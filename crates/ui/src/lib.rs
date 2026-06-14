@@ -82,6 +82,56 @@ const ICON_INFO: AppIcon = AppIcon {
     png_bytes: include_bytes!("../../../assets/icons/icon_info.png"),
 };
 
+/// A custom font embedded into the binary and registered with egui at startup.
+struct CustomFont {
+    /// Unique key egui uses to reference this font.
+    name: &'static str,
+    /// Raw .ttf / .otf bytes, embedded via `include_bytes!`.
+    ttf_bytes: &'static [u8],
+    /// Family this font becomes the primary face for.
+    family: egui::FontFamily,
+}
+
+/// Fonts bundled with the app, each made the default (index 0) for its family.
+/// Both are variable fonts; egui/ab_glyph rasterizes their default instance
+/// (regular weight), which is what we want for UI text.
+const CUSTOM_FONTS: &[CustomFont] = &[
+    CustomFont {
+        name: "inter",
+        ttf_bytes: include_bytes!("../../../assets/fonts/InterVariable.ttf"),
+        family: egui::FontFamily::Proportional,
+    },
+    CustomFont {
+        name: "jetbrains_mono",
+        ttf_bytes: include_bytes!("../../../assets/fonts/JetBrainsMono.ttf"),
+        family: egui::FontFamily::Monospace,
+    },
+];
+
+/// Install bundled custom fonts into the egui context. Call once at startup
+/// (the `app` coordinator does this when it builds the `egui::Context`).
+///
+/// Fonts are embedded at compile time via `include_bytes!`, matching how icons
+/// are bundled. To add a font, drop the file in `assets/fonts/` and append a
+/// [`CustomFont`] to [`CUSTOM_FONTS`]. Each font is inserted at index 0 of its
+/// family so it shadows egui's built-in default while keeping the built-ins as
+/// fallbacks for missing glyphs.
+pub fn install_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    for font in CUSTOM_FONTS {
+        fonts.font_data.insert(
+            font.name.to_owned(),
+            Arc::new(egui::FontData::from_static(font.ttf_bytes)),
+        );
+        fonts
+            .families
+            .entry(font.family.clone())
+            .or_default()
+            .insert(0, font.name.to_owned());
+    }
+    ctx.set_fonts(fonts);
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum WorkspaceMode {
     #[default]
