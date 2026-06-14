@@ -27,6 +27,12 @@ const GIZMO_SIZE_PX: f32 = 156.0;
 const GIZMO_INSET_PX: f32 = 26.0;
 const GIZMO_REACH_PX: f32 = 52.0;
 const GIZMO_BALL_RADIUS_PX: f32 = 13.0;
+const GIZMO_LABEL_SIZE_PX: f32 = 16.0;
+const GIZMO_LABEL_NEG_SIZE_PX: f32 = 15.0;
+const GIZMO_NEG_OPACITY: f32 = 0.05;
+/// View-space depth above which an axis is treated as pointing at the viewer
+/// (i.e. the camera is snapped down that axis).
+const GIZMO_AXIS_ALIGNED_DEPTH: f32 = 0.99;
 
 struct AppIcon {
     id: &'static str,
@@ -517,11 +523,8 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
             .show(ctx, |ui| {
                 ui.set_width(left_panel_width);
                 match panel {
-                    OptionPanel::UvChecker => option_panel(
-                        ui,
-                        "UV Checker Options",
-                        &mut state.panel_expanded,
-                        |ui| {
+                    OptionPanel::UvChecker => {
+                        option_panel(ui, "UV Checker Options", &mut state.panel_expanded, |ui| {
                             ui.add_enabled_ui(false, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.label(rich_label(
@@ -541,8 +544,8 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
                                     );
                                 });
                             });
-                        },
-                    ),
+                        })
+                    }
                     OptionPanel::FaceNormals => option_panel(
                         ui,
                         "Face Normals Options",
@@ -605,7 +608,9 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
                     toolbar_height + px(ctx, GIZMO_INSET_PX),
                 ),
             )
-            .show(ctx, |ui| draw_axis_gizmo(ui, ctx, camera));
+            .show(ctx, |ui| {
+                draw_axis_gizmo(ui, ctx, camera, state.projection_mode.into())
+            });
         output.axis_gizmo_action = gizmo_response.inner;
     }
 
@@ -1010,6 +1015,7 @@ fn draw_axis_gizmo(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
     camera: OrbitCamera,
+    projection: CameraProjection,
 ) -> Option<AxisGizmoAction> {
     let size = px(ctx, GIZMO_SIZE_PX);
     let reach = px(ctx, GIZMO_REACH_PX);
@@ -1032,7 +1038,7 @@ fn draw_axis_gizmo(
         );
     }
 
-    let mut points = axis_gizmo_points(camera, center, reach);
+    let mut points = axis_gizmo_points(camera, projection, center, reach);
     points.sort_by(|a, b| a.depth.total_cmp(&b.depth));
 
     for point in points.iter().filter(|point| point.positive) {
@@ -1066,34 +1072,54 @@ fn draw_axis_gizmo(
 
         if point.positive {
             painter.circle_filled(point.position, radius, point.color);
-            painter.text(
+            bold_text(
+                painter,
+                ctx,
                 point.position,
-                egui::Align2::CENTER_CENTER,
                 point.label,
-                egui::FontId::proportional(px(ctx, 13.0)),
+                px(ctx, GIZMO_LABEL_SIZE_PX),
                 egui::Color32::from_rgb(16, 21, 27),
             );
-        } else {
-            let fill = if response.hovered() {
-                point.color.linear_multiply(0.35)
-            } else {
-                egui::Color32::TRANSPARENT
-            };
-            painter.circle_filled(point.position, radius, fill);
+        } else if projection == CameraProjection::Orthographic
+            && point.depth > GIZMO_AXIS_ALIGNED_DEPTH
+        {
+            // The axis we're snapped down points straight at the viewer: render
+            // it solid like a positive axis so its label stays readable and the
+            // current view stays identified even without hovering.
+            painter.circle_filled(point.position, radius, point.color);
+            bold_text(
+                painter,
+                ctx,
+                point.position,
+                point.label,
+                px(ctx, GIZMO_LABEL_NEG_SIZE_PX),
+                egui::Color32::from_rgb(16, 21, 27),
+            );
+        } else if response.hovered() {
+            // Hovered: crisp full-colour outline plus the axis label.
             painter.circle_stroke(
                 point.position,
                 radius,
                 egui::Stroke::new(px(ctx, 2.0), point.color),
             );
-            if response.hovered() {
-                painter.text(
-                    point.position,
-                    egui::Align2::CENTER_CENTER,
-                    point.label,
-                    egui::FontId::proportional(px(ctx, 11.0)),
-                    point.color,
-                );
-            }
+            bold_text(
+                painter,
+                ctx,
+                point.position,
+                point.label,
+                px(ctx, GIZMO_LABEL_NEG_SIZE_PX),
+                point.color,
+            );
+        } else {
+            // Idle: a translucent filled disc. egui's antialiased closed-path
+            // strokes over-render thin rings, so a faded `circle_stroke` reads
+            // near-opaque; a `circle_filled` honours the alpha and clearly looks
+            // translucent.
+            painter.circle_filled(
+                point.position,
+                radius,
+                with_opacity(point.color, GIZMO_NEG_OPACITY),
+            );
         }
 
         if response.clicked() {
@@ -1115,7 +1141,12 @@ struct AxisGizmoPoint {
     positive: bool,
 }
 
-fn axis_gizmo_points(camera: OrbitCamera, center: egui::Pos2, reach: f32) -> Vec<AxisGizmoPoint> {
+fn axis_gizmo_points(
+    camera: OrbitCamera,
+    projection: CameraProjection,
+    center: egui::Pos2,
+    reach: f32,
+) -> Vec<AxisGizmoPoint> {
     const AXES: [(ViewAxis, Vec3, egui::Color32, &str, &str, bool); 6] = [
         (
             ViewAxis::PositiveX,
@@ -1167,12 +1198,31 @@ fn axis_gizmo_points(camera: OrbitCamera, center: egui::Pos2, reach: f32) -> Vec
         ),
     ];
 
+    // Distance from a virtual eye to the gizmo's center, derived from the
+    // viewport camera's vertical FOV (clamped to keep the foreshortening stable
+    // and the denominator strictly positive). `None` in orthographic mode, where
+    // the eye is effectively at infinity and the projection stays flat.
+    let perspective_eye = match projection {
+        CameraProjection::Orthographic => None,
+        CameraProjection::Perspective => {
+            Some(reach / (camera.fov_y_radians * 0.5).clamp(0.1, 0.6).tan())
+        }
+    };
+
     AXES.into_iter()
         .map(|(axis, world, color, label, tooltip, positive)| {
             let view = camera.view_space_direction(world);
+            // +Z in view space points toward the viewer: tips facing the camera
+            // are magnified, tips behind the center shrink.
+            let scale = perspective_eye
+                .map(|eye| eye / (eye - view.z * reach))
+                .unwrap_or(1.0);
             AxisGizmoPoint {
                 axis,
-                position: egui::pos2(center.x + view.x * reach, center.y - view.y * reach),
+                position: egui::pos2(
+                    center.x + view.x * reach * scale,
+                    center.y - view.y * reach * scale,
+                ),
                 depth: view.z,
                 color,
                 label,
@@ -1185,6 +1235,44 @@ fn axis_gizmo_points(camera: OrbitCamera, center: egui::Pos2, reach: f32) -> Vec
 
 fn rich_label(text: &str, size: f32, color: egui::Color32) -> egui::RichText {
     egui::RichText::new(text).size(size).color(color).strong()
+}
+
+/// Return `color` with its alpha set to `opacity` (0..=1) of fully opaque,
+/// regardless of the input alpha. Used to fade gizmo rings without dimming hue.
+fn with_opacity(color: egui::Color32, opacity: f32) -> egui::Color32 {
+    let alpha = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+    egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
+}
+
+/// Draw centered text with a faux-bold weight. Only the regular instance of the
+/// variable UI font is registered with egui, so there is no true bold face to
+/// select — the heavier stroke is approximated by layering the glyphs with
+/// small sub-pixel offsets before the crisp center pass.
+fn bold_text(
+    painter: &egui::Painter,
+    ctx: &egui::Context,
+    pos: egui::Pos2,
+    text: &str,
+    size: f32,
+    color: egui::Color32,
+) {
+    let font = egui::FontId::proportional(size);
+    let offset = px(ctx, 0.6);
+    for delta in [
+        egui::vec2(-offset, 0.0),
+        egui::vec2(offset, 0.0),
+        egui::vec2(0.0, -offset),
+        egui::vec2(0.0, offset),
+    ] {
+        painter.text(
+            pos + delta,
+            egui::Align2::CENTER_CENTER,
+            text,
+            font.clone(),
+            color,
+        );
+    }
+    painter.text(pos, egui::Align2::CENTER_CENTER, text, font, color);
 }
 
 fn px(ctx: &egui::Context, value: f32) -> f32 {
