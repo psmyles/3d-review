@@ -1,6 +1,8 @@
 use bytemuck::{Pod, Zeroable};
 use egui::epaint::PaintCallbackInfo;
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
+use review_model::ModelData;
+use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 use crate::OrbitCamera;
@@ -39,17 +41,26 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct SceneCallback {
     camera: OrbitCamera,
     output_format: wgpu::TextureFormat,
+    model: Arc<ModelData>,
+    model_revision: u64,
 }
 
 impl SceneCallback {
-    pub fn new(camera: OrbitCamera, output_format: wgpu::TextureFormat) -> Self {
+    pub fn new(
+        camera: OrbitCamera,
+        output_format: wgpu::TextureFormat,
+        model: Arc<ModelData>,
+        model_revision: u64,
+    ) -> Self {
         Self {
             camera,
             output_format,
+            model,
+            model_revision,
         }
     }
 }
@@ -71,6 +82,10 @@ impl CallbackTrait for SceneCallback {
             *resources = SceneResources::new(device, self.output_format);
         }
 
+        if resources.model_revision != self.model_revision {
+            resources.update_model(device, &self.model, self.model_revision);
+        }
+
         resources.update_camera(queue, self.camera);
         Vec::new()
     }
@@ -85,16 +100,18 @@ impl CallbackTrait for SceneCallback {
             return;
         };
 
+        if resources.mesh_index_count > 0 {
+            render_pass.set_bind_group(0, &resources.uniform_bind_group, &[]);
+            render_pass.set_pipeline(&resources.mesh_pipeline);
+            render_pass.set_vertex_buffer(0, resources.mesh_vertex_buffer.slice(..));
+            render_pass.set_index_buffer(
+                resources.mesh_index_buffer.slice(..),
+                wgpu::IndexFormat::Uint32,
+            );
+            render_pass.draw_indexed(0..resources.mesh_index_count, 0, 0..1);
+        }
+
         render_pass.set_bind_group(0, &resources.uniform_bind_group, &[]);
-
-        render_pass.set_pipeline(&resources.cube_pipeline);
-        render_pass.set_vertex_buffer(0, resources.cube_vertex_buffer.slice(..));
-        render_pass.set_index_buffer(
-            resources.cube_index_buffer.slice(..),
-            wgpu::IndexFormat::Uint16,
-        );
-        render_pass.draw_indexed(0..resources.cube_index_count, 0, 0..1);
-
         render_pass.set_pipeline(&resources.line_pipeline);
         render_pass.set_vertex_buffer(0, resources.line_vertex_buffer.slice(..));
         render_pass.draw(0..resources.line_vertex_count, 0..1);
@@ -103,13 +120,14 @@ impl CallbackTrait for SceneCallback {
 
 struct SceneResources {
     output_format: wgpu::TextureFormat,
-    cube_pipeline: wgpu::RenderPipeline,
+    model_revision: u64,
+    mesh_pipeline: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
-    cube_vertex_buffer: wgpu::Buffer,
-    cube_index_buffer: wgpu::Buffer,
-    cube_index_count: u32,
+    mesh_vertex_buffer: wgpu::Buffer,
+    mesh_index_buffer: wgpu::Buffer,
+    mesh_index_count: u32,
     line_vertex_buffer: wgpu::Buffer,
     line_vertex_count: u32,
 }
@@ -157,14 +175,14 @@ impl SceneResources {
             push_constant_ranges: &[],
         });
 
-        let cube_pipeline = create_pipeline(
+        let mesh_pipeline = create_pipeline(
             device,
             &pipeline_layout,
             &shader,
             output_format,
             wgpu::PrimitiveTopology::TriangleList,
             true,
-            "review_scene_cube_pipeline",
+            "review_scene_mesh_pipeline",
         );
         let line_pipeline = create_pipeline(
             device,
@@ -176,19 +194,9 @@ impl SceneResources {
             "review_scene_line_pipeline",
         );
 
-        let (cube_vertices, cube_indices) = cube_mesh();
         let line_vertices = scene_lines();
-
-        let cube_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("review_scene_cube_vertex_buffer"),
-            contents: bytemuck::cast_slice(&cube_vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let cube_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("review_scene_cube_index_buffer"),
-            contents: bytemuck::cast_slice(&cube_indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
+        let (mesh_vertex_buffer, mesh_index_buffer, mesh_index_count) =
+            create_mesh_buffers(device, &[], &[]);
         let line_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("review_scene_line_vertex_buffer"),
             contents: bytemuck::cast_slice(&line_vertices),
@@ -197,13 +205,14 @@ impl SceneResources {
 
         Self {
             output_format,
-            cube_pipeline,
+            model_revision: u64::MAX,
+            mesh_pipeline,
             line_pipeline,
             uniform_buffer,
             uniform_bind_group,
-            cube_vertex_buffer,
-            cube_index_buffer,
-            cube_index_count: cube_indices.len() as u32,
+            mesh_vertex_buffer,
+            mesh_index_buffer,
+            mesh_index_count,
             line_vertex_buffer,
             line_vertex_count: line_vertices.len() as u32,
         }
@@ -214,6 +223,17 @@ impl SceneResources {
             view_projection: camera.view_projection().to_cols_array_2d(),
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+    }
+
+    fn update_model(&mut self, device: &wgpu::Device, model: &ModelData, model_revision: u64) {
+        let (mesh_vertices, mesh_indices) = model_mesh(model);
+        let (mesh_vertex_buffer, mesh_index_buffer, mesh_index_count) =
+            create_mesh_buffers(device, &mesh_vertices, &mesh_indices);
+
+        self.mesh_vertex_buffer = mesh_vertex_buffer;
+        self.mesh_index_buffer = mesh_index_buffer;
+        self.mesh_index_count = mesh_index_count;
+        self.model_revision = model_revision;
     }
 }
 
@@ -304,81 +324,55 @@ fn scene_lines() -> Vec<SceneVertex> {
         [0.0, 0.004, grid_extent as f32],
         [0.18, 0.53, 1.0, 1.0],
     );
-
-    let s = 0.52;
-    let y0 = 0.02;
-    let y1 = 1.06;
-    let edge = [0.92, 0.97, 1.0, 0.72];
-    let corners = [
-        [-s, y0, -s],
-        [s, y0, -s],
-        [s, y0, s],
-        [-s, y0, s],
-        [-s, y1, -s],
-        [s, y1, -s],
-        [s, y1, s],
-        [-s, y1, s],
-    ];
-    for [a, b] in [
-        [0, 1],
-        [1, 2],
-        [2, 3],
-        [3, 0],
-        [4, 5],
-        [5, 6],
-        [6, 7],
-        [7, 4],
-        [0, 4],
-        [1, 5],
-        [2, 6],
-        [3, 7],
-    ] {
-        push_line(&mut vertices, corners[a], corners[b], edge);
-    }
-
     vertices
 }
 
-fn cube_mesh() -> (Vec<SceneVertex>, Vec<u16>) {
-    let s = 0.5;
-    let y0 = 0.03;
-    let y1 = 1.03;
-    let faces = [
-        (
-            [[-s, y0, s], [s, y0, s], [s, y1, s], [-s, y1, s]],
-            [0.30, 0.58, 0.86, 0.92],
-        ),
-        (
-            [[s, y0, -s], [-s, y0, -s], [-s, y1, -s], [s, y1, -s]],
-            [0.20, 0.37, 0.56, 0.92],
-        ),
-        (
-            [[-s, y0, -s], [-s, y0, s], [-s, y1, s], [-s, y1, -s]],
-            [0.22, 0.47, 0.73, 0.92],
-        ),
-        (
-            [[s, y0, s], [s, y0, -s], [s, y1, -s], [s, y1, s]],
-            [0.40, 0.68, 0.92, 0.92],
-        ),
-        (
-            [[-s, y1, s], [s, y1, s], [s, y1, -s], [-s, y1, -s]],
-            [0.62, 0.79, 0.96, 0.96],
-        ),
-        (
-            [[-s, y0, -s], [s, y0, -s], [s, y0, s], [-s, y0, s]],
-            [0.14, 0.25, 0.35, 0.92],
-        ),
-    ];
+fn model_mesh(model: &ModelData) -> (Vec<SceneVertex>, Vec<u32>) {
+    let vertices = model
+        .vertices
+        .iter()
+        .map(|vertex| SceneVertex {
+            position: vertex.position.to_array(),
+            color: vertex.color.to_array(),
+        })
+        .collect();
+    (vertices, model.indices.clone())
+}
 
-    let mut vertices = Vec::with_capacity(24);
-    let mut indices = Vec::with_capacity(36);
-    for (face_index, (positions, color)) in faces.into_iter().enumerate() {
-        let base = (face_index * 4) as u16;
-        vertices.extend(positions.map(|position| SceneVertex { position, color }));
-        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
-    }
+fn create_mesh_buffers(
+    device: &wgpu::Device,
+    vertices: &[SceneVertex],
+    indices: &[u32],
+) -> (wgpu::Buffer, wgpu::Buffer, u32) {
+    let placeholder_vertex = [SceneVertex {
+        position: [0.0, 0.0, 0.0],
+        color: [0.0, 0.0, 0.0, 0.0],
+    }];
+    let placeholder_index = [0_u32];
 
-    (vertices, indices)
+    let vertex_contents = if vertices.is_empty() {
+        bytemuck::cast_slice(&placeholder_vertex)
+    } else {
+        bytemuck::cast_slice(vertices)
+    };
+    let index_contents = if indices.is_empty() {
+        bytemuck::cast_slice(&placeholder_index)
+    } else {
+        bytemuck::cast_slice(indices)
+    };
+
+    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("review_scene_mesh_vertex_buffer"),
+        contents: vertex_contents,
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("review_scene_mesh_index_buffer"),
+        contents: index_contents,
+        usage: wgpu::BufferUsages::INDEX,
+    });
+
+    (vertex_buffer, index_buffer, indices.len() as u32)
 }
 
 fn push_line(vertices: &mut Vec<SceneVertex>, start: [f32; 3], end: [f32; 3], color: [f32; 4]) {

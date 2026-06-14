@@ -1884,6 +1884,7 @@ dependencies = [
  "glam",
  "pollster",
  "review-import",
+ "review-model",
  "review-render",
  "review-ui",
  "tracing",
