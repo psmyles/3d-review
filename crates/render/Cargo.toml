@@ -6,7 +6,9 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+bytemuck.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
 glam.workspace = true
 review-model = { path = "../model" }
 wgpu.workspace = true
-
