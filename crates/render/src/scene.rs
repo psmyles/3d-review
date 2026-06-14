@@ -6,7 +6,7 @@ use review_model::ModelData;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
-use crate::{OrbitCamera, SceneDebugOptions, ShadingMode};
+use crate::{CameraProjection, OrbitCamera, SceneDebugOptions, ShadingMode};
 
 pub const SCENE_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
 pub const SCENE_SAMPLE_COUNT: u32 = 4;
@@ -89,6 +89,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 #[derive(Debug, Clone)]
 pub struct SceneCallback {
     camera: OrbitCamera,
+    projection_mode: CameraProjection,
     output_format: wgpu::TextureFormat,
     model: Arc<ModelData>,
     model_revision: u64,
@@ -98,6 +99,7 @@ pub struct SceneCallback {
 impl SceneCallback {
     pub fn new(
         camera: OrbitCamera,
+        projection_mode: CameraProjection,
         output_format: wgpu::TextureFormat,
         model: Arc<ModelData>,
         model_revision: u64,
@@ -105,6 +107,7 @@ impl SceneCallback {
     ) -> Self {
         Self {
             camera,
+            projection_mode,
             output_format,
             model,
             model_revision,
@@ -134,7 +137,7 @@ impl CallbackTrait for SceneCallback {
             resources.update_model(device, &self.model, self.model_revision, self.debug_options);
         }
 
-        resources.update_camera(queue, self.camera, self.debug_options);
+        resources.update_camera(queue, self.camera, self.projection_mode, self.debug_options);
         Vec::new()
     }
 
@@ -316,10 +319,11 @@ impl SceneResources {
         &self,
         queue: &wgpu::Queue,
         camera: OrbitCamera,
+        projection_mode: CameraProjection,
         debug_options: SceneDebugOptions,
     ) {
         let uniforms = SceneUniforms {
-            view_projection: camera.view_projection().to_cols_array_2d(),
+            view_projection: camera.view_projection(projection_mode).to_cols_array_2d(),
             render_options: [
                 shading_mode_value(debug_options.shading_mode),
                 if debug_options.uv_checker { 1.0 } else { 0.0 },

@@ -10,7 +10,7 @@ use glam::Vec2;
 use review_import::{load_model, LoadOptions};
 use review_model::ModelData;
 use review_render::{Renderer, RendererConfig, SCENE_DEPTH_FORMAT, SCENE_SAMPLE_COUNT};
-use review_ui::{draw_overlay, draw_viewport_scene, UiState};
+use review_ui::{draw_overlay, draw_viewport_scene, AxisGizmoAction, UiOutput, UiState};
 use tracing::{info, warn};
 use winit::{
     application::ApplicationHandler,
@@ -43,6 +43,7 @@ struct App {
     drag_mode: Option<DragMode>,
     last_pointer_position: Option<Vec2>,
     last_primary_click: Option<(Instant, Vec2)>,
+    last_render_instant: Option<Instant>,
     scene_model: Arc<ModelData>,
     scene_revision: u64,
     ui: UiState,
@@ -65,6 +66,7 @@ impl Default for App {
             drag_mode: None,
             last_pointer_position: None,
             last_primary_click: None,
+            last_render_instant: None,
             scene_model,
             scene_revision: 0,
             ui,
@@ -97,7 +99,7 @@ impl ApplicationHandler for App {
         let mut renderer = Renderer::new(renderer_config);
         let size = window.inner_size();
         if size.height > 0 {
-            renderer.camera.aspect_ratio = size.width as f32 / size.height as f32;
+            renderer.set_camera_aspect_ratio(size.width as f32 / size.height as f32);
         }
         let egui_ctx = egui::Context::default();
         egui_ctx.set_visuals(egui::Visuals::dark());
@@ -163,7 +165,7 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(size) => {
                 if let Some(renderer) = self.renderer.as_mut() {
                     if size.height > 0 {
-                        renderer.camera.aspect_ratio = size.width as f32 / size.height as f32;
+                        renderer.set_camera_aspect_ratio(size.width as f32 / size.height as f32);
                     }
                 }
 
@@ -210,10 +212,10 @@ impl ApplicationHandler for App {
                 ) {
                     let delta = current - last;
                     match mode {
-                        DragMode::Orbit => renderer.camera.orbit(delta),
+                        DragMode::Orbit => renderer.orbit_camera(delta),
                         DragMode::Pan => {
                             let size = window.inner_size();
-                            renderer.camera.pan_screen_delta(
+                            renderer.pan_camera(
                                 delta,
                                 Vec2::new(size.width as f32, size.height as f32),
                             );
@@ -235,7 +237,7 @@ impl ApplicationHandler for App {
                             MouseScrollDelta::LineDelta(_, y) => y * 0.5,
                             MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 120.0,
                         };
-                        renderer.camera.zoom(amount);
+                        renderer.zoom_camera(amount);
                         window.request_redraw();
                     }
                 }
@@ -270,6 +272,7 @@ impl App {
         };
 
         window.set_title(&format!("3D Review - {}", self.ui.status));
+        self.update_camera_animation(&window);
 
         let output_format = {
             let Some(egui_painter) = self.egui_painter.as_ref() else {
@@ -286,7 +289,7 @@ impl App {
             output_format
         };
 
-        let (full_output, clear) = {
+        let (full_output, clear, ui_output) = {
             let Some(egui_state) = self.egui_state.as_mut() else {
                 return;
             };
@@ -299,6 +302,7 @@ impl App {
             let clear = renderer.config.clear_color;
             let scene_model = self.scene_model.clone();
             let scene_revision = self.scene_revision;
+            let mut ui_output = UiOutput::default();
             let full_output = egui_ctx.run(raw_input, |ctx| {
                 draw_viewport_scene(
                     ctx,
@@ -308,12 +312,14 @@ impl App {
                     scene_revision,
                     output_format,
                 );
-                draw_overlay(ctx, &mut self.ui);
+                ui_output = draw_overlay(ctx, &mut self.ui, camera);
             });
 
             egui_state.handle_platform_output(&window, full_output.platform_output.clone());
-            (full_output, clear)
+            (full_output, clear, ui_output)
         };
+
+        self.apply_ui_output(ui_output);
 
         let pixels_per_point = full_output.pixels_per_point;
         let clipped_primitives = egui_ctx.tessellate(full_output.shapes, pixels_per_point);
@@ -400,11 +406,45 @@ impl App {
         last_click_time.elapsed() <= Duration::from_millis(450)
             && current_position.distance(last_click_position) <= 6.0
     }
+
+    fn apply_ui_output(&mut self, output: UiOutput) {
+        let Some(action) = output.axis_gizmo_action else {
+            return;
+        };
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+
+        match action {
+            AxisGizmoAction::Orbit(delta) => renderer.orbit_camera(delta),
+            AxisGizmoAction::Snap(axis) => {
+                renderer.animate_camera_to_offset_direction(axis.offset_direction());
+            }
+        }
+
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
+    fn update_camera_animation(&mut self, window: &Window) {
+        let now = Instant::now();
+        let delta_seconds = self
+            .last_render_instant
+            .map_or(0.0, |last| now.duration_since(last).as_secs_f32());
+        self.last_render_instant = Some(now);
+
+        if let Some(renderer) = self.renderer.as_mut() {
+            if renderer.update_camera_animation(delta_seconds) && renderer.is_camera_animating() {
+                window.request_redraw();
+            }
+        }
+    }
 }
 
 fn frame_camera_to_model(renderer: &mut Renderer, model: &ModelData) {
     if let Some(bounds) = model.bounds {
-        renderer.camera.frame_bounds(bounds);
+        renderer.animate_camera_to_bounds(bounds);
     }
 }
 
