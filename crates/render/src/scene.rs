@@ -9,6 +9,7 @@ use wgpu::util::DeviceExt;
 use crate::{OrbitCamera, SceneDebugOptions};
 
 pub const SCENE_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
+pub const SCENE_SAMPLE_COUNT: u32 = 4;
 
 const SHADER: &str = r#"
 struct SceneUniforms {
@@ -338,7 +339,11 @@ fn create_pipeline(
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         }),
-        multisample: wgpu::MultisampleState::default(),
+        multisample: wgpu::MultisampleState {
+            count: SCENE_SAMPLE_COUNT,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
         fragment: Some(wgpu::FragmentState {
             module: shader,
             entry_point: Some("fs_main"),
