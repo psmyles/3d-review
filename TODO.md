@@ -1,3 +1,4 @@
-- MSAA or some sort of AA
-- update the toolbar to have the layout of 3d-review
 - don't update the viewport unless there's a change - save system resources
+- tone mapping 
+- image based lighting
+- 
