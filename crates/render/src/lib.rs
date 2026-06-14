@@ -50,12 +50,14 @@ pub struct OrbitCamera {
 impl Default for OrbitCamera {
     fn default() -> Self {
         Self {
-            target: Vec3::ZERO,
-            yaw: -0.65,
-            pitch: -0.45,
-            distance: 6.0,
+            // A neutral "review" home view: centered on the demo cube and close to
+            // an isometric angle so proportions read correctly on reset.
+            target: Vec3::new(0.0, 0.53, 0.0),
+            yaw: -45.0_f32.to_radians(),
+            pitch: -35.264_39_f32.to_radians(),
+            distance: 7.5,
             aspect_ratio: 16.0 / 9.0,
-            fov_y_radians: 45.0_f32.to_radians(),
+            fov_y_radians: 25.0_f32.to_radians(),
             z_near: 0.02,
             z_far: 10_000.0,
         }
@@ -64,7 +66,9 @@ impl Default for OrbitCamera {
 
 impl OrbitCamera {
     pub fn reset(&mut self) {
+        let aspect_ratio = self.aspect_ratio;
         *self = Self::default();
+        self.aspect_ratio = aspect_ratio;
     }
 
     pub fn frame_bounds(&mut self, bounds: Bounds) {
@@ -109,7 +113,8 @@ impl OrbitCamera {
     }
 
     pub fn view_matrix(self) -> Mat4 {
-        Mat4::look_at_rh(self.eye_position(), self.target, Vec3::Y)
+        let world_from_camera = Mat4::from_translation(self.eye_position()) * self.rotation();
+        world_from_camera.inverse()
     }
 
     pub fn view_projection(self) -> Mat4 {
