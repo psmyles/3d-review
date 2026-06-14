@@ -112,11 +112,12 @@ PATH so `cc` can compile `ufbx.c`).
 
 Pinned (workspace deps): `winit 0.30`, `wgpu 24`, `egui`/`egui-winit`/
 `egui-wgpu 0.31`, `glam 0.30`, `bytemuck 1`, `thiserror 2`, `rfd 0.15`,
-`image 0.25` (png), `pollster 0.4`, `cc 1` (build dep). Edition 2021.
+`image 0.25` (png), `pollster 0.4`, `cc 1` (build dep). Edition 2024.
 
-> **MSRV note:** `Cargo.toml` declares `rust-version = "1.80"`, but the FFI uses
-> `unsafe extern "C" { … }`, stabilized in **1.82**. Treat 1.82 as the real
-> floor (bump the manifest or drop the `unsafe extern` form).
+> **MSRV:** `rust-version = "1.85"` — the floor required by Edition 2024.
+> The FFI's `unsafe extern "C" { … }` blocks are the idiomatic (and, under
+> Edition 2024, required) form. Bump the floor only when adopting a feature
+> that needs a higher version.
 
 `build.rs` compiles `ufbx.c` + the bridge with `cc` **only when**
 `third_party/ufbx/ufbx.{c,h}` exist, and sets `cfg(has_ufbx)`; without them the
