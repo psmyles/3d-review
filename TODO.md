@@ -1,5 +1,3 @@
-- custom font for UI
-- remove text from title and bottom toolbar
 - have the stats button toggle viewport stats display
 - don't update the viewport unless there's a change - save system resources
 - tone mapping 
