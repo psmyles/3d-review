@@ -3,6 +3,11 @@ use std::sync::Arc;
 use review_model::{ModelData, ModelStats};
 use review_render::{OrbitCamera, SceneCallback};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiAction {
+    OpenModel,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum WorkspaceMode {
     #[default]
@@ -58,14 +63,16 @@ pub fn draw_viewport_scene(
     painter.add(callback);
 }
 
-pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState) {
+pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState) -> Option<UiAction> {
+    let mut action = None;
+
     egui::Area::new(egui::Id::new("top_toolbar"))
         .fixed_pos(egui::pos2(12.0, 10.0))
         .show(ctx, |ui| {
             egui::Frame::dark_canvas(ui.style()).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     if ui.button("Open").clicked() {
-                        state.status = "Open requested".to_owned();
+                        action = Some(UiAction::OpenModel);
                     }
 
                     ui.separator();
@@ -110,4 +117,6 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState) {
                 ui.label(&state.status);
             });
         });
+
+    action
 }

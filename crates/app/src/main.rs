@@ -2,10 +2,11 @@ use std::{num::NonZeroU32, sync::Arc};
 
 use anyhow::Context;
 use glam::Vec2;
+use review_import::{load_model, LoadOptions};
 use review_model::{demo_cube_model, ModelData};
 use review_render::{Renderer, RendererConfig, SCENE_DEPTH_FORMAT};
-use review_ui::{draw_overlay, draw_viewport_scene, UiState};
-use tracing::info;
+use review_ui::{draw_overlay, draw_viewport_scene, UiAction, UiState};
+use tracing::{info, warn};
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
@@ -91,6 +92,7 @@ impl ApplicationHandler for App {
         if size.height > 0 {
             renderer.camera.aspect_ratio = size.width as f32 / size.height as f32;
         }
+        frame_camera_to_model(&mut renderer, &self.scene_model);
 
         let egui_ctx = egui::Context::default();
         egui_ctx.set_visuals(egui::Visuals::dark());
@@ -119,7 +121,7 @@ impl ApplicationHandler for App {
         self.egui_ctx = Some(egui_ctx);
         self.egui_state = Some(egui_state);
         self.egui_painter = Some(egui_painter);
-        self.ui.status = "LMB orbit  RMB pan  Wheel zoom  F reset".to_owned();
+        self.ui.status = "LMB orbit  RMB pan  Wheel zoom  F frame".to_owned();
         self.ui.stats = self.scene_model.stats;
         self.window = Some(window.clone());
         info!("application shell started");
@@ -229,7 +231,7 @@ impl ApplicationHandler for App {
                     ) =>
             {
                 if let Some(renderer) = self.renderer.as_mut() {
-                    renderer.camera.reset();
+                    frame_camera_to_model(renderer, &self.scene_model);
                     window.request_redraw();
                 }
             }
@@ -240,46 +242,70 @@ impl ApplicationHandler for App {
 
 impl App {
     fn render(&mut self) {
-        let (Some(window), Some(renderer), Some(egui_ctx), Some(egui_state), Some(egui_painter)) = (
-            self.window.as_ref(),
-            self.renderer.as_ref(),
-            self.egui_ctx.as_ref(),
-            self.egui_state.as_mut(),
-            self.egui_painter.as_mut(),
-        ) else {
+        let Some(window) = self.window.as_ref().cloned() else {
+            return;
+        };
+        let Some(egui_ctx) = self.egui_ctx.as_ref().cloned() else {
             return;
         };
 
         window.set_title(&format!("3D Review - {}", self.ui.status));
 
-        let Some(output_format) = egui_painter
-            .render_state()
-            .map(|render_state| render_state.target_format)
-        else {
-            return;
+        let output_format = {
+            let Some(egui_painter) = self.egui_painter.as_ref() else {
+                return;
+            };
+
+            let Some(output_format) = egui_painter
+                .render_state()
+                .map(|render_state| render_state.target_format)
+            else {
+                return;
+            };
+
+            output_format
         };
 
-        let raw_input = egui_state.take_egui_input(window);
-        let camera = renderer.camera;
-        let scene_model = self.scene_model.clone();
-        let scene_revision = self.scene_revision;
-        let full_output = egui_ctx.run(raw_input, |ctx| {
-            draw_viewport_scene(
-                ctx,
-                &self.ui,
-                camera,
-                scene_model.clone(),
-                scene_revision,
-                output_format,
-            );
-            draw_overlay(ctx, &mut self.ui);
-        });
+        let (full_output, ui_action, clear) = {
+            let Some(egui_state) = self.egui_state.as_mut() else {
+                return;
+            };
+            let Some(renderer) = self.renderer.as_ref() else {
+                return;
+            };
 
-        egui_state.handle_platform_output(window, full_output.platform_output);
+            let raw_input = egui_state.take_egui_input(&window);
+            let camera = renderer.camera;
+            let clear = renderer.config.clear_color;
+            let scene_model = self.scene_model.clone();
+            let scene_revision = self.scene_revision;
+            let mut ui_action = None;
+            let full_output = egui_ctx.run(raw_input, |ctx| {
+                draw_viewport_scene(
+                    ctx,
+                    &self.ui,
+                    camera,
+                    scene_model.clone(),
+                    scene_revision,
+                    output_format,
+                );
+                ui_action = draw_overlay(ctx, &mut self.ui);
+            });
+
+            egui_state.handle_platform_output(&window, full_output.platform_output.clone());
+            (full_output, ui_action, clear)
+        };
+
+        if matches!(ui_action, Some(UiAction::OpenModel)) {
+            self.open_model_from_dialog();
+        }
 
         let pixels_per_point = full_output.pixels_per_point;
         let clipped_primitives = egui_ctx.tessellate(full_output.shapes, pixels_per_point);
-        let clear = renderer.config.clear_color;
+
+        let Some(egui_painter) = self.egui_painter.as_mut() else {
+            return;
+        };
 
         egui_painter.paint_and_update_textures(
             egui::ViewportId::ROOT,
@@ -294,6 +320,56 @@ impl App {
             &full_output.textures_delta,
             Vec::new(),
         );
+    }
+
+    fn open_model_from_dialog(&mut self) {
+        let file = rfd::FileDialog::new()
+            .add_filter("FBX", &["fbx"])
+            .set_title("Open Model")
+            .pick_file();
+
+        let Some(path) = file else {
+            self.ui.status = "Open canceled".to_owned();
+            return;
+        };
+
+        match load_model(&path, LoadOptions { triangulate: true }) {
+            Ok(model) => {
+                let model = Arc::new(model);
+                let display_name = if model.name.is_empty() {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("Model")
+                        .to_owned()
+                } else {
+                    model.name.clone()
+                };
+
+                if let Some(renderer) = self.renderer.as_mut() {
+                    frame_camera_to_model(renderer, &model);
+                }
+
+                self.ui.stats = model.stats;
+                self.ui.status = format!("Loaded {display_name}");
+                self.scene_model = model;
+                self.scene_revision = self.scene_revision.saturating_add(1);
+                info!(path = %path.display(), "model loaded");
+            }
+            Err(error) => {
+                self.ui.status = format!("Open failed: {error}");
+                warn!(path = %path.display(), error = %error, "model load failed");
+            }
+        }
+
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+}
+
+fn frame_camera_to_model(renderer: &mut Renderer, model: &ModelData) {
+    if let Some(bounds) = model.bounds {
+        renderer.camera.frame_bounds(bounds);
     }
 }
 
