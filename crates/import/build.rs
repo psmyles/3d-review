@@ -16,7 +16,5 @@ fn main() {
             .warnings(false)
             .compile("ufbx");
         println!("cargo:rustc-cfg=has_ufbx");
-    } else {
-        println!("cargo:warning=ufbx.c/ufbx.h not found; FBX import is stubbed until third_party/ufbx is populated");
     }
 }
