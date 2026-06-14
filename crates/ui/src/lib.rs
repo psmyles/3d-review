@@ -13,11 +13,12 @@ const TOOLBAR_ICON_SIZE_PX: f32 = 42.0;
 const TOOLBAR_ICON_GAP_PX: f32 = 3.0;
 const TOOLBAR_ICON_PADDING_PX: f32 = 8.0;
 const TOOLBAR_CENTER_WIDTH_PX: f32 = 180.0;
-const TOOLBAR_RIGHT_WIDTH_PX: f32 = 198.0;
+const TOOLBAR_RIGHT_WIDTH_PX: f32 = 153.0;
 const TOOLBAR_LEFT_WIDTH_PX: f32 = 333.0;
 const TOOLBAR_SHADING_GROUP_WIDTH_PX: f32 = 183.0;
 const TOOLBAR_DEBUG_GROUP_WIDTH_PX: f32 = 138.0;
-const TOOLBAR_ICON_GROUP_WIDTH_PX: f32 = 93.0;
+const TOOLBAR_SINGLE_ICON_GROUP_WIDTH_PX: f32 = 48.0;
+const TOOLBAR_DOUBLE_ICON_GROUP_WIDTH_PX: f32 = 93.0;
 const TOOLBAR_MODE_GROUP_WIDTH_PX: f32 = 180.0;
 const TOOLBAR_GROUP_HEIGHT_PX: f32 = 48.0;
 const TOOLBAR_GROUP_PADDING_PX: f32 = 3.0;
@@ -39,9 +40,9 @@ const ICON_SHADING_SOLID: AppIcon = AppIcon {
     id: "icon_shading_solid",
     png_bytes: include_bytes!("../../../assets/icons/icon_shading_solid.png"),
 };
-const ICON_SHADING_RENDERED: AppIcon = AppIcon {
-    id: "icon_shading_rendered",
-    png_bytes: include_bytes!("../../../assets/icons/icon_shading_rendered.png"),
+const ICON_SHADING_WIRE_SHADED: AppIcon = AppIcon {
+    id: "icon_shading_wire_shaded",
+    png_bytes: include_bytes!("../../../assets/icons/icon_shading_wire_shaded.png"),
 };
 const ICON_UV: AppIcon = AppIcon {
     id: "icon_uv",
@@ -63,9 +64,9 @@ const ICON_VIEW_PERSPECTIVE: AppIcon = AppIcon {
     id: "icon_view_perspective",
     png_bytes: include_bytes!("../../../assets/icons/icon_view_perspective.png"),
 };
-const ICON_BOUNDS: AppIcon = AppIcon {
-    id: "icon_bbox",
-    png_bytes: include_bytes!("../../../assets/icons/icon_bbox.png"),
+const ICON_AXIS_GIZMO: AppIcon = AppIcon {
+    id: "icon_empty_axis",
+    png_bytes: include_bytes!("../../../assets/icons/icon_empty_axis.png"),
 };
 const ICON_GRID: AppIcon = AppIcon {
     id: "icon_grid",
@@ -104,7 +105,7 @@ pub struct UiState {
     pub shading_mode: ShadingMode,
     pub projection_mode: ViewProjectionMode,
     pub show_grid: bool,
-    pub show_bbox: bool,
+    pub show_axis_gizmo: bool,
     pub uv_checker_panel_expanded: bool,
     pub face_normals: NormalPanelState,
     pub vertex_normals: NormalPanelState,
@@ -120,7 +121,7 @@ impl Default for UiState {
             shading_mode: ShadingMode::Shaded,
             projection_mode: ViewProjectionMode::Perspective,
             show_grid: true,
-            show_bbox: false,
+            show_axis_gizmo: true,
             uv_checker_panel_expanded: false,
             face_normals: NormalPanelState {
                 expanded: true,
@@ -174,7 +175,8 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState) {
     let toolbar_right_width = px(ctx, TOOLBAR_RIGHT_WIDTH_PX);
     let toolbar_shading_group_width = px(ctx, TOOLBAR_SHADING_GROUP_WIDTH_PX);
     let toolbar_debug_group_width = px(ctx, TOOLBAR_DEBUG_GROUP_WIDTH_PX);
-    let toolbar_icon_group_width = px(ctx, TOOLBAR_ICON_GROUP_WIDTH_PX);
+    let toolbar_single_icon_group_width = px(ctx, TOOLBAR_SINGLE_ICON_GROUP_WIDTH_PX);
+    let toolbar_double_icon_group_width = px(ctx, TOOLBAR_DOUBLE_ICON_GROUP_WIDTH_PX);
     let toolbar_mode_group_width = px(ctx, TOOLBAR_MODE_GROUP_WIDTH_PX);
 
     let viewport_rect = ctx.input(|input| input.screen_rect());
@@ -244,9 +246,9 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState) {
                             if icon_toggle_button(
                                 ui,
                                 ctx,
-                                &ICON_SHADING_RENDERED,
+                                &ICON_SHADING_WIRE_SHADED,
                                 rendered,
-                                "Rendered",
+                                "Wireframe over shaded",
                             )
                             .clicked()
                             {
@@ -319,36 +321,34 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState) {
                     ui.set_height(toolbar_group_height);
                     ui.spacing_mut().item_spacing.x = toolbar_group_spacing;
 
-                    toolbar_group_shell(ui, ctx, toolbar_icon_group_width, |ui| {
-                            icon_toggle_button(
-                                ui,
-                                ctx,
-                                &ICON_VIEW_PERSPECTIVE,
-                                matches!(state.projection_mode, ViewProjectionMode::Perspective),
-                                "Perspective",
-                            )
-                            .clicked()
-                            .then(|| state.projection_mode = ViewProjectionMode::Perspective);
+                    toolbar_group_shell(ui, ctx, toolbar_double_icon_group_width, |ui| {
+                            icon_toggle_button(ui, ctx, &ICON_AXIS_GIZMO, state.show_axis_gizmo, "Axis Gizmo")
+                                .clicked()
+                                .then(|| state.show_axis_gizmo = !state.show_axis_gizmo);
 
-                            icon_toggle_button(
-                                ui,
-                                ctx,
-                                &ICON_VIEW_ORTHO,
-                                matches!(state.projection_mode, ViewProjectionMode::Orthographic),
-                                "Orthographic",
-                            )
-                            .clicked()
-                            .then(|| state.projection_mode = ViewProjectionMode::Orthographic);
-                    });
-
-                    toolbar_group_shell(ui, ctx, toolbar_icon_group_width, |ui| {
                             icon_toggle_button(ui, ctx, &ICON_GRID, state.show_grid, "Grid")
                                 .clicked()
                                 .then(|| state.show_grid = !state.show_grid);
+                    });
 
-                            icon_toggle_button(ui, ctx, &ICON_BOUNDS, state.show_bbox, "Bounds")
-                                .clicked()
-                                .then(|| state.show_bbox = !state.show_bbox);
+                    toolbar_group_shell(ui, ctx, toolbar_single_icon_group_width, |ui| {
+                        let (icon, tooltip) = match state.projection_mode {
+                            ViewProjectionMode::Perspective => (
+                                &ICON_VIEW_PERSPECTIVE,
+                                "Perspective camera (click for orthographic)",
+                            ),
+                            ViewProjectionMode::Orthographic => (
+                                &ICON_VIEW_ORTHO,
+                                "Orthographic camera (click for perspective)",
+                            ),
+                        };
+
+                        if icon_toggle_button(ui, ctx, icon, false, tooltip).clicked() {
+                            state.projection_mode = match state.projection_mode {
+                                ViewProjectionMode::Perspective => ViewProjectionMode::Orthographic,
+                                ViewProjectionMode::Orthographic => ViewProjectionMode::Perspective,
+                            };
+                        }
                     });
                 },
             );
@@ -430,14 +430,16 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState) {
             }
         });
 
-    egui::Area::new(egui::Id::new("axis_gizmo"))
-        .anchor(
-            egui::Align2::RIGHT_TOP,
-            egui::vec2(-overlay_margin, toolbar_height + px(ctx, 10.0)),
-        )
-        .show(ctx, |ui| {
-            draw_axis_gizmo(ui);
-        });
+    if state.show_axis_gizmo {
+        egui::Area::new(egui::Id::new("axis_gizmo"))
+            .anchor(
+                egui::Align2::RIGHT_TOP,
+                egui::vec2(-overlay_margin, toolbar_height + px(ctx, 10.0)),
+            )
+            .show(ctx, |ui| {
+                draw_axis_gizmo(ui);
+            });
+    }
 
     egui::Area::new(egui::Id::new("stats_overlay"))
         .anchor(
@@ -569,9 +571,9 @@ fn toolbar_group_shell(
 }
 
 fn segmented_mode_control(ui: &mut egui::Ui, ctx: &egui::Context, mode: &mut WorkspaceMode) {
-    mode_segment(ui, ctx, mode, WorkspaceMode::ThreeD, "3D", true);
-    mode_segment(ui, ctx, mode, WorkspaceMode::Uv, "UV", false);
-    mode_segment(ui, ctx, mode, WorkspaceMode::Texture, "Tex", false);
+    mode_segment(ui, ctx, mode, WorkspaceMode::ThreeD, "3D");
+    mode_segment(ui, ctx, mode, WorkspaceMode::Uv, "UV");
+    mode_segment(ui, ctx, mode, WorkspaceMode::Texture, "Tex");
 }
 
 fn mode_segment(
@@ -580,29 +582,39 @@ fn mode_segment(
     mode: &mut WorkspaceMode,
     value: WorkspaceMode,
     label: &str,
-    enabled: bool,
 ) {
     let selected = *mode == value;
-    let button = egui::Button::new(rich_label(
-        label,
-        16.0,
-        if selected {
-            egui::Color32::WHITE
-        } else {
-            egui::Color32::from_gray(188)
-        },
-    ))
-    .min_size(egui::vec2(px(ctx, 52.0), px(ctx, 36.0)))
-    .fill(if selected {
+    let desired = egui::vec2(px(ctx, 56.0), px(ctx, 42.0));
+    let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::click());
+    let fill = if selected {
         egui::Color32::from_rgb(66, 103, 163)
+    } else if response.hovered() {
+        egui::Color32::from_rgb(54, 56, 61)
     } else {
         egui::Color32::TRANSPARENT
-    })
-    .stroke(egui::Stroke::NONE)
-    .corner_radius(px(ctx, 6.0));
+    };
+    let text_color = if selected {
+        egui::Color32::WHITE
+    } else {
+        egui::Color32::from_rgb(198, 207, 218)
+    };
 
-    let response = ui.add_enabled(enabled, button);
-    if enabled && response.clicked() {
+    ui.painter().rect(
+        rect,
+        px(ctx, 6.0),
+        fill,
+        egui::Stroke::NONE,
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(px(ctx, 18.0)),
+        text_color,
+    );
+
+    if response.clicked() {
         *mode = value;
     }
 }
