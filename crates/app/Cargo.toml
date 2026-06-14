@@ -16,6 +16,7 @@ review-import = { path = "../import" }
 review-model = { path = "../model" }
 review-render = { path = "../render" }
 review-ui = { path = "../ui" }
+rfd.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 wgpu.workspace = true

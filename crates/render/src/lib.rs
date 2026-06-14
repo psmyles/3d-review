@@ -57,7 +57,7 @@ impl Default for OrbitCamera {
             pitch: -35.264_39_f32.to_radians(),
             distance: 7.5,
             aspect_ratio: 16.0 / 9.0,
-            fov_y_radians: 25.0_f32.to_radians(),
+            fov_y_radians: 50.0_f32.to_radians(),
             z_near: 0.02,
             z_far: 10_000.0,
         }
@@ -72,10 +72,23 @@ impl OrbitCamera {
     }
 
     pub fn frame_bounds(&mut self, bounds: Bounds) {
-        let radius = bounds.radius().max(0.5);
-        self.target = bounds.center();
-        self.distance = radius * 2.6;
-        self.z_far = (radius * 12.0).max(100.0);
+        let center = bounds.center();
+        let half_size = bounds.size() * 0.5;
+        let rotation = self.rotation();
+        let right = rotation.transform_vector3(Vec3::X).abs();
+        let up = rotation.transform_vector3(Vec3::Y).abs();
+        let forward = self.forward_dir().abs();
+        let half_width = right.dot(half_size).max(0.25);
+        let half_height = up.dot(half_size).max(0.25);
+        let half_depth = forward.dot(half_size).max(0.25);
+        let half_vertical_fov = (self.fov_y_radians * 0.5).clamp(0.01, 1.5);
+        let half_horizontal_fov = (half_vertical_fov.tan() * self.aspect_ratio.max(0.1)).atan();
+        let distance_for_height = half_height / half_vertical_fov.tan();
+        let distance_for_width = half_width / half_horizontal_fov.tan();
+
+        self.target = center;
+        self.distance = (distance_for_width.max(distance_for_height) + half_depth) * 1.1;
+        self.z_far = (self.distance + half_depth * 4.0).max(100.0);
     }
 
     pub fn orbit(&mut self, delta: Vec2) {
