@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
+use glam::{Vec2, Vec3};
 use image::ImageError;
 use review_model::{ModelData, ModelStats};
-use review_render::{OrbitCamera, SceneCallback, SceneDebugOptions, ShadingMode};
+use review_render::{CameraProjection, OrbitCamera, SceneCallback, SceneDebugOptions, ShadingMode};
 
 const TOOLBAR_HEIGHT_PX: f32 = 73.0;
 const STATUS_BAR_HEIGHT_PX: f32 = 64.0;
@@ -22,6 +23,10 @@ const TOOLBAR_DOUBLE_ICON_GROUP_WIDTH_PX: f32 = 93.0;
 const TOOLBAR_MODE_GROUP_WIDTH_PX: f32 = 180.0;
 const TOOLBAR_GROUP_HEIGHT_PX: f32 = 48.0;
 const TOOLBAR_GROUP_PADDING_PX: f32 = 3.0;
+const GIZMO_SIZE_PX: f32 = 156.0;
+const GIZMO_INSET_PX: f32 = 26.0;
+const GIZMO_REACH_PX: f32 = 52.0;
+const GIZMO_BALL_RADIUS_PX: f32 = 13.0;
 
 struct AppIcon {
     id: &'static str,
@@ -91,6 +96,49 @@ pub enum ViewProjectionMode {
     Orthographic,
 }
 
+impl From<ViewProjectionMode> for CameraProjection {
+    fn from(value: ViewProjectionMode) -> Self {
+        match value {
+            ViewProjectionMode::Perspective => Self::Perspective,
+            ViewProjectionMode::Orthographic => Self::Orthographic,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ViewAxis {
+    PositiveX,
+    NegativeX,
+    PositiveY,
+    NegativeY,
+    PositiveZ,
+    NegativeZ,
+}
+
+impl ViewAxis {
+    pub fn offset_direction(self) -> Vec3 {
+        match self {
+            Self::PositiveX => Vec3::X,
+            Self::NegativeX => Vec3::NEG_X,
+            Self::PositiveY => Vec3::Y,
+            Self::NegativeY => Vec3::NEG_Y,
+            Self::PositiveZ => Vec3::Z,
+            Self::NegativeZ => Vec3::NEG_Z,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AxisGizmoAction {
+    Orbit(Vec2),
+    Snap(ViewAxis),
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct UiOutput {
+    pub axis_gizmo_action: Option<AxisGizmoAction>,
+}
+
 #[derive(Debug, Clone)]
 pub struct NormalPanelState {
     pub expanded: bool,
@@ -155,14 +203,22 @@ pub fn draw_viewport_scene(
     let painter = ctx.layer_painter(egui::LayerId::background());
     let callback = egui_wgpu::Callback::new_paint_callback(
         rect,
-        SceneCallback::new(camera, output_format, model, model_revision, state.debug),
+        SceneCallback::new(
+            camera,
+            state.projection_mode.into(),
+            output_format,
+            model,
+            model_revision,
+            state.debug,
+        ),
     );
     painter.add(callback);
 }
 
-pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState) {
+pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamera) -> UiOutput {
     apply_visuals(ctx);
     sync_debug_state(state);
+    let mut output = UiOutput::default();
 
     let toolbar_height = px(ctx, TOOLBAR_HEIGHT_PX);
     let status_bar_height = px(ctx, STATUS_BAR_HEIGHT_PX);
@@ -194,7 +250,10 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState) {
                 egui::Stroke::new(1.0, egui::Color32::from_gray(58)),
             );
             let row_rect = egui::Rect::from_min_size(
-                egui::pos2(bar_rect.left() + overlay_margin, bar_rect.top() + overlay_margin),
+                egui::pos2(
+                    bar_rect.left() + overlay_margin,
+                    bar_rect.top() + overlay_margin,
+                ),
                 egui::vec2(
                     (bar_rect.width() - overlay_margin * 2.0).max(0.0),
                     toolbar_group_height,
@@ -202,18 +261,30 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState) {
             );
             let left_rect = egui::Rect::from_min_size(
                 row_rect.left_top(),
-                egui::vec2(toolbar_left_width.min(row_rect.width()), toolbar_group_height),
+                egui::vec2(
+                    toolbar_left_width.min(row_rect.width()),
+                    toolbar_group_height,
+                ),
             );
             let center_rect = egui::Rect::from_center_size(
-                egui::pos2(row_rect.center().x, row_rect.top() + toolbar_group_height * 0.5),
-                egui::vec2(toolbar_center_width.min(row_rect.width()), toolbar_group_height),
+                egui::pos2(
+                    row_rect.center().x,
+                    row_rect.top() + toolbar_group_height * 0.5,
+                ),
+                egui::vec2(
+                    toolbar_center_width.min(row_rect.width()),
+                    toolbar_group_height,
+                ),
             );
             let right_rect = egui::Rect::from_min_size(
                 egui::pos2(
                     row_rect.right() - toolbar_right_width.min(row_rect.width()),
                     row_rect.top(),
                 ),
-                egui::vec2(toolbar_right_width.min(row_rect.width()), toolbar_group_height),
+                egui::vec2(
+                    toolbar_right_width.min(row_rect.width()),
+                    toolbar_group_height,
+                ),
             );
 
             ui.scope_builder(
@@ -225,86 +296,78 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState) {
                     ui.spacing_mut().item_spacing.x = toolbar_group_spacing;
 
                     toolbar_group_shell(ui, ctx, toolbar_shading_group_width, |ui| {
-                            let solid = matches!(state.shading_mode, ShadingMode::Shaded);
-                            let unlit = matches!(state.shading_mode, ShadingMode::Unlit);
-                            let rendered = matches!(state.shading_mode, ShadingMode::ShadedWireframe);
-                            let wire = matches!(state.shading_mode, ShadingMode::Wireframe);
+                        let solid = matches!(state.shading_mode, ShadingMode::Shaded);
+                        let unlit = matches!(state.shading_mode, ShadingMode::Unlit);
+                        let rendered = matches!(state.shading_mode, ShadingMode::ShadedWireframe);
+                        let wire = matches!(state.shading_mode, ShadingMode::Wireframe);
 
-                            if icon_toggle_button(ui, ctx, &ICON_SHADING_WIRE, wire, "Wire").clicked() {
-                                state.shading_mode = ShadingMode::Wireframe;
-                            }
-                            if icon_toggle_button(ui, ctx, &ICON_SHADING_UNLIT, unlit, "Unlit")
-                                .clicked()
-                            {
-                                state.shading_mode = ShadingMode::Unlit;
-                            }
-                            if icon_toggle_button(ui, ctx, &ICON_SHADING_SOLID, solid, "Solid")
-                                .clicked()
-                            {
-                                state.shading_mode = ShadingMode::Shaded;
-                            }
-                            if icon_toggle_button(
-                                ui,
-                                ctx,
-                                &ICON_SHADING_WIRE_SHADED,
-                                rendered,
-                                "Wireframe over shaded",
-                            )
+                        if icon_toggle_button(ui, ctx, &ICON_SHADING_WIRE, wire, "Wire").clicked() {
+                            state.shading_mode = ShadingMode::Wireframe;
+                        }
+                        if icon_toggle_button(ui, ctx, &ICON_SHADING_UNLIT, unlit, "Unlit")
                             .clicked()
-                            {
-                                state.shading_mode = ShadingMode::ShadedWireframe;
-                            }
+                        {
+                            state.shading_mode = ShadingMode::Unlit;
+                        }
+                        if icon_toggle_button(ui, ctx, &ICON_SHADING_SOLID, solid, "Solid")
+                            .clicked()
+                        {
+                            state.shading_mode = ShadingMode::Shaded;
+                        }
+                        if icon_toggle_button(
+                            ui,
+                            ctx,
+                            &ICON_SHADING_WIRE_SHADED,
+                            rendered,
+                            "Wireframe over shaded",
+                        )
+                        .clicked()
+                        {
+                            state.shading_mode = ShadingMode::ShadedWireframe;
+                        }
                     });
 
                     toolbar_group_shell(ui, ctx, toolbar_debug_group_width, |ui| {
-                            icon_toggle_button(
-                                ui,
-                                ctx,
-                                &ICON_UV,
-                                state.debug.uv_checker,
-                                "UV Checker",
-                            )
+                        icon_toggle_button(ui, ctx, &ICON_UV, state.debug.uv_checker, "UV Checker")
                             .clicked()
                             .then(|| {
                                 state.debug.uv_checker = !state.debug.uv_checker;
                                 state.uv_checker_panel_expanded = state.debug.uv_checker;
                             });
 
-                            if icon_toggle_button(
-                                ui,
-                                ctx,
-                                &ICON_NORMALS_FACE,
-                                state.debug.face_normals,
-                                "Face Normals",
-                            )
-                            .clicked()
-                            {
-                                state.debug.face_normals = !state.debug.face_normals;
-                                state.face_normals.expanded = state.debug.face_normals;
-                            }
+                        if icon_toggle_button(
+                            ui,
+                            ctx,
+                            &ICON_NORMALS_FACE,
+                            state.debug.face_normals,
+                            "Face Normals",
+                        )
+                        .clicked()
+                        {
+                            state.debug.face_normals = !state.debug.face_normals;
+                            state.face_normals.expanded = state.debug.face_normals;
+                        }
 
-                            if icon_toggle_button(
-                                ui,
-                                ctx,
-                                &ICON_NORMALS_VERTEX,
-                                state.debug.vertex_normals,
-                                "Vertex Normals",
-                            )
-                            .clicked()
-                            {
-                                state.debug.vertex_normals = !state.debug.vertex_normals;
-                                state.vertex_normals.expanded = state.debug.vertex_normals;
-                            }
+                        if icon_toggle_button(
+                            ui,
+                            ctx,
+                            &ICON_NORMALS_VERTEX,
+                            state.debug.vertex_normals,
+                            "Vertex Normals",
+                        )
+                        .clicked()
+                        {
+                            state.debug.vertex_normals = !state.debug.vertex_normals;
+                            state.vertex_normals.expanded = state.debug.vertex_normals;
+                        }
                     });
                 },
             );
 
             ui.scope_builder(
-                egui::UiBuilder::new()
-                    .max_rect(center_rect)
-                    .layout(egui::Layout::centered_and_justified(
-                        egui::Direction::LeftToRight,
-                    )),
+                egui::UiBuilder::new().max_rect(center_rect).layout(
+                    egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                ),
                 |ui| {
                     ui.set_height(toolbar_group_height);
                     toolbar_group_shell(ui, ctx, toolbar_mode_group_width, |ui| {
@@ -322,13 +385,19 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState) {
                     ui.spacing_mut().item_spacing.x = toolbar_group_spacing;
 
                     toolbar_group_shell(ui, ctx, toolbar_double_icon_group_width, |ui| {
-                            icon_toggle_button(ui, ctx, &ICON_AXIS_GIZMO, state.show_axis_gizmo, "Axis Gizmo")
-                                .clicked()
-                                .then(|| state.show_axis_gizmo = !state.show_axis_gizmo);
+                        icon_toggle_button(
+                            ui,
+                            ctx,
+                            &ICON_AXIS_GIZMO,
+                            state.show_axis_gizmo,
+                            "Axis Gizmo",
+                        )
+                        .clicked()
+                        .then(|| state.show_axis_gizmo = !state.show_axis_gizmo);
 
-                            icon_toggle_button(ui, ctx, &ICON_GRID, state.show_grid, "Grid")
-                                .clicked()
-                                .then(|| state.show_grid = !state.show_grid);
+                        icon_toggle_button(ui, ctx, &ICON_GRID, state.show_grid, "Grid")
+                            .clicked()
+                            .then(|| state.show_grid = !state.show_grid);
                     });
 
                     toolbar_group_shell(ui, ctx, toolbar_single_icon_group_width, |ui| {
@@ -431,14 +500,16 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState) {
         });
 
     if state.show_axis_gizmo {
-        egui::Area::new(egui::Id::new("axis_gizmo"))
+        let gizmo_response = egui::Area::new(egui::Id::new("axis_gizmo"))
             .anchor(
                 egui::Align2::RIGHT_TOP,
-                egui::vec2(-overlay_margin, toolbar_height + px(ctx, 10.0)),
+                egui::vec2(
+                    -px(ctx, GIZMO_INSET_PX),
+                    toolbar_height + px(ctx, GIZMO_INSET_PX),
+                ),
             )
-            .show(ctx, |ui| {
-                draw_axis_gizmo(ui);
-            });
+            .show(ctx, |ui| draw_axis_gizmo(ui, ctx, camera));
+        output.axis_gizmo_action = gizmo_response.inner;
     }
 
     egui::Area::new(egui::Id::new("stats_overlay"))
@@ -495,6 +566,7 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState) {
             });
         });
 
+    output
 }
 
 fn apply_visuals(ctx: &egui::Context) {
@@ -840,59 +912,181 @@ fn stat_row(ui: &mut egui::Ui, label: &str, value: &str) {
     ui.end_row();
 }
 
-fn draw_axis_gizmo(ui: &mut egui::Ui) {
-    let desired_size = egui::vec2(132.0, 132.0);
-    let (rect, _) = ui.allocate_exact_size(desired_size, egui::Sense::hover());
+fn draw_axis_gizmo(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    camera: OrbitCamera,
+) -> Option<AxisGizmoAction> {
+    let size = px(ctx, GIZMO_SIZE_PX);
+    let reach = px(ctx, GIZMO_REACH_PX);
+    let ball_radius = px(ctx, GIZMO_BALL_RADIUS_PX);
+    let (rect, panel_response) =
+        ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click_and_drag());
     let painter = ui.painter();
     let center = rect.center();
-    let origin = egui::pos2(center.x + 18.0, center.y - 6.0);
-    let x_end = egui::pos2(origin.x + 46.0, origin.y - 16.0);
-    let y_end = egui::pos2(origin.x, origin.y - 54.0);
-    let z_end = egui::pos2(origin.x + 36.0, origin.y + 22.0);
+    let mut action = panel_response
+        .dragged()
+        .then(|| panel_response.drag_motion())
+        .filter(|delta| delta.length_sq() > 0.0)
+        .map(|delta| AxisGizmoAction::Orbit(Vec2::new(delta.x, delta.y) * ctx.pixels_per_point()));
 
-    painter.line_segment(
-        [origin, x_end],
-        egui::Stroke::new(3.0, egui::Color32::from_rgb(242, 81, 93)),
-    );
-    painter.line_segment(
-        [origin, y_end],
-        egui::Stroke::new(3.0, egui::Color32::from_rgb(78, 238, 57)),
-    );
-    painter.line_segment(
-        [origin, z_end],
-        egui::Stroke::new(3.0, egui::Color32::from_rgb(63, 166, 239)),
-    );
+    if panel_response.hovered() || panel_response.dragged() {
+        painter.rect_filled(
+            rect,
+            px(ctx, 12.0),
+            egui::Color32::from_rgba_premultiplied(8, 12, 16, 90),
+        );
+    }
 
-    painter.circle_stroke(
-        egui::pos2(origin.x - 46.0, origin.y + 16.0),
-        14.0,
-        egui::Stroke::new(3.0, egui::Color32::from_rgb(242, 81, 93)),
-    );
-    painter.circle_stroke(
-        egui::pos2(origin.x - 46.0, origin.y - 26.0),
-        14.0,
-        egui::Stroke::new(3.0, egui::Color32::from_rgb(63, 166, 239)),
-    );
-    painter.circle_stroke(
-        egui::pos2(origin.x, origin.y + 56.0),
-        14.0,
-        egui::Stroke::new(3.0, egui::Color32::from_rgb(78, 238, 57)),
-    );
+    let mut points = axis_gizmo_points(camera, center, reach);
+    points.sort_by(|a, b| a.depth.total_cmp(&b.depth));
 
-    axis_bubble(painter, x_end, "X", egui::Color32::from_rgb(242, 81, 93));
-    axis_bubble(painter, y_end, "Y", egui::Color32::from_rgb(78, 238, 57));
-    axis_bubble(painter, z_end, "Z", egui::Color32::from_rgb(63, 166, 239));
+    for point in points.iter().filter(|point| point.positive) {
+        let alpha = ((0.4 + 0.6 * ((point.depth + 1.0) * 0.5)).clamp(0.0, 1.0) * 255.0) as u8;
+        painter.line_segment(
+            [center, point.position],
+            egui::Stroke::new(
+                px(ctx, 2.5),
+                point.color.linear_multiply(alpha as f32 / 255.0),
+            ),
+        );
+    }
+
+    for point in points {
+        let ball_rect = egui::Rect::from_center_size(
+            point.position,
+            egui::vec2(ball_radius * 2.0, ball_radius * 2.0),
+        );
+        let response = ui
+            .interact(
+                ball_rect.expand(px(ctx, 4.0)),
+                ui.make_persistent_id(("axis_gizmo_ball", point.axis)),
+                egui::Sense::click(),
+            )
+            .on_hover_text(point.tooltip);
+        let radius = if response.hovered() {
+            ball_radius * 1.18
+        } else {
+            ball_radius
+        };
+
+        if point.positive {
+            painter.circle_filled(point.position, radius, point.color);
+            painter.text(
+                point.position,
+                egui::Align2::CENTER_CENTER,
+                point.label,
+                egui::FontId::proportional(px(ctx, 13.0)),
+                egui::Color32::from_rgb(16, 21, 27),
+            );
+        } else {
+            let fill = if response.hovered() {
+                point.color.linear_multiply(0.35)
+            } else {
+                egui::Color32::TRANSPARENT
+            };
+            painter.circle_filled(point.position, radius, fill);
+            painter.circle_stroke(
+                point.position,
+                radius,
+                egui::Stroke::new(px(ctx, 2.0), point.color),
+            );
+            if response.hovered() {
+                painter.text(
+                    point.position,
+                    egui::Align2::CENTER_CENTER,
+                    point.label,
+                    egui::FontId::proportional(px(ctx, 11.0)),
+                    point.color,
+                );
+            }
+        }
+
+        if response.clicked() {
+            action = Some(AxisGizmoAction::Snap(point.axis));
+        }
+    }
+
+    action
 }
 
-fn axis_bubble(painter: &egui::Painter, center: egui::Pos2, label: &str, fill: egui::Color32) {
-    painter.circle_filled(center, 16.0, fill);
-    painter.text(
-        center,
-        egui::Align2::CENTER_CENTER,
-        label,
-        egui::FontId::proportional(18.0),
-        egui::Color32::BLACK,
-    );
+#[derive(Debug, Clone, Copy)]
+struct AxisGizmoPoint {
+    axis: ViewAxis,
+    position: egui::Pos2,
+    depth: f32,
+    color: egui::Color32,
+    label: &'static str,
+    tooltip: &'static str,
+    positive: bool,
+}
+
+fn axis_gizmo_points(camera: OrbitCamera, center: egui::Pos2, reach: f32) -> Vec<AxisGizmoPoint> {
+    const AXES: [(ViewAxis, Vec3, egui::Color32, &str, &str, bool); 6] = [
+        (
+            ViewAxis::PositiveX,
+            Vec3::X,
+            egui::Color32::from_rgb(242, 81, 93),
+            "X",
+            "View +X",
+            true,
+        ),
+        (
+            ViewAxis::NegativeX,
+            Vec3::NEG_X,
+            egui::Color32::from_rgb(242, 81, 93),
+            "-X",
+            "View -X",
+            false,
+        ),
+        (
+            ViewAxis::PositiveY,
+            Vec3::Y,
+            egui::Color32::from_rgb(78, 238, 57),
+            "Y",
+            "View +Y",
+            true,
+        ),
+        (
+            ViewAxis::NegativeY,
+            Vec3::NEG_Y,
+            egui::Color32::from_rgb(78, 238, 57),
+            "-Y",
+            "View -Y",
+            false,
+        ),
+        (
+            ViewAxis::PositiveZ,
+            Vec3::Z,
+            egui::Color32::from_rgb(63, 166, 239),
+            "Z",
+            "View +Z",
+            true,
+        ),
+        (
+            ViewAxis::NegativeZ,
+            Vec3::NEG_Z,
+            egui::Color32::from_rgb(63, 166, 239),
+            "-Z",
+            "View -Z",
+            false,
+        ),
+    ];
+
+    AXES.into_iter()
+        .map(|(axis, world, color, label, tooltip, positive)| {
+            let view = camera.view_space_direction(world);
+            AxisGizmoPoint {
+                axis,
+                position: egui::pos2(center.x + view.x * reach, center.y - view.y * reach),
+                depth: view.z,
+                color,
+                label,
+                tooltip,
+                positive,
+            }
+        })
+        .collect()
 }
 
 fn rich_label(text: &str, size: f32, color: egui::Color32) -> egui::RichText {
