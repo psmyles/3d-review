@@ -512,7 +512,7 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
         let default_pos = egui::pos2(px(ctx, 30.0), toolbar_height + px(ctx, 18.0));
         let panel_pos = state.panel_pos.unwrap_or(default_pos);
 
-        let outcome = egui::Area::new(egui::Id::new("option_panel"))
+        let area_response = egui::Area::new(egui::Id::new("option_panel"))
             .current_pos(panel_pos)
             .show(ctx, |ui| {
                 ui.set_width(left_panel_width);
@@ -574,12 +574,23 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
                         },
                     ),
                 }
-            })
-            .inner;
+            });
+        let outcome = area_response.inner;
+        let panel_size = area_response.response.rect.size();
 
-        if outcome.drag_delta != egui::Vec2::ZERO {
-            state.panel_pos = Some(panel_pos + outcome.drag_delta);
-        }
+        // Keep the panel inside the viewport: never let it slide under the top
+        // toolbar or the bottom status bar (and not off the left/right edges).
+        let screen = ctx.screen_rect();
+        let desired = panel_pos + outcome.drag_delta;
+        let min_x = screen.left();
+        let min_y = screen.top() + toolbar_height;
+        let max_x = (screen.right() - panel_size.x).max(min_x);
+        let max_y = (screen.bottom() - status_bar_height - panel_size.y).max(min_y);
+        state.panel_pos = Some(egui::pos2(
+            desired.x.clamp(min_x, max_x),
+            desired.y.clamp(min_y, max_y),
+        ));
+
         if outcome.close {
             state.active_panel = None;
         }
