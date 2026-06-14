@@ -1,0 +1,32 @@
+[workspace]
+members = [
+    "crates/app",
+    "crates/import",
+    "crates/model",
+    "crates/render",
+    "crates/ui",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/chandan/3d-review-rs"
+rust-version = "1.80"
+
+[workspace.dependencies]
+anyhow = "1"
+bytemuck = { version = "1", features = ["derive"] }
+cc = "1"
+egui = "0.31"
+egui-wgpu = "0.31"
+egui-winit = "0.31"
+glam = "0.30"
+pollster = "0.4"
+rfd = "0.15"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+wgpu = "24"
+winit = "0.30"
+

@@ -1,0 +1,89 @@
+use review_model::ModelStats;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WorkspaceMode {
+    #[default]
+    ThreeD,
+    Uv,
+    Texture,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DebugToggles {
+    pub wireframe: bool,
+    pub face_normals: bool,
+    pub vertex_normals: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct UiState {
+    pub mode: WorkspaceMode,
+    pub debug: DebugToggles,
+    pub status: String,
+    pub stats: ModelStats,
+}
+
+impl Default for UiState {
+    fn default() -> Self {
+        Self {
+            mode: WorkspaceMode::ThreeD,
+            debug: DebugToggles::default(),
+            status: "Ready".to_owned(),
+            stats: ModelStats::default(),
+        }
+    }
+}
+
+pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState) {
+    egui::Area::new(egui::Id::new("top_toolbar"))
+        .fixed_pos(egui::pos2(12.0, 10.0))
+        .show(ctx, |ui| {
+            egui::Frame::dark_canvas(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.button("Open").clicked() {
+                        state.status = "Open requested".to_owned();
+                    }
+
+                    ui.separator();
+                    ui.selectable_value(&mut state.mode, WorkspaceMode::ThreeD, "3D");
+                    ui.add_enabled_ui(false, |ui| {
+                        ui.selectable_value(&mut state.mode, WorkspaceMode::Uv, "UV");
+                        ui.selectable_value(&mut state.mode, WorkspaceMode::Texture, "Tex");
+                    });
+                });
+            });
+        });
+
+    egui::Area::new(egui::Id::new("left_options"))
+        .fixed_pos(egui::pos2(12.0, 58.0))
+        .show(ctx, |ui| {
+            egui::Frame::dark_canvas(ui.style()).show(ui, |ui| {
+                ui.set_width(210.0);
+                ui.heading("Viewport");
+                ui.checkbox(&mut state.debug.wireframe, "Wireframe");
+                ui.checkbox(&mut state.debug.face_normals, "Face normals");
+                ui.checkbox(&mut state.debug.vertex_normals, "Vertex normals");
+            });
+        });
+
+    egui::Area::new(egui::Id::new("stats_overlay"))
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 58.0))
+        .show(ctx, |ui| {
+            egui::Frame::dark_canvas(ui.style()).show(ui, |ui| {
+                ui.set_width(190.0);
+                ui.label(format!("Polygons: {}", state.stats.polygon_count));
+                ui.label(format!("Triangles: {}", state.stats.triangle_count));
+                ui.label(format!("Vertices: {}", state.stats.vertex_count));
+                ui.label(format!("UV sets: {}", state.stats.uv_set_count));
+                ui.label(format!("Draws: {}", state.stats.draw_count));
+            });
+        });
+
+    egui::Area::new(egui::Id::new("bottom_status"))
+        .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(12.0, -10.0))
+        .show(ctx, |ui| {
+            egui::Frame::dark_canvas(ui.style()).show(ui, |ui| {
+                ui.label(&state.status);
+            });
+        });
+}
