@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use review_model::{ModelData, ModelStats};
-use review_render::{OrbitCamera, SceneCallback};
+use review_render::{OrbitCamera, SceneCallback, SceneDebugOptions};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiAction {
@@ -16,17 +16,10 @@ pub enum WorkspaceMode {
     Texture,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct DebugToggles {
-    pub wireframe: bool,
-    pub face_normals: bool,
-    pub vertex_normals: bool,
-}
-
 #[derive(Debug, Clone)]
 pub struct UiState {
     pub mode: WorkspaceMode,
-    pub debug: DebugToggles,
+    pub debug: SceneDebugOptions,
     pub status: String,
     pub stats: ModelStats,
 }
@@ -35,8 +28,8 @@ impl Default for UiState {
     fn default() -> Self {
         Self {
             mode: WorkspaceMode::ThreeD,
-            debug: DebugToggles::default(),
-            status: "LMB orbit  RMB pan  Wheel zoom  F reset".to_owned(),
+            debug: SceneDebugOptions::default(),
+            status: "LMB orbit  RMB pan  Wheel zoom  F frame".to_owned(),
             stats: ModelStats::default(),
         }
     }
@@ -58,7 +51,7 @@ pub fn draw_viewport_scene(
     let painter = ctx.layer_painter(egui::LayerId::background());
     let callback = egui_wgpu::Callback::new_paint_callback(
         rect,
-        SceneCallback::new(camera, output_format, model, model_revision),
+        SceneCallback::new(camera, output_format, model, model_revision, state.debug),
     );
     painter.add(callback);
 }

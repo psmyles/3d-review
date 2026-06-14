@@ -1,11 +1,12 @@
 use bytemuck::{Pod, Zeroable};
 use egui::epaint::PaintCallbackInfo;
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
+use glam::Vec3;
 use review_model::ModelData;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
-use crate::OrbitCamera;
+use crate::{OrbitCamera, SceneDebugOptions};
 
 pub const SCENE_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
 
@@ -47,6 +48,7 @@ pub struct SceneCallback {
     output_format: wgpu::TextureFormat,
     model: Arc<ModelData>,
     model_revision: u64,
+    debug_options: SceneDebugOptions,
 }
 
 impl SceneCallback {
@@ -55,12 +57,14 @@ impl SceneCallback {
         output_format: wgpu::TextureFormat,
         model: Arc<ModelData>,
         model_revision: u64,
+        debug_options: SceneDebugOptions,
     ) -> Self {
         Self {
             camera,
             output_format,
             model,
             model_revision,
+            debug_options,
         }
     }
 }
@@ -115,6 +119,21 @@ impl CallbackTrait for SceneCallback {
         render_pass.set_pipeline(&resources.line_pipeline);
         render_pass.set_vertex_buffer(0, resources.line_vertex_buffer.slice(..));
         render_pass.draw(0..resources.line_vertex_count, 0..1);
+
+        if self.debug_options.wireframe && resources.wireframe_line_vertex_count > 0 {
+            render_pass.set_vertex_buffer(0, resources.wireframe_line_vertex_buffer.slice(..));
+            render_pass.draw(0..resources.wireframe_line_vertex_count, 0..1);
+        }
+
+        if self.debug_options.face_normals && resources.face_normal_vertex_count > 0 {
+            render_pass.set_vertex_buffer(0, resources.face_normal_vertex_buffer.slice(..));
+            render_pass.draw(0..resources.face_normal_vertex_count, 0..1);
+        }
+
+        if self.debug_options.vertex_normals && resources.vertex_normal_vertex_count > 0 {
+            render_pass.set_vertex_buffer(0, resources.vertex_normal_vertex_buffer.slice(..));
+            render_pass.draw(0..resources.vertex_normal_vertex_count, 0..1);
+        }
     }
 }
 
@@ -130,6 +149,12 @@ struct SceneResources {
     mesh_index_count: u32,
     line_vertex_buffer: wgpu::Buffer,
     line_vertex_count: u32,
+    wireframe_line_vertex_buffer: wgpu::Buffer,
+    wireframe_line_vertex_count: u32,
+    face_normal_vertex_buffer: wgpu::Buffer,
+    face_normal_vertex_count: u32,
+    vertex_normal_vertex_buffer: wgpu::Buffer,
+    vertex_normal_vertex_count: u32,
 }
 
 impl SceneResources {
@@ -197,6 +222,11 @@ impl SceneResources {
         let line_vertices = scene_lines();
         let (mesh_vertex_buffer, mesh_index_buffer, mesh_index_count) =
             create_mesh_buffers(device, &[], &[]);
+        let (wireframe_line_vertex_buffer, wireframe_line_vertex_count) =
+            create_line_buffer(device, &[]);
+        let (face_normal_vertex_buffer, face_normal_vertex_count) = create_line_buffer(device, &[]);
+        let (vertex_normal_vertex_buffer, vertex_normal_vertex_count) =
+            create_line_buffer(device, &[]);
         let line_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("review_scene_line_vertex_buffer"),
             contents: bytemuck::cast_slice(&line_vertices),
@@ -215,6 +245,12 @@ impl SceneResources {
             mesh_index_count,
             line_vertex_buffer,
             line_vertex_count: line_vertices.len() as u32,
+            wireframe_line_vertex_buffer,
+            wireframe_line_vertex_count,
+            face_normal_vertex_buffer,
+            face_normal_vertex_count,
+            vertex_normal_vertex_buffer,
+            vertex_normal_vertex_count,
         }
     }
 
@@ -229,10 +265,25 @@ impl SceneResources {
         let (mesh_vertices, mesh_indices) = model_mesh(model);
         let (mesh_vertex_buffer, mesh_index_buffer, mesh_index_count) =
             create_mesh_buffers(device, &mesh_vertices, &mesh_indices);
+        let wireframe_lines = wireframe_lines(model);
+        let face_normal_lines = face_normal_lines(model);
+        let vertex_normal_lines = vertex_normal_lines(model);
+        let (wireframe_line_vertex_buffer, wireframe_line_vertex_count) =
+            create_line_buffer(device, &wireframe_lines);
+        let (face_normal_vertex_buffer, face_normal_vertex_count) =
+            create_line_buffer(device, &face_normal_lines);
+        let (vertex_normal_vertex_buffer, vertex_normal_vertex_count) =
+            create_line_buffer(device, &vertex_normal_lines);
 
         self.mesh_vertex_buffer = mesh_vertex_buffer;
         self.mesh_index_buffer = mesh_index_buffer;
         self.mesh_index_count = mesh_index_count;
+        self.wireframe_line_vertex_buffer = wireframe_line_vertex_buffer;
+        self.wireframe_line_vertex_count = wireframe_line_vertex_count;
+        self.face_normal_vertex_buffer = face_normal_vertex_buffer;
+        self.face_normal_vertex_count = face_normal_vertex_count;
+        self.vertex_normal_vertex_buffer = vertex_normal_vertex_buffer;
+        self.vertex_normal_vertex_count = vertex_normal_vertex_count;
         self.model_revision = model_revision;
     }
 }
@@ -339,6 +390,159 @@ fn model_mesh(model: &ModelData) -> (Vec<SceneVertex>, Vec<u32>) {
     (vertices, model.indices.clone())
 }
 
+fn wireframe_lines(model: &ModelData) -> Vec<SceneVertex> {
+    let mut vertices = Vec::with_capacity(model.indices.len() * 2);
+
+    for triangle in model.indices.chunks_exact(3) {
+        let [a, b, c] = [
+            triangle[0] as usize,
+            triangle[1] as usize,
+            triangle[2] as usize,
+        ];
+        let positions = [
+            model.vertices.get(a).map(|vertex| vertex.position),
+            model.vertices.get(b).map(|vertex| vertex.position),
+            model.vertices.get(c).map(|vertex| vertex.position),
+        ];
+        let [Some(a), Some(b), Some(c)] = positions else {
+            continue;
+        };
+
+        push_line(
+            &mut vertices,
+            a.to_array(),
+            b.to_array(),
+            [0.96, 0.98, 1.0, 0.82],
+        );
+        push_line(
+            &mut vertices,
+            b.to_array(),
+            c.to_array(),
+            [0.96, 0.98, 1.0, 0.82],
+        );
+        push_line(
+            &mut vertices,
+            c.to_array(),
+            a.to_array(),
+            [0.96, 0.98, 1.0, 0.82],
+        );
+    }
+
+    vertices
+}
+
+fn face_normal_lines(model: &ModelData) -> Vec<SceneVertex> {
+    let triangle_count = model.indices.len() / 3;
+    if triangle_count == 0 {
+        return Vec::new();
+    }
+
+    let face_count = model
+        .tri_to_face
+        .iter()
+        .copied()
+        .max()
+        .map(|max_face| max_face as usize + 1)
+        .unwrap_or(triangle_count);
+    let mut accum_centers = vec![Vec3::ZERO; face_count];
+    let mut accum_normals = vec![Vec3::ZERO; face_count];
+    let mut counts = vec![0_u32; face_count];
+    let normal_length = debug_normal_length(model);
+
+    for (triangle_index, triangle) in model.indices.chunks_exact(3).enumerate() {
+        let face_index = model
+            .tri_to_face
+            .get(triangle_index)
+            .copied()
+            .unwrap_or(triangle_index as u32) as usize;
+        let [a, b, c] = [
+            triangle[0] as usize,
+            triangle[1] as usize,
+            triangle[2] as usize,
+        ];
+        let positions = [
+            model.vertices.get(a).map(|vertex| vertex.position),
+            model.vertices.get(b).map(|vertex| vertex.position),
+            model.vertices.get(c).map(|vertex| vertex.position),
+        ];
+        let [Some(a), Some(b), Some(c)] = positions else {
+            continue;
+        };
+
+        let ab = b - a;
+        let ac = c - a;
+        let normal = ab.cross(ac);
+        if normal.length_squared() <= f32::EPSILON {
+            continue;
+        }
+
+        if let (Some(center_accum), Some(normal_accum), Some(count)) = (
+            accum_centers.get_mut(face_index),
+            accum_normals.get_mut(face_index),
+            counts.get_mut(face_index),
+        ) {
+            *center_accum += (a + b + c) / 3.0;
+            *normal_accum += normal.normalize();
+            *count += 1;
+        }
+    }
+
+    let mut vertices = Vec::with_capacity(face_count * 2);
+    for face_index in 0..face_count {
+        let count = counts[face_index];
+        if count == 0 {
+            continue;
+        }
+
+        let center = accum_centers[face_index] / count as f32;
+        let normal = accum_normals[face_index];
+        if normal.length_squared() <= f32::EPSILON {
+            continue;
+        }
+
+        let end = center + normal.normalize() * normal_length;
+        push_line(
+            &mut vertices,
+            center.to_array(),
+            end.to_array(),
+            [1.0, 0.1, 0.1, 0.95],
+        );
+    }
+
+    vertices
+}
+
+fn vertex_normal_lines(model: &ModelData) -> Vec<SceneVertex> {
+    let normal_length = debug_normal_length(model);
+    let mut vertices = Vec::with_capacity(model.vertices.len() * 2);
+
+    for vertex in &model.vertices {
+        if vertex.normal.length_squared() <= f32::EPSILON {
+            continue;
+        }
+
+        let start = vertex.position;
+        let end = start + vertex.normal.normalize() * normal_length;
+        push_line(
+            &mut vertices,
+            start.to_array(),
+            end.to_array(),
+            [0.14, 0.92, 0.96, 0.95],
+        );
+    }
+
+    vertices
+}
+
+fn debug_normal_length(model: &ModelData) -> f32 {
+    let size = model
+        .bounds
+        .map(|bounds| bounds.size())
+        .unwrap_or(Vec3::splat(1.0));
+    let max_extent = size.max_element().max(1.0);
+    max_extent * 0.12
+}
+
 fn create_mesh_buffers(
     device: &wgpu::Device,
     vertices: &[SceneVertex],
@@ -373,6 +577,26 @@ fn create_mesh_buffers(
     });
 
     (vertex_buffer, index_buffer, indices.len() as u32)
+}
+
+fn create_line_buffer(device: &wgpu::Device, vertices: &[SceneVertex]) -> (wgpu::Buffer, u32) {
+    let placeholder_vertex = [SceneVertex {
+        position: [0.0, 0.0, 0.0],
+        color: [0.0, 0.0, 0.0, 0.0],
+    }];
+    let contents = if vertices.is_empty() {
+        bytemuck::cast_slice(&placeholder_vertex)
+    } else {
+        bytemuck::cast_slice(vertices)
+    };
+
+    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("review_scene_debug_line_vertex_buffer"),
+        contents,
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+
+    (vertex_buffer, vertices.len() as u32)
 }
 
 fn push_line(vertices: &mut Vec<SceneVertex>, start: [f32; 3], end: [f32; 3], color: [f32; 4]) {
