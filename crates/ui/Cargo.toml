@@ -7,5 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 egui.workspace = true
+egui-wgpu.workspace = true
+glam.workspace = true
 review-model = { path = "../model" }
-
+review-render = { path = "../render" }

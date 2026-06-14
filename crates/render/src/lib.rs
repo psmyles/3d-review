@@ -1,6 +1,10 @@
 use glam::{Mat4, Vec2, Vec3};
 use review_model::Bounds;
 
+mod scene;
+
+pub use scene::{SceneCallback, SCENE_DEPTH_FORMAT};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DebugView {
     Shaded,
@@ -59,6 +63,10 @@ impl Default for OrbitCamera {
 }
 
 impl OrbitCamera {
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
     pub fn frame_bounds(&mut self, bounds: Bounds) {
         let radius = bounds.radius().max(0.5);
         self.target = bounds.center();
@@ -76,11 +84,36 @@ impl OrbitCamera {
         self.distance = (self.distance * scale).max(0.05);
     }
 
+    pub fn pan_screen_delta(&mut self, delta_pixels: Vec2, viewport_size: Vec2) {
+        if viewport_size.x <= 0.0 || viewport_size.y <= 0.0 {
+            return;
+        }
+
+        let rotation = self.rotation();
+        let right = rotation.transform_vector3(Vec3::X);
+        let up = rotation.transform_vector3(Vec3::Y);
+        let view_height = 2.0 * self.distance * (self.fov_y_radians * 0.5).tan();
+        let view_width = view_height * self.aspect_ratio;
+        let delta_x = delta_pixels.x / viewport_size.x * view_width;
+        let delta_y = delta_pixels.y / viewport_size.y * view_height;
+
+        self.target += (-right * delta_x) + (up * delta_y);
+    }
+
+    pub fn eye_position(self) -> Vec3 {
+        self.target - self.forward_dir() * self.distance
+    }
+
+    pub fn forward_dir(self) -> Vec3 {
+        self.rotation().transform_vector3(Vec3::NEG_Z)
+    }
+
+    pub fn view_matrix(self) -> Mat4 {
+        Mat4::look_at_rh(self.eye_position(), self.target, Vec3::Y)
+    }
+
     pub fn view_projection(self) -> Mat4 {
-        let rotation = Mat4::from_rotation_y(self.yaw) * Mat4::from_rotation_x(self.pitch);
-        let forward = rotation.transform_vector3(Vec3::NEG_Z);
-        let eye = self.target - forward * self.distance;
-        let view = Mat4::look_at_rh(eye, self.target, Vec3::Y);
+        let view = self.view_matrix();
         let projection = Mat4::perspective_rh(
             self.fov_y_radians,
             self.aspect_ratio,
@@ -89,6 +122,10 @@ impl OrbitCamera {
         );
 
         projection * view
+    }
+
+    fn rotation(self) -> Mat4 {
+        Mat4::from_rotation_y(self.yaw) * Mat4::from_rotation_x(self.pitch)
     }
 }
 
