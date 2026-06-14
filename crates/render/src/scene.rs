@@ -20,12 +20,14 @@ var<uniform> uniforms: SceneUniforms;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
-    @location(1) color: vec4<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) color: vec4<f32>,
 };
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) color: vec4<f32>,
+    @location(1) normal: vec3<f32>,
 };
 
 @vertex
@@ -33,12 +35,26 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
     output.clip_position = uniforms.view_projection * vec4<f32>(input.position, 1.0);
     output.color = input.color;
+    output.normal = input.normal;
     return output;
 }
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    return input.color;
+    let normal_length_sq = dot(input.normal, input.normal);
+    if (normal_length_sq < 1e-6) {
+        return input.color;
+    }
+
+    let n = normalize(input.normal);
+    let light_dir = normalize(vec3<f32>(0.35, 0.82, 0.44));
+    let diffuse = max(dot(n, light_dir), 0.0);
+    let hemi_t = clamp(n.y * 0.5 + 0.5, 0.0, 1.0);
+    let sky = vec3<f32>(0.58, 0.64, 0.72);
+    let ground = vec3<f32>(0.10, 0.11, 0.13);
+    let hemi = mix(ground, sky, hemi_t);
+    let lighting = hemi * 0.55 + vec3<f32>(1.0, 1.0, 1.0) * (0.20 + diffuse * 0.75);
+    return vec4<f32>(input.color.rgb * lighting, input.color.a);
 }
 "#;
 
@@ -384,6 +400,7 @@ fn model_mesh(model: &ModelData) -> (Vec<SceneVertex>, Vec<u32>) {
         .iter()
         .map(|vertex| SceneVertex {
             position: vertex.position.to_array(),
+            normal: vertex.normal.to_array(),
             color: vertex.color.to_array(),
         })
         .collect();
@@ -550,6 +567,7 @@ fn create_mesh_buffers(
 ) -> (wgpu::Buffer, wgpu::Buffer, u32) {
     let placeholder_vertex = [SceneVertex {
         position: [0.0, 0.0, 0.0],
+        normal: [0.0, 0.0, 0.0],
         color: [0.0, 0.0, 0.0, 0.0],
     }];
     let placeholder_index = [0_u32];
@@ -582,6 +600,7 @@ fn create_mesh_buffers(
 fn create_line_buffer(device: &wgpu::Device, vertices: &[SceneVertex]) -> (wgpu::Buffer, u32) {
     let placeholder_vertex = [SceneVertex {
         position: [0.0, 0.0, 0.0],
+        normal: [0.0, 0.0, 0.0],
         color: [0.0, 0.0, 0.0, 0.0],
     }];
     let contents = if vertices.is_empty() {
@@ -602,10 +621,12 @@ fn create_line_buffer(device: &wgpu::Device, vertices: &[SceneVertex]) -> (wgpu:
 fn push_line(vertices: &mut Vec<SceneVertex>, start: [f32; 3], end: [f32; 3], color: [f32; 4]) {
     vertices.push(SceneVertex {
         position: start,
+        normal: [0.0, 0.0, 0.0],
         color,
     });
     vertices.push(SceneVertex {
         position: end,
+        normal: [0.0, 0.0, 0.0],
         color,
     });
 }
@@ -620,12 +641,13 @@ struct SceneUniforms {
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct SceneVertex {
     position: [f32; 3],
+    normal: [f32; 3],
     color: [f32; 4],
 }
 
 impl SceneVertex {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 2] =
-        wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4];
+    const ATTRIBUTES: [wgpu::VertexAttribute; 3] =
+        wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x4];
 
     fn layout() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {

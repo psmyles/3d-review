@@ -7,9 +7,9 @@ rust-version.workspace = true
 build = "build.rs"
 
 [dependencies]
+glam.workspace = true
 review-model = { path = "../model" }
 thiserror.workspace = true
 
 [build-dependencies]
 cc.workspace = true
-
