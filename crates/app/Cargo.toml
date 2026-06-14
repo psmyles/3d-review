@@ -13,6 +13,7 @@ egui-winit.workspace = true
 glam.workspace = true
 pollster.workspace = true
 review-import = { path = "../import" }
+review-model = { path = "../model" }
 review-render = { path = "../render" }
 review-ui = { path = "../ui" }
 tracing.workspace = true

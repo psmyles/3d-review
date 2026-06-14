@@ -106,3 +106,104 @@ impl ModelData {
         self.bounds = (!bounds.is_empty()).then_some(bounds);
     }
 }
+
+pub fn demo_cube_model() -> ModelData {
+    let mut model = ModelData {
+        name: "Demo Cube".to_owned(),
+        vertices: demo_cube_vertices(),
+        indices: demo_cube_indices(),
+        faces: (0..6)
+            .map(|face_index| TopologyFace {
+                first_index: face_index * 4,
+                index_count: 4,
+            })
+            .collect(),
+        tri_to_face: vec![0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5],
+        stats: ModelStats {
+            polygon_count: 6,
+            triangle_count: 12,
+            vertex_count: 24,
+            uv_set_count: 1,
+            material_count: 1,
+            draw_count: 1,
+        },
+        materials: vec![MaterialInfo {
+            name: "Default".to_owned(),
+            draw_count: 1,
+        }],
+        warnings: Vec::new(),
+        ..Default::default()
+    };
+    model.recompute_bounds();
+    model
+}
+
+fn demo_cube_vertices() -> Vec<Vertex> {
+    let s = 0.5;
+    let y0 = 0.03;
+    let y1 = 1.03;
+
+    let faces = [
+        (
+            [[-s, y0, s], [s, y0, s], [s, y1, s], [-s, y1, s]],
+            Vec3::Z,
+            Vec4::new(0.30, 0.58, 0.86, 0.92),
+        ),
+        (
+            [[s, y0, -s], [-s, y0, -s], [-s, y1, -s], [s, y1, -s]],
+            Vec3::NEG_Z,
+            Vec4::new(0.20, 0.37, 0.56, 0.92),
+        ),
+        (
+            [[-s, y0, -s], [-s, y0, s], [-s, y1, s], [-s, y1, -s]],
+            Vec3::NEG_X,
+            Vec4::new(0.22, 0.47, 0.73, 0.92),
+        ),
+        (
+            [[s, y0, s], [s, y0, -s], [s, y1, -s], [s, y1, s]],
+            Vec3::X,
+            Vec4::new(0.40, 0.68, 0.92, 0.92),
+        ),
+        (
+            [[-s, y1, s], [s, y1, s], [s, y1, -s], [-s, y1, -s]],
+            Vec3::Y,
+            Vec4::new(0.62, 0.79, 0.96, 0.96),
+        ),
+        (
+            [[-s, y0, -s], [s, y0, -s], [s, y0, s], [-s, y0, s]],
+            Vec3::NEG_Y,
+            Vec4::new(0.14, 0.25, 0.35, 0.92),
+        ),
+    ];
+
+    let uvs = [
+        Vec2::new(0.0, 0.0),
+        Vec2::new(1.0, 0.0),
+        Vec2::new(1.0, 1.0),
+        Vec2::new(0.0, 1.0),
+    ];
+
+    let mut vertices = Vec::with_capacity(24);
+    for (positions, normal, color) in faces {
+        for (index, position) in positions.into_iter().enumerate() {
+            vertices.push(Vertex {
+                position: Vec3::from_array(position),
+                normal,
+                uv: uvs[index],
+                color,
+                tangent: Vec4::new(1.0, 0.0, 0.0, 1.0),
+            });
+        }
+    }
+
+    vertices
+}
+
+fn demo_cube_indices() -> Vec<u32> {
+    let mut indices = Vec::with_capacity(36);
+    for face_index in 0..6 {
+        let base = face_index * 4;
+        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+    indices
+}

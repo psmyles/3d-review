@@ -1,4 +1,6 @@
-use review_model::ModelStats;
+use std::sync::Arc;
+
+use review_model::{ModelData, ModelStats};
 use review_render::{OrbitCamera, SceneCallback};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -39,6 +41,8 @@ pub fn draw_viewport_scene(
     ctx: &egui::Context,
     state: &UiState,
     camera: OrbitCamera,
+    model: Arc<ModelData>,
+    model_revision: u64,
     output_format: egui_wgpu::wgpu::TextureFormat,
 ) {
     if state.mode != WorkspaceMode::ThreeD {
@@ -47,8 +51,10 @@ pub fn draw_viewport_scene(
 
     let rect = ctx.input(|input| input.screen_rect());
     let painter = ctx.layer_painter(egui::LayerId::background());
-    let callback =
-        egui_wgpu::Callback::new_paint_callback(rect, SceneCallback::new(camera, output_format));
+    let callback = egui_wgpu::Callback::new_paint_callback(
+        rect,
+        SceneCallback::new(camera, output_format, model, model_revision),
+    );
     painter.add(callback);
 }
 

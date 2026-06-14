@@ -2,6 +2,7 @@ use std::{num::NonZeroU32, sync::Arc};
 
 use anyhow::Context;
 use glam::Vec2;
+use review_model::{demo_cube_model, ModelData};
 use review_render::{Renderer, RendererConfig, SCENE_DEPTH_FORMAT};
 use review_ui::{draw_overlay, draw_viewport_scene, UiState};
 use tracing::info;
@@ -27,7 +28,6 @@ fn main() -> anyhow::Result<()> {
         .context("application event loop failed")
 }
 
-#[derive(Default)]
 struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
@@ -36,7 +36,32 @@ struct App {
     egui_painter: Option<egui_wgpu::winit::Painter>,
     drag_mode: Option<DragMode>,
     last_pointer_position: Option<Vec2>,
+    scene_model: Arc<ModelData>,
+    scene_revision: u64,
     ui: UiState,
+}
+
+impl Default for App {
+    fn default() -> Self {
+        let scene_model = Arc::new(demo_cube_model());
+        let ui = UiState {
+            stats: scene_model.stats,
+            ..UiState::default()
+        };
+
+        Self {
+            window: None,
+            renderer: None,
+            egui_ctx: None,
+            egui_state: None,
+            egui_painter: None,
+            drag_mode: None,
+            last_pointer_position: None,
+            scene_model,
+            scene_revision: 1,
+            ui,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +120,7 @@ impl ApplicationHandler for App {
         self.egui_state = Some(egui_state);
         self.egui_painter = Some(egui_painter);
         self.ui.status = "LMB orbit  RMB pan  Wheel zoom  F reset".to_owned();
+        self.ui.stats = self.scene_model.stats;
         self.window = Some(window.clone());
         info!("application shell started");
         window.request_redraw();
@@ -235,8 +261,17 @@ impl App {
 
         let raw_input = egui_state.take_egui_input(window);
         let camera = renderer.camera;
+        let scene_model = self.scene_model.clone();
+        let scene_revision = self.scene_revision;
         let full_output = egui_ctx.run(raw_input, |ctx| {
-            draw_viewport_scene(ctx, &self.ui, camera, output_format);
+            draw_viewport_scene(
+                ctx,
+                &self.ui,
+                camera,
+                scene_model.clone(),
+                scene_revision,
+                output_format,
+            );
             draw_overlay(ctx, &mut self.ui);
         });
 
