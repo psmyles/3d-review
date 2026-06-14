@@ -1,11 +1,16 @@
-use std::{num::NonZeroU32, sync::Arc};
+use std::{
+    num::NonZeroU32,
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::Context;
 use glam::Vec2;
 use review_import::{load_model, LoadOptions};
-use review_model::{demo_cube_model, ModelData};
+use review_model::ModelData;
 use review_render::{Renderer, RendererConfig, SCENE_DEPTH_FORMAT, SCENE_SAMPLE_COUNT};
-use review_ui::{draw_overlay, draw_viewport_scene, UiAction, UiState};
+use review_ui::{draw_overlay, draw_viewport_scene, UiState};
 use tracing::{info, warn};
 use winit::{
     application::ApplicationHandler,
@@ -37,6 +42,7 @@ struct App {
     egui_painter: Option<egui_wgpu::winit::Painter>,
     drag_mode: Option<DragMode>,
     last_pointer_position: Option<Vec2>,
+    last_primary_click: Option<(Instant, Vec2)>,
     scene_model: Arc<ModelData>,
     scene_revision: u64,
     ui: UiState,
@@ -44,7 +50,7 @@ struct App {
 
 impl Default for App {
     fn default() -> Self {
-        let scene_model = Arc::new(demo_cube_model());
+        let scene_model = Arc::new(ModelData::default());
         let ui = UiState {
             stats: scene_model.stats,
             ..UiState::default()
@@ -58,8 +64,9 @@ impl Default for App {
             egui_painter: None,
             drag_mode: None,
             last_pointer_position: None,
+            last_primary_click: None,
             scene_model,
-            scene_revision: 1,
+            scene_revision: 0,
             ui,
         }
     }
@@ -75,7 +82,7 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
-        }
+        };
 
         let window = event_loop
             .create_window(
@@ -92,8 +99,6 @@ impl ApplicationHandler for App {
         if size.height > 0 {
             renderer.camera.aspect_ratio = size.width as f32 / size.height as f32;
         }
-        frame_camera_to_model(&mut renderer, &self.scene_model);
-
         let egui_ctx = egui::Context::default();
         egui_ctx.set_visuals(egui::Visuals::dark());
 
@@ -176,11 +181,23 @@ impl ApplicationHandler for App {
                 if state == ElementState::Released {
                     self.drag_mode = None;
                 } else if !egui_response.is_some_and(|response| response.consumed) {
-                    self.drag_mode = match button {
-                        MouseButton::Left => Some(DragMode::Orbit),
-                        MouseButton::Right => Some(DragMode::Pan),
-                        _ => self.drag_mode,
-                    };
+                    match button {
+                        MouseButton::Left => {
+                            if self.should_open_on_double_click() {
+                                self.open_model_from_dialog();
+                                self.drag_mode = None;
+                            } else {
+                                self.drag_mode = Some(DragMode::Orbit);
+                                if let Some(position) = self.last_pointer_position {
+                                    self.last_primary_click = Some((Instant::now(), position));
+                                }
+                            }
+                        }
+                        MouseButton::Right => {
+                            self.drag_mode = Some(DragMode::Pan);
+                        }
+                        _ => {}
+                    }
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -235,6 +252,9 @@ impl ApplicationHandler for App {
                     window.request_redraw();
                 }
             }
+            WindowEvent::DroppedFile(path) => {
+                self.open_model_from_path(&path);
+            }
             _ => {}
         }
     }
@@ -266,7 +286,7 @@ impl App {
             output_format
         };
 
-        let (full_output, ui_action, clear) = {
+        let (full_output, clear) = {
             let Some(egui_state) = self.egui_state.as_mut() else {
                 return;
             };
@@ -279,7 +299,6 @@ impl App {
             let clear = renderer.config.clear_color;
             let scene_model = self.scene_model.clone();
             let scene_revision = self.scene_revision;
-            let mut ui_action = None;
             let full_output = egui_ctx.run(raw_input, |ctx| {
                 draw_viewport_scene(
                     ctx,
@@ -289,16 +308,12 @@ impl App {
                     scene_revision,
                     output_format,
                 );
-                ui_action = draw_overlay(ctx, &mut self.ui);
+                draw_overlay(ctx, &mut self.ui);
             });
 
             egui_state.handle_platform_output(&window, full_output.platform_output.clone());
-            (full_output, ui_action, clear)
+            (full_output, clear)
         };
-
-        if matches!(ui_action, Some(UiAction::OpenModel)) {
-            self.open_model_from_dialog();
-        }
 
         let pixels_per_point = full_output.pixels_per_point;
         let clipped_primitives = egui_ctx.tessellate(full_output.shapes, pixels_per_point);
@@ -333,7 +348,11 @@ impl App {
             return;
         };
 
-        match load_model(&path, LoadOptions { triangulate: true }) {
+        self.open_model_from_path(&path);
+    }
+
+    fn open_model_from_path(&mut self, path: &Path) {
+        match load_model(path, LoadOptions { triangulate: true }) {
             Ok(model) => {
                 let model = Arc::new(model);
                 let display_name = if model.name.is_empty() {
@@ -364,6 +383,22 @@ impl App {
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
+    }
+
+    fn should_open_on_double_click(&self) -> bool {
+        if !self.scene_model.vertices.is_empty() {
+            return false;
+        }
+
+        let Some((last_click_time, last_click_position)) = self.last_primary_click else {
+            return false;
+        };
+        let Some(current_position) = self.last_pointer_position else {
+            return false;
+        };
+
+        last_click_time.elapsed() <= Duration::from_millis(450)
+            && current_position.distance(last_click_position) <= 6.0
     }
 }
 

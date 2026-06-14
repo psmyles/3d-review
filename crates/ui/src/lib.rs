@@ -2,23 +2,25 @@ use std::sync::Arc;
 
 use image::ImageError;
 use review_model::{ModelData, ModelStats};
-use review_render::{OrbitCamera, SceneCallback, SceneDebugOptions};
+use review_render::{OrbitCamera, SceneCallback, SceneDebugOptions, ShadingMode};
 
-const TOOLBAR_HEIGHT: f32 = 74.0;
-const STATUS_BAR_HEIGHT: f32 = 64.0;
-const OVERLAY_MARGIN: f32 = 20.0;
-const LEFT_PANEL_WIDTH: f32 = 432.0;
-const TOOLBAR_GROUP_SPACING: f32 = 14.0;
-const TOOLBAR_ICON_SIZE: f32 = 36.0;
-const TOOLBAR_ROW_HEIGHT: f32 = 52.0;
-const TOOLBAR_CENTER_WIDTH: f32 = 280.0;
-const TOOLBAR_RIGHT_WIDTH: f32 = 310.0;
-const TOOLBAR_LEFT_WIDTH: f32 = 760.0;
-const TOOLBAR_OPEN_WIDTH: f32 = 72.0;
-const TOOLBAR_SHADING_GROUP_WIDTH: f32 = 174.0;
-const TOOLBAR_DEBUG_GROUP_WIDTH: f32 = 132.0;
-const TOOLBAR_ICON_GROUP_WIDTH: f32 = 90.0;
-const TOOLBAR_MODE_GROUP_WIDTH: f32 = 180.0;
+const TOOLBAR_HEIGHT_PX: f32 = 73.0;
+const STATUS_BAR_HEIGHT_PX: f32 = 64.0;
+const OVERLAY_MARGIN_PX: f32 = 12.0;
+const LEFT_PANEL_WIDTH_PX: f32 = 432.0;
+const TOOLBAR_GROUP_SPACING_PX: f32 = 14.0;
+const TOOLBAR_ICON_SIZE_PX: f32 = 42.0;
+const TOOLBAR_ICON_GAP_PX: f32 = 3.0;
+const TOOLBAR_ICON_PADDING_PX: f32 = 8.0;
+const TOOLBAR_CENTER_WIDTH_PX: f32 = 180.0;
+const TOOLBAR_RIGHT_WIDTH_PX: f32 = 198.0;
+const TOOLBAR_LEFT_WIDTH_PX: f32 = 333.0;
+const TOOLBAR_SHADING_GROUP_WIDTH_PX: f32 = 183.0;
+const TOOLBAR_DEBUG_GROUP_WIDTH_PX: f32 = 138.0;
+const TOOLBAR_ICON_GROUP_WIDTH_PX: f32 = 93.0;
+const TOOLBAR_MODE_GROUP_WIDTH_PX: f32 = 180.0;
+const TOOLBAR_GROUP_HEIGHT_PX: f32 = 48.0;
+const TOOLBAR_GROUP_PADDING_PX: f32 = 3.0;
 
 struct AppIcon {
     id: &'static str,
@@ -74,25 +76,12 @@ const ICON_INFO: AppIcon = AppIcon {
     png_bytes: include_bytes!("../../../assets/icons/icon_info.png"),
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UiAction {
-    OpenModel,
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum WorkspaceMode {
     #[default]
     ThreeD,
     Uv,
     Texture,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ShadingMode {
-    Wire,
-    Unlit,
-    Solid,
-    Rendered,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,7 +117,7 @@ impl Default for UiState {
         Self {
             mode: WorkspaceMode::ThreeD,
             debug: SceneDebugOptions::default(),
-            shading_mode: ShadingMode::Solid,
+            shading_mode: ShadingMode::Shaded,
             projection_mode: ViewProjectionMode::Perspective,
             show_grid: true,
             show_bbox: false,
@@ -170,39 +159,59 @@ pub fn draw_viewport_scene(
     painter.add(callback);
 }
 
-pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState) -> Option<UiAction> {
+pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState) {
     apply_visuals(ctx);
     sync_debug_state(state);
 
-    let mut action = None;
+    let toolbar_height = px(ctx, TOOLBAR_HEIGHT_PX);
+    let status_bar_height = px(ctx, STATUS_BAR_HEIGHT_PX);
+    let overlay_margin = px(ctx, OVERLAY_MARGIN_PX);
+    let left_panel_width = px(ctx, LEFT_PANEL_WIDTH_PX);
+    let toolbar_group_spacing = px(ctx, TOOLBAR_GROUP_SPACING_PX);
+    let toolbar_group_height = px(ctx, TOOLBAR_GROUP_HEIGHT_PX);
+    let toolbar_left_width = px(ctx, TOOLBAR_LEFT_WIDTH_PX);
+    let toolbar_center_width = px(ctx, TOOLBAR_CENTER_WIDTH_PX);
+    let toolbar_right_width = px(ctx, TOOLBAR_RIGHT_WIDTH_PX);
+    let toolbar_shading_group_width = px(ctx, TOOLBAR_SHADING_GROUP_WIDTH_PX);
+    let toolbar_debug_group_width = px(ctx, TOOLBAR_DEBUG_GROUP_WIDTH_PX);
+    let toolbar_icon_group_width = px(ctx, TOOLBAR_ICON_GROUP_WIDTH_PX);
+    let toolbar_mode_group_width = px(ctx, TOOLBAR_MODE_GROUP_WIDTH_PX);
+
     let viewport_rect = ctx.input(|input| input.screen_rect());
 
     egui::TopBottomPanel::top("app_toolbar")
-        .exact_height(TOOLBAR_HEIGHT)
+        .exact_height(toolbar_height)
         .frame(toolbar_frame())
         .show(ctx, |ui| {
             let bar_rect = ui.max_rect();
-            let row_rect = egui::Rect::from_center_size(
-                bar_rect.center(),
+            ui.painter().line_segment(
+                [
+                    egui::pos2(bar_rect.left(), bar_rect.bottom() - 0.5),
+                    egui::pos2(bar_rect.right(), bar_rect.bottom() - 0.5),
+                ],
+                egui::Stroke::new(1.0, egui::Color32::from_gray(58)),
+            );
+            let row_rect = egui::Rect::from_min_size(
+                egui::pos2(bar_rect.left() + overlay_margin, bar_rect.top() + overlay_margin),
                 egui::vec2(
-                    (bar_rect.width() - OVERLAY_MARGIN * 2.0).max(0.0),
-                    TOOLBAR_ROW_HEIGHT,
+                    (bar_rect.width() - overlay_margin * 2.0).max(0.0),
+                    toolbar_group_height,
                 ),
             );
             let left_rect = egui::Rect::from_min_size(
-                egui::pos2(bar_rect.left() + OVERLAY_MARGIN, row_rect.top()),
-                egui::vec2(TOOLBAR_LEFT_WIDTH.min(row_rect.width()), TOOLBAR_ROW_HEIGHT),
+                row_rect.left_top(),
+                egui::vec2(toolbar_left_width.min(row_rect.width()), toolbar_group_height),
             );
             let center_rect = egui::Rect::from_center_size(
-                row_rect.center(),
-                egui::vec2(TOOLBAR_CENTER_WIDTH.min(row_rect.width()), TOOLBAR_ROW_HEIGHT),
+                egui::pos2(row_rect.center().x, row_rect.top() + toolbar_group_height * 0.5),
+                egui::vec2(toolbar_center_width.min(row_rect.width()), toolbar_group_height),
             );
             let right_rect = egui::Rect::from_min_size(
                 egui::pos2(
-                    bar_rect.right() - OVERLAY_MARGIN - TOOLBAR_RIGHT_WIDTH.min(row_rect.width()),
+                    row_rect.right() - toolbar_right_width.min(row_rect.width()),
                     row_rect.top(),
                 ),
-                egui::vec2(TOOLBAR_RIGHT_WIDTH.min(row_rect.width()), TOOLBAR_ROW_HEIGHT),
+                egui::vec2(toolbar_right_width.min(row_rect.width()), toolbar_group_height),
             );
 
             ui.scope_builder(
@@ -210,68 +219,58 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState) -> Option<UiAction
                     .max_rect(left_rect)
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
                 |ui| {
-                    ui.set_height(TOOLBAR_ROW_HEIGHT);
-                    ui.spacing_mut().item_spacing.x = TOOLBAR_GROUP_SPACING;
+                    ui.set_height(toolbar_group_height);
+                    ui.spacing_mut().item_spacing.x = toolbar_group_spacing;
 
-                    toolbar_slot(ui, TOOLBAR_OPEN_WIDTH, |ui| {
-                        if ui
-                            .add(sized_text_button("Open", egui::vec2(TOOLBAR_OPEN_WIDTH, 36.0)))
-                            .clicked()
-                        {
-                            action = Some(UiAction::OpenModel);
-                        }
-                    });
-
-                    toolbar_slot(ui, TOOLBAR_SHADING_GROUP_WIDTH, |ui| {
-                        toolbar_group(ui, |ui| {
-                            let solid = matches!(state.shading_mode, ShadingMode::Solid);
+                    toolbar_group_shell(ui, ctx, toolbar_shading_group_width, |ui| {
+                            let solid = matches!(state.shading_mode, ShadingMode::Shaded);
                             let unlit = matches!(state.shading_mode, ShadingMode::Unlit);
-                            let rendered = matches!(state.shading_mode, ShadingMode::Rendered);
-                            let wire = matches!(state.shading_mode, ShadingMode::Wire);
+                            let rendered = matches!(state.shading_mode, ShadingMode::ShadedWireframe);
+                            let wire = matches!(state.shading_mode, ShadingMode::Wireframe);
 
-                            if icon_toggle_button(ui, &ICON_SHADING_WIRE, wire, "Wire").clicked() {
-                                state.shading_mode = ShadingMode::Wire;
-                                state.debug.wireframe = true;
+                            if icon_toggle_button(ui, ctx, &ICON_SHADING_WIRE, wire, "Wire").clicked() {
+                                state.shading_mode = ShadingMode::Wireframe;
                             }
-                            if icon_toggle_button(ui, &ICON_SHADING_UNLIT, unlit, "Unlit")
+                            if icon_toggle_button(ui, ctx, &ICON_SHADING_UNLIT, unlit, "Unlit")
                                 .clicked()
                             {
                                 state.shading_mode = ShadingMode::Unlit;
                             }
-                            if icon_toggle_button(ui, &ICON_SHADING_SOLID, solid, "Solid")
+                            if icon_toggle_button(ui, ctx, &ICON_SHADING_SOLID, solid, "Solid")
                                 .clicked()
                             {
-                                state.shading_mode = ShadingMode::Solid;
-                                state.debug.wireframe = false;
+                                state.shading_mode = ShadingMode::Shaded;
                             }
                             if icon_toggle_button(
                                 ui,
+                                ctx,
                                 &ICON_SHADING_RENDERED,
                                 rendered,
                                 "Rendered",
                             )
                             .clicked()
                             {
-                                state.shading_mode = ShadingMode::Rendered;
+                                state.shading_mode = ShadingMode::ShadedWireframe;
                             }
-                        });
                     });
 
-                    toolbar_slot(ui, TOOLBAR_DEBUG_GROUP_WIDTH, |ui| {
-                        toolbar_group(ui, |ui| {
+                    toolbar_group_shell(ui, ctx, toolbar_debug_group_width, |ui| {
                             icon_toggle_button(
                                 ui,
+                                ctx,
                                 &ICON_UV,
-                                state.uv_checker_panel_expanded,
+                                state.debug.uv_checker,
                                 "UV Checker",
                             )
                             .clicked()
                             .then(|| {
-                                state.uv_checker_panel_expanded = !state.uv_checker_panel_expanded
+                                state.debug.uv_checker = !state.debug.uv_checker;
+                                state.uv_checker_panel_expanded = state.debug.uv_checker;
                             });
 
                             if icon_toggle_button(
                                 ui,
+                                ctx,
                                 &ICON_NORMALS_FACE,
                                 state.debug.face_normals,
                                 "Face Normals",
@@ -284,6 +283,7 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState) -> Option<UiAction
 
                             if icon_toggle_button(
                                 ui,
+                                ctx,
                                 &ICON_NORMALS_VERTEX,
                                 state.debug.vertex_normals,
                                 "Vertex Normals",
@@ -293,7 +293,6 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState) -> Option<UiAction
                                 state.debug.vertex_normals = !state.debug.vertex_normals;
                                 state.vertex_normals.expanded = state.debug.vertex_normals;
                             }
-                        });
                     });
                 },
             );
@@ -305,9 +304,9 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState) -> Option<UiAction
                         egui::Direction::LeftToRight,
                     )),
                 |ui| {
-                    ui.set_height(TOOLBAR_ROW_HEIGHT);
-                    toolbar_slot(ui, TOOLBAR_MODE_GROUP_WIDTH, |ui| {
-                        segmented_mode_control(ui, &mut state.mode);
+                    ui.set_height(toolbar_group_height);
+                    toolbar_group_shell(ui, ctx, toolbar_mode_group_width, |ui| {
+                        segmented_mode_control(ui, ctx, &mut state.mode);
                     });
                 },
             );
@@ -317,13 +316,13 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState) -> Option<UiAction
                     .max_rect(right_rect)
                     .layout(egui::Layout::right_to_left(egui::Align::Center)),
                 |ui| {
-                    ui.set_height(TOOLBAR_ROW_HEIGHT);
-                    ui.spacing_mut().item_spacing.x = TOOLBAR_GROUP_SPACING;
+                    ui.set_height(toolbar_group_height);
+                    ui.spacing_mut().item_spacing.x = toolbar_group_spacing;
 
-                    toolbar_slot(ui, TOOLBAR_ICON_GROUP_WIDTH, |ui| {
-                        toolbar_group(ui, |ui| {
+                    toolbar_group_shell(ui, ctx, toolbar_icon_group_width, |ui| {
                             icon_toggle_button(
                                 ui,
+                                ctx,
                                 &ICON_VIEW_PERSPECTIVE,
                                 matches!(state.projection_mode, ViewProjectionMode::Perspective),
                                 "Perspective",
@@ -333,100 +332,108 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState) -> Option<UiAction
 
                             icon_toggle_button(
                                 ui,
+                                ctx,
                                 &ICON_VIEW_ORTHO,
                                 matches!(state.projection_mode, ViewProjectionMode::Orthographic),
                                 "Orthographic",
                             )
                             .clicked()
                             .then(|| state.projection_mode = ViewProjectionMode::Orthographic);
-                        });
                     });
 
-                    toolbar_slot(ui, TOOLBAR_ICON_GROUP_WIDTH, |ui| {
-                        toolbar_group(ui, |ui| {
-                            icon_toggle_button(ui, &ICON_GRID, state.show_grid, "Grid")
+                    toolbar_group_shell(ui, ctx, toolbar_icon_group_width, |ui| {
+                            icon_toggle_button(ui, ctx, &ICON_GRID, state.show_grid, "Grid")
                                 .clicked()
                                 .then(|| state.show_grid = !state.show_grid);
 
-                            icon_toggle_button(ui, &ICON_BOUNDS, state.show_bbox, "Bounds")
+                            icon_toggle_button(ui, ctx, &ICON_BOUNDS, state.show_bbox, "Bounds")
                                 .clicked()
                                 .then(|| state.show_bbox = !state.show_bbox);
-                        });
                     });
                 },
             );
         });
 
     egui::Area::new(egui::Id::new("left_options"))
-        .fixed_pos(egui::pos2(30.0, TOOLBAR_HEIGHT + 18.0))
+        .fixed_pos(egui::pos2(px(ctx, 30.0), toolbar_height + px(ctx, 18.0)))
         .show(ctx, |ui| {
-            ui.set_width(LEFT_PANEL_WIDTH);
-            option_panel(
-                ui,
-                "UV Checker Options",
-                &mut state.uv_checker_panel_expanded,
-                |ui| {
-                    ui.add_enabled_ui(false, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(rich_label(
-                                "Checker Texture",
-                                15.0,
-                                egui::Color32::from_gray(160),
-                            ));
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.label(rich_label(
-                                        "Soon",
-                                        14.0,
-                                        egui::Color32::from_gray(120),
-                                    ));
-                                },
-                            );
+            ui.set_width(left_panel_width);
+            if state.debug.uv_checker {
+                option_panel(
+                    ui,
+                    "UV Checker Options",
+                    &mut state.uv_checker_panel_expanded,
+                    |ui| {
+                        ui.add_enabled_ui(false, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(rich_label(
+                                    "Checker Texture",
+                                    15.0,
+                                    egui::Color32::from_gray(160),
+                                ));
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.label(rich_label(
+                                            "Soon",
+                                            14.0,
+                                            egui::Color32::from_gray(120),
+                                        ));
+                                    },
+                                );
+                            });
                         });
-                    });
-                },
-            );
+                    },
+                );
+            }
 
-            ui.add_space(18.0);
-            option_panel(
-                ui,
-                "Face Normals Options",
-                &mut state.face_normals.expanded,
-                |ui| {
-                    labeled_slider(ui, "Normal Length", &mut state.face_normals.length);
-                    ui.add_space(10.0);
-                    color_swatch_row(ui, "Line Color", &mut state.face_normals.color);
-                    ui.add_space(14.0);
-                    if wide_reset_button(ui).clicked() {
-                        state.face_normals.length = 0.18;
-                        state.face_normals.color = egui::Color32::from_rgb(255, 32, 32);
-                    }
-                },
-            );
+            if state.debug.face_normals {
+                if state.debug.uv_checker {
+                    ui.add_space(18.0);
+                }
+                option_panel(
+                    ui,
+                    "Face Normals Options",
+                    &mut state.face_normals.expanded,
+                    |ui| {
+                        labeled_slider(ui, "Normal Length", &mut state.face_normals.length);
+                        ui.add_space(10.0);
+                        color_swatch_row(ui, "Line Color", &mut state.face_normals.color);
+                        ui.add_space(14.0);
+                        if wide_reset_button(ui).clicked() {
+                            state.face_normals.length = 0.18;
+                            state.face_normals.color = egui::Color32::from_rgb(255, 32, 32);
+                        }
+                    },
+                );
+            }
 
-            ui.add_space(18.0);
-            option_panel(
-                ui,
-                "Vertex Normals Options",
-                &mut state.vertex_normals.expanded,
-                |ui| {
-                    labeled_slider(ui, "Normal Length", &mut state.vertex_normals.length);
-                    ui.add_space(10.0);
-                    color_swatch_row(ui, "Line Color", &mut state.vertex_normals.color);
-                    ui.add_space(14.0);
-                    if wide_reset_button(ui).clicked() {
-                        state.vertex_normals.length = 0.18;
-                        state.vertex_normals.color = egui::Color32::from_rgb(32, 224, 232);
-                    }
-                },
-            );
+            if state.debug.vertex_normals {
+                if state.debug.uv_checker || state.debug.face_normals {
+                    ui.add_space(18.0);
+                }
+                option_panel(
+                    ui,
+                    "Vertex Normals Options",
+                    &mut state.vertex_normals.expanded,
+                    |ui| {
+                        labeled_slider(ui, "Normal Length", &mut state.vertex_normals.length);
+                        ui.add_space(10.0);
+                        color_swatch_row(ui, "Line Color", &mut state.vertex_normals.color);
+                        ui.add_space(14.0);
+                        if wide_reset_button(ui).clicked() {
+                            state.vertex_normals.length = 0.18;
+                            state.vertex_normals.color = egui::Color32::from_rgb(32, 224, 232);
+                        }
+                    },
+                );
+            }
         });
 
     egui::Area::new(egui::Id::new("axis_gizmo"))
         .anchor(
             egui::Align2::RIGHT_TOP,
-            egui::vec2(-OVERLAY_MARGIN, TOOLBAR_HEIGHT + 10.0),
+            egui::vec2(-overlay_margin, toolbar_height + px(ctx, 10.0)),
         )
         .show(ctx, |ui| {
             draw_axis_gizmo(ui);
@@ -435,7 +442,7 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState) -> Option<UiAction
     egui::Area::new(egui::Id::new("stats_overlay"))
         .anchor(
             egui::Align2::LEFT_BOTTOM,
-            egui::vec2(30.0, -(STATUS_BAR_HEIGHT + 18.0)),
+            egui::vec2(px(ctx, 30.0), -(status_bar_height + px(ctx, 18.0))),
         )
         .show(ctx, |ui| {
             egui::Frame::NONE
@@ -450,16 +457,17 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState) -> Option<UiAction
         });
 
     egui::TopBottomPanel::bottom("status_bar")
-        .exact_height(STATUS_BAR_HEIGHT)
+        .exact_height(status_bar_height)
         .frame(status_bar_frame())
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 let info_response = icon_tile_button(
                     ui,
+                    ctx,
                     &ICON_INFO,
                     false,
                     "Info",
-                    egui::vec2(42.0, 42.0),
+                    egui::vec2(px(ctx, 42.0), px(ctx, 42.0)),
                 );
                 if info_response.clicked() {
                     state.status = "Viewport info".to_owned();
@@ -485,7 +493,6 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState) -> Option<UiAction
             });
         });
 
-    action
 }
 
 fn apply_visuals(ctx: &egui::Context) {
@@ -509,13 +516,18 @@ fn apply_visuals(ctx: &egui::Context) {
 }
 
 fn sync_debug_state(state: &mut UiState) {
-    state.debug.wireframe = matches!(state.shading_mode, ShadingMode::Wire);
+    state.debug.shading_mode = state.shading_mode;
+    state.debug.show_grid = state.show_grid;
+    state.debug.face_normal_length = state.face_normals.length;
+    state.debug.vertex_normal_length = state.vertex_normals.length;
+    state.debug.face_normal_color = color32_to_rgba(state.face_normals.color);
+    state.debug.vertex_normal_color = color32_to_rgba(state.vertex_normals.color);
 }
 
 fn toolbar_frame() -> egui::Frame {
     egui::Frame::NONE
         .fill(egui::Color32::from_rgb(40, 39, 38))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(72)))
+        .stroke(egui::Stroke::NONE)
         .inner_margin(egui::Margin::same(0))
 }
 
@@ -526,40 +538,45 @@ fn status_bar_frame() -> egui::Frame {
         .inner_margin(egui::Margin::symmetric(26, 10))
 }
 
-fn toolbar_group(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::NONE
-        .fill(egui::Color32::from_rgb(18, 19, 22))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(48)))
-        .corner_radius(6.0)
-        .inner_margin(egui::Margin::symmetric(6, 6))
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            ui.horizontal(|ui| add_contents(ui));
-        });
-}
-
-fn toolbar_slot(
+fn toolbar_group_shell(
     ui: &mut egui::Ui,
+    ctx: &egui::Context,
     width: f32,
     add_contents: impl FnOnce(&mut egui::Ui),
-) -> egui::InnerResponse<()> {
-    ui.allocate_ui_with_layout(
-        egui::vec2(width, TOOLBAR_ROW_HEIGHT),
-        egui::Layout::centered_and_justified(egui::Direction::TopDown),
-        add_contents,
-    )
+) -> egui::Response {
+    let group_height = px(ctx, TOOLBAR_GROUP_HEIGHT_PX);
+    let desired = egui::vec2(width, group_height);
+    let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::hover());
+    ui.painter().rect(
+        rect,
+        px(ctx, 6.0),
+        egui::Color32::from_rgb(18, 19, 22),
+        egui::Stroke::NONE,
+        egui::StrokeKind::Outside,
+    );
+    let inner_padding = px(ctx, TOOLBAR_GROUP_PADDING_PX);
+    let inner = rect.shrink2(egui::vec2(inner_padding, inner_padding));
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(inner)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        |ui| {
+            ui.spacing_mut().item_spacing.x = px(ctx, TOOLBAR_ICON_GAP_PX);
+            add_contents(ui);
+        },
+    );
+    response
 }
 
-fn segmented_mode_control(ui: &mut egui::Ui, mode: &mut WorkspaceMode) {
-    toolbar_group(ui, |ui| {
-        mode_segment(ui, mode, WorkspaceMode::ThreeD, "3D", true);
-        mode_segment(ui, mode, WorkspaceMode::Uv, "UV", false);
-        mode_segment(ui, mode, WorkspaceMode::Texture, "Tex", false);
-    });
+fn segmented_mode_control(ui: &mut egui::Ui, ctx: &egui::Context, mode: &mut WorkspaceMode) {
+    mode_segment(ui, ctx, mode, WorkspaceMode::ThreeD, "3D", true);
+    mode_segment(ui, ctx, mode, WorkspaceMode::Uv, "UV", false);
+    mode_segment(ui, ctx, mode, WorkspaceMode::Texture, "Tex", false);
 }
 
 fn mode_segment(
     ui: &mut egui::Ui,
+    ctx: &egui::Context,
     mode: &mut WorkspaceMode,
     value: WorkspaceMode,
     label: &str,
@@ -575,14 +592,14 @@ fn mode_segment(
             egui::Color32::from_gray(188)
         },
     ))
-    .min_size(egui::vec2(52.0, 36.0))
+    .min_size(egui::vec2(px(ctx, 52.0), px(ctx, 36.0)))
     .fill(if selected {
         egui::Color32::from_rgb(66, 103, 163)
     } else {
         egui::Color32::TRANSPARENT
     })
     .stroke(egui::Stroke::NONE)
-    .corner_radius(6.0);
+    .corner_radius(px(ctx, 6.0));
 
     let response = ui.add_enabled(enabled, button);
     if enabled && response.clicked() {
@@ -592,21 +609,24 @@ fn mode_segment(
 
 fn icon_toggle_button(
     ui: &mut egui::Ui,
+    ctx: &egui::Context,
     icon: &AppIcon,
     selected: bool,
     tooltip: &str,
 ) -> egui::Response {
     icon_tile_button(
         ui,
+        ctx,
         icon,
         selected,
         tooltip,
-        egui::vec2(TOOLBAR_ICON_SIZE, TOOLBAR_ICON_SIZE),
+        egui::vec2(px(ctx, TOOLBAR_ICON_SIZE_PX), px(ctx, TOOLBAR_ICON_SIZE_PX)),
     )
 }
 
 fn icon_tile_button(
     ui: &mut egui::Ui,
+    ctx: &egui::Context,
     icon: &AppIcon,
     selected: bool,
     tooltip: &str,
@@ -621,30 +641,31 @@ fn icon_tile_button(
     let visuals = if selected {
         (
             egui::Color32::from_rgb(66, 103, 163),
-            egui::Color32::from_rgb(82, 126, 201),
+            egui::Color32::TRANSPARENT,
         )
     } else if response.hovered() {
         (
-            egui::Color32::from_rgb(47, 79, 131),
-            egui::Color32::from_rgb(82, 126, 201),
+            egui::Color32::from_rgb(54, 56, 61),
+            egui::Color32::TRANSPARENT,
         )
     } else {
         (
             egui::Color32::from_rgb(18, 19, 22),
-            egui::Color32::from_gray(42),
+            egui::Color32::TRANSPARENT,
         )
     };
 
     ui.painter().rect(
         rect,
-        6.0,
+        px(ctx, 6.0),
         visuals.0,
         egui::Stroke::new(1.0, visuals.1),
-        egui::StrokeKind::Outside,
+        egui::StrokeKind::Inside,
     );
 
     if let Some(texture) = load_icon_texture(ui, icon) {
-        let image_rect = rect.shrink2(egui::vec2(6.0, 6.0));
+        let image_padding = px(ctx, TOOLBAR_ICON_PADDING_PX);
+        let image_rect = rect.shrink2(egui::vec2(image_padding, image_padding));
         egui::Image::from_texture(texture)
             .fit_to_exact_size(image_rect.size())
             .tint(tint)
@@ -652,14 +673,6 @@ fn icon_tile_button(
     }
 
     response.on_hover_text(tooltip)
-}
-
-fn sized_text_button(label: &str, size: egui::Vec2) -> egui::Button<'_> {
-    egui::Button::new(rich_label(label, 15.0, egui::Color32::from_gray(220)))
-        .min_size(size)
-        .fill(egui::Color32::from_rgb(66, 66, 66))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(84)))
-        .corner_radius(6.0)
 }
 
 fn option_panel(
@@ -872,4 +885,17 @@ fn axis_bubble(painter: &egui::Painter, center: egui::Pos2, label: &str, fill: e
 
 fn rich_label(text: &str, size: f32, color: egui::Color32) -> egui::RichText {
     egui::RichText::new(text).size(size).color(color).strong()
+}
+
+fn px(ctx: &egui::Context, value: f32) -> f32 {
+    value / ctx.pixels_per_point()
+}
+
+fn color32_to_rgba(color: egui::Color32) -> [f32; 4] {
+    [
+        color.r() as f32 / 255.0,
+        color.g() as f32 / 255.0,
+        color.b() as f32 / 255.0,
+        color.a() as f32 / 255.0,
+    ]
 }

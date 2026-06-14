@@ -5,19 +5,42 @@ mod scene;
 
 pub use scene::{SceneCallback, SCENE_DEPTH_FORMAT, SCENE_SAMPLE_COUNT};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DebugView {
-    Shaded,
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ShadingMode {
     Wireframe,
-    FaceNormals,
-    VertexNormals,
+    Unlit,
+    #[default]
+    Shaded,
+    ShadedWireframe,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SceneDebugOptions {
-    pub wireframe: bool,
+    pub shading_mode: ShadingMode,
+    pub uv_checker: bool,
+    pub show_grid: bool,
     pub face_normals: bool,
     pub vertex_normals: bool,
+    pub face_normal_length: f32,
+    pub vertex_normal_length: f32,
+    pub face_normal_color: [f32; 4],
+    pub vertex_normal_color: [f32; 4],
+}
+
+impl Default for SceneDebugOptions {
+    fn default() -> Self {
+        Self {
+            shading_mode: ShadingMode::Shaded,
+            uv_checker: false,
+            show_grid: true,
+            face_normals: false,
+            vertex_normals: false,
+            face_normal_length: 0.18,
+            vertex_normal_length: 0.18,
+            face_normal_color: [1.0, 0.1, 0.1, 0.95],
+            vertex_normal_color: [0.14, 0.92, 0.96, 0.95],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -158,7 +181,6 @@ impl OrbitCamera {
 pub struct Renderer {
     pub config: RendererConfig,
     pub camera: OrbitCamera,
-    pub debug_view: DebugView,
 }
 
 impl Renderer {
@@ -166,7 +188,6 @@ impl Renderer {
         Self {
             config,
             camera: OrbitCamera::default(),
-            debug_view: DebugView::Shaded,
         }
     }
 }
