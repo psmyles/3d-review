@@ -131,7 +131,6 @@ impl ApplicationHandler for App {
         self.egui_ctx = Some(egui_ctx);
         self.egui_state = Some(egui_state);
         self.egui_painter = Some(egui_painter);
-        self.ui.status = "LMB orbit  RMB pan  Wheel zoom  F frame".to_owned();
         self.ui.stats = self.scene_model.stats;
         self.window = Some(window.clone());
         info!("application shell started");
@@ -274,7 +273,7 @@ impl App {
             return;
         };
 
-        window.set_title(&format!("3D Review - {}", self.ui.status));
+        window.set_title("3D Review");
         self.update_camera_animation(&window);
 
         let output_format = {
@@ -353,7 +352,6 @@ impl App {
             .pick_file();
 
         let Some(path) = file else {
-            self.ui.status = "Open canceled".to_owned();
             return;
         };
 
@@ -364,27 +362,17 @@ impl App {
         match load_model(path, LoadOptions { triangulate: true }) {
             Ok(model) => {
                 let model = Arc::new(model);
-                let display_name = if model.name.is_empty() {
-                    path.file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("Model")
-                        .to_owned()
-                } else {
-                    model.name.clone()
-                };
 
                 if let Some(renderer) = self.renderer.as_mut() {
                     frame_camera_to_model(renderer, &model);
                 }
 
                 self.ui.stats = model.stats;
-                self.ui.status = format!("Loaded {display_name}");
                 self.scene_model = model;
                 self.scene_revision = self.scene_revision.saturating_add(1);
                 info!(path = %path.display(), "model loaded");
             }
             Err(error) => {
-                self.ui.status = format!("Open failed: {error}");
                 warn!(path = %path.display(), error = %error, "model load failed");
             }
         }
