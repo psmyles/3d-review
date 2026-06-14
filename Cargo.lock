@@ -2275,6 +2275,7 @@ name = "review-import"
 version = "0.1.0"
 dependencies = [
  "cc",
+ "glam",
  "review-model",
  "thiserror 2.0.18",
 ]
