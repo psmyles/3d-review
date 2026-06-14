@@ -30,3 +30,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 wgpu = "24"
 winit = "0.30"
 
+[profile.dev]
+incremental = false
+
+[profile.test]
+incremental = false
