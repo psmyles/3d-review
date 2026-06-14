@@ -4,7 +4,7 @@ use anyhow::Context;
 use glam::Vec2;
 use review_import::{load_model, LoadOptions};
 use review_model::{demo_cube_model, ModelData};
-use review_render::{Renderer, RendererConfig, SCENE_DEPTH_FORMAT};
+use review_render::{Renderer, RendererConfig, SCENE_DEPTH_FORMAT, SCENE_SAMPLE_COUNT};
 use review_ui::{draw_overlay, draw_viewport_scene, UiAction, UiState};
 use tracing::{info, warn};
 use winit::{
@@ -100,7 +100,7 @@ impl ApplicationHandler for App {
         let mut egui_painter = pollster::block_on(egui_wgpu::winit::Painter::new(
             egui_ctx.clone(),
             wgpu_configuration(renderer_config),
-            1,
+            SCENE_SAMPLE_COUNT,
             Some(SCENE_DEPTH_FORMAT),
             false,
             true,

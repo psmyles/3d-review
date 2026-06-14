@@ -3,7 +3,7 @@ use review_model::Bounds;
 
 mod scene;
 
-pub use scene::{SceneCallback, SCENE_DEPTH_FORMAT};
+pub use scene::{SceneCallback, SCENE_DEPTH_FORMAT, SCENE_SAMPLE_COUNT};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DebugView {
