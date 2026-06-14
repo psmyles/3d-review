@@ -13,6 +13,13 @@ pub enum DebugView {
     VertexNormals,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SceneDebugOptions {
+    pub wireframe: bool,
+    pub face_normals: bool,
+    pub vertex_normals: bool,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct RendererConfig {
     pub preferred_backends: wgpu::Backends,
