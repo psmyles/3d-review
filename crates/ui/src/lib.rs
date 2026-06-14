@@ -191,9 +191,17 @@ pub struct UiOutput {
 
 #[derive(Debug, Clone)]
 pub struct NormalPanelState {
-    pub expanded: bool,
     pub length: f32,
     pub color: egui::Color32,
+}
+
+/// Which tool's options panel is currently open. Only one panel is shown at a
+/// time; a panel is opened by right-clicking its toolbar button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptionPanel {
+    UvChecker,
+    FaceNormals,
+    VertexNormals,
 }
 
 #[derive(Debug, Clone)]
@@ -204,10 +212,15 @@ pub struct UiState {
     pub projection_mode: ViewProjectionMode,
     pub show_grid: bool,
     pub show_axis_gizmo: bool,
-    pub uv_checker_panel_expanded: bool,
+    /// The single options panel currently shown, if any.
+    pub active_panel: Option<OptionPanel>,
+    /// Collapse state shared by whichever panel is active.
+    pub panel_expanded: bool,
+    /// Last viewport position the panel was dragged to (egui points). Shared by
+    /// every option panel so they all spawn where the last one was left.
+    pub panel_pos: Option<egui::Pos2>,
     pub face_normals: NormalPanelState,
     pub vertex_normals: NormalPanelState,
-    pub status: String,
     pub stats: ModelStats,
 }
 
@@ -220,19 +233,34 @@ impl Default for UiState {
             projection_mode: ViewProjectionMode::Perspective,
             show_grid: true,
             show_axis_gizmo: true,
-            uv_checker_panel_expanded: false,
+            active_panel: None,
+            panel_expanded: true,
+            panel_pos: None,
             face_normals: NormalPanelState {
-                expanded: true,
                 length: 0.18,
                 color: egui::Color32::from_rgb(255, 32, 32),
             },
             vertex_normals: NormalPanelState {
-                expanded: true,
                 length: 0.18,
                 color: egui::Color32::from_rgb(32, 224, 232),
             },
-            status: "Loaded scene".to_owned(),
             stats: ModelStats::default(),
+        }
+    }
+}
+
+impl UiState {
+    /// Open (or switch to) a tool's options panel. Opening always expands the
+    /// panel; the shared drag position is preserved so it spawns where the last
+    /// panel was left.
+    fn open_panel(&mut self, panel: OptionPanel) {
+        // Right-clicking the same tool again closes its panel; right-clicking a
+        // different tool switches the (single) panel to it.
+        if self.active_panel == Some(panel) {
+            self.active_panel = None;
+        } else {
+            self.active_panel = Some(panel);
+            self.panel_expanded = true;
         }
     }
 }
@@ -284,8 +312,6 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
     let toolbar_single_icon_group_width = px(ctx, TOOLBAR_SINGLE_ICON_GROUP_WIDTH_PX);
     let toolbar_double_icon_group_width = px(ctx, TOOLBAR_DOUBLE_ICON_GROUP_WIDTH_PX);
     let toolbar_mode_group_width = px(ctx, TOOLBAR_MODE_GROUP_WIDTH_PX);
-
-    let viewport_rect = ctx.input(|input| input.screen_rect());
 
     egui::TopBottomPanel::top("app_toolbar")
         .exact_height(toolbar_height)
@@ -378,37 +404,46 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
                     });
 
                     toolbar_group_shell(ui, ctx, toolbar_debug_group_width, |ui| {
-                        icon_toggle_button(ui, ctx, &ICON_UV, state.debug.uv_checker, "UV Checker")
-                            .clicked()
-                            .then(|| {
-                                state.debug.uv_checker = !state.debug.uv_checker;
-                                state.uv_checker_panel_expanded = state.debug.uv_checker;
-                            });
+                        let uv = icon_toggle_button(
+                            ui,
+                            ctx,
+                            &ICON_UV,
+                            state.debug.uv_checker,
+                            "UV Checker (right-click for options)",
+                        );
+                        if uv.clicked() {
+                            state.debug.uv_checker = !state.debug.uv_checker;
+                        }
+                        if uv.secondary_clicked() {
+                            state.open_panel(OptionPanel::UvChecker);
+                        }
 
-                        if icon_toggle_button(
+                        let face = icon_toggle_button(
                             ui,
                             ctx,
                             &ICON_NORMALS_FACE,
                             state.debug.face_normals,
-                            "Face Normals",
-                        )
-                        .clicked()
-                        {
+                            "Face Normals (right-click for options)",
+                        );
+                        if face.clicked() {
                             state.debug.face_normals = !state.debug.face_normals;
-                            state.face_normals.expanded = state.debug.face_normals;
+                        }
+                        if face.secondary_clicked() {
+                            state.open_panel(OptionPanel::FaceNormals);
                         }
 
-                        if icon_toggle_button(
+                        let vertex = icon_toggle_button(
                             ui,
                             ctx,
                             &ICON_NORMALS_VERTEX,
                             state.debug.vertex_normals,
-                            "Vertex Normals",
-                        )
-                        .clicked()
-                        {
+                            "Vertex Normals (right-click for options)",
+                        );
+                        if vertex.clicked() {
                             state.debug.vertex_normals = !state.debug.vertex_normals;
-                            state.vertex_normals.expanded = state.debug.vertex_normals;
+                        }
+                        if vertex.secondary_clicked() {
+                            state.open_panel(OptionPanel::VertexNormals);
                         }
                     });
                 },
@@ -473,81 +508,82 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
             );
         });
 
-    egui::Area::new(egui::Id::new("left_options"))
-        .fixed_pos(egui::pos2(px(ctx, 30.0), toolbar_height + px(ctx, 18.0)))
-        .show(ctx, |ui| {
-            ui.set_width(left_panel_width);
-            if state.debug.uv_checker {
-                option_panel(
-                    ui,
-                    "UV Checker Options",
-                    &mut state.uv_checker_panel_expanded,
-                    |ui| {
-                        ui.add_enabled_ui(false, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(rich_label(
-                                    "Checker Texture",
-                                    15.0,
-                                    egui::Color32::from_gray(160),
-                                ));
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        ui.label(rich_label(
-                                            "Soon",
-                                            14.0,
-                                            egui::Color32::from_gray(120),
-                                        ));
-                                    },
-                                );
+    if let Some(panel) = state.active_panel {
+        let default_pos = egui::pos2(px(ctx, 30.0), toolbar_height + px(ctx, 18.0));
+        let panel_pos = state.panel_pos.unwrap_or(default_pos);
+
+        let outcome = egui::Area::new(egui::Id::new("option_panel"))
+            .current_pos(panel_pos)
+            .show(ctx, |ui| {
+                ui.set_width(left_panel_width);
+                match panel {
+                    OptionPanel::UvChecker => option_panel(
+                        ui,
+                        "UV Checker Options",
+                        &mut state.panel_expanded,
+                        |ui| {
+                            ui.add_enabled_ui(false, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(rich_label(
+                                        "Checker Texture",
+                                        15.0,
+                                        egui::Color32::from_gray(160),
+                                    ));
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            ui.label(rich_label(
+                                                "Soon",
+                                                14.0,
+                                                egui::Color32::from_gray(120),
+                                            ));
+                                        },
+                                    );
+                                });
                             });
-                        });
-                    },
-                );
-            }
-
-            if state.debug.face_normals {
-                if state.debug.uv_checker {
-                    ui.add_space(18.0);
+                        },
+                    ),
+                    OptionPanel::FaceNormals => option_panel(
+                        ui,
+                        "Face Normals Options",
+                        &mut state.panel_expanded,
+                        |ui| {
+                            labeled_slider(ui, "Normal Length", &mut state.face_normals.length);
+                            ui.add_space(10.0);
+                            color_swatch_row(ui, "Line Color", &mut state.face_normals.color);
+                            ui.add_space(14.0);
+                            if wide_reset_button(ui).clicked() {
+                                state.face_normals.length = 0.18;
+                                state.face_normals.color = egui::Color32::from_rgb(255, 32, 32);
+                            }
+                        },
+                    ),
+                    OptionPanel::VertexNormals => option_panel(
+                        ui,
+                        "Vertex Normals Options",
+                        &mut state.panel_expanded,
+                        |ui| {
+                            labeled_slider(ui, "Normal Length", &mut state.vertex_normals.length);
+                            ui.add_space(10.0);
+                            color_swatch_row(ui, "Line Color", &mut state.vertex_normals.color);
+                            ui.add_space(14.0);
+                            if wide_reset_button(ui).clicked() {
+                                state.vertex_normals.length = 0.18;
+                                state.vertex_normals.color = egui::Color32::from_rgb(32, 224, 232);
+                            }
+                        },
+                    ),
                 }
-                option_panel(
-                    ui,
-                    "Face Normals Options",
-                    &mut state.face_normals.expanded,
-                    |ui| {
-                        labeled_slider(ui, "Normal Length", &mut state.face_normals.length);
-                        ui.add_space(10.0);
-                        color_swatch_row(ui, "Line Color", &mut state.face_normals.color);
-                        ui.add_space(14.0);
-                        if wide_reset_button(ui).clicked() {
-                            state.face_normals.length = 0.18;
-                            state.face_normals.color = egui::Color32::from_rgb(255, 32, 32);
-                        }
-                    },
-                );
-            }
+            })
+            .inner;
 
-            if state.debug.vertex_normals {
-                if state.debug.uv_checker || state.debug.face_normals {
-                    ui.add_space(18.0);
-                }
-                option_panel(
-                    ui,
-                    "Vertex Normals Options",
-                    &mut state.vertex_normals.expanded,
-                    |ui| {
-                        labeled_slider(ui, "Normal Length", &mut state.vertex_normals.length);
-                        ui.add_space(10.0);
-                        color_swatch_row(ui, "Line Color", &mut state.vertex_normals.color);
-                        ui.add_space(14.0);
-                        if wide_reset_button(ui).clicked() {
-                            state.vertex_normals.length = 0.18;
-                            state.vertex_normals.color = egui::Color32::from_rgb(32, 224, 232);
-                        }
-                    },
-                );
-            }
-        });
+        if outcome.drag_delta != egui::Vec2::ZERO {
+            state.panel_pos = Some(panel_pos + outcome.drag_delta);
+        }
+        if outcome.close {
+            state.active_panel = None;
+        }
+    }
 
     if state.show_axis_gizmo {
         let gizmo_response = egui::Area::new(egui::Id::new("axis_gizmo"))
@@ -584,7 +620,7 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
         .frame(status_bar_frame())
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                let info_response = icon_tile_button(
+                icon_tile_button(
                     ui,
                     ctx,
                     &ICON_INFO,
@@ -592,27 +628,6 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
                     "Info",
                     egui::vec2(px(ctx, 42.0), px(ctx, 42.0)),
                 );
-                if info_response.clicked() {
-                    state.status = "Viewport info".to_owned();
-                }
-
-                ui.add_space(14.0);
-                ui.label(rich_label(
-                    &state.status,
-                    16.0,
-                    egui::Color32::from_gray(188),
-                ));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(rich_label(
-                        if viewport_rect.width() > 1280.0 {
-                            "WebGPU"
-                        } else {
-                            ""
-                        },
-                        14.0,
-                        egui::Color32::from_gray(130),
-                    ));
-                });
             });
         });
 
@@ -809,50 +824,63 @@ fn icon_tile_button(
     response.on_hover_text(tooltip)
 }
 
+/// Result of drawing an [`option_panel`]: how far its header was dragged this
+/// frame, and whether the close button was pressed.
+struct PanelOutcome {
+    drag_delta: egui::Vec2,
+    close: bool,
+}
+
 fn option_panel(
     ui: &mut egui::Ui,
     title: &str,
     expanded: &mut bool,
     add_contents: impl FnOnce(&mut egui::Ui),
-) {
+) -> PanelOutcome {
+    let mut outcome = PanelOutcome {
+        drag_delta: egui::Vec2::ZERO,
+        close: false,
+    };
     egui::Frame::NONE
         .fill(egui::Color32::from_rgb(39, 39, 39))
         .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(66)))
         .corner_radius(6.0)
         .show(ui, |ui| {
-            let header_rect = ui
-                .horizontal(|ui| {
-                    ui.set_min_height(42.0);
-                    ui.add_space(12.0);
-                    ui.label(rich_label(title, 17.0, egui::Color32::from_gray(226)));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let arrow = if *expanded { "⌃" } else { "⌄" };
-                        if ui
-                            .add(
-                                egui::Button::new(rich_label(
-                                    arrow,
-                                    18.0,
-                                    egui::Color32::from_gray(190),
-                                ))
-                                .frame(false),
-                            )
-                            .clicked()
-                        {
-                            *expanded = !*expanded;
-                        }
-                    });
-                })
-                .response
-                .rect;
-
+            // Reserve the header rect and claim it as the drag/collapse handle
+            // *before* drawing the title and buttons, so those buttons (drawn on
+            // top) win clicks over the handle. A click on empty header toggles
+            // collapse; a drag moves the (shared) panel position.
+            let header_rect =
+                egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), 42.0));
             let header_response = ui.interact(
                 header_rect,
-                ui.make_persistent_id(title),
-                egui::Sense::click(),
+                ui.make_persistent_id(("option_panel_header", title)),
+                egui::Sense::click_and_drag(),
             );
+            if header_response.dragged() {
+                outcome.drag_delta = header_response.drag_delta();
+            }
             if header_response.clicked() {
                 *expanded = !*expanded;
             }
+            if header_response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+            }
+
+            ui.horizontal(|ui| {
+                ui.set_min_height(42.0);
+                ui.add_space(12.0);
+                ui.add(
+                    egui::Label::new(rich_label(title, 17.0, egui::Color32::from_gray(226)))
+                        .selectable(false),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(4.0);
+                    if header_glyph_button(ui, "✕", 16.0).clicked() {
+                        outcome.close = true;
+                    }
+                });
+            });
 
             if *expanded {
                 ui.separator();
@@ -864,6 +892,11 @@ fn option_panel(
                 });
             }
         });
+    outcome
+}
+
+fn header_glyph_button(ui: &mut egui::Ui, glyph: &str, size: f32) -> egui::Response {
+    ui.add(egui::Button::new(rich_label(glyph, size, egui::Color32::from_gray(190))).frame(false))
 }
 
 fn labeled_slider(ui: &mut egui::Ui, label: &str, value: &mut f32) {
