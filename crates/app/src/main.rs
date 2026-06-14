@@ -10,7 +10,9 @@ use glam::Vec2;
 use review_import::{load_model, LoadOptions};
 use review_model::ModelData;
 use review_render::{Renderer, RendererConfig, SCENE_DEPTH_FORMAT, SCENE_SAMPLE_COUNT};
-use review_ui::{draw_overlay, draw_viewport_scene, AxisGizmoAction, UiOutput, UiState};
+use review_ui::{
+    draw_overlay, draw_viewport_scene, install_fonts, AxisGizmoAction, UiOutput, UiState,
+};
 use tracing::{info, warn};
 use winit::{
     application::ApplicationHandler,
@@ -103,6 +105,7 @@ impl ApplicationHandler for App {
         }
         let egui_ctx = egui::Context::default();
         egui_ctx.set_visuals(egui::Visuals::dark());
+        install_fonts(&egui_ctx);
 
         let mut egui_painter = pollster::block_on(egui_wgpu::winit::Painter::new(
             egui_ctx.clone(),
