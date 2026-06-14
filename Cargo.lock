@@ -2306,6 +2306,7 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "glam",
+ "image",
  "review-model",
  "review-render",
 ]

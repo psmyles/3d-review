@@ -22,6 +22,7 @@ egui = "0.31"
 egui-wgpu = "0.31"
 egui-winit = "0.31"
 glam = "0.30"
+image = { version = "0.25", default-features = false, features = ["png"] }
 pollster = "0.4"
 rfd = "0.15"
 thiserror = "2"

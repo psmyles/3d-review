@@ -1,7 +1,78 @@
 use std::sync::Arc;
 
+use image::ImageError;
 use review_model::{ModelData, ModelStats};
 use review_render::{OrbitCamera, SceneCallback, SceneDebugOptions};
+
+const TOOLBAR_HEIGHT: f32 = 74.0;
+const STATUS_BAR_HEIGHT: f32 = 64.0;
+const OVERLAY_MARGIN: f32 = 20.0;
+const LEFT_PANEL_WIDTH: f32 = 432.0;
+const TOOLBAR_GROUP_SPACING: f32 = 14.0;
+const TOOLBAR_ICON_SIZE: f32 = 36.0;
+const TOOLBAR_ROW_HEIGHT: f32 = 52.0;
+const TOOLBAR_CENTER_WIDTH: f32 = 280.0;
+const TOOLBAR_RIGHT_WIDTH: f32 = 310.0;
+const TOOLBAR_LEFT_WIDTH: f32 = 760.0;
+const TOOLBAR_OPEN_WIDTH: f32 = 72.0;
+const TOOLBAR_SHADING_GROUP_WIDTH: f32 = 174.0;
+const TOOLBAR_DEBUG_GROUP_WIDTH: f32 = 132.0;
+const TOOLBAR_ICON_GROUP_WIDTH: f32 = 90.0;
+const TOOLBAR_MODE_GROUP_WIDTH: f32 = 180.0;
+
+struct AppIcon {
+    id: &'static str,
+    png_bytes: &'static [u8],
+}
+
+const ICON_SHADING_WIRE: AppIcon = AppIcon {
+    id: "icon_shading_wire",
+    png_bytes: include_bytes!("../../../assets/icons/icon_shading_wire.png"),
+};
+const ICON_SHADING_UNLIT: AppIcon = AppIcon {
+    id: "icon_shading_unlit",
+    png_bytes: include_bytes!("../../../assets/icons/icon_shading_unlit.png"),
+};
+const ICON_SHADING_SOLID: AppIcon = AppIcon {
+    id: "icon_shading_solid",
+    png_bytes: include_bytes!("../../../assets/icons/icon_shading_solid.png"),
+};
+const ICON_SHADING_RENDERED: AppIcon = AppIcon {
+    id: "icon_shading_rendered",
+    png_bytes: include_bytes!("../../../assets/icons/icon_shading_rendered.png"),
+};
+const ICON_UV: AppIcon = AppIcon {
+    id: "icon_uv",
+    png_bytes: include_bytes!("../../../assets/icons/icon_uv.png"),
+};
+const ICON_NORMALS_FACE: AppIcon = AppIcon {
+    id: "icon_normals_face",
+    png_bytes: include_bytes!("../../../assets/icons/icon_normals_face.png"),
+};
+const ICON_NORMALS_VERTEX: AppIcon = AppIcon {
+    id: "icon_normals_vertex",
+    png_bytes: include_bytes!("../../../assets/icons/icon_normals_vertex.png"),
+};
+const ICON_VIEW_ORTHO: AppIcon = AppIcon {
+    id: "icon_view_ortho",
+    png_bytes: include_bytes!("../../../assets/icons/icon_view_ortho.png"),
+};
+const ICON_VIEW_PERSPECTIVE: AppIcon = AppIcon {
+    id: "icon_view_perspective",
+    png_bytes: include_bytes!("../../../assets/icons/icon_view_perspective.png"),
+};
+const ICON_BOUNDS: AppIcon = AppIcon {
+    id: "icon_bbox",
+    png_bytes: include_bytes!("../../../assets/icons/icon_bbox.png"),
+};
+const ICON_GRID: AppIcon = AppIcon {
+    id: "icon_grid",
+    png_bytes: include_bytes!("../../../assets/icons/icon_grid.png"),
+};
+const ICON_INFO: AppIcon = AppIcon {
+    id: "icon_info",
+    png_bytes: include_bytes!("../../../assets/icons/icon_info.png"),
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiAction {
@@ -107,171 +178,189 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState) -> Option<UiAction
     let viewport_rect = ctx.input(|input| input.screen_rect());
 
     egui::TopBottomPanel::top("app_toolbar")
-        .exact_height(72.0)
+        .exact_height(TOOLBAR_HEIGHT)
         .frame(toolbar_frame())
         .show(ctx, |ui| {
-            ui.columns(3, |columns| {
-                columns[0].with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.set_min_height(44.0);
-                    ui.spacing_mut().item_spacing.x = 12.0;
+            let bar_rect = ui.max_rect();
+            let row_rect = egui::Rect::from_center_size(
+                bar_rect.center(),
+                egui::vec2(
+                    (bar_rect.width() - OVERLAY_MARGIN * 2.0).max(0.0),
+                    TOOLBAR_ROW_HEIGHT,
+                ),
+            );
+            let left_rect = egui::Rect::from_min_size(
+                egui::pos2(bar_rect.left() + OVERLAY_MARGIN, row_rect.top()),
+                egui::vec2(TOOLBAR_LEFT_WIDTH.min(row_rect.width()), TOOLBAR_ROW_HEIGHT),
+            );
+            let center_rect = egui::Rect::from_center_size(
+                row_rect.center(),
+                egui::vec2(TOOLBAR_CENTER_WIDTH.min(row_rect.width()), TOOLBAR_ROW_HEIGHT),
+            );
+            let right_rect = egui::Rect::from_min_size(
+                egui::pos2(
+                    bar_rect.right() - OVERLAY_MARGIN - TOOLBAR_RIGHT_WIDTH.min(row_rect.width()),
+                    row_rect.top(),
+                ),
+                egui::vec2(TOOLBAR_RIGHT_WIDTH.min(row_rect.width()), TOOLBAR_ROW_HEIGHT),
+            );
 
-                    if ui
-                        .add(sized_text_button("Open", egui::vec2(68.0, 30.0)))
-                        .clicked()
-                    {
-                        action = Some(UiAction::OpenModel);
-                    }
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(left_rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                |ui| {
+                    ui.set_height(TOOLBAR_ROW_HEIGHT);
+                    ui.spacing_mut().item_spacing.x = TOOLBAR_GROUP_SPACING;
 
-                    toolbar_group(ui, |ui| {
-                        let solid = matches!(state.shading_mode, ShadingMode::Solid);
-                        let unlit = matches!(state.shading_mode, ShadingMode::Unlit);
-                        let rendered = matches!(state.shading_mode, ShadingMode::Rendered);
-                        let wire = matches!(state.shading_mode, ShadingMode::Wire);
-
-                        if icon_toggle_button(
-                            ui,
-                            egui::include_image!("../../../assets/icons/icon_shading_wire.png"),
-                            wire,
-                            "Wire",
-                        )
-                        .clicked()
+                    toolbar_slot(ui, TOOLBAR_OPEN_WIDTH, |ui| {
+                        if ui
+                            .add(sized_text_button("Open", egui::vec2(TOOLBAR_OPEN_WIDTH, 36.0)))
+                            .clicked()
                         {
-                            state.shading_mode = ShadingMode::Wire;
-                            state.debug.wireframe = true;
-                        }
-                        if icon_toggle_button(
-                            ui,
-                            egui::include_image!("../../../assets/icons/icon_shading_unlit.png"),
-                            unlit,
-                            "Unlit",
-                        )
-                        .clicked()
-                        {
-                            state.shading_mode = ShadingMode::Unlit;
-                        }
-                        if icon_toggle_button(
-                            ui,
-                            egui::include_image!("../../../assets/icons/icon_shading_solid.png"),
-                            solid,
-                            "Solid",
-                        )
-                        .clicked()
-                        {
-                            state.shading_mode = ShadingMode::Solid;
-                            state.debug.wireframe = false;
-                        }
-                        if icon_toggle_button(
-                            ui,
-                            egui::include_image!(
-                                "../../../assets/icons/icon_shading_wire_shaded.png"
-                            ),
-                            rendered,
-                            "Rendered",
-                        )
-                        .clicked()
-                        {
-                            state.shading_mode = ShadingMode::Rendered;
+                            action = Some(UiAction::OpenModel);
                         }
                     });
 
-                    toolbar_group(ui, |ui| {
-                        icon_toggle_button(
-                            ui,
-                            egui::include_image!("../../../assets/icons/icon_uv.png"),
-                            state.uv_checker_panel_expanded,
-                            "UV Checker",
-                        )
-                        .clicked()
-                        .then(|| {
-                            state.uv_checker_panel_expanded = !state.uv_checker_panel_expanded
+                    toolbar_slot(ui, TOOLBAR_SHADING_GROUP_WIDTH, |ui| {
+                        toolbar_group(ui, |ui| {
+                            let solid = matches!(state.shading_mode, ShadingMode::Solid);
+                            let unlit = matches!(state.shading_mode, ShadingMode::Unlit);
+                            let rendered = matches!(state.shading_mode, ShadingMode::Rendered);
+                            let wire = matches!(state.shading_mode, ShadingMode::Wire);
+
+                            if icon_toggle_button(ui, &ICON_SHADING_WIRE, wire, "Wire").clicked() {
+                                state.shading_mode = ShadingMode::Wire;
+                                state.debug.wireframe = true;
+                            }
+                            if icon_toggle_button(ui, &ICON_SHADING_UNLIT, unlit, "Unlit")
+                                .clicked()
+                            {
+                                state.shading_mode = ShadingMode::Unlit;
+                            }
+                            if icon_toggle_button(ui, &ICON_SHADING_SOLID, solid, "Solid")
+                                .clicked()
+                            {
+                                state.shading_mode = ShadingMode::Solid;
+                                state.debug.wireframe = false;
+                            }
+                            if icon_toggle_button(
+                                ui,
+                                &ICON_SHADING_RENDERED,
+                                rendered,
+                                "Rendered",
+                            )
+                            .clicked()
+                            {
+                                state.shading_mode = ShadingMode::Rendered;
+                            }
                         });
-
-                        if icon_toggle_button(
-                            ui,
-                            egui::include_image!("../../../assets/icons/icon_normals_face.png"),
-                            state.debug.face_normals,
-                            "Face Normals",
-                        )
-                        .clicked()
-                        {
-                            state.debug.face_normals = !state.debug.face_normals;
-                            state.face_normals.expanded = state.debug.face_normals;
-                        }
-
-                        if icon_toggle_button(
-                            ui,
-                            egui::include_image!("../../../assets/icons/icon_normals_vertex.png"),
-                            state.debug.vertex_normals,
-                            "Vertex Normals",
-                        )
-                        .clicked()
-                        {
-                            state.debug.vertex_normals = !state.debug.vertex_normals;
-                            state.vertex_normals.expanded = state.debug.vertex_normals;
-                        }
                     });
-                });
 
-                columns[1].with_layout(
-                    egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
-                    |ui| {
+                    toolbar_slot(ui, TOOLBAR_DEBUG_GROUP_WIDTH, |ui| {
+                        toolbar_group(ui, |ui| {
+                            icon_toggle_button(
+                                ui,
+                                &ICON_UV,
+                                state.uv_checker_panel_expanded,
+                                "UV Checker",
+                            )
+                            .clicked()
+                            .then(|| {
+                                state.uv_checker_panel_expanded = !state.uv_checker_panel_expanded
+                            });
+
+                            if icon_toggle_button(
+                                ui,
+                                &ICON_NORMALS_FACE,
+                                state.debug.face_normals,
+                                "Face Normals",
+                            )
+                            .clicked()
+                            {
+                                state.debug.face_normals = !state.debug.face_normals;
+                                state.face_normals.expanded = state.debug.face_normals;
+                            }
+
+                            if icon_toggle_button(
+                                ui,
+                                &ICON_NORMALS_VERTEX,
+                                state.debug.vertex_normals,
+                                "Vertex Normals",
+                            )
+                            .clicked()
+                            {
+                                state.debug.vertex_normals = !state.debug.vertex_normals;
+                                state.vertex_normals.expanded = state.debug.vertex_normals;
+                            }
+                        });
+                    });
+                },
+            );
+
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(center_rect)
+                    .layout(egui::Layout::centered_and_justified(
+                        egui::Direction::LeftToRight,
+                    )),
+                |ui| {
+                    ui.set_height(TOOLBAR_ROW_HEIGHT);
+                    toolbar_slot(ui, TOOLBAR_MODE_GROUP_WIDTH, |ui| {
                         segmented_mode_control(ui, &mut state.mode);
-                    },
-                );
+                    });
+                },
+            );
 
-                columns[2].with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.set_min_height(44.0);
-                    ui.spacing_mut().item_spacing.x = 12.0;
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(right_rect)
+                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                |ui| {
+                    ui.set_height(TOOLBAR_ROW_HEIGHT);
+                    ui.spacing_mut().item_spacing.x = TOOLBAR_GROUP_SPACING;
 
-                    toolbar_group(ui, |ui| {
-                        icon_toggle_button(
-                            ui,
-                            egui::include_image!("../../../assets/icons/icon_view_ortho.png"),
-                            matches!(state.projection_mode, ViewProjectionMode::Orthographic),
-                            "Orthographic",
-                        )
-                        .clicked()
-                        .then(|| state.projection_mode = ViewProjectionMode::Orthographic);
+                    toolbar_slot(ui, TOOLBAR_ICON_GROUP_WIDTH, |ui| {
+                        toolbar_group(ui, |ui| {
+                            icon_toggle_button(
+                                ui,
+                                &ICON_VIEW_PERSPECTIVE,
+                                matches!(state.projection_mode, ViewProjectionMode::Perspective),
+                                "Perspective",
+                            )
+                            .clicked()
+                            .then(|| state.projection_mode = ViewProjectionMode::Perspective);
 
-                        icon_toggle_button(
-                            ui,
-                            egui::include_image!(
-                                "../../../assets/icons/icon_view_perspective.png"
-                            ),
-                            matches!(state.projection_mode, ViewProjectionMode::Perspective),
-                            "Perspective",
-                        )
-                        .clicked()
-                        .then(|| state.projection_mode = ViewProjectionMode::Perspective);
+                            icon_toggle_button(
+                                ui,
+                                &ICON_VIEW_ORTHO,
+                                matches!(state.projection_mode, ViewProjectionMode::Orthographic),
+                                "Orthographic",
+                            )
+                            .clicked()
+                            .then(|| state.projection_mode = ViewProjectionMode::Orthographic);
+                        });
                     });
 
-                    toolbar_group(ui, |ui| {
-                        icon_toggle_button(
-                            ui,
-                            egui::include_image!("../../../assets/icons/icon_bbox.png"),
-                            state.show_bbox,
-                            "Bounds",
-                        )
-                        .clicked()
-                        .then(|| state.show_bbox = !state.show_bbox);
+                    toolbar_slot(ui, TOOLBAR_ICON_GROUP_WIDTH, |ui| {
+                        toolbar_group(ui, |ui| {
+                            icon_toggle_button(ui, &ICON_GRID, state.show_grid, "Grid")
+                                .clicked()
+                                .then(|| state.show_grid = !state.show_grid);
 
-                        icon_toggle_button(
-                            ui,
-                            egui::include_image!("../../../assets/icons/icon_grid.png"),
-                            state.show_grid,
-                            "Grid",
-                        )
-                        .clicked()
-                        .then(|| state.show_grid = !state.show_grid);
+                            icon_toggle_button(ui, &ICON_BOUNDS, state.show_bbox, "Bounds")
+                                .clicked()
+                                .then(|| state.show_bbox = !state.show_bbox);
+                        });
                     });
-                });
-            });
+                },
+            );
         });
 
     egui::Area::new(egui::Id::new("left_options"))
-        .fixed_pos(egui::pos2(18.0, 92.0))
+        .fixed_pos(egui::pos2(30.0, TOOLBAR_HEIGHT + 18.0))
         .show(ctx, |ui| {
-            ui.set_width(432.0);
+            ui.set_width(LEFT_PANEL_WIDTH);
             option_panel(
                 ui,
                 "UV Checker Options",
@@ -335,13 +424,19 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState) -> Option<UiAction
         });
 
     egui::Area::new(egui::Id::new("axis_gizmo"))
-        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-28.0, 116.0))
+        .anchor(
+            egui::Align2::RIGHT_TOP,
+            egui::vec2(-OVERLAY_MARGIN, TOOLBAR_HEIGHT + 10.0),
+        )
         .show(ctx, |ui| {
             draw_axis_gizmo(ui);
         });
 
     egui::Area::new(egui::Id::new("stats_overlay"))
-        .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(18.0, -92.0))
+        .anchor(
+            egui::Align2::LEFT_BOTTOM,
+            egui::vec2(30.0, -(STATUS_BAR_HEIGHT + 18.0)),
+        )
         .show(ctx, |ui| {
             egui::Frame::NONE
                 .fill(egui::Color32::from_rgba_premultiplied(20, 22, 25, 130))
@@ -355,21 +450,17 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState) -> Option<UiAction
         });
 
     egui::TopBottomPanel::bottom("status_bar")
-        .exact_height(72.0)
+        .exact_height(STATUS_BAR_HEIGHT)
         .frame(status_bar_frame())
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                let info_response = ui
-                    .add_enabled_ui(true, |ui| {
-                        icon_tile_button(
-                            ui,
-                            egui::include_image!("../../../assets/icons/icon_info.png"),
-                            false,
-                            "Info",
-                            egui::vec2(40.0, 40.0),
-                        )
-                    })
-                    .inner;
+                let info_response = icon_tile_button(
+                    ui,
+                    &ICON_INFO,
+                    false,
+                    "Info",
+                    egui::vec2(42.0, 42.0),
+                );
                 if info_response.clicked() {
                     state.status = "Viewport info".to_owned();
                 }
@@ -425,14 +516,14 @@ fn toolbar_frame() -> egui::Frame {
     egui::Frame::NONE
         .fill(egui::Color32::from_rgb(40, 39, 38))
         .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(72)))
-        .inner_margin(egui::Margin::symmetric(14, 12))
+        .inner_margin(egui::Margin::same(0))
 }
 
 fn status_bar_frame() -> egui::Frame {
     egui::Frame::NONE
         .fill(egui::Color32::from_rgb(40, 39, 38))
         .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(72)))
-        .inner_margin(egui::Margin::symmetric(18, 14))
+        .inner_margin(egui::Margin::symmetric(26, 10))
 }
 
 fn toolbar_group(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
@@ -440,10 +531,23 @@ fn toolbar_group(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
         .fill(egui::Color32::from_rgb(18, 19, 22))
         .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(48)))
         .corner_radius(6.0)
-        .inner_margin(egui::Margin::symmetric(8, 8))
+        .inner_margin(egui::Margin::symmetric(6, 6))
         .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
             ui.horizontal(|ui| add_contents(ui));
         });
+}
+
+fn toolbar_slot(
+    ui: &mut egui::Ui,
+    width: f32,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) -> egui::InnerResponse<()> {
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, TOOLBAR_ROW_HEIGHT),
+        egui::Layout::centered_and_justified(egui::Direction::TopDown),
+        add_contents,
+    )
 }
 
 fn segmented_mode_control(ui: &mut egui::Ui, mode: &mut WorkspaceMode) {
@@ -471,7 +575,7 @@ fn mode_segment(
             egui::Color32::from_gray(188)
         },
     ))
-    .min_size(egui::vec2(56.0, 34.0))
+    .min_size(egui::vec2(52.0, 36.0))
     .fill(if selected {
         egui::Color32::from_rgb(66, 103, 163)
     } else {
@@ -488,16 +592,22 @@ fn mode_segment(
 
 fn icon_toggle_button(
     ui: &mut egui::Ui,
-    image: egui::ImageSource<'static>,
+    icon: &AppIcon,
     selected: bool,
     tooltip: &str,
 ) -> egui::Response {
-    icon_tile_button(ui, image, selected, tooltip, egui::vec2(36.0, 36.0))
+    icon_tile_button(
+        ui,
+        icon,
+        selected,
+        tooltip,
+        egui::vec2(TOOLBAR_ICON_SIZE, TOOLBAR_ICON_SIZE),
+    )
 }
 
 fn icon_tile_button(
     ui: &mut egui::Ui,
-    image: egui::ImageSource<'static>,
+    icon: &AppIcon,
     selected: bool,
     tooltip: &str,
     size: egui::Vec2,
@@ -533,11 +643,13 @@ fn icon_tile_button(
         egui::StrokeKind::Outside,
     );
 
-    let image_rect = rect.shrink2(egui::vec2(5.0, 5.0));
-    egui::Image::new(image)
-        .fit_to_exact_size(image_rect.size())
-        .tint(tint)
-        .paint_at(ui, image_rect);
+    if let Some(texture) = load_icon_texture(ui, icon) {
+        let image_rect = rect.shrink2(egui::vec2(6.0, 6.0));
+        egui::Image::from_texture(texture)
+            .fit_to_exact_size(image_rect.size())
+            .tint(tint)
+            .paint_at(ui, image_rect);
+    }
 
     response.on_hover_text(tooltip)
 }
@@ -563,7 +675,8 @@ fn option_panel(
         .show(ui, |ui| {
             let header_rect = ui
                 .horizontal(|ui| {
-                    ui.add_space(10.0);
+                    ui.set_min_height(42.0);
+                    ui.add_space(12.0);
                     ui.label(rich_label(title, 17.0, egui::Color32::from_gray(226)));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let arrow = if *expanded { "⌃" } else { "⌄" };
@@ -597,8 +710,11 @@ fn option_panel(
             if *expanded {
                 ui.separator();
                 ui.add_space(14.0);
-                ui.scope(add_contents);
-                ui.add_space(14.0);
+                ui.scope(|ui| {
+                    ui.add_space(18.0);
+                    add_contents(ui);
+                    ui.add_space(18.0);
+                });
             }
         });
 }
@@ -648,11 +764,33 @@ fn color_swatch_row(ui: &mut egui::Ui, label: &str, selected: &mut egui::Color32
 fn wide_reset_button(ui: &mut egui::Ui) -> egui::Response {
     ui.add(
         egui::Button::new(rich_label("Reset all", 15.0, egui::Color32::from_gray(214)))
-            .min_size(egui::vec2(392.0, 42.0))
+            .min_size(egui::vec2(394.0, 42.0))
             .fill(egui::Color32::from_rgb(20, 23, 26))
             .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(62)))
             .corner_radius(6.0),
     )
+}
+
+fn load_icon_texture(ui: &mut egui::Ui, icon: &AppIcon) -> Option<egui::load::SizedTexture> {
+    let texture_id = egui::Id::new(("toolbar_icon_texture", icon.id));
+    if let Some(handle) = ui.data(|data| data.get_temp::<egui::TextureHandle>(texture_id)) {
+        return Some(egui::load::SizedTexture::from_handle(&handle));
+    }
+
+    let color_image = decode_icon_color_image(icon).ok()?;
+    let handle = ui
+        .ctx()
+        .load_texture(icon.id, color_image, egui::TextureOptions::LINEAR);
+    let texture = egui::load::SizedTexture::from_handle(&handle);
+    ui.data_mut(|data| data.insert_temp(texture_id, handle));
+    Some(texture)
+}
+
+fn decode_icon_color_image(icon: &AppIcon) -> Result<egui::ColorImage, ImageError> {
+    let decoded = image::load_from_memory(icon.png_bytes)?.into_rgba8();
+    let size = [decoded.width() as usize, decoded.height() as usize];
+    let rgba = decoded.into_raw();
+    Ok(egui::ColorImage::from_rgba_unmultiplied(size, &rgba))
 }
 
 fn stats_grid(ui: &mut egui::Ui, state: &UiState) {
