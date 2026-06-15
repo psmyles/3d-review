@@ -23,6 +23,14 @@ const TOOLBAR_DOUBLE_ICON_GROUP_WIDTH_PX: f32 = 93.0;
 const TOOLBAR_MODE_GROUP_WIDTH_PX: f32 = 180.0;
 const TOOLBAR_GROUP_HEIGHT_PX: f32 = 48.0;
 const TOOLBAR_GROUP_PADDING_PX: f32 = 3.0;
+const STATS_FONT_SIZE_PX: f32 = 13.5;
+const STATS_ROW_SPACING_PX: f32 = 3.0;
+const STATS_PANEL_WIDTH_PX: f32 = 132.0;
+const STATS_PANEL_PAD_X_PX: i8 = 12;
+const STATS_PANEL_PAD_Y_PX: i8 = 10;
+/// Inset of the stats overlay from the left and bottom viewport edges. Kept
+/// equal so the panel reads as equidistant from both.
+const STATS_OVERLAY_MARGIN_PX: f32 = 18.0;
 const GIZMO_SIZE_PX: f32 = 156.0;
 const GIZMO_INSET_PX: f32 = 26.0;
 const GIZMO_REACH_PX: f32 = 52.0;
@@ -236,6 +244,9 @@ pub struct UiState {
     pub face_normals: NormalPanelState,
     pub vertex_normals: NormalPanelState,
     pub stats: ModelStats,
+    /// Most recent measured frames-per-second, fed by `app` from the render
+    /// loop. Zero while idle (the viewer redraws on demand, not continuously).
+    pub fps: f32,
 }
 
 impl Default for UiState {
@@ -260,6 +271,7 @@ impl Default for UiState {
                 color: egui::Color32::from_rgb(32, 224, 232),
             },
             stats: ModelStats::default(),
+            fps: 0.0,
         }
     }
 }
@@ -616,16 +628,19 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
         egui::Area::new(egui::Id::new("stats_overlay"))
             .anchor(
                 egui::Align2::LEFT_BOTTOM,
-                egui::vec2(px(ctx, 30.0), -(status_bar_height + px(ctx, 18.0))),
+                egui::vec2(
+                    px(ctx, STATS_OVERLAY_MARGIN_PX),
+                    -(status_bar_height + px(ctx, STATS_OVERLAY_MARGIN_PX)),
+                ),
             )
             .show(ctx, |ui| {
                 egui::Frame::NONE
                     .fill(egui::Color32::from_rgba_premultiplied(20, 22, 25, 130))
                     .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(52)))
                     .corner_radius(6.0)
-                    .inner_margin(egui::Margin::same(16))
+                    .inner_margin(egui::Margin::symmetric(STATS_PANEL_PAD_X_PX, STATS_PANEL_PAD_Y_PX))
                     .show(ui, |ui| {
-                        ui.set_width(200.0);
+                        ui.set_width(STATS_PANEL_WIDTH_PX);
                         stats_grid(ui, state);
                     });
             });
@@ -635,13 +650,14 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
         .exact_height(status_bar_height)
         .frame(status_bar_frame())
         .show(ctx, |ui| {
-            // Position the group with the same px-converted rect math as the top
-            // toolbar's left group: inset by `overlay_margin` and vertically
-            // centered, so the two bars' buttons line up at any DPI.
+            // Inset the group equally on all sides: the vertical gap is fixed by
+            // centering the group in the bar, so use that same gap on the left
+            // edge to keep the button box equidistant from every edge.
             let bar_rect = ui.max_rect();
+            let edge_inset = (status_bar_height - toolbar_group_height) * 0.5;
             let group_rect = egui::Rect::from_min_size(
                 egui::pos2(
-                    bar_rect.left() + overlay_margin,
+                    bar_rect.left() + edge_inset,
                     bar_rect.center().y - toolbar_group_height * 0.5,
                 ),
                 egui::vec2(toolbar_single_icon_group_width, toolbar_group_height),
@@ -1183,25 +1199,25 @@ fn decode_icon_color_image(icon: &AppIcon) -> Result<egui::ColorImage, ImageErro
 }
 
 fn stats_grid(ui: &mut egui::Ui, state: &UiState) {
-    egui::Grid::new("stats_grid")
-        .num_columns(2)
-        .spacing(egui::vec2(18.0, 6.0))
-        .show(ui, |ui| {
-            stat_row(ui, "FPS", "0");
-            stat_row(ui, "Draws", &state.stats.draw_count.to_string());
-            stat_row(ui, "Polys", &state.stats.polygon_count.to_string());
-            stat_row(ui, "Tris", &state.stats.triangle_count.to_string());
-            stat_row(ui, "Verts", &state.stats.vertex_count.to_string());
-            stat_row(ui, "UV Sets", &state.stats.uv_set_count.to_string());
-            stat_row(ui, "Colors", "yes");
-            stat_row(ui, "WebGPU", "yes");
-        });
+    let stats = &state.stats;
+    ui.spacing_mut().item_spacing.y = STATS_ROW_SPACING_PX;
+    stat_row(ui, "Draws", &stats.draw_count.to_string());
+    stat_row(ui, "Polys", &stats.polygon_count.to_string());
+    stat_row(ui, "Tris", &stats.triangle_count.to_string());
+    stat_row(ui, "Verts", &stats.vertex_count.to_string());
+    stat_row(ui, "UV Sets", &stats.uv_set_count.to_string());
+    stat_row(ui, "FPS", &format!("{:.0}", state.fps));
 }
 
+/// One stats row: label hugs the left edge, value right-aligns against the
+/// panel's right edge so the numeric column reads as a tidy block.
 fn stat_row(ui: &mut egui::Ui, label: &str, value: &str) {
-    ui.label(rich_label(label, 14.5, egui::Color32::from_gray(178)));
-    ui.label(rich_label(value, 14.5, egui::Color32::from_gray(232)));
-    ui.end_row();
+    ui.horizontal(|ui| {
+        ui.label(mono_label(label, STATS_FONT_SIZE_PX, egui::Color32::from_gray(178)));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(mono_label(value, STATS_FONT_SIZE_PX, egui::Color32::from_gray(232)));
+        });
+    });
 }
 
 fn draw_axis_gizmo(
@@ -1428,6 +1444,15 @@ fn axis_gizmo_points(
 
 fn rich_label(text: &str, size: f32, color: egui::Color32) -> egui::RichText {
     egui::RichText::new(text).size(size).color(color).strong()
+}
+
+/// Monospace variant of [`rich_label`], using the bundled JetBrains Mono face.
+/// Used by the stats overlay so numeric columns align on a fixed grid.
+fn mono_label(text: &str, size: f32, color: egui::Color32) -> egui::RichText {
+    egui::RichText::new(text)
+        .size(size)
+        .color(color)
+        .family(egui::FontFamily::Monospace)
 }
 
 /// Return `color` with its alpha set to `opacity` (0..=1) of fully opaque,
