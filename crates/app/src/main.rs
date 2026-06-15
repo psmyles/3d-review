@@ -425,6 +425,18 @@ impl App {
             .map_or(0.0, |last| now.duration_since(last).as_secs_f32());
         self.last_render_instant = Some(now);
 
+        // The viewer redraws on demand, so FPS is only meaningful across
+        // consecutive frames (camera animation / interaction). Ignore the long
+        // gaps after an idle period and exponentially smooth the live rate.
+        if (0.0..0.25).contains(&delta_seconds) && delta_seconds > 0.0 {
+            let instant_fps = 1.0 / delta_seconds;
+            self.ui.fps = if self.ui.fps > 0.0 {
+                self.ui.fps * 0.9 + instant_fps * 0.1
+            } else {
+                instant_fps
+            };
+        }
+
         if let Some(renderer) = self.renderer.as_mut() {
             if renderer.update_camera_animation(delta_seconds) && renderer.is_camera_animating() {
                 window.request_redraw();
