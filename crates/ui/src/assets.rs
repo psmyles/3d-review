@@ -52,6 +52,10 @@ pub(crate) const ICON_AXIS_GIZMO: AppIcon = AppIcon {
     id: "icon_empty_axis",
     png_bytes: include_bytes!("../../../assets/icons/icon_empty_axis.png"),
 };
+pub(crate) const ICON_RESET: AppIcon = AppIcon {
+    id: "icon_reset",
+    png_bytes: include_bytes!("../../../assets/icons/icon_reset.png"),
+};
 pub(crate) const ICON_GRID: AppIcon = AppIcon {
     id: "icon_grid",
     png_bytes: include_bytes!("../../../assets/icons/icon_grid.png"),

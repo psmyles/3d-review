@@ -133,10 +133,14 @@ pub struct OrbitCamera {
 impl Default for OrbitCamera {
     fn default() -> Self {
         Self {
-            // A neutral "review" home view: centered on the demo cube and close to
-            // an isometric angle so proportions read correctly on reset.
-            target: Vec3::new(0.0, 0.53, 0.0),
-            yaw: -45.0_f32.to_radians(),
+            // A neutral "review" home view: centered on the world origin (the
+            // grid's axis crossing) and close to an isometric angle so the empty
+            // scene reads centered and proportions hold on reset.
+            target: Vec3::ZERO,
+            // +45° yaw parks the eye in the +X/+Y/+Z octant (front-right iso): +X
+            // reads lower-right, +Z lower-left, both facing the viewer. (-45° is
+            // the mirror image and shows the -X side instead.)
+            yaw: 45.0_f32.to_radians(),
             pitch: -35.264_39_f32.to_radians(),
             distance: 7.5,
             aspect_ratio: 16.0 / 9.0,
@@ -391,6 +395,15 @@ impl Renderer {
 
     pub fn animate_camera_to_offset_direction(&mut self, direction: Vec3) {
         self.animate_camera_to(self.camera.with_offset_direction(direction));
+    }
+
+    /// Animate back to the default "home" view, preserving the live aspect ratio
+    /// so reset lands on the same framing regardless of window size.
+    pub fn animate_camera_to_home(&mut self) {
+        self.animate_camera_to(OrbitCamera {
+            aspect_ratio: self.camera.aspect_ratio,
+            ..OrbitCamera::default()
+        });
     }
 
     pub fn update_camera_animation(&mut self, delta_seconds: f32) -> bool {

@@ -5,6 +5,7 @@
 use glam::{Vec2, Vec3};
 use review_render::{CameraProjection, OrbitCamera};
 
+use crate::assets::{self, ICON_RESET};
 use crate::state::{AxisGizmoAction, ViewAxis};
 use crate::theme::{self, color, font, size};
 use crate::widgets::bold_text;
@@ -124,6 +125,44 @@ pub(crate) fn draw_axis_gizmo(
 
         if response.clicked() {
             action = Some(AxisGizmoAction::Snap(point.axis));
+        }
+    }
+
+    // Reset-view button: tucked into the gizmo's bottom-left corner and revealed
+    // only while the pointer is over the gizmo (or mid-drag). Drawn last so it
+    // sits above the axis balls; clicking returns the camera to its home view.
+    // (`contains_pointer` rather than `hovered` so it stays lit while the pointer
+    // moves onto the button itself.)
+    if panel_response.contains_pointer() || panel_response.dragged() {
+        let reset_size = theme::px(ctx, size::GIZMO_RESET_ICON_SIZE);
+        let inset = theme::px(ctx, size::GIZMO_RESET_INSET);
+        let reset_rect = egui::Rect::from_center_size(
+            egui::pos2(rect.left() + inset, rect.bottom() - inset),
+            egui::vec2(reset_size, reset_size),
+        );
+        let response = ui
+            .interact(
+                reset_rect.expand(theme::px(ctx, size::GIZMO_BALL_HIT_EXPAND)),
+                ui.make_persistent_id("axis_gizmo_reset"),
+                egui::Sense::click(),
+            )
+            .on_hover_text("Reset view");
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        let tint = if response.hovered() {
+            color::GIZMO_RESET_HOVERED
+        } else {
+            color::GIZMO_RESET_IDLE
+        };
+        if let Some(texture) = assets::load_icon_texture(ui, &ICON_RESET) {
+            egui::Image::from_texture(texture)
+                .fit_to_exact_size(reset_rect.size())
+                .tint(tint)
+                .paint_at(ui, reset_rect);
+        }
+        if response.clicked() {
+            action = Some(AxisGizmoAction::ResetView);
         }
     }
 

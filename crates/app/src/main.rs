@@ -517,6 +517,7 @@ impl App {
             AxisGizmoAction::Snap(axis) => {
                 renderer.animate_camera_to_offset_direction(axis.offset_direction());
             }
+            AxisGizmoAction::ResetView => renderer.animate_camera_to_home(),
         }
 
         self.redraw_requested = true;
