@@ -218,6 +218,9 @@ pub struct UiState {
     pub projection_mode: ViewProjectionMode,
     pub show_grid: bool,
     pub show_axis_gizmo: bool,
+    /// Whether the model-stats overlay is shown in the viewport. Toggled by the
+    /// info button in the status bar.
+    pub show_stats: bool,
     /// The single options panel currently shown, if any.
     pub active_panel: Option<OptionPanel>,
     /// Collapse state shared by whichever panel is active.
@@ -239,6 +242,7 @@ impl Default for UiState {
             projection_mode: ViewProjectionMode::Perspective,
             show_grid: true,
             show_axis_gizmo: true,
+            show_stats: true,
             active_panel: None,
             panel_expanded: true,
             panel_pos: None,
@@ -614,37 +618,55 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
         output.axis_gizmo_action = gizmo_response.inner;
     }
 
-    egui::Area::new(egui::Id::new("stats_overlay"))
-        .anchor(
-            egui::Align2::LEFT_BOTTOM,
-            egui::vec2(px(ctx, 30.0), -(status_bar_height + px(ctx, 18.0))),
-        )
-        .show(ctx, |ui| {
-            egui::Frame::NONE
-                .fill(egui::Color32::from_rgba_premultiplied(20, 22, 25, 130))
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(52)))
-                .corner_radius(6.0)
-                .inner_margin(egui::Margin::same(16))
-                .show(ui, |ui| {
-                    ui.set_width(200.0);
-                    stats_grid(ui, state);
-                });
-        });
+    if state.show_stats {
+        egui::Area::new(egui::Id::new("stats_overlay"))
+            .anchor(
+                egui::Align2::LEFT_BOTTOM,
+                egui::vec2(px(ctx, 30.0), -(status_bar_height + px(ctx, 18.0))),
+            )
+            .show(ctx, |ui| {
+                egui::Frame::NONE
+                    .fill(egui::Color32::from_rgba_premultiplied(20, 22, 25, 130))
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(52)))
+                    .corner_radius(6.0)
+                    .inner_margin(egui::Margin::same(16))
+                    .show(ui, |ui| {
+                        ui.set_width(200.0);
+                        stats_grid(ui, state);
+                    });
+            });
+    }
 
     egui::TopBottomPanel::bottom("status_bar")
         .exact_height(status_bar_height)
         .frame(status_bar_frame())
         .show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                icon_tile_button(
-                    ui,
-                    ctx,
-                    &ICON_INFO,
-                    false,
-                    "Info",
-                    egui::vec2(px(ctx, 42.0), px(ctx, 42.0)),
-                );
-            });
+            // Position the group with the same px-converted rect math as the top
+            // toolbar's left group: inset by `overlay_margin` and vertically
+            // centered, so the two bars' buttons line up at any DPI.
+            let bar_rect = ui.max_rect();
+            let group_rect = egui::Rect::from_min_size(
+                egui::pos2(
+                    bar_rect.left() + overlay_margin,
+                    bar_rect.center().y - toolbar_group_height * 0.5,
+                ),
+                egui::vec2(toolbar_single_icon_group_width, toolbar_group_height),
+            );
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(group_rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                |ui| {
+                    ui.set_height(toolbar_group_height);
+                    toolbar_group_shell(ui, ctx, toolbar_single_icon_group_width, |ui| {
+                        if icon_toggle_button(ui, ctx, &ICON_INFO, state.show_stats, "Model Stats")
+                            .clicked()
+                        {
+                            state.show_stats = !state.show_stats;
+                        }
+                    });
+                },
+            );
         });
 
     output
@@ -687,10 +709,13 @@ fn toolbar_frame() -> egui::Frame {
 }
 
 fn status_bar_frame() -> egui::Frame {
+    // Zero inner margin, like `toolbar_frame`: content is placed by px-converted
+    // rect math in `draw_overlay`, not by frame padding, so no raw pixel literals
+    // leak in here.
     egui::Frame::NONE
         .fill(egui::Color32::from_rgb(40, 39, 38))
         .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(72)))
-        .inner_margin(egui::Margin::symmetric(26, 10))
+        .inner_margin(egui::Margin::same(0))
 }
 
 fn toolbar_group_shell(
@@ -1096,7 +1121,7 @@ fn draw_axis_gizmo(
                 egui::Color32::from_rgb(16, 21, 27),
             );
         } else if response.hovered() {
-            // Hovered: crisp full-colour outline plus the axis label.
+            // Hovered: crisp full-color outline plus the axis label.
             painter.circle_stroke(
                 point.position,
                 radius,
