@@ -48,6 +48,9 @@ pub struct SceneDebugOptions {
     pub vertex_normal_length: f32,
     pub face_normal_color: [f32; 4],
     pub vertex_normal_color: [f32; 4],
+    /// Color of the wireframe lines (wireframe / shaded-wireframe modes), baked
+    /// into the line vertex buffer and rebuilt when it changes.
+    pub wireframe_color: [f32; 4],
 }
 
 impl Default for SceneDebugOptions {
@@ -65,6 +68,7 @@ impl Default for SceneDebugOptions {
             vertex_normal_length: 0.18,
             face_normal_color: [1.0, 0.1, 0.1, 0.95],
             vertex_normal_color: [0.14, 0.92, 0.96, 0.95],
+            wireframe_color: [1.0, 1.0, 1.0, 1.0],
         }
     }
 }

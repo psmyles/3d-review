@@ -175,10 +175,21 @@ impl CallbackTrait for SceneCallback {
 
         if resources.model_revision != self.model_revision {
             resources.update_model(device, &self.model, self.model_revision, self.debug_options);
-        } else if resources.mesh_uv_channel != self.debug_options.uv_channel {
-            // Switching UV channel only rebuilds the mesh vertex buffer's UVs;
-            // the rest of the derived geometry is channel-independent.
-            resources.update_mesh_channel(device, &self.model, self.debug_options.uv_channel);
+        } else {
+            if resources.mesh_uv_channel != self.debug_options.uv_channel {
+                // Switching UV channel only rebuilds the mesh vertex buffer's UVs;
+                // the rest of the derived geometry is channel-independent.
+                resources.update_mesh_channel(device, &self.model, self.debug_options.uv_channel);
+            }
+            if resources.wireframe_color != self.debug_options.wireframe_color {
+                // The wireframe color is baked into its line vertex buffer, so a
+                // color change rebuilds just that buffer (live, not on reload).
+                resources.update_wireframe_color(
+                    device,
+                    &self.model,
+                    self.debug_options.wireframe_color,
+                );
+            }
         }
 
         resources.update_camera(queue, self.camera, self.projection_mode, self.debug_options);
@@ -267,6 +278,9 @@ struct SceneResources {
     line_vertex_count: u32,
     wireframe_line_vertex_buffer: wgpu::Buffer,
     wireframe_line_vertex_count: u32,
+    /// Color currently baked into `wireframe_line_vertex_buffer`; a mismatch with
+    /// the debug options triggers a rebuild of just that buffer.
+    wireframe_color: [f32; 4],
     face_normal_vertex_buffer: wgpu::Buffer,
     face_normal_vertex_count: u32,
     vertex_normal_vertex_buffer: wgpu::Buffer,
@@ -416,6 +430,7 @@ impl SceneResources {
             line_vertex_count: line_vertices.len() as u32,
             wireframe_line_vertex_buffer,
             wireframe_line_vertex_count,
+            wireframe_color: SceneDebugOptions::default().wireframe_color,
             face_normal_vertex_buffer,
             face_normal_vertex_count,
             vertex_normal_vertex_buffer,
@@ -452,7 +467,7 @@ impl SceneResources {
         let (mesh_vertices, mesh_indices) = model_mesh(model, debug_options.uv_channel);
         let (mesh_vertex_buffer, mesh_index_buffer, mesh_index_count) =
             create_mesh_buffers(device, &mesh_vertices, &mesh_indices);
-        let wireframe_lines = wireframe_lines(model);
+        let wireframe_lines = wireframe_lines(model, debug_options.wireframe_color);
         let face_normal_lines = face_normal_lines(model, debug_options);
         let vertex_normal_lines = vertex_normal_lines(model, debug_options);
         let (wireframe_line_vertex_buffer, wireframe_line_vertex_count) =
@@ -471,8 +486,25 @@ impl SceneResources {
         self.face_normal_vertex_count = face_normal_vertex_count;
         self.vertex_normal_vertex_buffer = vertex_normal_vertex_buffer;
         self.vertex_normal_vertex_count = vertex_normal_vertex_count;
+        self.wireframe_color = debug_options.wireframe_color;
         self.model_revision = model_revision;
         self.mesh_uv_channel = debug_options.uv_channel;
+    }
+
+    /// Rebuild just the wireframe line buffer with a new baked color, leaving the
+    /// rest of the derived geometry untouched.
+    fn update_wireframe_color(
+        &mut self,
+        device: &wgpu::Device,
+        model: &ModelData,
+        color: [f32; 4],
+    ) {
+        let wireframe_lines = wireframe_lines(model, color);
+        let (wireframe_line_vertex_buffer, wireframe_line_vertex_count) =
+            create_line_buffer(device, &wireframe_lines);
+        self.wireframe_line_vertex_buffer = wireframe_line_vertex_buffer;
+        self.wireframe_line_vertex_count = wireframe_line_vertex_count;
+        self.wireframe_color = color;
     }
 
     fn update_mesh_channel(&mut self, device: &wgpu::Device, model: &ModelData, uv_channel: u32) {
@@ -596,7 +628,7 @@ fn model_mesh(model: &ModelData, uv_channel: u32) -> (Vec<SceneVertex>, Vec<u32>
     (vertices, model.indices.clone())
 }
 
-fn wireframe_lines(model: &ModelData) -> Vec<SceneVertex> {
+fn wireframe_lines(model: &ModelData, color: [f32; 4]) -> Vec<SceneVertex> {
     let mut vertices = Vec::with_capacity(model.indices.len() * 2);
 
     for triangle in model.indices.chunks_exact(3) {
@@ -614,24 +646,9 @@ fn wireframe_lines(model: &ModelData) -> Vec<SceneVertex> {
             continue;
         };
 
-        push_line(
-            &mut vertices,
-            a.to_array(),
-            b.to_array(),
-            [0.96, 0.98, 1.0, 0.82],
-        );
-        push_line(
-            &mut vertices,
-            b.to_array(),
-            c.to_array(),
-            [0.96, 0.98, 1.0, 0.82],
-        );
-        push_line(
-            &mut vertices,
-            c.to_array(),
-            a.to_array(),
-            [0.96, 0.98, 1.0, 0.82],
-        );
+        push_line(&mut vertices, a.to_array(), b.to_array(), color);
+        push_line(&mut vertices, b.to_array(), c.to_array(), color);
+        push_line(&mut vertices, c.to_array(), a.to_array(), color);
     }
 
     vertices

@@ -215,6 +215,21 @@ pub struct NormalPanelState {
     pub color: egui::Color32,
 }
 
+/// Editable state backing the Wireframe options panel. The renderer bakes the
+/// chosen color into the wireframe line buffer via [`SceneDebugOptions`].
+#[derive(Debug, Clone)]
+pub struct WireframePanelState {
+    pub color: egui::Color32,
+}
+
+impl Default for WireframePanelState {
+    fn default() -> Self {
+        Self {
+            color: egui::Color32::WHITE,
+        }
+    }
+}
+
 /// Editable state backing the UV Checker options panel. The renderer reads the
 /// committed values via [`SceneDebugOptions`]; `tiling_text` is the panel's own
 /// text-field buffer (kept out of the render options so `render` stays free of
@@ -242,6 +257,7 @@ impl Default for UvCheckerPanelState {
 /// time; a panel is opened by right-clicking its toolbar button.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OptionPanel {
+    Wireframe,
     UvChecker,
     FaceNormals,
     VertexNormals,
@@ -267,6 +283,7 @@ pub struct UiState {
     /// every option panel so they all spawn where the last one was left.
     pub panel_pos: Option<egui::Pos2>,
     pub uv_checker: UvCheckerPanelState,
+    pub wireframe: WireframePanelState,
     pub face_normals: NormalPanelState,
     pub vertex_normals: NormalPanelState,
     pub stats: ModelStats,
@@ -289,6 +306,7 @@ impl Default for UiState {
             panel_collapsed: false,
             panel_pos: None,
             uv_checker: UvCheckerPanelState::default(),
+            wireframe: WireframePanelState::default(),
             face_normals: NormalPanelState {
                 length: 0.18,
                 color: egui::Color32::from_rgb(255, 32, 32),
@@ -431,8 +449,18 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
                         let rendered = matches!(state.shading_mode, ShadingMode::ShadedWireframe);
                         let wire = matches!(state.shading_mode, ShadingMode::Wireframe);
 
-                        if icon_toggle_button(ui, ctx, &ICON_SHADING_WIRE, wire, "Wire").clicked() {
+                        let wire_button = icon_toggle_button(
+                            ui,
+                            ctx,
+                            &ICON_SHADING_WIRE,
+                            wire,
+                            "Wire (right-click for options)",
+                        );
+                        if wire_button.clicked() {
                             state.shading_mode = ShadingMode::Wireframe;
+                        }
+                        if wire_button.secondary_clicked() {
+                            state.open_panel(OptionPanel::Wireframe);
                         }
                         if icon_toggle_button(ui, ctx, &ICON_SHADING_UNLIT, unlit, "Unlit")
                             .clicked()
@@ -582,6 +610,14 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
                 ui.set_width(left_panel_width);
                 let collapsed = state.panel_collapsed;
                 match panel {
+                    OptionPanel::Wireframe => option_panel(ui, "Wireframe", collapsed, |ui| {
+                        color_swatch_row(
+                            ui,
+                            "Wireframe color",
+                            &mut state.wireframe.color,
+                            &WIREFRAME_SWATCH_COLORS,
+                        );
+                    }),
                     OptionPanel::UvChecker => {
                         let uv_set_count = state.stats.uv_set_count;
                         option_panel(ui, "UV Checker", collapsed, |ui| {
@@ -607,7 +643,12 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
                     OptionPanel::FaceNormals => option_panel(ui, "Face Normals", collapsed, |ui| {
                         labeled_slider(ui, "Normal Length", &mut state.face_normals.length);
                         ui.add_space(PANEL_ROW_GAP);
-                        color_swatch_row(ui, "Line Color", &mut state.face_normals.color);
+                        color_swatch_row(
+                            ui,
+                            "Line Color",
+                            &mut state.face_normals.color,
+                            &NORMAL_SWATCH_COLORS,
+                        );
                         ui.add_space(PANEL_ACTION_GAP);
                         if wide_reset_button(ui).clicked() {
                             state.face_normals.length = 0.18;
@@ -618,7 +659,12 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
                         option_panel(ui, "Vertex Normals", collapsed, |ui| {
                             labeled_slider(ui, "Normal Length", &mut state.vertex_normals.length);
                             ui.add_space(PANEL_ROW_GAP);
-                            color_swatch_row(ui, "Line Color", &mut state.vertex_normals.color);
+                            color_swatch_row(
+                                ui,
+                                "Line Color",
+                                &mut state.vertex_normals.color,
+                                &NORMAL_SWATCH_COLORS,
+                            );
                             ui.add_space(PANEL_ACTION_GAP);
                             if wide_reset_button(ui).clicked() {
                                 state.vertex_normals.length = 0.18;
@@ -760,6 +806,7 @@ fn sync_debug_state(state: &mut UiState) {
     state.debug.vertex_normal_length = state.vertex_normals.length;
     state.debug.face_normal_color = color32_to_rgba(state.face_normals.color);
     state.debug.vertex_normal_color = color32_to_rgba(state.vertex_normals.color);
+    state.debug.wireframe_color = color32_to_rgba(state.wireframe.color);
 }
 
 fn toolbar_frame() -> egui::Frame {
@@ -1300,23 +1347,40 @@ fn labeled_slider(ui: &mut egui::Ui, label: &str, value: &mut f32) {
     });
 }
 
-fn color_swatch_row(ui: &mut egui::Ui, label: &str, selected: &mut egui::Color32) {
-    const COLORS: [egui::Color32; 5] = [
-        egui::Color32::WHITE,
-        egui::Color32::BLACK,
-        egui::Color32::from_rgb(32, 224, 232),
-        egui::Color32::from_rgb(29, 255, 27),
-        egui::Color32::from_rgb(255, 27, 27),
-    ];
+/// Swatch palette offered for the normal-line color rows.
+const NORMAL_SWATCH_COLORS: [egui::Color32; 5] = [
+    egui::Color32::WHITE,
+    egui::Color32::BLACK,
+    egui::Color32::from_rgb(32, 224, 232),
+    egui::Color32::from_rgb(29, 255, 27),
+    egui::Color32::from_rgb(255, 27, 27),
+];
 
+/// Swatch palette offered for the wireframe color row: white (default), black,
+/// red, cyan, green, 60% grey.
+const WIREFRAME_SWATCH_COLORS: [egui::Color32; 6] = [
+    egui::Color32::WHITE,
+    egui::Color32::BLACK,
+    egui::Color32::from_rgb(255, 27, 27),
+    egui::Color32::from_rgb(32, 224, 232),
+    egui::Color32::from_rgb(29, 255, 27),
+    egui::Color32::from_gray(153),
+];
+
+fn color_swatch_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    selected: &mut egui::Color32,
+    colors: &[egui::Color32],
+) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         let control_w = table_label_cell(ui, label);
         // Compact thumbnails with tight, even gaps, left-aligned in the column;
         // capped so they stay small rather than filling the whole column.
-        let gaps = PANEL_SWATCH_GAP * (COLORS.len() as f32 - 1.0);
-        let swatch = ((control_w - gaps) / COLORS.len() as f32).clamp(0.0, PANEL_SWATCH_SIZE);
-        for (i, color) in COLORS.iter().enumerate() {
+        let gaps = PANEL_SWATCH_GAP * (colors.len() as f32 - 1.0);
+        let swatch = ((control_w - gaps) / colors.len() as f32).clamp(0.0, PANEL_SWATCH_SIZE);
+        for (i, color) in colors.iter().enumerate() {
             let (rect, response) =
                 ui.allocate_exact_size(egui::vec2(swatch, swatch), egui::Sense::click());
             if response.clicked() {
@@ -1329,7 +1393,7 @@ fn color_swatch_row(ui: &mut egui::Ui, label: &str, selected: &mut egui::Color32
             };
             ui.painter()
                 .rect(rect, 5.0, *color, stroke, egui::StrokeKind::Outside);
-            if i + 1 < COLORS.len() {
+            if i + 1 < colors.len() {
                 ui.add_space(PANEL_SWATCH_GAP);
             }
         }
