@@ -8,6 +8,19 @@ pub use scene::{SCENE_DEPTH_FORMAT, SCENE_SAMPLE_COUNT, SceneCallback};
 
 const CAMERA_TRANSITION_SECONDS: f32 = 0.3;
 
+/// Largest far/near ratio we let the projection produce. The depth buffer
+/// (`Depth24Plus`) only has so many distinguishable values; a huge range spends
+/// almost all of them in empty space in front of the model, leaving close and
+/// intersecting faces to flicker / swap draw order as you zoom. Bounding the
+/// ratio keeps enough precision across the model. ~5000:1 is comfortable for a
+/// 24-bit depth buffer.
+const MAX_DEPTH_RATIO: f32 = 5_000.0;
+/// Absolute floor for the near plane so it never collapses to zero.
+const MIN_Z_NEAR: f32 = 0.01;
+/// Worst-case radius of the static reference grid (±12 units, corner ~17). The
+/// far plane must reach it so the grid isn't clipped behind small models.
+const GRID_FAR_RADIUS: f32 = 20.0;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ShadingMode {
     Wireframe,
@@ -104,8 +117,10 @@ pub struct OrbitCamera {
     pub distance: f32,
     pub aspect_ratio: f32,
     pub fov_y_radians: f32,
-    pub z_near: f32,
-    pub z_far: f32,
+    /// Bounding-sphere radius of the framed content around `target`. The near /
+    /// far planes are fit to this each frame (see `near_far`) instead of being
+    /// stored, so depth precision stays optimal as `distance` changes on zoom.
+    pub scene_radius: f32,
 }
 
 impl Default for OrbitCamera {
@@ -119,8 +134,7 @@ impl Default for OrbitCamera {
             distance: 7.5,
             aspect_ratio: 16.0 / 9.0,
             fov_y_radians: 50.0_f32.to_radians(),
-            z_near: 0.02,
-            z_far: 10_000.0,
+            scene_radius: 1.0,
         }
     }
 }
@@ -153,7 +167,9 @@ impl OrbitCamera {
 
         self.target = center;
         self.distance = (distance_for_width.max(distance_for_height) + half_depth) * 1.1;
-        self.z_far = (self.distance + half_depth * 4.0).max(100.0);
+        // Bounding-sphere radius around `target` (corner distance). Drives the
+        // per-frame near/far fit in `near_far`.
+        self.scene_radius = half_size.length().max(0.001);
         self
     }
 
@@ -215,15 +231,27 @@ impl OrbitCamera {
         world_from_camera.inverse()
     }
 
+    /// Near / far planes fit to the current view each frame. The far plane
+    /// reaches past the content (model *and* the reference grid); the near plane
+    /// is pushed as far forward as a bounded far/near ratio allows so the depth
+    /// buffer keeps its precision across the model regardless of zoom. This is
+    /// what prevents close / intersecting faces from flickering and swapping
+    /// draw order — a fixed tiny near plane with a huge far plane does not.
+    pub fn near_far(self) -> (f32, f32) {
+        // Far must clear the grid even when the model is tiny.
+        let content_radius = self.scene_radius.max(GRID_FAR_RADIUS);
+        let z_far = (self.distance + content_radius).max(MIN_Z_NEAR * 2.0);
+        let z_near = (z_far / MAX_DEPTH_RATIO).max(MIN_Z_NEAR);
+        (z_near, z_far)
+    }
+
     pub fn view_projection(self, projection_mode: CameraProjection) -> Mat4 {
         let view = self.view_matrix();
+        let (z_near, z_far) = self.near_far();
         let projection = match projection_mode {
-            CameraProjection::Perspective => Mat4::perspective_rh(
-                self.fov_y_radians,
-                self.aspect_ratio,
-                self.z_near,
-                self.z_far,
-            ),
+            CameraProjection::Perspective => {
+                Mat4::perspective_rh(self.fov_y_radians, self.aspect_ratio, z_near, z_far)
+            }
             CameraProjection::Orthographic => {
                 let half_height = self.orthographic_half_height();
                 let half_width = half_height * self.aspect_ratio.max(0.1);
@@ -232,8 +260,8 @@ impl OrbitCamera {
                     half_width,
                     -half_height,
                     half_height,
-                    self.z_near,
-                    self.z_far,
+                    z_near,
+                    z_far,
                 )
             }
         };
@@ -289,8 +317,7 @@ fn lerp_camera(start: OrbitCamera, end: OrbitCamera, t: f32) -> OrbitCamera {
         distance: start.distance + (end.distance - start.distance) * t,
         aspect_ratio: end.aspect_ratio,
         fov_y_radians: start.fov_y_radians + (end.fov_y_radians - start.fov_y_radians) * t,
-        z_near: start.z_near + (end.z_near - start.z_near) * t,
-        z_far: start.z_far + (end.z_far - start.z_far) * t,
+        scene_radius: start.scene_radius + (end.scene_radius - start.scene_radius) * t,
     }
 }
 
