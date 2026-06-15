@@ -2,6 +2,7 @@
 //! module owns the shared panel chrome ([`option_panel`]) and the dispatch that
 //! routes the active [`OptionPanel`] to the right tool.
 
+mod bounding_box;
 mod normals;
 mod uv_checker;
 mod wireframe;
@@ -30,6 +31,9 @@ pub(crate) fn draw_active_panel(
         OptionPanel::Wireframe => {
             option_panel(ui, "Wireframe", collapsed, |ui| wireframe::body(ui, state))
         }
+        OptionPanel::BoundingBox => option_panel(ui, "Bounding Box", collapsed, |ui| {
+            bounding_box::body(ui, state)
+        }),
         OptionPanel::UvChecker => option_panel(ui, "UV Checker", collapsed, |ui| {
             uv_checker::body(ui, state)
         }),

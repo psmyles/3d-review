@@ -1,3 +1,13 @@
+- start state camera angle
+- reset camera button
+- show bounds button
 - image based lighting
 - viewport background controls
+- MSAA toggle / controls
+- backface rendering toggle
+- vertex colors
+- normal / tangent view
+- texel density
+- UV stretching
+- overdraw
 - 

@@ -96,6 +96,47 @@ pub(crate) fn wireframe_lines(model: &ModelData, color: [f32; 4]) -> Vec<SceneVe
     vertices
 }
 
+/// The 12 edges of the model's axis-aligned bounding box, in the given color.
+/// Empty when the model has no computed bounds (e.g. an empty mesh).
+pub(crate) fn bounding_box_lines(model: &ModelData, color: [f32; 4]) -> Vec<SceneVertex> {
+    let Some(bounds) = model.bounds else {
+        return Vec::new();
+    };
+    let (min, max) = (bounds.min, bounds.max);
+    let corners = [
+        [min.x, min.y, min.z],
+        [max.x, min.y, min.z],
+        [max.x, max.y, min.z],
+        [min.x, max.y, min.z],
+        [min.x, min.y, max.z],
+        [max.x, min.y, max.z],
+        [max.x, max.y, max.z],
+        [min.x, max.y, max.z],
+    ];
+    // Pairs of corner indices: the bottom (z=min) loop, the top (z=max) loop,
+    // then the four verticals connecting them.
+    const EDGES: [(usize, usize); 12] = [
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
+    ];
+
+    let mut vertices = Vec::with_capacity(EDGES.len() * 2);
+    for (a, b) in EDGES {
+        push_line(&mut vertices, corners[a], corners[b], color);
+    }
+    vertices
+}
+
 /// One line per original face, from the face centroid along its averaged normal.
 /// `length_scale` is relative to the model's largest extent; `color` is baked in.
 pub(crate) fn face_normal_lines(

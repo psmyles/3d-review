@@ -97,6 +97,21 @@ impl Default for WireframePanelState {
     }
 }
 
+/// Editable state backing the Bounding Box options panel. The renderer bakes the
+/// chosen color into the bounding-box line buffer via [`SceneDebugOptions`].
+#[derive(Debug, Clone)]
+pub struct BoundingBoxPanelState {
+    pub color: egui::Color32,
+}
+
+impl Default for BoundingBoxPanelState {
+    fn default() -> Self {
+        Self {
+            color: theme::color::BOUNDING_BOX_DEFAULT,
+        }
+    }
+}
+
 /// Editable state backing the UV Checker options panel. The renderer reads the
 /// committed values via [`SceneDebugOptions`]; `tiling_text` is the panel's own
 /// text-field buffer (kept out of the render options so `render` stays free of
@@ -125,6 +140,7 @@ impl Default for UvCheckerPanelState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OptionPanel {
     Wireframe,
+    BoundingBox,
     UvChecker,
     FaceNormals,
     VertexNormals,
@@ -151,6 +167,7 @@ pub struct UiState {
     pub panel_pos: Option<egui::Pos2>,
     pub uv_checker: UvCheckerPanelState,
     pub wireframe: WireframePanelState,
+    pub bounding_box: BoundingBoxPanelState,
     pub face_normals: NormalPanelState,
     pub vertex_normals: NormalPanelState,
     pub stats: ModelStats,
@@ -174,6 +191,7 @@ impl Default for UiState {
             panel_pos: None,
             uv_checker: UvCheckerPanelState::default(),
             wireframe: WireframePanelState::default(),
+            bounding_box: BoundingBoxPanelState::default(),
             face_normals: NormalPanelState {
                 length: DEFAULT_NORMAL_LENGTH,
                 color: theme::color::FACE_NORMAL_DEFAULT,
@@ -217,4 +235,5 @@ pub(crate) fn sync_debug_state(state: &mut UiState) {
     state.debug.face_normal_color = theme::color32_to_rgba(state.face_normals.color);
     state.debug.vertex_normal_color = theme::color32_to_rgba(state.vertex_normals.color);
     state.debug.wireframe_color = theme::color32_to_rgba(state.wireframe.color);
+    state.debug.bounding_box_color = theme::color32_to_rgba(state.bounding_box.color);
 }
