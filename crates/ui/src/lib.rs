@@ -528,7 +528,7 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
                 ui.set_width(left_panel_width);
                 match panel {
                     OptionPanel::UvChecker => {
-                        option_panel(ui, "UV Checker Options", &mut state.panel_expanded, |ui| {
+                        option_panel(ui, "UV Checker", &mut state.panel_expanded, |ui| {
                             ui.add_enabled_ui(false, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.label(rich_label(
@@ -552,7 +552,7 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
                     }
                     OptionPanel::FaceNormals => option_panel(
                         ui,
-                        "Face Normals Options",
+                        "Face Normals",
                         &mut state.panel_expanded,
                         |ui| {
                             labeled_slider(ui, "Normal Length", &mut state.face_normals.length);
@@ -567,7 +567,7 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
                     ),
                     OptionPanel::VertexNormals => option_panel(
                         ui,
-                        "Vertex Normals Options",
+                        "Vertex Normals",
                         &mut state.panel_expanded,
                         |ui| {
                             labeled_slider(ui, "Normal Length", &mut state.vertex_normals.length);
@@ -597,10 +597,6 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
             desired.x.clamp(min_x, max_x),
             desired.y.clamp(min_y, max_y),
         ));
-
-        if outcome.close {
-            state.active_panel = None;
-        }
     }
 
     if state.show_axis_gizmo {
@@ -866,11 +862,18 @@ fn icon_tile_button(
 }
 
 /// Result of drawing an [`option_panel`]: how far its header was dragged this
-/// frame, and whether the close button was pressed.
+/// frame.
 struct PanelOutcome {
     drag_delta: egui::Vec2,
-    close: bool,
 }
+
+/// Compact header bar height. Kept short so the title reads as a label, not a
+/// title bar (see the reference layout).
+const PANEL_HEADER_HEIGHT: f32 = 34.0;
+/// Horizontal inset of the title text from the panel's left edge.
+const PANEL_HEADER_PAD_X: f32 = 16.0;
+/// Padding around the collapsible body content.
+const PANEL_CONTENT_MARGIN: i8 = 18;
 
 fn option_panel(
     ui: &mut egui::Ui,
@@ -880,19 +883,19 @@ fn option_panel(
 ) -> PanelOutcome {
     let mut outcome = PanelOutcome {
         drag_delta: egui::Vec2::ZERO,
-        close: false,
     };
     egui::Frame::NONE
         .fill(egui::Color32::from_rgb(39, 39, 39))
         .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(66)))
         .corner_radius(6.0)
         .show(ui, |ui| {
-            // Reserve the header rect and claim it as the drag/collapse handle
-            // *before* drawing the title and buttons, so those buttons (drawn on
-            // top) win clicks over the handle. A click on empty header toggles
-            // collapse; a drag moves the (shared) panel position.
-            let header_rect =
-                egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), 42.0));
+            // Reserve the header bar and claim it as the drag/collapse handle
+            // *before* painting the title and chevron on top. A click on the bar
+            // (or chevron) toggles collapse; a drag moves the shared position.
+            let header_rect = egui::Rect::from_min_size(
+                ui.cursor().min,
+                egui::vec2(ui.available_width(), PANEL_HEADER_HEIGHT),
+            );
             let header_response = ui.interact(
                 header_rect,
                 ui.make_persistent_id(("option_panel_header", title)),
@@ -901,50 +904,102 @@ fn option_panel(
             if header_response.dragged() {
                 outcome.drag_delta = header_response.drag_delta();
             }
-            if header_response.clicked() {
-                *expanded = !*expanded;
-            }
             if header_response.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
             }
 
-            ui.horizontal(|ui| {
-                ui.set_min_height(42.0);
-                ui.add_space(12.0);
-                ui.add(
-                    egui::Label::new(rich_label(title, 17.0, egui::Color32::from_gray(226)))
-                        .selectable(false),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_space(4.0);
-                    if header_glyph_button(ui, "✕", 16.0).clicked() {
-                        outcome.close = true;
-                    }
-                });
-            });
+            // Title: left-aligned and vertically centered in the compact bar.
+            ui.painter().text(
+                egui::pos2(
+                    header_rect.left() + PANEL_HEADER_PAD_X,
+                    header_rect.center().y,
+                ),
+                egui::Align2::LEFT_CENTER,
+                title,
+                egui::FontId::proportional(14.5),
+                egui::Color32::from_gray(224),
+            );
+
+            // Collapse chevron, right-aligned in the bar (a square hit area the
+            // full height of the header).
+            let chevron_rect = egui::Rect::from_min_size(
+                egui::pos2(
+                    header_rect.right() - PANEL_HEADER_HEIGHT,
+                    header_rect.top(),
+                ),
+                egui::vec2(PANEL_HEADER_HEIGHT, PANEL_HEADER_HEIGHT),
+            );
+            let chevron_response = ui.interact(
+                chevron_rect,
+                ui.make_persistent_id(("option_panel_chevron", title)),
+                egui::Sense::click(),
+            );
+            paint_chevron(
+                ui.painter(),
+                chevron_rect.center(),
+                *expanded,
+                chevron_response.hovered(),
+            );
+            if chevron_response.clicked() || header_response.clicked() {
+                *expanded = !*expanded;
+            }
+
+            // interact()/painter don't advance the layout cursor; step past the
+            // header bar so the separator and body fall below it.
+            ui.add_space(PANEL_HEADER_HEIGHT);
 
             if *expanded {
                 ui.separator();
-                ui.add_space(14.0);
-                ui.scope(|ui| {
-                    ui.add_space(18.0);
-                    add_contents(ui);
-                    ui.add_space(18.0);
-                });
+                egui::Frame::NONE
+                    .inner_margin(egui::Margin {
+                        left: PANEL_CONTENT_MARGIN,
+                        right: PANEL_CONTENT_MARGIN,
+                        top: 14,
+                        bottom: PANEL_CONTENT_MARGIN,
+                    })
+                    .show(ui, add_contents);
             }
         });
     outcome
 }
 
-fn header_glyph_button(ui: &mut egui::Ui, glyph: &str, size: f32) -> egui::Response {
-    ui.add(egui::Button::new(rich_label(glyph, size, egui::Color32::from_gray(190))).frame(false))
+/// Paint a small collapse chevron centered at `center`: pointing up when the
+/// panel is expanded (click to collapse), down when collapsed.
+fn paint_chevron(painter: &egui::Painter, center: egui::Pos2, expanded: bool, hovered: bool) {
+    let color = if hovered {
+        egui::Color32::from_gray(224)
+    } else {
+        egui::Color32::from_gray(168)
+    };
+    let half_w = 5.0;
+    let half_h = 3.0;
+    let (left, tip, right) = if expanded {
+        (
+            egui::pos2(center.x - half_w, center.y + half_h),
+            egui::pos2(center.x, center.y - half_h),
+            egui::pos2(center.x + half_w, center.y + half_h),
+        )
+    } else {
+        (
+            egui::pos2(center.x - half_w, center.y - half_h),
+            egui::pos2(center.x, center.y + half_h),
+            egui::pos2(center.x + half_w, center.y - half_h),
+        )
+    };
+    let stroke = egui::Stroke::new(1.6, color);
+    painter.line_segment([left, tip], stroke);
+    painter.line_segment([tip, right], stroke);
 }
 
 fn labeled_slider(ui: &mut egui::Ui, label: &str, value: &mut f32) {
+    let row_width = ui.available_width();
     ui.horizontal(|ui| {
-        ui.set_min_width(400.0);
+        ui.set_width(row_width);
         ui.label(rich_label(label, 15.0, egui::Color32::from_gray(180)));
         ui.add_space(16.0);
+        // Let the rail consume the rest of the row (minus the handle's reach) so
+        // the slider's right edge lines up with the color swatches below it.
+        ui.spacing_mut().slider_width = (ui.available_width() - 12.0).max(0.0);
         ui.add(
             egui::Slider::new(value, 0.02..=1.0)
                 .show_value(false)
@@ -983,13 +1038,32 @@ fn color_swatch_row(ui: &mut egui::Ui, label: &str, selected: &mut egui::Color32
 }
 
 fn wide_reset_button(ui: &mut egui::Ui) -> egui::Response {
-    ui.add(
-        egui::Button::new(rich_label("Reset all", 15.0, egui::Color32::from_gray(214)))
-            .min_size(egui::vec2(394.0, 42.0))
-            .fill(egui::Color32::from_rgb(20, 23, 26))
-            .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(62)))
-            .corner_radius(6.0),
-    )
+    // Full-width button with the label painted dead-center. egui's `Button`
+    // left-aligns text within an over-wide rect (it honors the parent layout's
+    // horizontal align), so paint the label ourselves to keep it centered.
+    let width = ui.available_width();
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(width, 40.0), egui::Sense::click());
+    let fill = if response.hovered() {
+        egui::Color32::from_rgb(28, 32, 37)
+    } else {
+        egui::Color32::from_rgb(20, 23, 26)
+    };
+    ui.painter().rect(
+        rect,
+        6.0,
+        fill,
+        egui::Stroke::new(1.0, egui::Color32::from_gray(62)),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "Reset all",
+        egui::FontId::proportional(15.0),
+        egui::Color32::from_gray(214),
+    );
+    response
 }
 
 fn load_icon_texture(ui: &mut egui::Ui, icon: &AppIcon) -> Option<egui::load::SizedTexture> {
