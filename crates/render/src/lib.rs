@@ -23,10 +23,24 @@ pub enum CameraProjection {
     Orthographic,
 }
 
+/// Which built-in checker texture the UV-checker view samples.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CheckerTexture {
+    #[default]
+    Greyscale,
+    Color,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SceneDebugOptions {
     pub shading_mode: ShadingMode,
     pub uv_checker: bool,
+    pub uv_checker_texture: CheckerTexture,
+    /// Checker repeats across the 0..1 UV range; clamped to 1..=16 by the UI.
+    pub uv_checker_tiling: u32,
+    /// Which model UV set the checker view samples (0-based). Only meaningful
+    /// when the model carries more than one UV set.
+    pub uv_channel: u32,
     pub show_grid: bool,
     pub face_normals: bool,
     pub vertex_normals: bool,
@@ -41,6 +55,9 @@ impl Default for SceneDebugOptions {
         Self {
             shading_mode: ShadingMode::Shaded,
             uv_checker: false,
+            uv_checker_texture: CheckerTexture::Greyscale,
+            uv_checker_tiling: 4,
+            uv_channel: 0,
             show_grid: true,
             face_normals: false,
             vertex_normals: false,

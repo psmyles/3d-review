@@ -72,6 +72,7 @@ void review_import_free_scene(review_import_scene *scene)
     free(scene->indices);
     free(scene->faces);
     free(scene->tri_to_face);
+    free(scene->uvs);
     review_import_free_materials(scene->materials, scene->material_count);
     review_import_free_warnings(scene->warnings, scene->warning_count);
     memset(scene, 0, sizeof(*scene));
@@ -238,6 +239,18 @@ int review_import_load_fbx(
     out_scene->face_count = total_faces;
     out_scene->tri_to_face_count = total_triangles;
 
+    /* Only multi-set models need separate per-channel UV storage; single-set
+       models keep using review_import_vertex::uv (channel 0). */
+    if (out_scene->uv_set_count > 1) {
+        size_t uv_value_count = total_vertices * (size_t)out_scene->uv_set_count * 2;
+        out_scene->uvs = (float*)calloc(uv_value_count, sizeof(float));
+        if (!out_scene->uvs) {
+            review_import_set_error(out_error, "out of memory while allocating UV channels");
+            goto cleanup;
+        }
+        out_scene->uv_value_count = uv_value_count;
+    }
+
     for (node_index = 0; node_index < scene->nodes.count; node_index++) {
         ufbx_node *node = scene->nodes.data[node_index];
         ufbx_mesh *mesh = node ? node->mesh : NULL;
@@ -323,6 +336,27 @@ int review_import_load_fbx(
                 dst->tangent[2] = (float)tangent.z;
                 review_import_normalize3(dst->tangent, fallback_tangent);
                 dst->tangent[3] = 1.0f;
+
+                if (out_scene->uvs) {
+                    uint32_t channel;
+                    for (channel = 0; channel < out_scene->uv_set_count; channel++) {
+                        float channel_u = 0.0f;
+                        float channel_v = 0.0f;
+                        size_t base = ((size_t)channel * total_vertices + vertex_offset) * 2;
+
+                        if (channel < mesh->uv_sets.count) {
+                            ufbx_uv_set uv_set = mesh->uv_sets.data[channel];
+                            if (uv_set.vertex_uv.exists) {
+                                ufbx_vec2 set_uv = ufbx_get_vertex_vec2(&uv_set.vertex_uv, mesh_index);
+                                channel_u = (float)set_uv.x;
+                                channel_v = (float)set_uv.y;
+                            }
+                        }
+
+                        out_scene->uvs[base + 0] = channel_u;
+                        out_scene->uvs[base + 1] = channel_v;
+                    }
+                }
 
                 vertex_offset += 1;
             }

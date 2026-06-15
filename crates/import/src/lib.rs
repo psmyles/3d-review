@@ -98,6 +98,8 @@ mod ffi {
         warning_count: usize,
         uv_set_count: u32,
         draw_count: u32,
+        uvs: *mut f32,
+        uv_value_count: usize,
     }
 
     #[repr(C)]
@@ -176,6 +178,7 @@ mod ffi {
             .collect::<Vec<_>>();
         let tri_to_face =
             checked_slice(scene.tri_to_face, scene.tri_to_face_count, "tri_to_face")?.to_vec();
+        let uv_channels = build_uv_channels(scene)?;
         let materials = checked_slice(scene.materials, scene.material_count, "materials")?
             .iter()
             .map(|material| MaterialInfo {
@@ -203,6 +206,7 @@ mod ffi {
             indices,
             faces,
             tri_to_face,
+            uv_channels,
             bounds: None,
             stats: ModelStats {
                 polygon_count: scene.face_count,
@@ -224,6 +228,39 @@ mod ffi {
         }
 
         Ok(model)
+    }
+
+    /// Builds the per-channel UV table for multi-set models. Single-set models
+    /// (and meshes the bridge left without a `uvs` allocation) return an empty
+    /// vec, in which case the renderer falls back to [`Vertex::uv`].
+    fn build_uv_channels(scene: &ReviewImportScene) -> Result<Vec<Vec<Vec2>>, ImportError> {
+        let channel_count = scene.uv_set_count as usize;
+        if channel_count <= 1 || scene.uvs.is_null() {
+            return Ok(Vec::new());
+        }
+
+        let vertex_count = scene.vertex_count;
+        let expected = channel_count * vertex_count * 2;
+        if scene.uv_value_count < expected {
+            return Err(ImportError::LoadFailed(format!(
+                "FBX bridge returned {} UV values, expected {expected}",
+                scene.uv_value_count
+            )));
+        }
+
+        let values = checked_slice(scene.uvs, scene.uv_value_count, "uvs")?;
+        let channels = (0..channel_count)
+            .map(|channel| {
+                (0..vertex_count)
+                    .map(|vertex| {
+                        let base = (channel * vertex_count + vertex) * 2;
+                        Vec2::new(values[base], values[base + 1])
+                    })
+                    .collect()
+            })
+            .collect();
+
+        Ok(channels)
     }
 
     fn read_error_message(error: &ReviewImportError) -> String {

@@ -3,7 +3,9 @@ use std::sync::Arc;
 use glam::{Vec2, Vec3};
 use image::ImageError;
 use review_model::{ModelData, ModelStats};
-use review_render::{CameraProjection, OrbitCamera, SceneCallback, SceneDebugOptions, ShadingMode};
+use review_render::{
+    CameraProjection, CheckerTexture, OrbitCamera, SceneCallback, SceneDebugOptions, ShadingMode,
+};
 
 const TOOLBAR_HEIGHT_PX: f32 = 73.0;
 const STATUS_BAR_HEIGHT_PX: f32 = 64.0;
@@ -213,6 +215,29 @@ pub struct NormalPanelState {
     pub color: egui::Color32,
 }
 
+/// Editable state backing the UV Checker options panel. The renderer reads the
+/// committed values via [`SceneDebugOptions`]; `tiling_text` is the panel's own
+/// text-field buffer (kept out of the render options so `render` stays free of
+/// UI string state) and is re-sanitized to an integer on commit.
+#[derive(Debug, Clone)]
+pub struct UvCheckerPanelState {
+    pub texture: CheckerTexture,
+    pub tiling: u32,
+    pub tiling_text: String,
+    pub uv_channel: u32,
+}
+
+impl Default for UvCheckerPanelState {
+    fn default() -> Self {
+        Self {
+            texture: CheckerTexture::Greyscale,
+            tiling: DEFAULT_CHECKER_TILING,
+            tiling_text: DEFAULT_CHECKER_TILING.to_string(),
+            uv_channel: 0,
+        }
+    }
+}
+
 /// Which tool's options panel is currently open. Only one panel is shown at a
 /// time; a panel is opened by right-clicking its toolbar button.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -241,6 +266,7 @@ pub struct UiState {
     /// Last viewport position the panel was dragged to (egui points). Shared by
     /// every option panel so they all spawn where the last one was left.
     pub panel_pos: Option<egui::Pos2>,
+    pub uv_checker: UvCheckerPanelState,
     pub face_normals: NormalPanelState,
     pub vertex_normals: NormalPanelState,
     pub stats: ModelStats,
@@ -262,6 +288,7 @@ impl Default for UiState {
             active_panel: None,
             panel_collapsed: false,
             panel_pos: None,
+            uv_checker: UvCheckerPanelState::default(),
             face_normals: NormalPanelState {
                 length: 0.18,
                 color: egui::Color32::from_rgb(255, 32, 32),
@@ -555,16 +582,28 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
                 ui.set_width(left_panel_width);
                 let collapsed = state.panel_collapsed;
                 match panel {
-                    OptionPanel::UvChecker => option_panel(ui, "UV Checker", collapsed, |ui| {
-                        ui.horizontal(|ui| {
-                            table_label_cell(ui, "Checker Texture");
-                            ui.label(rich_label(
-                                "Soon",
-                                PANEL_LABEL_FONT_SIZE,
-                                egui::Color32::from_gray(120),
-                            ));
-                        });
-                    }),
+                    OptionPanel::UvChecker => {
+                        let uv_set_count = state.stats.uv_set_count;
+                        option_panel(ui, "UV Checker", collapsed, |ui| {
+                            checker_texture_row(ui, &mut state.uv_checker.texture);
+                            ui.add_space(PANEL_ROW_GAP);
+                            checker_tiling_row(ui, &mut state.uv_checker);
+                            // The channel picker is only meaningful — and only
+                            // shown — when the model carries more than one UV set.
+                            if uv_set_count > 1 {
+                                ui.add_space(PANEL_ROW_GAP);
+                                checker_channel_row(
+                                    ui,
+                                    &mut state.uv_checker.uv_channel,
+                                    uv_set_count,
+                                );
+                            }
+                            ui.add_space(PANEL_ACTION_GAP);
+                            if wide_reset_button(ui).clicked() {
+                                state.uv_checker = UvCheckerPanelState::default();
+                            }
+                        })
+                    }
                     OptionPanel::FaceNormals => option_panel(ui, "Face Normals", collapsed, |ui| {
                         labeled_slider(ui, "Normal Length", &mut state.face_normals.length);
                         ui.add_space(PANEL_ROW_GAP);
@@ -714,6 +753,9 @@ fn apply_visuals(ctx: &egui::Context) {
 fn sync_debug_state(state: &mut UiState) {
     state.debug.shading_mode = state.shading_mode;
     state.debug.show_grid = state.show_grid;
+    state.debug.uv_checker_texture = state.uv_checker.texture;
+    state.debug.uv_checker_tiling = state.uv_checker.tiling;
+    state.debug.uv_channel = state.uv_checker.uv_channel;
     state.debug.face_normal_length = state.face_normals.length;
     state.debug.vertex_normal_length = state.vertex_normals.length;
     state.debug.face_normal_color = color32_to_rgba(state.face_normals.color);
@@ -930,6 +972,13 @@ const PANEL_BUTTON_HEIGHT: f32 = 32.0;
 /// Edge of each square color swatch, and the gap between swatches.
 const PANEL_SWATCH_SIZE: f32 = 24.0;
 const PANEL_SWATCH_GAP: f32 = 6.0;
+/// Width of the numeric text field paired with the checker-tiling slider.
+const PANEL_TILING_TEXT_W: f32 = 48.0;
+
+/// Inclusive checker-tiling range and the value a fresh / reset panel uses.
+const CHECKER_TILING_MIN: u32 = 1;
+const CHECKER_TILING_MAX: u32 = 16;
+const DEFAULT_CHECKER_TILING: u32 = 4;
 
 /// Title text size in the header bar.
 const PANEL_TITLE_FONT_SIZE: f32 = 14.5;
@@ -1097,6 +1146,86 @@ fn table_label_cell(ui: &mut egui::Ui, label: &str) -> f32 {
     );
     ui.add_space(PANEL_COL_GAP);
     control_w
+}
+
+/// "Checker Texture" row: a dropdown choosing which built-in checker the UV
+/// view samples.
+fn checker_texture_row(ui: &mut egui::Ui, texture: &mut CheckerTexture) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let control_w = table_label_cell(ui, "Checker Texture");
+        egui::ComboBox::from_id_salt("uv_checker_texture")
+            .selected_text(checker_texture_label(*texture))
+            .width(control_w)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(texture, CheckerTexture::Greyscale, "Greyscale");
+                ui.selectable_value(texture, CheckerTexture::Color, "Color");
+            });
+    });
+}
+
+/// "Checker Tiling" row: an integer slider (1..=16) paired with a text field.
+/// The slider updates the text mirror live; the text field is re-sanitized to a
+/// clamped integer when editing finishes (focus loss or Enter).
+fn checker_tiling_row(ui: &mut egui::Ui, state: &mut UvCheckerPanelState) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let control_w = table_label_cell(ui, "Checker Tiling");
+        let slider_w = (control_w - PANEL_TILING_TEXT_W - PANEL_COL_GAP).max(0.0);
+
+        ui.spacing_mut().slider_width = slider_w;
+        let slider = ui.add(
+            egui::Slider::new(&mut state.tiling, CHECKER_TILING_MIN..=CHECKER_TILING_MAX)
+                .show_value(false)
+                .clamping(egui::SliderClamping::Always),
+        );
+        if slider.changed() {
+            state.tiling_text = state.tiling.to_string();
+        }
+
+        ui.add_space(PANEL_COL_GAP);
+        let field = ui.add_sized(
+            egui::vec2(PANEL_TILING_TEXT_W, PANEL_ROW_H),
+            egui::TextEdit::singleline(&mut state.tiling_text)
+                .horizontal_align(egui::Align::Center),
+        );
+        // Commit only when editing ends: an empty / non-numeric entry reverts to
+        // the current value, anything else is clamped into range.
+        if field.lost_focus() {
+            let committed = state
+                .tiling_text
+                .trim()
+                .parse::<u32>()
+                .unwrap_or(state.tiling)
+                .clamp(CHECKER_TILING_MIN, CHECKER_TILING_MAX);
+            state.tiling = committed;
+            state.tiling_text = committed.to_string();
+        }
+    });
+}
+
+/// "Model UV channel" row: a dropdown selecting which of the model's UV sets the
+/// checker view visualizes. Only shown for models with more than one set.
+fn checker_channel_row(ui: &mut egui::Ui, uv_channel: &mut u32, uv_set_count: usize) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let control_w = table_label_cell(ui, "Model UV channel");
+        egui::ComboBox::from_id_salt("uv_checker_channel")
+            .selected_text(format!("Channel {uv_channel}"))
+            .width(control_w)
+            .show_ui(ui, |ui| {
+                for channel in 0..uv_set_count as u32 {
+                    ui.selectable_value(uv_channel, channel, format!("Channel {channel}"));
+                }
+            });
+    });
+}
+
+fn checker_texture_label(texture: CheckerTexture) -> &'static str {
+    match texture {
+        CheckerTexture::Greyscale => "Greyscale",
+        CheckerTexture::Color => "Color",
+    }
 }
 
 fn labeled_slider(ui: &mut egui::Ui, label: &str, value: &mut f32) {
@@ -1455,12 +1584,8 @@ fn axis_gizmo_points(
         .collect()
 }
 
-fn rich_label(text: &str, size: f32, color: egui::Color32) -> egui::RichText {
-    egui::RichText::new(text).size(size).color(color).strong()
-}
-
-/// Monospace variant of [`rich_label`], using the bundled JetBrains Mono face.
-/// Used by the stats overlay so numeric columns align on a fixed grid.
+/// Monospace label using the bundled JetBrains Mono face. Used by the stats
+/// overlay so numeric columns align on a fixed grid.
 fn mono_label(text: &str, size: f32, color: egui::Color32) -> egui::RichText {
     egui::RichText::new(text)
         .size(size)

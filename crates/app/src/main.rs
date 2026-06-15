@@ -455,6 +455,10 @@ impl App {
                 }
 
                 self.ui.stats = model.stats;
+                // A new model invalidates the previously selected UV channel;
+                // reset to channel 0 so the picker never points past the new
+                // model's UV-set count.
+                self.ui.uv_checker.uv_channel = 0;
                 self.scene_model = model;
                 self.scene_revision = self.scene_revision.saturating_add(1);
                 info!(path = %path.display(), "model loaded");

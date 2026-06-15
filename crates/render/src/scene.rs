@@ -6,7 +6,7 @@ use review_model::ModelData;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
-use crate::{CameraProjection, OrbitCamera, SceneDebugOptions, ShadingMode};
+use crate::{CameraProjection, CheckerTexture, OrbitCamera, SceneDebugOptions, ShadingMode};
 
 pub const SCENE_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
 pub const SCENE_SAMPLE_COUNT: u32 = 4;
@@ -19,6 +19,11 @@ struct SceneUniforms {
 
 @group(0) @binding(0)
 var<uniform> uniforms: SceneUniforms;
+
+@group(1) @binding(0)
+var checker_texture: texture_2d<f32>;
+@group(1) @binding(1)
+var checker_sampler: sampler;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -44,30 +49,24 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     return output;
 }
 
-fn checker_mask(uv: vec2<f32>) -> f32 {
-    let tiles = floor(uv * 8.0);
-    return fract((tiles.x + tiles.y) * 0.5) * 2.0;
-}
-
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let uv_checker_enabled = uniforms.render_options.y > 0.5;
     let shading_mode = uniforms.render_options.x;
+    let uv_checker_enabled = uniforms.render_options.y > 0.5;
+    let tiling = max(uniforms.render_options.z, 1.0);
+    // Sample at top level so it stays in uniform control flow.
+    let checker = textureSample(checker_texture, checker_sampler, input.uv * tiling);
     let normal_length_sq = dot(input.normal, input.normal);
+
+    // Grid / wireframe / normal lines carry a zero normal — they always render
+    // their own vertex color and never pick up the checker tint.
+    if (normal_length_sq < 1e-6) {
+        return input.color;
+    }
+
     var base_color = input.color.rgb;
     if (uv_checker_enabled) {
-        let checker = checker_mask(input.uv);
-        let dark = vec3<f32>(0.11, 0.11, 0.12);
-        let light = vec3<f32>(0.83, 0.84, 0.87);
-        let accent = vec3<f32>(0.22, 0.57, 0.93);
-        let mix_t = smoothstep(0.0, 1.0, checker);
-        base_color = mix(dark, light, mix_t);
-        if (fract(input.uv.x * 8.0) < 0.04 || fract(input.uv.y * 8.0) < 0.04) {
-            base_color = accent;
-        }
-    }
-    if (normal_length_sq < 1e-6) {
-        return vec4<f32>(base_color, input.color.a);
+        base_color = checker.rgb;
     }
 
     if (shading_mode < 1.5) {
@@ -127,14 +126,18 @@ impl CallbackTrait for SceneCallback {
     ) -> Vec<wgpu::CommandBuffer> {
         let resources = callback_resources
             .entry::<SceneResources>()
-            .or_insert_with(|| SceneResources::new(device, self.output_format));
+            .or_insert_with(|| SceneResources::new(device, queue, self.output_format));
 
         if resources.output_format != self.output_format {
-            *resources = SceneResources::new(device, self.output_format);
+            *resources = SceneResources::new(device, queue, self.output_format);
         }
 
         if resources.model_revision != self.model_revision {
             resources.update_model(device, &self.model, self.model_revision, self.debug_options);
+        } else if resources.mesh_uv_channel != self.debug_options.uv_channel {
+            // Switching UV channel only rebuilds the mesh vertex buffer's UVs;
+            // the rest of the derived geometry is channel-independent.
+            resources.update_mesh_channel(device, &self.model, self.debug_options.uv_channel);
         }
 
         resources.update_camera(queue, self.camera, self.projection_mode, self.debug_options);
@@ -150,6 +153,14 @@ impl CallbackTrait for SceneCallback {
         let Some(resources) = callback_resources.get::<SceneResources>() else {
             return;
         };
+
+        // group 1 (checker texture + sampler) stays bound for every draw using
+        // the shared pipeline layout; only the mesh actually samples it.
+        let checker_bind_group = match self.debug_options.uv_checker_texture {
+            CheckerTexture::Greyscale => &resources.checker_bind_group_greyscale,
+            CheckerTexture::Color => &resources.checker_bind_group_color,
+        };
+        render_pass.set_bind_group(1, checker_bind_group, &[]);
 
         if resources.mesh_index_count > 0
             && !matches!(self.debug_options.shading_mode, ShadingMode::Wireframe)
@@ -201,10 +212,13 @@ impl CallbackTrait for SceneCallback {
 struct SceneResources {
     output_format: wgpu::TextureFormat,
     model_revision: u64,
+    mesh_uv_channel: u32,
     mesh_pipeline: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
+    checker_bind_group_greyscale: wgpu::BindGroup,
+    checker_bind_group_color: wgpu::BindGroup,
     mesh_vertex_buffer: wgpu::Buffer,
     mesh_index_buffer: wgpu::Buffer,
     mesh_index_count: u32,
@@ -219,7 +233,7 @@ struct SceneResources {
 }
 
 impl SceneResources {
-    fn new(device: &wgpu::Device, output_format: wgpu::TextureFormat) -> Self {
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue, output_format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("review_scene_shader"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
@@ -255,9 +269,59 @@ impl SceneResources {
             }],
         });
 
+        let checker_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("review_scene_checker_layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+
+        let checker_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("review_scene_checker_sampler"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        let checker_bind_group_greyscale = create_checker_bind_group(
+            device,
+            queue,
+            &checker_layout,
+            &checker_sampler,
+            include_bytes!("../../../assets/textures/T_UV_Checker_BW.png"),
+            "review_scene_checker_greyscale",
+        );
+        let checker_bind_group_color = create_checker_bind_group(
+            device,
+            queue,
+            &checker_layout,
+            &checker_sampler,
+            include_bytes!("../../../assets/textures/T_UV_Checker_CLR.png"),
+            "review_scene_checker_color",
+        );
+
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("review_scene_pipeline_layout"),
-            bind_group_layouts: &[&uniform_layout],
+            bind_group_layouts: &[&uniform_layout, &checker_layout],
             push_constant_ranges: &[],
         });
 
@@ -297,10 +361,13 @@ impl SceneResources {
         Self {
             output_format,
             model_revision: u64::MAX,
+            mesh_uv_channel: 0,
             mesh_pipeline,
             line_pipeline,
             uniform_buffer,
             uniform_bind_group,
+            checker_bind_group_greyscale,
+            checker_bind_group_color,
             mesh_vertex_buffer,
             mesh_index_buffer,
             mesh_index_count,
@@ -327,7 +394,7 @@ impl SceneResources {
             render_options: [
                 shading_mode_value(debug_options.shading_mode),
                 if debug_options.uv_checker { 1.0 } else { 0.0 },
-                0.0,
+                debug_options.uv_checker_tiling.max(1) as f32,
                 0.0,
             ],
         };
@@ -341,7 +408,7 @@ impl SceneResources {
         model_revision: u64,
         debug_options: SceneDebugOptions,
     ) {
-        let (mesh_vertices, mesh_indices) = model_mesh(model);
+        let (mesh_vertices, mesh_indices) = model_mesh(model, debug_options.uv_channel);
         let (mesh_vertex_buffer, mesh_index_buffer, mesh_index_count) =
             create_mesh_buffers(device, &mesh_vertices, &mesh_indices);
         let wireframe_lines = wireframe_lines(model);
@@ -364,6 +431,17 @@ impl SceneResources {
         self.vertex_normal_vertex_buffer = vertex_normal_vertex_buffer;
         self.vertex_normal_vertex_count = vertex_normal_vertex_count;
         self.model_revision = model_revision;
+        self.mesh_uv_channel = debug_options.uv_channel;
+    }
+
+    fn update_mesh_channel(&mut self, device: &wgpu::Device, model: &ModelData, uv_channel: u32) {
+        let (mesh_vertices, mesh_indices) = model_mesh(model, uv_channel);
+        let (mesh_vertex_buffer, mesh_index_buffer, mesh_index_count) =
+            create_mesh_buffers(device, &mesh_vertices, &mesh_indices);
+        self.mesh_vertex_buffer = mesh_vertex_buffer;
+        self.mesh_index_buffer = mesh_index_buffer;
+        self.mesh_index_count = mesh_index_count;
+        self.mesh_uv_channel = uv_channel;
     }
 }
 
@@ -461,14 +539,16 @@ fn scene_lines() -> Vec<SceneVertex> {
     vertices
 }
 
-fn model_mesh(model: &ModelData) -> (Vec<SceneVertex>, Vec<u32>) {
+fn model_mesh(model: &ModelData, uv_channel: u32) -> (Vec<SceneVertex>, Vec<u32>) {
+    let channel = uv_channel as usize;
     let vertices = model
         .vertices
         .iter()
-        .map(|vertex| SceneVertex {
+        .enumerate()
+        .map(|(index, vertex)| SceneVertex {
             position: vertex.position.to_array(),
             normal: vertex.normal.to_array(),
-            uv: vertex.uv.to_array(),
+            uv: model.uv_for_channel(index, channel).to_array(),
             color: vertex.color.to_array(),
         })
         .collect();
@@ -686,6 +766,75 @@ fn create_line_buffer(device: &wgpu::Device, vertices: &[SceneVertex]) -> (wgpu:
     });
 
     (vertex_buffer, vertices.len() as u32)
+}
+
+fn create_checker_bind_group(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    png_bytes: &[u8],
+    label: &str,
+) -> wgpu::BindGroup {
+    // The PNGs are baked in at build time (invariant: assets via include_bytes!),
+    // so a decode failure is a packaging bug — fall back to a 1x1 white texel
+    // rather than panicking inside the render callback.
+    let rgba = image::load_from_memory(png_bytes)
+        .map(|image| image.to_rgba8())
+        .unwrap_or_else(|_| image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 255, 255, 255])));
+    let (width, height) = rgba.dimensions();
+
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &rgba,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(width * 4),
+            rows_per_image: Some(height),
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(label),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    })
 }
 
 fn push_line(vertices: &mut Vec<SceneVertex>, start: [f32; 3], end: [f32; 3], color: [f32; 4]) {

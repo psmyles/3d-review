@@ -89,6 +89,13 @@ pub struct ModelData {
     pub indices: Vec<u32>,
     pub faces: Vec<TopologyFace>,
     pub tri_to_face: Vec<u32>,
+    /// Per-vertex UV coordinates for every UV set the model carries, one inner
+    /// vector per channel (each `vertices.len()` long). Only populated when the
+    /// model has **more than one** UV set; single-set models leave this empty
+    /// and use [`Vertex::uv`] (which always holds channel 0). Channel 0 is thus
+    /// mirrored here for multi-set models — a deliberate trade so the renderer
+    /// can pick a channel by index without special-casing channel 0.
+    pub uv_channels: Vec<Vec<Vec2>>,
     pub bounds: Option<Bounds>,
     pub stats: ModelStats,
     pub materials: Vec<MaterialInfo>,
@@ -96,6 +103,21 @@ pub struct ModelData {
 }
 
 impl ModelData {
+    /// UV coordinates for `vertex_index` in `channel`, falling back to the
+    /// vertex's own [`Vertex::uv`] when the requested channel isn't stored
+    /// (single-set models, or an out-of-range channel).
+    pub fn uv_for_channel(&self, vertex_index: usize, channel: usize) -> Vec2 {
+        self.uv_channels
+            .get(channel)
+            .and_then(|channel_uvs| channel_uvs.get(vertex_index).copied())
+            .unwrap_or_else(|| {
+                self.vertices
+                    .get(vertex_index)
+                    .map(|vertex| vertex.uv)
+                    .unwrap_or(Vec2::ZERO)
+            })
+    }
+
     pub fn recompute_bounds(&mut self) {
         let mut bounds = Bounds::EMPTY;
 
