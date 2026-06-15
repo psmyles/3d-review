@@ -104,6 +104,9 @@ pub mod color {
     pub const GIZMO_AXIS_Z: Color32 = Color32::from_rgb(63, 166, 239);
     /// Label glyph painted on a solid gizmo ball.
     pub const GIZMO_LABEL: Color32 = Color32::from_rgb(16, 21, 27);
+    /// Reset-view button tint: dim at rest, brightened on hover.
+    pub const GIZMO_RESET_IDLE: Color32 = Color32::from_gray(120);
+    pub const GIZMO_RESET_HOVERED: Color32 = Color32::from_gray(225);
 
     // ── Debug-view defaults ─────────────────────────────────────────────────
     // Each default is also a member of its tool's swatch palette below, so a
@@ -204,6 +207,10 @@ pub mod size {
     /// View-space depth above which an axis is treated as pointing at the viewer.
     pub const GIZMO_AXIS_ALIGNED_DEPTH: f32 = 0.99;
     pub const GIZMO_NEG_OPACITY: f32 = 0.05;
+    /// Reset-view button: icon size and inset of its center from the gizmo's
+    /// bottom-left corner.
+    pub const GIZMO_RESET_ICON_SIZE: f32 = 20.0;
+    pub const GIZMO_RESET_INSET: f32 = 17.0;
 
     // ── Option panels (not DPI-scaled) ────────────────────────────────────
     pub const PANEL_HEADER_HEIGHT: f32 = 34.0;

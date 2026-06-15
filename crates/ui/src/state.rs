@@ -69,6 +69,8 @@ impl ViewAxis {
 pub enum AxisGizmoAction {
     Orbit(Vec2),
     Snap(ViewAxis),
+    /// Return the camera to its starting "home" view (the gizmo's reset button).
+    ResetView,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
