@@ -100,6 +100,7 @@ mod ffi {
         draw_count: u32,
         uvs: *mut f32,
         uv_value_count: usize,
+        source_unit_meters: f32,
     }
 
     #[repr(C)]
@@ -215,6 +216,7 @@ mod ffi {
                 uv_set_count: scene.uv_set_count as usize,
                 material_count: scene.material_count,
                 draw_count: scene.draw_count as usize,
+                source_unit_meters: scene.source_unit_meters,
             },
             materials,
             warnings,

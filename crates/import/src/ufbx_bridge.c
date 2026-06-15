@@ -187,6 +187,12 @@ int review_import_load_fbx(
     }
 
     load_opts.generate_missing_normals = true;
+    /* Normalize every file to meters so 1 world unit == 1 m regardless of the
+       DCC's authoring units (Maya exports centimeters, so a 1 m cube is 100
+       units otherwise). With the default space conversion (TRANSFORM_ROOT) the
+       unit scale folds into the root transform and so into `geometry_to_world`,
+       which we already apply to every vertex below. */
+    load_opts.target_unit_meters = 1.0;
     scene = ufbx_load_file(path, &load_opts, &error);
     if (!scene) {
         char buffer[256];
@@ -194,6 +200,11 @@ int review_import_load_fbx(
         review_import_set_error(out_error, buffer);
         return 0;
     }
+
+    /* Record what the file claimed its unit was, before our target_unit_meters
+       normalization rescaled everything to meters. Surfaced in the stats panel
+       so a mis-authored export is visible rather than silently trusted. */
+    out_scene->source_unit_meters = (float)scene->settings.original_unit_meters;
 
     for (node_index = 0; node_index < scene->nodes.count; node_index++) {
         ufbx_node *node = scene->nodes.data[node_index];

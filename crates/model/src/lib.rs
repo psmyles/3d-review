@@ -72,7 +72,7 @@ pub struct TopologyFace {
     pub index_count: u32,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ModelStats {
     pub polygon_count: usize,
     pub triangle_count: usize,
@@ -80,6 +80,12 @@ pub struct ModelStats {
     pub uv_set_count: usize,
     pub material_count: usize,
     pub draw_count: usize,
+    /// The model's authored world unit, in meters per source unit, as recorded
+    /// in the file (e.g. `0.01` for a centimeter file like a Maya export). This
+    /// is the *original* unit before import normalizes everything to meters, so
+    /// the stats panel can show what the file claimed. `0.0` means the source
+    /// declared no unit (e.g. the built-in demo, or a file missing the metadata).
+    pub source_unit_meters: f32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -148,6 +154,7 @@ pub fn demo_cube_model() -> ModelData {
             uv_set_count: 1,
             material_count: 1,
             draw_count: 1,
+            source_unit_meters: 1.0,
         },
         materials: vec![MaterialInfo {
             name: "Default".to_owned(),

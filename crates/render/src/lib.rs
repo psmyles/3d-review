@@ -17,9 +17,19 @@ const CAMERA_TRANSITION_SECONDS: f32 = 0.3;
 const MAX_DEPTH_RATIO: f32 = 5_000.0;
 /// Absolute floor for the near plane so it never collapses to zero.
 const MIN_Z_NEAR: f32 = 0.01;
-/// Worst-case radius of the static reference grid (±12 units, corner ~17). The
-/// far plane must reach it so the grid isn't clipped behind small models.
-const GRID_FAR_RADIUS: f32 = 20.0;
+/// Half-extent of the static reference grid: a 2 m square floor (±1 m) ruled in
+/// 10 cm cells. Shared with `geometry::scene_lines` and the home-view framing so
+/// the grid's size is defined in exactly one place. World units are meters.
+pub(crate) const GRID_HALF_EXTENT: f32 = 1.0;
+/// Axis-aligned bounds of that flat grid, used to frame the empty "home" view so
+/// the whole floor is visible on launch and on reset.
+const GRID_BOUNDS: Bounds = Bounds {
+    min: Vec3::new(-GRID_HALF_EXTENT, 0.0, -GRID_HALF_EXTENT),
+    max: Vec3::new(GRID_HALF_EXTENT, 0.0, GRID_HALF_EXTENT),
+};
+/// Worst-case radius of the grid (its corner, ~1.41 m) with margin. The far
+/// plane must reach it so the grid isn't clipped behind small models.
+const GRID_FAR_RADIUS: f32 = GRID_HALF_EXTENT * 2.0;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ShadingMode {
@@ -132,21 +142,22 @@ pub struct OrbitCamera {
 
 impl Default for OrbitCamera {
     fn default() -> Self {
-        Self {
-            // A neutral "review" home view: centered on the world origin (the
-            // grid's axis crossing) and close to an isometric angle so the empty
-            // scene reads centered and proportions hold on reset.
+        // A neutral "review" home view: a front-right isometric angle, framed so
+        // the whole 2 m reference grid is visible when the scene is empty.
+        let base = Self {
             target: Vec3::ZERO,
             // +45° yaw parks the eye in the +X/+Y/+Z octant (front-right iso): +X
             // reads lower-right, +Z lower-left, both facing the viewer. (-45° is
             // the mirror image and shows the -X side instead.)
             yaw: 45.0_f32.to_radians(),
             pitch: -35.264_39_f32.to_radians(),
+            // `distance` / `scene_radius` are recomputed by `framed_to_bounds`.
             distance: 7.5,
             aspect_ratio: 16.0 / 9.0,
             fov_y_radians: 50.0_f32.to_radians(),
             scene_radius: 1.0,
-        }
+        };
+        base.framed_to_bounds(GRID_BOUNDS)
     }
 }
 
@@ -397,13 +408,14 @@ impl Renderer {
         self.animate_camera_to(self.camera.with_offset_direction(direction));
     }
 
-    /// Animate back to the default "home" view, preserving the live aspect ratio
-    /// so reset lands on the same framing regardless of window size.
+    /// Animate back to the default "home" view, re-framing the grid for the live
+    /// aspect ratio so the whole floor stays visible regardless of window shape.
     pub fn animate_camera_to_home(&mut self) {
-        self.animate_camera_to(OrbitCamera {
+        let home = OrbitCamera {
             aspect_ratio: self.camera.aspect_ratio,
             ..OrbitCamera::default()
-        });
+        };
+        self.animate_camera_to(home.framed_to_bounds(GRID_BOUNDS));
     }
 
     pub fn update_camera_animation(&mut self, delta_seconds: f32) -> bool {

@@ -11,13 +11,20 @@ use review_model::ModelData;
 
 use crate::scene::SceneVertex;
 
-/// The static reference grid + colored X/Z axis lines, in world space.
+/// The static reference grid + colored X/Z axis lines, in world space. A 2 m
+/// square floor (`±GRID_HALF_EXTENT`) ruled in 10 cm cells, with a stronger line
+/// every 0.5 m. Iterates integer cell indices to avoid float drift.
 pub(crate) fn scene_lines() -> Vec<SceneVertex> {
     let mut vertices = Vec::new();
-    let grid_extent = 12;
+    let extent = crate::GRID_HALF_EXTENT;
+    // 10 cm cells across the half-extent, so ±10 lines for a ±1 m grid.
+    const CELL: f32 = 0.1;
+    let lines_per_half = (extent / CELL).round() as i32;
 
-    for line in -grid_extent..=grid_extent {
-        let strong = line % 4 == 0;
+    for line in -lines_per_half..=lines_per_half {
+        let coord = line as f32 * CELL;
+        // Emphasize every 0.5 m (every 5th 10 cm line).
+        let strong = line % 5 == 0;
         let color = if strong {
             [0.42, 0.49, 0.54, 0.46]
         } else {
@@ -25,28 +32,28 @@ pub(crate) fn scene_lines() -> Vec<SceneVertex> {
         };
         push_line(
             &mut vertices,
-            [line as f32, 0.0, -grid_extent as f32],
-            [line as f32, 0.0, grid_extent as f32],
+            [coord, 0.0, -extent],
+            [coord, 0.0, extent],
             color,
         );
         push_line(
             &mut vertices,
-            [-grid_extent as f32, 0.0, line as f32],
-            [grid_extent as f32, 0.0, line as f32],
+            [-extent, 0.0, coord],
+            [extent, 0.0, coord],
             color,
         );
     }
 
     push_line(
         &mut vertices,
-        [-grid_extent as f32, 0.002, 0.0],
-        [grid_extent as f32, 0.002, 0.0],
+        [-extent, 0.002, 0.0],
+        [extent, 0.002, 0.0],
         [0.94, 0.23, 0.28, 1.0],
     );
     push_line(
         &mut vertices,
-        [0.0, 0.004, -grid_extent as f32],
-        [0.0, 0.004, grid_extent as f32],
+        [0.0, 0.004, -extent],
+        [0.0, 0.004, extent],
         [0.18, 0.53, 1.0, 1.0],
     );
     vertices

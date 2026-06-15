@@ -48,6 +48,10 @@ typedef struct review_import_scene {
        (single-set models carry channel 0 in review_import_vertex::uv). */
     float *uvs;
     size_t uv_value_count;
+    /* The file's authored world unit in meters per source unit (e.g. 0.01 for a
+       centimeter file), captured before normalizing the scene to meters. 0.0 if
+       the file declared no unit. */
+    float source_unit_meters;
 } review_import_scene;
 
 typedef struct review_import_options {
