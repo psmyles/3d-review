@@ -99,6 +99,20 @@ enum DragMode {
     Pan,
 }
 
+/// Decode the embedded application logo into a winit window icon — used for the
+/// title bar, Alt+Tab, and the taskbar button while the app is running. A decode
+/// failure is non-fatal: the window simply falls back to the system default.
+/// (The *exe* icon for Explorer / pinned shortcuts is embedded separately in
+/// `build.rs`.)
+fn load_window_icon() -> Option<winit::window::Icon> {
+    const PNG: &[u8] = include_bytes!("../../../assets/icons/application-logo.png");
+    let image = image::load_from_memory_with_format(PNG, image::ImageFormat::Png)
+        .ok()?
+        .into_rgba8();
+    let (width, height) = image.dimensions();
+    winit::window::Icon::from_rgba(image.into_raw(), width, height).ok()
+}
+
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
@@ -109,6 +123,7 @@ impl ApplicationHandler for App {
             .create_window(
                 WindowAttributes::default()
                     .with_title("3D Review")
+                    .with_window_icon(load_window_icon())
                     .with_min_inner_size(winit::dpi::LogicalSize::new(960.0, 640.0)),
             )
             .expect("failed to create application window");
