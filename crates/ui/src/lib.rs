@@ -879,9 +879,14 @@ struct PanelOutcome {
 const PANEL_HEADER_HEIGHT: f32 = 34.0;
 /// Horizontal inset of the title text from the panel's left edge.
 const PANEL_HEADER_PAD_X: f32 = 16.0;
+/// Outer corner radius of the panel. The header rounds its top corners and the
+/// body rounds its bottom corners so the two stacked elements read as one card.
+const PANEL_CORNER_RADIUS: u8 = 6;
 /// Padding around the body content. Kept tight: this is a diagnostic tool,
 /// density matters more than air.
 const PANEL_CONTENT_MARGIN: i8 = 14;
+/// Padding between the header divider and the body's first control row.
+const PANEL_BODY_TOP_MARGIN: i8 = 10;
 /// Fixed width of the label column in the two-column control table. Wide
 /// enough for the longest label ("Normal Length") so the control column always
 /// starts at the same x, giving the rows a tabular alignment.
@@ -891,8 +896,6 @@ const PANEL_COL_GAP: f32 = 12.0;
 /// Height of a control row (label + control share this; both vertically
 /// centered within it).
 const PANEL_ROW_H: f32 = 22.0;
-/// Vertical gap below the header separator, before the first control row.
-const PANEL_SEPARATOR_GAP: f32 = 6.0;
 /// Vertical gap between stacked control rows (slider → swatches).
 const PANEL_ROW_GAP: f32 = 6.0;
 /// Vertical gap before the full-width action button (Reset all).
@@ -924,25 +927,40 @@ fn option_panel(
         toggle_collapse: false,
         close: false,
     };
-    // Same frame whether collapsed or expanded — collapsing only drops the body,
-    // it must never restyle the panel. The fill/stroke/radius are identical in
-    // both states.
+
+    let panel_fill = egui::Color32::from_rgb(39, 39, 39);
+    let panel_stroke = egui::Stroke::new(1.0, egui::Color32::from_gray(66));
+
+    // The panel is two stacked elements: an always-visible header bar and a
+    // controls body shown only when expanded. They sit flush (no inter-frame
+    // spacing) and share fill/stroke, so their touching borders read as a single
+    // full-width divider and the pair looks like one rounded card.
+    ui.spacing_mut().item_spacing.y = 0.0;
+
+    // ── Header bar ──────────────────────────────────────────────────────────
+    // Rounds all four corners when collapsed (a standalone pill); only the top
+    // corners when expanded so it meets the body squarely.
+    let header_corner = if collapsed {
+        egui::CornerRadius::same(PANEL_CORNER_RADIUS)
+    } else {
+        egui::CornerRadius {
+            nw: PANEL_CORNER_RADIUS,
+            ne: PANEL_CORNER_RADIUS,
+            sw: 0,
+            se: 0,
+        }
+    };
     egui::Frame::NONE
-        .fill(egui::Color32::from_rgb(39, 39, 39))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(66)))
-        .corner_radius(6.0)
+        .fill(panel_fill)
+        .stroke(panel_stroke)
+        .corner_radius(header_corner)
         .show(ui, |ui| {
-            // Reserve the header bar and claim it as the interaction handle
-            // *before* painting the title and close button on top. A single click
-            // toggles collapse; a drag moves the shared position; the close button
-            // (painted on top, with its own hit area) dismisses the panel.
-            let header_rect = egui::Rect::from_min_size(
-                ui.cursor().min,
+            // Allocate the full-width bar so the frame actually paints its
+            // background. (An interact-only header claims zero width, which is
+            // why the bar went transparent when collapsed.) The bar is the
+            // interaction handle: a single click toggles collapse, a drag moves.
+            let (header_rect, header_response) = ui.allocate_exact_size(
                 egui::vec2(ui.available_width(), PANEL_HEADER_HEIGHT),
-            );
-            let header_response = ui.interact(
-                header_rect,
-                ui.make_persistent_id(("option_panel_header", title)),
                 egui::Sense::click_and_drag(),
             );
             if header_response.dragged() {
@@ -1011,35 +1029,34 @@ fn option_panel(
             if close_response.clicked() {
                 outcome.close = true;
             }
-
-            // interact()/painter don't advance the layout cursor; step past the
-            // header bar so the separator and body fall below it.
-            ui.add_space(PANEL_HEADER_HEIGHT);
-
-            // Collapsed: header only, nothing below. The frame above already
-            // closed tight around the header, so the panel keeps its exact style.
-            if collapsed {
-                return;
-            }
-
-            // Separator lives inside the content margin so its ends line up with
-            // the control column (the column "ends where the line ends").
-            egui::Frame::NONE
-                .inner_margin(egui::Margin {
-                    left: PANEL_CONTENT_MARGIN,
-                    right: PANEL_CONTENT_MARGIN,
-                    top: 0,
-                    bottom: PANEL_CONTENT_MARGIN,
-                })
-                .show(ui, |ui| {
-                    // Zero implicit row spacing first so the separator sits tight
-                    // to the first control row; rows space themselves via add_space.
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    ui.separator();
-                    ui.add_space(PANEL_SEPARATOR_GAP);
-                    add_contents(ui);
-                });
         });
+
+    // ── Controls body ──────────────────────────────────────────────────────
+    // A separate element below the header, hidden entirely when collapsed. The
+    // divider between the two is their shared (full-width) border.
+    if !collapsed {
+        egui::Frame::NONE
+            .fill(panel_fill)
+            .stroke(panel_stroke)
+            .corner_radius(egui::CornerRadius {
+                nw: 0,
+                ne: 0,
+                sw: PANEL_CORNER_RADIUS,
+                se: PANEL_CORNER_RADIUS,
+            })
+            .inner_margin(egui::Margin {
+                left: PANEL_CONTENT_MARGIN,
+                right: PANEL_CONTENT_MARGIN,
+                top: PANEL_BODY_TOP_MARGIN,
+                bottom: PANEL_CONTENT_MARGIN,
+            })
+            .show(ui, |ui| {
+                // Rows space themselves via add_space; kill the implicit gap.
+                ui.spacing_mut().item_spacing.y = 0.0;
+                add_contents(ui);
+            });
+    }
+
     outcome
 }
 
