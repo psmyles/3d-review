@@ -3,7 +3,7 @@ use review_model::Bounds;
 
 mod scene;
 
-pub use scene::{SceneCallback, SCENE_DEPTH_FORMAT, SCENE_SAMPLE_COUNT};
+pub use scene::{SCENE_DEPTH_FORMAT, SCENE_SAMPLE_COUNT, SceneCallback};
 
 const CAMERA_TRANSITION_SECONDS: f32 = 0.3;
 

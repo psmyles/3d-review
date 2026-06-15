@@ -540,6 +540,12 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
         let panel_pos = state.panel_pos.unwrap_or(default_pos);
 
         let area_response = egui::Area::new(egui::Id::new("option_panel"))
+            // Persistent overlay chrome, not a transient popup: disable egui's
+            // default fade-in. For an always-present anchored area `visible_last_frame`
+            // reads false every frame, so the fade never completes and egui calls
+            // `request_repaint()` forever — a busy-loop that pins the GPU. (See
+            // egui area.rs:558-568.)
+            .fade_in(false)
             .current_pos(panel_pos)
             // We drive position ourselves via the header drag handle; let egui's
             // own area-move stay off so a body drag can't fight our positioning
@@ -549,18 +555,16 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
                 ui.set_width(left_panel_width);
                 let collapsed = state.panel_collapsed;
                 match panel {
-                    OptionPanel::UvChecker => {
-                        option_panel(ui, "UV Checker", collapsed, |ui| {
-                            ui.horizontal(|ui| {
-                                table_label_cell(ui, "Checker Texture");
-                                ui.label(rich_label(
-                                    "Soon",
-                                    PANEL_LABEL_FONT_SIZE,
-                                    egui::Color32::from_gray(120),
-                                ));
-                            });
-                        })
-                    }
+                    OptionPanel::UvChecker => option_panel(ui, "UV Checker", collapsed, |ui| {
+                        ui.horizontal(|ui| {
+                            table_label_cell(ui, "Checker Texture");
+                            ui.label(rich_label(
+                                "Soon",
+                                PANEL_LABEL_FONT_SIZE,
+                                egui::Color32::from_gray(120),
+                            ));
+                        });
+                    }),
                     OptionPanel::FaceNormals => option_panel(ui, "Face Normals", collapsed, |ui| {
                         labeled_slider(ui, "Normal Length", &mut state.face_normals.length);
                         ui.add_space(PANEL_ROW_GAP);
@@ -611,6 +615,7 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
 
     if state.show_axis_gizmo {
         let gizmo_response = egui::Area::new(egui::Id::new("axis_gizmo"))
+            .fade_in(false)
             .anchor(
                 egui::Align2::RIGHT_TOP,
                 egui::vec2(
@@ -626,6 +631,7 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
 
     if state.show_stats {
         egui::Area::new(egui::Id::new("stats_overlay"))
+            .fade_in(false)
             .anchor(
                 egui::Align2::LEFT_BOTTOM,
                 egui::vec2(
@@ -638,7 +644,10 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
                     .fill(egui::Color32::from_rgba_premultiplied(20, 22, 25, 130))
                     .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(52)))
                     .corner_radius(6.0)
-                    .inner_margin(egui::Margin::symmetric(STATS_PANEL_PAD_X_PX, STATS_PANEL_PAD_Y_PX))
+                    .inner_margin(egui::Margin::symmetric(
+                        STATS_PANEL_PAD_X_PX,
+                        STATS_PANEL_PAD_Y_PX,
+                    ))
                     .show(ui, |ui| {
                         ui.set_width(STATS_PANEL_WIDTH_PX);
                         stats_grid(ui, state);
@@ -1006,10 +1015,7 @@ fn option_panel(
             // own Sense::click() wins over the header's, so clicking the X closes
             // rather than toggling collapse.
             let close_rect = egui::Rect::from_min_size(
-                egui::pos2(
-                    header_rect.right() - PANEL_HEADER_HEIGHT,
-                    header_rect.top(),
-                ),
+                egui::pos2(header_rect.right() - PANEL_HEADER_HEIGHT, header_rect.top()),
                 egui::vec2(PANEL_HEADER_HEIGHT, PANEL_HEADER_HEIGHT),
             );
             let close_response = ui.interact(
@@ -1018,11 +1024,8 @@ fn option_panel(
                 egui::Sense::click(),
             );
             if close_response.hovered() {
-                ui.painter().rect_filled(
-                    close_rect.shrink(4.0),
-                    5.0,
-                    egui::Color32::from_gray(58),
-                );
+                ui.painter()
+                    .rect_filled(close_rect.shrink(4.0), 5.0, egui::Color32::from_gray(58));
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
             if let Some(texture) = load_icon_texture(ui, &ICON_CLOSE) {
@@ -1081,8 +1084,10 @@ fn option_panel(
 /// column + gap so the caller can drop the control straight after it.
 fn table_label_cell(ui: &mut egui::Ui, label: &str) -> f32 {
     let control_w = (ui.available_width() - PANEL_LABEL_COL_W - PANEL_COL_GAP).max(0.0);
-    let (label_rect, _) =
-        ui.allocate_exact_size(egui::vec2(PANEL_LABEL_COL_W, PANEL_ROW_H), egui::Sense::hover());
+    let (label_rect, _) = ui.allocate_exact_size(
+        egui::vec2(PANEL_LABEL_COL_W, PANEL_ROW_H),
+        egui::Sense::hover(),
+    );
     ui.painter().text(
         egui::pos2(label_rect.left(), label_rect.center().y),
         egui::Align2::LEFT_CENTER,
@@ -1213,9 +1218,17 @@ fn stats_grid(ui: &mut egui::Ui, state: &UiState) {
 /// panel's right edge so the numeric column reads as a tidy block.
 fn stat_row(ui: &mut egui::Ui, label: &str, value: &str) {
     ui.horizontal(|ui| {
-        ui.label(mono_label(label, STATS_FONT_SIZE_PX, egui::Color32::from_gray(178)));
+        ui.label(mono_label(
+            label,
+            STATS_FONT_SIZE_PX,
+            egui::Color32::from_gray(178),
+        ));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(mono_label(value, STATS_FONT_SIZE_PX, egui::Color32::from_gray(232)));
+            ui.label(mono_label(
+                value,
+                STATS_FONT_SIZE_PX,
+                egui::Color32::from_gray(232),
+            ));
         });
     });
 }
