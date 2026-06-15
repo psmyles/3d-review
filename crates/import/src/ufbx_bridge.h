@@ -43,6 +43,11 @@ typedef struct review_import_scene {
     size_t warning_count;
     uint32_t uv_set_count;
     uint32_t draw_count;
+    /* Channel-major flat UV storage, only allocated when uv_set_count > 1:
+       uvs[(channel * vertex_count + vertex) * 2 + {0,1}]. NULL otherwise
+       (single-set models carry channel 0 in review_import_vertex::uv). */
+    float *uvs;
+    size_t uv_value_count;
 } review_import_scene;
 
 typedef struct review_import_options {
