@@ -1,6 +1,4 @@
-- start state camera angle
-- reset camera button
-- show bounds button
+3D view
 - image based lighting
 - viewport background controls
 - MSAA toggle / controls
@@ -10,4 +8,7 @@
 - texel density
 - UV stretching
 - overdraw
+- 
+
+UV view
 - 
