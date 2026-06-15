@@ -1,8 +1,8 @@
-//! Wireframe tool options: just the line color.
+//! Wireframe tool options: the line color, plus a reset to its default.
 
-use crate::state::UiState;
-use crate::theme::color;
-use crate::widgets::color_swatch_row;
+use crate::state::{UiState, WireframePanelState};
+use crate::theme::{color, size};
+use crate::widgets::{color_swatch_row, wide_reset_button};
 
 pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
     color_swatch_row(
@@ -11,4 +11,8 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
         &mut state.wireframe.color,
         &color::WIREFRAME_SWATCHES,
     );
+    ui.add_space(size::PANEL_ACTION_GAP);
+    if wide_reset_button(ui).clicked() {
+        state.wireframe = WireframePanelState::default();
+    }
 }

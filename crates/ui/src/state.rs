@@ -92,7 +92,7 @@ pub struct WireframePanelState {
 impl Default for WireframePanelState {
     fn default() -> Self {
         Self {
-            color: egui::Color32::WHITE,
+            color: theme::color::WIREFRAME_DEFAULT,
         }
     }
 }

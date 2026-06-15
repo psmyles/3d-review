@@ -106,24 +106,30 @@ pub mod color {
     pub const GIZMO_LABEL: Color32 = Color32::from_rgb(16, 21, 27);
 
     // ── Debug-view defaults ─────────────────────────────────────────────────
+    // Each default is also a member of its tool's swatch palette below, so a
+    // reset lands on a swatch that stays highlighted (the swatch row marks the
+    // entry exactly equal to the selected color).
     /// Default face-normal line color.
-    pub const FACE_NORMAL_DEFAULT: Color32 = Color32::from_rgb(255, 32, 32);
+    pub const FACE_NORMAL_DEFAULT: Color32 = Color32::from_rgb(255, 27, 27);
     /// Default vertex-normal line color.
     pub const VERTEX_NORMAL_DEFAULT: Color32 = Color32::from_rgb(32, 224, 232);
+    /// Default wireframe line color.
+    pub const WIREFRAME_DEFAULT: Color32 = Color32::WHITE;
 
-    /// Swatch palette offered for the normal-line color rows.
+    /// Swatch palette offered for the normal-line color rows. Includes both
+    /// normal-view defaults so either can be restored by reset.
     pub const NORMAL_SWATCHES: [Color32; 5] = [
         Color32::WHITE,
         Color32::BLACK,
-        Color32::from_rgb(32, 224, 232),
+        VERTEX_NORMAL_DEFAULT,
         Color32::from_rgb(29, 255, 27),
-        Color32::from_rgb(255, 27, 27),
+        FACE_NORMAL_DEFAULT,
     ];
 
     /// Swatch palette offered for the wireframe color row: white (default),
     /// black, red, cyan, green, 60% grey.
     pub const WIREFRAME_SWATCHES: [Color32; 6] = [
-        Color32::WHITE,
+        WIREFRAME_DEFAULT,
         Color32::BLACK,
         Color32::from_rgb(255, 27, 27),
         Color32::from_rgb(32, 224, 232),
