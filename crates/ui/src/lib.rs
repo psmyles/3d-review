@@ -25,11 +25,11 @@ const TOOLBAR_DOUBLE_ICON_GROUP_WIDTH_PX: f32 = 93.0;
 const TOOLBAR_MODE_GROUP_WIDTH_PX: f32 = 180.0;
 const TOOLBAR_GROUP_HEIGHT_PX: f32 = 48.0;
 const TOOLBAR_GROUP_PADDING_PX: f32 = 3.0;
-const STATS_FONT_SIZE_PX: f32 = 13.5;
+const STATS_FONT_SIZE_PX: f32 = 12.0;
 const STATS_ROW_SPACING_PX: f32 = 3.0;
 const STATS_PANEL_WIDTH_PX: f32 = 132.0;
-const STATS_PANEL_PAD_X_PX: i8 = 12;
-const STATS_PANEL_PAD_Y_PX: i8 = 10;
+const STATS_PANEL_PAD_X_PX: i8 = 9;
+const STATS_PANEL_PAD_Y_PX: i8 = 9;
 /// Inset of the stats overlay from the left and bottom viewport edges. Kept
 /// equal so the panel reads as equidistant from both.
 const STATS_OVERLAY_MARGIN_PX: f32 = 18.0;
@@ -974,6 +974,21 @@ const PANEL_SWATCH_SIZE: f32 = 24.0;
 const PANEL_SWATCH_GAP: f32 = 6.0;
 /// Width of the numeric text field paired with the checker-tiling slider.
 const PANEL_TILING_TEXT_W: f32 = 48.0;
+/// Vertical padding inside the compact dropdown button. Trimmed (vs. egui's
+/// default) so the closed combo is the same height as the slider / text-field
+/// rows — every label+control row in the panel then reads as one uniform band.
+const PANEL_COMBO_BUTTON_PAD_Y: f32 = 2.0;
+/// Max height of an opened dropdown popup before it starts to scroll.
+const PANEL_COMBO_POPUP_MAX_H: f32 = 240.0;
+/// Per-option row height, inter-option gap, and per-option vertical padding in
+/// an opened dropdown. Kept small so a short option list is compact.
+const PANEL_COMBO_OPTION_H: f32 = 20.0;
+const PANEL_COMBO_OPTION_GAP: f32 = 2.0;
+const PANEL_COMBO_OPTION_PAD_Y: f32 = 2.0;
+/// Dropdown option text colors. The active option reads from a brighter text
+/// color rather than a low-contrast highlight fill; the rest are dimmed.
+const PANEL_COMBO_TEXT_SELECTED: egui::Color32 = egui::Color32::from_gray(238);
+const PANEL_COMBO_TEXT_DIM: egui::Color32 = egui::Color32::from_gray(150);
 
 /// Inclusive checker-tiling range and the value a fresh / reset panel uses.
 const CHECKER_TILING_MIN: u32 = 1;
@@ -1148,19 +1163,56 @@ fn table_label_cell(ui: &mut egui::Ui, label: &str) -> f32 {
     control_w
 }
 
+/// A dropdown sized to one control row: the closed button matches `PANEL_ROW_H`
+/// (so combo rows are the same height as slider / text-field rows), and the
+/// opened popup uses short option rows with the active option distinguished by a
+/// brighter text color instead of a low-contrast highlight fill.
+fn compact_combo(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    control_w: f32,
+    selected_text: impl Into<egui::WidgetText>,
+    contents: impl FnOnce(&mut egui::Ui),
+) {
+    // Shrink the closed button to row height.
+    ui.spacing_mut().interact_size.y = PANEL_ROW_H;
+    ui.spacing_mut().button_padding.y = PANEL_COMBO_BUTTON_PAD_Y;
+    egui::ComboBox::from_id_salt(id_salt)
+        .selected_text(selected_text)
+        .width(control_w)
+        .height(PANEL_COMBO_POPUP_MAX_H)
+        .show_ui(ui, |ui| {
+            // Compact the option rows.
+            ui.spacing_mut().item_spacing.y = PANEL_COMBO_OPTION_GAP;
+            ui.spacing_mut().interact_size.y = PANEL_COMBO_OPTION_H;
+            ui.spacing_mut().button_padding.y = PANEL_COMBO_OPTION_PAD_Y;
+            // Drop the blue selection fill (zero-width stroke paints no border)
+            // and carry the brighter color through as the selected text color;
+            // dim the unselected options so the active one stands out by
+            // contrast alone.
+            ui.visuals_mut().selection.bg_fill = egui::Color32::TRANSPARENT;
+            ui.visuals_mut().selection.stroke = egui::Stroke::new(0.0, PANEL_COMBO_TEXT_SELECTED);
+            ui.visuals_mut().widgets.inactive.fg_stroke.color = PANEL_COMBO_TEXT_DIM;
+            contents(ui);
+        });
+}
+
 /// "Checker Texture" row: a dropdown choosing which built-in checker the UV
 /// view samples.
 fn checker_texture_row(ui: &mut egui::Ui, texture: &mut CheckerTexture) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         let control_w = table_label_cell(ui, "Checker Texture");
-        egui::ComboBox::from_id_salt("uv_checker_texture")
-            .selected_text(checker_texture_label(*texture))
-            .width(control_w)
-            .show_ui(ui, |ui| {
+        compact_combo(
+            ui,
+            "uv_checker_texture",
+            control_w,
+            checker_texture_label(*texture),
+            |ui| {
                 ui.selectable_value(texture, CheckerTexture::Greyscale, "Greyscale");
                 ui.selectable_value(texture, CheckerTexture::Color, "Color");
-            });
+            },
+        );
     });
 }
 
@@ -1210,14 +1262,17 @@ fn checker_channel_row(ui: &mut egui::Ui, uv_channel: &mut u32, uv_set_count: us
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         let control_w = table_label_cell(ui, "Model UV channel");
-        egui::ComboBox::from_id_salt("uv_checker_channel")
-            .selected_text(format!("Channel {uv_channel}"))
-            .width(control_w)
-            .show_ui(ui, |ui| {
+        compact_combo(
+            ui,
+            "uv_checker_channel",
+            control_w,
+            format!("Channel {uv_channel}"),
+            |ui| {
                 for channel in 0..uv_set_count as u32 {
                     ui.selectable_value(uv_channel, channel, format!("Channel {channel}"));
                 }
-            });
+            },
+        );
     });
 }
 
