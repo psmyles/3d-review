@@ -87,6 +87,10 @@ const ICON_INFO: AppIcon = AppIcon {
     id: "icon_info",
     png_bytes: include_bytes!("../../../assets/icons/icon_info.png"),
 };
+const ICON_CLOSE: AppIcon = AppIcon {
+    id: "icon_close",
+    png_bytes: include_bytes!("../../../assets/icons/icon_close.png"),
+};
 
 /// A custom font embedded into the binary and registered with egui at startup.
 struct CustomFont {
@@ -223,8 +227,9 @@ pub struct UiState {
     pub show_stats: bool,
     /// The single options panel currently shown, if any.
     pub active_panel: Option<OptionPanel>,
-    /// Collapse state shared by whichever panel is active.
-    pub panel_expanded: bool,
+    /// Whether the active panel is collapsed to just its header bar. Toggled by
+    /// a single click on the header; reset to expanded whenever a panel opens.
+    pub panel_collapsed: bool,
     /// Last viewport position the panel was dragged to (egui points). Shared by
     /// every option panel so they all spawn where the last one was left.
     pub panel_pos: Option<egui::Pos2>,
@@ -244,7 +249,7 @@ impl Default for UiState {
             show_axis_gizmo: true,
             show_stats: true,
             active_panel: None,
-            panel_expanded: true,
+            panel_collapsed: false,
             panel_pos: None,
             face_normals: NormalPanelState {
                 length: 0.18,
@@ -260,9 +265,8 @@ impl Default for UiState {
 }
 
 impl UiState {
-    /// Open (or switch to) a tool's options panel. Opening always expands the
-    /// panel; the shared drag position is preserved so it spawns where the last
-    /// panel was left.
+    /// Open (or switch to) a tool's options panel. The shared drag position is
+    /// preserved so it spawns where the last panel was left.
     fn open_panel(&mut self, panel: OptionPanel) {
         // Right-clicking the same tool again closes its panel; right-clicking a
         // different tool switches the (single) panel to it.
@@ -270,7 +274,8 @@ impl UiState {
             self.active_panel = None;
         } else {
             self.active_panel = Some(panel);
-            self.panel_expanded = true;
+            // A freshly opened (or switched-to) panel always starts expanded.
+            self.panel_collapsed = false;
         }
     }
 }
@@ -524,66 +529,59 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
 
         let area_response = egui::Area::new(egui::Id::new("option_panel"))
             .current_pos(panel_pos)
+            // We drive position ourselves via the header drag handle; let egui's
+            // own area-move stay off so a body drag can't fight our positioning
+            // (that tug-of-war is what made the panel flicker).
+            .movable(false)
             .show(ctx, |ui| {
                 ui.set_width(left_panel_width);
+                let collapsed = state.panel_collapsed;
                 match panel {
                     OptionPanel::UvChecker => {
-                        option_panel(ui, "UV Checker", &mut state.panel_expanded, |ui| {
-                            ui.add_enabled_ui(false, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(rich_label(
-                                        "Checker Texture",
-                                        15.0,
-                                        egui::Color32::from_gray(160),
-                                    ));
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            ui.label(rich_label(
-                                                "Soon",
-                                                14.0,
-                                                egui::Color32::from_gray(120),
-                                            ));
-                                        },
-                                    );
-                                });
+                        option_panel(ui, "UV Checker", collapsed, |ui| {
+                            ui.horizontal(|ui| {
+                                table_label_cell(ui, "Checker Texture");
+                                ui.label(rich_label(
+                                    "Soon",
+                                    PANEL_LABEL_FONT_SIZE,
+                                    egui::Color32::from_gray(120),
+                                ));
                             });
                         })
                     }
-                    OptionPanel::FaceNormals => option_panel(
-                        ui,
-                        "Face Normals",
-                        &mut state.panel_expanded,
-                        |ui| {
-                            labeled_slider(ui, "Normal Length", &mut state.face_normals.length);
-                            ui.add_space(10.0);
-                            color_swatch_row(ui, "Line Color", &mut state.face_normals.color);
-                            ui.add_space(14.0);
-                            if wide_reset_button(ui).clicked() {
-                                state.face_normals.length = 0.18;
-                                state.face_normals.color = egui::Color32::from_rgb(255, 32, 32);
-                            }
-                        },
-                    ),
-                    OptionPanel::VertexNormals => option_panel(
-                        ui,
-                        "Vertex Normals",
-                        &mut state.panel_expanded,
-                        |ui| {
+                    OptionPanel::FaceNormals => option_panel(ui, "Face Normals", collapsed, |ui| {
+                        labeled_slider(ui, "Normal Length", &mut state.face_normals.length);
+                        ui.add_space(PANEL_ROW_GAP);
+                        color_swatch_row(ui, "Line Color", &mut state.face_normals.color);
+                        ui.add_space(PANEL_ACTION_GAP);
+                        if wide_reset_button(ui).clicked() {
+                            state.face_normals.length = 0.18;
+                            state.face_normals.color = egui::Color32::from_rgb(255, 32, 32);
+                        }
+                    }),
+                    OptionPanel::VertexNormals => {
+                        option_panel(ui, "Vertex Normals", collapsed, |ui| {
                             labeled_slider(ui, "Normal Length", &mut state.vertex_normals.length);
-                            ui.add_space(10.0);
+                            ui.add_space(PANEL_ROW_GAP);
                             color_swatch_row(ui, "Line Color", &mut state.vertex_normals.color);
-                            ui.add_space(14.0);
+                            ui.add_space(PANEL_ACTION_GAP);
                             if wide_reset_button(ui).clicked() {
                                 state.vertex_normals.length = 0.18;
                                 state.vertex_normals.color = egui::Color32::from_rgb(32, 224, 232);
                             }
-                        },
-                    ),
+                        })
+                    }
                 }
             });
         let outcome = area_response.inner;
         let panel_size = area_response.response.rect.size();
+
+        if outcome.toggle_collapse {
+            state.panel_collapsed = !state.panel_collapsed;
+        }
+        if outcome.close {
+            state.active_panel = None;
+        }
 
         // Keep the panel inside the viewport: never let it slide under the top
         // toolbar or the bottom status bar (and not off the left/right edges).
@@ -862,36 +860,82 @@ fn icon_tile_button(
 }
 
 /// Result of drawing an [`option_panel`]: how far its header was dragged this
-/// frame.
+/// frame, plus the one-shot header interactions (collapse toggle / close).
 struct PanelOutcome {
     drag_delta: egui::Vec2,
+    toggle_collapse: bool,
+    close: bool,
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// Option-panel layout tokens. Tweak padding, sizes, and font sizes here — every
+// option panel (Face Normals / Vertex Normals / UV Checker) reads these, so a
+// change in this block re-skins all of them. Values are raw pixels (the panel
+// is intentionally not DPI-scaled, matching the rest of the panel chrome).
+// ──────────────────────────────────────────────────────────────────────────
 
 /// Compact header bar height. Kept short so the title reads as a label, not a
 /// title bar (see the reference layout).
 const PANEL_HEADER_HEIGHT: f32 = 34.0;
 /// Horizontal inset of the title text from the panel's left edge.
 const PANEL_HEADER_PAD_X: f32 = 16.0;
-/// Padding around the collapsible body content.
-const PANEL_CONTENT_MARGIN: i8 = 18;
+/// Padding around the body content. Kept tight: this is a diagnostic tool,
+/// density matters more than air.
+const PANEL_CONTENT_MARGIN: i8 = 14;
+/// Fixed width of the label column in the two-column control table. Wide
+/// enough for the longest label ("Normal Length") so the control column always
+/// starts at the same x, giving the rows a tabular alignment.
+const PANEL_LABEL_COL_W: f32 = 116.0;
+/// Gap between the label column and the control column.
+const PANEL_COL_GAP: f32 = 12.0;
+/// Height of a control row (label + control share this; both vertically
+/// centered within it).
+const PANEL_ROW_H: f32 = 22.0;
+/// Vertical gap below the header separator, before the first control row.
+const PANEL_SEPARATOR_GAP: f32 = 6.0;
+/// Vertical gap between stacked control rows (slider → swatches).
+const PANEL_ROW_GAP: f32 = 6.0;
+/// Vertical gap before the full-width action button (Reset all).
+const PANEL_ACTION_GAP: f32 = 10.0;
+/// Height of the full-width action button.
+const PANEL_BUTTON_HEIGHT: f32 = 32.0;
+/// Edge of each square color swatch, and the gap between swatches.
+const PANEL_SWATCH_SIZE: f32 = 24.0;
+const PANEL_SWATCH_GAP: f32 = 6.0;
+
+/// Title text size in the header bar.
+const PANEL_TITLE_FONT_SIZE: f32 = 14.5;
+/// Row-label text size in the control table's left column.
+const PANEL_LABEL_FONT_SIZE: f32 = 14.0;
+/// Action-button label text size.
+const PANEL_BUTTON_FONT_SIZE: f32 = 14.0;
+/// Side length of the close glyph painted in the header's right-edge button.
+/// Kept close to the hit area so the icon reads as a real button, not a speck.
+const PANEL_CLOSE_ICON_SIZE: f32 = 20.0;
 
 fn option_panel(
     ui: &mut egui::Ui,
     title: &str,
-    expanded: &mut bool,
+    collapsed: bool,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) -> PanelOutcome {
     let mut outcome = PanelOutcome {
         drag_delta: egui::Vec2::ZERO,
+        toggle_collapse: false,
+        close: false,
     };
+    // Same frame whether collapsed or expanded — collapsing only drops the body,
+    // it must never restyle the panel. The fill/stroke/radius are identical in
+    // both states.
     egui::Frame::NONE
         .fill(egui::Color32::from_rgb(39, 39, 39))
         .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(66)))
         .corner_radius(6.0)
         .show(ui, |ui| {
-            // Reserve the header bar and claim it as the drag/collapse handle
-            // *before* painting the title and chevron on top. A click on the bar
-            // (or chevron) toggles collapse; a drag moves the shared position.
+            // Reserve the header bar and claim it as the interaction handle
+            // *before* painting the title and close button on top. A single click
+            // toggles collapse; a drag moves the shared position; the close button
+            // (painted on top, with its own hit area) dismisses the panel.
             let header_rect = egui::Rect::from_min_size(
                 ui.cursor().min,
                 egui::vec2(ui.available_width(), PANEL_HEADER_HEIGHT),
@@ -903,6 +947,9 @@ fn option_panel(
             );
             if header_response.dragged() {
                 outcome.drag_delta = header_response.drag_delta();
+            }
+            if header_response.clicked() {
+                outcome.toggle_collapse = true;
             }
             if header_response.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
@@ -916,90 +963,113 @@ fn option_panel(
                 ),
                 egui::Align2::LEFT_CENTER,
                 title,
-                egui::FontId::proportional(14.5),
+                egui::FontId::proportional(PANEL_TITLE_FONT_SIZE),
                 egui::Color32::from_gray(224),
             );
 
-            // Collapse chevron, right-aligned in the bar (a square hit area the
-            // full height of the header).
-            let chevron_rect = egui::Rect::from_min_size(
+            // Close button, right-aligned in the bar (a square hit area the full
+            // height of the header), painted on top of the header handle. Its
+            // own Sense::click() wins over the header's, so clicking the X closes
+            // rather than toggling collapse.
+            let close_rect = egui::Rect::from_min_size(
                 egui::pos2(
                     header_rect.right() - PANEL_HEADER_HEIGHT,
                     header_rect.top(),
                 ),
                 egui::vec2(PANEL_HEADER_HEIGHT, PANEL_HEADER_HEIGHT),
             );
-            let chevron_response = ui.interact(
-                chevron_rect,
-                ui.make_persistent_id(("option_panel_chevron", title)),
+            let close_response = ui.interact(
+                close_rect,
+                ui.make_persistent_id(("option_panel_close", title)),
                 egui::Sense::click(),
             );
-            paint_chevron(
-                ui.painter(),
-                chevron_rect.center(),
-                *expanded,
-                chevron_response.hovered(),
-            );
-            if chevron_response.clicked() || header_response.clicked() {
-                *expanded = !*expanded;
+            if close_response.hovered() {
+                ui.painter().rect_filled(
+                    close_rect.shrink(4.0),
+                    5.0,
+                    egui::Color32::from_gray(58),
+                );
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            if let Some(texture) = load_icon_texture(ui, &ICON_CLOSE) {
+                let icon_rect = egui::Rect::from_center_size(
+                    close_rect.center(),
+                    egui::vec2(PANEL_CLOSE_ICON_SIZE, PANEL_CLOSE_ICON_SIZE),
+                );
+                let tint = if close_response.hovered() {
+                    egui::Color32::from_gray(235)
+                } else {
+                    egui::Color32::from_gray(176)
+                };
+                ui.painter().image(
+                    texture.id,
+                    icon_rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    tint,
+                );
+            }
+            if close_response.clicked() {
+                outcome.close = true;
             }
 
             // interact()/painter don't advance the layout cursor; step past the
             // header bar so the separator and body fall below it.
             ui.add_space(PANEL_HEADER_HEIGHT);
 
-            if *expanded {
-                ui.separator();
-                egui::Frame::NONE
-                    .inner_margin(egui::Margin {
-                        left: PANEL_CONTENT_MARGIN,
-                        right: PANEL_CONTENT_MARGIN,
-                        top: 14,
-                        bottom: PANEL_CONTENT_MARGIN,
-                    })
-                    .show(ui, add_contents);
+            // Collapsed: header only, nothing below. The frame above already
+            // closed tight around the header, so the panel keeps its exact style.
+            if collapsed {
+                return;
             }
+
+            // Separator lives inside the content margin so its ends line up with
+            // the control column (the column "ends where the line ends").
+            egui::Frame::NONE
+                .inner_margin(egui::Margin {
+                    left: PANEL_CONTENT_MARGIN,
+                    right: PANEL_CONTENT_MARGIN,
+                    top: 0,
+                    bottom: PANEL_CONTENT_MARGIN,
+                })
+                .show(ui, |ui| {
+                    // Zero implicit row spacing first so the separator sits tight
+                    // to the first control row; rows space themselves via add_space.
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    ui.separator();
+                    ui.add_space(PANEL_SEPARATOR_GAP);
+                    add_contents(ui);
+                });
         });
     outcome
 }
 
-/// Paint a small collapse chevron centered at `center`: pointing up when the
-/// panel is expanded (click to collapse), down when collapsed.
-fn paint_chevron(painter: &egui::Painter, center: egui::Pos2, expanded: bool, hovered: bool) {
-    let color = if hovered {
-        egui::Color32::from_gray(224)
-    } else {
-        egui::Color32::from_gray(168)
-    };
-    let half_w = 5.0;
-    let half_h = 3.0;
-    let (left, tip, right) = if expanded {
-        (
-            egui::pos2(center.x - half_w, center.y + half_h),
-            egui::pos2(center.x, center.y - half_h),
-            egui::pos2(center.x + half_w, center.y + half_h),
-        )
-    } else {
-        (
-            egui::pos2(center.x - half_w, center.y - half_h),
-            egui::pos2(center.x, center.y + half_h),
-            egui::pos2(center.x + half_w, center.y - half_h),
-        )
-    };
-    let stroke = egui::Stroke::new(1.6, color);
-    painter.line_segment([left, tip], stroke);
-    painter.line_segment([tip, right], stroke);
+/// Paint a fixed-width label cell (left column of the control table) and return
+/// the width remaining for the control cell. Advances the cursor past the label
+/// column + gap so the caller can drop the control straight after it.
+fn table_label_cell(ui: &mut egui::Ui, label: &str) -> f32 {
+    let control_w = (ui.available_width() - PANEL_LABEL_COL_W - PANEL_COL_GAP).max(0.0);
+    let (label_rect, _) =
+        ui.allocate_exact_size(egui::vec2(PANEL_LABEL_COL_W, PANEL_ROW_H), egui::Sense::hover());
+    ui.painter().text(
+        egui::pos2(label_rect.left(), label_rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(PANEL_LABEL_FONT_SIZE),
+        egui::Color32::from_gray(180),
+    );
+    ui.add_space(PANEL_COL_GAP);
+    control_w
 }
 
 fn labeled_slider(ui: &mut egui::Ui, label: &str, value: &mut f32) {
-    let row_width = ui.available_width();
     ui.horizontal(|ui| {
-        ui.set_width(row_width);
-        ui.label(rich_label(label, 15.0, egui::Color32::from_gray(180)));
-        ui.add_space(16.0);
-        // Let the rail consume the rest of the row (minus the handle's reach) so
-        // the slider's right edge lines up with the color swatches below it.
-        ui.spacing_mut().slider_width = (ui.available_width() - 12.0).max(0.0);
+        // Zero egui's implicit inter-item gap so our explicit column gap is the
+        // only horizontal spacing.
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let control_w = table_label_cell(ui, label);
+        // Fill the control column exactly; egui keeps the handle inside the rail
+        // rect, so the rail spans to the column's right edge without spilling.
+        ui.spacing_mut().slider_width = control_w;
         ui.add(
             egui::Slider::new(value, 0.02..=1.0)
                 .show_value(false)
@@ -1018,21 +1088,28 @@ fn color_swatch_row(ui: &mut egui::Ui, label: &str, selected: &mut egui::Color32
     ];
 
     ui.horizontal(|ui| {
-        ui.label(rich_label(label, 15.0, egui::Color32::from_gray(180)));
-        ui.add_space(16.0);
-        for color in COLORS {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let control_w = table_label_cell(ui, label);
+        // Compact thumbnails with tight, even gaps, left-aligned in the column;
+        // capped so they stay small rather than filling the whole column.
+        let gaps = PANEL_SWATCH_GAP * (COLORS.len() as f32 - 1.0);
+        let swatch = ((control_w - gaps) / COLORS.len() as f32).clamp(0.0, PANEL_SWATCH_SIZE);
+        for (i, color) in COLORS.iter().enumerate() {
             let (rect, response) =
-                ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::click());
+                ui.allocate_exact_size(egui::vec2(swatch, swatch), egui::Sense::click());
             if response.clicked() {
-                *selected = color;
+                *selected = *color;
             }
-            let stroke = if *selected == color {
+            let stroke = if selected == color {
                 egui::Stroke::new(2.0, egui::Color32::from_rgb(88, 135, 217))
             } else {
                 egui::Stroke::new(1.0, egui::Color32::from_gray(28))
             };
             ui.painter()
-                .rect(rect, 6.0, color, stroke, egui::StrokeKind::Outside);
+                .rect(rect, 5.0, *color, stroke, egui::StrokeKind::Outside);
+            if i + 1 < COLORS.len() {
+                ui.add_space(PANEL_SWATCH_GAP);
+            }
         }
     });
 }
@@ -1043,7 +1120,7 @@ fn wide_reset_button(ui: &mut egui::Ui) -> egui::Response {
     // horizontal align), so paint the label ourselves to keep it centered.
     let width = ui.available_width();
     let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(width, 40.0), egui::Sense::click());
+        ui.allocate_exact_size(egui::vec2(width, PANEL_BUTTON_HEIGHT), egui::Sense::click());
     let fill = if response.hovered() {
         egui::Color32::from_rgb(28, 32, 37)
     } else {
@@ -1060,7 +1137,7 @@ fn wide_reset_button(ui: &mut egui::Ui) -> egui::Response {
         rect.center(),
         egui::Align2::CENTER_CENTER,
         "Reset all",
-        egui::FontId::proportional(15.0),
+        egui::FontId::proportional(PANEL_BUTTON_FONT_SIZE),
         egui::Color32::from_gray(214),
     );
     response
