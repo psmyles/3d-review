@@ -49,6 +49,42 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     return output;
 }
 
+// egui hands us a non-sRGB (gamma-space) framebuffer, so the scene shader must
+// do its own color management: decode sRGB inputs to linear, light/tone-map in
+// linear, then re-encode to sRGB on output. (The checker texture is sampled as
+// Rgba8UnormSrgb and is therefore already linear at this point.)
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    let lo = c / 12.92;
+    let hi = pow((c + 0.055) / 1.055, vec3<f32>(2.4));
+    return select(hi, lo, c <= vec3<f32>(0.04045));
+}
+
+fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
+    let lo = c * 12.92;
+    let hi = 1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - 0.055;
+    return select(hi, lo, c <= vec3<f32>(0.0031308));
+}
+
+// Khronos PBR Neutral tone mapping (Rec.709 linear), ported from
+// https://github.com/KhronosGroup/ToneMapping/tree/main/PBR_Neutral
+// Rolls off highlights >1.0 gracefully instead of hard per-channel clipping,
+// preserving hue with only controlled desaturation near white.
+fn pbr_neutral_tonemap(color_in: vec3<f32>) -> vec3<f32> {
+    let start_compression = 0.8 - 0.04;
+    let desaturation = 0.15;
+    var color = color_in;
+    let x = min(color.r, min(color.g, color.b));
+    let offset = select(0.04, x - 6.25 * x * x, x < 0.08);
+    color = color - offset;
+    let peak = max(color.r, max(color.g, color.b));
+    if (peak < start_compression) { return color; }
+    let d = 1.0 - start_compression;
+    let new_peak = 1.0 - d * d / (peak + d - start_compression);
+    color = color * (new_peak / peak);
+    let g = 1.0 - 1.0 / (desaturation * (peak - new_peak) + 1.0);
+    return mix(color, new_peak * vec3<f32>(1.0, 1.0, 1.0), g);
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let shading_mode = uniforms.render_options.x;
@@ -64,24 +100,29 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         return input.color;
     }
 
-    var base_color = input.color.rgb;
+    // Work in linear space. Vertex colors are authored in sRGB/gamma space;
+    // the checker sample is already linear (sRGB texture format).
+    var base_color = srgb_to_linear(input.color.rgb);
     if (uv_checker_enabled) {
         base_color = checker.rgb;
     }
 
     if (shading_mode < 1.5) {
-        return vec4<f32>(base_color, input.color.a);
+        return vec4<f32>(linear_to_srgb(base_color), input.color.a);
     }
 
     let n = normalize(input.normal);
     let light_dir = normalize(vec3<f32>(0.35, 0.82, 0.44));
     let diffuse = max(dot(n, light_dir), 0.0);
     let hemi_t = clamp(n.y * 0.5 + 0.5, 0.0, 1.0);
-    let sky = vec3<f32>(0.58, 0.64, 0.72);
-    let ground = vec3<f32>(0.10, 0.11, 0.13);
+    // Neutral grey hemisphere (Rec.709 luma of the former bluish sky/ground) so
+    // lighting only scales brightness and never shifts hue/saturation.
+    let sky = vec3<f32>(0.63, 0.63, 0.63);
+    let ground = vec3<f32>(0.11, 0.11, 0.11);
     let hemi = mix(ground, sky, hemi_t);
     let lighting = hemi * 0.55 + vec3<f32>(1.0, 1.0, 1.0) * (0.20 + diffuse * 0.75);
-    return vec4<f32>(base_color * lighting, input.color.a);
+    let mapped = pbr_neutral_tonemap(base_color * lighting);
+    return vec4<f32>(linear_to_srgb(mapped), input.color.a);
 }
 "#;
 
