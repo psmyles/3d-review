@@ -26,8 +26,8 @@ Deeper docs: `PROJECT_STRUCTURE.md` (crate map, data flow, ownership),
    (wireframe edges, face-normal lines, vertex-normal lines, future overdraw /
    barycentric buffers) is built when that view turns on and dropped when it
    turns off. The steady-state shaded view holds **zero** derived buffers.
-   *(Gap: today the line buffers are rebuilt only on model change and kept
-   regardless of toggle — converge toward this rule, don't extend the gap.)*
+   Implemented for the line views by `SceneResources::sync_line_views` in
+   `render/src/scene.rs` (build-on-demand, free-on-off, live param rebuild).
 4. **Heavy derived views are GPU compute and capability-gated.** Compute-based
    views (normals/tangents/overdraw, post-MVP) read buffers already on the GPU
    and write transient storage buffers. Gate them on `wgpu` adapter features and
@@ -35,10 +35,9 @@ Deeper docs: `PROJECT_STRUCTURE.md` (crate map, data flow, ownership),
 5. **Faithful stats.** The Model Stats panel reads source DCC counts carried
    through import in `ModelStats` (original polygon/vertex counts), **never**
    post-triangulation render counts. Every stat shown must be a real measured
-   value. *(Gap: `stats_grid` currently shows placeholder `FPS=0`,
-   `Colors=yes`, `WebGPU=yes` — these must be replaced with real values, not
-   copied as a pattern. The renderer is native `wgpu` (DX12/Vulkan/Metal), not
-   WebGPU; report the actual adapter backend.)*
+   value. `stats_grid` shows only measured values (Draws/Polys/Tris/Verts/UV
+   Sets/FPS); `fps` is fed from the `app` render loop. Don't reintroduce
+   placeholder rows.
 6. **The redraw loop lives in `app`.** Redraw is driven by `winit` events and
    active camera animation (redraw-on-demand), never by UI state mutation.
    Continuous redraw only while a camera transition or interaction is live.
@@ -52,8 +51,9 @@ Deeper docs: `PROJECT_STRUCTURE.md` (crate map, data flow, ownership),
    central semantic theme (a `theme` module), not inline literals. The only
    exception is a value computed at runtime from state (e.g. a per-axis gizmo
    color). Token names are **semantic** (`panel_bg`, `selection`, `gizmo_ball`),
-   not `dark_grey_6`. *(Gap: pixel sizes are centralized but colors are repeated
-   inline `Color32::from_rgb(...)` — add the token first, then reference it.)*
+   not `dark_grey_6`. Tokens live in `crates/ui/src/theme.rs` (`color`, `size`,
+   `font` submodules + `apply_visuals`); add the token there first, then
+   reference it.
 
 ### Rust-specific invariants
 
@@ -85,9 +85,12 @@ crates/
   render/   review-render: ShadingMode, CameraProjection, SceneDebugOptions,
             RendererConfig, OrbitCamera (framing/orbit/pan/zoom/ortho+persp),
             CameraTransition (0.3s ease-in-out cubic), Renderer, SceneCallback +
-            inline WGSL shader + GPU buffer builders. -> src/lib.rs, src/scene.rs
+            GPU resources/buffer upload. -> src/lib.rs, src/scene.rs;
+            CPU vertex generation -> src/geometry.rs; shader -> src/scene.wgsl
   ui/       review-ui: egui toolbar, option panels, axis gizmo, stats overlay,
-            status bar, icon loading; UiOutput intents. -> src/lib.rs
+            status bar; UiOutput intents. Thin root re-exports; modules:
+            theme/state/assets/widgets/overlay/toolbar/status_bar/stats/gizmo +
+            panels/ (one file per tool). -> src/lib.rs + src/*.rs
 third_party/ufbx/   vendored ufbx.c / ufbx.h (compiled only if present)
 assets/icons/       PNG toolbar/gizmo icons (include_bytes!)
 assets/test_models/ local FBX fixtures for manual checks
@@ -144,21 +147,30 @@ vertex-normal debug overlays; orthographic/perspective toggle; animated axis
 gizmo (orbit + snap-to-axis). Drag an FBX in, or double-click the empty viewport
 to open the file picker.
 
-Known gaps (see invariants 3, 5, 8 and MSRV note): debug line buffers aren't yet
-freed on view-off and the normal length/color sliders don't update live (the
-line geometry is baked only on model load); stats panel has placeholders; UI
-colors are inline rather than tokenized; no tests yet though `cargo test` is an
-acceptance criterion. UV / Texture panes, texture loading/KTX2, IBL/tone
-mapping, and additional formats (glTF/OBJ) are post-MVP (`TODO.md`).
+The `ui` crate is split into focused modules (`theme`, `state`, `assets`,
+`widgets`, `overlay`, `toolbar`, `status_bar`, `stats`, `gizmo`, `panels/`) and
+all visual values come from the central `theme` module (invariant 8). Derived
+line views are now freed on view-off and the normal length/color sliders update
+live (invariant 3, via `scene.rs` `sync_line_views`). The stats panel shows only
+measured values (invariant 5).
+
+Known gaps (see MSRV note): no tests yet though `cargo test` is an acceptance
+criterion. UV / Texture panes, texture loading/KTX2, IBL/tone mapping, and
+additional formats (glTF/OBJ) are post-MVP (`TODO.md`).
 
 ## 6. Gotchas
 
 - Real GPU required for render checks; reserve CI for `check` / `clippy` /
   import unit tests.
 - GPU struct field order must match the WGSL `Uniforms`/vertex layouts
-  (invariant 11) — update the shader in `scene.rs` if you change them.
-- `SceneCallback` reads some options live in `paint()` (grid, shading,
-  uv-checker) but bakes normal-line geometry in `update_model()` — keep "live vs
-  baked" explicit when adding options so sliders actually take effect.
+  (invariant 11) — the shader lives in `crates/render/src/scene.wgsl` (loaded via
+  `include_str!` in `scene.rs`); update it in lockstep with the `#[repr(C)]`
+  `SceneUniforms`/`SceneVertex` structs in `scene.rs` if you change them.
+- CPU-side vertex generation (grid, wireframe, face/vertex normal lines) lives in
+  `crates/render/src/geometry.rs`; `scene.rs` owns the callback, GPU resources
+  and buffer upload. Derived line views are built-on-demand and freed-on-off by
+  `SceneResources::sync_line_views` (invariant 3) — a view's buffer exists only
+  while its toggle is on and is rebuilt live when its baked length/color drifts.
+  Add new debug views by following that ensure/free pattern.
 - Keep `model` + camera/debug math host-agnostic so a future renderer swap only
   touches `render`.
