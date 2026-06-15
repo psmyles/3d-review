@@ -1,0 +1,220 @@
+//! UI state and the intents the UI emits back to `app`.
+//!
+//! Per invariant 2 this crate holds plain values + displayed stats and emits
+//! [`UiOutput`] *intents*; it never owns or mutates renderer/model internals.
+//! [`sync_debug_state`] funnels the committed panel values into the
+//! [`SceneDebugOptions`] the renderer reads.
+
+use glam::{Vec2, Vec3};
+use review_model::ModelStats;
+use review_render::{CameraProjection, CheckerTexture, SceneDebugOptions, ShadingMode};
+
+use crate::theme;
+
+/// Default checker repeats across the 0..1 UV range for a fresh / reset panel.
+pub(crate) const DEFAULT_CHECKER_TILING: u32 = 4;
+/// Inclusive checker-tiling range enforced by the UV-checker panel.
+pub(crate) const CHECKER_TILING_MIN: u32 = 1;
+pub(crate) const CHECKER_TILING_MAX: u32 = 16;
+/// Default length for the face/vertex normal-line views.
+pub(crate) const DEFAULT_NORMAL_LENGTH: f32 = 0.18;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WorkspaceMode {
+    #[default]
+    ThreeD,
+    Uv,
+    Texture,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewProjectionMode {
+    Perspective,
+    Orthographic,
+}
+
+impl From<ViewProjectionMode> for CameraProjection {
+    fn from(value: ViewProjectionMode) -> Self {
+        match value {
+            ViewProjectionMode::Perspective => Self::Perspective,
+            ViewProjectionMode::Orthographic => Self::Orthographic,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ViewAxis {
+    PositiveX,
+    NegativeX,
+    PositiveY,
+    NegativeY,
+    PositiveZ,
+    NegativeZ,
+}
+
+impl ViewAxis {
+    pub fn offset_direction(self) -> Vec3 {
+        match self {
+            Self::PositiveX => Vec3::X,
+            Self::NegativeX => Vec3::NEG_X,
+            Self::PositiveY => Vec3::Y,
+            Self::NegativeY => Vec3::NEG_Y,
+            Self::PositiveZ => Vec3::Z,
+            Self::NegativeZ => Vec3::NEG_Z,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AxisGizmoAction {
+    Orbit(Vec2),
+    Snap(ViewAxis),
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct UiOutput {
+    pub axis_gizmo_action: Option<AxisGizmoAction>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NormalPanelState {
+    pub length: f32,
+    pub color: egui::Color32,
+}
+
+/// Editable state backing the Wireframe options panel. The renderer bakes the
+/// chosen color into the wireframe line buffer via [`SceneDebugOptions`].
+#[derive(Debug, Clone)]
+pub struct WireframePanelState {
+    pub color: egui::Color32,
+}
+
+impl Default for WireframePanelState {
+    fn default() -> Self {
+        Self {
+            color: egui::Color32::WHITE,
+        }
+    }
+}
+
+/// Editable state backing the UV Checker options panel. The renderer reads the
+/// committed values via [`SceneDebugOptions`]; `tiling_text` is the panel's own
+/// text-field buffer (kept out of the render options so `render` stays free of
+/// UI string state) and is re-sanitized to an integer on commit.
+#[derive(Debug, Clone)]
+pub struct UvCheckerPanelState {
+    pub texture: CheckerTexture,
+    pub tiling: u32,
+    pub tiling_text: String,
+    pub uv_channel: u32,
+}
+
+impl Default for UvCheckerPanelState {
+    fn default() -> Self {
+        Self {
+            texture: CheckerTexture::Greyscale,
+            tiling: DEFAULT_CHECKER_TILING,
+            tiling_text: DEFAULT_CHECKER_TILING.to_string(),
+            uv_channel: 0,
+        }
+    }
+}
+
+/// Which tool's options panel is currently open. Only one panel is shown at a
+/// time; a panel is opened by right-clicking its toolbar button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptionPanel {
+    Wireframe,
+    UvChecker,
+    FaceNormals,
+    VertexNormals,
+}
+
+#[derive(Debug, Clone)]
+pub struct UiState {
+    pub mode: WorkspaceMode,
+    pub debug: SceneDebugOptions,
+    pub shading_mode: ShadingMode,
+    pub projection_mode: ViewProjectionMode,
+    pub show_grid: bool,
+    pub show_axis_gizmo: bool,
+    /// Whether the model-stats overlay is shown in the viewport. Toggled by the
+    /// info button in the status bar.
+    pub show_stats: bool,
+    /// The single options panel currently shown, if any.
+    pub active_panel: Option<OptionPanel>,
+    /// Whether the active panel is collapsed to just its header bar. Toggled by
+    /// a single click on the header; reset to expanded whenever a panel opens.
+    pub panel_collapsed: bool,
+    /// Last viewport position the panel was dragged to (egui points). Shared by
+    /// every option panel so they all spawn where the last one was left.
+    pub panel_pos: Option<egui::Pos2>,
+    pub uv_checker: UvCheckerPanelState,
+    pub wireframe: WireframePanelState,
+    pub face_normals: NormalPanelState,
+    pub vertex_normals: NormalPanelState,
+    pub stats: ModelStats,
+    /// Most recent measured frames-per-second, fed by `app` from the render
+    /// loop. Zero while idle (the viewer redraws on demand, not continuously).
+    pub fps: f32,
+}
+
+impl Default for UiState {
+    fn default() -> Self {
+        Self {
+            mode: WorkspaceMode::ThreeD,
+            debug: SceneDebugOptions::default(),
+            shading_mode: ShadingMode::Shaded,
+            projection_mode: ViewProjectionMode::Perspective,
+            show_grid: true,
+            show_axis_gizmo: true,
+            show_stats: true,
+            active_panel: None,
+            panel_collapsed: false,
+            panel_pos: None,
+            uv_checker: UvCheckerPanelState::default(),
+            wireframe: WireframePanelState::default(),
+            face_normals: NormalPanelState {
+                length: DEFAULT_NORMAL_LENGTH,
+                color: theme::color::FACE_NORMAL_DEFAULT,
+            },
+            vertex_normals: NormalPanelState {
+                length: DEFAULT_NORMAL_LENGTH,
+                color: theme::color::VERTEX_NORMAL_DEFAULT,
+            },
+            stats: ModelStats::default(),
+            fps: 0.0,
+        }
+    }
+}
+
+impl UiState {
+    /// Open (or switch to) a tool's options panel. The shared drag position is
+    /// preserved so it spawns where the last panel was left.
+    pub(crate) fn open_panel(&mut self, panel: OptionPanel) {
+        // Right-clicking the same tool again closes its panel; right-clicking a
+        // different tool switches the (single) panel to it.
+        if self.active_panel == Some(panel) {
+            self.active_panel = None;
+        } else {
+            self.active_panel = Some(panel);
+            // A freshly opened (or switched-to) panel always starts expanded.
+            self.panel_collapsed = false;
+        }
+    }
+}
+
+/// Copy the committed panel values into the [`SceneDebugOptions`] the renderer
+/// reads. Called once per frame before the overlay is drawn.
+pub(crate) fn sync_debug_state(state: &mut UiState) {
+    state.debug.shading_mode = state.shading_mode;
+    state.debug.show_grid = state.show_grid;
+    state.debug.uv_checker_texture = state.uv_checker.texture;
+    state.debug.uv_checker_tiling = state.uv_checker.tiling;
+    state.debug.uv_channel = state.uv_checker.uv_channel;
+    state.debug.face_normal_length = state.face_normals.length;
+    state.debug.vertex_normal_length = state.vertex_normals.length;
+    state.debug.face_normal_color = theme::color32_to_rgba(state.face_normals.color);
+    state.debug.vertex_normal_color = theme::color32_to_rgba(state.vertex_normals.color);
+    state.debug.wireframe_color = theme::color32_to_rgba(state.wireframe.color);
+}

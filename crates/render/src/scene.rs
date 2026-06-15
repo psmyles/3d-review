@@ -1,130 +1,22 @@
 use bytemuck::{Pod, Zeroable};
 use egui::epaint::PaintCallbackInfo;
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
-use glam::Vec3;
 use review_model::ModelData;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
+use crate::geometry::{
+    face_normal_lines, model_mesh, scene_lines, vertex_normal_lines, wireframe_lines,
+};
 use crate::{CameraProjection, CheckerTexture, OrbitCamera, SceneDebugOptions, ShadingMode};
 
 pub const SCENE_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
 pub const SCENE_SAMPLE_COUNT: u32 = 4;
 
-const SHADER: &str = r#"
-struct SceneUniforms {
-    view_projection: mat4x4<f32>,
-    render_options: vec4<f32>,
-};
-
-@group(0) @binding(0)
-var<uniform> uniforms: SceneUniforms;
-
-@group(1) @binding(0)
-var checker_texture: texture_2d<f32>;
-@group(1) @binding(1)
-var checker_sampler: sampler;
-
-struct VertexInput {
-    @location(0) position: vec3<f32>,
-    @location(1) normal: vec3<f32>,
-    @location(2) uv: vec2<f32>,
-    @location(3) color: vec4<f32>,
-};
-
-struct VertexOutput {
-    @builtin(position) clip_position: vec4<f32>,
-    @location(0) color: vec4<f32>,
-    @location(1) normal: vec3<f32>,
-    @location(2) uv: vec2<f32>,
-};
-
-@vertex
-fn vs_main(input: VertexInput) -> VertexOutput {
-    var output: VertexOutput;
-    output.clip_position = uniforms.view_projection * vec4<f32>(input.position, 1.0);
-    output.color = input.color;
-    output.normal = input.normal;
-    output.uv = input.uv;
-    return output;
-}
-
-// egui hands us a non-sRGB (gamma-space) framebuffer, so the scene shader must
-// do its own color management: decode sRGB inputs to linear, light/tone-map in
-// linear, then re-encode to sRGB on output. (The checker texture is sampled as
-// Rgba8UnormSrgb and is therefore already linear at this point.)
-fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
-    let lo = c / 12.92;
-    let hi = pow((c + 0.055) / 1.055, vec3<f32>(2.4));
-    return select(hi, lo, c <= vec3<f32>(0.04045));
-}
-
-fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
-    let lo = c * 12.92;
-    let hi = 1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - 0.055;
-    return select(hi, lo, c <= vec3<f32>(0.0031308));
-}
-
-// Khronos PBR Neutral tone mapping (Rec.709 linear), ported from
-// https://github.com/KhronosGroup/ToneMapping/tree/main/PBR_Neutral
-// Rolls off highlights >1.0 gracefully instead of hard per-channel clipping,
-// preserving hue with only controlled desaturation near white.
-fn pbr_neutral_tonemap(color_in: vec3<f32>) -> vec3<f32> {
-    let start_compression = 0.8 - 0.04;
-    let desaturation = 0.15;
-    var color = color_in;
-    let x = min(color.r, min(color.g, color.b));
-    let offset = select(0.04, x - 6.25 * x * x, x < 0.08);
-    color = color - offset;
-    let peak = max(color.r, max(color.g, color.b));
-    if (peak < start_compression) { return color; }
-    let d = 1.0 - start_compression;
-    let new_peak = 1.0 - d * d / (peak + d - start_compression);
-    color = color * (new_peak / peak);
-    let g = 1.0 - 1.0 / (desaturation * (peak - new_peak) + 1.0);
-    return mix(color, new_peak * vec3<f32>(1.0, 1.0, 1.0), g);
-}
-
-@fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let shading_mode = uniforms.render_options.x;
-    let uv_checker_enabled = uniforms.render_options.y > 0.5;
-    let tiling = max(uniforms.render_options.z, 1.0);
-    // Sample at top level so it stays in uniform control flow.
-    let checker = textureSample(checker_texture, checker_sampler, input.uv * tiling);
-    let normal_length_sq = dot(input.normal, input.normal);
-
-    // Grid / wireframe / normal lines carry a zero normal — they always render
-    // their own vertex color and never pick up the checker tint.
-    if (normal_length_sq < 1e-6) {
-        return input.color;
-    }
-
-    // Work in linear space. Vertex colors are authored in sRGB/gamma space;
-    // the checker sample is already linear (sRGB texture format).
-    var base_color = srgb_to_linear(input.color.rgb);
-    if (uv_checker_enabled) {
-        base_color = checker.rgb;
-    }
-
-    if (shading_mode < 1.5) {
-        return vec4<f32>(linear_to_srgb(base_color), input.color.a);
-    }
-
-    let n = normalize(input.normal);
-    let light_dir = normalize(vec3<f32>(0.35, 0.82, 0.44));
-    let diffuse = max(dot(n, light_dir), 0.0);
-    let hemi_t = clamp(n.y * 0.5 + 0.5, 0.0, 1.0);
-    // Neutral grey hemisphere (Rec.709 luma of the former bluish sky/ground) so
-    // lighting only scales brightness and never shifts hue/saturation.
-    let sky = vec3<f32>(0.63, 0.63, 0.63);
-    let ground = vec3<f32>(0.11, 0.11, 0.11);
-    let hemi = mix(ground, sky, hemi_t);
-    let lighting = hemi * 0.55 + vec3<f32>(1.0, 1.0, 1.0) * (0.20 + diffuse * 0.75);
-    let mapped = pbr_neutral_tonemap(base_color * lighting);
-    return vec4<f32>(linear_to_srgb(mapped), input.color.a);
-}
-"#;
+/// The scene shader (shaded / unlit / wireframe / uv-checker paths). Kept in a
+/// sibling `.wgsl` file but the `SceneUniforms` / `SceneVertex` layouts there
+/// must track the `#[repr(C)]` structs below (invariant 11).
+const SHADER: &str = include_str!("scene.wgsl");
 
 #[derive(Debug, Clone)]
 pub struct SceneCallback {
@@ -174,23 +66,20 @@ impl CallbackTrait for SceneCallback {
         }
 
         if resources.model_revision != self.model_revision {
+            // A new model rebuilds the steady-state mesh and resets every derived
+            // line view to "not built" — they are (re)built on demand below only
+            // for the views currently switched on (invariant 3).
             resources.update_model(device, &self.model, self.model_revision, self.debug_options);
-        } else {
-            if resources.mesh_uv_channel != self.debug_options.uv_channel {
-                // Switching UV channel only rebuilds the mesh vertex buffer's UVs;
-                // the rest of the derived geometry is channel-independent.
-                resources.update_mesh_channel(device, &self.model, self.debug_options.uv_channel);
-            }
-            if resources.wireframe_color != self.debug_options.wireframe_color {
-                // The wireframe color is baked into its line vertex buffer, so a
-                // color change rebuilds just that buffer (live, not on reload).
-                resources.update_wireframe_color(
-                    device,
-                    &self.model,
-                    self.debug_options.wireframe_color,
-                );
-            }
+        } else if resources.mesh_uv_channel != self.debug_options.uv_channel {
+            // Switching UV channel only rebuilds the mesh vertex buffer's UVs;
+            // the rest of the derived geometry is channel-independent.
+            resources.update_mesh_channel(device, &self.model, self.debug_options.uv_channel);
         }
+
+        // Build-on-demand / free-on-off for the derived line views: a view's
+        // buffer exists only while its toggle is on, and is rebuilt live when its
+        // baked length/color drifts from the current options (invariant 3).
+        resources.sync_line_views(device, &self.model, self.debug_options);
 
         resources.update_camera(queue, self.camera, self.projection_mode, self.debug_options);
         Vec::new()
@@ -276,15 +165,34 @@ struct SceneResources {
     mesh_index_count: u32,
     line_vertex_buffer: wgpu::Buffer,
     line_vertex_count: u32,
+    // Derived line views. Each `*_baked` is `Some(params)` while that view is
+    // built and `None` while it is off (its buffer holds only a placeholder).
+    // Comparing against the current options drives build / rebuild / free in
+    // `sync_line_views` (invariant 3).
     wireframe_line_vertex_buffer: wgpu::Buffer,
     wireframe_line_vertex_count: u32,
-    /// Color currently baked into `wireframe_line_vertex_buffer`; a mismatch with
-    /// the debug options triggers a rebuild of just that buffer.
-    wireframe_color: [f32; 4],
+    /// Color baked into the wireframe buffer, or `None` when the view is off.
+    wireframe_baked: Option<[f32; 4]>,
     face_normal_vertex_buffer: wgpu::Buffer,
     face_normal_vertex_count: u32,
+    /// `(length_scale, color)` baked into the face-normal buffer, or `None`.
+    face_baked: Option<NormalParams>,
     vertex_normal_vertex_buffer: wgpu::Buffer,
     vertex_normal_vertex_count: u32,
+    /// `(length_scale, color)` baked into the vertex-normal buffer, or `None`.
+    vertex_baked: Option<NormalParams>,
+}
+
+/// Baked parameters for a normal-line view: `(length_scale, color)`. Compared by
+/// value each frame to decide whether the view's buffer is up to date.
+type NormalParams = (f32, [f32; 4]);
+
+/// The three derived line views, used to address one for freeing.
+#[derive(Debug, Clone, Copy)]
+enum LineView {
+    Wireframe,
+    FaceNormals,
+    VertexNormals,
 }
 
 impl SceneResources {
@@ -430,11 +338,13 @@ impl SceneResources {
             line_vertex_count: line_vertices.len() as u32,
             wireframe_line_vertex_buffer,
             wireframe_line_vertex_count,
-            wireframe_color: SceneDebugOptions::default().wireframe_color,
+            wireframe_baked: None,
             face_normal_vertex_buffer,
             face_normal_vertex_count,
+            face_baked: None,
             vertex_normal_vertex_buffer,
             vertex_normal_vertex_count,
+            vertex_baked: None,
         }
     }
 
@@ -457,6 +367,10 @@ impl SceneResources {
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }
 
+    /// Rebuild the steady-state mesh for a new model and free every derived line
+    /// view (the views are rebuilt on demand by [`sync_line_views`] for whichever
+    /// toggles are on). Per invariant 3 the steady-state shaded view then holds
+    /// zero derived buffers.
     fn update_model(
         &mut self,
         device: &wgpu::Device,
@@ -467,44 +381,99 @@ impl SceneResources {
         let (mesh_vertices, mesh_indices) = model_mesh(model, debug_options.uv_channel);
         let (mesh_vertex_buffer, mesh_index_buffer, mesh_index_count) =
             create_mesh_buffers(device, &mesh_vertices, &mesh_indices);
-        let wireframe_lines = wireframe_lines(model, debug_options.wireframe_color);
-        let face_normal_lines = face_normal_lines(model, debug_options);
-        let vertex_normal_lines = vertex_normal_lines(model, debug_options);
-        let (wireframe_line_vertex_buffer, wireframe_line_vertex_count) =
-            create_line_buffer(device, &wireframe_lines);
-        let (face_normal_vertex_buffer, face_normal_vertex_count) =
-            create_line_buffer(device, &face_normal_lines);
-        let (vertex_normal_vertex_buffer, vertex_normal_vertex_count) =
-            create_line_buffer(device, &vertex_normal_lines);
 
         self.mesh_vertex_buffer = mesh_vertex_buffer;
         self.mesh_index_buffer = mesh_index_buffer;
         self.mesh_index_count = mesh_index_count;
-        self.wireframe_line_vertex_buffer = wireframe_line_vertex_buffer;
-        self.wireframe_line_vertex_count = wireframe_line_vertex_count;
-        self.face_normal_vertex_buffer = face_normal_vertex_buffer;
-        self.face_normal_vertex_count = face_normal_vertex_count;
-        self.vertex_normal_vertex_buffer = vertex_normal_vertex_buffer;
-        self.vertex_normal_vertex_count = vertex_normal_vertex_count;
-        self.wireframe_color = debug_options.wireframe_color;
         self.model_revision = model_revision;
         self.mesh_uv_channel = debug_options.uv_channel;
+
+        // Drop the previous model's derived geometry; `sync_line_views` rebuilds
+        // whatever is currently switched on.
+        self.free_line_view(device, LineView::Wireframe);
+        self.free_line_view(device, LineView::FaceNormals);
+        self.free_line_view(device, LineView::VertexNormals);
     }
 
-    /// Rebuild just the wireframe line buffer with a new baked color, leaving the
-    /// rest of the derived geometry untouched.
-    fn update_wireframe_color(
+    /// Build-on-demand / free-on-off for the three derived line views. A view's
+    /// buffer is (re)built when its toggle is on and its baked params drift from
+    /// the current options, and freed back to a placeholder when its toggle is
+    /// off. Unchanged views are left untouched (no per-frame rebuild).
+    fn sync_line_views(
         &mut self,
         device: &wgpu::Device,
         model: &ModelData,
-        color: [f32; 4],
+        debug_options: SceneDebugOptions,
     ) {
-        let wireframe_lines = wireframe_lines(model, color);
-        let (wireframe_line_vertex_buffer, wireframe_line_vertex_count) =
-            create_line_buffer(device, &wireframe_lines);
-        self.wireframe_line_vertex_buffer = wireframe_line_vertex_buffer;
-        self.wireframe_line_vertex_count = wireframe_line_vertex_count;
-        self.wireframe_color = color;
+        let wireframe_on = matches!(
+            debug_options.shading_mode,
+            ShadingMode::Wireframe | ShadingMode::ShadedWireframe
+        );
+        let want_wireframe = wireframe_on.then_some(debug_options.wireframe_color);
+        if self.wireframe_baked != want_wireframe {
+            let (buffer, count) = match want_wireframe {
+                Some(color) => create_line_buffer(device, &wireframe_lines(model, color)),
+                None => create_line_buffer(device, &[]),
+            };
+            self.wireframe_line_vertex_buffer = buffer;
+            self.wireframe_line_vertex_count = count;
+            self.wireframe_baked = want_wireframe;
+        }
+
+        let want_face = debug_options.face_normals.then_some((
+            debug_options.face_normal_length,
+            debug_options.face_normal_color,
+        ));
+        if self.face_baked != want_face {
+            let (buffer, count) = match want_face {
+                Some((length, color)) => {
+                    create_line_buffer(device, &face_normal_lines(model, length, color))
+                }
+                None => create_line_buffer(device, &[]),
+            };
+            self.face_normal_vertex_buffer = buffer;
+            self.face_normal_vertex_count = count;
+            self.face_baked = want_face;
+        }
+
+        let want_vertex = debug_options.vertex_normals.then_some((
+            debug_options.vertex_normal_length,
+            debug_options.vertex_normal_color,
+        ));
+        if self.vertex_baked != want_vertex {
+            let (buffer, count) = match want_vertex {
+                Some((length, color)) => {
+                    create_line_buffer(device, &vertex_normal_lines(model, length, color))
+                }
+                None => create_line_buffer(device, &[]),
+            };
+            self.vertex_normal_vertex_buffer = buffer;
+            self.vertex_normal_vertex_count = count;
+            self.vertex_baked = want_vertex;
+        }
+    }
+
+    /// Replace a derived view's buffer with an empty placeholder and mark it
+    /// not-built, freeing the previous (potentially large) allocation.
+    fn free_line_view(&mut self, device: &wgpu::Device, view: LineView) {
+        let (buffer, count) = create_line_buffer(device, &[]);
+        match view {
+            LineView::Wireframe => {
+                self.wireframe_line_vertex_buffer = buffer;
+                self.wireframe_line_vertex_count = count;
+                self.wireframe_baked = None;
+            }
+            LineView::FaceNormals => {
+                self.face_normal_vertex_buffer = buffer;
+                self.face_normal_vertex_count = count;
+                self.face_baked = None;
+            }
+            LineView::VertexNormals => {
+                self.vertex_normal_vertex_buffer = buffer;
+                self.vertex_normal_vertex_count = count;
+                self.vertex_baked = None;
+            }
+        }
     }
 
     fn update_mesh_channel(&mut self, device: &wgpu::Device, model: &ModelData, uv_channel: u32) {
@@ -570,200 +539,6 @@ fn create_pipeline(
         multiview: None,
         cache: None,
     })
-}
-
-fn scene_lines() -> Vec<SceneVertex> {
-    let mut vertices = Vec::new();
-    let grid_extent = 12;
-
-    for line in -grid_extent..=grid_extent {
-        let strong = line % 4 == 0;
-        let color = if strong {
-            [0.42, 0.49, 0.54, 0.46]
-        } else {
-            [0.33, 0.38, 0.42, 0.28]
-        };
-        push_line(
-            &mut vertices,
-            [line as f32, 0.0, -grid_extent as f32],
-            [line as f32, 0.0, grid_extent as f32],
-            color,
-        );
-        push_line(
-            &mut vertices,
-            [-grid_extent as f32, 0.0, line as f32],
-            [grid_extent as f32, 0.0, line as f32],
-            color,
-        );
-    }
-
-    push_line(
-        &mut vertices,
-        [-grid_extent as f32, 0.002, 0.0],
-        [grid_extent as f32, 0.002, 0.0],
-        [0.94, 0.23, 0.28, 1.0],
-    );
-    push_line(
-        &mut vertices,
-        [0.0, 0.004, -grid_extent as f32],
-        [0.0, 0.004, grid_extent as f32],
-        [0.18, 0.53, 1.0, 1.0],
-    );
-    vertices
-}
-
-fn model_mesh(model: &ModelData, uv_channel: u32) -> (Vec<SceneVertex>, Vec<u32>) {
-    let channel = uv_channel as usize;
-    let vertices = model
-        .vertices
-        .iter()
-        .enumerate()
-        .map(|(index, vertex)| SceneVertex {
-            position: vertex.position.to_array(),
-            normal: vertex.normal.to_array(),
-            uv: model.uv_for_channel(index, channel).to_array(),
-            color: vertex.color.to_array(),
-        })
-        .collect();
-    (vertices, model.indices.clone())
-}
-
-fn wireframe_lines(model: &ModelData, color: [f32; 4]) -> Vec<SceneVertex> {
-    let mut vertices = Vec::with_capacity(model.indices.len() * 2);
-
-    for triangle in model.indices.chunks_exact(3) {
-        let [a, b, c] = [
-            triangle[0] as usize,
-            triangle[1] as usize,
-            triangle[2] as usize,
-        ];
-        let positions = [
-            model.vertices.get(a).map(|vertex| vertex.position),
-            model.vertices.get(b).map(|vertex| vertex.position),
-            model.vertices.get(c).map(|vertex| vertex.position),
-        ];
-        let [Some(a), Some(b), Some(c)] = positions else {
-            continue;
-        };
-
-        push_line(&mut vertices, a.to_array(), b.to_array(), color);
-        push_line(&mut vertices, b.to_array(), c.to_array(), color);
-        push_line(&mut vertices, c.to_array(), a.to_array(), color);
-    }
-
-    vertices
-}
-
-fn face_normal_lines(model: &ModelData, debug_options: SceneDebugOptions) -> Vec<SceneVertex> {
-    let triangle_count = model.indices.len() / 3;
-    if triangle_count == 0 {
-        return Vec::new();
-    }
-
-    let face_count = model
-        .tri_to_face
-        .iter()
-        .copied()
-        .max()
-        .map(|max_face| max_face as usize + 1)
-        .unwrap_or(triangle_count);
-    let mut accum_centers = vec![Vec3::ZERO; face_count];
-    let mut accum_normals = vec![Vec3::ZERO; face_count];
-    let mut counts = vec![0_u32; face_count];
-    let normal_length = debug_normal_length(model, debug_options.face_normal_length);
-
-    for (triangle_index, triangle) in model.indices.chunks_exact(3).enumerate() {
-        let face_index = model
-            .tri_to_face
-            .get(triangle_index)
-            .copied()
-            .unwrap_or(triangle_index as u32) as usize;
-        let [a, b, c] = [
-            triangle[0] as usize,
-            triangle[1] as usize,
-            triangle[2] as usize,
-        ];
-        let positions = [
-            model.vertices.get(a).map(|vertex| vertex.position),
-            model.vertices.get(b).map(|vertex| vertex.position),
-            model.vertices.get(c).map(|vertex| vertex.position),
-        ];
-        let [Some(a), Some(b), Some(c)] = positions else {
-            continue;
-        };
-
-        let ab = b - a;
-        let ac = c - a;
-        let normal = ab.cross(ac);
-        if normal.length_squared() <= f32::EPSILON {
-            continue;
-        }
-
-        if let (Some(center_accum), Some(normal_accum), Some(count)) = (
-            accum_centers.get_mut(face_index),
-            accum_normals.get_mut(face_index),
-            counts.get_mut(face_index),
-        ) {
-            *center_accum += (a + b + c) / 3.0;
-            *normal_accum += normal.normalize();
-            *count += 1;
-        }
-    }
-
-    let mut vertices = Vec::with_capacity(face_count * 2);
-    for face_index in 0..face_count {
-        let count = counts[face_index];
-        if count == 0 {
-            continue;
-        }
-
-        let center = accum_centers[face_index] / count as f32;
-        let normal = accum_normals[face_index];
-        if normal.length_squared() <= f32::EPSILON {
-            continue;
-        }
-
-        let end = center + normal.normalize() * normal_length;
-        push_line(
-            &mut vertices,
-            center.to_array(),
-            end.to_array(),
-            debug_options.face_normal_color,
-        );
-    }
-
-    vertices
-}
-
-fn vertex_normal_lines(model: &ModelData, debug_options: SceneDebugOptions) -> Vec<SceneVertex> {
-    let normal_length = debug_normal_length(model, debug_options.vertex_normal_length);
-    let mut vertices = Vec::with_capacity(model.vertices.len() * 2);
-
-    for vertex in &model.vertices {
-        if vertex.normal.length_squared() <= f32::EPSILON {
-            continue;
-        }
-
-        let start = vertex.position;
-        let end = start + vertex.normal.normalize() * normal_length;
-        push_line(
-            &mut vertices,
-            start.to_array(),
-            end.to_array(),
-            debug_options.vertex_normal_color,
-        );
-    }
-
-    vertices
-}
-
-fn debug_normal_length(model: &ModelData, scale: f32) -> f32 {
-    let size = model
-        .bounds
-        .map(|bounds| bounds.size())
-        .unwrap_or(Vec3::splat(1.0));
-    let max_extent = size.max_element().max(1.0);
-    max_extent * scale.max(0.01)
 }
 
 fn create_mesh_buffers(
@@ -895,21 +670,6 @@ fn create_checker_bind_group(
     })
 }
 
-fn push_line(vertices: &mut Vec<SceneVertex>, start: [f32; 3], end: [f32; 3], color: [f32; 4]) {
-    vertices.push(SceneVertex {
-        position: start,
-        normal: [0.0, 0.0, 0.0],
-        uv: [0.0, 0.0],
-        color,
-    });
-    vertices.push(SceneVertex {
-        position: end,
-        normal: [0.0, 0.0, 0.0],
-        uv: [0.0, 0.0],
-        color,
-    });
-}
-
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct SceneUniforms {
@@ -919,11 +679,11 @@ struct SceneUniforms {
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct SceneVertex {
-    position: [f32; 3],
-    normal: [f32; 3],
-    uv: [f32; 2],
-    color: [f32; 4],
+pub(crate) struct SceneVertex {
+    pub(crate) position: [f32; 3],
+    pub(crate) normal: [f32; 3],
+    pub(crate) uv: [f32; 2],
+    pub(crate) color: [f32; 4],
 }
 
 impl SceneVertex {

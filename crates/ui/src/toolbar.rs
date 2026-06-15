@@ -1,0 +1,292 @@
+//! The top toolbar: shading-mode group, debug-view group, the 3D/UV/Tex mode
+//! segments, and the gizmo/grid/projection group. Emits panel-open intents by
+//! mutating [`UiState`] in place.
+
+use review_render::ShadingMode;
+
+use crate::assets::{
+    ICON_AXIS_GIZMO, ICON_GRID, ICON_NORMALS_FACE, ICON_NORMALS_VERTEX, ICON_SHADING_SOLID,
+    ICON_SHADING_UNLIT, ICON_SHADING_WIRE, ICON_SHADING_WIRE_SHADED, ICON_UV, ICON_VIEW_ORTHO,
+    ICON_VIEW_PERSPECTIVE,
+};
+use crate::state::{OptionPanel, UiState, ViewProjectionMode, WorkspaceMode};
+use crate::theme::{self, color, font, size};
+use crate::widgets::{icon_toggle_button, toolbar_group_shell};
+
+/// Background frame shared by the toolbar (and matched by the status bar). Zero
+/// inner margin: content is placed by px-converted rect math below, so no raw
+/// pixel literals leak into the frame.
+pub(crate) fn toolbar_frame() -> egui::Frame {
+    egui::Frame::NONE
+        .fill(color::CHROME_BG)
+        .stroke(egui::Stroke::NONE)
+        .inner_margin(egui::Margin::same(0))
+}
+
+pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
+    let toolbar_height = theme::px(ctx, size::TOOLBAR_HEIGHT);
+    let overlay_margin = theme::px(ctx, size::OVERLAY_MARGIN);
+    let group_spacing = theme::px(ctx, size::TOOLBAR_GROUP_SPACING);
+    let group_height = theme::px(ctx, size::TOOLBAR_GROUP_HEIGHT);
+    let left_width = theme::px(ctx, size::TOOLBAR_LEFT_WIDTH);
+    let center_width = theme::px(ctx, size::TOOLBAR_CENTER_WIDTH);
+    let right_width = theme::px(ctx, size::TOOLBAR_RIGHT_WIDTH);
+    let shading_group_width = theme::px(ctx, size::TOOLBAR_SHADING_GROUP_WIDTH);
+    let debug_group_width = theme::px(ctx, size::TOOLBAR_DEBUG_GROUP_WIDTH);
+    let single_icon_group_width = theme::px(ctx, size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH);
+    let double_icon_group_width = theme::px(ctx, size::TOOLBAR_DOUBLE_ICON_GROUP_WIDTH);
+    let mode_group_width = theme::px(ctx, size::TOOLBAR_MODE_GROUP_WIDTH);
+
+    egui::TopBottomPanel::top("app_toolbar")
+        .exact_height(toolbar_height)
+        .frame(toolbar_frame())
+        .show(ctx, |ui| {
+            let bar_rect = ui.max_rect();
+            ui.painter().line_segment(
+                [
+                    egui::pos2(bar_rect.left(), bar_rect.bottom() - 0.5),
+                    egui::pos2(bar_rect.right(), bar_rect.bottom() - 0.5),
+                ],
+                egui::Stroke::new(size::HAIRLINE, color::DIVIDER),
+            );
+            let row_rect = egui::Rect::from_min_size(
+                egui::pos2(
+                    bar_rect.left() + overlay_margin,
+                    bar_rect.top() + overlay_margin,
+                ),
+                egui::vec2(
+                    (bar_rect.width() - overlay_margin * 2.0).max(0.0),
+                    group_height,
+                ),
+            );
+            let left_rect = egui::Rect::from_min_size(
+                row_rect.left_top(),
+                egui::vec2(left_width.min(row_rect.width()), group_height),
+            );
+            let center_rect = egui::Rect::from_center_size(
+                egui::pos2(row_rect.center().x, row_rect.top() + group_height * 0.5),
+                egui::vec2(center_width.min(row_rect.width()), group_height),
+            );
+            let right_rect = egui::Rect::from_min_size(
+                egui::pos2(
+                    row_rect.right() - right_width.min(row_rect.width()),
+                    row_rect.top(),
+                ),
+                egui::vec2(right_width.min(row_rect.width()), group_height),
+            );
+
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(left_rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                |ui| {
+                    ui.set_height(group_height);
+                    ui.spacing_mut().item_spacing.x = group_spacing;
+                    draw_shading_group(ui, ctx, state, shading_group_width);
+                    draw_debug_group(ui, ctx, state, debug_group_width);
+                },
+            );
+
+            ui.scope_builder(
+                egui::UiBuilder::new().max_rect(center_rect).layout(
+                    egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                ),
+                |ui| {
+                    ui.set_height(group_height);
+                    toolbar_group_shell(ui, ctx, mode_group_width, |ui| {
+                        segmented_mode_control(ui, ctx, &mut state.mode);
+                    });
+                },
+            );
+
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(right_rect)
+                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                |ui| {
+                    ui.set_height(group_height);
+                    ui.spacing_mut().item_spacing.x = group_spacing;
+                    draw_view_group(ui, ctx, state, double_icon_group_width);
+                    draw_projection_group(ui, ctx, state, single_icon_group_width);
+                },
+            );
+        });
+}
+
+fn draw_shading_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState, width: f32) {
+    toolbar_group_shell(ui, ctx, width, |ui| {
+        let solid = matches!(state.shading_mode, ShadingMode::Shaded);
+        let unlit = matches!(state.shading_mode, ShadingMode::Unlit);
+        let rendered = matches!(state.shading_mode, ShadingMode::ShadedWireframe);
+        let wire = matches!(state.shading_mode, ShadingMode::Wireframe);
+
+        let wire_button = icon_toggle_button(
+            ui,
+            ctx,
+            &ICON_SHADING_WIRE,
+            wire,
+            "Wire (right-click for options)",
+        );
+        if wire_button.clicked() {
+            state.shading_mode = ShadingMode::Wireframe;
+        }
+        if wire_button.secondary_clicked() {
+            state.open_panel(OptionPanel::Wireframe);
+        }
+        if icon_toggle_button(ui, ctx, &ICON_SHADING_UNLIT, unlit, "Unlit").clicked() {
+            state.shading_mode = ShadingMode::Unlit;
+        }
+        if icon_toggle_button(ui, ctx, &ICON_SHADING_SOLID, solid, "Solid").clicked() {
+            state.shading_mode = ShadingMode::Shaded;
+        }
+        if icon_toggle_button(
+            ui,
+            ctx,
+            &ICON_SHADING_WIRE_SHADED,
+            rendered,
+            "Wireframe over shaded",
+        )
+        .clicked()
+        {
+            state.shading_mode = ShadingMode::ShadedWireframe;
+        }
+    });
+}
+
+fn draw_debug_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState, width: f32) {
+    toolbar_group_shell(ui, ctx, width, |ui| {
+        let uv = icon_toggle_button(
+            ui,
+            ctx,
+            &ICON_UV,
+            state.debug.uv_checker,
+            "UV Checker (right-click for options)",
+        );
+        if uv.clicked() {
+            state.debug.uv_checker = !state.debug.uv_checker;
+        }
+        if uv.secondary_clicked() {
+            state.open_panel(OptionPanel::UvChecker);
+        }
+
+        let face = icon_toggle_button(
+            ui,
+            ctx,
+            &ICON_NORMALS_FACE,
+            state.debug.face_normals,
+            "Face Normals (right-click for options)",
+        );
+        if face.clicked() {
+            state.debug.face_normals = !state.debug.face_normals;
+        }
+        if face.secondary_clicked() {
+            state.open_panel(OptionPanel::FaceNormals);
+        }
+
+        let vertex = icon_toggle_button(
+            ui,
+            ctx,
+            &ICON_NORMALS_VERTEX,
+            state.debug.vertex_normals,
+            "Vertex Normals (right-click for options)",
+        );
+        if vertex.clicked() {
+            state.debug.vertex_normals = !state.debug.vertex_normals;
+        }
+        if vertex.secondary_clicked() {
+            state.open_panel(OptionPanel::VertexNormals);
+        }
+    });
+}
+
+fn draw_view_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState, width: f32) {
+    toolbar_group_shell(ui, ctx, width, |ui| {
+        icon_toggle_button(
+            ui,
+            ctx,
+            &ICON_AXIS_GIZMO,
+            state.show_axis_gizmo,
+            "Axis Gizmo",
+        )
+        .clicked()
+        .then(|| state.show_axis_gizmo = !state.show_axis_gizmo);
+
+        icon_toggle_button(ui, ctx, &ICON_GRID, state.show_grid, "Grid")
+            .clicked()
+            .then(|| state.show_grid = !state.show_grid);
+    });
+}
+
+fn draw_projection_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState, width: f32) {
+    toolbar_group_shell(ui, ctx, width, |ui| {
+        let (icon, tooltip) = match state.projection_mode {
+            ViewProjectionMode::Perspective => (
+                &ICON_VIEW_PERSPECTIVE,
+                "Perspective camera (click for orthographic)",
+            ),
+            ViewProjectionMode::Orthographic => (
+                &ICON_VIEW_ORTHO,
+                "Orthographic camera (click for perspective)",
+            ),
+        };
+
+        if icon_toggle_button(ui, ctx, icon, false, tooltip).clicked() {
+            state.projection_mode = match state.projection_mode {
+                ViewProjectionMode::Perspective => ViewProjectionMode::Orthographic,
+                ViewProjectionMode::Orthographic => ViewProjectionMode::Perspective,
+            };
+        }
+    });
+}
+
+fn segmented_mode_control(ui: &mut egui::Ui, ctx: &egui::Context, mode: &mut WorkspaceMode) {
+    mode_segment(ui, ctx, mode, WorkspaceMode::ThreeD, "3D");
+    mode_segment(ui, ctx, mode, WorkspaceMode::Uv, "UV");
+    mode_segment(ui, ctx, mode, WorkspaceMode::Texture, "Tex");
+}
+
+fn mode_segment(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    mode: &mut WorkspaceMode,
+    value: WorkspaceMode,
+    label: &str,
+) {
+    let selected = *mode == value;
+    let desired = egui::vec2(
+        theme::px(ctx, size::MODE_SEGMENT_WIDTH),
+        theme::px(ctx, size::MODE_SEGMENT_HEIGHT),
+    );
+    let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::click());
+    let fill = if selected {
+        color::ACCENT
+    } else if response.hovered() {
+        color::HOVER_BG
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    let text_color = if selected {
+        color::TEXT_PRIMARY
+    } else {
+        color::TEXT_SEGMENT_IDLE
+    };
+
+    ui.painter().rect(
+        rect,
+        theme::px(ctx, size::TILE_CORNER_RADIUS),
+        fill,
+        egui::Stroke::NONE,
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(theme::px(ctx, font::MODE_SEGMENT)),
+        text_color,
+    );
+
+    if response.clicked() {
+        *mode = value;
+    }
+}

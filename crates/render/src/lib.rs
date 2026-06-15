@@ -1,6 +1,7 @@
 use glam::{Mat4, Vec2, Vec3};
 use review_model::Bounds;
 
+mod geometry;
 mod scene;
 
 pub use scene::{SCENE_DEPTH_FORMAT, SCENE_SAMPLE_COUNT, SceneCallback};
