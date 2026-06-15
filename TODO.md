@@ -1,5 +1,3 @@
-- have the stats button toggle viewport stats display
-- don't update the viewport unless there's a change - save system resources
-- tone mapping 
 - image based lighting
+- viewport background controls
 - 
