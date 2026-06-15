@@ -6,7 +6,8 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 use crate::geometry::{
-    face_normal_lines, model_mesh, scene_lines, vertex_normal_lines, wireframe_lines,
+    bounding_box_lines, face_normal_lines, model_mesh, scene_lines, vertex_normal_lines,
+    wireframe_lines,
 };
 use crate::{CameraProjection, CheckerTexture, OrbitCamera, SceneDebugOptions, ShadingMode};
 
@@ -134,6 +135,13 @@ impl CallbackTrait for SceneCallback {
             render_pass.draw(0..resources.wireframe_line_vertex_count, 0..1);
         }
 
+        if self.debug_options.show_bounding_box && resources.bounding_box_vertex_count > 0 {
+            render_pass.set_bind_group(0, &resources.uniform_bind_group, &[]);
+            render_pass.set_pipeline(&resources.line_pipeline);
+            render_pass.set_vertex_buffer(0, resources.bounding_box_vertex_buffer.slice(..));
+            render_pass.draw(0..resources.bounding_box_vertex_count, 0..1);
+        }
+
         if self.debug_options.face_normals && resources.face_normal_vertex_count > 0 {
             render_pass.set_bind_group(0, &resources.uniform_bind_group, &[]);
             render_pass.set_pipeline(&resources.line_pipeline);
@@ -173,6 +181,10 @@ struct SceneResources {
     wireframe_line_vertex_count: u32,
     /// Color baked into the wireframe buffer, or `None` when the view is off.
     wireframe_baked: Option<[f32; 4]>,
+    bounding_box_vertex_buffer: wgpu::Buffer,
+    bounding_box_vertex_count: u32,
+    /// Color baked into the bounding-box buffer, or `None` when the view is off.
+    bounding_box_baked: Option<[f32; 4]>,
     face_normal_vertex_buffer: wgpu::Buffer,
     face_normal_vertex_count: u32,
     /// `(length_scale, color)` baked into the face-normal buffer, or `None`.
@@ -191,6 +203,7 @@ type NormalParams = (f32, [f32; 4]);
 #[derive(Debug, Clone, Copy)]
 enum LineView {
     Wireframe,
+    BoundingBox,
     FaceNormals,
     VertexNormals,
 }
@@ -312,6 +325,8 @@ impl SceneResources {
             create_mesh_buffers(device, &[], &[]);
         let (wireframe_line_vertex_buffer, wireframe_line_vertex_count) =
             create_line_buffer(device, &[]);
+        let (bounding_box_vertex_buffer, bounding_box_vertex_count) =
+            create_line_buffer(device, &[]);
         let (face_normal_vertex_buffer, face_normal_vertex_count) = create_line_buffer(device, &[]);
         let (vertex_normal_vertex_buffer, vertex_normal_vertex_count) =
             create_line_buffer(device, &[]);
@@ -339,6 +354,9 @@ impl SceneResources {
             wireframe_line_vertex_buffer,
             wireframe_line_vertex_count,
             wireframe_baked: None,
+            bounding_box_vertex_buffer,
+            bounding_box_vertex_count,
+            bounding_box_baked: None,
             face_normal_vertex_buffer,
             face_normal_vertex_count,
             face_baked: None,
@@ -391,6 +409,7 @@ impl SceneResources {
         // Drop the previous model's derived geometry; `sync_line_views` rebuilds
         // whatever is currently switched on.
         self.free_line_view(device, LineView::Wireframe);
+        self.free_line_view(device, LineView::BoundingBox);
         self.free_line_view(device, LineView::FaceNormals);
         self.free_line_view(device, LineView::VertexNormals);
     }
@@ -418,6 +437,19 @@ impl SceneResources {
             self.wireframe_line_vertex_buffer = buffer;
             self.wireframe_line_vertex_count = count;
             self.wireframe_baked = want_wireframe;
+        }
+
+        let want_bounding_box = debug_options
+            .show_bounding_box
+            .then_some(debug_options.bounding_box_color);
+        if self.bounding_box_baked != want_bounding_box {
+            let (buffer, count) = match want_bounding_box {
+                Some(color) => create_line_buffer(device, &bounding_box_lines(model, color)),
+                None => create_line_buffer(device, &[]),
+            };
+            self.bounding_box_vertex_buffer = buffer;
+            self.bounding_box_vertex_count = count;
+            self.bounding_box_baked = want_bounding_box;
         }
 
         let want_face = debug_options.face_normals.then_some((
@@ -462,6 +494,11 @@ impl SceneResources {
                 self.wireframe_line_vertex_buffer = buffer;
                 self.wireframe_line_vertex_count = count;
                 self.wireframe_baked = None;
+            }
+            LineView::BoundingBox => {
+                self.bounding_box_vertex_buffer = buffer;
+                self.bounding_box_vertex_count = count;
+                self.bounding_box_baked = None;
             }
             LineView::FaceNormals => {
                 self.face_normal_vertex_buffer = buffer;

@@ -56,6 +56,8 @@ pub struct SceneDebugOptions {
     /// when the model carries more than one UV set.
     pub uv_channel: u32,
     pub show_grid: bool,
+    /// Whether the model's axis-aligned bounding box is drawn as a wireframe box.
+    pub show_bounding_box: bool,
     pub face_normals: bool,
     pub vertex_normals: bool,
     pub face_normal_length: f32,
@@ -65,6 +67,9 @@ pub struct SceneDebugOptions {
     /// Color of the wireframe lines (wireframe / shaded-wireframe modes), baked
     /// into the line vertex buffer and rebuilt when it changes.
     pub wireframe_color: [f32; 4],
+    /// Color of the bounding-box edges, baked into its line buffer and rebuilt
+    /// when it changes.
+    pub bounding_box_color: [f32; 4],
 }
 
 impl Default for SceneDebugOptions {
@@ -76,6 +81,7 @@ impl Default for SceneDebugOptions {
             uv_checker_tiling: 4,
             uv_channel: 0,
             show_grid: true,
+            show_bounding_box: false,
             face_normals: false,
             vertex_normals: false,
             face_normal_length: 0.18,
@@ -83,6 +89,7 @@ impl Default for SceneDebugOptions {
             face_normal_color: [1.0, 0.1, 0.1, 0.95],
             vertex_normal_color: [0.14, 0.92, 0.96, 0.95],
             wireframe_color: [1.0, 1.0, 1.0, 1.0],
+            bounding_box_color: [1.0, 0.803_921_6, 0.250_980_4, 1.0],
         }
     }
 }

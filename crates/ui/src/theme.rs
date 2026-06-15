@@ -115,6 +115,9 @@ pub mod color {
     pub const VERTEX_NORMAL_DEFAULT: Color32 = Color32::from_rgb(32, 224, 232);
     /// Default wireframe line color.
     pub const WIREFRAME_DEFAULT: Color32 = Color32::WHITE;
+    /// Default bounding-box edge color (a distinct amber that reads against the
+    /// shaded model and the grid).
+    pub const BOUNDING_BOX_DEFAULT: Color32 = Color32::from_rgb(255, 205, 64);
 
     /// Swatch palette offered for the normal-line color rows. Includes both
     /// normal-view defaults so either can be restored by reset.
@@ -136,6 +139,18 @@ pub mod color {
         Color32::from_rgb(29, 255, 27),
         Color32::from_gray(153),
     ];
+
+    /// Swatch palette offered for the bounding-box color row: amber (default),
+    /// white, black, red, cyan, green. The default leads so reset stays
+    /// highlighted on its swatch.
+    pub const BOUNDING_BOX_SWATCHES: [Color32; 6] = [
+        BOUNDING_BOX_DEFAULT,
+        Color32::WHITE,
+        Color32::BLACK,
+        Color32::from_rgb(255, 27, 27),
+        Color32::from_rgb(32, 224, 232),
+        Color32::from_rgb(29, 255, 27),
+    ];
 }
 
 /// Pixel sizes, spacings and radii. Raw logical pixels; most are DPI-scaled at
@@ -154,12 +169,14 @@ pub mod size {
     pub const TOOLBAR_ICON_GAP: f32 = 3.0;
     pub const TOOLBAR_ICON_PADDING: f32 = 8.0;
     pub const TOOLBAR_CENTER_WIDTH: f32 = 180.0;
-    pub const TOOLBAR_RIGHT_WIDTH: f32 = 153.0;
+    pub const TOOLBAR_RIGHT_WIDTH: f32 = 200.0;
     pub const TOOLBAR_LEFT_WIDTH: f32 = 333.0;
     pub const TOOLBAR_SHADING_GROUP_WIDTH: f32 = 183.0;
     pub const TOOLBAR_DEBUG_GROUP_WIDTH: f32 = 138.0;
     pub const TOOLBAR_SINGLE_ICON_GROUP_WIDTH: f32 = 48.0;
     pub const TOOLBAR_DOUBLE_ICON_GROUP_WIDTH: f32 = 93.0;
+    /// Width of a three-icon toolbar group (e.g. bounding box / gizmo / grid).
+    pub const TOOLBAR_TRIPLE_ICON_GROUP_WIDTH: f32 = 138.0;
     pub const TOOLBAR_MODE_GROUP_WIDTH: f32 = 180.0;
     pub const TOOLBAR_GROUP_HEIGHT: f32 = 48.0;
     pub const TOOLBAR_GROUP_PADDING: f32 = 3.0;

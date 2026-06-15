@@ -56,6 +56,10 @@ pub(crate) const ICON_GRID: AppIcon = AppIcon {
     id: "icon_grid",
     png_bytes: include_bytes!("../../../assets/icons/icon_grid.png"),
 };
+pub(crate) const ICON_BBOX: AppIcon = AppIcon {
+    id: "icon_bbox",
+    png_bytes: include_bytes!("../../../assets/icons/icon_bbox.png"),
+};
 pub(crate) const ICON_INFO: AppIcon = AppIcon {
     id: "icon_info",
     png_bytes: include_bytes!("../../../assets/icons/icon_info.png"),

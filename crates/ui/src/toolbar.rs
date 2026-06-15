@@ -5,9 +5,9 @@
 use review_render::ShadingMode;
 
 use crate::assets::{
-    ICON_AXIS_GIZMO, ICON_GRID, ICON_NORMALS_FACE, ICON_NORMALS_VERTEX, ICON_SHADING_SOLID,
-    ICON_SHADING_UNLIT, ICON_SHADING_WIRE, ICON_SHADING_WIRE_SHADED, ICON_UV, ICON_VIEW_ORTHO,
-    ICON_VIEW_PERSPECTIVE,
+    ICON_AXIS_GIZMO, ICON_BBOX, ICON_GRID, ICON_NORMALS_FACE, ICON_NORMALS_VERTEX,
+    ICON_SHADING_SOLID, ICON_SHADING_UNLIT, ICON_SHADING_WIRE, ICON_SHADING_WIRE_SHADED, ICON_UV,
+    ICON_VIEW_ORTHO, ICON_VIEW_PERSPECTIVE,
 };
 use crate::state::{OptionPanel, UiState, ViewProjectionMode, WorkspaceMode};
 use crate::theme::{self, color, font, size};
@@ -34,7 +34,7 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
     let shading_group_width = theme::px(ctx, size::TOOLBAR_SHADING_GROUP_WIDTH);
     let debug_group_width = theme::px(ctx, size::TOOLBAR_DEBUG_GROUP_WIDTH);
     let single_icon_group_width = theme::px(ctx, size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH);
-    let double_icon_group_width = theme::px(ctx, size::TOOLBAR_DOUBLE_ICON_GROUP_WIDTH);
+    let triple_icon_group_width = theme::px(ctx, size::TOOLBAR_TRIPLE_ICON_GROUP_WIDTH);
     let mode_group_width = theme::px(ctx, size::TOOLBAR_MODE_GROUP_WIDTH);
 
     egui::TopBottomPanel::top("app_toolbar")
@@ -106,7 +106,7 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                 |ui| {
                     ui.set_height(group_height);
                     ui.spacing_mut().item_spacing.x = group_spacing;
-                    draw_view_group(ui, ctx, state, double_icon_group_width);
+                    draw_view_group(ui, ctx, state, triple_icon_group_width);
                     draw_projection_group(ui, ctx, state, single_icon_group_width);
                 },
             );
@@ -201,6 +201,20 @@ fn draw_debug_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState,
 
 fn draw_view_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState, width: f32) {
     toolbar_group_shell(ui, ctx, width, |ui| {
+        let bbox = icon_toggle_button(
+            ui,
+            ctx,
+            &ICON_BBOX,
+            state.debug.show_bounding_box,
+            "Bounding Box (right-click for options)",
+        );
+        if bbox.clicked() {
+            state.debug.show_bounding_box = !state.debug.show_bounding_box;
+        }
+        if bbox.secondary_clicked() {
+            state.open_panel(OptionPanel::BoundingBox);
+        }
+
         icon_toggle_button(
             ui,
             ctx,

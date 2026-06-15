@@ -27,6 +27,6 @@ mod widgets;
 pub use assets::install_fonts;
 pub use overlay::{draw_overlay, draw_viewport_scene};
 pub use state::{
-    AxisGizmoAction, NormalPanelState, OptionPanel, UiOutput, UiState, UvCheckerPanelState,
-    ViewAxis, ViewProjectionMode, WireframePanelState, WorkspaceMode,
+    AxisGizmoAction, BoundingBoxPanelState, NormalPanelState, OptionPanel, UiOutput, UiState,
+    UvCheckerPanelState, ViewAxis, ViewProjectionMode, WireframePanelState, WorkspaceMode,
 };
