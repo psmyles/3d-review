@@ -7,11 +7,11 @@ use std::{
 
 use anyhow::Context;
 use glam::Vec2;
-use review_import::{load_model, LoadOptions};
+use review_import::{LoadOptions, load_model};
 use review_model::ModelData;
 use review_render::{Renderer, RendererConfig, SCENE_DEPTH_FORMAT, SCENE_SAMPLE_COUNT};
 use review_ui::{
-    draw_overlay, draw_viewport_scene, install_fonts, AxisGizmoAction, UiOutput, UiState,
+    AxisGizmoAction, UiOutput, UiState, draw_overlay, draw_viewport_scene, install_fonts,
 };
 use tracing::{info, warn};
 use winit::{
@@ -46,6 +46,20 @@ struct App {
     last_pointer_position: Option<Vec2>,
     last_primary_click: Option<(Instant, Vec2)>,
     last_render_instant: Option<Instant>,
+    /// When egui has asked to be repainted at a future time (e.g. a UI fade
+    /// animation). Drives `ControlFlow::WaitUntil` so the loop sleeps until then
+    /// instead of spinning. `None` = wait for the next input/redraw event.
+    repaint_at: Option<Instant>,
+    /// An interactive event (drag, hover, wheel, key) has requested a redraw.
+    /// Folded into the paced `repaint_at` schedule in `about_to_wait` rather than
+    /// triggering an immediate `request_redraw`, so a high-polling-rate mouse or
+    /// key auto-repeat can't drive rendering faster than the monitor refresh.
+    redraw_requested: bool,
+    /// Minimum spacing between continuously-rendered frames, derived from the
+    /// active monitor's refresh rate. Caps redraw to the display so animation
+    /// doesn't render faster than it can be shown (the swapchain doesn't pace us
+    /// on the Vulkan path). Defaults to 60 Hz until a monitor is known.
+    refresh_interval: Duration,
     scene_model: Arc<ModelData>,
     scene_revision: u64,
     ui: UiState,
@@ -69,6 +83,9 @@ impl Default for App {
             last_pointer_position: None,
             last_primary_click: None,
             last_render_instant: None,
+            repaint_at: None,
+            redraw_requested: false,
+            refresh_interval: Duration::from_secs_f64(1.0 / 60.0),
             scene_model,
             scene_revision: 0,
             ui,
@@ -132,6 +149,7 @@ impl ApplicationHandler for App {
         self.egui_state = Some(egui_state);
         self.egui_painter = Some(egui_painter);
         self.ui.stats = self.scene_model.stats;
+        self.refresh_interval = monitor_refresh_interval(&window);
         self.window = Some(window.clone());
         info!("application shell started");
         window.request_redraw();
@@ -151,13 +169,23 @@ impl ApplicationHandler for App {
             return;
         }
 
-        let egui_response = self.egui_state.as_mut().map(|egui_state| {
-            let response = egui_state.on_window_event(window, &event);
-            if response.repaint {
-                window.request_redraw();
-            }
-            response
-        });
+        let egui_response = self
+            .egui_state
+            .as_mut()
+            .map(|egui_state| egui_state.on_window_event(window, &event));
+
+        // egui reports `repaint` for `RedrawRequested` itself; honoring that here
+        // would make every frame schedule the next one, spinning the loop
+        // uncapped. Only let *other* events (input, resize, …) request a repaint,
+        // and route it through the paced flag so mouse-over/hover repaints are
+        // capped to the monitor refresh rather than redrawn immediately.
+        if egui_response
+            .as_ref()
+            .is_some_and(|response| response.repaint)
+            && !matches!(event, WindowEvent::RedrawRequested)
+        {
+            self.redraw_requested = true;
+        }
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
@@ -165,6 +193,10 @@ impl ApplicationHandler for App {
                 self.render();
             }
             WindowEvent::Resized(size) => {
+                // A resize often accompanies a move to another monitor, which may
+                // have a different refresh rate; re-derive the frame cap.
+                self.refresh_interval = monitor_refresh_interval(window);
+
                 if let Some(renderer) = self.renderer.as_mut() {
                     if size.height > 0 {
                         renderer.set_camera_aspect_ratio(size.width as f32 / size.height as f32);
@@ -223,7 +255,7 @@ impl ApplicationHandler for App {
                             );
                         }
                     }
-                    window.request_redraw();
+                    self.redraw_requested = true;
                 }
 
                 self.last_pointer_position = Some(current);
@@ -240,7 +272,7 @@ impl ApplicationHandler for App {
                             MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 120.0,
                         };
                         renderer.zoom_camera(amount);
-                        window.request_redraw();
+                        self.redraw_requested = true;
                     }
                 }
             }
@@ -253,13 +285,44 @@ impl ApplicationHandler for App {
             {
                 if let Some(renderer) = self.renderer.as_mut() {
                     frame_camera_to_model(renderer, &self.scene_model);
-                    window.request_redraw();
+                    self.redraw_requested = true;
                 }
             }
             WindowEvent::DroppedFile(path) => {
                 self.open_model_from_path(&path);
             }
             _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let now = Instant::now();
+
+        // Fold a pending interactive redraw (drag, hover, wheel, key) into the
+        // paced schedule. The earliest we'll draw is one refresh interval after
+        // the last frame, so a burst of high-frequency input events coalesces
+        // into a single redraw capped at the monitor refresh rate.
+        if self.redraw_requested {
+            self.redraw_requested = false;
+            let earliest = self
+                .last_render_instant
+                .map_or(now, |last| last + self.refresh_interval);
+            self.repaint_at = Some(self.repaint_at.map_or(earliest, |at| at.min(earliest)));
+        }
+
+        // Sleep until the next scheduled repaint (if any), otherwise block until
+        // the next input event. When the scheduled time arrives, fire one redraw
+        // and fall back to waiting.
+        match self.repaint_at {
+            Some(wake) if now >= wake => {
+                self.repaint_at = None;
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+                event_loop.set_control_flow(ControlFlow::Wait);
+            }
+            Some(wake) => event_loop.set_control_flow(ControlFlow::WaitUntil(wake)),
+            None => event_loop.set_control_flow(ControlFlow::Wait),
         }
     }
 }
@@ -274,7 +337,7 @@ impl App {
         };
 
         window.set_title("3D Review");
-        self.update_camera_animation(&window);
+        self.update_camera_animation();
 
         let output_format = {
             let Some(egui_painter) = self.egui_painter.as_ref() else {
@@ -322,6 +385,30 @@ impl App {
         };
 
         self.apply_ui_output(ui_output);
+
+        // Decide when the next frame should be drawn. Continuous motion — a live
+        // camera transition, or egui asking to "repaint immediately" (zero delay)
+        // — is paced to the monitor's refresh interval so the viewer never renders
+        // faster than the display can show it. (We can't rely on the swapchain to
+        // pace us: on the Vulkan path `present` does not block on vblank.) A finite
+        // egui delay (e.g. a tooltip timer) schedules a single future wake-up, and
+        // an infinite delay means everything is idle, so we wait for the next event.
+        let repaint_delay = full_output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .map_or(Duration::MAX, |output| output.repaint_delay);
+        let camera_animating = self
+            .renderer
+            .as_ref()
+            .is_some_and(Renderer::is_camera_animating);
+        self.repaint_at = if repaint_delay.is_zero() || camera_animating {
+            let frame_start = self.last_render_instant.unwrap_or_else(Instant::now);
+            Some(frame_start + self.refresh_interval)
+        } else if repaint_delay == Duration::MAX {
+            None
+        } else {
+            Instant::now().checked_add(repaint_delay)
+        };
 
         let pixels_per_point = full_output.pixels_per_point;
         let clipped_primitives = egui_ctx.tessellate(full_output.shapes, pixels_per_point);
@@ -413,12 +500,10 @@ impl App {
             }
         }
 
-        if let Some(window) = self.window.as_ref() {
-            window.request_redraw();
-        }
+        self.redraw_requested = true;
     }
 
-    fn update_camera_animation(&mut self, window: &Window) {
+    fn update_camera_animation(&mut self) {
         let now = Instant::now();
         let delta_seconds = self
             .last_render_instant
@@ -437,12 +522,25 @@ impl App {
             };
         }
 
+        // Advance any live camera transition. The follow-up redraw is scheduled
+        // by the paced `repaint_at` logic in `render` (which checks
+        // `is_camera_animating`), so we don't request one directly here — doing so
+        // would bypass the refresh-rate cap.
         if let Some(renderer) = self.renderer.as_mut() {
-            if renderer.update_camera_animation(delta_seconds) && renderer.is_camera_animating() {
-                window.request_redraw();
-            }
+            renderer.update_camera_animation(delta_seconds);
         }
     }
+}
+
+/// The active monitor's refresh interval, used to cap continuous redraw. Falls
+/// back to 60 Hz when winit can't report a rate (some virtual/headless displays).
+fn monitor_refresh_interval(window: &Window) -> Duration {
+    window
+        .current_monitor()
+        .and_then(|monitor| monitor.refresh_rate_millihertz())
+        .filter(|millihertz| *millihertz > 0)
+        .map(|millihertz| Duration::from_secs_f64(1000.0 / f64::from(millihertz)))
+        .unwrap_or_else(|| Duration::from_secs_f64(1.0 / 60.0))
 }
 
 fn frame_camera_to_model(renderer: &mut Renderer, model: &ModelData) {
@@ -457,6 +555,9 @@ fn wgpu_configuration(renderer_config: RendererConfig) -> egui_wgpu::WgpuConfigu
 
     egui_wgpu::WgpuConfiguration {
         wgpu_setup: egui_wgpu::WgpuSetup::CreateNew(setup),
+        // Vsync: present in FIFO so the swapchain paces frames to the monitor's
+        // refresh and the viewer never renders faster than the display.
+        present_mode: wgpu::PresentMode::AutoVsync,
         ..Default::default()
     }
 }
