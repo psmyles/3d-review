@@ -712,8 +712,16 @@ impl App {
         // by the paced `repaint_at` logic in `render` (which checks
         // `is_camera_animating`), so we don't request one directly here — doing so
         // would bypass the refresh-rate cap.
+        //
+        // Cap the step: the viewer redraws on demand, so after an idle period
+        // `last_render_instant` is stale and the first frame's delta is the whole
+        // idle gap. Advancing a transition by that would fast-forward it to the
+        // end in one frame (skipping the animation entirely) — most visible on the
+        // short 0.1 s WASD orbits, where almost any delta exceeds the duration.
+        // One ~30 Hz frame is plenty to keep motion smooth.
+        const MAX_ANIMATION_STEP: f32 = 1.0 / 30.0;
         if let Some(renderer) = self.renderer.as_mut() {
-            renderer.update_camera_animation(delta_seconds);
+            renderer.update_camera_animation(delta_seconds.min(MAX_ANIMATION_STEP));
         }
     }
 }
