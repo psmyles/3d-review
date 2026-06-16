@@ -228,8 +228,13 @@ pub(crate) fn face_normal_lines(
 
         let ab = b - a;
         let ac = c - a;
-        let normal = ab.cross(ac);
-        if normal.length_squared() <= f32::EPSILON {
+        // Normalize before the degeneracy test: the raw cross product scales with
+        // triangle area, so a fixed `length_squared` threshold wrongly rejects the
+        // tiny (but valid) triangles of dense regions — hands, head, boots — while
+        // keeping the low-poly torso. `normalize_or_zero` only yields zero for a
+        // genuinely degenerate (zero-area / non-finite) triangle.
+        let normal = ab.cross(ac).normalize_or_zero();
+        if normal == Vec3::ZERO {
             continue;
         }
 
@@ -239,7 +244,7 @@ pub(crate) fn face_normal_lines(
             counts.get_mut(face_index),
         ) {
             *center_accum += (a + b + c) / 3.0;
-            *normal_accum += normal.normalize();
+            *normal_accum += normal;
             *count += 1;
         }
     }
@@ -296,7 +301,7 @@ fn debug_normal_length(model: &ModelData, scale: f32) -> f32 {
         .map(|bounds| bounds.size())
         .unwrap_or(Vec3::splat(1.0));
     let max_extent = size.max_element().max(1.0);
-    max_extent * scale.max(0.01)
+    max_extent * scale.max(0.001)
 }
 
 fn push_line(vertices: &mut Vec<SceneVertex>, start: [f32; 3], end: [f32; 3], color: [f32; 4]) {
