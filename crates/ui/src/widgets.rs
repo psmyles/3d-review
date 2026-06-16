@@ -155,8 +155,14 @@ pub(crate) fn compact_combo(
         });
 }
 
-/// A label + 0.02..=1.0 slider row using the shared two-column table layout.
-pub(crate) fn labeled_slider(ui: &mut egui::Ui, label: &str, value: &mut f32) {
+/// A label + slider row using the shared two-column table layout. `range` is the
+/// inclusive slider domain (the caller owns the semantic bounds).
+pub(crate) fn labeled_slider(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+) {
     ui.horizontal(|ui| {
         // Zero egui's implicit inter-item gap so our explicit column gap is the
         // only horizontal spacing.
@@ -166,7 +172,7 @@ pub(crate) fn labeled_slider(ui: &mut egui::Ui, label: &str, value: &mut f32) {
         // rect, so the rail spans to the column's right edge without spilling.
         ui.spacing_mut().slider_width = control_w;
         ui.add(
-            egui::Slider::new(value, 0.02..=1.0)
+            egui::Slider::new(value, range)
                 .show_value(false)
                 .clamping(egui::SliderClamping::Always),
         );

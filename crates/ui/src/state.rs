@@ -16,8 +16,12 @@ pub(crate) const DEFAULT_CHECKER_TILING: u32 = 4;
 /// Inclusive checker-tiling range enforced by the UV-checker panel.
 pub(crate) const CHECKER_TILING_MIN: u32 = 1;
 pub(crate) const CHECKER_TILING_MAX: u32 = 16;
-/// Default length for the face/vertex normal-line views.
-pub(crate) const DEFAULT_NORMAL_LENGTH: f32 = 0.18;
+/// Default length for the face/vertex normal-line views, as a fraction of the
+/// model's largest bounding extent (see `debug_normal_length` in `review-render`).
+pub(crate) const DEFAULT_NORMAL_LENGTH: f32 = 0.03;
+/// Inclusive normal-length range: 1%–10% of the model's largest bounding extent.
+pub(crate) const NORMAL_LENGTH_MIN: f32 = 0.01;
+pub(crate) const NORMAL_LENGTH_MAX: f32 = 0.10;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum WorkspaceMode {
