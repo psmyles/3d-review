@@ -301,13 +301,31 @@ impl SceneResources {
             push_constant_ranges: &[],
         });
 
+        // The wireframe (and other line overlays) share vertex positions with the
+        // shaded surface they trace, so they z-fight it: on curved faces edges sink
+        // behind the surface and drop out, and MSAA partial occlusion leaves the
+        // survivors uneven in opacity/thickness. We can't bias the lines directly —
+        // on DX12 depth bias applies only to triangle primitives — so instead the
+        // mesh pipeline pushes the shaded surface a hair *away* from the camera with
+        // a slope-scaled depth bias. Lines then render at their true depth and win
+        // the `LessEqual` test against the receded surface, while still being
+        // correctly occluded by geometry genuinely in front of them (slope-scaled
+        // bias is in real depth-buffer units, so it never over-pulls the far side
+        // through the front the way a constant clip-space line offset did).
         let mesh_pipeline = create_pipeline(
             device,
             &pipeline_layout,
             &shader,
             output_format,
             wgpu::PrimitiveTopology::TriangleList,
-            true,
+            DepthConfig {
+                write_enabled: true,
+                bias: wgpu::DepthBiasState {
+                    constant: 2,
+                    slope_scale: 2.0,
+                    clamp: 0.0,
+                },
+            },
             "review_scene_mesh_pipeline",
         );
         let line_pipeline = create_pipeline(
@@ -316,7 +334,10 @@ impl SceneResources {
             &shader,
             output_format,
             wgpu::PrimitiveTopology::LineList,
-            false,
+            DepthConfig {
+                write_enabled: false,
+                bias: wgpu::DepthBiasState::default(),
+            },
             "review_scene_line_pipeline",
         );
 
@@ -524,13 +545,21 @@ impl SceneResources {
     }
 }
 
+/// Depth behavior for a pipeline: whether it writes depth, and how much it biases
+/// fragments. The mesh writes depth and pushes the surface back (so coplanar line
+/// overlays win the depth test); the line pipeline does neither.
+struct DepthConfig {
+    write_enabled: bool,
+    bias: wgpu::DepthBiasState,
+}
+
 fn create_pipeline(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
     shader: &wgpu::ShaderModule,
     output_format: wgpu::TextureFormat,
     topology: wgpu::PrimitiveTopology,
-    depth_write_enabled: bool,
+    depth: DepthConfig,
     label: &'static str,
 ) -> wgpu::RenderPipeline {
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -553,10 +582,10 @@ fn create_pipeline(
         },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: SCENE_DEPTH_FORMAT,
-            depth_write_enabled,
+            depth_write_enabled: depth.write_enabled,
             depth_compare: wgpu::CompareFunction::LessEqual,
             stencil: wgpu::StencilState::default(),
-            bias: wgpu::DepthBiasState::default(),
+            bias: depth.bias,
         }),
         multisample: wgpu::MultisampleState {
             count: SCENE_SAMPLE_COUNT,

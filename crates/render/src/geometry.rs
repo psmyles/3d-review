@@ -76,8 +76,46 @@ pub(crate) fn model_mesh(model: &ModelData, uv_channel: u32) -> (Vec<SceneVertex
     (vertices, model.indices.clone())
 }
 
-/// Wireframe line segments (one per triangle edge) in the given color.
+/// Wireframe line segments tracing each *original* polygon's edges (quads stay
+/// quads, n-gons stay n-gons) in the given color — not the triangulated
+/// diagonals, which a viewer must not show as real edges (Maya/Blender don't).
+///
+/// The import bridge lays out each face's corners as a contiguous run of
+/// vertices, so a `TopologyFace` is the closed loop over the `index_count`
+/// vertices starting at `first_index`. Falls back to triangle edges only if a
+/// model somehow arrives without face topology.
 pub(crate) fn wireframe_lines(model: &ModelData, color: [f32; 4]) -> Vec<SceneVertex> {
+    let mut vertices = Vec::with_capacity(model.indices.len() * 2);
+
+    if model.faces.is_empty() {
+        return triangulated_wireframe_lines(model, color);
+    }
+
+    for face in &model.faces {
+        let count = face.index_count as usize;
+        if count < 2 {
+            continue;
+        }
+        let first = face.first_index as usize;
+
+        for corner in 0..count {
+            let a = first + corner;
+            let b = first + (corner + 1) % count;
+            let (Some(start), Some(end)) = (
+                model.vertices.get(a).map(|vertex| vertex.position),
+                model.vertices.get(b).map(|vertex| vertex.position),
+            ) else {
+                continue;
+            };
+            push_line(&mut vertices, start.to_array(), end.to_array(), color);
+        }
+    }
+
+    vertices
+}
+
+/// Triangle-edge fallback for [`wireframe_lines`] when face topology is absent.
+fn triangulated_wireframe_lines(model: &ModelData, color: [f32; 4]) -> Vec<SceneVertex> {
     let mut vertices = Vec::with_capacity(model.indices.len() * 2);
 
     for triangle in model.indices.chunks_exact(3) {
