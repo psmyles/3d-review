@@ -12,21 +12,29 @@ pub(crate) struct AppIcon {
     pub(crate) png_bytes: &'static [u8],
 }
 
+/// "Show Wireframe" — the independent wireframe-overlay toggle.
 pub(crate) const ICON_SHADING_WIRE: AppIcon = AppIcon {
     id: "icon_shading_wire",
     png_bytes: include_bytes!("../../../assets/icons/icon_shading_wire.png"),
+};
+/// "Wireframe Only" — the wireframe-only shading mode.
+pub(crate) const ICON_SHADING_WIRE_ONLY: AppIcon = AppIcon {
+    id: "icon_shading_wire_only",
+    png_bytes: include_bytes!("../../../assets/icons/icon_shading_wire_only.png"),
 };
 pub(crate) const ICON_SHADING_UNLIT: AppIcon = AppIcon {
     id: "icon_shading_unlit",
     png_bytes: include_bytes!("../../../assets/icons/icon_shading_unlit.png"),
 };
-pub(crate) const ICON_SHADING_SOLID: AppIcon = AppIcon {
-    id: "icon_shading_solid",
-    png_bytes: include_bytes!("../../../assets/icons/icon_shading_solid.png"),
+/// "Shaded" — the lit shading mode.
+pub(crate) const ICON_SHADING_SHADED: AppIcon = AppIcon {
+    id: "icon_shading_shaded",
+    png_bytes: include_bytes!("../../../assets/icons/icon_shading_shaded.png"),
 };
-pub(crate) const ICON_SHADING_WIRE_SHADED: AppIcon = AppIcon {
-    id: "icon_shading_wire_shaded",
-    png_bytes: include_bytes!("../../../assets/icons/icon_shading_wire_shaded.png"),
+/// "Source Material" — show the model's imported material (default).
+pub(crate) const ICON_SHADING_TEXTURE: AppIcon = AppIcon {
+    id: "icon_shading_texture",
+    png_bytes: include_bytes!("../../../assets/icons/icon_shading_texture.png"),
 };
 pub(crate) const ICON_UV: AppIcon = AppIcon {
     id: "icon_uv",

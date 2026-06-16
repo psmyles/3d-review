@@ -10,7 +10,8 @@ use crate::geometry::{
     wireframe_lines,
 };
 use crate::{
-    CameraProjection, CheckerTexture, OrbitCamera, SceneDebugOptions, ShadingMode, VertexColorMode,
+    ActiveMaterial, CameraProjection, CheckerTexture, OrbitCamera, SceneDebugOptions, ShadingMode,
+    VertexColorMode,
 };
 
 pub const SCENE_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
@@ -126,10 +127,9 @@ impl CallbackTrait for SceneCallback {
             render_pass.draw(0..resources.line_vertex_count, 0..1);
         }
 
-        if matches!(
-            self.debug_options.shading_mode,
-            ShadingMode::Wireframe | ShadingMode::ShadedWireframe
-        ) && resources.wireframe_line_vertex_count > 0
+        if (self.debug_options.wireframe_overlay
+            || matches!(self.debug_options.shading_mode, ShadingMode::Wireframe))
+            && resources.wireframe_line_vertex_count > 0
         {
             render_pass.set_bind_group(0, &resources.uniform_bind_group, &[]);
             render_pass.set_pipeline(&resources.line_pipeline);
@@ -400,7 +400,11 @@ impl SceneResources {
             view_projection: camera.view_projection(projection_mode).to_cols_array_2d(),
             render_options: [
                 shading_mode_value(debug_options.shading_mode),
-                if debug_options.uv_checker { 1.0 } else { 0.0 },
+                if debug_options.active_material == ActiveMaterial::UvChecker {
+                    1.0
+                } else {
+                    0.0
+                },
                 debug_options.uv_checker_tiling.max(1) as f32,
                 vertex_color_value(debug_options),
             ],
@@ -447,10 +451,8 @@ impl SceneResources {
         model: &ModelData,
         debug_options: SceneDebugOptions,
     ) {
-        let wireframe_on = matches!(
-            debug_options.shading_mode,
-            ShadingMode::Wireframe | ShadingMode::ShadedWireframe
-        );
+        let wireframe_on = debug_options.wireframe_overlay
+            || matches!(debug_options.shading_mode, ShadingMode::Wireframe);
         let want_wireframe = wireframe_on.then_some(debug_options.wireframe_color);
         if self.wireframe_baked != want_wireframe {
             let (buffer, count) = match want_wireframe {
@@ -776,15 +778,14 @@ fn shading_mode_value(mode: ShadingMode) -> f32 {
         ShadingMode::Wireframe => 0.0,
         ShadingMode::Unlit => 1.0,
         ShadingMode::Shaded => 2.0,
-        ShadingMode::ShadedWireframe => 3.0,
     }
 }
 
 /// Encode the vertex-color view into `render_options.w` for the shader: `-1`
-/// when the view is off, otherwise the mode index (`0` RGB, `1` Alpha, `2`
-/// RGB+A). One float keeps the uniform layout unchanged.
+/// when the active material isn't vertex colors, otherwise the mode index (`0`
+/// RGB, `1` Alpha, `2` RGB+A). One float keeps the uniform layout unchanged.
 fn vertex_color_value(debug_options: SceneDebugOptions) -> f32 {
-    if !debug_options.vertex_colors {
+    if debug_options.active_material != ActiveMaterial::VertexColors {
         return -1.0;
     }
     match debug_options.vertex_color_mode {
