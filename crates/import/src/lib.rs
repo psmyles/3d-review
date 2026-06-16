@@ -63,6 +63,7 @@ mod ffi {
         color: [f32; 4],
         tangent: [f32; 4],
         vertex_color: [f32; 4],
+        smoothness: f32,
     }
 
     #[repr(C)]
@@ -169,6 +170,7 @@ mod ffi {
                 color: Vec4::from_array(vertex.color),
                 tangent: Vec4::from_array(vertex.tangent),
                 vertex_color: Vec4::from_array(vertex.vertex_color),
+                smoothness: vertex.smoothness,
             })
             .collect::<Vec<_>>();
         let indices = checked_slice(scene.indices, scene.index_count, "indices")?.to_vec();

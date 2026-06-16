@@ -140,7 +140,14 @@ fn draw_shading_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiStat
         let unlit = matches!(state.shading_mode, ShadingMode::Unlit);
         let shaded = matches!(state.shading_mode, ShadingMode::Shaded);
 
-        if icon_toggle_button(ui, ctx, &ICON_SHADING_WIRE_ONLY, wire_only, "Wireframe Only").clicked()
+        if icon_toggle_button(
+            ui,
+            ctx,
+            &ICON_SHADING_WIRE_ONLY,
+            wire_only,
+            "Wireframe Only",
+        )
+        .clicked()
         {
             state.shading_mode = ShadingMode::Wireframe;
         }
