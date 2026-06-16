@@ -30,6 +30,7 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 wgpu = "24"
+windows-sys = "0.52"
 winit = "0.30"
 winresource = "0.1"
 

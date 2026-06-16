@@ -89,6 +89,10 @@ struct App {
     /// presented, so launch never flashes the white DWM redirection bitmap. Set
     /// once in `RedrawRequested` after the first paint.
     window_revealed: bool,
+    /// The process was launched with a request to start maximized (e.g. a
+    /// shortcut set to **Run: Maximized**). Set in `resumed` and re-asserted when
+    /// the hidden window is revealed, since winit doesn't honor the OS hint.
+    start_maximized: bool,
 }
 
 impl Default for App {
@@ -119,6 +123,7 @@ impl Default for App {
             ui,
             initial_model: None,
             window_revealed: false,
+            start_maximized: false,
         }
     }
 }
@@ -154,12 +159,18 @@ impl ApplicationHandler for App {
         // for the ~300 ms of wgpu init painted with the DWM redirection bitmap,
         // which flashes white. Revealing after the first present means the
         // window appears already showing the rendered scene.
+        // Honor the OS launch hint (e.g. a shortcut set to "Run: Maximized").
+        // winit never consults `STARTUPINFO.wShowWindow`, so we query it and set
+        // the initial state ourselves; re-asserted on reveal below.
+        self.start_maximized = review_import::startup_show_maximized();
+
         let window = event_loop
             .create_window(
                 WindowAttributes::default()
                     .with_title("3D Review")
                     .with_window_icon(load_window_icon())
                     .with_min_inner_size(winit::dpi::LogicalSize::new(960.0, 640.0))
+                    .with_maximized(self.start_maximized)
                     .with_visible(false),
             )
             .expect("failed to create application window");
@@ -543,6 +554,14 @@ impl App {
         // flash during wgpu init.
         if !self.window_revealed {
             if let Some(window) = self.window.as_ref() {
+                // Re-assert the maximized state *before* showing the window. While
+                // hidden this only records the flag (no `ShowWindow`), so the
+                // reveal shows the window already maximized in one step. Doing it
+                // after `set_visible` instead triggers a visible restore→maximize
+                // animation flash on launch.
+                if self.start_maximized {
+                    window.set_maximized(true);
+                }
                 window.set_visible(true);
             }
             self.window_revealed = true;
