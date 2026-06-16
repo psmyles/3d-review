@@ -61,6 +61,54 @@ static void review_import_free_warnings(review_import_warning *warnings, size_t 
     free(warnings);
 }
 
+static void review_import_free_uv_set_names(char **names, size_t name_count)
+{
+    size_t index;
+    if (!names) {
+        return;
+    }
+    for (index = 0; index < name_count; index++) {
+        free(names[index]);
+    }
+    free(names);
+}
+
+/* Replace the scene's UV-set name table with the names of `mesh`'s UV sets, in
+   source order. Called for the mesh that defines a new `uv_set_count` so the
+   stored names always match the channel count. Returns 1 on success, 0 on OOM
+   (leaving any previous table freed). */
+static int review_import_capture_uv_set_names(review_import_scene *scene, const ufbx_mesh *mesh)
+{
+    size_t count = mesh->uv_sets.count;
+    char **names;
+    size_t index;
+
+    review_import_free_uv_set_names(scene->uv_set_names, scene->uv_set_name_count);
+    scene->uv_set_names = NULL;
+    scene->uv_set_name_count = 0;
+
+    if (count == 0) {
+        return 1;
+    }
+
+    names = (char**)calloc(count, sizeof(char*));
+    if (!names) {
+        return 0;
+    }
+
+    for (index = 0; index < count; index++) {
+        names[index] = review_import_dup_ufbx_string(mesh->uv_sets.data[index].name);
+        if (!names[index]) {
+            review_import_free_uv_set_names(names, index);
+            return 0;
+        }
+    }
+
+    scene->uv_set_names = names;
+    scene->uv_set_name_count = count;
+    return 1;
+}
+
 void review_import_free_scene(review_import_scene *scene)
 {
     if (!scene) {
@@ -75,6 +123,7 @@ void review_import_free_scene(review_import_scene *scene)
     free(scene->uvs);
     review_import_free_materials(scene->materials, scene->material_count);
     review_import_free_warnings(scene->warnings, scene->warning_count);
+    review_import_free_uv_set_names(scene->uv_set_names, scene->uv_set_name_count);
     memset(scene, 0, sizeof(*scene));
 }
 
@@ -290,6 +339,12 @@ int review_import_load_fbx(
 
         if (mesh->uv_sets.count > out_scene->uv_set_count) {
             out_scene->uv_set_count = (uint32_t)mesh->uv_sets.count;
+            /* Capture the names from the mesh that defines the channel count, so
+               the dropdown lists every set in source-file order. */
+            if (!review_import_capture_uv_set_names(out_scene, mesh)) {
+                review_import_set_error(out_error, "out of memory while recording UV set names");
+                goto cleanup;
+            }
         } else if (mesh->vertex_uv.exists && out_scene->uv_set_count == 0) {
             out_scene->uv_set_count = 1;
         }

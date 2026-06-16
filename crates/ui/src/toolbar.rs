@@ -11,7 +11,7 @@ use crate::assets::{
 };
 use crate::state::{OptionPanel, UiState, ViewProjectionMode, WorkspaceMode};
 use crate::theme::{self, color, font, size};
-use crate::widgets::{icon_toggle_button, toolbar_group_shell};
+use crate::widgets::{compact_combo, icon_toggle_button, toolbar_group_shell};
 
 /// Background frame shared by the toolbar (and matched by the status bar). Zero
 /// inner margin: content is placed by px-converted rect math below, so no raw
@@ -76,18 +76,24 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                 egui::vec2(right_width.min(row_rect.width()), group_height),
             );
 
-            ui.scope_builder(
-                egui::UiBuilder::new()
-                    .max_rect(left_rect)
-                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                |ui| {
-                    ui.set_height(group_height);
-                    ui.spacing_mut().item_spacing.x = group_spacing;
-                    draw_shading_group(ui, ctx, state, shading_group_width);
-                    draw_material_group(ui, ctx, state, material_group_width);
-                    draw_normals_group(ui, ctx, state, normals_group_width);
-                },
-            );
+            // The shading / material / normal tool groups and the view /
+            // projection groups operate on the 3D scene, so they are shown only
+            // in the 3D workspace. UV mode replaces the right cluster with the
+            // UV-set picker; Texture mode (placeholder) shows neither.
+            if state.mode == WorkspaceMode::ThreeD {
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .max_rect(left_rect)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                    |ui| {
+                        ui.set_height(group_height);
+                        ui.spacing_mut().item_spacing.x = group_spacing;
+                        draw_shading_group(ui, ctx, state, shading_group_width);
+                        draw_material_group(ui, ctx, state, material_group_width);
+                        draw_normals_group(ui, ctx, state, normals_group_width);
+                    },
+                );
+            }
 
             ui.scope_builder(
                 egui::UiBuilder::new().max_rect(center_rect).layout(
@@ -108,8 +114,14 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                 |ui| {
                     ui.set_height(group_height);
                     ui.spacing_mut().item_spacing.x = group_spacing;
-                    draw_view_group(ui, ctx, state, triple_icon_group_width);
-                    draw_projection_group(ui, ctx, state, single_icon_group_width);
+                    match state.mode {
+                        WorkspaceMode::ThreeD => {
+                            draw_view_group(ui, ctx, state, triple_icon_group_width);
+                            draw_projection_group(ui, ctx, state, single_icon_group_width);
+                        }
+                        WorkspaceMode::Uv => draw_uv_set_picker(ui, ctx, state),
+                        WorkspaceMode::Texture => {}
+                    }
                 },
             );
         });
@@ -287,6 +299,32 @@ fn draw_projection_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiS
                 ViewProjectionMode::Perspective => ViewProjectionMode::Orthographic,
                 ViewProjectionMode::Orthographic => ViewProjectionMode::Perspective,
             };
+        }
+    });
+}
+
+/// The UV-set dropdown shown on the right of the toolbar in UV mode: lists the
+/// model's UV sets in source-file order and selects which one the UV view draws.
+/// Hidden when the model carries no UV sets.
+fn draw_uv_set_picker(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState) {
+    if state.uv_sets.is_empty() {
+        return;
+    }
+    // Keep the selected channel in range (a reload may have shrunk the set list).
+    let count = state.uv_sets.len() as u32;
+    if state.uv_view_channel >= count {
+        state.uv_view_channel = 0;
+    }
+
+    // Route through the shared combo helper so the closed button and its popup
+    // read identically to the option-panel dropdowns (fill, rounding, padding,
+    // font, and the no-blue-fill selection treatment).
+    let width = theme::px(ctx, size::TOOLBAR_UV_DROPDOWN_WIDTH);
+    let labels = state.uv_sets.clone();
+    let selected = labels[state.uv_view_channel as usize].clone();
+    compact_combo(ui, "uv_set_picker", width, selected, |ui| {
+        for (channel, label) in labels.iter().enumerate() {
+            ui.selectable_value(&mut state.uv_view_channel, channel as u32, label);
         }
     });
 }

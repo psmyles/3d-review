@@ -115,6 +115,11 @@ pub struct ModelData {
     /// mirrored here for multi-set models — a deliberate trade so the renderer
     /// can pick a channel by index without special-casing channel 0.
     pub uv_channels: Vec<Vec<Vec2>>,
+    /// Names of the model's UV sets in source-file order (e.g. `"UVMap"`,
+    /// `"UVMap.001"`), one per UV set. May be shorter than the UV-set count, or
+    /// hold an empty string for an unnamed set; use [`ModelData::uv_set_label`]
+    /// for a display label that falls back to a generated name.
+    pub uv_set_names: Vec<String>,
     pub bounds: Option<Bounds>,
     pub stats: ModelStats,
     pub materials: Vec<MaterialInfo>,
@@ -135,6 +140,24 @@ impl ModelData {
                     .map(|vertex| vertex.uv)
                     .unwrap_or(Vec2::ZERO)
             })
+    }
+
+    /// Display label for UV set `channel`: its source name when present and
+    /// non-empty, otherwise a generated `"UV {channel}"` fallback.
+    pub fn uv_set_label(&self, channel: usize) -> String {
+        self.uv_set_names
+            .get(channel)
+            .filter(|name| !name.is_empty())
+            .cloned()
+            .unwrap_or_else(|| format!("UV {channel}"))
+    }
+
+    /// Display labels for every UV set the model carries, in source-file order.
+    /// Empty when the model has no UV sets.
+    pub fn uv_set_labels(&self) -> Vec<String> {
+        (0..self.stats.uv_set_count)
+            .map(|channel| self.uv_set_label(channel))
+            .collect()
     }
 
     pub fn recompute_bounds(&mut self) {
@@ -160,6 +183,7 @@ pub fn demo_cube_model() -> ModelData {
             })
             .collect(),
         tri_to_face: vec![0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5],
+        uv_set_names: vec!["UVMap".to_owned()],
         stats: ModelStats {
             polygon_count: 6,
             triangle_count: 12,

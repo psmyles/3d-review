@@ -134,6 +134,8 @@ mod ffi {
         uvs: *mut f32,
         uv_value_count: usize,
         source_unit_meters: f32,
+        uv_set_names: *mut *mut c_char,
+        uv_set_name_count: usize,
     }
 
     #[repr(C)]
@@ -215,6 +217,11 @@ mod ffi {
         let tri_to_face =
             checked_slice(scene.tri_to_face, scene.tri_to_face_count, "tri_to_face")?.to_vec();
         let uv_channels = build_uv_channels(scene)?;
+        let uv_set_names =
+            checked_slice(scene.uv_set_names, scene.uv_set_name_count, "uv_set_names")?
+                .iter()
+                .map(|&name| read_optional_c_string(name).unwrap_or_default())
+                .collect::<Vec<_>>();
         let materials = checked_slice(scene.materials, scene.material_count, "materials")?
             .iter()
             .map(|material| MaterialInfo {
@@ -243,6 +250,7 @@ mod ffi {
             faces,
             tri_to_face,
             uv_channels,
+            uv_set_names,
             bounds: None,
             stats: ModelStats {
                 polygon_count: scene.face_count,

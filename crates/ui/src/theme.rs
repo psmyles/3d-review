@@ -197,6 +197,8 @@ pub mod size {
     /// Width of a three-icon toolbar group (e.g. bounding box / gizmo / grid).
     pub const TOOLBAR_TRIPLE_ICON_GROUP_WIDTH: f32 = 138.0;
     pub const TOOLBAR_MODE_GROUP_WIDTH: f32 = 180.0;
+    /// Width of the UV-set dropdown shown on the right of the toolbar in UV mode.
+    pub const TOOLBAR_UV_DROPDOWN_WIDTH: f32 = 200.0;
     pub const TOOLBAR_GROUP_HEIGHT: f32 = 48.0;
     pub const TOOLBAR_GROUP_PADDING: f32 = 3.0;
     /// Corner radius shared by toolbar groups, icon tiles and mode segments.

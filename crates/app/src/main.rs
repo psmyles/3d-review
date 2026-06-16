@@ -18,7 +18,8 @@ use review_render::{
     Renderer, RendererConfig, SCENE_DEPTH_FORMAT, SCENE_SAMPLE_COUNT, ShadingMode,
 };
 use review_ui::{
-    AxisGizmoAction, UiOutput, UiState, draw_overlay, draw_viewport_scene, install_fonts,
+    AxisGizmoAction, UiOutput, UiState, WorkspaceMode, draw_overlay, draw_viewport_scene,
+    install_fonts,
 };
 use tracing::{info, warn};
 use winit::{
@@ -171,6 +172,7 @@ impl ApplicationHandler for App {
         let size = window.inner_size();
         if size.height > 0 {
             renderer.set_camera_aspect_ratio(size.width as f32 / size.height as f32);
+            renderer.set_uv_aspect_ratio(size.width as f32 / size.height as f32);
             let (safe_w, safe_h) = framing_safe_area(size.height, window.scale_factor() as f32);
             renderer.set_framing_safe_area(safe_w, safe_h);
             // Re-frame the home view for the real window size / safe area so the
@@ -222,6 +224,7 @@ impl ApplicationHandler for App {
         self.egui_state = Some(egui_state);
         self.egui_painter = Some(egui_painter);
         self.ui.stats = self.scene_model.stats;
+        self.ui.uv_sets = self.scene_model.uv_set_labels();
         self.refresh_interval = monitor_refresh_interval(&window);
         self.window = Some(window.clone());
         info!("application shell started");
@@ -287,7 +290,9 @@ impl ApplicationHandler for App {
 
                 if let Some(renderer) = self.renderer.as_mut() {
                     if size.height > 0 {
-                        renderer.set_camera_aspect_ratio(size.width as f32 / size.height as f32);
+                        let aspect = size.width as f32 / size.height as f32;
+                        renderer.set_camera_aspect_ratio(aspect);
+                        renderer.set_uv_aspect_ratio(aspect);
                         let (safe_w, safe_h) =
                             framing_safe_area(size.height, window.scale_factor() as f32);
                         renderer.set_framing_safe_area(safe_w, safe_h);
@@ -324,22 +329,30 @@ impl ApplicationHandler for App {
                     self.ui.show_help_overlay = false;
                     self.redraw_requested = true;
                 } else if !egui_response.is_some_and(|response| response.consumed) {
+                    // The UV viewport is a 2D pan/zoom workspace: LMB pans, RMB
+                    // zooms (down = in). The 3D scene keeps LMB orbit / RMB
+                    // pan-or-zoom.
+                    let uv_mode = self.ui.mode == WorkspaceMode::Uv;
                     match button {
                         MouseButton::Left => {
                             if self.should_open_on_double_click() {
                                 self.open_model_from_dialog();
                                 self.drag_mode = None;
                             } else {
-                                self.drag_mode = Some(DragMode::Orbit);
+                                self.drag_mode = Some(if uv_mode {
+                                    DragMode::Pan
+                                } else {
+                                    DragMode::Orbit
+                                });
                                 if let Some(position) = self.last_pointer_position {
                                     self.last_primary_click = Some((Instant::now(), position));
                                 }
                             }
                         }
                         MouseButton::Right => {
-                            // Alt+RMB zoom-drags (down = in, up = out); plain
-                            // RMB pans.
-                            self.drag_mode = Some(if self.modifiers.alt_key() {
+                            // UV mode: RMB zoom-drags. 3D: Alt+RMB zoom-drags
+                            // (down = in, up = out), plain RMB pans.
+                            self.drag_mode = Some(if uv_mode || self.modifiers.alt_key() {
                                 DragMode::Zoom
                             } else {
                                 DragMode::Pan
@@ -361,18 +374,29 @@ impl ApplicationHandler for App {
                     self.drag_mode,
                 ) {
                     let delta = current - last;
+                    let uv_mode = self.ui.mode == WorkspaceMode::Uv;
+                    let size = window.inner_size();
+                    let viewport = Vec2::new(size.width as f32, size.height as f32);
                     match mode {
                         DragMode::Orbit => renderer.orbit_camera(delta),
+                        // Pan drives the 2D UV camera in UV mode, the 3D camera
+                        // otherwise.
                         DragMode::Pan => {
-                            let size = window.inner_size();
-                            renderer.pan_camera(
-                                delta,
-                                Vec2::new(size.width as f32, size.height as f32),
-                            );
+                            if uv_mode {
+                                renderer.pan_uv_camera(delta, viewport);
+                            } else {
+                                renderer.pan_camera(delta, viewport);
+                            }
                         }
                         // Pointer down (positive screen delta) zooms in, up
                         // zooms out — matching the wheel's positive-is-in sign.
-                        DragMode::Zoom => renderer.zoom_camera(delta.y * 0.01),
+                        DragMode::Zoom => {
+                            if uv_mode {
+                                renderer.zoom_uv_camera(delta.y * 0.01);
+                            } else {
+                                renderer.zoom_camera(delta.y * 0.01);
+                            }
+                        }
                     }
                     self.redraw_requested = true;
                 }
@@ -390,7 +414,11 @@ impl ApplicationHandler for App {
                             MouseScrollDelta::LineDelta(_, y) => y * 0.5,
                             MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 120.0,
                         };
-                        renderer.zoom_camera(amount);
+                        if self.ui.mode == WorkspaceMode::Uv {
+                            renderer.zoom_uv_camera(amount);
+                        } else {
+                            renderer.zoom_camera(amount);
+                        }
                         self.redraw_requested = true;
                     }
                 }
@@ -484,6 +512,7 @@ impl App {
 
             let raw_input = egui_state.take_egui_input(&window);
             let camera = renderer.camera;
+            let uv_camera = renderer.uv_camera;
             let clear = renderer.config.clear_color;
             let scene_model = self.scene_model.clone();
             let scene_revision = self.scene_revision;
@@ -493,6 +522,7 @@ impl App {
                     ctx,
                     &self.ui,
                     camera,
+                    uv_camera,
                     scene_model.clone(),
                     scene_revision,
                     output_format,
@@ -576,6 +606,7 @@ impl App {
 
                 if let Some(renderer) = self.renderer.as_mut() {
                     frame_camera_to_model(renderer, &model);
+                    renderer.reset_uv_camera();
                 }
 
                 self.ui.stats = model.stats;
@@ -583,6 +614,10 @@ impl App {
                 // reset to channel 0 so the picker never points past the new
                 // model's UV-set count.
                 self.ui.uv_checker.uv_channel = 0;
+                // Refresh the UV-view dropdown labels and reset its independent
+                // channel for the new model.
+                self.ui.uv_sets = model.uv_set_labels();
+                self.ui.uv_view_channel = 0;
                 self.scene_model = model;
                 self.scene_revision = self.scene_revision.saturating_add(1);
                 info!(path = %path.display(), "model loaded");
@@ -620,6 +655,18 @@ impl App {
         }
 
         if !self.modifiers.is_empty() {
+            return;
+        }
+
+        // In the UV workspace the 3D camera shortcuts (WASD orbit / shading /
+        // grid) don't apply; only F / R, which reframe the 2D UV view.
+        if self.ui.mode == WorkspaceMode::Uv {
+            if event.state == ElementState::Pressed && matches!(character.as_str(), "f" | "r") {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.reset_uv_camera();
+                }
+                self.redraw_requested = true;
+            }
             return;
         }
 
@@ -681,11 +728,14 @@ impl App {
         let empty = Arc::new(ModelData::default());
         self.ui.stats = empty.stats;
         self.ui.uv_checker.uv_channel = 0;
+        self.ui.uv_sets = empty.uv_set_labels();
+        self.ui.uv_view_channel = 0;
         self.scene_model = empty;
         self.scene_revision = self.scene_revision.saturating_add(1);
 
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.animate_camera_to_home();
+            renderer.reset_uv_camera();
         }
 
         info!("reset to start state");

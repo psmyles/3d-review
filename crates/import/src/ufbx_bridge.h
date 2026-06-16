@@ -61,6 +61,13 @@ typedef struct review_import_scene {
        centimeter file), captured before normalizing the scene to meters. 0.0 if
        the file declared no unit. */
     float source_unit_meters;
+    /* The model's UV-set names in source-file order (e.g. "UVMap",
+       "UVMap.001"), one per UV set, captured from the mesh that defines
+       `uv_set_count`. Each entry is an owned, NUL-terminated string; an entry
+       may be the empty string if the source set carried no name. NULL when the
+       model has no UV sets. */
+    char **uv_set_names;
+    size_t uv_set_name_count;
 } review_import_scene;
 
 typedef struct review_import_options {

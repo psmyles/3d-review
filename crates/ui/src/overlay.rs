@@ -5,30 +5,25 @@
 use std::sync::Arc;
 
 use review_model::ModelData;
-use review_render::{OrbitCamera, SceneCallback};
+use review_render::{OrbitCamera, SceneCallback, UvCamera};
 
 use crate::state::{UiOutput, UiState, WorkspaceMode, sync_debug_state};
 use crate::theme::{self, color, size};
 use crate::{gizmo, help, panels, stats, status_bar, toolbar};
 
-/// Paint the 3D viewport scene behind the egui chrome (3D mode only).
+/// Paint the viewport scene behind the egui chrome: the 3D scene in 3D mode, the
+/// 2D UV viewport in UV mode. Texture mode draws nothing (placeholder).
 pub fn draw_viewport_scene(
     ctx: &egui::Context,
     state: &UiState,
     camera: OrbitCamera,
+    uv_camera: UvCamera,
     model: Arc<ModelData>,
     model_revision: u64,
     output_format: egui_wgpu::wgpu::TextureFormat,
 ) {
-    if state.mode != WorkspaceMode::ThreeD {
-        return;
-    }
-
-    let rect = ctx.input(|input| input.screen_rect());
-    let painter = ctx.layer_painter(egui::LayerId::background());
-    let callback = egui_wgpu::Callback::new_paint_callback(
-        rect,
-        SceneCallback::new(
+    let callback = match state.mode {
+        WorkspaceMode::ThreeD => SceneCallback::new(
             camera,
             state.projection_mode.into(),
             output_format,
@@ -36,8 +31,19 @@ pub fn draw_viewport_scene(
             model_revision,
             state.debug,
         ),
-    );
-    painter.add(callback);
+        WorkspaceMode::Uv => SceneCallback::new_uv(
+            output_format,
+            model,
+            model_revision,
+            uv_camera,
+            state.uv_view_channel,
+        ),
+        WorkspaceMode::Texture => return,
+    };
+
+    let rect = ctx.input(|input| input.screen_rect());
+    let painter = ctx.layer_painter(egui::LayerId::background());
+    painter.add(egui_wgpu::Callback::new_paint_callback(rect, callback));
 }
 
 /// Draw the full egui overlay and return the intents emitted this frame.
@@ -50,25 +56,32 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
     let status_bar_height = theme::px(ctx, size::STATUS_BAR_HEIGHT);
 
     toolbar::draw(ctx, state);
-    draw_option_panel(ctx, state, toolbar_height, status_bar_height);
 
-    if state.show_axis_gizmo {
-        let gizmo_response = egui::Area::new(egui::Id::new("axis_gizmo"))
-            .fade_in(false)
-            .anchor(
-                egui::Align2::RIGHT_TOP,
-                egui::vec2(
-                    -theme::px(ctx, size::GIZMO_INSET),
-                    toolbar_height + theme::px(ctx, size::GIZMO_INSET),
-                ),
-            )
-            .show(ctx, |ui| {
-                gizmo::draw_axis_gizmo(ui, ctx, camera, state.projection_mode.into())
-            });
-        output.axis_gizmo_action = gizmo_response.inner;
+    // The option panels, axis gizmo and stats overlay are all 3D-scene chrome;
+    // the UV / Texture workspaces keep a clean viewport (just the UV dropdown in
+    // the toolbar), so they only draw in 3D mode.
+    if state.mode == WorkspaceMode::ThreeD {
+        draw_option_panel(ctx, state, toolbar_height, status_bar_height);
+
+        if state.show_axis_gizmo {
+            let gizmo_response = egui::Area::new(egui::Id::new("axis_gizmo"))
+                .fade_in(false)
+                .anchor(
+                    egui::Align2::RIGHT_TOP,
+                    egui::vec2(
+                        -theme::px(ctx, size::GIZMO_INSET),
+                        toolbar_height + theme::px(ctx, size::GIZMO_INSET),
+                    ),
+                )
+                .show(ctx, |ui| {
+                    gizmo::draw_axis_gizmo(ui, ctx, camera, state.projection_mode.into())
+                });
+            output.axis_gizmo_action = gizmo_response.inner;
+        }
+
+        draw_stats_overlay(ctx, state, status_bar_height);
     }
 
-    draw_stats_overlay(ctx, state, status_bar_height);
     status_bar::draw(ctx, state);
 
     // The startup cheat-sheet sits on top of all the chrome (drawn last). It
