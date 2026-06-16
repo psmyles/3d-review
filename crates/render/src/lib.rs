@@ -141,7 +141,7 @@ impl Default for SceneDebugOptions {
             vertex_normal_length: 0.03,
             face_normal_color: [1.0, 0.1, 0.1, 0.95],
             vertex_normal_color: [0.14, 0.92, 0.96, 0.95],
-            wireframe_color: [1.0, 1.0, 1.0, 1.0],
+            wireframe_color: [0.6, 0.6, 0.6, 1.0],
             bounding_box_color: [1.0, 0.803_921_6, 0.250_980_4, 1.0],
         }
     }
