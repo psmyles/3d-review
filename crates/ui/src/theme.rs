@@ -116,8 +116,8 @@ pub mod color {
     pub const FACE_NORMAL_DEFAULT: Color32 = Color32::from_rgb(255, 27, 27);
     /// Default vertex-normal line color.
     pub const VERTEX_NORMAL_DEFAULT: Color32 = Color32::from_rgb(32, 224, 232);
-    /// Default wireframe line color.
-    pub const WIREFRAME_DEFAULT: Color32 = Color32::WHITE;
+    /// Default wireframe line color (60% grey).
+    pub const WIREFRAME_DEFAULT: Color32 = Color32::from_gray(153);
     /// Default bounding-box edge color (a distinct amber that reads against the
     /// shaded model and the grid).
     pub const BOUNDING_BOX_DEFAULT: Color32 = Color32::from_rgb(255, 205, 64);
@@ -132,15 +132,15 @@ pub mod color {
         FACE_NORMAL_DEFAULT,
     ];
 
-    /// Swatch palette offered for the wireframe color row: white (default),
-    /// black, red, cyan, green, 60% grey.
+    /// Swatch palette offered for the wireframe color row: 60% grey (default),
+    /// black, red, cyan, green, white.
     pub const WIREFRAME_SWATCHES: [Color32; 6] = [
         WIREFRAME_DEFAULT,
         Color32::BLACK,
         Color32::from_rgb(255, 27, 27),
         Color32::from_rgb(32, 224, 232),
         Color32::from_rgb(29, 255, 27),
-        Color32::from_gray(153),
+        Color32::WHITE,
     ];
 
     /// Swatch palette offered for the bounding-box color row: amber (default),
