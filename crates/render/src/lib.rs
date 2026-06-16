@@ -60,6 +60,21 @@ pub enum CameraProjection {
     Orthographic,
 }
 
+/// How the 2D UV viewport draws the model's UV layout. Mutually exclusive (the
+/// toolbar's UV-shading group is a radio selection); the UV edges are always
+/// drawn, the fill underneath them changes per mode.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum UvShadingMode {
+    /// UV edges over the reference grid, with no fill underneath (the default
+    /// wire-only layout view).
+    #[default]
+    Wire,
+    /// The UV islands filled with one solid shaded color, edges drawn on top.
+    Shaded,
+    /// Each UV island filled with its own unique color, edges drawn on top.
+    Islands,
+}
+
 /// Which built-in checker texture the UV-checker view samples.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum CheckerTexture {

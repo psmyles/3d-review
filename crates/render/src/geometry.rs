@@ -66,6 +66,9 @@ const UV_GRID_BORDER_COLOR: [f32; 4] = [0.42, 0.49, 0.54, 0.7];
 const UV_GRID_CELL_COLOR: [f32; 4] = [0.33, 0.38, 0.42, 0.32];
 /// Color of the model's UV edges drawn over the grid (a readable cyan-blue).
 const UV_EDGE_COLOR: [f32; 4] = [0.29, 0.64, 0.91, 0.9];
+/// Flat fill color for the solid-shaded UV view (a muted steel blue, gamma-space
+/// like the line colors). The wireframe is drawn on top of it.
+const UV_FILL_SOLID_COLOR: [f32; 4] = [0.24, 0.34, 0.46, 1.0];
 
 /// The 0..1 reference grid for the UV viewport, in UV-plane coordinates
 /// (positions are `(u, v, 0)`). Ten subdivisions per axis plus a stronger
@@ -133,6 +136,134 @@ pub(crate) fn uv_wireframe_lines(model: &ModelData, channel: u32) -> Vec<SceneVe
     }
 
     vertices
+}
+
+/// Filled UV-space triangles for `channel`, used as the solid layer the UV
+/// wireframe is drawn over. Positions are the triangulated per-corner UVs mapped
+/// to the UV plane as `(u, v, 0)`, with a zero normal so the scene shader returns
+/// the baked vertex color flat (no lighting). When `per_island` is false every
+/// triangle gets [`UV_FILL_SOLID_COLOR`]; when true each connected UV island is
+/// tinted a unique color (see [`uv_island_colors`]).
+pub(crate) fn uv_fill_triangles(
+    model: &ModelData,
+    channel: u32,
+    per_island: bool,
+) -> Vec<SceneVertex> {
+    let channel = channel as usize;
+    if model.indices.is_empty() || model.vertices.is_empty() {
+        return Vec::new();
+    }
+
+    let island_colors = per_island.then(|| uv_island_colors(model));
+    let uv_point = |vertex_index: usize| {
+        let uv = model.uv_for_channel(vertex_index, channel);
+        [uv.x, uv.y, 0.0]
+    };
+
+    let mut vertices = Vec::with_capacity(model.indices.len());
+    for triangle in model.indices.chunks_exact(3) {
+        let [a, b, c] = [
+            triangle[0] as usize,
+            triangle[1] as usize,
+            triangle[2] as usize,
+        ];
+        if a >= model.vertices.len() || b >= model.vertices.len() || c >= model.vertices.len() {
+            continue;
+        }
+        let color = match &island_colors {
+            // All three corners share an island root, so corner `a` decides.
+            Some(colors) => colors.get(a).copied().unwrap_or(UV_FILL_SOLID_COLOR),
+            None => UV_FILL_SOLID_COLOR,
+        };
+        push_fill_vertex(&mut vertices, uv_point(a), color);
+        push_fill_vertex(&mut vertices, uv_point(b), color);
+        push_fill_vertex(&mut vertices, uv_point(c), color);
+    }
+
+    vertices
+}
+
+/// A per-vertex fill color assigning each connected UV island its own hue.
+///
+/// Islands are the connected components of the mesh as indexed: triangles that
+/// share a vertex index share that vertex's UV exactly, so they're joined; a UV
+/// seam duplicates the vertex (same position, different UV, distinct index), so
+/// the two sides fall into different components — which is precisely a UV island.
+/// A union-find over triangle membership finds the components; each root is
+/// assigned a distinct color in first-seen order.
+fn uv_island_colors(model: &ModelData) -> Vec<[f32; 4]> {
+    let vertex_count = model.vertices.len();
+    let mut parent: Vec<u32> = (0..vertex_count as u32).collect();
+
+    for triangle in model.indices.chunks_exact(3) {
+        let [a, b, c] = [triangle[0], triangle[1], triangle[2]];
+        if (a as usize) < vertex_count && (b as usize) < vertex_count && (c as usize) < vertex_count
+        {
+            uf_union(&mut parent, a, b);
+            uf_union(&mut parent, a, c);
+        }
+    }
+
+    // Map each component root to a color index in first-seen order, so island
+    // colors are stable for a given mesh rather than scattered by vertex id.
+    let mut root_color_index = vec![u32::MAX; vertex_count];
+    let mut island_count = 0_u32;
+    let mut colors = vec![UV_FILL_SOLID_COLOR; vertex_count];
+    for vertex in 0..vertex_count as u32 {
+        let root = uf_find(&mut parent, vertex) as usize;
+        if root_color_index[root] == u32::MAX {
+            root_color_index[root] = island_count;
+            island_count += 1;
+        }
+        colors[vertex as usize] = island_color(root_color_index[root]);
+    }
+
+    colors
+}
+
+/// Distinct, evenly-spread island color for the `index`-th UV island. Hues step
+/// by the golden-ratio conjugate so successive islands stay far apart on the
+/// wheel; saturation/value are fixed for a cohesive, readable palette. Returned
+/// in gamma space (the scene shader emits a zero-normal vertex color directly).
+fn island_color(index: u32) -> [f32; 4] {
+    let hue = (index as f32 * 0.618_034).fract();
+    let [r, g, b] = hsv_to_rgb(hue, 0.55, 0.80);
+    [r, g, b, 1.0]
+}
+
+/// HSV→RGB for `h`, `s`, `v` in 0..1, returning 0..1 RGB.
+fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
+    let i = (h * 6.0).floor();
+    let f = h * 6.0 - i;
+    let p = v * (1.0 - s);
+    let q = v * (1.0 - f * s);
+    let t = v * (1.0 - (1.0 - f) * s);
+    match (i as i32).rem_euclid(6) {
+        0 => [v, t, p],
+        1 => [q, v, p],
+        2 => [p, v, t],
+        3 => [p, q, v],
+        4 => [t, p, v],
+        _ => [v, p, q],
+    }
+}
+
+/// Union-find root with path halving.
+fn uf_find(parent: &mut [u32], mut x: u32) -> u32 {
+    while parent[x as usize] != x {
+        parent[x as usize] = parent[parent[x as usize] as usize];
+        x = parent[x as usize];
+    }
+    x
+}
+
+/// Union the components containing `a` and `b`.
+fn uf_union(parent: &mut [u32], a: u32, b: u32) {
+    let root_a = uf_find(parent, a);
+    let root_b = uf_find(parent, b);
+    if root_a != root_b {
+        parent[root_a as usize] = root_b;
+    }
 }
 
 /// The shaded mesh vertices + indices for `uv_channel`.
@@ -380,6 +511,19 @@ fn debug_normal_length(model: &ModelData, scale: f32) -> f32 {
         .unwrap_or(Vec3::splat(1.0));
     let max_extent = size.max_element().max(1.0);
     max_extent * scale.max(0.001)
+}
+
+/// Push one filled-triangle corner: a zero-normal vertex carrying `color`, so the
+/// scene shader returns it flat (the same path the line views use).
+fn push_fill_vertex(vertices: &mut Vec<SceneVertex>, position: [f32; 3], color: [f32; 4]) {
+    vertices.push(SceneVertex {
+        position,
+        normal: [0.0, 0.0, 0.0],
+        uv: [0.0, 0.0],
+        color,
+        vertex_color: [0.0, 0.0, 0.0, 0.0],
+        smoothness: 0.0,
+    });
 }
 
 fn push_line(vertices: &mut Vec<SceneVertex>, start: [f32; 3], end: [f32; 3], color: [f32; 4]) {

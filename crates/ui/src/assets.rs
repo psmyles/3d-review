@@ -40,6 +40,21 @@ pub(crate) const ICON_UV: AppIcon = AppIcon {
     id: "icon_uv",
     png_bytes: include_bytes!("../../../assets/icons/icon_uv.png"),
 };
+/// "UV Wire" — the wire-only UV shading mode.
+pub(crate) const ICON_UV_WIRE: AppIcon = AppIcon {
+    id: "icon_uv_wire",
+    png_bytes: include_bytes!("../../../assets/icons/icon_uv_wire.png"),
+};
+/// "UV Shaded" — UV islands filled with one solid shaded color.
+pub(crate) const ICON_UV_SHADED: AppIcon = AppIcon {
+    id: "icon_uv_shaded",
+    png_bytes: include_bytes!("../../../assets/icons/icon_uv_shaded.png"),
+};
+/// "UV Islands" — each UV island filled with a unique color.
+pub(crate) const ICON_UV_ISLANDS: AppIcon = AppIcon {
+    id: "icon_uv_colored",
+    png_bytes: include_bytes!("../../../assets/icons/icon_uv_colored.png"),
+};
 pub(crate) const ICON_NORMALS_FACE: AppIcon = AppIcon {
     id: "icon_normals_face",
     png_bytes: include_bytes!("../../../assets/icons/icon_normals_face.png"),
