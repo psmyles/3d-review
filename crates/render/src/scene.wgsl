@@ -22,6 +22,7 @@ struct VertexInput {
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
     @location(3) color: vec4<f32>,
+    @location(4) vertex_color: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -29,6 +30,7 @@ struct VertexOutput {
     @location(0) color: vec4<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
+    @location(3) vertex_color: vec4<f32>,
 };
 
 @vertex
@@ -38,6 +40,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     output.color = input.color;
     output.normal = input.normal;
     output.uv = input.uv;
+    output.vertex_color = input.vertex_color;
     return output;
 }
 
@@ -82,25 +85,43 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let shading_mode = uniforms.render_options.x;
     let uv_checker_enabled = uniforms.render_options.y > 0.5;
     let tiling = max(uniforms.render_options.z, 1.0);
+    // Vertex-color view: -1 off, else mode (0 RGB, 1 Alpha, 2 RGB+A).
+    let vertex_color_mode = uniforms.render_options.w;
     // Sample at top level so it stays in uniform control flow.
     let checker = textureSample(checker_texture, checker_sampler, input.uv * tiling);
     let normal_length_sq = dot(input.normal, input.normal);
 
     // Grid / wireframe / normal lines carry a zero normal — they always render
-    // their own vertex color and never pick up the checker tint.
+    // their own vertex color and never pick up the checker / vertex-color tint.
     if (normal_length_sq < 1e-6) {
         return input.color;
     }
 
-    // Work in linear space. Vertex colors are authored in sRGB/gamma space;
+    // Work in linear space. The material color is authored in sRGB/gamma space;
     // the checker sample is already linear (sRGB texture format).
     var base_color = srgb_to_linear(input.color.rgb);
+    var out_alpha = input.color.a;
     if (uv_checker_enabled) {
         base_color = checker.rgb;
     }
+    // The vertex-color view replaces the surface material (overriding the checker
+    // if both are on). RGB is gamma-space like the material color; alpha is a raw
+    // 0..1 scalar shown as linear grey.
+    if (vertex_color_mode >= 0.0) {
+        if (vertex_color_mode < 0.5) {
+            base_color = srgb_to_linear(input.vertex_color.rgb);
+            out_alpha = 1.0;
+        } else if (vertex_color_mode < 1.5) {
+            base_color = vec3<f32>(input.vertex_color.a);
+            out_alpha = 1.0;
+        } else {
+            base_color = srgb_to_linear(input.vertex_color.rgb);
+            out_alpha = input.vertex_color.a;
+        }
+    }
 
     if (shading_mode < 1.5) {
-        return vec4<f32>(linear_to_srgb(base_color), input.color.a);
+        return vec4<f32>(linear_to_srgb(base_color), out_alpha);
     }
 
     let n = normalize(input.normal);
@@ -114,5 +135,5 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let hemi = mix(ground, sky, hemi_t);
     let lighting = hemi * 0.55 + vec3<f32>(1.0, 1.0, 1.0) * (0.20 + diffuse * 0.75);
     let mapped = pbr_neutral_tonemap(base_color * lighting);
-    return vec4<f32>(linear_to_srgb(mapped), input.color.a);
+    return vec4<f32>(linear_to_srgb(mapped), out_alpha);
 }

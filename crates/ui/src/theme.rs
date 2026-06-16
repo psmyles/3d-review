@@ -173,9 +173,11 @@ pub mod size {
     pub const TOOLBAR_ICON_PADDING: f32 = 8.0;
     pub const TOOLBAR_CENTER_WIDTH: f32 = 180.0;
     pub const TOOLBAR_RIGHT_WIDTH: f32 = 200.0;
-    pub const TOOLBAR_LEFT_WIDTH: f32 = 333.0;
+    pub const TOOLBAR_LEFT_WIDTH: f32 = 380.0;
     pub const TOOLBAR_SHADING_GROUP_WIDTH: f32 = 183.0;
-    pub const TOOLBAR_DEBUG_GROUP_WIDTH: f32 = 138.0;
+    /// Four-icon debug group: UV checker, face normals, vertex normals, vertex
+    /// colors. Matches the four-icon shading group width.
+    pub const TOOLBAR_DEBUG_GROUP_WIDTH: f32 = 183.0;
     pub const TOOLBAR_SINGLE_ICON_GROUP_WIDTH: f32 = 48.0;
     pub const TOOLBAR_DOUBLE_ICON_GROUP_WIDTH: f32 = 93.0;
     /// Width of a three-icon toolbar group (e.g. bounding box / gizmo / grid).

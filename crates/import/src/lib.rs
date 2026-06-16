@@ -62,6 +62,7 @@ mod ffi {
         uv: [f32; 2],
         color: [f32; 4],
         tangent: [f32; 4],
+        vertex_color: [f32; 4],
     }
 
     #[repr(C)]
@@ -167,6 +168,7 @@ mod ffi {
                 uv: Vec2::from_array(vertex.uv),
                 color: Vec4::from_array(vertex.color),
                 tangent: Vec4::from_array(vertex.tangent),
+                vertex_color: Vec4::from_array(vertex.vertex_color),
             })
             .collect::<Vec<_>>();
         let indices = checked_slice(scene.indices, scene.index_count, "indices")?.to_vec();

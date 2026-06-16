@@ -370,8 +370,22 @@ int review_import_load_fbx(
                 ufbx_vec3 tangent = mesh->vertex_tangent.exists
                     ? ufbx_transform_direction(&normal_matrix, ufbx_get_vertex_vec3(&mesh->vertex_tangent, mesh_index))
                     : ufbx_zero_vec3;
+                ufbx_vec4 vertex_color;
                 const float fallback_normal[3] = { 0.0f, 1.0f, 0.0f };
                 const float fallback_tangent[3] = { 1.0f, 0.0f, 0.0f };
+
+                /* Mesh vertex-color attribute (the DCC color set), kept separate
+                   from the baked material base color above. Stored as authored
+                   (no sRGB re-encode): the renderer treats RGB as gamma-space and
+                   round-trips it, so the displayed color matches the file. */
+                if (mesh->vertex_color.exists) {
+                    vertex_color = ufbx_get_vertex_vec4(&mesh->vertex_color, mesh_index);
+                } else {
+                    vertex_color.x = 1.0;
+                    vertex_color.y = 1.0;
+                    vertex_color.z = 1.0;
+                    vertex_color.w = 1.0;
+                }
 
                 dst->position[0] = (float)position.x;
                 dst->position[1] = (float)position.y;
@@ -397,6 +411,11 @@ int review_import_load_fbx(
                 dst->tangent[2] = (float)tangent.z;
                 review_import_normalize3(dst->tangent, fallback_tangent);
                 dst->tangent[3] = 1.0f;
+
+                dst->vertex_color[0] = (float)vertex_color.x;
+                dst->vertex_color[1] = (float)vertex_color.y;
+                dst->vertex_color[2] = (float)vertex_color.z;
+                dst->vertex_color[3] = (float)vertex_color.w;
 
                 if (out_scene->uvs) {
                     uint32_t channel;

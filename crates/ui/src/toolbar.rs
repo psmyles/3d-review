@@ -7,7 +7,7 @@ use review_render::ShadingMode;
 use crate::assets::{
     ICON_AXIS_GIZMO, ICON_BBOX, ICON_GRID, ICON_NORMALS_FACE, ICON_NORMALS_VERTEX,
     ICON_SHADING_SOLID, ICON_SHADING_UNLIT, ICON_SHADING_WIRE, ICON_SHADING_WIRE_SHADED, ICON_UV,
-    ICON_VIEW_ORTHO, ICON_VIEW_PERSPECTIVE,
+    ICON_VERTEX_COLORS, ICON_VIEW_ORTHO, ICON_VIEW_PERSPECTIVE,
 };
 use crate::state::{OptionPanel, UiState, ViewProjectionMode, WorkspaceMode};
 use crate::theme::{self, color, font, size};
@@ -195,6 +195,20 @@ fn draw_debug_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState,
         }
         if vertex.secondary_clicked() {
             state.open_panel(OptionPanel::VertexNormals);
+        }
+
+        let vertex_colors = icon_toggle_button(
+            ui,
+            ctx,
+            &ICON_VERTEX_COLORS,
+            state.debug.vertex_colors,
+            "Vertex Colors (right-click for options)",
+        );
+        if vertex_colors.clicked() {
+            state.debug.vertex_colors = !state.debug.vertex_colors;
+        }
+        if vertex_colors.secondary_clicked() {
+            state.open_panel(OptionPanel::VertexColors);
         }
     });
 }

@@ -5,8 +5,14 @@ pub struct Vertex {
     pub position: Vec3,
     pub normal: Vec3,
     pub uv: Vec2,
+    /// Resolved material base color (carried through import), used as the surface
+    /// color in the normal shaded/unlit views.
     pub color: Vec4,
     pub tangent: Vec4,
+    /// Per-vertex RGBA color from the mesh's vertex-color attribute (the DCC
+    /// color set), distinct from [`Vertex::color`]. White when the mesh carries
+    /// no vertex-color layer. Visualized by the vertex-color debug view.
+    pub vertex_color: Vec4,
 }
 
 impl Default for Vertex {
@@ -17,6 +23,7 @@ impl Default for Vertex {
             uv: Vec2::ZERO,
             color: Vec4::ONE,
             tangent: Vec4::new(1.0, 0.0, 0.0, 1.0),
+            vertex_color: Vec4::ONE,
         }
     }
 }
@@ -212,6 +219,16 @@ fn demo_cube_vertices() -> Vec<Vertex> {
         Vec2::new(0.0, 1.0),
     ];
 
+    // Distinct per-corner vertex colors so the vertex-color debug view has
+    // something to show on the built-in demo: an R/G/B/yellow ring with a
+    // 0.25→1.0 alpha ramp to exercise the alpha / RGB+A modes too.
+    let vertex_colors = [
+        Vec4::new(1.0, 0.0, 0.0, 0.25),
+        Vec4::new(0.0, 1.0, 0.0, 0.50),
+        Vec4::new(0.0, 0.0, 1.0, 0.75),
+        Vec4::new(1.0, 1.0, 0.0, 1.00),
+    ];
+
     let mut vertices = Vec::with_capacity(24);
     for (positions, normal, color) in faces {
         for (index, position) in positions.into_iter().enumerate() {
@@ -221,6 +238,7 @@ fn demo_cube_vertices() -> Vec<Vertex> {
                 uv: uvs[index],
                 color,
                 tangent: Vec4::new(1.0, 0.0, 0.0, 1.0),
+                vertex_color: vertex_colors[index],
             });
         }
     }
