@@ -112,14 +112,22 @@ pub struct RendererConfig {
 
 impl Default for RendererConfig {
     fn default() -> Self {
+        // On Windows, request DX12 only: adapter/device creation is ~100 ms
+        // cheaper than bringing up the Vulkan loader + ICD (measured on an RTX
+        // 4080), and DX12 is guaranteed on Windows 10+. Other platforms keep
+        // Vulkan/Metal. This is the "prefer DX12 on Windows" decision in
+        // CLAUDE.md §4, now enforced rather than left to adapter selection.
+        #[cfg(windows)]
+        let preferred_backends = wgpu::Backends::DX12;
+        #[cfg(not(windows))]
+        let preferred_backends = wgpu::Backends::VULKAN | wgpu::Backends::METAL;
+
         Self {
-            preferred_backends: wgpu::Backends::DX12
-                | wgpu::Backends::VULKAN
-                | wgpu::Backends::METAL,
+            preferred_backends,
             clear_color: wgpu::Color {
-                r: 0.035,
-                g: 0.037,
-                b: 0.043,
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
                 a: 1.0,
             },
         }

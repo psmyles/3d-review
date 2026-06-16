@@ -79,6 +79,10 @@ struct App {
     /// Model to load once the window/renderer exist, taken from the command line
     /// (file association / `3d-review.exe <path>`). Consumed in `resumed`.
     initial_model: Option<PathBuf>,
+    /// The window is created hidden and revealed only after the first frame is
+    /// presented, so launch never flashes the white DWM redirection bitmap. Set
+    /// once in `RedrawRequested` after the first paint.
+    window_revealed: bool,
 }
 
 impl Default for App {
@@ -106,6 +110,7 @@ impl Default for App {
             scene_revision: 0,
             ui,
             initial_model: None,
+            window_revealed: false,
         }
     }
 }
@@ -136,12 +141,18 @@ impl ApplicationHandler for App {
             return;
         };
 
+        // Start hidden and reveal the window only once the first frame has been
+        // presented (see `RedrawRequested`). Otherwise the OS shows the window
+        // for the ~300 ms of wgpu init painted with the DWM redirection bitmap,
+        // which flashes white. Revealing after the first present means the
+        // window appears already showing the rendered scene.
         let window = event_loop
             .create_window(
                 WindowAttributes::default()
                     .with_title("3D Review")
                     .with_window_icon(load_window_icon())
-                    .with_min_inner_size(winit::dpi::LogicalSize::new(960.0, 640.0)),
+                    .with_min_inner_size(winit::dpi::LogicalSize::new(960.0, 640.0))
+                    .with_visible(false),
             )
             .expect("failed to create application window");
         let window = Arc::new(window);
@@ -166,6 +177,19 @@ impl ApplicationHandler for App {
         ));
         pollster::block_on(egui_painter.set_window(egui::ViewportId::ROOT, Some(window.clone())))
             .expect("failed to initialize wgpu surface");
+
+        // Report which backend/adapter wgpu actually selected (see
+        // RendererConfig::preferred_backends — DX12 on Windows). Logged via
+        // `tracing`; set RUST_LOG=info to see it.
+        if let Some(render_state) = egui_painter.render_state() {
+            let adapter_info = render_state.adapter.get_info();
+            info!(
+                backend = ?adapter_info.backend,
+                adapter = %adapter_info.name,
+                device_type = ?adapter_info.device_type,
+                "selected wgpu adapter"
+            );
+        }
 
         let egui_state = egui_winit::State::new(
             egui_ctx.clone(),
@@ -192,7 +216,14 @@ impl ApplicationHandler for App {
             self.open_model_from_path(&path);
         }
 
-        window.request_redraw();
+        // Paint the first frame directly rather than going through
+        // `request_redraw()`. The window was created hidden (see above), and
+        // Windows does not deliver `WM_PAINT`/`RedrawRequested` to a window that
+        // has never been shown — so relying on the redraw event would deadlock:
+        // the reveal lives inside `render()`, which would never run. Rendering
+        // here paints into the already-configured surface and reveals the window
+        // once the first frame is present.
+        self.render();
     }
 
     fn window_event(
@@ -470,6 +501,16 @@ impl App {
             &full_output.textures_delta,
             Vec::new(),
         );
+
+        // First frame is on screen now — reveal the window. It was created hidden
+        // (see `resumed`) so launch shows the rendered scene rather than a white
+        // flash during wgpu init.
+        if !self.window_revealed {
+            if let Some(window) = self.window.as_ref() {
+                window.set_visible(true);
+            }
+            self.window_revealed = true;
+        }
     }
 
     fn open_model_from_dialog(&mut self) {
