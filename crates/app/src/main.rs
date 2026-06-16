@@ -23,7 +23,7 @@ use winit::{
     application::ApplicationHandler,
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-    keyboard::Key,
+    keyboard::{Key, ModifiersState},
     window::{Window, WindowAttributes, WindowId},
 };
 
@@ -58,6 +58,10 @@ struct App {
     drag_mode: Option<DragMode>,
     last_pointer_position: Option<Vec2>,
     last_primary_click: Option<(Instant, Vec2)>,
+    /// Latest keyboard modifier state, tracked from `ModifiersChanged` so
+    /// per-key events (which don't carry modifiers in winit) can test for
+    /// chords like Ctrl+N.
+    modifiers: ModifiersState,
     last_render_instant: Option<Instant>,
     /// When egui has asked to be repainted at a future time (e.g. a UI fade
     /// animation). Drives `ControlFlow::WaitUntil` so the loop sleeps until then
@@ -102,6 +106,7 @@ impl Default for App {
             drag_mode: None,
             last_pointer_position: None,
             last_primary_click: None,
+            modifiers: ModifiersState::empty(),
             last_render_instant: None,
             repaint_at: None,
             redraw_requested: false,
@@ -347,6 +352,29 @@ impl ApplicationHandler for App {
                     }
                 }
             }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers.state();
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed
+                    && self.modifiers.control_key()
+                    && matches!(
+                        &event.logical_key,
+                        Key::Character(character) if character.eq_ignore_ascii_case("n")
+                    ) =>
+            {
+                self.reset_to_start_state();
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed
+                    && self.modifiers.control_key()
+                    && matches!(
+                        &event.logical_key,
+                        Key::Character(character) if character.eq_ignore_ascii_case("o")
+                    ) =>
+            {
+                self.open_model_from_dialog();
+            }
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed
                     && matches!(
@@ -552,6 +580,25 @@ impl App {
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
+    }
+
+    /// Return the viewer to its launch state (Ctrl+N): drop the loaded model so
+    /// the empty viewport is shown again, reset the dependent UI, and animate the
+    /// camera back to its home framing. Bumping the scene revision drops the
+    /// previously-uploaded GPU geometry on the next paint.
+    fn reset_to_start_state(&mut self) {
+        let empty = Arc::new(ModelData::default());
+        self.ui.stats = empty.stats;
+        self.ui.uv_checker.uv_channel = 0;
+        self.scene_model = empty;
+        self.scene_revision = self.scene_revision.saturating_add(1);
+
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.animate_camera_to_home();
+        }
+
+        info!("reset to start state");
+        self.redraw_requested = true;
     }
 
     fn should_open_on_double_click(&self) -> bool {
