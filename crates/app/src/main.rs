@@ -127,6 +127,7 @@ impl Default for App {
 enum DragMode {
     Orbit,
     Pan,
+    Zoom,
 }
 
 /// Decode the embedded application logo into a winit window icon — used for the
@@ -336,6 +337,15 @@ impl ApplicationHandler for App {
                             }
                         }
                         MouseButton::Right => {
+                            // Alt+RMB zoom-drags (down = in, up = out); plain
+                            // RMB pans.
+                            self.drag_mode = Some(if self.modifiers.alt_key() {
+                                DragMode::Zoom
+                            } else {
+                                DragMode::Pan
+                            });
+                        }
+                        MouseButton::Middle => {
                             self.drag_mode = Some(DragMode::Pan);
                         }
                         _ => {}
@@ -360,6 +370,9 @@ impl ApplicationHandler for App {
                                 Vec2::new(size.width as f32, size.height as f32),
                             );
                         }
+                        // Pointer down (positive screen delta) zooms in, up
+                        // zooms out — matching the wheel's positive-is-in sign.
+                        DragMode::Zoom => renderer.zoom_camera(delta.y * 0.01),
                     }
                     self.redraw_requested = true;
                 }
