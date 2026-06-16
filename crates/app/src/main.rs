@@ -14,14 +14,16 @@ use anyhow::Context;
 use glam::Vec2;
 use review_import::{LoadOptions, load_model};
 use review_model::ModelData;
-use review_render::{Renderer, RendererConfig, SCENE_DEPTH_FORMAT, SCENE_SAMPLE_COUNT};
+use review_render::{
+    Renderer, RendererConfig, SCENE_DEPTH_FORMAT, SCENE_SAMPLE_COUNT, ShadingMode,
+};
 use review_ui::{
     AxisGizmoAction, UiOutput, UiState, draw_overlay, draw_viewport_scene, install_fonts,
 };
 use tracing::{info, warn};
 use winit::{
     application::ApplicationHandler,
-    event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
+    event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{Key, ModifiersState},
     window::{Window, WindowAttributes, WindowId},
@@ -263,6 +265,10 @@ impl ApplicationHandler for App {
             self.redraw_requested = true;
         }
 
+        // egui claims keyboard events while a widget has focus (e.g. typing in a
+        // panel's numeric field); don't let those double as viewer shortcuts.
+        let egui_consumed = egui_response.is_some_and(|response| response.consumed);
+
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::RedrawRequested => {
@@ -355,49 +361,8 @@ impl ApplicationHandler for App {
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers.state();
             }
-            WindowEvent::KeyboardInput { event, .. }
-                if event.state == ElementState::Pressed
-                    && self.modifiers.control_key()
-                    && matches!(
-                        &event.logical_key,
-                        Key::Character(character) if character.eq_ignore_ascii_case("n")
-                    ) =>
-            {
-                self.reset_to_start_state();
-            }
-            WindowEvent::KeyboardInput { event, .. }
-                if event.state == ElementState::Pressed
-                    && self.modifiers.control_key()
-                    && matches!(
-                        &event.logical_key,
-                        Key::Character(character) if character.eq_ignore_ascii_case("o")
-                    ) =>
-            {
-                self.open_model_from_dialog();
-            }
-            WindowEvent::KeyboardInput { event, .. }
-                if event.state == ElementState::Pressed
-                    && self.modifiers.is_empty()
-                    && matches!(
-                        &event.logical_key,
-                        Key::Character(character) if character.eq_ignore_ascii_case("f")
-                    ) =>
-            {
-                if let Some(renderer) = self.renderer.as_mut() {
-                    frame_camera_to_model(renderer, &self.scene_model);
-                    self.redraw_requested = true;
-                }
-            }
-            WindowEvent::KeyboardInput { event, .. }
-                if event.state == ElementState::Pressed
-                    && self.modifiers.is_empty()
-                    && matches!(
-                        &event.logical_key,
-                        Key::Character(character) if character.eq_ignore_ascii_case("w")
-                    ) =>
-            {
-                self.ui.debug.wireframe_overlay = !self.ui.debug.wireframe_overlay;
-                self.redraw_requested = true;
+            WindowEvent::KeyboardInput { event, .. } if !egui_consumed => {
+                self.handle_keyboard_shortcut(&event);
             }
             WindowEvent::DroppedFile(path) => {
                 self.open_model_from_path(&path);
@@ -591,6 +556,82 @@ impl App {
 
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
+        }
+    }
+
+    /// Dispatch a viewport keyboard shortcut on key-down. Ctrl-modified keys are
+    /// file commands; the bare keys are view / camera shortcuts and only fire
+    /// when no modifier is held (so Shift/Alt/Ctrl combinations stay free).
+    /// Keyboard events egui has already consumed are filtered out by the caller.
+    fn handle_keyboard_shortcut(&mut self, event: &KeyEvent) {
+        let Key::Character(character) = &event.logical_key else {
+            return;
+        };
+
+        if self.modifiers.control_key() {
+            // File commands fire on key-down only.
+            if event.state != ElementState::Pressed {
+                return;
+            }
+            if character.eq_ignore_ascii_case("n") {
+                self.reset_to_start_state();
+            } else if character.eq_ignore_ascii_case("o") {
+                self.open_model_from_dialog();
+            }
+            return;
+        }
+
+        if !self.modifiers.is_empty() {
+            return;
+        }
+
+        // Each 45° orbit step (radians). Sign maps the requested side to the
+        // yaw/pitch convention in `OrbitCamera` (negative pitch lifts the eye up).
+        const ORBIT_STEP: f32 = std::f32::consts::FRAC_PI_4;
+
+        // WASD orbits fire on key *release*: holding a key emits a burst of
+        // repeat key-down events (which would snap the camera with no animation),
+        // but exactly one release — so a brief hold animates a single clean step.
+        if event.state == ElementState::Released {
+            match character.as_str() {
+                "a" => self.orbit_camera_step(ORBIT_STEP, 0.0),
+                "d" => self.orbit_camera_step(-ORBIT_STEP, 0.0),
+                "w" => self.orbit_camera_step(0.0, -ORBIT_STEP),
+                "s" => self.orbit_camera_step(0.0, ORBIT_STEP),
+                _ => return,
+            }
+            self.redraw_requested = true;
+            return;
+        }
+
+        // Remaining shortcuts are instant toggles/commands on key-down.
+        match character.as_str() {
+            "`" => self.ui.debug.wireframe_overlay = !self.ui.debug.wireframe_overlay,
+            "1" => self.ui.shading_mode = ShadingMode::Wireframe,
+            "2" => self.ui.shading_mode = ShadingMode::Unlit,
+            "3" => self.ui.shading_mode = ShadingMode::Shaded,
+            "i" => self.ui.show_stats = !self.ui.show_stats,
+            "g" => self.ui.show_grid = !self.ui.show_grid,
+            "f" => {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    frame_camera_to_model(renderer, &self.scene_model);
+                }
+            }
+            "r" => {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.animate_camera_to_home();
+                }
+            }
+            _ => return,
+        }
+
+        self.redraw_requested = true;
+    }
+
+    /// Animate a relative 45° camera orbit (radians) for the WASD shortcuts.
+    fn orbit_camera_step(&mut self, yaw_delta: f32, pitch_delta: f32) {
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.animate_orbit_by(yaw_delta, pitch_delta);
         }
     }
 
