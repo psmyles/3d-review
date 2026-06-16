@@ -2,7 +2,7 @@
 //! and inset equally from every edge.
 
 use crate::assets::ICON_INFO;
-use crate::state::UiState;
+use crate::state::{UiState, WorkspaceMode};
 use crate::theme::{self, color, size};
 use crate::widgets::{icon_toggle_button, toolbar_group_shell};
 
@@ -24,6 +24,13 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
         .exact_height(status_bar_height)
         .frame(status_bar_frame())
         .show(ctx, |ui| {
+            // The Model Stats overlay only renders in the 3D workspace, so its
+            // toggle is dead weight elsewhere — drop the button in UV / Texture
+            // mode and leave a clean status bar.
+            if state.mode != WorkspaceMode::ThreeD {
+                return;
+            }
+
             // Inset the group equally on all sides: the vertical gap is fixed by
             // centering the group in the bar, so use that same gap on the left
             // edge to keep the button box equidistant from every edge.
