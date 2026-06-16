@@ -49,8 +49,12 @@ fn main() {
                 }
             }
 
+            // Task Manager's "Name" column and the Details tab both surface
+            // FileDescription, so it must be the product name — not the longer
+            // marketing description, which goes in Comments instead.
             res.set("ProductName", product_name);
-            res.set("FileDescription", description);
+            res.set("FileDescription", product_name);
+            res.set("Comments", description);
             res.set("CompanyName", author);
             res.set("LegalCopyright", copyright);
             res.set("ProductVersion", version);
