@@ -287,8 +287,9 @@ pub(crate) fn vertex_normal_lines(
     vertices
 }
 
-/// Scale a 0..1 length slider value into world units relative to the model's
-/// largest bounding extent (so normals read consistently regardless of scale).
+/// Scale a fractional length slider value (UI clamps it to 1%–10%) into world
+/// units relative to the model's largest bounding extent (so normals read
+/// consistently regardless of scale).
 fn debug_normal_length(model: &ModelData, scale: f32) -> f32 {
     let size = model
         .bounds
