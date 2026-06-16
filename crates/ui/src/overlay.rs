@@ -9,7 +9,7 @@ use review_render::{OrbitCamera, SceneCallback};
 
 use crate::state::{UiOutput, UiState, WorkspaceMode, sync_debug_state};
 use crate::theme::{self, color, size};
-use crate::{gizmo, panels, stats, status_bar, toolbar};
+use crate::{gizmo, help, panels, stats, status_bar, toolbar};
 
 /// Paint the 3D viewport scene behind the egui chrome (3D mode only).
 pub fn draw_viewport_scene(
@@ -70,6 +70,12 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
 
     draw_stats_overlay(ctx, state, status_bar_height);
     status_bar::draw(ctx, state);
+
+    // The startup cheat-sheet sits on top of all the chrome (drawn last). It
+    // consumes pointer input (so the chrome beneath stays inert while it's up);
+    // `app` owns dismissing it — on any key, a click, a file drop, or a model
+    // load — and double-clicking it opens the file picker.
+    help::draw_help_overlay(ctx, state);
 
     output
 }
