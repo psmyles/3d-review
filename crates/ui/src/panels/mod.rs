@@ -5,6 +5,7 @@
 mod bounding_box;
 mod normals;
 mod uv_checker;
+mod vertex_colors;
 mod wireframe;
 
 use crate::assets::{self, ICON_CLOSE};
@@ -42,6 +43,9 @@ pub(crate) fn draw_active_panel(
         }),
         OptionPanel::VertexNormals => option_panel(ui, "Vertex Normals", collapsed, |ui| {
             normals::vertex_body(ui, state)
+        }),
+        OptionPanel::VertexColors => option_panel(ui, "Vertex Colors", collapsed, |ui| {
+            vertex_colors::body(ui, state)
         }),
     }
 }

@@ -9,7 +9,9 @@ use crate::geometry::{
     bounding_box_lines, face_normal_lines, model_mesh, scene_lines, vertex_normal_lines,
     wireframe_lines,
 };
-use crate::{CameraProjection, CheckerTexture, OrbitCamera, SceneDebugOptions, ShadingMode};
+use crate::{
+    CameraProjection, CheckerTexture, OrbitCamera, SceneDebugOptions, ShadingMode, VertexColorMode,
+};
 
 pub const SCENE_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
 pub const SCENE_SAMPLE_COUNT: u32 = 4;
@@ -400,7 +402,7 @@ impl SceneResources {
                 shading_mode_value(debug_options.shading_mode),
                 if debug_options.uv_checker { 1.0 } else { 0.0 },
                 debug_options.uv_checker_tiling.max(1) as f32,
-                0.0,
+                vertex_color_value(debug_options),
             ],
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
@@ -617,6 +619,7 @@ fn create_mesh_buffers(
         normal: [0.0, 0.0, 0.0],
         uv: [0.0, 0.0],
         color: [0.0, 0.0, 0.0, 0.0],
+        vertex_color: [0.0, 0.0, 0.0, 0.0],
     }];
     let placeholder_index = [0_u32];
 
@@ -651,6 +654,7 @@ fn create_line_buffer(device: &wgpu::Device, vertices: &[SceneVertex]) -> (wgpu:
         normal: [0.0, 0.0, 0.0],
         uv: [0.0, 0.0],
         color: [0.0, 0.0, 0.0, 0.0],
+        vertex_color: [0.0, 0.0, 0.0, 0.0],
     }];
     let contents = if vertices.is_empty() {
         bytemuck::cast_slice(&placeholder_vertex)
@@ -750,11 +754,13 @@ pub(crate) struct SceneVertex {
     pub(crate) normal: [f32; 3],
     pub(crate) uv: [f32; 2],
     pub(crate) color: [f32; 4],
+    pub(crate) vertex_color: [f32; 4],
 }
 
 impl SceneVertex {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 4] =
-        wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4];
+    const ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+        0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4, 4 => Float32x4
+    ];
 
     fn layout() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
@@ -771,5 +777,19 @@ fn shading_mode_value(mode: ShadingMode) -> f32 {
         ShadingMode::Unlit => 1.0,
         ShadingMode::Shaded => 2.0,
         ShadingMode::ShadedWireframe => 3.0,
+    }
+}
+
+/// Encode the vertex-color view into `render_options.w` for the shader: `-1`
+/// when the view is off, otherwise the mode index (`0` RGB, `1` Alpha, `2`
+/// RGB+A). One float keeps the uniform layout unchanged.
+fn vertex_color_value(debug_options: SceneDebugOptions) -> f32 {
+    if !debug_options.vertex_colors {
+        return -1.0;
+    }
+    match debug_options.vertex_color_mode {
+        VertexColorMode::Rgb => 0.0,
+        VertexColorMode::Alpha => 1.0,
+        VertexColorMode::RgbAlpha => 2.0,
     }
 }

@@ -40,6 +40,10 @@ pub(crate) const ICON_NORMALS_VERTEX: AppIcon = AppIcon {
     id: "icon_normals_vertex",
     png_bytes: include_bytes!("../../../assets/icons/icon_normals_vertex.png"),
 };
+pub(crate) const ICON_VERTEX_COLORS: AppIcon = AppIcon {
+    id: "icon_vertex_colors",
+    png_bytes: include_bytes!("../../../assets/icons/icon_vertex_colors.png"),
+};
 pub(crate) const ICON_VIEW_ORTHO: AppIcon = AppIcon {
     id: "icon_view_ortho",
     png_bytes: include_bytes!("../../../assets/icons/icon_view_ortho.png"),

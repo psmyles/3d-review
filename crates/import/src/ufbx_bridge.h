@@ -11,6 +11,10 @@ typedef struct review_import_vertex {
     float uv[2];
     float color[4];
     float tangent[4];
+    /* Per-vertex RGBA color from the mesh's vertex-color attribute (the DCC
+       color set), distinct from `color` which carries the resolved material
+       base color. White (1,1,1,1) when the mesh has no vertex-color layer. */
+    float vertex_color[4];
 } review_import_vertex;
 
 typedef struct review_import_face {

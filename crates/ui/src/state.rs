@@ -7,7 +7,9 @@
 
 use glam::{Vec2, Vec3};
 use review_model::ModelStats;
-use review_render::{CameraProjection, CheckerTexture, SceneDebugOptions, ShadingMode};
+use review_render::{
+    CameraProjection, CheckerTexture, SceneDebugOptions, ShadingMode, VertexColorMode,
+};
 
 use crate::theme;
 
@@ -141,6 +143,14 @@ impl Default for UvCheckerPanelState {
     }
 }
 
+/// Editable state backing the Vertex Color options panel. The toggle itself
+/// lives in [`SceneDebugOptions::vertex_colors`] (like the UV checker); this
+/// holds only the channel-display mode, synced via [`SceneDebugOptions`].
+#[derive(Debug, Clone, Default)]
+pub struct VertexColorPanelState {
+    pub mode: VertexColorMode,
+}
+
 /// Which tool's options panel is currently open. Only one panel is shown at a
 /// time; a panel is opened by right-clicking its toolbar button.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,6 +160,7 @@ pub enum OptionPanel {
     UvChecker,
     FaceNormals,
     VertexNormals,
+    VertexColors,
 }
 
 #[derive(Debug, Clone)]
@@ -176,6 +187,7 @@ pub struct UiState {
     pub bounding_box: BoundingBoxPanelState,
     pub face_normals: NormalPanelState,
     pub vertex_normals: NormalPanelState,
+    pub vertex_colors: VertexColorPanelState,
     pub stats: ModelStats,
     /// Most recent measured frames-per-second, fed by `app` from the render
     /// loop. Zero while idle (the viewer redraws on demand, not continuously).
@@ -206,6 +218,7 @@ impl Default for UiState {
                 length: DEFAULT_NORMAL_LENGTH,
                 color: theme::color::VERTEX_NORMAL_DEFAULT,
             },
+            vertex_colors: VertexColorPanelState::default(),
             stats: ModelStats::default(),
             fps: 0.0,
         }
@@ -236,6 +249,7 @@ pub(crate) fn sync_debug_state(state: &mut UiState) {
     state.debug.uv_checker_texture = state.uv_checker.texture;
     state.debug.uv_checker_tiling = state.uv_checker.tiling;
     state.debug.uv_channel = state.uv_checker.uv_channel;
+    state.debug.vertex_color_mode = state.vertex_colors.mode;
     state.debug.face_normal_length = state.face_normals.length;
     state.debug.vertex_normal_length = state.vertex_normals.length;
     state.debug.face_normal_color = theme::color32_to_rgba(state.face_normals.color);

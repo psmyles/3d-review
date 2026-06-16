@@ -28,5 +28,6 @@ pub use assets::install_fonts;
 pub use overlay::{draw_overlay, draw_viewport_scene};
 pub use state::{
     AxisGizmoAction, BoundingBoxPanelState, NormalPanelState, OptionPanel, UiOutput, UiState,
-    UvCheckerPanelState, ViewAxis, ViewProjectionMode, WireframePanelState, WorkspaceMode,
+    UvCheckerPanelState, VertexColorPanelState, ViewAxis, ViewProjectionMode, WireframePanelState,
+    WorkspaceMode,
 };

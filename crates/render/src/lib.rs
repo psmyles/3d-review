@@ -55,11 +55,28 @@ pub enum CheckerTexture {
     Color,
 }
 
+/// How the vertex-color view interprets the mesh's vertex-color attribute.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum VertexColorMode {
+    /// Show the RGB channels only (alpha forced opaque).
+    #[default]
+    Rgb,
+    /// Show the alpha channel as a 0..1 greyscale value.
+    Alpha,
+    /// Show RGB as color and alpha as surface opacity.
+    RgbAlpha,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SceneDebugOptions {
     pub shading_mode: ShadingMode,
     pub uv_checker: bool,
     pub uv_checker_texture: CheckerTexture,
+    /// Replace the surface material with the mesh's vertex colors (visible in the
+    /// filled-face modes: unlit / shaded / shaded-wireframe).
+    pub vertex_colors: bool,
+    /// Which vertex-color channels the view shows when `vertex_colors` is on.
+    pub vertex_color_mode: VertexColorMode,
     /// Checker repeats across the 0..1 UV range; clamped to 1..=16 by the UI.
     pub uv_checker_tiling: u32,
     /// Which model UV set the checker view samples (0-based). Only meaningful
@@ -88,6 +105,8 @@ impl Default for SceneDebugOptions {
             shading_mode: ShadingMode::Shaded,
             uv_checker: false,
             uv_checker_texture: CheckerTexture::Greyscale,
+            vertex_colors: false,
+            vertex_color_mode: VertexColorMode::Rgb,
             uv_checker_tiling: 4,
             uv_channel: 0,
             show_grid: true,
