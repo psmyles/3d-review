@@ -37,6 +37,7 @@ pub fn draw_viewport_scene(
             model_revision,
             uv_camera,
             state.uv_view_channel,
+            state.uv_shading_mode,
         ),
         WorkspaceMode::Texture => return,
     };

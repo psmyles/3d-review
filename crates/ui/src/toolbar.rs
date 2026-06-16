@@ -2,12 +2,13 @@
 //! segments, and the gizmo/grid/projection group. Emits panel-open intents by
 //! mutating [`UiState`] in place.
 
-use review_render::{ActiveMaterial, ShadingMode};
+use review_render::{ActiveMaterial, ShadingMode, UvShadingMode};
 
 use crate::assets::{
     ICON_AXIS_GIZMO, ICON_BBOX, ICON_GRID, ICON_NORMALS_FACE, ICON_NORMALS_VERTEX,
     ICON_SHADING_SHADED, ICON_SHADING_TEXTURE, ICON_SHADING_UNLIT, ICON_SHADING_WIRE,
-    ICON_SHADING_WIRE_ONLY, ICON_UV, ICON_VERTEX_COLORS, ICON_VIEW_ORTHO, ICON_VIEW_PERSPECTIVE,
+    ICON_SHADING_WIRE_ONLY, ICON_UV, ICON_UV_ISLANDS, ICON_UV_SHADED, ICON_UV_WIRE,
+    ICON_VERTEX_COLORS, ICON_VIEW_ORTHO, ICON_VIEW_PERSPECTIVE,
 };
 use crate::state::{OptionPanel, UiState, ViewProjectionMode, WorkspaceMode};
 use crate::theme::{self, color, font, size};
@@ -93,6 +94,18 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                         draw_normals_group(ui, ctx, state, normals_group_width);
                     },
                 );
+            } else if state.mode == WorkspaceMode::Uv {
+                // UV mode swaps the 3D tool groups for the UV-shading group.
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .max_rect(left_rect)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                    |ui| {
+                        ui.set_height(group_height);
+                        ui.spacing_mut().item_spacing.x = group_spacing;
+                        draw_uv_shading_group(ui, ctx, state, triple_icon_group_width);
+                    },
+                );
             }
 
             ui.scope_builder(
@@ -168,6 +181,27 @@ fn draw_shading_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiStat
         }
         if icon_toggle_button(ui, ctx, &ICON_SHADING_SHADED, shaded, "Shaded").clicked() {
             state.shading_mode = ShadingMode::Shaded;
+        }
+    });
+}
+
+/// UV-shading group (UV mode only): a radio selection of how the 2D UV view
+/// shades the layout — wire-only, solid-shaded islands, or a unique color per
+/// island. Exactly one is active; the UV edges are drawn in every mode.
+fn draw_uv_shading_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState, width: f32) {
+    toolbar_group_shell(ui, ctx, width, |ui| {
+        let wire = state.uv_shading_mode == UvShadingMode::Wire;
+        let shaded = state.uv_shading_mode == UvShadingMode::Shaded;
+        let islands = state.uv_shading_mode == UvShadingMode::Islands;
+
+        if icon_toggle_button(ui, ctx, &ICON_UV_WIRE, wire, "UV Wire").clicked() {
+            state.uv_shading_mode = UvShadingMode::Wire;
+        }
+        if icon_toggle_button(ui, ctx, &ICON_UV_SHADED, shaded, "UV Shaded").clicked() {
+            state.uv_shading_mode = UvShadingMode::Shaded;
+        }
+        if icon_toggle_button(ui, ctx, &ICON_UV_ISLANDS, islands, "UV Islands").clicked() {
+            state.uv_shading_mode = UvShadingMode::Islands;
         }
     });
 }

@@ -8,7 +8,8 @@
 use glam::{Vec2, Vec3};
 use review_model::ModelStats;
 use review_render::{
-    CameraProjection, CheckerTexture, SceneDebugOptions, ShadingMode, VertexColorMode,
+    CameraProjection, CheckerTexture, SceneDebugOptions, ShadingMode, UvShadingMode,
+    VertexColorMode,
 };
 
 use crate::theme;
@@ -191,6 +192,10 @@ pub struct UiState {
     /// The UV set the 2D UV view draws (0-based index into [`UiState::uv_sets`]).
     /// Independent of the 3D UV-checker's own channel ([`UvCheckerPanelState`]).
     pub uv_view_channel: u32,
+    /// How the 2D UV view shades the layout: wire-only, solid-shaded islands, or
+    /// unique per-island colors. Selected by the UV-shading toolbar group (shown
+    /// only in UV mode).
+    pub uv_shading_mode: UvShadingMode,
     pub wireframe: WireframePanelState,
     pub bounding_box: BoundingBoxPanelState,
     pub face_normals: NormalPanelState,
@@ -228,6 +233,7 @@ impl Default for UiState {
             uv_checker: UvCheckerPanelState::default(),
             uv_sets: Vec::new(),
             uv_view_channel: 0,
+            uv_shading_mode: UvShadingMode::default(),
             wireframe: WireframePanelState::default(),
             bounding_box: BoundingBoxPanelState::default(),
             face_normals: NormalPanelState {

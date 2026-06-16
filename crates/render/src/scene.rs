@@ -6,12 +6,12 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 use crate::geometry::{
-    bounding_box_lines, face_normal_lines, model_mesh, scene_lines, uv_grid_lines,
-    uv_wireframe_lines, vertex_normal_lines, wireframe_lines,
+    bounding_box_lines, face_normal_lines, model_mesh, scene_lines, uv_fill_triangles,
+    uv_grid_lines, uv_wireframe_lines, vertex_normal_lines, wireframe_lines,
 };
 use crate::{
     ActiveMaterial, CameraProjection, CheckerTexture, OrbitCamera, SceneDebugOptions, ShadingMode,
-    UvCamera, VertexColorMode,
+    UvCamera, UvShadingMode, VertexColorMode,
 };
 
 pub const SCENE_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
@@ -22,12 +22,14 @@ pub const SCENE_SAMPLE_COUNT: u32 = 4;
 /// must track the `#[repr(C)]` structs below (invariant 11).
 const SHADER: &str = include_str!("scene.wgsl");
 
-/// The 2D UV viewport view: which UV channel to draw and the camera framing it.
-/// `Some` switches [`SceneCallback`] to the UV path (grid + UV wireframe).
+/// The 2D UV viewport view: which UV channel to draw, how to shade it, and the
+/// camera framing it. `Some` switches [`SceneCallback`] to the UV path (grid +
+/// optional island fill + UV wireframe).
 #[derive(Debug, Clone, Copy)]
 struct UvView {
     camera: UvCamera,
     channel: u32,
+    shading_mode: UvShadingMode,
 }
 
 #[derive(Debug, Clone)]
@@ -63,13 +65,14 @@ impl SceneCallback {
     }
 
     /// Build a callback that renders the 2D UV viewport for `channel` framed by
-    /// `camera`, instead of the 3D scene.
+    /// `camera` and shaded per `shading_mode`, instead of the 3D scene.
     pub fn new_uv(
         output_format: wgpu::TextureFormat,
         model: Arc<ModelData>,
         model_revision: u64,
         camera: UvCamera,
         channel: u32,
+        shading_mode: UvShadingMode,
     ) -> Self {
         Self {
             camera: OrbitCamera::default(),
@@ -78,7 +81,11 @@ impl SceneCallback {
             model,
             model_revision,
             debug_options: SceneDebugOptions::default(),
-            uv_view: Some(UvView { camera, channel }),
+            uv_view: Some(UvView {
+                camera,
+                channel,
+                shading_mode,
+            }),
         }
     }
 }
@@ -104,7 +111,13 @@ impl CallbackTrait for SceneCallback {
         // model) and frame it with the 2D camera. The 3D mesh / line views are
         // left untouched and are rebuilt when the 3D scene is shown again.
         if let Some(uv) = self.uv_view {
-            resources.sync_uv_view(device, &self.model, self.model_revision, uv.channel);
+            resources.sync_uv_view(
+                device,
+                &self.model,
+                self.model_revision,
+                uv.channel,
+                uv.shading_mode,
+            );
             resources.update_camera_uv(queue, uv.camera);
             return Vec::new();
         }
@@ -143,9 +156,10 @@ impl CallbackTrait for SceneCallback {
             return;
         };
 
-        // UV viewport: draw the 0..1 grid then the model's UV edges, both with the
-        // line pipeline framed by the 2D UV camera. group 1 must still be bound to
-        // satisfy the shared pipeline layout even though lines don't sample it.
+        // UV viewport: draw the 0..1 grid, then the island fill (solid-shaded /
+        // per-island modes only — empty otherwise), then the model's UV edges on
+        // top. group 1 must still be bound to satisfy the shared pipeline layout
+        // even though none of these draws sample it.
         if self.uv_view.is_some() {
             render_pass.set_bind_group(1, &resources.checker_bind_group_greyscale, &[]);
             render_pass.set_bind_group(0, &resources.uniform_bind_group, &[]);
@@ -154,7 +168,13 @@ impl CallbackTrait for SceneCallback {
                 render_pass.set_vertex_buffer(0, resources.uv_grid_vertex_buffer.slice(..));
                 render_pass.draw(0..resources.uv_grid_vertex_count, 0..1);
             }
+            if resources.uv_fill_vertex_count > 0 {
+                render_pass.set_pipeline(&resources.uv_fill_pipeline);
+                render_pass.set_vertex_buffer(0, resources.uv_fill_vertex_buffer.slice(..));
+                render_pass.draw(0..resources.uv_fill_vertex_count, 0..1);
+            }
             if resources.uv_wireframe_vertex_count > 0 {
+                render_pass.set_pipeline(&resources.line_pipeline);
                 render_pass.set_vertex_buffer(0, resources.uv_wireframe_vertex_buffer.slice(..));
                 render_pass.draw(0..resources.uv_wireframe_vertex_count, 0..1);
             }
@@ -228,6 +248,10 @@ struct SceneResources {
     mesh_uv_channel: u32,
     mesh_pipeline: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
+    /// Flat-color triangle pipeline for the UV island fill: no lighting (the fill
+    /// vertices carry a zero normal), no depth write/bias — it sits under the UV
+    /// wireframe and is composited by draw order in the 2D viewport.
+    uv_fill_pipeline: wgpu::RenderPipeline,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
     checker_bind_group_greyscale: wgpu::BindGroup,
@@ -267,6 +291,14 @@ struct SceneResources {
     /// `(model_revision, channel)` baked into the UV wireframe, or `None` when
     /// the view is off (its buffer holds only a placeholder).
     uv_baked: Option<(u64, u32)>,
+    // UV island fill. Built on demand for the active `(model_revision, channel,
+    // shading_mode)` when the mode draws a fill (Shaded / Islands), and freed
+    // back to a placeholder in Wire mode or when the 3D scene is shown.
+    uv_fill_vertex_buffer: wgpu::Buffer,
+    uv_fill_vertex_count: u32,
+    /// `(model_revision, channel, shading_mode)` baked into the UV fill, or
+    /// `None` when no fill is drawn (its buffer holds only a placeholder).
+    uv_fill_baked: Option<(u64, u32, UvShadingMode)>,
 }
 
 /// Baked parameters for a normal-line view: `(length_scale, color)`. Compared by
@@ -414,6 +446,21 @@ impl SceneResources {
             },
             "review_scene_line_pipeline",
         );
+        // The UV island fill draws flat-color triangles in the 2D viewport. It
+        // never writes depth (everything sits at z=0) so the grid below and the
+        // wireframe above composite purely by draw order.
+        let uv_fill_pipeline = create_pipeline(
+            device,
+            &pipeline_layout,
+            &shader,
+            output_format,
+            wgpu::PrimitiveTopology::TriangleList,
+            DepthConfig {
+                write_enabled: false,
+                bias: wgpu::DepthBiasState::default(),
+            },
+            "review_scene_uv_fill_pipeline",
+        );
 
         let line_vertices = scene_lines();
         let (mesh_vertex_buffer, mesh_index_buffer, mesh_index_count) =
@@ -435,6 +482,7 @@ impl SceneResources {
             create_line_buffer(device, &uv_grid_vertices);
         let (uv_wireframe_vertex_buffer, uv_wireframe_vertex_count) =
             create_line_buffer(device, &[]);
+        let (uv_fill_vertex_buffer, uv_fill_vertex_count) = create_line_buffer(device, &[]);
 
         Self {
             output_format,
@@ -442,6 +490,7 @@ impl SceneResources {
             mesh_uv_channel: 0,
             mesh_pipeline,
             line_pipeline,
+            uv_fill_pipeline,
             uniform_buffer,
             uniform_bind_group,
             checker_bind_group_greyscale,
@@ -468,6 +517,9 @@ impl SceneResources {
             uv_wireframe_vertex_buffer,
             uv_wireframe_vertex_count,
             uv_baked: None,
+            uv_fill_vertex_buffer,
+            uv_fill_vertex_count,
+            uv_fill_baked: None,
         }
     }
 
@@ -631,35 +683,62 @@ impl SceneResources {
         self.mesh_uv_channel = uv_channel;
     }
 
-    /// Build-on-demand for the UV wireframe: rebuilt only when the active model
-    /// or channel changes (tracked by `uv_baked`), so panning/zooming the UV
-    /// view doesn't rebuild the buffer.
+    /// Build-on-demand for the UV viewport's derived buffers. The wireframe is
+    /// rebuilt only when the active model or channel changes (`uv_baked`); the
+    /// island fill is rebuilt when the model / channel / shading mode changes
+    /// (`uv_fill_baked`) and freed in Wire mode — so panning/zooming rebuilds
+    /// nothing (invariant 3).
     fn sync_uv_view(
         &mut self,
         device: &wgpu::Device,
         model: &ModelData,
         model_revision: u64,
         channel: u32,
+        shading_mode: UvShadingMode,
     ) {
-        let want = Some((model_revision, channel));
-        if self.uv_baked == want {
-            return;
+        let want_wireframe = Some((model_revision, channel));
+        if self.uv_baked != want_wireframe {
+            let (buffer, count) = create_line_buffer(device, &uv_wireframe_lines(model, channel));
+            self.uv_wireframe_vertex_buffer = buffer;
+            self.uv_wireframe_vertex_count = count;
+            self.uv_baked = want_wireframe;
         }
-        let (buffer, count) = create_line_buffer(device, &uv_wireframe_lines(model, channel));
-        self.uv_wireframe_vertex_buffer = buffer;
-        self.uv_wireframe_vertex_count = count;
-        self.uv_baked = want;
+
+        // Wire mode draws no fill; Shaded / Islands build the triangle fill
+        // (per-island coloring only in Islands mode).
+        let want_fill = match shading_mode {
+            UvShadingMode::Wire => None,
+            UvShadingMode::Shaded | UvShadingMode::Islands => {
+                Some((model_revision, channel, shading_mode))
+            }
+        };
+        if self.uv_fill_baked != want_fill {
+            let fill = match shading_mode {
+                UvShadingMode::Wire => Vec::new(),
+                UvShadingMode::Shaded => uv_fill_triangles(model, channel, false),
+                UvShadingMode::Islands => uv_fill_triangles(model, channel, true),
+            };
+            let (buffer, count) = create_line_buffer(device, &fill);
+            self.uv_fill_vertex_buffer = buffer;
+            self.uv_fill_vertex_count = count;
+            self.uv_fill_baked = want_fill;
+        }
     }
 
-    /// Free the UV wireframe back to a placeholder when the UV view is off.
+    /// Free the UV wireframe + island fill back to placeholders when the UV view
+    /// is off (the 3D scene is shown), so neither holds a derived allocation.
     fn free_uv_view(&mut self, device: &wgpu::Device) {
-        if self.uv_baked.is_none() {
+        if self.uv_baked.is_none() && self.uv_fill_baked.is_none() {
             return;
         }
-        let (buffer, count) = create_line_buffer(device, &[]);
-        self.uv_wireframe_vertex_buffer = buffer;
-        self.uv_wireframe_vertex_count = count;
+        let (wireframe_buffer, wireframe_count) = create_line_buffer(device, &[]);
+        self.uv_wireframe_vertex_buffer = wireframe_buffer;
+        self.uv_wireframe_vertex_count = wireframe_count;
         self.uv_baked = None;
+        let (fill_buffer, fill_count) = create_line_buffer(device, &[]);
+        self.uv_fill_vertex_buffer = fill_buffer;
+        self.uv_fill_vertex_count = fill_count;
+        self.uv_fill_baked = None;
     }
 
     /// Write the 2D UV camera's view-projection into the shared uniform buffer.
