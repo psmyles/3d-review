@@ -2,12 +2,12 @@
 //! segments, and the gizmo/grid/projection group. Emits panel-open intents by
 //! mutating [`UiState`] in place.
 
-use review_render::ShadingMode;
+use review_render::{ActiveMaterial, ShadingMode};
 
 use crate::assets::{
     ICON_AXIS_GIZMO, ICON_BBOX, ICON_GRID, ICON_NORMALS_FACE, ICON_NORMALS_VERTEX,
-    ICON_SHADING_SOLID, ICON_SHADING_UNLIT, ICON_SHADING_WIRE, ICON_SHADING_WIRE_SHADED, ICON_UV,
-    ICON_VERTEX_COLORS, ICON_VIEW_ORTHO, ICON_VIEW_PERSPECTIVE,
+    ICON_SHADING_SHADED, ICON_SHADING_TEXTURE, ICON_SHADING_UNLIT, ICON_SHADING_WIRE,
+    ICON_SHADING_WIRE_ONLY, ICON_UV, ICON_VERTEX_COLORS, ICON_VIEW_ORTHO, ICON_VIEW_PERSPECTIVE,
 };
 use crate::state::{OptionPanel, UiState, ViewProjectionMode, WorkspaceMode};
 use crate::theme::{self, color, font, size};
@@ -32,7 +32,8 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
     let center_width = theme::px(ctx, size::TOOLBAR_CENTER_WIDTH);
     let right_width = theme::px(ctx, size::TOOLBAR_RIGHT_WIDTH);
     let shading_group_width = theme::px(ctx, size::TOOLBAR_SHADING_GROUP_WIDTH);
-    let debug_group_width = theme::px(ctx, size::TOOLBAR_DEBUG_GROUP_WIDTH);
+    let material_group_width = theme::px(ctx, size::TOOLBAR_MATERIAL_GROUP_WIDTH);
+    let normals_group_width = theme::px(ctx, size::TOOLBAR_NORMALS_GROUP_WIDTH);
     let single_icon_group_width = theme::px(ctx, size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH);
     let triple_icon_group_width = theme::px(ctx, size::TOOLBAR_TRIPLE_ICON_GROUP_WIDTH);
     let mode_group_width = theme::px(ctx, size::TOOLBAR_MODE_GROUP_WIDTH);
@@ -83,7 +84,8 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                     ui.set_height(group_height);
                     ui.spacing_mut().item_spacing.x = group_spacing;
                     draw_shading_group(ui, ctx, state, shading_group_width);
-                    draw_debug_group(ui, ctx, state, debug_group_width);
+                    draw_material_group(ui, ctx, state, material_group_width);
+                    draw_normals_group(ui, ctx, state, normals_group_width);
                 },
             );
 
@@ -113,68 +115,97 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
         });
 }
 
+/// Shading group: the independent "Show Wireframe" overlay toggle followed by
+/// the mutually-exclusive shading modes (wireframe-only / unlit / shaded). The
+/// overlay can be on regardless of which shading mode is selected.
 fn draw_shading_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState, width: f32) {
     toolbar_group_shell(ui, ctx, width, |ui| {
-        let solid = matches!(state.shading_mode, ShadingMode::Shaded);
-        let unlit = matches!(state.shading_mode, ShadingMode::Unlit);
-        let rendered = matches!(state.shading_mode, ShadingMode::ShadedWireframe);
-        let wire = matches!(state.shading_mode, ShadingMode::Wireframe);
-
-        let wire_button = icon_toggle_button(
+        // 1. Show Wireframe — independent overlay toggle; retains its options panel.
+        let wire_overlay = icon_toggle_button(
             ui,
             ctx,
             &ICON_SHADING_WIRE,
-            wire,
-            "Wire (right-click for options)",
+            state.debug.wireframe_overlay,
+            "Show Wireframe (right-click for options)",
         );
-        if wire_button.clicked() {
-            state.shading_mode = ShadingMode::Wireframe;
+        if wire_overlay.clicked() {
+            state.debug.wireframe_overlay = !state.debug.wireframe_overlay;
         }
-        if wire_button.secondary_clicked() {
+        if wire_overlay.secondary_clicked() {
             state.open_panel(OptionPanel::Wireframe);
+        }
+
+        // 2-4. Shading mode — radio selection; exactly one is active.
+        let wire_only = matches!(state.shading_mode, ShadingMode::Wireframe);
+        let unlit = matches!(state.shading_mode, ShadingMode::Unlit);
+        let shaded = matches!(state.shading_mode, ShadingMode::Shaded);
+
+        if icon_toggle_button(ui, ctx, &ICON_SHADING_WIRE_ONLY, wire_only, "Wireframe Only").clicked()
+        {
+            state.shading_mode = ShadingMode::Wireframe;
         }
         if icon_toggle_button(ui, ctx, &ICON_SHADING_UNLIT, unlit, "Unlit").clicked() {
             state.shading_mode = ShadingMode::Unlit;
         }
-        if icon_toggle_button(ui, ctx, &ICON_SHADING_SOLID, solid, "Solid").clicked() {
+        if icon_toggle_button(ui, ctx, &ICON_SHADING_SHADED, shaded, "Shaded").clicked() {
             state.shading_mode = ShadingMode::Shaded;
-        }
-        if icon_toggle_button(
-            ui,
-            ctx,
-            &ICON_SHADING_WIRE_SHADED,
-            rendered,
-            "Wireframe over shaded",
-        )
-        .clicked()
-        {
-            state.shading_mode = ShadingMode::ShadedWireframe;
         }
     });
 }
 
-fn draw_debug_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState, width: f32) {
+/// Active-material group: a radio selection of which material the filled faces
+/// show — source material, UV checker, or vertex colors. The UV-checker and
+/// vertex-color buttons each retain their right-click options panel.
+fn draw_material_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState, width: f32) {
     toolbar_group_shell(ui, ctx, width, |ui| {
+        let source = state.debug.active_material == ActiveMaterial::Source;
+        let uv_active = state.debug.active_material == ActiveMaterial::UvChecker;
+        let vertex_colors_active = state.debug.active_material == ActiveMaterial::VertexColors;
+
+        if icon_toggle_button(ui, ctx, &ICON_SHADING_TEXTURE, source, "Source Material").clicked() {
+            state.debug.active_material = ActiveMaterial::Source;
+        }
+
         let uv = icon_toggle_button(
             ui,
             ctx,
             &ICON_UV,
-            state.debug.uv_checker,
+            uv_active,
             "UV Checker (right-click for options)",
         );
         if uv.clicked() {
-            state.debug.uv_checker = !state.debug.uv_checker;
+            state.debug.active_material = ActiveMaterial::UvChecker;
         }
         if uv.secondary_clicked() {
             state.open_panel(OptionPanel::UvChecker);
         }
 
+        let vertex_colors = icon_toggle_button(
+            ui,
+            ctx,
+            &ICON_VERTEX_COLORS,
+            vertex_colors_active,
+            "Vertex Colors (right-click for options)",
+        );
+        if vertex_colors.clicked() {
+            state.debug.active_material = ActiveMaterial::VertexColors;
+        }
+        if vertex_colors.secondary_clicked() {
+            state.open_panel(OptionPanel::VertexColors);
+        }
+    });
+}
+
+/// Normal-debug group: the face- and vertex-normal line overlays. Independent
+/// toggles — any combination can be active. Each retains its options panel.
+fn draw_normals_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState, width: f32) {
+    toolbar_group_shell(ui, ctx, width, |ui| {
         let face = icon_toggle_button(
             ui,
             ctx,
             &ICON_NORMALS_FACE,
             state.debug.face_normals,
-            "Face Normals (right-click for options)",
+            "Face Normal (right-click for options)",
         );
         if face.clicked() {
             state.debug.face_normals = !state.debug.face_normals;
@@ -188,27 +219,13 @@ fn draw_debug_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState,
             ctx,
             &ICON_NORMALS_VERTEX,
             state.debug.vertex_normals,
-            "Vertex Normals (right-click for options)",
+            "Vertex Normal (right-click for options)",
         );
         if vertex.clicked() {
             state.debug.vertex_normals = !state.debug.vertex_normals;
         }
         if vertex.secondary_clicked() {
             state.open_panel(OptionPanel::VertexNormals);
-        }
-
-        let vertex_colors = icon_toggle_button(
-            ui,
-            ctx,
-            &ICON_VERTEX_COLORS,
-            state.debug.vertex_colors,
-            "Vertex Colors (right-click for options)",
-        );
-        if vertex_colors.clicked() {
-            state.debug.vertex_colors = !state.debug.vertex_colors;
-        }
-        if vertex_colors.secondary_clicked() {
-            state.open_panel(OptionPanel::VertexColors);
         }
     });
 }

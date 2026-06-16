@@ -173,13 +173,16 @@ pub mod size {
     pub const TOOLBAR_ICON_PADDING: f32 = 8.0;
     pub const TOOLBAR_CENTER_WIDTH: f32 = 180.0;
     pub const TOOLBAR_RIGHT_WIDTH: f32 = 200.0;
-    pub const TOOLBAR_LEFT_WIDTH: f32 = 380.0;
+    /// Left toolbar cluster: shading (4) + material (3) + normals (2) groups,
+    /// with two group spacings between them (183 + 14 + 138 + 14 + 93).
+    pub const TOOLBAR_LEFT_WIDTH: f32 = 442.0;
+    /// Four-icon shading group: show-wireframe, wireframe-only, unlit, shaded.
     pub const TOOLBAR_SHADING_GROUP_WIDTH: f32 = 183.0;
-    /// Four-icon debug group: UV checker, face normals, vertex normals, vertex
-    /// colors. Matches the four-icon shading group width.
-    pub const TOOLBAR_DEBUG_GROUP_WIDTH: f32 = 183.0;
+    /// Three-icon active-material group: source material, UV checker, vertex colors.
+    pub const TOOLBAR_MATERIAL_GROUP_WIDTH: f32 = 138.0;
+    /// Two-icon normal-debug group: face normals, vertex normals.
+    pub const TOOLBAR_NORMALS_GROUP_WIDTH: f32 = 93.0;
     pub const TOOLBAR_SINGLE_ICON_GROUP_WIDTH: f32 = 48.0;
-    pub const TOOLBAR_DOUBLE_ICON_GROUP_WIDTH: f32 = 93.0;
     /// Width of a three-icon toolbar group (e.g. bounding box / gizmo / grid).
     pub const TOOLBAR_TRIPLE_ICON_GROUP_WIDTH: f32 = 138.0;
     pub const TOOLBAR_MODE_GROUP_WIDTH: f32 = 180.0;

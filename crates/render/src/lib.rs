@@ -33,11 +33,13 @@ const GRID_FAR_RADIUS: f32 = GRID_HALF_EXTENT * 2.0;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ShadingMode {
+    /// Wireframe only: the filled surface is not drawn, just its edges.
     Wireframe,
+    /// Filled faces showing the active material as flat emissive color (no light).
     Unlit,
+    /// Filled faces lit and shaded with the active material color.
     #[default]
     Shaded,
-    ShadedWireframe,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -67,15 +69,37 @@ pub enum VertexColorMode {
     RgbAlpha,
 }
 
+/// Which material the filled faces display. The choices are mutually exclusive
+/// (the toolbar's material group is a radio selection). [`Source`] is the
+/// model's imported material; the other two replace it for inspection and apply
+/// in every filled-face mode (unlit / shaded).
+///
+/// [`Source`]: ActiveMaterial::Source
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ActiveMaterial {
+    /// The material as imported from the model.
+    #[default]
+    Source,
+    /// A built-in UV checker pattern sampled through the model's UVs.
+    UvChecker,
+    /// The mesh's per-vertex color attribute.
+    VertexColors,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SceneDebugOptions {
     pub shading_mode: ShadingMode,
-    pub uv_checker: bool,
+    /// Draw the wireframe edges on top of the filled surface. Independent of
+    /// `shading_mode` (it is an overlay), so it combines with the unlit and
+    /// shaded modes; it is also implied when `shading_mode` is
+    /// [`ShadingMode::Wireframe`] (which draws the edges as the only geometry).
+    pub wireframe_overlay: bool,
+    /// Which material the filled faces show (source / UV checker / vertex colors).
+    /// Mutually exclusive; applies in every filled-face mode.
+    pub active_material: ActiveMaterial,
     pub uv_checker_texture: CheckerTexture,
-    /// Replace the surface material with the mesh's vertex colors (visible in the
-    /// filled-face modes: unlit / shaded / shaded-wireframe).
-    pub vertex_colors: bool,
-    /// Which vertex-color channels the view shows when `vertex_colors` is on.
+    /// Which vertex-color channels the view shows when `active_material` is
+    /// [`ActiveMaterial::VertexColors`].
     pub vertex_color_mode: VertexColorMode,
     /// Checker repeats across the 0..1 UV range; clamped to 1..=16 by the UI.
     pub uv_checker_tiling: u32,
@@ -103,9 +127,9 @@ impl Default for SceneDebugOptions {
     fn default() -> Self {
         Self {
             shading_mode: ShadingMode::Shaded,
-            uv_checker: false,
+            wireframe_overlay: false,
+            active_material: ActiveMaterial::Source,
             uv_checker_texture: CheckerTexture::Greyscale,
-            vertex_colors: false,
             vertex_color_mode: VertexColorMode::Rgb,
             uv_checker_tiling: 4,
             uv_channel: 0,
