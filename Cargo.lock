@@ -2287,6 +2287,7 @@ dependencies = [
  "glam",
  "review-model",
  "thiserror 2.0.18",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
