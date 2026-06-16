@@ -154,14 +154,15 @@ pub(crate) fn uv_fill_triangles(
         return Vec::new();
     }
 
-    let island_colors = per_island.then(|| uv_island_colors(model));
+    // Per-face island colors, looked up per triangle via `tri_to_face`.
+    let island_colors = per_island.then(|| uv_island_colors(model, channel));
     let uv_point = |vertex_index: usize| {
         let uv = model.uv_for_channel(vertex_index, channel);
         [uv.x, uv.y, 0.0]
     };
 
     let mut vertices = Vec::with_capacity(model.indices.len());
-    for triangle in model.indices.chunks_exact(3) {
+    for (triangle_index, triangle) in model.indices.chunks_exact(3).enumerate() {
         let [a, b, c] = [
             triangle[0] as usize,
             triangle[1] as usize,
@@ -171,8 +172,12 @@ pub(crate) fn uv_fill_triangles(
             continue;
         }
         let color = match &island_colors {
-            // All three corners share an island root, so corner `a` decides.
-            Some(colors) => colors.get(a).copied().unwrap_or(UV_FILL_SOLID_COLOR),
+            // All triangles of a face belong to the same island; resolve the
+            // owning face for this triangle and use its island color.
+            Some(colors) => {
+                let face = model.tri_to_face.get(triangle_index).copied().unwrap_or(0) as usize;
+                colors.get(face).copied().unwrap_or(UV_FILL_SOLID_COLOR)
+            }
             None => UV_FILL_SOLID_COLOR,
         };
         push_fill_vertex(&mut vertices, uv_point(a), color);
@@ -183,39 +188,112 @@ pub(crate) fn uv_fill_triangles(
     vertices
 }
 
-/// A per-vertex fill color assigning each connected UV island its own hue.
+/// A per-*face* fill color assigning each connected UV island its own hue.
 ///
-/// Islands are the connected components of the mesh as indexed: triangles that
-/// share a vertex index share that vertex's UV exactly, so they're joined; a UV
-/// seam duplicates the vertex (same position, different UV, distinct index), so
-/// the two sides fall into different components — which is precisely a UV island.
-/// A union-find over triangle membership finds the components; each root is
-/// assigned a distinct color in first-seen order.
-fn uv_island_colors(model: &ModelData) -> Vec<[f32; 4]> {
-    let vertex_count = model.vertices.len();
-    let mut parent: Vec<u32> = (0..vertex_count as u32).collect();
+/// A UV island is a connected component of faces in the UV layout. The importer
+/// splits vertices per face-corner, so faces never share a vertex index — island
+/// membership can't be read off the index buffer. Instead we connect faces that
+/// share a 3D edge whose UVs are continuous across it: two faces meeting along an
+/// edge belong to the same island unless that edge is a UV seam (the UVs differ
+/// on the two sides). Connecting by 3D adjacency — not by welding UV coordinates —
+/// keeps mirrored/overlapping UV islands (common in game characters) separate.
+///
+/// Edges are keyed by their welded 3D endpoints (quantized so shared control
+/// points collapse), carrying the per-endpoint UVs; a union-find over faces finds
+/// the components and each root gets a distinct color in first-seen order. The
+/// returned vector is indexed by face index ([`ModelData::faces`]).
+fn uv_island_colors(model: &ModelData, channel: usize) -> Vec<[f32; 4]> {
+    use std::collections::HashMap;
 
-    for triangle in model.indices.chunks_exact(3) {
-        let [a, b, c] = [triangle[0], triangle[1], triangle[2]];
-        if (a as usize) < vertex_count && (b as usize) < vertex_count && (c as usize) < vertex_count
-        {
-            uf_union(&mut parent, a, b);
-            uf_union(&mut parent, a, c);
+    let face_count = model.faces.len();
+    if face_count == 0 {
+        // No face topology to walk — let the caller fall back to the solid fill.
+        return Vec::new();
+    }
+
+    // Quantization steps: positions snap relative to the model's size so shared
+    // control points collapse despite float drift; UVs snap on a fixed fine grid.
+    let scale = model
+        .bounds
+        .map(|bounds| bounds.size().max_element())
+        .unwrap_or(1.0)
+        .max(1.0e-6);
+    let pos_step = scale * 1.0e-5;
+    let quant_pos = |p: Vec3| -> [i64; 3] {
+        [
+            (p.x / pos_step).round() as i64,
+            (p.y / pos_step).round() as i64,
+            (p.z / pos_step).round() as i64,
+        ]
+    };
+    let quant_uv = |uv: glam::Vec2| -> [i64; 2] {
+        [
+            (uv.x / 1.0e-5).round() as i64,
+            (uv.y / 1.0e-5).round() as i64,
+        ]
+    };
+
+    // Map each 3D edge (welded endpoints, order-independent) to the faces meeting
+    // there, each tagged with the UVs at the edge's low/high endpoint.
+    type EdgeKey = ([i64; 3], [i64; 3]);
+    type EdgeFace = (usize, [i64; 2], [i64; 2]);
+    let mut edges: HashMap<EdgeKey, Vec<EdgeFace>> = HashMap::new();
+
+    for (face_index, face) in model.faces.iter().enumerate() {
+        let count = face.index_count as usize;
+        if count < 2 {
+            continue;
+        }
+        let first = face.first_index as usize;
+        for corner in 0..count {
+            let ia = first + corner;
+            let ib = first + (corner + 1) % count;
+            let (Some(va), Some(vb)) = (model.vertices.get(ia), model.vertices.get(ib)) else {
+                continue;
+            };
+            let (pa, pb) = (quant_pos(va.position), quant_pos(vb.position));
+            let uva = quant_uv(model.uv_for_channel(ia, channel));
+            let uvb = quant_uv(model.uv_for_channel(ib, channel));
+            // Order the endpoints by position so an edge keys identically from
+            // either adjacent face, carrying the UV that goes with each endpoint.
+            let (key, uv_low, uv_high) = if pa <= pb {
+                ((pa, pb), uva, uvb)
+            } else {
+                ((pb, pa), uvb, uva)
+            };
+            edges
+                .entry(key)
+                .or_default()
+                .push((face_index, uv_low, uv_high));
+        }
+    }
+
+    let mut parent: Vec<u32> = (0..face_count as u32).collect();
+    for faces in edges.values() {
+        // Join faces meeting at this 3D edge whose UVs match at both endpoints
+        // (continuous, i.e. not a seam). Manifold edges hold two faces, so the
+        // pairwise scan is effectively constant.
+        for (i, &(fa, la, ha)) in faces.iter().enumerate() {
+            for &(fb, lb, hb) in &faces[i + 1..] {
+                if la == lb && ha == hb {
+                    uf_union(&mut parent, fa as u32, fb as u32);
+                }
+            }
         }
     }
 
     // Map each component root to a color index in first-seen order, so island
-    // colors are stable for a given mesh rather than scattered by vertex id.
-    let mut root_color_index = vec![u32::MAX; vertex_count];
+    // colors are stable for a given mesh rather than scattered by face id.
+    let mut root_color_index = vec![u32::MAX; face_count];
     let mut island_count = 0_u32;
-    let mut colors = vec![UV_FILL_SOLID_COLOR; vertex_count];
-    for vertex in 0..vertex_count as u32 {
-        let root = uf_find(&mut parent, vertex) as usize;
+    let mut colors = vec![UV_FILL_SOLID_COLOR; face_count];
+    for face in 0..face_count as u32 {
+        let root = uf_find(&mut parent, face) as usize;
         if root_color_index[root] == u32::MAX {
             root_color_index[root] = island_count;
             island_count += 1;
         }
-        colors[vertex as usize] = island_color(root_color_index[root]);
+        colors[face as usize] = island_color(root_color_index[root]);
     }
 
     colors
