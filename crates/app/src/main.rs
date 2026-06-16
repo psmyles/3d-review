@@ -377,6 +377,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed
+                    && self.modifiers.is_empty()
                     && matches!(
                         &event.logical_key,
                         Key::Character(character) if character.eq_ignore_ascii_case("f")
@@ -386,6 +387,17 @@ impl ApplicationHandler for App {
                     frame_camera_to_model(renderer, &self.scene_model);
                     self.redraw_requested = true;
                 }
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed
+                    && self.modifiers.is_empty()
+                    && matches!(
+                        &event.logical_key,
+                        Key::Character(character) if character.eq_ignore_ascii_case("w")
+                    ) =>
+            {
+                self.ui.debug.wireframe_overlay = !self.ui.debug.wireframe_overlay;
+                self.redraw_requested = true;
             }
             WindowEvent::DroppedFile(path) => {
                 self.open_model_from_path(&path);

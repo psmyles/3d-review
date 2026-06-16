@@ -227,19 +227,38 @@ impl OrbitCamera {
         let center = bounds.center();
         let half_size = bounds.size() * 0.5;
         let rotation = self.rotation();
-        let right = rotation.transform_vector3(Vec3::X).abs();
-        let up = rotation.transform_vector3(Vec3::Y).abs();
-        let forward = self.forward_dir().abs();
-        let half_width = right.dot(half_size).max(0.25);
-        let half_height = up.dot(half_size).max(0.25);
-        let half_depth = forward.dot(half_size).max(0.25);
-        let half_vertical_fov = (self.fov_y_radians * 0.5).clamp(0.01, 1.5);
-        let half_horizontal_fov = (half_vertical_fov.tan() * self.aspect_ratio.max(0.1)).atan();
-        let distance_for_height = half_height / half_vertical_fov.tan();
-        let distance_for_width = half_width / half_horizontal_fov.tan();
+        // Camera basis. `forward` points from the eye toward (and past) the
+        // target, so a corner's depth from the eye is `distance + forward·c`.
+        let right = rotation.transform_vector3(Vec3::X);
+        let up = rotation.transform_vector3(Vec3::Y);
+        let forward = self.forward_dir();
+        let tan_v = (self.fov_y_radians * 0.5).clamp(0.01, 1.5).tan();
+        let tan_h = tan_v * self.aspect_ratio.max(0.1);
+
+        // Exact tight perspective fit: find the smallest distance at which every
+        // one of the 8 box corners stays inside the horizontal *and* vertical
+        // FOV. Per corner the screen-fill constraint is
+        //   |u| <= tan_h * (distance + w)   and   |v| <= tan_v * (distance + w)
+        // i.e. distance >= |u|/tan_h - w (and likewise for v), where u/v/w are
+        // the corner offset projected onto right/up/forward. Taking the max over
+        // all corners gives a fit that is tight *and* independent of view angle
+        // (no AABB-silhouette padding that balloons on off-axis views).
+        let mut distance = 0.0_f32;
+        for sx in [-1.0_f32, 1.0] {
+            for sy in [-1.0_f32, 1.0] {
+                for sz in [-1.0_f32, 1.0] {
+                    let c = Vec3::new(sx * half_size.x, sy * half_size.y, sz * half_size.z);
+                    let u = right.dot(c).abs();
+                    let v = up.dot(c).abs();
+                    let w = forward.dot(c);
+                    distance = distance.max(u / tan_h - w).max(v / tan_v - w);
+                }
+            }
+        }
 
         self.target = center;
-        self.distance = (distance_for_width.max(distance_for_height) + half_depth) * 1.1;
+        // Small margin so the bounds sit just inside the viewport edges.
+        self.distance = (distance * 1.05).max(0.05);
         // Bounding-sphere radius around `target` (corner distance). Drives the
         // per-frame near/far fit in `near_far`.
         self.scene_radius = half_size.length().max(0.001);
