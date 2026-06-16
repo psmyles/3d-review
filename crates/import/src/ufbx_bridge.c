@@ -98,6 +98,52 @@ static void review_import_normalize3(float value[3], const float fallback[3])
     value[2] /= length;
 }
 
+/* Encode one linear channel to sRGB/gamma space (matches the renderer's WGSL
+   `linear_to_srgb`). ufbx hands back material colors in *linear* space, but the
+   scene shader treats the vertex color channel as sRGB and decodes it; baking
+   the sRGB form here makes that round-trip recover the original linear value
+   instead of double-decoding the color into near-black. */
+static float review_import_linear_to_srgb(float c)
+{
+    if (c <= 0.0f) {
+        return 0.0f;
+    }
+    if (c <= 0.0031308f) {
+        return c * 12.92f;
+    }
+    return 1.055f * powf(c, 1.0f / 2.4f) - 0.055f;
+}
+
+/* Game-asset DCC color comes from the material's base/diffuse color, not a
+   vertex-color layer. Prefer the PBR base color, fall back to the legacy FBX
+   diffuse color, then to white. RGB only — the viewer renders meshes opaque.
+   The resolved (linear) color is sRGB-encoded so it survives the shader's
+   sRGB→linear decode unchanged. */
+static void review_import_material_base_color(const ufbx_material *material, float out_color[3])
+{
+    out_color[0] = 1.0f;
+    out_color[1] = 1.0f;
+    out_color[2] = 1.0f;
+
+    if (!material) {
+        return;
+    }
+
+    if (material->pbr.base_color.has_value) {
+        out_color[0] = (float)material->pbr.base_color.value_vec4.x;
+        out_color[1] = (float)material->pbr.base_color.value_vec4.y;
+        out_color[2] = (float)material->pbr.base_color.value_vec4.z;
+    } else if (material->fbx.diffuse_color.has_value) {
+        out_color[0] = (float)material->fbx.diffuse_color.value_vec4.x;
+        out_color[1] = (float)material->fbx.diffuse_color.value_vec4.y;
+        out_color[2] = (float)material->fbx.diffuse_color.value_vec4.z;
+    }
+
+    out_color[0] = review_import_linear_to_srgb(out_color[0]);
+    out_color[1] = review_import_linear_to_srgb(out_color[1]);
+    out_color[2] = review_import_linear_to_srgb(out_color[2]);
+}
+
 static uint32_t review_import_add_material(review_import_scene *scene, const char *name_data, size_t name_length)
 {
     size_t index;
@@ -292,6 +338,18 @@ int review_import_load_fbx(
             ufbx_face face = mesh->faces.data[face_index];
             size_t local_face_first_vertex = vertex_offset;
             size_t corner_index;
+            ufbx_material *face_material_ptr = NULL;
+            float base_color[3];
+
+            if (mesh->face_material.count > face_index) {
+                uint32_t face_material = mesh->face_material.data[face_index];
+                if (face_material < node->materials.count) {
+                    face_material_ptr = node->materials.data[face_material];
+                } else if (face_material < mesh->materials.count) {
+                    face_material_ptr = mesh->materials.data[face_material];
+                }
+            }
+            review_import_material_base_color(face_material_ptr, base_color);
 
             out_scene->faces[face_offset].first_index = (uint32_t)local_face_first_vertex;
             out_scene->faces[face_offset].index_count = face.num_indices;
@@ -309,9 +367,6 @@ int review_import_load_fbx(
                 ufbx_vec2 uv = mesh->vertex_uv.exists
                     ? ufbx_get_vertex_vec2(&mesh->vertex_uv, mesh_index)
                     : ufbx_zero_vec2;
-                ufbx_vec4 color = mesh->vertex_color.exists
-                    ? ufbx_get_vertex_vec4(&mesh->vertex_color, mesh_index)
-                    : ufbx_zero_vec4;
                 ufbx_vec3 tangent = mesh->vertex_tangent.exists
                     ? ufbx_transform_direction(&normal_matrix, ufbx_get_vertex_vec3(&mesh->vertex_tangent, mesh_index))
                     : ufbx_zero_vec3;
@@ -330,17 +385,12 @@ int review_import_load_fbx(
                 dst->uv[0] = (float)uv.x;
                 dst->uv[1] = (float)uv.y;
 
-                if (mesh->vertex_color.exists) {
-                    dst->color[0] = (float)color.x;
-                    dst->color[1] = (float)color.y;
-                    dst->color[2] = (float)color.z;
-                    dst->color[3] = (float)color.w;
-                } else {
-                    dst->color[0] = 1.0f;
-                    dst->color[1] = 1.0f;
-                    dst->color[2] = 1.0f;
-                    dst->color[3] = 1.0f;
-                }
+                /* Bake the resolved material base color; alpha stays opaque so a
+                   masking vertex-color layer can't blend the mesh away. */
+                dst->color[0] = base_color[0];
+                dst->color[1] = base_color[1];
+                dst->color[2] = base_color[2];
+                dst->color[3] = 1.0f;
 
                 dst->tangent[0] = (float)tangent.x;
                 dst->tangent[1] = (float)tangent.y;
@@ -393,28 +443,17 @@ int review_import_load_fbx(
 
                 node_has_triangles = 1;
 
-                if (mesh->face_material.count > face_index) {
-                    uint32_t face_material = mesh->face_material.data[face_index];
-                    ufbx_material *material = NULL;
-
-                    if (face_material < node->materials.count) {
-                        material = node->materials.data[face_material];
-                    } else if (face_material < mesh->materials.count) {
-                        material = mesh->materials.data[face_material];
-                    }
-
-                    if (material) {
-                        material_slot = review_import_add_material(
-                            out_scene,
-                            material->name.data,
-                            material->name.length
-                        );
-                        if (material_slot == UINT32_MAX) {
-                            review_import_set_error(out_error, "out of memory while recording FBX materials");
-                            free(triangle_buffer);
-                            free(used_material_slots);
-                            goto cleanup;
-                        }
+                if (face_material_ptr) {
+                    material_slot = review_import_add_material(
+                        out_scene,
+                        face_material_ptr->name.data,
+                        face_material_ptr->name.length
+                    );
+                    if (material_slot == UINT32_MAX) {
+                        review_import_set_error(out_error, "out of memory while recording FBX materials");
+                        free(triangle_buffer);
+                        free(used_material_slots);
+                        goto cleanup;
                     }
                 }
 
