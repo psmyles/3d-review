@@ -96,6 +96,7 @@ impl Default for App {
         let scene_model = Arc::new(ModelData::default());
         let ui = UiState {
             stats: scene_model.stats,
+            app_version: env!("CARGO_PKG_VERSION").to_string(),
             ..UiState::default()
         };
 
@@ -198,6 +199,8 @@ impl ApplicationHandler for App {
                 device_type = ?adapter_info.device_type,
                 "selected wgpu adapter"
             );
+            // Surface the chosen backend in the startup help overlay.
+            self.ui.gpu_backend = friendly_backend_name(adapter_info.backend);
         }
 
         let egui_state = egui_winit::State::new(
@@ -303,6 +306,22 @@ impl ApplicationHandler for App {
             WindowEvent::MouseInput { state, button, .. } => {
                 if state == ElementState::Released {
                     self.drag_mode = None;
+                } else if button == MouseButton::Left && self.ui.show_help_overlay {
+                    // The startup help overlay is up: it swallows the click in
+                    // egui (so the chrome beneath stays inert), but we still drive
+                    // dismissal here. A plain click hides it; a double-click also
+                    // opens the file picker — the same gesture as on the empty
+                    // viewport, so it reuses the same double-click detection. The
+                    // first click seeds `last_primary_click`; the second arrives
+                    // after the overlay is gone and opens the dialog via the
+                    // branch below.
+                    if self.should_open_on_double_click() {
+                        self.open_model_from_dialog();
+                    } else if let Some(position) = self.last_pointer_position {
+                        self.last_primary_click = Some((Instant::now(), position));
+                    }
+                    self.ui.show_help_overlay = false;
+                    self.redraw_requested = true;
                 } else if !egui_response.is_some_and(|response| response.consumed) {
                     match button {
                         MouseButton::Left => {
@@ -367,6 +386,13 @@ impl ApplicationHandler for App {
                 self.modifiers = modifiers.state();
             }
             WindowEvent::KeyboardInput { event, .. } if !egui_consumed => {
+                // Any key press dismisses the startup help overlay (and still
+                // performs its shortcut). Request a redraw so it clears even for
+                // keys that aren't bound to a shortcut.
+                if event.state == ElementState::Pressed && self.ui.show_help_overlay {
+                    self.ui.show_help_overlay = false;
+                    self.redraw_requested = true;
+                }
                 self.handle_keyboard_shortcut(&event);
             }
             WindowEvent::DroppedFile(path) => {
@@ -537,6 +563,10 @@ impl App {
     }
 
     fn open_model_from_path(&mut self, path: &Path) {
+        // Loading a model (drag-drop, file dialog, or CLI arg) dismisses the
+        // startup help overlay if it's still up.
+        self.ui.show_help_overlay = false;
+
         match load_model(path, LoadOptions { triangulate: true }) {
             Ok(model) => {
                 let model = Arc::new(model);
@@ -761,6 +791,20 @@ fn framing_safe_area(height_px: u32, scale_factor: f32) -> (f32, f32) {
 fn frame_camera_to_model(renderer: &mut Renderer, model: &ModelData) {
     if let Some(bounds) = model.bounds {
         renderer.animate_camera_to_bounds(bounds);
+    }
+}
+
+/// Map the wgpu backend wgpu actually selected to a short label for the help
+/// overlay title (e.g. `Backend::Dx12` → "DX12"). Falls back to the enum's debug
+/// name for any backend without a custom label.
+fn friendly_backend_name(backend: wgpu::Backend) -> String {
+    match backend {
+        wgpu::Backend::Dx12 => "DX12".to_string(),
+        wgpu::Backend::Vulkan => "Vulkan".to_string(),
+        wgpu::Backend::Metal => "Metal".to_string(),
+        wgpu::Backend::Gl => "OpenGL".to_string(),
+        wgpu::Backend::BrowserWebGpu => "WebGPU".to_string(),
+        other => format!("{other:?}"),
     }
 }
 

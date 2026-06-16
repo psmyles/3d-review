@@ -259,19 +259,18 @@ pub(crate) fn mono_label(text: &str, font_size: f32, color: egui::Color32) -> eg
         .family(egui::FontFamily::Monospace)
 }
 
-/// Draw centered text with a faux-bold weight. Only the regular instance of the
-/// variable UI font is registered with egui, so there is no true bold face to
-/// select — the heavier stroke is approximated by layering the glyphs with small
-/// sub-pixel offsets before the crisp center pass.
+/// Draw centered text with a faux-bold weight in the given font. Only the
+/// regular instance of each bundled variable font is registered with egui, so
+/// there is no true bold face to select — the heavier stroke is approximated by
+/// layering the glyphs with small sub-pixel offsets before the crisp center pass.
 pub(crate) fn bold_text(
     painter: &egui::Painter,
     ctx: &egui::Context,
     pos: egui::Pos2,
     text: &str,
-    font_size: f32,
+    font: egui::FontId,
     color: egui::Color32,
 ) {
-    let font = egui::FontId::proportional(font_size);
     let offset = theme::px(ctx, size::GIZMO_BOLD_OFFSET);
     for delta in [
         egui::vec2(-offset, 0.0),

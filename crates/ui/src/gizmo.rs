@@ -78,7 +78,7 @@ pub(crate) fn draw_axis_gizmo(
                 ctx,
                 point.position,
                 point.label,
-                theme::px(ctx, font::GIZMO_LABEL),
+                egui::FontId::proportional(theme::px(ctx, font::GIZMO_LABEL)),
                 color::GIZMO_LABEL,
             );
         } else if projection == CameraProjection::Orthographic
@@ -93,7 +93,7 @@ pub(crate) fn draw_axis_gizmo(
                 ctx,
                 point.position,
                 point.label,
-                theme::px(ctx, font::GIZMO_LABEL_NEG),
+                egui::FontId::proportional(theme::px(ctx, font::GIZMO_LABEL_NEG)),
                 color::GIZMO_LABEL,
             );
         } else if response.hovered() {
@@ -108,7 +108,7 @@ pub(crate) fn draw_axis_gizmo(
                 ctx,
                 point.position,
                 point.label,
-                theme::px(ctx, font::GIZMO_LABEL_NEG),
+                egui::FontId::proportional(theme::px(ctx, font::GIZMO_LABEL_NEG)),
                 point.color,
             );
         } else {

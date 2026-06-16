@@ -192,6 +192,16 @@ pub struct UiState {
     /// Most recent measured frames-per-second, fed by `app` from the render
     /// loop. Zero while idle (the viewer redraws on demand, not continuously).
     pub fps: f32,
+    /// Whether the startup help overlay (keyboard-shortcut cheat sheet) is shown.
+    /// Starts `true` so it greets the user on launch, and is cleared by a click
+    /// anywhere (see `help::draw_help_overlay`).
+    pub show_help_overlay: bool,
+    /// Application version shown in the help overlay title (e.g. "0.1.0"), set by
+    /// `app` from its `CARGO_PKG_VERSION`.
+    pub app_version: String,
+    /// Friendly name of the wgpu backend wgpu actually selected (e.g. "DX12"),
+    /// shown in the help overlay title; set by `app` once the adapter is known.
+    pub gpu_backend: String,
 }
 
 impl Default for UiState {
@@ -221,6 +231,9 @@ impl Default for UiState {
             vertex_colors: VertexColorPanelState::default(),
             stats: ModelStats::default(),
             fps: 0.0,
+            show_help_overlay: true,
+            app_version: String::new(),
+            gpu_backend: String::new(),
         }
     }
 }

@@ -15,6 +15,7 @@
 
 mod assets;
 mod gizmo;
+mod help;
 mod overlay;
 mod panels;
 mod state;

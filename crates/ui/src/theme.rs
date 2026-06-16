@@ -154,6 +154,17 @@ pub mod color {
         Color32::from_rgb(32, 224, 232),
         Color32::from_rgb(29, 255, 27),
     ];
+
+    // ── Startup help overlay ────────────────────────────────────────────────
+    /// Help-card surface (translucent, like the stats overlay — the viewport
+    /// shows through faintly so the modal doesn't black out the scene) and border.
+    pub const HELP_CARD_BG: Color32 = Color32::from_rgba_premultiplied(31, 32, 35, 214);
+    pub const HELP_CARD_BORDER: Color32 = Color32::from_gray(70);
+    /// Section dividers inside the help card.
+    pub const HELP_DIVIDER: Color32 = Color32::from_gray(60);
+    /// Key-cap tile fill and outline.
+    pub const HELP_KEYCAP_BG: Color32 = Color32::from_rgb(24, 25, 28);
+    pub const HELP_KEYCAP_BORDER: Color32 = Color32::from_gray(82);
 }
 
 /// Pixel sizes, spacings and radii. Raw logical pixels; most are DPI-scaled at
@@ -263,6 +274,29 @@ pub mod size {
     pub const ITEM_SPACING: f32 = 8.0;
     pub const BUTTON_PADDING_X: f32 = 10.0;
     pub const BUTTON_PADDING_Y: f32 = 8.0;
+
+    // ── Startup help overlay (treated as egui points, like the option panels) ─
+    /// Width of each of the two shortcut columns and the gap between them; the
+    /// card content width is derived as `2 * COLUMN_WIDTH + COLUMN_GAP`.
+    pub const HELP_COLUMN_WIDTH: f32 = 196.0;
+    pub const HELP_COLUMN_GAP: f32 = 18.0;
+    /// Card inner padding and rounding.
+    pub const HELP_CARD_PAD_X: i8 = 18;
+    pub const HELP_CARD_PAD_Y: i8 = 14;
+    pub const HELP_CARD_CORNER_RADIUS: u8 = 7;
+    /// Vertical breathing room on each side of a section divider.
+    pub const HELP_SECTION_GAP: f32 = 8.0;
+    /// Vertical gap between adjacent shortcut rows.
+    pub const HELP_ROW_GAP: f32 = 5.0;
+    /// Key-cap tile geometry: square single keys, wider caps for word labels
+    /// ("Ctrl"), shared corner radius, and the gaps that flank them.
+    pub const HELP_KEYCAP_SIZE: f32 = 22.0;
+    pub const HELP_KEYCAP_WIDE_WIDTH: f32 = 38.0;
+    pub const HELP_KEYCAP_CORNER_RADIUS: f32 = 4.0;
+    /// Gap between two key-caps in one chord (Ctrl + N).
+    pub const HELP_KEYCAP_GAP: f32 = 6.0;
+    /// Gap between a row's key-cap(s) and its description text.
+    pub const HELP_KEY_LABEL_GAP: f32 = 10.0;
 }
 
 /// Font sizes (logical px). The proportional face is Inter, monospace is
@@ -275,6 +309,17 @@ pub mod font {
     pub const PANEL_TITLE: f32 = 14.5;
     pub const PANEL_LABEL: f32 = 14.0;
     pub const PANEL_BUTTON: f32 = 14.0;
+
+    // ── Startup help overlay (sized to match the app's other overlay text) ──
+    pub const HELP_TITLE: f32 = 14.0;
+    pub const HELP_META: f32 = 11.5;
+    pub const HELP_SUBTITLE: f32 = 12.0;
+    pub const HELP_BODY: f32 = 12.0;
+    pub const HELP_KEYCAP: f32 = 11.0;
+    /// Backtick key-cap glyph: bumped up because `` ` `` renders tiny and
+    /// top-aligned at the regular key-cap size.
+    pub const HELP_KEYCAP_BACKTICK: f32 = 18.0;
+    pub const HELP_FOOTER: f32 = 11.0;
 }
 
 /// Apply the app's egui visuals (dark theme) onto `ctx`. Called once per frame at
