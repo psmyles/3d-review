@@ -59,6 +59,82 @@ pub(crate) fn scene_lines() -> Vec<SceneVertex> {
     vertices
 }
 
+/// Color of the UV unit-square border (the 0..1 outline), gamma-space (the line
+/// shader returns the vertex color directly into the gamma framebuffer).
+const UV_GRID_BORDER_COLOR: [f32; 4] = [0.42, 0.49, 0.54, 0.7];
+/// Color of the interior UV grid subdivisions (every 0.1 of the unit square).
+const UV_GRID_CELL_COLOR: [f32; 4] = [0.33, 0.38, 0.42, 0.32];
+/// Color of the model's UV edges drawn over the grid (a readable cyan-blue).
+const UV_EDGE_COLOR: [f32; 4] = [0.29, 0.64, 0.91, 0.9];
+
+/// The 0..1 reference grid for the UV viewport, in UV-plane coordinates
+/// (positions are `(u, v, 0)`). Ten subdivisions per axis plus a stronger
+/// border at 0 and 1, matching the look of the 3D floor grid.
+pub(crate) fn uv_grid_lines() -> Vec<SceneVertex> {
+    const CELLS: i32 = 10;
+    let mut vertices = Vec::with_capacity(((CELLS + 1) * 2 * 2) as usize);
+
+    for line in 0..=CELLS {
+        let coord = line as f32 / CELLS as f32;
+        // The 0 and 1 lines form the unit-square border; the rest are cells.
+        let color = if line == 0 || line == CELLS {
+            UV_GRID_BORDER_COLOR
+        } else {
+            UV_GRID_CELL_COLOR
+        };
+        // Vertical line (constant u) and horizontal line (constant v).
+        push_line(&mut vertices, [coord, 0.0, 0.0], [coord, 1.0, 0.0], color);
+        push_line(&mut vertices, [0.0, coord, 0.0], [1.0, coord, 0.0], color);
+    }
+
+    vertices
+}
+
+/// The model's UV edges for `channel`, traced over each *original* polygon (like
+/// [`wireframe_lines`] but in UV space): positions are the per-corner UVs mapped
+/// to the UV plane as `(u, v, 0)`. Falls back to triangle edges when the model
+/// arrives without face topology.
+pub(crate) fn uv_wireframe_lines(model: &ModelData, channel: u32) -> Vec<SceneVertex> {
+    let channel = channel as usize;
+    let mut vertices = Vec::with_capacity(model.indices.len() * 2);
+
+    let uv_point = |vertex_index: usize| {
+        let uv = model.uv_for_channel(vertex_index, channel);
+        [uv.x, uv.y, 0.0]
+    };
+
+    if model.faces.is_empty() {
+        for triangle in model.indices.chunks_exact(3) {
+            let [a, b, c] = [
+                triangle[0] as usize,
+                triangle[1] as usize,
+                triangle[2] as usize,
+            ];
+            push_line(&mut vertices, uv_point(a), uv_point(b), UV_EDGE_COLOR);
+            push_line(&mut vertices, uv_point(b), uv_point(c), UV_EDGE_COLOR);
+            push_line(&mut vertices, uv_point(c), uv_point(a), UV_EDGE_COLOR);
+        }
+        return vertices;
+    }
+
+    for face in &model.faces {
+        let count = face.index_count as usize;
+        if count < 2 {
+            continue;
+        }
+        let first = face.first_index as usize;
+        for corner in 0..count {
+            let a = first + corner;
+            let b = first + (corner + 1) % count;
+            if a < model.vertices.len() && b < model.vertices.len() {
+                push_line(&mut vertices, uv_point(a), uv_point(b), UV_EDGE_COLOR);
+            }
+        }
+    }
+
+    vertices
+}
+
 /// The shaded mesh vertices + indices for `uv_channel`.
 pub(crate) fn model_mesh(model: &ModelData, uv_channel: u32) -> (Vec<SceneVertex>, Vec<u32>) {
     let channel = uv_channel as usize;

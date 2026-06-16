@@ -6,12 +6,12 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 use crate::geometry::{
-    bounding_box_lines, face_normal_lines, model_mesh, scene_lines, vertex_normal_lines,
-    wireframe_lines,
+    bounding_box_lines, face_normal_lines, model_mesh, scene_lines, uv_grid_lines,
+    uv_wireframe_lines, vertex_normal_lines, wireframe_lines,
 };
 use crate::{
     ActiveMaterial, CameraProjection, CheckerTexture, OrbitCamera, SceneDebugOptions, ShadingMode,
-    VertexColorMode,
+    UvCamera, VertexColorMode,
 };
 
 pub const SCENE_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
@@ -22,6 +22,14 @@ pub const SCENE_SAMPLE_COUNT: u32 = 4;
 /// must track the `#[repr(C)]` structs below (invariant 11).
 const SHADER: &str = include_str!("scene.wgsl");
 
+/// The 2D UV viewport view: which UV channel to draw and the camera framing it.
+/// `Some` switches [`SceneCallback`] to the UV path (grid + UV wireframe).
+#[derive(Debug, Clone, Copy)]
+struct UvView {
+    camera: UvCamera,
+    channel: u32,
+}
+
 #[derive(Debug, Clone)]
 pub struct SceneCallback {
     camera: OrbitCamera,
@@ -30,6 +38,8 @@ pub struct SceneCallback {
     model: Arc<ModelData>,
     model_revision: u64,
     debug_options: SceneDebugOptions,
+    /// `Some` renders the 2D UV viewport instead of the 3D scene.
+    uv_view: Option<UvView>,
 }
 
 impl SceneCallback {
@@ -48,6 +58,27 @@ impl SceneCallback {
             model,
             model_revision,
             debug_options,
+            uv_view: None,
+        }
+    }
+
+    /// Build a callback that renders the 2D UV viewport for `channel` framed by
+    /// `camera`, instead of the 3D scene.
+    pub fn new_uv(
+        output_format: wgpu::TextureFormat,
+        model: Arc<ModelData>,
+        model_revision: u64,
+        camera: UvCamera,
+        channel: u32,
+    ) -> Self {
+        Self {
+            camera: OrbitCamera::default(),
+            projection_mode: CameraProjection::default(),
+            output_format,
+            model,
+            model_revision,
+            debug_options: SceneDebugOptions::default(),
+            uv_view: Some(UvView { camera, channel }),
         }
     }
 }
@@ -68,6 +99,19 @@ impl CallbackTrait for SceneCallback {
         if resources.output_format != self.output_format {
             *resources = SceneResources::new(device, queue, self.output_format);
         }
+
+        // UV viewport path: build only the UV wireframe (on demand, per channel /
+        // model) and frame it with the 2D camera. The 3D mesh / line views are
+        // left untouched and are rebuilt when the 3D scene is shown again.
+        if let Some(uv) = self.uv_view {
+            resources.sync_uv_view(device, &self.model, self.model_revision, uv.channel);
+            resources.update_camera_uv(queue, uv.camera);
+            return Vec::new();
+        }
+
+        // Back in the 3D scene: free the (potentially large) UV wireframe so the
+        // steady-state view holds no derived UV buffer (invariant 3).
+        resources.free_uv_view(device);
 
         if resources.model_revision != self.model_revision {
             // A new model rebuilds the steady-state mesh and resets every derived
@@ -98,6 +142,24 @@ impl CallbackTrait for SceneCallback {
         let Some(resources) = callback_resources.get::<SceneResources>() else {
             return;
         };
+
+        // UV viewport: draw the 0..1 grid then the model's UV edges, both with the
+        // line pipeline framed by the 2D UV camera. group 1 must still be bound to
+        // satisfy the shared pipeline layout even though lines don't sample it.
+        if self.uv_view.is_some() {
+            render_pass.set_bind_group(1, &resources.checker_bind_group_greyscale, &[]);
+            render_pass.set_bind_group(0, &resources.uniform_bind_group, &[]);
+            render_pass.set_pipeline(&resources.line_pipeline);
+            if resources.uv_grid_vertex_count > 0 {
+                render_pass.set_vertex_buffer(0, resources.uv_grid_vertex_buffer.slice(..));
+                render_pass.draw(0..resources.uv_grid_vertex_count, 0..1);
+            }
+            if resources.uv_wireframe_vertex_count > 0 {
+                render_pass.set_vertex_buffer(0, resources.uv_wireframe_vertex_buffer.slice(..));
+                render_pass.draw(0..resources.uv_wireframe_vertex_count, 0..1);
+            }
+            return;
+        }
 
         // group 1 (checker texture + sampler) stays bound for every draw using
         // the shared pipeline layout; only the mesh actually samples it.
@@ -195,6 +257,16 @@ struct SceneResources {
     vertex_normal_vertex_count: u32,
     /// `(length_scale, color)` baked into the vertex-normal buffer, or `None`.
     vertex_baked: Option<NormalParams>,
+    // UV viewport buffers. The 0..1 grid is static (built once); the UV
+    // wireframe is built on demand for the active `(model_revision, channel)`
+    // and freed when the 3D scene is shown again (invariant 3).
+    uv_grid_vertex_buffer: wgpu::Buffer,
+    uv_grid_vertex_count: u32,
+    uv_wireframe_vertex_buffer: wgpu::Buffer,
+    uv_wireframe_vertex_count: u32,
+    /// `(model_revision, channel)` baked into the UV wireframe, or `None` when
+    /// the view is off (its buffer holds only a placeholder).
+    uv_baked: Option<(u64, u32)>,
 }
 
 /// Baked parameters for a normal-line view: `(length_scale, color)`. Compared by
@@ -358,6 +430,11 @@ impl SceneResources {
             contents: bytemuck::cast_slice(&line_vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
+        let uv_grid_vertices = uv_grid_lines();
+        let (uv_grid_vertex_buffer, uv_grid_vertex_count) =
+            create_line_buffer(device, &uv_grid_vertices);
+        let (uv_wireframe_vertex_buffer, uv_wireframe_vertex_count) =
+            create_line_buffer(device, &[]);
 
         Self {
             output_format,
@@ -386,6 +463,11 @@ impl SceneResources {
             vertex_normal_vertex_buffer,
             vertex_normal_vertex_count,
             vertex_baked: None,
+            uv_grid_vertex_buffer,
+            uv_grid_vertex_count,
+            uv_wireframe_vertex_buffer,
+            uv_wireframe_vertex_count,
+            uv_baked: None,
         }
     }
 
@@ -547,6 +629,49 @@ impl SceneResources {
         self.mesh_index_buffer = mesh_index_buffer;
         self.mesh_index_count = mesh_index_count;
         self.mesh_uv_channel = uv_channel;
+    }
+
+    /// Build-on-demand for the UV wireframe: rebuilt only when the active model
+    /// or channel changes (tracked by `uv_baked`), so panning/zooming the UV
+    /// view doesn't rebuild the buffer.
+    fn sync_uv_view(
+        &mut self,
+        device: &wgpu::Device,
+        model: &ModelData,
+        model_revision: u64,
+        channel: u32,
+    ) {
+        let want = Some((model_revision, channel));
+        if self.uv_baked == want {
+            return;
+        }
+        let (buffer, count) = create_line_buffer(device, &uv_wireframe_lines(model, channel));
+        self.uv_wireframe_vertex_buffer = buffer;
+        self.uv_wireframe_vertex_count = count;
+        self.uv_baked = want;
+    }
+
+    /// Free the UV wireframe back to a placeholder when the UV view is off.
+    fn free_uv_view(&mut self, device: &wgpu::Device) {
+        if self.uv_baked.is_none() {
+            return;
+        }
+        let (buffer, count) = create_line_buffer(device, &[]);
+        self.uv_wireframe_vertex_buffer = buffer;
+        self.uv_wireframe_vertex_count = count;
+        self.uv_baked = None;
+    }
+
+    /// Write the 2D UV camera's view-projection into the shared uniform buffer.
+    /// The other uniform fields are unused by the line path (lines return their
+    /// own vertex color), so they are left zeroed.
+    fn update_camera_uv(&self, queue: &wgpu::Queue, camera: UvCamera) {
+        let uniforms = SceneUniforms {
+            view_projection: camera.view_projection().to_cols_array_2d(),
+            render_options: [0.0; 4],
+            camera_position: [0.0; 4],
+        };
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }
 }
 

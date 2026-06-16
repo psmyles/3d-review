@@ -188,6 +188,85 @@ impl Default for RendererConfig {
     }
 }
 
+/// Default half-height (in UV units) of the UV viewport, so the unit square is
+/// shown with comfortable margin around it. The visible vertical span is twice
+/// this; `> 0.5` leaves the 0..1 square framed back from the edges.
+const UV_DEFAULT_HALF_HEIGHT: f32 = 0.72;
+/// Clamp range for the UV camera's half-height so zoom can't invert or run away.
+const UV_MIN_HALF_HEIGHT: f32 = 0.02;
+const UV_MAX_HALF_HEIGHT: f32 = 50.0;
+
+/// A 2D pan/zoom camera for the UV viewport. Maps UV space (the 0..1 unit square
+/// the model's UVs live in) to the screen with an aspect-corrected orthographic
+/// projection, so the unit square always stays square regardless of window
+/// shape. `center` is the UV point shown at the viewport center; `half_height`
+/// is half the visible vertical span in UV units (smaller = zoomed in).
+#[derive(Debug, Clone, Copy)]
+pub struct UvCamera {
+    pub center: Vec2,
+    pub half_height: f32,
+    pub aspect_ratio: f32,
+}
+
+impl Default for UvCamera {
+    fn default() -> Self {
+        Self {
+            // Center on the middle of the 0..1 unit square.
+            center: Vec2::new(0.5, 0.5),
+            half_height: UV_DEFAULT_HALF_HEIGHT,
+            aspect_ratio: 16.0 / 9.0,
+        }
+    }
+}
+
+impl UvCamera {
+    /// Reset to the default framing, preserving the live aspect ratio.
+    pub fn reset(&mut self) {
+        let aspect_ratio = self.aspect_ratio;
+        *self = Self::default();
+        self.aspect_ratio = aspect_ratio;
+    }
+
+    fn half_width(self) -> f32 {
+        self.half_height * self.aspect_ratio.max(0.1)
+    }
+
+    /// Pan the view by a pointer drag (pixels), keeping the grabbed UV point
+    /// under the cursor: the content follows the drag direction.
+    pub fn pan_screen_delta(&mut self, delta_pixels: Vec2, viewport_size: Vec2) {
+        if viewport_size.x <= 0.0 || viewport_size.y <= 0.0 {
+            return;
+        }
+        let du = delta_pixels.x / viewport_size.x * (2.0 * self.half_width());
+        let dv = delta_pixels.y / viewport_size.y * (2.0 * self.half_height);
+        // Drag right (+x) shows lower-u content at center; drag down (+y, with v
+        // up) shows higher-v content at center.
+        self.center.x -= du;
+        self.center.y += dv;
+    }
+
+    /// Zoom about the view center. Positive `amount` zooms in (matches the orbit
+    /// camera's wheel/zoom-drag sign), shrinking the visible span.
+    pub fn zoom(&mut self, amount: f32) {
+        let scale = (1.0 - amount * 0.1).clamp(0.2, 5.0);
+        self.half_height = (self.half_height * scale).clamp(UV_MIN_HALF_HEIGHT, UV_MAX_HALF_HEIGHT);
+    }
+
+    /// Aspect-corrected orthographic view-projection mapping UV-plane points
+    /// `(u, v, 0)` to clip space, with v pointing up like a UV editor.
+    pub fn view_projection(self) -> Mat4 {
+        let half_w = self.half_width();
+        Mat4::orthographic_rh(
+            self.center.x - half_w,
+            self.center.x + half_w,
+            self.center.y - self.half_height,
+            self.center.y + self.half_height,
+            -1.0,
+            1.0,
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct OrbitCamera {
     pub target: Vec3,
@@ -510,6 +589,8 @@ fn ease_in_out_cubic(t: f32) -> f32 {
 pub struct Renderer {
     pub config: RendererConfig,
     pub camera: OrbitCamera,
+    /// The 2D camera for the UV viewport, independent of the 3D orbit camera.
+    pub uv_camera: UvCamera,
     camera_transition: Option<CameraTransition>,
     /// Fraction of the viewport (x = width, y = height) framing should fill,
     /// leaving room for the chrome that overlays the full-window 3D scene. Set
@@ -522,9 +603,26 @@ impl Renderer {
         Self {
             config,
             camera: OrbitCamera::default(),
+            uv_camera: UvCamera::default(),
             camera_transition: None,
             framing_safe_area: Vec2::ONE,
         }
+    }
+
+    pub fn set_uv_aspect_ratio(&mut self, aspect_ratio: f32) {
+        self.uv_camera.aspect_ratio = aspect_ratio;
+    }
+
+    pub fn pan_uv_camera(&mut self, delta_pixels: Vec2, viewport_size: Vec2) {
+        self.uv_camera.pan_screen_delta(delta_pixels, viewport_size);
+    }
+
+    pub fn zoom_uv_camera(&mut self, amount: f32) {
+        self.uv_camera.zoom(amount);
+    }
+
+    pub fn reset_uv_camera(&mut self) {
+        self.uv_camera.reset();
     }
 
     /// Set the fraction of the viewport that subsequent framing should fill, so

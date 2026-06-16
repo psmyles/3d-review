@@ -183,6 +183,14 @@ pub struct UiState {
     /// every option panel so they all spawn where the last one was left.
     pub panel_pos: Option<egui::Pos2>,
     pub uv_checker: UvCheckerPanelState,
+    /// Display labels of the loaded model's UV sets, in source-file order, shown
+    /// in the UV-view toolbar dropdown. Empty when no model / no UV sets. Set by
+    /// `app` from [`review_model::ModelData::uv_set_labels`] (invariant 2: plain
+    /// values, not model ownership).
+    pub uv_sets: Vec<String>,
+    /// The UV set the 2D UV view draws (0-based index into [`UiState::uv_sets`]).
+    /// Independent of the 3D UV-checker's own channel ([`UvCheckerPanelState`]).
+    pub uv_view_channel: u32,
     pub wireframe: WireframePanelState,
     pub bounding_box: BoundingBoxPanelState,
     pub face_normals: NormalPanelState,
@@ -218,6 +226,8 @@ impl Default for UiState {
             panel_collapsed: false,
             panel_pos: None,
             uv_checker: UvCheckerPanelState::default(),
+            uv_sets: Vec::new(),
+            uv_view_channel: 0,
             wireframe: WireframePanelState::default(),
             bounding_box: BoundingBoxPanelState::default(),
             face_normals: NormalPanelState {

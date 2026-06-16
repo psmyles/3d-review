@@ -140,19 +140,24 @@ pub(crate) fn compact_combo(
         .width(control_w)
         .height(size::PANEL_COMBO_POPUP_MAX_H)
         .show_ui(ui, |ui| {
-            // Compact the option rows.
-            ui.spacing_mut().item_spacing.y = size::PANEL_COMBO_OPTION_GAP;
-            ui.spacing_mut().interact_size.y = size::PANEL_COMBO_OPTION_H;
-            ui.spacing_mut().button_padding.y = size::PANEL_COMBO_OPTION_PAD_Y;
-            // Drop the blue selection fill (zero-width stroke paints no border)
-            // and carry the brighter color through as the selected text color;
-            // dim the unselected options so the active one stands out by
-            // contrast alone.
-            ui.visuals_mut().selection.bg_fill = egui::Color32::TRANSPARENT;
-            ui.visuals_mut().selection.stroke = egui::Stroke::new(0.0, color::TEXT_COMBO_SELECTED);
-            ui.visuals_mut().widgets.inactive.fg_stroke.color = color::TEXT_COMBO_DIM;
+            style_combo_popup(ui);
             contents(ui);
         });
+}
+
+/// Applies the shared combo-popup look: compact option rows, the blue selection
+/// fill dropped (zero-width stroke paints no border) with the brighter color
+/// carried through as the selected text color, and the unselected options
+/// dimmed so the active one stands out by contrast alone. Call this at the top
+/// of any `ComboBox::show_ui` closure so toolbar and panel dropdowns read the
+/// same.
+pub(crate) fn style_combo_popup(ui: &mut egui::Ui) {
+    ui.spacing_mut().item_spacing.y = size::PANEL_COMBO_OPTION_GAP;
+    ui.spacing_mut().interact_size.y = size::PANEL_COMBO_OPTION_H;
+    ui.spacing_mut().button_padding.y = size::PANEL_COMBO_OPTION_PAD_Y;
+    ui.visuals_mut().selection.bg_fill = egui::Color32::TRANSPARENT;
+    ui.visuals_mut().selection.stroke = egui::Stroke::new(0.0, color::TEXT_COMBO_SELECTED);
+    ui.visuals_mut().widgets.inactive.fg_stroke.color = color::TEXT_COMBO_DIM;
 }
 
 /// A label + slider row using the shared two-column table layout. `range` is the
