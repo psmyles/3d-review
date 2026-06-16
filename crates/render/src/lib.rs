@@ -7,6 +7,9 @@ mod scene;
 pub use scene::{SCENE_DEPTH_FORMAT, SCENE_SAMPLE_COUNT, SceneCallback};
 
 const CAMERA_TRANSITION_SECONDS: f32 = 0.3;
+/// Shorter transition used for the WASD 45° orbit steps, which fire repeatedly
+/// and want a snappier response than the default framing/snap animation.
+const ORBIT_TRANSITION_SECONDS: f32 = 0.1;
 
 /// Largest far/near ratio we let the projection produce. The depth buffer
 /// (`Depth24Plus`) only has so many distinguishable values; a huge range spends
@@ -380,11 +383,15 @@ struct CameraTransition {
 
 impl CameraTransition {
     fn new(start: OrbitCamera, end: OrbitCamera) -> Self {
+        Self::with_duration(start, end, CAMERA_TRANSITION_SECONDS)
+    }
+
+    fn with_duration(start: OrbitCamera, end: OrbitCamera, duration_seconds: f32) -> Self {
         Self {
             start,
             end,
             elapsed_seconds: 0.0,
-            duration_seconds: CAMERA_TRANSITION_SECONDS,
+            duration_seconds,
         }
     }
 
@@ -476,6 +483,22 @@ impl Renderer {
 
     pub fn animate_camera_to_offset_direction(&mut self, direction: Vec3) {
         self.animate_camera_to(self.camera.with_offset_direction(direction));
+    }
+
+    /// Animate a relative orbit by the given yaw / pitch deltas (radians). Based
+    /// off any in-flight transition's target (not the mid-flight camera) so
+    /// repeated key presses chain into successive 45° steps. Pitch is clamped to
+    /// match interactive [`OrbitCamera::orbit`]. Uses the shorter
+    /// [`ORBIT_TRANSITION_SECONDS`] so each step feels snappy.
+    pub fn animate_orbit_by(&mut self, yaw_delta: f32, pitch_delta: f32) {
+        let mut end = self.camera_transition.map_or(self.camera, |t| t.end);
+        end.yaw += yaw_delta;
+        end.pitch = (end.pitch + pitch_delta).clamp(-1.5, 1.5);
+        self.camera_transition = Some(CameraTransition::with_duration(
+            self.camera,
+            end,
+            ORBIT_TRANSITION_SECONDS,
+        ));
     }
 
     /// Animate back to the default "home" view, re-framing the grid for the live
