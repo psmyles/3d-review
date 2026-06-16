@@ -25,6 +25,7 @@ glam = "0.30"
 image = { version = "0.25", default-features = false, features = ["png"] }
 pollster = "0.4"
 rfd = "0.15"
+serde_json = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
@@ -37,3 +38,14 @@ incremental = false
 
 [profile.test]
 incremental = false
+
+# Optimized, self-contained build for distribution. `strip` and `panic = "abort"`
+# drop debug symbols and the unwinding machinery a shipped viewer doesn't need;
+# `lto` + single codegen unit trade build time for a faster, smaller binary. The
+# console window is suppressed separately via `windows_subsystem` in `main.rs`.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true
