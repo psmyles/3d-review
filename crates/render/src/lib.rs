@@ -10,6 +10,9 @@ const CAMERA_TRANSITION_SECONDS: f32 = 0.3;
 /// Shorter transition used for the WASD 45° orbit steps, which fire repeatedly
 /// and want a snappier response than the default framing/snap animation.
 const ORBIT_TRANSITION_SECONDS: f32 = 0.1;
+/// Uniform breathing room left around a framed fit (4%), on top of any
+/// safe-area inset, so content never sits hard against the viewport edges.
+const FRAME_MARGIN: f32 = 1.04;
 
 /// Largest far/near ratio we let the projection produce. The depth buffer
 /// (`Depth24Plus`) only has so many distinguishable values; a huge range spends
@@ -211,7 +214,7 @@ impl Default for OrbitCamera {
             fov_y_radians: 50.0_f32.to_radians(),
             scene_radius: 1.0,
         };
-        base.framed_to_bounds(GRID_BOUNDS)
+        base.framed_to_bounds(GRID_BOUNDS, Vec2::ONE)
     }
 }
 
@@ -223,10 +226,17 @@ impl OrbitCamera {
     }
 
     pub fn frame_bounds(&mut self, bounds: Bounds) {
-        *self = self.framed_to_bounds(bounds);
+        *self = self.framed_to_bounds(bounds, Vec2::ONE);
     }
 
-    pub fn framed_to_bounds(mut self, bounds: Bounds) -> Self {
+    /// Frame the camera so `bounds` fills the viewport, tight and centred.
+    ///
+    /// `safe_area` is the fraction of the viewport (x = width, y = height) that
+    /// framing should aim to fill — `Vec2::ONE` is the whole window. The 3D
+    /// scene is painted full-window with the toolbar / status-bar chrome drawn
+    /// *over* its top and bottom, so passing the visible fraction there keeps
+    /// the model out from under the chrome.
+    pub fn framed_to_bounds(mut self, bounds: Bounds, safe_area: Vec2) -> Self {
         let center = bounds.center();
         let half_size = bounds.size() * 0.5;
         let rotation = self.rotation();
@@ -235,35 +245,64 @@ impl OrbitCamera {
         let right = rotation.transform_vector3(Vec3::X);
         let up = rotation.transform_vector3(Vec3::Y);
         let forward = self.forward_dir();
-        let tan_v = (self.fov_y_radians * 0.5).clamp(0.01, 1.5).tan();
-        let tan_h = tan_v * self.aspect_ratio.max(0.1);
+        // Loosen the usable FOV by the safe-area fractions and the uniform
+        // margin, so the silhouette is fit *inside* the visible band rather than
+        // the full window.
+        let safe_h = (safe_area.x / FRAME_MARGIN).clamp(0.05, 1.0);
+        let safe_v = (safe_area.y / FRAME_MARGIN).clamp(0.05, 1.0);
+        let half_fov = (self.fov_y_radians * 0.5).clamp(0.01, 1.5).tan();
+        let tan_v = half_fov * safe_v;
+        let tan_h = half_fov * self.aspect_ratio.max(0.1) * safe_h;
 
-        // Exact tight perspective fit: find the smallest distance at which every
-        // one of the 8 box corners stays inside the horizontal *and* vertical
-        // FOV. Per corner the screen-fill constraint is
-        //   |u| <= tan_h * (distance + w)   and   |v| <= tan_v * (distance + w)
-        // i.e. distance >= |u|/tan_h - w (and likewise for v), where u/v/w are
-        // the corner offset projected onto right/up/forward. Taking the max over
-        // all corners gives a fit that is tight *and* independent of view angle
-        // (no AABB-silhouette padding that balloons on off-axis views).
-        let mut distance = 0.0_f32;
-        for sx in [-1.0_f32, 1.0] {
-            for sy in [-1.0_f32, 1.0] {
-                for sz in [-1.0_f32, 1.0] {
-                    let c = Vec3::new(sx * half_size.x, sy * half_size.y, sz * half_size.z);
-                    let u = right.dot(c).abs();
-                    let v = up.dot(c).abs();
-                    let w = forward.dot(c);
-                    distance = distance.max(u / tan_h - w).max(v / tan_v - w);
+        // Per-corner offsets from the box centre projected onto the camera
+        // basis: `(u, v, w)` = (right·c, up·c, forward·c). `w` (depth along
+        // forward) is unaffected by a lateral re-centring pan, so it's computed
+        // once; `u`/`v` shift uniformly as the target pans.
+        let mut corners = [(0.0_f32, 0.0_f32, 0.0_f32); 8];
+        let mut i = 0;
+        for cx in [-1.0_f32, 1.0] {
+            for cy in [-1.0_f32, 1.0] {
+                for cz in [-1.0_f32, 1.0] {
+                    let c = Vec3::new(cx * half_size.x, cy * half_size.y, cz * half_size.z);
+                    corners[i] = (right.dot(c), up.dot(c), forward.dot(c));
+                    i += 1;
                 }
             }
         }
 
-        self.target = center;
-        // Small margin so the bounds sit just inside the viewport edges.
-        self.distance = (distance * 1.05).max(0.05);
-        // Bounding-sphere radius around `target` (corner distance). Drives the
-        // per-frame near/far fit in `near_far`.
+        // Solve the fit distance *and* a lateral re-centring pan together. The
+        // per-corner screen-fill constraint is
+        //   |u| <= tan_h * (distance + w)   and   |v| <= tan_v * (distance + w)
+        // so distance >= |u|/tan_h - w (and likewise for v). A pure box-centre
+        // fit (pan = 0) makes the *nearest* extreme corner touch the edge while
+        // the far corner leaves a gap — perspective magnifies near geometry, so
+        // the silhouette is not actually centred. Each pass fits the smallest
+        // distance for the current pan, then shifts the pan so the projected
+        // silhouette straddles the centre. The depth term makes the re-centre
+        // non-linear, so iterate to a fixed point (cheap: 8 corners, 6 passes).
+        let mut pan_u = 0.0_f32;
+        let mut pan_v = 0.0_f32;
+        let mut distance = 0.05_f32;
+        for _ in 0..6 {
+            distance = 0.0;
+            for &(u, v, w) in &corners {
+                distance = distance
+                    .max((u + pan_u).abs() / tan_h - w)
+                    .max((v + pan_v).abs() / tan_v - w);
+            }
+            distance = distance.max(0.05);
+            pan_u +=
+                silhouette_recenter(corners.iter().map(|&(u, _, w)| (u + pan_u, distance + w)));
+            pan_v +=
+                silhouette_recenter(corners.iter().map(|&(_, v, w)| (v + pan_v, distance + w)));
+        }
+
+        // Pan the target laterally by the solved offset (eye follows, so depth
+        // along forward is unchanged) to centre the projected silhouette.
+        self.target = center - right * pan_u - up * pan_v;
+        self.distance = distance;
+        // Bounding-sphere radius around the box centre (corner distance). Drives
+        // the per-frame near/far fit in `near_far`.
         self.scene_radius = half_size.length().max(0.001);
         self
     }
@@ -426,6 +465,34 @@ fn lerp_angle(start: f32, end: f32, t: f32) -> f32 {
     start + delta * t
 }
 
+/// Additional lateral pan that makes the two screen-space extreme corners on one
+/// axis straddle the viewport centre symmetrically. Each item is `(lateral,
+/// depth)` for a corner — `lateral` already includes the running pan, `depth` is
+/// `distance + forward·offset`. Returns the extra pan to apply on that axis.
+fn silhouette_recenter(corners: impl Iterator<Item = (f32, f32)>) -> f32 {
+    let mut lo = f32::INFINITY;
+    let mut hi = f32::NEG_INFINITY;
+    let mut lo_corner = (0.0_f32, 1.0_f32);
+    let mut hi_corner = (0.0_f32, 1.0_f32);
+    for (lateral, depth) in corners {
+        let depth = depth.max(1e-3);
+        let screen = lateral / depth;
+        if screen < lo {
+            lo = screen;
+            lo_corner = (lateral, depth);
+        }
+        if screen > hi {
+            hi = screen;
+            hi_corner = (lateral, depth);
+        }
+    }
+    let (lat_lo, depth_lo) = lo_corner;
+    let (lat_hi, depth_hi) = hi_corner;
+    // Solve Δ so (lat_lo + Δ)/depth_lo = -(lat_hi + Δ)/depth_hi, i.e. the two
+    // extreme corners project to equal-and-opposite screen offsets.
+    -(lat_lo * depth_hi + lat_hi * depth_lo) / (depth_lo + depth_hi)
+}
+
 fn ease_in_out_cubic(t: f32) -> f32 {
     if t < 0.5 {
         4.0 * t * t * t
@@ -439,6 +506,10 @@ pub struct Renderer {
     pub config: RendererConfig,
     pub camera: OrbitCamera,
     camera_transition: Option<CameraTransition>,
+    /// Fraction of the viewport (x = width, y = height) framing should fill,
+    /// leaving room for the chrome that overlays the full-window 3D scene. Set
+    /// by `app` from the live window + chrome sizes; `Vec2::ONE` = whole window.
+    framing_safe_area: Vec2,
 }
 
 impl Renderer {
@@ -447,7 +518,14 @@ impl Renderer {
             config,
             camera: OrbitCamera::default(),
             camera_transition: None,
+            framing_safe_area: Vec2::ONE,
         }
+    }
+
+    /// Set the fraction of the viewport that subsequent framing should fill, so
+    /// the model lands inside the band left visible by the toolbar / status bar.
+    pub fn set_framing_safe_area(&mut self, width_fraction: f32, height_fraction: f32) {
+        self.framing_safe_area = Vec2::new(width_fraction, height_fraction);
     }
 
     pub fn orbit_camera(&mut self, delta: Vec2) {
@@ -478,7 +556,7 @@ impl Renderer {
     }
 
     pub fn animate_camera_to_bounds(&mut self, bounds: Bounds) {
-        self.animate_camera_to(self.camera.framed_to_bounds(bounds));
+        self.animate_camera_to(self.camera.framed_to_bounds(bounds, self.framing_safe_area));
     }
 
     pub fn animate_camera_to_offset_direction(&mut self, direction: Vec3) {
@@ -508,7 +586,7 @@ impl Renderer {
             aspect_ratio: self.camera.aspect_ratio,
             ..OrbitCamera::default()
         };
-        self.animate_camera_to(home.framed_to_bounds(GRID_BOUNDS));
+        self.animate_camera_to(home.framed_to_bounds(GRID_BOUNDS, self.framing_safe_area));
     }
 
     pub fn update_camera_animation(&mut self, delta_seconds: f32) -> bool {

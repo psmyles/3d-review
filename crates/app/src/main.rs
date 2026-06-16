@@ -169,6 +169,8 @@ impl ApplicationHandler for App {
         let size = window.inner_size();
         if size.height > 0 {
             renderer.set_camera_aspect_ratio(size.width as f32 / size.height as f32);
+            let (safe_w, safe_h) = framing_safe_area(size.height, window.scale_factor() as f32);
+            renderer.set_framing_safe_area(safe_w, safe_h);
         }
         let egui_ctx = egui::Context::default();
         egui_ctx.set_visuals(egui::Visuals::dark());
@@ -282,6 +284,9 @@ impl ApplicationHandler for App {
                 if let Some(renderer) = self.renderer.as_mut() {
                     if size.height > 0 {
                         renderer.set_camera_aspect_ratio(size.width as f32 / size.height as f32);
+                        let (safe_w, safe_h) =
+                            framing_safe_area(size.height, window.scale_factor() as f32);
+                        renderer.set_framing_safe_area(safe_w, safe_h);
                     }
                 }
 
@@ -735,6 +740,22 @@ fn monitor_refresh_interval(window: &Window) -> Duration {
         .filter(|millihertz| *millihertz > 0)
         .map(|millihertz| Duration::from_secs_f64(1000.0 / f64::from(millihertz)))
         .unwrap_or_else(|| Duration::from_secs_f64(1.0 / 60.0))
+}
+
+/// Fraction of the window framing should fill, leaving room for the chrome that
+/// overlays the full-window 3D scene (toolbar on top, status bar on the bottom)
+/// so a framed model doesn't hide under it. Width is left unconstrained — the
+/// option panel floats and is transient.
+fn framing_safe_area(height_px: u32, scale_factor: f32) -> (f32, f32) {
+    use review_ui::theme::size::{STATUS_BAR_HEIGHT, TOOLBAR_HEIGHT};
+    let logical_height = height_px as f32 / scale_factor.max(0.1);
+    let chrome = TOOLBAR_HEIGHT + STATUS_BAR_HEIGHT;
+    let height_fraction = if logical_height > chrome {
+        (logical_height - chrome) / logical_height
+    } else {
+        1.0
+    };
+    (1.0, height_fraction.clamp(0.4, 1.0))
 }
 
 fn frame_camera_to_model(renderer: &mut Renderer, model: &ModelData) {
