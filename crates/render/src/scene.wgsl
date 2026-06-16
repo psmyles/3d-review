@@ -7,6 +7,8 @@
 struct SceneUniforms {
     view_projection: mat4x4<f32>,
     render_options: vec4<f32>,
+    // World-space camera eye in `xyz` (`w` is padding), for the specular view vector.
+    camera_position: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -23,6 +25,7 @@ struct VertexInput {
     @location(2) uv: vec2<f32>,
     @location(3) color: vec4<f32>,
     @location(4) vertex_color: vec4<f32>,
+    @location(5) smoothness: f32,
 };
 
 struct VertexOutput {
@@ -31,6 +34,8 @@ struct VertexOutput {
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
     @location(3) vertex_color: vec4<f32>,
+    @location(4) smoothness: f32,
+    @location(5) world_position: vec3<f32>,
 };
 
 @vertex
@@ -41,6 +46,8 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     output.normal = input.normal;
     output.uv = input.uv;
     output.vertex_color = input.vertex_color;
+    output.smoothness = input.smoothness;
+    output.world_position = input.position;
     return output;
 }
 
@@ -134,6 +141,17 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let ground = vec3<f32>(0.11, 0.11, 0.11);
     let hemi = mix(ground, sky, hemi_t);
     let lighting = hemi * 0.55 + vec3<f32>(1.0, 1.0, 1.0) * (0.20 + diffuse * 0.75);
-    let mapped = pbr_neutral_tonemap(base_color * lighting);
+    let lit = base_color * lighting;
+
+    // Smoothness-driven Blinn-Phong specular: the imported material smoothness
+    // (glossiness == 1 - roughness) both tightens the highlight (exponent) and
+    // scales its strength, so rough surfaces show no glint and smooth ones a
+    // sharp one. The view vector comes from the world-space camera eye.
+    let smoothness = clamp(input.smoothness, 0.0, 1.0);
+    let view_dir = normalize(uniforms.camera_position.xyz - input.world_position);
+    let half_dir = normalize(light_dir + view_dir);
+    let shininess = exp2(1.0 + smoothness * 10.0);
+    let spec = pow(max(dot(n, half_dir), 0.0), shininess) * smoothness * step(0.0, diffuse);
+    let mapped = pbr_neutral_tonemap(lit + vec3<f32>(spec));
     return vec4<f32>(linear_to_srgb(mapped), out_alpha);
 }

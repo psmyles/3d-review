@@ -13,6 +13,11 @@ pub struct Vertex {
     /// color set), distinct from [`Vertex::color`]. White when the mesh carries
     /// no vertex-color layer. Visualized by the vertex-color debug view.
     pub vertex_color: Vec4,
+    /// Resolved material smoothness in `0.0..=1.0` (glossiness, i.e.
+    /// `1 - roughness`), carried through import like [`Vertex::color`] so the
+    /// shaded view can drive a specular highlight. `0.5` when the source
+    /// material declares neither glossiness nor roughness.
+    pub smoothness: f32,
 }
 
 impl Default for Vertex {
@@ -24,6 +29,7 @@ impl Default for Vertex {
             color: Vec4::ONE,
             tangent: Vec4::new(1.0, 0.0, 0.0, 1.0),
             vertex_color: Vec4::ONE,
+            smoothness: 0.5,
         }
     }
 }
@@ -239,6 +245,7 @@ fn demo_cube_vertices() -> Vec<Vertex> {
                 color,
                 tangent: Vec4::new(1.0, 0.0, 0.0, 1.0),
                 vertex_color: vertex_colors[index],
+                smoothness: 0.6,
             });
         }
     }

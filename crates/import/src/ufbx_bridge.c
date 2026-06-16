@@ -144,6 +144,33 @@ static void review_import_material_base_color(const ufbx_material *material, flo
     out_color[2] = review_import_linear_to_srgb(out_color[2]);
 }
 
+/* Resolve the material's smoothness (Unity-style glossiness) in [0,1]. ufbx
+   normalizes shininess/glossiness models into `pbr.roughness`, mapping a
+   glossiness authoring into `pbr.glossiness` as well, so prefer the explicit
+   glossiness, fall back to `1 - roughness`, then to a neutral 0.5 when the
+   material declares neither. */
+static float review_import_material_smoothness(const ufbx_material *material)
+{
+    float smoothness = 0.5f;
+
+    if (!material) {
+        return smoothness;
+    }
+
+    if (material->pbr.glossiness.has_value) {
+        smoothness = (float)material->pbr.glossiness.value_real;
+    } else if (material->pbr.roughness.has_value) {
+        smoothness = 1.0f - (float)material->pbr.roughness.value_real;
+    }
+
+    if (smoothness < 0.0f) {
+        smoothness = 0.0f;
+    } else if (smoothness > 1.0f) {
+        smoothness = 1.0f;
+    }
+    return smoothness;
+}
+
 static uint32_t review_import_add_material(review_import_scene *scene, const char *name_data, size_t name_length)
 {
     size_t index;
@@ -340,6 +367,7 @@ int review_import_load_fbx(
             size_t corner_index;
             ufbx_material *face_material_ptr = NULL;
             float base_color[3];
+            float smoothness;
 
             if (mesh->face_material.count > face_index) {
                 uint32_t face_material = mesh->face_material.data[face_index];
@@ -350,6 +378,7 @@ int review_import_load_fbx(
                 }
             }
             review_import_material_base_color(face_material_ptr, base_color);
+            smoothness = review_import_material_smoothness(face_material_ptr);
 
             out_scene->faces[face_offset].first_index = (uint32_t)local_face_first_vertex;
             out_scene->faces[face_offset].index_count = face.num_indices;
@@ -416,6 +445,8 @@ int review_import_load_fbx(
                 dst->vertex_color[1] = (float)vertex_color.y;
                 dst->vertex_color[2] = (float)vertex_color.z;
                 dst->vertex_color[3] = (float)vertex_color.w;
+
+                dst->smoothness = smoothness;
 
                 if (out_scene->uvs) {
                     uint32_t channel;

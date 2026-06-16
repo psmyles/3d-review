@@ -72,6 +72,7 @@ pub(crate) fn model_mesh(model: &ModelData, uv_channel: u32) -> (Vec<SceneVertex
             uv: model.uv_for_channel(index, channel).to_array(),
             color: vertex.color.to_array(),
             vertex_color: vertex.vertex_color.to_array(),
+            smoothness: vertex.smoothness,
         })
         .collect();
     (vertices, model.indices.clone())
@@ -312,6 +313,7 @@ fn push_line(vertices: &mut Vec<SceneVertex>, start: [f32; 3], end: [f32; 3], co
         uv: [0.0, 0.0],
         color,
         vertex_color: [0.0, 0.0, 0.0, 0.0],
+        smoothness: 0.0,
     });
     vertices.push(SceneVertex {
         position: end,
@@ -319,5 +321,6 @@ fn push_line(vertices: &mut Vec<SceneVertex>, start: [f32; 3], end: [f32; 3], co
         uv: [0.0, 0.0],
         color,
         vertex_color: [0.0, 0.0, 0.0, 0.0],
+        smoothness: 0.0,
     });
 }

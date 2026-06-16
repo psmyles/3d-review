@@ -408,6 +408,7 @@ impl SceneResources {
                 debug_options.uv_checker_tiling.max(1) as f32,
                 vertex_color_value(debug_options),
             ],
+            camera_position: camera.eye_position().extend(0.0).to_array(),
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }
@@ -622,6 +623,7 @@ fn create_mesh_buffers(
         uv: [0.0, 0.0],
         color: [0.0, 0.0, 0.0, 0.0],
         vertex_color: [0.0, 0.0, 0.0, 0.0],
+        smoothness: 0.0,
     }];
     let placeholder_index = [0_u32];
 
@@ -657,6 +659,7 @@ fn create_line_buffer(device: &wgpu::Device, vertices: &[SceneVertex]) -> (wgpu:
         uv: [0.0, 0.0],
         color: [0.0, 0.0, 0.0, 0.0],
         vertex_color: [0.0, 0.0, 0.0, 0.0],
+        smoothness: 0.0,
     }];
     let contents = if vertices.is_empty() {
         bytemuck::cast_slice(&placeholder_vertex)
@@ -747,6 +750,9 @@ fn create_checker_bind_group(
 struct SceneUniforms {
     view_projection: [[f32; 4]; 4],
     render_options: [f32; 4],
+    /// World-space camera eye in `xyz` (`w` is padding). Used by the shaded path
+    /// to build the view vector for the smoothness-driven specular highlight.
+    camera_position: [f32; 4],
 }
 
 #[repr(C)]
@@ -757,11 +763,12 @@ pub(crate) struct SceneVertex {
     pub(crate) uv: [f32; 2],
     pub(crate) color: [f32; 4],
     pub(crate) vertex_color: [f32; 4],
+    pub(crate) smoothness: f32,
 }
 
 impl SceneVertex {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
-        0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4, 4 => Float32x4
+    const ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
+        0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4, 4 => Float32x4, 5 => Float32
     ];
 
     fn layout() -> wgpu::VertexBufferLayout<'static> {
