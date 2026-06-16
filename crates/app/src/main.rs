@@ -1,6 +1,11 @@
+// Suppress the console window in release builds — a shipped GUI viewer should
+// open as a window, not alongside a terminal. Debug builds keep the console so
+// `tracing` output stays visible during development.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use std::{
     num::NonZeroU32,
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -30,7 +35,15 @@ fn main() -> anyhow::Result<()> {
     let event_loop = EventLoop::new().context("failed to create winit event loop")?;
     event_loop.set_control_flow(ControlFlow::Wait);
 
-    let mut app = App::default();
+    // A file path passed on the command line (e.g. when Windows launches the exe
+    // for a double-clicked `.fbx` via the registered file association) is loaded
+    // once the window is up. See `resumed`.
+    let initial_model = std::env::args_os().nth(1).map(PathBuf::from);
+
+    let mut app = App {
+        initial_model,
+        ..App::default()
+    };
     event_loop
         .run_app(&mut app)
         .context("application event loop failed")
@@ -63,6 +76,9 @@ struct App {
     scene_model: Arc<ModelData>,
     scene_revision: u64,
     ui: UiState,
+    /// Model to load once the window/renderer exist, taken from the command line
+    /// (file association / `3d-review.exe <path>`). Consumed in `resumed`.
+    initial_model: Option<PathBuf>,
 }
 
 impl Default for App {
@@ -89,6 +105,7 @@ impl Default for App {
             scene_model,
             scene_revision: 0,
             ui,
+            initial_model: None,
         }
     }
 }
@@ -167,6 +184,14 @@ impl ApplicationHandler for App {
         self.refresh_interval = monitor_refresh_interval(&window);
         self.window = Some(window.clone());
         info!("application shell started");
+
+        // Load a file passed on the command line (file association / CLI arg)
+        // now that the renderer exists. Reuses the same path as drag-drop, so
+        // framing/stats/redraw behave identically.
+        if let Some(path) = self.initial_model.take() {
+            self.open_model_from_path(&path);
+        }
+
         window.request_redraw();
     }
 
