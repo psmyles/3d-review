@@ -85,13 +85,9 @@ struct App {
     /// Model to load once the window/renderer exist, taken from the command line
     /// (file association / `3d-review.exe <path>`). Consumed in `resumed`.
     initial_model: Option<PathBuf>,
-    /// The window is created hidden and revealed only after the first frame is
-    /// presented, so launch never flashes the white DWM redirection bitmap. Set
-    /// once in `RedrawRequested` after the first paint.
-    window_revealed: bool,
     /// The process was launched with a request to start maximized (e.g. a
-    /// shortcut set to **Run: Maximized**). Set in `resumed` and re-asserted when
-    /// the hidden window is revealed, since winit doesn't honor the OS hint.
+    /// shortcut set to **Run: Maximized**). Set in `resumed` and applied at
+    /// window creation, since winit doesn't honor the OS hint on its own.
     start_maximized: bool,
 }
 
@@ -122,7 +118,6 @@ impl Default for App {
             scene_revision: 0,
             ui,
             initial_model: None,
-            window_revealed: false,
             start_maximized: false,
         }
     }
@@ -154,14 +149,9 @@ impl ApplicationHandler for App {
             return;
         };
 
-        // Start hidden and reveal the window only once the first frame has been
-        // presented (see `RedrawRequested`). Otherwise the OS shows the window
-        // for the ~300 ms of wgpu init painted with the DWM redirection bitmap,
-        // which flashes white. Revealing after the first present means the
-        // window appears already showing the rendered scene.
         // Honor the OS launch hint (e.g. a shortcut set to "Run: Maximized").
         // winit never consults `STARTUPINFO.wShowWindow`, so we query it and set
-        // the initial state ourselves; re-asserted on reveal below.
+        // the initial state ourselves.
         self.start_maximized = review_import::startup_show_maximized();
 
         let window = event_loop
@@ -170,8 +160,7 @@ impl ApplicationHandler for App {
                     .with_title("3D Review")
                     .with_window_icon(load_window_icon())
                     .with_min_inner_size(winit::dpi::LogicalSize::new(960.0, 640.0))
-                    .with_maximized(self.start_maximized)
-                    .with_visible(false),
+                    .with_maximized(self.start_maximized),
             )
             .expect("failed to create application window");
         let window = Arc::new(window);
@@ -183,6 +172,10 @@ impl ApplicationHandler for App {
             renderer.set_camera_aspect_ratio(size.width as f32 / size.height as f32);
             let (safe_w, safe_h) = framing_safe_area(size.height, window.scale_factor() as f32);
             renderer.set_framing_safe_area(safe_w, safe_h);
+            // Re-frame the home view for the real window size / safe area so the
+            // startup view matches what reset (`animate_camera_to_home`)
+            // produces, instead of the full-window `OrbitCamera::default`.
+            renderer.reset_camera_to_home();
         }
         let egui_ctx = egui::Context::default();
         egui_ctx.set_visuals(egui::Visuals::dark());
@@ -239,13 +232,9 @@ impl ApplicationHandler for App {
             self.open_model_from_path(&path);
         }
 
-        // Paint the first frame directly rather than going through
-        // `request_redraw()`. The window was created hidden (see above), and
-        // Windows does not deliver `WM_PAINT`/`RedrawRequested` to a window that
-        // has never been shown — so relying on the redraw event would deadlock:
-        // the reveal lives inside `render()`, which would never run. Rendering
-        // here paints into the already-configured surface and reveals the window
-        // once the first frame is present.
+        // Paint the first frame directly rather than waiting on the first
+        // `RedrawRequested`, so the window shows the rendered scene as soon as
+        // it appears instead of an unpainted surface.
         self.render();
     }
 
@@ -548,24 +537,6 @@ impl App {
             &full_output.textures_delta,
             Vec::new(),
         );
-
-        // First frame is on screen now — reveal the window. It was created hidden
-        // (see `resumed`) so launch shows the rendered scene rather than a white
-        // flash during wgpu init.
-        if !self.window_revealed {
-            if let Some(window) = self.window.as_ref() {
-                // Re-assert the maximized state *before* showing the window. While
-                // hidden this only records the flag (no `ShowWindow`), so the
-                // reveal shows the window already maximized in one step. Doing it
-                // after `set_visible` instead triggers a visible restore→maximize
-                // animation flash on launch.
-                if self.start_maximized {
-                    window.set_maximized(true);
-                }
-                window.set_visible(true);
-            }
-            self.window_revealed = true;
-        }
     }
 
     fn open_model_from_dialog(&mut self) {

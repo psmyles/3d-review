@@ -13,6 +13,11 @@ const ORBIT_TRANSITION_SECONDS: f32 = 0.1;
 /// Uniform breathing room left around a framed fit (4%), on top of any
 /// safe-area inset, so content never sits hard against the viewport edges.
 const FRAME_MARGIN: f32 = 1.04;
+/// Fraction of the safe area the empty "home" grid view fills. Below 1.0 so the
+/// reference grid sits comfortably back in the viewport with margin around it,
+/// rather than filling the window edge-to-edge. Only affects the home/reset
+/// view — loaded models still frame tight to the safe area.
+const HOME_FILL_FRACTION: f32 = 0.68;
 
 /// Largest far/near ratio we let the projection produce. The depth buffer
 /// (`Depth24Plus`) only has so many distinguishable values; a huge range spends
@@ -579,14 +584,31 @@ impl Renderer {
         ));
     }
 
-    /// Animate back to the default "home" view, re-framing the grid for the live
-    /// aspect ratio so the whole floor stays visible regardless of window shape.
-    pub fn animate_camera_to_home(&mut self) {
+    /// The default "home" view, re-framed for the live aspect ratio and the
+    /// chrome-aware safe area so the whole grid stays visible regardless of
+    /// window shape. Shared by the animated reset and the instant startup frame
+    /// so both land on exactly the same view.
+    fn home_camera(&self) -> OrbitCamera {
         let home = OrbitCamera {
             aspect_ratio: self.camera.aspect_ratio,
             ..OrbitCamera::default()
         };
-        self.animate_camera_to(home.framed_to_bounds(GRID_BOUNDS, self.framing_safe_area));
+        // Fill only a fraction of the safe area so the grid sits back from the
+        // edges (see HOME_FILL_FRACTION) instead of filling the window.
+        home.framed_to_bounds(GRID_BOUNDS, self.framing_safe_area * HOME_FILL_FRACTION)
+    }
+
+    /// Animate back to the home view.
+    pub fn animate_camera_to_home(&mut self) {
+        self.animate_camera_to(self.home_camera());
+    }
+
+    /// Snap (no animation) to the home view. Used at startup once the real
+    /// window size / safe area are known, so the initial frame matches the
+    /// reset view rather than the full-window `OrbitCamera::default` framing.
+    pub fn reset_camera_to_home(&mut self) {
+        self.camera_transition = None;
+        self.camera = self.home_camera();
     }
 
     pub fn update_camera_animation(&mut self, delta_seconds: f32) -> bool {
