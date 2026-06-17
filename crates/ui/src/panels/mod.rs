@@ -7,6 +7,7 @@ mod bloom;
 mod bounding_box;
 mod environment;
 mod normals;
+mod ssao;
 mod uv_checker;
 mod vertex_colors;
 mod wireframe;
@@ -57,6 +58,9 @@ pub(crate) fn draw_active_panel(
             environment::body(ui, state)
         }),
         OptionPanel::Bloom => option_panel(ui, "Bloom", collapsed, |ui| bloom::body(ui, state)),
+        OptionPanel::Ssao => option_panel(ui, "Ambient Occlusion", collapsed, |ui| {
+            ssao::body(ui, state)
+        }),
     }
 }
 

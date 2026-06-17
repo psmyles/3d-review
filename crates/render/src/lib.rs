@@ -6,10 +6,12 @@ mod geometry;
 mod ibl;
 mod post;
 mod scene;
+mod ssao;
 mod targets;
 
 pub use ibl::ibl_supported;
 pub use scene::{EGUI_MSAA_SAMPLE_COUNT, SCENE_DEPTH_FORMAT, SceneCallback};
+pub use ssao::ssao_supported;
 
 const CAMERA_TRANSITION_SECONDS: f32 = 0.3;
 /// Shorter transition used for the WASD 45° orbit steps, which fire repeatedly
@@ -267,6 +269,41 @@ impl Default for BloomSettings {
             enabled: true,
             threshold: 1.0,
             intensity: 0.6,
+        }
+    }
+}
+
+/// Screen-space ambient occlusion configuration for the shaded view (CLAUDE.md
+/// render roadmap, Phase 5). Read by [`SceneCallback`] to drive the SSAO + blur
+/// passes and the composite multiply.
+///
+/// SSAO samples a view-space normal + depth G-buffer the scene pass writes
+/// alongside its color, estimates how occluded each pixel is by nearby geometry,
+/// blurs the result, and multiplies it into the scene's ambient light in the
+/// composite — darkening contact creases and cavities. `radius` and `bias` are
+/// expressed as **fractions of the framed model's bounding-sphere radius**, so
+/// the look is scale-invariant across models (the renderer multiplies them by the
+/// live scene radius). `enabled` is the toolbar toggle; the default is on but
+/// subtle.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SsaoSettings {
+    pub enabled: bool,
+    /// Sample hemisphere radius, as a fraction of the scene bounding-sphere radius.
+    pub radius: f32,
+    /// Strength of the darkening (multiplier on the raw occlusion).
+    pub intensity: f32,
+    /// Depth-comparison bias (fraction of the scene radius) that suppresses
+    /// self-occlusion acne on flat surfaces.
+    pub bias: f32,
+}
+
+impl Default for SsaoSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            radius: 0.35,
+            intensity: 1.0,
+            bias: 0.02,
         }
     }
 }
@@ -690,9 +727,18 @@ impl OrbitCamera {
     }
 
     pub fn view_projection(self, projection_mode: CameraProjection) -> Mat4 {
-        let view = self.view_matrix();
+        self.projection_matrix(projection_mode) * self.view_matrix()
+    }
+
+    /// The projection matrix alone (view → clip), fit to the current near/far.
+    /// Split out from [`view_projection`] so passes that work in view space (SSAO
+    /// reconstructs view-space position from this and projects sample points back
+    /// through it) can get the projection without the view baked in.
+    ///
+    /// [`view_projection`]: OrbitCamera::view_projection
+    pub fn projection_matrix(self, projection_mode: CameraProjection) -> Mat4 {
         let (z_near, z_far) = self.near_far();
-        let projection = match projection_mode {
+        match projection_mode {
             CameraProjection::Perspective => {
                 Mat4::perspective_rh(self.fov_y_radians, self.aspect_ratio, z_near, z_far)
             }
@@ -708,9 +754,7 @@ impl OrbitCamera {
                     z_far,
                 )
             }
-        };
-
-        projection * view
+        }
     }
 
     fn orthographic_half_height(self) -> f32 {

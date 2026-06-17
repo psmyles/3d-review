@@ -51,6 +51,14 @@ pub(crate) struct SceneTargets {
     /// Single-sample resolve of `bloom_render_view` (the texture bloom samples),
     /// present only when MSAA is on.
     pub(crate) bloom_resolve_view: Option<wgpu::TextureView>,
+    /// SSAO G-buffer attachment (MRT location 2): view-space normal in `xyz`,
+    /// view-space Z (linear depth, negative in front of the camera) in `w`. Packed
+    /// in one `Rgba16Float`, MSAA-matched. Overlays/skybox write 0 here, so SSAO
+    /// treats those pixels as background (unoccluded). See `scene.wgsl` `FragOutput`.
+    pub(crate) gbuffer_render_view: wgpu::TextureView,
+    /// Single-sample resolve of `gbuffer_render_view` (the texture SSAO samples),
+    /// present only when MSAA is on.
+    pub(crate) gbuffer_resolve_view: Option<wgpu::TextureView>,
     /// Depth used while drawing the scene, matching `sample_count`.
     pub(crate) depth_view: wgpu::TextureView,
 }
@@ -102,6 +110,7 @@ impl SceneTargets {
         };
         let color_render_view = make_render("review_scene_color_render");
         let bloom_render_view = make_render("review_scene_bloom_render");
+        let gbuffer_render_view = make_render("review_scene_gbuffer_render");
 
         let depth = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("review_scene_depth"),
@@ -132,9 +141,10 @@ impl SceneTargets {
                 })
                 .create_view(&wgpu::TextureViewDescriptor::default())
         };
-        let (color_resolve_view, bloom_resolve_view) = if multisampled {
+        let (color_resolve_view, bloom_resolve_view, gbuffer_resolve_view) = if multisampled {
             let color_resolve = make_resolve("review_scene_color_resolved");
             let bloom_resolve = make_resolve("review_scene_bloom_resolved");
+            let gbuffer_resolve = make_resolve("review_scene_gbuffer_resolved");
 
             // The resolve targets are only ever written by the MSAA resolve, never
             // by a clear/discard. wgpu's lazy zero-init doesn't fire for a resolve
@@ -148,7 +158,7 @@ impl SceneTargets {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("review_scene_resolve_init"),
             });
-            for view in [&color_resolve, &bloom_resolve] {
+            for view in [&color_resolve, &bloom_resolve, &gbuffer_resolve] {
                 encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("review_scene_resolve_init_pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -166,9 +176,13 @@ impl SceneTargets {
             }
             queue.submit(std::iter::once(encoder.finish()));
 
-            (Some(color_resolve), Some(bloom_resolve))
+            (
+                Some(color_resolve),
+                Some(bloom_resolve),
+                Some(gbuffer_resolve),
+            )
         } else {
-            (None, None)
+            (None, None, None)
         };
 
         Self {
@@ -179,6 +193,8 @@ impl SceneTargets {
             color_resolve_view,
             bloom_render_view,
             bloom_resolve_view,
+            gbuffer_render_view,
+            gbuffer_resolve_view,
             depth_view,
         }
     }
@@ -198,5 +214,14 @@ impl SceneTargets {
         self.bloom_resolve_view
             .as_ref()
             .unwrap_or(&self.bloom_render_view)
+    }
+
+    /// The single-sample SSAO G-buffer (view normal + view Z) the SSAO pass reads:
+    /// the resolve when MSAA is on, otherwise the (already single-sample) render
+    /// texture.
+    pub(crate) fn sampled_gbuffer_view(&self) -> &wgpu::TextureView {
+        self.gbuffer_resolve_view
+            .as_ref()
+            .unwrap_or(&self.gbuffer_render_view)
     }
 }

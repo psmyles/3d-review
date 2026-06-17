@@ -20,9 +20,9 @@ struct PostUniforms {
     fxaa_enabled: u32,
     bloom_enabled: u32,
     bloom_intensity: f32,
+    ssao_enabled: u32,
     _pad0: f32,
     _pad1: f32,
-    _pad2: f32,
 };
 @group(0) @binding(2)
 var<uniform> post: PostUniforms;
@@ -30,6 +30,10 @@ var<uniform> post: PostUniforms;
 // back over the scene when `bloom_enabled` is set.
 @group(0) @binding(3)
 var bloom_texture: texture_2d<f32>;
+// Blurred SSAO occlusion (R8, full-res). Multiplied into the scene's ambient
+// light when `ssao_enabled` is set.
+@group(0) @binding(4)
+var ssao_texture: texture_2d<f32>;
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
@@ -125,17 +129,28 @@ fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    // The display-space scene color (FXAA'd or straight). When bloom is off this
-    // is returned untouched, so the composite stays byte-for-byte what it was.
+    // The display-space scene color (FXAA'd or straight). When both bloom and SSAO
+    // are off this is returned untouched, so the composite stays byte-for-byte what
+    // it was before those effects existed.
     var color = textureSample(scene_color, scene_sampler, input.uv).rgb;
     if (post.fxaa_enabled != 0u) {
         color = fxaa(input.uv);
     }
 
-    if (post.bloom_enabled != 0u) {
-        // Add the blurred linear-HDR bloom in linear light, then re-encode.
-        let bloom = textureSample(bloom_texture, scene_sampler, input.uv).rgb;
-        let lit = srgb_to_linear(color) + bloom * post.bloom_intensity;
+    let bloom_on = post.bloom_enabled != 0u;
+    let ssao_on = post.ssao_enabled != 0u;
+    if (bloom_on || ssao_on) {
+        // Work in linear light: darken by ambient occlusion, then add the blurred
+        // bloom (which is not occluded — highlights still glow), then re-encode.
+        var lit = srgb_to_linear(color);
+        if (ssao_on) {
+            let ao = textureSample(ssao_texture, scene_sampler, input.uv).r;
+            lit = lit * ao;
+        }
+        if (bloom_on) {
+            let bloom = textureSample(bloom_texture, scene_sampler, input.uv).rgb;
+            lit = lit + bloom * post.bloom_intensity;
+        }
         return vec4<f32>(linear_to_srgb(lit), 1.0);
     }
 

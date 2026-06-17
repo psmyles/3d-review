@@ -112,6 +112,12 @@ pub(crate) const ICON_BLOOM: AppIcon = AppIcon {
     id: "icon_bloom",
     png_bytes: include_bytes!("../../../assets/icons/icon_bloom.png"),
 };
+/// "Ambient occlusion" — toggles SSAO; right-click opens the Ambient Occlusion
+/// options panel (status bar, right, grouped with IBL + Bloom + Anti aliasing).
+pub(crate) const ICON_AO: AppIcon = AppIcon {
+    id: "icon_ao",
+    png_bytes: include_bytes!("../../../assets/icons/icon_ao.png"),
+};
 pub(crate) const ICON_CLOSE: AppIcon = AppIcon {
     id: "icon_close",
     png_bytes: include_bytes!("../../../assets/icons/icon_close.png"),

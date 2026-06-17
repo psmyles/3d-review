@@ -26,7 +26,8 @@ struct PostUniforms {
     fxaa_enabled: u32,
     bloom_enabled: u32,
     bloom_intensity: f32,
-    _pad: [f32; 3],
+    ssao_enabled: u32,
+    _pad: [f32; 2],
 }
 
 pub(crate) struct PostPass {
@@ -78,6 +79,18 @@ impl PostPass {
                 // sampler (it is half-res, so it is upsampled here).
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // The blurred SSAO occlusion (R8, full-res), multiplied into the
+                // scene's ambient light when SSAO is enabled.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
@@ -164,13 +177,14 @@ impl PostPass {
     }
 
     /// (Re)build the bind group pointing at the resolved scene color + blurred
-    /// bloom views. Called on creation and whenever the targets are recreated
-    /// (resize / MSAA change), since both views are then stale.
+    /// bloom + blurred AO views. Called on creation and whenever the targets are
+    /// recreated (resize / MSAA change), since all three views are then stale.
     pub(crate) fn create_bind_group(
         &self,
         device: &wgpu::Device,
         scene_color: &wgpu::TextureView,
         bloom: &wgpu::TextureView,
+        ssao: &wgpu::TextureView,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("review_post_bind_group"),
@@ -192,13 +206,18 @@ impl PostPass {
                     binding: 3,
                     resource: wgpu::BindingResource::TextureView(bloom),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(ssao),
+                },
             ],
         })
     }
 
     /// Write the per-frame composite uniform: the texel size (for FXAA taps), the
-    /// FXAA enable flag, and the bloom enable + intensity. Cheap; called every
-    /// frame from `prepare`.
+    /// FXAA enable flag, the bloom enable + intensity, and the SSAO enable flag.
+    /// Cheap; called every frame from `prepare`.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn update_uniform(
         &self,
         queue: &wgpu::Queue,
@@ -207,13 +226,15 @@ impl PostPass {
         fxaa: bool,
         bloom_enabled: bool,
         bloom_intensity: f32,
+        ssao_enabled: bool,
     ) {
         let uniforms = PostUniforms {
             inv_resolution: [1.0 / width.max(1) as f32, 1.0 / height.max(1) as f32],
             fxaa_enabled: u32::from(fxaa),
             bloom_enabled: u32::from(bloom_enabled),
             bloom_intensity: bloom_intensity.max(0.0),
-            _pad: [0.0; 3],
+            ssao_enabled: u32::from(ssao_enabled),
+            _pad: [0.0; 2],
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }

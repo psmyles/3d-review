@@ -28,8 +28,8 @@ mod widgets;
 pub use assets::install_fonts;
 pub use overlay::{draw_overlay, draw_startup_fade, draw_viewport_scene};
 pub use review_render::{
-    AntiAliasing, BloomSettings, EnvironmentMap, EnvironmentSettings, MsaaSamples, ibl_supported,
-    supported_msaa_levels,
+    AntiAliasing, BloomSettings, EnvironmentMap, EnvironmentSettings, MsaaSamples, SsaoSettings,
+    ibl_supported, ssao_supported, supported_msaa_levels,
 };
 pub use state::{
     AxisGizmoAction, BoundingBoxPanelState, NormalPanelState, OptionPanel, UiOutput, UiState,
