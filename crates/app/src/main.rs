@@ -3,6 +3,8 @@
 // `tracing` output stays visible during development.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod window_state;
+
 use std::{
     num::NonZeroU32,
     path::{Path, PathBuf},
@@ -29,6 +31,8 @@ use winit::{
     keyboard::{Key, ModifiersState},
     window::{Window, WindowAttributes, WindowId},
 };
+
+use window_state::WindowPlacement;
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -90,6 +94,11 @@ struct App {
     /// shortcut set to **Run: Maximized**). Set in `resumed` and applied at
     /// window creation, since winit doesn't honor the OS hint on its own.
     start_maximized: bool,
+    /// The most recent *non-maximized* window placement (outer position + inner
+    /// size), tracked from `Moved`/`Resized` events so it's available to persist
+    /// on exit. Recorded only while the window isn't maximized, so un-maximizing
+    /// a restored session returns to a real window rather than a fullscreen rect.
+    last_windowed_bounds: Option<((i32, i32), (u32, u32))>,
 }
 
 impl Default for App {
@@ -120,6 +129,7 @@ impl Default for App {
             ui,
             initial_model: None,
             start_maximized: false,
+            last_windowed_bounds: None,
         }
     }
 }
@@ -156,14 +166,35 @@ impl ApplicationHandler for App {
         // the initial state ourselves.
         self.start_maximized = review_import::startup_show_maximized();
 
+        // Restore the window to where it was last closed. A placement on a
+        // monitor that's no longer connected is dropped so the window can't open
+        // off-screen. The OS launch hint still forces maximized regardless.
+        let saved =
+            window_state::load().filter(|placement| placement_is_visible(event_loop, placement));
+        let maximized = self.start_maximized || saved.is_some_and(|placement| placement.maximized);
+
+        let mut attributes = WindowAttributes::default()
+            .with_title("3D Review")
+            .with_window_icon(load_window_icon())
+            .with_min_inner_size(winit::dpi::LogicalSize::new(960.0, 640.0))
+            .with_maximized(maximized);
+        if let Some(placement) = saved {
+            // Position/size are the restored (non-maximized) bounds; setting them
+            // even when maximized gives un-maximize a sensible target.
+            attributes = attributes
+                .with_position(winit::dpi::PhysicalPosition::new(placement.x, placement.y))
+                .with_inner_size(winit::dpi::PhysicalSize::new(
+                    placement.width,
+                    placement.height,
+                ));
+            self.last_windowed_bounds = Some((
+                (placement.x, placement.y),
+                (placement.width, placement.height),
+            ));
+        }
+
         let window = event_loop
-            .create_window(
-                WindowAttributes::default()
-                    .with_title("3D Review")
-                    .with_window_icon(load_window_icon())
-                    .with_min_inner_size(winit::dpi::LogicalSize::new(960.0, 640.0))
-                    .with_maximized(self.start_maximized),
-            )
+            .create_window(attributes)
             .expect("failed to create application window");
         let window = Arc::new(window);
 
@@ -248,7 +279,10 @@ impl ApplicationHandler for App {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        let Some(window) = self.window.as_ref() else {
+        // Clone the `Arc` so `self` stays free to mutate inside the match arms
+        // (e.g. recording window bounds), rather than holding an immutable borrow
+        // of `self.window` for the whole handler.
+        let Some(window) = self.window.clone() else {
             return;
         };
 
@@ -259,7 +293,7 @@ impl ApplicationHandler for App {
         let egui_response = self
             .egui_state
             .as_mut()
-            .map(|egui_state| egui_state.on_window_event(window, &event));
+            .map(|egui_state| egui_state.on_window_event(&window, &event));
 
         // egui reports `repaint` for `RedrawRequested` itself; honoring that here
         // would make every frame schedule the next one, spinning the loop
@@ -279,14 +313,21 @@ impl ApplicationHandler for App {
         let egui_consumed = egui_response.is_some_and(|response| response.consumed);
 
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                self.save_window_placement();
+                event_loop.exit();
+            }
             WindowEvent::RedrawRequested => {
                 self.render();
+            }
+            WindowEvent::Moved(_) => {
+                self.record_windowed_bounds();
             }
             WindowEvent::Resized(size) => {
                 // A resize often accompanies a move to another monitor, which may
                 // have a different refresh rate; re-derive the frame cap.
-                self.refresh_interval = monitor_refresh_interval(window);
+                self.refresh_interval = monitor_refresh_interval(&window);
+                self.record_windowed_bounds();
 
                 if let Some(renderer) = self.renderer.as_mut() {
                     if size.height > 0 {
@@ -777,6 +818,51 @@ impl App {
         self.redraw_requested = true;
     }
 
+    /// Snapshot the window's current outer position + inner size while it isn't
+    /// maximized, so the persisted placement describes a real window. Skipped
+    /// while maximized (the bounds then cover the whole monitor) and when winit
+    /// can't report the outer position.
+    fn record_windowed_bounds(&mut self) {
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        if window.is_maximized() {
+            return;
+        }
+        let Ok(position) = window.outer_position() else {
+            return;
+        };
+        let size = window.inner_size();
+        if size.width == 0 || size.height == 0 {
+            return;
+        }
+        self.last_windowed_bounds = Some(((position.x, position.y), (size.width, size.height)));
+    }
+
+    /// Persist the current window placement to `%APPDATA%` on exit. Uses the last
+    /// recorded non-maximized bounds (so un-maximize restores correctly) together
+    /// with the live maximized state.
+    fn save_window_placement(&mut self) {
+        // Refresh from the live window first in case the latest move/resize hasn't
+        // been recorded yet.
+        self.record_windowed_bounds();
+
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        let Some(((x, y), (width, height))) = self.last_windowed_bounds else {
+            return;
+        };
+
+        window_state::save(WindowPlacement {
+            x,
+            y,
+            width,
+            height,
+            maximized: window.is_maximized(),
+        });
+    }
+
     fn update_camera_animation(&mut self) {
         let now = Instant::now();
         let delta_seconds = self
@@ -812,6 +898,40 @@ impl App {
             renderer.update_camera_animation(delta_seconds.min(MAX_ANIMATION_STEP));
         }
     }
+}
+
+/// Whether a saved placement still lands on a connected monitor. Guards against
+/// restoring a window onto a display that has since been unplugged or had its
+/// layout changed, which would otherwise reopen the window off-screen. A
+/// placement counts as visible if its rectangle overlaps any available monitor;
+/// when winit reports no monitors we trust the placement rather than discard it.
+fn placement_is_visible(event_loop: &ActiveEventLoop, placement: &WindowPlacement) -> bool {
+    let win_left = placement.x;
+    let win_top = placement.y;
+    let win_right = placement.x + placement.width as i32;
+    let win_bottom = placement.y + placement.height as i32;
+
+    let mut any_monitor = false;
+    for monitor in event_loop.available_monitors() {
+        any_monitor = true;
+        let pos = monitor.position();
+        let size = monitor.size();
+        let mon_left = pos.x;
+        let mon_top = pos.y;
+        let mon_right = pos.x + size.width as i32;
+        let mon_bottom = pos.y + size.height as i32;
+
+        let overlaps = win_left < mon_right
+            && win_right > mon_left
+            && win_top < mon_bottom
+            && win_bottom > mon_top;
+        if overlaps {
+            return true;
+        }
+    }
+
+    // No monitors enumerated (rare/headless): don't throw the placement away.
+    !any_monitor
 }
 
 /// The active monitor's refresh interval, used to cap continuous redraw. Falls
