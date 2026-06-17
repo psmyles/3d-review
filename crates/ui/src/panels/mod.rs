@@ -2,6 +2,7 @@
 //! module owns the shared panel chrome ([`option_panel`]) and the dispatch that
 //! routes the active [`OptionPanel`] to the right tool.
 
+mod anti_aliasing;
 mod bounding_box;
 mod normals;
 mod uv_checker;
@@ -46,6 +47,9 @@ pub(crate) fn draw_active_panel(
         }),
         OptionPanel::VertexColors => option_panel(ui, "Vertex Colors", collapsed, |ui| {
             vertex_colors::body(ui, state)
+        }),
+        OptionPanel::AntiAliasing => option_panel(ui, "Anti Aliasing", collapsed, |ui| {
+            anti_aliasing::body(ui, state)
         }),
     }
 }

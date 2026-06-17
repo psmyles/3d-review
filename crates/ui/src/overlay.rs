@@ -30,6 +30,7 @@ pub fn draw_viewport_scene(
             model,
             model_revision,
             state.debug,
+            state.anti_aliasing,
         ),
         WorkspaceMode::Uv => SceneCallback::new_uv(
             output_format,

@@ -8,8 +8,8 @@
 use glam::{Vec2, Vec3};
 use review_model::ModelStats;
 use review_render::{
-    CameraProjection, CheckerTexture, SceneDebugOptions, ShadingMode, UvShadingMode,
-    VertexColorMode,
+    AntiAliasing, CameraProjection, CheckerTexture, MsaaSamples, SceneDebugOptions, ShadingMode,
+    UvShadingMode, VertexColorMode,
 };
 
 use crate::theme;
@@ -162,6 +162,7 @@ pub enum OptionPanel {
     FaceNormals,
     VertexNormals,
     VertexColors,
+    AntiAliasing,
 }
 
 #[derive(Debug, Clone)]
@@ -201,6 +202,14 @@ pub struct UiState {
     pub face_normals: NormalPanelState,
     pub vertex_normals: NormalPanelState,
     pub vertex_colors: VertexColorPanelState,
+    /// Scene antialiasing (MSAA level + FXAA). Read straight by the viewport
+    /// callback — not a debug option — and edited by the Anti Aliasing panel.
+    pub anti_aliasing: AntiAliasing,
+    /// MSAA levels the active adapter actually supports, set by `app` from
+    /// [`review_render::supported_msaa_levels`]. The Anti Aliasing menu disables
+    /// any level not in this list (invariant 4). Empty until the adapter is known
+    /// (the panel then falls back to offering only the current level).
+    pub supported_msaa: Vec<MsaaSamples>,
     pub stats: ModelStats,
     /// Most recent measured frames-per-second, fed by `app` from the render
     /// loop. Zero while idle (the viewer redraws on demand, not continuously).
@@ -245,6 +254,8 @@ impl Default for UiState {
                 color: theme::color::VERTEX_NORMAL_DEFAULT,
             },
             vertex_colors: VertexColorPanelState::default(),
+            anti_aliasing: AntiAliasing::default(),
+            supported_msaa: Vec::new(),
             stats: ModelStats::default(),
             fps: 0.0,
             show_help_overlay: true,

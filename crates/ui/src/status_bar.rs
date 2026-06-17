@@ -1,8 +1,8 @@
 //! The bottom status bar: currently just the Model Stats toggle button, centered
 //! and inset equally from every edge.
 
-use crate::assets::ICON_INFO;
-use crate::state::{UiState, WorkspaceMode};
+use crate::assets::{ICON_ANTI_ALIASING, ICON_INFO};
+use crate::state::{OptionPanel, UiState, WorkspaceMode};
 use crate::theme::{self, color, size};
 use crate::widgets::{icon_toggle_button, toolbar_group_shell};
 
@@ -36,7 +36,9 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
             // edge to keep the button box equidistant from every edge.
             let bar_rect = ui.max_rect();
             let edge_inset = (status_bar_height - group_height) * 0.5;
-            let group_rect = egui::Rect::from_min_size(
+
+            // Model Stats toggle — single-icon group inset equally on the left.
+            let left_rect = egui::Rect::from_min_size(
                 egui::pos2(
                     bar_rect.left() + edge_inset,
                     bar_rect.center().y - group_height * 0.5,
@@ -45,7 +47,7 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
             );
             ui.scope_builder(
                 egui::UiBuilder::new()
-                    .max_rect(group_rect)
+                    .max_rect(left_rect)
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
                 |ui| {
                     ui.set_height(group_height);
@@ -54,6 +56,40 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                             .clicked()
                         {
                             state.show_stats = !state.show_stats;
+                        }
+                    });
+                },
+            );
+
+            // Anti Aliasing — single-icon group mirrored to the right edge.
+            // Left-click toggles AA on/off (highlighted while on); right-click
+            // opens the MSAA / FXAA options panel, matching the toolbar buttons.
+            let right_rect = egui::Rect::from_min_size(
+                egui::pos2(
+                    bar_rect.right() - edge_inset - single_icon_group_width,
+                    bar_rect.center().y - group_height * 0.5,
+                ),
+                egui::vec2(single_icon_group_width, group_height),
+            );
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(right_rect)
+                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                |ui| {
+                    ui.set_height(group_height);
+                    toolbar_group_shell(ui, ctx, single_icon_group_width, |ui| {
+                        let aa = icon_toggle_button(
+                            ui,
+                            ctx,
+                            &ICON_ANTI_ALIASING,
+                            state.anti_aliasing.enabled,
+                            "Anti aliasing (right-click for options)",
+                        );
+                        if aa.clicked() {
+                            state.anti_aliasing.enabled = !state.anti_aliasing.enabled;
+                        }
+                        if aa.secondary_clicked() {
+                            state.open_panel(OptionPanel::AntiAliasing);
                         }
                     });
                 },
