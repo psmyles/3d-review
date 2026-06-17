@@ -9,11 +9,12 @@ use crate::geometry::{
     bounding_box_lines, face_normal_lines, model_mesh, scene_lines, uv_fill_triangles,
     uv_grid_lines, uv_wireframe_lines, vertex_normal_lines, wireframe_lines,
 };
+use crate::ibl::{IblResources, PREFILTER_MAX_LOD};
 use crate::post::PostPass;
 use crate::targets::{SCENE_HDR_FORMAT, SceneTargets};
 use crate::{
-    ActiveMaterial, AntiAliasing, CameraProjection, CheckerTexture, OrbitCamera, SceneDebugOptions,
-    ShadingMode, UvCamera, UvShadingMode, VertexColorMode,
+    ActiveMaterial, AntiAliasing, CameraProjection, CheckerTexture, EnvironmentSettings,
+    OrbitCamera, SceneDebugOptions, ShadingMode, UvCamera, UvShadingMode, VertexColorMode,
 };
 
 pub const SCENE_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
@@ -61,11 +62,18 @@ pub struct SceneCallback {
     /// Scene MSAA level + FXAA toggle. Drives the offscreen target / scene
     /// pipeline sample count and the composite shader.
     anti_aliasing: AntiAliasing,
+    /// Image-based lighting / environment selection. Drives the precomputed IBL
+    /// maps, the PBR shaded path, and the optional skybox.
+    environment: EnvironmentSettings,
     /// `Some` renders the 2D UV viewport instead of the 3D scene.
     uv_view: Option<UvView>,
 }
 
 impl SceneCallback {
+    // Eight distinct, independent inputs (camera + projection + target + model +
+    // revision + the three UI option bundles); there is no redundant pair to fold
+    // away, and a params struct would only move the same values behind one name.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         camera: OrbitCamera,
         projection_mode: CameraProjection,
@@ -74,6 +82,7 @@ impl SceneCallback {
         model_revision: u64,
         debug_options: SceneDebugOptions,
         anti_aliasing: AntiAliasing,
+        environment: EnvironmentSettings,
     ) -> Self {
         Self {
             camera,
@@ -83,6 +92,7 @@ impl SceneCallback {
             model_revision,
             debug_options,
             anti_aliasing,
+            environment,
             uv_view: None,
         }
     }
@@ -107,6 +117,9 @@ impl SceneCallback {
             // The UV viewport keeps the default scene AA (4× MSAA, no FXAA), so
             // switching to UV mode renders exactly as it did pre-Phase-2.
             anti_aliasing: AntiAliasing::default(),
+            // IBL is irrelevant to the 2D UV viewport; the skybox/IBL paths are
+            // never reached there (the UV path returns before them).
+            environment: EnvironmentSettings::default(),
             uv_view: Some(UvView {
                 camera,
                 channel,
@@ -171,7 +184,17 @@ impl CallbackTrait for SceneCallback {
             // its baked length/color drifts from the current options (invariant 3).
             resources.sync_line_views(device, &self.model, self.debug_options);
 
-            resources.update_camera(queue, self.camera, self.projection_mode, self.debug_options);
+            // Rebuild the IBL maps if the environment changed (one-time, not per
+            // frame); only the 3D path uses them.
+            resources.sync_environment(device, queue, self.environment);
+
+            resources.update_camera(
+                queue,
+                self.camera,
+                self.projection_mode,
+                self.debug_options,
+                self.environment,
+            );
         }
 
         // Render the scene (3D or UV) into the offscreen HDR target now, on egui's
@@ -247,6 +270,9 @@ impl SceneCallback {
         // even though none of these draws sample it.
         if self.uv_view.is_some() {
             render_pass.set_bind_group(1, &resources.checker_bind_group_greyscale, &[]);
+            // group 2 (IBL) must be bound to satisfy the shared pipeline layout
+            // even though the UV path never samples it.
+            render_pass.set_bind_group(2, &resources.ibl.bind_group, &[]);
             render_pass.set_bind_group(0, &resources.uniform_bind_group, &[]);
             render_pass.set_pipeline(&resources.line_pipeline);
             if resources.uv_grid_vertex_count > 0 {
@@ -273,6 +299,17 @@ impl SceneCallback {
             CheckerTexture::Color => &resources.checker_bind_group_color,
         };
         render_pass.set_bind_group(1, checker_bind_group, &[]);
+        // group 2 (the IBL maps) is likewise bound for every draw — the shared
+        // pipeline layout includes it; only the shaded path and skybox sample it.
+        render_pass.set_bind_group(2, &resources.ibl.bind_group, &[]);
+
+        // Skybox background first, behind all geometry (depth-test always, no
+        // write), when the environment is shown as the background.
+        if self.environment.show_background {
+            render_pass.set_bind_group(0, &resources.uniform_bind_group, &[]);
+            render_pass.set_pipeline(&resources.skybox_pipeline);
+            render_pass.draw(0..3, 0..1);
+        }
 
         if resources.mesh_index_count > 0
             && !matches!(self.debug_options.shading_mode, ShadingMode::Wireframe)
@@ -336,6 +373,13 @@ struct SceneResources {
     /// (pipeline sample count is baked at creation).
     shader: wgpu::ShaderModule,
     pipeline_layout: wgpu::PipelineLayout,
+    /// Layout of the IBL bind group (group 2), embedded in `pipeline_layout`.
+    /// Stable across environment switches so the pipelines stay valid; passed to
+    /// every [`IblResources::new`] to rebuild the bind group.
+    ibl_layout: wgpu::BindGroupLayout,
+    /// Precomputed image-based-lighting maps + their bind group. Rebuilt by
+    /// `sync_environment` only when the chosen environment changes.
+    ibl: IblResources,
     /// Offscreen HDR color + depth the scene renders into, recreated on resize or
     /// MSAA change.
     targets: SceneTargets,
@@ -348,6 +392,8 @@ struct SceneResources {
     mesh_uv_channel: u32,
     mesh_pipeline: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
+    /// Fullscreen pipeline that draws the environment cubemap as the background.
+    skybox_pipeline: wgpu::RenderPipeline,
     /// Flat-color triangle pipeline for the UV island fill: no lighting (the fill
     /// vertices carry a zero normal), no depth write/bias — it sits under the UV
     /// wireframe and is composited by draw order in the 2D viewport.
@@ -501,9 +547,19 @@ impl SceneResources {
             "review_scene_checker_color",
         );
 
+        // The IBL maps occupy bind group 2; its layout is part of the shared
+        // pipeline layout, so every scene pipeline can sample the environment.
+        let ibl_layout = IblResources::scene_layout(device);
+        let ibl = IblResources::new(
+            device,
+            queue,
+            &ibl_layout,
+            EnvironmentSettings::default().map,
+        );
+
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("review_scene_pipeline_layout"),
-            bind_group_layouts: &[&uniform_layout, &checker_layout],
+            bind_group_layouts: &[&uniform_layout, &checker_layout, &ibl_layout],
             push_constant_ranges: &[],
         });
 
@@ -512,7 +568,7 @@ impl SceneResources {
         // into a pipeline at creation). `build_scene_pipelines` carries the
         // depth-bias reasoning.
         let scene_sample_count = AntiAliasing::default().msaa.sample_count();
-        let (mesh_pipeline, line_pipeline, uv_fill_pipeline) =
+        let (mesh_pipeline, line_pipeline, uv_fill_pipeline, skybox_pipeline) =
             build_scene_pipelines(device, &pipeline_layout, &shader, scene_sample_count);
 
         // Offscreen targets + the composite pass. Targets start at 1x1 and are
@@ -549,6 +605,8 @@ impl SceneResources {
             scene_sample_count,
             shader,
             pipeline_layout,
+            ibl_layout,
+            ibl,
             targets,
             post,
             post_bind_group,
@@ -556,6 +614,7 @@ impl SceneResources {
             mesh_uv_channel: 0,
             mesh_pipeline,
             line_pipeline,
+            skybox_pipeline,
             uv_fill_pipeline,
             uniform_buffer,
             uniform_bind_group,
@@ -610,11 +669,12 @@ impl SceneResources {
         let sample_count = anti_aliasing.effective_sample_count();
 
         if self.scene_sample_count != sample_count {
-            let (mesh_pipeline, line_pipeline, uv_fill_pipeline) =
+            let (mesh_pipeline, line_pipeline, uv_fill_pipeline, skybox_pipeline) =
                 build_scene_pipelines(device, &self.pipeline_layout, &self.shader, sample_count);
             self.mesh_pipeline = mesh_pipeline;
             self.line_pipeline = line_pipeline;
             self.uv_fill_pipeline = uv_fill_pipeline;
+            self.skybox_pipeline = skybox_pipeline;
             self.scene_sample_count = sample_count;
         }
 
@@ -638,9 +698,12 @@ impl SceneResources {
         camera: OrbitCamera,
         projection_mode: CameraProjection,
         debug_options: SceneDebugOptions,
+        environment: EnvironmentSettings,
     ) {
+        let view_projection = camera.view_projection(projection_mode);
         let uniforms = SceneUniforms {
-            view_projection: camera.view_projection(projection_mode).to_cols_array_2d(),
+            view_projection: view_projection.to_cols_array_2d(),
+            inv_view_projection: view_projection.inverse().to_cols_array_2d(),
             render_options: [
                 shading_mode_value(debug_options.shading_mode),
                 if debug_options.active_material == ActiveMaterial::UvChecker {
@@ -652,8 +715,32 @@ impl SceneResources {
                 vertex_color_value(debug_options),
             ],
             camera_position: camera.eye_position().extend(0.0).to_array(),
+            env_params: [
+                if environment.ibl_enabled { 1.0 } else { 0.0 },
+                environment.intensity.max(0.0),
+                if environment.show_background {
+                    1.0
+                } else {
+                    0.0
+                },
+                PREFILTER_MAX_LOD,
+            ],
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+    }
+
+    /// Rebuild the IBL maps when the chosen environment changes. One-time GPU
+    /// work (a burst of small precompute passes); a no-op when the map is
+    /// unchanged, so steady-state frames pay nothing.
+    fn sync_environment(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        environment: EnvironmentSettings,
+    ) {
+        if self.ibl.environment != environment.map {
+            self.ibl = IblResources::new(device, queue, &self.ibl_layout, environment.map);
+        }
     }
 
     /// Rebuild the steady-state mesh for a new model and free every derived line
@@ -856,8 +943,11 @@ impl SceneResources {
     fn update_camera_uv(&self, queue: &wgpu::Queue, camera: UvCamera) {
         let uniforms = SceneUniforms {
             view_projection: camera.view_projection().to_cols_array_2d(),
+            inv_view_projection: [[0.0; 4]; 4],
             render_options: [0.0; 4],
             camera_position: [0.0; 4],
+            // The UV path never reaches the IBL / skybox code, so these are unused.
+            env_params: [0.0; 4],
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }
@@ -894,6 +984,7 @@ fn build_scene_pipelines(
     shader: &wgpu::ShaderModule,
     sample_count: u32,
 ) -> (
+    wgpu::RenderPipeline,
     wgpu::RenderPipeline,
     wgpu::RenderPipeline,
     wgpu::RenderPipeline,
@@ -941,7 +1032,61 @@ fn build_scene_pipelines(
         sample_count,
         "review_scene_uv_fill_pipeline",
     );
-    (mesh_pipeline, line_pipeline, uv_fill_pipeline)
+    let skybox_pipeline = create_skybox_pipeline(device, layout, shader, sample_count);
+    (
+        mesh_pipeline,
+        line_pipeline,
+        uv_fill_pipeline,
+        skybox_pipeline,
+    )
+}
+
+/// The skybox pipeline: a fullscreen triangle (no vertex buffer) sampling the
+/// environment cubemap. It draws first in the offscreen pass over the cleared
+/// frame, so it never writes depth and always passes the depth test; scene
+/// geometry then composites on top. Renders into the HDR target at the scene's
+/// MSAA level, so it is rebuilt alongside the other pipelines when MSAA changes.
+fn create_skybox_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("review_scene_skybox_pipeline"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_skybox"),
+            buffers: &[],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: SCENE_DEPTH_FORMAT,
+            depth_write_enabled: false,
+            depth_compare: wgpu::CompareFunction::Always,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState {
+            count: sample_count,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_skybox"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: SCENE_HDR_FORMAT,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        multiview: None,
+        cache: None,
+    })
 }
 
 fn create_pipeline(
@@ -1135,10 +1280,16 @@ fn create_checker_bind_group(
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct SceneUniforms {
     view_projection: [[f32; 4]; 4],
+    /// Inverse view-projection, for reconstructing world ray directions in the
+    /// skybox pass.
+    inv_view_projection: [[f32; 4]; 4],
     render_options: [f32; 4],
     /// World-space camera eye in `xyz` (`w` is padding). Used by the shaded path
-    /// to build the view vector for the smoothness-driven specular highlight.
+    /// to build the view vector for the specular highlight / reflection.
     camera_position: [f32; 4],
+    /// Image-based lighting: `x` = IBL enabled (>0.5), `y` = intensity, `z` =
+    /// show background skybox (>0.5), `w` = prefiltered-cube max mip LOD.
+    env_params: [f32; 4],
 }
 
 #[repr(C)]

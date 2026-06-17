@@ -10,6 +10,7 @@ bytemuck.workspace = true
 egui.workspace = true
 egui-wgpu.workspace = true
 glam.workspace = true
+half.workspace = true
 image.workspace = true
 review-model = { path = "../model" }
 wgpu.workspace = true

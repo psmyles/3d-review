@@ -1,7 +1,7 @@
 //! The bottom status bar: currently just the Model Stats toggle button, centered
 //! and inset equally from every edge.
 
-use crate::assets::{ICON_ANTI_ALIASING, ICON_INFO};
+use crate::assets::{ICON_ANTI_ALIASING, ICON_IBL, ICON_INFO};
 use crate::state::{OptionPanel, UiState, WorkspaceMode};
 use crate::theme::{self, color, size};
 use crate::widgets::{icon_toggle_button, toolbar_group_shell};
@@ -91,6 +91,48 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                         if aa.secondary_clicked() {
                             state.open_panel(OptionPanel::AntiAliasing);
                         }
+                    });
+                },
+            );
+
+            // Image-based lighting — single-icon group just left of Anti aliasing.
+            // Left-click toggles IBL on/off (the env-lit Shaded look); right-click
+            // opens the Environment options panel. Disabled + forced off when the
+            // adapter can't build the IBL maps (invariant 4).
+            let ibl_rect = egui::Rect::from_min_size(
+                egui::pos2(
+                    right_rect.left()
+                        - theme::px(ctx, size::TOOLBAR_GROUP_SPACING)
+                        - single_icon_group_width,
+                    bar_rect.center().y - group_height * 0.5,
+                ),
+                egui::vec2(single_icon_group_width, group_height),
+            );
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(ibl_rect)
+                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                |ui| {
+                    ui.set_height(group_height);
+                    toolbar_group_shell(ui, ctx, single_icon_group_width, |ui| {
+                        if !state.ibl_supported {
+                            state.environment.ibl_enabled = false;
+                        }
+                        ui.add_enabled_ui(state.ibl_supported, |ui| {
+                            let ibl = icon_toggle_button(
+                                ui,
+                                ctx,
+                                &ICON_IBL,
+                                state.environment.ibl_enabled,
+                                "Image-based lighting (right-click for options)",
+                            );
+                            if ibl.clicked() {
+                                state.environment.ibl_enabled = !state.environment.ibl_enabled;
+                            }
+                            if ibl.secondary_clicked() {
+                                state.open_panel(OptionPanel::Environment);
+                            }
+                        });
                     });
                 },
             );

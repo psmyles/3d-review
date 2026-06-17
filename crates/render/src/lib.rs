@@ -2,10 +2,12 @@ use glam::{Mat4, Vec2, Vec3};
 use review_model::Bounds;
 
 mod geometry;
+mod ibl;
 mod post;
 mod scene;
 mod targets;
 
+pub use ibl::ibl_supported;
 pub use scene::{EGUI_MSAA_SAMPLE_COUNT, SCENE_DEPTH_FORMAT, SceneCallback};
 
 const CAMERA_TRANSITION_SECONDS: f32 = 0.3;
@@ -179,6 +181,64 @@ pub fn supported_msaa_levels(adapter: &wgpu::Adapter) -> Vec<MsaaSamples> {
                     && depth.sample_count_supported(count))
         })
         .collect()
+}
+
+/// Which built-in HDR environment lights the scene (image-based lighting) and,
+/// optionally, is shown as the background. The three maps are baked into the
+/// binary from `assets/textures` (invariant: assets via `include_bytes!`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EnvironmentMap {
+    #[default]
+    Hdr01,
+    Hdr02,
+    Hdr03,
+}
+
+impl EnvironmentMap {
+    /// Every variant in display order, for building UI menus.
+    pub const ALL: [EnvironmentMap; 3] = [
+        EnvironmentMap::Hdr01,
+        EnvironmentMap::Hdr02,
+        EnvironmentMap::Hdr03,
+    ];
+
+    /// Short menu label.
+    pub fn label(self) -> &'static str {
+        match self {
+            EnvironmentMap::Hdr01 => "HDR 01",
+            EnvironmentMap::Hdr02 => "HDR 02",
+            EnvironmentMap::Hdr03 => "HDR 03",
+        }
+    }
+}
+
+/// Image-based lighting / environment configuration for the shaded view. Read by
+/// [`SceneCallback`] to choose + precompute the IBL maps and drive the PBR shaded
+/// path and optional skybox.
+///
+/// `ibl_enabled` is the default lighting for Shaded mode: on (the env lights the
+/// surface via diffuse irradiance + specular reflection). When off, the shaded
+/// path falls back to the analytic neutral-hemisphere lighting. `show_background`
+/// draws the chosen map as a skybox behind the model (off by default — the
+/// neutral background is kept so the model stands out, while the surface still
+/// reflects the environment). `intensity` scales the IBL contribution.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EnvironmentSettings {
+    pub ibl_enabled: bool,
+    pub show_background: bool,
+    pub map: EnvironmentMap,
+    pub intensity: f32,
+}
+
+impl Default for EnvironmentSettings {
+    fn default() -> Self {
+        Self {
+            ibl_enabled: true,
+            show_background: false,
+            map: EnvironmentMap::default(),
+            intensity: 1.0,
+        }
+    }
 }
 
 /// How the 2D UV viewport draws the model's UV layout. Mutually exclusive (the

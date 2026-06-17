@@ -19,7 +19,7 @@ use review_import::{LoadOptions, load_model};
 use review_model::ModelData;
 use review_render::{
     EGUI_MSAA_SAMPLE_COUNT, Renderer, RendererConfig, SCENE_DEPTH_FORMAT, ShadingMode,
-    supported_msaa_levels,
+    ibl_supported, supported_msaa_levels,
 };
 use review_ui::{
     AxisGizmoAction, UiOutput, UiState, WorkspaceMode, draw_overlay, draw_startup_fade,
@@ -277,6 +277,9 @@ impl ApplicationHandler for App {
             // Gate the Anti Aliasing menu to the MSAA levels this adapter can
             // actually render the scene at (invariant 4).
             self.ui.supported_msaa = supported_msaa_levels(&render_state.adapter);
+            // Gate the Environment IBL toggle on the adapter being able to build
+            // the HDR maps (invariant 4).
+            self.ui.ibl_supported = ibl_supported(&render_state.adapter);
         }
 
         let egui_state = egui_winit::State::new(

@@ -100,6 +100,12 @@ pub(crate) const ICON_ANTI_ALIASING: AppIcon = AppIcon {
     id: "icon_anti_aliasing",
     png_bytes: include_bytes!("../../../assets/icons/icon_anti_aliasing.png"),
 };
+/// "Image-based lighting" — toggles IBL; right-click opens the Environment
+/// options panel (status bar, right, next to Anti aliasing).
+pub(crate) const ICON_IBL: AppIcon = AppIcon {
+    id: "icon_ibl",
+    png_bytes: include_bytes!("../../../assets/icons/icon_ibl.png"),
+};
 pub(crate) const ICON_CLOSE: AppIcon = AppIcon {
     id: "icon_close",
     png_bytes: include_bytes!("../../../assets/icons/icon_close.png"),

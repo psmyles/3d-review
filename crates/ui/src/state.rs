@@ -8,8 +8,8 @@
 use glam::{Vec2, Vec3};
 use review_model::ModelStats;
 use review_render::{
-    AntiAliasing, CameraProjection, CheckerTexture, MsaaSamples, SceneDebugOptions, ShadingMode,
-    UvShadingMode, VertexColorMode,
+    AntiAliasing, CameraProjection, CheckerTexture, EnvironmentSettings, MsaaSamples,
+    SceneDebugOptions, ShadingMode, UvShadingMode, VertexColorMode,
 };
 
 use crate::theme;
@@ -163,6 +163,7 @@ pub enum OptionPanel {
     VertexNormals,
     VertexColors,
     AntiAliasing,
+    Environment,
 }
 
 #[derive(Debug, Clone)]
@@ -210,6 +211,14 @@ pub struct UiState {
     /// any level not in this list (invariant 4). Empty until the adapter is known
     /// (the panel then falls back to offering only the current level).
     pub supported_msaa: Vec<MsaaSamples>,
+    /// Image-based lighting / environment selection. Read straight by the
+    /// viewport callback (not a debug option) and edited by the Environment
+    /// panel. Default is IBL on, HDR 01, no background (see [`EnvironmentSettings`]).
+    pub environment: EnvironmentSettings,
+    /// Whether the active adapter can build the IBL maps, set by `app` from
+    /// [`review_render::ibl_supported`]. The Environment panel disables (and
+    /// forces off) the IBL toggle when false (invariant 4).
+    pub ibl_supported: bool,
     pub stats: ModelStats,
     /// Most recent measured frames-per-second, fed by `app` from the render
     /// loop. Zero while idle (the viewer redraws on demand, not continuously).
@@ -256,6 +265,10 @@ impl Default for UiState {
             vertex_colors: VertexColorPanelState::default(),
             anti_aliasing: AntiAliasing::default(),
             supported_msaa: Vec::new(),
+            environment: EnvironmentSettings::default(),
+            // Assume supported until the adapter is queried; `app` corrects this
+            // once the device is known.
+            ibl_supported: true,
             stats: ModelStats::default(),
             fps: 0.0,
             show_help_overlay: true,

@@ -4,6 +4,7 @@
 
 mod anti_aliasing;
 mod bounding_box;
+mod environment;
 mod normals;
 mod uv_checker;
 mod vertex_colors;
@@ -50,6 +51,9 @@ pub(crate) fn draw_active_panel(
         }),
         OptionPanel::AntiAliasing => option_panel(ui, "Anti Aliasing", collapsed, |ui| {
             anti_aliasing::body(ui, state)
+        }),
+        OptionPanel::Environment => option_panel(ui, "Environment", collapsed, |ui| {
+            environment::body(ui, state)
         }),
     }
 }
