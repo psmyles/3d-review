@@ -43,7 +43,11 @@ fn msaa_row(ui: &mut egui::Ui, state: &mut UiState) {
                     let offered =
                         level == state.anti_aliasing.msaa || state.supported_msaa.contains(&level);
                     if offered {
-                        ui.selectable_value(&mut state.anti_aliasing.msaa, level, msaa_label(level));
+                        ui.selectable_value(
+                            &mut state.anti_aliasing.msaa,
+                            level,
+                            msaa_label(level),
+                        );
                     }
                 }
             },

@@ -179,6 +179,8 @@ fn draw_shading_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiStat
         if icon_toggle_button(ui, ctx, &ICON_SHADING_UNLIT, unlit, "Unlit").clicked() {
             state.shading_mode = ShadingMode::Unlit;
         }
+        // Shaded mode is environment-lit PBR; its IBL on/off + environment
+        // options live on the dedicated IBL button in the status bar.
         if icon_toggle_button(ui, ctx, &ICON_SHADING_SHADED, shaded, "Shaded").clicked() {
             state.shading_mode = ShadingMode::Shaded;
         }

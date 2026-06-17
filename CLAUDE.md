@@ -96,7 +96,11 @@ crates/
             RendererConfig, OrbitCamera (framing/orbit/pan/zoom/ortho+persp),
             CameraTransition (0.3s ease-in-out cubic), Renderer, SceneCallback +
             GPU resources/buffer upload. -> src/lib.rs, src/scene.rs;
-            CPU vertex generation -> src/geometry.rs; shader -> src/scene.wgsl
+            CPU vertex generation -> src/geometry.rs; shader -> src/scene.wgsl.
+            Offscreen HDR target + composite/FXAA seam -> src/targets.rs,
+            src/post.rs(+post.wgsl). HDR image-based lighting (env cube +
+            irradiance + prefilter + BRDF LUT precompute, PBR shaded path,
+            skybox) -> src/ibl.rs, src/ibl.wgsl
   ui/       review-ui: egui toolbar, option panels, axis gizmo, stats overlay,
             status bar; UiOutput intents. Thin root re-exports; modules:
             theme/state/assets/widgets/overlay/toolbar/status_bar/stats/gizmo +
@@ -125,7 +129,7 @@ PATH so `cc` can compile `ufbx.c`).
 
 Pinned (workspace deps): `winit 0.30`, `wgpu 24`, `egui`/`egui-winit`/
 `egui-wgpu 0.31`, `glam 0.30`, `bytemuck 1`, `thiserror 2`, `rfd 0.15`,
-`image 0.25` (png), `pollster 0.4`, `cc 1` (build dep). Edition 2024.
+`image 0.25` (png + hdr), `half 2`, `pollster 0.4`, `cc 1` (build dep). Edition 2024.
 
 > **MSRV:** `rust-version = "1.85"` — the floor required by Edition 2024.
 > The FFI's `unsafe extern "C" { … }` blocks are the idiomatic (and, under
@@ -164,9 +168,19 @@ line views are now freed on view-off and the normal length/color sliders update
 live (invariant 3, via `scene.rs` `sync_line_views`). The stats panel shows only
 measured values (invariant 5).
 
+Rendering pipeline (see `C:\Users\<user>\.claude\plans\reflective-chasing-horizon.md`):
+the scene renders into an **offscreen HDR target** (`Rgba16Float`) composited by a
+fullscreen post pass (Phase 1); **anti-aliasing** has dynamic scene MSAA (Off/2×/
+4×/8×/16×) + FXAA, on the status-bar AA button (Phase 2); **HDR image-based
+lighting + PBR** is the default Shaded look (Phase 3) — three baked HDR
+environments, precomputed irradiance/prefilter/BRDF-LUT maps in `ibl.rs`, an
+optional skybox, controlled by the Environment panel (right-click the Shaded
+toolbar button). The scene shader still tone-maps inline; the linear-HDR
+color-space migration is deferred to Phase 4 (bloom), which needs it.
+
 Known gaps (see MSRV note): no tests yet though `cargo test` is an acceptance
-criterion. UV / Texture panes, texture loading/KTX2, IBL/tone mapping, and
-additional formats (glTF/OBJ) are post-MVP (`TODO.md`).
+criterion. UV / Texture panes, texture loading/KTX2, bloom, SSAO, GPU-buffer
+visualization, and additional formats (glTF/OBJ) are post-MVP (`TODO.md`).
 
 ## 6. Gotchas
 

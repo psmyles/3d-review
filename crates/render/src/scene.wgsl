@@ -6,9 +6,15 @@
 
 struct SceneUniforms {
     view_projection: mat4x4<f32>,
+    // Inverse view-projection, for reconstructing world ray directions in the
+    // skybox pass.
+    inv_view_projection: mat4x4<f32>,
     render_options: vec4<f32>,
     // World-space camera eye in `xyz` (`w` is padding), for the specular view vector.
     camera_position: vec4<f32>,
+    // Image-based lighting: x = IBL enabled (>0.5), y = intensity, z = show
+    // background skybox (>0.5), w = prefiltered-cube max mip LOD.
+    env_params: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -18,6 +24,20 @@ var<uniform> uniforms: SceneUniforms;
 var checker_texture: texture_2d<f32>;
 @group(1) @binding(1)
 var checker_sampler: sampler;
+
+// Image-based lighting maps (group 2), precomputed in `ibl.rs` from the chosen
+// HDR environment. Bound for every scene draw (the shared pipeline layout
+// includes this group); only the shaded path and the skybox sample them.
+@group(2) @binding(0)
+var irradiance_cube: texture_cube<f32>;
+@group(2) @binding(1)
+var prefilter_cube: texture_cube<f32>;
+@group(2) @binding(2)
+var brdf_lut: texture_2d<f32>;
+@group(2) @binding(3)
+var env_cube: texture_cube<f32>;
+@group(2) @binding(4)
+var ibl_sampler: sampler;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -87,6 +107,41 @@ fn pbr_neutral_tonemap(color_in: vec3<f32>) -> vec3<f32> {
     return mix(color, new_peak * vec3<f32>(1.0, 1.0, 1.0), g);
 }
 
+// Fresnel-Schlick with a roughness term, so rough surfaces don't over-brighten
+// at grazing angles (the IBL ambient form).
+fn fresnel_schlick_roughness(cos_theta: f32, f0: vec3<f32>, roughness: f32) -> vec3<f32> {
+    let inv_rough = vec3<f32>(1.0 - roughness);
+    return f0 + (max(inv_rough, f0) - f0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);
+}
+
+// Environment-lit metallic-roughness PBR for the shaded path. `albedo` is linear.
+// The imported material carries no metallic channel (CLAUDE.md Phase 3 decision),
+// so the surface is treated as a dielectric and roughness comes from the material
+// smoothness. Returns linear radiance (tone mapping happens at the end of fs_main).
+fn shade_ibl(albedo: vec3<f32>, world_normal: vec3<f32>, world_pos: vec3<f32>, roughness: f32) -> vec3<f32> {
+    let metallic = 0.0;
+    let n = normalize(world_normal);
+    let v = normalize(uniforms.camera_position.xyz - world_pos);
+    let r = reflect(-v, n);
+    let n_dot_v = max(dot(n, v), 1e-4);
+    let f0 = mix(vec3<f32>(0.04), albedo, metallic);
+
+    // Diffuse: cosine-convolved irradiance modulated by albedo.
+    let irradiance = textureSampleLevel(irradiance_cube, ibl_sampler, n, 0.0).rgb;
+    let diffuse = irradiance * albedo;
+
+    // Specular: split-sum — prefiltered env at the roughness mip, scaled by the
+    // BRDF LUT (scale + bias).
+    let max_lod = uniforms.env_params.w;
+    let prefiltered = textureSampleLevel(prefilter_cube, ibl_sampler, r, roughness * max_lod).rgb;
+    let brdf = textureSampleLevel(brdf_lut, ibl_sampler, vec2<f32>(n_dot_v, roughness), 0.0).rg;
+    let fresnel = fresnel_schlick_roughness(n_dot_v, f0, roughness);
+    let specular = prefiltered * (fresnel * brdf.x + brdf.y);
+
+    let kd = (vec3<f32>(1.0) - fresnel) * (1.0 - metallic);
+    return (kd * diffuse + specular) * uniforms.env_params.y;
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let shading_mode = uniforms.render_options.x;
@@ -132,26 +187,72 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     let n = normalize(input.normal);
-    let light_dir = normalize(vec3<f32>(0.35, 0.82, 0.44));
-    let diffuse = max(dot(n, light_dir), 0.0);
-    let hemi_t = clamp(n.y * 0.5 + 0.5, 0.0, 1.0);
-    // Neutral grey hemisphere (Rec.709 luma of the former bluish sky/ground) so
-    // lighting only scales brightness and never shifts hue/saturation.
-    let sky = vec3<f32>(0.63, 0.63, 0.63);
-    let ground = vec3<f32>(0.11, 0.11, 0.11);
-    let hemi = mix(ground, sky, hemi_t);
-    let lighting = hemi * 0.55 + vec3<f32>(1.0, 1.0, 1.0) * (0.20 + diffuse * 0.75);
-    let lit = base_color * lighting;
-
-    // Smoothness-driven Blinn-Phong specular: the imported material smoothness
-    // (glossiness == 1 - roughness) both tightens the highlight (exponent) and
-    // scales its strength, so rough surfaces show no glint and smooth ones a
-    // sharp one. The view vector comes from the world-space camera eye.
     let smoothness = clamp(input.smoothness, 0.0, 1.0);
-    let view_dir = normalize(uniforms.camera_position.xyz - input.world_position);
-    let half_dir = normalize(light_dir + view_dir);
-    let shininess = exp2(1.0 + smoothness * 10.0);
-    let spec = pow(max(dot(n, half_dir), 0.0), shininess) * smoothness * step(0.0, diffuse);
-    let mapped = pbr_neutral_tonemap(lit + vec3<f32>(spec));
+
+    var color_linear: vec3<f32>;
+    if (uniforms.env_params.x > 0.5) {
+        // Image-based lighting (the default Shaded look): metallic-roughness PBR
+        // sampling the precomputed environment maps. Roughness from the material
+        // smoothness, clamped away from a perfect mirror so the lowest mip still
+        // reads as a surface.
+        let roughness = clamp(1.0 - smoothness, 0.04, 1.0);
+        color_linear = shade_ibl(base_color, input.normal, input.world_position, roughness);
+    } else {
+        // Analytic fallback: the neutral-grey hemisphere + Blinn-Phong specular
+        // used before IBL. Kept so disabling IBL restores the previous look.
+        let light_dir = normalize(vec3<f32>(0.35, 0.82, 0.44));
+        let diffuse = max(dot(n, light_dir), 0.0);
+        let hemi_t = clamp(n.y * 0.5 + 0.5, 0.0, 1.0);
+        let sky = vec3<f32>(0.63, 0.63, 0.63);
+        let ground = vec3<f32>(0.11, 0.11, 0.11);
+        let hemi = mix(ground, sky, hemi_t);
+        let lighting = hemi * 0.55 + vec3<f32>(1.0, 1.0, 1.0) * (0.20 + diffuse * 0.75);
+        let lit = base_color * lighting;
+
+        let view_dir = normalize(uniforms.camera_position.xyz - input.world_position);
+        let half_dir = normalize(light_dir + view_dir);
+        let shininess = exp2(1.0 + smoothness * 10.0);
+        let spec = pow(max(dot(n, half_dir), 0.0), shininess) * smoothness * step(0.0, diffuse);
+        color_linear = lit + vec3<f32>(spec);
+    }
+
+    let mapped = pbr_neutral_tonemap(color_linear);
     return vec4<f32>(linear_to_srgb(mapped), out_alpha);
+}
+
+// --- Skybox: draw the environment cubemap as the viewport background. -------
+// A fullscreen triangle whose per-pixel world ray direction is reconstructed
+// from the inverse view-projection, sampled into the env cube. Drawn first in
+// the offscreen pass (depth-test always, no depth write) so scene geometry
+// composites over it.
+struct SkyOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) ndc: vec2<f32>,
+};
+
+@vertex
+fn vs_skybox(@builtin(vertex_index) vertex_index: u32) -> SkyOutput {
+    var positions = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(3.0, -1.0),
+        vec2<f32>(-1.0, 3.0),
+    );
+    let xy = positions[vertex_index];
+    var out: SkyOutput;
+    // z = 1 keeps the skybox at the far plane; depth write is off so this is only
+    // for completeness.
+    out.clip_position = vec4<f32>(xy, 1.0, 1.0);
+    out.ndc = xy;
+    return out;
+}
+
+@fragment
+fn fs_skybox(input: SkyOutput) -> @location(0) vec4<f32> {
+    // Unproject a far-plane point to world space, then form the ray from the eye.
+    let world = uniforms.inv_view_projection * vec4<f32>(input.ndc, 1.0, 1.0);
+    let world_pos = world.xyz / world.w;
+    let dir = normalize(world_pos - uniforms.camera_position.xyz);
+    let color = textureSampleLevel(env_cube, ibl_sampler, dir, 0.0).rgb * uniforms.env_params.y;
+    let mapped = pbr_neutral_tonemap(color);
+    return vec4<f32>(linear_to_srgb(mapped), 1.0);
 }
