@@ -16,14 +16,17 @@ use crate::scene::{EGUI_MSAA_SAMPLE_COUNT, SCENE_DEPTH_FORMAT};
 const POST_SHADER: &str = include_str!("post.wgsl");
 
 /// Composite-pass uniform: the inverse framebuffer resolution (texel size, for
-/// FXAA neighbor taps) and whether FXAA is enabled. `#[repr(C)]` + `Pod` to match
-/// the WGSL `PostUniforms` layout (invariant 11).
+/// FXAA neighbor taps), whether FXAA is enabled, and the bloom enable + intensity
+/// for the additive bloom composite. `#[repr(C)]` + `Pod` to match the WGSL
+/// `PostUniforms` layout (invariant 11).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct PostUniforms {
     inv_resolution: [f32; 2],
     fxaa_enabled: u32,
-    _pad: u32,
+    bloom_enabled: u32,
+    bloom_intensity: f32,
+    _pad: [f32; 3],
 }
 
 pub(crate) struct PostPass {
@@ -68,6 +71,18 @@ impl PostPass {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
                         min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // The blurred bloom texture, sampled with the same filtering
+                // sampler (it is half-res, so it is upsampled here).
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
                     },
                     count: None,
                 },
@@ -148,12 +163,14 @@ impl PostPass {
         }
     }
 
-    /// (Re)build the bind group pointing at the resolved scene color view. Called
-    /// on creation and whenever the targets are recreated (resize / MSAA change).
+    /// (Re)build the bind group pointing at the resolved scene color + blurred
+    /// bloom views. Called on creation and whenever the targets are recreated
+    /// (resize / MSAA change), since both views are then stale.
     pub(crate) fn create_bind_group(
         &self,
         device: &wgpu::Device,
         scene_color: &wgpu::TextureView,
+        bloom: &wgpu::TextureView,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("review_post_bind_group"),
@@ -171,17 +188,32 @@ impl PostPass {
                     binding: 2,
                     resource: self.uniform_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(bloom),
+                },
             ],
         })
     }
 
-    /// Write the per-frame composite uniform: the texel size (for FXAA taps) and
-    /// the FXAA enable flag. Cheap; called every frame from `prepare`.
-    pub(crate) fn update_uniform(&self, queue: &wgpu::Queue, width: u32, height: u32, fxaa: bool) {
+    /// Write the per-frame composite uniform: the texel size (for FXAA taps), the
+    /// FXAA enable flag, and the bloom enable + intensity. Cheap; called every
+    /// frame from `prepare`.
+    pub(crate) fn update_uniform(
+        &self,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        fxaa: bool,
+        bloom_enabled: bool,
+        bloom_intensity: f32,
+    ) {
         let uniforms = PostUniforms {
             inv_resolution: [1.0 / width.max(1) as f32, 1.0 / height.max(1) as f32],
             fxaa_enabled: u32::from(fxaa),
-            _pad: 0,
+            bloom_enabled: u32::from(bloom_enabled),
+            bloom_intensity: bloom_intensity.max(0.0),
+            _pad: [0.0; 3],
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }

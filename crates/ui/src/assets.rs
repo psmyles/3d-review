@@ -106,6 +106,12 @@ pub(crate) const ICON_IBL: AppIcon = AppIcon {
     id: "icon_ibl",
     png_bytes: include_bytes!("../../../assets/icons/icon_ibl.png"),
 };
+/// "Bloom" — toggles HDR bloom; right-click opens the Bloom options panel (status
+/// bar, right, grouped with IBL + Anti aliasing).
+pub(crate) const ICON_BLOOM: AppIcon = AppIcon {
+    id: "icon_bloom",
+    png_bytes: include_bytes!("../../../assets/icons/icon_bloom.png"),
+};
 pub(crate) const ICON_CLOSE: AppIcon = AppIcon {
     id: "icon_close",
     png_bytes: include_bytes!("../../../assets/icons/icon_close.png"),

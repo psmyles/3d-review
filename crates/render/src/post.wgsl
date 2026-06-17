@@ -18,10 +18,18 @@ var scene_sampler: sampler;
 struct PostUniforms {
     inv_resolution: vec2<f32>,
     fxaa_enabled: u32,
-    _pad: u32,
+    bloom_enabled: u32,
+    bloom_intensity: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
 };
 @group(0) @binding(2)
 var<uniform> post: PostUniforms;
+// Blurred linear-HDR bloom (half-res; the filtering sampler upsamples it). Added
+// back over the scene when `bloom_enabled` is set.
+@group(0) @binding(3)
+var bloom_texture: texture_2d<f32>;
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
@@ -101,10 +109,35 @@ fn fxaa(uv: vec2<f32>) -> vec3<f32> {
     return rgb_b;
 }
 
+// sRGB transfer functions, so bloom can be added in linear light. The scene
+// color is display-space (sRGB-encoded by the scene shader); bloom is linear HDR.
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    let lo = c / 12.92;
+    let hi = pow((c + 0.055) / 1.055, vec3<f32>(2.4));
+    return select(hi, lo, c <= vec3<f32>(0.04045));
+}
+
+fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
+    let lo = c * 12.92;
+    let hi = 1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - 0.055;
+    return select(hi, lo, c <= vec3<f32>(0.0031308));
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    // The display-space scene color (FXAA'd or straight). When bloom is off this
+    // is returned untouched, so the composite stays byte-for-byte what it was.
+    var color = textureSample(scene_color, scene_sampler, input.uv).rgb;
     if (post.fxaa_enabled != 0u) {
-        return vec4<f32>(fxaa(input.uv), 1.0);
+        color = fxaa(input.uv);
     }
-    return vec4<f32>(textureSample(scene_color, scene_sampler, input.uv).rgb, 1.0);
+
+    if (post.bloom_enabled != 0u) {
+        // Add the blurred linear-HDR bloom in linear light, then re-encode.
+        let bloom = textureSample(bloom_texture, scene_sampler, input.uv).rgb;
+        let lit = srgb_to_linear(color) + bloom * post.bloom_intensity;
+        return vec4<f32>(linear_to_srgb(lit), 1.0);
+    }
+
+    return vec4<f32>(color, 1.0);
 }

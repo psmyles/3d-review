@@ -1,7 +1,7 @@
-//! The bottom status bar: currently just the Model Stats toggle button, centered
-//! and inset equally from every edge.
+//! The bottom status bar: the Model Stats toggle inset on the left, and a
+//! rendering-quality group (IBL / Bloom / Anti aliasing) mirrored to the right.
 
-use crate::assets::{ICON_ANTI_ALIASING, ICON_IBL, ICON_INFO};
+use crate::assets::{ICON_ANTI_ALIASING, ICON_BLOOM, ICON_IBL, ICON_INFO};
 use crate::state::{OptionPanel, UiState, WorkspaceMode};
 use crate::theme::{self, color, size};
 use crate::widgets::{icon_toggle_button, toolbar_group_shell};
@@ -19,6 +19,7 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
     let status_bar_height = theme::px(ctx, size::STATUS_BAR_HEIGHT);
     let group_height = theme::px(ctx, size::TOOLBAR_GROUP_HEIGHT);
     let single_icon_group_width = theme::px(ctx, size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH);
+    let triple_icon_group_width = theme::px(ctx, size::TOOLBAR_TRIPLE_ICON_GROUP_WIDTH);
 
     egui::TopBottomPanel::bottom("status_bar")
         .exact_height(status_bar_height)
@@ -61,60 +62,26 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                 },
             );
 
-            // Anti Aliasing — single-icon group mirrored to the right edge.
-            // Left-click toggles AA on/off (highlighted while on); right-click
-            // opens the MSAA / FXAA options panel, matching the toolbar buttons.
+            // Rendering-quality group — IBL / Bloom / Anti aliasing in one
+            // recessed group mirrored to the right edge. Each tile left-clicks to
+            // toggle its effect (highlighted while on) and right-clicks to open its
+            // options panel, matching the top-toolbar buttons.
             let right_rect = egui::Rect::from_min_size(
                 egui::pos2(
-                    bar_rect.right() - edge_inset - single_icon_group_width,
+                    bar_rect.right() - edge_inset - triple_icon_group_width,
                     bar_rect.center().y - group_height * 0.5,
                 ),
-                egui::vec2(single_icon_group_width, group_height),
+                egui::vec2(triple_icon_group_width, group_height),
             );
             ui.scope_builder(
                 egui::UiBuilder::new()
                     .max_rect(right_rect)
-                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
                 |ui| {
                     ui.set_height(group_height);
-                    toolbar_group_shell(ui, ctx, single_icon_group_width, |ui| {
-                        let aa = icon_toggle_button(
-                            ui,
-                            ctx,
-                            &ICON_ANTI_ALIASING,
-                            state.anti_aliasing.enabled,
-                            "Anti aliasing (right-click for options)",
-                        );
-                        if aa.clicked() {
-                            state.anti_aliasing.enabled = !state.anti_aliasing.enabled;
-                        }
-                        if aa.secondary_clicked() {
-                            state.open_panel(OptionPanel::AntiAliasing);
-                        }
-                    });
-                },
-            );
-
-            // Image-based lighting — single-icon group just left of Anti aliasing.
-            // Left-click toggles IBL on/off (the env-lit Shaded look); right-click
-            // opens the Environment options panel. Disabled + forced off when the
-            // adapter can't build the IBL maps (invariant 4).
-            let ibl_rect = egui::Rect::from_min_size(
-                egui::pos2(
-                    right_rect.left()
-                        - theme::px(ctx, size::TOOLBAR_GROUP_SPACING)
-                        - single_icon_group_width,
-                    bar_rect.center().y - group_height * 0.5,
-                ),
-                egui::vec2(single_icon_group_width, group_height),
-            );
-            ui.scope_builder(
-                egui::UiBuilder::new()
-                    .max_rect(ibl_rect)
-                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
-                |ui| {
-                    ui.set_height(group_height);
-                    toolbar_group_shell(ui, ctx, single_icon_group_width, |ui| {
+                    toolbar_group_shell(ui, ctx, triple_icon_group_width, |ui| {
+                        // Image-based lighting. Disabled + forced off when the
+                        // adapter can't build the IBL maps (invariant 4).
                         if !state.ibl_supported {
                             state.environment.ibl_enabled = false;
                         }
@@ -133,6 +100,36 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                                 state.open_panel(OptionPanel::Environment);
                             }
                         });
+
+                        // Bloom (HDR glow).
+                        let bloom = icon_toggle_button(
+                            ui,
+                            ctx,
+                            &ICON_BLOOM,
+                            state.bloom.enabled,
+                            "Bloom (right-click for options)",
+                        );
+                        if bloom.clicked() {
+                            state.bloom.enabled = !state.bloom.enabled;
+                        }
+                        if bloom.secondary_clicked() {
+                            state.open_panel(OptionPanel::Bloom);
+                        }
+
+                        // Anti aliasing.
+                        let aa = icon_toggle_button(
+                            ui,
+                            ctx,
+                            &ICON_ANTI_ALIASING,
+                            state.anti_aliasing.enabled,
+                            "Anti aliasing (right-click for options)",
+                        );
+                        if aa.clicked() {
+                            state.anti_aliasing.enabled = !state.anti_aliasing.enabled;
+                        }
+                        if aa.secondary_clicked() {
+                            state.open_panel(OptionPanel::AntiAliasing);
+                        }
                     });
                 },
             );

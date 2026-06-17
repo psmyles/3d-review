@@ -8,8 +8,8 @@
 use glam::{Vec2, Vec3};
 use review_model::ModelStats;
 use review_render::{
-    AntiAliasing, CameraProjection, CheckerTexture, EnvironmentSettings, MsaaSamples,
-    SceneDebugOptions, ShadingMode, UvShadingMode, VertexColorMode,
+    AntiAliasing, BloomSettings, CameraProjection, CheckerTexture, EnvironmentSettings,
+    MsaaSamples, SceneDebugOptions, ShadingMode, UvShadingMode, VertexColorMode,
 };
 
 use crate::theme;
@@ -164,6 +164,7 @@ pub enum OptionPanel {
     VertexColors,
     AntiAliasing,
     Environment,
+    Bloom,
 }
 
 #[derive(Debug, Clone)]
@@ -219,6 +220,10 @@ pub struct UiState {
     /// [`review_render::ibl_supported`]. The Environment panel disables (and
     /// forces off) the IBL toggle when false (invariant 4).
     pub ibl_supported: bool,
+    /// Bloom (HDR glow) settings. Read straight by the viewport callback (not a
+    /// debug option) and edited by the Bloom panel; the bloom status-bar button
+    /// toggles `bloom.enabled`. Default is on (see [`BloomSettings`]).
+    pub bloom: BloomSettings,
     pub stats: ModelStats,
     /// Most recent measured frames-per-second, fed by `app` from the render
     /// loop. Zero while idle (the viewer redraws on demand, not continuously).
@@ -269,6 +274,7 @@ impl Default for UiState {
             // Assume supported until the adapter is queried; `app` corrects this
             // once the device is known.
             ibl_supported: true,
+            bloom: BloomSettings::default(),
             stats: ModelStats::default(),
             fps: 0.0,
             show_help_overlay: true,

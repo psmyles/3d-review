@@ -1,6 +1,7 @@
 use glam::{Mat4, Vec2, Vec3};
 use review_model::Bounds;
 
+mod bloom;
 mod geometry;
 mod ibl;
 mod post;
@@ -237,6 +238,35 @@ impl Default for EnvironmentSettings {
             show_background: false,
             map: EnvironmentMap::default(),
             intensity: 1.0,
+        }
+    }
+}
+
+/// Bloom (HDR glow) configuration for the shaded view. Read by [`SceneCallback`]
+/// to drive the bloom passes and the composite add.
+///
+/// Bloom thresholds the scene's **pre-tone-map** linear HDR (carried in a second
+/// render target alongside the display-space color, so overlays never bloom and
+/// the existing views are unaffected when bloom is off), blurs what is brighter
+/// than `threshold`, and adds it back in the composite scaled by `intensity`.
+/// `enabled` is the toolbar toggle; the default is on with a threshold of 1.0, so
+/// only genuinely bright highlights (bright reflections / the skybox) glow while
+/// ordinary diffuse surfaces are untouched.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BloomSettings {
+    pub enabled: bool,
+    /// Linear-HDR luminance above which a pixel contributes to bloom.
+    pub threshold: f32,
+    /// Multiplier on the blurred bloom when it is added back to the scene.
+    pub intensity: f32,
+}
+
+impl Default for BloomSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            threshold: 1.0,
+            intensity: 0.6,
         }
     }
 }

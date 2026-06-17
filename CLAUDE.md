@@ -97,10 +97,12 @@ crates/
             CameraTransition (0.3s ease-in-out cubic), Renderer, SceneCallback +
             GPU resources/buffer upload. -> src/lib.rs, src/scene.rs;
             CPU vertex generation -> src/geometry.rs; shader -> src/scene.wgsl.
-            Offscreen HDR target + composite/FXAA seam -> src/targets.rs,
-            src/post.rs(+post.wgsl). HDR image-based lighting (env cube +
-            irradiance + prefilter + BRDF LUT precompute, PBR shaded path,
-            skybox) -> src/ibl.rs, src/ibl.wgsl
+            Offscreen HDR targets (display color + linear-HDR bloom MRT) +
+            composite/FXAA seam -> src/targets.rs, src/post.rs(+post.wgsl). HDR
+            image-based lighting (env cube + irradiance + prefilter + BRDF LUT
+            precompute, PBR shaded path, skybox) -> src/ibl.rs, src/ibl.wgsl.
+            Bloom (bright-pass + separable blur, half-res) -> src/bloom.rs,
+            src/bloom.wgsl
   ui/       review-ui: egui toolbar, option panels, axis gizmo, stats overlay,
             status bar; UiOutput intents. Thin root re-exports; modules:
             theme/state/assets/widgets/overlay/toolbar/status_bar/stats/gizmo +
@@ -174,12 +176,17 @@ fullscreen post pass (Phase 1); **anti-aliasing** has dynamic scene MSAA (Off/2�
 4×/8×/16×) + FXAA, on the status-bar AA button (Phase 2); **HDR image-based
 lighting + PBR** is the default Shaded look (Phase 3) — three baked HDR
 environments, precomputed irradiance/prefilter/BRDF-LUT maps in `ibl.rs`, an
-optional skybox, controlled by the Environment panel (right-click the Shaded
-toolbar button). The scene shader still tone-maps inline; the linear-HDR
-color-space migration is deferred to Phase 4 (bloom), which needs it.
+optional skybox; **bloom** (HDR glow) is on by default (Phase 4) — a bright-pass
++ separable blur over a pre-tone-map linear-HDR MRT target so only bright
+highlights glow and overlays never do. The status bar's right group holds the
+IBL / Bloom / Anti-aliasing toggles (left-click toggles, right-click opens each
+tool's options panel — Environment / Bloom / Anti Aliasing). The scene shader
+still tone-maps inline (bloom reads its own pre-tone-map MRT target, so the full
+linear-HDR color-space migration stays deferred — only SSAO/further post would
+force it).
 
 Known gaps (see MSRV note): no tests yet though `cargo test` is an acceptance
-criterion. UV / Texture panes, texture loading/KTX2, bloom, SSAO, GPU-buffer
+criterion. UV / Texture panes, texture loading/KTX2, SSAO, GPU-buffer
 visualization, and additional formats (glTF/OBJ) are post-MVP (`TODO.md`).
 
 ## 6. Gotchas
@@ -190,6 +197,13 @@ visualization, and additional formats (glTF/OBJ) are post-MVP (`TODO.md`).
   (invariant 11) — the shader lives in `crates/render/src/scene.wgsl` (loaded via
   `include_str!` in `scene.rs`); update it in lockstep with the `#[repr(C)]`
   `SceneUniforms`/`SceneVertex` structs in `scene.rs` if you change them.
+- The scene geometry pass is **MRT**: `scene.wgsl`'s `FragOutput` writes location
+  0 (display color) + location 1 (linear-HDR bloom source), so every scene
+  pipeline (mesh/line/uv-fill/skybox) must declare *two* color targets and the
+  offscreen pass *two* attachments — keep them in lockstep with `FragOutput`.
+  Overlays (zero-normal verts) must keep writing 0 to location 1 so they don't
+  bloom. naga's WGSL rejects `_` digit separators in numeric literals (e.g.
+  `0.227_027`) — write float constants without them.
 - CPU-side vertex generation (grid, wireframe, face/vertex normal lines) lives in
   `crates/render/src/geometry.rs`; `scene.rs` owns the callback, GPU resources
   and buffer upload. Derived line views are built-on-demand and freed-on-off by

@@ -142,8 +142,20 @@ fn shade_ibl(albedo: vec3<f32>, world_normal: vec3<f32>, world_pos: vec3<f32>, r
     return (kd * diffuse + specular) * uniforms.env_params.y;
 }
 
+// Scene fragment output (MRT): location 0 is the display-space color the
+// composite shows (tone-mapped + sRGB-encoded here, exactly as before bloom);
+// location 1 is the linear pre-tone-map HDR radiance bloom thresholds. Overlays
+// write 0 to the bloom target so grid / wireframe / normal lines never glow.
+struct FragOutput {
+    @location(0) color: vec4<f32>,
+    @location(1) bloom: vec4<f32>,
+};
+
 @fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_main(input: VertexOutput) -> FragOutput {
+    var out: FragOutput;
+    out.bloom = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+
     let shading_mode = uniforms.render_options.x;
     let uv_checker_enabled = uniforms.render_options.y > 0.5;
     let tiling = max(uniforms.render_options.z, 1.0);
@@ -155,8 +167,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     // Grid / wireframe / normal lines carry a zero normal — they always render
     // their own vertex color and never pick up the checker / vertex-color tint.
+    // They emit no bloom (`out.bloom` stays 0), so overlays never glow.
     if (normal_length_sq < 1e-6) {
-        return input.color;
+        out.color = input.color;
+        return out;
     }
 
     // Work in linear space. The material color is authored in sRGB/gamma space;
@@ -183,7 +197,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     if (shading_mode < 1.5) {
-        return vec4<f32>(linear_to_srgb(base_color), out_alpha);
+        // Unlit: flat emissive material color. Carry its linear value to the bloom
+        // target so a bright unlit surface can glow past the threshold.
+        out.color = vec4<f32>(linear_to_srgb(base_color), out_alpha);
+        out.bloom = vec4<f32>(base_color, 1.0);
+        return out;
     }
 
     let n = normalize(input.normal);
@@ -217,7 +235,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     let mapped = pbr_neutral_tonemap(color_linear);
-    return vec4<f32>(linear_to_srgb(mapped), out_alpha);
+    out.color = vec4<f32>(linear_to_srgb(mapped), out_alpha);
+    // Bloom reads the pre-tone-map linear radiance, so bright reflections /
+    // highlights above the threshold glow.
+    out.bloom = vec4<f32>(color_linear, 1.0);
+    return out;
 }
 
 // --- Skybox: draw the environment cubemap as the viewport background. -------
@@ -247,12 +269,16 @@ fn vs_skybox(@builtin(vertex_index) vertex_index: u32) -> SkyOutput {
 }
 
 @fragment
-fn fs_skybox(input: SkyOutput) -> @location(0) vec4<f32> {
+fn fs_skybox(input: SkyOutput) -> FragOutput {
     // Unproject a far-plane point to world space, then form the ray from the eye.
     let world = uniforms.inv_view_projection * vec4<f32>(input.ndc, 1.0, 1.0);
     let world_pos = world.xyz / world.w;
     let dir = normalize(world_pos - uniforms.camera_position.xyz);
     let color = textureSampleLevel(env_cube, ibl_sampler, dir, 0.0).rgb * uniforms.env_params.y;
     let mapped = pbr_neutral_tonemap(color);
-    return vec4<f32>(linear_to_srgb(mapped), 1.0);
+    var out: FragOutput;
+    out.color = vec4<f32>(linear_to_srgb(mapped), 1.0);
+    // Full linear HDR sky into the bloom target — bright sky regions glow.
+    out.bloom = vec4<f32>(color, 1.0);
+    return out;
 }
