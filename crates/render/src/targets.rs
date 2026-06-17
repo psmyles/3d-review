@@ -24,18 +24,33 @@ pub(crate) const SCENE_HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg
 /// The named offscreen targets for one framebuffer size + MSAA level. Recreated
 /// wholesale when the framebuffer is resized or the sample count changes
 /// (textures are immutable in both), via `SceneResources::sync_targets`.
+///
+/// The scene geometry pass renders to **two** color attachments (MRT): the
+/// display-space `color` the composite shows (tone-mapped + sRGB-encoded in the
+/// scene shader, exactly as before bloom existed) and a parallel **linear HDR**
+/// `bloom` target carrying the pre-tone-map radiance of the lit surfaces / skybox
+/// (overlays write 0 there, so they never glow). Bloom thresholds + blurs the
+/// `bloom` target; keeping the two separate is what lets bloom read true HDR
+/// without disturbing the display color or the overlays.
 pub(crate) struct SceneTargets {
     pub(crate) width: u32,
     pub(crate) height: u32,
     /// MSAA sample count the scene renders at (1 = no multisampling).
     pub(crate) sample_count: u32,
-    /// Color attachment the scene geometry renders into. Multisampled when
-    /// `sample_count > 1`, otherwise the single-sample sampled texture itself.
+    /// Display-space color attachment the scene geometry renders into.
+    /// Multisampled when `sample_count > 1`, otherwise the single-sample sampled
+    /// texture itself.
     pub(crate) color_render_view: wgpu::TextureView,
     /// Single-sample resolve of `color_render_view`, present only when MSAA is on
     /// (`sample_count > 1`). `None` at 1× — the render texture is already
     /// single-sample and is sampled directly.
     pub(crate) color_resolve_view: Option<wgpu::TextureView>,
+    /// Linear-HDR bloom-source attachment (MRT location 1), MSAA-matched to
+    /// `color_render_view`.
+    pub(crate) bloom_render_view: wgpu::TextureView,
+    /// Single-sample resolve of `bloom_render_view` (the texture bloom samples),
+    /// present only when MSAA is on.
+    pub(crate) bloom_resolve_view: Option<wgpu::TextureView>,
     /// Depth used while drawing the scene, matching `sample_count`.
     pub(crate) depth_view: wgpu::TextureView,
 }
@@ -61,25 +76,32 @@ impl SceneTargets {
 
         let multisampled = sample_count > 1;
 
-        // The texture the post pass samples must carry TEXTURE_BINDING. At 1× the
-        // render texture is sampled directly, so it gets that usage; at 2×+ the
-        // MSAA color is render-only and the separate resolve target is sampled.
+        // The texture downstream passes sample must carry TEXTURE_BINDING. At 1×
+        // the render texture is sampled directly, so it gets that usage; at 2×+
+        // the MSAA color is render-only and the separate resolve target is sampled.
         let render_usage = if multisampled {
             wgpu::TextureUsages::RENDER_ATTACHMENT
         } else {
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING
         };
-        let color_render = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("review_scene_color_render"),
-            size: extent,
-            mip_level_count: 1,
-            sample_count,
-            dimension: wgpu::TextureDimension::D2,
-            format: SCENE_HDR_FORMAT,
-            usage: render_usage,
-            view_formats: &[],
-        });
-        let color_render_view = color_render.create_view(&wgpu::TextureViewDescriptor::default());
+        // The two HDR color attachments (display-space color + linear bloom
+        // source) are created identically; only their role differs.
+        let make_render = |label: &str| {
+            device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: extent,
+                    mip_level_count: 1,
+                    sample_count,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: SCENE_HDR_FORMAT,
+                    usage: render_usage,
+                    view_formats: &[],
+                })
+                .create_view(&wgpu::TextureViewDescriptor::default())
+        };
+        let color_render_view = make_render("review_scene_color_render");
+        let bloom_render_view = make_render("review_scene_bloom_render");
 
         let depth = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("review_scene_depth"),
@@ -93,38 +115,44 @@ impl SceneTargets {
         });
         let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let color_resolve_view = if multisampled {
-            let color_resolve = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("review_scene_color_resolved"),
-                size: extent,
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: SCENE_HDR_FORMAT,
-                // RENDER_ATTACHMENT so it can be the MSAA resolve target;
-                // TEXTURE_BINDING so the post pass can sample it.
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            });
-            let view = color_resolve.create_view(&wgpu::TextureViewDescriptor::default());
+        let make_resolve = |label: &str| {
+            device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: extent,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: SCENE_HDR_FORMAT,
+                    // RENDER_ATTACHMENT so it can be the MSAA resolve target;
+                    // TEXTURE_BINDING so a later pass can sample it.
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+                .create_view(&wgpu::TextureViewDescriptor::default())
+        };
+        let (color_resolve_view, bloom_resolve_view) = if multisampled {
+            let color_resolve = make_resolve("review_scene_color_resolved");
+            let bloom_resolve = make_resolve("review_scene_bloom_resolved");
 
-            // The resolve target is only ever written by the MSAA resolve, never
+            // The resolve targets are only ever written by the MSAA resolve, never
             // by a clear/discard. wgpu's lazy zero-init doesn't fire for a resolve
-            // destination, so D3D12's debug layer flags it as "used uninitialized"
-            // on the first resolve. The resolve fully overwrites the texture each
-            // frame (so this is benign), but a one-time clear here satisfies the
-            // validation requirement that a render-target resource be initialized
-            // before first use. The render color + depth need no such clear — they
-            // are cleared every frame by the offscreen pass's `LoadOp::Clear`.
+            // destination, so D3D12's debug layer flags them as "used
+            // uninitialized" on the first resolve. The resolve fully overwrites
+            // each texture every frame (so this is benign), but a one-time clear
+            // here satisfies the validation requirement that a render-target
+            // resource be initialized before first use. The render colors + depth
+            // need no such clear — they are cleared every frame by the offscreen
+            // pass's `LoadOp::Clear`.
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("review_scene_resolve_init"),
             });
-            {
-                let _init_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            for view in [&color_resolve, &bloom_resolve] {
+                encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("review_scene_resolve_init_pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
+                        view,
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -138,9 +166,9 @@ impl SceneTargets {
             }
             queue.submit(std::iter::once(encoder.finish()));
 
-            Some(view)
+            (Some(color_resolve), Some(bloom_resolve))
         } else {
-            None
+            (None, None)
         };
 
         Self {
@@ -149,6 +177,8 @@ impl SceneTargets {
             sample_count,
             color_render_view,
             color_resolve_view,
+            bloom_render_view,
+            bloom_resolve_view,
             depth_view,
         }
     }
@@ -159,5 +189,14 @@ impl SceneTargets {
         self.color_resolve_view
             .as_ref()
             .unwrap_or(&self.color_render_view)
+    }
+
+    /// The single-sample linear-HDR bloom source bloom passes read: the bloom
+    /// resolve when MSAA is on, otherwise the (already single-sample) bloom render
+    /// texture.
+    pub(crate) fn sampled_bloom_view(&self) -> &wgpu::TextureView {
+        self.bloom_resolve_view
+            .as_ref()
+            .unwrap_or(&self.bloom_render_view)
     }
 }

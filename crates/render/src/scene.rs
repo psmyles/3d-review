@@ -5,6 +5,7 @@ use review_model::ModelData;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
+use crate::bloom::{BLOOM_BLUR_ITERATIONS, BloomPass};
 use crate::geometry::{
     bounding_box_lines, face_normal_lines, model_mesh, scene_lines, uv_fill_triangles,
     uv_grid_lines, uv_wireframe_lines, vertex_normal_lines, wireframe_lines,
@@ -13,8 +14,9 @@ use crate::ibl::{IblResources, PREFILTER_MAX_LOD};
 use crate::post::PostPass;
 use crate::targets::{SCENE_HDR_FORMAT, SceneTargets};
 use crate::{
-    ActiveMaterial, AntiAliasing, CameraProjection, CheckerTexture, EnvironmentSettings,
-    OrbitCamera, SceneDebugOptions, ShadingMode, UvCamera, UvShadingMode, VertexColorMode,
+    ActiveMaterial, AntiAliasing, BloomSettings, CameraProjection, CheckerTexture,
+    EnvironmentSettings, OrbitCamera, SceneDebugOptions, ShadingMode, UvCamera, UvShadingMode,
+    VertexColorMode,
 };
 
 pub const SCENE_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
@@ -65,13 +67,15 @@ pub struct SceneCallback {
     /// Image-based lighting / environment selection. Drives the precomputed IBL
     /// maps, the PBR shaded path, and the optional skybox.
     environment: EnvironmentSettings,
+    /// Bloom (HDR glow) settings. Drives the bloom passes + the composite add.
+    bloom: BloomSettings,
     /// `Some` renders the 2D UV viewport instead of the 3D scene.
     uv_view: Option<UvView>,
 }
 
 impl SceneCallback {
-    // Eight distinct, independent inputs (camera + projection + target + model +
-    // revision + the three UI option bundles); there is no redundant pair to fold
+    // Nine distinct, independent inputs (camera + projection + target + model +
+    // revision + the four UI option bundles); there is no redundant pair to fold
     // away, and a params struct would only move the same values behind one name.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -83,6 +87,7 @@ impl SceneCallback {
         debug_options: SceneDebugOptions,
         anti_aliasing: AntiAliasing,
         environment: EnvironmentSettings,
+        bloom: BloomSettings,
     ) -> Self {
         Self {
             camera,
@@ -93,6 +98,7 @@ impl SceneCallback {
             debug_options,
             anti_aliasing,
             environment,
+            bloom,
             uv_view: None,
         }
     }
@@ -120,6 +126,12 @@ impl SceneCallback {
             // IBL is irrelevant to the 2D UV viewport; the skybox/IBL paths are
             // never reached there (the UV path returns before them).
             environment: EnvironmentSettings::default(),
+            // Bloom is a 3D-only effect; the UV viewport never glows. Disable it so
+            // the composite skips the bloom add in UV mode.
+            bloom: BloomSettings {
+                enabled: false,
+                ..BloomSettings::default()
+            },
             uv_view: Some(UvView {
                 camera,
                 channel,
@@ -197,14 +209,33 @@ impl CallbackTrait for SceneCallback {
             );
         }
 
-        // Render the scene (3D or UV) into the offscreen HDR target now, on egui's
+        // Render the scene (3D or UV) into the offscreen HDR targets now, on egui's
         // encoder, so it runs before egui's main pass. `paint` then composites the
         // resolved result into egui's framebuffer behind the chrome. Sync the
-        // targets / scene pipelines to the framebuffer size + MSAA level and feed
-        // the FXAA flag to the composite uniform first.
+        // targets / scene pipelines to the framebuffer size + MSAA level first.
         let [width, height] = screen_descriptor.size_in_pixels;
         resources.sync_anti_aliasing(device, queue, width, height, self.anti_aliasing);
+
+        // Bloom is a 3D-only effect (the UV `bloom` is forced off). Feed the
+        // composite the FXAA + bloom flags, and run the bloom passes after the
+        // scene so the blurred glow is ready when `paint` composites it.
+        let bloom_active = self.uv_view.is_none() && self.bloom.enabled;
+        resources
+            .bloom
+            .update_threshold(queue, self.bloom.threshold);
+        resources.post.update_uniform(
+            queue,
+            width.max(1),
+            height.max(1),
+            self.anti_aliasing.effective_fxaa(),
+            bloom_active,
+            self.bloom.intensity,
+        );
+
         self.encode_scene(resources, egui_encoder);
+        if bloom_active {
+            resources.encode_bloom(egui_encoder);
+        }
 
         Vec::new()
     }
@@ -235,14 +266,27 @@ impl SceneCallback {
     fn encode_scene(&self, resources: &SceneResources, encoder: &mut wgpu::CommandEncoder) {
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("review_scene_offscreen_pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &resources.targets.color_render_view,
-                resolve_target: resources.targets.color_resolve_view.as_ref(),
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(SCENE_CLEAR_COLOR),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
+            color_attachments: &[
+                // Location 0: display-space color the composite shows.
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &resources.targets.color_render_view,
+                    resolve_target: resources.targets.color_resolve_view.as_ref(),
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(SCENE_CLEAR_COLOR),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+                // Location 1: linear-HDR bloom source (cleared to black so empty
+                // background contributes no glow).
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &resources.targets.bloom_render_view,
+                    resolve_target: resources.targets.bloom_resolve_view.as_ref(),
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(SCENE_CLEAR_COLOR),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+            ],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &resources.targets.depth_view,
                 depth_ops: Some(wgpu::Operations {
@@ -385,9 +429,22 @@ struct SceneResources {
     targets: SceneTargets,
     /// The fullscreen composite pass (offscreen scene → egui's framebuffer).
     post: PostPass,
-    /// Bind group feeding the resolved scene color to `post`; rebuilt with
-    /// `targets`.
+    /// Bind group feeding the resolved scene color + blurred bloom to `post`;
+    /// rebuilt with `targets`.
     post_bind_group: wgpu::BindGroup,
+    /// The bloom bright-pass + blur pass (Phase 4). Size-independent; the half-res
+    /// ping-pong textures + bind groups below are rebuilt with `targets`.
+    bloom: BloomPass,
+    /// Half-resolution HDR ping-pong textures the bloom blur bounces between.
+    /// `a` holds the bright-pass output and the final (post-blur) result `post`
+    /// samples; `b` is the intermediate. Recreated on resize.
+    bloom_tex_a: wgpu::TextureView,
+    bloom_tex_b: wgpu::TextureView,
+    /// Bloom bind groups: bright-pass reads the scene bloom source, the blur reads
+    /// `a` (→ `b`) then `b` (→ `a`). Rebuilt when the bloom textures are.
+    bloom_brightpass_bind_group: wgpu::BindGroup,
+    bloom_blur_h_bind_group: wgpu::BindGroup,
+    bloom_blur_v_bind_group: wgpu::BindGroup,
     model_revision: u64,
     mesh_uv_channel: u32,
     mesh_pipeline: wgpu::RenderPipeline,
@@ -576,7 +633,15 @@ impl SceneResources {
         // (`sync_anti_aliasing`); the post pass draws into egui's `output_format`.
         let targets = SceneTargets::new(device, queue, 1, 1, scene_sample_count);
         let post = PostPass::new(device, output_format);
-        let post_bind_group = post.create_bind_group(device, targets.sampled_view());
+        let bloom = BloomPass::new(device);
+        let (
+            bloom_tex_a,
+            bloom_tex_b,
+            bloom_brightpass_bind_group,
+            bloom_blur_h_bind_group,
+            bloom_blur_v_bind_group,
+            post_bind_group,
+        ) = build_bloom_targets(device, queue, &targets, &bloom, &post);
 
         let line_vertices = scene_lines();
         let (mesh_vertex_buffer, mesh_index_buffer, mesh_index_count) =
@@ -610,6 +675,12 @@ impl SceneResources {
             targets,
             post,
             post_bind_group,
+            bloom,
+            bloom_tex_a,
+            bloom_tex_b,
+            bloom_brightpass_bind_group,
+            bloom_blur_h_bind_group,
+            bloom_blur_v_bind_group,
             model_revision: u64::MAX,
             mesh_uv_channel: 0,
             mesh_pipeline,
@@ -683,13 +754,54 @@ impl SceneResources {
             || self.targets.sample_count != sample_count;
         if targets_stale {
             self.targets = SceneTargets::new(device, queue, width, height, sample_count);
-            self.post_bind_group = self
-                .post
-                .create_bind_group(device, self.targets.sampled_view());
+            // The bloom ping-pong textures + every bind group reading the targets
+            // (bloom + composite) are now stale; rebuild them at the new half-res.
+            let (
+                bloom_tex_a,
+                bloom_tex_b,
+                bloom_brightpass_bind_group,
+                bloom_blur_h_bind_group,
+                bloom_blur_v_bind_group,
+                post_bind_group,
+            ) = build_bloom_targets(device, queue, &self.targets, &self.bloom, &self.post);
+            self.bloom_tex_a = bloom_tex_a;
+            self.bloom_tex_b = bloom_tex_b;
+            self.bloom_brightpass_bind_group = bloom_brightpass_bind_group;
+            self.bloom_blur_h_bind_group = bloom_blur_h_bind_group;
+            self.bloom_blur_v_bind_group = bloom_blur_v_bind_group;
+            self.post_bind_group = post_bind_group;
         }
+    }
 
-        self.post
-            .update_uniform(queue, width, height, anti_aliasing.effective_fxaa());
+    /// Run the bloom passes on egui's encoder, after the scene pass: bright-pass
+    /// the scene's resolved linear-HDR bloom source into the half-res `a`, then
+    /// ping-pong a separable Gaussian blur between `a` and `b`. Ends in `a`, which
+    /// the composite (`post`) samples. Only called when bloom is active.
+    fn encode_bloom(&self, encoder: &mut wgpu::CommandEncoder) {
+        bloom_fullscreen_pass(
+            encoder,
+            &self.bloom.brightpass_pipeline,
+            &self.bloom_brightpass_bind_group,
+            &self.bloom_tex_a,
+            "review_bloom_brightpass_pass",
+        );
+        for _ in 0..BLOOM_BLUR_ITERATIONS {
+            // Horizontal: a → b, then vertical: b → a.
+            bloom_fullscreen_pass(
+                encoder,
+                &self.bloom.blur_pipeline,
+                &self.bloom_blur_h_bind_group,
+                &self.bloom_tex_b,
+                "review_bloom_blur_h_pass",
+            );
+            bloom_fullscreen_pass(
+                encoder,
+                &self.bloom.blur_pipeline,
+                &self.bloom_blur_v_bind_group,
+                &self.bloom_tex_a,
+                "review_bloom_blur_v_pass",
+            );
+        }
     }
 
     fn update_camera(
@@ -1077,11 +1189,21 @@ fn create_skybox_pipeline(
         fragment: Some(wgpu::FragmentState {
             module: shader,
             entry_point: Some("fs_skybox"),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: SCENE_HDR_FORMAT,
-                blend: None,
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
+            // MRT to match the other scene pipelines: location 0 = display color,
+            // location 1 = linear-HDR bloom source. The skybox draws first over the
+            // cleared frame, so neither target blends (opaque replace).
+            targets: &[
+                Some(wgpu::ColorTargetState {
+                    format: SCENE_HDR_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+                Some(wgpu::ColorTargetState {
+                    format: SCENE_HDR_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+            ],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         }),
         multiview: None,
@@ -1131,11 +1253,22 @@ fn create_pipeline(
         fragment: Some(wgpu::FragmentState {
             module: shader,
             entry_point: Some("fs_main"),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: SCENE_HDR_FORMAT,
-                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
+            // MRT: location 0 = display color, location 1 = linear-HDR bloom
+            // source. Both alpha-blend so overlay draws (which write bloom alpha 0)
+            // leave the geometry's bloom value intact (invariant 11: matches the
+            // `FragOutput` struct in `scene.wgsl`).
+            targets: &[
+                Some(wgpu::ColorTargetState {
+                    format: SCENE_HDR_FORMAT,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+                Some(wgpu::ColorTargetState {
+                    format: SCENE_HDR_FORMAT,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+            ],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         }),
         multiview: None,
@@ -1205,6 +1338,128 @@ fn create_line_buffer(device: &wgpu::Device, vertices: &[SceneVertex]) -> (wgpu:
     });
 
     (vertex_buffer, vertices.len() as u32)
+}
+
+/// Create one half-resolution HDR bloom ping-pong texture (render target + sampled
+/// in later passes) and return its view.
+fn create_bloom_texture(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+    label: &str,
+) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: SCENE_HDR_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+        .create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+/// (Re)create the half-resolution bloom textures + every bind group that reads the
+/// scene targets (the three bloom bind groups + the composite bind group), and
+/// refresh the blur sampling offsets for the new size. Called on creation and
+/// whenever the scene targets are recreated (resize / MSAA change). Returns the
+/// new `(bloom_a, bloom_b, brightpass_bg, blur_h_bg, blur_v_bg, post_bg)`.
+fn build_bloom_targets(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    targets: &SceneTargets,
+    bloom: &BloomPass,
+    post: &PostPass,
+) -> (
+    wgpu::TextureView,
+    wgpu::TextureView,
+    wgpu::BindGroup,
+    wgpu::BindGroup,
+    wgpu::BindGroup,
+    wgpu::BindGroup,
+) {
+    let half_width = (targets.width / 2).max(1);
+    let half_height = (targets.height / 2).max(1);
+    let bloom_tex_a = create_bloom_texture(device, half_width, half_height, "review_bloom_tex_a");
+    let bloom_tex_b = create_bloom_texture(device, half_width, half_height, "review_bloom_tex_b");
+
+    // The composite binds `bloom_tex_a` every frame but only samples it when bloom
+    // is active. Clear both once at creation so D3D12's debug layer doesn't flag
+    // the texture as read-before-initialized while bloom is off (the bloom passes
+    // fully overwrite them with `LoadOp::Clear` whenever bloom is on).
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("review_bloom_init"),
+    });
+    for view in [&bloom_tex_a, &bloom_tex_b] {
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("review_bloom_init_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+    }
+    queue.submit(std::iter::once(encoder.finish()));
+
+    bloom.update_blur_offsets(queue, half_width, half_height);
+
+    let brightpass_bg = bloom.brightpass_bind_group(device, targets.sampled_bloom_view());
+    // The horizontal blur reads `a` (→ `b`); the vertical reads `b` (→ `a`).
+    let blur_h_bg = bloom.blur_h_bind_group(device, &bloom_tex_a);
+    let blur_v_bg = bloom.blur_v_bind_group(device, &bloom_tex_b);
+    let post_bg = post.create_bind_group(device, targets.sampled_view(), &bloom_tex_a);
+
+    (
+        bloom_tex_a,
+        bloom_tex_b,
+        brightpass_bg,
+        blur_h_bg,
+        blur_v_bg,
+        post_bg,
+    )
+}
+
+/// Run one fullscreen bloom pass: clear `target`, bind `pipeline` + `bind_group`,
+/// draw the fullscreen triangle. The bloom textures are single-sample with no
+/// depth, so the pass is a bare color attachment.
+fn bloom_fullscreen_pass(
+    encoder: &mut wgpu::CommandEncoder,
+    pipeline: &wgpu::RenderPipeline,
+    bind_group: &wgpu::BindGroup,
+    target: &wgpu::TextureView,
+    label: &str,
+) {
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some(label),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: target,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+    });
+    pass.set_pipeline(pipeline);
+    pass.set_bind_group(0, bind_group, &[]);
+    pass.draw(0..3, 0..1);
 }
 
 fn create_checker_bind_group(

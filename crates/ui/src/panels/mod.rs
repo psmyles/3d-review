@@ -3,6 +3,7 @@
 //! routes the active [`OptionPanel`] to the right tool.
 
 mod anti_aliasing;
+mod bloom;
 mod bounding_box;
 mod environment;
 mod normals;
@@ -55,6 +56,7 @@ pub(crate) fn draw_active_panel(
         OptionPanel::Environment => option_panel(ui, "Environment", collapsed, |ui| {
             environment::body(ui, state)
         }),
+        OptionPanel::Bloom => option_panel(ui, "Bloom", collapsed, |ui| bloom::body(ui, state)),
     }
 }
 
