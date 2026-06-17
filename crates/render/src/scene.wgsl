@@ -15,6 +15,9 @@ struct SceneUniforms {
     // Image-based lighting: x = IBL enabled (>0.5), y = intensity, z = show
     // background skybox (>0.5), w = prefiltered-cube max mip LOD.
     env_params: vec4<f32>,
+    // View matrix (world -> view), for writing the view-space normal + depth into
+    // the SSAO G-buffer (MRT location 2).
+    view: mat4x4<f32>,
 };
 
 @group(0) @binding(0)
@@ -144,17 +147,21 @@ fn shade_ibl(albedo: vec3<f32>, world_normal: vec3<f32>, world_pos: vec3<f32>, r
 
 // Scene fragment output (MRT): location 0 is the display-space color the
 // composite shows (tone-mapped + sRGB-encoded here, exactly as before bloom);
-// location 1 is the linear pre-tone-map HDR radiance bloom thresholds. Overlays
-// write 0 to the bloom target so grid / wireframe / normal lines never glow.
+// location 1 is the linear pre-tone-map HDR radiance bloom thresholds; location 2
+// is the SSAO G-buffer (view-space normal in xyz, view-space Z in w). Overlays
+// write 0 to locations 1 and 2 so grid / wireframe / normal lines never glow and
+// never generate ambient occlusion.
 struct FragOutput {
     @location(0) color: vec4<f32>,
     @location(1) bloom: vec4<f32>,
+    @location(2) gbuffer: vec4<f32>,
 };
 
 @fragment
 fn fs_main(input: VertexOutput) -> FragOutput {
     var out: FragOutput;
     out.bloom = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    out.gbuffer = vec4<f32>(0.0, 0.0, 0.0, 0.0);
 
     let shading_mode = uniforms.render_options.x;
     let uv_checker_enabled = uniforms.render_options.y > 0.5;
@@ -172,6 +179,14 @@ fn fs_main(input: VertexOutput) -> FragOutput {
         out.color = input.color;
         return out;
     }
+
+    // Real geometry: write the view-space normal + linear view Z into the SSAO
+    // G-buffer (both the unlit and shaded paths below carry it). View Z is negative
+    // in front of the camera; SSAO treats the zero left by overlays/background as
+    // unoccluded.
+    let view_pos = uniforms.view * vec4<f32>(input.world_position, 1.0);
+    let view_normal = normalize((uniforms.view * vec4<f32>(input.normal, 0.0)).xyz);
+    out.gbuffer = vec4<f32>(view_normal, view_pos.z);
 
     // Work in linear space. The material color is authored in sRGB/gamma space;
     // the checker sample is already linear (sRGB texture format).
@@ -280,5 +295,7 @@ fn fs_skybox(input: SkyOutput) -> FragOutput {
     out.color = vec4<f32>(linear_to_srgb(mapped), 1.0);
     // Full linear HDR sky into the bloom target — bright sky regions glow.
     out.bloom = vec4<f32>(color, 1.0);
+    // The sky is background: zero G-buffer so SSAO leaves it unoccluded.
+    out.gbuffer = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     return out;
 }

@@ -9,7 +9,7 @@ use glam::{Vec2, Vec3};
 use review_model::ModelStats;
 use review_render::{
     AntiAliasing, BloomSettings, CameraProjection, CheckerTexture, EnvironmentSettings,
-    MsaaSamples, SceneDebugOptions, ShadingMode, UvShadingMode, VertexColorMode,
+    MsaaSamples, SceneDebugOptions, ShadingMode, SsaoSettings, UvShadingMode, VertexColorMode,
 };
 
 use crate::theme;
@@ -165,6 +165,7 @@ pub enum OptionPanel {
     AntiAliasing,
     Environment,
     Bloom,
+    Ssao,
 }
 
 #[derive(Debug, Clone)]
@@ -224,6 +225,14 @@ pub struct UiState {
     /// debug option) and edited by the Bloom panel; the bloom status-bar button
     /// toggles `bloom.enabled`. Default is on (see [`BloomSettings`]).
     pub bloom: BloomSettings,
+    /// Screen-space ambient occlusion settings. Read straight by the viewport
+    /// callback and edited by the Ambient Occlusion panel; the SSAO status-bar
+    /// button toggles `ssao.enabled`. Default is on (see [`SsaoSettings`]).
+    pub ssao: SsaoSettings,
+    /// Whether the active adapter can run SSAO, set by `app` from
+    /// [`review_render::ssao_supported`]. The status-bar SSAO button is disabled
+    /// (and forced off) when false (invariant 4).
+    pub ssao_supported: bool,
     pub stats: ModelStats,
     /// Most recent measured frames-per-second, fed by `app` from the render
     /// loop. Zero while idle (the viewer redraws on demand, not continuously).
@@ -275,6 +284,8 @@ impl Default for UiState {
             // once the device is known.
             ibl_supported: true,
             bloom: BloomSettings::default(),
+            ssao: SsaoSettings::default(),
+            ssao_supported: true,
             stats: ModelStats::default(),
             fps: 0.0,
             show_help_overlay: true,

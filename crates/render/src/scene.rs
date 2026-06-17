@@ -12,11 +12,12 @@ use crate::geometry::{
 };
 use crate::ibl::{IblResources, PREFILTER_MAX_LOD};
 use crate::post::PostPass;
+use crate::ssao::{SSAO_FORMAT, SsaoPass};
 use crate::targets::{SCENE_HDR_FORMAT, SceneTargets};
 use crate::{
     ActiveMaterial, AntiAliasing, BloomSettings, CameraProjection, CheckerTexture,
-    EnvironmentSettings, OrbitCamera, SceneDebugOptions, ShadingMode, UvCamera, UvShadingMode,
-    VertexColorMode,
+    EnvironmentSettings, OrbitCamera, SceneDebugOptions, ShadingMode, SsaoSettings, UvCamera,
+    UvShadingMode, VertexColorMode,
 };
 
 pub const SCENE_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
@@ -69,13 +70,16 @@ pub struct SceneCallback {
     environment: EnvironmentSettings,
     /// Bloom (HDR glow) settings. Drives the bloom passes + the composite add.
     bloom: BloomSettings,
+    /// Screen-space ambient occlusion settings. Drives the SSAO + blur passes and
+    /// the composite multiply.
+    ssao: SsaoSettings,
     /// `Some` renders the 2D UV viewport instead of the 3D scene.
     uv_view: Option<UvView>,
 }
 
 impl SceneCallback {
-    // Nine distinct, independent inputs (camera + projection + target + model +
-    // revision + the four UI option bundles); there is no redundant pair to fold
+    // Ten distinct, independent inputs (camera + projection + target + model +
+    // revision + the five UI option bundles); there is no redundant pair to fold
     // away, and a params struct would only move the same values behind one name.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -88,6 +92,7 @@ impl SceneCallback {
         anti_aliasing: AntiAliasing,
         environment: EnvironmentSettings,
         bloom: BloomSettings,
+        ssao: SsaoSettings,
     ) -> Self {
         Self {
             camera,
@@ -99,6 +104,7 @@ impl SceneCallback {
             anti_aliasing,
             environment,
             bloom,
+            ssao,
             uv_view: None,
         }
     }
@@ -131,6 +137,11 @@ impl SceneCallback {
             bloom: BloomSettings {
                 enabled: false,
                 ..BloomSettings::default()
+            },
+            // SSAO is a 3D-only effect; the flat UV viewport has no depth to occlude.
+            ssao: SsaoSettings {
+                enabled: false,
+                ..SsaoSettings::default()
             },
             uv_view: Some(UvView {
                 camera,
@@ -216,13 +227,28 @@ impl CallbackTrait for SceneCallback {
         let [width, height] = screen_descriptor.size_in_pixels;
         resources.sync_anti_aliasing(device, queue, width, height, self.anti_aliasing);
 
-        // Bloom is a 3D-only effect (the UV `bloom` is forced off). Feed the
-        // composite the FXAA + bloom flags, and run the bloom passes after the
-        // scene so the blurred glow is ready when `paint` composites it.
+        // Bloom + SSAO are 3D-only effects (both forced off in UV mode). Feed the
+        // composite the FXAA / bloom / SSAO flags, and run their passes after the
+        // scene so the blurred glow + AO are ready when `paint` composites them.
         let bloom_active = self.uv_view.is_none() && self.bloom.enabled;
+        let ssao_active = self.uv_view.is_none() && self.ssao.enabled;
         resources
             .bloom
             .update_threshold(queue, self.bloom.threshold);
+        if ssao_active {
+            // The settings' radius/bias are fractions of the framed model's
+            // bounding-sphere radius, so the AO look is scale-invariant; scale them
+            // into view units by the live scene radius here.
+            let scene_radius = self.camera.scene_radius.max(1e-3);
+            resources.ssao.update(
+                queue,
+                self.camera.projection_matrix(self.projection_mode),
+                matches!(self.projection_mode, CameraProjection::Orthographic),
+                self.ssao.radius * scene_radius,
+                self.ssao.bias * scene_radius,
+                self.ssao.intensity,
+            );
+        }
         resources.post.update_uniform(
             queue,
             width.max(1),
@@ -230,9 +256,13 @@ impl CallbackTrait for SceneCallback {
             self.anti_aliasing.effective_fxaa(),
             bloom_active,
             self.bloom.intensity,
+            ssao_active,
         );
 
         self.encode_scene(resources, egui_encoder);
+        if ssao_active {
+            resources.encode_ssao(egui_encoder);
+        }
         if bloom_active {
             resources.encode_bloom(egui_encoder);
         }
@@ -283,6 +313,16 @@ impl SceneCallback {
                     resolve_target: resources.targets.bloom_resolve_view.as_ref(),
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(SCENE_CLEAR_COLOR),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+                // Location 2: SSAO G-buffer (view normal + view Z), cleared to all
+                // zero so the empty background reads as unoccluded.
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &resources.targets.gbuffer_render_view,
+                    resolve_target: resources.targets.gbuffer_resolve_view.as_ref(),
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
                     },
                 }),
@@ -445,6 +485,17 @@ struct SceneResources {
     bloom_brightpass_bind_group: wgpu::BindGroup,
     bloom_blur_h_bind_group: wgpu::BindGroup,
     bloom_blur_v_bind_group: wgpu::BindGroup,
+    /// The SSAO occlusion + blur pass (Phase 5). Size-independent; the full-res AO
+    /// textures + bind groups below are rebuilt with `targets`.
+    ssao: SsaoPass,
+    /// Full-resolution AO textures: `raw` holds the occlusion pass output, `blur`
+    /// the denoised result the composite samples. Recreated on resize.
+    ssao_raw_view: wgpu::TextureView,
+    ssao_blur_view: wgpu::TextureView,
+    /// SSAO bind groups: the occlusion pass reads the scene G-buffer, the blur
+    /// reads `raw`. Rebuilt when the AO textures / G-buffer are.
+    ssao_bind_group: wgpu::BindGroup,
+    ssao_blur_bind_group: wgpu::BindGroup,
     model_revision: u64,
     mesh_uv_channel: u32,
     mesh_pipeline: wgpu::RenderPipeline,
@@ -634,14 +685,22 @@ impl SceneResources {
         let targets = SceneTargets::new(device, queue, 1, 1, scene_sample_count);
         let post = PostPass::new(device, output_format);
         let bloom = BloomPass::new(device);
+        let ssao = SsaoPass::new(device);
         let (
             bloom_tex_a,
             bloom_tex_b,
             bloom_brightpass_bind_group,
             bloom_blur_h_bind_group,
             bloom_blur_v_bind_group,
-            post_bind_group,
-        ) = build_bloom_targets(device, queue, &targets, &bloom, &post);
+        ) = build_bloom_targets(device, queue, &targets, &bloom);
+        let (ssao_raw_view, ssao_blur_view, ssao_bind_group, ssao_blur_bind_group) =
+            build_ssao_targets(device, queue, &targets, &ssao);
+        let post_bind_group = post.create_bind_group(
+            device,
+            targets.sampled_view(),
+            &bloom_tex_a,
+            &ssao_blur_view,
+        );
 
         let line_vertices = scene_lines();
         let (mesh_vertex_buffer, mesh_index_buffer, mesh_index_count) =
@@ -681,6 +740,11 @@ impl SceneResources {
             bloom_brightpass_bind_group,
             bloom_blur_h_bind_group,
             bloom_blur_v_bind_group,
+            ssao,
+            ssao_raw_view,
+            ssao_blur_view,
+            ssao_bind_group,
+            ssao_blur_bind_group,
             model_revision: u64::MAX,
             mesh_uv_channel: 0,
             mesh_pipeline,
@@ -754,22 +818,36 @@ impl SceneResources {
             || self.targets.sample_count != sample_count;
         if targets_stale {
             self.targets = SceneTargets::new(device, queue, width, height, sample_count);
-            // The bloom ping-pong textures + every bind group reading the targets
-            // (bloom + composite) are now stale; rebuild them at the new half-res.
+            // Every bind group reading the targets (bloom ping-pong, SSAO AO
+            // textures, and the composite) is now stale; rebuild them all.
             let (
                 bloom_tex_a,
                 bloom_tex_b,
                 bloom_brightpass_bind_group,
                 bloom_blur_h_bind_group,
                 bloom_blur_v_bind_group,
-                post_bind_group,
-            ) = build_bloom_targets(device, queue, &self.targets, &self.bloom, &self.post);
+            ) = build_bloom_targets(device, queue, &self.targets, &self.bloom);
             self.bloom_tex_a = bloom_tex_a;
             self.bloom_tex_b = bloom_tex_b;
             self.bloom_brightpass_bind_group = bloom_brightpass_bind_group;
             self.bloom_blur_h_bind_group = bloom_blur_h_bind_group;
             self.bloom_blur_v_bind_group = bloom_blur_v_bind_group;
-            self.post_bind_group = post_bind_group;
+
+            let (ssao_raw_view, ssao_blur_view, ssao_bind_group, ssao_blur_bind_group) =
+                build_ssao_targets(device, queue, &self.targets, &self.ssao);
+            self.ssao_raw_view = ssao_raw_view;
+            self.ssao_blur_view = ssao_blur_view;
+            self.ssao_bind_group = ssao_bind_group;
+            self.ssao_blur_bind_group = ssao_blur_bind_group;
+
+            // The composite reads the resolved color, the blurred bloom, and the
+            // blurred AO — all just recreated.
+            self.post_bind_group = self.post.create_bind_group(
+                device,
+                self.targets.sampled_view(),
+                &self.bloom_tex_a,
+                &self.ssao_blur_view,
+            );
         }
     }
 
@@ -802,6 +880,28 @@ impl SceneResources {
                 "review_bloom_blur_v_pass",
             );
         }
+    }
+
+    /// Run the SSAO passes on egui's encoder, after the scene pass: the occlusion
+    /// pass reads the scene's resolved G-buffer into `raw`, then the box blur
+    /// denoises `raw` → `blur`, which the composite (`post`) samples. Reuses the
+    /// bloom fullscreen-pass helper (single color attachment, no depth). Only
+    /// called when SSAO is active.
+    fn encode_ssao(&self, encoder: &mut wgpu::CommandEncoder) {
+        bloom_fullscreen_pass(
+            encoder,
+            &self.ssao.ssao_pipeline,
+            &self.ssao_bind_group,
+            &self.ssao_raw_view,
+            "review_ssao_pass",
+        );
+        bloom_fullscreen_pass(
+            encoder,
+            &self.ssao.blur_pipeline,
+            &self.ssao_blur_bind_group,
+            &self.ssao_blur_view,
+            "review_ssao_blur_pass",
+        );
     }
 
     fn update_camera(
@@ -837,6 +937,7 @@ impl SceneResources {
                 },
                 PREFILTER_MAX_LOD,
             ],
+            view: camera.view_matrix().to_cols_array_2d(),
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }
@@ -1060,6 +1161,9 @@ impl SceneResources {
             camera_position: [0.0; 4],
             // The UV path never reaches the IBL / skybox code, so these are unused.
             env_params: [0.0; 4],
+            // No SSAO in the UV viewport (its fill/lines write a zero G-buffer), so
+            // the view matrix is unused here.
+            view: [[0.0; 4]; 4],
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }
@@ -1190,9 +1294,15 @@ fn create_skybox_pipeline(
             module: shader,
             entry_point: Some("fs_skybox"),
             // MRT to match the other scene pipelines: location 0 = display color,
-            // location 1 = linear-HDR bloom source. The skybox draws first over the
-            // cleared frame, so neither target blends (opaque replace).
+            // location 1 = linear-HDR bloom source, location 2 = SSAO G-buffer. The
+            // skybox draws first over the cleared frame, so no target blends (opaque
+            // replace); it writes a zero G-buffer (background = unoccluded).
             targets: &[
+                Some(wgpu::ColorTargetState {
+                    format: SCENE_HDR_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
                 Some(wgpu::ColorTargetState {
                     format: SCENE_HDR_FORMAT,
                     blend: None,
@@ -1253,10 +1363,13 @@ fn create_pipeline(
         fragment: Some(wgpu::FragmentState {
             module: shader,
             entry_point: Some("fs_main"),
-            // MRT: location 0 = display color, location 1 = linear-HDR bloom
-            // source. Both alpha-blend so overlay draws (which write bloom alpha 0)
-            // leave the geometry's bloom value intact (invariant 11: matches the
-            // `FragOutput` struct in `scene.wgsl`).
+            // MRT (invariant 11: matches the `FragOutput` struct in `scene.wgsl`):
+            // location 0 = display color, location 1 = linear-HDR bloom source,
+            // location 2 = SSAO G-buffer. Locations 0 and 1 alpha-blend so overlay
+            // draws (which write bloom alpha 0) leave the geometry's bloom value
+            // intact. The G-buffer packs view Z in its `.w`, so it can NOT alpha-
+            // blend (the `.w` is data, not coverage) — it replaces; overlays write a
+            // zero G-buffer there, which SSAO reads as background.
             targets: &[
                 Some(wgpu::ColorTargetState {
                     format: SCENE_HDR_FORMAT,
@@ -1266,6 +1379,11 @@ fn create_pipeline(
                 Some(wgpu::ColorTargetState {
                     format: SCENE_HDR_FORMAT,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+                Some(wgpu::ColorTargetState {
+                    format: SCENE_HDR_FORMAT,
+                    blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 }),
             ],
@@ -1366,21 +1484,19 @@ fn create_bloom_texture(
         .create_view(&wgpu::TextureViewDescriptor::default())
 }
 
-/// (Re)create the half-resolution bloom textures + every bind group that reads the
-/// scene targets (the three bloom bind groups + the composite bind group), and
-/// refresh the blur sampling offsets for the new size. Called on creation and
+/// (Re)create the half-resolution bloom textures + the three bloom bind groups,
+/// and refresh the blur sampling offsets for the new size. Called on creation and
 /// whenever the scene targets are recreated (resize / MSAA change). Returns the
-/// new `(bloom_a, bloom_b, brightpass_bg, blur_h_bg, blur_v_bg, post_bg)`.
+/// new `(bloom_a, bloom_b, brightpass_bg, blur_h_bg, blur_v_bg)`. The composite
+/// bind group is built by the caller (it also depends on the SSAO AO texture).
 fn build_bloom_targets(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     targets: &SceneTargets,
     bloom: &BloomPass,
-    post: &PostPass,
 ) -> (
     wgpu::TextureView,
     wgpu::TextureView,
-    wgpu::BindGroup,
     wgpu::BindGroup,
     wgpu::BindGroup,
     wgpu::BindGroup,
@@ -1394,12 +1510,95 @@ fn build_bloom_targets(
     // is active. Clear both once at creation so D3D12's debug layer doesn't flag
     // the texture as read-before-initialized while bloom is off (the bloom passes
     // fully overwrite them with `LoadOp::Clear` whenever bloom is on).
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("review_bloom_init"),
-    });
-    for view in [&bloom_tex_a, &bloom_tex_b] {
+    clear_views(
+        device,
+        queue,
+        &[&bloom_tex_a, &bloom_tex_b],
+        "review_bloom_init",
+    );
+
+    bloom.update_blur_offsets(queue, half_width, half_height);
+
+    let brightpass_bg = bloom.brightpass_bind_group(device, targets.sampled_bloom_view());
+    // The horizontal blur reads `a` (→ `b`); the vertical reads `b` (→ `a`).
+    let blur_h_bg = bloom.blur_h_bind_group(device, &bloom_tex_a);
+    let blur_v_bg = bloom.blur_v_bind_group(device, &bloom_tex_b);
+
+    (
+        bloom_tex_a,
+        bloom_tex_b,
+        brightpass_bg,
+        blur_h_bg,
+        blur_v_bg,
+    )
+}
+
+/// Create one full-resolution single-channel AO texture (render target + sampled
+/// in later passes) and return its view.
+fn create_ssao_texture(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+    label: &str,
+) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: SSAO_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+        .create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+/// (Re)create the full-resolution AO textures + the SSAO bind groups (occlusion
+/// pass reads the scene G-buffer → `raw`; blur reads `raw` → `blur`). Called on
+/// creation and whenever the scene targets are recreated. Returns the new
+/// `(raw, blur, ssao_bg, blur_bg)`. As with bloom, the composite binds the blurred
+/// AO every frame but only samples it when SSAO is on, so both AO textures are
+/// cleared once here to satisfy D3D12's read-before-init validation.
+fn build_ssao_targets(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    targets: &SceneTargets,
+    ssao: &SsaoPass,
+) -> (
+    wgpu::TextureView,
+    wgpu::TextureView,
+    wgpu::BindGroup,
+    wgpu::BindGroup,
+) {
+    let raw = create_ssao_texture(device, targets.width, targets.height, "review_ssao_raw");
+    let blur = create_ssao_texture(device, targets.width, targets.height, "review_ssao_blur");
+    clear_views(device, queue, &[&raw, &blur], "review_ssao_init");
+
+    let ssao_bg = ssao.bind_group(device, targets.sampled_gbuffer_view(), "review_ssao_bg");
+    let blur_bg = ssao.bind_group(device, &raw, "review_ssao_blur_bg");
+    (raw, blur, ssao_bg, blur_bg)
+}
+
+/// Clear a set of color views once (`LoadOp::Clear` to black), in a single
+/// throwaway encoder. Used to initialise render targets that a later pass binds
+/// but may not write before first read (bloom / AO when their effect is off).
+fn clear_views(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    views: &[&wgpu::TextureView],
+    label: &str,
+) {
+    let mut encoder =
+        device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
+    for view in views {
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("review_bloom_init_pass"),
+            label: Some(label),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view,
                 resolve_target: None,
@@ -1414,23 +1613,6 @@ fn build_bloom_targets(
         });
     }
     queue.submit(std::iter::once(encoder.finish()));
-
-    bloom.update_blur_offsets(queue, half_width, half_height);
-
-    let brightpass_bg = bloom.brightpass_bind_group(device, targets.sampled_bloom_view());
-    // The horizontal blur reads `a` (→ `b`); the vertical reads `b` (→ `a`).
-    let blur_h_bg = bloom.blur_h_bind_group(device, &bloom_tex_a);
-    let blur_v_bg = bloom.blur_v_bind_group(device, &bloom_tex_b);
-    let post_bg = post.create_bind_group(device, targets.sampled_view(), &bloom_tex_a);
-
-    (
-        bloom_tex_a,
-        bloom_tex_b,
-        brightpass_bg,
-        blur_h_bg,
-        blur_v_bg,
-        post_bg,
-    )
 }
 
 /// Run one fullscreen bloom pass: clear `target`, bind `pipeline` + `bind_group`,
@@ -1545,6 +1727,9 @@ struct SceneUniforms {
     /// Image-based lighting: `x` = IBL enabled (>0.5), `y` = intensity, `z` =
     /// show background skybox (>0.5), `w` = prefiltered-cube max mip LOD.
     env_params: [f32; 4],
+    /// View matrix (world → view), for writing the view-space normal + depth into
+    /// the SSAO G-buffer.
+    view: [[f32; 4]; 4],
 }
 
 #[repr(C)]

@@ -202,6 +202,9 @@ pub mod size {
     pub const TOOLBAR_SINGLE_ICON_GROUP_WIDTH: f32 = 48.0;
     /// Width of a three-icon toolbar group (e.g. bounding box / gizmo / grid).
     pub const TOOLBAR_TRIPLE_ICON_GROUP_WIDTH: f32 = 138.0;
+    /// Width of a four-icon toolbar group (the status bar's IBL / Bloom / SSAO /
+    /// Anti-aliasing rendering-quality cluster). Matches the shading group.
+    pub const TOOLBAR_QUAD_ICON_GROUP_WIDTH: f32 = 183.0;
     pub const TOOLBAR_MODE_GROUP_WIDTH: f32 = 180.0;
     /// Width of the UV-set dropdown shown on the right of the toolbar in UV mode.
     pub const TOOLBAR_UV_DROPDOWN_WIDTH: f32 = 200.0;

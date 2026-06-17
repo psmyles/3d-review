@@ -33,6 +33,7 @@ pub fn draw_viewport_scene(
             state.anti_aliasing,
             state.environment,
             state.bloom,
+            state.ssao,
         ),
         WorkspaceMode::Uv => SceneCallback::new_uv(
             output_format,

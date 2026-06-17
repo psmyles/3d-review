@@ -1,7 +1,8 @@
 //! The bottom status bar: the Model Stats toggle inset on the left, and a
-//! rendering-quality group (IBL / Bloom / Anti aliasing) mirrored to the right.
+//! rendering-quality group (IBL / Bloom / SSAO / Anti aliasing) mirrored to the
+//! right.
 
-use crate::assets::{ICON_ANTI_ALIASING, ICON_BLOOM, ICON_IBL, ICON_INFO};
+use crate::assets::{ICON_ANTI_ALIASING, ICON_AO, ICON_BLOOM, ICON_IBL, ICON_INFO};
 use crate::state::{OptionPanel, UiState, WorkspaceMode};
 use crate::theme::{self, color, size};
 use crate::widgets::{icon_toggle_button, toolbar_group_shell};
@@ -19,7 +20,7 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
     let status_bar_height = theme::px(ctx, size::STATUS_BAR_HEIGHT);
     let group_height = theme::px(ctx, size::TOOLBAR_GROUP_HEIGHT);
     let single_icon_group_width = theme::px(ctx, size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH);
-    let triple_icon_group_width = theme::px(ctx, size::TOOLBAR_TRIPLE_ICON_GROUP_WIDTH);
+    let quad_icon_group_width = theme::px(ctx, size::TOOLBAR_QUAD_ICON_GROUP_WIDTH);
 
     egui::TopBottomPanel::bottom("status_bar")
         .exact_height(status_bar_height)
@@ -62,16 +63,16 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                 },
             );
 
-            // Rendering-quality group — IBL / Bloom / Anti aliasing in one
+            // Rendering-quality group — IBL / Bloom / SSAO / Anti aliasing in one
             // recessed group mirrored to the right edge. Each tile left-clicks to
             // toggle its effect (highlighted while on) and right-clicks to open its
             // options panel, matching the top-toolbar buttons.
             let right_rect = egui::Rect::from_min_size(
                 egui::pos2(
-                    bar_rect.right() - edge_inset - triple_icon_group_width,
+                    bar_rect.right() - edge_inset - quad_icon_group_width,
                     bar_rect.center().y - group_height * 0.5,
                 ),
-                egui::vec2(triple_icon_group_width, group_height),
+                egui::vec2(quad_icon_group_width, group_height),
             );
             ui.scope_builder(
                 egui::UiBuilder::new()
@@ -79,7 +80,7 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
                 |ui| {
                     ui.set_height(group_height);
-                    toolbar_group_shell(ui, ctx, triple_icon_group_width, |ui| {
+                    toolbar_group_shell(ui, ctx, quad_icon_group_width, |ui| {
                         // Image-based lighting. Disabled + forced off when the
                         // adapter can't build the IBL maps (invariant 4).
                         if !state.ibl_supported {
@@ -115,6 +116,27 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                         if bloom.secondary_clicked() {
                             state.open_panel(OptionPanel::Bloom);
                         }
+
+                        // Screen-space ambient occlusion. Disabled + forced off when
+                        // the adapter can't run SSAO (invariant 4).
+                        if !state.ssao_supported {
+                            state.ssao.enabled = false;
+                        }
+                        ui.add_enabled_ui(state.ssao_supported, |ui| {
+                            let ssao = icon_toggle_button(
+                                ui,
+                                ctx,
+                                &ICON_AO,
+                                state.ssao.enabled,
+                                "Ambient occlusion (right-click for options)",
+                            );
+                            if ssao.clicked() {
+                                state.ssao.enabled = !state.ssao.enabled;
+                            }
+                            if ssao.secondary_clicked() {
+                                state.open_panel(OptionPanel::Ssao);
+                            }
+                        });
 
                         // Anti aliasing.
                         let aa = icon_toggle_button(
