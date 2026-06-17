@@ -61,6 +61,14 @@ Deeper docs: `PROJECT_STRUCTURE.md` (crate map, data flow, ownership),
    into `model` / `render` / `ui` / `app`. Before `slice::from_raw_parts`,
    null-check the pointer and treat len 0 as empty (`checked_slice`). Free the
    C scene on **both** success and error paths (no leak).
+   **One sanctioned exception:** `crates/app/src/startup_paint.rs` holds a small
+   Windows-only `unsafe` GDI block (`GetDC`/`FillRect`/`ReleaseDC`) that fills
+   the new window black before the first wgpu present, killing the white startup
+   flash. It has to run on the live winit `Window` the instant it's created in
+   `resumed` (before surface setup), touches no model/render state, and releases
+   its DC in the same call — so the boundary this invariant protects still holds.
+   Do not grow this exception: any *other* new `unsafe`/FFI still belongs in
+   `import`.
 10. **`crates/model` is host-agnostic.** It depends only on `glam` — no `wgpu`,
     `egui`, `winit`, or importer types. This is what lets the renderer be
     swapped later; don't add rendering/UI deps to `model`.
@@ -74,7 +82,9 @@ crates/
   app/      review-app: winit ApplicationHandler, event loop, input routing
             (LMB orbit / RMB pan / wheel zoom / F frame / drag-drop /
             double-click-open), egui_winit + egui_wgpu wiring, redraw timing,
-            applies UiOutput back to Renderer. -> src/main.rs
+            applies UiOutput back to Renderer. -> src/main.rs;
+            window position/size restore via %APPDATA% -> src/window_state.rs;
+            startup black-fill (invariant 9 exception) -> src/startup_paint.rs
   model/    review-model: host-agnostic data only (glam dep only).
             Vertex, Bounds, MaterialInfo, TopologyFace, ModelStats, ModelData,
             recompute_bounds, demo_cube_model. -> src/lib.rs

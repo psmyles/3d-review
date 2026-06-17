@@ -3,6 +3,7 @@
 // `tracing` output stays visible during development.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod startup_paint;
 mod window_state;
 
 use std::{
@@ -20,8 +21,8 @@ use review_render::{
     Renderer, RendererConfig, SCENE_DEPTH_FORMAT, SCENE_SAMPLE_COUNT, ShadingMode,
 };
 use review_ui::{
-    AxisGizmoAction, UiOutput, UiState, WorkspaceMode, draw_overlay, draw_viewport_scene,
-    install_fonts,
+    AxisGizmoAction, UiOutput, UiState, WorkspaceMode, draw_overlay, draw_startup_fade,
+    draw_viewport_scene, install_fonts,
 };
 use tracing::{info, warn};
 use winit::{
@@ -99,7 +100,33 @@ struct App {
     /// on exit. Recorded only while the window isn't maximized, so un-maximizing
     /// a restored session returns to a real window rather than a fullscreen rect.
     last_windowed_bounds: Option<((i32, i32), (u32, u32))>,
+    /// Launch fade-in progress: while set, each frame paints a full-screen cover
+    /// that dissolves from the startup black to the live viewer (see
+    /// `startup_paint`). Seeded just before the first frame in `resumed` and
+    /// cleared once the fade completes, after which the steady state draws no
+    /// cover. Advanced by a *capped per-frame delta* (not absolute wall-clock
+    /// time) so a slow first frame — pipeline/shader warm-up, surface acquire,
+    /// the OS window-open animation — can't fast-forward the whole fade in one
+    /// stall and make the viewer snap in. Same guard `update_camera_animation`
+    /// uses for camera transitions.
+    fade: Option<FadeProgress>,
 }
+
+/// State of the launch fade-in. `elapsed` is animation time accumulated across
+/// rendered frames (capped per frame), `last_tick` is when it last advanced.
+struct FadeProgress {
+    elapsed: Duration,
+    last_tick: Instant,
+}
+
+/// Duration of the launch fade-in (startup black → viewer). Short on purpose:
+/// long enough to read as a dissolve, brief enough not to feel like a wait.
+const STARTUP_FADE: Duration = Duration::from_millis(200);
+
+/// Cap on how much the fade advances in a single frame. A startup stall yields
+/// one frame's worth of progress instead of the whole gap, so the dissolve
+/// always plays across real presented frames rather than being skipped.
+const MAX_FADE_STEP: Duration = Duration::from_millis(33);
 
 impl Default for App {
     fn default() -> Self {
@@ -130,6 +157,7 @@ impl Default for App {
             initial_model: None,
             start_maximized: false,
             last_windowed_bounds: None,
+            fade: None,
         }
     }
 }
@@ -197,6 +225,12 @@ impl ApplicationHandler for App {
             .create_window(attributes)
             .expect("failed to create application window");
         let window = Arc::new(window);
+
+        // Paint the client area black immediately, before the (non-instant) wgpu
+        // surface setup below, so the window never flashes its default white while
+        // the renderer comes up. See `startup_paint` (the one sanctioned exception
+        // to invariant 9).
+        startup_paint::paint_window_black(&window);
 
         let renderer_config = RendererConfig::default();
         let mut renderer = Renderer::new(renderer_config);
@@ -266,6 +300,16 @@ impl ApplicationHandler for App {
         if let Some(path) = self.initial_model.take() {
             self.open_model_from_path(&path);
         }
+
+        // Begin the launch fade-in from here: the renderer/chrome are ready, so
+        // the first frame starts fully covered by the startup black and dissolves
+        // to the live viewer over `STARTUP_FADE`. Starting it now (rather than at
+        // window creation) ties the fade to the moment there's actually something
+        // to reveal, so a slow surface setup doesn't eat into it.
+        self.fade = Some(FadeProgress {
+            elapsed: Duration::ZERO,
+            last_tick: Instant::now(),
+        });
 
         // Paint the first frame directly rather than waiting on the first
         // `RedrawRequested`, so the window shows the rendered scene as soon as
@@ -528,6 +572,12 @@ impl App {
         window.set_title("3D Review");
         self.update_camera_animation();
 
+        // Opacity of the launch fade cover this frame (1 = startup black, 0 =
+        // fully revealed). Advancing here clears `fade_start` once it reaches 0,
+        // so the steady state draws no cover; while it's > 0 the pacing logic
+        // below keeps requesting frames so the dissolve animates.
+        let cover_opacity = self.advance_startup_fade();
+
         let output_format = {
             let Some(egui_painter) = self.egui_painter.as_ref() else {
                 return;
@@ -569,6 +619,8 @@ impl App {
                     output_format,
                 );
                 ui_output = draw_overlay(ctx, &mut self.ui, camera);
+                // Above all chrome: the launch fade cover (no-op once revealed).
+                draw_startup_fade(ctx, cover_opacity);
             });
 
             egui_state.handle_platform_output(&window, full_output.platform_output.clone());
@@ -592,7 +644,10 @@ impl App {
             .renderer
             .as_ref()
             .is_some_and(Renderer::is_camera_animating);
-        self.repaint_at = if repaint_delay.is_zero() || camera_animating {
+        // The launch fade is continuous motion too: keep pacing frames while the
+        // cover is still dissolving so it doesn't stall on a static partial fade.
+        let fade_active = cover_opacity > 0.0;
+        self.repaint_at = if repaint_delay.is_zero() || camera_animating || fade_active {
             let frame_start = self.last_render_instant.unwrap_or_else(Instant::now);
             Some(frame_start + self.refresh_interval)
         } else if repaint_delay == Duration::MAX {
@@ -861,6 +916,34 @@ impl App {
             height,
             maximized: window.is_maximized(),
         });
+    }
+
+    /// Advance the launch fade-in and return this frame's cover opacity (1 =
+    /// startup black, 0 = fully revealed). Returns 0 and clears `fade` once the
+    /// animation is done, so it's a cheap no-op every frame thereafter. The curve
+    /// is an inverted smoothstep: the reveal starts gently from full black,
+    /// accelerates, then eases out as the viewer settles in.
+    ///
+    /// Time is accumulated from a *capped* per-frame delta rather than absolute
+    /// wall-clock: a slow first frame (pipeline warm-up, surface acquire, the OS
+    /// window-open animation) advances the fade by one frame's worth instead of
+    /// the whole stall, so the dissolve plays across real presented frames
+    /// instead of being skipped — which read as a snap.
+    fn advance_startup_fade(&mut self) -> f32 {
+        let Some(fade) = self.fade.as_mut() else {
+            return 0.0;
+        };
+        let now = Instant::now();
+        let step = now.duration_since(fade.last_tick).min(MAX_FADE_STEP);
+        fade.last_tick = now;
+        fade.elapsed += step;
+
+        if fade.elapsed >= STARTUP_FADE {
+            self.fade = None;
+            return 0.0;
+        }
+        let t = (fade.elapsed.as_secs_f32() / STARTUP_FADE.as_secs_f32()).clamp(0.0, 1.0);
+        1.0 - t * t * (3.0 - 2.0 * t)
     }
 
     fn update_camera_animation(&mut self) {

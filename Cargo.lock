@@ -2275,6 +2275,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wgpu",
+ "windows-sys 0.52.0",
  "winit",
  "winresource",
 ]

@@ -26,7 +26,7 @@ mod toolbar;
 mod widgets;
 
 pub use assets::install_fonts;
-pub use overlay::{draw_overlay, draw_viewport_scene};
+pub use overlay::{draw_overlay, draw_startup_fade, draw_viewport_scene};
 pub use state::{
     AxisGizmoAction, BoundingBoxPanelState, NormalPanelState, OptionPanel, UiOutput, UiState,
     UvCheckerPanelState, VertexColorPanelState, ViewAxis, ViewProjectionMode, WireframePanelState,
