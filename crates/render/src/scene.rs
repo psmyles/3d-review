@@ -12,12 +12,17 @@ use crate::geometry::{
 use crate::post::PostPass;
 use crate::targets::{SCENE_HDR_FORMAT, SceneTargets};
 use crate::{
-    ActiveMaterial, CameraProjection, CheckerTexture, OrbitCamera, SceneDebugOptions, ShadingMode,
-    UvCamera, UvShadingMode, VertexColorMode,
+    ActiveMaterial, AntiAliasing, CameraProjection, CheckerTexture, OrbitCamera, SceneDebugOptions,
+    ShadingMode, UvCamera, UvShadingMode, VertexColorMode,
 };
 
 pub const SCENE_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
-pub const SCENE_SAMPLE_COUNT: u32 = 4;
+/// MSAA sample count of egui's own framebuffer (the surface the composite pass
+/// draws into). Fixed: it antialiases the egui chrome and is what the painter is
+/// created with in `app`. Distinct from the scene's MSAA, which is dynamic
+/// ([`AntiAliasing::msaa`]) and resolved to a single-sample texture before this
+/// pass ever runs — so the two sample counts are deliberately independent.
+pub const EGUI_MSAA_SAMPLE_COUNT: u32 = 4;
 
 /// Background the offscreen scene target is cleared to each frame. Black in both
 /// gamma and linear, so it matches the previous direct-to-egui clear regardless
@@ -53,6 +58,9 @@ pub struct SceneCallback {
     model: Arc<ModelData>,
     model_revision: u64,
     debug_options: SceneDebugOptions,
+    /// Scene MSAA level + FXAA toggle. Drives the offscreen target / scene
+    /// pipeline sample count and the composite shader.
+    anti_aliasing: AntiAliasing,
     /// `Some` renders the 2D UV viewport instead of the 3D scene.
     uv_view: Option<UvView>,
 }
@@ -65,6 +73,7 @@ impl SceneCallback {
         model: Arc<ModelData>,
         model_revision: u64,
         debug_options: SceneDebugOptions,
+        anti_aliasing: AntiAliasing,
     ) -> Self {
         Self {
             camera,
@@ -73,6 +82,7 @@ impl SceneCallback {
             model,
             model_revision,
             debug_options,
+            anti_aliasing,
             uv_view: None,
         }
     }
@@ -94,6 +104,9 @@ impl SceneCallback {
             model,
             model_revision,
             debug_options: SceneDebugOptions::default(),
+            // The UV viewport keeps the default scene AA (4× MSAA, no FXAA), so
+            // switching to UV mode renders exactly as it did pre-Phase-2.
+            anti_aliasing: AntiAliasing::default(),
             uv_view: Some(UvView {
                 camera,
                 channel,
@@ -163,9 +176,11 @@ impl CallbackTrait for SceneCallback {
 
         // Render the scene (3D or UV) into the offscreen HDR target now, on egui's
         // encoder, so it runs before egui's main pass. `paint` then composites the
-        // resolved result into egui's framebuffer behind the chrome.
+        // resolved result into egui's framebuffer behind the chrome. Sync the
+        // targets / scene pipelines to the framebuffer size + MSAA level and feed
+        // the FXAA flag to the composite uniform first.
         let [width, height] = screen_descriptor.size_in_pixels;
-        resources.sync_targets(device, queue, width, height);
+        resources.sync_anti_aliasing(device, queue, width, height, self.anti_aliasing);
         self.encode_scene(resources, egui_encoder);
 
         Vec::new()
@@ -198,8 +213,8 @@ impl SceneCallback {
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("review_scene_offscreen_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &resources.targets.color_msaa_view,
-                resolve_target: Some(&resources.targets.color_resolved_view),
+                view: &resources.targets.color_render_view,
+                resolve_target: resources.targets.color_resolve_view.as_ref(),
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(SCENE_CLEAR_COLOR),
                     store: wgpu::StoreOp::Store,
@@ -314,7 +329,15 @@ impl SceneCallback {
 
 struct SceneResources {
     output_format: wgpu::TextureFormat,
-    /// Offscreen HDR color + depth the scene renders into, recreated on resize.
+    /// MSAA sample count the scene pipelines + targets are currently built for.
+    /// Rebuilt when the chosen [`AntiAliasing::msaa`] level changes.
+    scene_sample_count: u32,
+    /// Retained so the scene pipelines can be rebuilt when the MSAA level changes
+    /// (pipeline sample count is baked at creation).
+    shader: wgpu::ShaderModule,
+    pipeline_layout: wgpu::PipelineLayout,
+    /// Offscreen HDR color + depth the scene renders into, recreated on resize or
+    /// MSAA change.
     targets: SceneTargets,
     /// The fullscreen composite pass (offscreen scene → egui's framebuffer).
     post: PostPass,
@@ -484,70 +507,20 @@ impl SceneResources {
             push_constant_ranges: &[],
         });
 
-        // The wireframe (and other line overlays) share vertex positions with the
-        // shaded surface they trace, so they z-fight it: on curved faces edges sink
-        // behind the surface and drop out, and MSAA partial occlusion leaves the
-        // survivors uneven in opacity/thickness. We can't bias the lines directly —
-        // on DX12 depth bias applies only to triangle primitives — so instead the
-        // mesh pipeline pushes the shaded surface a hair *away* from the camera with
-        // a slope-scaled depth bias. Lines then render at their true depth and win
-        // the `LessEqual` test against the receded surface, while still being
-        // correctly occluded by geometry genuinely in front of them (slope-scaled
-        // bias is in real depth-buffer units, so it never over-pulls the far side
-        // through the front the way a constant clip-space line offset did).
-        // The scene pipelines now render into the offscreen HDR target
-        // (`SCENE_HDR_FORMAT`), not egui's framebuffer; the post pass composites
-        // the result back. Their depth / bias behavior is unchanged.
-        let mesh_pipeline = create_pipeline(
-            device,
-            &pipeline_layout,
-            &shader,
-            SCENE_HDR_FORMAT,
-            wgpu::PrimitiveTopology::TriangleList,
-            DepthConfig {
-                write_enabled: true,
-                bias: wgpu::DepthBiasState {
-                    constant: 2,
-                    slope_scale: 2.0,
-                    clamp: 0.0,
-                },
-            },
-            "review_scene_mesh_pipeline",
-        );
-        let line_pipeline = create_pipeline(
-            device,
-            &pipeline_layout,
-            &shader,
-            SCENE_HDR_FORMAT,
-            wgpu::PrimitiveTopology::LineList,
-            DepthConfig {
-                write_enabled: false,
-                bias: wgpu::DepthBiasState::default(),
-            },
-            "review_scene_line_pipeline",
-        );
-        // The UV island fill draws flat-color triangles in the 2D viewport. It
-        // never writes depth (everything sits at z=0) so the grid below and the
-        // wireframe above composite purely by draw order.
-        let uv_fill_pipeline = create_pipeline(
-            device,
-            &pipeline_layout,
-            &shader,
-            SCENE_HDR_FORMAT,
-            wgpu::PrimitiveTopology::TriangleList,
-            DepthConfig {
-                write_enabled: false,
-                bias: wgpu::DepthBiasState::default(),
-            },
-            "review_scene_uv_fill_pipeline",
-        );
+        // Scene pipelines start at the default MSAA level and are rebuilt by
+        // `sync_anti_aliasing` when the level changes (the sample count is baked
+        // into a pipeline at creation). `build_scene_pipelines` carries the
+        // depth-bias reasoning.
+        let scene_sample_count = AntiAliasing::default().msaa.sample_count();
+        let (mesh_pipeline, line_pipeline, uv_fill_pipeline) =
+            build_scene_pipelines(device, &pipeline_layout, &shader, scene_sample_count);
 
         // Offscreen targets + the composite pass. Targets start at 1x1 and are
         // recreated at the real framebuffer size on the first `prepare`
-        // (`sync_targets`); the post pass draws into egui's `output_format`.
-        let targets = SceneTargets::new(device, queue, 1, 1, SCENE_SAMPLE_COUNT);
+        // (`sync_anti_aliasing`); the post pass draws into egui's `output_format`.
+        let targets = SceneTargets::new(device, queue, 1, 1, scene_sample_count);
         let post = PostPass::new(device, output_format);
-        let post_bind_group = post.create_bind_group(device, &targets.color_resolved_view);
+        let post_bind_group = post.create_bind_group(device, targets.sampled_view());
 
         let line_vertices = scene_lines();
         let (mesh_vertex_buffer, mesh_index_buffer, mesh_index_count) =
@@ -573,6 +546,9 @@ impl SceneResources {
 
         Self {
             output_format,
+            scene_sample_count,
+            shader,
+            pipeline_layout,
             targets,
             post,
             post_bind_group,
@@ -613,19 +589,47 @@ impl SceneResources {
         }
     }
 
-    /// Recreate the offscreen targets (and the post bind group that samples them)
-    /// when the framebuffer size changes. A no-op when the size is unchanged, so
-    /// steady-state frames allocate nothing.
-    fn sync_targets(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, width: u32, height: u32) {
+    /// Bring the offscreen targets, scene pipelines and composite uniform in line
+    /// with the framebuffer size + the chosen antialiasing. Targets are recreated
+    /// when the size or MSAA level changes; the scene pipelines are rebuilt only
+    /// when the MSAA level changes (their sample count is baked at creation); the
+    /// FXAA flag + texel size are written every frame (cheap). Steady-state frames
+    /// (unchanged size/level) allocate nothing.
+    fn sync_anti_aliasing(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        anti_aliasing: AntiAliasing,
+    ) {
         let width = width.max(1);
         let height = height.max(1);
-        if self.targets.width == width && self.targets.height == height {
-            return;
+        // The master AA toggle collapses to single-sample + no FXAA when off; the
+        // panel's stored level/flag are honoured only while it is on.
+        let sample_count = anti_aliasing.effective_sample_count();
+
+        if self.scene_sample_count != sample_count {
+            let (mesh_pipeline, line_pipeline, uv_fill_pipeline) =
+                build_scene_pipelines(device, &self.pipeline_layout, &self.shader, sample_count);
+            self.mesh_pipeline = mesh_pipeline;
+            self.line_pipeline = line_pipeline;
+            self.uv_fill_pipeline = uv_fill_pipeline;
+            self.scene_sample_count = sample_count;
         }
-        self.targets = SceneTargets::new(device, queue, width, height, SCENE_SAMPLE_COUNT);
-        self.post_bind_group = self
-            .post
-            .create_bind_group(device, &self.targets.color_resolved_view);
+
+        let targets_stale = self.targets.width != width
+            || self.targets.height != height
+            || self.targets.sample_count != sample_count;
+        if targets_stale {
+            self.targets = SceneTargets::new(device, queue, width, height, sample_count);
+            self.post_bind_group = self
+                .post
+                .create_bind_group(device, self.targets.sampled_view());
+        }
+
+        self.post
+            .update_uniform(queue, width, height, anti_aliasing.effective_fxaa());
     }
 
     fn update_camera(
@@ -867,13 +871,86 @@ struct DepthConfig {
     bias: wgpu::DepthBiasState,
 }
 
+/// Build the three scene pipelines (mesh / line / UV-fill) for a given MSAA
+/// sample count. Rebuilt whenever the level changes, since the sample count is
+/// baked into pipeline state.
+///
+/// The wireframe (and other line overlays) share vertex positions with the
+/// shaded surface they trace, so they z-fight it: on curved faces edges sink
+/// behind the surface and drop out, and MSAA partial occlusion leaves the
+/// survivors uneven in opacity/thickness. We can't bias the lines directly — on
+/// DX12 depth bias applies only to triangle primitives — so instead the mesh
+/// pipeline pushes the shaded surface a hair *away* from the camera with a
+/// slope-scaled depth bias. Lines then render at their true depth and win the
+/// `LessEqual` test against the receded surface, while still being correctly
+/// occluded by geometry genuinely in front of them (slope-scaled bias is in real
+/// depth-buffer units, so it never over-pulls the far side through the front the
+/// way a constant clip-space line offset did). The scene pipelines render into
+/// the offscreen HDR target (`SCENE_HDR_FORMAT`), not egui's framebuffer; the
+/// post pass composites the result back.
+fn build_scene_pipelines(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    sample_count: u32,
+) -> (
+    wgpu::RenderPipeline,
+    wgpu::RenderPipeline,
+    wgpu::RenderPipeline,
+) {
+    let mesh_pipeline = create_pipeline(
+        device,
+        layout,
+        shader,
+        wgpu::PrimitiveTopology::TriangleList,
+        DepthConfig {
+            write_enabled: true,
+            bias: wgpu::DepthBiasState {
+                constant: 2,
+                slope_scale: 2.0,
+                clamp: 0.0,
+            },
+        },
+        sample_count,
+        "review_scene_mesh_pipeline",
+    );
+    let line_pipeline = create_pipeline(
+        device,
+        layout,
+        shader,
+        wgpu::PrimitiveTopology::LineList,
+        DepthConfig {
+            write_enabled: false,
+            bias: wgpu::DepthBiasState::default(),
+        },
+        sample_count,
+        "review_scene_line_pipeline",
+    );
+    // The UV island fill draws flat-color triangles in the 2D viewport. It never
+    // writes depth (everything sits at z=0) so the grid below and the wireframe
+    // above composite purely by draw order.
+    let uv_fill_pipeline = create_pipeline(
+        device,
+        layout,
+        shader,
+        wgpu::PrimitiveTopology::TriangleList,
+        DepthConfig {
+            write_enabled: false,
+            bias: wgpu::DepthBiasState::default(),
+        },
+        sample_count,
+        "review_scene_uv_fill_pipeline",
+    );
+    (mesh_pipeline, line_pipeline, uv_fill_pipeline)
+}
+
 fn create_pipeline(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
     shader: &wgpu::ShaderModule,
-    output_format: wgpu::TextureFormat,
     topology: wgpu::PrimitiveTopology,
     depth: DepthConfig,
+    sample_count: u32,
     label: &'static str,
 ) -> wgpu::RenderPipeline {
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -902,7 +979,7 @@ fn create_pipeline(
             bias: depth.bias,
         }),
         multisample: wgpu::MultisampleState {
-            count: SCENE_SAMPLE_COUNT,
+            count: sample_count,
             mask: !0,
             alpha_to_coverage_enabled: false,
         },
@@ -910,7 +987,7 @@ fn create_pipeline(
             module: shader,
             entry_point: Some("fs_main"),
             targets: &[Some(wgpu::ColorTargetState {
-                format: output_format,
+                format: SCENE_HDR_FORMAT,
                 blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,
             })],

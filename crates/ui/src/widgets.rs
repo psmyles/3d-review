@@ -184,6 +184,19 @@ pub(crate) fn labeled_slider(
     });
 }
 
+/// A label + checkbox row using the shared two-column table layout. The checkbox
+/// (no inline text — the label cell carries it) sits left-aligned in the control
+/// column so it lines up with the other panel controls.
+pub(crate) fn labeled_checkbox(ui: &mut egui::Ui, label: &str, value: &mut bool) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let _control_w = table_label_cell(ui, label);
+        // Keep the box the same height as other control rows so the row aligns.
+        ui.spacing_mut().interact_size.y = size::PANEL_ROW_H;
+        ui.add(egui::Checkbox::new(value, ""));
+    });
+}
+
 /// A row of clickable color swatches; clicking one writes it into `selected`.
 pub(crate) fn color_swatch_row(
     ui: &mut egui::Ui,

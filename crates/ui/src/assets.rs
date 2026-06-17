@@ -95,6 +95,11 @@ pub(crate) const ICON_INFO: AppIcon = AppIcon {
     id: "icon_info",
     png_bytes: include_bytes!("../../../assets/icons/icon_info.png"),
 };
+/// "Anti aliasing" — opens the MSAA / FXAA options panel (status bar, right).
+pub(crate) const ICON_ANTI_ALIASING: AppIcon = AppIcon {
+    id: "icon_anti_aliasing",
+    png_bytes: include_bytes!("../../../assets/icons/icon_anti_aliasing.png"),
+};
 pub(crate) const ICON_CLOSE: AppIcon = AppIcon {
     id: "icon_close",
     png_bytes: include_bytes!("../../../assets/icons/icon_close.png"),

@@ -1,17 +1,27 @@
 // Post / composite pass: samples the resolved offscreen scene color and writes it
-// into egui's framebuffer, behind the chrome (CLAUDE.md render roadmap, Phase 1).
+// into egui's framebuffer, behind the chrome (CLAUDE.md render roadmap, Phase 1),
+// optionally running FXAA first (Phase 2).
 //
-// Phase 1 is a straight passthrough. The scene shader still owns lighting, tone
-// mapping and the sRGB encode, so the offscreen target already holds final
-// display-space color and this pass only blits it — keeping the composited image
-// byte-for-byte what egui produced when the scene drew directly into its pass.
-// This is the seam where tone mapping / bloom / FXAA move once the scene renders
-// in linear HDR (see `targets.rs` SCENE_HDR_FORMAT).
+// The scene shader still owns lighting, tone mapping and the sRGB encode, so the
+// offscreen target already holds final display-space color and this pass either
+// blits it straight through (byte-for-byte what egui produced when the scene drew
+// directly into its pass) or runs an FXAA edge-blend over it. FXAA operates on
+// display-space luma, which is exactly the space it was designed for. This is the
+// seam where tone mapping / bloom move once the scene renders in linear HDR (see
+// `targets.rs` SCENE_HDR_FORMAT).
 
 @group(0) @binding(0)
 var scene_color: texture_2d<f32>;
 @group(0) @binding(1)
 var scene_sampler: sampler;
+
+struct PostUniforms {
+    inv_resolution: vec2<f32>,
+    fxaa_enabled: u32,
+    _pad: u32,
+};
+@group(0) @binding(2)
+var<uniform> post: PostUniforms;
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
@@ -37,7 +47,64 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
     return out;
 }
 
+// Perceptual luma weights (Rec. 601), the standard FXAA edge metric.
+const LUMA: vec3<f32> = vec3<f32>(0.299, 0.587, 0.114);
+
+// Classic NVIDIA FXAA II ("console" quality) edge-blend. Cheap, dependency-free,
+// and a good match for a single full-screen post pass over LDR color.
+fn fxaa(uv: vec2<f32>) -> vec3<f32> {
+    let span_max = 8.0;
+    let reduce_mul = 1.0 / 8.0;
+    let reduce_min = 1.0 / 128.0;
+    let inv = post.inv_resolution;
+
+    let rgb_nw = textureSample(scene_color, scene_sampler, uv + vec2<f32>(-1.0, -1.0) * inv).rgb;
+    let rgb_ne = textureSample(scene_color, scene_sampler, uv + vec2<f32>(1.0, -1.0) * inv).rgb;
+    let rgb_sw = textureSample(scene_color, scene_sampler, uv + vec2<f32>(-1.0, 1.0) * inv).rgb;
+    let rgb_se = textureSample(scene_color, scene_sampler, uv + vec2<f32>(1.0, 1.0) * inv).rgb;
+    let rgb_m = textureSample(scene_color, scene_sampler, uv).rgb;
+
+    let luma_nw = dot(rgb_nw, LUMA);
+    let luma_ne = dot(rgb_ne, LUMA);
+    let luma_sw = dot(rgb_sw, LUMA);
+    let luma_se = dot(rgb_se, LUMA);
+    let luma_m = dot(rgb_m, LUMA);
+
+    let luma_min = min(luma_m, min(min(luma_nw, luma_ne), min(luma_sw, luma_se)));
+    let luma_max = max(luma_m, max(max(luma_nw, luma_ne), max(luma_sw, luma_se)));
+
+    // Edge direction perpendicular to the local luma gradient.
+    var dir = vec2<f32>(
+        -((luma_nw + luma_ne) - (luma_sw + luma_se)),
+        ((luma_nw + luma_sw) - (luma_ne + luma_se)),
+    );
+
+    let dir_reduce = max((luma_nw + luma_ne + luma_sw + luma_se) * 0.25 * reduce_mul, reduce_min);
+    let rcp_dir_min = 1.0 / (min(abs(dir.x), abs(dir.y)) + dir_reduce);
+    dir = clamp(dir * rcp_dir_min, vec2<f32>(-span_max), vec2<f32>(span_max)) * inv;
+
+    // Two-tap inner average and a four-tap wider average; pick the wider one
+    // unless it strays outside the local luma range (which would over-blur).
+    let rgb_a = 0.5 * (
+        textureSample(scene_color, scene_sampler, uv + dir * (1.0 / 3.0 - 0.5)).rgb
+        + textureSample(scene_color, scene_sampler, uv + dir * (2.0 / 3.0 - 0.5)).rgb
+    );
+    let rgb_b = rgb_a * 0.5 + 0.25 * (
+        textureSample(scene_color, scene_sampler, uv + dir * -0.5).rgb
+        + textureSample(scene_color, scene_sampler, uv + dir * 0.5).rgb
+    );
+
+    let luma_b = dot(rgb_b, LUMA);
+    if (luma_b < luma_min || luma_b > luma_max) {
+        return rgb_a;
+    }
+    return rgb_b;
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    if (post.fxaa_enabled != 0u) {
+        return vec4<f32>(fxaa(input.uv), 1.0);
+    }
     return vec4<f32>(textureSample(scene_color, scene_sampler, input.uv).rgb, 1.0);
 }

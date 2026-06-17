@@ -6,7 +6,7 @@ mod post;
 mod scene;
 mod targets;
 
-pub use scene::{SCENE_DEPTH_FORMAT, SCENE_SAMPLE_COUNT, SceneCallback};
+pub use scene::{EGUI_MSAA_SAMPLE_COUNT, SCENE_DEPTH_FORMAT, SceneCallback};
 
 const CAMERA_TRANSITION_SECONDS: f32 = 0.3;
 /// Shorter transition used for the WASD 45° orbit steps, which fire repeatedly
@@ -60,6 +60,125 @@ pub enum CameraProjection {
     #[default]
     Perspective,
     Orthographic,
+}
+
+/// Multisample level for the offscreen scene render (the geometry MSAA). Distinct
+/// from egui's own framebuffer MSAA ([`EGUI_MSAA_SAMPLE_COUNT`], fixed): this is
+/// the per-edge antialiasing of the 3D scene, chosen at runtime. `Off` renders
+/// single-sample (no resolve); the rest render multisampled and resolve to a
+/// single-sample texture the composite pass samples.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MsaaSamples {
+    Off,
+    X2,
+    #[default]
+    X4,
+    X8,
+    X16,
+}
+
+impl MsaaSamples {
+    /// Every variant in ascending order, for building UI menus.
+    pub const ALL: [MsaaSamples; 5] = [
+        MsaaSamples::Off,
+        MsaaSamples::X2,
+        MsaaSamples::X4,
+        MsaaSamples::X8,
+        MsaaSamples::X16,
+    ];
+
+    /// The wgpu sample count this level maps to (`Off` = 1).
+    pub fn sample_count(self) -> u32 {
+        match self {
+            MsaaSamples::Off => 1,
+            MsaaSamples::X2 => 2,
+            MsaaSamples::X4 => 4,
+            MsaaSamples::X8 => 8,
+            MsaaSamples::X16 => 16,
+        }
+    }
+}
+
+/// The viewer's antialiasing configuration: a master on/off plus the MSAA level
+/// and an optional FXAA post-process pass. Read by [`SceneCallback`] to size the
+/// offscreen targets / scene pipelines and to drive the composite shader.
+///
+/// `enabled` is the toolbar toggle (left-click): when off, the scene renders with
+/// no antialiasing at all regardless of `msaa` / `fxaa`, but those settings are
+/// retained so toggling back on restores them. The default (enabled, 4× MSAA,
+/// FXAA off) matches the pre-Phase-2 fixed pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AntiAliasing {
+    pub enabled: bool,
+    pub msaa: MsaaSamples,
+    pub fxaa: bool,
+}
+
+impl Default for AntiAliasing {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            msaa: MsaaSamples::X4,
+            fxaa: false,
+        }
+    }
+}
+
+impl AntiAliasing {
+    /// The MSAA sample count to actually render at: the chosen level when AA is
+    /// enabled, otherwise 1 (single-sample, no resolve).
+    pub fn effective_sample_count(self) -> u32 {
+        if self.enabled {
+            self.msaa.sample_count()
+        } else {
+            1
+        }
+    }
+
+    /// Whether the FXAA post pass should run: only when AA is enabled *and* FXAA
+    /// is ticked.
+    pub fn effective_fxaa(self) -> bool {
+        self.enabled && self.fxaa
+    }
+}
+
+/// The MSAA levels the active adapter can actually render the scene at, in
+/// ascending order. Queried against both the HDR color and depth target formats
+/// so a level is only offered when both support it (invariant 4: capability-gate,
+/// never crash). `Off` (single-sample) is always included. The UI uses this to
+/// drop unsupported entries from the antialiasing menu.
+///
+/// `Adapter::get_texture_format_features` reports the adapter's full
+/// (adapter-specific) sample-count support regardless of which device features
+/// are enabled. We only get those extra counts on the *device* when
+/// `TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES` is enabled (the app enables it iff
+/// the adapter offers it). So unless that feature is present we clamp to the
+/// WebGPU-guaranteed counts (1 and 4) for these render formats — otherwise we'd
+/// offer a level whose pipeline build the device would reject.
+pub fn supported_msaa_levels(adapter: &wgpu::Adapter) -> Vec<MsaaSamples> {
+    let adapter_specific = adapter
+        .features()
+        .contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES);
+    let color = adapter
+        .get_texture_format_features(crate::targets::SCENE_HDR_FORMAT)
+        .flags;
+    let depth = adapter
+        .get_texture_format_features(SCENE_DEPTH_FORMAT)
+        .flags;
+    MsaaSamples::ALL
+        .into_iter()
+        .filter(|level| {
+            let count = level.sample_count();
+            // Single-sample and the WebGPU-guaranteed 4× are always safe; any
+            // other count requires the adapter to both report it and have the
+            // adapter-specific feature enabled on the device.
+            count == 1
+                || count == 4
+                || (adapter_specific
+                    && color.sample_count_supported(count)
+                    && depth.sample_count_supported(count))
+        })
+        .collect()
 }
 
 /// How the 2D UV viewport draws the model's UV layout. Mutually exclusive (the

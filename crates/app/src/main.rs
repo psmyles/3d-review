@@ -18,7 +18,8 @@ use glam::Vec2;
 use review_import::{LoadOptions, load_model};
 use review_model::ModelData;
 use review_render::{
-    Renderer, RendererConfig, SCENE_DEPTH_FORMAT, SCENE_SAMPLE_COUNT, ShadingMode,
+    EGUI_MSAA_SAMPLE_COUNT, Renderer, RendererConfig, SCENE_DEPTH_FORMAT, ShadingMode,
+    supported_msaa_levels,
 };
 use review_ui::{
     AxisGizmoAction, UiOutput, UiState, WorkspaceMode, draw_overlay, draw_startup_fade,
@@ -252,7 +253,7 @@ impl ApplicationHandler for App {
         let mut egui_painter = pollster::block_on(egui_wgpu::winit::Painter::new(
             egui_ctx.clone(),
             wgpu_configuration(renderer_config),
-            SCENE_SAMPLE_COUNT,
+            EGUI_MSAA_SAMPLE_COUNT,
             Some(SCENE_DEPTH_FORMAT),
             false,
             true,
@@ -273,6 +274,9 @@ impl ApplicationHandler for App {
             );
             // Surface the chosen backend in the startup help overlay.
             self.ui.gpu_backend = friendly_backend_name(adapter_info.backend);
+            // Gate the Anti Aliasing menu to the MSAA levels this adapter can
+            // actually render the scene at (invariant 4).
+            self.ui.supported_msaa = supported_msaa_levels(&render_state.adapter);
         }
 
         let egui_state = egui_winit::State::new(
@@ -1067,6 +1071,35 @@ fn friendly_backend_name(backend: wgpu::Backend) -> String {
 fn wgpu_configuration(renderer_config: RendererConfig) -> egui_wgpu::WgpuConfiguration {
     let mut setup = egui_wgpu::WgpuSetupCreateNew::default();
     setup.instance_descriptor.backends = renderer_config.preferred_backends;
+
+    // Mirror egui_wgpu's default device descriptor, but additionally request
+    // `TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES` when the adapter offers it. The
+    // WebGPU spec only guarantees sample counts [1, 4] for our HDR/depth render
+    // formats; the intermediate/high counts the adapter reports (2× / 8× here)
+    // are only usable on the device once that feature is enabled. Without it,
+    // building a scene pipeline at e.g. 2× MSAA fails validation. The feature is
+    // masked against the adapter's own features so we never request something it
+    // lacks (invariant 4); `supported_msaa_levels` mirrors this gating so the UI
+    // only offers what the device will actually accept.
+    setup.device_descriptor = std::sync::Arc::new(|adapter: &wgpu::Adapter| {
+        let base_limits = if adapter.get_info().backend == wgpu::Backend::Gl {
+            wgpu::Limits::downlevel_webgl2_defaults()
+        } else {
+            wgpu::Limits::default()
+        };
+        wgpu::DeviceDescriptor {
+            label: Some("egui wgpu device"),
+            required_features: adapter.features()
+                & wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+            required_limits: wgpu::Limits {
+                // Match egui's default: large enough for 4k+ surfaces with a depth
+                // buffer.
+                max_texture_dimension_2d: 8192,
+                ..base_limits
+            },
+            memory_hints: wgpu::MemoryHints::default(),
+        }
+    });
 
     egui_wgpu::WgpuConfiguration {
         wgpu_setup: egui_wgpu::WgpuSetup::CreateNew(setup),

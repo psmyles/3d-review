@@ -1,20 +1,36 @@
 //! The post / composite pass that draws the offscreen scene color into egui's
-//! framebuffer behind the chrome (CLAUDE.md render roadmap, Phase 1).
+//! framebuffer behind the chrome (CLAUDE.md render roadmap, Phase 1), with an
+//! optional FXAA edge-blend (Phase 2).
 //!
-//! Owns the fullscreen-triangle pipeline plus the sampler used to read the
-//! resolved scene target. The bind group is rebuilt by the caller whenever the
-//! target is recreated (resize), since it references the resolved texture view.
-//! For Phase 1 the shader is a passthrough (see `post.wgsl`); this is the seam
-//! tone mapping / bloom / FXAA slot into later.
+//! Owns the fullscreen-triangle pipeline, the sampler used to read the resolved
+//! scene target, and a small uniform carrying the inverse resolution + FXAA
+//! enable flag. The bind group is rebuilt by the caller whenever the target is
+//! recreated (resize / MSAA change), since it references the resolved texture
+//! view; the uniform is rewritten each frame. This pass is also the seam tone
+//! mapping / bloom slot into later.
 
-use crate::scene::{SCENE_DEPTH_FORMAT, SCENE_SAMPLE_COUNT};
+use bytemuck::{Pod, Zeroable};
+
+use crate::scene::{EGUI_MSAA_SAMPLE_COUNT, SCENE_DEPTH_FORMAT};
 
 const POST_SHADER: &str = include_str!("post.wgsl");
+
+/// Composite-pass uniform: the inverse framebuffer resolution (texel size, for
+/// FXAA neighbor taps) and whether FXAA is enabled. `#[repr(C)]` + `Pod` to match
+/// the WGSL `PostUniforms` layout (invariant 11).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct PostUniforms {
+    inv_resolution: [f32; 2],
+    fxaa_enabled: u32,
+    _pad: u32,
+}
 
 pub(crate) struct PostPass {
     pub(crate) pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    uniform_buffer: wgpu::Buffer,
 }
 
 impl PostPass {
@@ -45,17 +61,33 @@ impl PostPass {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
-        // The scene target matches the framebuffer 1:1, so the fullscreen blit
-        // never magnifies/minifies; nearest would do, but linear is harmless and
-        // future-proofs a differently-sized source.
+        // FXAA needs bilinear taps between texels; the passthrough path samples
+        // the target 1:1 (no magnify/minify), so linear is harmless there too.
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("review_post_sampler"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
+        });
+
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("review_post_uniform_buffer"),
+            size: std::mem::size_of::<PostUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -84,8 +116,11 @@ impl PostPass {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
+            // The composite pass draws into egui's framebuffer, so its sample
+            // count tracks egui's fixed MSAA — NOT the scene's (dynamic) MSAA,
+            // which is already resolved away into the single-sample target below.
             multisample: wgpu::MultisampleState {
-                count: SCENE_SAMPLE_COUNT,
+                count: EGUI_MSAA_SAMPLE_COUNT,
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
@@ -109,11 +144,12 @@ impl PostPass {
             pipeline,
             bind_group_layout,
             sampler,
+            uniform_buffer,
         }
     }
 
     /// (Re)build the bind group pointing at the resolved scene color view. Called
-    /// on creation and whenever the targets are recreated (resize).
+    /// on creation and whenever the targets are recreated (resize / MSAA change).
     pub(crate) fn create_bind_group(
         &self,
         device: &wgpu::Device,
@@ -131,7 +167,22 @@ impl PostPass {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(&self.sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.uniform_buffer.as_entire_binding(),
+                },
             ],
         })
+    }
+
+    /// Write the per-frame composite uniform: the texel size (for FXAA taps) and
+    /// the FXAA enable flag. Cheap; called every frame from `prepare`.
+    pub(crate) fn update_uniform(&self, queue: &wgpu::Queue, width: u32, height: u32, fxaa: bool) {
+        let uniforms = PostUniforms {
+            inv_resolution: [1.0 / width.max(1) as f32, 1.0 / height.max(1) as f32],
+            fxaa_enabled: u32::from(fxaa),
+            _pad: 0,
+        };
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }
 }
