@@ -94,6 +94,24 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
     output
 }
 
+/// Paint a full-screen cover over the entire viewer — the 3D/UV viewport *and*
+/// the egui chrome — at `opacity` (1 = fully hidden, 0 = fully revealed). `app`
+/// drives `opacity` from 1 down to 0 over the launch animation so the viewer
+/// dissolves in from the startup black instead of popping in at once. At
+/// `opacity <= 0` it draws nothing, so the steady state pays for no extra shape.
+///
+/// Drawn above every other layer (including the help overlay, which sits in
+/// `Foreground`) so the whole composed frame fades together.
+pub fn draw_startup_fade(ctx: &egui::Context, opacity: f32) {
+    if opacity <= 0.0 {
+        return;
+    }
+    let rect = ctx.screen_rect();
+    let cover = theme::with_opacity(color::STARTUP_COVER, opacity);
+    let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("startup_fade"));
+    ctx.layer_painter(layer).rect_filled(rect, 0.0, cover);
+}
+
 fn draw_option_panel(
     ctx: &egui::Context,
     state: &mut UiState,

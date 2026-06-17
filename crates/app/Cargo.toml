@@ -23,6 +23,15 @@ tracing-subscriber.workspace = true
 wgpu.workspace = true
 winit.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+# GDI used only by `startup_paint` to fill the new window black before the first
+# wgpu present (the one sanctioned exception to invariant 9).
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
 [target.'cfg(windows)'.build-dependencies]
 serde_json.workspace = true
 winresource.workspace = true
