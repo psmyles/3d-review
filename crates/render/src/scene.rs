@@ -9,6 +9,8 @@ use crate::geometry::{
     bounding_box_lines, face_normal_lines, model_mesh, scene_lines, uv_fill_triangles,
     uv_grid_lines, uv_wireframe_lines, vertex_normal_lines, wireframe_lines,
 };
+use crate::post::PostPass;
+use crate::targets::{SCENE_HDR_FORMAT, SceneTargets};
 use crate::{
     ActiveMaterial, CameraProjection, CheckerTexture, OrbitCamera, SceneDebugOptions, ShadingMode,
     UvCamera, UvShadingMode, VertexColorMode,
@@ -16,6 +18,17 @@ use crate::{
 
 pub const SCENE_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
 pub const SCENE_SAMPLE_COUNT: u32 = 4;
+
+/// Background the offscreen scene target is cleared to each frame. Black in both
+/// gamma and linear, so it matches the previous direct-to-egui clear regardless
+/// of the target's color space. (The post pass overwrites the whole framebuffer,
+/// so egui's own clear color no longer shows through in the scene region.)
+const SCENE_CLEAR_COLOR: wgpu::Color = wgpu::Color {
+    r: 0.0,
+    g: 0.0,
+    b: 0.0,
+    a: 1.0,
+};
 
 /// The scene shader (shaded / unlit / wireframe / uv-checker paths). Kept in a
 /// sibling `.wgsl` file but the `SceneUniforms` / `SceneVertex` layouts there
@@ -95,8 +108,8 @@ impl CallbackTrait for SceneCallback {
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        _screen_descriptor: &ScreenDescriptor,
-        _egui_encoder: &mut wgpu::CommandEncoder,
+        screen_descriptor: &ScreenDescriptor,
+        egui_encoder: &mut wgpu::CommandEncoder,
         callback_resources: &mut CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
         let resources = callback_resources
@@ -107,10 +120,10 @@ impl CallbackTrait for SceneCallback {
             *resources = SceneResources::new(device, queue, self.output_format);
         }
 
-        // UV viewport path: build only the UV wireframe (on demand, per channel /
-        // model) and frame it with the 2D camera. The 3D mesh / line views are
-        // left untouched and are rebuilt when the 3D scene is shown again.
         if let Some(uv) = self.uv_view {
+            // UV viewport path: build only the UV wireframe (on demand, per
+            // channel / model) and frame it with the 2D camera. The 3D mesh /
+            // line views are left untouched and rebuilt when the 3D scene returns.
             resources.sync_uv_view(
                 device,
                 &self.model,
@@ -119,30 +132,42 @@ impl CallbackTrait for SceneCallback {
                 uv.shading_mode,
             );
             resources.update_camera_uv(queue, uv.camera);
-            return Vec::new();
+        } else {
+            // Back in the 3D scene: free the (potentially large) UV wireframe so
+            // the steady-state view holds no derived UV buffer (invariant 3).
+            resources.free_uv_view(device);
+
+            if resources.model_revision != self.model_revision {
+                // A new model rebuilds the steady-state mesh and resets every
+                // derived line view to "not built" — they are (re)built on demand
+                // below only for the views currently switched on (invariant 3).
+                resources.update_model(
+                    device,
+                    &self.model,
+                    self.model_revision,
+                    self.debug_options,
+                );
+            } else if resources.mesh_uv_channel != self.debug_options.uv_channel {
+                // Switching UV channel only rebuilds the mesh vertex buffer's UVs;
+                // the rest of the derived geometry is channel-independent.
+                resources.update_mesh_channel(device, &self.model, self.debug_options.uv_channel);
+            }
+
+            // Build-on-demand / free-on-off for the derived line views: a view's
+            // buffer exists only while its toggle is on, and is rebuilt live when
+            // its baked length/color drifts from the current options (invariant 3).
+            resources.sync_line_views(device, &self.model, self.debug_options);
+
+            resources.update_camera(queue, self.camera, self.projection_mode, self.debug_options);
         }
 
-        // Back in the 3D scene: free the (potentially large) UV wireframe so the
-        // steady-state view holds no derived UV buffer (invariant 3).
-        resources.free_uv_view(device);
+        // Render the scene (3D or UV) into the offscreen HDR target now, on egui's
+        // encoder, so it runs before egui's main pass. `paint` then composites the
+        // resolved result into egui's framebuffer behind the chrome.
+        let [width, height] = screen_descriptor.size_in_pixels;
+        resources.sync_targets(device, queue, width, height);
+        self.encode_scene(resources, egui_encoder);
 
-        if resources.model_revision != self.model_revision {
-            // A new model rebuilds the steady-state mesh and resets every derived
-            // line view to "not built" — they are (re)built on demand below only
-            // for the views currently switched on (invariant 3).
-            resources.update_model(device, &self.model, self.model_revision, self.debug_options);
-        } else if resources.mesh_uv_channel != self.debug_options.uv_channel {
-            // Switching UV channel only rebuilds the mesh vertex buffer's UVs;
-            // the rest of the derived geometry is channel-independent.
-            resources.update_mesh_channel(device, &self.model, self.debug_options.uv_channel);
-        }
-
-        // Build-on-demand / free-on-off for the derived line views: a view's
-        // buffer exists only while its toggle is on, and is rebuilt live when its
-        // baked length/color drifts from the current options (invariant 3).
-        resources.sync_line_views(device, &self.model, self.debug_options);
-
-        resources.update_camera(queue, self.camera, self.projection_mode, self.debug_options);
         Vec::new()
     }
 
@@ -156,6 +181,51 @@ impl CallbackTrait for SceneCallback {
             return;
         };
 
+        // Composite the offscreen scene (already drawn + resolved in `prepare`)
+        // into egui's framebuffer with a single fullscreen blit, behind the chrome.
+        render_pass.set_pipeline(&resources.post.pipeline);
+        render_pass.set_bind_group(0, &resources.post_bind_group, &[]);
+        render_pass.draw(0..3, 0..1);
+    }
+}
+
+impl SceneCallback {
+    /// Record the scene into the offscreen HDR target: a single MSAA color pass
+    /// (resolved to a sampleable single-sample texture) with depth. The draw list
+    /// is identical to what used to run directly in egui's pass — only the target
+    /// changed — so the composited image is unchanged (Phase 1).
+    fn encode_scene(&self, resources: &SceneResources, encoder: &mut wgpu::CommandEncoder) {
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("review_scene_offscreen_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &resources.targets.color_msaa_view,
+                resolve_target: Some(&resources.targets.color_resolved_view),
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(SCENE_CLEAR_COLOR),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &resources.targets.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        self.record_scene(resources, &mut render_pass);
+    }
+
+    /// Draw the scene geometry into `render_pass` (the offscreen target). Branches
+    /// on `uv_view` for the 2D UV viewport vs the 3D scene.
+    fn record_scene<'pass>(
+        &self,
+        resources: &'pass SceneResources,
+        render_pass: &mut wgpu::RenderPass<'pass>,
+    ) {
         // UV viewport: draw the 0..1 grid, then the island fill (solid-shaded /
         // per-island modes only — empty otherwise), then the model's UV edges on
         // top. group 1 must still be bound to satisfy the shared pipeline layout
@@ -244,6 +314,13 @@ impl CallbackTrait for SceneCallback {
 
 struct SceneResources {
     output_format: wgpu::TextureFormat,
+    /// Offscreen HDR color + depth the scene renders into, recreated on resize.
+    targets: SceneTargets,
+    /// The fullscreen composite pass (offscreen scene → egui's framebuffer).
+    post: PostPass,
+    /// Bind group feeding the resolved scene color to `post`; rebuilt with
+    /// `targets`.
+    post_bind_group: wgpu::BindGroup,
     model_revision: u64,
     mesh_uv_channel: u32,
     mesh_pipeline: wgpu::RenderPipeline,
@@ -418,11 +495,14 @@ impl SceneResources {
         // correctly occluded by geometry genuinely in front of them (slope-scaled
         // bias is in real depth-buffer units, so it never over-pulls the far side
         // through the front the way a constant clip-space line offset did).
+        // The scene pipelines now render into the offscreen HDR target
+        // (`SCENE_HDR_FORMAT`), not egui's framebuffer; the post pass composites
+        // the result back. Their depth / bias behavior is unchanged.
         let mesh_pipeline = create_pipeline(
             device,
             &pipeline_layout,
             &shader,
-            output_format,
+            SCENE_HDR_FORMAT,
             wgpu::PrimitiveTopology::TriangleList,
             DepthConfig {
                 write_enabled: true,
@@ -438,7 +518,7 @@ impl SceneResources {
             device,
             &pipeline_layout,
             &shader,
-            output_format,
+            SCENE_HDR_FORMAT,
             wgpu::PrimitiveTopology::LineList,
             DepthConfig {
                 write_enabled: false,
@@ -453,7 +533,7 @@ impl SceneResources {
             device,
             &pipeline_layout,
             &shader,
-            output_format,
+            SCENE_HDR_FORMAT,
             wgpu::PrimitiveTopology::TriangleList,
             DepthConfig {
                 write_enabled: false,
@@ -461,6 +541,13 @@ impl SceneResources {
             },
             "review_scene_uv_fill_pipeline",
         );
+
+        // Offscreen targets + the composite pass. Targets start at 1x1 and are
+        // recreated at the real framebuffer size on the first `prepare`
+        // (`sync_targets`); the post pass draws into egui's `output_format`.
+        let targets = SceneTargets::new(device, queue, 1, 1, SCENE_SAMPLE_COUNT);
+        let post = PostPass::new(device, output_format);
+        let post_bind_group = post.create_bind_group(device, &targets.color_resolved_view);
 
         let line_vertices = scene_lines();
         let (mesh_vertex_buffer, mesh_index_buffer, mesh_index_count) =
@@ -486,6 +573,9 @@ impl SceneResources {
 
         Self {
             output_format,
+            targets,
+            post,
+            post_bind_group,
             model_revision: u64::MAX,
             mesh_uv_channel: 0,
             mesh_pipeline,
@@ -521,6 +611,21 @@ impl SceneResources {
             uv_fill_vertex_count,
             uv_fill_baked: None,
         }
+    }
+
+    /// Recreate the offscreen targets (and the post bind group that samples them)
+    /// when the framebuffer size changes. A no-op when the size is unchanged, so
+    /// steady-state frames allocate nothing.
+    fn sync_targets(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, width: u32, height: u32) {
+        let width = width.max(1);
+        let height = height.max(1);
+        if self.targets.width == width && self.targets.height == height {
+            return;
+        }
+        self.targets = SceneTargets::new(device, queue, width, height, SCENE_SAMPLE_COUNT);
+        self.post_bind_group = self
+            .post
+            .create_bind_group(device, &self.targets.color_resolved_view);
     }
 
     fn update_camera(
