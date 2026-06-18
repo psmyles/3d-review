@@ -25,6 +25,12 @@ pub(crate) const DEFAULT_NORMAL_LENGTH: f32 = 0.03;
 /// Inclusive normal-length range: 0.1%–10% of the model's largest bounding extent.
 pub(crate) const NORMAL_LENGTH_MIN: f32 = 0.001;
 pub(crate) const NORMAL_LENGTH_MAX: f32 = 0.10;
+pub(crate) const DEFAULT_WIREFRAME_SCREEN_THICKNESS: f32 = 1.0;
+pub(crate) const WIREFRAME_SCREEN_THICKNESS_MIN: f32 = 1.0;
+pub(crate) const WIREFRAME_SCREEN_THICKNESS_MAX: f32 = 8.0;
+pub(crate) const DEFAULT_WIREFRAME_WORLD_THICKNESS: f32 = 0.005;
+pub(crate) const WIREFRAME_WORLD_THICKNESS_MIN: f32 = 0.001;
+pub(crate) const WIREFRAME_WORLD_THICKNESS_MAX: f32 = 0.05;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum WorkspaceMode {
@@ -92,16 +98,23 @@ pub struct NormalPanelState {
 }
 
 /// Editable state backing the Wireframe options panel. The renderer bakes the
-/// chosen color into the wireframe line buffer via [`SceneDebugOptions`].
+/// chosen color into the final wireframe overlay segment buffer via
+/// [`SceneDebugOptions`].
 #[derive(Debug, Clone)]
 pub struct WireframePanelState {
     pub color: egui::Color32,
+    pub screen_thickness: f32,
+    pub world_thickness: f32,
+    pub use_world_units: bool,
 }
 
 impl Default for WireframePanelState {
     fn default() -> Self {
         Self {
             color: theme::color::WIREFRAME_DEFAULT,
+            screen_thickness: DEFAULT_WIREFRAME_SCREEN_THICKNESS,
+            world_thickness: DEFAULT_WIREFRAME_WORLD_THICKNESS,
+            use_world_units: false,
         }
     }
 }
@@ -325,5 +338,8 @@ pub(crate) fn sync_debug_state(state: &mut UiState) {
     state.debug.face_normal_color = theme::color32_to_rgba(state.face_normals.color);
     state.debug.vertex_normal_color = theme::color32_to_rgba(state.vertex_normals.color);
     state.debug.wireframe_color = theme::color32_to_rgba(state.wireframe.color);
+    state.debug.wireframe_screen_thickness = state.wireframe.screen_thickness;
+    state.debug.wireframe_world_thickness = state.wireframe.world_thickness;
+    state.debug.wireframe_use_world_units = state.wireframe.use_world_units;
     state.debug.bounding_box_color = theme::color32_to_rgba(state.bounding_box.color);
 }
