@@ -14,6 +14,7 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
         &mut state.wireframe.color,
         &color::WIREFRAME_SWATCHES,
     );
+    ui.add_space(size::PANEL_ROW_GAP);
     let (thickness, range) = if state.wireframe.use_world_units {
         (
             &mut state.wireframe.world_thickness,
@@ -26,6 +27,7 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
         )
     };
     labeled_slider(ui, "Thickness", thickness, range);
+    ui.add_space(size::PANEL_ROW_GAP);
     labeled_checkbox(ui, "Use World Units", &mut state.wireframe.use_world_units);
     ui.add_space(size::PANEL_ACTION_GAP);
     if wide_reset_button(ui).clicked() {
