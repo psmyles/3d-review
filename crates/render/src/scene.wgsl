@@ -155,9 +155,12 @@ fn fs_main(input: VertexOutput) -> FragOutput {
 
     // Grid / wireframe / normal lines carry a zero normal — they always render
     // their own vertex color and never pick up the checker / vertex-color tint.
-    // They emit no bloom or ambient, so overlays never glow or receive AO.
+    // They emit no bloom. Their ambient output has zero color but the overlay
+    // alpha, masking the mesh ambient beneath them so post AO only darkens the
+    // still-visible mesh fraction, not the overlay color itself.
     if (normal_length_sq < 1e-6) {
         out.color = vec4<f32>(srgb_to_linear(input.color.rgb), input.color.a);
+        out.ambient = vec4<f32>(0.0, 0.0, 0.0, input.color.a);
         return out;
     }
 
