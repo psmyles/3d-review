@@ -1,7 +1,7 @@
 //! Screen-space ambient occlusion (CLAUDE.md render roadmap, Phase 5): an
-//! occlusion pass over the scene's view-space normal+depth G-buffer, then a box
-//! blur to remove the per-pixel-rotation noise. The composite (`post.rs`)
-//! multiplies the blurred AO into the scene's ambient light.
+//! occlusion pass over a single-sample view-space normal+depth G-buffer, then a
+//! bilateral blur to remove per-pixel-rotation noise while respecting geometry
+//! edges. The composite (`post.rs`) applies the blurred AO only to ambient light.
 //!
 //! `SsaoPass` owns the (size-independent) pipelines, sampler and uniform (with the
 //! baked hemisphere kernel); the full-resolution AO ping/blur textures + the bind
@@ -85,11 +85,21 @@ impl SsaoPass {
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
@@ -151,12 +161,12 @@ impl SsaoPass {
         }
     }
 
-    /// Bind group feeding `input_view` (the G-buffer for the SSAO pass, or the raw
-    /// AO for the blur pass) + the shared uniform.
-    pub(crate) fn bind_group(
+    /// Bind group feeding the single-sample G-buffer into the occlusion pass.
+    pub(crate) fn occlusion_bind_group(
         &self,
         device: &wgpu::Device,
-        input_view: &wgpu::TextureView,
+        gbuffer_view: &wgpu::TextureView,
+        dummy_ao_view: &wgpu::TextureView,
         label: &str,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -165,14 +175,51 @@ impl SsaoPass {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(input_view),
+                    resource: wgpu::BindingResource::TextureView(gbuffer_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    resource: wgpu::BindingResource::TextureView(dummy_ao_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.uniform.as_entire_binding(),
+                },
+            ],
+        })
+    }
+
+    /// Bind group feeding the single-sample G-buffer and raw AO into the bilateral
+    /// blur pass.
+    pub(crate) fn blur_bind_group(
+        &self,
+        device: &wgpu::Device,
+        gbuffer_view: &wgpu::TextureView,
+        raw_ao_view: &wgpu::TextureView,
+        label: &str,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(label),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(gbuffer_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(raw_ao_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
                     resource: self.uniform.as_entire_binding(),
                 },
             ],

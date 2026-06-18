@@ -1,7 +1,7 @@
 //! The bloom passes (CLAUDE.md render roadmap, Phase 4): a bright-pass extract
 //! from the scene's linear-HDR bloom source, then a separable Gaussian blur, all
-//! at half framebuffer resolution. The blurred result is added back over the
-//! display-space scene by the composite pass (`post.rs`).
+//! at half framebuffer resolution. The blurred result is added over the linear
+//! scene color by the composite pass (`post.rs`) before tone mapping.
 //!
 //! `BloomPass` owns the (size-independent) pipelines, sampler and per-step uniform
 //! buffers; the half-resolution ping-pong textures + the bind groups that point at

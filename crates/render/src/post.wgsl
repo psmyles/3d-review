@@ -1,14 +1,7 @@
-// Post / composite pass: samples the resolved offscreen scene color and writes it
-// into egui's framebuffer, behind the chrome (CLAUDE.md render roadmap, Phase 1),
-// optionally running FXAA first (Phase 2).
-//
-// The scene shader still owns lighting, tone mapping and the sRGB encode, so the
-// offscreen target already holds final display-space color and this pass either
-// blits it straight through (byte-for-byte what egui produced when the scene drew
-// directly into its pass) or runs an FXAA edge-blend over it. FXAA operates on
-// display-space luma, which is exactly the space it was designed for. This is the
-// seam where tone mapping / bloom move once the scene renders in linear HDR (see
-// `targets.rs` SCENE_HDR_FORMAT).
+// Post / composite pass: samples the resolved linear-HDR offscreen scene targets,
+// applies ambient-only SSAO, adds bloom, tone-maps, encodes to sRGB, and writes
+// the final LDR color into egui's framebuffer behind the chrome. FXAA operates on
+// the composed display-space result.
 
 @group(0) @binding(0)
 var scene_color: texture_2d<f32>;
@@ -34,6 +27,9 @@ var bloom_texture: texture_2d<f32>;
 // light when `ssao_enabled` is set.
 @group(0) @binding(4)
 var ssao_texture: texture_2d<f32>;
+// Linear HDR ambient radiance eligible for SSAO attenuation.
+@group(0) @binding(5)
+var ambient_texture: texture_2d<f32>;
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
@@ -62,6 +58,46 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
 // Perceptual luma weights (Rec. 601), the standard FXAA edge metric.
 const LUMA: vec3<f32> = vec3<f32>(0.299, 0.587, 0.114);
 
+fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
+    let lo = c * 12.92;
+    let hi = 1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - 0.055;
+    return select(hi, lo, c <= vec3<f32>(0.0031308));
+}
+
+// Khronos PBR Neutral tone mapping (Rec.709 linear), ported from
+// https://github.com/KhronosGroup/ToneMapping/tree/main/PBR_Neutral
+// Rolls off highlights >1.0 gracefully instead of hard per-channel clipping,
+// preserving hue with only controlled desaturation near white.
+fn pbr_neutral_tonemap(color_in: vec3<f32>) -> vec3<f32> {
+    let start_compression = 0.8 - 0.04;
+    let desaturation = 0.15;
+    var color = color_in;
+    let x = min(color.r, min(color.g, color.b));
+    let offset = select(0.04, x - 6.25 * x * x, x < 0.08);
+    color = color - offset;
+    let peak = max(color.r, max(color.g, color.b));
+    if (peak < start_compression) { return color; }
+    let d = 1.0 - start_compression;
+    let new_peak = 1.0 - d * d / (peak + d - start_compression);
+    color = color * (new_peak / peak);
+    let g = 1.0 - 1.0 / (desaturation * (peak - new_peak) + 1.0);
+    return mix(color, new_peak * vec3<f32>(1.0, 1.0, 1.0), g);
+}
+
+fn compose_ldr(uv: vec2<f32>) -> vec3<f32> {
+    var lit = textureSample(scene_color, scene_sampler, uv).rgb;
+    if (post.ssao_enabled != 0u) {
+        let ao = textureSample(ssao_texture, scene_sampler, uv).r;
+        let ambient = textureSample(ambient_texture, scene_sampler, uv).rgb;
+        lit = max(lit - ambient * (1.0 - ao), vec3<f32>(0.0));
+    }
+    if (post.bloom_enabled != 0u) {
+        let bloom = textureSample(bloom_texture, scene_sampler, uv).rgb;
+        lit = lit + bloom * post.bloom_intensity;
+    }
+    return linear_to_srgb(pbr_neutral_tonemap(lit));
+}
+
 // Classic NVIDIA FXAA II ("console" quality) edge-blend. Cheap, dependency-free,
 // and a good match for a single full-screen post pass over LDR color.
 fn fxaa(uv: vec2<f32>) -> vec3<f32> {
@@ -70,11 +106,11 @@ fn fxaa(uv: vec2<f32>) -> vec3<f32> {
     let reduce_min = 1.0 / 128.0;
     let inv = post.inv_resolution;
 
-    let rgb_nw = textureSample(scene_color, scene_sampler, uv + vec2<f32>(-1.0, -1.0) * inv).rgb;
-    let rgb_ne = textureSample(scene_color, scene_sampler, uv + vec2<f32>(1.0, -1.0) * inv).rgb;
-    let rgb_sw = textureSample(scene_color, scene_sampler, uv + vec2<f32>(-1.0, 1.0) * inv).rgb;
-    let rgb_se = textureSample(scene_color, scene_sampler, uv + vec2<f32>(1.0, 1.0) * inv).rgb;
-    let rgb_m = textureSample(scene_color, scene_sampler, uv).rgb;
+    let rgb_nw = compose_ldr(uv + vec2<f32>(-1.0, -1.0) * inv);
+    let rgb_ne = compose_ldr(uv + vec2<f32>(1.0, -1.0) * inv);
+    let rgb_sw = compose_ldr(uv + vec2<f32>(-1.0, 1.0) * inv);
+    let rgb_se = compose_ldr(uv + vec2<f32>(1.0, 1.0) * inv);
+    let rgb_m = compose_ldr(uv);
 
     let luma_nw = dot(rgb_nw, LUMA);
     let luma_ne = dot(rgb_ne, LUMA);
@@ -98,12 +134,12 @@ fn fxaa(uv: vec2<f32>) -> vec3<f32> {
     // Two-tap inner average and a four-tap wider average; pick the wider one
     // unless it strays outside the local luma range (which would over-blur).
     let rgb_a = 0.5 * (
-        textureSample(scene_color, scene_sampler, uv + dir * (1.0 / 3.0 - 0.5)).rgb
-        + textureSample(scene_color, scene_sampler, uv + dir * (2.0 / 3.0 - 0.5)).rgb
+        compose_ldr(uv + dir * (1.0 / 3.0 - 0.5))
+        + compose_ldr(uv + dir * (2.0 / 3.0 - 0.5))
     );
     let rgb_b = rgb_a * 0.5 + 0.25 * (
-        textureSample(scene_color, scene_sampler, uv + dir * -0.5).rgb
-        + textureSample(scene_color, scene_sampler, uv + dir * 0.5).rgb
+        compose_ldr(uv + dir * -0.5)
+        + compose_ldr(uv + dir * 0.5)
     );
 
     let luma_b = dot(rgb_b, LUMA);
@@ -113,46 +149,11 @@ fn fxaa(uv: vec2<f32>) -> vec3<f32> {
     return rgb_b;
 }
 
-// sRGB transfer functions, so bloom can be added in linear light. The scene
-// color is display-space (sRGB-encoded by the scene shader); bloom is linear HDR.
-fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
-    let lo = c / 12.92;
-    let hi = pow((c + 0.055) / 1.055, vec3<f32>(2.4));
-    return select(hi, lo, c <= vec3<f32>(0.04045));
-}
-
-fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
-    let lo = c * 12.92;
-    let hi = 1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - 0.055;
-    return select(hi, lo, c <= vec3<f32>(0.0031308));
-}
-
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    // The display-space scene color (FXAA'd or straight). When both bloom and SSAO
-    // are off this is returned untouched, so the composite stays byte-for-byte what
-    // it was before those effects existed.
-    var color = textureSample(scene_color, scene_sampler, input.uv).rgb;
+    var color = compose_ldr(input.uv);
     if (post.fxaa_enabled != 0u) {
         color = fxaa(input.uv);
     }
-
-    let bloom_on = post.bloom_enabled != 0u;
-    let ssao_on = post.ssao_enabled != 0u;
-    if (bloom_on || ssao_on) {
-        // Work in linear light: darken by ambient occlusion, then add the blurred
-        // bloom (which is not occluded — highlights still glow), then re-encode.
-        var lit = srgb_to_linear(color);
-        if (ssao_on) {
-            let ao = textureSample(ssao_texture, scene_sampler, input.uv).r;
-            lit = lit * ao;
-        }
-        if (bloom_on) {
-            let bloom = textureSample(bloom_texture, scene_sampler, input.uv).rgb;
-            lit = lit + bloom * post.bloom_intensity;
-        }
-        return vec4<f32>(linear_to_srgb(lit), 1.0);
-    }
-
     return vec4<f32>(color, 1.0);
 }

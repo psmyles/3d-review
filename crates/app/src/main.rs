@@ -18,7 +18,7 @@ use glam::Vec2;
 use review_import::{LoadOptions, load_model};
 use review_model::ModelData;
 use review_render::{
-    EGUI_MSAA_SAMPLE_COUNT, Renderer, RendererConfig, SCENE_DEPTH_FORMAT, ShadingMode,
+    EGUI_DEPTH_FORMAT, EGUI_MSAA_SAMPLE_COUNT, Renderer, RendererConfig, ShadingMode,
     ibl_supported, ssao_supported, supported_msaa_levels,
 };
 use review_ui::{
@@ -254,7 +254,7 @@ impl ApplicationHandler for App {
             egui_ctx.clone(),
             wgpu_configuration(renderer_config),
             EGUI_MSAA_SAMPLE_COUNT,
-            Some(SCENE_DEPTH_FORMAT),
+            Some(EGUI_DEPTH_FORMAT),
             false,
             true,
         ));

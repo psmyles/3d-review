@@ -13,31 +13,25 @@
 
 use crate::scene::SCENE_DEPTH_FORMAT;
 
-/// Color format of the offscreen scene target. `Rgba16Float` is a linear,
-/// HDR-capable format: it gives later phases headroom above 1.0 for tone mapping
-/// and bloom without changing the target. Phase 1 still stores display-space
-/// color in it (the scene shader keeps owning lighting / tone map / sRGB encode,
-/// so compositing stays byte-for-byte what egui produced before); switching the
-/// scene shader to emit linear HDR is deferred to the phase that adds IBL/bloom.
+/// Color format of the offscreen scene targets. `Rgba16Float` is linear and
+/// HDR-capable: scene color, bloom source and ambient radiance all stay in linear
+/// light until the post pass tone-maps and encodes for display.
 pub(crate) const SCENE_HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// The named offscreen targets for one framebuffer size + MSAA level. Recreated
 /// wholesale when the framebuffer is resized or the sample count changes
 /// (textures are immutable in both), via `SceneResources::sync_targets`.
 ///
-/// The scene geometry pass renders to **two** color attachments (MRT): the
-/// display-space `color` the composite shows (tone-mapped + sRGB-encoded in the
-/// scene shader, exactly as before bloom existed) and a parallel **linear HDR**
-/// `bloom` target carrying the pre-tone-map radiance of the lit surfaces / skybox
-/// (overlays write 0 there, so they never glow). Bloom thresholds + blurs the
-/// `bloom` target; keeping the two separate is what lets bloom read true HDR
-/// without disturbing the display color or the overlays.
+/// The scene geometry pass renders to three color attachments (MRT): linear HDR
+/// `color`, linear HDR bloom source, and linear ambient radiance that SSAO is
+/// allowed to attenuate. The actual normal/depth SSAO G-buffer is a separate
+/// single-sample target owned alongside the AO pass.
 pub(crate) struct SceneTargets {
     pub(crate) width: u32,
     pub(crate) height: u32,
     /// MSAA sample count the scene renders at (1 = no multisampling).
     pub(crate) sample_count: u32,
-    /// Display-space color attachment the scene geometry renders into.
+    /// Linear HDR color attachment the scene geometry renders into.
     /// Multisampled when `sample_count > 1`, otherwise the single-sample sampled
     /// texture itself.
     pub(crate) color_render_view: wgpu::TextureView,
@@ -51,14 +45,12 @@ pub(crate) struct SceneTargets {
     /// Single-sample resolve of `bloom_render_view` (the texture bloom samples),
     /// present only when MSAA is on.
     pub(crate) bloom_resolve_view: Option<wgpu::TextureView>,
-    /// SSAO G-buffer attachment (MRT location 2): view-space normal in `xyz`,
-    /// view-space Z (linear depth, negative in front of the camera) in `w`. Packed
-    /// in one `Rgba16Float`, MSAA-matched. Overlays/skybox write 0 here, so SSAO
-    /// treats those pixels as background (unoccluded). See `scene.wgsl` `FragOutput`.
-    pub(crate) gbuffer_render_view: wgpu::TextureView,
-    /// Single-sample resolve of `gbuffer_render_view` (the texture SSAO samples),
+    /// Ambient radiance attachment (MRT location 2), MSAA-matched to the scene.
+    /// This stores only the lighting terms SSAO may darken.
+    pub(crate) ambient_render_view: wgpu::TextureView,
+    /// Single-sample resolve of `ambient_render_view` (the texture post samples),
     /// present only when MSAA is on.
-    pub(crate) gbuffer_resolve_view: Option<wgpu::TextureView>,
+    pub(crate) ambient_resolve_view: Option<wgpu::TextureView>,
     /// Depth used while drawing the scene, matching `sample_count`.
     pub(crate) depth_view: wgpu::TextureView,
 }
@@ -92,8 +84,8 @@ impl SceneTargets {
         } else {
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING
         };
-        // The two HDR color attachments (display-space color + linear bloom
-        // source) are created identically; only their role differs.
+        // The HDR color attachments are created identically; only their roles
+        // differ in the shaders and post pass.
         let make_render = |label: &str| {
             device
                 .create_texture(&wgpu::TextureDescriptor {
@@ -110,7 +102,7 @@ impl SceneTargets {
         };
         let color_render_view = make_render("review_scene_color_render");
         let bloom_render_view = make_render("review_scene_bloom_render");
-        let gbuffer_render_view = make_render("review_scene_gbuffer_render");
+        let ambient_render_view = make_render("review_scene_ambient_render");
 
         let depth = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("review_scene_depth"),
@@ -141,10 +133,10 @@ impl SceneTargets {
                 })
                 .create_view(&wgpu::TextureViewDescriptor::default())
         };
-        let (color_resolve_view, bloom_resolve_view, gbuffer_resolve_view) = if multisampled {
+        let (color_resolve_view, bloom_resolve_view, ambient_resolve_view) = if multisampled {
             let color_resolve = make_resolve("review_scene_color_resolved");
             let bloom_resolve = make_resolve("review_scene_bloom_resolved");
-            let gbuffer_resolve = make_resolve("review_scene_gbuffer_resolved");
+            let ambient_resolve = make_resolve("review_scene_ambient_resolved");
 
             // The resolve targets are only ever written by the MSAA resolve, never
             // by a clear/discard. wgpu's lazy zero-init doesn't fire for a resolve
@@ -158,7 +150,7 @@ impl SceneTargets {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("review_scene_resolve_init"),
             });
-            for view in [&color_resolve, &bloom_resolve, &gbuffer_resolve] {
+            for view in [&color_resolve, &bloom_resolve, &ambient_resolve] {
                 encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("review_scene_resolve_init_pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -179,7 +171,7 @@ impl SceneTargets {
             (
                 Some(color_resolve),
                 Some(bloom_resolve),
-                Some(gbuffer_resolve),
+                Some(ambient_resolve),
             )
         } else {
             (None, None, None)
@@ -193,8 +185,8 @@ impl SceneTargets {
             color_resolve_view,
             bloom_render_view,
             bloom_resolve_view,
-            gbuffer_render_view,
-            gbuffer_resolve_view,
+            ambient_render_view,
+            ambient_resolve_view,
             depth_view,
         }
     }
@@ -216,12 +208,12 @@ impl SceneTargets {
             .unwrap_or(&self.bloom_render_view)
     }
 
-    /// The single-sample SSAO G-buffer (view normal + view Z) the SSAO pass reads:
-    /// the resolve when MSAA is on, otherwise the (already single-sample) render
+    /// The single-sample ambient radiance texture the composite pass samples:
+    /// the resolve when MSAA is on, otherwise the already single-sample render
     /// texture.
-    pub(crate) fn sampled_gbuffer_view(&self) -> &wgpu::TextureView {
-        self.gbuffer_resolve_view
+    pub(crate) fn sampled_ambient_view(&self) -> &wgpu::TextureView {
+        self.ambient_resolve_view
             .as_ref()
-            .unwrap_or(&self.gbuffer_render_view)
+            .unwrap_or(&self.ambient_render_view)
     }
 }
