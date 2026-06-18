@@ -15,8 +15,10 @@ struct SceneUniforms {
     // Image-based lighting: x = IBL enabled (>0.5), y = intensity, z = show
     // background skybox (>0.5), w = prefiltered-cube max mip LOD.
     env_params: vec4<f32>,
+    // Projection metadata: x = orthographic projection (>0.5), y/z/w unused.
+    projection_params: vec4<f32>,
     // View matrix (world -> view), for writing the view-space normal + depth into
-    // the SSAO G-buffer (MRT location 2).
+    // the separate SSAO G-buffer pass.
     view: mat4x4<f32>,
 };
 
@@ -74,40 +76,13 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     return output;
 }
 
-// egui hands us a non-sRGB (gamma-space) framebuffer, so the scene shader must
-// do its own color management: decode sRGB inputs to linear, light/tone-map in
-// linear, then re-encode to sRGB on output. (The checker texture is sampled as
-// Rgba8UnormSrgb and is therefore already linear at this point.)
+// Decode sRGB-authored vertex colors into the scene's linear HDR working space.
+// Tone mapping and final sRGB encoding happen once in `post.wgsl`. The checker
+// texture is sampled as Rgba8UnormSrgb and is therefore already linear here.
 fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     let lo = c / 12.92;
     let hi = pow((c + 0.055) / 1.055, vec3<f32>(2.4));
     return select(hi, lo, c <= vec3<f32>(0.04045));
-}
-
-fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
-    let lo = c * 12.92;
-    let hi = 1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - 0.055;
-    return select(hi, lo, c <= vec3<f32>(0.0031308));
-}
-
-// Khronos PBR Neutral tone mapping (Rec.709 linear), ported from
-// https://github.com/KhronosGroup/ToneMapping/tree/main/PBR_Neutral
-// Rolls off highlights >1.0 gracefully instead of hard per-channel clipping,
-// preserving hue with only controlled desaturation near white.
-fn pbr_neutral_tonemap(color_in: vec3<f32>) -> vec3<f32> {
-    let start_compression = 0.8 - 0.04;
-    let desaturation = 0.15;
-    var color = color_in;
-    let x = min(color.r, min(color.g, color.b));
-    let offset = select(0.04, x - 6.25 * x * x, x < 0.08);
-    color = color - offset;
-    let peak = max(color.r, max(color.g, color.b));
-    if (peak < start_compression) { return color; }
-    let d = 1.0 - start_compression;
-    let new_peak = 1.0 - d * d / (peak + d - start_compression);
-    color = color * (new_peak / peak);
-    let g = 1.0 - 1.0 / (desaturation * (peak - new_peak) + 1.0);
-    return mix(color, new_peak * vec3<f32>(1.0, 1.0, 1.0), g);
 }
 
 // Fresnel-Schlick with a roughness term, so rough surfaces don't over-brighten
@@ -117,11 +92,17 @@ fn fresnel_schlick_roughness(cos_theta: f32, f0: vec3<f32>, roughness: f32) -> v
     return f0 + (max(inv_rough, f0) - f0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);
 }
 
+struct ShadingResult {
+    color: vec3<f32>,
+    ambient: vec3<f32>,
+};
+
 // Environment-lit metallic-roughness PBR for the shaded path. `albedo` is linear.
 // The imported material carries no metallic channel (CLAUDE.md Phase 3 decision),
 // so the surface is treated as a dielectric and roughness comes from the material
-// smoothness. Returns linear radiance (tone mapping happens at the end of fs_main).
-fn shade_ibl(albedo: vec3<f32>, world_normal: vec3<f32>, world_pos: vec3<f32>, roughness: f32) -> vec3<f32> {
+// smoothness. Returns linear radiance and the diffuse ambient term SSAO may
+// attenuate (tone mapping happens in post).
+fn shade_ibl(albedo: vec3<f32>, world_normal: vec3<f32>, world_pos: vec3<f32>, roughness: f32) -> ShadingResult {
     let metallic = 0.0;
     let n = normalize(world_normal);
     let v = normalize(uniforms.camera_position.xyz - world_pos);
@@ -142,26 +123,26 @@ fn shade_ibl(albedo: vec3<f32>, world_normal: vec3<f32>, world_pos: vec3<f32>, r
     let specular = prefiltered * (fresnel * brdf.x + brdf.y);
 
     let kd = (vec3<f32>(1.0) - fresnel) * (1.0 - metallic);
-    return (kd * diffuse + specular) * uniforms.env_params.y;
+    let ambient = kd * diffuse * uniforms.env_params.y;
+    return ShadingResult(ambient + specular * uniforms.env_params.y, ambient);
 }
 
-// Scene fragment output (MRT): location 0 is the display-space color the
-// composite shows (tone-mapped + sRGB-encoded here, exactly as before bloom);
-// location 1 is the linear pre-tone-map HDR radiance bloom thresholds; location 2
-// is the SSAO G-buffer (view-space normal in xyz, view-space Z in w). Overlays
-// write 0 to locations 1 and 2 so grid / wireframe / normal lines never glow and
-// never generate ambient occlusion.
+// Scene fragment output (MRT): location 0 is the linear HDR color the composite
+// tone-maps; location 1 is the linear HDR radiance bloom thresholds;
+// location 2 is the linear ambient radiance SSAO may attenuate. Overlays write 0
+// alpha to locations 1 and 2 so grid / wireframe / normal lines never glow and
+// never darken.
 struct FragOutput {
     @location(0) color: vec4<f32>,
     @location(1) bloom: vec4<f32>,
-    @location(2) gbuffer: vec4<f32>,
+    @location(2) ambient: vec4<f32>,
 };
 
 @fragment
 fn fs_main(input: VertexOutput) -> FragOutput {
     var out: FragOutput;
-    out.bloom = vec4<f32>(0.0, 0.0, 0.0, 1.0);
-    out.gbuffer = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    out.bloom = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    out.ambient = vec4<f32>(0.0, 0.0, 0.0, 0.0);
 
     let shading_mode = uniforms.render_options.x;
     let uv_checker_enabled = uniforms.render_options.y > 0.5;
@@ -174,19 +155,11 @@ fn fs_main(input: VertexOutput) -> FragOutput {
 
     // Grid / wireframe / normal lines carry a zero normal — they always render
     // their own vertex color and never pick up the checker / vertex-color tint.
-    // They emit no bloom (`out.bloom` stays 0), so overlays never glow.
+    // They emit no bloom or ambient, so overlays never glow or receive AO.
     if (normal_length_sq < 1e-6) {
-        out.color = input.color;
+        out.color = vec4<f32>(srgb_to_linear(input.color.rgb), input.color.a);
         return out;
     }
-
-    // Real geometry: write the view-space normal + linear view Z into the SSAO
-    // G-buffer (both the unlit and shaded paths below carry it). View Z is negative
-    // in front of the camera; SSAO treats the zero left by overlays/background as
-    // unoccluded.
-    let view_pos = uniforms.view * vec4<f32>(input.world_position, 1.0);
-    let view_normal = normalize((uniforms.view * vec4<f32>(input.normal, 0.0)).xyz);
-    out.gbuffer = vec4<f32>(view_normal, view_pos.z);
 
     // Work in linear space. The material color is authored in sRGB/gamma space;
     // the checker sample is already linear (sRGB texture format).
@@ -214,7 +187,7 @@ fn fs_main(input: VertexOutput) -> FragOutput {
     if (shading_mode < 1.5) {
         // Unlit: flat emissive material color. Carry its linear value to the bloom
         // target so a bright unlit surface can glow past the threshold.
-        out.color = vec4<f32>(linear_to_srgb(base_color), out_alpha);
+        out.color = vec4<f32>(base_color, out_alpha);
         out.bloom = vec4<f32>(base_color, 1.0);
         return out;
     }
@@ -223,13 +196,16 @@ fn fs_main(input: VertexOutput) -> FragOutput {
     let smoothness = clamp(input.smoothness, 0.0, 1.0);
 
     var color_linear: vec3<f32>;
+    var ambient_linear: vec3<f32>;
     if (uniforms.env_params.x > 0.5) {
         // Image-based lighting (the default Shaded look): metallic-roughness PBR
         // sampling the precomputed environment maps. Roughness from the material
         // smoothness, clamped away from a perfect mirror so the lowest mip still
         // reads as a surface.
         let roughness = clamp(1.0 - smoothness, 0.04, 1.0);
-        color_linear = shade_ibl(base_color, input.normal, input.world_position, roughness);
+        let shaded = shade_ibl(base_color, input.normal, input.world_position, roughness);
+        color_linear = shaded.color;
+        ambient_linear = shaded.ambient;
     } else {
         // Analytic fallback: the neutral-grey hemisphere + Blinn-Phong specular
         // used before IBL. Kept so disabling IBL restores the previous look.
@@ -239,7 +215,9 @@ fn fs_main(input: VertexOutput) -> FragOutput {
         let sky = vec3<f32>(0.63, 0.63, 0.63);
         let ground = vec3<f32>(0.11, 0.11, 0.11);
         let hemi = mix(ground, sky, hemi_t);
-        let lighting = hemi * 0.55 + vec3<f32>(1.0, 1.0, 1.0) * (0.20 + diffuse * 0.75);
+        let ambient_light = hemi * 0.55 + vec3<f32>(1.0, 1.0, 1.0) * 0.20;
+        let direct_light = vec3<f32>(1.0, 1.0, 1.0) * (diffuse * 0.75);
+        let lighting = ambient_light + direct_light;
         let lit = base_color * lighting;
 
         let view_dir = normalize(uniforms.camera_position.xyz - input.world_position);
@@ -247,14 +225,25 @@ fn fs_main(input: VertexOutput) -> FragOutput {
         let shininess = exp2(1.0 + smoothness * 10.0);
         let spec = pow(max(dot(n, half_dir), 0.0), shininess) * smoothness * step(0.0, diffuse);
         color_linear = lit + vec3<f32>(spec);
+        ambient_linear = base_color * ambient_light;
     }
 
-    let mapped = pbr_neutral_tonemap(color_linear);
-    out.color = vec4<f32>(linear_to_srgb(mapped), out_alpha);
-    // Bloom reads the pre-tone-map linear radiance, so bright reflections /
-    // highlights above the threshold glow.
+    out.color = vec4<f32>(color_linear, out_alpha);
     out.bloom = vec4<f32>(color_linear, 1.0);
+    out.ambient = vec4<f32>(ambient_linear, out_alpha);
     return out;
+}
+
+@fragment
+fn fs_ssao_gbuffer(input: VertexOutput) -> @location(0) vec4<f32> {
+    let normal_length_sq = dot(input.normal, input.normal);
+    if (normal_length_sq < 1e-6) {
+        return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    }
+    // View Z is negative in front of the camera; SSAO treats zero as background.
+    let view_pos = uniforms.view * vec4<f32>(input.world_position, 1.0);
+    let view_normal = normalize((uniforms.view * vec4<f32>(input.normal, 0.0)).xyz);
+    return vec4<f32>(view_normal, view_pos.z);
 }
 
 // --- Skybox: draw the environment cubemap as the viewport background. -------
@@ -276,26 +265,27 @@ fn vs_skybox(@builtin(vertex_index) vertex_index: u32) -> SkyOutput {
     );
     let xy = positions[vertex_index];
     var out: SkyOutput;
-    // z = 1 keeps the skybox at the far plane; depth write is off so this is only
-    // for completeness.
-    out.clip_position = vec4<f32>(xy, 1.0, 1.0);
+    // Reversed-Z far depth is 0; depth write is off and the pipeline always
+    // passes, so this is only for completeness.
+    out.clip_position = vec4<f32>(xy, 0.0, 1.0);
     out.ndc = xy;
     return out;
 }
 
 @fragment
 fn fs_skybox(input: SkyOutput) -> FragOutput {
-    // Unproject a far-plane point to world space, then form the ray from the eye.
-    let world = uniforms.inv_view_projection * vec4<f32>(input.ndc, 1.0, 1.0);
+    // Perspective uses an infinite reversed projection, so unproject a finite
+    // near-plane point. Orthographic keeps a finite far plane and uses that point
+    // to preserve the existing viewport-varying background direction.
+    let unproject_depth = select(1.0, 0.0, uniforms.projection_params.x > 0.5);
+    let world = uniforms.inv_view_projection * vec4<f32>(input.ndc, unproject_depth, 1.0);
     let world_pos = world.xyz / world.w;
     let dir = normalize(world_pos - uniforms.camera_position.xyz);
     let color = textureSampleLevel(env_cube, ibl_sampler, dir, 0.0).rgb * uniforms.env_params.y;
-    let mapped = pbr_neutral_tonemap(color);
     var out: FragOutput;
-    out.color = vec4<f32>(linear_to_srgb(mapped), 1.0);
-    // Full linear HDR sky into the bloom target — bright sky regions glow.
+    out.color = vec4<f32>(color, 1.0);
     out.bloom = vec4<f32>(color, 1.0);
-    // The sky is background: zero G-buffer so SSAO leaves it unoccluded.
-    out.gbuffer = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    // The sky is background: no ambient target, so SSAO never darkens it.
+    out.ambient = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     return out;
 }

@@ -2,7 +2,8 @@
 // scene's linear-HDR bloom source (MRT location 1 of the scene pass), then a
 // separable Gaussian blur. All three entry points share one fullscreen-triangle
 // vertex shader and one bind group (input texture + sampler + uniform). The
-// composite/post pass adds the blurred result back over the display-space scene.
+// composite/post pass adds the blurred result over the linear scene color before
+// tone mapping.
 //
 // Bloom runs at half framebuffer resolution: the bright-pass downsamples the
 // full-res source into the half-res target (the fullscreen draw + linear sampler

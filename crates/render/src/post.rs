@@ -3,15 +3,14 @@
 //! optional FXAA edge-blend (Phase 2).
 //!
 //! Owns the fullscreen-triangle pipeline, the sampler used to read the resolved
-//! scene target, and a small uniform carrying the inverse resolution + FXAA
-//! enable flag. The bind group is rebuilt by the caller whenever the target is
-//! recreated (resize / MSAA change), since it references the resolved texture
-//! view; the uniform is rewritten each frame. This pass is also the seam tone
-//! mapping / bloom slot into later.
+//! scene targets, and a small uniform carrying the inverse resolution + effect
+//! flags. The bind group is rebuilt by the caller whenever targets are recreated
+//! (resize / MSAA change), since it references their texture views; the uniform
+//! is rewritten each frame.
 
 use bytemuck::{Pod, Zeroable};
 
-use crate::scene::{EGUI_MSAA_SAMPLE_COUNT, SCENE_DEPTH_FORMAT};
+use crate::scene::{EGUI_DEPTH_FORMAT, EGUI_MSAA_SAMPLE_COUNT};
 
 const POST_SHADER: &str = include_str!("post.wgsl");
 
@@ -87,10 +86,21 @@ impl PostPass {
                     },
                     count: None,
                 },
-                // The blurred SSAO occlusion (R8, full-res), multiplied into the
+                // The blurred SSAO occlusion (R8, full-res), applied to the
                 // scene's ambient light when SSAO is enabled.
                 wgpu::BindGroupLayoutEntry {
                     binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // Linear HDR ambient radiance that SSAO is allowed to attenuate.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
@@ -138,7 +148,7 @@ impl PostPass {
             // it must declare matching depth state. The blit ignores depth: never
             // writes, always passes (it draws first, over the cleared frame).
             depth_stencil: Some(wgpu::DepthStencilState {
-                format: SCENE_DEPTH_FORMAT,
+                format: EGUI_DEPTH_FORMAT,
                 depth_write_enabled: false,
                 depth_compare: wgpu::CompareFunction::Always,
                 stencil: wgpu::StencilState::default(),
@@ -176,15 +186,17 @@ impl PostPass {
         }
     }
 
-    /// (Re)build the bind group pointing at the resolved scene color + blurred
-    /// bloom + blurred AO views. Called on creation and whenever the targets are
-    /// recreated (resize / MSAA change), since all three views are then stale.
+    /// (Re)build the bind group pointing at the resolved scene color, blurred
+    /// bloom, blurred AO and ambient-radiance views. Called on creation and
+    /// whenever the targets are recreated (resize / MSAA change), since all views
+    /// are then stale.
     pub(crate) fn create_bind_group(
         &self,
         device: &wgpu::Device,
         scene_color: &wgpu::TextureView,
         bloom: &wgpu::TextureView,
         ssao: &wgpu::TextureView,
+        ambient: &wgpu::TextureView,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("review_post_bind_group"),
@@ -209,6 +221,10 @@ impl PostPass {
                 wgpu::BindGroupEntry {
                     binding: 4,
                     resource: wgpu::BindingResource::TextureView(ssao),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(ambient),
                 },
             ],
         })

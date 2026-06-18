@@ -20,7 +20,11 @@ use crate::{
     UvShadingMode, VertexColorMode,
 };
 
-pub const SCENE_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
+pub const SCENE_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+/// Depth format of egui's own framebuffer. The scene uses `Depth32Float`
+/// Reversed-Z offscreen, but egui's pass only needs a conventional attachment so
+/// the fullscreen composite pipeline can match the painter.
+pub const EGUI_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
 /// MSAA sample count of egui's own framebuffer (the surface the composite pass
 /// draws into). Fixed: it antialiases the egui chrome and is what the painter is
 /// created with in `app`. Distinct from the scene's MSAA, which is dynamic
@@ -261,6 +265,7 @@ impl CallbackTrait for SceneCallback {
 
         self.encode_scene(resources, egui_encoder);
         if ssao_active {
+            resources.encode_ssao_gbuffer(egui_encoder);
             resources.encode_ssao(egui_encoder);
         }
         if bloom_active {
@@ -297,7 +302,7 @@ impl SceneCallback {
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("review_scene_offscreen_pass"),
             color_attachments: &[
-                // Location 0: display-space color the composite shows.
+                // Location 0: linear HDR scene radiance the composite tone-maps.
                 Some(wgpu::RenderPassColorAttachment {
                     view: &resources.targets.color_render_view,
                     resolve_target: resources.targets.color_resolve_view.as_ref(),
@@ -316,11 +321,10 @@ impl SceneCallback {
                         store: wgpu::StoreOp::Store,
                     },
                 }),
-                // Location 2: SSAO G-buffer (view normal + view Z), cleared to all
-                // zero so the empty background reads as unoccluded.
+                // Location 2: ambient radiance SSAO is allowed to attenuate.
                 Some(wgpu::RenderPassColorAttachment {
-                    view: &resources.targets.gbuffer_render_view,
-                    resolve_target: resources.targets.gbuffer_resolve_view.as_ref(),
+                    view: &resources.targets.ambient_render_view,
+                    resolve_target: resources.targets.ambient_resolve_view.as_ref(),
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
@@ -330,7 +334,7 @@ impl SceneCallback {
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &resources.targets.depth_view,
                 depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
+                    load: wgpu::LoadOp::Clear(0.0),
                     store: wgpu::StoreOp::Store,
                 }),
                 stencil_ops: None,
@@ -488,18 +492,27 @@ struct SceneResources {
     /// The SSAO occlusion + blur pass (Phase 5). Size-independent; the full-res AO
     /// textures + bind groups below are rebuilt with `targets`.
     ssao: SsaoPass,
+    /// Single-sample SSAO G-buffer (view-space normal + view-space Z). Kept out
+    /// of the MSAA scene MRTs so normals/depths are not averaged across geometry
+    /// edges before the AO pass samples them.
+    ssao_gbuffer_view: wgpu::TextureView,
+    /// Reversed-Z depth used only by the single-sample SSAO G-buffer pass.
+    ssao_depth_view: wgpu::TextureView,
     /// Full-resolution AO textures: `raw` holds the occlusion pass output, `blur`
     /// the denoised result the composite samples. Recreated on resize.
     ssao_raw_view: wgpu::TextureView,
     ssao_blur_view: wgpu::TextureView,
-    /// SSAO bind groups: the occlusion pass reads the scene G-buffer, the blur
-    /// reads `raw`. Rebuilt when the AO textures / G-buffer are.
+    /// SSAO bind groups: the occlusion pass reads the single-sample G-buffer, the
+    /// blur reads that same G-buffer plus `raw`. Rebuilt when the AO textures /
+    /// G-buffer are.
     ssao_bind_group: wgpu::BindGroup,
     ssao_blur_bind_group: wgpu::BindGroup,
     model_revision: u64,
     mesh_uv_channel: u32,
     mesh_pipeline: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
+    /// Mesh-only pipeline that writes the single-sample SSAO normal/depth buffer.
+    ssao_gbuffer_pipeline: wgpu::RenderPipeline,
     /// Fullscreen pipeline that draws the environment cubemap as the background.
     skybox_pipeline: wgpu::RenderPipeline,
     /// Flat-color triangle pipeline for the UV island fill: no lighting (the fill
@@ -678,6 +691,7 @@ impl SceneResources {
         let scene_sample_count = AntiAliasing::default().msaa.sample_count();
         let (mesh_pipeline, line_pipeline, uv_fill_pipeline, skybox_pipeline) =
             build_scene_pipelines(device, &pipeline_layout, &shader, scene_sample_count);
+        let ssao_gbuffer_pipeline = create_ssao_gbuffer_pipeline(device, &pipeline_layout, &shader);
 
         // Offscreen targets + the composite pass. Targets start at 1x1 and are
         // recreated at the real framebuffer size on the first `prepare`
@@ -693,13 +707,20 @@ impl SceneResources {
             bloom_blur_h_bind_group,
             bloom_blur_v_bind_group,
         ) = build_bloom_targets(device, queue, &targets, &bloom);
-        let (ssao_raw_view, ssao_blur_view, ssao_bind_group, ssao_blur_bind_group) =
-            build_ssao_targets(device, queue, &targets, &ssao);
+        let (
+            ssao_gbuffer_view,
+            ssao_depth_view,
+            ssao_raw_view,
+            ssao_blur_view,
+            ssao_bind_group,
+            ssao_blur_bind_group,
+        ) = build_ssao_targets(device, queue, &targets, &ssao);
         let post_bind_group = post.create_bind_group(
             device,
             targets.sampled_view(),
             &bloom_tex_a,
             &ssao_blur_view,
+            targets.sampled_ambient_view(),
         );
 
         let line_vertices = scene_lines();
@@ -741,6 +762,8 @@ impl SceneResources {
             bloom_blur_h_bind_group,
             bloom_blur_v_bind_group,
             ssao,
+            ssao_gbuffer_view,
+            ssao_depth_view,
             ssao_raw_view,
             ssao_blur_view,
             ssao_bind_group,
@@ -749,6 +772,7 @@ impl SceneResources {
             mesh_uv_channel: 0,
             mesh_pipeline,
             line_pipeline,
+            ssao_gbuffer_pipeline,
             skybox_pipeline,
             uv_fill_pipeline,
             uniform_buffer,
@@ -833,8 +857,16 @@ impl SceneResources {
             self.bloom_blur_h_bind_group = bloom_blur_h_bind_group;
             self.bloom_blur_v_bind_group = bloom_blur_v_bind_group;
 
-            let (ssao_raw_view, ssao_blur_view, ssao_bind_group, ssao_blur_bind_group) =
-                build_ssao_targets(device, queue, &self.targets, &self.ssao);
+            let (
+                ssao_gbuffer_view,
+                ssao_depth_view,
+                ssao_raw_view,
+                ssao_blur_view,
+                ssao_bind_group,
+                ssao_blur_bind_group,
+            ) = build_ssao_targets(device, queue, &self.targets, &self.ssao);
+            self.ssao_gbuffer_view = ssao_gbuffer_view;
+            self.ssao_depth_view = ssao_depth_view;
             self.ssao_raw_view = ssao_raw_view;
             self.ssao_blur_view = ssao_blur_view;
             self.ssao_bind_group = ssao_bind_group;
@@ -847,6 +879,7 @@ impl SceneResources {
                 self.targets.sampled_view(),
                 &self.bloom_tex_a,
                 &self.ssao_blur_view,
+                self.targets.sampled_ambient_view(),
             );
         }
     }
@@ -882,8 +915,46 @@ impl SceneResources {
         }
     }
 
+    /// Render a single-sample, mesh-only normal/depth buffer for SSAO. This avoids
+    /// MSAA resolve averaging view-space normals/Z across geometry edges before
+    /// the occlusion and bilateral blur passes read them.
+    fn encode_ssao_gbuffer(&self, encoder: &mut wgpu::CommandEncoder) {
+        if self.mesh_index_count == 0 {
+            return;
+        }
+
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("review_ssao_gbuffer_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &self.ssao_gbuffer_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &self.ssao_depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(0.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+        render_pass.set_bind_group(1, &self.checker_bind_group_greyscale, &[]);
+        render_pass.set_bind_group(2, &self.ibl.bind_group, &[]);
+        render_pass.set_pipeline(&self.ssao_gbuffer_pipeline);
+        render_pass.set_vertex_buffer(0, self.mesh_vertex_buffer.slice(..));
+        render_pass.set_index_buffer(self.mesh_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        render_pass.draw_indexed(0..self.mesh_index_count, 0, 0..1);
+    }
+
     /// Run the SSAO passes on egui's encoder, after the scene pass: the occlusion
-    /// pass reads the scene's resolved G-buffer into `raw`, then the box blur
+    /// pass reads the single-sample G-buffer into `raw`, then the bilateral blur
     /// denoises `raw` → `blur`, which the composite (`post`) samples. Reuses the
     /// bloom fullscreen-pass helper (single color attachment, no depth). Only
     /// called when SSAO is active.
@@ -936,6 +1007,16 @@ impl SceneResources {
                     0.0
                 },
                 PREFILTER_MAX_LOD,
+            ],
+            projection_params: [
+                if matches!(projection_mode, CameraProjection::Orthographic) {
+                    1.0
+                } else {
+                    0.0
+                },
+                0.0,
+                0.0,
+                0.0,
             ],
             view: camera.view_matrix().to_cols_array_2d(),
         };
@@ -1161,8 +1242,8 @@ impl SceneResources {
             camera_position: [0.0; 4],
             // The UV path never reaches the IBL / skybox code, so these are unused.
             env_params: [0.0; 4],
-            // No SSAO in the UV viewport (its fill/lines write a zero G-buffer), so
-            // the view matrix is unused here.
+            projection_params: [1.0, 0.0, 0.0, 0.0],
+            // No SSAO in the UV viewport, so the view matrix is unused here.
             view: [[0.0; 4]; 4],
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
@@ -1187,8 +1268,9 @@ struct DepthConfig {
 /// survivors uneven in opacity/thickness. We can't bias the lines directly — on
 /// DX12 depth bias applies only to triangle primitives — so instead the mesh
 /// pipeline pushes the shaded surface a hair *away* from the camera with a
-/// slope-scaled depth bias. Lines then render at their true depth and win the
-/// `LessEqual` test against the receded surface, while still being correctly
+/// slope-scaled depth bias. In Reversed-Z, away from the camera is a smaller
+/// depth value, so the bias is negative. Lines then render at their true depth
+/// and win the `GreaterEqual` test against the receded surface, while still being correctly
 /// occluded by geometry genuinely in front of them (slope-scaled bias is in real
 /// depth-buffer units, so it never over-pulls the far side through the front the
 /// way a constant clip-space line offset did). The scene pipelines render into
@@ -1213,8 +1295,8 @@ fn build_scene_pipelines(
         DepthConfig {
             write_enabled: true,
             bias: wgpu::DepthBiasState {
-                constant: 2,
-                slope_scale: 2.0,
+                constant: -2,
+                slope_scale: -2.0,
                 clamp: 0.0,
             },
         },
@@ -1257,6 +1339,55 @@ fn build_scene_pipelines(
     )
 }
 
+/// Mesh-only pipeline that writes a single-sample view-space normal/Z buffer for
+/// SSAO. It deliberately has no MSAA so geometry-edge normals/depths are not
+/// averaged by a resolve before the AO shader samples them.
+fn create_ssao_gbuffer_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("review_ssao_gbuffer_pipeline"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_main"),
+            buffers: &[SceneVertex::layout()],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            unclipped_depth: false,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            conservative: false,
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: SCENE_DEPTH_FORMAT,
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::GreaterEqual,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_ssao_gbuffer"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: SCENE_HDR_FORMAT,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        multiview: None,
+        cache: None,
+    })
+}
+
 /// The skybox pipeline: a fullscreen triangle (no vertex buffer) sampling the
 /// environment cubemap. It draws first in the offscreen pass over the cleared
 /// frame, so it never writes depth and always passes the depth test; scene
@@ -1293,10 +1424,11 @@ fn create_skybox_pipeline(
         fragment: Some(wgpu::FragmentState {
             module: shader,
             entry_point: Some("fs_skybox"),
-            // MRT to match the other scene pipelines: location 0 = display color,
-            // location 1 = linear-HDR bloom source, location 2 = SSAO G-buffer. The
-            // skybox draws first over the cleared frame, so no target blends (opaque
-            // replace); it writes a zero G-buffer (background = unoccluded).
+            // MRT to match the other scene pipelines: location 0 = linear HDR
+            // scene color, location 1 = linear-HDR bloom source, location 2 =
+            // AO-eligible ambient radiance. The skybox draws first over the
+            // cleared frame, so no target blends (opaque replace); it writes zero
+            // ambient so SSAO never darkens the background.
             targets: &[
                 Some(wgpu::ColorTargetState {
                     format: SCENE_HDR_FORMAT,
@@ -1351,7 +1483,7 @@ fn create_pipeline(
         depth_stencil: Some(wgpu::DepthStencilState {
             format: SCENE_DEPTH_FORMAT,
             depth_write_enabled: depth.write_enabled,
-            depth_compare: wgpu::CompareFunction::LessEqual,
+            depth_compare: wgpu::CompareFunction::GreaterEqual,
             stencil: wgpu::StencilState::default(),
             bias: depth.bias,
         }),
@@ -1364,12 +1496,10 @@ fn create_pipeline(
             module: shader,
             entry_point: Some("fs_main"),
             // MRT (invariant 11: matches the `FragOutput` struct in `scene.wgsl`):
-            // location 0 = display color, location 1 = linear-HDR bloom source,
-            // location 2 = SSAO G-buffer. Locations 0 and 1 alpha-blend so overlay
-            // draws (which write bloom alpha 0) leave the geometry's bloom value
-            // intact. The G-buffer packs view Z in its `.w`, so it can NOT alpha-
-            // blend (the `.w` is data, not coverage) — it replaces; overlays write a
-            // zero G-buffer there, which SSAO reads as background.
+            // location 0 = linear HDR scene color, location 1 = linear-HDR bloom
+            // source, location 2 = AO-eligible ambient radiance. All three
+            // alpha-blend so transparent material/overlay coverage is handled in
+            // linear light; overlays write zero bloom/ambient with alpha 0.
             targets: &[
                 Some(wgpu::ColorTargetState {
                     format: SCENE_HDR_FORMAT,
@@ -1383,7 +1513,7 @@ fn create_pipeline(
                 }),
                 Some(wgpu::ColorTargetState {
                     format: SCENE_HDR_FORMAT,
-                    blend: None,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 }),
             ],
@@ -1559,12 +1689,49 @@ fn create_ssao_texture(
         .create_view(&wgpu::TextureViewDescriptor::default())
 }
 
-/// (Re)create the full-resolution AO textures + the SSAO bind groups (occlusion
-/// pass reads the scene G-buffer → `raw`; blur reads `raw` → `blur`). Called on
-/// creation and whenever the scene targets are recreated. Returns the new
-/// `(raw, blur, ssao_bg, blur_bg)`. As with bloom, the composite binds the blurred
-/// AO every frame but only samples it when SSAO is on, so both AO textures are
-/// cleared once here to satisfy D3D12's read-before-init validation.
+/// Create the single-sample SSAO G-buffer color+depth targets.
+fn create_ssao_gbuffer_targets(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+) -> (wgpu::TextureView, wgpu::TextureView) {
+    let extent = wgpu::Extent3d {
+        width: width.max(1),
+        height: height.max(1),
+        depth_or_array_layers: 1,
+    };
+    let gbuffer = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("review_ssao_gbuffer"),
+        size: extent,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: SCENE_HDR_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let depth = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("review_ssao_depth"),
+        size: extent,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: SCENE_DEPTH_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    (
+        gbuffer.create_view(&wgpu::TextureViewDescriptor::default()),
+        depth.create_view(&wgpu::TextureViewDescriptor::default()),
+    )
+}
+
+/// (Re)create the full-resolution SSAO G-buffer, AO textures and bind groups.
+/// The occlusion pass reads the single-sample G-buffer → `raw`; the bilateral
+/// blur reads both the same G-buffer and `raw` → `blur`. Called on creation and
+/// whenever scene targets are recreated. As with bloom, the composite binds the
+/// blurred AO every frame but only samples it when SSAO is on, so all sampled
+/// views are cleared once here to satisfy D3D12's read-before-init validation.
 fn build_ssao_targets(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -1573,16 +1740,19 @@ fn build_ssao_targets(
 ) -> (
     wgpu::TextureView,
     wgpu::TextureView,
+    wgpu::TextureView,
+    wgpu::TextureView,
     wgpu::BindGroup,
     wgpu::BindGroup,
 ) {
+    let (gbuffer, depth) = create_ssao_gbuffer_targets(device, targets.width, targets.height);
     let raw = create_ssao_texture(device, targets.width, targets.height, "review_ssao_raw");
     let blur = create_ssao_texture(device, targets.width, targets.height, "review_ssao_blur");
-    clear_views(device, queue, &[&raw, &blur], "review_ssao_init");
+    clear_views(device, queue, &[&gbuffer, &raw, &blur], "review_ssao_init");
 
-    let ssao_bg = ssao.bind_group(device, targets.sampled_gbuffer_view(), "review_ssao_bg");
-    let blur_bg = ssao.bind_group(device, &raw, "review_ssao_blur_bg");
-    (raw, blur, ssao_bg, blur_bg)
+    let ssao_bg = ssao.occlusion_bind_group(device, &gbuffer, &blur, "review_ssao_bg");
+    let blur_bg = ssao.blur_bind_group(device, &gbuffer, &raw, "review_ssao_blur_bg");
+    (gbuffer, depth, raw, blur, ssao_bg, blur_bg)
 }
 
 /// Clear a set of color views once (`LoadOp::Clear` to black), in a single
@@ -1727,6 +1897,8 @@ struct SceneUniforms {
     /// Image-based lighting: `x` = IBL enabled (>0.5), `y` = intensity, `z` =
     /// show background skybox (>0.5), `w` = prefiltered-cube max mip LOD.
     env_params: [f32; 4],
+    /// Projection metadata: `x` = orthographic projection (>0.5), y/z/w unused.
+    projection_params: [f32; 4],
     /// View matrix (world → view), for writing the view-space normal + depth into
     /// the SSAO G-buffer.
     view: [[f32; 4]; 4],

@@ -41,8 +41,9 @@ ModelData
   -> SceneCallback::record_scene()
       mesh / grid / debug / skybox draws
   -> SceneTargets
-      display color + bloom source + SSAO G-buffer + depth
-  -> SSAO and bloom passes
+      linear scene color + bloom source + ambient radiance + Reversed-Z depth
+  -> SSAO G-buffer pass
+  -> SSAO and bloom fullscreen passes
   -> PostPass composite
 ```
 
@@ -56,10 +57,12 @@ length changes.
 
 | Target | Format | Purpose |
 | --- | --- | --- |
-| Color MRT location 0 | `Rgba16Float` | Display-space scene color, already tone-mapped and sRGB-encoded by `scene.wgsl`. |
-| Bloom MRT location 1 | `Rgba16Float` | Linear pre-tone-map HDR radiance for bloom thresholding. |
-| G-buffer MRT location 2 | `Rgba16Float` | View-space normal in `xyz`, view-space Z in `w` for SSAO. |
-| Depth | `Depth24Plus` | Scene depth for mesh/line/skybox ordering. |
+| Color MRT location 0 | `Rgba16Float` | Linear HDR scene radiance. |
+| Bloom MRT location 1 | `Rgba16Float` | Linear HDR bloom source; overlays write zero contribution. |
+| Ambient MRT location 2 | `Rgba16Float` | Linear AO-eligible ambient radiance. |
+| Scene depth | `Depth32Float` | Reversed-Z scene depth for mesh/line/skybox ordering. |
+| SSAO G-buffer | `Rgba16Float` | Separate single-sample view-space normal in `xyz`, view-space Z in `w`. |
+| SSAO depth | `Depth32Float` | Single-sample Reversed-Z depth for the SSAO G-buffer pass. |
 
 When scene MSAA is enabled, render views are multisampled and resolved into
 single-sample views for post-processing. At 1x, the render views are sampled
@@ -76,33 +79,35 @@ The scene pass uses a shared pipeline layout:
 
 There are four scene pipelines:
 
-- Mesh pipeline: triangle list, depth write enabled, small depth bias to reduce
-  coplanar wireframe z-fighting.
+- Mesh pipeline: triangle list, Reversed-Z depth write enabled, small negative
+  depth bias to reduce coplanar wireframe z-fighting.
 - Line pipeline: line list, no depth write, used by grid, wireframe, bounding
   box, normal lines, and UV wireframe.
 - UV fill pipeline: triangle list, no depth write, used in the 2D UV viewport.
 - Skybox pipeline: fullscreen triangle, always passes depth, no depth write.
 
 All scene pipelines declare the same three color targets. The mesh/line/UV
-pipelines alpha-blend color and bloom targets while replacing the G-buffer. The
-skybox writes all targets opaquely and leaves the G-buffer at zero so SSAO treats
-it as background.
+pipelines alpha-blend scene color, bloom source, and ambient radiance in linear
+light. The skybox writes color/bloom opaquely and leaves ambient at zero so SSAO
+never darkens the background.
 
 ## Scene Shader
 
 `scene.wgsl` handles several paths in one shader module:
 
 - Zero-normal vertices are treated as overlays. They output their baked color and
-  write no bloom or G-buffer contribution.
-- Real geometry writes view-space normal and view Z to the G-buffer.
+  write no bloom or ambient contribution.
+- `fs_ssao_gbuffer` writes view-space normal and view Z for the separate SSAO
+  G-buffer pass.
 - Source material color is decoded from sRGB to linear.
 - UV checker mode samples an embedded checker texture.
 - Vertex-color mode can display RGB, alpha as grayscale, or RGB plus alpha.
 - Unlit mode emits flat material color and also writes linear color to the bloom
   source.
 - Shaded mode uses either IBL/PBR or an analytic fallback light when IBL is off.
-- Tone mapping uses Khronos PBR Neutral, then the result is encoded to sRGB for
-  the display color target.
+- Shaded mode writes both total linear radiance and the diffuse/fill ambient
+  radiance SSAO may attenuate.
+- Tone mapping and final sRGB encoding are handled once by the post pass.
 
 The material model is currently simple: imported base color and smoothness are
 baked into vertices. Metallic is fixed at 0, and there are no texture maps,
@@ -130,8 +135,8 @@ Bloom uses `bloom.rs` and `bloom.wgsl`:
 1. Bright-pass samples the scene's linear-HDR bloom MRT and writes over-threshold
    radiance into a half-resolution HDR texture.
 2. A separable Gaussian blur ping-pongs between two half-resolution textures.
-3. The post pass upsamples the blurred result and adds it to the scene in linear
-   light, scaled by the bloom intensity.
+3. The post pass upsamples the blurred result and adds it to the linear scene
+   color before tone mapping, scaled by the bloom intensity.
 
 Bloom is 3D-only. The UV viewport disables it, and overlay line vertices write
 zero to the bloom target so grid, wireframe, panels, and normal lines do not
@@ -141,13 +146,15 @@ glow.
 
 SSAO uses `ssao.rs` and `ssao.wgsl`:
 
-1. The scene pass writes view-space normal and view-space Z into MRT location 2.
+1. A mesh-only, single-sample pass writes view-space normal and view-space Z into
+   the SSAO G-buffer.
 2. The SSAO pass reconstructs view-space positions, rotates a deterministic
    16-sample hemisphere kernel per pixel, projects samples back to screen, and
    compares sampled depths.
-3. The raw `R8Unorm` occlusion texture is box-blurred into another full-resolution
-   `R8Unorm` texture.
-4. The post pass multiplies the scene color by the blurred AO value.
+3. The raw `R8Unorm` occlusion texture is bilateral-blurred with depth and normal
+   weights into another full-resolution `R8Unorm` texture.
+4. The post pass subtracts only the occluded portion of the ambient radiance, so
+   direct and specular lighting are not darkened.
 
 Radius and bias are stored in UI as fractions of the framed scene radius, then
 scaled into view units by the renderer. Orthographic and perspective projection
@@ -160,8 +167,8 @@ The renderer has two independent AA layers:
 - Scene MSAA: Off, 2x, 4x, 8x, or 16x, gated by adapter support for the HDR color
   and depth formats. Pipelines and scene targets rebuild when the effective
   sample count changes.
-- FXAA: optional fullscreen edge blend in `post.wgsl`, run over display-space
-  color before bloom and SSAO composite work.
+- FXAA: optional fullscreen edge blend in `post.wgsl`, run over the final
+  display-space color after ambient AO, bloom, tone mapping, and sRGB encoding.
 
 egui's own framebuffer uses fixed 4x MSAA, separate from scene MSAA.
 
@@ -206,28 +213,18 @@ Steady-state frames should allocate no major GPU resources.
   churn.
 - Debug overlays are generated from original topology where it matters, so quads
   and n-gons do not display fake triangulation edges.
-- IBL, bloom, SSAO, skybox, UV view, and debug lines all share a coherent
+- Linear HDR scene color, IBL, bloom, SSAO, skybox, UV view, and debug lines all share a coherent
   renderer resource model.
 - Adapter capability checks are present for optional/high-risk features.
-- Camera near/far fitting is depth-precision aware, which helps avoid flicker on
-  close or intersecting surfaces.
+- Scene depth uses `Depth32Float` Reversed-Z, with camera near/far fitting still
+  used for near placement and orthographic range.
 
 ## What Can Be Better
 
-- Finish the linear HDR migration. The display color target is still
-  tone-mapped/sRGB-encoded in the scene shader. Bloom and SSAO therefore decode
-  display color back to linear in post. A cleaner pipeline would keep scene color
-  linear HDR through post, then apply tone mapping/output encoding once.
-- Apply SSAO more selectively. Current SSAO multiplies final scene color, which
-  darkens direct/specular light too. A more physically plausible path would
-  apply AO to ambient/IBL diffuse terms before tone mapping.
 - Reduce target memory pressure. Three `Rgba16Float` MRTs plus resolves and
-  high MSAA can get expensive quickly. The G-buffer could use more compact
-  formats, such as encoded normals plus a dedicated depth/value target, if
-  format support and filtering requirements allow it.
-- Improve SSAO edge behavior. Resolving an MSAA normal/depth G-buffer can average
-  data across geometry edges, and the current blur is not edge-aware. A bilateral
-  blur or depth-aware filter would reduce halos.
+  high MSAA can get expensive quickly. The ambient and SSAO G-buffer targets
+  could use more compact encodings if format support and filtering requirements
+  allow it.
 - Add a real material/texture path. The renderer currently has one mesh draw and
   baked per-vertex material values. Texture loading, sampler/material bindings,
   normal maps, roughness/metallic, alpha handling, and per-material batching are
@@ -247,10 +244,7 @@ Steady-state frames should allocate no major GPU resources.
 
 1. Add tests around camera math, UV island generation, and `SceneUniforms` /
    `SceneVertex` layout assumptions.
-2. Move tone mapping and final sRGB encoding into post, keeping the scene color
-   target linear HDR.
-3. Introduce texture/material resources and draw grouping.
-4. Add in-app renderer diagnostics for target size, MSAA level, active passes,
+2. Introduce texture/material resources and draw grouping.
+3. Add in-app renderer diagnostics for target size, MSAA level, active passes,
    adapter/backend, and approximate render target memory.
-5. Upgrade SSAO with edge-aware blur and ambient-only application.
-
+4. Add renderer capture/golden tests for depth, HDR, bloom, and SSAO regressions.
