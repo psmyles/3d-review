@@ -143,14 +143,12 @@ impl Default for BoundingBoxPanelState {
 }
 
 /// Editable state backing the UV Checker options panel. The renderer reads the
-/// committed values via [`SceneDebugOptions`]; `tiling_text` is the panel's own
-/// text-field buffer (kept out of the render options so `render` stays free of
-/// UI string state) and is re-sanitized to an integer on commit.
+/// committed values via [`SceneDebugOptions`]. `tiling` is edited directly on the
+/// standard slider's inline value field, so no separate text buffer is needed.
 #[derive(Debug, Clone)]
 pub struct UvCheckerPanelState {
     pub texture: CheckerTexture,
     pub tiling: u32,
-    pub tiling_text: String,
     pub uv_channel: u32,
 }
 
@@ -159,7 +157,6 @@ impl Default for UvCheckerPanelState {
         Self {
             texture: CheckerTexture::Greyscale,
             tiling: DEFAULT_CHECKER_TILING,
-            tiling_text: DEFAULT_CHECKER_TILING.to_string(),
             uv_channel: 0,
         }
     }
