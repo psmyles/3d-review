@@ -4,12 +4,12 @@
 
 use std::sync::Arc;
 
-use review_model::ModelData;
+use review_model::{Bvh, ModelData};
 use review_render::{OrbitCamera, SceneCallback, UvCamera};
 
 use crate::state::{UiOutput, UiState, WorkspaceMode, sync_debug_state};
 use crate::theme::{self, color, size};
-use crate::{gizmo, help, panels, stats, status_bar, toolbar};
+use crate::{dimensions, gizmo, help, panels, stats, status_bar, toolbar};
 
 /// Paint the viewport scene behind the egui chrome: the 3D scene in 3D mode, the
 /// 2D UV viewport in UV mode. Texture mode draws nothing (placeholder).
@@ -52,8 +52,18 @@ pub fn draw_viewport_scene(
     painter.add(egui_wgpu::Callback::new_paint_callback(rect, callback));
 }
 
-/// Draw the full egui overlay and return the intents emitted this frame.
-pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamera) -> UiOutput {
+/// Draw the full egui overlay and return the intents emitted this frame. `model`
+/// is the shared scene geometry and `bvh` an acceleration structure over it, both
+/// read only for the bounding-box dimension labels' occlusion test (invariant 1:
+/// borrowed, never copied). `bvh` is `None` until `app` has built it for the
+/// current model (lazily, the first time the labels need it).
+pub fn draw_overlay(
+    ctx: &egui::Context,
+    state: &mut UiState,
+    camera: OrbitCamera,
+    model: &ModelData,
+    bvh: Option<&Bvh>,
+) -> UiOutput {
     theme::apply_visuals(ctx);
     sync_debug_state(state);
     let mut output = UiOutput::default();
@@ -67,6 +77,9 @@ pub fn draw_overlay(ctx: &egui::Context, state: &mut UiState, camera: OrbitCamer
     // the UV / Texture workspaces keep a clean viewport (just the UV dropdown in
     // the toolbar), so they only draw in 3D mode.
     if state.mode == WorkspaceMode::ThreeD {
+        // Bounding-box dimension labels sit on the viewport (under the chrome).
+        dimensions::draw_dimension_labels(ctx, state, camera, model, bvh);
+
         draw_option_panel(ctx, state, toolbar_height, status_bar_height);
 
         if state.show_axis_gizmo {

@@ -16,7 +16,7 @@ use std::{
 use anyhow::Context;
 use glam::Vec2;
 use review_import::{LoadOptions, load_model};
-use review_model::ModelData;
+use review_model::{Bvh, ModelData};
 use review_render::{
     EGUI_DEPTH_FORMAT, EGUI_MSAA_SAMPLE_COUNT, Renderer, RendererConfig, ShadingMode,
     ibl_supported, ssao_supported, supported_msaa_levels,
@@ -88,6 +88,14 @@ struct App {
     refresh_interval: Duration,
     scene_model: Arc<ModelData>,
     scene_revision: u64,
+    /// Triangle BVH over [`Self::scene_model`], used to occlude the bounding-box
+    /// dimension labels against the mesh. Built lazily the first frame the labels
+    /// need it (the bounding-box view is on) and reused across frames; a heavy
+    /// per-model structure we don't pay for unless the feature is used. `None`
+    /// until built; [`Self::occlusion_bvh_revision`] tracks which model it covers
+    /// so it rebuilds when a new model loads.
+    occlusion_bvh: Option<Bvh>,
+    occlusion_bvh_revision: u64,
     ui: UiState,
     /// Model to load once the window/renderer exist, taken from the command line
     /// (file association / `3d-review.exe <path>`). Consumed in `resumed`.
@@ -154,6 +162,10 @@ impl Default for App {
             refresh_interval: Duration::from_secs_f64(1.0 / 60.0),
             scene_model,
             scene_revision: 0,
+            occlusion_bvh: None,
+            // A sentinel distinct from the initial `scene_revision` (0) so the BVH
+            // is treated as stale until first built.
+            occlusion_bvh_revision: u64::MAX,
             ui,
             initial_model: None,
             start_maximized: false,
@@ -298,6 +310,7 @@ impl ApplicationHandler for App {
         self.egui_state = Some(egui_state);
         self.egui_painter = Some(egui_painter);
         self.ui.stats = self.scene_model.stats;
+        self.ui.bounds = self.scene_model.bounds;
         self.ui.uv_sets = self.scene_model.uv_set_labels();
         self.refresh_interval = monitor_refresh_interval(&window);
         self.window = Some(window.clone());
@@ -602,6 +615,15 @@ impl App {
             output_format
         };
 
+        // The bounding-box dimension labels occlude against the mesh through a
+        // triangle BVH. Build it lazily the first frame the labels are shown for a
+        // given model (and rebuild after a new model loads); reused across frames,
+        // so orbiting pays no per-frame triangle cost.
+        if self.ui.debug.show_bounding_box && self.occlusion_bvh_revision != self.scene_revision {
+            self.occlusion_bvh = Some(Bvh::build(&self.scene_model));
+            self.occlusion_bvh_revision = self.scene_revision;
+        }
+
         let (full_output, clear, ui_output) = {
             let Some(egui_state) = self.egui_state.as_mut() else {
                 return;
@@ -616,6 +638,7 @@ impl App {
             let clear = renderer.config.clear_color;
             let scene_model = self.scene_model.clone();
             let scene_revision = self.scene_revision;
+            let occlusion_bvh = self.occlusion_bvh.as_ref();
             let mut ui_output = UiOutput::default();
             let full_output = egui_ctx.run(raw_input, |ctx| {
                 draw_viewport_scene(
@@ -627,7 +650,7 @@ impl App {
                     scene_revision,
                     output_format,
                 );
-                ui_output = draw_overlay(ctx, &mut self.ui, camera);
+                ui_output = draw_overlay(ctx, &mut self.ui, camera, &scene_model, occlusion_bvh);
                 // Above all chrome: the launch fade cover (no-op once revealed).
                 draw_startup_fade(ctx, cover_opacity);
             });
@@ -715,6 +738,7 @@ impl App {
                 }
 
                 self.ui.stats = model.stats;
+                self.ui.bounds = model.bounds;
                 // A new model invalidates the previously selected UV channel;
                 // reset to channel 0 so the picker never points past the new
                 // model's UV-set count.
@@ -832,6 +856,7 @@ impl App {
     fn reset_to_start_state(&mut self) {
         let empty = Arc::new(ModelData::default());
         self.ui.stats = empty.stats;
+        self.ui.bounds = empty.bounds;
         self.ui.uv_checker.uv_channel = 0;
         self.ui.uv_sets = empty.uv_set_labels();
         self.ui.uv_view_channel = 0;

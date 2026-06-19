@@ -62,9 +62,9 @@ pub(crate) fn draw_active_panel(
         OptionPanel::Ssao => option_panel(ui, "Ambient Occlusion", collapsed, |ui| {
             ssao::body(ui, state)
         }),
-        OptionPanel::Tonemap => option_panel(ui, "Tonemapper", collapsed, |ui| {
-            tonemap::body(ui, state)
-        }),
+        OptionPanel::Tonemap => {
+            option_panel(ui, "Tonemapper", collapsed, |ui| tonemap::body(ui, state))
+        }
     }
 }
 

@@ -16,8 +16,8 @@ use crate::ssao::{SSAO_FORMAT, SsaoPass};
 use crate::targets::{SCENE_HDR_FORMAT, SceneTargets};
 use crate::{
     ActiveMaterial, AntiAliasing, BloomSettings, CameraProjection, CheckerTexture,
-    EnvironmentSettings, OrbitCamera, SceneDebugOptions, ShadingMode, SsaoSettings, TonemapSettings,
-    UvCamera, UvShadingMode, VertexColorMode,
+    EnvironmentSettings, OrbitCamera, SceneDebugOptions, ShadingMode, SsaoSettings,
+    TonemapSettings, UvCamera, UvShadingMode, VertexColorMode,
 };
 
 pub const SCENE_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;

@@ -36,6 +36,14 @@ pub mod color {
     pub const STATS_OVERLAY_BG: Color32 = Color32::from_rgba_premultiplied(20, 22, 25, 130);
     /// Translucent fill behind the axis gizmo while hovered / dragged.
     pub const GIZMO_BG: Color32 = Color32::from_rgba_premultiplied(8, 12, 16, 90);
+    /// Translucent pill behind a bounding-box dimension label. The pill keeps the
+    /// readout legible over both the dark viewport and a light model surface; the
+    /// text itself is tinted by the axis it measures (`DIMENSION_LABEL_{X,Y,Z}`)
+    /// so the readout reads like the axis gizmo.
+    pub const DIMENSION_LABEL_BG: Color32 = Color32::from_rgba_premultiplied(18, 20, 23, 210);
+    pub const DIMENSION_LABEL_X: Color32 = Color32::from_rgb(246, 109, 120);
+    pub const DIMENSION_LABEL_Y: Color32 = Color32::from_rgb(120, 226, 96);
+    pub const DIMENSION_LABEL_Z: Color32 = Color32::from_rgb(96, 178, 244);
 
     // ── Accent / selection ──────────────────────────────────────────────────
     /// Selected / active control fill (toolbar toggles, mode segments).
@@ -229,6 +237,13 @@ pub mod size {
     pub const STATS_OVERLAY_MARGIN: f32 = 18.0;
     pub const STATS_CORNER_RADIUS: f32 = 6.0;
 
+    // ── Bounding-box dimension labels ─────────────────────────────────────
+    /// Inner padding between a dimension label's pill edge and its text, and the
+    /// pill's corner radius.
+    pub const DIMENSION_LABEL_PAD_X: f32 = 7.0;
+    pub const DIMENSION_LABEL_PAD_Y: f32 = 3.0;
+    pub const DIMENSION_LABEL_CORNER_RADIUS: f32 = 5.0;
+
     // ── Axis gizmo ────────────────────────────────────────────────────────
     pub const GIZMO_SIZE: f32 = 156.0;
     pub const GIZMO_INSET: f32 = 26.0;
@@ -324,6 +339,8 @@ pub mod size {
 /// JetBrains Mono; see [`crate::assets`].
 pub mod font {
     pub const STATS: f32 = 12.0;
+    /// Bounding-box dimension-label text (monospace).
+    pub const DIMENSION_LABEL: f32 = 18.0;
     pub const GIZMO_LABEL: f32 = 16.0;
     pub const GIZMO_LABEL_NEG: f32 = 15.0;
     pub const MODE_SEGMENT: f32 = 18.0;

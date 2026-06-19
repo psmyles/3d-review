@@ -14,6 +14,7 @@
 //! - `toolbar` / `status_bar` / `stats` / `gizmo` / `panels` — the chrome.
 
 mod assets;
+mod dimensions;
 mod gizmo;
 mod help;
 mod overlay;
