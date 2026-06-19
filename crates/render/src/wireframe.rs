@@ -124,15 +124,22 @@ impl WireframeOverlayPass {
             multisample: wgpu::MultisampleState {
                 count: EGUI_MSAA_SAMPLE_COUNT,
                 mask: !0,
-                alpha_to_coverage_enabled: false,
+                // The fragment's coverage rides in alpha and masks MSAA samples,
+                // so the 4x framebuffer antialiases the wireframe with no extra
+                // target or pass. It is self-limiting on dense meshes: coverage
+                // caps per-pixel darkening instead of accumulating into a mass.
+                alpha_to_coverage_enabled: true,
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: output_format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
+                    // No blend: alpha_to_coverage turns the line into a sample
+                    // mask, and MSAA resolve averages line vs. background. Write
+                    // color only so the framebuffer alpha channel is untouched.
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::COLOR,
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
@@ -184,7 +191,9 @@ impl WireframeOverlayPass {
         let active_thickness = if use_world_units {
             world_thickness.max(0.0001)
         } else {
-            screen_thickness.max(1.0)
+            // Allow sub-pixel screen widths: the analytic coverage falloff dims a
+            // thin line smoothly instead of needing a whole-pixel floor.
+            screen_thickness.max(0.05)
         };
         let occlusion_bias = (camera.scene_radius.max(1e-3) * 0.001).max(1e-5);
         let uniforms = WireframeUniforms {
