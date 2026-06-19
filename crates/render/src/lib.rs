@@ -8,7 +8,6 @@ mod post;
 mod scene;
 mod ssao;
 mod targets;
-mod wireframe;
 
 pub use ibl::ibl_supported;
 pub use scene::{EGUI_DEPTH_FORMAT, EGUI_MSAA_SAMPLE_COUNT, SCENE_DEPTH_FORMAT, SceneCallback};
@@ -388,18 +387,9 @@ pub struct SceneDebugOptions {
     pub vertex_normal_length: f32,
     pub face_normal_color: [f32; 4],
     pub vertex_normal_color: [f32; 4],
-    /// Color of the model wireframe overlay, baked into the edge segment buffer
+    /// Color of the model wireframe overlay, baked into the line vertex buffer
     /// and rebuilt when it changes.
     pub wireframe_color: [f32; 4],
-    /// Screen-space wireframe thickness in pixels, used when
-    /// `wireframe_use_world_units` is false.
-    pub wireframe_screen_thickness: f32,
-    /// World-space wireframe thickness, used when `wireframe_use_world_units` is
-    /// true.
-    pub wireframe_world_thickness: f32,
-    /// Whether wireframe thickness is interpreted in world units instead of
-    /// constant screen pixels.
-    pub wireframe_use_world_units: bool,
     /// Color of the bounding-box edges, baked into its line buffer and rebuilt
     /// when it changes.
     pub bounding_box_color: [f32; 4],
@@ -424,9 +414,6 @@ impl Default for SceneDebugOptions {
             face_normal_color: [1.0, 0.1, 0.1, 0.95],
             vertex_normal_color: [0.14, 0.92, 0.96, 0.95],
             wireframe_color: [0.6, 0.6, 0.6, 1.0],
-            wireframe_screen_thickness: 1.0,
-            wireframe_world_thickness: 0.005,
-            wireframe_use_world_units: false,
             bounding_box_color: [1.0, 0.803_921_6, 0.250_980_4, 1.0],
         }
     }

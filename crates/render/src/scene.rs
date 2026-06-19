@@ -14,7 +14,6 @@ use crate::ibl::{IblResources, PREFILTER_MAX_LOD};
 use crate::post::PostPass;
 use crate::ssao::{SSAO_FORMAT, SsaoPass};
 use crate::targets::{SCENE_HDR_FORMAT, SceneTargets};
-use crate::wireframe::{WireframeOverlayPass, create_wireframe_segment_buffer};
 use crate::{
     ActiveMaterial, AntiAliasing, BloomSettings, CameraProjection, CheckerTexture,
     EnvironmentSettings, OrbitCamera, SceneDebugOptions, ShadingMode, SsaoSettings, UvCamera,
@@ -237,8 +236,6 @@ impl CallbackTrait for SceneCallback {
         // scene so the blurred glow + AO are ready when `paint` composites them.
         let bloom_active = self.uv_view.is_none() && self.bloom.enabled;
         let ssao_active = self.uv_view.is_none() && self.ssao.enabled;
-        let final_wireframe_active = self.final_wireframe_active();
-        let wireframe_occlusion_active = self.final_wireframe_occlusion_active();
         resources
             .bloom
             .update_threshold(queue, self.bloom.threshold);
@@ -265,25 +262,9 @@ impl CallbackTrait for SceneCallback {
             self.bloom.intensity,
             ssao_active,
         );
-        if final_wireframe_active {
-            resources.wireframe_overlay.update_uniform(
-                queue,
-                self.camera,
-                self.projection_mode,
-                width.max(1),
-                height.max(1),
-                self.debug_options.wireframe_screen_thickness,
-                self.debug_options.wireframe_world_thickness,
-                self.debug_options.wireframe_use_world_units,
-                wireframe_occlusion_active,
-            );
-        }
-
         self.encode_scene(resources, egui_encoder);
-        if ssao_active || wireframe_occlusion_active {
-            resources.encode_ssao_gbuffer(egui_encoder);
-        }
         if ssao_active {
+            resources.encode_ssao_gbuffer(egui_encoder);
             resources.encode_ssao(egui_encoder);
         }
         if bloom_active {
@@ -308,29 +289,10 @@ impl CallbackTrait for SceneCallback {
         render_pass.set_pipeline(&resources.post.pipeline);
         render_pass.set_bind_group(0, &resources.post_bind_group, &[]);
         render_pass.draw(0..3, 0..1);
-
-        if self.final_wireframe_active() && resources.wireframe_segment_count > 0 {
-            render_pass.set_pipeline(&resources.wireframe_overlay.pipeline);
-            render_pass.set_bind_group(0, &resources.wireframe_overlay_bind_group, &[]);
-            render_pass.set_vertex_buffer(0, resources.wireframe_segment_buffer.slice(..));
-            render_pass.draw(0..6, 0..resources.wireframe_segment_count);
-        }
     }
 }
 
 impl SceneCallback {
-    fn final_wireframe_active(&self) -> bool {
-        self.uv_view.is_none()
-            && (self.debug_options.wireframe_overlay
-                || matches!(self.debug_options.shading_mode, ShadingMode::Wireframe))
-    }
-
-    fn final_wireframe_occlusion_active(&self) -> bool {
-        self.uv_view.is_none()
-            && self.debug_options.wireframe_overlay
-            && !matches!(self.debug_options.shading_mode, ShadingMode::Wireframe)
-    }
-
     /// Record the scene into the offscreen HDR target: a single MSAA color pass
     /// (resolved to a sampleable single-sample texture) with depth. The draw list
     /// is identical to what used to run directly in egui's pass — only the target
@@ -456,6 +418,21 @@ impl SceneCallback {
             render_pass.draw(0..resources.line_vertex_count, 0..1);
         }
 
+        // Model wireframe: a plain line list drawn in the scene pass so the
+        // `line_pipeline`'s depth test (Reversed-Z `GreaterEqual` against the
+        // mesh depth) occludes edges on hidden faces. Native line rasterization +
+        // the scene MSAA keep it clean and stable (no thickness control). Drawn
+        // after the mesh/grid so it sits on top wherever it is not occluded.
+        if (self.debug_options.wireframe_overlay
+            || matches!(self.debug_options.shading_mode, ShadingMode::Wireframe))
+            && resources.wireframe_line_vertex_count > 0
+        {
+            render_pass.set_bind_group(0, &resources.uniform_bind_group, &[]);
+            render_pass.set_pipeline(&resources.line_pipeline);
+            render_pass.set_vertex_buffer(0, resources.wireframe_line_vertex_buffer.slice(..));
+            render_pass.draw(0..resources.wireframe_line_vertex_count, 0..1);
+        }
+
         if self.debug_options.show_bounding_box && resources.bounding_box_vertex_count > 0 {
             render_pass.set_bind_group(0, &resources.uniform_bind_group, &[]);
             render_pass.set_pipeline(&resources.line_pipeline);
@@ -534,11 +511,6 @@ struct SceneResources {
     /// G-buffer are.
     ssao_bind_group: wgpu::BindGroup,
     ssao_blur_bind_group: wgpu::BindGroup,
-    /// Final model-wireframe overlay pass. Runs after the post composite into
-    /// egui's framebuffer, using the SSAO G-buffer only for optional mesh
-    /// occlusion.
-    wireframe_overlay: WireframeOverlayPass,
-    wireframe_overlay_bind_group: wgpu::BindGroup,
     model_revision: u64,
     mesh_uv_channel: u32,
     mesh_pipeline: wgpu::RenderPipeline,
@@ -564,8 +536,8 @@ struct SceneResources {
     // built and `None` while it is off (its buffer holds only a placeholder).
     // Comparing against the current options drives build / rebuild / free in
     // `sync_line_views` (invariant 3).
-    wireframe_segment_buffer: wgpu::Buffer,
-    wireframe_segment_count: u32,
+    wireframe_line_vertex_buffer: wgpu::Buffer,
+    wireframe_line_vertex_count: u32,
     /// Color baked into the wireframe buffer, or `None` when the view is off.
     wireframe_baked: Option<[f32; 4]>,
     bounding_box_vertex_buffer: wgpu::Buffer,
@@ -754,15 +726,11 @@ impl SceneResources {
             &ssao_blur_view,
             targets.sampled_ambient_view(),
         );
-        let wireframe_overlay = WireframeOverlayPass::new(device, output_format);
-        let wireframe_overlay_bind_group =
-            wireframe_overlay.create_bind_group(device, &ssao_gbuffer_view);
-
         let line_vertices = scene_lines();
         let (mesh_vertex_buffer, mesh_index_buffer, mesh_index_count) =
             create_mesh_buffers(device, &[], &[]);
-        let (wireframe_segment_buffer, wireframe_segment_count) =
-            create_wireframe_segment_buffer(device, &[]);
+        let (wireframe_line_vertex_buffer, wireframe_line_vertex_count) =
+            create_line_buffer(device, &[]);
         let (bounding_box_vertex_buffer, bounding_box_vertex_count) =
             create_line_buffer(device, &[]);
         let (face_normal_vertex_buffer, face_normal_vertex_count) = create_line_buffer(device, &[]);
@@ -803,8 +771,6 @@ impl SceneResources {
             ssao_blur_view,
             ssao_bind_group,
             ssao_blur_bind_group,
-            wireframe_overlay,
-            wireframe_overlay_bind_group,
             model_revision: u64::MAX,
             mesh_uv_channel: 0,
             mesh_pipeline,
@@ -821,8 +787,8 @@ impl SceneResources {
             mesh_index_count,
             line_vertex_buffer,
             line_vertex_count: line_vertices.len() as u32,
-            wireframe_segment_buffer,
-            wireframe_segment_count,
+            wireframe_line_vertex_buffer,
+            wireframe_line_vertex_count,
             wireframe_baked: None,
             bounding_box_vertex_buffer,
             bounding_box_vertex_count,
@@ -908,9 +874,6 @@ impl SceneResources {
             self.ssao_blur_view = ssao_blur_view;
             self.ssao_bind_group = ssao_bind_group;
             self.ssao_blur_bind_group = ssao_blur_bind_group;
-            self.wireframe_overlay_bind_group = self
-                .wireframe_overlay
-                .create_bind_group(device, &self.ssao_gbuffer_view);
 
             // The composite reads the resolved color, the blurred bloom, and the
             // blurred AO — all just recreated.
@@ -1121,13 +1084,11 @@ impl SceneResources {
         let want_wireframe = wireframe_on.then_some(debug_options.wireframe_color);
         if self.wireframe_baked != want_wireframe {
             let (buffer, count) = match want_wireframe {
-                Some(color) => {
-                    create_wireframe_segment_buffer(device, &wireframe_lines(model, color))
-                }
-                None => create_wireframe_segment_buffer(device, &[]),
+                Some(color) => create_line_buffer(device, &wireframe_lines(model, color)),
+                None => create_line_buffer(device, &[]),
             };
-            self.wireframe_segment_buffer = buffer;
-            self.wireframe_segment_count = count;
+            self.wireframe_line_vertex_buffer = buffer;
+            self.wireframe_line_vertex_count = count;
             self.wireframe_baked = want_wireframe;
         }
 
@@ -1182,9 +1143,9 @@ impl SceneResources {
     fn free_line_view(&mut self, device: &wgpu::Device, view: LineView) {
         match view {
             LineView::Wireframe => {
-                let (buffer, count) = create_wireframe_segment_buffer(device, &[]);
-                self.wireframe_segment_buffer = buffer;
-                self.wireframe_segment_count = count;
+                let (buffer, count) = create_line_buffer(device, &[]);
+                self.wireframe_line_vertex_buffer = buffer;
+                self.wireframe_line_vertex_count = count;
                 self.wireframe_baked = None;
             }
             LineView::BoundingBox => {
