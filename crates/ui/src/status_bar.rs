@@ -2,7 +2,9 @@
 //! rendering-quality group (IBL / Bloom / SSAO / Anti aliasing) mirrored to the
 //! right.
 
-use crate::assets::{ICON_ANTI_ALIASING, ICON_AO, ICON_BLOOM, ICON_IBL, ICON_INFO};
+use crate::assets::{
+    ICON_ANTI_ALIASING, ICON_AO, ICON_BLOOM, ICON_IBL, ICON_INFO, ICON_TONEMAPPER,
+};
 use crate::state::{OptionPanel, UiState, WorkspaceMode};
 use crate::theme::{self, color, size};
 use crate::widgets::{icon_toggle_button, toolbar_group_shell};
@@ -20,7 +22,7 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
     let status_bar_height = theme::px(ctx, size::STATUS_BAR_HEIGHT);
     let group_height = theme::px(ctx, size::TOOLBAR_GROUP_HEIGHT);
     let single_icon_group_width = theme::px(ctx, size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH);
-    let quad_icon_group_width = theme::px(ctx, size::TOOLBAR_QUAD_ICON_GROUP_WIDTH);
+    let quint_icon_group_width = theme::px(ctx, size::TOOLBAR_QUINT_ICON_GROUP_WIDTH);
 
     egui::TopBottomPanel::bottom("status_bar")
         .exact_height(status_bar_height)
@@ -63,16 +65,17 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                 },
             );
 
-            // Rendering-quality group — IBL / Bloom / SSAO / Anti aliasing in one
-            // recessed group mirrored to the right edge. Each tile left-clicks to
-            // toggle its effect (highlighted while on) and right-clicks to open its
-            // options panel, matching the top-toolbar buttons.
+            // Rendering-quality group — IBL / Bloom / SSAO / Tonemapper / Anti
+            // aliasing in one recessed group mirrored to the right edge. Each tile
+            // left-clicks to toggle its effect (highlighted while on) and
+            // right-clicks to open its options panel, matching the top-toolbar
+            // buttons.
             let right_rect = egui::Rect::from_min_size(
                 egui::pos2(
-                    bar_rect.right() - edge_inset - quad_icon_group_width,
+                    bar_rect.right() - edge_inset - quint_icon_group_width,
                     bar_rect.center().y - group_height * 0.5,
                 ),
-                egui::vec2(quad_icon_group_width, group_height),
+                egui::vec2(quint_icon_group_width, group_height),
             );
             ui.scope_builder(
                 egui::UiBuilder::new()
@@ -80,7 +83,7 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
                 |ui| {
                     ui.set_height(group_height);
-                    toolbar_group_shell(ui, ctx, quad_icon_group_width, |ui| {
+                    toolbar_group_shell(ui, ctx, quint_icon_group_width, |ui| {
                         // Image-based lighting. Disabled + forced off when the
                         // adapter can't build the IBL maps (invariant 4).
                         if !state.ibl_supported {
@@ -137,6 +140,23 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                                 state.open_panel(OptionPanel::Ssao);
                             }
                         });
+
+                        // Tone mapping. Left-click toggles the tone curve on/off
+                        // (off = linear → sRGB); right-click opens the operator
+                        // picker.
+                        let tonemap = icon_toggle_button(
+                            ui,
+                            ctx,
+                            &ICON_TONEMAPPER,
+                            state.tonemap.enabled,
+                            "Tone mapping (right-click for options)",
+                        );
+                        if tonemap.clicked() {
+                            state.tonemap.enabled = !state.tonemap.enabled;
+                        }
+                        if tonemap.secondary_clicked() {
+                            state.open_panel(OptionPanel::Tonemap);
+                        }
 
                         // Anti aliasing.
                         let aa = icon_toggle_button(

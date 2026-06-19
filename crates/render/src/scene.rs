@@ -16,8 +16,8 @@ use crate::ssao::{SSAO_FORMAT, SsaoPass};
 use crate::targets::{SCENE_HDR_FORMAT, SceneTargets};
 use crate::{
     ActiveMaterial, AntiAliasing, BloomSettings, CameraProjection, CheckerTexture,
-    EnvironmentSettings, OrbitCamera, SceneDebugOptions, ShadingMode, SsaoSettings, UvCamera,
-    UvShadingMode, VertexColorMode,
+    EnvironmentSettings, OrbitCamera, SceneDebugOptions, ShadingMode, SsaoSettings, TonemapSettings,
+    UvCamera, UvShadingMode, VertexColorMode,
 };
 
 pub const SCENE_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -77,13 +77,15 @@ pub struct SceneCallback {
     /// Screen-space ambient occlusion settings. Drives the SSAO + blur passes and
     /// the composite multiply.
     ssao: SsaoSettings,
+    /// Tone-mapping settings. Drives the tone-map stage of the composite shader.
+    tonemap: TonemapSettings,
     /// `Some` renders the 2D UV viewport instead of the 3D scene.
     uv_view: Option<UvView>,
 }
 
 impl SceneCallback {
-    // Ten distinct, independent inputs (camera + projection + target + model +
-    // revision + the five UI option bundles); there is no redundant pair to fold
+    // Eleven distinct, independent inputs (camera + projection + target + model +
+    // revision + the six UI option bundles); there is no redundant pair to fold
     // away, and a params struct would only move the same values behind one name.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -97,6 +99,7 @@ impl SceneCallback {
         environment: EnvironmentSettings,
         bloom: BloomSettings,
         ssao: SsaoSettings,
+        tonemap: TonemapSettings,
     ) -> Self {
         Self {
             camera,
@@ -109,6 +112,7 @@ impl SceneCallback {
             environment,
             bloom,
             ssao,
+            tonemap,
             uv_view: None,
         }
     }
@@ -147,6 +151,9 @@ impl SceneCallback {
                 enabled: false,
                 ..SsaoSettings::default()
             },
+            // The UV viewport keeps the default tone mapping so its shaded fills
+            // read the same as in the 3D scene.
+            tonemap: TonemapSettings::default(),
             uv_view: Some(UvView {
                 camera,
                 channel,
@@ -261,6 +268,8 @@ impl CallbackTrait for SceneCallback {
             bloom_active,
             self.bloom.intensity,
             ssao_active,
+            self.tonemap.enabled,
+            self.tonemap.operator.shader_index(),
         );
         self.encode_scene(resources, egui_encoder);
         if ssao_active {

@@ -34,6 +34,7 @@ pub fn draw_viewport_scene(
             state.environment,
             state.bloom,
             state.ssao,
+            state.tonemap,
         ),
         WorkspaceMode::Uv => SceneCallback::new_uv(
             output_format,

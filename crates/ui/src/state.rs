@@ -9,7 +9,8 @@ use glam::{Vec2, Vec3};
 use review_model::ModelStats;
 use review_render::{
     AntiAliasing, BloomSettings, CameraProjection, CheckerTexture, EnvironmentSettings,
-    MsaaSamples, SceneDebugOptions, ShadingMode, SsaoSettings, UvShadingMode, VertexColorMode,
+    MsaaSamples, SceneDebugOptions, ShadingMode, SsaoSettings, TonemapSettings, UvShadingMode,
+    VertexColorMode,
 };
 
 use crate::theme;
@@ -163,6 +164,7 @@ pub enum OptionPanel {
     Environment,
     Bloom,
     Ssao,
+    Tonemap,
 }
 
 #[derive(Debug, Clone)]
@@ -230,6 +232,11 @@ pub struct UiState {
     /// [`review_render::ssao_supported`]. The status-bar SSAO button is disabled
     /// (and forced off) when false (invariant 4).
     pub ssao_supported: bool,
+    /// Tone-mapping settings. Read straight by the viewport callback (not a debug
+    /// option) and edited by the Tonemapper panel; the status-bar tonemapper button
+    /// toggles `tonemap.enabled`. Default is on with Khronos PBR Neutral (see
+    /// [`TonemapSettings`]).
+    pub tonemap: TonemapSettings,
     pub stats: ModelStats,
     /// Most recent measured frames-per-second, fed by `app` from the render
     /// loop. Zero while idle (the viewer redraws on demand, not continuously).
@@ -283,6 +290,7 @@ impl Default for UiState {
             bloom: BloomSettings::default(),
             ssao: SsaoSettings::default(),
             ssao_supported: true,
+            tonemap: TonemapSettings::default(),
             stats: ModelStats::default(),
             fps: 0.0,
             show_help_overlay: true,
