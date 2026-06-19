@@ -6,7 +6,7 @@
 //! [`SceneDebugOptions`] the renderer reads.
 
 use glam::{Vec2, Vec3};
-use review_model::ModelStats;
+use review_model::{Bounds, ModelStats};
 use review_render::{
     AntiAliasing, BloomSettings, CameraProjection, CheckerTexture, EnvironmentSettings,
     MsaaSamples, SceneDebugOptions, ShadingMode, SsaoSettings, TonemapSettings, UvShadingMode,
@@ -238,6 +238,11 @@ pub struct UiState {
     /// [`TonemapSettings`]).
     pub tonemap: TonemapSettings,
     pub stats: ModelStats,
+    /// Axis-aligned bounds of the loaded model (world meters), set by `app`
+    /// alongside [`UiState::stats`] (invariant 2: a plain value, not model
+    /// ownership). `None` when no model is loaded. Read by the dimension-label
+    /// overlay to place each box edge's axis-length readout.
+    pub bounds: Option<Bounds>,
     /// Most recent measured frames-per-second, fed by `app` from the render
     /// loop. Zero while idle (the viewer redraws on demand, not continuously).
     pub fps: f32,
@@ -292,6 +297,7 @@ impl Default for UiState {
             ssao_supported: true,
             tonemap: TonemapSettings::default(),
             stats: ModelStats::default(),
+            bounds: None,
             fps: 0.0,
             show_help_overlay: true,
             app_version: String::new(),

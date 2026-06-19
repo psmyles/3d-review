@@ -1,5 +1,8 @@
 use glam::{Vec2, Vec3, Vec4};
 
+mod bvh;
+pub use bvh::Bvh;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Vertex {
     pub position: Vec3,
