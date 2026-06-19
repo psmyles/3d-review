@@ -198,9 +198,12 @@ linear-HDR bloom MRT so only bright highlights glow and overlays never do;
 **SSAO** is on by default — a hemisphere-kernel occlusion + 5×5 bilateral blur
 over a *separate single-sample* view-normal/view-Z G-buffer (its own mesh-only
 pass, not an MSAA MRT), composed in post as ambient-only attenuation so direct
-and specular light are never darkened. The status bar's right group holds the
-IBL / Bloom / SSAO / Anti-aliasing toggles (left-click toggles, right-click opens
-each tool's options panel — Environment / Bloom / Ambient Occlusion / Anti
+and specular light are never darkened. **Tone mapping** is on by default — the
+composite applies a selectable operator (Khronos PBR Neutral / Linear / Reinhard /
+ACES / AgX) to the linear-HDR radiance before sRGB encoding; toggling it off is a
+linear pass-through. The status bar's right group holds the IBL / Bloom / SSAO /
+Tonemapper / Anti-aliasing toggles (left-click toggles, right-click opens each
+tool's options panel — Environment / Bloom / Ambient Occlusion / Tonemapper / Anti
 Aliasing).
 
 The renderer is now **fully linear-HDR with Reversed-Z scene depth**: scene MRT

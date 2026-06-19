@@ -118,6 +118,12 @@ pub(crate) const ICON_AO: AppIcon = AppIcon {
     id: "icon_ao",
     png_bytes: include_bytes!("../../../assets/icons/icon_ao.png"),
 };
+/// "Tonemapper" — toggles tone mapping; right-click opens the Tonemapper options
+/// panel (status bar, right, grouped with IBL + Bloom + SSAO + Anti aliasing).
+pub(crate) const ICON_TONEMAPPER: AppIcon = AppIcon {
+    id: "icon_tonemapper",
+    png_bytes: include_bytes!("../../../assets/icons/icon_tonemapper.png"),
+};
 pub(crate) const ICON_CLOSE: AppIcon = AppIcon {
     id: "icon_close",
     png_bytes: include_bytes!("../../../assets/icons/icon_close.png"),

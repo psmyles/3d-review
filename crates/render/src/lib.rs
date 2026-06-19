@@ -306,6 +306,80 @@ impl Default for SsaoSettings {
     }
 }
 
+/// The tone-mapping operator applied in the composite pass when tone mapping is
+/// enabled, converting the scene's linear HDR radiance to a display range before
+/// sRGB encoding. `Linear` is a pass-through (the master toggle off is equivalent
+/// to `Linear`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TonemapOperator {
+    /// Khronos PBR Neutral — hue-preserving highlight roll-off (the default look).
+    #[default]
+    PbrNeutral,
+    /// No tone curve: linear radiance straight to sRGB (highlights hard-clip).
+    Linear,
+    /// Reinhard `c / (1 + c)` — simple, classic, low-contrast roll-off.
+    Reinhard,
+    /// ACES filmic (Narkowicz/Hill fit) — punchy, contrasty film response.
+    Aces,
+    /// AgX — modern neutral filmic with graceful, low-chroma highlight handling.
+    Agx,
+}
+
+impl TonemapOperator {
+    /// Every variant in display order, for building UI menus.
+    pub const ALL: [TonemapOperator; 5] = [
+        TonemapOperator::PbrNeutral,
+        TonemapOperator::Linear,
+        TonemapOperator::Reinhard,
+        TonemapOperator::Aces,
+        TonemapOperator::Agx,
+    ];
+
+    /// Short menu label.
+    pub fn label(self) -> &'static str {
+        match self {
+            TonemapOperator::PbrNeutral => "PBR Neutral",
+            TonemapOperator::Linear => "Linear",
+            TonemapOperator::Reinhard => "Reinhard",
+            TonemapOperator::Aces => "ACES",
+            TonemapOperator::Agx => "AgX",
+        }
+    }
+
+    /// The index the post shader's `apply_tonemap` switch reads. Must match the
+    /// `case` arms in `post.wgsl` (invariant 11).
+    pub fn shader_index(self) -> u32 {
+        match self {
+            TonemapOperator::PbrNeutral => 0,
+            TonemapOperator::Linear => 1,
+            TonemapOperator::Reinhard => 2,
+            TonemapOperator::Aces => 3,
+            TonemapOperator::Agx => 4,
+        }
+    }
+}
+
+/// Tone-mapping configuration for the composite pass. Read by [`SceneCallback`] to
+/// drive the tone-map stage of the post shader.
+///
+/// `enabled` is the status-bar toggle; when off the composite skips the tone curve
+/// (linear → sRGB, hard-clipping highlights). The default is on with the Khronos
+/// PBR Neutral operator, matching the pre-existing fixed look.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TonemapSettings {
+    pub enabled: bool,
+    pub operator: TonemapOperator,
+}
+
+impl Default for TonemapSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            operator: TonemapOperator::PbrNeutral,
+        }
+    }
+}
+
 /// How the 2D UV viewport draws the model's UV layout. Mutually exclusive (the
 /// toolbar's UV-shading group is a radio selection); the UV edges are always
 /// drawn, the fill underneath them changes per mode.

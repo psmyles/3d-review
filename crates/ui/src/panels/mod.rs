@@ -8,6 +8,7 @@ mod bounding_box;
 mod environment;
 mod normals;
 mod ssao;
+mod tonemap;
 mod uv_checker;
 mod vertex_colors;
 mod wireframe;
@@ -60,6 +61,9 @@ pub(crate) fn draw_active_panel(
         OptionPanel::Bloom => option_panel(ui, "Bloom", collapsed, |ui| bloom::body(ui, state)),
         OptionPanel::Ssao => option_panel(ui, "Ambient Occlusion", collapsed, |ui| {
             ssao::body(ui, state)
+        }),
+        OptionPanel::Tonemap => option_panel(ui, "Tonemapper", collapsed, |ui| {
+            tonemap::body(ui, state)
         }),
     }
 }

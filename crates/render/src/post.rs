@@ -26,7 +26,10 @@ struct PostUniforms {
     bloom_enabled: u32,
     bloom_intensity: f32,
     ssao_enabled: u32,
-    _pad: [f32; 2],
+    /// Whether the tone curve runs (0 = linear pass-through to sRGB).
+    tonemap_enabled: u32,
+    /// Which tone-map operator the shader's `apply_tonemap` switch selects.
+    tonemap_op: u32,
 }
 
 pub(crate) struct PostPass {
@@ -231,8 +234,8 @@ impl PostPass {
     }
 
     /// Write the per-frame composite uniform: the texel size (for FXAA taps), the
-    /// FXAA enable flag, the bloom enable + intensity, and the SSAO enable flag.
-    /// Cheap; called every frame from `prepare`.
+    /// FXAA enable flag, the bloom enable + intensity, the SSAO enable flag, and
+    /// the tone-map enable + operator. Cheap; called every frame from `prepare`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn update_uniform(
         &self,
@@ -243,6 +246,8 @@ impl PostPass {
         bloom_enabled: bool,
         bloom_intensity: f32,
         ssao_enabled: bool,
+        tonemap_enabled: bool,
+        tonemap_op: u32,
     ) {
         let uniforms = PostUniforms {
             inv_resolution: [1.0 / width.max(1) as f32, 1.0 / height.max(1) as f32],
@@ -250,7 +255,8 @@ impl PostPass {
             bloom_enabled: u32::from(bloom_enabled),
             bloom_intensity: bloom_intensity.max(0.0),
             ssao_enabled: u32::from(ssao_enabled),
-            _pad: [0.0; 2],
+            tonemap_enabled: u32::from(tonemap_enabled),
+            tonemap_op,
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }
