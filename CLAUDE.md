@@ -108,9 +108,10 @@ crates/
             shaded path, skybox) -> src/ibl.rs, src/ibl.wgsl. Bloom (bright-pass +
             separable blur, half-res) -> src/bloom.rs, src/bloom.wgsl. SSAO
             (hemisphere-kernel occlusion + 5x5 bilateral blur over the single-sample
-            G-buffer) -> src/ssao.rs, src/ssao.wgsl. Final model-wireframe overlay
-            (post-composite, edges expanded to camera-facing ribbons with thickness)
-            -> src/wireframe.rs, src/wireframe.wgsl
+            G-buffer) -> src/ssao.rs, src/ssao.wgsl. The model wireframe is a plain
+            LineList drawn in the scene pass via `line_pipeline` (depth-tested
+            against the mesh so hidden-face edges are occluded; no thickness
+            control) -> src/scene.rs + src/geometry.rs (`wireframe_lines`)
   ui/       review-ui: egui toolbar, option panels, axis gizmo, stats overlay,
             status bar, startup help overlay; UiOutput intents. Thin root
             re-exports; modules: theme/state/assets/widgets/overlay/toolbar/
@@ -163,7 +164,7 @@ workspace still builds and FBX import returns a clear error.
   glTF (drops quad topology, changes vertex counts).
 - Shading is one inline WGSL scene shader covering shaded / unlit / wireframe /
   uv-checker / vertex-color paths; tone mapping + sRGB encoding live in the post
-  shader, and the thick model wireframe is a separate post-composite overlay
+  shader, and the model wireframe is a depth-tested line-list draw in the scene
   pass. `3D` and `UV` viewports are both implemented; `Tex` is still a placeholder.
 - Crate boundaries are load-bearing (invariants 2, 9, 10) — keep them.
 
@@ -208,8 +209,10 @@ moved into `post.wgsl`); location 1 is the linear-HDR bloom source; location 2 i
 the AO-eligible ambient radiance (IBL diffuse + analytic fill only). Scene depth
 is `Depth32Float` cleared to 0 with `GreaterEqual` and infinite reversed
 perspective (`perspective_infinite_reverse_rh`); egui's framebuffer keeps its own
-`EGUI_DEPTH_FORMAT`. The thick model wireframe is a final post-composite overlay
-pass (`wireframe.rs`) so it dodges SSAO/bloom/tone-map.
+`EGUI_DEPTH_FORMAT`. The model wireframe is a plain `LineList` drawn inside the
+scene pass via `line_pipeline`, so it depth-tests against the mesh (Reversed-Z
+`GreaterEqual`, no depth write) and edges on hidden faces are occluded, while the
+scene MSAA antialiases it (the trade-off is fixed 1px hardware line width).
 
 Known gaps (see MSRV note): no tests yet though `cargo test` is an acceptance
 criterion. Texture pane, texture loading/KTX2, a real material/texture table,
