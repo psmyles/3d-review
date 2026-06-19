@@ -92,22 +92,31 @@ crates/
             (repr(C) mirror structs, checked_slice, model_from_bridge_scene),
             the vendored ufbx C + bridge, build.rs (cc, cfg(has_ufbx)).
             -> src/lib.rs, src/ufbx_bridge.c/.h, build.rs
-  render/   review-render: ShadingMode, CameraProjection, SceneDebugOptions,
-            RendererConfig, OrbitCamera (framing/orbit/pan/zoom/ortho+persp),
-            CameraTransition (0.3s ease-in-out cubic), Renderer, SceneCallback +
-            GPU resources/buffer upload. -> src/lib.rs, src/scene.rs;
-            CPU vertex generation -> src/geometry.rs; shader -> src/scene.wgsl.
-            Offscreen HDR targets (display color + linear-HDR bloom MRT +
-            view-normal/depth SSAO G-buffer MRT) + composite/FXAA seam ->
-            src/targets.rs, src/post.rs(+post.wgsl). HDR image-based lighting (env
-            cube + irradiance + prefilter + BRDF LUT precompute, PBR shaded path,
-            skybox) -> src/ibl.rs, src/ibl.wgsl. Bloom (bright-pass + separable
-            blur, half-res) -> src/bloom.rs, src/bloom.wgsl. SSAO (hemisphere-kernel
-            occlusion + box blur over the G-buffer) -> src/ssao.rs, src/ssao.wgsl
+  render/   review-render: ShadingMode, VertexColorMode, ActiveMaterial,
+            CameraProjection, SceneDebugOptions, RendererConfig, OrbitCamera
+            (framing/orbit/pan/zoom/ortho+persp, Reversed-Z infinite perspective),
+            UvCamera (2D UV viewport), CameraTransition (0.3s ease-in-out cubic),
+            Renderer, SceneCallback (+ new_uv) + GPU resources/buffer upload.
+            -> src/lib.rs, src/scene.rs; CPU vertex generation -> src/geometry.rs;
+            scene shader -> src/scene.wgsl. SCENE_DEPTH_FORMAT (Depth32Float,
+            Reversed-Z) is separate from EGUI_DEPTH_FORMAT (Depth24Plus).
+            Offscreen linear-HDR targets (linear scene radiance + linear-HDR bloom
+            MRT + AO-eligible ambient-radiance MRT, all Rgba16Float; separate
+            single-sample SSAO normal/view-Z G-buffer) + composite/tone-map/FXAA
+            seam -> src/targets.rs, src/post.rs(+post.wgsl). HDR image-based
+            lighting (env cube + irradiance + prefilter + BRDF LUT precompute, PBR
+            shaded path, skybox) -> src/ibl.rs, src/ibl.wgsl. Bloom (bright-pass +
+            separable blur, half-res) -> src/bloom.rs, src/bloom.wgsl. SSAO
+            (hemisphere-kernel occlusion + 5x5 bilateral blur over the single-sample
+            G-buffer) -> src/ssao.rs, src/ssao.wgsl. Final model-wireframe overlay
+            (post-composite, edges expanded to camera-facing ribbons with thickness)
+            -> src/wireframe.rs, src/wireframe.wgsl
   ui/       review-ui: egui toolbar, option panels, axis gizmo, stats overlay,
-            status bar; UiOutput intents. Thin root re-exports; modules:
-            theme/state/assets/widgets/overlay/toolbar/status_bar/stats/gizmo +
-            panels/ (one file per tool). -> src/lib.rs + src/*.rs
+            status bar, startup help overlay; UiOutput intents. Thin root
+            re-exports; modules: theme/state/assets/widgets/overlay/toolbar/
+            status_bar/stats/gizmo/help + panels/ (one file per tool: anti_aliasing,
+            bloom, bounding_box, environment, normals, ssao, uv_checker,
+            vertex_colors, wireframe). -> src/lib.rs + src/*.rs
 third_party/ufbx/   vendored ufbx.c / ufbx.h (compiled only if present)
 assets/icons/       PNG toolbar/gizmo icons (include_bytes!)
 assets/test_models/ local FBX fixtures for manual checks
@@ -152,17 +161,23 @@ workspace still builds and FBX import returns a clear error.
   original face topology + source stats). FBX is the only MVP import format,
   parsed by vendored `ufbx` through a single C bridge — don't round-trip through
   glTF (drops quad topology, changes vertex counts).
-- Shading is one inline WGSL shader covering shaded / unlit / wireframe /
-  uv-checker paths. `ui` MVP only needs `3D` mode; `UV` / `Tex` are placeholders.
+- Shading is one inline WGSL scene shader covering shaded / unlit / wireframe /
+  uv-checker / vertex-color paths; tone mapping + sRGB encoding live in the post
+  shader, and the thick model wireframe is a separate post-composite overlay
+  pass. `3D` and `UV` viewports are both implemented; `Tex` is still a placeholder.
 - Crate boundaries are load-bearing (invariants 2, 9, 10) — keep them.
 
 ## 5. Current state
 
-MVP: native window + wgpu viewport + egui chrome; FBX import via ufbx; orbit/
-pan/zoom + frame-on-`F`; grid with axes; shaded / unlit / wireframe + face- and
-vertex-normal debug overlays; orthographic/perspective toggle; animated axis
-gizmo (orbit + snap-to-axis). Drag an FBX in, or double-click the empty viewport
-to open the file picker.
+MVP: native window + wgpu viewport + egui chrome; FBX import via ufbx (drag-drop,
+`Ctrl+O`, double-click empty viewport, command-line/file-association path);
+orbit/pan/zoom + frame-on-`F` + home reset + 45° WASD orbit steps; grid with
+axes; shaded / unlit / wireframe / shaded+wireframe, source-color / UV-checker /
+vertex-color materials, plus bounding-box, face- and vertex-normal debug
+overlays; orthographic/perspective toggle; animated axis gizmo (orbit +
+snap-to-axis); a 2D UV viewport (independent pan/zoom, UV channel picker, wire
+layout, shaded fill, per-island coloring). Windows packaging (exe icon/resource
+metadata + Inno Setup installer) is present.
 
 The `ui` crate is split into focused modules (`theme`, `state`, `assets`,
 `widgets`, `overlay`, `toolbar`, `status_bar`, `stats`, `gizmo`, `panels/`) and
@@ -171,28 +186,35 @@ line views are now freed on view-off and the normal length/color sliders update
 live (invariant 3, via `scene.rs` `sync_line_views`). The stats panel shows only
 measured values (invariant 5).
 
-Rendering pipeline (see `C:\Users\<user>\.claude\plans\reflective-chasing-horizon.md`):
-the scene renders into an **offscreen HDR target** (`Rgba16Float`) composited by a
-fullscreen post pass (Phase 1); **anti-aliasing** has dynamic scene MSAA (Off/2×/
-4×/8×/16×) + FXAA, on the status-bar AA button (Phase 2); **HDR image-based
-lighting + PBR** is the default Shaded look (Phase 3) — three baked HDR
-environments, precomputed irradiance/prefilter/BRDF-LUT maps in `ibl.rs`, an
-optional skybox; **bloom** (HDR glow) is on by default (Phase 4) — a bright-pass
-+ separable blur over a pre-tone-map linear-HDR MRT target so only bright
-highlights glow and overlays never do; **SSAO** is on by default (Phase 5) — a
-hemisphere-kernel occlusion + box blur over a view-space normal/depth G-buffer
-(a third MRT target the scene pass writes), multiplied into the scene's ambient
-light in the composite (overlays write a zero G-buffer, so they never occlude).
-The status bar's right group holds the IBL / Bloom / SSAO / Anti-aliasing toggles
-(left-click toggles, right-click opens each tool's options panel — Environment /
-Bloom / Ambient Occlusion / Anti Aliasing). The scene shader still tone-maps
-inline (bloom reads its own pre-tone-map MRT target; SSAO darkens in the post
-pass), so the full linear-HDR color-space migration stays deferred — only further
-post would force it.
+Rendering pipeline (see `PROJECT_STATE.md` + `RENDERING_PIPELINE.md`): the scene
+renders into **offscreen linear-HDR MRT targets** composited by a fullscreen post
+pass; **anti-aliasing** has dynamic scene MSAA (Off/2×/4×/8×/16×, gated on
+`Depth32Float` support) + FXAA, on the status-bar AA button; **HDR image-based
+lighting + PBR** is the default Shaded look — three baked HDR environments,
+precomputed irradiance/prefilter/BRDF-LUT maps in `ibl.rs`, an optional skybox;
+**bloom** (HDR glow) is on by default — a bright-pass + separable blur over the
+linear-HDR bloom MRT so only bright highlights glow and overlays never do;
+**SSAO** is on by default — a hemisphere-kernel occlusion + 5×5 bilateral blur
+over a *separate single-sample* view-normal/view-Z G-buffer (its own mesh-only
+pass, not an MSAA MRT), composed in post as ambient-only attenuation so direct
+and specular light are never darkened. The status bar's right group holds the
+IBL / Bloom / SSAO / Anti-aliasing toggles (left-click toggles, right-click opens
+each tool's options panel — Environment / Bloom / Ambient Occlusion / Anti
+Aliasing).
+
+The renderer is now **fully linear-HDR with Reversed-Z scene depth**: scene MRT
+location 0 carries linear radiance (PBR-Neutral tone mapping + `linear_to_srgb`
+moved into `post.wgsl`); location 1 is the linear-HDR bloom source; location 2 is
+the AO-eligible ambient radiance (IBL diffuse + analytic fill only). Scene depth
+is `Depth32Float` cleared to 0 with `GreaterEqual` and infinite reversed
+perspective (`perspective_infinite_reverse_rh`); egui's framebuffer keeps its own
+`EGUI_DEPTH_FORMAT`. The thick model wireframe is a final post-composite overlay
+pass (`wireframe.rs`) so it dodges SSAO/bloom/tone-map.
 
 Known gaps (see MSRV note): no tests yet though `cargo test` is an acceptance
-criterion. UV / Texture panes, texture loading/KTX2, GPU-buffer visualization,
-and additional formats (glTF/OBJ) are post-MVP (`TODO.md`).
+criterion. Texture pane, texture loading/KTX2, a real material/texture table,
+in-app load-error/warning display, GPU-buffer visualization, and additional
+formats (glTF/OBJ) are post-MVP (`TODO.md`).
 
 ## 6. Gotchas
 
@@ -203,16 +225,20 @@ and additional formats (glTF/OBJ) are post-MVP (`TODO.md`).
   `include_str!` in `scene.rs`); update it in lockstep with the `#[repr(C)]`
   `SceneUniforms`/`SceneVertex` structs in `scene.rs` if you change them.
 - The scene geometry pass is **MRT** with **three** color targets: `scene.wgsl`'s
-  `FragOutput` writes location 0 (display color), location 1 (linear-HDR bloom
-  source) and location 2 (SSAO G-buffer: view normal `xyz` + view Z `w`), so every
-  scene pipeline (mesh/line/uv-fill/skybox) must declare *three* color targets and
-  the offscreen pass *three* attachments + resolves — keep them in lockstep with
-  `FragOutput`. Overlays (zero-normal verts) write 0 to locations 1 and 2 so they
-  neither bloom nor occlude. Locations 0/1 alpha-blend; location 2 must NOT blend
-  (its `.w` is packed view Z, not coverage) — it replaces. naga's WGSL rejects `_`
-  digit separators in numeric literals (e.g. `0.227_027`) — write float constants
-  without them, and use `textureSampleLevel` (not `textureSample`) anywhere a
-  texture is read inside a loop/branch (non-uniform control flow).
+  `FragOutput` writes location 0 (linear scene radiance), location 1 (linear-HDR
+  bloom source) and location 2 (AO-eligible ambient radiance), so every scene
+  pipeline (mesh/line/uv-fill/skybox) must declare *three* color targets and the
+  offscreen pass *three* attachments + resolves — keep them in lockstep with
+  `FragOutput`. All three locations alpha-blend now (location 2 is ambient
+  radiance, no longer packed view-Z). Overlays (zero-normal verts) write 0 to
+  locations 1 and 2 so they neither bloom nor get AO-darkened. SSAO no longer
+  reads location 2's normal: it has its own single-sample mesh-only pass
+  (`fs_ssao_gbuffer`, one `@location(0)` output of view normal `xyz` + view Z `w`)
+  into a separate G-buffer target, avoiding MSAA edge averaging. Tone mapping +
+  sRGB encoding happen once in `post.wgsl`, not in the scene shader. naga's WGSL
+  rejects `_` digit separators in numeric literals (e.g. `0.227_027`) — write
+  float constants without them, and use `textureSampleLevel` (not `textureSample`)
+  anywhere a texture is read inside a loop/branch (non-uniform control flow).
 - CPU-side vertex generation (grid, wireframe, face/vertex normal lines) lives in
   `crates/render/src/geometry.rs`; `scene.rs` owns the callback, GPU resources
   and buffer upload. Derived line views are built-on-demand and freed-on-off by

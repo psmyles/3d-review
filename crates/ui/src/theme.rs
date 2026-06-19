@@ -117,7 +117,7 @@ pub mod color {
     /// Default vertex-normal line color.
     pub const VERTEX_NORMAL_DEFAULT: Color32 = Color32::from_rgb(32, 224, 232);
     /// Default wireframe line color (60% grey).
-    pub const WIREFRAME_DEFAULT: Color32 = Color32::from_gray(153);
+    pub const WIREFRAME_DEFAULT: Color32 = Color32::from_gray(100);
     /// Default bounding-box edge color (a distinct amber that reads against the
     /// shaded model and the grid).
     pub const BOUNDING_BOX_DEFAULT: Color32 = Color32::from_rgb(255, 205, 64);
@@ -254,6 +254,9 @@ pub mod size {
     pub const PANEL_SWATCH_SIZE: f32 = 24.0;
     pub const PANEL_SWATCH_GAP: f32 = 6.0;
     pub const PANEL_TILING_TEXT_W: f32 = 48.0;
+    /// Width of the numeric value field shown to the right of a slider on rows
+    /// that pair a slider with an editable value (e.g. wireframe thickness).
+    pub const PANEL_VALUE_FIELD_W: f32 = 52.0;
     pub const PANEL_COMBO_BUTTON_PAD_Y: f32 = 2.0;
     pub const PANEL_COMBO_POPUP_MAX_H: f32 = 240.0;
     pub const PANEL_COMBO_OPTION_H: f32 = 20.0;
