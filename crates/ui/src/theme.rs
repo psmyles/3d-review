@@ -253,10 +253,13 @@ pub mod size {
     pub const PANEL_BUTTON_HEIGHT: f32 = 32.0;
     pub const PANEL_SWATCH_SIZE: f32 = 24.0;
     pub const PANEL_SWATCH_GAP: f32 = 6.0;
-    pub const PANEL_TILING_TEXT_W: f32 = 48.0;
-    /// Width of the numeric value field shown to the right of a slider on rows
-    /// that pair a slider with an editable value (e.g. wireframe thickness).
+    /// Width of the numeric value field shown to the right of a slider. Every
+    /// option-panel slider pairs its rail with this inline, editable value field.
     pub const PANEL_VALUE_FIELD_W: f32 = 52.0;
+    /// Inner horizontal padding between the value field's frame and its digits.
+    /// Kept tight so the readout sits close to the box edges and the widest value
+    /// still fits the field.
+    pub const PANEL_VALUE_FIELD_PAD_X: f32 = 4.0;
     pub const PANEL_COMBO_BUTTON_PAD_Y: f32 = 2.0;
     pub const PANEL_COMBO_POPUP_MAX_H: f32 = 240.0;
     pub const PANEL_COMBO_OPTION_H: f32 = 20.0;
@@ -323,6 +326,11 @@ pub mod font {
     pub const PANEL_TITLE: f32 = 14.5;
     pub const PANEL_LABEL: f32 = 14.0;
     pub const PANEL_BUTTON: f32 = 14.0;
+    /// Inline value field at the right of a slider row. Rendered in the monospace
+    /// (JetBrains Mono) face so digits sit on a fixed advance and don't jitter as
+    /// the value scrubs. Sized a touch smaller than the proportional label face so
+    /// the widest readout (e.g. `0.020`) fits the value field without clipping.
+    pub const PANEL_VALUE: f32 = 12.5;
 
     // ── Startup help overlay (sized to match the app's other overlay text) ──
     pub const HELP_TITLE: f32 = 14.0;

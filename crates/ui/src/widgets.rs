@@ -160,40 +160,21 @@ pub(crate) fn style_combo_popup(ui: &mut egui::Ui) {
     ui.visuals_mut().widgets.inactive.fg_stroke.color = color::TEXT_COMBO_DIM;
 }
 
-/// A label + slider row using the shared two-column table layout. `range` is the
-/// inclusive slider domain (the caller owns the semantic bounds).
-pub(crate) fn labeled_slider(
-    ui: &mut egui::Ui,
-    label: &str,
-    value: &mut f32,
-    range: std::ops::RangeInclusive<f32>,
-) {
-    ui.horizontal(|ui| {
-        // Zero egui's implicit inter-item gap so our explicit column gap is the
-        // only horizontal spacing.
-        ui.spacing_mut().item_spacing.x = 0.0;
-        let control_w = table_label_cell(ui, label);
-        // Fill the control column exactly; egui keeps the handle inside the rail
-        // rect, so the rail spans to the column's right edge without spilling.
-        ui.spacing_mut().slider_width = control_w;
-        ui.add(
-            egui::Slider::new(value, range)
-                .show_value(false)
-                .clamping(egui::SliderClamping::Always),
-        );
-    });
-}
-
 /// A label + slider row that also shows the live value in an editable numeric
 /// field at the right of the row. The slider gives up a fixed slice of the
 /// control column to the field; both bind the same value, so dragging the slider
-/// updates the field and typing/dragging the field updates the slider. `decimals`
-/// fixes the field's displayed precision and `speed` is the field's drag step.
-pub(crate) fn labeled_slider_with_value(
+/// updates the field and clicking/typing/dragging the field updates the slider.
+/// `decimals` fixes the field's displayed precision (use 0 for integers) and
+/// `speed` is the field's drag step.
+///
+/// This is the standard slider for every option panel: a rail plus an inline,
+/// click-to-edit, drag-to-scrub value field. New panels should use it rather than
+/// a bare slider so all sliders behave identically.
+pub(crate) fn labeled_slider_with_value<Num: egui::emath::Numeric>(
     ui: &mut egui::Ui,
     label: &str,
-    value: &mut f32,
-    range: std::ops::RangeInclusive<f32>,
+    value: &mut Num,
+    range: std::ops::RangeInclusive<Num>,
     decimals: usize,
     speed: f32,
 ) {
@@ -216,6 +197,12 @@ pub(crate) fn labeled_slider_with_value(
         // growing the row and breaking the inter-row spacing).
         ui.spacing_mut().interact_size.y = size::PANEL_ROW_H;
         ui.spacing_mut().button_padding.y = size::PANEL_COMBO_BUTTON_PAD_Y;
+        // Tighten the field's inner horizontal padding so the digits sit close to
+        // the box edges and the widest readout fits without clipping.
+        ui.spacing_mut().button_padding.x = size::PANEL_VALUE_FIELD_PAD_X;
+        // Render the field's digits in the monospace face (this is the last widget
+        // in the row, so the font override doesn't bleed into other controls).
+        ui.style_mut().override_font_id = Some(egui::FontId::monospace(font::PANEL_VALUE));
         ui.add_sized(
             egui::vec2(size::PANEL_VALUE_FIELD_W, size::PANEL_ROW_H),
             egui::DragValue::new(value)

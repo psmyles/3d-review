@@ -5,13 +5,24 @@ use review_render::CheckerTexture;
 
 use crate::state::{CHECKER_TILING_MAX, CHECKER_TILING_MIN, UiState, UvCheckerPanelState};
 use crate::theme::size;
-use crate::widgets::{compact_combo, table_label_cell, wide_reset_button};
+use crate::widgets::{
+    compact_combo, labeled_slider_with_value, table_label_cell, wide_reset_button,
+};
 
 pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
     let uv_set_count = state.stats.uv_set_count;
     checker_texture_row(ui, &mut state.uv_checker.texture);
     ui.add_space(size::PANEL_ROW_GAP);
-    checker_tiling_row(ui, &mut state.uv_checker);
+    // Integer tiling on the standard slider: rail + inline click-to-edit,
+    // drag-to-scrub value field (0 decimals, step 1).
+    labeled_slider_with_value(
+        ui,
+        "Checker Tiling",
+        &mut state.uv_checker.tiling,
+        CHECKER_TILING_MIN..=CHECKER_TILING_MAX,
+        0,
+        1.0,
+    );
     // The channel picker is only meaningful — and only shown — when the model
     // carries more than one UV set.
     if uv_set_count > 1 {
@@ -40,46 +51,6 @@ fn checker_texture_row(ui: &mut egui::Ui, texture: &mut CheckerTexture) {
                 ui.selectable_value(texture, CheckerTexture::Color, "Color");
             },
         );
-    });
-}
-
-/// "Checker Tiling" row: an integer slider (1..=16) paired with a text field.
-/// The slider updates the text mirror live; the text field is re-sanitized to a
-/// clamped integer when editing finishes (focus loss or Enter).
-fn checker_tiling_row(ui: &mut egui::Ui, state: &mut UvCheckerPanelState) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        let control_w = table_label_cell(ui, "Checker Tiling");
-        let slider_w = (control_w - size::PANEL_TILING_TEXT_W - size::PANEL_COL_GAP).max(0.0);
-
-        ui.spacing_mut().slider_width = slider_w;
-        let slider = ui.add(
-            egui::Slider::new(&mut state.tiling, CHECKER_TILING_MIN..=CHECKER_TILING_MAX)
-                .show_value(false)
-                .clamping(egui::SliderClamping::Always),
-        );
-        if slider.changed() {
-            state.tiling_text = state.tiling.to_string();
-        }
-
-        ui.add_space(size::PANEL_COL_GAP);
-        let field = ui.add_sized(
-            egui::vec2(size::PANEL_TILING_TEXT_W, size::PANEL_ROW_H),
-            egui::TextEdit::singleline(&mut state.tiling_text)
-                .horizontal_align(egui::Align::Center),
-        );
-        // Commit only when editing ends: an empty / non-numeric entry reverts to
-        // the current value, anything else is clamped into range.
-        if field.lost_focus() {
-            let committed = state
-                .tiling_text
-                .trim()
-                .parse::<u32>()
-                .unwrap_or(state.tiling)
-                .clamp(CHECKER_TILING_MIN, CHECKER_TILING_MAX);
-            state.tiling = committed;
-            state.tiling_text = committed.to_string();
-        }
     });
 }
 

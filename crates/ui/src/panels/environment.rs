@@ -11,7 +11,7 @@ use review_render::{EnvironmentMap, EnvironmentSettings};
 use crate::state::UiState;
 use crate::theme::size;
 use crate::widgets::{
-    compact_combo, labeled_checkbox, labeled_slider, table_label_cell, wide_reset_button,
+    compact_combo, labeled_checkbox, labeled_slider_with_value, table_label_cell, wide_reset_button,
 };
 
 /// Inclusive range for the IBL intensity slider.
@@ -25,11 +25,13 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
     labeled_checkbox(ui, "Background", &mut state.environment.show_background);
     ui.add_space(size::PANEL_ROW_GAP);
 
-    labeled_slider(
+    labeled_slider_with_value(
         ui,
         "Intensity",
         &mut state.environment.intensity,
         INTENSITY_MIN..=INTENSITY_MAX,
+        2,
+        0.01,
     );
     ui.add_space(size::PANEL_ACTION_GAP);
 
