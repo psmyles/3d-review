@@ -1,10 +1,10 @@
 // Screen-space ambient occlusion (CLAUDE.md render roadmap, Phase 5). Two passes,
 // both fullscreen triangles sharing the vertex shader:
-//   * fs_ssao  — hemisphere-kernel occlusion from the scene's view-space normal +
-//                depth G-buffer (MRT location 2 of the scene pass) into an R8 AO
-//                target.
-//   * fs_blur  — a small box blur that removes the per-pixel-rotation noise.
-// The composite (post.rs) multiplies the blurred AO into the scene's ambient light.
+//   * fs_ssao  — hemisphere-kernel occlusion from a single-sample view-space
+//                normal + depth G-buffer into an R8 AO target.
+//   * fs_blur  — a bilateral blur that removes per-pixel-rotation noise while
+//                preserving depth/normal edges.
+// The composite (post.rs) applies the blurred AO only to ambient radiance.
 //
 // SSAO works in view space: the G-buffer stores the view-space normal (xyz) and
 // the linear view-space Z (w, negative in front of the camera). The view position
@@ -30,8 +30,10 @@ struct SsaoUniforms {
 @group(0) @binding(0)
 var gbuffer: texture_2d<f32>;
 @group(0) @binding(1)
-var gbuffer_sampler: sampler;
+var raw_ao: texture_2d<f32>;
 @group(0) @binding(2)
+var ssao_sampler: sampler;
+@group(0) @binding(3)
 var<uniform> ssao: SsaoUniforms;
 
 struct VertexOutput {
@@ -88,7 +90,7 @@ fn hash12(p: vec2<f32>) -> f32 {
 
 @fragment
 fn fs_ssao(input: VertexOutput) -> @location(0) f32 {
-    let sample = textureSampleLevel(gbuffer, gbuffer_sampler, input.uv, 0.0);
+    let sample = textureSampleLevel(gbuffer, ssao_sampler, input.uv, 0.0);
     let normal = sample.xyz;
     let view_z = sample.w;
 
@@ -119,7 +121,7 @@ fn fs_ssao(input: VertexOutput) -> @location(0) f32 {
             continue;
         }
         // Depth of the real geometry at that screen location.
-        let scene_z = textureSampleLevel(gbuffer, gbuffer_sampler, sample_uv, 0.0).w;
+        let scene_z = textureSampleLevel(gbuffer, ssao_sampler, sample_uv, 0.0).w;
         // Occluded when the real geometry is in front of the sample point (view Z
         // increases toward the camera, so a *larger* scene_z means closer).
         let occluded = select(0.0, 1.0, scene_z >= sample_pos.z + bias);
@@ -133,18 +135,50 @@ fn fs_ssao(input: VertexOutput) -> @location(0) f32 {
     return clamp(ao, 0.0, 1.0);
 }
 
-// 4×4 box blur over the raw AO, removing the per-pixel rotation noise. Reads the
-// texture dimensions directly so it needs no extra uniform.
+// 5x5 bilateral blur over the raw AO. Depth and normal weights keep occlusion
+// from bleeding across silhouettes and hard creases.
 @fragment
 fn fs_blur(input: VertexOutput) -> @location(0) f32 {
-    let dims = vec2<f32>(textureDimensions(gbuffer));
+    let center_g = textureSampleLevel(gbuffer, ssao_sampler, input.uv, 0.0);
+    let center_n = center_g.xyz;
+    let center_z = center_g.w;
+    if (dot(center_n, center_n) < 0.25 || center_z >= -1e-4) {
+        return 1.0;
+    }
+
+    let dims = vec2<f32>(textureDimensions(raw_ao));
     let texel = 1.0 / dims;
+    let n0 = normalize(center_n);
+    let depth_sigma = max(max(ssao.params.x * 0.12, ssao.params.y * 4.0), 1e-4);
+    let spatial_sigma = 2.0;
     var sum = 0.0;
-    for (var x = -2; x < 2; x = x + 1) {
-        for (var y = -2; y < 2; y = y + 1) {
-            let offset = vec2<f32>(f32(x) + 0.5, f32(y) + 0.5) * texel;
-            sum = sum + textureSampleLevel(gbuffer, gbuffer_sampler, input.uv + offset, 0.0).r;
+    var weight_sum = 0.0;
+    for (var x = -2; x <= 2; x = x + 1) {
+        for (var y = -2; y <= 2; y = y + 1) {
+            let pixel_offset = vec2<f32>(f32(x), f32(y));
+            let uv = input.uv + pixel_offset * texel;
+            let g = textureSampleLevel(gbuffer, ssao_sampler, uv, 0.0);
+            let n_len = dot(g.xyz, g.xyz);
+            if (n_len < 0.25 || g.w >= -1e-4) {
+                continue;
+            }
+
+            let normal_dot = dot(n0, normalize(g.xyz));
+            if (normal_dot < 0.75) {
+                continue;
+            }
+            let spatial_weight = exp(-dot(pixel_offset, pixel_offset) / (2.0 * spatial_sigma * spatial_sigma));
+            let dz = abs(g.w - center_z);
+            let depth_weight = exp(-(dz * dz) / (2.0 * depth_sigma * depth_sigma));
+            let normal_weight = smoothstep(0.75, 1.0, normal_dot);
+            let weight = spatial_weight * depth_weight * normal_weight;
+            let ao = textureSampleLevel(raw_ao, ssao_sampler, uv, 0.0).r;
+            sum = sum + ao * weight;
+            weight_sum = weight_sum + weight;
         }
     }
-    return sum / 16.0;
+    if (weight_sum <= 1e-5) {
+        return textureSampleLevel(raw_ao, ssao_sampler, input.uv, 0.0).r;
+    }
+    return sum / weight_sum;
 }

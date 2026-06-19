@@ -8,9 +8,10 @@ mod post;
 mod scene;
 mod ssao;
 mod targets;
+mod wireframe;
 
 pub use ibl::ibl_supported;
-pub use scene::{EGUI_MSAA_SAMPLE_COUNT, SCENE_DEPTH_FORMAT, SceneCallback};
+pub use scene::{EGUI_DEPTH_FORMAT, EGUI_MSAA_SAMPLE_COUNT, SCENE_DEPTH_FORMAT, SceneCallback};
 pub use ssao::ssao_supported;
 
 const CAMERA_TRANSITION_SECONDS: f32 = 0.3;
@@ -26,12 +27,10 @@ const FRAME_MARGIN: f32 = 1.04;
 /// view — loaded models still frame tight to the safe area.
 const HOME_FILL_FRACTION: f32 = 0.68;
 
-/// Largest far/near ratio we let the projection produce. The depth buffer
-/// (`Depth24Plus`) only has so many distinguishable values; a huge range spends
-/// almost all of them in empty space in front of the model, leaving close and
-/// intersecting faces to flicker / swap draw order as you zoom. Bounding the
-/// ratio keeps enough precision across the model. ~5000:1 is comfortable for a
-/// 24-bit depth buffer.
+/// Largest far/near ratio we use when fitting the near plane. Perspective uses
+/// infinite Reversed-Z, so the far value no longer clips geometry there; the
+/// ratio still keeps the near plane from collapsing when framing tiny content and
+/// provides the finite far range used by orthographic projection.
 const MAX_DEPTH_RATIO: f32 = 5_000.0;
 /// Absolute floor for the near plane so it never collapses to zero.
 const MIN_Z_NEAR: f32 = 0.01;
@@ -247,10 +246,10 @@ impl Default for EnvironmentSettings {
 /// Bloom (HDR glow) configuration for the shaded view. Read by [`SceneCallback`]
 /// to drive the bloom passes and the composite add.
 ///
-/// Bloom thresholds the scene's **pre-tone-map** linear HDR (carried in a second
-/// render target alongside the display-space color, so overlays never bloom and
-/// the existing views are unaffected when bloom is off), blurs what is brighter
-/// than `threshold`, and adds it back in the composite scaled by `intensity`.
+/// Bloom thresholds the scene's linear HDR bloom source (carried in a second
+/// render target alongside the linear HDR scene color, so overlays never bloom),
+/// blurs what is brighter than `threshold`, and adds it back in the composite
+/// scaled by `intensity`.
 /// `enabled` is the toolbar toggle; the default is on with a threshold of 1.0, so
 /// only genuinely bright highlights (bright reflections / the skybox) glow while
 /// ordinary diffuse surfaces are untouched.
@@ -277,14 +276,14 @@ impl Default for BloomSettings {
 /// render roadmap, Phase 5). Read by [`SceneCallback`] to drive the SSAO + blur
 /// passes and the composite multiply.
 ///
-/// SSAO samples a view-space normal + depth G-buffer the scene pass writes
-/// alongside its color, estimates how occluded each pixel is by nearby geometry,
-/// blurs the result, and multiplies it into the scene's ambient light in the
-/// composite — darkening contact creases and cavities. `radius` and `bias` are
-/// expressed as **fractions of the framed model's bounding-sphere radius**, so
-/// the look is scale-invariant across models (the renderer multiplies them by the
-/// live scene radius). `enabled` is the toolbar toggle; the default is on but
-/// subtle.
+/// SSAO samples a single-sample view-space normal + depth G-buffer, estimates how
+/// occluded each pixel is by nearby geometry, edge-aware blurs the result, and
+/// applies it only to the scene's ambient radiance in the composite — darkening
+/// contact creases and cavities without muting direct/specular light. `radius`
+/// and `bias` are expressed as **fractions of the framed model's bounding-sphere
+/// radius**, so the look is scale-invariant across models (the renderer
+/// multiplies them by the live scene radius). `enabled` is the toolbar toggle;
+/// the default is on but subtle.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SsaoSettings {
     pub enabled: bool,
@@ -389,9 +388,18 @@ pub struct SceneDebugOptions {
     pub vertex_normal_length: f32,
     pub face_normal_color: [f32; 4],
     pub vertex_normal_color: [f32; 4],
-    /// Color of the wireframe lines (wireframe / shaded-wireframe modes), baked
-    /// into the line vertex buffer and rebuilt when it changes.
+    /// Color of the model wireframe overlay, baked into the edge segment buffer
+    /// and rebuilt when it changes.
     pub wireframe_color: [f32; 4],
+    /// Screen-space wireframe thickness in pixels, used when
+    /// `wireframe_use_world_units` is false.
+    pub wireframe_screen_thickness: f32,
+    /// World-space wireframe thickness, used when `wireframe_use_world_units` is
+    /// true.
+    pub wireframe_world_thickness: f32,
+    /// Whether wireframe thickness is interpreted in world units instead of
+    /// constant screen pixels.
+    pub wireframe_use_world_units: bool,
     /// Color of the bounding-box edges, baked into its line buffer and rebuilt
     /// when it changes.
     pub bounding_box_color: [f32; 4],
@@ -416,6 +424,9 @@ impl Default for SceneDebugOptions {
             face_normal_color: [1.0, 0.1, 0.1, 0.95],
             vertex_normal_color: [0.14, 0.92, 0.96, 0.95],
             wireframe_color: [0.6, 0.6, 0.6, 1.0],
+            wireframe_screen_thickness: 1.0,
+            wireframe_world_thickness: 0.005,
+            wireframe_use_world_units: false,
             bounding_box_color: [1.0, 0.803_921_6, 0.250_980_4, 1.0],
         }
     }
@@ -740,7 +751,7 @@ impl OrbitCamera {
         let (z_near, z_far) = self.near_far();
         match projection_mode {
             CameraProjection::Perspective => {
-                Mat4::perspective_rh(self.fov_y_radians, self.aspect_ratio, z_near, z_far)
+                Mat4::perspective_infinite_reverse_rh(self.fov_y_radians, self.aspect_ratio, z_near)
             }
             CameraProjection::Orthographic => {
                 let half_height = self.orthographic_half_height();
@@ -750,8 +761,8 @@ impl OrbitCamera {
                     half_width,
                     -half_height,
                     half_height,
-                    z_near,
                     z_far,
+                    z_near,
                 )
             }
         }
@@ -852,6 +863,37 @@ fn ease_in_out_cubic(t: f32) -> f32 {
         4.0 * t * t * t
     } else {
         1.0 - (-2.0 * t + 2.0).powi(3) * 0.5
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ndc_z(projection: Mat4, view_z: f32) -> f32 {
+        let clip = projection * Vec3::new(0.0, 0.0, view_z).extend(1.0);
+        clip.z / clip.w
+    }
+
+    #[test]
+    fn perspective_projection_uses_reversed_z() {
+        let camera = OrbitCamera::default();
+        let (near, _) = camera.near_far();
+        let projection = camera.projection_matrix(CameraProjection::Perspective);
+
+        assert!((ndc_z(projection, -near) - 1.0).abs() < 1e-5);
+        let distant = ndc_z(projection, -near * 1_000.0);
+        assert!(distant > 0.0 && distant < 0.01);
+    }
+
+    #[test]
+    fn orthographic_projection_uses_reversed_z() {
+        let camera = OrbitCamera::default();
+        let (near, far) = camera.near_far();
+        let projection = camera.projection_matrix(CameraProjection::Orthographic);
+
+        assert!((ndc_z(projection, -near) - 1.0).abs() < 1e-5);
+        assert!(ndc_z(projection, -far).abs() < 1e-5);
     }
 }
 

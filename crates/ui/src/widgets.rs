@@ -184,6 +184,50 @@ pub(crate) fn labeled_slider(
     });
 }
 
+/// A label + slider row that also shows the live value in an editable numeric
+/// field at the right of the row. The slider gives up a fixed slice of the
+/// control column to the field; both bind the same value, so dragging the slider
+/// updates the field and typing/dragging the field updates the slider. `decimals`
+/// fixes the field's displayed precision and `speed` is the field's drag step.
+pub(crate) fn labeled_slider_with_value(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    decimals: usize,
+    speed: f32,
+) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        // Center every control on the row's vertical axis so the slider rail, the
+        // value field and the label all line up regardless of their natural heights.
+        ui.set_min_height(size::PANEL_ROW_H);
+        let control_w = table_label_cell(ui, label);
+        let slider_w = (control_w - size::PANEL_VALUE_FIELD_W - size::PANEL_COL_GAP).max(0.0);
+        ui.spacing_mut().slider_width = slider_w;
+        ui.add(
+            egui::Slider::new(value, range.clone())
+                .show_value(false)
+                .clamping(egui::SliderClamping::Always),
+        );
+        ui.add_space(size::PANEL_COL_GAP);
+        // Shrink the field's vertical padding so it sits exactly at row height
+        // (the global button padding would otherwise make it taller than the row,
+        // growing the row and breaking the inter-row spacing).
+        ui.spacing_mut().interact_size.y = size::PANEL_ROW_H;
+        ui.spacing_mut().button_padding.y = size::PANEL_COMBO_BUTTON_PAD_Y;
+        ui.add_sized(
+            egui::vec2(size::PANEL_VALUE_FIELD_W, size::PANEL_ROW_H),
+            egui::DragValue::new(value)
+                .range(range)
+                .speed(speed)
+                .min_decimals(decimals)
+                .max_decimals(decimals)
+                .clamp_existing_to_range(true),
+        );
+    });
+}
+
 /// A label + checkbox row using the shared two-column table layout. The checkbox
 /// (no inline text — the label cell carries it) sits left-aligned in the control
 /// column so it lines up with the other panel controls.
