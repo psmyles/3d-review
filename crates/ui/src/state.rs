@@ -220,7 +220,7 @@ pub struct UiState {
     pub ibl_supported: bool,
     /// Bloom (HDR glow) settings. Read straight by the viewport callback (not a
     /// debug option) and edited by the Bloom panel; the bloom status-bar button
-    /// toggles `bloom.enabled`. Default is on (see [`BloomSettings`]).
+    /// toggles `bloom.enabled`. Default is off (see [`BloomSettings`]).
     pub bloom: BloomSettings,
     /// Screen-space ambient occlusion settings. Read straight by the viewport
     /// callback and edited by the Ambient Occlusion panel; the SSAO status-bar
