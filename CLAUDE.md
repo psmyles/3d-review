@@ -193,7 +193,7 @@ pass; **anti-aliasing** has dynamic scene MSAA (Off/2×/4×/8×/16×, gated on
 `Depth32Float` support) + FXAA, on the status-bar AA button; **HDR image-based
 lighting + PBR** is the default Shaded look — three baked HDR environments,
 precomputed irradiance/prefilter/BRDF-LUT maps in `ibl.rs`, an optional skybox;
-**bloom** (HDR glow) is on by default — a bright-pass + separable blur over the
+**bloom** (HDR glow) is off by default — a bright-pass + separable blur over the
 linear-HDR bloom MRT so only bright highlights glow and overlays never do;
 **SSAO** is on by default — a hemisphere-kernel occlusion + 5×5 bilateral blur
 over a *separate single-sample* view-normal/view-Z G-buffer (its own mesh-only

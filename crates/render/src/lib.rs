@@ -264,7 +264,7 @@ pub struct BloomSettings {
 impl Default for BloomSettings {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             threshold: 1.0,
             intensity: 0.6,
         }
