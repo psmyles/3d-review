@@ -26,11 +26,19 @@ pub(crate) const DEFAULT_NORMAL_LENGTH: f32 = 0.03;
 pub(crate) const NORMAL_LENGTH_MIN: f32 = 0.001;
 pub(crate) const NORMAL_LENGTH_MAX: f32 = 0.10;
 pub(crate) const DEFAULT_WIREFRAME_SCREEN_THICKNESS: f32 = 1.0;
-pub(crate) const WIREFRAME_SCREEN_THICKNESS_MIN: f32 = 1.0;
-pub(crate) const WIREFRAME_SCREEN_THICKNESS_MAX: f32 = 8.0;
-pub(crate) const DEFAULT_WIREFRAME_WORLD_THICKNESS: f32 = 0.005;
-pub(crate) const WIREFRAME_WORLD_THICKNESS_MIN: f32 = 0.001;
-pub(crate) const WIREFRAME_WORLD_THICKNESS_MAX: f32 = 0.05;
+pub(crate) const WIREFRAME_SCREEN_THICKNESS_MIN: f32 = 0.1;
+pub(crate) const WIREFRAME_SCREEN_THICKNESS_MAX: f32 = 2.0;
+pub(crate) const DEFAULT_WIREFRAME_WORLD_THICKNESS: f32 = 0.0005;
+pub(crate) const WIREFRAME_WORLD_THICKNESS_MIN: f32 = 0.0001;
+pub(crate) const WIREFRAME_WORLD_THICKNESS_MAX: f32 = 0.001;
+/// World thickness is stored in true world units (mm-scale fractions) but shown
+/// on a friendlier 0.1–1.0 scale in the panel. Shown value = actual * SCALE, so
+/// the UI reads 0.1–1.0 while the renderer keeps the real 0.0001–0.001 length.
+pub(crate) const WIREFRAME_WORLD_THICKNESS_DISPLAY_SCALE: f32 = 1000.0;
+pub(crate) const WIREFRAME_WORLD_THICKNESS_DISPLAY_MIN: f32 =
+    WIREFRAME_WORLD_THICKNESS_MIN * WIREFRAME_WORLD_THICKNESS_DISPLAY_SCALE;
+pub(crate) const WIREFRAME_WORLD_THICKNESS_DISPLAY_MAX: f32 =
+    WIREFRAME_WORLD_THICKNESS_MAX * WIREFRAME_WORLD_THICKNESS_DISPLAY_SCALE;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum WorkspaceMode {
