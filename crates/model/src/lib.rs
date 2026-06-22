@@ -1,4 +1,4 @@
-use glam::{Vec2, Vec3, Vec4};
+use glam::{Mat4, Vec2, Vec3, Vec4};
 
 mod bvh;
 pub use bvh::Bvh;
@@ -71,10 +71,38 @@ impl Bounds {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MaterialInfo {
     pub name: String,
     pub draw_count: usize,
+    /// Import default base color (linear RGB), seeding the editable material
+    /// table. White when the source material declared none.
+    pub base_color: Vec3,
+    /// Import default smoothness in `0.0..=1.0` (glossiness, `1 - roughness`).
+    /// `0.5` when the source material declared neither glossiness nor roughness.
+    pub smoothness: f32,
+    /// Import default metalness in `0.0..=1.0`. `0.0` (dielectric) when the
+    /// source material declared none.
+    pub metallic: f32,
+    /// Import default emissive color (linear RGB, `emission_color` scaled by
+    /// `emission_factor`). Black when the source material declared none.
+    pub emissive: Vec3,
+}
+
+/// One node in the imported scene-graph hierarchy (every FBX node, mesh-bearing
+/// or not), carried through for the Outliner. The transform is display metadata
+/// only — geometry is world-baked at import (invariant 1).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneNode {
+    pub name: String,
+    /// Index into [`ModelData::nodes`] of this node's parent, or `None` for the
+    /// root (and any node the importer left parentless).
+    pub parent: Option<usize>,
+    /// Running index among mesh-bearing nodes (in import traversal order), or
+    /// `None` when this node carries no renderable mesh.
+    pub mesh_part: Option<usize>,
+    /// `node_to_world` transform. Display metadata only.
+    pub transform: Mat4,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,6 +139,14 @@ pub struct ModelData {
     pub indices: Vec<u32>,
     pub faces: Vec<TopologyFace>,
     pub tri_to_face: Vec<u32>,
+    /// Per-triangle material slot, parallel to [`ModelData::tri_to_face`] (same
+    /// length and ordering). Each entry indexes [`ModelData::materials`], or
+    /// `u32::MAX` for a triangle whose face carried no material. Drives the
+    /// per-material draw grouping (Phase 1) without a per-vertex `material_id`.
+    pub tri_material: Vec<u32>,
+    /// The imported scene-graph hierarchy (every node, mesh-bearing or not), for
+    /// the Outliner. Empty for procedurally-built models with no hierarchy.
+    pub nodes: Vec<SceneNode>,
     /// Per-vertex UV coordinates for every UV set the model carries, one inner
     /// vector per channel (each `vertices.len()` long). Only populated when the
     /// model has **more than one** UV set; single-set models leave this empty
@@ -186,6 +222,13 @@ pub fn demo_cube_model() -> ModelData {
             })
             .collect(),
         tri_to_face: vec![0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5],
+        tri_material: vec![0; 12],
+        nodes: vec![SceneNode {
+            name: "Demo Cube".to_owned(),
+            parent: None,
+            mesh_part: Some(0),
+            transform: Mat4::IDENTITY,
+        }],
         uv_set_names: vec!["UVMap".to_owned()],
         stats: ModelStats {
             polygon_count: 6,
@@ -199,6 +242,10 @@ pub fn demo_cube_model() -> ModelData {
         materials: vec![MaterialInfo {
             name: "Default".to_owned(),
             draw_count: 1,
+            base_color: Vec3::ONE,
+            smoothness: 0.6,
+            metallic: 0.0,
+            emissive: Vec3::ZERO,
         }],
         warnings: Vec::new(),
         ..Default::default()
@@ -287,4 +334,19 @@ fn demo_cube_indices() -> Vec<u32> {
         indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     }
     indices
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn demo_cube_carries_nodes_and_per_triangle_material() {
+        let model = demo_cube_model();
+
+        assert!(!model.nodes.is_empty());
+        assert_eq!(model.tri_material.len(), model.stats.triangle_count);
+        assert_eq!(model.tri_material.len(), model.tri_to_face.len());
+        assert!(model.tri_material.iter().all(|&slot| slot == 0));
+    }
 }

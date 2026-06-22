@@ -109,6 +109,18 @@ static int review_import_capture_uv_set_names(review_import_scene *scene, const 
     return 1;
 }
 
+static void review_import_free_nodes(review_import_node *nodes, size_t node_count)
+{
+    size_t index;
+    if (!nodes) {
+        return;
+    }
+    for (index = 0; index < node_count; index++) {
+        free(nodes[index].name);
+    }
+    free(nodes);
+}
+
 void review_import_free_scene(review_import_scene *scene)
 {
     if (!scene) {
@@ -124,6 +136,8 @@ void review_import_free_scene(review_import_scene *scene)
     review_import_free_materials(scene->materials, scene->material_count);
     review_import_free_warnings(scene->warnings, scene->warning_count);
     review_import_free_uv_set_names(scene->uv_set_names, scene->uv_set_name_count);
+    review_import_free_nodes(scene->nodes, scene->node_count);
+    free(scene->tri_material);
     memset(scene, 0, sizeof(*scene));
 }
 
@@ -166,9 +180,9 @@ static float review_import_linear_to_srgb(float c)
 /* Game-asset DCC color comes from the material's base/diffuse color, not a
    vertex-color layer. Prefer the PBR base color, fall back to the legacy FBX
    diffuse color, then to white. RGB only — the viewer renders meshes opaque.
-   The resolved (linear) color is sRGB-encoded so it survives the shader's
-   sRGB→linear decode unchanged. */
-static void review_import_material_base_color(const ufbx_material *material, float out_color[3])
+   Returns the resolved color in *linear* space (the material table seeds a PBR
+   uniform from it directly). */
+static void review_import_material_base_color_linear(const ufbx_material *material, float out_color[3])
 {
     out_color[0] = 1.0f;
     out_color[1] = 1.0f;
@@ -187,10 +201,60 @@ static void review_import_material_base_color(const ufbx_material *material, flo
         out_color[1] = (float)material->fbx.diffuse_color.value_vec4.y;
         out_color[2] = (float)material->fbx.diffuse_color.value_vec4.z;
     }
+}
 
+/* Per-vertex baked base color: the linear material color sRGB-encoded so it
+   survives the scene shader's sRGB→linear decode unchanged (the vertex color
+   channel is treated as gamma-space). */
+static void review_import_material_base_color(const ufbx_material *material, float out_color[3])
+{
+    review_import_material_base_color_linear(material, out_color);
     out_color[0] = review_import_linear_to_srgb(out_color[0]);
     out_color[1] = review_import_linear_to_srgb(out_color[1]);
     out_color[2] = review_import_linear_to_srgb(out_color[2]);
+}
+
+/* Resolve the material's metalness in [0,1], defaulting to 0 (dielectric) when
+   the material declares none. */
+static float review_import_material_metallic(const ufbx_material *material)
+{
+    float metallic = 0.0f;
+
+    if (material && material->pbr.metalness.has_value) {
+        metallic = (float)material->pbr.metalness.value_real;
+    }
+
+    if (metallic < 0.0f) {
+        metallic = 0.0f;
+    } else if (metallic > 1.0f) {
+        metallic = 1.0f;
+    }
+    return metallic;
+}
+
+/* Resolve the material's emissive color (linear RGB) = emission_color scaled by
+   emission_factor, defaulting to black when the material declares none. */
+static void review_import_material_emissive(const ufbx_material *material, float out_color[3])
+{
+    float factor = 1.0f;
+
+    out_color[0] = 0.0f;
+    out_color[1] = 0.0f;
+    out_color[2] = 0.0f;
+
+    if (!material) {
+        return;
+    }
+
+    if (material->pbr.emission_factor.has_value) {
+        factor = (float)material->pbr.emission_factor.value_real;
+    }
+
+    if (material->pbr.emission_color.has_value) {
+        out_color[0] = (float)material->pbr.emission_color.value_vec4.x * factor;
+        out_color[1] = (float)material->pbr.emission_color.value_vec4.y * factor;
+        out_color[2] = (float)material->pbr.emission_color.value_vec4.z * factor;
+    }
 }
 
 /* Resolve the material's smoothness (Unity-style glossiness) in [0,1]. ufbx
@@ -220,9 +284,11 @@ static float review_import_material_smoothness(const ufbx_material *material)
     return smoothness;
 }
 
-static uint32_t review_import_add_material(review_import_scene *scene, const char *name_data, size_t name_length)
+static uint32_t review_import_add_material(review_import_scene *scene, const ufbx_material *material)
 {
     size_t index;
+    const char *name_data = material ? material->name.data : NULL;
+    size_t name_length = material ? material->name.length : 0;
     char *owned_name = NULL;
 
     if (!name_data || name_length == 0) {
@@ -251,14 +317,21 @@ static uint32_t review_import_add_material(review_import_scene *scene, const cha
             scene->materials,
             (scene->material_count + 1) * sizeof(review_import_material)
         );
+        review_import_material *slot;
         if (!new_materials) {
             free(owned_name);
             return UINT32_MAX;
         }
 
         scene->materials = new_materials;
-        scene->materials[scene->material_count].name = owned_name;
-        scene->materials[scene->material_count].draw_count = 0;
+        slot = &scene->materials[scene->material_count];
+        slot->name = owned_name;
+        slot->draw_count = 0;
+        /* Seed the editable material table's import defaults (Phase 1). */
+        review_import_material_base_color_linear(material, slot->base_color);
+        slot->smoothness = review_import_material_smoothness(material);
+        slot->metallic = review_import_material_metallic(material);
+        review_import_material_emissive(material, slot->emissive);
         scene->material_count += 1;
     }
 
@@ -368,7 +441,9 @@ int review_import_load_fbx(
     out_scene->indices = (uint32_t*)calloc(total_triangles * 3, sizeof(uint32_t));
     out_scene->faces = (review_import_face*)calloc(total_faces, sizeof(review_import_face));
     out_scene->tri_to_face = (uint32_t*)calloc(total_triangles, sizeof(uint32_t));
-    if (!out_scene->vertices || !out_scene->indices || !out_scene->faces || !out_scene->tri_to_face) {
+    out_scene->tri_material = (uint32_t*)calloc(total_triangles, sizeof(uint32_t));
+    if (!out_scene->vertices || !out_scene->indices || !out_scene->faces ||
+        !out_scene->tri_to_face || !out_scene->tri_material) {
         review_import_set_error(out_error, "out of memory while allocating imported mesh");
         goto cleanup;
     }
@@ -377,6 +452,7 @@ int review_import_load_fbx(
     out_scene->index_count = total_triangles * 3;
     out_scene->face_count = total_faces;
     out_scene->tri_to_face_count = total_triangles;
+    out_scene->tri_material_count = total_triangles;
 
     /* Only multi-set models need separate per-channel UV storage; single-set
        models keep using review_import_vertex::uv (channel 0). */
@@ -537,23 +613,10 @@ int review_import_load_fbx(
                 uint32_t triangle_index;
                 uint32_t material_slot = UINT32_MAX;
 
-                for (triangle_index = 0; triangle_index < triangle_count * 3; triangle_index++) {
-                    out_scene->indices[index_offset++] = (uint32_t)local_face_first_vertex +
-                        (triangle_buffer[triangle_index] - face.index_begin);
-                }
-
-                for (triangle_index = 0; triangle_index < triangle_count; triangle_index++) {
-                    out_scene->tri_to_face[tri_offset++] = (uint32_t)face_offset;
-                }
-
-                node_has_triangles = 1;
-
+                /* Resolve the material slot first so each triangle can record it
+                   into the parallel `tri_material` array below. */
                 if (face_material_ptr) {
-                    material_slot = review_import_add_material(
-                        out_scene,
-                        face_material_ptr->name.data,
-                        face_material_ptr->name.length
-                    );
+                    material_slot = review_import_add_material(out_scene, face_material_ptr);
                     if (material_slot == UINT32_MAX) {
                         review_import_set_error(out_error, "out of memory while recording FBX materials");
                         free(triangle_buffer);
@@ -561,6 +624,19 @@ int review_import_load_fbx(
                         goto cleanup;
                     }
                 }
+
+                for (triangle_index = 0; triangle_index < triangle_count * 3; triangle_index++) {
+                    out_scene->indices[index_offset++] = (uint32_t)local_face_first_vertex +
+                        (triangle_buffer[triangle_index] - face.index_begin);
+                }
+
+                for (triangle_index = 0; triangle_index < triangle_count; triangle_index++) {
+                    out_scene->tri_to_face[tri_offset] = (uint32_t)face_offset;
+                    out_scene->tri_material[tri_offset] = material_slot;
+                    tri_offset++;
+                }
+
+                node_has_triangles = 1;
 
                 if (material_slot != UINT32_MAX) {
                     if (!review_import_material_used(used_material_slots, used_material_count, material_slot)) {
@@ -598,6 +674,51 @@ int review_import_load_fbx(
 
         free(triangle_buffer);
         free(used_material_slots);
+    }
+
+    /* Capture the full scene-graph hierarchy (every node, mesh-bearing or not)
+       for the Outliner. Walks `scene->nodes` in the same order as the geometry
+       fill so `mesh_part_index` lines up with that traversal. Display metadata
+       only — geometry is already world-baked above. */
+    if (scene->nodes.count > 0) {
+        size_t mesh_part_counter = 0;
+
+        out_scene->nodes = (review_import_node*)calloc(scene->nodes.count, sizeof(review_import_node));
+        if (!out_scene->nodes) {
+            review_import_set_error(out_error, "out of memory while recording scene nodes");
+            goto cleanup;
+        }
+        out_scene->node_count = scene->nodes.count;
+
+        for (node_index = 0; node_index < scene->nodes.count; node_index++) {
+            ufbx_node *node = scene->nodes.data[node_index];
+            review_import_node *dst = &out_scene->nodes[node_index];
+            ufbx_matrix transform = node->node_to_world;
+            size_t col;
+
+            dst->name = review_import_dup_ufbx_string(node->name);
+            if (!dst->name) {
+                review_import_set_error(out_error, "out of memory while recording scene node names");
+                goto cleanup;
+            }
+
+            dst->parent = node->parent ? (int32_t)node->parent->typed_id : -1;
+
+            if (node->mesh && node->mesh->vertex_position.exists) {
+                dst->mesh_part_index = (int32_t)mesh_part_counter++;
+            } else {
+                dst->mesh_part_index = -1;
+            }
+
+            /* node_to_world is a column-major affine (4 columns of 3); expand to a
+               full column-major 4x4 with the implicit [0,0,0,1] bottom row. */
+            for (col = 0; col < 4; col++) {
+                dst->transform[col * 4 + 0] = (float)transform.cols[col].x;
+                dst->transform[col * 4 + 1] = (float)transform.cols[col].y;
+                dst->transform[col * 4 + 2] = (float)transform.cols[col].z;
+                dst->transform[col * 4 + 3] = (col == 3) ? 1.0f : 0.0f;
+            }
+        }
     }
 
     success = 1;
