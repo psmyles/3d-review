@@ -30,7 +30,31 @@ typedef struct review_import_face {
 typedef struct review_import_material {
     char *name;
     uint32_t draw_count;
+    /* Import defaults seeding the editable material table (Phase 1). Base color
+       and emissive are stored in *linear* space (unlike review_import_vertex::color,
+       which is sRGB-encoded for the vertex-color shader path). Smoothness is
+       glossiness (1 - roughness) in [0,1]; metallic in [0,1]. */
+    float base_color[3];
+    float smoothness;
+    float metallic;
+    float emissive[3];
 } review_import_material;
+
+/* One scene-graph node. Carries the full hierarchy (every ufbx node, mesh-bearing
+   or not) for the Outliner. `transform` is the node_to_world matrix as a
+   column-major 4x4 (display metadata only; geometry stays world-baked). */
+typedef struct review_import_node {
+    char *name;
+    /* Index into the scene's `nodes` array of this node's parent, or -1 for the
+       root (and any node ufbx left parentless). */
+    int32_t parent;
+    /* Running index among mesh-bearing nodes, in the same order the geometry fill
+       walks `scene->nodes`, or -1 when this node carries no renderable mesh. */
+    int32_t mesh_part_index;
+    /* node_to_world as a column-major 4x4 (16 floats), last row implicitly
+       [0,0,0,1]. */
+    float transform[16];
+} review_import_node;
 
 typedef struct review_import_warning {
     char *message;
@@ -68,6 +92,15 @@ typedef struct review_import_scene {
        model has no UV sets. */
     char **uv_set_names;
     size_t uv_set_name_count;
+    /* Full scene-graph node hierarchy (one entry per ufbx node), for the
+       Outliner. NULL when the scene has no nodes. */
+    review_import_node *nodes;
+    size_t node_count;
+    /* Per-triangle material slot, parallel to `tri_to_face` (same length /
+       ordering). Each entry indexes `materials`, or UINT32_MAX for a triangle
+       whose face carried no material. NULL when there are no triangles. */
+    uint32_t *tri_material;
+    size_t tri_material_count;
 } review_import_scene;
 
 typedef struct review_import_options {

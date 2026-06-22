@@ -81,8 +81,10 @@ mod ffi {
         slice,
     };
 
-    use glam::{Vec2, Vec3, Vec4};
-    use review_model::{MaterialInfo, ModelData, ModelStats, ModelWarning, TopologyFace, Vertex};
+    use glam::{Mat4, Vec2, Vec3, Vec4};
+    use review_model::{
+        MaterialInfo, ModelData, ModelStats, ModelWarning, SceneNode, TopologyFace, Vertex,
+    };
 
     use crate::{ImportError, LoadOptions};
 
@@ -107,11 +109,23 @@ mod ffi {
     struct ReviewImportMaterial {
         name: *mut c_char,
         draw_count: u32,
+        base_color: [f32; 3],
+        smoothness: f32,
+        metallic: f32,
+        emissive: [f32; 3],
     }
 
     #[repr(C)]
     struct ReviewImportWarning {
         message: *mut c_char,
+    }
+
+    #[repr(C)]
+    struct ReviewImportNode {
+        name: *mut c_char,
+        parent: i32,
+        mesh_part_index: i32,
+        transform: [f32; 16],
     }
 
     #[repr(C)]
@@ -136,6 +150,10 @@ mod ffi {
         source_unit_meters: f32,
         uv_set_names: *mut *mut c_char,
         uv_set_name_count: usize,
+        nodes: *mut ReviewImportNode,
+        node_count: usize,
+        tri_material: *mut u32,
+        tri_material_count: usize,
     }
 
     #[repr(C)]
@@ -216,6 +234,17 @@ mod ffi {
             .collect::<Vec<_>>();
         let tri_to_face =
             checked_slice(scene.tri_to_face, scene.tri_to_face_count, "tri_to_face")?.to_vec();
+        let tri_material =
+            checked_slice(scene.tri_material, scene.tri_material_count, "tri_material")?.to_vec();
+        let nodes = checked_slice(scene.nodes, scene.node_count, "nodes")?
+            .iter()
+            .map(|node| SceneNode {
+                name: read_optional_c_string(node.name).unwrap_or_default(),
+                parent: (node.parent >= 0).then_some(node.parent as usize),
+                mesh_part: (node.mesh_part_index >= 0).then_some(node.mesh_part_index as usize),
+                transform: Mat4::from_cols_array(&node.transform),
+            })
+            .collect::<Vec<_>>();
         let uv_channels = build_uv_channels(scene)?;
         let uv_set_names =
             checked_slice(scene.uv_set_names, scene.uv_set_name_count, "uv_set_names")?
@@ -227,6 +256,10 @@ mod ffi {
             .map(|material| MaterialInfo {
                 name: read_optional_c_string(material.name).unwrap_or_else(|| "Default".to_owned()),
                 draw_count: material.draw_count as usize,
+                base_color: Vec3::from_array(material.base_color),
+                smoothness: material.smoothness,
+                metallic: material.metallic,
+                emissive: Vec3::from_array(material.emissive),
             })
             .collect::<Vec<_>>();
         let warnings = checked_slice(scene.warnings, scene.warning_count, "warnings")?
@@ -249,6 +282,8 @@ mod ffi {
             indices,
             faces,
             tri_to_face,
+            tri_material,
+            nodes,
             uv_channels,
             uv_set_names,
             bounds: None,
@@ -343,5 +378,50 @@ mod ffi {
         };
 
         Ok(unsafe { slice::from_raw_parts(ptr.as_ptr(), len) })
+    }
+}
+
+#[cfg(all(test, has_ufbx))]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::{LoadOptions, load_model};
+
+    fn fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/test_models")
+            .join(name)
+    }
+
+    /// Phase 0 plumbing: a loaded FBX must carry the scene-graph hierarchy and a
+    /// per-triangle material slot parallel to the triangle list.
+    #[test]
+    fn import_carries_nodes_and_per_triangle_material() {
+        let model = load_model(fixture("meter_cube.fbx"), LoadOptions::default())
+            .expect("meter_cube.fbx should import");
+
+        assert!(
+            !model.nodes.is_empty(),
+            "imported scene-graph hierarchy must be non-empty"
+        );
+        assert_eq!(
+            model.tri_material.len(),
+            model.stats.triangle_count,
+            "tri_material must hold exactly one entry per triangle"
+        );
+        assert_eq!(
+            model.tri_material.len(),
+            model.tri_to_face.len(),
+            "tri_material must run parallel to tri_to_face"
+        );
+
+        // Every recorded slot is either a valid material index or the
+        // no-material sentinel.
+        for &slot in &model.tri_material {
+            assert!(
+                slot == u32::MAX || (slot as usize) < model.materials.len(),
+                "tri_material slot {slot} out of range"
+            );
+        }
     }
 }
