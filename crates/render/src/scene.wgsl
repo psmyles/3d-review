@@ -44,34 +44,44 @@ var env_cube: texture_cube<f32>;
 @group(2) @binding(4)
 var ibl_sampler: sampler;
 
+// Per-material parameters (bind group 3), addressed per draw by dynamic offset.
+// Must match the `#[repr(C)]` `MaterialUniform` in `material.rs` (invariant 11).
+// The mesh sources its base color / metallic / roughness / emissive from here;
+// `base_color`/`emissive` are linear. `params` = (metallic, roughness,
+// slot_flags, highlight) — the last two are reserved for later phases.
+struct MaterialUniform {
+    base_color: vec4<f32>,
+    emissive: vec4<f32>,
+    params: vec4<f32>,
+};
+
+@group(3) @binding(0)
+var<uniform> material: MaterialUniform;
+
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
-    @location(3) color: vec4<f32>,
-    @location(4) vertex_color: vec4<f32>,
-    @location(5) smoothness: f32,
+    // The DCC vertex-color attribute on the mesh; on overlay/line/UV-fill geometry
+    // (zero normal) this instead carries the flat color the overlay path returns.
+    @location(3) vertex_color: vec4<f32>,
 };
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
-    @location(0) color: vec4<f32>,
-    @location(1) normal: vec3<f32>,
-    @location(2) uv: vec2<f32>,
-    @location(3) vertex_color: vec4<f32>,
-    @location(4) smoothness: f32,
-    @location(5) world_position: vec3<f32>,
+    @location(0) normal: vec3<f32>,
+    @location(1) uv: vec2<f32>,
+    @location(2) vertex_color: vec4<f32>,
+    @location(3) world_position: vec3<f32>,
 };
 
 @vertex
 fn vs_main(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
     output.clip_position = uniforms.view_projection * vec4<f32>(input.position, 1.0);
-    output.color = input.color;
     output.normal = input.normal;
     output.uv = input.uv;
     output.vertex_color = input.vertex_color;
-    output.smoothness = input.smoothness;
     output.world_position = input.position;
     return output;
 }
@@ -97,13 +107,11 @@ struct ShadingResult {
     ambient: vec3<f32>,
 };
 
-// Environment-lit metallic-roughness PBR for the shaded path. `albedo` is linear.
-// The imported material carries no metallic channel (CLAUDE.md Phase 3 decision),
-// so the surface is treated as a dielectric and roughness comes from the material
-// smoothness. Returns linear radiance and the diffuse ambient term SSAO may
-// attenuate (tone mapping happens in post).
-fn shade_ibl(albedo: vec3<f32>, world_normal: vec3<f32>, world_pos: vec3<f32>, roughness: f32) -> ShadingResult {
-    let metallic = 0.0;
+// Environment-lit metallic-roughness PBR for the shaded path. `albedo`, `metallic`
+// and `roughness` come from the per-material uniform (bind group 3). Returns linear
+// radiance and the diffuse ambient term SSAO may attenuate (tone mapping happens in
+// post).
+fn shade_ibl(albedo: vec3<f32>, world_normal: vec3<f32>, world_pos: vec3<f32>, roughness: f32, metallic: f32) -> ShadingResult {
     let n = normalize(world_normal);
     let v = normalize(uniforms.camera_position.xyz - world_pos);
     let r = reflect(-v, n);
@@ -159,15 +167,15 @@ fn fs_main(input: VertexOutput) -> FragOutput {
     // alpha, masking the mesh ambient beneath them so post AO only darkens the
     // still-visible mesh fraction, not the overlay color itself.
     if (normal_length_sq < 1e-6) {
-        out.color = vec4<f32>(srgb_to_linear(input.color.rgb), input.color.a);
-        out.ambient = vec4<f32>(0.0, 0.0, 0.0, input.color.a);
+        out.color = vec4<f32>(srgb_to_linear(input.vertex_color.rgb), input.vertex_color.a);
+        out.ambient = vec4<f32>(0.0, 0.0, 0.0, input.vertex_color.a);
         return out;
     }
 
-    // Work in linear space. The material color is authored in sRGB/gamma space;
-    // the checker sample is already linear (sRGB texture format).
-    var base_color = srgb_to_linear(input.color.rgb);
-    var out_alpha = input.color.a;
+    // Work in linear space. The material base color is stored linear in the uniform
+    // (no decode); the checker sample is already linear (sRGB texture format).
+    var base_color = material.base_color.rgb;
+    var out_alpha = material.base_color.a;
     if (uv_checker_enabled) {
         base_color = checker.rgb;
     }
@@ -196,22 +204,24 @@ fn fs_main(input: VertexOutput) -> FragOutput {
     }
 
     let n = normalize(input.normal);
-    let smoothness = clamp(input.smoothness, 0.0, 1.0);
+    // Metallic + roughness come straight from the per-material uniform.
+    let metallic = clamp(material.params.x, 0.0, 1.0);
 
     var color_linear: vec3<f32>;
     var ambient_linear: vec3<f32>;
     if (uniforms.env_params.x > 0.5) {
         // Image-based lighting (the default Shaded look): metallic-roughness PBR
-        // sampling the precomputed environment maps. Roughness from the material
-        // smoothness, clamped away from a perfect mirror so the lowest mip still
-        // reads as a surface.
-        let roughness = clamp(1.0 - smoothness, 0.04, 1.0);
-        let shaded = shade_ibl(base_color, input.normal, input.world_position, roughness);
+        // sampling the precomputed environment maps. Roughness clamped away from a
+        // perfect mirror so the lowest mip still reads as a surface.
+        let roughness = clamp(material.params.y, 0.04, 1.0);
+        let shaded = shade_ibl(base_color, input.normal, input.world_position, roughness, metallic);
         color_linear = shaded.color;
         ambient_linear = shaded.ambient;
     } else {
         // Analytic fallback: the neutral-grey hemisphere + Blinn-Phong specular
         // used before IBL. Kept so disabling IBL restores the previous look.
+        // Smoothness (glossiness) is the complement of the material roughness.
+        let smoothness = clamp(1.0 - material.params.y, 0.0, 1.0);
         let light_dir = normalize(vec3<f32>(0.35, 0.82, 0.44));
         let diffuse = max(dot(n, light_dir), 0.0);
         let hemi_t = clamp(n.y * 0.5 + 0.5, 0.0, 1.0);
@@ -230,6 +240,11 @@ fn fs_main(input: VertexOutput) -> FragOutput {
         color_linear = lit + vec3<f32>(spec);
         ambient_linear = base_color * ambient_light;
     }
+
+    // Emissive adds on top of the lit result (linear), and contributes to bloom so
+    // a bright emissive surface can glow. Default emissive is black (no effect).
+    let emissive = material.emissive.rgb;
+    color_linear = color_linear + emissive;
 
     out.color = vec4<f32>(color_linear, out_alpha);
     out.bloom = vec4<f32>(color_linear, 1.0);

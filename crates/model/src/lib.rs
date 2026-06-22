@@ -8,19 +8,14 @@ pub struct Vertex {
     pub position: Vec3,
     pub normal: Vec3,
     pub uv: Vec2,
-    /// Resolved material base color (carried through import), used as the surface
-    /// color in the normal shaded/unlit views.
-    pub color: Vec4,
     pub tangent: Vec4,
     /// Per-vertex RGBA color from the mesh's vertex-color attribute (the DCC
-    /// color set), distinct from [`Vertex::color`]. White when the mesh carries
-    /// no vertex-color layer. Visualized by the vertex-color debug view.
+    /// color set). White when the mesh carries no vertex-color layer. Visualized
+    /// by the vertex-color debug view. The resolved material base color and
+    /// smoothness are no longer baked per vertex (Phase 1): they live on
+    /// [`MaterialInfo`] and drive the per-material draws via the renderer's
+    /// material table.
     pub vertex_color: Vec4,
-    /// Resolved material smoothness in `0.0..=1.0` (glossiness, i.e.
-    /// `1 - roughness`), carried through import like [`Vertex::color`] so the
-    /// shaded view can drive a specular highlight. `0.5` when the source
-    /// material declares neither glossiness nor roughness.
-    pub smoothness: f32,
 }
 
 impl Default for Vertex {
@@ -29,10 +24,8 @@ impl Default for Vertex {
             position: Vec3::ZERO,
             normal: Vec3::Y,
             uv: Vec2::ZERO,
-            color: Vec4::ONE,
             tangent: Vec4::new(1.0, 0.0, 0.0, 1.0),
             vertex_color: Vec4::ONE,
-            smoothness: 0.5,
         }
     }
 }
@@ -199,6 +192,28 @@ impl ModelData {
             .collect()
     }
 
+    /// Number of per-material draw ranges the renderer issues for this mesh —
+    /// one per distinct [`ModelData::tri_material`] slot, in first-seen order.
+    /// Mirrors the grouping in the renderer's `model_mesh`, so the Draws stat
+    /// reflects the real draw-call count (invariant 5). `0` when the mesh has no
+    /// triangles; `1` when triangles exist but carry no per-triangle material.
+    pub fn material_draw_count(&self) -> usize {
+        let triangle_count = self.indices.len() / 3;
+        if triangle_count == 0 {
+            return 0;
+        }
+        if self.tri_material.len() != triangle_count {
+            return 1;
+        }
+        let mut seen: Vec<u32> = Vec::new();
+        for &slot in &self.tri_material {
+            if !seen.contains(&slot) {
+                seen.push(slot);
+            }
+        }
+        seen.len()
+    }
+
     pub fn recompute_bounds(&mut self) {
         let mut bounds = Bounds::EMPTY;
 
@@ -260,35 +275,20 @@ fn demo_cube_vertices() -> Vec<Vertex> {
     let y1 = 1.03;
 
     let faces = [
-        (
-            [[-s, y0, s], [s, y0, s], [s, y1, s], [-s, y1, s]],
-            Vec3::Z,
-            Vec4::new(0.30, 0.58, 0.86, 0.92),
-        ),
+        ([[-s, y0, s], [s, y0, s], [s, y1, s], [-s, y1, s]], Vec3::Z),
         (
             [[s, y0, -s], [-s, y0, -s], [-s, y1, -s], [s, y1, -s]],
             Vec3::NEG_Z,
-            Vec4::new(0.20, 0.37, 0.56, 0.92),
         ),
         (
             [[-s, y0, -s], [-s, y0, s], [-s, y1, s], [-s, y1, -s]],
             Vec3::NEG_X,
-            Vec4::new(0.22, 0.47, 0.73, 0.92),
         ),
-        (
-            [[s, y0, s], [s, y0, -s], [s, y1, -s], [s, y1, s]],
-            Vec3::X,
-            Vec4::new(0.40, 0.68, 0.92, 0.92),
-        ),
-        (
-            [[-s, y1, s], [s, y1, s], [s, y1, -s], [-s, y1, -s]],
-            Vec3::Y,
-            Vec4::new(0.62, 0.79, 0.96, 0.96),
-        ),
+        ([[s, y0, s], [s, y0, -s], [s, y1, -s], [s, y1, s]], Vec3::X),
+        ([[-s, y1, s], [s, y1, s], [s, y1, -s], [-s, y1, -s]], Vec3::Y),
         (
             [[-s, y0, -s], [s, y0, -s], [s, y0, s], [-s, y0, s]],
             Vec3::NEG_Y,
-            Vec4::new(0.14, 0.25, 0.35, 0.92),
         ),
     ];
 
@@ -310,16 +310,14 @@ fn demo_cube_vertices() -> Vec<Vertex> {
     ];
 
     let mut vertices = Vec::with_capacity(24);
-    for (positions, normal, color) in faces {
+    for (positions, normal) in faces {
         for (index, position) in positions.into_iter().enumerate() {
             vertices.push(Vertex {
                 position: Vec3::from_array(position),
                 normal,
                 uv: uvs[index],
-                color,
                 tangent: Vec4::new(1.0, 0.0, 0.0, 1.0),
                 vertex_color: vertex_colors[index],
-                smoothness: 0.6,
             });
         }
     }
@@ -348,5 +346,20 @@ mod tests {
         assert_eq!(model.tri_material.len(), model.stats.triangle_count);
         assert_eq!(model.tri_material.len(), model.tri_to_face.len());
         assert!(model.tri_material.iter().all(|&slot| slot == 0));
+    }
+
+    #[test]
+    fn material_draw_count_counts_distinct_slots() {
+        let mut model = demo_cube_model();
+        // Single material across every triangle -> one draw.
+        assert_eq!(model.material_draw_count(), 1);
+
+        // Three distinct slots -> three draws, regardless of ordering/repeats.
+        model.tri_material = vec![0, 0, 1, 1, 2, 2, 0, 1, 2, 2, 1, 0];
+        assert_eq!(model.material_draw_count(), 3);
+
+        // No triangles -> no draws.
+        model.indices.clear();
+        assert_eq!(model.material_draw_count(), 0);
     }
 }

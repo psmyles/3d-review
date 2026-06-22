@@ -5,7 +5,9 @@
 use std::sync::Arc;
 
 use review_model::{Bvh, ModelData};
-use review_render::{OrbitCamera, SceneCallback, UvCamera};
+use review_render::{
+    MaterialChange, MaterialEdit, MaterialState, OrbitCamera, SceneCallback, UvCamera,
+};
 
 use crate::state::{UiOutput, UiState, WorkspaceMode, sync_debug_state};
 use crate::theme::{self, color, size};
@@ -23,19 +25,30 @@ pub fn draw_viewport_scene(
     output_format: egui_wgpu::wgpu::TextureFormat,
 ) {
     let callback = match state.mode {
-        WorkspaceMode::ThreeD => SceneCallback::new(
-            camera,
-            state.projection_mode.into(),
-            output_format,
-            model,
-            model_revision,
-            state.debug,
-            state.anti_aliasing,
-            state.environment,
-            state.bloom,
-            state.ssao,
-            state.tonemap,
-        ),
+        WorkspaceMode::ThreeD => {
+            // The editable material values ride in from the app→UI snapshot; the
+            // scene callback uploads them into the renderer's material table.
+            let materials: Vec<MaterialState> = state
+                .materials_snapshot
+                .iter()
+                .map(|snapshot| snapshot.state)
+                .collect();
+            SceneCallback::new(
+                camera,
+                state.projection_mode.into(),
+                output_format,
+                model,
+                model_revision,
+                state.debug,
+                state.anti_aliasing,
+                state.environment,
+                state.bloom,
+                state.ssao,
+                state.tonemap,
+                &materials,
+                state.material_revision,
+            )
+        }
         WorkspaceMode::Uv => SceneCallback::new_uv(
             output_format,
             model,
@@ -99,6 +112,11 @@ pub fn draw_overlay(
         }
 
         draw_stats_overlay(ctx, state, status_bar_height);
+
+        // Temporary Phase-1 material editor: a draggable window of per-material
+        // scalar/color controls so live editing can be verified before the real
+        // Inspector lands in Phase 2. Emits edit intents `app` applies.
+        output.material_edit = draw_material_editor(ctx, state, toolbar_height);
     }
 
     status_bar::draw(ctx, state);
@@ -181,6 +199,90 @@ fn draw_option_panel(
         desired.x.clamp(min_x, max_x),
         desired.y.clamp(min_y, max_y),
     ));
+}
+
+/// Temporary Phase-1 material editor (replaced by the Inspector in Phase 2). One
+/// collapsible row per material with base-color / metallic / roughness / emissive
+/// controls, emitting a [`MaterialEdit`] intent when a control changes. Returns
+/// `None` when the model has no materials. Styling is left to the themed egui
+/// visuals (no inline literals; invariant 8).
+fn draw_material_editor(
+    ctx: &egui::Context,
+    state: &UiState,
+    toolbar_height: f32,
+) -> Option<MaterialEdit> {
+    if state.materials_snapshot.is_empty() {
+        return None;
+    }
+
+    let mut edit = None;
+    egui::Window::new("Materials (temp)")
+        .resizable(false)
+        .default_open(true)
+        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, toolbar_height))
+        .show(ctx, |ui| {
+            for (index, material) in state.materials_snapshot.iter().enumerate() {
+                egui::CollapsingHeader::new(&material.name)
+                    .id_salt(index)
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        let current = material.state;
+
+                        let mut base = [
+                            current.base_color.x,
+                            current.base_color.y,
+                            current.base_color.z,
+                        ];
+                        ui.horizontal(|ui| {
+                            ui.label("Base color");
+                            if ui.color_edit_button_rgb(&mut base).changed() {
+                                edit = Some(MaterialEdit {
+                                    index,
+                                    change: MaterialChange::BaseColor(base),
+                                });
+                            }
+                        });
+
+                        let mut metallic = current.metallic;
+                        if ui
+                            .add(egui::Slider::new(&mut metallic, 0.0..=1.0).text("Metallic"))
+                            .changed()
+                        {
+                            edit = Some(MaterialEdit {
+                                index,
+                                change: MaterialChange::Metallic(metallic),
+                            });
+                        }
+
+                        let mut roughness = current.roughness;
+                        if ui
+                            .add(egui::Slider::new(&mut roughness, 0.0..=1.0).text("Roughness"))
+                            .changed()
+                        {
+                            edit = Some(MaterialEdit {
+                                index,
+                                change: MaterialChange::Roughness(roughness),
+                            });
+                        }
+
+                        let mut emissive = [
+                            current.emissive.x,
+                            current.emissive.y,
+                            current.emissive.z,
+                        ];
+                        ui.horizontal(|ui| {
+                            ui.label("Emissive");
+                            if ui.color_edit_button_rgb(&mut emissive).changed() {
+                                edit = Some(MaterialEdit {
+                                    index,
+                                    change: MaterialChange::Emissive(emissive),
+                                });
+                            }
+                        });
+                    });
+            }
+        });
+    edit
 }
 
 fn draw_stats_overlay(ctx: &egui::Context, state: &UiState, status_bar_height: f32) {

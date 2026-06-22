@@ -1,15 +1,17 @@
 use glam::{Mat4, Vec2, Vec3};
-use review_model::Bounds;
+use review_model::{Bounds, MaterialInfo};
 
 mod bloom;
 mod geometry;
 mod ibl;
+mod material;
 mod post;
 mod scene;
 mod ssao;
 mod targets;
 
 pub use ibl::ibl_supported;
+pub use material::{MaterialChange, MaterialEdit, MaterialSnapshot, MaterialState};
 pub use scene::{EGUI_DEPTH_FORMAT, EGUI_MSAA_SAMPLE_COUNT, SCENE_DEPTH_FORMAT, SceneCallback};
 pub use ssao::ssao_supported;
 
@@ -969,6 +971,16 @@ pub struct Renderer {
     /// leaving room for the chrome that overlays the full-window 3D scene. Set
     /// by `app` from the live window + chrome sizes; `Vec2::ONE` = whole window.
     framing_safe_area: Vec2,
+    /// Editable per-material PBR parameters, seeded from the loaded model's import
+    /// defaults and edited live via [`MaterialEdit`] intents (invariant 2). Carried
+    /// into the scene callback each frame; the renderer-side table re-uploads them
+    /// when `material_revision` changes.
+    material_states: Vec<MaterialState>,
+    /// Display names paired with `material_states`, for the app→UI snapshot.
+    material_names: Vec<String>,
+    /// Bumped on every material edit (and on model load) so the GPU table is
+    /// re-uploaded without a full mesh rebuild.
+    material_revision: u64,
 }
 
 impl Renderer {
@@ -979,7 +991,67 @@ impl Renderer {
             uv_camera: UvCamera::default(),
             camera_transition: None,
             framing_safe_area: Vec2::ONE,
+            material_states: Vec::new(),
+            material_names: Vec::new(),
+            material_revision: 0,
         }
+    }
+
+    /// Seed the editable material table from a freshly loaded model's import
+    /// defaults (or clear it for an empty model). Bumps the material revision so
+    /// the GPU table is rebuilt/re-uploaded on the next frame.
+    pub fn set_model_materials(&mut self, materials: &[MaterialInfo]) {
+        self.material_states = materials
+            .iter()
+            .map(|material| MaterialState {
+                base_color: material.base_color,
+                metallic: material.metallic,
+                // Roughness is the complement of the imported glossiness.
+                roughness: (1.0 - material.smoothness).clamp(0.0, 1.0),
+                emissive: material.emissive,
+            })
+            .collect();
+        self.material_names = materials
+            .iter()
+            .map(|material| material.name.clone())
+            .collect();
+        self.material_revision = self.material_revision.wrapping_add(1);
+    }
+
+    /// Apply one UI material-edit intent to the editable table, bumping the
+    /// revision so the renderer re-uploads. Out-of-range indices are ignored.
+    pub fn set_material_param(&mut self, edit: MaterialEdit) {
+        let Some(state) = self.material_states.get_mut(edit.index) else {
+            return;
+        };
+        match edit.change {
+            MaterialChange::BaseColor(rgb) => state.base_color = Vec3::from_array(rgb),
+            MaterialChange::Metallic(value) => state.metallic = value.clamp(0.0, 1.0),
+            MaterialChange::Roughness(value) => state.roughness = value.clamp(0.0, 1.0),
+            MaterialChange::Emissive(rgb) => state.emissive = Vec3::from_array(rgb),
+        }
+        self.material_revision = self.material_revision.wrapping_add(1);
+    }
+
+    /// The editable material parameters, carried into the scene callback each frame.
+    pub fn material_states(&self) -> &[MaterialState] {
+        &self.material_states
+    }
+
+    /// The current material revision (bumped on edit / load).
+    pub fn material_revision(&self) -> u64 {
+        self.material_revision
+    }
+
+    /// A name+value snapshot of the editable materials for the UI (invariant 2:
+    /// the UI reads this plain value, never renderer-owned state).
+    pub fn material_snapshot(&self) -> Vec<MaterialSnapshot> {
+        self.material_names
+            .iter()
+            .cloned()
+            .zip(self.material_states.iter().copied())
+            .map(|(name, state)| MaterialSnapshot { name, state })
+            .collect()
     }
 
     pub fn set_uv_aspect_ratio(&mut self, aspect_ratio: f32) {

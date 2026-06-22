@@ -93,10 +93,8 @@ mod ffi {
         position: [f32; 3],
         normal: [f32; 3],
         uv: [f32; 2],
-        color: [f32; 4],
         tangent: [f32; 4],
         vertex_color: [f32; 4],
-        smoothness: f32,
     }
 
     #[repr(C)]
@@ -218,10 +216,8 @@ mod ffi {
                 position: Vec3::from_array(vertex.position),
                 normal: Vec3::from_array(vertex.normal),
                 uv: Vec2::from_array(vertex.uv),
-                color: Vec4::from_array(vertex.color),
                 tangent: Vec4::from_array(vertex.tangent),
                 vertex_color: Vec4::from_array(vertex.vertex_color),
-                smoothness: vertex.smoothness,
             })
             .collect::<Vec<_>>();
         let indices = checked_slice(scene.indices, scene.index_count, "indices")?.to_vec();
@@ -293,13 +289,19 @@ mod ffi {
                 vertex_count: scene.vertex_count,
                 uv_set_count: scene.uv_set_count as usize,
                 material_count: scene.material_count,
-                draw_count: scene.draw_count as usize,
+                // Overwritten below from `material_draw_count` so the Draws stat
+                // matches the renderer's per-material grouping (invariant 5).
+                draw_count: 0,
                 source_unit_meters: scene.source_unit_meters,
             },
             materials,
             warnings,
         };
         model.recompute_bounds();
+        // The renderer groups triangles into one draw per distinct material slot;
+        // report that count rather than the C bridge's per-node tally so Draws is
+        // the real draw-call count.
+        model.stats.draw_count = model.material_draw_count();
 
         if model.vertices.is_empty() || model.indices.is_empty() {
             return Err(ImportError::LoadFailed(

@@ -9,17 +9,12 @@ typedef struct review_import_vertex {
     float position[3];
     float normal[3];
     float uv[2];
-    float color[4];
     float tangent[4];
     /* Per-vertex RGBA color from the mesh's vertex-color attribute (the DCC
-       color set), distinct from `color` which carries the resolved material
-       base color. White (1,1,1,1) when the mesh has no vertex-color layer. */
+       color set). White (1,1,1,1) when the mesh has no vertex-color layer. The
+       resolved material base color / smoothness are no longer baked per vertex
+       (Phase 1): they seed `review_import_material` and drive per-material draws. */
     float vertex_color[4];
-    /* Resolved material smoothness in [0,1] (glossiness == 1 - roughness),
-       baked per-vertex like `color` so the shaded view can drive a specular
-       highlight without a per-material draw. Defaults to 0.5 when the source
-       material declares neither glossiness nor roughness. */
-    float smoothness;
 } review_import_vertex;
 
 typedef struct review_import_face {
