@@ -732,10 +732,18 @@ impl App {
             Ok(model) => {
                 let model = Arc::new(model);
 
-                if let Some(renderer) = self.renderer.as_mut() {
-                    frame_camera_to_model(renderer, &model);
-                    renderer.reset_uv_camera();
-                }
+                let (materials_snapshot, material_revision) =
+                    if let Some(renderer) = self.renderer.as_mut() {
+                        frame_camera_to_model(renderer, &model);
+                        renderer.reset_uv_camera();
+                        // Seed the editable material table from the import defaults.
+                        renderer.set_model_materials(&model.materials);
+                        (renderer.material_snapshot(), renderer.material_revision())
+                    } else {
+                        (Vec::new(), 0)
+                    };
+                self.ui.materials_snapshot = materials_snapshot;
+                self.ui.material_revision = material_revision;
 
                 self.ui.stats = model.stats;
                 self.ui.bounds = model.bounds;
@@ -863,10 +871,17 @@ impl App {
         self.scene_model = empty;
         self.scene_revision = self.scene_revision.saturating_add(1);
 
-        if let Some(renderer) = self.renderer.as_mut() {
+        let material_revision = if let Some(renderer) = self.renderer.as_mut() {
             renderer.animate_camera_to_home();
             renderer.reset_uv_camera();
-        }
+            // Drop the previous model's editable materials.
+            renderer.set_model_materials(&[]);
+            renderer.material_revision()
+        } else {
+            0
+        };
+        self.ui.materials_snapshot = Vec::new();
+        self.ui.material_revision = material_revision;
 
         info!("reset to start state");
         self.redraw_requested = true;
@@ -889,22 +904,38 @@ impl App {
     }
 
     fn apply_ui_output(&mut self, output: UiOutput) {
-        let Some(action) = output.axis_gizmo_action else {
-            return;
-        };
         let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
 
-        match action {
-            AxisGizmoAction::Orbit(delta) => renderer.orbit_camera(delta),
-            AxisGizmoAction::Snap(axis) => {
-                renderer.animate_camera_to_offset_direction(axis.offset_direction());
+        let mut redraw = false;
+
+        if let Some(action) = output.axis_gizmo_action {
+            match action {
+                AxisGizmoAction::Orbit(delta) => renderer.orbit_camera(delta),
+                AxisGizmoAction::Snap(axis) => {
+                    renderer.animate_camera_to_offset_direction(axis.offset_direction());
+                }
+                AxisGizmoAction::ResetView => renderer.animate_camera_to_home(),
             }
-            AxisGizmoAction::ResetView => renderer.animate_camera_to_home(),
+            redraw = true;
         }
 
-        self.redraw_requested = true;
+        // Apply a live material edit and refresh the UI snapshot + revision so the
+        // editor reflects the new value and the scene callback re-uploads the table.
+        let material_update = output.material_edit.map(|edit| {
+            renderer.set_material_param(edit);
+            (renderer.material_snapshot(), renderer.material_revision())
+        });
+        if let Some((snapshot, revision)) = material_update {
+            self.ui.materials_snapshot = snapshot;
+            self.ui.material_revision = revision;
+            redraw = true;
+        }
+
+        if redraw {
+            self.redraw_requested = true;
+        }
     }
 
     /// Snapshot the window's current outer position + inner size while it isn't

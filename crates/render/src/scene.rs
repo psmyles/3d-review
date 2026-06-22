@@ -11,6 +11,7 @@ use crate::geometry::{
     uv_grid_lines, uv_wireframe_lines, vertex_normal_lines, wireframe_lines,
 };
 use crate::ibl::{IblResources, PREFILTER_MAX_LOD};
+use crate::material::{MaterialDrawRange, MaterialState, MaterialTable, material_layout};
 use crate::post::PostPass;
 use crate::ssao::{SSAO_FORMAT, SsaoPass};
 use crate::targets::{SCENE_HDR_FORMAT, SceneTargets};
@@ -79,14 +80,22 @@ pub struct SceneCallback {
     ssao: SsaoSettings,
     /// Tone-mapping settings. Drives the tone-map stage of the composite shader.
     tonemap: TonemapSettings,
+    /// Editable per-material PBR parameters (seeded from import defaults, edited
+    /// via UI intents). Uploaded into the renderer's material table when
+    /// `material_revision` changes; the mesh is drawn one range per material.
+    materials: Vec<MaterialState>,
+    /// Bumped by `app` on every material edit (and on model load) so the table is
+    /// re-uploaded without rebuilding the mesh. Separate from `model_revision`.
+    material_revision: u64,
     /// `Some` renders the 2D UV viewport instead of the 3D scene.
     uv_view: Option<UvView>,
 }
 
 impl SceneCallback {
-    // Eleven distinct, independent inputs (camera + projection + target + model +
-    // revision + the six UI option bundles); there is no redundant pair to fold
-    // away, and a params struct would only move the same values behind one name.
+    // Thirteen distinct, independent inputs (camera + projection + target + model +
+    // revision + the six UI option bundles + the editable material table + its
+    // revision); there is no redundant pair to fold away, and a params struct would
+    // only move the same values behind one name.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         camera: OrbitCamera,
@@ -100,6 +109,8 @@ impl SceneCallback {
         bloom: BloomSettings,
         ssao: SsaoSettings,
         tonemap: TonemapSettings,
+        materials: &[MaterialState],
+        material_revision: u64,
     ) -> Self {
         Self {
             camera,
@@ -113,6 +124,8 @@ impl SceneCallback {
             bloom,
             ssao,
             tonemap,
+            materials: materials.to_vec(),
+            material_revision,
             uv_view: None,
         }
     }
@@ -154,6 +167,10 @@ impl SceneCallback {
             // The UV viewport keeps the default tone mapping so its shaded fills
             // read the same as in the 3D scene.
             tonemap: TonemapSettings::default(),
+            // The UV path samples no material; the table keeps its fallback entry,
+            // bound to satisfy the shared pipeline layout.
+            materials: Vec::new(),
+            material_revision: 0,
             uv_view: Some(UvView {
                 camera,
                 channel,
@@ -221,6 +238,11 @@ impl CallbackTrait for SceneCallback {
             // Rebuild the IBL maps if the environment changed (one-time, not per
             // frame); only the 3D path uses them.
             resources.sync_environment(device, queue, self.environment);
+
+            // Bring the editable material table in line with the current values:
+            // rebuilt when the material count changes (new model), re-uploaded when
+            // an edit bumps the revision, otherwise left untouched.
+            resources.sync_materials(device, queue, &self.materials, self.material_revision);
 
             resources.update_camera(
                 queue,
@@ -369,6 +391,13 @@ impl SceneCallback {
             // group 2 (IBL) must be bound to satisfy the shared pipeline layout
             // even though the UV path never samples it.
             render_pass.set_bind_group(2, &resources.ibl.bind_group, &[]);
+            // group 3 (material) must likewise be bound; the UV draws don't sample
+            // it, so the fallback entry is fine.
+            render_pass.set_bind_group(
+                3,
+                resources.material_table.bind_group(),
+                &[resources.material_table.fallback_offset()],
+            );
             render_pass.set_bind_group(0, &resources.uniform_bind_group, &[]);
             render_pass.set_pipeline(&resources.line_pipeline);
             if resources.uv_grid_vertex_count > 0 {
@@ -398,6 +427,14 @@ impl SceneCallback {
         // group 2 (the IBL maps) is likewise bound for every draw — the shared
         // pipeline layout includes it; only the shaded path and skybox sample it.
         render_pass.set_bind_group(2, &resources.ibl.bind_group, &[]);
+        // group 3 (material) is bound for every draw too; the mesh loop below
+        // rebinds it per material range, but the skybox / grid / overlays don't
+        // sample it, so the fallback entry satisfies the layout for them.
+        render_pass.set_bind_group(
+            3,
+            resources.material_table.bind_group(),
+            &[resources.material_table.fallback_offset()],
+        );
 
         // Skybox background first, behind all geometry (depth-test always, no
         // write), when the environment is shown as the background.
@@ -417,7 +454,14 @@ impl SceneCallback {
                 resources.mesh_index_buffer.slice(..),
                 wgpu::IndexFormat::Uint32,
             );
-            render_pass.draw_indexed(0..resources.mesh_index_count, 0, 0..1);
+            // One draw per material range, feeding each material's parameters from
+            // the group-3 uniform via its dynamic offset.
+            for range in &resources.material_ranges {
+                let offset = resources.material_table.offset_for(range.material);
+                render_pass.set_bind_group(3, resources.material_table.bind_group(), &[offset]);
+                let end = range.first_index + range.index_count;
+                render_pass.draw_indexed(range.first_index..end, 0, 0..1);
+            }
         }
 
         if self.debug_options.show_grid {
@@ -481,6 +525,21 @@ struct SceneResources {
     /// Precomputed image-based-lighting maps + their bind group. Rebuilt by
     /// `sync_environment` only when the chosen environment changes.
     ibl: IblResources,
+    /// Layout of the material bind group (group 3), embedded in `pipeline_layout`.
+    /// Passed to [`MaterialTable::sync`] to rebuild the table's bind group when a
+    /// new model changes the material count.
+    material_layout: wgpu::BindGroupLayout,
+    /// Min uniform-buffer offset alignment the material table strides to.
+    material_alignment: u64,
+    /// Editable per-material PBR uniform table (group 3), seeded from import
+    /// defaults and re-uploaded on edit by `sync_materials`.
+    material_table: MaterialTable,
+    /// Per-material draw ranges over the reordered mesh index buffer; one draw per
+    /// entry. Rebuilt with the mesh in `update_model` / `update_mesh_channel`.
+    material_ranges: Vec<MaterialDrawRange>,
+    /// Last material revision uploaded into `material_table`; compared against the
+    /// callback's to drive re-uploads on edit (separate from `model_revision`).
+    material_revision: u64,
     /// Offscreen HDR color + depth the scene renders into, recreated on resize or
     /// MSAA change.
     targets: SceneTargets,
@@ -691,9 +750,20 @@ impl SceneResources {
             EnvironmentSettings::default().map,
         );
 
+        // The editable per-material uniforms occupy bind group 3; its layout joins
+        // the shared pipeline layout so every scene pipeline can read a material.
+        let material_layout = material_layout(device);
+        let material_alignment = device.limits().min_uniform_buffer_offset_alignment as u64;
+        let material_table = MaterialTable::new(device, queue, &material_layout, material_alignment);
+
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("review_scene_pipeline_layout"),
-            bind_group_layouts: &[&uniform_layout, &checker_layout, &ibl_layout],
+            bind_group_layouts: &[
+                &uniform_layout,
+                &checker_layout,
+                &ibl_layout,
+                &material_layout,
+            ],
             push_constant_ranges: &[],
         });
 
@@ -764,6 +834,13 @@ impl SceneResources {
             pipeline_layout,
             ibl_layout,
             ibl,
+            material_layout,
+            material_alignment,
+            material_table,
+            material_ranges: Vec::new(),
+            // Sentinel distinct from any real revision so the first 3D frame uploads
+            // the (initially fallback-only) table.
+            material_revision: u64::MAX,
             targets,
             post,
             post_bind_group,
@@ -959,6 +1036,14 @@ impl SceneResources {
         render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
         render_pass.set_bind_group(1, &self.checker_bind_group_greyscale, &[]);
         render_pass.set_bind_group(2, &self.ibl.bind_group, &[]);
+        // group 3 (material) must be bound to satisfy the shared pipeline layout;
+        // the G-buffer pass writes only normals/depth, so the fallback entry is
+        // fine. One draw over the whole index buffer (material is irrelevant here).
+        render_pass.set_bind_group(
+            3,
+            self.material_table.bind_group(),
+            &[self.material_table.fallback_offset()],
+        );
         render_pass.set_pipeline(&self.ssao_gbuffer_pipeline);
         render_pass.set_vertex_buffer(0, self.mesh_vertex_buffer.slice(..));
         render_pass.set_index_buffer(self.mesh_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
@@ -1060,13 +1145,14 @@ impl SceneResources {
         model_revision: u64,
         debug_options: SceneDebugOptions,
     ) {
-        let (mesh_vertices, mesh_indices) = model_mesh(model, debug_options.uv_channel);
+        let (mesh_vertices, mesh_indices, mesh_ranges) = model_mesh(model, debug_options.uv_channel);
         let (mesh_vertex_buffer, mesh_index_buffer, mesh_index_count) =
             create_mesh_buffers(device, &mesh_vertices, &mesh_indices);
 
         self.mesh_vertex_buffer = mesh_vertex_buffer;
         self.mesh_index_buffer = mesh_index_buffer;
         self.mesh_index_count = mesh_index_count;
+        self.material_ranges = mesh_ranges;
         self.model_revision = model_revision;
         self.mesh_uv_channel = debug_options.uv_channel;
 
@@ -1179,13 +1265,42 @@ impl SceneResources {
     }
 
     fn update_mesh_channel(&mut self, device: &wgpu::Device, model: &ModelData, uv_channel: u32) {
-        let (mesh_vertices, mesh_indices) = model_mesh(model, uv_channel);
+        let (mesh_vertices, mesh_indices, mesh_ranges) = model_mesh(model, uv_channel);
         let (mesh_vertex_buffer, mesh_index_buffer, mesh_index_count) =
             create_mesh_buffers(device, &mesh_vertices, &mesh_indices);
         self.mesh_vertex_buffer = mesh_vertex_buffer;
         self.mesh_index_buffer = mesh_index_buffer;
         self.mesh_index_count = mesh_index_count;
+        // The index reordering depends only on `tri_material`, so the ranges are
+        // unchanged by a UV-channel switch — but reassign them to stay in lockstep
+        // with the freshly rebuilt index buffer.
+        self.material_ranges = mesh_ranges;
         self.mesh_uv_channel = uv_channel;
+    }
+
+    /// Bring the material table in line with the current editable values. Rebuilds
+    /// the table (buffer + bind group) when the material count changes (a new
+    /// model), re-uploads when an edit bumped the revision, and otherwise does
+    /// nothing — so steady-state frames pay nothing (the same cadence as
+    /// `sync_environment`).
+    fn sync_materials(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        materials: &[MaterialState],
+        material_revision: u64,
+    ) {
+        let count_changed = self.material_table.material_count() != materials.len();
+        if count_changed || self.material_revision != material_revision {
+            self.material_table.sync(
+                device,
+                queue,
+                &self.material_layout,
+                self.material_alignment,
+                materials,
+            );
+            self.material_revision = material_revision;
+        }
     }
 
     /// Build-on-demand for the UV viewport's derived buffers. The wireframe is
@@ -1549,9 +1664,7 @@ fn create_mesh_buffers(
         position: [0.0, 0.0, 0.0],
         normal: [0.0, 0.0, 0.0],
         uv: [0.0, 0.0],
-        color: [0.0, 0.0, 0.0, 0.0],
         vertex_color: [0.0, 0.0, 0.0, 0.0],
-        smoothness: 0.0,
     }];
     let placeholder_index = [0_u32];
 
@@ -1585,9 +1698,7 @@ fn create_line_buffer(device: &wgpu::Device, vertices: &[SceneVertex]) -> (wgpu:
         position: [0.0, 0.0, 0.0],
         normal: [0.0, 0.0, 0.0],
         uv: [0.0, 0.0],
-        color: [0.0, 0.0, 0.0, 0.0],
         vertex_color: [0.0, 0.0, 0.0, 0.0],
-        smoothness: 0.0,
     }];
     let contents = if vertices.is_empty() {
         bytemuck::cast_slice(&placeholder_vertex)
@@ -1926,14 +2037,16 @@ pub(crate) struct SceneVertex {
     pub(crate) position: [f32; 3],
     pub(crate) normal: [f32; 3],
     pub(crate) uv: [f32; 2],
-    pub(crate) color: [f32; 4],
+    /// The DCC vertex-color attribute on the mesh; on overlay/line/UV-fill
+    /// geometry (zero normal) it instead carries the flat color the shader's
+    /// overlay path returns. The material base color / smoothness are no longer
+    /// baked per vertex (Phase 1) — they come from the group-3 material uniform.
     pub(crate) vertex_color: [f32; 4],
-    pub(crate) smoothness: f32,
 }
 
 impl SceneVertex {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
-        0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4, 4 => Float32x4, 5 => Float32
+    const ATTRIBUTES: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
+        0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4
     ];
 
     fn layout() -> wgpu::VertexBufferLayout<'static> {

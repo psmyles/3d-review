@@ -9,8 +9,8 @@ use glam::{Vec2, Vec3};
 use review_model::{Bounds, ModelStats};
 use review_render::{
     AntiAliasing, BloomSettings, CameraProjection, CheckerTexture, EnvironmentSettings,
-    MsaaSamples, SceneDebugOptions, ShadingMode, SsaoSettings, TonemapSettings, UvShadingMode,
-    VertexColorMode,
+    MaterialEdit, MaterialSnapshot, MsaaSamples, SceneDebugOptions, ShadingMode, SsaoSettings,
+    TonemapSettings, UvShadingMode, VertexColorMode,
 };
 
 use crate::theme;
@@ -83,6 +83,9 @@ pub enum AxisGizmoAction {
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct UiOutput {
     pub axis_gizmo_action: Option<AxisGizmoAction>,
+    /// A live material-parameter edit emitted by the (temporary, Phase 1) material
+    /// editor. `app` applies it to the renderer's editable material table.
+    pub material_edit: Option<MaterialEdit>,
 }
 
 #[derive(Debug, Clone)]
@@ -238,6 +241,15 @@ pub struct UiState {
     /// [`TonemapSettings`]).
     pub tonemap: TonemapSettings,
     pub stats: ModelStats,
+    /// Name+value snapshot of the loaded model's editable materials, set by `app`
+    /// from the renderer (invariant 2: a plain value, refreshed on load/edit).
+    /// Drives the temporary Phase-1 material editor and feeds the per-material
+    /// uniforms into the scene callback.
+    pub materials_snapshot: Vec<MaterialSnapshot>,
+    /// Material-table revision matching `materials_snapshot`, set by `app` from
+    /// the renderer. Carried into the scene callback so the GPU table re-uploads
+    /// only when an edit (or a new model) bumps it.
+    pub material_revision: u64,
     /// Axis-aligned bounds of the loaded model (world meters), set by `app`
     /// alongside [`UiState::stats`] (invariant 2: a plain value, not model
     /// ownership). `None` when no model is loaded. Read by the dimension-label
@@ -297,6 +309,8 @@ impl Default for UiState {
             ssao_supported: true,
             tonemap: TonemapSettings::default(),
             stats: ModelStats::default(),
+            materials_snapshot: Vec::new(),
+            material_revision: 0,
             bounds: None,
             fps: 0.0,
             show_help_overlay: true,

@@ -161,22 +161,6 @@ static void review_import_normalize3(float value[3], const float fallback[3])
     value[2] /= length;
 }
 
-/* Encode one linear channel to sRGB/gamma space (matches the renderer's WGSL
-   `linear_to_srgb`). ufbx hands back material colors in *linear* space, but the
-   scene shader treats the vertex color channel as sRGB and decodes it; baking
-   the sRGB form here makes that round-trip recover the original linear value
-   instead of double-decoding the color into near-black. */
-static float review_import_linear_to_srgb(float c)
-{
-    if (c <= 0.0f) {
-        return 0.0f;
-    }
-    if (c <= 0.0031308f) {
-        return c * 12.92f;
-    }
-    return 1.055f * powf(c, 1.0f / 2.4f) - 0.055f;
-}
-
 /* Game-asset DCC color comes from the material's base/diffuse color, not a
    vertex-color layer. Prefer the PBR base color, fall back to the legacy FBX
    diffuse color, then to white. RGB only — the viewer renders meshes opaque.
@@ -201,17 +185,6 @@ static void review_import_material_base_color_linear(const ufbx_material *materi
         out_color[1] = (float)material->fbx.diffuse_color.value_vec4.y;
         out_color[2] = (float)material->fbx.diffuse_color.value_vec4.z;
     }
-}
-
-/* Per-vertex baked base color: the linear material color sRGB-encoded so it
-   survives the scene shader's sRGB→linear decode unchanged (the vertex color
-   channel is treated as gamma-space). */
-static void review_import_material_base_color(const ufbx_material *material, float out_color[3])
-{
-    review_import_material_base_color_linear(material, out_color);
-    out_color[0] = review_import_linear_to_srgb(out_color[0]);
-    out_color[1] = review_import_linear_to_srgb(out_color[1]);
-    out_color[2] = review_import_linear_to_srgb(out_color[2]);
 }
 
 /* Resolve the material's metalness in [0,1], defaulting to 0 (dielectric) when
@@ -497,8 +470,6 @@ int review_import_load_fbx(
             size_t local_face_first_vertex = vertex_offset;
             size_t corner_index;
             ufbx_material *face_material_ptr = NULL;
-            float base_color[3];
-            float smoothness;
 
             if (mesh->face_material.count > face_index) {
                 uint32_t face_material = mesh->face_material.data[face_index];
@@ -508,8 +479,6 @@ int review_import_load_fbx(
                     face_material_ptr = mesh->materials.data[face_material];
                 }
             }
-            review_import_material_base_color(face_material_ptr, base_color);
-            smoothness = review_import_material_smoothness(face_material_ptr);
 
             out_scene->faces[face_offset].first_index = (uint32_t)local_face_first_vertex;
             out_scene->faces[face_offset].index_count = face.num_indices;
@@ -559,13 +528,6 @@ int review_import_load_fbx(
                 dst->uv[0] = (float)uv.x;
                 dst->uv[1] = (float)uv.y;
 
-                /* Bake the resolved material base color; alpha stays opaque so a
-                   masking vertex-color layer can't blend the mesh away. */
-                dst->color[0] = base_color[0];
-                dst->color[1] = base_color[1];
-                dst->color[2] = base_color[2];
-                dst->color[3] = 1.0f;
-
                 dst->tangent[0] = (float)tangent.x;
                 dst->tangent[1] = (float)tangent.y;
                 dst->tangent[2] = (float)tangent.z;
@@ -576,8 +538,6 @@ int review_import_load_fbx(
                 dst->vertex_color[1] = (float)vertex_color.y;
                 dst->vertex_color[2] = (float)vertex_color.z;
                 dst->vertex_color[3] = (float)vertex_color.w;
-
-                dst->smoothness = smoothness;
 
                 if (out_scene->uvs) {
                     uint32_t channel;
