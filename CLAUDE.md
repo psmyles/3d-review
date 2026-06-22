@@ -4,8 +4,7 @@ A Windows-first **native** 3D model-audit viewer (think F3D / Autodesk FBX
 Review). Drag-drop an **FBX**, inspect game assets, switch through debug views.
 Built on `winit` (window/event loop) + `wgpu` (GPU) + `egui` (overlay UI) +
 vendored `ufbx` (FBX parsing via a C bridge). Pure-Rust, no web/Electron layer.
-**Target priority: Windows.** This is the native alternate to the Three.js +
-Electron viewer in `D:\Dev\3d-review` (see that repo's `CLAUDE.md`).
+**Target priority: Windows.**
 
 Deeper docs: `PROJECT_STRUCTURE.md` (crate map, data flow, ownership),
 `MVP_PLAN.md` (goals + acceptance), `TODO.md` (running notes).
