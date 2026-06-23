@@ -5,9 +5,7 @@
 use std::sync::Arc;
 
 use review_model::{ModelData, SceneBvh};
-use review_render::{
-    MaterialEdit, MaterialState, OrbitCamera, SceneCallback, SelectionView, UvCamera,
-};
+use review_render::{MaterialState, OrbitCamera, SceneCallback, SelectionView, UvCamera};
 
 use crate::state::{OptionPanel, UiOutput, UiState, WorkspaceMode, sync_debug_state};
 use crate::theme::{self, color, size};
@@ -27,11 +25,13 @@ pub fn draw_viewport_scene(
     let callback = match state.mode {
         WorkspaceMode::ThreeD => {
             // The editable material values ride in from the app→UI snapshot; the
-            // scene callback uploads them into the renderer's material table.
+            // scene callback uploads them into the renderer's material table. The
+            // states carry `Arc`-shared decoded textures, so cloning is a refcount
+            // bump, not a pixel copy.
             let materials: Vec<MaterialState> = state
                 .materials_snapshot
                 .iter()
-                .map(|snapshot| snapshot.state)
+                .map(|snapshot| snapshot.state.clone())
                 .collect();
             // The Outliner selection + solo flag + highlight color + flash fade ride
             // in so the scene pass can flash / isolate the selection (Phase 2). The
@@ -120,7 +120,9 @@ pub fn draw_overlay(
         // the gizmo / stats never land on top of a panel. The Inspector emits
         // material-edit intents for `app` to apply (invariant 2).
         let side = draw_side_panels(ctx, state, model);
-        output.material_edit = side.material_edit;
+        output.material_edit = side.inspector.material_edit;
+        output.texture_browse = side.inspector.browse;
+        output.texture_clear = side.inspector.clear;
 
         // Bounding-box dimension labels sit on the viewport (under the chrome).
         // The measured box is resolved here (cached for the "visible only" scan)
@@ -219,11 +221,12 @@ fn draw_option_panels(ctx: &egui::Context, state: &mut UiState, toolbar_height: 
     }
 }
 
-/// The result of laying out the dockable side panels: the Inspector's material
-/// edit (if any) plus the live widths of the open panels, used to inset the
-/// floating viewport chrome (gizmo / stats) so it doesn't land over a panel.
+/// The result of laying out the dockable side panels: the Inspector's emitted
+/// intents (material edit / texture browse / clear) plus the live widths of the
+/// open panels, used to inset the floating viewport chrome (gizmo / stats) so it
+/// doesn't land over a panel.
 struct SidePanelLayout {
-    material_edit: Option<MaterialEdit>,
+    inspector: panels::inspector::InspectorOutput,
     left_inset: f32,
     right_inset: f32,
 }
@@ -249,7 +252,7 @@ fn draw_side_panels(
     }
 
     let mut right_inset = 0.0;
-    let mut material_edit = None;
+    let mut inspector = panels::inspector::InspectorOutput::default();
     if state.inspector_open {
         let response = egui::SidePanel::right("inspector_panel")
             .resizable(true)
@@ -257,11 +260,11 @@ fn draw_side_panels(
             .width_range(size::SIDE_PANEL_MIN_WIDTH..=size::OUTLINER_MAX_WIDTH)
             .show(ctx, |ui| panels::inspector::body(ui, state, model));
         right_inset = response.response.rect.width();
-        material_edit = response.inner;
+        inspector = response.inner;
     }
 
     SidePanelLayout {
-        material_edit,
+        inspector,
         left_inset,
         right_inset,
     }

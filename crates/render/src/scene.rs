@@ -448,12 +448,8 @@ impl SceneCallback {
             // even though the UV path never samples it.
             render_pass.set_bind_group(2, &resources.ibl.bind_group, &[]);
             // group 3 (material) must likewise be bound; the UV draws don't sample
-            // it, so the fallback entry is fine.
-            render_pass.set_bind_group(
-                3,
-                resources.material_table.bind_group(),
-                &[resources.material_table.fallback_offset()],
-            );
+            // it, so the all-fallback bind group is fine.
+            render_pass.set_bind_group(3, resources.material_table.fallback_bind_group(), &[]);
             render_pass.set_bind_group(0, &resources.uniform_bind_group, &[]);
             render_pass.set_pipeline(&resources.line_pipeline);
             if resources.uv_grid_vertex_count > 0 {
@@ -485,12 +481,8 @@ impl SceneCallback {
         render_pass.set_bind_group(2, &resources.ibl.bind_group, &[]);
         // group 3 (material) is bound for every draw too; the mesh loop below
         // rebinds it per material range, but the skybox / grid / overlays don't
-        // sample it, so the fallback entry satisfies the layout for them.
-        render_pass.set_bind_group(
-            3,
-            resources.material_table.bind_group(),
-            &[resources.material_table.fallback_offset()],
-        );
+        // sample it, so the all-fallback bind group satisfies the layout for them.
+        render_pass.set_bind_group(3, resources.material_table.fallback_bind_group(), &[]);
 
         // Skybox background first, behind all geometry (depth-test always, no
         // write), when the environment is shown as the background.
@@ -522,11 +514,14 @@ impl SceneCallback {
                 (&resources.mesh_index_buffer, &resources.material_ranges)
             };
             render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            // One draw per material range, feeding each material's parameters from
-            // the group-3 uniform via its dynamic offset.
+            // One draw per material range, binding each material's own group-3 bind
+            // group (its uniform slice + its texture slots).
             for range in ranges {
-                let offset = resources.material_table.offset_for(range.material);
-                render_pass.set_bind_group(3, resources.material_table.bind_group(), &[offset]);
+                render_pass.set_bind_group(
+                    3,
+                    resources.material_table.bind_group_for(range.material),
+                    &[],
+                );
                 let end = range.first_index + range.index_count;
                 render_pass.draw_indexed(range.first_index..end, 0, 0..1);
             }
@@ -1205,13 +1200,9 @@ impl SceneResources {
         render_pass.set_bind_group(1, &self.checker_bind_group_greyscale, &[]);
         render_pass.set_bind_group(2, &self.ibl.bind_group, &[]);
         // group 3 (material) must be bound to satisfy the shared pipeline layout;
-        // the G-buffer pass writes only normals/depth, so the fallback entry is
-        // fine. One draw over the whole index buffer (material is irrelevant here).
-        render_pass.set_bind_group(
-            3,
-            self.material_table.bind_group(),
-            &[self.material_table.fallback_offset()],
-        );
+        // the G-buffer pass writes only normals/depth, so the all-fallback bind
+        // group is fine. One draw over the whole index buffer (material irrelevant).
+        render_pass.set_bind_group(3, self.material_table.fallback_bind_group(), &[]);
         render_pass.set_pipeline(&self.ssao_gbuffer_pipeline);
         render_pass.set_vertex_buffer(0, self.mesh_vertex_buffer.slice(..));
         render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
@@ -2017,6 +2008,7 @@ fn create_mesh_buffers(
         position: [0.0, 0.0, 0.0],
         normal: [0.0, 0.0, 0.0],
         uv: [0.0, 0.0],
+        tangent: [1.0, 0.0, 0.0, 1.0],
         vertex_color: [0.0, 0.0, 0.0, 0.0],
     }];
     let placeholder_index = [0_u32];
@@ -2070,6 +2062,7 @@ fn create_line_buffer(device: &wgpu::Device, vertices: &[SceneVertex]) -> (wgpu:
         position: [0.0, 0.0, 0.0],
         normal: [0.0, 0.0, 0.0],
         uv: [0.0, 0.0],
+        tangent: [1.0, 0.0, 0.0, 1.0],
         vertex_color: [0.0, 0.0, 0.0, 0.0],
     }];
     let contents = if vertices.is_empty() {
@@ -2413,6 +2406,10 @@ pub(crate) struct SceneVertex {
     pub(crate) position: [f32; 3],
     pub(crate) normal: [f32; 3],
     pub(crate) uv: [f32; 2],
+    /// World-space tangent (`xyz`) + handedness sign (`w`), forwarded for normal
+    /// mapping (Phase 3). Zeroed-but-valid (`[1,0,0,1]`) on overlay/line/UV-fill
+    /// geometry, which never samples a normal map.
+    pub(crate) tangent: [f32; 4],
     /// The DCC vertex-color attribute on the mesh; on overlay/line/UV-fill
     /// geometry (zero normal) it instead carries the flat color the shader's
     /// overlay path returns. The material base color / smoothness are no longer
@@ -2421,8 +2418,8 @@ pub(crate) struct SceneVertex {
 }
 
 impl SceneVertex {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
-        0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4
+    const ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+        0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4, 4 => Float32x4
     ];
 
     fn layout() -> wgpu::VertexBufferLayout<'static> {
@@ -2453,5 +2450,24 @@ fn vertex_color_value(debug_options: SceneDebugOptions) -> f32 {
         VertexColorMode::Rgb => 0.0,
         VertexColorMode::Alpha => 1.0,
         VertexColorMode::RgbAlpha => 2.0,
+    }
+}
+
+#[cfg(test)]
+mod shader_tests {
+    /// The hand-written scene shader must parse + validate. The real check is GPU
+    /// pipeline creation, but validating with naga here catches type / control-flow
+    /// / binding-layout mistakes (e.g. a `textureSample` in non-uniform flow, or a
+    /// `MaterialUniform` field mismatch) without a device.
+    #[test]
+    fn scene_shader_validates() {
+        let module = naga::front::wgsl::parse_str(super::SHADER).expect("scene.wgsl should parse");
+        let mut validator = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        );
+        validator
+            .validate(&module)
+            .expect("scene.wgsl should validate");
     }
 }

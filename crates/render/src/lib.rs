@@ -1,3 +1,6 @@
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
 use glam::{Mat4, Vec2, Vec3};
 use review_model::{Bounds, MaterialInfo};
 
@@ -10,12 +13,18 @@ mod scene;
 mod selection;
 mod ssao;
 mod targets;
+mod texture;
 
 pub use ibl::ibl_supported;
-pub use material::{MaterialChange, MaterialEdit, MaterialSnapshot, MaterialState};
+pub use material::{
+    AlphaMode, MaterialChange, MaterialEdit, MaterialSnapshot, MaterialState, TextureBinding,
+};
 pub use scene::{EGUI_DEPTH_FORMAT, EGUI_MSAA_SAMPLE_COUNT, SCENE_DEPTH_FORMAT, SceneCallback};
 pub use selection::{Selection, SelectionView};
 pub use ssao::ssao_supported;
+pub use texture::{
+    ChannelSelect, DecodedImage, TEXTURE_SLOT_COUNT, TextureSlot, decode_image, suggested_channel,
+};
 
 const CAMERA_TRANSITION_SECONDS: f32 = 0.3;
 /// Shorter transition used for the WASD 45° orbit steps, which fire repeatedly
@@ -1017,6 +1026,7 @@ impl Renderer {
                 // Roughness is the complement of the imported glossiness.
                 roughness: (1.0 - material.smoothness).clamp(0.0, 1.0),
                 emissive: material.emissive,
+                ..MaterialState::default()
             })
             .collect();
         self.material_names = materials
@@ -1037,6 +1047,15 @@ impl Renderer {
             MaterialChange::Metallic(value) => state.metallic = value.clamp(0.0, 1.0),
             MaterialChange::Roughness(value) => state.roughness = value.clamp(0.0, 1.0),
             MaterialChange::Emissive(rgb) => state.emissive = Vec3::from_array(rgb),
+            MaterialChange::Channel(slot, channel) => {
+                // Re-route an already-assigned slot; ignored if the slot is empty
+                // or out of range.
+                if let Some(Some(binding)) = state.textures.get_mut(slot) {
+                    binding.channel = channel;
+                }
+            }
+            MaterialChange::AlphaMode(mode) => state.alpha_mode = mode,
+            MaterialChange::AlphaCutoff(value) => state.alpha_cutoff = value.clamp(0.0, 1.0),
         }
         self.material_revision = self.material_revision.wrapping_add(1);
     }
@@ -1057,9 +1076,85 @@ impl Renderer {
         self.material_names
             .iter()
             .cloned()
-            .zip(self.material_states.iter().copied())
+            .zip(self.material_states.iter().cloned())
             .map(|(name, state)| MaterialSnapshot { name, state })
             .collect()
+    }
+
+    /// Assign (or replace) a decoded image to one of a material's seven texture
+    /// slots, with the chosen channel routing. The image is shared by `Arc` (the
+    /// app decodes once and may reuse it across slots / materials). Bumps the
+    /// revision so the GPU table uploads + rebinds on the next frame. Out-of-range
+    /// material indices are ignored.
+    pub fn set_texture_slot(
+        &mut self,
+        material: usize,
+        slot: TextureSlot,
+        path: PathBuf,
+        image: Arc<DecodedImage>,
+        channel: ChannelSelect,
+    ) {
+        let Some(state) = self.material_states.get_mut(material) else {
+            return;
+        };
+        state.textures[slot.index()] = Some(TextureBinding {
+            path,
+            image,
+            channel,
+        });
+        // Assigning an opacity map switches the material to alpha-blend so the
+        // translucency shows; the Inspector can switch it to Clip.
+        if slot == TextureSlot::Opacity && state.alpha_mode == AlphaMode::Opaque {
+            state.alpha_mode = AlphaMode::Blend;
+        }
+        self.material_revision = self.material_revision.wrapping_add(1);
+    }
+
+    /// Clear a material's texture slot back to the shader's neutral fallback.
+    pub fn clear_texture_slot(&mut self, material: usize, slot: TextureSlot) {
+        let Some(state) = self.material_states.get_mut(material) else {
+            return;
+        };
+        state.textures[slot.index()] = None;
+        // Clearing the opacity map restores opaque compositing.
+        if slot == TextureSlot::Opacity {
+            state.alpha_mode = AlphaMode::Opaque;
+        }
+        self.material_revision = self.material_revision.wrapping_add(1);
+    }
+
+    /// Replace the decoded image of every texture binding that references `path`
+    /// (across all materials / slots) with `image` — the disk-auto-reload path.
+    /// Keeps each binding's channel routing. Returns `true` (and bumps the
+    /// revision) when at least one binding matched.
+    pub fn reload_texture(&mut self, path: &Path, image: Arc<DecodedImage>) -> bool {
+        let mut changed = false;
+        for state in &mut self.material_states {
+            for binding in state.textures.iter_mut().flatten() {
+                if binding.path == path {
+                    binding.image = Arc::clone(&image);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.material_revision = self.material_revision.wrapping_add(1);
+        }
+        changed
+    }
+
+    /// Every distinct source path currently bound to a material slot (for the disk
+    /// watcher to register / reconcile).
+    pub fn texture_paths(&self) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = Vec::new();
+        for state in &self.material_states {
+            for binding in state.textures.iter().flatten() {
+                if !paths.contains(&binding.path) {
+                    paths.push(binding.path.clone());
+                }
+            }
+        }
+        paths
     }
 
     pub fn set_uv_aspect_ratio(&mut self, aspect_ratio: f32) {

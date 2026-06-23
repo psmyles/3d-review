@@ -12,6 +12,7 @@ egui-wgpu = { workspace = true, features = ["winit"] }
 egui-winit.workspace = true
 glam.workspace = true
 image.workspace = true
+notify.workspace = true
 pollster.workspace = true
 review-import = { path = "../import" }
 review-model = { path = "../model" }

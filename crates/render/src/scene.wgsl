@@ -48,27 +48,53 @@ var env_cube: texture_cube<f32>;
 @group(2) @binding(4)
 var ibl_sampler: sampler;
 
-// Per-material parameters (bind group 3), addressed per draw by dynamic offset.
-// Must match the `#[repr(C)]` `MaterialUniform` in `material.rs` (invariant 11).
-// The mesh sources its base color / metallic / roughness / emissive from here;
-// `base_color`/`emissive` are linear. `params` = (metallic, roughness,
-// slot_flags, highlight) — the last two are reserved for later phases.
+// Per-material parameters (bind group 3). Must match the `#[repr(C)]`
+// `MaterialUniform` in `material.rs` (invariant 11). The mesh sources its base
+// color / metallic / roughness / emissive from here; `base_color`/`emissive` are
+// linear. `params` = (metallic, roughness, slot_flags bitfield, alpha mode).
+// `channels0` selects the channel (0 R … 3 A) feeding slots 0..3; `channels1`
+// does the same for slots 4..6 with `w` carrying the alpha cutoff.
 struct MaterialUniform {
     base_color: vec4<f32>,
     emissive: vec4<f32>,
     params: vec4<f32>,
+    channels0: vec4<f32>,
+    channels1: vec4<f32>,
 };
 
 @group(3) @binding(0)
 var<uniform> material: MaterialUniform;
+// The seven material texture slots + their shared sampler. The same cached view
+// may be bound to several slots (packed maps); the shader picks the configured
+// channel per scalar property. Unassigned slots bind a neutral 1×1 fallback and
+// are gated off by the slot-flags bitfield in `params.z`.
+@group(3) @binding(1)
+var base_color_tex: texture_2d<f32>;
+@group(3) @binding(2)
+var normal_tex: texture_2d<f32>;
+@group(3) @binding(3)
+var roughness_tex: texture_2d<f32>;
+@group(3) @binding(4)
+var metallic_tex: texture_2d<f32>;
+@group(3) @binding(5)
+var ao_tex: texture_2d<f32>;
+@group(3) @binding(6)
+var emissive_tex: texture_2d<f32>;
+@group(3) @binding(7)
+var opacity_tex: texture_2d<f32>;
+@group(3) @binding(8)
+var material_sampler: sampler;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
+    // World-space tangent (xyz) + handedness sign (w), for normal mapping. Zeroed
+    // on overlay/line/UV-fill geometry (those never sample a normal map).
+    @location(3) tangent: vec4<f32>,
     // The DCC vertex-color attribute on the mesh; on overlay/line/UV-fill geometry
     // (zero normal) this instead carries the flat color the overlay path returns.
-    @location(3) vertex_color: vec4<f32>,
+    @location(4) vertex_color: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -77,6 +103,7 @@ struct VertexOutput {
     @location(1) uv: vec2<f32>,
     @location(2) vertex_color: vec4<f32>,
     @location(3) world_position: vec3<f32>,
+    @location(4) tangent: vec4<f32>,
 };
 
 @vertex
@@ -87,7 +114,32 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     output.uv = input.uv;
     output.vertex_color = input.vertex_color;
     output.world_position = input.position;
+    output.tangent = input.tangent;
     return output;
+}
+
+// Select one channel of a sampled texel by index (0 R, 1 G, 2 B, 3 A), so a packed
+// map can route any channel into a scalar property.
+fn select_channel(texel: vec4<f32>, index: f32) -> f32 {
+    if (index < 0.5) { return texel.r; }
+    if (index < 1.5) { return texel.g; }
+    if (index < 2.5) { return texel.b; }
+    return texel.a;
+}
+
+// Perturb the geometric normal `n` by a tangent-space normal-map sample, using the
+// vertex tangent (xyz) + handedness (w) to build the TBN basis. Geometry is
+// world-baked, so the tangent is already world-space (no model matrix).
+fn apply_normal_map(n: vec3<f32>, tangent: vec4<f32>, sample_rgb: vec3<f32>) -> vec3<f32> {
+    let geo_n = normalize(n);
+    // Gram-Schmidt orthonormalize the tangent against the normal.
+    let t = normalize(tangent.xyz - geo_n * dot(geo_n, tangent.xyz));
+    if (dot(t, t) < 1e-8) {
+        return geo_n;
+    }
+    let b = cross(geo_n, t) * tangent.w;
+    let m = sample_rgb * 2.0 - vec3<f32>(1.0);
+    return normalize(t * m.x + b * m.y + geo_n * m.z);
 }
 
 // Decode sRGB-authored vertex colors into the scene's linear HDR working space.
@@ -163,6 +215,17 @@ fn fs_main(input: VertexOutput) -> FragOutput {
     let vertex_color_mode = uniforms.render_options.w;
     // Sample at top level so it stays in uniform control flow.
     let checker = textureSample(checker_texture, checker_sampler, input.uv * tiling);
+    // Sample every material slot at the top level (uniform control flow), so the
+    // branches below can use them without re-sampling in non-uniform flow. Slots
+    // are gated by the slot-flags bitfield; an unbound slot reads its 1×1 fallback.
+    let tex_base = textureSample(base_color_tex, material_sampler, input.uv);
+    let tex_normal = textureSample(normal_tex, material_sampler, input.uv);
+    let tex_roughness = textureSample(roughness_tex, material_sampler, input.uv);
+    let tex_metallic = textureSample(metallic_tex, material_sampler, input.uv);
+    let tex_ao = textureSample(ao_tex, material_sampler, input.uv);
+    let tex_emissive = textureSample(emissive_tex, material_sampler, input.uv);
+    let tex_opacity = textureSample(opacity_tex, material_sampler, input.uv);
+    let slot_flags = u32(material.params.z);
     let normal_length_sq = dot(input.normal, input.normal);
 
     // Grid / wireframe / normal lines carry a zero normal — they always render
@@ -176,10 +239,26 @@ fn fs_main(input: VertexOutput) -> FragOutput {
         return out;
     }
 
+    // Which material slots carry a texture (the slot-flags bitfield in params.z).
+    let has_base = (slot_flags & 1u) != 0u;
+    let has_normal = (slot_flags & 2u) != 0u;
+    let has_roughness = (slot_flags & 4u) != 0u;
+    let has_metallic = (slot_flags & 8u) != 0u;
+    let has_ao = (slot_flags & 16u) != 0u;
+    let has_emissive = (slot_flags & 32u) != 0u;
+    let has_opacity = (slot_flags & 64u) != 0u;
+
     // Work in linear space. The material base color is stored linear in the uniform
-    // (no decode); the checker sample is already linear (sRGB texture format).
+    // (no decode); the base-color texture (sRGB format → already linear here)
+    // modulates it. The checker sample is already linear (sRGB texture format).
     var base_color = material.base_color.rgb;
+    if (has_base) {
+        base_color = base_color * tex_base.rgb;
+    }
     var out_alpha = material.base_color.a;
+    if (has_opacity) {
+        out_alpha = out_alpha * select_channel(tex_opacity, material.channels1.z);
+    }
     if (uv_checker_enabled) {
         base_color = checker.rgb;
     }
@@ -199,6 +278,13 @@ fn fs_main(input: VertexOutput) -> FragOutput {
         }
     }
 
+    // Alpha-clip cutout (material flag): drop fully-transparent fragments before
+    // any shading. Blend mode keeps the fragment and lets the MRT alpha-blend it.
+    let alpha_mode = material.params.w;
+    if (alpha_mode > 1.5 && out_alpha < material.channels1.w) {
+        discard;
+    }
+
     if (shading_mode < 1.5) {
         // Unlit: flat emissive material color. Carry its linear value to the bloom
         // target so a bright unlit surface can glow past the threshold.
@@ -207,9 +293,29 @@ fn fs_main(input: VertexOutput) -> FragOutput {
         return out;
     }
 
-    let n = normalize(input.normal);
-    // Metallic + roughness come straight from the per-material uniform.
-    let metallic = clamp(material.params.x, 0.0, 1.0);
+    // The shading normal: the geometric normal, optionally perturbed by a
+    // tangent-space normal map.
+    var world_normal = normalize(input.normal);
+    if (has_normal) {
+        world_normal = apply_normal_map(input.normal, input.tangent, tex_normal.rgb);
+    }
+    let n = world_normal;
+    // Metallic + roughness from the uniform, modulated by their (channel-routed)
+    // textures when bound.
+    var metallic = material.params.x;
+    if (has_metallic) {
+        metallic = metallic * select_channel(tex_metallic, material.channels0.w);
+    }
+    metallic = clamp(metallic, 0.0, 1.0);
+    var roughness_value = material.params.y;
+    if (has_roughness) {
+        roughness_value = roughness_value * select_channel(tex_roughness, material.channels0.z);
+    }
+    // Ambient-occlusion factor (channel-routed), darkening only the ambient term.
+    var ao = 1.0;
+    if (has_ao) {
+        ao = select_channel(tex_ao, material.channels1.x);
+    }
 
     var color_linear: vec3<f32>;
     var ambient_linear: vec3<f32>;
@@ -217,15 +323,15 @@ fn fs_main(input: VertexOutput) -> FragOutput {
         // Image-based lighting (the default Shaded look): metallic-roughness PBR
         // sampling the precomputed environment maps. Roughness clamped away from a
         // perfect mirror so the lowest mip still reads as a surface.
-        let roughness = clamp(material.params.y, 0.04, 1.0);
-        let shaded = shade_ibl(base_color, input.normal, input.world_position, roughness, metallic);
+        let roughness = clamp(roughness_value, 0.04, 1.0);
+        let shaded = shade_ibl(base_color, world_normal, input.world_position, roughness, metallic);
         color_linear = shaded.color;
         ambient_linear = shaded.ambient;
     } else {
         // Analytic fallback: the neutral-grey hemisphere + Blinn-Phong specular
         // used before IBL. Kept so disabling IBL restores the previous look.
-        // Smoothness (glossiness) is the complement of the material roughness.
-        let smoothness = clamp(1.0 - material.params.y, 0.0, 1.0);
+        // Smoothness (glossiness) is the complement of the (textured) roughness.
+        let smoothness = clamp(1.0 - roughness_value, 0.0, 1.0);
         let light_dir = normalize(vec3<f32>(0.35, 0.82, 0.44));
         let diffuse = max(dot(n, light_dir), 0.0);
         let hemi_t = clamp(n.y * 0.5 + 0.5, 0.0, 1.0);
@@ -245,9 +351,25 @@ fn fs_main(input: VertexOutput) -> FragOutput {
         ambient_linear = base_color * ambient_light;
     }
 
+    // Ambient occlusion darkens only the ambient term: remove the un-occluded
+    // ambient from the lit color and add back the occluded fraction, leaving direct
+    // + specular light untouched (matching the post SSAO compose).
+    color_linear = color_linear + ambient_linear * (ao - 1.0);
+    ambient_linear = ambient_linear * ao;
+
     // Emissive adds on top of the lit result (linear), and contributes to bloom so
-    // a bright emissive surface can glow. Default emissive is black (no effect).
-    let emissive = material.emissive.rgb;
+    // a bright emissive surface can glow. Default emissive is black (no effect);
+    // an emissive texture (when bound) modulates it.
+    var emissive = material.emissive.rgb;
+    if (has_emissive) {
+        // An emissive map with the default (black) factor still shows at full
+        // strength; a non-zero factor tints it.
+        var factor = material.emissive.rgb;
+        if (all(factor <= vec3<f32>(0.0))) {
+            factor = vec3<f32>(1.0);
+        }
+        emissive = tex_emissive.rgb * factor;
+    }
     color_linear = color_linear + emissive;
 
     out.color = vec4<f32>(color_linear, out_alpha);

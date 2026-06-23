@@ -366,6 +366,7 @@ pub(crate) fn model_mesh(
             position: vertex.position.to_array(),
             normal: vertex.normal.to_array(),
             uv: model.uv_for_channel(index, channel).to_array(),
+            tangent: vertex.tangent.to_array(),
             vertex_color: vertex.vertex_color.to_array(),
         })
         .collect();
@@ -918,6 +919,7 @@ fn push_fill_vertex(vertices: &mut Vec<SceneVertex>, position: [f32; 3], color: 
         position,
         normal: [0.0, 0.0, 0.0],
         uv: [0.0, 0.0],
+        tangent: [1.0, 0.0, 0.0, 1.0],
         vertex_color: color,
     });
 }
@@ -927,12 +929,14 @@ fn push_line(vertices: &mut Vec<SceneVertex>, start: [f32; 3], end: [f32; 3], co
         position: start,
         normal: [0.0, 0.0, 0.0],
         uv: [0.0, 0.0],
+        tangent: [1.0, 0.0, 0.0, 1.0],
         vertex_color: color,
     });
     vertices.push(SceneVertex {
         position: end,
         normal: [0.0, 0.0, 0.0],
         uv: [0.0, 0.0],
+        tangent: [1.0, 0.0, 0.0, 1.0],
         vertex_color: color,
     });
 }
