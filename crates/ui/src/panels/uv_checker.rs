@@ -24,6 +24,7 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
             checker_channel_row(ui, &mut state.uv_checker.uv_channel, uv_set_count);
         }
     });
+    ui.separator();
     if reset_button(ui).clicked() {
         state.uv_checker = UvCheckerPanelState::default();
     }

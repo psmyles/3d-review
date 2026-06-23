@@ -16,6 +16,7 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
         operator_row(ui, state);
     });
 
+    ui.separator();
     if reset_button(ui).clicked() {
         // The on/off state is owned by the status-bar toggle, so reset only the
         // operator and leave `enabled` untouched.

@@ -112,17 +112,42 @@ pub(crate) fn toolbar_group_shell(
 /// just calls them inside this closure. Full-width controls (the reset button)
 /// go *after* the grid, not inside it.
 pub(crate) fn panel_grid(ui: &mut egui::Ui, salt: &str, contents: impl FnOnce(&mut egui::Ui)) {
+    let row_gap = ui.spacing().item_spacing.y;
     egui::Grid::new(("panel_grid", salt))
         .num_columns(2)
+        .min_col_width(size::PANEL_LABEL_COL_WIDTH)
+        .spacing(egui::vec2(size::PANEL_GRID_COL_GAP, row_gap))
         .striped(true)
         .show(ui, contents);
 }
 
-/// The left (label) cell of a panel-grid row: a plain default-styled label.
-/// Leaves the cursor in the control column for the caller to drop the row's
-/// widget and then call `ui.end_row()`.
+/// The left (label) cell of a panel-grid row: a plain default-styled label
+/// pinned to the fixed [`size::PANEL_LABEL_COL_WIDTH`] (left-aligned; an
+/// over-long label truncates rather than widening the column, so every panel
+/// keeps the same label/control split). Leaves the cursor in the control column
+/// for the caller to drop the row's widget and then call `ui.end_row()`.
 fn grid_label(ui: &mut egui::Ui, label: &str) {
-    ui.label(label);
+    ui.scope(|ui| {
+        ui.set_width(size::PANEL_LABEL_COL_WIDTH);
+        ui.add(egui::Label::new(label).truncate());
+    });
+}
+
+/// The right (control) cell of a panel-grid row: a cell spanning **all the
+/// remaining width** of the row (the window minus the fixed label column) whose
+/// contents are **right-aligned**, so the control's right edge sits flush with
+/// the panel's right edge — no matter how wide egui sizes the window — and any
+/// slack in a row (a short swatch run, a narrow value) falls *between* the label
+/// and the control. Controls that already fill the column (slider rail, combo)
+/// span it edge to edge regardless.
+fn grid_control<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let width = ui.available_width();
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, ui.spacing().interact_size.y),
+        egui::Layout::right_to_left(egui::Align::Center),
+        add,
+    )
+    .inner
 }
 
 /// A dropdown sized to one control row: the closed button matches `PANEL_ROW_H`
@@ -181,13 +206,43 @@ pub(crate) fn labeled_slider_with_value<Num: egui::emath::Numeric>(
     decimals: usize,
 ) -> bool {
     grid_label(ui, label);
-    let response = ui.add(
-        egui::Slider::new(value, range)
-            .max_decimals(decimals)
-            .clamping(egui::SliderClamping::Always),
-    );
+    // The slider's own inline readout auto-sizes to its digit count, so it
+    // reflows as the number changes. Instead, hide it (`show_value(false)`) and
+    // append a separate **fixed-width** `DragValue` box: the rail fills the row
+    // up to a constant value-box width on the right, which never moves.
+    let changed = ui
+        .scope(|ui| {
+            let value_w = size::PANEL_SLIDER_VALUE_W;
+            let gap = ui.spacing().item_spacing.x;
+            ui.spacing_mut().slider_width = (ui.available_width() - value_w - gap).max(0.0);
+            let mut response = ui.add(
+                egui::Slider::new(value, range.clone())
+                    .show_value(false)
+                    .clamping(egui::SliderClamping::Always),
+            );
+            let box_height = ui.spacing().interact_size.y;
+            // Place the value box in a fixed-size cell whose layout is justified
+            // (the box fills `value_w`, so its width never reflows) but
+            // left-aligned (`main_align = Min`) — egui's `DragValue` positions
+            // its text via the current layout, so this left-aligns both the
+            // displayed value and the edit-mode caret. (`ui.add_sized` would
+            // center it via a `centered_and_justified` layout.)
+            let cell_layout = egui::Layout::centered_and_justified(egui::Direction::LeftToRight)
+                .with_main_align(egui::Align::Min);
+            response |= ui
+                .allocate_ui_with_layout(egui::vec2(value_w, box_height), cell_layout, |ui| {
+                    ui.add(
+                        egui::DragValue::new(value)
+                            .range(range)
+                            .max_decimals(decimals),
+                    )
+                })
+                .inner;
+            response.changed()
+        })
+        .inner;
     ui.end_row();
-    response.changed()
+    changed
 }
 
 /// A label + color-button grid row (the stock egui color-edit button). Returns the
@@ -198,7 +253,7 @@ pub(crate) fn labeled_color_button(
     rgb: &mut [f32; 3],
 ) -> egui::Response {
     grid_label(ui, label);
-    let response = ui.color_edit_button_rgb(rgb);
+    let response = grid_control(ui, |ui| ui.color_edit_button_rgb(rgb));
     ui.end_row();
     response
 }
@@ -207,7 +262,7 @@ pub(crate) fn labeled_color_button(
 /// cell is its label.
 pub(crate) fn labeled_checkbox(ui: &mut egui::Ui, label: &str, value: &mut bool) {
     grid_label(ui, label);
-    ui.checkbox(value, "");
+    grid_control(ui, |ui| ui.checkbox(value, ""));
     ui.end_row();
 }
 
@@ -223,6 +278,7 @@ pub(crate) fn labeled_combo(
     grid_label(ui, label);
     egui::ComboBox::from_id_salt(id_salt)
         .selected_text(selected_text)
+        .width(ui.available_width())
         .show_ui(ui, contents);
     ui.end_row();
 }
@@ -230,21 +286,44 @@ pub(crate) fn labeled_combo(
 /// A label + read-only value grid row (Inspector node stats / stubbed slots).
 pub(crate) fn value_row(ui: &mut egui::Ui, label: &str, value: &str) {
     grid_label(ui, label);
-    ui.label(value);
+    grid_control(ui, |ui| ui.label(value));
     ui.end_row();
 }
 
-/// A label + color-button grid row over an `egui::Color32` (the stock egui
-/// color-edit button / picker). Returns the button's [`egui::Response`].
-pub(crate) fn labeled_color32(
+/// A label + a row of square preset-color swatch buttons (each a stock
+/// `egui::Button` at the standard button height); clicking one writes it into
+/// `selected`. The active swatch is outlined with the selection stroke.
+pub(crate) fn color_swatch_row(
     ui: &mut egui::Ui,
     label: &str,
-    color: &mut egui::Color32,
-) -> egui::Response {
+    selected: &mut egui::Color32,
+    colors: &[egui::Color32],
+) {
     grid_label(ui, label);
-    let response = ui.color_edit_button_srgba(color);
+    grid_control(ui, |ui| {
+        // Right-align the whole swatch run while keeping the swatches themselves
+        // in left-to-right order (a plain `ui.horizontal` group, placed at the
+        // right edge of the right-to-left control cell).
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = size::PANEL_SWATCH_GAP;
+            let side = ui.spacing().interact_size.y;
+            for &swatch in colors {
+                let mut button = egui::Button::new("")
+                    .fill(swatch)
+                    .min_size(egui::vec2(side, side));
+                if *selected == swatch {
+                    button = button.stroke(egui::Stroke::new(
+                        size::SELECTION_STROKE_WIDTH,
+                        color::SELECTION_STROKE,
+                    ));
+                }
+                if ui.add(button).clicked() {
+                    *selected = swatch;
+                }
+            }
+        });
+    });
     ui.end_row();
-    response
 }
 
 /// A stock "Reset all" button (default egui button styling).

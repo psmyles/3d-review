@@ -198,9 +198,11 @@ fn draw_option_panels(ctx: &egui::Context, state: &mut UiState, toolbar_height: 
         egui::Window::new(panel.title())
             .id(egui::Id::new(panel.window_id()))
             .open(&mut open)
-            .resizable(true)
+            // The option panels have compact, fixed content (a two-column table),
+            // so they aren't resizable — which also drops egui's bottom-right
+            // resize grip. The body pins a consistent width (see `draw_panel_body`).
+            .resizable(false)
             .collapsible(true)
-            .default_width(size::TOOL_WINDOW_DEFAULT_WIDTH)
             .default_pos(default_pos)
             // Persistent chrome, not a transient popup: skip egui's fade so an
             // always-present window never spins the on-demand redraw loop

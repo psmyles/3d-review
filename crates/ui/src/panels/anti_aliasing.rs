@@ -16,6 +16,7 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
         msaa_row(ui, state);
         labeled_checkbox(ui, "FXAA", &mut state.anti_aliasing.fxaa);
     });
+    ui.separator();
     if reset_button(ui).clicked() {
         state.anti_aliasing = AntiAliasing::default();
     }

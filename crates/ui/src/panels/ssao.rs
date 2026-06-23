@@ -41,6 +41,7 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
         labeled_slider_with_value(ui, "Bias", &mut state.ssao.bias, BIAS_MIN..=BIAS_MAX, 3);
     });
 
+    ui.separator();
     if reset_button(ui).clicked() {
         // The on/off state is owned by the status-bar toggle, so reset only the
         // panel's own options and leave `enabled` untouched.

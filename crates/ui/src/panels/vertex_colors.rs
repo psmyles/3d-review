@@ -11,6 +11,7 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
     panel_grid(ui, "vertex_colors", |ui| {
         color_mode_row(ui, &mut state.vertex_colors.mode);
     });
+    ui.separator();
     if reset_button(ui).clicked() {
         state.vertex_colors = VertexColorPanelState::default();
     }
