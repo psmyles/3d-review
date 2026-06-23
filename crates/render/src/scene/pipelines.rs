@@ -6,6 +6,24 @@ use super::SCENE_DEPTH_FORMAT;
 use super::SceneVertex;
 use crate::targets::SCENE_HDR_FORMAT;
 
+/// The scene pass's three MRT color targets — the single source of truth for the
+/// `FragOutput` lockstep (the CLAUDE.md "three color targets" gotcha): location 0
+/// = linear HDR scene color, location 1 = linear-HDR bloom source, location 2 =
+/// AO-eligible ambient radiance. `blend` applies to all three: the geometry
+/// pipelines alpha-blend (transparent coverage handled in linear light; overlays
+/// write zero ambient to mask the mesh ambient so AO doesn't darken them), the
+/// skybox draws opaque (`None`) over the cleared frame. Any new scene-pass
+/// pipeline (e.g. Phase 7's alpha-sort write-off variant) gets the right shape by
+/// calling this rather than re-listing three targets.
+fn scene_color_targets(blend: Option<wgpu::BlendState>) -> [Option<wgpu::ColorTargetState>; 3] {
+    let target = wgpu::ColorTargetState {
+        format: SCENE_HDR_FORMAT,
+        blend,
+        write_mask: wgpu::ColorWrites::ALL,
+    };
+    [Some(target.clone()), Some(target.clone()), Some(target)]
+}
+
 /// Depth behavior for a pipeline: whether it writes depth, and how much it biases
 /// fragments. The mesh writes depth and pushes the surface back (so coplanar line
 /// overlays win the depth test); the line pipeline does neither.
@@ -203,28 +221,9 @@ fn create_skybox_pipeline(
         fragment: Some(wgpu::FragmentState {
             module: shader,
             entry_point: Some("fs_skybox"),
-            // MRT to match the other scene pipelines: location 0 = linear HDR
-            // scene color, location 1 = linear-HDR bloom source, location 2 =
-            // AO-eligible ambient radiance. The skybox draws first over the
-            // cleared frame, so no target blends (opaque replace); it writes zero
-            // ambient so SSAO never darkens the background.
-            targets: &[
-                Some(wgpu::ColorTargetState {
-                    format: SCENE_HDR_FORMAT,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                }),
-                Some(wgpu::ColorTargetState {
-                    format: SCENE_HDR_FORMAT,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                }),
-                Some(wgpu::ColorTargetState {
-                    format: SCENE_HDR_FORMAT,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                }),
-            ],
+            // Opaque MRT (the skybox draws first over the cleared frame); writes
+            // zero ambient so SSAO never darkens the background.
+            targets: &scene_color_targets(None),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         }),
         multiview: None,
@@ -279,29 +278,8 @@ fn create_pipeline(
         fragment: Some(wgpu::FragmentState {
             module: shader,
             entry_point: Some(fragment_entry),
-            // MRT (invariant 11: matches the `FragOutput` struct in `scene.wgsl`):
-            // location 0 = linear HDR scene color, location 1 = linear-HDR bloom
-            // source, location 2 = AO-eligible ambient radiance. All three
-            // alpha-blend so transparent material/overlay coverage is handled in
-            // linear light; overlays write zero ambient color with their own alpha
-            // to mask the mesh ambient below, so AO does not darken the overlay.
-            targets: &[
-                Some(wgpu::ColorTargetState {
-                    format: SCENE_HDR_FORMAT,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                }),
-                Some(wgpu::ColorTargetState {
-                    format: SCENE_HDR_FORMAT,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                }),
-                Some(wgpu::ColorTargetState {
-                    format: SCENE_HDR_FORMAT,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                }),
-            ],
+            // The three alpha-blended scene-pass MRT targets (invariant 11).
+            targets: &scene_color_targets(Some(wgpu::BlendState::ALPHA_BLENDING)),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         }),
         multiview: None,
