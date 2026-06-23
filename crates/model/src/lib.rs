@@ -137,6 +137,11 @@ pub struct ModelData {
     /// `u32::MAX` for a triangle whose face carried no material. Drives the
     /// per-material draw grouping (Phase 1) without a per-vertex `material_id`.
     pub tri_material: Vec<u32>,
+    /// Per-triangle owning scene-graph node, parallel to [`ModelData::tri_to_face`]
+    /// (same length and ordering). Each entry indexes [`ModelData::nodes`] — the
+    /// node whose mesh the triangle came from — driving the Outliner's per-node
+    /// selection / solo (Phase 2). Empty for models with no node hierarchy.
+    pub tri_node: Vec<u32>,
     /// The imported scene-graph hierarchy (every node, mesh-bearing or not), for
     /// the Outliner. Empty for procedurally-built models with no hierarchy.
     pub nodes: Vec<SceneNode>,
@@ -238,6 +243,8 @@ pub fn demo_cube_model() -> ModelData {
             .collect(),
         tri_to_face: vec![0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5],
         tri_material: vec![0; 12],
+        // The demo cube is a single node, so every triangle belongs to node 0.
+        tri_node: vec![0; 12],
         nodes: vec![SceneNode {
             name: "Demo Cube".to_owned(),
             parent: None,
@@ -285,7 +292,10 @@ fn demo_cube_vertices() -> Vec<Vertex> {
             Vec3::NEG_X,
         ),
         ([[s, y0, s], [s, y0, -s], [s, y1, -s], [s, y1, s]], Vec3::X),
-        ([[-s, y1, s], [s, y1, s], [s, y1, -s], [-s, y1, -s]], Vec3::Y),
+        (
+            [[-s, y1, s], [s, y1, s], [s, y1, -s], [-s, y1, -s]],
+            Vec3::Y,
+        ),
         (
             [[-s, y0, -s], [s, y0, -s], [s, y0, s], [-s, y0, s]],
             Vec3::NEG_Y,
@@ -346,6 +356,9 @@ mod tests {
         assert_eq!(model.tri_material.len(), model.stats.triangle_count);
         assert_eq!(model.tri_material.len(), model.tri_to_face.len());
         assert!(model.tri_material.iter().all(|&slot| slot == 0));
+        // Per-triangle node index runs parallel and points at the single node.
+        assert_eq!(model.tri_node.len(), model.stats.triangle_count);
+        assert!(model.tri_node.iter().all(|&node| node == 0));
     }
 
     #[test]

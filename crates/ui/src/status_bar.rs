@@ -101,7 +101,7 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                                 state.environment.ibl_enabled = !state.environment.ibl_enabled;
                             }
                             if ibl.secondary_clicked() {
-                                state.open_panel(OptionPanel::Environment);
+                                state.panels_open.toggle(OptionPanel::Environment);
                             }
                         });
 
@@ -117,7 +117,7 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                             state.bloom.enabled = !state.bloom.enabled;
                         }
                         if bloom.secondary_clicked() {
-                            state.open_panel(OptionPanel::Bloom);
+                            state.panels_open.toggle(OptionPanel::Bloom);
                         }
 
                         // Screen-space ambient occlusion. Disabled + forced off when
@@ -137,7 +137,7 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                                 state.ssao.enabled = !state.ssao.enabled;
                             }
                             if ssao.secondary_clicked() {
-                                state.open_panel(OptionPanel::Ssao);
+                                state.panels_open.toggle(OptionPanel::Ssao);
                             }
                         });
 
@@ -155,7 +155,7 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                             state.tonemap.enabled = !state.tonemap.enabled;
                         }
                         if tonemap.secondary_clicked() {
-                            state.open_panel(OptionPanel::Tonemap);
+                            state.panels_open.toggle(OptionPanel::Tonemap);
                         }
 
                         // Anti aliasing.
@@ -170,7 +170,7 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                             state.anti_aliasing.enabled = !state.anti_aliasing.enabled;
                         }
                         if aa.secondary_clicked() {
-                            state.open_panel(OptionPanel::AntiAliasing);
+                            state.panels_open.toggle(OptionPanel::AntiAliasing);
                         }
                     });
                 },

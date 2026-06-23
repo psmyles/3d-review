@@ -96,6 +96,12 @@ typedef struct review_import_scene {
        whose face carried no material. NULL when there are no triangles. */
     uint32_t *tri_material;
     size_t tri_material_count;
+    /* Per-triangle owning scene-graph node, parallel to `tri_to_face` (same
+       length / ordering). Each entry indexes `nodes` (the node whose mesh the
+       triangle came from), driving the Outliner's per-node selection / solo
+       (Phase 2). NULL when there are no triangles. */
+    uint32_t *tri_node;
+    size_t tri_node_count;
 } review_import_scene;
 
 typedef struct review_import_options {

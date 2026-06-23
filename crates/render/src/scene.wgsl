@@ -20,6 +20,10 @@ struct SceneUniforms {
     // View matrix (world -> view), for writing the view-space normal + depth into
     // the separate SSAO G-buffer pass.
     view: mat4x4<f32>,
+    // Selection-flash highlight: rgb is the gamma-space highlight color, a is the
+    // flash fade (1 at the start of a selection flash down to 0). Read only by
+    // `fs_selection`; zero alpha while nothing is flashing.
+    selection_color: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -249,6 +253,23 @@ fn fs_main(input: VertexOutput) -> FragOutput {
     out.color = vec4<f32>(color_linear, out_alpha);
     out.bloom = vec4<f32>(color_linear, 1.0);
     out.ambient = vec4<f32>(ambient_linear, out_alpha);
+    return out;
+}
+
+// Selection flash: a flat color fill over the selected triangles (the solo index
+// buffer, drawn over the mesh vertices). Ignores the mesh's lighting and material
+// entirely — it emits the uniform highlight color tinted by the flash fade alpha.
+// Writes zero bloom so the flash never glows, and zero ambient *color* with the
+// fade alpha so it masks (rather than darkens via SSAO) the mesh ambient beneath,
+// matching the other overlays. As `selection_color.a` reaches 0 the fill blends
+// fully away.
+@fragment
+fn fs_selection(input: VertexOutput) -> FragOutput {
+    var out: FragOutput;
+    let fade = uniforms.selection_color.a;
+    out.color = vec4<f32>(srgb_to_linear(uniforms.selection_color.rgb), fade);
+    out.bloom = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    out.ambient = vec4<f32>(0.0, 0.0, 0.0, fade);
     return out;
 }
 
