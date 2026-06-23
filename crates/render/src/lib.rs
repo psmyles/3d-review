@@ -7,12 +7,14 @@ mod ibl;
 mod material;
 mod post;
 mod scene;
+mod selection;
 mod ssao;
 mod targets;
 
 pub use ibl::ibl_supported;
 pub use material::{MaterialChange, MaterialEdit, MaterialSnapshot, MaterialState};
 pub use scene::{EGUI_DEPTH_FORMAT, EGUI_MSAA_SAMPLE_COUNT, SCENE_DEPTH_FORMAT, SceneCallback};
+pub use selection::{Selection, SelectionView};
 pub use ssao::ssao_supported;
 
 const CAMERA_TRANSITION_SECONDS: f32 = 0.3;

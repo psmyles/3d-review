@@ -5,10 +5,10 @@
 use review_render::{ActiveMaterial, ShadingMode, UvShadingMode};
 
 use crate::assets::{
-    ICON_AXIS_GIZMO, ICON_BBOX, ICON_GRID, ICON_NORMALS_FACE, ICON_NORMALS_VERTEX,
-    ICON_SHADING_SHADED, ICON_SHADING_TEXTURE, ICON_SHADING_UNLIT, ICON_SHADING_WIRE,
-    ICON_SHADING_WIRE_ONLY, ICON_UV, ICON_UV_ISLANDS, ICON_UV_SHADED, ICON_UV_WIRE,
-    ICON_VERTEX_COLORS, ICON_VIEW_ORTHO, ICON_VIEW_PERSPECTIVE,
+    ICON_AXIS_GIZMO, ICON_BBOX, ICON_GRID, ICON_INSPECTOR, ICON_NORMALS_FACE, ICON_NORMALS_VERTEX,
+    ICON_OUTLINER, ICON_SHADING_SHADED, ICON_SHADING_TEXTURE, ICON_SHADING_UNLIT,
+    ICON_SHADING_WIRE, ICON_SHADING_WIRE_ONLY, ICON_UV, ICON_UV_ISLANDS, ICON_UV_SHADED,
+    ICON_UV_WIRE, ICON_VERTEX_COLORS, ICON_VIEW_ORTHO, ICON_VIEW_PERSPECTIVE,
 };
 use crate::state::{OptionPanel, UiState, ViewProjectionMode, WorkspaceMode};
 use crate::theme::{self, color, font, size};
@@ -37,6 +37,7 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
     let normals_group_width = theme::px(ctx, size::TOOLBAR_NORMALS_GROUP_WIDTH);
     let single_icon_group_width = theme::px(ctx, size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH);
     let triple_icon_group_width = theme::px(ctx, size::TOOLBAR_TRIPLE_ICON_GROUP_WIDTH);
+    let tools_group_width = theme::px(ctx, size::TOOLBAR_TOOLS_GROUP_WIDTH);
     let mode_group_width = theme::px(ctx, size::TOOLBAR_MODE_GROUP_WIDTH);
 
     egui::TopBottomPanel::top("app_toolbar")
@@ -131,6 +132,7 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                         WorkspaceMode::ThreeD => {
                             draw_view_group(ui, ctx, state, triple_icon_group_width);
                             draw_projection_group(ui, ctx, state, single_icon_group_width);
+                            draw_windows_group(ui, ctx, state, tools_group_width);
                         }
                         WorkspaceMode::Uv => draw_uv_set_picker(ui, ctx, state),
                         WorkspaceMode::Texture => {}
@@ -157,7 +159,7 @@ fn draw_shading_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiStat
             state.debug.wireframe_overlay = !state.debug.wireframe_overlay;
         }
         if wire_overlay.secondary_clicked() {
-            state.open_panel(OptionPanel::Wireframe);
+            state.panels_open.toggle(OptionPanel::Wireframe);
         }
 
         // 2-4. Shading mode — radio selection; exactly one is active.
@@ -232,7 +234,7 @@ fn draw_material_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiSta
             state.debug.active_material = ActiveMaterial::UvChecker;
         }
         if uv.secondary_clicked() {
-            state.open_panel(OptionPanel::UvChecker);
+            state.panels_open.toggle(OptionPanel::UvChecker);
         }
 
         let vertex_colors = icon_toggle_button(
@@ -246,7 +248,7 @@ fn draw_material_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiSta
             state.debug.active_material = ActiveMaterial::VertexColors;
         }
         if vertex_colors.secondary_clicked() {
-            state.open_panel(OptionPanel::VertexColors);
+            state.panels_open.toggle(OptionPanel::VertexColors);
         }
     });
 }
@@ -266,7 +268,7 @@ fn draw_normals_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiStat
             state.debug.face_normals = !state.debug.face_normals;
         }
         if face.secondary_clicked() {
-            state.open_panel(OptionPanel::FaceNormals);
+            state.panels_open.toggle(OptionPanel::FaceNormals);
         }
 
         let vertex = icon_toggle_button(
@@ -280,7 +282,7 @@ fn draw_normals_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiStat
             state.debug.vertex_normals = !state.debug.vertex_normals;
         }
         if vertex.secondary_clicked() {
-            state.open_panel(OptionPanel::VertexNormals);
+            state.panels_open.toggle(OptionPanel::VertexNormals);
         }
     });
 }
@@ -298,7 +300,7 @@ fn draw_view_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState, 
             state.debug.show_bounding_box = !state.debug.show_bounding_box;
         }
         if bbox.secondary_clicked() {
-            state.open_panel(OptionPanel::BoundingBox);
+            state.panels_open.toggle(OptionPanel::BoundingBox);
         }
 
         icon_toggle_button(
@@ -314,6 +316,21 @@ fn draw_view_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState, 
         icon_toggle_button(ui, ctx, &ICON_GRID, state.show_grid, "Grid")
             .clicked()
             .then(|| state.show_grid = !state.show_grid);
+    });
+}
+
+/// Window-toggle group (3D mode): the Outliner and Inspector buttons. Each toggle
+/// shows highlighted while its window is open (Phase 2). The windows are
+/// independent — both can be open at once, and alongside any option panel.
+fn draw_windows_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState, width: f32) {
+    toolbar_group_shell(ui, ctx, width, |ui| {
+        if icon_toggle_button(ui, ctx, &ICON_OUTLINER, state.outliner_open, "Outliner").clicked() {
+            state.outliner_open = !state.outliner_open;
+        }
+        if icon_toggle_button(ui, ctx, &ICON_INSPECTOR, state.inspector_open, "Inspector").clicked()
+        {
+            state.inspector_open = !state.inspector_open;
+        }
     });
 }
 

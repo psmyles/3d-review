@@ -8,8 +8,7 @@
 use review_render::BloomSettings;
 
 use crate::state::UiState;
-use crate::theme::size;
-use crate::widgets::{labeled_slider_with_value, wide_reset_button};
+use crate::widgets::{labeled_slider_with_value, panel_grid, reset_button};
 
 /// Inclusive ranges for the bloom sliders. Threshold is in linear-HDR luminance
 /// (1.0 = "only brighter-than-white highlights glow"); intensity scales the glow.
@@ -19,27 +18,24 @@ const INTENSITY_MIN: f32 = 0.0;
 const INTENSITY_MAX: f32 = 2.0;
 
 pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
-    labeled_slider_with_value(
-        ui,
-        "Threshold",
-        &mut state.bloom.threshold,
-        THRESHOLD_MIN..=THRESHOLD_MAX,
-        2,
-        0.01,
-    );
-    ui.add_space(size::PANEL_ROW_GAP);
+    panel_grid(ui, "bloom", |ui| {
+        labeled_slider_with_value(
+            ui,
+            "Threshold",
+            &mut state.bloom.threshold,
+            THRESHOLD_MIN..=THRESHOLD_MAX,
+            2,
+        );
+        labeled_slider_with_value(
+            ui,
+            "Intensity",
+            &mut state.bloom.intensity,
+            INTENSITY_MIN..=INTENSITY_MAX,
+            2,
+        );
+    });
 
-    labeled_slider_with_value(
-        ui,
-        "Intensity",
-        &mut state.bloom.intensity,
-        INTENSITY_MIN..=INTENSITY_MAX,
-        2,
-        0.01,
-    );
-    ui.add_space(size::PANEL_ACTION_GAP);
-
-    if wide_reset_button(ui).clicked() {
+    if reset_button(ui).clicked() {
         // The on/off state is owned by the status-bar toggle, so reset only the
         // panel's own options and leave `enabled` untouched.
         state.bloom = BloomSettings {

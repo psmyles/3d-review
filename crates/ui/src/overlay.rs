@@ -6,10 +6,10 @@ use std::sync::Arc;
 
 use review_model::{Bvh, ModelData};
 use review_render::{
-    MaterialChange, MaterialEdit, MaterialState, OrbitCamera, SceneCallback, UvCamera,
+    MaterialEdit, MaterialState, OrbitCamera, SceneCallback, SelectionView, UvCamera,
 };
 
-use crate::state::{UiOutput, UiState, WorkspaceMode, sync_debug_state};
+use crate::state::{OptionPanel, UiOutput, UiState, WorkspaceMode, sync_debug_state};
 use crate::theme::{self, color, size};
 use crate::{dimensions, gizmo, help, panels, stats, status_bar, toolbar};
 
@@ -33,6 +33,22 @@ pub fn draw_viewport_scene(
                 .iter()
                 .map(|snapshot| snapshot.state)
                 .collect();
+            // The Outliner selection + solo flag + highlight color + flash fade ride
+            // in so the scene pass can flash / isolate the selection (Phase 2). The
+            // fade is driven by `app` (invariant 6) and runs 1→0 over the flash.
+            let selection = SelectionView {
+                selection: state.selection,
+                solo: state.solo,
+                highlight_color: theme::color32_to_rgba(color::SELECTION_OUTLINE),
+                fade: state.selection_fade,
+            };
+            // The Outliner's hidden mesh nodes ride in so the scene pass can filter
+            // them out of the viewport draw + SSAO (Phase 2).
+            let hidden_meshes: Vec<u32> = state
+                .hidden_meshes
+                .iter()
+                .map(|&index| index as u32)
+                .collect();
             SceneCallback::new(
                 camera,
                 state.projection_mode.into(),
@@ -47,6 +63,8 @@ pub fn draw_viewport_scene(
                 state.tonemap,
                 &materials,
                 state.material_revision,
+                selection,
+                &hidden_meshes,
             )
         }
         WorkspaceMode::Uv => SceneCallback::new_uv(
@@ -77,23 +95,37 @@ pub fn draw_overlay(
     model: &ModelData,
     bvh: Option<&Bvh>,
 ) -> UiOutput {
-    theme::apply_visuals(ctx);
+    // Visuals + fonts are installed once at startup (`theme::init_style`); the
+    // style is derived only from constant tokens, so there is nothing to re-apply
+    // here each frame.
     sync_debug_state(state);
     let mut output = UiOutput::default();
 
     let toolbar_height = theme::px(ctx, size::TOOLBAR_HEIGHT);
     let status_bar_height = theme::px(ctx, size::STATUS_BAR_HEIGHT);
 
+    // Native chrome panels first: the top toolbar and bottom status bar carve their
+    // bands, then the dockable side panels fill the middle — declared in this order
+    // so the side panels sit *between* the bars, not under them.
     toolbar::draw(ctx, state);
+    status_bar::draw(ctx, state);
 
-    // The option panels, axis gizmo and stats overlay are all 3D-scene chrome;
-    // the UV / Texture workspaces keep a clean viewport (just the UV dropdown in
-    // the toolbar), so they only draw in 3D mode.
+    // The side panels, option panels, axis gizmo and stats overlay are all 3D-scene
+    // chrome; the UV / Texture workspaces keep a clean viewport (just the UV dropdown
+    // in the toolbar), so they only draw in 3D mode.
     if state.mode == WorkspaceMode::ThreeD {
+        // Outliner (left) + Inspector (right) dockable side panels. They paint over
+        // the full-window background scene (exactly as the toolbar / status bar
+        // already do); their live widths inset the floating viewport chrome below so
+        // the gizmo / stats never land on top of a panel. The Inspector emits
+        // material-edit intents for `app` to apply (invariant 2).
+        let side = draw_side_panels(ctx, state, model);
+        output.material_edit = side.material_edit;
+
         // Bounding-box dimension labels sit on the viewport (under the chrome).
         dimensions::draw_dimension_labels(ctx, state, camera, model, bvh);
 
-        draw_option_panel(ctx, state, toolbar_height, status_bar_height);
+        draw_option_panels(ctx, state, toolbar_height);
 
         if state.show_axis_gizmo {
             let gizmo_response = egui::Area::new(egui::Id::new("axis_gizmo"))
@@ -101,7 +133,7 @@ pub fn draw_overlay(
                 .anchor(
                     egui::Align2::RIGHT_TOP,
                     egui::vec2(
-                        -theme::px(ctx, size::GIZMO_INSET),
+                        -(theme::px(ctx, size::GIZMO_INSET) + side.right_inset),
                         toolbar_height + theme::px(ctx, size::GIZMO_INSET),
                     ),
                 )
@@ -111,15 +143,8 @@ pub fn draw_overlay(
             output.axis_gizmo_action = gizmo_response.inner;
         }
 
-        draw_stats_overlay(ctx, state, status_bar_height);
-
-        // Temporary Phase-1 material editor: a draggable window of per-material
-        // scalar/color controls so live editing can be verified before the real
-        // Inspector lands in Phase 2. Emits edit intents `app` applies.
-        output.material_edit = draw_material_editor(ctx, state, toolbar_height);
+        draw_stats_overlay(ctx, state, status_bar_height, side.left_inset);
     }
-
-    status_bar::draw(ctx, state);
 
     // The startup cheat-sheet sits on top of all the chrome (drawn last). It
     // consumes pointer input (so the chrome beneath stays inert while it's up);
@@ -148,144 +173,101 @@ pub fn draw_startup_fade(ctx: &egui::Context, opacity: f32) {
     ctx.layer_painter(layer).rect_filled(rect, 0.0, cover);
 }
 
-fn draw_option_panel(
+/// Draw every open tool option panel as its own native `egui::Window`
+/// (resizable, collapsible, closable, drop-shadowed — egui owns each window's
+/// position/size/collapsed state in memory, so they auto-clamp to the screen and
+/// several can be open at once). A window's title-bar X clears it from
+/// [`UiState::panels_open`].
+fn draw_option_panels(ctx: &egui::Context, state: &mut UiState, toolbar_height: f32) {
+    for (slot, panel) in OptionPanel::ALL.into_iter().enumerate() {
+        if !state.panels_open.is_open(panel) {
+            continue;
+        }
+        // Cascade fresh windows down-right from just under the toolbar so several
+        // opened at once don't land exactly atop each other. egui only honors this
+        // the first time a given window id appears; afterwards the user's dragged
+        // position (kept in egui memory) wins.
+        let step = size::PANEL_CASCADE_STEP * slot as f32;
+        let default_pos = egui::pos2(
+            theme::px(ctx, size::OVERLAY_MARGIN) + step,
+            toolbar_height + theme::px(ctx, size::OVERLAY_MARGIN) + step,
+        );
+        // egui's `.open(&mut bool)` paints the title-bar X and flips this false
+        // when it's clicked; mirror that back into the open-set after the window.
+        let mut open = true;
+        egui::Window::new(panel.title())
+            .id(egui::Id::new(panel.window_id()))
+            .open(&mut open)
+            .resizable(true)
+            .collapsible(true)
+            .default_width(size::TOOL_WINDOW_DEFAULT_WIDTH)
+            .default_pos(default_pos)
+            // Persistent chrome, not a transient popup: skip egui's fade so an
+            // always-present window never spins the on-demand redraw loop
+            // (invariant 6).
+            .fade_in(false)
+            .fade_out(false)
+            .show(ctx, |ui| panels::draw_panel_body(ui, state, panel));
+        if !open {
+            state.panels_open.set(panel, false);
+        }
+    }
+}
+
+/// The result of laying out the dockable side panels: the Inspector's material
+/// edit (if any) plus the live widths of the open panels, used to inset the
+/// floating viewport chrome (gizmo / stats) so it doesn't land over a panel.
+struct SidePanelLayout {
+    material_edit: Option<MaterialEdit>,
+    left_inset: f32,
+    right_inset: f32,
+}
+
+/// Draw the dockable Outliner (left) and Inspector (right) side panels and return
+/// the Inspector's material edit plus the panels' live widths. Both are native
+/// `egui::SidePanel`s — resizable by dragging their inner edge, with egui owning
+/// the width across frames. The Outliner mutates [`UiState::selection`] directly;
+/// the Inspector returns an intent for `app` to apply (invariant 2).
+fn draw_side_panels(
     ctx: &egui::Context,
     state: &mut UiState,
-    toolbar_height: f32,
-    status_bar_height: f32,
-) {
-    let Some(panel) = state.active_panel else {
-        return;
-    };
-    let left_panel_width = theme::px(ctx, size::LEFT_PANEL_WIDTH);
-    let default_pos = egui::pos2(theme::px(ctx, 30.0), toolbar_height + theme::px(ctx, 18.0));
-    let panel_pos = state.panel_pos.unwrap_or(default_pos);
-
-    let area_response = egui::Area::new(egui::Id::new("option_panel"))
-        // Persistent overlay chrome, not a transient popup: disable egui's
-        // default fade-in. For an always-present anchored area `visible_last_frame`
-        // reads false every frame, so the fade never completes and egui calls
-        // `request_repaint()` forever — a busy-loop that pins the GPU. (See
-        // egui area.rs:558-568.)
-        .fade_in(false)
-        .current_pos(panel_pos)
-        // We drive position ourselves via the header drag handle; let egui's own
-        // area-move stay off so a body drag can't fight our positioning (that
-        // tug-of-war is what made the panel flicker).
-        .movable(false)
-        .show(ctx, |ui| {
-            ui.set_width(left_panel_width);
-            panels::draw_active_panel(ui, state, panel)
-        });
-    let outcome = area_response.inner;
-    let panel_size = area_response.response.rect.size();
-
-    if outcome.toggle_collapse {
-        state.panel_collapsed = !state.panel_collapsed;
-    }
-    if outcome.close {
-        state.active_panel = None;
+    model: &ModelData,
+) -> SidePanelLayout {
+    let mut left_inset = 0.0;
+    if state.outliner_open {
+        let response = egui::SidePanel::left("outliner_panel")
+            .resizable(true)
+            .default_width(size::SIDE_PANEL_DEFAULT_WIDTH)
+            .width_range(size::SIDE_PANEL_MIN_WIDTH..=size::OUTLINER_MAX_WIDTH)
+            .show(ctx, |ui| panels::outliner::body(ui, state, model));
+        left_inset = response.response.rect.width();
     }
 
-    // Keep the panel inside the viewport: never let it slide under the top
-    // toolbar or the bottom status bar (and not off the left/right edges).
-    let screen = ctx.screen_rect();
-    let desired = panel_pos + outcome.drag_delta;
-    let min_x = screen.left();
-    let min_y = screen.top() + toolbar_height;
-    let max_x = (screen.right() - panel_size.x).max(min_x);
-    let max_y = (screen.bottom() - status_bar_height - panel_size.y).max(min_y);
-    state.panel_pos = Some(egui::pos2(
-        desired.x.clamp(min_x, max_x),
-        desired.y.clamp(min_y, max_y),
-    ));
+    let mut right_inset = 0.0;
+    let mut material_edit = None;
+    if state.inspector_open {
+        let response = egui::SidePanel::right("inspector_panel")
+            .resizable(true)
+            .default_width(size::SIDE_PANEL_DEFAULT_WIDTH)
+            .width_range(size::SIDE_PANEL_MIN_WIDTH..=size::OUTLINER_MAX_WIDTH)
+            .show(ctx, |ui| panels::inspector::body(ui, state, model));
+        right_inset = response.response.rect.width();
+        material_edit = response.inner;
+    }
+
+    SidePanelLayout {
+        material_edit,
+        left_inset,
+        right_inset,
+    }
 }
 
-/// Temporary Phase-1 material editor (replaced by the Inspector in Phase 2). One
-/// collapsible row per material with base-color / metallic / roughness / emissive
-/// controls, emitting a [`MaterialEdit`] intent when a control changes. Returns
-/// `None` when the model has no materials. Styling is left to the themed egui
-/// visuals (no inline literals; invariant 8).
-fn draw_material_editor(
+fn draw_stats_overlay(
     ctx: &egui::Context,
     state: &UiState,
-    toolbar_height: f32,
-) -> Option<MaterialEdit> {
-    if state.materials_snapshot.is_empty() {
-        return None;
-    }
-
-    let mut edit = None;
-    egui::Window::new("Materials (temp)")
-        .resizable(false)
-        .default_open(true)
-        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, toolbar_height))
-        .show(ctx, |ui| {
-            for (index, material) in state.materials_snapshot.iter().enumerate() {
-                egui::CollapsingHeader::new(&material.name)
-                    .id_salt(index)
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        let current = material.state;
-
-                        let mut base = [
-                            current.base_color.x,
-                            current.base_color.y,
-                            current.base_color.z,
-                        ];
-                        ui.horizontal(|ui| {
-                            ui.label("Base color");
-                            if ui.color_edit_button_rgb(&mut base).changed() {
-                                edit = Some(MaterialEdit {
-                                    index,
-                                    change: MaterialChange::BaseColor(base),
-                                });
-                            }
-                        });
-
-                        let mut metallic = current.metallic;
-                        if ui
-                            .add(egui::Slider::new(&mut metallic, 0.0..=1.0).text("Metallic"))
-                            .changed()
-                        {
-                            edit = Some(MaterialEdit {
-                                index,
-                                change: MaterialChange::Metallic(metallic),
-                            });
-                        }
-
-                        let mut roughness = current.roughness;
-                        if ui
-                            .add(egui::Slider::new(&mut roughness, 0.0..=1.0).text("Roughness"))
-                            .changed()
-                        {
-                            edit = Some(MaterialEdit {
-                                index,
-                                change: MaterialChange::Roughness(roughness),
-                            });
-                        }
-
-                        let mut emissive = [
-                            current.emissive.x,
-                            current.emissive.y,
-                            current.emissive.z,
-                        ];
-                        ui.horizontal(|ui| {
-                            ui.label("Emissive");
-                            if ui.color_edit_button_rgb(&mut emissive).changed() {
-                                edit = Some(MaterialEdit {
-                                    index,
-                                    change: MaterialChange::Emissive(emissive),
-                                });
-                            }
-                        });
-                    });
-            }
-        });
-    edit
-}
-
-fn draw_stats_overlay(ctx: &egui::Context, state: &UiState, status_bar_height: f32) {
+    status_bar_height: f32,
+    left_inset: f32,
+) {
     if !state.show_stats {
         return;
     }
@@ -294,7 +276,7 @@ fn draw_stats_overlay(ctx: &egui::Context, state: &UiState, status_bar_height: f
         .anchor(
             egui::Align2::LEFT_BOTTOM,
             egui::vec2(
-                theme::px(ctx, size::STATS_OVERLAY_MARGIN),
+                left_inset + theme::px(ctx, size::STATS_OVERLAY_MARGIN),
                 -(status_bar_height + theme::px(ctx, size::STATS_OVERLAY_MARGIN)),
             ),
         )

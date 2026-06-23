@@ -2,7 +2,7 @@
 //! stats overlay. None of these own state — they paint and report interactions.
 
 use crate::assets::{self, AppIcon};
-use crate::theme::{self, color, font, size};
+use crate::theme::{self, color, size};
 
 /// A square icon toggle sized to the standard toolbar tile.
 pub(crate) fn icon_toggle_button(
@@ -101,24 +101,28 @@ pub(crate) fn toolbar_group_shell(
     response
 }
 
-/// Paint a fixed-width label cell (left column of the control table) and return
-/// the width remaining for the control cell. Advances the cursor past the label
-/// column + gap so the caller can drop the control straight after it.
-pub(crate) fn table_label_cell(ui: &mut egui::Ui, label: &str) -> f32 {
-    let control_w = (ui.available_width() - size::PANEL_LABEL_COL_W - size::PANEL_COL_GAP).max(0.0);
-    let (label_rect, _) = ui.allocate_exact_size(
-        egui::vec2(size::PANEL_LABEL_COL_W, size::PANEL_ROW_H),
-        egui::Sense::hover(),
-    );
-    ui.painter().text(
-        egui::pos2(label_rect.left(), label_rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        label,
-        egui::FontId::proportional(font::PANEL_LABEL),
-        color::TEXT_LABEL,
-    );
-    ui.add_space(size::PANEL_COL_GAP);
-    control_w
+/// Wrap a panel's label+control rows in a stock striped two-column
+/// `egui::Grid` — the same primitive (and default styling) egui's demo widget
+/// gallery uses: alternating faint row backgrounds (egui's stock
+/// `faint_bg_color`), a label column auto-sized to its widest entry, the control
+/// column filling the rest, all at egui's default grid spacing, row height and
+/// font. The row helpers below (`labeled_slider_with_value`,
+/// `labeled_color_button`, `labeled_checkbox`, `labeled_color32`,
+/// `labeled_combo`, `value_row`) each emit exactly one grid row, so a panel body
+/// just calls them inside this closure. Full-width controls (the reset button)
+/// go *after* the grid, not inside it.
+pub(crate) fn panel_grid(ui: &mut egui::Ui, salt: &str, contents: impl FnOnce(&mut egui::Ui)) {
+    egui::Grid::new(("panel_grid", salt))
+        .num_columns(2)
+        .striped(true)
+        .show(ui, contents);
+}
+
+/// The left (label) cell of a panel-grid row: a plain default-styled label.
+/// Leaves the cursor in the control column for the caller to drop the row's
+/// widget and then call `ui.end_row()`.
+fn grid_label(ui: &mut egui::Ui, label: &str) {
+    ui.label(label);
 }
 
 /// A dropdown sized to one control row: the closed button matches `PANEL_ROW_H`
@@ -160,143 +164,92 @@ pub(crate) fn style_combo_popup(ui: &mut egui::Ui) {
     ui.visuals_mut().widgets.inactive.fg_stroke.color = color::TEXT_COMBO_DIM;
 }
 
-/// A label + slider row that also shows the live value in an editable numeric
-/// field at the right of the row. The slider gives up a fixed slice of the
-/// control column to the field; both bind the same value, so dragging the slider
-/// updates the field and clicking/typing/dragging the field updates the slider.
-/// `decimals` fixes the field's displayed precision (use 0 for integers) and
-/// `speed` is the field's drag step.
+/// A label + slider grid row, styled like the egui demo's slider: a stock
+/// [`egui::Slider`] with its built-in inline value (drag-to-scrub,
+/// double-click-to-type), at egui's default rail width and row height. `decimals`
+/// caps the value's displayed precision (use 0 for an integer readout).
 ///
-/// This is the standard slider for every option panel: a rail plus an inline,
-/// click-to-edit, drag-to-scrub value field. New panels should use it rather than
-/// a bare slider so all sliders behave identically.
+/// This is the standard slider for every option panel — emit it inside a
+/// [`panel_grid`] closure. Returns `true` when the value changed this frame, so a
+/// caller that emits an edit intent (e.g. the Inspector) can react; panels that
+/// write straight into their own state can ignore it.
 pub(crate) fn labeled_slider_with_value<Num: egui::emath::Numeric>(
     ui: &mut egui::Ui,
     label: &str,
     value: &mut Num,
     range: std::ops::RangeInclusive<Num>,
     decimals: usize,
-    speed: f32,
-) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        // Center every control on the row's vertical axis so the slider rail, the
-        // value field and the label all line up regardless of their natural heights.
-        ui.set_min_height(size::PANEL_ROW_H);
-        let control_w = table_label_cell(ui, label);
-        let slider_w = (control_w - size::PANEL_VALUE_FIELD_W - size::PANEL_COL_GAP).max(0.0);
-        ui.spacing_mut().slider_width = slider_w;
-        ui.add(
-            egui::Slider::new(value, range.clone())
-                .show_value(false)
-                .clamping(egui::SliderClamping::Always),
-        );
-        ui.add_space(size::PANEL_COL_GAP);
-        // Shrink the field's vertical padding so it sits exactly at row height
-        // (the global button padding would otherwise make it taller than the row,
-        // growing the row and breaking the inter-row spacing).
-        ui.spacing_mut().interact_size.y = size::PANEL_ROW_H;
-        ui.spacing_mut().button_padding.y = size::PANEL_COMBO_BUTTON_PAD_Y;
-        // Tighten the field's inner horizontal padding so the digits sit close to
-        // the box edges and the widest readout fits without clipping.
-        ui.spacing_mut().button_padding.x = size::PANEL_VALUE_FIELD_PAD_X;
-        // Render the field's digits in the monospace face (this is the last widget
-        // in the row, so the font override doesn't bleed into other controls).
-        ui.style_mut().override_font_id = Some(egui::FontId::monospace(font::PANEL_VALUE));
-        ui.add_sized(
-            egui::vec2(size::PANEL_VALUE_FIELD_W, size::PANEL_ROW_H),
-            egui::DragValue::new(value)
-                .range(range)
-                .speed(speed)
-                .min_decimals(decimals)
-                .max_decimals(decimals)
-                .clamp_existing_to_range(true),
-        );
-    });
+) -> bool {
+    grid_label(ui, label);
+    let response = ui.add(
+        egui::Slider::new(value, range)
+            .max_decimals(decimals)
+            .clamping(egui::SliderClamping::Always),
+    );
+    ui.end_row();
+    response.changed()
 }
 
-/// A label + checkbox row using the shared two-column table layout. The checkbox
-/// (no inline text — the label cell carries it) sits left-aligned in the control
-/// column so it lines up with the other panel controls.
-pub(crate) fn labeled_checkbox(ui: &mut egui::Ui, label: &str, value: &mut bool) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        let _control_w = table_label_cell(ui, label);
-        // Keep the box the same height as other control rows so the row aligns.
-        ui.spacing_mut().interact_size.y = size::PANEL_ROW_H;
-        ui.add(egui::Checkbox::new(value, ""));
-    });
-}
-
-/// A row of clickable color swatches; clicking one writes it into `selected`.
-pub(crate) fn color_swatch_row(
+/// A label + color-button grid row (the stock egui color-edit button). Returns the
+/// button's [`egui::Response`] so the caller can react to an edit.
+pub(crate) fn labeled_color_button(
     ui: &mut egui::Ui,
     label: &str,
-    selected: &mut egui::Color32,
-    colors: &[egui::Color32],
-) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        let control_w = table_label_cell(ui, label);
-        // Compact thumbnails with tight, even gaps, left-aligned in the column;
-        // capped so they stay small rather than filling the whole column.
-        let gaps = size::PANEL_SWATCH_GAP * (colors.len() as f32 - 1.0);
-        let swatch = ((control_w - gaps) / colors.len() as f32).clamp(0.0, size::PANEL_SWATCH_SIZE);
-        for (i, swatch_color) in colors.iter().enumerate() {
-            let (rect, response) =
-                ui.allocate_exact_size(egui::vec2(swatch, swatch), egui::Sense::click());
-            if response.clicked() {
-                *selected = *swatch_color;
-            }
-            let stroke = if selected == swatch_color {
-                egui::Stroke::new(size::SELECTION_STROKE_WIDTH, color::SELECTION_STROKE)
-            } else {
-                egui::Stroke::new(size::HAIRLINE, color::SWATCH_BORDER)
-            };
-            ui.painter().rect(
-                rect,
-                size::SWATCH_CORNER_RADIUS,
-                *swatch_color,
-                stroke,
-                egui::StrokeKind::Outside,
-            );
-            if i + 1 < colors.len() {
-                ui.add_space(size::PANEL_SWATCH_GAP);
-            }
-        }
-    });
+    rgb: &mut [f32; 3],
+) -> egui::Response {
+    grid_label(ui, label);
+    let response = ui.color_edit_button_rgb(rgb);
+    ui.end_row();
+    response
 }
 
-/// A full-width "Reset all" button with the label painted dead-center.
-pub(crate) fn wide_reset_button(ui: &mut egui::Ui) -> egui::Response {
-    // egui's `Button` left-aligns text within an over-wide rect (it honors the
-    // parent layout's horizontal align), so paint the label ourselves to keep it
-    // centered.
-    let width = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(width, size::PANEL_BUTTON_HEIGHT),
-        egui::Sense::click(),
-    );
-    let fill = if response.hovered() {
-        color::BUTTON_HOVER_BG
-    } else {
-        color::BUTTON_BG
-    };
-    ui.painter().rect(
-        rect,
-        size::BUTTON_CORNER_RADIUS,
-        fill,
-        egui::Stroke::new(size::HAIRLINE, color::BUTTON_BORDER),
-        egui::StrokeKind::Inside,
-    );
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        "Reset all",
-        egui::FontId::proportional(font::PANEL_BUTTON),
-        color::TEXT_BUTTON,
-    );
+/// A label + checkbox grid row. The checkbox carries no inline text — the label
+/// cell is its label.
+pub(crate) fn labeled_checkbox(ui: &mut egui::Ui, label: &str, value: &mut bool) {
+    grid_label(ui, label);
+    ui.checkbox(value, "");
+    ui.end_row();
+}
+
+/// A label + dropdown grid row: a stock [`egui::ComboBox`] with egui's default
+/// styling (the toolbar's compact-combo styling is *not* applied here).
+pub(crate) fn labeled_combo(
+    ui: &mut egui::Ui,
+    label: &str,
+    id_salt: &str,
+    selected_text: impl Into<egui::WidgetText>,
+    contents: impl FnOnce(&mut egui::Ui),
+) {
+    grid_label(ui, label);
+    egui::ComboBox::from_id_salt(id_salt)
+        .selected_text(selected_text)
+        .show_ui(ui, contents);
+    ui.end_row();
+}
+
+/// A label + read-only value grid row (Inspector node stats / stubbed slots).
+pub(crate) fn value_row(ui: &mut egui::Ui, label: &str, value: &str) {
+    grid_label(ui, label);
+    ui.label(value);
+    ui.end_row();
+}
+
+/// A label + color-button grid row over an `egui::Color32` (the stock egui
+/// color-edit button / picker). Returns the button's [`egui::Response`].
+pub(crate) fn labeled_color32(
+    ui: &mut egui::Ui,
+    label: &str,
+    color: &mut egui::Color32,
+) -> egui::Response {
+    grid_label(ui, label);
+    let response = ui.color_edit_button_srgba(color);
+    ui.end_row();
     response
+}
+
+/// A stock "Reset all" button (default egui button styling).
+pub(crate) fn reset_button(ui: &mut egui::Ui) -> egui::Response {
+    ui.button("Reset all")
 }
 
 /// Monospace label using the bundled JetBrains Mono face. Used by the stats

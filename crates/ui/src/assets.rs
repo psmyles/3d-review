@@ -124,9 +124,15 @@ pub(crate) const ICON_TONEMAPPER: AppIcon = AppIcon {
     id: "icon_tonemapper",
     png_bytes: include_bytes!("../../../assets/icons/icon_tonemapper.png"),
 };
-pub(crate) const ICON_CLOSE: AppIcon = AppIcon {
-    id: "icon_close",
-    png_bytes: include_bytes!("../../../assets/icons/icon_close.png"),
+/// "Outliner" — toggles the scene-graph / materials Outliner window (Phase 2).
+pub(crate) const ICON_OUTLINER: AppIcon = AppIcon {
+    id: "icon_outliner",
+    png_bytes: include_bytes!("../../../assets/icons/icon_outliner.png"),
+};
+/// "Inspector" — toggles the material / node Inspector window (Phase 2).
+pub(crate) const ICON_INSPECTOR: AppIcon = AppIcon {
+    id: "icon_inspector",
+    png_bytes: include_bytes!("../../../assets/icons/icon_inspector.png"),
 };
 
 /// A custom font embedded into the binary and registered with egui at startup.

@@ -7,12 +7,14 @@ use wgpu::util::DeviceExt;
 
 use crate::bloom::{BLOOM_BLUR_ITERATIONS, BloomPass};
 use crate::geometry::{
-    bounding_box_lines, face_normal_lines, model_mesh, scene_lines, uv_fill_triangles,
-    uv_grid_lines, uv_wireframe_lines, vertex_normal_lines, wireframe_lines,
+    bounding_box_lines, face_normal_lines, model_mesh, scene_lines, selection_geometry,
+    uv_fill_triangles, uv_grid_lines, uv_wireframe_lines, vertex_normal_lines, visible_geometry,
+    wireframe_lines,
 };
 use crate::ibl::{IblResources, PREFILTER_MAX_LOD};
 use crate::material::{MaterialDrawRange, MaterialState, MaterialTable, material_layout};
 use crate::post::PostPass;
+use crate::selection::{Selection, SelectionView};
 use crate::ssao::{SSAO_FORMAT, SsaoPass};
 use crate::targets::{SCENE_HDR_FORMAT, SceneTargets};
 use crate::{
@@ -87,15 +89,23 @@ pub struct SceneCallback {
     /// Bumped by `app` on every material edit (and on model load) so the table is
     /// re-uploaded without rebuilding the mesh. Separate from `model_revision`.
     material_revision: u64,
+    /// Outliner selection + solo flag + highlight color. Drives the viewport
+    /// outline and the solo (isolate) draw filter (Phase 2).
+    selection: SelectionView,
+    /// Mesh nodes the Outliner has hidden (node indices). Their triangles are
+    /// filtered out of the viewport draw + SSAO G-buffer (Phase 2). Empty means
+    /// everything is visible.
+    hidden_meshes: Vec<u32>,
     /// `Some` renders the 2D UV viewport instead of the 3D scene.
     uv_view: Option<UvView>,
 }
 
 impl SceneCallback {
-    // Thirteen distinct, independent inputs (camera + projection + target + model +
+    // Fifteen distinct, independent inputs (camera + projection + target + model +
     // revision + the six UI option bundles + the editable material table + its
-    // revision); there is no redundant pair to fold away, and a params struct would
-    // only move the same values behind one name.
+    // revision + the Outliner selection + the hidden-mesh set); there is no
+    // redundant pair to fold away, and a params struct would only move the same
+    // values behind one name.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         camera: OrbitCamera,
@@ -111,6 +121,8 @@ impl SceneCallback {
         tonemap: TonemapSettings,
         materials: &[MaterialState],
         material_revision: u64,
+        selection: SelectionView,
+        hidden_meshes: &[u32],
     ) -> Self {
         Self {
             camera,
@@ -126,6 +138,8 @@ impl SceneCallback {
             tonemap,
             materials: materials.to_vec(),
             material_revision,
+            selection,
+            hidden_meshes: hidden_meshes.to_vec(),
             uv_view: None,
         }
     }
@@ -171,6 +185,10 @@ impl SceneCallback {
             // bound to satisfy the shared pipeline layout.
             materials: Vec::new(),
             material_revision: 0,
+            // No Outliner selection in the 2D UV viewport.
+            selection: SelectionView::default(),
+            // The 2D UV viewport draws every mesh's UVs; visibility is 3D-only.
+            hidden_meshes: Vec::new(),
             uv_view: Some(UvView {
                 camera,
                 channel,
@@ -208,6 +226,11 @@ impl CallbackTrait for SceneCallback {
                 uv.channel,
                 uv.shading_mode,
             );
+            // The 2D UV viewport has no Outliner selection or per-mesh visibility;
+            // drop any selection / visibility buffers built for the 3D scene
+            // (invariant 3).
+            resources.free_selection(device);
+            resources.free_visibility(device);
             resources.update_camera_uv(queue, uv.camera);
         } else {
             // Back in the 3D scene: free the (potentially large) UV wireframe so
@@ -244,12 +267,45 @@ impl CallbackTrait for SceneCallback {
             // an edit bumps the revision, otherwise left untouched.
             resources.sync_materials(device, queue, &self.materials, self.material_revision);
 
+            // Build (or free) the selected-triangle index buffer (solo isolate +
+            // highlight-flash fill source) when the Outliner selection changes
+            // (invariant 3).
+            resources.sync_selection(
+                device,
+                &self.model,
+                self.model_revision,
+                self.selection,
+                &self.hidden_meshes,
+            );
+
+            // Build (or free) the per-mesh visibility draw list when the Outliner's
+            // hidden-mesh set changes (invariant 3): the filtered index buffer
+            // exists only while some mesh is hidden.
+            resources.sync_visibility(
+                device,
+                &self.model,
+                self.model_revision,
+                &self.hidden_meshes,
+            );
+
+            // The highlight flash rides in the uniform: gamma-space color in rgb,
+            // the flash fade in alpha (0 while nothing is selected/flashing). The
+            // geometry is keyed only on *what* is selected, so this per-frame change
+            // never rebuilds a buffer.
+            let selection_color = if self.selection.selection.is_active() {
+                let [r, g, b, _] = self.selection.highlight_color;
+                [r, g, b, self.selection.fade.clamp(0.0, 1.0)]
+            } else {
+                [0.0; 4]
+            };
+
             resources.update_camera(
                 queue,
                 self.camera,
                 self.projection_mode,
                 self.debug_options,
                 self.environment,
+                selection_color,
             );
         }
 
@@ -444,19 +500,31 @@ impl SceneCallback {
             render_pass.draw(0..3, 0..1);
         }
 
+        // Mesh draw list, in precedence order: solo (isolate the selection) wins;
+        // otherwise per-mesh visibility (the filtered list, present only while some
+        // mesh is hidden); otherwise the whole mesh. All three share the mesh vertex
+        // buffer, so only the index source + ranges differ.
+        let solo = self.selection.solo && self.selection.selection.is_active();
         if resources.mesh_index_count > 0
             && !matches!(self.debug_options.shading_mode, ShadingMode::Wireframe)
         {
             render_pass.set_bind_group(0, &resources.uniform_bind_group, &[]);
             render_pass.set_pipeline(&resources.mesh_pipeline);
             render_pass.set_vertex_buffer(0, resources.mesh_vertex_buffer.slice(..));
-            render_pass.set_index_buffer(
-                resources.mesh_index_buffer.slice(..),
-                wgpu::IndexFormat::Uint32,
-            );
+            let (index_buffer, ranges) = if solo {
+                (
+                    &resources.selection_index_buffer,
+                    &resources.selection_ranges,
+                )
+            } else if resources.visible_active {
+                (&resources.visible_index_buffer, &resources.visible_ranges)
+            } else {
+                (&resources.mesh_index_buffer, &resources.material_ranges)
+            };
+            render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             // One draw per material range, feeding each material's parameters from
             // the group-3 uniform via its dynamic offset.
-            for range in &resources.material_ranges {
+            for range in ranges {
                 let offset = resources.material_table.offset_for(range.material);
                 render_pass.set_bind_group(3, resources.material_table.bind_group(), &[offset]);
                 let end = range.first_index + range.index_count;
@@ -506,6 +574,29 @@ impl SceneCallback {
             render_pass.set_vertex_buffer(0, resources.vertex_normal_vertex_buffer.slice(..));
             render_pass.draw(0..resources.vertex_normal_vertex_count, 0..1);
         }
+
+        // Selection highlight flash: a flat bright-color fill redrawing the selected
+        // triangles over the mesh, fading out over ~0.5s after a selection change.
+        // Drawn last so it sits on top. Reuses the selected-triangle index buffer
+        // (the solo list) over the shared mesh vertex buffer; `fs_selection` tints
+        // them with the uniform highlight color × the flash fade alpha. Depth-tested
+        // (Reversed-Z `GreaterEqual`, no write) so the fill is occluded where the
+        // selection hides behind other geometry but wins over the coplanar surface
+        // it tints. Skipped once the flash has fully faded, so the steady state (and
+        // a still-active-but-faded selection) pays nothing.
+        if self.selection.selection.is_active()
+            && self.selection.fade > 0.0
+            && resources.selection_index_count > 0
+        {
+            render_pass.set_bind_group(0, &resources.uniform_bind_group, &[]);
+            render_pass.set_pipeline(&resources.selection_fill_pipeline);
+            render_pass.set_vertex_buffer(0, resources.mesh_vertex_buffer.slice(..));
+            render_pass.set_index_buffer(
+                resources.selection_index_buffer.slice(..),
+                wgpu::IndexFormat::Uint32,
+            );
+            render_pass.draw_indexed(0..resources.selection_index_count, 0, 0..1);
+        }
     }
 }
 
@@ -540,6 +631,41 @@ struct SceneResources {
     /// Last material revision uploaded into `material_table`; compared against the
     /// callback's to drive re-uploads on edit (separate from `model_revision`).
     material_revision: u64,
+    /// Selected-triangle index buffer: the selection reordered grouped by material,
+    /// sharing `mesh_vertex_buffer`. Drawn via `selection_ranges` when solo is on
+    /// (the isolate view), and redrawn whole by the highlight flash (a flat color
+    /// fill over `selection_index_count` indices). Holds a placeholder while
+    /// nothing is selected.
+    selection_index_buffer: wgpu::Buffer,
+    /// Per-material draw ranges over `selection_index_buffer` (the solo draw list).
+    selection_ranges: Vec<MaterialDrawRange>,
+    /// Total selected indices in `selection_index_buffer`; the flash draws them all
+    /// in one call (material is irrelevant to the flat fill). 0 while nothing is
+    /// selected (the buffer then holds only a placeholder index).
+    selection_index_count: u32,
+    /// `(model_revision, selection, sorted hidden meshes)` baked into the selection
+    /// buffer, or `None` while nothing is selected — compared each frame to drive
+    /// build / free (invariant 3). The hidden set is part of the key because hiding
+    /// a selected mesh must drop it from the solo list + highlight flash. The
+    /// highlight color + flash fade ride in the uniform, not the geometry, so they
+    /// are not part of the key.
+    selection_baked: Option<(u64, Selection, Vec<u32>)>,
+    /// Per-mesh visibility draw list: the visible triangles reordered grouped by
+    /// material, sharing `mesh_vertex_buffer`. Drawn instead of the full mesh
+    /// whenever `visible_active`. Holds a placeholder while nothing is hidden.
+    visible_index_buffer: wgpu::Buffer,
+    /// Per-material draw ranges over `visible_index_buffer`.
+    visible_ranges: Vec<MaterialDrawRange>,
+    /// Total indices in `visible_index_buffer` (0 when every mesh is hidden).
+    visible_index_count: u32,
+    /// Whether the visibility filter is in effect (some mesh hidden and the model
+    /// carries per-triangle node info): when set, the mesh / SSAO passes draw
+    /// `visible_index_buffer` instead of the full mesh.
+    visible_active: bool,
+    /// `(model_revision, sorted hidden mesh nodes)` baked into the visibility
+    /// buffer, or `None` while nothing is hidden — compared each frame to drive
+    /// build / free (invariant 3).
+    visibility_baked: Option<(u64, Vec<u32>)>,
     /// Offscreen HDR color + depth the scene renders into, recreated on resize or
     /// MSAA change.
     targets: SceneTargets,
@@ -583,6 +709,10 @@ struct SceneResources {
     mesh_uv_channel: u32,
     mesh_pipeline: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
+    /// Flat-color triangle pipeline for the selection-highlight flash: depth-tested
+    /// (Reversed-Z `GreaterEqual`) but no depth write, MRT like the mesh, drawing
+    /// `fs_selection` (uniform highlight color × flash fade).
+    selection_fill_pipeline: wgpu::RenderPipeline,
     /// Mesh-only pipeline that writes the single-sample SSAO normal/depth buffer.
     ssao_gbuffer_pipeline: wgpu::RenderPipeline,
     /// Fullscreen pipeline that draws the environment cubemap as the background.
@@ -754,7 +884,8 @@ impl SceneResources {
         // the shared pipeline layout so every scene pipeline can read a material.
         let material_layout = material_layout(device);
         let material_alignment = device.limits().min_uniform_buffer_offset_alignment as u64;
-        let material_table = MaterialTable::new(device, queue, &material_layout, material_alignment);
+        let material_table =
+            MaterialTable::new(device, queue, &material_layout, material_alignment);
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("review_scene_pipeline_layout"),
@@ -772,8 +903,13 @@ impl SceneResources {
         // into a pipeline at creation). `build_scene_pipelines` carries the
         // depth-bias reasoning.
         let scene_sample_count = AntiAliasing::default().msaa.sample_count();
-        let (mesh_pipeline, line_pipeline, uv_fill_pipeline, skybox_pipeline) =
-            build_scene_pipelines(device, &pipeline_layout, &shader, scene_sample_count);
+        let (
+            mesh_pipeline,
+            line_pipeline,
+            uv_fill_pipeline,
+            selection_fill_pipeline,
+            skybox_pipeline,
+        ) = build_scene_pipelines(device, &pipeline_layout, &shader, scene_sample_count);
         let ssao_gbuffer_pipeline = create_ssao_gbuffer_pipeline(device, &pipeline_layout, &shader);
 
         // Offscreen targets + the composite pass. Targets start at 1x1 and are
@@ -826,6 +962,8 @@ impl SceneResources {
         let (uv_wireframe_vertex_buffer, uv_wireframe_vertex_count) =
             create_line_buffer(device, &[]);
         let (uv_fill_vertex_buffer, uv_fill_vertex_count) = create_line_buffer(device, &[]);
+        let (selection_index_buffer, selection_index_count) = create_index_buffer(device, &[]);
+        let (visible_index_buffer, visible_index_count) = create_index_buffer(device, &[]);
 
         Self {
             output_format,
@@ -841,6 +979,15 @@ impl SceneResources {
             // Sentinel distinct from any real revision so the first 3D frame uploads
             // the (initially fallback-only) table.
             material_revision: u64::MAX,
+            selection_index_buffer,
+            selection_ranges: Vec::new(),
+            selection_index_count,
+            selection_baked: None,
+            visible_index_buffer,
+            visible_ranges: Vec::new(),
+            visible_index_count,
+            visible_active: false,
+            visibility_baked: None,
             targets,
             post,
             post_bind_group,
@@ -861,6 +1008,7 @@ impl SceneResources {
             mesh_uv_channel: 0,
             mesh_pipeline,
             line_pipeline,
+            selection_fill_pipeline,
             ssao_gbuffer_pipeline,
             skybox_pipeline,
             uv_fill_pipeline,
@@ -917,11 +1065,17 @@ impl SceneResources {
         let sample_count = anti_aliasing.effective_sample_count();
 
         if self.scene_sample_count != sample_count {
-            let (mesh_pipeline, line_pipeline, uv_fill_pipeline, skybox_pipeline) =
-                build_scene_pipelines(device, &self.pipeline_layout, &self.shader, sample_count);
+            let (
+                mesh_pipeline,
+                line_pipeline,
+                uv_fill_pipeline,
+                selection_fill_pipeline,
+                skybox_pipeline,
+            ) = build_scene_pipelines(device, &self.pipeline_layout, &self.shader, sample_count);
             self.mesh_pipeline = mesh_pipeline;
             self.line_pipeline = line_pipeline;
             self.uv_fill_pipeline = uv_fill_pipeline;
+            self.selection_fill_pipeline = selection_fill_pipeline;
             self.skybox_pipeline = skybox_pipeline;
             self.scene_sample_count = sample_count;
         }
@@ -1008,7 +1162,14 @@ impl SceneResources {
     /// MSAA resolve averaging view-space normals/Z across geometry edges before
     /// the occlusion and bilateral blur passes read them.
     fn encode_ssao_gbuffer(&self, encoder: &mut wgpu::CommandEncoder) {
-        if self.mesh_index_count == 0 {
+        // Match the shaded mesh draw's visibility: a hidden mesh casts no AO. Solo
+        // is left out here (as before), so only the per-mesh hide filters the AO.
+        let (index_buffer, index_count) = if self.visible_active {
+            (&self.visible_index_buffer, self.visible_index_count)
+        } else {
+            (&self.mesh_index_buffer, self.mesh_index_count)
+        };
+        if index_count == 0 {
             return;
         }
 
@@ -1046,8 +1207,8 @@ impl SceneResources {
         );
         render_pass.set_pipeline(&self.ssao_gbuffer_pipeline);
         render_pass.set_vertex_buffer(0, self.mesh_vertex_buffer.slice(..));
-        render_pass.set_index_buffer(self.mesh_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        render_pass.draw_indexed(0..self.mesh_index_count, 0, 0..1);
+        render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        render_pass.draw_indexed(0..index_count, 0, 0..1);
     }
 
     /// Run the SSAO passes on egui's encoder, after the scene pass: the occlusion
@@ -1079,6 +1240,7 @@ impl SceneResources {
         projection_mode: CameraProjection,
         debug_options: SceneDebugOptions,
         environment: EnvironmentSettings,
+        selection_color: [f32; 4],
     ) {
         let view_projection = camera.view_projection(projection_mode);
         let uniforms = SceneUniforms {
@@ -1116,6 +1278,7 @@ impl SceneResources {
                 0.0,
             ],
             view: camera.view_matrix().to_cols_array_2d(),
+            selection_color,
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }
@@ -1145,7 +1308,8 @@ impl SceneResources {
         model_revision: u64,
         debug_options: SceneDebugOptions,
     ) {
-        let (mesh_vertices, mesh_indices, mesh_ranges) = model_mesh(model, debug_options.uv_channel);
+        let (mesh_vertices, mesh_indices, mesh_ranges) =
+            model_mesh(model, debug_options.uv_channel);
         let (mesh_vertex_buffer, mesh_index_buffer, mesh_index_count) =
             create_mesh_buffers(device, &mesh_vertices, &mesh_indices);
 
@@ -1162,6 +1326,11 @@ impl SceneResources {
         self.free_line_view(device, LineView::BoundingBox);
         self.free_line_view(device, LineView::FaceNormals);
         self.free_line_view(device, LineView::VertexNormals);
+
+        // The visibility filter's node indices belong to the previous model; drop
+        // it (the app clears its hidden set on load, so `sync_visibility` rebuilds
+        // only if the new model has meshes hidden).
+        self.free_visibility(device);
     }
 
     /// Build-on-demand / free-on-off for the three derived line views. A view's
@@ -1303,6 +1472,117 @@ impl SceneResources {
         }
     }
 
+    /// Build (or free) the selected-triangle index buffer (the solo isolate list +
+    /// the highlight flash's fill source) when the Outliner selection changes. Like
+    /// `sync_line_views`, the buffer exists only while a selection is active and is
+    /// rebuilt when the model / selection drifts (invariant 3). The highlight color
+    /// and flash fade ride in the uniform, so they don't trigger a rebuild — only a
+    /// change of *what* is selected does. Steady-state frames do nothing.
+    fn sync_selection(
+        &mut self,
+        device: &wgpu::Device,
+        model: &ModelData,
+        model_revision: u64,
+        view: SelectionView,
+        hidden: &[u32],
+    ) {
+        let want = view
+            .selection
+            .is_active()
+            .then(|| (model_revision, view.selection, hidden.to_vec()));
+        if self.selection_baked == want {
+            return;
+        }
+        match &want {
+            // The selection resolved to no usable geometry (e.g. the model lacks the
+            // parallel arrays, or every selected mesh is hidden) -> clear; otherwise
+            // upload the visible selected indices.
+            Some((_, selection, hidden)) => match selection_geometry(model, *selection, hidden) {
+                Some((indices, ranges)) => {
+                    let (index_buffer, index_count) = create_index_buffer(device, &indices);
+                    self.selection_index_buffer = index_buffer;
+                    self.selection_index_count = index_count;
+                    self.selection_ranges = ranges;
+                }
+                None => self.clear_selection_buffers(device),
+            },
+            None => self.clear_selection_buffers(device),
+        }
+        self.selection_baked = want;
+    }
+
+    /// Drop the selection buffers back to placeholders and mark nothing selected.
+    fn free_selection(&mut self, device: &wgpu::Device) {
+        if self.selection_baked.is_none() {
+            return;
+        }
+        self.clear_selection_buffers(device);
+        self.selection_baked = None;
+    }
+
+    /// Reset the selection index buffer to an empty placeholder (shared by
+    /// `sync_selection`'s no-geometry path and `free_selection`).
+    fn clear_selection_buffers(&mut self, device: &wgpu::Device) {
+        let (index_buffer, index_count) = create_index_buffer(device, &[]);
+        self.selection_index_buffer = index_buffer;
+        self.selection_index_count = index_count;
+        self.selection_ranges = Vec::new();
+    }
+
+    /// Build (or free) the per-mesh visibility draw list when the Outliner's hidden
+    /// set changes. Like `sync_selection`, the filtered index buffer exists only
+    /// while some mesh is hidden and is rebuilt when the model / hidden set drifts
+    /// (invariant 3). `hidden` is the hidden mesh node indices; empty means
+    /// everything is visible (the full mesh is drawn, no filtered buffer held).
+    /// Steady-state frames do nothing.
+    fn sync_visibility(
+        &mut self,
+        device: &wgpu::Device,
+        model: &ModelData,
+        model_revision: u64,
+        hidden: &[u32],
+    ) {
+        let want = (!hidden.is_empty()).then(|| (model_revision, hidden.to_vec()));
+        if self.visibility_baked == want {
+            return;
+        }
+        match &want {
+            // Something is hidden: build the filtered draw list, or fall back to the
+            // full mesh when the model carries no per-triangle node info.
+            Some((_, hidden)) => match visible_geometry(model, hidden) {
+                Some((indices, ranges)) => {
+                    let (index_buffer, index_count) = create_index_buffer(device, &indices);
+                    self.visible_index_buffer = index_buffer;
+                    self.visible_index_count = index_count;
+                    self.visible_ranges = ranges;
+                    self.visible_active = true;
+                }
+                None => self.clear_visibility_buffers(device),
+            },
+            None => self.clear_visibility_buffers(device),
+        }
+        self.visibility_baked = want;
+    }
+
+    /// Drop the visibility buffer back to a placeholder and mark nothing hidden.
+    fn free_visibility(&mut self, device: &wgpu::Device) {
+        if self.visibility_baked.is_none() && !self.visible_active {
+            return;
+        }
+        self.clear_visibility_buffers(device);
+        self.visibility_baked = None;
+    }
+
+    /// Reset the visibility index buffer to a placeholder and turn the filter off
+    /// (shared by `sync_visibility`'s fall-back path and `free_visibility`).
+    fn clear_visibility_buffers(&mut self, device: &wgpu::Device) {
+        let (index_buffer, index_count) = create_index_buffer(device, &[]);
+        self.visible_index_buffer = index_buffer;
+        self.visible_index_count = index_count;
+        self.visible_ranges = Vec::new();
+        self.visible_active = false;
+    }
+
     /// Build-on-demand for the UV viewport's derived buffers. The wireframe is
     /// rebuilt only when the active model or channel changes (`uv_baked`); the
     /// island fill is rebuilt when the model / channel / shading mode changes
@@ -1375,6 +1655,8 @@ impl SceneResources {
             projection_params: [1.0, 0.0, 0.0, 0.0],
             // No SSAO in the UV viewport, so the view matrix is unused here.
             view: [[0.0; 4]; 4],
+            // No Outliner selection in the 2D UV viewport.
+            selection_color: [0.0; 4],
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }
@@ -1416,6 +1698,7 @@ fn build_scene_pipelines(
     wgpu::RenderPipeline,
     wgpu::RenderPipeline,
     wgpu::RenderPipeline,
+    wgpu::RenderPipeline,
 ) {
     let mesh_pipeline = create_pipeline(
         device,
@@ -1431,6 +1714,7 @@ fn build_scene_pipelines(
             },
         },
         sample_count,
+        "fs_main",
         "review_scene_mesh_pipeline",
     );
     let line_pipeline = create_pipeline(
@@ -1443,6 +1727,7 @@ fn build_scene_pipelines(
             bias: wgpu::DepthBiasState::default(),
         },
         sample_count,
+        "fs_main",
         "review_scene_line_pipeline",
     );
     // The UV island fill draws flat-color triangles in the 2D viewport. It never
@@ -1458,13 +1743,33 @@ fn build_scene_pipelines(
             bias: wgpu::DepthBiasState::default(),
         },
         sample_count,
+        "fs_main",
         "review_scene_uv_fill_pipeline",
+    );
+    // The selection flash: a flat-color triangle fill redrawing the selected
+    // triangles over the shaded mesh. Like the line overlays it depth-tests
+    // (Reversed-Z `GreaterEqual`) but never writes depth, so it is occluded by
+    // geometry genuinely in front of the selection yet wins over the coplanar
+    // surface it tints. `fs_selection` emits the uniform highlight color × fade.
+    let selection_fill_pipeline = create_pipeline(
+        device,
+        layout,
+        shader,
+        wgpu::PrimitiveTopology::TriangleList,
+        DepthConfig {
+            write_enabled: false,
+            bias: wgpu::DepthBiasState::default(),
+        },
+        sample_count,
+        "fs_selection",
+        "review_scene_selection_fill_pipeline",
     );
     let skybox_pipeline = create_skybox_pipeline(device, layout, shader, sample_count);
     (
         mesh_pipeline,
         line_pipeline,
         uv_fill_pipeline,
+        selection_fill_pipeline,
         skybox_pipeline,
     )
 }
@@ -1583,6 +1888,10 @@ fn create_skybox_pipeline(
     })
 }
 
+// Independent pipeline knobs (device + layout + shader + topology + depth + MSAA
+// level + fragment entry + label); none is redundant and a params struct would
+// only rename them, so the wide signature is intentional.
+#[allow(clippy::too_many_arguments)]
 fn create_pipeline(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
@@ -1590,6 +1899,7 @@ fn create_pipeline(
     topology: wgpu::PrimitiveTopology,
     depth: DepthConfig,
     sample_count: u32,
+    fragment_entry: &'static str,
     label: &'static str,
 ) -> wgpu::RenderPipeline {
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1624,7 +1934,7 @@ fn create_pipeline(
         },
         fragment: Some(wgpu::FragmentState {
             module: shader,
-            entry_point: Some("fs_main"),
+            entry_point: Some(fragment_entry),
             // MRT (invariant 11: matches the `FragOutput` struct in `scene.wgsl`):
             // location 0 = linear HDR scene color, location 1 = linear-HDR bloom
             // source, location 2 = AO-eligible ambient radiance. All three
@@ -1691,6 +2001,25 @@ fn create_mesh_buffers(
     });
 
     (vertex_buffer, index_buffer, indices.len() as u32)
+}
+
+/// Create a standalone index buffer (returning its index count). Used for the
+/// solo (isolate) draw list, which shares the steady-state mesh vertex buffer but
+/// supplies its own reordered, selection-only indices. A placeholder index keeps
+/// the buffer non-empty when nothing is selected.
+fn create_index_buffer(device: &wgpu::Device, indices: &[u32]) -> (wgpu::Buffer, u32) {
+    let placeholder_index = [0_u32];
+    let contents = if indices.is_empty() {
+        bytemuck::cast_slice(&placeholder_index)
+    } else {
+        bytemuck::cast_slice(indices)
+    };
+    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("review_scene_selection_index_buffer"),
+        contents,
+        usage: wgpu::BufferUsages::INDEX,
+    });
+    (index_buffer, indices.len() as u32)
 }
 
 fn create_line_buffer(device: &wgpu::Device, vertices: &[SceneVertex]) -> (wgpu::Buffer, u32) {
@@ -2029,6 +2358,10 @@ struct SceneUniforms {
     /// View matrix (world → view), for writing the view-space normal + depth into
     /// the SSAO G-buffer.
     view: [[f32; 4]; 4],
+    /// Selection-flash highlight: `rgb` = gamma-space highlight color, `w` = flash
+    /// fade (1 at flash start → 0 when done). Read only by `fs_selection`; zero
+    /// while nothing is flashing.
+    selection_color: [f32; 4],
 }
 
 #[repr(C)]

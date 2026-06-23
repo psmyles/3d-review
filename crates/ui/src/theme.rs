@@ -56,6 +56,10 @@ pub mod color {
     pub const WIDGET_HOVERED_BG: Color32 = Color32::from_rgb(47, 79, 131);
     /// Outline on a selected swatch / selection stroke.
     pub const SELECTION_STROKE: Color32 = Color32::from_rgb(88, 135, 217);
+    /// Viewport selection highlight: the outline drawn around the Outliner-selected
+    /// node / material in the 3D scene. A punchy orange so it reads against an
+    /// arbitrary model surface and the grey wireframe (Phase 2).
+    pub const SELECTION_OUTLINE: Color32 = Color32::from_rgb(255, 140, 35);
     /// Hover fill for custom-painted tiles (icon tiles, mode segments).
     pub const HOVER_BG: Color32 = Color32::from_rgb(54, 56, 61);
     /// Reset-button fills (idle / hovered).
@@ -163,6 +167,12 @@ pub mod color {
         Color32::from_rgb(29, 255, 27),
     ];
 
+    // ── Native window / panel chrome ────────────────────────────────────────
+    /// Drop-shadow color cast under native `egui::Window`s. Mirrors egui's
+    /// default `window_shadow.color` (`from_black_alpha(96)`); retuned here so the
+    /// shadow strength lives under a semantic token (invariant 8).
+    pub const WINDOW_SHADOW: Color32 = Color32::from_black_alpha(96);
+
     // ── Startup fade-in ─────────────────────────────────────────────────────
     /// Full-screen cover that dissolves the viewer in from black on launch.
     /// Matches the startup GDI black-fill and the renderer's clear color so the
@@ -189,7 +199,23 @@ pub mod size {
     pub const TOOLBAR_HEIGHT: f32 = 73.0;
     pub const STATUS_BAR_HEIGHT: f32 = 64.0;
     pub const OVERLAY_MARGIN: f32 = 12.0;
-    pub const LEFT_PANEL_WIDTH: f32 = 432.0;
+    /// Width of the dockable Outliner / Inspector side panels (their default /
+    /// also reused for [`SIDE_PANEL_DEFAULT_WIDTH`]). A touch narrower than the
+    /// option windows, since their content is lists / a compact property column.
+    pub const TOOL_WINDOW_WIDTH: f32 = 300.0;
+    /// Max height of the Outliner's scrolling list before it scrolls internally.
+    pub const TOOL_WINDOW_LIST_MAX_H: f32 = 300.0;
+    /// Height of an Outliner tab (Geometry / Materials), painted as text with an
+    /// active-underline rather than a button.
+    pub const OUTLINER_TAB_HEIGHT: f32 = 28.0;
+    /// Thickness of the active Outliner tab's underline accent.
+    pub const OUTLINER_TAB_UNDERLINE: f32 = 2.0;
+    /// Width of the visibility-checkbox column in an Outliner geometry row (the
+    /// name column fills the rest). Sized so the box centers under the tab text.
+    pub const OUTLINER_CHECK_COL_W: f32 = 26.0;
+    /// Upper bound the user can drag the Outliner / Inspector side panels out to
+    /// (the `width_range` ceiling); they start at [`SIDE_PANEL_DEFAULT_WIDTH`].
+    pub const OUTLINER_MAX_WIDTH: f32 = 560.0;
 
     // ── Toolbar groups ────────────────────────────────────────────────────
     pub const TOOLBAR_GROUP_SPACING: f32 = 14.0;
@@ -197,7 +223,14 @@ pub mod size {
     pub const TOOLBAR_ICON_GAP: f32 = 3.0;
     pub const TOOLBAR_ICON_PADDING: f32 = 8.0;
     pub const TOOLBAR_CENTER_WIDTH: f32 = 180.0;
-    pub const TOOLBAR_RIGHT_WIDTH: f32 = 200.0;
+    /// Right toolbar cluster (3D mode): view (138) + projection (48) + the
+    /// Outliner/Inspector window-toggle group (93), with two group spacings
+    /// (138 + 14 + 48 + 14 + 93 = 307), plus a little slack. It grows leftward from
+    /// the right edge, away from the centered mode segments.
+    pub const TOOLBAR_RIGHT_WIDTH: f32 = 320.0;
+    /// Two-icon window-toggle group (Outliner / Inspector) in the toolbar right
+    /// cluster.
+    pub const TOOLBAR_TOOLS_GROUP_WIDTH: f32 = 93.0;
     /// Left toolbar cluster: shading (4) + material (3) + normals (2) groups,
     /// with two group spacings between them (183 + 14 + 138 + 14 + 93).
     pub const TOOLBAR_LEFT_WIDTH: f32 = 442.0;
@@ -264,21 +297,18 @@ pub mod size {
     pub const PANEL_CORNER_RADIUS: u8 = 6;
     pub const PANEL_CONTENT_MARGIN: i8 = 14;
     pub const PANEL_BODY_TOP_MARGIN: i8 = 10;
-    pub const PANEL_LABEL_COL_W: f32 = 116.0;
-    pub const PANEL_COL_GAP: f32 = 12.0;
+    /// Compact control-row height used by panel combos (the dropdown button is
+    /// shrunk to this so combo rows stay dense — combos keep their own styling).
     pub const PANEL_ROW_H: f32 = 22.0;
     pub const PANEL_ROW_GAP: f32 = 6.0;
     pub const PANEL_ACTION_GAP: f32 = 10.0;
+    /// Striped panel-grid spacing — the demo widget-gallery layout: a tight
+    /// vertical row gap and a modest gap between the label and control columns.
+    pub const PANEL_GRID_COL_GAP: f32 = 12.0;
+    pub const PANEL_GRID_ROW_GAP: f32 = 4.0;
     pub const PANEL_BUTTON_HEIGHT: f32 = 32.0;
     pub const PANEL_SWATCH_SIZE: f32 = 24.0;
     pub const PANEL_SWATCH_GAP: f32 = 6.0;
-    /// Width of the numeric value field shown to the right of a slider. Every
-    /// option-panel slider pairs its rail with this inline, editable value field.
-    pub const PANEL_VALUE_FIELD_W: f32 = 52.0;
-    /// Inner horizontal padding between the value field's frame and its digits.
-    /// Kept tight so the readout sits close to the box edges and the widest value
-    /// still fits the field.
-    pub const PANEL_VALUE_FIELD_PAD_X: f32 = 4.0;
     pub const PANEL_COMBO_BUTTON_PAD_Y: f32 = 2.0;
     pub const PANEL_COMBO_POPUP_MAX_H: f32 = 240.0;
     pub const PANEL_COMBO_OPTION_H: f32 = 20.0;
@@ -310,6 +340,28 @@ pub mod size {
     pub const ITEM_SPACING: f32 = 8.0;
     pub const BUTTON_PADDING_X: f32 = 10.0;
     pub const BUTTON_PADDING_Y: f32 = 8.0;
+
+    // ── Native window / panel chrome ──────────────────────────────────────
+    // Values handed to native `egui::Window` / `egui::SidePanel` builders. These
+    // are egui *points* (the builder sizes are scaled by DPI inside egui), so —
+    // unlike the hand-painted overlays — they are NOT routed through `px()`.
+    /// Corner radius of native window frames. Mirrors egui's default
+    /// `window_corner_radius` (6).
+    pub const WINDOW_CORNER_RADIUS: u8 = 6;
+    /// Native window drop-shadow geometry. Mirrors egui's default `window_shadow`
+    /// (`offset [10, 20]`, `blur 15`, `spread 0`).
+    pub const WINDOW_SHADOW_OFFSET: [i8; 2] = [10, 20];
+    pub const WINDOW_SHADOW_BLUR: u8 = 15;
+    pub const WINDOW_SHADOW_SPREAD: u8 = 0;
+    /// Default width a tool window opens at (option panels). Raw points.
+    pub const TOOL_WINDOW_DEFAULT_WIDTH: f32 = 300.0;
+    /// Default / minimum width of the dockable Outliner / Inspector side panels;
+    /// the upper bound reuses [`OUTLINER_MAX_WIDTH`]. Raw points.
+    pub const SIDE_PANEL_DEFAULT_WIDTH: f32 = TOOL_WINDOW_WIDTH;
+    pub const SIDE_PANEL_MIN_WIDTH: f32 = 180.0;
+    /// Down-right offset between successive option windows' first-open positions
+    /// so several opened at once don't stack exactly atop each other.
+    pub const PANEL_CASCADE_STEP: f32 = 26.0;
 
     // ── Startup help overlay (treated as egui points, like the option panels) ─
     /// Width of each of the two shortcut columns and the gap between them; the
@@ -345,13 +397,9 @@ pub mod font {
     pub const GIZMO_LABEL_NEG: f32 = 15.0;
     pub const MODE_SEGMENT: f32 = 18.0;
     pub const PANEL_TITLE: f32 = 14.5;
+    /// Section-heading font in the Inspector side panel.
     pub const PANEL_LABEL: f32 = 14.0;
     pub const PANEL_BUTTON: f32 = 14.0;
-    /// Inline value field at the right of a slider row. Rendered in the monospace
-    /// (JetBrains Mono) face so digits sit on a fixed advance and don't jitter as
-    /// the value scrubs. Sized a touch smaller than the proportional label face so
-    /// the widest readout (e.g. `0.020`) fits the value field without clipping.
-    pub const PANEL_VALUE: f32 = 12.5;
 
     // ── Startup help overlay (sized to match the app's other overlay text) ──
     pub const HELP_TITLE: f32 = 14.0;
@@ -365,26 +413,30 @@ pub mod font {
     pub const HELP_FOOTER: f32 = 11.0;
 }
 
-/// Apply the app's egui visuals (dark theme) onto `ctx`. Called once per frame at
-/// the top of the overlay so the style is always in sync with these tokens.
+/// Install the app's fonts and visuals onto `ctx`. Called **once** at startup
+/// (the visuals are derived only from these constant tokens, never per-frame
+/// state, so there's nothing to re-sync each frame — and a per-frame `set_style`
+/// would needlessly nudge the on-demand redraw loop, invariant 6).
+pub fn init_style(ctx: &egui::Context) {
+    crate::assets::install_fonts(ctx);
+    apply_visuals(ctx);
+}
+
+/// Apply the app's egui visuals onto `ctx`.
+///
+/// Deliberately **pure egui `Visuals::dark()`** — no surface/accent/spacing
+/// overrides. The egui chrome (toolbar / status bar / option panels / side
+/// panels / native widgets) uses egui's stock dark theme so every control,
+/// visual and layout reads exactly like the egui demo. The app's *own* fonts are
+/// still installed separately ([`init_style`] → [`crate::assets::install_fonts`]);
+/// only the bundled fonts diverge from stock egui.
+///
+/// Note: the hand-painted overlays (axis gizmo, stats, dimension labels, help
+/// card) and the toolbar / status-bar chrome paint with explicit theme tokens in
+/// their own draw code, *not* through these visuals — so they are unaffected by
+/// this and invariant 8 still holds for them.
 pub fn apply_visuals(ctx: &egui::Context) {
-    let mut style = (*ctx.style()).clone();
-    style.visuals.window_fill = color::WINDOW_BG;
-    style.visuals.panel_fill = color::WINDOW_BG;
-    style.visuals.extreme_bg_color = color::EXTREME_BG;
-    style.visuals.widgets.noninteractive.bg_fill = color::WIDGET_NONINTERACTIVE_BG;
-    style.visuals.widgets.inactive.bg_fill = color::GROUP_BG;
-    style.visuals.widgets.hovered.bg_fill = color::WIDGET_HOVERED_BG;
-    style.visuals.widgets.active.bg_fill = color::ACTIVE;
-    style.visuals.widgets.open.bg_fill = color::WIDGET_OPEN_BG;
-    style.visuals.widgets.inactive.fg_stroke.color = color::TEXT_BODY;
-    style.visuals.widgets.hovered.fg_stroke.color = color::TEXT_PRIMARY;
-    style.visuals.selection.bg_fill = color::SELECTION;
-    style.visuals.selection.stroke = egui::Stroke::new(1.0, color::SELECTION_STROKE);
-    style.visuals.window_stroke = egui::Stroke::new(1.0, color::DIVIDER);
-    style.spacing.item_spacing = egui::vec2(size::ITEM_SPACING, size::ITEM_SPACING);
-    style.spacing.button_padding = egui::vec2(size::BUTTON_PADDING_X, size::BUTTON_PADDING_Y);
-    ctx.set_style(style);
+    ctx.set_visuals(egui::Visuals::dark());
 }
 
 /// Convert a logical-pixel design value into egui points for the current DPI, so

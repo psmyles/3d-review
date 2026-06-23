@@ -152,6 +152,8 @@ mod ffi {
         node_count: usize,
         tri_material: *mut u32,
         tri_material_count: usize,
+        tri_node: *mut u32,
+        tri_node_count: usize,
     }
 
     #[repr(C)]
@@ -232,6 +234,7 @@ mod ffi {
             checked_slice(scene.tri_to_face, scene.tri_to_face_count, "tri_to_face")?.to_vec();
         let tri_material =
             checked_slice(scene.tri_material, scene.tri_material_count, "tri_material")?.to_vec();
+        let tri_node = checked_slice(scene.tri_node, scene.tri_node_count, "tri_node")?.to_vec();
         let nodes = checked_slice(scene.nodes, scene.node_count, "nodes")?
             .iter()
             .map(|node| SceneNode {
@@ -279,6 +282,7 @@ mod ffi {
             faces,
             tri_to_face,
             tri_material,
+            tri_node,
             nodes,
             uv_channels,
             uv_set_names,
@@ -423,6 +427,20 @@ mod tests {
             assert!(
                 slot == u32::MAX || (slot as usize) < model.materials.len(),
                 "tri_material slot {slot} out of range"
+            );
+        }
+
+        // Per-triangle node index runs parallel to the triangle list and points
+        // at a real scene-graph node (Phase 2: drives per-node selection / solo).
+        assert_eq!(
+            model.tri_node.len(),
+            model.stats.triangle_count,
+            "tri_node must hold exactly one entry per triangle"
+        );
+        for &node in &model.tri_node {
+            assert!(
+                (node as usize) < model.nodes.len(),
+                "tri_node index {node} out of range"
             );
         }
     }

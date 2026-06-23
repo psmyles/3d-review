@@ -5,12 +5,14 @@
 //! [`sync_debug_state`] funnels the committed panel values into the
 //! [`SceneDebugOptions`] the renderer reads.
 
+use std::collections::HashSet;
+
 use glam::{Vec2, Vec3};
 use review_model::{Bounds, ModelStats};
 use review_render::{
     AntiAliasing, BloomSettings, CameraProjection, CheckerTexture, EnvironmentSettings,
-    MaterialEdit, MaterialSnapshot, MsaaSamples, SceneDebugOptions, ShadingMode, SsaoSettings,
-    TonemapSettings, UvShadingMode, VertexColorMode,
+    MaterialEdit, MaterialSnapshot, MsaaSamples, SceneDebugOptions, Selection, ShadingMode,
+    SsaoSettings, TonemapSettings, UvShadingMode, VertexColorMode,
 };
 
 use crate::theme;
@@ -153,9 +155,19 @@ pub struct VertexColorPanelState {
     pub mode: VertexColorMode,
 }
 
-/// Which tool's options panel is currently open. Only one panel is shown at a
-/// time; a panel is opened by right-clicking its toolbar button.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Which tab the Outliner shows: the flat list of mesh objects or the flat
+/// deduplicated material list. A cheap click switches between them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OutlinerTab {
+    #[default]
+    Geometry,
+    Materials,
+}
+
+/// A tool's options panel. Each is shown as its own native `egui::Window`, so
+/// several can be open at once (see [`PanelsOpen`]); a panel is toggled by
+/// right-clicking its toolbar / status-bar button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OptionPanel {
     Wireframe,
     BoundingBox,
@@ -170,6 +182,90 @@ pub enum OptionPanel {
     Tonemap,
 }
 
+impl OptionPanel {
+    /// Every panel, in toolbar order. Iterated each frame to draw the open ones
+    /// (and to give each a stable cascade slot), so the order is deterministic.
+    pub(crate) const ALL: [OptionPanel; 11] = [
+        OptionPanel::Wireframe,
+        OptionPanel::BoundingBox,
+        OptionPanel::UvChecker,
+        OptionPanel::FaceNormals,
+        OptionPanel::VertexNormals,
+        OptionPanel::VertexColors,
+        OptionPanel::AntiAliasing,
+        OptionPanel::Environment,
+        OptionPanel::Bloom,
+        OptionPanel::Ssao,
+        OptionPanel::Tonemap,
+    ];
+
+    /// Title shown in the panel's native window title bar.
+    pub(crate) fn title(self) -> &'static str {
+        match self {
+            OptionPanel::Wireframe => "Wireframe",
+            OptionPanel::BoundingBox => "Bounding Box",
+            OptionPanel::UvChecker => "UV Checker",
+            OptionPanel::FaceNormals => "Face Normals",
+            OptionPanel::VertexNormals => "Vertex Normals",
+            OptionPanel::VertexColors => "Vertex Colors",
+            OptionPanel::AntiAliasing => "Anti Aliasing",
+            OptionPanel::Environment => "Environment",
+            OptionPanel::Bloom => "Bloom",
+            OptionPanel::Ssao => "Ambient Occlusion",
+            OptionPanel::Tonemap => "Tonemapper",
+        }
+    }
+
+    /// Stable, unique id string for the panel's window, so egui keeps each
+    /// window's position/size independent in its memory across frames.
+    pub(crate) fn window_id(self) -> &'static str {
+        match self {
+            OptionPanel::Wireframe => "panel_wireframe",
+            OptionPanel::BoundingBox => "panel_bounding_box",
+            OptionPanel::UvChecker => "panel_uv_checker",
+            OptionPanel::FaceNormals => "panel_face_normals",
+            OptionPanel::VertexNormals => "panel_vertex_normals",
+            OptionPanel::VertexColors => "panel_vertex_colors",
+            OptionPanel::AntiAliasing => "panel_anti_aliasing",
+            OptionPanel::Environment => "panel_environment",
+            OptionPanel::Bloom => "panel_bloom",
+            OptionPanel::Ssao => "panel_ssao",
+            OptionPanel::Tonemap => "panel_tonemap",
+        }
+    }
+}
+
+/// The set of option panels currently open. Each open panel is its own native
+/// `egui::Window` (egui owns its position/size/collapsed state in memory), so
+/// any number can be open simultaneously — a button right-click toggles its
+/// panel's membership here.
+#[derive(Debug, Clone, Default)]
+pub struct PanelsOpen {
+    open: HashSet<OptionPanel>,
+}
+
+impl PanelsOpen {
+    pub(crate) fn is_open(&self, panel: OptionPanel) -> bool {
+        self.open.contains(&panel)
+    }
+
+    /// Toggle a panel open/closed (the right-click-button behavior).
+    pub(crate) fn toggle(&mut self, panel: OptionPanel) {
+        if !self.open.remove(&panel) {
+            self.open.insert(panel);
+        }
+    }
+
+    /// Force a panel's open state (used when egui's window X-button closes it).
+    pub(crate) fn set(&mut self, panel: OptionPanel, open: bool) {
+        if open {
+            self.open.insert(panel);
+        } else {
+            self.open.remove(&panel);
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct UiState {
     pub mode: WorkspaceMode,
@@ -181,14 +277,12 @@ pub struct UiState {
     /// Whether the model-stats overlay is shown in the viewport. Toggled by the
     /// info button in the status bar.
     pub show_stats: bool,
-    /// The single options panel currently shown, if any.
-    pub active_panel: Option<OptionPanel>,
-    /// Whether the active panel is collapsed to just its header bar. Toggled by
-    /// a single click on the header; reset to expanded whenever a panel opens.
-    pub panel_collapsed: bool,
-    /// Last viewport position the panel was dragged to (egui points). Shared by
-    /// every option panel so they all spawn where the last one was left.
-    pub panel_pos: Option<egui::Pos2>,
+    /// The set of tool option panels currently open. Each is its own native
+    /// `egui::Window`; egui owns each window's position/size/collapsed state, so
+    /// several can be open at once (invariant: UI holds only plain values). The
+    /// field is public for struct construction; its mutators are crate-private so
+    /// only the UI toggles panels.
+    pub panels_open: PanelsOpen,
     pub uv_checker: UvCheckerPanelState,
     /// Display labels of the loaded model's UV sets, in source-file order, shown
     /// in the UV-view toolbar dropdown. Empty when no model / no UV sets. Set by
@@ -250,6 +344,31 @@ pub struct UiState {
     /// the renderer. Carried into the scene callback so the GPU table re-uploads
     /// only when an edit (or a new model) bumps it.
     pub material_revision: u64,
+    /// The Outliner selection (a node, a material, or nothing). Set by clicking a
+    /// row in the Outliner; drives the viewport highlight + solo and the Inspector.
+    pub selection: Selection,
+    /// Whether the selection is isolated (solo): only the selected geometry is
+    /// drawn. A no-op while nothing is selected.
+    pub solo: bool,
+    /// Selection-flash fade, set by `app` each frame (data flows app→UI, invariant
+    /// 2; the redraw animation lives in `app`, invariant 6). Runs 1→0 over ~0.5s
+    /// after a selection change, modulating the viewport highlight fill's alpha so
+    /// the flash blinks then fades. 0 when no flash is playing.
+    pub selection_fade: f32,
+    /// Which Outliner tab is shown (mesh list vs material list).
+    pub outliner_tab: OutlinerTab,
+    /// Case-insensitive substring filter applied to the Outliner rows.
+    pub outliner_filter: String,
+    /// Mesh nodes the user has hidden via the Outliner's per-row visibility
+    /// checkbox (node indices into [`review_model::ModelData::nodes`]). The scene
+    /// callback filters these meshes' triangles out of the viewport draw + SSAO
+    /// (Phase 2). Cleared by `app` on model load (the indices no longer apply).
+    pub hidden_meshes: HashSet<usize>,
+    /// Whether the dockable Outliner side panel (left) is open. egui owns its
+    /// resized width; the UI only tracks open/closed.
+    pub outliner_open: bool,
+    /// Whether the dockable Inspector side panel (right) is open.
+    pub inspector_open: bool,
     /// Axis-aligned bounds of the loaded model (world meters), set by `app`
     /// alongside [`UiState::stats`] (invariant 2: a plain value, not model
     /// ownership). `None` when no model is loaded. Read by the dimension-label
@@ -280,9 +399,7 @@ impl Default for UiState {
             show_grid: true,
             show_axis_gizmo: true,
             show_stats: true,
-            active_panel: None,
-            panel_collapsed: false,
-            panel_pos: None,
+            panels_open: PanelsOpen::default(),
             uv_checker: UvCheckerPanelState::default(),
             uv_sets: Vec::new(),
             uv_view_channel: 0,
@@ -311,27 +428,19 @@ impl Default for UiState {
             stats: ModelStats::default(),
             materials_snapshot: Vec::new(),
             material_revision: 0,
+            selection: Selection::None,
+            solo: false,
+            selection_fade: 0.0,
+            outliner_tab: OutlinerTab::default(),
+            outliner_filter: String::new(),
+            hidden_meshes: HashSet::new(),
+            outliner_open: false,
+            inspector_open: false,
             bounds: None,
             fps: 0.0,
             show_help_overlay: true,
             app_version: String::new(),
             gpu_backend: String::new(),
-        }
-    }
-}
-
-impl UiState {
-    /// Open (or switch to) a tool's options panel. The shared drag position is
-    /// preserved so it spawns where the last panel was left.
-    pub(crate) fn open_panel(&mut self, panel: OptionPanel) {
-        // Right-clicking the same tool again closes its panel; right-clicking a
-        // different tool switches the (single) panel to it.
-        if self.active_panel == Some(panel) {
-            self.active_panel = None;
-        } else {
-            self.active_panel = Some(panel);
-            // A freshly opened (or switched-to) panel always starts expanded.
-            self.panel_collapsed = false;
         }
     }
 }

@@ -11,8 +11,7 @@
 use review_render::SsaoSettings;
 
 use crate::state::UiState;
-use crate::theme::size;
-use crate::widgets::{labeled_slider_with_value, wide_reset_button};
+use crate::widgets::{labeled_slider_with_value, panel_grid, reset_button};
 
 /// Inclusive slider ranges. Radius/bias are scene-radius fractions; intensity
 /// scales the raw occlusion.
@@ -24,37 +23,25 @@ const BIAS_MIN: f32 = 0.0;
 const BIAS_MAX: f32 = 0.1;
 
 pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
-    labeled_slider_with_value(
-        ui,
-        "Radius",
-        &mut state.ssao.radius,
-        RADIUS_MIN..=RADIUS_MAX,
-        2,
-        0.01,
-    );
-    ui.add_space(size::PANEL_ROW_GAP);
+    panel_grid(ui, "ssao", |ui| {
+        labeled_slider_with_value(
+            ui,
+            "Radius",
+            &mut state.ssao.radius,
+            RADIUS_MIN..=RADIUS_MAX,
+            2,
+        );
+        labeled_slider_with_value(
+            ui,
+            "Intensity",
+            &mut state.ssao.intensity,
+            INTENSITY_MIN..=INTENSITY_MAX,
+            2,
+        );
+        labeled_slider_with_value(ui, "Bias", &mut state.ssao.bias, BIAS_MIN..=BIAS_MAX, 3);
+    });
 
-    labeled_slider_with_value(
-        ui,
-        "Intensity",
-        &mut state.ssao.intensity,
-        INTENSITY_MIN..=INTENSITY_MAX,
-        2,
-        0.01,
-    );
-    ui.add_space(size::PANEL_ROW_GAP);
-
-    labeled_slider_with_value(
-        ui,
-        "Bias",
-        &mut state.ssao.bias,
-        BIAS_MIN..=BIAS_MAX,
-        3,
-        0.001,
-    );
-    ui.add_space(size::PANEL_ACTION_GAP);
-
-    if wide_reset_button(ui).clicked() {
+    if reset_button(ui).clicked() {
         // The on/off state is owned by the status-bar toggle, so reset only the
         // panel's own options and leave `enabled` untouched.
         state.ssao = SsaoSettings {

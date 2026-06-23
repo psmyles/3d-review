@@ -138,6 +138,7 @@ void review_import_free_scene(review_import_scene *scene)
     review_import_free_uv_set_names(scene->uv_set_names, scene->uv_set_name_count);
     review_import_free_nodes(scene->nodes, scene->node_count);
     free(scene->tri_material);
+    free(scene->tri_node);
     memset(scene, 0, sizeof(*scene));
 }
 
@@ -415,8 +416,9 @@ int review_import_load_fbx(
     out_scene->faces = (review_import_face*)calloc(total_faces, sizeof(review_import_face));
     out_scene->tri_to_face = (uint32_t*)calloc(total_triangles, sizeof(uint32_t));
     out_scene->tri_material = (uint32_t*)calloc(total_triangles, sizeof(uint32_t));
+    out_scene->tri_node = (uint32_t*)calloc(total_triangles, sizeof(uint32_t));
     if (!out_scene->vertices || !out_scene->indices || !out_scene->faces ||
-        !out_scene->tri_to_face || !out_scene->tri_material) {
+        !out_scene->tri_to_face || !out_scene->tri_material || !out_scene->tri_node) {
         review_import_set_error(out_error, "out of memory while allocating imported mesh");
         goto cleanup;
     }
@@ -426,6 +428,7 @@ int review_import_load_fbx(
     out_scene->face_count = total_faces;
     out_scene->tri_to_face_count = total_triangles;
     out_scene->tri_material_count = total_triangles;
+    out_scene->tri_node_count = total_triangles;
 
     /* Only multi-set models need separate per-channel UV storage; single-set
        models keep using review_import_vertex::uv (channel 0). */
@@ -593,6 +596,10 @@ int review_import_load_fbx(
                 for (triangle_index = 0; triangle_index < triangle_count; triangle_index++) {
                     out_scene->tri_to_face[tri_offset] = (uint32_t)face_offset;
                     out_scene->tri_material[tri_offset] = material_slot;
+                    /* `node_index` indexes `scene->nodes`, and ufbx guarantees
+                       node->typed_id == that index, so it doubles as the
+                       review_import_node index recorded for the Outliner. */
+                    out_scene->tri_node[tri_offset] = (uint32_t)node_index;
                     tri_offset++;
                 }
 

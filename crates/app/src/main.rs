@@ -22,8 +22,8 @@ use review_render::{
     ibl_supported, ssao_supported, supported_msaa_levels,
 };
 use review_ui::{
-    AxisGizmoAction, UiOutput, UiState, WorkspaceMode, draw_overlay, draw_startup_fade,
-    draw_viewport_scene, install_fonts,
+    AxisGizmoAction, Selection, UiOutput, UiState, WorkspaceMode, draw_overlay, draw_startup_fade,
+    draw_viewport_scene, init_style,
 };
 use tracing::{info, warn};
 use winit::{
@@ -119,6 +119,15 @@ struct App {
     /// stall and make the viewer snap in. Same guard `update_camera_animation`
     /// uses for camera transitions.
     fade: Option<FadeProgress>,
+    /// Live selection-highlight flash, or `None` when none is playing. Started when
+    /// [`Self::flashed_selection`] no longer matches the UI's current selection, and
+    /// advanced each frame by [`Self::update_selection_flash`], which writes the
+    /// fade into [`UiState::selection_fade`] for the scene callback.
+    selection_flash: Option<FlashProgress>,
+    /// The selection the flash is currently animating (or last animated), so a
+    /// change to a *different* node/material restarts the flash and selecting
+    /// nothing ends it.
+    flashed_selection: Selection,
 }
 
 /// State of the launch fade-in. `elapsed` is animation time accumulated across
@@ -127,6 +136,23 @@ struct FadeProgress {
     elapsed: Duration,
     last_tick: Instant,
 }
+
+/// State of the selection-highlight flash: a brief bright fill over a newly
+/// selected node/material that fades out. Same capped-per-frame accumulation as
+/// the launch fade / camera transitions, so an idle gap before the flash can't
+/// fast-forward it to the end. `None` when no flash is playing.
+struct FlashProgress {
+    elapsed: Duration,
+    last_tick: Instant,
+}
+
+/// How long the selection-highlight flash takes to fade from full to gone.
+const SELECTION_FLASH: Duration = Duration::from_millis(500);
+
+/// Cap on how much the selection flash advances in one frame (≈30 Hz), so an idle
+/// gap before a selection change doesn't skip the flash. Matches the camera
+/// transition / startup-fade step guards.
+const MAX_FLASH_STEP: Duration = Duration::from_millis(33);
 
 /// Duration of the launch fade-in (startup black → viewer). Short on purpose:
 /// long enough to read as a dissolve, brief enough not to feel like a wait.
@@ -171,6 +197,8 @@ impl Default for App {
             start_maximized: false,
             last_windowed_bounds: None,
             fade: None,
+            selection_flash: None,
+            flashed_selection: Selection::None,
         }
     }
 }
@@ -259,8 +287,9 @@ impl ApplicationHandler for App {
             renderer.reset_camera_to_home();
         }
         let egui_ctx = egui::Context::default();
-        egui_ctx.set_visuals(egui::Visuals::dark());
-        install_fonts(&egui_ctx);
+        // Install fonts + visuals once: the style is derived purely from the
+        // central theme tokens (no per-frame state), so it never needs re-syncing.
+        init_style(&egui_ctx);
 
         let mut egui_painter = pollster::block_on(egui_wgpu::winit::Painter::new(
             egui_ctx.clone(),
@@ -593,6 +622,11 @@ impl App {
 
         window.set_title("3D Review");
         self.update_camera_animation();
+        // Advance the selection-highlight flash and feed this frame's fade into the
+        // UI snapshot the scene callback reads. Done before the egui run below so the
+        // viewport reflects the current fade; a change of selection (set by the
+        // Outliner last frame) restarts it here.
+        self.update_selection_flash();
 
         // Opacity of the launch fade cover this frame (1 = startup black, 0 =
         // fully revealed). Advancing here clears `fade_start` once it reaches 0,
@@ -679,14 +713,18 @@ impl App {
         // The launch fade is continuous motion too: keep pacing frames while the
         // cover is still dissolving so it doesn't stall on a static partial fade.
         let fade_active = cover_opacity > 0.0;
-        self.repaint_at = if repaint_delay.is_zero() || camera_animating || fade_active {
-            let frame_start = self.last_render_instant.unwrap_or_else(Instant::now);
-            Some(frame_start + self.refresh_interval)
-        } else if repaint_delay == Duration::MAX {
-            None
-        } else {
-            Instant::now().checked_add(repaint_delay)
-        };
+        // The selection flash likewise animates over ~0.5s; keep pacing frames until
+        // it finishes so the highlight fades smoothly rather than freezing partway.
+        let flash_active = self.selection_flash.is_some();
+        self.repaint_at =
+            if repaint_delay.is_zero() || camera_animating || fade_active || flash_active {
+                let frame_start = self.last_render_instant.unwrap_or_else(Instant::now);
+                Some(frame_start + self.refresh_interval)
+            } else if repaint_delay == Duration::MAX {
+                None
+            } else {
+                Instant::now().checked_add(repaint_delay)
+            };
 
         let pixels_per_point = full_output.pixels_per_point;
         let clipped_primitives = egui_ctx.tessellate(full_output.shapes, pixels_per_point);
@@ -744,6 +782,12 @@ impl App {
                     };
                 self.ui.materials_snapshot = materials_snapshot;
                 self.ui.material_revision = material_revision;
+                // A new model invalidates any Outliner selection (node / material
+                // indices no longer apply); clear it, drop solo, and unhide every
+                // mesh (the hidden node indices belong to the old model).
+                self.ui.selection = Selection::None;
+                self.ui.solo = false;
+                self.ui.hidden_meshes.clear();
 
                 self.ui.stats = model.stats;
                 self.ui.bounds = model.bounds;
@@ -882,6 +926,9 @@ impl App {
         };
         self.ui.materials_snapshot = Vec::new();
         self.ui.material_revision = material_revision;
+        self.ui.selection = Selection::None;
+        self.ui.solo = false;
+        self.ui.hidden_meshes.clear();
 
         info!("reset to start state");
         self.redraw_requested = true;
@@ -1009,6 +1056,50 @@ impl App {
         }
         let t = (fade.elapsed.as_secs_f32() / STARTUP_FADE.as_secs_f32()).clamp(0.0, 1.0);
         1.0 - t * t * (3.0 - 2.0 * t)
+    }
+
+    /// Advance the selection-highlight flash and write this frame's fade factor (1
+    /// → 0 over [`SELECTION_FLASH`]) into [`UiState::selection_fade`], where the
+    /// scene callback reads it. A change to a different node/material (set by the
+    /// Outliner) restarts the flash; selecting nothing ends it. The fade lives in
+    /// `app` because the redraw loop does (invariant 6) — the flash keeps requesting
+    /// frames via `selection_flash.is_some()` in `render`, the same way camera
+    /// transitions do. Like those, time accumulates from a capped per-frame delta so
+    /// an idle gap before the selection can't fast-forward the flash.
+    fn update_selection_flash(&mut self) {
+        let now = Instant::now();
+
+        // (Re)start the flash whenever the selection changes to a different target;
+        // clear it when nothing is selected.
+        if self.ui.selection != self.flashed_selection {
+            self.flashed_selection = self.ui.selection;
+            self.selection_flash = self.ui.selection.is_active().then_some(FlashProgress {
+                elapsed: Duration::ZERO,
+                last_tick: now,
+            });
+        }
+
+        let fade = match self.selection_flash.as_mut() {
+            Some(flash) => {
+                let step = now.duration_since(flash.last_tick).min(MAX_FLASH_STEP);
+                flash.last_tick = now;
+                flash.elapsed += step;
+                if flash.elapsed >= SELECTION_FLASH {
+                    // Flash done: drop it so the pacing loop stops requesting frames.
+                    self.selection_flash = None;
+                    0.0
+                } else {
+                    // Ease-out (smoothstep complement): full at the start of the
+                    // flash, easing smoothly to 0 — a blink that settles rather than
+                    // a linear cut.
+                    let t = (flash.elapsed.as_secs_f32() / SELECTION_FLASH.as_secs_f32())
+                        .clamp(0.0, 1.0);
+                    1.0 - t * t * (3.0 - 2.0 * t)
+                }
+            }
+            None => 0.0,
+        };
+        self.ui.selection_fade = fade;
     }
 
     fn update_camera_animation(&mut self) {
