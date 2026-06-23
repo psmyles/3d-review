@@ -11,6 +11,17 @@ Deeper docs: `PROJECT_STRUCTURE.md` (crate map, data flow, ownership),
 
 ## 1. Invariants — the rules an agent will break if not told
 
+> **Lean on the existing system; don't hand-roll your own.** Before building any
+> mechanism, reach for what's already there — first the platform/framework
+> primitive (e.g. egui's native `Window`/`SidePanel`/`Grid`/`Slider`, winit/wgpu
+> facilities), then an existing helper in this codebase (a `theme` token, a
+> `widgets` primitive, an `import`/`render` funnel). The UI chrome was *migrated
+> away* from a hand-rolled `egui::Area` + pixel-rect layout system precisely
+> because re-implementing window management by hand made every new panel come out
+> broken. Do not reintroduce bespoke layout/window/styling machinery when a native
+> primitive or shared helper covers it. If the existing system genuinely can't do
+> the job, say so and extend it in one place — don't fork a parallel one.
+
 1. **Single source of geometry; no defensive copies.** `ModelData`
    (`crates/model`) owns the mesh buffers. They are uploaded to the GPU by
    `bytemuck` cast and shared as `Arc<ModelData>`. Never `.clone()` / re-`Vec`
@@ -111,12 +122,21 @@ crates/
             LineList drawn in the scene pass via `line_pipeline` (depth-tested
             against the mesh so hidden-face edges are occluded; no thickness
             control) -> src/scene.rs + src/geometry.rs (`wireframe_lines`)
-  ui/       review-ui: egui toolbar, option panels, axis gizmo, stats overlay,
-            status bar, startup help overlay; UiOutput intents. Thin root
-            re-exports; modules: theme/state/assets/widgets/overlay/toolbar/
-            status_bar/stats/gizmo/help + panels/ (one file per tool: anti_aliasing,
-            bloom, bounding_box, environment, normals, ssao, uv_checker,
-            vertex_colors, wireframe). -> src/lib.rs + src/*.rs
+  ui/       review-ui: egui chrome built on egui's **native windowing**, not a
+            hand-rolled layout system. Option tools are native `egui::Window`s
+            (collapsible/closable, non-resizable, multi-open via
+            `UiState::panels_open`); the Outliner (left) + Inspector (right) are
+            dockable, resizable `egui::SidePanel`s; the toolbar + status bar are
+            `egui::TopBottomPanel` bands (interiors still hand-laid via
+            `scope_builder` — the one remaining rework step). The 3D/UV scene
+            paints on the background layer behind the chrome. Plus axis gizmo,
+            stats overlay, bounding-box dimension labels, startup help overlay;
+            emits UiOutput intents. Thin root re-exports; modules: theme/state/
+            assets/widgets/overlay/toolbar/status_bar/stats/gizmo/dimensions/help
+            + panels/ (mod.rs = width-pinning dispatch; one file per tool:
+            anti_aliasing, bloom, bounding_box, environment, normals, ssao,
+            tonemap, uv_checker, vertex_colors, wireframe; plus inspector +
+            outliner for the side panels). -> src/lib.rs + src/*.rs
 third_party/ufbx/   vendored ufbx.c / ufbx.h (compiled only if present)
 assets/icons/       PNG toolbar/gizmo icons (include_bytes!)
 assets/test_models/ local FBX fixtures for manual checks
@@ -157,6 +177,13 @@ workspace still builds and FBX import returns a clear error.
 - Native stack: direct `winit` + `wgpu` (not `eframe`); `egui` is an overlay
   drawn via an `egui_wgpu` paint callback. Prefer DX12 on Windows
   (DX12|Vulkan|Metal requested).
+- UI chrome uses egui's **native windowing** (`Window` / `SidePanel` /
+  `TopBottomPanel`) and stock widgets (`Grid` / `Slider` / `DragValue` /
+  `ComboBox`), styled from egui's default `Visuals::dark()` plus a few theme-token
+  overrides. The old hand-rolled `egui::Area` + pixel-rect panel system is gone —
+  do **not** bring it back (see the lead-in to §1). Styling exceptions: keep the
+  bundled Inter (proportional) + JetBrains Mono fonts; numeric value boxes
+  (`DragValue`) render in monospace, everything else proportional.
 - Internal format is the own `ModelData` superset (flat parallel buffers +
   original face topology + source stats). FBX is the only MVP import format,
   parsed by vendored `ufbx` through a single C bridge — don't round-trip through
@@ -179,12 +206,23 @@ snap-to-axis); a 2D UV viewport (independent pan/zoom, UV channel picker, wire
 layout, shaded fill, per-island coloring). Windows packaging (exe icon/resource
 metadata + Inno Setup installer) is present.
 
-The `ui` crate is split into focused modules (`theme`, `state`, `assets`,
-`widgets`, `overlay`, `toolbar`, `status_bar`, `stats`, `gizmo`, `panels/`) and
-all visual values come from the central `theme` module (invariant 8). Derived
-line views are now freed on view-off and the normal length/color sliders update
-live (invariant 3, via `scene.rs` `sync_line_views`). The stats panel shows only
-measured values (invariant 5).
+The `ui` crate was migrated off the old hand-rolled `egui::Area` + pixel-rect
+layout system onto egui's **native windowing**: option tools are native
+`egui::Window`s (collapsible/closable, non-resizable, multi-open via
+`UiState::panels_open`), the Outliner/Inspector are dockable `egui::SidePanel`s,
+the toolbar/status bar are `TopBottomPanel` bands, and panel bodies use stock
+`Grid`/`Slider`/`DragValue`/`ComboBox` widgets dispatched by
+`panels::draw_panel_body` (which pins each panel to one width). Styling derives
+from egui's default `Visuals::dark()` installed once at startup
+(`theme::init_style`) plus a few token overrides — custom accent colors were
+dropped, but the Inter (proportional) + JetBrains Mono fonts are kept; only the
+numeric `DragValue` value boxes render in monospace (left-aligned, fixed width),
+everything else proportional. All visual values still come from the central
+`theme` module (invariant 8). Derived line views are freed on view-off and the
+normal length/color sliders update live (invariant 3, via `scene.rs`
+`sync_line_views`). The stats panel shows only measured values (invariant 5).
+Still pending: the toolbar/status-bar *interiors* are the last hand-laid
+(`scope_builder`) bit awaiting a native-layout rebuild.
 
 Rendering pipeline (see `PROJECT_STATE.md` + `RENDERING_PIPELINE.md`): the scene
 renders into **offscreen linear-HDR MRT targets** composited by a fullscreen post
