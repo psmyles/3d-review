@@ -24,7 +24,11 @@ pub(super) fn debug_normal_length(model: &ModelData, scale: f32) -> f32 {
 /// `vertex_color` channel, so the scene shader's overlay path returns it flat (the
 /// same path the line views use). The mesh sources its color from the material
 /// uniform, so the per-vertex color channel now belongs to the overlays/lines.
-pub(super) fn push_fill_vertex(vertices: &mut Vec<SceneVertex>, position: [f32; 3], color: [f32; 4]) {
+pub(super) fn push_fill_vertex(
+    vertices: &mut Vec<SceneVertex>,
+    position: [f32; 3],
+    color: [f32; 4],
+) {
     vertices.push(SceneVertex {
         position,
         normal: [0.0, 0.0, 0.0],

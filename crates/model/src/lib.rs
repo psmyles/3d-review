@@ -391,7 +391,10 @@ mod tests {
         // here means that data move must preserve it.
         assert_eq!(model.tri_to_face.len(), model.stats.triangle_count);
         for &face in &model.tri_to_face {
-            assert!((face as usize) < model.faces.len(), "tri_to_face out of range");
+            assert!(
+                (face as usize) < model.faces.len(),
+                "tri_to_face out of range"
+            );
         }
         for &slot in &model.tri_material {
             assert!(
