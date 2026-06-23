@@ -324,13 +324,19 @@ fn fs_main(input: VertexOutput) -> FragOutput {
     metallic = clamp(metallic, 0.0, 1.0);
     var roughness_value = material.params.y;
     if (has_roughness) {
-        var roughness_sample = select_channel(tex_roughness, material.channels0.z);
-        // Smoothness workflow (flags.x): the bound map is a smoothness map, i.e. an
-        // inverted roughness map, so invert it before modulating the roughness.
+        let sample = select_channel(tex_roughness, material.channels0.z);
         if (material.flags.x > 0.5) {
-            roughness_sample = 1.0 - roughness_sample;
+            // Smoothness workflow (flags.x): the bound map is a smoothness map and
+            // the slider is a smoothness value (stored as its roughness complement).
+            // Combine in *smoothness* space like Unity — final = slider * map — so a
+            // slider of 1 uses the map as authored instead of multiplying the
+            // roughness scalar (0) into the map and forcing a mirror.
+            let smoothness_scalar = 1.0 - roughness_value;
+            roughness_value = 1.0 - smoothness_scalar * sample;
+        } else {
+            // Roughness workflow: roughnessFactor * roughness_map (glTF convention).
+            roughness_value = roughness_value * sample;
         }
-        roughness_value = roughness_value * roughness_sample;
     }
     // Ambient-occlusion factor (channel-routed), darkening only the ambient term.
     var ao = 1.0;

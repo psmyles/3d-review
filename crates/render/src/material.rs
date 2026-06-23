@@ -18,7 +18,14 @@ use std::sync::Arc;
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
 
+use crate::mipmap::{MipGenerator, mip_level_count};
 use crate::texture::{ChannelSelect, DecodedImage, TEXTURE_SLOT_COUNT, TextureSlot};
+
+/// Anisotropic-filter sample count for the material sampler. 16× is the common
+/// hardware ceiling; `wgpu` clamps it to the adapter's actual maximum. Combined
+/// with the per-texture mip chain ([`MipGenerator`]) this removes the shimmer that
+/// single-level minification produced on grazing-angle surfaces.
+const MATERIAL_ANISOTROPY: u16 = 16;
 
 /// One per-material draw: a contiguous run of the reordered mesh index buffer
 /// whose triangles share a single material slot. `material` indexes the table, or
@@ -304,8 +311,11 @@ pub(crate) struct MaterialTable {
     stride: u64,
     /// Number of real materials, *excluding* the trailing fallback entry.
     material_count: usize,
-    /// Shared sampler for every material texture (repeat, trilinear).
+    /// Shared sampler for every material texture (repeat, trilinear + anisotropic).
     sampler: wgpu::Sampler,
+    /// Builds the mip chain for each uploaded slot texture (mip-mapped sampling +
+    /// anisotropy is what actually resolves minification noise).
+    mip_generator: MipGenerator,
     /// Per-slot neutral 1×1 textures, bound for unassigned slots.
     fallback_views: [wgpu::TextureView; TEXTURE_SLOT_COUNT],
     /// GPU texture views keyed by `(path, srgb)`: a decoded image is uploaded once
@@ -338,8 +348,10 @@ impl MaterialTable {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             mipmap_filter: wgpu::FilterMode::Linear,
+            anisotropy_clamp: MATERIAL_ANISOTROPY,
             ..Default::default()
         });
+        let mip_generator = MipGenerator::new(device);
         let fallback_views = create_fallback_views(device, queue);
 
         let unit = std::mem::size_of::<MaterialUniform>() as u64;
@@ -358,6 +370,7 @@ impl MaterialTable {
             stride,
             material_count: 0,
             sampler,
+            mip_generator,
             fallback_views,
             texture_cache: HashMap::new(),
             bind_groups: Vec::new(),
@@ -431,7 +444,13 @@ impl MaterialTable {
                         .get(&key)
                         .is_none_or(|cached| cached.identity != identity);
                     if stale {
-                        let view = upload_texture(device, queue, &binding.image, slot.is_srgb());
+                        let view = upload_texture(
+                            device,
+                            queue,
+                            &mut self.mip_generator,
+                            &binding.image,
+                            slot.is_srgb(),
+                        );
                         self.texture_cache
                             .insert(key, CachedTexture { identity, view });
                     }
@@ -563,11 +582,13 @@ fn fallback_pixel(slot: TextureSlot) -> [u8; 4] {
     }
 }
 
-/// Upload a decoded image into a GPU texture and return its view. Color slots use
-/// `Rgba8UnormSrgb`; linear data slots use `Rgba8Unorm`.
+/// Upload a decoded image into a mip-mapped GPU texture and return its view. Color
+/// slots use `Rgba8UnormSrgb`; linear data slots use `Rgba8Unorm`. A full mip chain
+/// is built by [`MipGenerator`] so anisotropic minification has levels to filter.
 fn upload_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
+    mip_generator: &mut MipGenerator,
     image: &DecodedImage,
     srgb: bool,
 ) -> wgpu::TextureView {
@@ -578,10 +599,37 @@ fn upload_texture(
     if image.rgba.len() < (width as usize * height as usize * 4) {
         return upload_pixels(device, queue, 1, 1, &[255, 255, 255, 255], srgb);
     }
-    upload_pixels(device, queue, width, height, &image.rgba, srgb)
+
+    let format = if srgb {
+        wgpu::TextureFormat::Rgba8UnormSrgb
+    } else {
+        wgpu::TextureFormat::Rgba8Unorm
+    };
+    let mip_levels = mip_level_count(width, height);
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("review_material_texture"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: mip_levels,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        // RENDER_ATTACHMENT lets the generator blit each downsampled level into place.
+        usage: wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    write_mip0(queue, &texture, width, height, &image.rgba);
+    mip_generator.generate(device, queue, &texture, format, mip_levels);
+    texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
-/// Create + fill a 2D RGBA8 texture and return its view.
+/// Create + fill a single-level 2D RGBA8 texture (no mips) and return its view.
+/// Used for the 1×1 per-slot fallbacks and the empty-buffer guard.
 fn upload_pixels(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -609,9 +657,15 @@ fn upload_pixels(
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
+    write_mip0(queue, &texture, width, height, rgba);
+    texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+/// Write `rgba` into mip level 0 of `texture`.
+fn write_mip0(queue: &wgpu::Queue, texture: &wgpu::Texture, width: u32, height: u32, rgba: &[u8]) {
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
-            texture: &texture,
+            texture,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
@@ -628,7 +682,6 @@ fn upload_pixels(
             depth_or_array_layers: 1,
         },
     );
-    texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
 /// Allocate the strided uniform buffer for `count` entries (materials + fallback).
