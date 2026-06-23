@@ -25,8 +25,8 @@ use review_render::{
     TextureSlot, ibl_supported, ssao_supported, supported_msaa_levels,
 };
 use review_ui::{
-    AxisGizmoAction, Notifications, Selection, UiOutput, UiState, WorkspaceMode, draw_overlay,
-    draw_startup_fade, draw_viewport_scene, init_style,
+    AxisGizmoAction, Notifications, Selection, TextureIntent, UiOutput, UiState, WorkspaceMode,
+    draw_overlay, draw_startup_fade, draw_viewport_scene, init_style,
 };
 use tracing::{info, warn};
 use winit::{
@@ -1089,34 +1089,33 @@ impl App {
             redraw = true;
         }
 
-        // Clear a property's slot back to its fallback ("select texture").
-        if let Some(slot_ref) = output.texture_clear {
-            if let Some(slot) = TextureSlot::from_index(slot_ref.slot) {
-                if let Some(renderer) = self.renderer.as_mut() {
-                    renderer.clear_texture_slot(slot_ref.material, slot);
+        // One texture-pool command per frame (the Inspector emits at most one).
+        if let Some(intent) = output.texture {
+            match intent {
+                // Clear a property's slot back to its fallback ("select texture").
+                TextureIntent::Clear(slot_ref) => {
+                    if let Some(slot) = TextureSlot::from_index(slot_ref.slot) {
+                        if let Some(renderer) = self.renderer.as_mut() {
+                            renderer.clear_texture_slot(slot_ref.material, slot);
+                        }
+                        self.refresh_materials();
+                        redraw = true;
+                    }
                 }
-                self.refresh_materials();
-                redraw = true;
+                // Bind an already-decoded pooled texture to a property (applies now).
+                TextureIntent::Assign(assign) => {
+                    self.assign_pooled_texture(assign.slot, assign.path);
+                    redraw = true;
+                }
+                // Remove a pooled texture (the ✕) — also unbinds every slot using it.
+                TextureIntent::Remove(path) => {
+                    self.remove_texture(&path);
+                    redraw = true;
+                }
+                // Import textures into the pool ("Add textures…"). The modal picker
+                // blocks the loop, so it does not schedule a redraw itself.
+                TextureIntent::Import => self.import_textures(),
             }
-        }
-
-        // Bind a pooled texture to a property (the texture dropdown). The image is
-        // already decoded in the pool, so this applies on the spot.
-        if let Some(assign) = output.texture_assign {
-            self.assign_pooled_texture(assign.slot, assign.path);
-            redraw = true;
-        }
-
-        // Remove a pooled texture (the ✕) — also unbinds every slot using it.
-        if let Some(path) = output.texture_remove {
-            self.remove_texture(&path);
-            redraw = true;
-        }
-
-        // Import textures into the pool ("Add textures…"). Done last because the
-        // modal picker blocks the loop.
-        if output.texture_import {
-            self.import_textures();
         }
 
         if redraw {
