@@ -93,8 +93,11 @@ impl TextureSlot {
 }
 
 /// Which channel(s) of a (possibly packed) texture feed a material property. The
-/// scalar slots read one channel (R/G/B/A); the color/vector slots use RGB. The
-/// numeric [`ChannelSelect::shader_index`] is what the shader swizzles by.
+/// scalar slots read one channel (R/G/B/A). The color slots (base color / emissive)
+/// read either the full `Rgb` or a single channel scaled by the material color
+/// value. Normal always reads RGB (no selector). There is no RGBA option — opacity
+/// comes from the dedicated Opacity slot. The numeric [`ChannelSelect::shader_index`]
+/// is what the shader branches/swizzles on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ChannelSelect {
     R,
@@ -102,7 +105,6 @@ pub enum ChannelSelect {
     B,
     A,
     Rgb,
-    Rgba,
 }
 
 impl ChannelSelect {
@@ -114,15 +116,26 @@ impl ChannelSelect {
         ChannelSelect::A,
     ];
 
-    /// Index the shader's `select_channel` swizzles by (0 R, 1 G, 2 B, 3 A; RGB /
-    /// RGBA fall back to R for the scalar path, which only ever uses single
-    /// channels).
+    /// The channel choices a color slot (base color / emissive) offers: full RGB
+    /// or any single channel scaled by the color value.
+    pub const COLOR: [ChannelSelect; 5] = [
+        ChannelSelect::Rgb,
+        ChannelSelect::R,
+        ChannelSelect::G,
+        ChannelSelect::B,
+        ChannelSelect::A,
+    ];
+
+    /// Index the shader branches/swizzles on: 0 R, 1 G, 2 B, 3 A for a single
+    /// channel, and `4` for full `Rgb` (the color slots test `> 3.5` to take the
+    /// RGB path; the scalar `select_channel` only ever sees 0..3).
     pub fn shader_index(self) -> f32 {
         match self {
-            ChannelSelect::R | ChannelSelect::Rgb | ChannelSelect::Rgba => 0.0,
+            ChannelSelect::R => 0.0,
             ChannelSelect::G => 1.0,
             ChannelSelect::B => 2.0,
             ChannelSelect::A => 3.0,
+            ChannelSelect::Rgb => 4.0,
         }
     }
 
@@ -134,7 +147,6 @@ impl ChannelSelect {
             ChannelSelect::B => "B",
             ChannelSelect::A => "A",
             ChannelSelect::Rgb => "RGB",
-            ChannelSelect::Rgba => "RGBA",
         }
     }
 }

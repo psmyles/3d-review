@@ -17,7 +17,8 @@ mod texture;
 
 pub use ibl::ibl_supported;
 pub use material::{
-    AlphaMode, MaterialChange, MaterialEdit, MaterialSnapshot, MaterialState, TextureBinding,
+    AlphaMode, MaterialChange, MaterialEdit, MaterialSnapshot, MaterialState, RoughnessWorkflow,
+    TextureBinding,
 };
 pub use scene::{EGUI_DEPTH_FORMAT, EGUI_MSAA_SAMPLE_COUNT, SCENE_DEPTH_FORMAT, SceneCallback};
 pub use selection::{Selection, SelectionView};
@@ -1056,6 +1057,7 @@ impl Renderer {
             }
             MaterialChange::AlphaMode(mode) => state.alpha_mode = mode,
             MaterialChange::AlphaCutoff(value) => state.alpha_cutoff = value.clamp(0.0, 1.0),
+            MaterialChange::Workflow(workflow) => state.workflow = workflow,
         }
         self.material_revision = self.material_revision.wrapping_add(1);
     }

@@ -53,13 +53,15 @@ var ibl_sampler: sampler;
 // color / metallic / roughness / emissive from here; `base_color`/`emissive` are
 // linear. `params` = (metallic, roughness, slot_flags bitfield, alpha mode).
 // `channels0` selects the channel (0 R … 3 A) feeding slots 0..3; `channels1`
-// does the same for slots 4..6 with `w` carrying the alpha cutoff.
+// does the same for slots 4..6 with `w` carrying the alpha cutoff. `flags.x` is
+// the roughness workflow (0 roughness, 1 smoothness: invert the bound map).
 struct MaterialUniform {
     base_color: vec4<f32>,
     emissive: vec4<f32>,
     params: vec4<f32>,
     channels0: vec4<f32>,
     channels1: vec4<f32>,
+    flags: vec4<f32>,
 };
 
 @group(3) @binding(0)
@@ -260,7 +262,13 @@ fn fs_main(input: VertexOutput) -> FragOutput {
     // modulates it. The checker sample is already linear (sRGB texture format).
     var base_color = material.base_color.rgb;
     if (has_base) {
-        base_color = base_color * tex_base.rgb;
+        // Full RGB (channel index 4) multiplies the color directly; a single channel
+        // (0..3) is a scalar mask scaled by the material base color.
+        if (material.channels0.x > 3.5) {
+            base_color = base_color * tex_base.rgb;
+        } else {
+            base_color = base_color * select_channel(tex_base, material.channels0.x);
+        }
     }
     var out_alpha = material.base_color.a;
     if (has_opacity) {
@@ -316,7 +324,13 @@ fn fs_main(input: VertexOutput) -> FragOutput {
     metallic = clamp(metallic, 0.0, 1.0);
     var roughness_value = material.params.y;
     if (has_roughness) {
-        roughness_value = roughness_value * select_channel(tex_roughness, material.channels0.z);
+        var roughness_sample = select_channel(tex_roughness, material.channels0.z);
+        // Smoothness workflow (flags.x): the bound map is a smoothness map, i.e. an
+        // inverted roughness map, so invert it before modulating the roughness.
+        if (material.flags.x > 0.5) {
+            roughness_sample = 1.0 - roughness_sample;
+        }
+        roughness_value = roughness_value * roughness_sample;
     }
     // Ambient-occlusion factor (channel-routed), darkening only the ambient term.
     var ao = 1.0;
@@ -375,7 +389,13 @@ fn fs_main(input: VertexOutput) -> FragOutput {
         if (all(factor <= vec3<f32>(0.0))) {
             factor = vec3<f32>(1.0);
         }
-        emissive = tex_emissive.rgb * factor;
+        // Full RGB (channel index 4) tints the map by the factor; a single channel
+        // (0..3) is a scalar emissive mask scaled by the factor.
+        if (material.channels1.y > 3.5) {
+            emissive = tex_emissive.rgb * factor;
+        } else {
+            emissive = vec3<f32>(select_channel(tex_emissive, material.channels1.y)) * factor;
+        }
     }
     color_linear = color_linear + emissive;
 

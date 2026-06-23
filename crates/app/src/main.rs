@@ -25,8 +25,8 @@ use review_render::{
     suggested_channel, supported_msaa_levels,
 };
 use review_ui::{
-    AxisGizmoAction, Notifications, Selection, TextureSlotRef, UiOutput, UiState, WorkspaceMode,
-    draw_overlay, draw_startup_fade, draw_viewport_scene, init_style,
+    AxisGizmoAction, Notifications, Selection, TexturePoolEntry, TextureSlotRef, UiOutput, UiState,
+    WorkspaceMode, draw_overlay, draw_startup_fade, draw_viewport_scene, init_style,
 };
 use tracing::{info, warn};
 use winit::{
@@ -64,13 +64,9 @@ struct TextureDecode {
 /// applied once it returns.
 #[derive(Debug, Clone)]
 enum TextureDecodeRequest {
-    /// The user assigned `path` to a material slot; `channel` is the auto-detected
-    /// routing (computed at dispatch, before the slow decode).
-    Assign {
-        slot: TextureSlotRef,
-        path: PathBuf,
-        channel: ChannelSelect,
-    },
+    /// The user imported `path` into the scene texture pool; on completion it
+    /// joins the pool (and the disk watcher) so material properties can bind it.
+    Import { path: PathBuf },
     /// A watched file changed on disk; re-upload every binding using `path`.
     Reload { path: PathBuf },
 }
@@ -79,9 +75,7 @@ impl TextureDecodeRequest {
     /// The source path this decode reads.
     fn path(&self) -> &Path {
         match self {
-            TextureDecodeRequest::Assign { path, .. } | TextureDecodeRequest::Reload { path } => {
-                path
-            }
+            TextureDecodeRequest::Import { path } | TextureDecodeRequest::Reload { path } => path,
         }
     }
 }
@@ -198,6 +192,12 @@ struct App {
     /// Decoded-image cache keyed by source path, so a packed map assigned to
     /// several slots / materials decodes once. Cleared on model load / reset.
     texture_cache: HashMap<PathBuf, Arc<DecodedImage>>,
+    /// The scene-wide texture pool: imported source paths in insertion order. The
+    /// decoded pixels live in [`Self::texture_cache`]; this is just the ordered set
+    /// the Inspector's Texture files list + property dropdowns draw from (mirrored
+    /// into [`UiState::texture_pool`] by [`Self::refresh_texture_pool`]). Cleared on
+    /// model load / reset.
+    texture_pool: Vec<PathBuf>,
     /// The toast notification system (egui-notify). `app` owns it because it owns
     /// the egui frame and triggers the notifications (texture decode start/finish);
     /// the UI crate only provides the themed type. Shown once per frame in `render`.
@@ -277,6 +277,7 @@ impl Default for App {
             texture_watcher: None,
             watched_dirs: HashSet::new(),
             texture_cache: HashMap::new(),
+            texture_pool: Vec::new(),
             notifications: Notifications::new(),
         }
     }
@@ -300,6 +301,20 @@ fn same_path(a: &Path, b: &Path) -> bool {
         (Ok(a), Ok(b)) => a == b,
         _ => false,
     }
+}
+
+/// The image extensions the texture pool accepts (the picker filter + the
+/// drag-drop routing). Anything else dropped on the window is treated as a model.
+const TEXTURE_EXTENSIONS: [&str; 9] = [
+    "png", "jpg", "jpeg", "tga", "tif", "tiff", "psd", "bmp", "gif",
+];
+
+/// Whether `path`'s extension is one the texture pool accepts (case-insensitive).
+fn is_image_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .is_some_and(|ext| TEXTURE_EXTENSIONS.contains(&ext.as_str()))
 }
 
 /// A short human label for a texture path — its file name, or the full path when
@@ -682,7 +697,13 @@ impl ApplicationHandler<UserEvent> for App {
                 self.handle_keyboard_shortcut(&event);
             }
             WindowEvent::DroppedFile(path) => {
-                self.open_model_from_path(&path);
+                // An image dropped anywhere joins the scene texture pool (the
+                // Inspector's "drop to add"); anything else is treated as a model.
+                if is_image_path(&path) {
+                    self.import_texture_path(path);
+                } else {
+                    self.open_model_from_path(&path);
+                }
             }
             _ => {}
         }
@@ -1107,7 +1128,7 @@ impl App {
             redraw = true;
         }
 
-        // Clear a slot back to its fallback (Phase 3).
+        // Clear a property's slot back to its fallback ("select texture").
         if let Some(slot_ref) = output.texture_clear {
             if let Some(slot) = TextureSlot::from_index(slot_ref.slot) {
                 if let Some(renderer) = self.renderer.as_mut() {
@@ -1118,10 +1139,23 @@ impl App {
             }
         }
 
-        // Browse for + assign a slot (opens the file dialog, decodes, uploads). Done
-        // last because the modal dialog blocks the loop.
-        if let Some(slot_ref) = output.texture_browse {
-            self.browse_texture(slot_ref);
+        // Bind a pooled texture to a property (the texture dropdown). The image is
+        // already decoded in the pool, so this applies on the spot.
+        if let Some(assign) = output.texture_assign {
+            self.assign_pooled_texture(assign.slot, assign.path);
+            redraw = true;
+        }
+
+        // Remove a pooled texture (the ✕) — also unbinds every slot using it.
+        if let Some(path) = output.texture_remove {
+            self.remove_texture(&path);
+            redraw = true;
+        }
+
+        // Import textures into the pool ("Add textures…"). Done last because the
+        // modal picker blocks the loop.
+        if output.texture_import {
+            self.import_textures();
         }
 
         if redraw {
@@ -1138,47 +1172,96 @@ impl App {
         }
     }
 
-    /// Open the image picker for a texture slot and assign the chosen file.
-    fn browse_texture(&mut self, slot_ref: TextureSlotRef) {
-        let file = rfd::FileDialog::new()
-            .add_filter(
-                "Image",
-                &[
-                    "png", "jpg", "jpeg", "tga", "tif", "tiff", "psd", "bmp", "gif",
-                ],
-            )
-            .set_title("Assign Texture")
-            .pick_file();
-        if let Some(path) = file {
-            self.assign_texture(slot_ref, path);
+    /// Mirror the ordered texture pool into the UI snapshot (invariant 2), pairing
+    /// each pooled path with its decoded image from the cache. Called after any
+    /// import / remove / reload / model load.
+    fn refresh_texture_pool(&mut self) {
+        self.ui.texture_pool = self
+            .texture_pool
+            .iter()
+            .filter_map(|path| {
+                self.texture_cache.get(path).map(|image| TexturePoolEntry {
+                    path: path.clone(),
+                    image: Arc::clone(image),
+                })
+            })
+            .collect();
+    }
+
+    /// Open the multi-select image picker and import each chosen file into the
+    /// scene texture pool. Done from `apply_ui_output` (the modal blocks the loop).
+    fn import_textures(&mut self) {
+        let files = rfd::FileDialog::new()
+            .add_filter("Image", &TEXTURE_EXTENSIONS)
+            .set_title("Import Textures")
+            .pick_files();
+        if let Some(files) = files {
+            for path in files {
+                self.import_texture_path(path);
+            }
         }
     }
 
-    /// Assign `path` to the material slot with auto-detected channel routing. An
-    /// already-decoded image (cache hit) is applied immediately; otherwise the
+    /// Import `path` into the scene texture pool. An already-decoded file (cache
+    /// hit, or a drop of one already pooled) joins immediately; otherwise the
     /// decode runs on a background thread (so a slow PSD / large image can't freeze
-    /// the event loop) and a "Decoding…" toast is shown until it lands back via
+    /// the event loop) and a "Decoding…" toast shows until it lands back via
     /// [`UserEvent::TextureDecoded`].
-    fn assign_texture(&mut self, slot_ref: TextureSlotRef, path: PathBuf) {
-        let Some(slot) = TextureSlot::from_index(slot_ref.slot) else {
-            return;
-        };
-        let channel = suggested_channel(&path, slot);
-        // Cache hit: apply on the spot — instant, no thread, no toast.
-        if let Some(image) = self.texture_cache.get(&path).cloned() {
-            self.apply_assigned_texture(slot_ref, &path, image, channel);
+    fn import_texture_path(&mut self, path: PathBuf) {
+        if self.texture_pool.contains(&path) {
             return;
         }
-        // Cache miss: decode off the event loop. The result returns as
-        // `UserEvent::TextureDecoded` and is applied in `handle_texture_decoded`.
+        // Already decoded (a prior import that was removed, say): pool on the spot.
+        if self.texture_cache.contains_key(&path) {
+            self.texture_pool.push(path.clone());
+            self.watch_texture(&path);
+            self.refresh_texture_pool();
+            self.redraw_requested = true;
+            return;
+        }
         self.notifications
             .begin_activity(format!("Decoding {}…", file_label(&path)));
         self.redraw_requested = true;
-        self.spawn_decode(TextureDecodeRequest::Assign {
-            slot: slot_ref,
-            path,
-            channel,
-        });
+        self.spawn_decode(TextureDecodeRequest::Import { path });
+    }
+
+    /// Bind an already-pooled texture to a material slot, auto-detecting the
+    /// channel routing from its filename. The image is in the pool (decoded), so
+    /// this applies immediately.
+    fn assign_pooled_texture(&mut self, slot_ref: TextureSlotRef, path: PathBuf) {
+        let Some(slot) = TextureSlot::from_index(slot_ref.slot) else {
+            return;
+        };
+        let Some(image) = self.texture_cache.get(&path).cloned() else {
+            warn!(path = %path.display(), "assign of a texture not in the pool");
+            return;
+        };
+        let channel = suggested_channel(&path, slot);
+        self.apply_assigned_texture(slot_ref, &path, image, channel);
+    }
+
+    /// Remove a texture from the pool and unbind every material slot that
+    /// referenced it (reverting those slots to their neutral fallback).
+    fn remove_texture(&mut self, path: &Path) {
+        if let Some(renderer) = self.renderer.as_mut() {
+            // `material_snapshot` is an owned copy, so iterating it while mutating
+            // the renderer's slots below is fine.
+            let snapshot = renderer.material_snapshot();
+            for (material_index, material) in snapshot.iter().enumerate() {
+                for slot in TextureSlot::ALL {
+                    let references = material.state.textures[slot.index()]
+                        .as_ref()
+                        .is_some_and(|binding| binding.path == path);
+                    if references {
+                        renderer.clear_texture_slot(material_index, slot);
+                    }
+                }
+            }
+        }
+        self.texture_pool.retain(|pooled| pooled != path);
+        self.texture_cache.remove(path);
+        self.refresh_materials();
+        self.refresh_texture_pool();
     }
 
     /// Apply an already-decoded image to a material slot: upload it, register the
@@ -1219,7 +1302,7 @@ impl App {
 
     /// Apply a finished background decode on the main thread: cache + upload the
     /// pixels and update the slot/binding, or report the failure. Always clears the
-    /// activity toast it was paired with (in `assign_texture` / `reload_texture_file`).
+    /// activity toast it was paired with (in `import_texture_path` / `reload_texture_file`).
     fn handle_texture_decoded(&mut self, decode: TextureDecode) {
         self.notifications.end_activity();
         let TextureDecode { request, result } = decode;
@@ -1230,8 +1313,13 @@ impl App {
                 let image = Arc::new(image);
                 self.texture_cache.insert(path.clone(), Arc::clone(&image));
                 match request {
-                    TextureDecodeRequest::Assign { slot, channel, .. } => {
-                        self.apply_assigned_texture(slot, &path, image, channel);
+                    TextureDecodeRequest::Import { .. } => {
+                        if !self.texture_pool.contains(&path) {
+                            self.texture_pool.push(path.clone());
+                        }
+                        self.watch_texture(&path);
+                        self.refresh_texture_pool();
+                        self.redraw_requested = true;
                         self.notifications.success(format!("Loaded {name}"));
                     }
                     TextureDecodeRequest::Reload { .. } => {
@@ -1239,6 +1327,9 @@ impl App {
                             .renderer
                             .as_mut()
                             .is_some_and(|renderer| renderer.reload_texture(&path, image));
+                        // Refresh the pool regardless so the thumbnail picks up the
+                        // re-decoded image even if the file isn't bound to a slot.
+                        self.refresh_texture_pool();
                         if updated {
                             self.refresh_materials();
                             self.redraw_requested = true;
@@ -1327,6 +1418,8 @@ impl App {
     /// longer apply.
     fn reset_texture_state(&mut self) {
         self.texture_cache.clear();
+        self.texture_pool.clear();
+        self.ui.texture_pool = Vec::new();
         self.watched_dirs.clear();
         // Dropping the watcher unregisters every directory.
         self.texture_watcher = None;
