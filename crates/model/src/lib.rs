@@ -384,6 +384,24 @@ mod tests {
         // Per-triangle node index runs parallel and points at the single node.
         assert_eq!(model.tri_node.len(), model.stats.triangle_count);
         assert!(model.tri_node.iter().all(|&node| node == 0));
+
+        // The parallel per-triangle arrays stay mutually in lockstep, and every
+        // index they carry points at a real face / material / node. This is the
+        // invariant the step-8 `TriangleData::validate` will formalize; pinning it
+        // here means that data move must preserve it.
+        assert_eq!(model.tri_to_face.len(), model.stats.triangle_count);
+        for &face in &model.tri_to_face {
+            assert!((face as usize) < model.faces.len(), "tri_to_face out of range");
+        }
+        for &slot in &model.tri_material {
+            assert!(
+                (slot as usize) < model.materials.len(),
+                "tri_material out of range"
+            );
+        }
+        for &node in &model.tri_node {
+            assert!((node as usize) < model.nodes.len(), "tri_node out of range");
+        }
     }
 
     #[test]

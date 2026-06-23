@@ -443,5 +443,43 @@ mod tests {
                 "tri_node index {node} out of range"
             );
         }
+
+        // Round-trip marshaling: the loaded model is internally consistent.
+        let triangle_count = model.stats.triangle_count;
+        assert_eq!(
+            model.indices.len(),
+            triangle_count * 3,
+            "index count must be three per triangle"
+        );
+        assert_eq!(
+            model.tri_to_face.len(),
+            triangle_count,
+            "tri_to_face must hold one entry per triangle"
+        );
+        for &face in &model.tri_to_face {
+            assert!(
+                (face as usize) < model.faces.len(),
+                "tri_to_face index {face} out of range"
+            );
+        }
+        assert!(
+            model.bounds.is_some(),
+            "a non-empty imported mesh must compute bounds"
+        );
+        // Multi-set UV tables, when present, carry one full per-vertex channel each.
+        if !model.uv_channels.is_empty() {
+            assert_eq!(
+                model.uv_channels.len(),
+                model.stats.uv_set_count,
+                "uv_channels must hold one entry per UV set"
+            );
+            for channel in &model.uv_channels {
+                assert_eq!(
+                    channel.len(),
+                    model.vertices.len(),
+                    "each UV channel must cover every vertex"
+                );
+            }
+        }
     }
 }
