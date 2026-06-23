@@ -102,7 +102,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
  "x11rb",
 ]
 
@@ -697,6 +697,15 @@ dependencies = [
  "log",
  "nohash-hasher",
  "profiling",
+]
+
+[[package]]
+name = "egui-notify"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ab6bab52b2ef6d7ba32697da10a2ae7d3e8a245f9da42f62826af3afcd8fdc3"
+dependencies = [
+ "egui",
 ]
 
 [[package]]
@@ -2409,6 +2418,7 @@ name = "review-ui"
 version = "0.1.0"
 dependencies = [
  "egui",
+ "egui-notify",
  "egui-wgpu",
  "glam",
  "image",

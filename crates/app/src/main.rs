@@ -20,13 +20,13 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use review_import::{LoadOptions, load_model};
 use review_model::{ModelData, SceneBvh};
 use review_render::{
-    DecodedImage, EGUI_DEPTH_FORMAT, EGUI_MSAA_SAMPLE_COUNT, Renderer, RendererConfig, ShadingMode,
-    TextureSlot, decode_image, ibl_supported, ssao_supported, suggested_channel,
-    supported_msaa_levels,
+    ChannelSelect, DecodedImage, EGUI_DEPTH_FORMAT, EGUI_MSAA_SAMPLE_COUNT, Renderer,
+    RendererConfig, ShadingMode, TextureSlot, decode_image, ibl_supported, ssao_supported,
+    suggested_channel, supported_msaa_levels,
 };
 use review_ui::{
-    AxisGizmoAction, Selection, TextureSlotRef, UiOutput, UiState, WorkspaceMode, draw_overlay,
-    draw_startup_fade, draw_viewport_scene, init_style,
+    AxisGizmoAction, Notifications, Selection, TextureSlotRef, UiOutput, UiState, WorkspaceMode,
+    draw_overlay, draw_startup_fade, draw_viewport_scene, init_style,
 };
 use tracing::{info, warn};
 use winit::{
@@ -37,14 +37,53 @@ use winit::{
     window::{Window, WindowAttributes, WindowId},
 };
 
-/// Custom event posted from the texture file-watcher's background thread to the
-/// winit event loop, so disk-auto-reload re-decodes on the main thread (the redraw
-/// loop stays in `app` — invariant 6).
+/// Custom event posted from a background thread to the winit event loop, so work
+/// done off the main thread is applied back on it (the redraw loop + all renderer
+/// state stay in `app` — invariant 6).
 #[derive(Debug, Clone)]
 enum UserEvent {
     /// A watched directory reported a change to this path; if it's a bound texture,
-    /// re-decode + re-upload it.
+    /// re-decode + re-upload it (posted by the file-watcher thread).
     TextureChanged(PathBuf),
+    /// A background texture decode finished (posted by the decode thread). The
+    /// result is uploaded + the slot/binding updated here on the main thread.
+    TextureDecoded(TextureDecode),
+}
+
+/// A finished background texture decode, posted back to the event loop. Carries
+/// what the decode was *for* ([`TextureDecodeRequest`]) so the main thread knows
+/// how to apply the pixels (or report the failure).
+#[derive(Debug, Clone)]
+struct TextureDecode {
+    request: TextureDecodeRequest,
+    /// Decoded pixels, or a human-readable error (shown as an error toast).
+    result: Result<DecodedImage, String>,
+}
+
+/// Why a texture was being decoded off-thread — determines how the result is
+/// applied once it returns.
+#[derive(Debug, Clone)]
+enum TextureDecodeRequest {
+    /// The user assigned `path` to a material slot; `channel` is the auto-detected
+    /// routing (computed at dispatch, before the slow decode).
+    Assign {
+        slot: TextureSlotRef,
+        path: PathBuf,
+        channel: ChannelSelect,
+    },
+    /// A watched file changed on disk; re-upload every binding using `path`.
+    Reload { path: PathBuf },
+}
+
+impl TextureDecodeRequest {
+    /// The source path this decode reads.
+    fn path(&self) -> &Path {
+        match self {
+            TextureDecodeRequest::Assign { path, .. } | TextureDecodeRequest::Reload { path } => {
+                path
+            }
+        }
+    }
 }
 
 use window_state::WindowPlacement;
@@ -159,6 +198,10 @@ struct App {
     /// Decoded-image cache keyed by source path, so a packed map assigned to
     /// several slots / materials decodes once. Cleared on model load / reset.
     texture_cache: HashMap<PathBuf, Arc<DecodedImage>>,
+    /// The toast notification system (egui-notify). `app` owns it because it owns
+    /// the egui frame and triggers the notifications (texture decode start/finish);
+    /// the UI crate only provides the themed type. Shown once per frame in `render`.
+    notifications: Notifications,
 }
 
 /// State of the launch fade-in. `elapsed` is animation time accumulated across
@@ -234,6 +277,7 @@ impl Default for App {
             texture_watcher: None,
             watched_dirs: HashSet::new(),
             texture_cache: HashMap::new(),
+            notifications: Notifications::new(),
         }
     }
 }
@@ -258,6 +302,14 @@ fn same_path(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// A short human label for a texture path — its file name, or the full path when
+/// it has no file-name component. Used in the notification toast captions.
+fn file_label(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
 /// Decode the embedded application logo into a winit window icon — used for the
 /// title bar, Alt+Tab, and the taskbar button while the app is running. A decode
 /// failure is non-fatal: the window simply falls back to the system default.
@@ -278,6 +330,7 @@ impl ApplicationHandler<UserEvent> for App {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::TextureChanged(path) => self.reload_texture_file(&path),
+            UserEvent::TextureDecoded(decode) => self.handle_texture_decoded(decode),
         }
     }
 
@@ -729,6 +782,9 @@ impl App {
             let scene_model = self.scene_model.clone();
             let scene_revision = self.scene_revision;
             let occlusion_bvh = self.occlusion_bvh.as_ref();
+            // Borrowed as a disjoint field so the egui closure can show the toasts
+            // alongside its `&mut self.ui` borrow (the toast system lives in `app`).
+            let notifications = &mut self.notifications;
             let mut ui_output = UiOutput::default();
             let full_output = egui_ctx.run(raw_input, |ctx| {
                 draw_viewport_scene(
@@ -741,6 +797,10 @@ impl App {
                     output_format,
                 );
                 ui_output = draw_overlay(ctx, &mut self.ui, camera, &scene_model, occlusion_bvh);
+                // Toasts paint on the egui Foreground layer, above the chrome but
+                // below the launch-fade cover (Tooltip order), so the fade hides
+                // them too during the dissolve.
+                notifications.show(ctx);
                 // Above all chrome: the launch fade cover (no-op once revealed).
                 draw_startup_fade(ctx, cover_opacity);
             });
@@ -860,9 +920,13 @@ impl App {
                 self.ui.uv_view_channel = 0;
                 self.scene_model = model;
                 self.scene_revision = self.scene_revision.saturating_add(1);
+                self.notifications
+                    .success(format!("Loaded {}", file_label(path)));
                 info!(path = %path.display(), "model loaded");
             }
             Err(error) => {
+                self.notifications
+                    .error(format!("Couldn't load {}", file_label(path)));
                 warn!(path = %path.display(), error = %error, "model load failed");
             }
         }
@@ -1079,7 +1143,9 @@ impl App {
         let file = rfd::FileDialog::new()
             .add_filter(
                 "Image",
-                &["png", "jpg", "jpeg", "tga", "tif", "tiff", "psd", "bmp", "gif"],
+                &[
+                    "png", "jpg", "jpeg", "tga", "tif", "tiff", "psd", "bmp", "gif",
+                ],
             )
             .set_title("Assign Texture")
             .pick_file();
@@ -1088,42 +1154,106 @@ impl App {
         }
     }
 
-    /// Decode `path` (deduped via the cache), assign it to the material slot with
-    /// auto-detected channel routing, register the file for disk-auto-reload, and
-    /// refresh the UI. A decode failure warns and leaves the slot unchanged.
+    /// Assign `path` to the material slot with auto-detected channel routing. An
+    /// already-decoded image (cache hit) is applied immediately; otherwise the
+    /// decode runs on a background thread (so a slow PSD / large image can't freeze
+    /// the event loop) and a "Decoding…" toast is shown until it lands back via
+    /// [`UserEvent::TextureDecoded`].
     fn assign_texture(&mut self, slot_ref: TextureSlotRef, path: PathBuf) {
         let Some(slot) = TextureSlot::from_index(slot_ref.slot) else {
             return;
         };
-        let Some(image) = self.decode_cached(&path) else {
+        let channel = suggested_channel(&path, slot);
+        // Cache hit: apply on the spot — instant, no thread, no toast.
+        if let Some(image) = self.texture_cache.get(&path).cloned() {
+            self.apply_assigned_texture(slot_ref, &path, image, channel);
+            return;
+        }
+        // Cache miss: decode off the event loop. The result returns as
+        // `UserEvent::TextureDecoded` and is applied in `handle_texture_decoded`.
+        self.notifications
+            .begin_activity(format!("Decoding {}…", file_label(&path)));
+        self.redraw_requested = true;
+        self.spawn_decode(TextureDecodeRequest::Assign {
+            slot: slot_ref,
+            path,
+            channel,
+        });
+    }
+
+    /// Apply an already-decoded image to a material slot: upload it, register the
+    /// file for disk-auto-reload, and refresh the UI. Used by both the cache-hit
+    /// path and the background-decode completion.
+    fn apply_assigned_texture(
+        &mut self,
+        slot_ref: TextureSlotRef,
+        path: &Path,
+        image: Arc<DecodedImage>,
+        channel: ChannelSelect,
+    ) {
+        let Some(slot) = TextureSlot::from_index(slot_ref.slot) else {
             return;
         };
-        let channel = suggested_channel(&path, slot);
         if let Some(renderer) = self.renderer.as_mut() {
-            renderer.set_texture_slot(slot_ref.material, slot, path.clone(), image, channel);
+            renderer.set_texture_slot(slot_ref.material, slot, path.to_path_buf(), image, channel);
         }
-        self.watch_texture(&path);
+        self.watch_texture(path);
         self.refresh_materials();
         self.redraw_requested = true;
     }
 
-    /// Decode an image, returning the cached `Arc` when the path was decoded
-    /// before. Warns + returns `None` on failure (the slot keeps its fallback).
-    fn decode_cached(&mut self, path: &Path) -> Option<Arc<DecodedImage>> {
-        if let Some(image) = self.texture_cache.get(path) {
-            return Some(Arc::clone(image));
-        }
-        match decode_image(path) {
+    /// Spawn a background thread that decodes `request`'s source image and posts the
+    /// result back to the event loop. Decoding (especially the `magick`-shelled PSD
+    /// path) can take seconds, so it must never run on the main thread.
+    fn spawn_decode(&self, request: TextureDecodeRequest) {
+        let Some(proxy) = self.texture_proxy.clone() else {
+            warn!("no event-loop proxy; cannot decode texture off-thread");
+            return;
+        };
+        std::thread::spawn(move || {
+            let result = decode_image(request.path());
+            // A send failure only means the event loop has exited; nothing to do.
+            let _ = proxy.send_event(UserEvent::TextureDecoded(TextureDecode { request, result }));
+        });
+    }
+
+    /// Apply a finished background decode on the main thread: cache + upload the
+    /// pixels and update the slot/binding, or report the failure. Always clears the
+    /// activity toast it was paired with (in `assign_texture` / `reload_texture_file`).
+    fn handle_texture_decoded(&mut self, decode: TextureDecode) {
+        self.notifications.end_activity();
+        let TextureDecode { request, result } = decode;
+        let path = request.path().to_path_buf();
+        let name = file_label(&path);
+        match result {
             Ok(image) => {
                 let image = Arc::new(image);
-                self.texture_cache
-                    .insert(path.to_path_buf(), Arc::clone(&image));
-                Some(image)
+                self.texture_cache.insert(path.clone(), Arc::clone(&image));
+                match request {
+                    TextureDecodeRequest::Assign { slot, channel, .. } => {
+                        self.apply_assigned_texture(slot, &path, image, channel);
+                        self.notifications.success(format!("Loaded {name}"));
+                    }
+                    TextureDecodeRequest::Reload { .. } => {
+                        let updated = self
+                            .renderer
+                            .as_mut()
+                            .is_some_and(|renderer| renderer.reload_texture(&path, image));
+                        if updated {
+                            self.refresh_materials();
+                            self.redraw_requested = true;
+                            self.notifications.info(format!("Reloaded {name}"));
+                        }
+                    }
+                }
             }
             Err(error) => {
                 warn!(path = %path.display(), error = %error, "texture decode failed");
-                None
+                self.notifications.error(format!("Couldn't load {name}"));
             }
+        }
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
         }
     }
 
@@ -1173,7 +1303,9 @@ impl App {
 
     /// Re-decode + re-upload a texture that changed on disk (the watcher event).
     /// Matches the event path against the bound texture paths (canonicalizing to
-    /// tolerate path-form differences), then reloads every binding using it.
+    /// tolerate path-form differences), then decodes off-thread (like an assign) so
+    /// a slow re-decode of an edited PSD never freezes the loop; the reload is
+    /// applied in `handle_texture_decoded`.
     fn reload_texture_file(&mut self, changed: &Path) {
         let Some(renderer) = self.renderer.as_ref() else {
             return;
@@ -1185,24 +1317,9 @@ impl App {
         else {
             return;
         };
-        let image = match decode_image(&bound) {
-            Ok(image) => Arc::new(image),
-            Err(error) => {
-                warn!(path = %bound.display(), error = %error, "texture reload decode failed");
-                return;
-            }
-        };
-        self.texture_cache.insert(bound.clone(), Arc::clone(&image));
-        let updated = self
-            .renderer
-            .as_mut()
-            .is_some_and(|renderer| renderer.reload_texture(&bound, image));
-        if updated {
-            self.refresh_materials();
-            if let Some(window) = self.window.as_ref() {
-                window.request_redraw();
-            }
-        }
+        self.notifications
+            .begin_activity(format!("Reloading {}…", file_label(&bound)));
+        self.spawn_decode(TextureDecodeRequest::Reload { path: bound });
     }
 
     /// Drop all texture-watching + decode state (model load / reset): the new

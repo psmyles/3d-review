@@ -222,7 +222,11 @@ fn decode_via_magick(path: &Path) -> Result<image::DynamicImage, String> {
 fn locate_magick() -> Option<PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let candidate = dir.join(if cfg!(windows) { "magick.exe" } else { "magick" });
+            let candidate = dir.join(if cfg!(windows) {
+                "magick.exe"
+            } else {
+                "magick"
+            });
             if candidate.is_file() {
                 return Some(candidate);
             }
@@ -264,7 +268,10 @@ fn packed_channel(token: &str, slot: TextureSlot) -> Option<ChannelSelect> {
     let upper = token.to_ascii_uppercase();
     // Only treat 3–4 letter all-property tokens as packings, so a plain
     // `..._color` or `..._normal` suffix is never misread.
-    if !(3..=4).contains(&upper.len()) || !upper.bytes().all(|b| matches!(b, b'O' | b'A' | b'R' | b'M'))
+    if !(3..=4).contains(&upper.len())
+        || !upper
+            .bytes()
+            .all(|b| matches!(b, b'O' | b'A' | b'R' | b'M'))
     {
         return None;
     }

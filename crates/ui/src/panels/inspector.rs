@@ -36,9 +36,11 @@ pub(crate) fn body(ui: &mut egui::Ui, state: &UiState, model: &ModelData) -> Ins
             ui.weak("Select a node or material in the Outliner.");
             InspectorOutput::default()
         }
-        Selection::Material(index) => egui::ScrollArea::vertical()
-            .show(ui, |ui| material_inspector(ui, state, index))
-            .inner,
+        Selection::Material(index) => {
+            egui::ScrollArea::vertical()
+                .show(ui, |ui| material_inspector(ui, state, index))
+                .inner
+        }
         Selection::Node(index) => {
             node_inspector(ui, model, index);
             InspectorOutput::default()

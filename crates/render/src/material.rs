@@ -18,7 +18,7 @@ use std::sync::Arc;
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
 
-use crate::texture::{ChannelSelect, DecodedImage, TextureSlot, TEXTURE_SLOT_COUNT};
+use crate::texture::{ChannelSelect, DecodedImage, TEXTURE_SLOT_COUNT, TextureSlot};
 
 /// One per-material draw: a contiguous run of the reordered mesh index buffer
 /// whose triangles share a single material slot. `material` indexes the table, or
@@ -398,8 +398,8 @@ impl MaterialTable {
         let mut bind_groups = Vec::with_capacity(materials.len());
         for (index, material) in materials.iter().enumerate() {
             let offset = index as u64 * self.stride;
-            let views: [&wgpu::TextureView; TEXTURE_SLOT_COUNT] = std::array::from_fn(|slot| {
-                match &material.textures[slot] {
+            let views: [&wgpu::TextureView; TEXTURE_SLOT_COUNT] =
+                std::array::from_fn(|slot| match &material.textures[slot] {
                     Some(binding) => {
                         let srgb = TextureSlot::ALL[slot].is_srgb();
                         let key = (binding.path.clone(), srgb);
@@ -409,8 +409,7 @@ impl MaterialTable {
                             .unwrap_or(&self.fallback_views[slot])
                     }
                     None => &self.fallback_views[slot],
-                }
-            });
+                });
             bind_groups.push(build_bind_group(
                 device,
                 layout,

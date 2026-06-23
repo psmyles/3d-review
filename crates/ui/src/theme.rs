@@ -261,6 +261,27 @@ pub mod size {
     pub const MODE_SEGMENT_WIDTH: f32 = 56.0;
     pub const MODE_SEGMENT_HEIGHT: f32 = 42.0;
 
+    // ── Notifications (egui-notify toasts) ────────────────────────────────
+    /// Minimum horizontal inset of the toast stacks. The toasts are centered on
+    /// the viewport, but never pulled closer than this to either screen edge.
+    pub const NOTIFICATION_MARGIN_X: f32 = OVERLAY_MARGIN;
+    /// egui-notify's internal per-toast box padding (it hard-codes `vec2(10, 10)`).
+    /// Mirrored here so we can reconstruct a toast's on-screen width and center it
+    /// horizontally — egui-notify has no center anchor of its own.
+    pub const NOTIFICATION_PADDING: f32 = 10.0;
+    /// Vertical gap between stacked toasts (and the basis for one toast "row").
+    pub const NOTIFICATION_SPACING: f32 = 8.0;
+    /// Approximate height of one toast row (egui-notify's toast height plus the
+    /// inter-toast spacing), used to stack the activity toast above the events.
+    pub const NOTIFICATION_ROW: f32 = 34.0 + NOTIFICATION_SPACING;
+    /// Bottom inset of the transient *event* toast stack. Clears the status bar at
+    /// every display scale: the bar is at most `STATUS_BAR_HEIGHT` points tall, and
+    /// this inset is that plus a margin, so the toasts always sit above it.
+    pub const NOTIFICATION_EVENT_MARGIN_Y: f32 = STATUS_BAR_HEIGHT + OVERLAY_MARGIN;
+    /// Bottom inset of the persistent *activity* toast: one row above the event
+    /// stack so the work indicator and result toasts don't overlap.
+    pub const NOTIFICATION_ACTIVITY_MARGIN_Y: f32 = NOTIFICATION_EVENT_MARGIN_Y + NOTIFICATION_ROW;
+
     // ── Stats overlay ─────────────────────────────────────────────────────
     pub const STATS_ROW_SPACING: f32 = 3.0;
     pub const STATS_PANEL_WIDTH: f32 = 132.0;

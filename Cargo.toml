@@ -19,6 +19,7 @@ anyhow = "1"
 bytemuck = { version = "1", features = ["derive"] }
 cc = "1"
 egui = "0.31"
+egui-notify = "0.19"
 egui-wgpu = "0.31"
 egui-winit = "0.31"
 glam = "0.30"
