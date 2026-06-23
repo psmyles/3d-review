@@ -8,6 +8,7 @@ mod bloom;
 mod geometry;
 mod ibl;
 mod material;
+mod mipmap;
 mod post;
 mod scene;
 mod selection;
