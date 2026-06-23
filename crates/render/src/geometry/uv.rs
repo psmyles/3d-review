@@ -97,7 +97,12 @@ pub(crate) fn uv_fill_triangles(
             // All triangles of a face belong to the same island; resolve the
             // owning face for this triangle and use its island color.
             Some(colors) => {
-                let face = model.tri_to_face.get(triangle_index).copied().unwrap_or(0) as usize;
+                let face = model
+                    .triangles
+                    .to_face
+                    .get(triangle_index)
+                    .copied()
+                    .unwrap_or(0) as usize;
                 colors.get(face).copied().unwrap_or(UV_FILL_SOLID_COLOR)
             }
             None => UV_FILL_SOLID_COLOR,

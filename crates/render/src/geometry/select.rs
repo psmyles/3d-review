@@ -27,9 +27,9 @@ pub(crate) fn selection_geometry(
     // A hidden mesh isn't drawn, so its triangles must drop out of both the solo
     // list and the highlight flash — otherwise the flash floats in empty space
     // where the mesh would be. Clear the selected triangles owned by a hidden node.
-    if !hidden_nodes.is_empty() && model.tri_node.len() == mask.len() {
+    if !hidden_nodes.is_empty() && model.triangles.node.len() == mask.len() {
         let hidden: HashSet<u32> = hidden_nodes.iter().copied().collect();
-        for (triangle, owner) in model.tri_node.iter().enumerate() {
+        for (triangle, owner) in model.triangles.node.iter().enumerate() {
             if hidden.contains(owner) {
                 mask[triangle] = false;
             }
@@ -51,12 +51,16 @@ pub(crate) fn visible_geometry(
     hidden_nodes: &[u32],
 ) -> Option<(Vec<u32>, Vec<MaterialDrawRange>)> {
     let triangle_count = model.indices.len() / 3;
-    if triangle_count == 0 || hidden_nodes.is_empty() || model.tri_node.len() != triangle_count {
+    if triangle_count == 0
+        || hidden_nodes.is_empty()
+        || model.triangles.node.len() != triangle_count
+    {
         return None;
     }
     let hidden: HashSet<u32> = hidden_nodes.iter().copied().collect();
     let mask: Vec<bool> = model
-        .tri_node
+        .triangles
+        .node
         .iter()
         .map(|node| !hidden.contains(node))
         .collect();
@@ -75,20 +79,28 @@ fn selected_triangle_mask(model: &ModelData, selection: Selection) -> Option<Vec
     match selection {
         Selection::None => None,
         Selection::Material(slot) => {
-            if model.tri_material.len() != triangle_count {
+            if model.triangles.material.len() != triangle_count {
                 return None;
             }
             let slot = slot as u32;
-            Some(model.tri_material.iter().map(|&m| m == slot).collect())
+            Some(
+                model
+                    .triangles
+                    .material
+                    .iter()
+                    .map(|&m| m == slot)
+                    .collect(),
+            )
         }
         Selection::Node(node) => {
-            if model.tri_node.len() != triangle_count {
+            if model.triangles.node.len() != triangle_count {
                 return None;
             }
             let subtree = node_subtree(model, node);
             Some(
                 model
-                    .tri_node
+                    .triangles
+                    .node
                     .iter()
                     .map(|&n| subtree.contains(&n))
                     .collect(),
@@ -129,7 +141,7 @@ fn node_subtree(model: &ModelData, root: usize) -> HashSet<u32> {
 /// to draw only the selection while still feeding each material's uniform.
 fn selection_mesh(model: &ModelData, mask: &[bool]) -> (Vec<u32>, Vec<MaterialDrawRange>) {
     let triangle_count = model.indices.len() / 3;
-    let has_material = model.tri_material.len() == triangle_count;
+    let has_material = model.triangles.material.len() == triangle_count;
     let mut order: Vec<u32> = Vec::new();
     let mut groups: HashMap<u32, Vec<usize>> = HashMap::new();
     for triangle in 0..triangle_count {
@@ -137,7 +149,7 @@ fn selection_mesh(model: &ModelData, mask: &[bool]) -> (Vec<u32>, Vec<MaterialDr
             continue;
         }
         let slot = if has_material {
-            model.tri_material[triangle]
+            model.triangles.material[triangle]
         } else {
             0
         };
@@ -172,7 +184,7 @@ fn selection_mesh(model: &ModelData, mask: &[bool]) -> (Vec<u32>, Vec<MaterialDr
 mod tests {
     use super::*;
     use glam::{Vec2, Vec3, Vec4};
-    use review_model::Vertex;
+    use review_model::{TriangleData, Vertex};
 
     fn corner(index: usize) -> Vertex {
         Vertex {
@@ -195,7 +207,10 @@ mod tests {
         let model = ModelData {
             vertices,
             indices,
-            tri_material,
+            triangles: TriangleData {
+                material: tri_material,
+                ..Default::default()
+            },
             ..Default::default()
         };
 
@@ -238,7 +253,10 @@ mod tests {
         let model = ModelData {
             vertices,
             indices,
-            tri_node,
+            triangles: TriangleData {
+                node: tri_node,
+                ..Default::default()
+            },
             nodes,
             ..Default::default()
         };
@@ -267,7 +285,10 @@ mod tests {
         let model = ModelData {
             vertices,
             indices,
-            tri_node,
+            triangles: TriangleData {
+                node: tri_node,
+                ..Default::default()
+            },
             ..Default::default()
         };
 

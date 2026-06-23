@@ -83,7 +83,8 @@ mod ffi {
 
     use glam::{Mat4, Vec2, Vec3, Vec4};
     use review_model::{
-        MaterialInfo, ModelData, ModelStats, ModelWarning, SceneNode, TopologyFace, Vertex,
+        MaterialImportDefaults, ModelData, ModelStats, ModelWarning, SceneNode, TopologyFace,
+        TriangleData, Vertex,
     };
 
     use crate::{ImportError, LoadOptions};
@@ -252,7 +253,7 @@ mod ffi {
                 .collect::<Vec<_>>();
         let materials = checked_slice(scene.materials, scene.material_count, "materials")?
             .iter()
-            .map(|material| MaterialInfo {
+            .map(|material| MaterialImportDefaults {
                 name: read_optional_c_string(material.name).unwrap_or_else(|| "Default".to_owned()),
                 draw_count: material.draw_count as usize,
                 base_color: Vec3::from_array(material.base_color),
@@ -280,9 +281,11 @@ mod ffi {
             vertices,
             indices,
             faces,
-            tri_to_face,
-            tri_material,
-            tri_node,
+            triangles: TriangleData {
+                to_face: tri_to_face,
+                material: tri_material,
+                node: tri_node,
+            },
             nodes,
             uv_channels,
             uv_set_names,
@@ -306,6 +309,13 @@ mod ffi {
         // report that count rather than the C bridge's per-node tally so Draws is
         // the real draw-call count.
         model.stats.draw_count = model.material_draw_count();
+
+        // Lockstep guard at the one import funnel (invariant 7): each per-triangle
+        // array must be empty or exactly `triangle_count` long. Catches a bridge
+        // marshaling drift here, once, rather than in every renderer-side reader.
+        if let Err(error) = model.triangles.validate(model.stats.triangle_count) {
+            return Err(ImportError::LoadFailed(error));
+        }
 
         if model.vertices.is_empty() || model.indices.is_empty() {
             return Err(ImportError::LoadFailed(
@@ -411,19 +421,19 @@ mod tests {
             "imported scene-graph hierarchy must be non-empty"
         );
         assert_eq!(
-            model.tri_material.len(),
+            model.triangles.material.len(),
             model.stats.triangle_count,
             "tri_material must hold exactly one entry per triangle"
         );
         assert_eq!(
-            model.tri_material.len(),
-            model.tri_to_face.len(),
+            model.triangles.material.len(),
+            model.triangles.to_face.len(),
             "tri_material must run parallel to tri_to_face"
         );
 
         // Every recorded slot is either a valid material index or the
         // no-material sentinel.
-        for &slot in &model.tri_material {
+        for &slot in &model.triangles.material {
             assert!(
                 slot == u32::MAX || (slot as usize) < model.materials.len(),
                 "tri_material slot {slot} out of range"
@@ -433,11 +443,11 @@ mod tests {
         // Per-triangle node index runs parallel to the triangle list and points
         // at a real scene-graph node (Phase 2: drives per-node selection / solo).
         assert_eq!(
-            model.tri_node.len(),
+            model.triangles.node.len(),
             model.stats.triangle_count,
             "tri_node must hold exactly one entry per triangle"
         );
-        for &node in &model.tri_node {
+        for &node in &model.triangles.node {
             assert!(
                 (node as usize) < model.nodes.len(),
                 "tri_node index {node} out of range"
@@ -446,17 +456,21 @@ mod tests {
 
         // Round-trip marshaling: the loaded model is internally consistent.
         let triangle_count = model.stats.triangle_count;
+        assert!(
+            model.triangles.validate(triangle_count).is_ok(),
+            "per-triangle arrays must stay in lockstep"
+        );
         assert_eq!(
             model.indices.len(),
             triangle_count * 3,
             "index count must be three per triangle"
         );
         assert_eq!(
-            model.tri_to_face.len(),
+            model.triangles.to_face.len(),
             triangle_count,
             "tri_to_face must hold one entry per triangle"
         );
-        for &face in &model.tri_to_face {
+        for &face in &model.triangles.to_face {
             assert!(
                 (face as usize) < model.faces.len(),
                 "tri_to_face index {face} out of range"

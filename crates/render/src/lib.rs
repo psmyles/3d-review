@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use glam::{Mat4, Vec2, Vec3};
-use review_model::{Bounds, MaterialInfo};
+use review_model::{Bounds, MaterialImportDefaults};
 
 mod bloom;
 mod geometry;
@@ -1019,7 +1019,7 @@ impl Renderer {
     /// Seed the editable material table from a freshly loaded model's import
     /// defaults (or clear it for an empty model). Bumps the material revision so
     /// the GPU table is rebuilt/re-uploaded on the next frame.
-    pub fn set_model_materials(&mut self, materials: &[MaterialInfo]) {
+    pub fn set_model_materials(&mut self, materials: &[MaterialImportDefaults]) {
         self.material_states = materials
             .iter()
             .map(|material| MaterialState {

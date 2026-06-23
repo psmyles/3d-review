@@ -45,7 +45,7 @@ fn material_draw_ranges(model: &ModelData) -> (Vec<u32>, Vec<MaterialDrawRange>)
     if triangle_count == 0 {
         return (model.indices.clone(), Vec::new());
     }
-    if model.tri_material.len() != triangle_count {
+    if model.triangles.material.len() != triangle_count {
         let ranges = vec![MaterialDrawRange {
             material: 0,
             first_index: 0,
@@ -56,7 +56,7 @@ fn material_draw_ranges(model: &ModelData) -> (Vec<u32>, Vec<MaterialDrawRange>)
 
     let mut order: Vec<u32> = Vec::new();
     let mut groups: HashMap<u32, Vec<usize>> = HashMap::new();
-    for (triangle, &slot) in model.tri_material.iter().enumerate() {
+    for (triangle, &slot) in model.triangles.material.iter().enumerate() {
         groups
             .entry(slot)
             .or_insert_with(|| {
@@ -88,7 +88,7 @@ fn material_draw_ranges(model: &ModelData) -> (Vec<u32>, Vec<MaterialDrawRange>)
 mod tests {
     use super::*;
     use glam::{Vec2, Vec3, Vec4};
-    use review_model::Vertex;
+    use review_model::{TriangleData, Vertex};
 
     fn corner(index: usize) -> Vertex {
         Vertex {
@@ -112,7 +112,10 @@ mod tests {
         let model = ModelData {
             vertices,
             indices,
-            tri_material,
+            triangles: TriangleData {
+                material: tri_material,
+                ..Default::default()
+            },
             ..Default::default()
         };
 

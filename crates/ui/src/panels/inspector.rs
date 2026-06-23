@@ -463,7 +463,8 @@ fn node_inspector(ui: &mut egui::Ui, model: &ModelData, index: usize) {
     // Own triangles (this node's mesh), not the whole subtree — a quick audit
     // figure that matches what selecting just this node would isolate.
     let triangle_count = model
-        .tri_node
+        .triangles
+        .node
         .iter()
         .filter(|&&owner| owner as usize == index)
         .count();

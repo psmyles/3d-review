@@ -77,17 +77,17 @@ pub(crate) fn wireframe_lines(
 fn face_node_map(model: &ModelData) -> Option<Vec<u32>> {
     let triangle_count = model.indices.len() / 3;
     if triangle_count == 0
-        || model.tri_node.len() != triangle_count
-        || model.tri_to_face.len() != triangle_count
+        || model.triangles.node.len() != triangle_count
+        || model.triangles.to_face.len() != triangle_count
         || model.faces.is_empty()
     {
         return None;
     }
     let mut map = vec![u32::MAX; model.faces.len()];
     for triangle in 0..triangle_count {
-        let face = model.tri_to_face[triangle] as usize;
+        let face = model.triangles.to_face[triangle] as usize;
         if let Some(slot) = map.get_mut(face) {
-            *slot = model.tri_node[triangle];
+            *slot = model.triangles.node[triangle];
         }
     }
     Some(map)
@@ -104,10 +104,10 @@ fn triangulated_wireframe_lines(
     let mut vertices = Vec::with_capacity(model.indices.len() * 2);
     let triangle_count = model.indices.len() / 3;
     let hidden: HashSet<u32> = hidden_nodes.iter().copied().collect();
-    let resolve_nodes = !hidden.is_empty() && model.tri_node.len() == triangle_count;
+    let resolve_nodes = !hidden.is_empty() && model.triangles.node.len() == triangle_count;
 
     for (triangle_index, triangle) in model.indices.chunks_exact(3).enumerate() {
-        if resolve_nodes && hidden.contains(&model.tri_node[triangle_index]) {
+        if resolve_nodes && hidden.contains(&model.triangles.node[triangle_index]) {
             continue;
         }
         let [a, b, c] = [
@@ -185,7 +185,8 @@ pub(crate) fn face_normal_lines(
     }
 
     let face_count = model
-        .tri_to_face
+        .triangles
+        .to_face
         .iter()
         .copied()
         .max()
@@ -200,14 +201,15 @@ pub(crate) fn face_normal_lines(
     // contribute no normal lines; with no hidden set (or no per-triangle node
     // info) every triangle counts.
     let hidden: HashSet<u32> = hidden_nodes.iter().copied().collect();
-    let resolve_nodes = !hidden.is_empty() && model.tri_node.len() == triangle_count;
+    let resolve_nodes = !hidden.is_empty() && model.triangles.node.len() == triangle_count;
 
     for (triangle_index, triangle) in model.indices.chunks_exact(3).enumerate() {
-        if resolve_nodes && hidden.contains(&model.tri_node[triangle_index]) {
+        if resolve_nodes && hidden.contains(&model.triangles.node[triangle_index]) {
             continue;
         }
         let face_index = model
-            .tri_to_face
+            .triangles
+            .to_face
             .get(triangle_index)
             .copied()
             .unwrap_or(triangle_index as u32) as usize;
@@ -309,13 +311,16 @@ pub(crate) fn vertex_normal_lines(
 /// vertex is drawn).
 fn visible_vertex_mask(model: &ModelData, hidden_nodes: &[u32]) -> Option<Vec<bool>> {
     let triangle_count = model.indices.len() / 3;
-    if triangle_count == 0 || hidden_nodes.is_empty() || model.tri_node.len() != triangle_count {
+    if triangle_count == 0
+        || hidden_nodes.is_empty()
+        || model.triangles.node.len() != triangle_count
+    {
         return None;
     }
     let hidden: HashSet<u32> = hidden_nodes.iter().copied().collect();
     let mut mask = vec![false; model.vertices.len()];
     for (triangle_index, triangle) in model.indices.chunks_exact(3).enumerate() {
-        if hidden.contains(&model.tri_node[triangle_index]) {
+        if hidden.contains(&model.triangles.node[triangle_index]) {
             continue;
         }
         for &corner in triangle {
@@ -331,7 +336,7 @@ fn visible_vertex_mask(model: &ModelData, hidden_nodes: &[u32]) -> Option<Vec<bo
 mod tests {
     use super::*;
     use glam::{Vec2, Vec4};
-    use review_model::Vertex;
+    use review_model::{TriangleData, Vertex};
 
     fn corner(index: usize) -> Vertex {
         Vertex {
@@ -365,8 +370,11 @@ mod tests {
             vertices,
             indices,
             faces,
-            tri_to_face,
-            tri_node,
+            triangles: TriangleData {
+                to_face: tri_to_face,
+                node: tri_node,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let color = [1.0, 1.0, 1.0, 1.0];
@@ -419,8 +427,11 @@ mod tests {
             vertices,
             indices,
             faces,
-            tri_to_face,
-            tri_node,
+            triangles: TriangleData {
+                to_face: tri_to_face,
+                node: tri_node,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let color = [1.0, 1.0, 1.0, 1.0];
