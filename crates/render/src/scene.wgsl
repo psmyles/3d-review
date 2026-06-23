@@ -213,18 +213,25 @@ fn fs_main(input: VertexOutput) -> FragOutput {
     let tiling = max(uniforms.render_options.z, 1.0);
     // Vertex-color view: -1 off, else mode (0 RGB, 1 Alpha, 2 RGB+A).
     let vertex_color_mode = uniforms.render_options.w;
+    // FBX (and the DCC tools that feed it) author UVs with a bottom-left origin
+    // (V up), but wgpu samples textures from a top-left origin (V down), so the
+    // raw UV reads textures vertically mirrored. Flip V once here, at the single
+    // UV→texel boundary, for both the checker and every material slot — the model
+    // geometry's UVs (and the 2D UV viewport, which positions by `input.position`)
+    // stay untouched, so nothing downstream is mirrored twice.
+    let tex_uv = vec2<f32>(input.uv.x, 1.0 - input.uv.y);
     // Sample at top level so it stays in uniform control flow.
-    let checker = textureSample(checker_texture, checker_sampler, input.uv * tiling);
+    let checker = textureSample(checker_texture, checker_sampler, tex_uv * tiling);
     // Sample every material slot at the top level (uniform control flow), so the
     // branches below can use them without re-sampling in non-uniform flow. Slots
     // are gated by the slot-flags bitfield; an unbound slot reads its 1×1 fallback.
-    let tex_base = textureSample(base_color_tex, material_sampler, input.uv);
-    let tex_normal = textureSample(normal_tex, material_sampler, input.uv);
-    let tex_roughness = textureSample(roughness_tex, material_sampler, input.uv);
-    let tex_metallic = textureSample(metallic_tex, material_sampler, input.uv);
-    let tex_ao = textureSample(ao_tex, material_sampler, input.uv);
-    let tex_emissive = textureSample(emissive_tex, material_sampler, input.uv);
-    let tex_opacity = textureSample(opacity_tex, material_sampler, input.uv);
+    let tex_base = textureSample(base_color_tex, material_sampler, tex_uv);
+    let tex_normal = textureSample(normal_tex, material_sampler, tex_uv);
+    let tex_roughness = textureSample(roughness_tex, material_sampler, tex_uv);
+    let tex_metallic = textureSample(metallic_tex, material_sampler, tex_uv);
+    let tex_ao = textureSample(ao_tex, material_sampler, tex_uv);
+    let tex_emissive = textureSample(emissive_tex, material_sampler, tex_uv);
+    let tex_opacity = textureSample(opacity_tex, material_sampler, tex_uv);
     let slot_flags = u32(material.params.z);
     let normal_length_sq = dot(input.normal, input.normal);
 
