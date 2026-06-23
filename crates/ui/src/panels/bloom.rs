@@ -35,6 +35,7 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
         );
     });
 
+    ui.separator();
     if reset_button(ui).clicked() {
         // The on/off state is owned by the status-bar toggle, so reset only the
         // panel's own options and leave `enabled` untouched.

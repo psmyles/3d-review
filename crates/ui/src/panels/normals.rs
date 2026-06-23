@@ -6,7 +6,7 @@ use crate::state::{
     DEFAULT_NORMAL_LENGTH, NORMAL_LENGTH_MAX, NORMAL_LENGTH_MIN, NormalPanelState, UiState,
 };
 use crate::theme::color;
-use crate::widgets::{labeled_color32, labeled_slider_with_value, panel_grid, reset_button};
+use crate::widgets::{color_swatch_row, labeled_slider_with_value, panel_grid, reset_button};
 
 pub(super) fn face_body(ui: &mut egui::Ui, state: &mut UiState) {
     normal_body(ui, &mut state.face_normals, color::FACE_NORMAL_DEFAULT);
@@ -25,8 +25,14 @@ fn normal_body(ui: &mut egui::Ui, normals: &mut NormalPanelState, default_color:
             NORMAL_LENGTH_MIN..=NORMAL_LENGTH_MAX,
             3,
         );
-        labeled_color32(ui, "Line Color", &mut normals.color);
+        color_swatch_row(
+            ui,
+            "Line Color",
+            &mut normals.color,
+            &color::NORMAL_SWATCHES,
+        );
     });
+    ui.separator();
     if reset_button(ui).clicked() {
         normals.length = DEFAULT_NORMAL_LENGTH;
         normals.color = default_color;

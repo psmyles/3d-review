@@ -306,6 +306,19 @@ pub mod size {
     /// vertical row gap and a modest gap between the label and control columns.
     pub const PANEL_GRID_COL_GAP: f32 = 12.0;
     pub const PANEL_GRID_ROW_GAP: f32 = 4.0;
+    /// Option-panel grid column widths (raw points). The label column is pinned
+    /// (long labels truncate rather than widen it); the control column is
+    /// *elastic* — controls fill all remaining row width so their right edge
+    /// always sits flush with the panel's right edge (no trailing empty space),
+    /// however wide egui sizes the window. [`PANEL_CONTROL_COL_WIDTH`] is only
+    /// the control column's **minimum**, used to pin the panel's minimum width
+    /// (`PANEL_LABEL_COL_WIDTH + PANEL_GRID_COL_GAP + PANEL_CONTROL_COL_WIDTH`).
+    pub const PANEL_LABEL_COL_WIDTH: f32 = 116.0;
+    pub const PANEL_CONTROL_COL_WIDTH: f32 = 128.0;
+    /// Fixed width of a slider row's value box (a separate `DragValue`, not the
+    /// slider's auto-sized inline readout — fixed so the box never reflows as the
+    /// number's digit count changes). The slider rail fills the rest of the row.
+    pub const PANEL_SLIDER_VALUE_W: f32 = 48.0;
     pub const PANEL_BUTTON_HEIGHT: f32 = 32.0;
     pub const PANEL_SWATCH_SIZE: f32 = 24.0;
     pub const PANEL_SWATCH_GAP: f32 = 6.0;
@@ -391,6 +404,10 @@ pub mod size {
 /// JetBrains Mono; see [`crate::assets`].
 pub mod font {
     pub const STATS: f32 = 12.0;
+    /// Option-panel body text (labels, slider value boxes, combo text, the reset
+    /// button). Rendered in the monospace face one step smaller than egui's
+    /// default body size so numeric readouts line up on a fixed grid.
+    pub const PANEL_BODY: f32 = 12.0;
     /// Bounding-box dimension-label text (monospace).
     pub const DIMENSION_LABEL: f32 = 18.0;
     pub const GIZMO_LABEL: f32 = 16.0;
@@ -400,6 +417,10 @@ pub mod font {
     /// Section-heading font in the Inspector side panel.
     pub const PANEL_LABEL: f32 = 14.0;
     pub const PANEL_BUTTON: f32 = 14.0;
+    /// egui `TextStyle::Heading` size — used by native window title bars and the
+    /// Inspector's `ui.heading` section headings. Trimmed from egui's stock 18 so
+    /// the option-window title bars are a touch shorter.
+    pub const PANEL_HEADING: f32 = 14.0;
 
     // ── Startup help overlay (sized to match the app's other overlay text) ──
     pub const HELP_TITLE: f32 = 14.0;
@@ -422,21 +443,29 @@ pub fn init_style(ctx: &egui::Context) {
     apply_visuals(ctx);
 }
 
-/// Apply the app's egui visuals onto `ctx`.
+/// Apply the app's egui style onto `ctx`.
 ///
-/// Deliberately **pure egui `Visuals::dark()`** — no surface/accent/spacing
+/// Essentially **pure egui `Visuals::dark()`** — no surface/accent/spacing
 /// overrides. The egui chrome (toolbar / status bar / option panels / side
 /// panels / native widgets) uses egui's stock dark theme so every control,
 /// visual and layout reads exactly like the egui demo. The app's *own* fonts are
 /// still installed separately ([`init_style`] → [`crate::assets::install_fonts`]);
-/// only the bundled fonts diverge from stock egui.
+/// the only deliberate divergences from stock egui are the bundled fonts and a
+/// slightly smaller `TextStyle::Heading` ([`font::PANEL_HEADING`]).
 ///
 /// Note: the hand-painted overlays (axis gizmo, stats, dimension labels, help
 /// card) and the toolbar / status-bar chrome paint with explicit theme tokens in
-/// their own draw code, *not* through these visuals — so they are unaffected by
-/// this and invariant 8 still holds for them.
+/// their own draw code, *not* through this style — so they are unaffected by it
+/// and invariant 8 still holds for them.
 pub fn apply_visuals(ctx: &egui::Context) {
-    ctx.set_visuals(egui::Visuals::dark());
+    let mut style = egui::Style {
+        visuals: egui::Visuals::dark(),
+        ..Default::default()
+    };
+    if let Some(heading) = style.text_styles.get_mut(&egui::TextStyle::Heading) {
+        *heading = egui::FontId::proportional(font::PANEL_HEADING);
+    }
+    ctx.set_style(style);
 }
 
 /// Convert a logical-pixel design value into egui points for the current DPI, so
