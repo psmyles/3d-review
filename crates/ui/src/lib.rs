@@ -29,12 +29,12 @@ mod widgets;
 pub use assets::install_fonts;
 pub use overlay::{draw_overlay, draw_startup_fade, draw_viewport_scene};
 pub use review_render::{
-    AntiAliasing, BloomSettings, EnvironmentMap, EnvironmentSettings, MsaaSamples, Selection,
-    SsaoSettings, ibl_supported, ssao_supported, supported_msaa_levels,
+    AntiAliasing, BloomSettings, ChannelSelect, EnvironmentMap, EnvironmentSettings, MsaaSamples,
+    Selection, SsaoSettings, TextureSlot, ibl_supported, ssao_supported, supported_msaa_levels,
 };
 pub use state::{
     AxisGizmoAction, BoundingBoxPanelState, NormalPanelState, OptionPanel, OutlinerTab, PanelsOpen,
-    UiOutput, UiState, UvCheckerPanelState, VertexColorPanelState, ViewAxis, ViewProjectionMode,
-    WireframePanelState, WorkspaceMode,
+    TextureSlotRef, UiOutput, UiState, UvCheckerPanelState, VertexColorPanelState, ViewAxis,
+    ViewProjectionMode, WireframePanelState, WorkspaceMode,
 };
 pub use theme::init_style;

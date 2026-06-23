@@ -14,3 +14,8 @@ half.workspace = true
 image.workspace = true
 review-model = { path = "../model" }
 wgpu.workspace = true
+
+[dev-dependencies]
+# Validate the hand-written WGSL (scene shader) at `cargo test` time, since the
+# real pipeline-creation check needs a GPU. Pinned to wgpu 24's naga.
+naga = { version = "24", features = ["wgsl-in"] }

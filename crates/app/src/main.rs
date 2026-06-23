@@ -7,6 +7,7 @@ mod startup_paint;
 mod window_state;
 
 use std::{
+    collections::{HashMap, HashSet},
     num::NonZeroU32,
     path::{Path, PathBuf},
     sync::Arc,
@@ -15,24 +16,36 @@ use std::{
 
 use anyhow::Context;
 use glam::Vec2;
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use review_import::{LoadOptions, load_model};
 use review_model::{ModelData, SceneBvh};
 use review_render::{
-    EGUI_DEPTH_FORMAT, EGUI_MSAA_SAMPLE_COUNT, Renderer, RendererConfig, ShadingMode,
-    ibl_supported, ssao_supported, supported_msaa_levels,
+    DecodedImage, EGUI_DEPTH_FORMAT, EGUI_MSAA_SAMPLE_COUNT, Renderer, RendererConfig, ShadingMode,
+    TextureSlot, decode_image, ibl_supported, ssao_supported, suggested_channel,
+    supported_msaa_levels,
 };
 use review_ui::{
-    AxisGizmoAction, Selection, UiOutput, UiState, WorkspaceMode, draw_overlay, draw_startup_fade,
-    draw_viewport_scene, init_style,
+    AxisGizmoAction, Selection, TextureSlotRef, UiOutput, UiState, WorkspaceMode, draw_overlay,
+    draw_startup_fade, draw_viewport_scene, init_style,
 };
 use tracing::{info, warn};
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
-    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     keyboard::{Key, ModifiersState},
     window::{Window, WindowAttributes, WindowId},
 };
+
+/// Custom event posted from the texture file-watcher's background thread to the
+/// winit event loop, so disk-auto-reload re-decodes on the main thread (the redraw
+/// loop stays in `app` — invariant 6).
+#[derive(Debug, Clone)]
+enum UserEvent {
+    /// A watched directory reported a change to this path; if it's a bound texture,
+    /// re-decode + re-upload it.
+    TextureChanged(PathBuf),
+}
 
 use window_state::WindowPlacement;
 
@@ -41,7 +54,9 @@ fn main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let event_loop = EventLoop::new().context("failed to create winit event loop")?;
+    let event_loop = EventLoop::<UserEvent>::with_user_event()
+        .build()
+        .context("failed to create winit event loop")?;
     event_loop.set_control_flow(ControlFlow::Wait);
 
     // A file path passed on the command line (e.g. when Windows launches the exe
@@ -49,8 +64,12 @@ fn main() -> anyhow::Result<()> {
     // once the window is up. See `resumed`.
     let initial_model = std::env::args_os().nth(1).map(PathBuf::from);
 
+    // The texture file-watcher posts reload events back through this proxy.
+    let texture_proxy = event_loop.create_proxy();
+
     let mut app = App {
         initial_model,
+        texture_proxy: Some(texture_proxy),
         ..App::default()
     };
     event_loop
@@ -128,6 +147,18 @@ struct App {
     /// change to a *different* node/material restarts the flash and selecting
     /// nothing ends it.
     flashed_selection: Selection,
+    /// Proxy used by the texture file-watcher thread to post reload events to the
+    /// event loop (set in `main` before the loop runs).
+    texture_proxy: Option<EventLoopProxy<UserEvent>>,
+    /// The disk-auto-reload watcher, created lazily on the first texture
+    /// assignment. Dropping it stops watching (done on model load / reset).
+    texture_watcher: Option<RecommendedWatcher>,
+    /// Directories the watcher is registered on (the parents of assigned textures),
+    /// so each directory is watched at most once.
+    watched_dirs: HashSet<PathBuf>,
+    /// Decoded-image cache keyed by source path, so a packed map assigned to
+    /// several slots / materials decodes once. Cleared on model load / reset.
+    texture_cache: HashMap<PathBuf, Arc<DecodedImage>>,
 }
 
 /// State of the launch fade-in. `elapsed` is animation time accumulated across
@@ -199,6 +230,10 @@ impl Default for App {
             fade: None,
             selection_flash: None,
             flashed_selection: Selection::None,
+            texture_proxy: None,
+            texture_watcher: None,
+            watched_dirs: HashSet::new(),
+            texture_cache: HashMap::new(),
         }
     }
 }
@@ -208,6 +243,19 @@ enum DragMode {
     Orbit,
     Pan,
     Zoom,
+}
+
+/// Whether two paths point at the same file, tolerating differences in form
+/// (relative vs absolute, separators, `\\?\` prefixes) by falling back to
+/// canonicalization — used to match a watcher event path against a bound texture.
+fn same_path(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 /// Decode the embedded application logo into a winit window icon — used for the
@@ -224,7 +272,15 @@ fn load_window_icon() -> Option<winit::window::Icon> {
     winit::window::Icon::from_rgba(image.into_raw(), width, height).ok()
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<UserEvent> for App {
+    /// Handle a custom event from the texture file-watcher: re-decode + re-upload
+    /// the changed texture (the disk-auto-reload path; redraw stays here).
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
+        match event {
+            UserEvent::TextureChanged(path) => self.reload_texture_file(&path),
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -788,6 +844,9 @@ impl App {
                 self.ui.selection = Selection::None;
                 self.ui.solo = false;
                 self.ui.hidden_meshes.clear();
+                // The previous model's texture watches / decode cache no longer
+                // apply (the fresh materials carry no slots).
+                self.reset_texture_state();
 
                 self.ui.stats = model.stats;
                 self.ui.bounds = model.bounds;
@@ -929,6 +988,7 @@ impl App {
         self.ui.selection = Selection::None;
         self.ui.solo = false;
         self.ui.hidden_meshes.clear();
+        self.reset_texture_state();
 
         info!("reset to start state");
         self.redraw_requested = true;
@@ -951,38 +1011,208 @@ impl App {
     }
 
     fn apply_ui_output(&mut self, output: UiOutput) {
-        let Some(renderer) = self.renderer.as_mut() else {
+        if self.renderer.is_none() {
             return;
-        };
+        }
 
         let mut redraw = false;
 
-        if let Some(action) = output.axis_gizmo_action {
-            match action {
-                AxisGizmoAction::Orbit(delta) => renderer.orbit_camera(delta),
-                AxisGizmoAction::Snap(axis) => {
-                    renderer.animate_camera_to_offset_direction(axis.offset_direction());
+        // Camera + scalar material edits need the renderer borrow; scope it so the
+        // texture intents below can call `&mut self` helpers.
+        {
+            let renderer = self.renderer.as_mut().unwrap();
+            if let Some(action) = output.axis_gizmo_action {
+                match action {
+                    AxisGizmoAction::Orbit(delta) => renderer.orbit_camera(delta),
+                    AxisGizmoAction::Snap(axis) => {
+                        renderer.animate_camera_to_offset_direction(axis.offset_direction());
+                    }
+                    AxisGizmoAction::ResetView => renderer.animate_camera_to_home(),
                 }
-                AxisGizmoAction::ResetView => renderer.animate_camera_to_home(),
+                redraw = true;
             }
+            if let Some(edit) = output.material_edit {
+                renderer.set_material_param(edit);
+            }
+        }
+
+        // Refresh the UI snapshot + revision so the editor reflects the new value
+        // and the scene callback re-uploads the table.
+        if output.material_edit.is_some() {
+            self.refresh_materials();
             redraw = true;
         }
 
-        // Apply a live material edit and refresh the UI snapshot + revision so the
-        // editor reflects the new value and the scene callback re-uploads the table.
-        let material_update = output.material_edit.map(|edit| {
-            renderer.set_material_param(edit);
-            (renderer.material_snapshot(), renderer.material_revision())
-        });
-        if let Some((snapshot, revision)) = material_update {
-            self.ui.materials_snapshot = snapshot;
-            self.ui.material_revision = revision;
-            redraw = true;
+        // Clear a slot back to its fallback (Phase 3).
+        if let Some(slot_ref) = output.texture_clear {
+            if let Some(slot) = TextureSlot::from_index(slot_ref.slot) {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.clear_texture_slot(slot_ref.material, slot);
+                }
+                self.refresh_materials();
+                redraw = true;
+            }
+        }
+
+        // Browse for + assign a slot (opens the file dialog, decodes, uploads). Done
+        // last because the modal dialog blocks the loop.
+        if let Some(slot_ref) = output.texture_browse {
+            self.browse_texture(slot_ref);
         }
 
         if redraw {
             self.redraw_requested = true;
         }
+    }
+
+    /// Pull the renderer's editable-material snapshot + revision back into the UI
+    /// (after any material edit / texture assignment / reload).
+    fn refresh_materials(&mut self) {
+        if let Some(renderer) = self.renderer.as_ref() {
+            self.ui.materials_snapshot = renderer.material_snapshot();
+            self.ui.material_revision = renderer.material_revision();
+        }
+    }
+
+    /// Open the image picker for a texture slot and assign the chosen file.
+    fn browse_texture(&mut self, slot_ref: TextureSlotRef) {
+        let file = rfd::FileDialog::new()
+            .add_filter(
+                "Image",
+                &["png", "jpg", "jpeg", "tga", "tif", "tiff", "psd", "bmp", "gif"],
+            )
+            .set_title("Assign Texture")
+            .pick_file();
+        if let Some(path) = file {
+            self.assign_texture(slot_ref, path);
+        }
+    }
+
+    /// Decode `path` (deduped via the cache), assign it to the material slot with
+    /// auto-detected channel routing, register the file for disk-auto-reload, and
+    /// refresh the UI. A decode failure warns and leaves the slot unchanged.
+    fn assign_texture(&mut self, slot_ref: TextureSlotRef, path: PathBuf) {
+        let Some(slot) = TextureSlot::from_index(slot_ref.slot) else {
+            return;
+        };
+        let Some(image) = self.decode_cached(&path) else {
+            return;
+        };
+        let channel = suggested_channel(&path, slot);
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.set_texture_slot(slot_ref.material, slot, path.clone(), image, channel);
+        }
+        self.watch_texture(&path);
+        self.refresh_materials();
+        self.redraw_requested = true;
+    }
+
+    /// Decode an image, returning the cached `Arc` when the path was decoded
+    /// before. Warns + returns `None` on failure (the slot keeps its fallback).
+    fn decode_cached(&mut self, path: &Path) -> Option<Arc<DecodedImage>> {
+        if let Some(image) = self.texture_cache.get(path) {
+            return Some(Arc::clone(image));
+        }
+        match decode_image(path) {
+            Ok(image) => {
+                let image = Arc::new(image);
+                self.texture_cache
+                    .insert(path.to_path_buf(), Arc::clone(&image));
+                Some(image)
+            }
+            Err(error) => {
+                warn!(path = %path.display(), error = %error, "texture decode failed");
+                None
+            }
+        }
+    }
+
+    /// Register a texture file's parent directory with the disk watcher (created
+    /// lazily). Watching the directory — not the file — tolerates editors that save
+    /// via an atomic rename. Each directory is watched at most once.
+    fn watch_texture(&mut self, path: &Path) {
+        let Some(dir) = path.parent().map(Path::to_path_buf) else {
+            return;
+        };
+        if self.watched_dirs.contains(&dir) {
+            return;
+        }
+        if self.texture_watcher.is_none() {
+            let Some(proxy) = self.texture_proxy.clone() else {
+                return;
+            };
+            let handler = move |result: notify::Result<Event>| {
+                if let Ok(event) = result {
+                    // Only content writes / creates matter (a save is one or both).
+                    if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
+                        for changed in event.paths {
+                            let _ = proxy.send_event(UserEvent::TextureChanged(changed));
+                        }
+                    }
+                }
+            };
+            match RecommendedWatcher::new(handler, notify::Config::default()) {
+                Ok(watcher) => self.texture_watcher = Some(watcher),
+                Err(error) => {
+                    warn!(error = %error, "failed to create texture watcher");
+                    return;
+                }
+            }
+        }
+        if let Some(watcher) = self.texture_watcher.as_mut() {
+            match watcher.watch(&dir, RecursiveMode::NonRecursive) {
+                Ok(()) => {
+                    self.watched_dirs.insert(dir);
+                }
+                Err(error) => {
+                    warn!(dir = %dir.display(), error = %error, "failed to watch texture directory");
+                }
+            }
+        }
+    }
+
+    /// Re-decode + re-upload a texture that changed on disk (the watcher event).
+    /// Matches the event path against the bound texture paths (canonicalizing to
+    /// tolerate path-form differences), then reloads every binding using it.
+    fn reload_texture_file(&mut self, changed: &Path) {
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
+        let Some(bound) = renderer
+            .texture_paths()
+            .into_iter()
+            .find(|bound| same_path(bound, changed))
+        else {
+            return;
+        };
+        let image = match decode_image(&bound) {
+            Ok(image) => Arc::new(image),
+            Err(error) => {
+                warn!(path = %bound.display(), error = %error, "texture reload decode failed");
+                return;
+            }
+        };
+        self.texture_cache.insert(bound.clone(), Arc::clone(&image));
+        let updated = self
+            .renderer
+            .as_mut()
+            .is_some_and(|renderer| renderer.reload_texture(&bound, image));
+        if updated {
+            self.refresh_materials();
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+        }
+    }
+
+    /// Drop all texture-watching + decode state (model load / reset): the new
+    /// model's materials carry no textures, so old watches / cached images no
+    /// longer apply.
+    fn reset_texture_state(&mut self) {
+        self.texture_cache.clear();
+        self.watched_dirs.clear();
+        // Dropping the watcher unregisters every directory.
+        self.texture_watcher = None;
     }
 
     /// Snapshot the window's current outer position + inner size while it isn't

@@ -82,12 +82,29 @@ pub enum AxisGizmoAction {
     ResetView,
 }
 
+/// A reference to one material's texture slot (the slot is a
+/// [`review_render::TextureSlot`] index, `0..7`), used by the Inspector's
+/// browse / clear intents. `app` opens the file dialog + decodes (it owns the
+/// filesystem); the UI only points at the slot (invariant 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextureSlotRef {
+    pub material: usize,
+    pub slot: usize,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct UiOutput {
     pub axis_gizmo_action: Option<AxisGizmoAction>,
-    /// A live material-parameter edit emitted by the (temporary, Phase 1) material
-    /// editor. `app` applies it to the renderer's editable material table.
+    /// A live material-parameter edit emitted by the Inspector (base color /
+    /// metallic / roughness / emissive / channel routing / alpha). `app` applies
+    /// it to the renderer's editable material table.
     pub material_edit: Option<MaterialEdit>,
+    /// The Inspector's "Browse…" was clicked for a texture slot: `app` opens the
+    /// image picker, decodes, and assigns the slot (Phase 3).
+    pub texture_browse: Option<TextureSlotRef>,
+    /// The Inspector's "Clear" was clicked for a texture slot: `app` reverts it to
+    /// the shader's neutral fallback.
+    pub texture_clear: Option<TextureSlotRef>,
 }
 
 #[derive(Debug, Clone)]
