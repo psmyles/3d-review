@@ -8,7 +8,7 @@
 use std::collections::HashSet;
 
 use glam::{Vec2, Vec3};
-use review_model::{Bounds, ModelStats};
+use review_model::{Bounds, ModelData, ModelStats};
 use review_render::{
     AntiAliasing, BloomSettings, CameraProjection, CheckerTexture, EnvironmentSettings,
     MaterialEdit, MaterialSnapshot, MsaaSamples, SceneDebugOptions, Selection, ShadingMode,
@@ -112,17 +112,43 @@ impl Default for WireframePanelState {
     }
 }
 
+/// Which geometry the bounding box wraps: the whole model, or only the meshes
+/// the Outliner currently shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BoundsScope {
+    /// Wrap every mesh, regardless of Outliner visibility (the default).
+    #[default]
+    AllMeshes,
+    /// Wrap only the currently-visible meshes (Outliner-hidden meshes excluded).
+    VisibleOnly,
+}
+
+impl BoundsScope {
+    pub const ALL: [BoundsScope; 2] = [BoundsScope::AllMeshes, BoundsScope::VisibleOnly];
+
+    /// The dropdown label for this scope.
+    pub fn label(self) -> &'static str {
+        match self {
+            BoundsScope::AllMeshes => "all meshes",
+            BoundsScope::VisibleOnly => "visible only",
+        }
+    }
+}
+
 /// Editable state backing the Bounding Box options panel. The renderer bakes the
-/// chosen color into the bounding-box line buffer via [`SceneDebugOptions`].
+/// chosen color + scope into the bounding-box line buffer via [`SceneDebugOptions`].
 #[derive(Debug, Clone)]
 pub struct BoundingBoxPanelState {
     pub color: egui::Color32,
+    /// Whether the box covers all meshes or only the visible ones.
+    pub scope: BoundsScope,
 }
 
 impl Default for BoundingBoxPanelState {
     fn default() -> Self {
         Self {
             color: theme::color::BOUNDING_BOX_DEFAULT,
+            scope: BoundsScope::default(),
         }
     }
 }
@@ -374,6 +400,16 @@ pub struct UiState {
     /// ownership). `None` when no model is loaded. Read by the dimension-label
     /// overlay to place each box edge's axis-length readout.
     pub bounds: Option<Bounds>,
+    /// Cached `model.visible_bounds(hidden)` for the dimension-label overlay's
+    /// "visible only" box. That scan is O(triangles); it must not run per-frame,
+    /// so it's rebuilt only when [`UiState::visible_bounds_key`] (the hidden set
+    /// it was computed for) no longer matches the live hidden set. Unused — the
+    /// overlay falls back to [`UiState::bounds`] — when nothing is hidden or the
+    /// whole-model box is shown.
+    pub visible_bounds_cache: Option<Bounds>,
+    /// The sorted hidden-node set [`UiState::visible_bounds_cache`] was built for;
+    /// a mismatch with the live hidden set invalidates the cache.
+    pub visible_bounds_key: Vec<u32>,
     /// Most recent measured frames-per-second, fed by `app` from the render
     /// loop. Zero while idle (the viewer redraws on demand, not continuously).
     pub fps: f32,
@@ -437,11 +473,40 @@ impl Default for UiState {
             outliner_open: false,
             inspector_open: false,
             bounds: None,
+            visible_bounds_cache: None,
+            visible_bounds_key: Vec::new(),
             fps: 0.0,
             show_help_overlay: true,
             app_version: String::new(),
             gpu_backend: String::new(),
         }
+    }
+}
+
+impl UiState {
+    /// The bounding box the dimension-label overlay measures this frame. In
+    /// "visible only" mode this is the box over just the *unhidden* geometry — an
+    /// O(triangle) scan ([`ModelData::visible_bounds`]), so the result is cached
+    /// and rebuilt only when the hidden set changes (never per-frame). Otherwise,
+    /// and whenever nothing is hidden, it's the whole-model [`UiState::bounds`]
+    /// (no scan). Mirrors the box the renderer draws.
+    pub(crate) fn measured_bounds(&mut self, model: &ModelData) -> Option<Bounds> {
+        if !self.debug.bounding_box_visible_only {
+            return self.bounds;
+        }
+        let mut hidden: Vec<u32> = self.hidden_meshes.iter().map(|&i| i as u32).collect();
+        hidden.sort_unstable();
+        // An empty hidden set makes `visible_bounds` the whole-model box, so skip
+        // both the scan and the cache. (Model loads clear the hidden set, so the
+        // cache below is never served across a model swap.)
+        if hidden.is_empty() {
+            return self.bounds;
+        }
+        if self.visible_bounds_key != hidden {
+            self.visible_bounds_cache = model.visible_bounds(&hidden);
+            self.visible_bounds_key = hidden;
+        }
+        self.visible_bounds_cache
     }
 }
 
@@ -460,4 +525,6 @@ pub(crate) fn sync_debug_state(state: &mut UiState) {
     state.debug.vertex_normal_color = theme::color32_to_rgba(state.vertex_normals.color);
     state.debug.wireframe_color = theme::color32_to_rgba(state.wireframe.color);
     state.debug.bounding_box_color = theme::color32_to_rgba(state.bounding_box.color);
+    state.debug.bounding_box_visible_only =
+        matches!(state.bounding_box.scope, BoundsScope::VisibleOnly);
 }

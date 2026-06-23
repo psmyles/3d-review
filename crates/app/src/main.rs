@@ -16,7 +16,7 @@ use std::{
 use anyhow::Context;
 use glam::Vec2;
 use review_import::{LoadOptions, load_model};
-use review_model::{Bvh, ModelData};
+use review_model::{ModelData, SceneBvh};
 use review_render::{
     EGUI_DEPTH_FORMAT, EGUI_MSAA_SAMPLE_COUNT, Renderer, RendererConfig, ShadingMode,
     ibl_supported, ssao_supported, supported_msaa_levels,
@@ -88,13 +88,13 @@ struct App {
     refresh_interval: Duration,
     scene_model: Arc<ModelData>,
     scene_revision: u64,
-    /// Triangle BVH over [`Self::scene_model`], used to occlude the bounding-box
-    /// dimension labels against the mesh. Built lazily the first frame the labels
-    /// need it (the bounding-box view is on) and reused across frames; a heavy
-    /// per-model structure we don't pay for unless the feature is used. `None`
-    /// until built; [`Self::occlusion_bvh_revision`] tracks which model it covers
-    /// so it rebuilds when a new model loads.
-    occlusion_bvh: Option<Bvh>,
+    /// Per-mesh-part triangle BVH over [`Self::scene_model`], used to occlude the
+    /// bounding-box dimension labels against the *visible* mesh. Built lazily the
+    /// first frame the labels need it (the bounding-box view is on) and reused
+    /// across frames; a heavy per-model structure we don't pay for unless the
+    /// feature is used. `None` until built; [`Self::occlusion_bvh_revision`] tracks
+    /// which model it covers so it rebuilds when a new model loads.
+    occlusion_bvh: Option<SceneBvh>,
     occlusion_bvh_revision: u64,
     ui: UiState,
     /// Model to load once the window/renderer exist, taken from the command line
@@ -654,7 +654,7 @@ impl App {
         // given model (and rebuild after a new model loads); reused across frames,
         // so orbiting pays no per-frame triangle cost.
         if self.ui.debug.show_bounding_box && self.occlusion_bvh_revision != self.scene_revision {
-            self.occlusion_bvh = Some(Bvh::build(&self.scene_model));
+            self.occlusion_bvh = Some(SceneBvh::build(&self.scene_model));
             self.occlusion_bvh_revision = self.scene_revision;
         }
 

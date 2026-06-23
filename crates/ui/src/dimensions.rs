@@ -5,13 +5,13 @@
 //! readout reads as part of the scene rather than floating over it.
 //!
 //! Per invariant 2 this reads only shared, read-only data — the plain values in
-//! [`UiState`], the shared [`ModelData`] geometry and a [`Bvh`] over it (both for
+//! [`UiState`], the shared [`ModelData`] geometry and a [`SceneBvh`] over it (both for
 //! the occlusion test) — and paints into the egui overlay; it never mutates
-//! renderer/model internals. The occlusion test runs through the [`Bvh`] so its
+//! renderer/model internals. The occlusion test runs through the [`SceneBvh`] so its
 //! cost is sub-linear in the triangle count (no per-frame brute-force ray-cast).
 
 use glam::{Mat4, Vec3};
-use review_model::{Bvh, ModelData};
+use review_model::{Bounds, ModelData, SceneBvh};
 use review_render::OrbitCamera;
 
 use crate::state::{UiState, ViewProjectionMode};
@@ -30,22 +30,31 @@ const KNOWN_UNITS: [(f32, &str); 6] = [
 
 /// Draw the axis-length label at the centre of each of the 12 bounding-box
 /// edges. No-op unless the bounding-box view is active and the model has bounds.
-/// An edge whose midpoint is hidden behind the model geometry (the camera→midpoint
-/// segment is blocked by a triangle, tested through `bvh`) is skipped. When `bvh`
-/// is `None` (not built yet for this model) every edge label is drawn.
+/// An edge whose midpoint is hidden behind the *visible* model geometry (the
+/// camera→midpoint segment is blocked by a triangle of a non-hidden mesh part,
+/// tested through `bvh`) is skipped; meshes hidden in the Outliner don't occlude,
+/// since they aren't drawn. When `bvh` is `None` (not built yet for this model)
+/// every edge label is drawn.
 pub(crate) fn draw_dimension_labels(
     ctx: &egui::Context,
     state: &UiState,
     camera: OrbitCamera,
     model: &ModelData,
-    bvh: Option<&Bvh>,
+    bvh: Option<&SceneBvh>,
+    bounds: Option<Bounds>,
 ) {
     if !state.debug.show_bounding_box {
         return;
     }
-    let Some(bounds) = state.bounds else {
+    // The box to measure is supplied by the caller ([`UiState::measured_bounds`])
+    // so the O(triangle) "visible only" scan stays cached, not per-frame.
+    let Some(bounds) = bounds else {
         return;
     };
+    // The Outliner-hidden meshes are excluded from the occlusion test: they aren't
+    // drawn, so they can't hide a label. (The measured box, above, already accounts
+    // for them in "visible only" mode.)
+    let hidden: Vec<u32> = state.hidden_meshes.iter().map(|&i| i as u32).collect();
 
     let size_world = bounds.size();
     // Per-axis label text (the axis length in the file's authored unit), shared
@@ -87,7 +96,7 @@ pub(crate) fn draw_dimension_labels(
         } else {
             eye
         };
-        if bvh.is_some_and(|bvh| bvh.segment_occluded(model, ray_origin, midpoint)) {
+        if bvh.is_some_and(|bvh| bvh.segment_occluded(model, ray_origin, midpoint, &hidden)) {
             continue;
         }
         if let Some(pos) = project(view_projection, midpoint, screen) {
