@@ -210,11 +210,12 @@ fn material_section(
 }
 
 /// Section 2 — one property row: the slot name and a texture dropdown listing the
-/// pool ("select texture" = unbound), plus a channel dropdown for every slot except
-/// **Normal** (which always reads full RGB). The packed **scalar** slots (roughness
-/// / metallic / AO / opacity) route a single channel (R/G/B/A); the **color** slots
-/// (base color / emissive) offer full RGB *or* a single channel scaled by the color
-/// value. Under the Smoothness workflow the Roughness row is relabelled "Smoothness".
+/// pool ("select texture" = unbound), plus a channel dropdown. The packed **scalar**
+/// slots (roughness / metallic / AO / opacity) route a single channel (R/G/B/A); the
+/// **color** slots (base color / emissive) offer full RGB *or* a single channel scaled
+/// by the color value. **Normal** always reads full RGB, so its channel dropdown is
+/// shown disabled at "RGB" — present for row alignment, never editable. Under the
+/// Smoothness workflow the Roughness row is relabelled "Smoothness".
 fn texture_mapping_row(
     ui: &mut egui::Ui,
     state: &MaterialState,
@@ -234,9 +235,10 @@ fn texture_mapping_row(
         } else {
             slot.label()
         };
-    // Every slot but Normal carries a channel dropdown: scalar slots route a single
-    // channel, color slots (base color / emissive) offer RGB or a single channel.
-    let show_channel = slot != TextureSlot::Normal;
+    // Every slot carries a channel dropdown: scalar slots route a single channel,
+    // color slots (base color / emissive) offer RGB or a single channel, and Normal
+    // shows a disabled "RGB" combo (it always reads full RGB).
+    let is_normal = slot == TextureSlot::Normal;
 
     ui.horizontal(|ui| {
         ui.scope(|ui| {
@@ -246,11 +248,7 @@ fn texture_mapping_row(
 
         let gap = ui.spacing().item_spacing.x;
         let channel_w = size::TEXTURE_CHANNEL_COMBO_W;
-        let texture_w = if show_channel {
-            (ui.available_width() - channel_w - gap).max(60.0)
-        } else {
-            ui.available_width()
-        };
+        let texture_w = (ui.available_width() - channel_w - gap).max(60.0);
 
         let selected_text = binding
             .map(|binding| pool_name(&binding.path))
@@ -281,11 +279,9 @@ fn texture_mapping_row(
                 }
             });
 
-        if !show_channel {
-            return;
-        }
         // Scalar slots offer single channels; color slots add the full-RGB option.
-        // Show the dropdown disabled (at the slot's neutral default) when unbound.
+        // Show the dropdown disabled (at the slot's neutral default) when unbound, and
+        // always disabled at "RGB" for Normal (which has no channel choice).
         let choices: &[ChannelSelect] = if slot.is_scalar() {
             &ChannelSelect::SCALAR
         } else {
@@ -296,8 +292,12 @@ fn texture_mapping_row(
         } else {
             ChannelSelect::Rgb
         };
-        let current_channel = binding.map_or(default_channel, |binding| binding.channel);
-        ui.add_enabled_ui(binding.is_some(), |ui| {
+        let current_channel = if is_normal {
+            ChannelSelect::Rgb
+        } else {
+            binding.map_or(default_channel, |binding| binding.channel)
+        };
+        ui.add_enabled_ui(binding.is_some() && !is_normal, |ui| {
             egui::ComboBox::from_id_salt(("inspector_ch", index, slot.index()))
                 .selected_text(current_channel.label())
                 .width(channel_w)
