@@ -319,6 +319,10 @@ pub mod size {
     /// slider's auto-sized inline readout — fixed so the box never reflows as the
     /// number's digit count changes). The slider rail fills the rest of the row.
     pub const PANEL_SLIDER_VALUE_W: f32 = 48.0;
+    /// Slider grab handle aspect ratio (width / height). egui's library default
+    /// is a `Circle` handle; we use the egui.rs demo's slim rounded-`Rect` grab
+    /// instead (`HandleShape::Rect { aspect_ratio }`), set in `apply_visuals`.
+    pub const SLIDER_HANDLE_ASPECT_RATIO: f32 = 0.5;
     pub const PANEL_BUTTON_HEIGHT: f32 = 32.0;
     pub const PANEL_SWATCH_SIZE: f32 = 24.0;
     pub const PANEL_SWATCH_GAP: f32 = 6.0;
@@ -450,8 +454,10 @@ pub fn init_style(ctx: &egui::Context) {
 /// panels / native widgets) uses egui's stock dark theme so every control,
 /// visual and layout reads exactly like the egui demo. The app's *own* fonts are
 /// still installed separately ([`init_style`] → [`crate::assets::install_fonts`]);
-/// the only deliberate divergences from stock egui are the bundled fonts and a
-/// slightly smaller `TextStyle::Heading` ([`font::PANEL_HEADING`]).
+/// the only deliberate divergences from stock egui are the bundled fonts, a
+/// slightly smaller `TextStyle::Heading` ([`font::PANEL_HEADING`]), and the
+/// rectangular slider grab ([`size::SLIDER_HANDLE_ASPECT_RATIO`], matching the
+/// egui.rs demo rather than the library default circle).
 ///
 /// Note: the hand-painted overlays (axis gizmo, stats, dimension labels, help
 /// card) and the toolbar / status-bar chrome paint with explicit theme tokens in
@@ -465,6 +471,11 @@ pub fn apply_visuals(ctx: &egui::Context) {
     if let Some(heading) = style.text_styles.get_mut(&egui::TextStyle::Heading) {
         *heading = egui::FontId::proportional(font::PANEL_HEADING);
     }
+    // Match the egui.rs demo's slim rectangular slider grab (the library default
+    // is a `Circle`); the value box keeps our own fixed-width monospace styling.
+    style.visuals.handle_shape = egui::style::HandleShape::Rect {
+        aspect_ratio: size::SLIDER_HANDLE_ASPECT_RATIO,
+    };
     ctx.set_style(style);
 }
 

@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use review_model::{Bvh, ModelData};
+use review_model::{ModelData, SceneBvh};
 use review_render::{
     MaterialEdit, MaterialState, OrbitCamera, SceneCallback, SelectionView, UvCamera,
 };
@@ -93,7 +93,7 @@ pub fn draw_overlay(
     state: &mut UiState,
     camera: OrbitCamera,
     model: &ModelData,
-    bvh: Option<&Bvh>,
+    bvh: Option<&SceneBvh>,
 ) -> UiOutput {
     // Visuals + fonts are installed once at startup (`theme::init_style`); the
     // style is derived only from constant tokens, so there is nothing to re-apply
@@ -123,7 +123,10 @@ pub fn draw_overlay(
         output.material_edit = side.material_edit;
 
         // Bounding-box dimension labels sit on the viewport (under the chrome).
-        dimensions::draw_dimension_labels(ctx, state, camera, model, bvh);
+        // The measured box is resolved here (cached for the "visible only" scan)
+        // so the overlay never redoes the O(triangle) bounds walk per frame.
+        let bounds = state.measured_bounds(model);
+        dimensions::draw_dimension_labels(ctx, state, camera, model, bvh, bounds);
 
         draw_option_panels(ctx, state, toolbar_height);
 

@@ -471,6 +471,11 @@ pub struct SceneDebugOptions {
     /// Color of the bounding-box edges, baked into its line buffer and rebuilt
     /// when it changes.
     pub bounding_box_color: [f32; 4],
+    /// When `true` the bounding box (and its dimension labels) wraps only the
+    /// Outliner's currently-visible geometry rather than the whole model. Baked
+    /// into the box line buffer alongside the hidden set, so it rebuilds when the
+    /// scope or the visible meshes change.
+    pub bounding_box_visible_only: bool,
 }
 
 impl Default for SceneDebugOptions {
@@ -493,6 +498,7 @@ impl Default for SceneDebugOptions {
             vertex_normal_color: [0.14, 0.92, 0.96, 0.95],
             wireframe_color: [0.6, 0.6, 0.6, 1.0],
             bounding_box_color: [1.0, 0.803_921_6, 0.250_980_4, 1.0],
+            bounding_box_visible_only: false,
         }
     }
 }

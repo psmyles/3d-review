@@ -8,6 +8,8 @@
 //! per-node bounds — it never copies the vertex/index geometry. Queries borrow
 //! the shared [`ModelData`] to read triangle positions.
 
+use std::collections::BTreeMap;
+
 use glam::Vec3;
 
 use crate::ModelData;
@@ -57,27 +59,36 @@ pub struct Bvh {
 }
 
 impl Bvh {
-    /// Build a hierarchy over `model`'s triangles. Cost is `O(n log n)` in the
-    /// triangle count; do this once per loaded model and reuse it across frames.
-    /// Expects a triangulated model (the importer triangulates on load).
+    /// Build a hierarchy over all of `model`'s triangles. Cost is `O(n log n)` in
+    /// the triangle count; do this once per loaded model and reuse it across
+    /// frames. Expects a triangulated model (the importer triangulates on load).
     pub fn build(model: &ModelData) -> Self {
         let tri_count = model.indices.len() / 3;
-        let mut tris: Vec<u32> = (0..tri_count as u32).collect();
+        Self::build_from_triangles(model, (0..tri_count as u32).collect())
+    }
 
-        if tri_count == 0 {
+    /// Build a hierarchy over a chosen subset of *global* triangle indices
+    /// (`global_tris`, each `t` referring to `indices[3*t .. 3*t + 3]`). The
+    /// stored permutation holds global indices, so queries read positions straight
+    /// from the shared model regardless of which subset this covers — that lets a
+    /// [`SceneBvh`] hold one hierarchy per mesh part without copying geometry.
+    pub(crate) fn build_from_triangles(model: &ModelData, global_tris: Vec<u32>) -> Self {
+        let n = global_tris.len();
+        if n == 0 {
             return Self {
                 nodes: vec![Node::EMPTY],
-                tris,
+                tris: Vec::new(),
             };
         }
 
-        // Per-triangle bounds + centroid scratch, dropped when the build returns
-        // (build acceleration data, not a persistent copy of the geometry).
-        let mut tri_min = Vec::with_capacity(tri_count);
-        let mut tri_max = Vec::with_capacity(tri_count);
-        let mut centroid = Vec::with_capacity(tri_count);
-        for t in 0..tri_count {
-            let [a, b, c] = triangle_positions(model, t as u32);
+        // Per-triangle bounds + centroid scratch, indexed by *position* within
+        // `global_tris` (a local index), dropped when the build returns (build
+        // acceleration data, not a persistent copy of the geometry).
+        let mut tri_min = Vec::with_capacity(n);
+        let mut tri_max = Vec::with_capacity(n);
+        let mut centroid = Vec::with_capacity(n);
+        for &g in &global_tris {
+            let [a, b, c] = triangle_positions(model, g);
             let lo = a.min(b).min(c);
             let hi = a.max(b).max(c);
             tri_min.push(lo);
@@ -85,12 +96,17 @@ impl Bvh {
             centroid.push((lo + hi) * 0.5);
         }
 
-        let mut nodes = Vec::with_capacity(2 * tri_count);
+        // The builder permutes *local* positions; leaves reference these, then we
+        // translate them back to global triangle indices for the stored `tris`.
+        let mut order: Vec<u32> = (0..n as u32).collect();
+        let mut nodes = Vec::with_capacity(2 * n);
         nodes.push(Node::EMPTY);
         build_node(
-            0, 0, tri_count, &mut nodes, &mut tris, &tri_min, &tri_max, &centroid,
+            0, 0, n, &mut nodes, &mut order, &tri_min, &tri_max, &centroid,
         );
         nodes.shrink_to_fit();
+
+        let tris = order.iter().map(|&p| global_tris[p as usize]).collect();
         Self { nodes, tris }
     }
 
@@ -130,6 +146,89 @@ impl Bvh {
             }
         }
         false
+    }
+}
+
+/// Sentinel owning-node id for a model with no per-triangle node info — never
+/// matches a real (Outliner) mesh index, so such a part always participates in
+/// occlusion.
+const NO_NODE: u32 = u32::MAX;
+
+/// One [`Bvh`] per scene mesh part (owning node), so an occlusion query can skip
+/// the parts the Outliner has hidden. This is both *correct* — a hidden mesh
+/// isn't drawn, so it must not occlude a dimension label — and *fast*: a query
+/// buried inside a tight "visible only" bounding box never traverses the hidden
+/// geometry packed around it, which a single whole-model hierarchy would force it
+/// to. Built once per loaded model and reused across frames.
+///
+/// Invariant 1: like [`Bvh`], the parts store only triangle-index permutations
+/// and node bounds — never a copy of the vertex/index geometry.
+#[derive(Debug, Clone)]
+pub struct SceneBvh {
+    parts: Vec<ScenePart>,
+}
+
+#[derive(Debug, Clone)]
+struct ScenePart {
+    /// The scene node these triangles belong to (matches [`ModelData::tri_node`]),
+    /// or [`NO_NODE`] when the model carries no per-triangle node info.
+    node: u32,
+    bvh: Bvh,
+}
+
+impl SceneBvh {
+    /// Build one [`Bvh`] per owning node. Total cost is `O(n log n)` in the
+    /// triangle count (the same as a single whole-model build, split across
+    /// parts); do this once per loaded model and reuse it across frames.
+    pub fn build(model: &ModelData) -> Self {
+        let tri_count = model.indices.len() / 3;
+        if model.tri_node.len() != tri_count {
+            // No per-triangle node info: one part covering the whole model, which
+            // visibility filtering can never exclude (it carries [`NO_NODE`]).
+            let all = (0..tri_count as u32).collect();
+            return Self {
+                parts: vec![ScenePart {
+                    node: NO_NODE,
+                    bvh: Bvh::build_from_triangles(model, all),
+                }],
+            };
+        }
+
+        // Group global triangle indices by owning node. A `BTreeMap` makes the
+        // part order deterministic (independent of triangle traversal order).
+        let mut by_node: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+        for t in 0..tri_count as u32 {
+            by_node
+                .entry(model.tri_node[t as usize])
+                .or_default()
+                .push(t);
+        }
+        let parts = by_node
+            .into_iter()
+            .map(|(node, tris)| ScenePart {
+                node,
+                bvh: Bvh::build_from_triangles(model, tris),
+            })
+            .collect();
+        Self { parts }
+    }
+
+    /// Whether any *visible* mesh part occludes the segment from `origin` to
+    /// `target`: parts whose node is in `hidden_nodes` are skipped, so a hidden
+    /// mesh neither blocks a label nor costs a query. `hidden_nodes` is tiny (the
+    /// handful of Outliner-hidden meshes), so the linear membership test is
+    /// cheaper than building a set. Reads triangle positions from `model` (must be
+    /// the model this was built from).
+    pub fn segment_occluded(
+        &self,
+        model: &ModelData,
+        origin: Vec3,
+        target: Vec3,
+        hidden_nodes: &[u32],
+    ) -> bool {
+        self.parts.iter().any(|part| {
+            !hidden_nodes.contains(&part.node) && part.bvh.segment_occluded(model, origin, target)
+        })
     }
 }
 
@@ -398,5 +497,51 @@ mod tests {
         let model = ModelData::default();
         let bvh = Bvh::build(&model);
         assert!(!bvh.segment_occluded(&model, Vec3::ZERO, Vec3::new(1.0, 1.0, 1.0)));
+    }
+
+    /// A two-part model: node 0's triangle straddles the origin (blocking a
+    /// segment through it), node 1's triangle sits far off to the side. Hiding the
+    /// blocking part must drop the occlusion — and never test it.
+    #[test]
+    fn scene_bvh_skips_hidden_parts() {
+        use crate::Vertex;
+        use glam::{Vec2, Vec4};
+
+        let positions = [
+            // Node 0: a triangle in the z = 0 plane covering the origin.
+            Vec3::new(-1.0, -1.0, 0.0),
+            Vec3::new(1.0, -1.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            // Node 1: a triangle far away on +x, never on the line of sight.
+            Vec3::new(100.0, 0.0, 0.0),
+            Vec3::new(101.0, 0.0, 0.0),
+            Vec3::new(100.0, 1.0, 0.0),
+        ];
+        let model = ModelData {
+            vertices: positions
+                .iter()
+                .map(|&position| Vertex {
+                    position,
+                    normal: Vec3::Y,
+                    uv: Vec2::ZERO,
+                    tangent: Vec4::new(1.0, 0.0, 0.0, 1.0),
+                    vertex_color: Vec4::ONE,
+                })
+                .collect(),
+            indices: vec![0, 1, 2, 3, 4, 5],
+            tri_node: vec![0, 1],
+            ..Default::default()
+        };
+        let bvh = SceneBvh::build(&model);
+
+        let origin = Vec3::new(0.0, 0.0, 5.0);
+        let target = Vec3::new(0.0, 0.0, -5.0);
+
+        // Nothing hidden: node 0 blocks the segment.
+        assert!(bvh.segment_occluded(&model, origin, target, &[]));
+        // Hiding the unrelated node 1 changes nothing.
+        assert!(bvh.segment_occluded(&model, origin, target, &[1]));
+        // Hiding node 0 removes the only occluder.
+        assert!(!bvh.segment_occluded(&model, origin, target, &[0]));
     }
 }

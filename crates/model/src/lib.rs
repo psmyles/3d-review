@@ -1,7 +1,7 @@
 use glam::{Mat4, Vec2, Vec3, Vec4};
 
 mod bvh;
-pub use bvh::Bvh;
+pub use bvh::{Bvh, SceneBvh};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Vertex {
@@ -228,6 +228,31 @@ impl ModelData {
 
         self.bounds = (!bounds.is_empty()).then_some(bounds);
     }
+
+    /// Bounds over only the geometry whose owning node is *not* in `hidden_nodes`
+    /// — the box for the Outliner's currently-visible meshes. Falls back to the
+    /// full [`ModelData::bounds`] when nothing is hidden or the model carries no
+    /// per-triangle node info (so visibility can't be resolved). `None` when no
+    /// visible geometry remains (every mesh hidden, or an empty model).
+    pub fn visible_bounds(&self, hidden_nodes: &[u32]) -> Option<Bounds> {
+        let triangle_count = self.indices.len() / 3;
+        if hidden_nodes.is_empty() || self.tri_node.len() != triangle_count {
+            return self.bounds;
+        }
+        let hidden: std::collections::HashSet<u32> = hidden_nodes.iter().copied().collect();
+        let mut bounds = Bounds::EMPTY;
+        for (triangle_index, triangle) in self.indices.chunks_exact(3).enumerate() {
+            if hidden.contains(&self.tri_node[triangle_index]) {
+                continue;
+            }
+            for &corner in triangle {
+                if let Some(vertex) = self.vertices.get(corner as usize) {
+                    bounds.include_point(vertex.position);
+                }
+            }
+        }
+        (!bounds.is_empty()).then_some(bounds)
+    }
 }
 
 pub fn demo_cube_model() -> ModelData {
@@ -374,5 +399,46 @@ mod tests {
         // No triangles -> no draws.
         model.indices.clear();
         assert_eq!(model.material_draw_count(), 0);
+    }
+
+    #[test]
+    fn visible_bounds_excludes_hidden_nodes() {
+        // Two triangles: node 0 spans x in [0,2], node 1 spans x in [10,12].
+        let positions = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(10.0, 0.0, 0.0),
+            Vec3::new(11.0, 1.0, 0.0),
+            Vec3::new(12.0, 0.0, 0.0),
+        ];
+        let mut model = ModelData {
+            vertices: positions
+                .iter()
+                .map(|&position| Vertex {
+                    position,
+                    normal: Vec3::Y,
+                    uv: Vec2::ZERO,
+                    tangent: Vec4::new(1.0, 0.0, 0.0, 1.0),
+                    vertex_color: Vec4::ONE,
+                })
+                .collect(),
+            indices: vec![0, 1, 2, 3, 4, 5],
+            tri_node: vec![0, 1],
+            ..Default::default()
+        };
+        model.recompute_bounds();
+
+        // Nothing hidden -> the full extent (falls back to `bounds`).
+        let all = model.visible_bounds(&[]).unwrap();
+        assert_eq!(all.max.x, 12.0);
+
+        // Hide node 1 -> the box stops at node 0's geometry.
+        let visible = model.visible_bounds(&[1]).unwrap();
+        assert_eq!(visible.min.x, 0.0);
+        assert_eq!(visible.max.x, 2.0);
+
+        // Hide every node -> no visible geometry, no box.
+        assert!(model.visible_bounds(&[0, 1]).is_none());
     }
 }

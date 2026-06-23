@@ -256,7 +256,7 @@ impl CallbackTrait for SceneCallback {
             // Build-on-demand / free-on-off for the derived line views: a view's
             // buffer exists only while its toggle is on, and is rebuilt live when
             // its baked length/color drifts from the current options (invariant 3).
-            resources.sync_line_views(device, &self.model, self.debug_options);
+            resources.sync_line_views(device, &self.model, self.debug_options, &self.hidden_meshes);
 
             // Rebuild the IBL maps if the environment changed (one-time, not per
             // frame); only the 3D path uses them.
@@ -737,11 +737,11 @@ struct SceneResources {
     wireframe_line_vertex_buffer: wgpu::Buffer,
     wireframe_line_vertex_count: u32,
     /// Color baked into the wireframe buffer, or `None` when the view is off.
-    wireframe_baked: Option<[f32; 4]>,
+    wireframe_baked: Option<([f32; 4], Vec<u32>)>,
     bounding_box_vertex_buffer: wgpu::Buffer,
     bounding_box_vertex_count: u32,
     /// Color baked into the bounding-box buffer, or `None` when the view is off.
-    bounding_box_baked: Option<[f32; 4]>,
+    bounding_box_baked: Option<BoundingBoxParams>,
     face_normal_vertex_buffer: wgpu::Buffer,
     face_normal_vertex_count: u32,
     /// `(length_scale, color)` baked into the face-normal buffer, or `None`.
@@ -770,9 +770,16 @@ struct SceneResources {
     uv_fill_baked: Option<(u64, u32, UvShadingMode)>,
 }
 
-/// Baked parameters for a normal-line view: `(length_scale, color)`. Compared by
-/// value each frame to decide whether the view's buffer is up to date.
-type NormalParams = (f32, [f32; 4]);
+/// Baked parameters for the bounding-box view: `(color, visible_only,
+/// hidden_nodes)`. The hidden set only changes the box in `visible_only` mode,
+/// but baking it unconditionally keeps the comparison a plain value equality.
+type BoundingBoxParams = ([f32; 4], bool, Vec<u32>);
+
+/// Baked parameters for a normal-line view: `(length_scale, color, hidden_nodes)`.
+/// Compared by value each frame to decide whether the view's buffer is up to
+/// date — including the Outliner's hidden set, so a hidden mesh's normal lines
+/// drop with the mesh itself.
+type NormalParams = (f32, [f32; 4], Vec<u32>);
 
 /// The three derived line views, used to address one for freeing.
 #[derive(Debug, Clone, Copy)]
@@ -1342,13 +1349,19 @@ impl SceneResources {
         device: &wgpu::Device,
         model: &ModelData,
         debug_options: SceneDebugOptions,
+        hidden_meshes: &[u32],
     ) {
         let wireframe_on = debug_options.wireframe_overlay
             || matches!(debug_options.shading_mode, ShadingMode::Wireframe);
-        let want_wireframe = wireframe_on.then_some(debug_options.wireframe_color);
+        // The wireframe rebuilds when its color *or* the Outliner's hidden set
+        // drifts, so edges of a hidden mesh disappear with the mesh itself.
+        let want_wireframe =
+            wireframe_on.then(|| (debug_options.wireframe_color, hidden_meshes.to_vec()));
         if self.wireframe_baked != want_wireframe {
-            let (buffer, count) = match want_wireframe {
-                Some(color) => create_line_buffer(device, &wireframe_lines(model, color)),
+            let (buffer, count) = match &want_wireframe {
+                Some((color, hidden)) => {
+                    create_line_buffer(device, &wireframe_lines(model, *color, hidden))
+                }
                 None => create_line_buffer(device, &[]),
             };
             self.wireframe_line_vertex_buffer = buffer;
@@ -1356,12 +1369,36 @@ impl SceneResources {
             self.wireframe_baked = want_wireframe;
         }
 
-        let want_bounding_box = debug_options
-            .show_bounding_box
-            .then_some(debug_options.bounding_box_color);
+        let want_bounding_box = debug_options.show_bounding_box.then(|| {
+            // The hidden set only affects the box in "visible only" mode, so leave
+            // it out of the bake key otherwise — toggling a mesh's visibility then
+            // never rebuilds the (identical) whole-model box.
+            let visible_only = debug_options.bounding_box_visible_only;
+            let hidden = if visible_only {
+                hidden_meshes.to_vec()
+            } else {
+                Vec::new()
+            };
+            (debug_options.bounding_box_color, visible_only, hidden)
+        });
         if self.bounding_box_baked != want_bounding_box {
-            let (buffer, count) = match want_bounding_box {
-                Some(color) => create_line_buffer(device, &bounding_box_lines(model, color)),
+            let (buffer, count) = match &want_bounding_box {
+                // In "visible only" mode the box wraps just the unhidden geometry;
+                // otherwise it wraps the whole model. Either way it's empty when no
+                // bounds remain (every mesh hidden, or an empty model).
+                Some((color, visible_only, hidden)) => {
+                    let bounds = if *visible_only {
+                        model.visible_bounds(hidden)
+                    } else {
+                        model.bounds
+                    };
+                    match bounds {
+                        Some(bounds) => {
+                            create_line_buffer(device, &bounding_box_lines(bounds, *color))
+                        }
+                        None => create_line_buffer(device, &[]),
+                    }
+                }
                 None => create_line_buffer(device, &[]),
             };
             self.bounding_box_vertex_buffer = buffer;
@@ -1369,14 +1406,17 @@ impl SceneResources {
             self.bounding_box_baked = want_bounding_box;
         }
 
-        let want_face = debug_options.face_normals.then_some((
-            debug_options.face_normal_length,
-            debug_options.face_normal_color,
-        ));
+        let want_face = debug_options.face_normals.then(|| {
+            (
+                debug_options.face_normal_length,
+                debug_options.face_normal_color,
+                hidden_meshes.to_vec(),
+            )
+        });
         if self.face_baked != want_face {
-            let (buffer, count) = match want_face {
-                Some((length, color)) => {
-                    create_line_buffer(device, &face_normal_lines(model, length, color))
+            let (buffer, count) = match &want_face {
+                Some((length, color, hidden)) => {
+                    create_line_buffer(device, &face_normal_lines(model, *length, *color, hidden))
                 }
                 None => create_line_buffer(device, &[]),
             };
@@ -1385,14 +1425,17 @@ impl SceneResources {
             self.face_baked = want_face;
         }
 
-        let want_vertex = debug_options.vertex_normals.then_some((
-            debug_options.vertex_normal_length,
-            debug_options.vertex_normal_color,
-        ));
+        let want_vertex = debug_options.vertex_normals.then(|| {
+            (
+                debug_options.vertex_normal_length,
+                debug_options.vertex_normal_color,
+                hidden_meshes.to_vec(),
+            )
+        });
         if self.vertex_baked != want_vertex {
-            let (buffer, count) = match want_vertex {
-                Some((length, color)) => {
-                    create_line_buffer(device, &vertex_normal_lines(model, length, color))
+            let (buffer, count) = match &want_vertex {
+                Some((length, color, hidden)) => {
+                    create_line_buffer(device, &vertex_normal_lines(model, *length, *color, hidden))
                 }
                 None => create_line_buffer(device, &[]),
             };
