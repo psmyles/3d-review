@@ -11,12 +11,14 @@
 //! - [`assets`] — embedded icons + fonts and lazy texture loading.
 //! - [`widgets`] — reusable theme-driven primitives.
 //! - [`overlay`] — per-frame orchestration (the public entry points).
+//! - `notifications` — the egui-notify toast system (`app`-owned, themed here).
 //! - `toolbar` / `status_bar` / `stats` / `gizmo` / `panels` — the chrome.
 
 mod assets;
 mod dimensions;
 mod gizmo;
 mod help;
+mod notifications;
 mod overlay;
 mod panels;
 mod state;
@@ -27,6 +29,7 @@ mod toolbar;
 mod widgets;
 
 pub use assets::install_fonts;
+pub use notifications::Notifications;
 pub use overlay::{draw_overlay, draw_startup_fade, draw_viewport_scene};
 pub use review_render::{
     AntiAliasing, BloomSettings, ChannelSelect, EnvironmentMap, EnvironmentSettings, MsaaSamples,
