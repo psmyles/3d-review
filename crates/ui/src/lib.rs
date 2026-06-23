@@ -37,7 +37,7 @@ pub use review_render::{
 };
 pub use state::{
     AxisGizmoAction, BoundingBoxPanelState, NormalPanelState, OptionPanel, OutlinerTab, PanelsOpen,
-    TextureSlotRef, UiOutput, UiState, UvCheckerPanelState, VertexColorPanelState, ViewAxis,
-    ViewProjectionMode, WireframePanelState, WorkspaceMode,
+    TextureAssign, TexturePoolEntry, TextureSlotRef, UiOutput, UiState, UvCheckerPanelState,
+    VertexColorPanelState, ViewAxis, ViewProjectionMode, WireframePanelState, WorkspaceMode,
 };
 pub use theme::init_style;

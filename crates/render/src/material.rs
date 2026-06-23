@@ -41,6 +41,41 @@ pub enum AlphaMode {
     Clip,
 }
 
+/// How a material's roughness is authored — the Inspector's **Workflow** dropdown.
+/// `Roughness` is the native metallic-roughness convention (the value/map *is*
+/// roughness). `Smoothness` is the Unity-style inverse: the slider reads as
+/// smoothness and a bound map is a smoothness map (an inverted roughness map), so
+/// the shader inverts the sampled value before using it as roughness. Internally
+/// the material always stores roughness; the workflow only changes how it is
+/// displayed and how a bound map is interpreted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RoughnessWorkflow {
+    #[default]
+    Roughness,
+    Smoothness,
+}
+
+impl RoughnessWorkflow {
+    pub const ALL: [RoughnessWorkflow; 2] =
+        [RoughnessWorkflow::Roughness, RoughnessWorkflow::Smoothness];
+
+    /// Value the shader branches on (`flags.x`): 0 roughness, 1 smoothness (invert
+    /// the bound map).
+    fn shader_value(self) -> f32 {
+        match self {
+            RoughnessWorkflow::Roughness => 0.0,
+            RoughnessWorkflow::Smoothness => 1.0,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            RoughnessWorkflow::Roughness => "Roughness",
+            RoughnessWorkflow::Smoothness => "Smoothness",
+        }
+    }
+}
+
 impl AlphaMode {
     pub const ALL: [AlphaMode; 3] = [AlphaMode::Opaque, AlphaMode::Blend, AlphaMode::Clip];
 
@@ -89,6 +124,10 @@ pub struct MaterialState {
     pub alpha_mode: AlphaMode,
     /// Alpha-clip threshold in `0.0..=1.0` (used only in [`AlphaMode::Clip`]).
     pub alpha_cutoff: f32,
+    /// How `roughness` (and a bound roughness map) is authored / displayed. Storage
+    /// is always roughness; [`RoughnessWorkflow::Smoothness`] only flips the UI and
+    /// inverts a bound map in the shader.
+    pub workflow: RoughnessWorkflow,
 }
 
 impl Default for MaterialState {
@@ -101,6 +140,7 @@ impl Default for MaterialState {
             textures: Default::default(),
             alpha_mode: AlphaMode::Opaque,
             alpha_cutoff: 0.5,
+            workflow: RoughnessWorkflow::Roughness,
         }
     }
 }
@@ -127,6 +167,8 @@ pub enum MaterialChange {
     Channel(usize, ChannelSelect),
     AlphaMode(AlphaMode),
     AlphaCutoff(f32),
+    /// The roughness/smoothness authoring workflow (display + map interpretation).
+    Workflow(RoughnessWorkflow),
 }
 
 /// A UI edit intent: change one parameter of the material at `index`.
@@ -150,6 +192,9 @@ pub(crate) struct MaterialUniform {
     pub channels0: [f32; 4],
     /// Channel-select index for slots 4,5,6 in `x,y,z`; `w` = alpha cutoff.
     pub channels1: [f32; 4],
+    /// Material flags. `x` = roughness workflow (0 roughness, 1 smoothness: invert
+    /// the bound roughness map); `y,z,w` reserved.
+    pub flags: [f32; 4],
 }
 
 impl MaterialUniform {
@@ -183,6 +228,7 @@ impl MaterialUniform {
                 channel[6],
                 state.alpha_cutoff.clamp(0.0, 1.0),
             ],
+            flags: [state.workflow.shader_value(), 0.0, 0.0, 0.0],
         }
     }
 
@@ -195,6 +241,7 @@ impl MaterialUniform {
             params: [0.0, 0.5, 0.0, 0.0],
             channels0: [0.0; 4],
             channels1: [0.0; 4],
+            flags: [0.0; 4],
         }
     }
 }

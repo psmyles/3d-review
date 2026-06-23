@@ -1,33 +1,43 @@
-//! The Inspector: edits the selected material's scalar/color parameters and its
-//! seven texture slots (emitting the Phase-1/Phase-3 [`MaterialEdit`] intents and
-//! the browse/clear intents `app` acts on), or shows read-only stats for a
-//! selected node.
+//! The Inspector: for a selected material, a three-section layout —
+//! **Material** (shader type, transparency mode, base color / roughness /
+//! metallic / emissive), **Texture mapping** (one texture + channel dropdown per
+//! PBR property, drawing from the scene texture pool), and **Texture files** (the
+//! pooled images with thumbnails + remove) — each under a collapsible header. For
+//! a selected node it shows read-only stats instead.
 //!
-//! The scalar editors lay out on the same striped two-column [`panel_grid`] the
-//! option panels use; the texture slots use a compact per-slot block (name +
-//! Browse/Clear + a channel dropdown for packed scalar maps).
-//!
-//! Reads the editable material values from the app→UI snapshot and the node
-//! hierarchy from the borrowed [`ModelData`] (invariant 2). Returns the edit /
-//! browse / clear intents (if any) for the overlay to forward to `app`.
+//! Textures live in a **scene-wide pool** (`app`-owned, decoded once, shared by
+//! `Arc`): the Inspector lists the pool and lets each property *reference* a
+//! pooled image plus a channel, rather than each slot owning its own file. All
+//! filesystem work (the import picker, decode, disk-watch) stays in `app`
+//! (invariant 2); the Inspector only emits import / assign / clear / remove
+//! intents and the live [`MaterialEdit`]s for the overlay to forward.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use review_model::ModelData;
 use review_render::{
-    AlphaMode, ChannelSelect, MaterialChange, MaterialEdit, Selection, TextureSlot,
+    AlphaMode, ChannelSelect, DecodedImage, MaterialChange, MaterialEdit, MaterialState,
+    RoughnessWorkflow, Selection, TextureSlot,
 };
 
-use crate::state::{TextureSlotRef, UiState};
-use crate::widgets::{
-    labeled_color_button, labeled_combo, labeled_slider_with_value, panel_grid, value_row,
-};
+use crate::state::{TextureAssign, TexturePoolEntry, TextureSlotRef, UiState};
+use crate::theme::size;
+use crate::widgets::{labeled_color_button, labeled_combo, labeled_slider_with_value, panel_grid};
 
 /// What the Inspector emitted this frame, forwarded by the overlay into the
 /// [`crate::state::UiOutput`].
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct InspectorOutput {
     pub material_edit: Option<MaterialEdit>,
-    pub browse: Option<TextureSlotRef>,
+    /// A pooled texture was chosen in a property's texture dropdown.
+    pub assign: Option<TextureAssign>,
+    /// A property's texture dropdown was set back to "select texture".
     pub clear: Option<TextureSlotRef>,
+    /// The "Add textures…" button was clicked (open the import picker).
+    pub import: bool,
+    /// A pooled texture's remove (✕) was clicked.
+    pub remove: Option<PathBuf>,
 }
 
 pub(crate) fn body(ui: &mut egui::Ui, state: &UiState, model: &ModelData) -> InspectorOutput {
@@ -48,159 +58,89 @@ pub(crate) fn body(ui: &mut egui::Ui, state: &UiState, model: &ModelData) -> Ins
     }
 }
 
-/// Editable material parameters for the selected slot — base color, metallic,
-/// roughness, emissive — plus the seven assignable texture slots and the alpha
-/// compositing controls.
+/// The selected material's three collapsible sections.
 fn material_inspector(ui: &mut egui::Ui, state: &UiState, index: usize) -> InspectorOutput {
     let Some(snapshot) = state.materials_snapshot.get(index) else {
         ui.weak("Material no longer exists.");
         return InspectorOutput::default();
     };
-    ui.heading(format!("Material — {}", snapshot.name));
 
     let current = &snapshot.state;
     let mut out = InspectorOutput::default();
 
-    let mut base = [
-        current.base_color.x,
-        current.base_color.y,
-        current.base_color.z,
-    ];
-    let mut metallic = current.metallic;
-    let mut roughness = current.roughness;
-    let mut emissive = [current.emissive.x, current.emissive.y, current.emissive.z];
+    let title = if snapshot.name.is_empty() {
+        "Material".to_owned()
+    } else {
+        snapshot.name.clone()
+    };
 
-    panel_grid(ui, "inspector_material", |ui| {
-        if labeled_color_button(ui, "Base color", &mut base).changed() {
-            out.material_edit = Some(MaterialEdit {
-                index,
-                change: MaterialChange::BaseColor(base),
-            });
-        }
-        if labeled_slider_with_value(ui, "Metallic", &mut metallic, 0.0..=1.0, 3) {
-            out.material_edit = Some(MaterialEdit {
-                index,
-                change: MaterialChange::Metallic(metallic),
-            });
-        }
-        if labeled_slider_with_value(ui, "Roughness", &mut roughness, 0.0..=1.0, 3) {
-            out.material_edit = Some(MaterialEdit {
-                index,
-                change: MaterialChange::Roughness(roughness),
-            });
-        }
-        if labeled_color_button(ui, "Emissive", &mut emissive).changed() {
-            out.material_edit = Some(MaterialEdit {
-                index,
-                change: MaterialChange::Emissive(emissive),
-            });
-        }
-    });
+    egui::CollapsingHeader::new(title)
+        .id_salt(("inspector_material_section", index))
+        .default_open(true)
+        .show(ui, |ui| material_section(ui, current, index, &mut out));
 
-    ui.separator();
-    ui.heading("Texture slots");
-    for slot in TextureSlot::ALL {
-        texture_slot_block(ui, current, index, slot, &mut out);
-    }
+    egui::CollapsingHeader::new("Texture mapping")
+        .id_salt(("inspector_texture_mapping", index))
+        .default_open(true)
+        .show(ui, |ui| {
+            for slot in TextureSlot::ALL {
+                texture_mapping_row(ui, current, &state.texture_pool, index, slot, &mut out);
+            }
+        });
 
-    ui.separator();
-    ui.heading("Transparency");
-    alpha_controls(ui, current, index, &mut out);
+    egui::CollapsingHeader::new("Texture files")
+        .id_salt("inspector_texture_files")
+        .default_open(true)
+        .show(ui, |ui| {
+            texture_files_section(ui, &state.texture_pool, &mut out)
+        });
 
     out
 }
 
-/// One texture slot's controls: the slot name, the assigned file (or "not
-/// assigned"), a Browse / Clear pair, and — for an assigned packed scalar slot —
-/// the channel dropdown (pre-filled by auto-detect, overridable here).
-fn texture_slot_block(
+/// Section 1 — the material's shader type (display-only), transparency mode, and
+/// the editable scalar/color PBR parameters, on the striped two-column grid.
+fn material_section(
     ui: &mut egui::Ui,
-    state: &review_render::MaterialState,
+    state: &MaterialState,
     index: usize,
-    slot: TextureSlot,
     out: &mut InspectorOutput,
 ) {
-    let binding = state.textures[slot.index()].as_ref();
-    let slot_ref = TextureSlotRef {
-        material: index,
-        slot: slot.index(),
-    };
+    let mut base = [state.base_color.x, state.base_color.y, state.base_color.z];
+    let mut metallic = state.metallic;
+    let mut roughness = state.roughness;
+    let mut emissive = [state.emissive.x, state.emissive.y, state.emissive.z];
+    let mut cutoff = state.alpha_cutoff;
 
-    ui.horizontal(|ui| {
-        ui.strong(slot.label());
-        // Right-aligned action buttons.
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if binding.is_some() && ui.button("Clear").clicked() {
-                out.clear = Some(slot_ref);
-            }
-            if ui.button("Browse\u{2026}").clicked() {
-                out.browse = Some(slot_ref);
-            }
-        });
-    });
-
-    match binding {
-        Some(binding) => {
-            let name = binding
-                .path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("<texture>");
-            ui.add(egui::Label::new(egui::RichText::new(name).weak()).truncate());
-            // Packed scalar slots expose a channel selector; color/normal/emissive
-            // always read RGB, so no selector is needed.
-            if slot.is_scalar() {
-                channel_dropdown(ui, index, slot, binding.channel, out);
-            }
-        }
-        None => {
-            ui.weak("not assigned");
-        }
-    }
-    ui.add_space(ui.spacing().item_spacing.y);
-}
-
-/// The per-slot channel dropdown (R/G/B/A), emitting a re-route edit on change.
-fn channel_dropdown(
-    ui: &mut egui::Ui,
-    index: usize,
-    slot: TextureSlot,
-    current: ChannelSelect,
-    out: &mut InspectorOutput,
-) {
-    ui.horizontal(|ui| {
-        ui.label("Channel");
-        egui::ComboBox::from_id_salt(("inspector_channel", index, slot.index()))
-            .selected_text(current.label())
-            .show_ui(ui, |ui| {
-                for choice in ChannelSelect::SCALAR {
+    panel_grid(ui, "inspector_material", |ui| {
+        // Workflow: how roughness is authored. Roughness is the native
+        // metallic-roughness convention; Smoothness flips the slider + relabels the
+        // map row and inverts a bound map in the shader (Unity-style).
+        labeled_combo(
+            ui,
+            "Workflow",
+            "inspector_workflow",
+            state.workflow.label(),
+            |ui| {
+                for workflow in RoughnessWorkflow::ALL {
                     if ui
-                        .selectable_label(choice == current, choice.label())
+                        .selectable_label(workflow == state.workflow, workflow.label())
                         .clicked()
-                        && choice != current
+                        && workflow != state.workflow
                     {
                         out.material_edit = Some(MaterialEdit {
                             index,
-                            change: MaterialChange::Channel(slot.index(), choice),
+                            change: MaterialChange::Workflow(workflow),
                         });
                     }
                 }
-            });
-    });
-}
+            },
+        );
 
-/// Alpha compositing controls: the blend mode and (in Clip mode) the cutoff.
-fn alpha_controls(
-    ui: &mut egui::Ui,
-    state: &review_render::MaterialState,
-    index: usize,
-    out: &mut InspectorOutput,
-) {
-    let mut cutoff = state.alpha_cutoff;
-    panel_grid(ui, "inspector_alpha", |ui| {
+        // Transparency mode = the material's alpha-compositing mode.
         labeled_combo(
             ui,
-            "Mode",
+            "Transparency",
             "inspector_alpha_mode",
             state.alpha_mode.label(),
             |ui| {
@@ -218,7 +158,6 @@ fn alpha_controls(
                 }
             },
         );
-
         if state.alpha_mode == AlphaMode::Clip
             && labeled_slider_with_value(ui, "Cutoff", &mut cutoff, 0.0..=1.0, 3)
         {
@@ -227,7 +166,273 @@ fn alpha_controls(
                 change: MaterialChange::AlphaCutoff(cutoff),
             });
         }
+
+        if labeled_color_button(ui, "Base color", &mut base).changed() {
+            out.material_edit = Some(MaterialEdit {
+                index,
+                change: MaterialChange::BaseColor(base),
+            });
+        }
+        // The scalar always stores roughness; the Smoothness workflow displays its
+        // complement and writes it back inverted (a smoothness slider).
+        match state.workflow {
+            RoughnessWorkflow::Roughness => {
+                if labeled_slider_with_value(ui, "Roughness", &mut roughness, 0.0..=1.0, 3) {
+                    out.material_edit = Some(MaterialEdit {
+                        index,
+                        change: MaterialChange::Roughness(roughness),
+                    });
+                }
+            }
+            RoughnessWorkflow::Smoothness => {
+                let mut smoothness = 1.0 - roughness;
+                if labeled_slider_with_value(ui, "Smoothness", &mut smoothness, 0.0..=1.0, 3) {
+                    out.material_edit = Some(MaterialEdit {
+                        index,
+                        change: MaterialChange::Roughness(1.0 - smoothness),
+                    });
+                }
+            }
+        }
+        if labeled_slider_with_value(ui, "Metallic", &mut metallic, 0.0..=1.0, 3) {
+            out.material_edit = Some(MaterialEdit {
+                index,
+                change: MaterialChange::Metallic(metallic),
+            });
+        }
+        if labeled_color_button(ui, "Emissive", &mut emissive).changed() {
+            out.material_edit = Some(MaterialEdit {
+                index,
+                change: MaterialChange::Emissive(emissive),
+            });
+        }
     });
+}
+
+/// Section 2 — one property row: the slot name and a texture dropdown listing the
+/// pool ("select texture" = unbound), plus a channel dropdown for every slot except
+/// **Normal** (which always reads full RGB). The packed **scalar** slots (roughness
+/// / metallic / AO / opacity) route a single channel (R/G/B/A); the **color** slots
+/// (base color / emissive) offer full RGB *or* a single channel scaled by the color
+/// value. Under the Smoothness workflow the Roughness row is relabelled "Smoothness".
+fn texture_mapping_row(
+    ui: &mut egui::Ui,
+    state: &MaterialState,
+    pool: &[TexturePoolEntry],
+    index: usize,
+    slot: TextureSlot,
+    out: &mut InspectorOutput,
+) {
+    let slot_ref = TextureSlotRef {
+        material: index,
+        slot: slot.index(),
+    };
+    let binding = state.textures[slot.index()].as_ref();
+    let slot_label =
+        if slot == TextureSlot::Roughness && state.workflow == RoughnessWorkflow::Smoothness {
+            "Smoothness"
+        } else {
+            slot.label()
+        };
+    // Every slot but Normal carries a channel dropdown: scalar slots route a single
+    // channel, color slots (base color / emissive) offer RGB or a single channel.
+    let show_channel = slot != TextureSlot::Normal;
+
+    ui.horizontal(|ui| {
+        ui.scope(|ui| {
+            ui.set_width(size::TEXTURE_MAP_LABEL_W);
+            ui.add(egui::Label::new(slot_label).truncate());
+        });
+
+        let gap = ui.spacing().item_spacing.x;
+        let channel_w = size::TEXTURE_CHANNEL_COMBO_W;
+        let texture_w = if show_channel {
+            (ui.available_width() - channel_w - gap).max(60.0)
+        } else {
+            ui.available_width()
+        };
+
+        let selected_text = binding
+            .map(|binding| pool_name(&binding.path))
+            .unwrap_or_else(|| "select texture".to_owned());
+        egui::ComboBox::from_id_salt(("inspector_tex", index, slot.index()))
+            .selected_text(selected_text)
+            .width(texture_w)
+            .show_ui(ui, |ui| {
+                if ui
+                    .selectable_label(binding.is_none(), "select texture")
+                    .clicked()
+                    && binding.is_some()
+                {
+                    out.clear = Some(slot_ref);
+                }
+                for entry in pool {
+                    let is_selected = binding.is_some_and(|binding| binding.path == entry.path);
+                    if ui
+                        .selectable_label(is_selected, pool_name(&entry.path))
+                        .clicked()
+                        && !is_selected
+                    {
+                        out.assign = Some(TextureAssign {
+                            slot: slot_ref,
+                            path: entry.path.clone(),
+                        });
+                    }
+                }
+            });
+
+        if !show_channel {
+            return;
+        }
+        // Scalar slots offer single channels; color slots add the full-RGB option.
+        // Show the dropdown disabled (at the slot's neutral default) when unbound.
+        let choices: &[ChannelSelect] = if slot.is_scalar() {
+            &ChannelSelect::SCALAR
+        } else {
+            &ChannelSelect::COLOR
+        };
+        let default_channel = if slot.is_scalar() {
+            ChannelSelect::R
+        } else {
+            ChannelSelect::Rgb
+        };
+        let current_channel = binding.map_or(default_channel, |binding| binding.channel);
+        ui.add_enabled_ui(binding.is_some(), |ui| {
+            egui::ComboBox::from_id_salt(("inspector_ch", index, slot.index()))
+                .selected_text(current_channel.label())
+                .width(channel_w)
+                .show_ui(ui, |ui| {
+                    for &choice in choices {
+                        if ui
+                            .selectable_label(choice == current_channel, choice.label())
+                            .clicked()
+                            && choice != current_channel
+                        {
+                            out.material_edit = Some(MaterialEdit {
+                                index,
+                                change: MaterialChange::Channel(slot.index(), choice),
+                            });
+                        }
+                    }
+                });
+        });
+    });
+}
+
+/// Section 3 — the scene texture pool: each imported file as a thumbnail + name +
+/// remove (✕), then an "Add textures…" button and the drop-to-add hint.
+fn texture_files_section(ui: &mut egui::Ui, pool: &[TexturePoolEntry], out: &mut InspectorOutput) {
+    if pool.is_empty() {
+        ui.weak("No textures imported.");
+    } else {
+        for entry in pool {
+            texture_file_row(ui, entry, out);
+        }
+    }
+
+    ui.add_space(ui.spacing().item_spacing.y);
+    if ui.button("Add textures\u{2026}").clicked() {
+        out.import = true;
+    }
+    ui.weak("Drop texture files here to add");
+}
+
+/// One Texture files row: thumbnail (left), name (fills, truncating), remove
+/// button (right).
+fn texture_file_row(ui: &mut egui::Ui, entry: &TexturePoolEntry, out: &mut InspectorOutput) {
+    ui.horizontal(|ui| {
+        let side = size::TEXTURE_THUMB_SIZE;
+        let thumb_size = egui::vec2(side, side);
+        match texture_thumbnail(ui, entry) {
+            Some(texture) => {
+                ui.add(egui::Image::from_texture(texture).fit_to_exact_size(thumb_size));
+            }
+            None => {
+                // Decode hiccup: a neutral placeholder square keeps the row aligned.
+                let (rect, _) = ui.allocate_exact_size(thumb_size, egui::Sense::hover());
+                ui.painter().rect_filled(
+                    rect,
+                    size::SWATCH_CORNER_RADIUS,
+                    crate::theme::color::GROUP_BG,
+                );
+            }
+        }
+
+        let gap = ui.spacing().item_spacing.x;
+        let button_w = size::TEXTURE_REMOVE_BTN_W;
+        let name_w = (ui.available_width() - button_w - gap).max(0.0);
+        ui.scope(|ui| {
+            ui.set_width(name_w);
+            ui.add(egui::Label::new(pool_name(&entry.path)).truncate());
+        });
+        if ui
+            .button("\u{2715}")
+            .on_hover_text("Remove texture")
+            .clicked()
+        {
+            out.remove = Some(entry.path.clone());
+        }
+    });
+}
+
+/// The display name of a pooled texture (its file name).
+fn pool_name(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("<texture>")
+        .to_owned()
+}
+
+/// Lazily build + cache a small egui texture thumbnail for a pooled image. Cached
+/// in egui temp data keyed by path, with the source `Arc`'s identity stored so a
+/// disk reload (a fresh `Arc` at the same path) rebuilds the thumbnail. Mirrors
+/// [`crate::assets::load_icon_texture`]'s caching, downscaled on the CPU first so
+/// a 4K source doesn't upload at full size.
+fn texture_thumbnail(
+    ui: &mut egui::Ui,
+    entry: &TexturePoolEntry,
+) -> Option<egui::load::SizedTexture> {
+    let id = egui::Id::new(("texture_thumb", entry.path.as_path()));
+    let identity = Arc::as_ptr(&entry.image) as usize;
+    if let Some((cached, handle)) =
+        ui.data(|data| data.get_temp::<(usize, egui::TextureHandle)>(id))
+    {
+        if cached == identity {
+            return Some(egui::load::SizedTexture::from_handle(&handle));
+        }
+    }
+
+    let color_image = thumbnail_color_image(&entry.image)?;
+    let handle = ui.ctx().load_texture(
+        format!("thumb:{}", entry.path.display()),
+        color_image,
+        egui::TextureOptions::LINEAR,
+    );
+    let sized = egui::load::SizedTexture::from_handle(&handle);
+    ui.data_mut(|data| data.insert_temp(id, (identity, handle)));
+    Some(sized)
+}
+
+/// Downscale a decoded RGBA8 image to a small `egui::ColorImage` thumbnail,
+/// preserving aspect ratio (longest edge ≈ twice the on-screen size for crispness
+/// on HiDPI). Returns `None` if the buffer is too small to be that image.
+fn thumbnail_color_image(image: &DecodedImage) -> Option<egui::ColorImage> {
+    let width = image.width.max(1);
+    let height = image.height.max(1);
+    if image.rgba.len() < (width as usize * height as usize * 4) {
+        return None;
+    }
+    let source = image::RgbaImage::from_raw(width, height, image.rgba.clone())?;
+    let max_edge = (size::TEXTURE_THUMB_SIZE * 2.0) as u32;
+    let scale = (max_edge as f32 / width.max(height) as f32).min(1.0);
+    let target_w = ((width as f32 * scale).round() as u32).max(1);
+    let target_h = ((height as f32 * scale).round() as u32).max(1);
+    let thumb = image::imageops::thumbnail(&source, target_w, target_h);
+    let dimensions = [thumb.width() as usize, thumb.height() as usize];
+    Some(egui::ColorImage::from_rgba_unmultiplied(
+        dimensions,
+        thumb.as_raw(),
+    ))
 }
 
 /// Read-only stats for a selected node: name, type, child count, triangle count,
@@ -265,10 +470,10 @@ fn node_inspector(ui: &mut egui::Ui, model: &ModelData, index: usize) {
     let position = node.transform.w_axis.truncate();
 
     panel_grid(ui, "inspector_node", |ui| {
-        value_row(ui, "Type", kind);
-        value_row(ui, "Children", &child_count.to_string());
-        value_row(ui, "Triangles", &triangle_count.to_string());
-        value_row(
+        crate::widgets::value_row(ui, "Type", kind);
+        crate::widgets::value_row(ui, "Children", &child_count.to_string());
+        crate::widgets::value_row(ui, "Triangles", &triangle_count.to_string());
+        crate::widgets::value_row(
             ui,
             "Position",
             &format!("{:.3}, {:.3}, {:.3}", position.x, position.y, position.z),

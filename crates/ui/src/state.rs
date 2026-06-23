@@ -6,13 +6,15 @@
 //! [`SceneDebugOptions`] the renderer reads.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use glam::{Vec2, Vec3};
 use review_model::{Bounds, ModelData, ModelStats};
 use review_render::{
-    AntiAliasing, BloomSettings, CameraProjection, CheckerTexture, EnvironmentSettings,
-    MaterialEdit, MaterialSnapshot, MsaaSamples, SceneDebugOptions, Selection, ShadingMode,
-    SsaoSettings, TonemapSettings, UvShadingMode, VertexColorMode,
+    AntiAliasing, BloomSettings, CameraProjection, CheckerTexture, DecodedImage,
+    EnvironmentSettings, MaterialEdit, MaterialSnapshot, MsaaSamples, SceneDebugOptions, Selection,
+    ShadingMode, SsaoSettings, TonemapSettings, UvShadingMode, VertexColorMode,
 };
 
 use crate::theme;
@@ -84,27 +86,53 @@ pub enum AxisGizmoAction {
 
 /// A reference to one material's texture slot (the slot is a
 /// [`review_render::TextureSlot`] index, `0..7`), used by the Inspector's
-/// browse / clear intents. `app` opens the file dialog + decodes (it owns the
-/// filesystem); the UI only points at the slot (invariant 2).
+/// assign / clear intents. `app` owns the filesystem + decoded-texture pool; the
+/// UI only points at the slot (invariant 2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextureSlotRef {
     pub material: usize,
     pub slot: usize,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+/// One imported texture in the scene-wide pool, surfaced to the Inspector so it
+/// can list the files (with a real thumbnail built from `image`) and offer them
+/// in each material property's texture dropdown. A plain app→UI snapshot value
+/// (invariant 2): `app` owns the decode + the pool, the UI only reads this. The
+/// `Arc` makes carrying it a refcount bump, not a pixel copy.
+#[derive(Debug, Clone)]
+pub struct TexturePoolEntry {
+    pub path: PathBuf,
+    pub image: Arc<DecodedImage>,
+}
+
+/// The Inspector asked to bind a pooled texture to a material slot: `app` looks
+/// the decoded image up in its pool and assigns it (auto-detecting the channel
+/// routing). The matching "unbind" is [`UiOutput::texture_clear`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextureAssign {
+    pub slot: TextureSlotRef,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct UiOutput {
     pub axis_gizmo_action: Option<AxisGizmoAction>,
     /// A live material-parameter edit emitted by the Inspector (base color /
     /// metallic / roughness / emissive / channel routing / alpha). `app` applies
     /// it to the renderer's editable material table.
     pub material_edit: Option<MaterialEdit>,
-    /// The Inspector's "Browse…" was clicked for a texture slot: `app` opens the
-    /// image picker, decodes, and assigns the slot (Phase 3).
-    pub texture_browse: Option<TextureSlotRef>,
-    /// The Inspector's "Clear" was clicked for a texture slot: `app` reverts it to
-    /// the shader's neutral fallback.
+    /// The Inspector's "Add textures…" was clicked (Texture files section): `app`
+    /// opens the image picker and imports the chosen files into the scene pool.
+    pub texture_import: bool,
+    /// A pooled texture was chosen in a property's texture dropdown: `app` binds
+    /// the decoded image to the slot.
+    pub texture_assign: Option<TextureAssign>,
+    /// A property's texture dropdown was set back to "select texture": `app`
+    /// reverts that slot to the shader's neutral fallback.
     pub texture_clear: Option<TextureSlotRef>,
+    /// A pooled texture's remove (✕) was clicked: `app` drops it from the pool and
+    /// unbinds every material slot that referenced it.
+    pub texture_remove: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -383,6 +411,12 @@ pub struct UiState {
     /// Drives the temporary Phase-1 material editor and feeds the per-material
     /// uniforms into the scene callback.
     pub materials_snapshot: Vec<MaterialSnapshot>,
+    /// The scene-wide pool of imported textures (decoded images), set by `app`.
+    /// The Inspector lists these in its Texture files section and offers them in
+    /// each material property's texture dropdown; a texture is decoded once and
+    /// shared by every material/slot that references it (invariant 2: plain
+    /// snapshot value).
+    pub texture_pool: Vec<TexturePoolEntry>,
     /// Material-table revision matching `materials_snapshot`, set by `app` from
     /// the renderer. Carried into the scene callback so the GPU table re-uploads
     /// only when an edit (or a new model) bumps it.
@@ -480,6 +514,7 @@ impl Default for UiState {
             tonemap: TonemapSettings::default(),
             stats: ModelStats::default(),
             materials_snapshot: Vec::new(),
+            texture_pool: Vec::new(),
             material_revision: 0,
             selection: Selection::None,
             solo: false,

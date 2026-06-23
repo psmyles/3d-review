@@ -282,6 +282,19 @@ pub mod size {
     /// stack so the work indicator and result toasts don't overlap.
     pub const NOTIFICATION_ACTIVITY_MARGIN_Y: f32 = NOTIFICATION_EVENT_MARGIN_Y + NOTIFICATION_ROW;
 
+    // ── Material inspector: texture mapping + files ───────────────────────
+    /// Fixed label-column width for a Texture-mapping row (property name), so the
+    /// texture + channel dropdowns line up down the column.
+    pub const TEXTURE_MAP_LABEL_W: f32 = 84.0;
+    /// Width of the per-property channel dropdown (R/G/B/A, or RGB + single channels
+    /// for color slots) in a Texture-mapping row; the texture dropdown fills the rest.
+    pub const TEXTURE_CHANNEL_COMBO_W: f32 = 62.0;
+    /// On-screen size of a pooled-texture thumbnail in the Texture files list,
+    /// and the max edge its CPU downscale targets (doubled for crispness on HiDPI).
+    pub const TEXTURE_THUMB_SIZE: f32 = 40.0;
+    /// Width of the remove (✕) button column in a Texture files row.
+    pub const TEXTURE_REMOVE_BTN_W: f32 = 24.0;
+
     // ── Stats overlay ─────────────────────────────────────────────────────
     pub const STATS_ROW_SPACING: f32 = 3.0;
     pub const STATS_PANEL_WIDTH: f32 = 132.0;

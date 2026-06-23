@@ -121,8 +121,10 @@ pub fn draw_overlay(
         // material-edit intents for `app` to apply (invariant 2).
         let side = draw_side_panels(ctx, state, model);
         output.material_edit = side.inspector.material_edit;
-        output.texture_browse = side.inspector.browse;
+        output.texture_import = side.inspector.import;
+        output.texture_assign = side.inspector.assign;
         output.texture_clear = side.inspector.clear;
+        output.texture_remove = side.inspector.remove;
 
         // Bounding-box dimension labels sit on the viewport (under the chrome).
         // The measured box is resolved here (cached for the "visible only" scan)
@@ -222,9 +224,9 @@ fn draw_option_panels(ctx: &egui::Context, state: &mut UiState, toolbar_height: 
 }
 
 /// The result of laying out the dockable side panels: the Inspector's emitted
-/// intents (material edit / texture browse / clear) plus the live widths of the
-/// open panels, used to inset the floating viewport chrome (gizmo / stats) so it
-/// doesn't land over a panel.
+/// intents (material edit / texture import / assign / clear / remove) plus the
+/// live widths of the open panels, used to inset the floating viewport chrome
+/// (gizmo / stats) so it doesn't land over a panel.
 struct SidePanelLayout {
     inspector: panels::inspector::InspectorOutput,
     left_inset: f32,
