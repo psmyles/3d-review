@@ -135,6 +135,37 @@ pub(crate) const ICON_INSPECTOR: AppIcon = AppIcon {
     png_bytes: include_bytes!("../../../assets/icons/icon_inspector.png"),
 };
 
+/// Tone-mapped equirectangular preview thumbnails for the built-in HDR
+/// environments, shown beside each option in the Environment dropdown. They are
+/// small (128×64) sRGB PNGs generated offline from the HDRs in `assets/textures`,
+/// embedded the same way as the icons above and decoded lazily on first use via
+/// [`load_icon_texture`]. One entry per [`review_render::EnvironmentMap`] variant
+/// (see [`crate::panels`]'s environment row, which maps a variant to its thumb).
+pub(crate) const THUMB_HDR_01: AppIcon = AppIcon {
+    id: "thumb_hdr_01",
+    png_bytes: include_bytes!("../../../assets/thumbnails/T_HDR_01.png"),
+};
+pub(crate) const THUMB_HDR_02: AppIcon = AppIcon {
+    id: "thumb_hdr_02",
+    png_bytes: include_bytes!("../../../assets/thumbnails/T_HDR_02.png"),
+};
+pub(crate) const THUMB_HDR_03: AppIcon = AppIcon {
+    id: "thumb_hdr_03",
+    png_bytes: include_bytes!("../../../assets/thumbnails/T_HDR_03.png"),
+};
+pub(crate) const THUMB_HDR_04: AppIcon = AppIcon {
+    id: "thumb_hdr_04",
+    png_bytes: include_bytes!("../../../assets/thumbnails/T_HDR_04.png"),
+};
+pub(crate) const THUMB_HDR_05: AppIcon = AppIcon {
+    id: "thumb_hdr_05",
+    png_bytes: include_bytes!("../../../assets/thumbnails/T_HDR_05.png"),
+};
+pub(crate) const THUMB_HDR_06: AppIcon = AppIcon {
+    id: "thumb_hdr_06",
+    png_bytes: include_bytes!("../../../assets/thumbnails/T_HDR_06.png"),
+};
+
 /// A custom font embedded into the binary and registered with egui at startup.
 struct CustomFont {
     /// Unique key egui uses to reference this font.

@@ -532,7 +532,8 @@ impl SceneResources {
                 } else {
                     0.0
                 },
-                0.0,
+                // Environment yaw (radians) for the IBL / skybox sample rotation.
+                environment.rotation_degrees.to_radians(),
                 0.0,
                 0.0,
             ],

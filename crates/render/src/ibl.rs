@@ -603,6 +603,15 @@ fn load_equirect_texture(
     texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
+/// Largest value representable as a finite `f16`. HDR suns routinely exceed this;
+/// left unclamped, `f16::from_f32` rounds them to `inf`, which then propagates as
+/// `NaN` through the IBL convolutions (the unclamped irradiance integral
+/// especially) and the raw skybox sample — blowing out into black speckles on the
+/// model and a dead spot at the sun. Clamp every channel to this ceiling so the
+/// uploaded environment stays finite. (`f32::min(NaN, x)` returns `x`, so this
+/// also sanitizes a stray non-finite source texel.)
+const F16_MAX: f32 = 65504.0;
+
 /// Decode an environment HDR to `(width, height, rgba_f16_bits)`. RGBA, four
 /// half-floats per texel (`Rgba16Float`).
 fn decode_hdr(environment: EnvironmentMap) -> (u32, u32, Vec<u16>) {
@@ -613,7 +622,7 @@ fn decode_hdr(environment: EnvironmentMap) -> (u32, u32, Vec<u16>) {
             let (width, height) = rgba.dimensions();
             let halfs = rgba
                 .iter()
-                .map(|&c| half::f16::from_f32(c).to_bits())
+                .map(|&c| half::f16::from_f32(c.min(F16_MAX)).to_bits())
                 .collect();
             (width, height, halfs)
         }
@@ -634,5 +643,28 @@ fn hdr_bytes(environment: EnvironmentMap) -> &'static [u8] {
         EnvironmentMap::Hdr01 => include_bytes!("../../../assets/textures/T_HDR_01.hdr"),
         EnvironmentMap::Hdr02 => include_bytes!("../../../assets/textures/T_HDR_02.hdr"),
         EnvironmentMap::Hdr03 => include_bytes!("../../../assets/textures/T_HDR_03.hdr"),
+        EnvironmentMap::Hdr04 => include_bytes!("../../../assets/textures/T_HDR_04.hdr"),
+        EnvironmentMap::Hdr05 => include_bytes!("../../../assets/textures/T_HDR_05.hdr"),
+        EnvironmentMap::Hdr06 => include_bytes!("../../../assets/textures/T_HDR_06.hdr"),
+    }
+}
+
+#[cfg(test)]
+mod shader_tests {
+    /// The IBL precompute shader must parse + validate. Like the scene-shader
+    /// test (see `scene::gpu_types`), this catches type / control-flow / binding
+    /// mistakes without a GPU; the real check is pipeline creation in
+    /// [`super::IblResources::new`].
+    #[test]
+    fn ibl_shader_validates() {
+        let module =
+            naga::front::wgsl::parse_str(super::IBL_SHADER).expect("ibl.wgsl should parse");
+        let mut validator = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        );
+        validator
+            .validate(&module)
+            .expect("ibl.wgsl should validate");
     }
 }
