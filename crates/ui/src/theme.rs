@@ -318,16 +318,26 @@ pub mod size {
     /// Width of the Tex viewport's stats panel (wider than the model-stats panel so
     /// "Dimension  1024 × 1024" fits on one row).
     pub const TEXTURE_STATS_PANEL_WIDTH: f32 = 188.0;
+    /// Width of the clickable zoom-percentage readout next to the texture-info
+    /// button in the Tex status bar. Sized to hold the widest readout
+    /// (`6400%` at the max zoom) without reflowing.
+    pub const TEXTURE_ZOOM_LABEL_WIDTH: f32 = 60.0;
     /// Screen-point side of one checkerboard-background square.
     pub const TEXTURE_CHECKER_CELL: f32 = 12.0;
     /// Fraction of the viewport the image fills when first fit (a small margin so a
     /// fitted image isn't flush to the edges).
     pub const TEXTURE_FIT_MARGIN: f32 = 0.96;
-    /// Zoom clamp + wheel sensitivity for the Tex viewport pan/zoom. `ZOOM_SPEED`
-    /// scales a scroll-delta into the exponent of the multiplicative zoom step.
+    /// Zoom clamp + sensitivities for the Tex viewport pan/zoom. `ZOOM_SPEED`
+    /// scales a scroll-delta, and `DRAG_ZOOM_SPEED` a right-drag vertical delta,
+    /// into the exponent of the multiplicative zoom step.
     pub const TEXTURE_ZOOM_MIN: f32 = 0.02;
     pub const TEXTURE_ZOOM_MAX: f32 = 64.0;
     pub const TEXTURE_ZOOM_SPEED: f32 = 0.0015;
+    pub const TEXTURE_DRAG_ZOOM_SPEED: f32 = 0.01;
+    /// Duration (seconds) of the eased pan/zoom transition run when the view
+    /// snaps to a target — the zoom-readout toggle (100% ↔ fit) and the `F` / `R`
+    /// frame reset. Continuous wheel/drag zoom is not eased.
+    pub const TEXTURE_ZOOM_ANIM_SECS: f32 = 0.1;
 
     // ── Stats overlay ─────────────────────────────────────────────────────
     pub const STATS_ROW_SPACING: f32 = 3.0;
@@ -481,6 +491,8 @@ pub mod size {
 /// JetBrains Mono; see [`crate::assets`].
 pub mod font {
     pub const STATS: f32 = 12.0;
+    /// Clickable zoom-percentage readout in the Tex status bar (monospace).
+    pub const STATUS_ZOOM: f32 = 16.0;
     /// Option-panel body text (labels, slider value boxes, combo text, the reset
     /// button). Rendered in the monospace face one step smaller than egui's
     /// default body size so numeric readouts line up on a fixed grid.

@@ -59,10 +59,12 @@ input/file path
   45 degree WASD orbit steps, and clickable/dragable axis gizmo.
 - 2D UV viewport with independent pan/zoom, UV channel picker, wire layout,
   shaded fill, and per-island coloring.
-- 2D Tex viewport (pure-egui image viewer over the scene texture pool): texture
-  picker, RGB/R/G/B/A channel isolation (the `A` segment auto-hides for opaque
-  images), pan/zoom, black/white/grey/checker background fill, and a real-values
-  stats panel (format, dimension, channels, bit depth, on-disk size).
+- 2D Tex viewport (wgpu image draw via `TexCallback` over the scene texture pool):
+  texture picker, RGB/R/G/B/A channel isolation (a shader uniform swizzle, so
+  switching is instant; the `A` segment auto-hides for opaque images), mipmapped,
+  pan (LMB-drag) / zoom (wheel or RMB-drag) / `F`-to-fit, black/white/grey/checker
+  background fill, and a real-values stats panel (format, dimension, channels, bit
+  depth, on-disk size).
 - Source material color, UV checker material, and vertex-color inspection modes.
 - Shaded, unlit, wireframe-only, and shaded-plus-wireframe modes.
 - Grid, bounding box, face-normal lines, and vertex-normal lines.
@@ -125,12 +127,16 @@ input/file path
   logged with `tracing::warn!`, but the viewer does not show an in-app error.
   `ModelWarning` exists in the data model, but warning generation/display is not
   active yet.
-- Texture mode is implemented: the `Tex` tab is a pure-egui 2D image viewer over
-  the scene texture pool (`ui/src/texture_view.rs`) — texture picker, RGB/R/G/B/A
-  channel isolation (the `A` segment auto-hides for opaque images), pan/zoom,
-  black/white/grey/checker background fill, and a real-values stats panel. It
-  registers no scene callback, so `draw_viewport_scene` still returns early in
-  that mode. Future work: DDS/KTX2 (compressed) source support and per-mip view.
+- Texture mode is implemented: the `Tex` tab draws the selected pooled texture
+  through `review-render`'s standalone `TexCallback` (`render/src/tex.rs` +
+  `tex.wgsl`), while `ui/src/texture_view.rs` owns only interaction (pan/zoom/fit,
+  background fill, channel pick) — texture picker, RGB/R/G/B/A channel isolation
+  (a shader uniform swizzle; the `A` segment auto-hides for opaque images),
+  mipmapped, pan/zoom, black/white/grey/checker background fill, and a real-values
+  stats panel. The callback is its own minimal fullscreen-triangle pipeline,
+  outside the scene MRT/tonemap path. The per-path GPU cache is an LRU bounded to
+  16 textures (a 17th upload evicts the least-recently-viewed). Future work:
+  DDS/KTX2 (compressed) source support and a per-mip view.
 - Decide what `LoadOptions::triangulate` means. It is passed through Rust/C, but
   the C bridge currently always triangulates render indices and ignores the
   option value.

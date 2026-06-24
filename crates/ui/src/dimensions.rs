@@ -101,7 +101,14 @@ pub(crate) fn draw_dimension_labels(
             continue;
         }
         if let Some(pos) = project(view_projection, midpoint, screen) {
-            draw_label(&painter, ctx, pos, &labels[axis], axis_colors[axis], viewport);
+            draw_label(
+                &painter,
+                ctx,
+                pos,
+                &labels[axis],
+                axis_colors[axis],
+                viewport,
+            );
         }
     }
 }

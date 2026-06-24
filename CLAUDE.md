@@ -140,7 +140,12 @@ crates/
             G-buffer) -> src/ssao.rs, src/ssao.wgsl. The model wireframe is a plain
             LineList drawn in the scene pass via `line_pipeline` (depth-tested
             against the mesh so hidden-face edges are occluded; no thickness
-            control) -> src/scene/ + src/geometry/ (`wireframe_lines`)
+            control) -> src/scene/ + src/geometry/ (`wireframe_lines`). The Tex
+            viewport's image draw is its own standalone egui paint callback
+            (`TexCallback`) — a minimal fullscreen-triangle pipeline with a path-keyed
+            mipped-texture cache + a channel-select/placement uniform, deliberately
+            outside the scene MRT/tonemap path so the displayed texel equals the
+            stored texel -> src/tex.rs, src/tex.wgsl
   ui/       review-ui: egui chrome built on egui's **native windowing**, not a
             hand-rolled layout system. Option tools are native `egui::Window`s
             (collapsible/closable, non-resizable, multi-open via
@@ -149,8 +154,9 @@ crates/
             `egui::TopBottomPanel` bands (interiors still hand-laid via
             `scope_builder` — the one remaining rework step). The 3D/UV scene
             paints on the background layer behind the chrome; the Tex viewport
-            (`texture_view.rs`) is a pure-egui 2D image viewer painted over that
-            same background. Plus axis gizmo,
+            (`texture_view.rs`) handles only interaction (pan/zoom/fit, background
+            fill, channel pick) and hands the image to `review_render`'s
+            `TexCallback` to draw — it owns no GPU state. Plus axis gizmo,
             stats overlay, bounding-box dimension labels, startup help overlay;
             emits UiOutput intents. Thin root re-exports; modules: theme/state/
             assets/widgets/overlay/toolbar/status_bar/stats/texture_view/gizmo/
@@ -214,8 +220,10 @@ workspace still builds and FBX import returns a clear error.
 - Shading is one inline WGSL scene shader covering shaded / unlit / wireframe /
   uv-checker / vertex-color paths; tone mapping + sRGB encoding live in the post
   shader, and the model wireframe is a depth-tested line-list draw in the scene
-  pass. `3D`, `UV` and `Tex` viewports are all implemented (the `Tex` 2D image
-  viewer is pure-egui — it registers no scene callback).
+  pass. `3D`, `UV` and `Tex` viewports are all implemented; the `Tex` image is
+  drawn by its own standalone egui paint callback (`TexCallback`, a minimal
+  fullscreen-triangle pipeline outside the scene MRT/tonemap path) so channel
+  isolation is a uniform swizzle and the displayed texel equals the stored texel.
 - Crate boundaries are load-bearing (invariants 2, 9, 10) — keep them.
 
 ## 5. Current state
@@ -227,9 +235,11 @@ axes; shaded / unlit / wireframe / shaded+wireframe, source-color / UV-checker /
 vertex-color materials, plus bounding-box, face- and vertex-normal debug
 overlays; orthographic/perspective toggle; animated axis gizmo (orbit +
 snap-to-axis); a 2D UV viewport (independent pan/zoom, UV channel picker, wire
-layout, shaded fill, per-island coloring); a 2D Tex viewport (pure-egui image
-viewer over the scene texture pool: texture picker, RGB/R/G/B/A channel isolation
-— the `A` segment auto-hides for opaque images — pan/zoom, black/white/grey/checker
+layout, shaded fill, per-island coloring); a 2D Tex viewport (a wgpu image draw
+via `TexCallback` over the scene texture pool: texture picker, RGB/R/G/B/A channel
+isolation — a shader uniform swizzle, so switching is instant; the `A` segment
+auto-hides for opaque images — mipmapped, pan (LMB-drag) / zoom (wheel or
+RMB-drag) / `F`-to-fit, black/white/grey/checker
 background fill, and a real-values stats panel). Windows packaging (exe icon/resource
 metadata + Inno Setup installer) is present.
 

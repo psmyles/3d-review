@@ -182,14 +182,23 @@ UV mode reuses the same callback/resource system but switches to `SceneCallback:
 - Filled UV triangles can be solid or per-island colored.
 - Bloom and SSAO are disabled.
 
-Texture mode registers no scene callback by design: the `Tex` tab is a pure-egui
-2D image viewer (`ui/src/texture_view.rs`) painted on the background layer behind
-the chrome. The selected pooled texture is uploaded as an egui texture with the
-chosen channel isolated on the CPU (RGB keeps color+alpha; a single channel is
-replicated as opaque greyscale) and painted with interactive pan/zoom over a
-black/white/grey/checker background fill. Keeping it out of the wgpu scene path is
-deliberate — it avoids round-tripping display-ready sRGB texels through the
-linear-HDR / tone-map / MRT pipeline, so the pixels are shown exactly as decoded.
+Texture mode runs its own minimal wgpu callback (`TexCallback` in
+`render/src/tex.rs` + `tex.wgsl`), separate from the scene callback. `ui/src/
+texture_view.rs` owns only interaction — pan/zoom/fit, the background fill, and the
+channel pick — and hands the selected pooled image to the callback, which paints it
+on the background layer behind the chrome. The callback uploads the source texture
+once into a mip-mapped `Rgba8Unorm` texture (path-keyed LRU cache bounded to 16
+entries, reused across frames + channel switches) and draws a fullscreen triangle that maps the
+framebuffer pixel to an image UV from a placement uniform, discards fragments
+outside the image (so the background fill shows through), and isolates the channel
+by a `channel` uniform the fragment shader swizzles on — so RGB/R/G/B/A switches
+are a buffer write, never a re-upload. Faithfulness across the sRGB seam: the
+texture is `Rgba8Unorm`, so the sample returns the raw stored bytes for every
+channel alike, and a `target_srgb` flag pre-compensates the framebuffer's
+encode-on-write so the on-screen byte equals the source byte. This pipeline is
+deliberately outside the scene's linear-HDR / tone-map / MRT path, so the pixels
+are shown exactly as decoded — now with real mip minification (egui's single-level
+upload shimmered when zoomed out).
 
 ## Resource Lifecycle
 
