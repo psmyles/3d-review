@@ -1,6 +1,5 @@
 3D view
 - viewport background controls
-- backface rendering toggle
 - buffer views
 - UV stretching
 - overdraw
@@ -9,4 +8,5 @@
 - camera FOV controls
 - 
 UV view
-- 
+- wireframe color
+- uv overlap

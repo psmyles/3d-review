@@ -153,12 +153,21 @@ impl ChannelSelect {
 
 /// Decoded RGBA8 pixels for one source image, shared by `Arc` so the per-frame
 /// scene callback and the GPU upload reference the same buffer without copying.
+///
+/// The pixels are always RGBA8 (the renderer / Tex viewer sample one layout); the
+/// `source_*` fields preserve the *original* file's channel count and per-channel
+/// bit depth so the Tex viewport's stats panel can report them faithfully
+/// (invariant 5) — they describe the file on disk, not this decoded buffer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodedImage {
     pub width: u32,
     pub height: u32,
     /// Tightly-packed RGBA8 rows, `width * height * 4` bytes.
     pub rgba: Vec<u8>,
+    /// Channel count of the source file (1 grey, 2 grey+alpha, 3 RGB, 4 RGBA).
+    pub source_channels: u8,
+    /// Bits per channel of the source file (e.g. 8, 16), before the RGBA8 decode.
+    pub source_bit_depth: u8,
 }
 
 /// Decode `path` into RGBA8 pixels. Dispatches on the file extension: formats the
@@ -179,12 +188,20 @@ pub fn decode_image(path: &Path) -> Result<DecodedImage, String> {
         decode_via_magick(path)?
     };
 
+    // Capture the source color type *before* the RGBA8 flatten, so the Tex
+    // viewport can report the file's real channel count + bit depth.
+    let color = image.color();
+    let source_channels = color.channel_count().max(1);
+    let source_bit_depth = (color.bits_per_pixel() / source_channels as u16) as u8;
+
     let rgba = image.to_rgba8();
     let (width, height) = rgba.dimensions();
     Ok(DecodedImage {
         width,
         height,
         rgba: rgba.into_raw(),
+        source_channels,
+        source_bit_depth,
     })
 }
 

@@ -24,6 +24,7 @@ mod panels;
 mod state;
 mod stats;
 mod status_bar;
+mod texture_view;
 pub mod theme;
 mod toolbar;
 mod widgets;
@@ -37,8 +38,8 @@ pub use review_render::{
 };
 pub use state::{
     AxisGizmoAction, BoundingBoxPanelState, NormalPanelState, OptionPanel, OutlinerTab, PanelsOpen,
-    TextureAssign, TextureIntent, TexturePoolEntry, TextureSlotRef, UiOutput, UiState,
-    UvCheckerPanelState, VertexColorPanelState, ViewAxis, ViewProjectionMode, WireframePanelState,
-    WorkspaceMode,
+    TextureAssign, TextureBackground, TextureChannelView, TextureIntent, TexturePoolEntry,
+    TextureSlotRef, TextureViewState, UiOutput, UiState, UvCheckerPanelState,
+    VertexColorPanelState, ViewAxis, ViewProjectionMode, WireframePanelState, WorkspaceMode,
 };
 pub use theme::init_style;

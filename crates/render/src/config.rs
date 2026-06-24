@@ -447,6 +447,12 @@ pub struct SceneDebugOptions {
     /// into the box line buffer alongside the hidden set, so it rebuilds when the
     /// scope or the visible meshes change.
     pub bounding_box_visible_only: bool,
+    /// When `true` back-facing triangles are drawn (the mesh is double-sided);
+    /// when `false` (the default) they are culled, so only camera-facing surfaces
+    /// are rendered. The renderer keeps two mesh pipelines — culling vs.
+    /// double-sided — and picks one per frame from this flag, so toggling it
+    /// allocates nothing.
+    pub render_backfaces: bool,
 }
 
 impl Default for SceneDebugOptions {
@@ -470,6 +476,7 @@ impl Default for SceneDebugOptions {
             wireframe_color: [0.6, 0.6, 0.6, 1.0],
             bounding_box_color: [1.0, 0.803_921_6, 0.250_980_4, 1.0],
             bounding_box_visible_only: false,
+            render_backfaces: false,
         }
     }
 }

@@ -2,7 +2,7 @@
 //! stats overlay. None of these own state — they paint and report interactions.
 
 use crate::assets::{self, AppIcon};
-use crate::theme::{self, color, size};
+use crate::theme::{self, color, font, size};
 
 /// A square icon toggle sized to the standard toolbar tile.
 pub(crate) fn icon_toggle_button(
@@ -67,6 +67,50 @@ pub(crate) fn icon_tile_button(
     }
 
     response.on_hover_text(tooltip)
+}
+
+/// A custom-painted **text** segment tile (a labelled radio cell), sized to
+/// `width`: accent-filled when selected, lifted on hover, idle transparent. The
+/// shared primitive behind the mode tabs (3D/UV/Tex), the Tex channel group
+/// (RGB/R/G/B/A) and the Tex background group (B/W/G/C). Returns the response so
+/// the caller drives selection on `clicked()`.
+pub(crate) fn segment_button(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    label: &str,
+    selected: bool,
+    width: f32,
+) -> egui::Response {
+    let desired = egui::vec2(width, theme::px(ctx, size::MODE_SEGMENT_HEIGHT));
+    let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::click());
+    let fill = if selected {
+        color::ACCENT
+    } else if response.hovered() {
+        color::HOVER_BG
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    let text_color = if selected {
+        color::TEXT_PRIMARY
+    } else {
+        color::TEXT_SEGMENT_IDLE
+    };
+
+    ui.painter().rect(
+        rect,
+        theme::px(ctx, size::TILE_CORNER_RADIUS),
+        fill,
+        egui::Stroke::NONE,
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(theme::px(ctx, font::MODE_SEGMENT)),
+        text_color,
+    );
+    response
 }
 
 /// A recessed group shell that hosts a row of toolbar tiles, laid out

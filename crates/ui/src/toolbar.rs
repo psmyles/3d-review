@@ -5,14 +5,16 @@
 use review_render::{ActiveMaterial, ShadingMode, UvShadingMode};
 
 use crate::assets::{
-    ICON_AXIS_GIZMO, ICON_BBOX, ICON_GRID, ICON_INSPECTOR, ICON_NORMALS_FACE, ICON_NORMALS_VERTEX,
-    ICON_OUTLINER, ICON_SHADING_SHADED, ICON_SHADING_TEXTURE, ICON_SHADING_UNLIT,
-    ICON_SHADING_WIRE, ICON_SHADING_WIRE_ONLY, ICON_UV, ICON_UV_ISLANDS, ICON_UV_SHADED,
-    ICON_UV_WIRE, ICON_VERTEX_COLORS, ICON_VIEW_ORTHO, ICON_VIEW_PERSPECTIVE,
+    ICON_AXIS_GIZMO, ICON_BACKFACE, ICON_BBOX, ICON_GRID, ICON_INSPECTOR, ICON_NORMALS_FACE,
+    ICON_NORMALS_VERTEX, ICON_OUTLINER, ICON_SHADING_SHADED, ICON_SHADING_TEXTURE,
+    ICON_SHADING_UNLIT, ICON_SHADING_WIRE, ICON_SHADING_WIRE_ONLY, ICON_UV, ICON_UV_ISLANDS,
+    ICON_UV_SHADED, ICON_UV_WIRE, ICON_VERTEX_COLORS, ICON_VIEW_ORTHO, ICON_VIEW_PERSPECTIVE,
 };
-use crate::state::{OptionPanel, UiState, ViewProjectionMode, WorkspaceMode};
-use crate::theme::{self, color, font, size};
-use crate::widgets::{compact_combo, icon_toggle_button, toolbar_group_shell};
+use crate::state::{
+    OptionPanel, TextureChannelView, TexturePoolEntry, UiState, ViewProjectionMode, WorkspaceMode,
+};
+use crate::theme::{self, color, size};
+use crate::widgets::{compact_combo, icon_toggle_button, segment_button, toolbar_group_shell};
 
 /// Background frame shared by the toolbar (and matched by the status bar). Zero
 /// inner margin: content is placed by px-converted rect math below, so no raw
@@ -80,8 +82,8 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
 
             // The shading / material / normal tool groups and the view /
             // projection groups operate on the 3D scene, so they are shown only
-            // in the 3D workspace. UV mode replaces the right cluster with the
-            // UV-set picker; Texture mode (placeholder) shows neither.
+            // in the 3D workspace. UV mode swaps in the UV-shading group + UV-set
+            // picker; Texture mode swaps in the channel group + texture picker.
             if state.mode == WorkspaceMode::ThreeD {
                 ui.scope_builder(
                     egui::UiBuilder::new()
@@ -105,6 +107,18 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                         ui.set_height(group_height);
                         ui.spacing_mut().item_spacing.x = group_spacing;
                         draw_uv_shading_group(ui, ctx, state, triple_icon_group_width);
+                    },
+                );
+            } else if state.mode == WorkspaceMode::Texture {
+                // Texture mode shows the channel radio group (RGB/R/G/B/A).
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .max_rect(left_rect)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                    |ui| {
+                        ui.set_height(group_height);
+                        ui.spacing_mut().item_spacing.x = group_spacing;
+                        draw_texture_channel_group(ui, ctx, state);
                     },
                 );
             }
@@ -135,16 +149,17 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                             draw_windows_group(ui, ctx, state, tools_group_width);
                         }
                         WorkspaceMode::Uv => draw_uv_set_picker(ui, ctx, state),
-                        WorkspaceMode::Texture => {}
+                        WorkspaceMode::Texture => draw_texture_picker(ui, ctx, state),
                     }
                 },
             );
         });
 }
 
-/// Shading group: the independent "Show Wireframe" overlay toggle followed by
-/// the mutually-exclusive shading modes (wireframe-only / unlit / shaded). The
-/// overlay can be on regardless of which shading mode is selected.
+/// Shading group: the independent "Show Wireframe" overlay toggle, the
+/// mutually-exclusive shading modes (wireframe-only / unlit / shaded), and the
+/// independent "Backface Rendering" toggle. The two toggles bookend the radio:
+/// either can be on regardless of which shading mode is selected.
 fn draw_shading_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState, width: f32) {
     toolbar_group_shell(ui, ctx, width, |ui| {
         // 1. Show Wireframe — independent overlay toggle; retains its options panel.
@@ -185,6 +200,20 @@ fn draw_shading_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiStat
         // options live on the dedicated IBL button in the status bar.
         if icon_toggle_button(ui, ctx, &ICON_SHADING_SHADED, shaded, "Shaded").clicked() {
             state.shading_mode = ShadingMode::Shaded;
+        }
+
+        // 5. Backface Rendering — independent toggle; off (default) culls back
+        // faces, on draws the mesh double-sided.
+        if icon_toggle_button(
+            ui,
+            ctx,
+            &ICON_BACKFACE,
+            state.debug.render_backfaces,
+            "Backface Rendering",
+        )
+        .clicked()
+        {
+            state.debug.render_backfaces = !state.debug.render_backfaces;
         }
     });
 }
@@ -395,41 +424,72 @@ fn mode_segment(
     value: WorkspaceMode,
     label: &str,
 ) {
-    let selected = *mode == value;
-    let desired = egui::vec2(
-        theme::px(ctx, size::MODE_SEGMENT_WIDTH),
-        theme::px(ctx, size::MODE_SEGMENT_HEIGHT),
-    );
-    let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::click());
-    let fill = if selected {
-        color::ACCENT
-    } else if response.hovered() {
-        color::HOVER_BG
-    } else {
-        egui::Color32::TRANSPARENT
-    };
-    let text_color = if selected {
-        color::TEXT_PRIMARY
-    } else {
-        color::TEXT_SEGMENT_IDLE
-    };
-
-    ui.painter().rect(
-        rect,
-        theme::px(ctx, size::TILE_CORNER_RADIUS),
-        fill,
-        egui::Stroke::NONE,
-        egui::StrokeKind::Inside,
-    );
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        label,
-        egui::FontId::proportional(theme::px(ctx, font::MODE_SEGMENT)),
-        text_color,
-    );
-
-    if response.clicked() {
+    let width = theme::px(ctx, size::MODE_SEGMENT_WIDTH);
+    if segment_button(ui, ctx, label, *mode == value, width).clicked() {
         *mode = value;
     }
+}
+
+/// Channel radio group (RGB / R / G / B / A) shown on the left of the toolbar in
+/// Texture mode: selects which channel of the viewed texture the Tex viewport
+/// displays. Exactly one is active. The `A` segment is shown only when the viewed
+/// image actually carries an alpha channel; an opaque (RGB / greyscale) source
+/// hides it, and the group shrinks to the remaining segments.
+fn draw_texture_channel_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState) {
+    // Alpha exists when the decoded source had 2 (grey+a) or 4 (RGBA) channels.
+    let has_alpha = state
+        .texture_pool
+        .get(state.texture_view.selected)
+        .map(|entry| matches!(entry.image.source_channels, 2 | 4))
+        .unwrap_or(false);
+    // If alpha was the active channel but the new image has none, fall back to
+    // the full-RGB view so the now-hidden A segment isn't left selected.
+    if !has_alpha && state.texture_view.channel == TextureChannelView::A {
+        state.texture_view.channel = TextureChannelView::Rgb;
+    }
+
+    let segment_w = theme::px(ctx, size::TEXTURE_CHANNEL_SEGMENT_WIDTH);
+    let padding = theme::px(ctx, size::TOOLBAR_GROUP_PADDING);
+    let gap = theme::px(ctx, size::TOOLBAR_ICON_GAP);
+    let count = if has_alpha { 5.0 } else { 4.0 };
+    // Size the shell to exactly the visible segments (matching its own
+    // padding/gap), so dropping A tightens the group instead of leaving a gap.
+    let width = padding * 2.0 + count * segment_w + (count - 1.0) * gap;
+    toolbar_group_shell(ui, ctx, width, |ui| {
+        for channel in TextureChannelView::ALL {
+            if channel == TextureChannelView::A && !has_alpha {
+                continue;
+            }
+            let selected = state.texture_view.channel == channel;
+            if segment_button(ui, ctx, channel.label(), selected, segment_w).clicked() {
+                state.texture_view.channel = channel;
+            }
+        }
+    });
+}
+
+/// The texture-picker dropdown shown on the right of the toolbar in Texture mode:
+/// lists the scene texture pool by file name and selects which one the Tex
+/// viewport shows. Hidden when the pool is empty.
+fn draw_texture_picker(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState) {
+    if state.texture_pool.is_empty() {
+        return;
+    }
+    // Keep the selection in range (a removed texture may have shrunk the pool).
+    if state.texture_view.selected >= state.texture_pool.len() {
+        state.texture_view.selected = 0;
+    }
+
+    let width = theme::px(ctx, size::TOOLBAR_TEXTURE_DROPDOWN_WIDTH);
+    let names: Vec<String> = state
+        .texture_pool
+        .iter()
+        .map(TexturePoolEntry::name)
+        .collect();
+    let selected = names[state.texture_view.selected].clone();
+    compact_combo(ui, "texture_picker", width, selected, |ui| {
+        for (index, name) in names.iter().enumerate() {
+            ui.selectable_value(&mut state.texture_view.selected, index, name);
+        }
+    });
 }

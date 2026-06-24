@@ -152,7 +152,13 @@ struct SceneResources {
     ssao_blur_bind_group: wgpu::BindGroup,
     model_revision: u64,
     mesh_uv_channel: u32,
+    /// Default mesh pipeline: back faces culled (only camera-facing surfaces
+    /// drawn). Used when [`SceneDebugOptions::render_backfaces`] is off.
     mesh_pipeline: wgpu::RenderPipeline,
+    /// Double-sided mesh pipeline: no face culling, so back faces are drawn too.
+    /// Used when [`SceneDebugOptions::render_backfaces`] is on. Built alongside
+    /// `mesh_pipeline` and rebuilt with it on MSAA change.
+    mesh_pipeline_double_sided: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
     /// Flat-color triangle pipeline for the selection-highlight flash: depth-tested
     /// (Reversed-Z `GreaterEqual`) but no depth write, MRT like the mesh, drawing

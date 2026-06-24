@@ -32,9 +32,17 @@ struct DepthConfig {
     bias: wgpu::DepthBiasState,
 }
 
-/// Build the three scene pipelines (mesh / line / UV-fill) for a given MSAA
-/// sample count. Rebuilt whenever the level changes, since the sample count is
-/// baked into pipeline state.
+/// Build the scene pipelines (mesh / double-sided mesh / line / UV-fill /
+/// selection-fill / skybox) for a given MSAA sample count. Rebuilt whenever the
+/// level changes, since the sample count is baked into pipeline state.
+///
+/// The mesh is built twice — once culling back faces (`mesh_pipeline`, the
+/// default) and once double-sided (`mesh_pipeline_double_sided`, no culling) —
+/// so the "Backface Rendering" toggle is a per-frame pipeline pick rather than a
+/// rebuild (front faces are CCW: glam's `_rh` projection + wgpu's framebuffer
+/// winding, unaffected by the reversed-Z / ortho near-far swap). Only the mesh
+/// needs the pair: lines aren't subject to face culling, the UV fill and
+/// selection flash stay double-sided so they always show.
 ///
 /// The wireframe (and other line overlays) share vertex positions with the
 /// shaded surface they trace, so they z-fight it: on curved faces edges sink
@@ -61,29 +69,48 @@ pub(super) fn build_scene_pipelines(
     wgpu::RenderPipeline,
     wgpu::RenderPipeline,
     wgpu::RenderPipeline,
+    wgpu::RenderPipeline,
 ) {
+    // The mesh writes depth and pushes the surface back so coplanar line overlays
+    // win the depth test; both the culling and double-sided variants share it.
+    let mesh_depth = || DepthConfig {
+        write_enabled: true,
+        bias: wgpu::DepthBiasState {
+            constant: -2,
+            slope_scale: -2.0,
+            clamp: 0.0,
+        },
+    };
     let mesh_pipeline = create_pipeline(
         device,
         layout,
         shader,
         wgpu::PrimitiveTopology::TriangleList,
-        DepthConfig {
-            write_enabled: true,
-            bias: wgpu::DepthBiasState {
-                constant: -2,
-                slope_scale: -2.0,
-                clamp: 0.0,
-            },
-        },
+        Some(wgpu::Face::Back),
+        mesh_depth(),
         sample_count,
         "fs_main",
         "review_scene_mesh_pipeline",
+    );
+    // The "Backface Rendering" on variant: identical to the mesh pipeline but with
+    // culling disabled, so both sides of the surface are drawn.
+    let mesh_pipeline_double_sided = create_pipeline(
+        device,
+        layout,
+        shader,
+        wgpu::PrimitiveTopology::TriangleList,
+        None,
+        mesh_depth(),
+        sample_count,
+        "fs_main",
+        "review_scene_mesh_double_sided_pipeline",
     );
     let line_pipeline = create_pipeline(
         device,
         layout,
         shader,
         wgpu::PrimitiveTopology::LineList,
+        None,
         DepthConfig {
             write_enabled: false,
             bias: wgpu::DepthBiasState::default(),
@@ -100,6 +127,7 @@ pub(super) fn build_scene_pipelines(
         layout,
         shader,
         wgpu::PrimitiveTopology::TriangleList,
+        None,
         DepthConfig {
             write_enabled: false,
             bias: wgpu::DepthBiasState::default(),
@@ -118,6 +146,7 @@ pub(super) fn build_scene_pipelines(
         layout,
         shader,
         wgpu::PrimitiveTopology::TriangleList,
+        None,
         DepthConfig {
             write_enabled: false,
             bias: wgpu::DepthBiasState::default(),
@@ -129,6 +158,7 @@ pub(super) fn build_scene_pipelines(
     let skybox_pipeline = create_skybox_pipeline(device, layout, shader, sample_count);
     (
         mesh_pipeline,
+        mesh_pipeline_double_sided,
         line_pipeline,
         uv_fill_pipeline,
         selection_fill_pipeline,
@@ -231,15 +261,18 @@ fn create_skybox_pipeline(
     })
 }
 
-// Independent pipeline knobs (device + layout + shader + topology + depth + MSAA
-// level + fragment entry + label); none is redundant and a params struct would
-// only rename them, so the wide signature is intentional.
+// Independent pipeline knobs (device + layout + shader + topology + cull + depth +
+// MSAA level + fragment entry + label); none is redundant and a params struct
+// would only rename them, so the wide signature is intentional. `cull_mode` is
+// `Some(Back)` for the default mesh pipeline and `None` everywhere a face must
+// always draw (the double-sided mesh, lines, the UV/selection fills).
 #[allow(clippy::too_many_arguments)]
 fn create_pipeline(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
     shader: &wgpu::ShaderModule,
     topology: wgpu::PrimitiveTopology,
+    cull_mode: Option<wgpu::Face>,
     depth: DepthConfig,
     sample_count: u32,
     fragment_entry: &'static str,
@@ -258,7 +291,7 @@ fn create_pipeline(
             topology,
             strip_index_format: None,
             front_face: wgpu::FrontFace::Ccw,
-            cull_mode: None,
+            cull_mode,
             unclipped_depth: false,
             polygon_mode: wgpu::PolygonMode::Fill,
             conservative: false,

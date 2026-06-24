@@ -167,6 +167,14 @@ pub mod color {
         Color32::from_rgb(29, 255, 27),
     ];
 
+    // ── Texture viewport ────────────────────────────────────────────────────
+    /// Solid mid-grey background fill option behind the viewed texture.
+    pub const TEXTURE_BG_GREY: Color32 = Color32::from_gray(128);
+    /// Checkerboard background fill (the default): two greys, drawn as a tiled 2×2
+    /// texture so an image's transparency reads against it.
+    pub const TEXTURE_CHECKER_LIGHT: Color32 = Color32::from_gray(170);
+    pub const TEXTURE_CHECKER_DARK: Color32 = Color32::from_gray(110);
+
     // ── Native window / panel chrome ────────────────────────────────────────
     /// Drop-shadow color cast under native `egui::Window`s. Mirrors egui's
     /// default `window_shadow.color` (`from_black_alpha(96)`); retuned here so the
@@ -231,11 +239,12 @@ pub mod size {
     /// Two-icon window-toggle group (Outliner / Inspector) in the toolbar right
     /// cluster.
     pub const TOOLBAR_TOOLS_GROUP_WIDTH: f32 = 93.0;
-    /// Left toolbar cluster: shading (4) + material (3) + normals (2) groups,
-    /// with two group spacings between them (183 + 14 + 138 + 14 + 93).
-    pub const TOOLBAR_LEFT_WIDTH: f32 = 442.0;
-    /// Four-icon shading group: show-wireframe, wireframe-only, unlit, shaded.
-    pub const TOOLBAR_SHADING_GROUP_WIDTH: f32 = 183.0;
+    /// Left toolbar cluster: shading (5) + material (3) + normals (2) groups,
+    /// with two group spacings between them (228 + 14 + 138 + 14 + 93).
+    pub const TOOLBAR_LEFT_WIDTH: f32 = 487.0;
+    /// Five-icon shading group: show-wireframe, wireframe-only, unlit, shaded,
+    /// backface-rendering.
+    pub const TOOLBAR_SHADING_GROUP_WIDTH: f32 = 228.0;
     /// Three-icon active-material group: source material, UV checker, vertex colors.
     pub const TOOLBAR_MATERIAL_GROUP_WIDTH: f32 = 138.0;
     /// Two-icon normal-debug group: face normals, vertex normals.
@@ -244,7 +253,7 @@ pub mod size {
     /// Width of a three-icon toolbar group (e.g. bounding box / gizmo / grid).
     pub const TOOLBAR_TRIPLE_ICON_GROUP_WIDTH: f32 = 138.0;
     /// Width of a four-icon toolbar group (the status bar's IBL / Bloom / SSAO /
-    /// Anti-aliasing rendering-quality cluster). Matches the shading group.
+    /// Anti-aliasing rendering-quality cluster): 6 padding + 4×42 icons + 3×3 gaps.
     pub const TOOLBAR_QUAD_ICON_GROUP_WIDTH: f32 = 183.0;
     /// Width of a five-icon toolbar group (the status bar's IBL / Bloom / SSAO /
     /// Tonemapper / Anti-aliasing rendering-quality cluster). One icon step (45 px)
@@ -294,6 +303,31 @@ pub mod size {
     pub const TEXTURE_THUMB_SIZE: f32 = 40.0;
     /// Width of the remove (✕) button column in a Texture files row.
     pub const TEXTURE_REMOVE_BTN_W: f32 = 24.0;
+
+    // ── Texture viewport ──────────────────────────────────────────────────
+    /// One segment width of the channel radio group (RGB / R / G / B / A),
+    /// top-left of the Tex toolbar. The group width is derived per-frame from the
+    /// number of visible segments (the `A` segment is hidden for opaque images).
+    pub const TEXTURE_CHANNEL_SEGMENT_WIDTH: f32 = 44.0;
+    /// Background-fill radio group (B / W / G / C), bottom-right of the Tex status
+    /// bar: one segment width and the group width (4 segments + gaps + padding).
+    pub const TEXTURE_BG_SEGMENT_WIDTH: f32 = 40.0;
+    pub const TEXTURE_BG_GROUP_WIDTH: f32 = 175.0;
+    /// Width of the texture-picker dropdown on the right of the Tex toolbar.
+    pub const TOOLBAR_TEXTURE_DROPDOWN_WIDTH: f32 = 220.0;
+    /// Width of the Tex viewport's stats panel (wider than the model-stats panel so
+    /// "Dimension  1024 × 1024" fits on one row).
+    pub const TEXTURE_STATS_PANEL_WIDTH: f32 = 188.0;
+    /// Screen-point side of one checkerboard-background square.
+    pub const TEXTURE_CHECKER_CELL: f32 = 12.0;
+    /// Fraction of the viewport the image fills when first fit (a small margin so a
+    /// fitted image isn't flush to the edges).
+    pub const TEXTURE_FIT_MARGIN: f32 = 0.96;
+    /// Zoom clamp + wheel sensitivity for the Tex viewport pan/zoom. `ZOOM_SPEED`
+    /// scales a scroll-delta into the exponent of the multiplicative zoom step.
+    pub const TEXTURE_ZOOM_MIN: f32 = 0.02;
+    pub const TEXTURE_ZOOM_MAX: f32 = 64.0;
+    pub const TEXTURE_ZOOM_SPEED: f32 = 0.0015;
 
     // ── Stats overlay ─────────────────────────────────────────────────────
     pub const STATS_ROW_SPACING: f32 = 3.0;
@@ -464,6 +498,11 @@ pub mod font {
     /// Inspector's `ui.heading` section headings. Trimmed from egui's stock 18 so
     /// the option-window title bars are a touch shorter.
     pub const PANEL_HEADING: f32 = 14.0;
+
+    /// Centered "nothing loaded yet" hint shown in an empty viewport (e.g. the Tex
+    /// view's "No textures loaded…" prompt). Larger than panel body text so it
+    /// reads clearly across the otherwise-empty canvas.
+    pub const VIEWPORT_EMPTY_HINT: f32 = 20.0;
 
     // ── Startup help overlay (sized to match the app's other overlay text) ──
     pub const HELP_TITLE: f32 = 14.0;
