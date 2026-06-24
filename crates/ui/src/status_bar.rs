@@ -5,8 +5,8 @@
 use crate::assets::{
     ICON_ANTI_ALIASING, ICON_AO, ICON_BLOOM, ICON_IBL, ICON_INFO, ICON_TONEMAPPER,
 };
-use crate::state::{OptionPanel, TextureBackground, UiState, WorkspaceMode};
-use crate::theme::{self, color, size};
+use crate::state::{OptionPanel, TexViewRequest, TextureBackground, UiState, WorkspaceMode};
+use crate::theme::{self, color, font, size};
 use crate::widgets::{icon_toggle_button, segment_button, toolbar_group_shell};
 
 /// Background frame for the status bar: matches the toolbar fill with a top
@@ -231,6 +231,36 @@ fn draw_texture_status_bar(
         },
     );
 
+    // Zoom-level readout next to the texture-info button: the current zoom as an
+    // integer percentage, clickable to reset to 100%.
+    let zoom_label_width = theme::px(ctx, size::TEXTURE_ZOOM_LABEL_WIDTH);
+    let zoom_rect = egui::Rect::from_min_size(
+        egui::pos2(
+            left_rect.right() + edge_inset,
+            bar_rect.center().y - group_height * 0.5,
+        ),
+        egui::vec2(zoom_label_width, group_height),
+    );
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(zoom_rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        |ui| {
+            ui.set_height(group_height);
+            if zoom_reset_label(ui, ctx, state.texture_view.zoom).clicked() {
+                // Toggle on the readout the user sees: at 100% → fit, at any other
+                // zoom → 100%. Both are emitted as a request `texture_view` eases
+                // to over `TEXTURE_ZOOM_ANIM_SECS` on its next paint.
+                state.texture_view.request =
+                    Some(if (state.texture_view.zoom * 100.0).round() as i32 == 100 {
+                        TexViewRequest::Fit
+                    } else {
+                        TexViewRequest::Zoom(1.0)
+                    });
+            }
+        },
+    );
+
     // Background-fill radio group — mirrored to the right edge.
     let right_rect = egui::Rect::from_min_size(
         egui::pos2(
@@ -257,6 +287,27 @@ fn draw_texture_status_bar(
             });
         },
     );
+}
+
+/// A clickable zoom-percentage readout for the Tex status bar: shows the current
+/// zoom rounded to the nearest integer percent (e.g. `120%`), brightening on
+/// hover; clicking it toggles between 100% and fit-to-view.
+fn zoom_reset_label(ui: &mut egui::Ui, ctx: &egui::Context, zoom: f32) -> egui::Response {
+    let percent = (zoom * 100.0).round() as i32;
+    let (rect, response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::click());
+    let text_color = if response.hovered() {
+        color::TEXT_PRIMARY
+    } else {
+        color::TEXT_MUTED
+    };
+    ui.painter().text(
+        rect.left_center(),
+        egui::Align2::LEFT_CENTER,
+        format!("{percent}%"),
+        egui::FontId::monospace(theme::px(ctx, font::STATUS_ZOOM)),
+        text_color,
+    );
+    response.on_hover_text("Zoom level - click to toggle 100% / fit to view")
 }
 
 /// Hover tooltip spelling out a background-fill segment's single-letter label.

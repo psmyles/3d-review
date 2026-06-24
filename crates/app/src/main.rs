@@ -25,8 +25,8 @@ use review_render::{
     TextureSlot, ibl_supported, ssao_supported, supported_msaa_levels,
 };
 use review_ui::{
-    AxisGizmoAction, Notifications, Selection, TextureIntent, UiOutput, UiState, WorkspaceMode,
-    draw_overlay, draw_startup_fade, draw_viewport_scene, init_style,
+    AxisGizmoAction, Notifications, Selection, TexViewRequest, TextureIntent, UiOutput, UiState,
+    WorkspaceMode, draw_overlay, draw_startup_fade, draw_viewport_scene, init_style,
 };
 use tracing::{info, warn};
 use winit::{
@@ -778,7 +778,14 @@ impl App {
                     scene_revision,
                     output_format,
                 );
-                ui_output = draw_overlay(ctx, &mut self.ui, camera, &scene_model, occlusion_bvh);
+                ui_output = draw_overlay(
+                    ctx,
+                    &mut self.ui,
+                    camera,
+                    &scene_model,
+                    occlusion_bvh,
+                    output_format,
+                );
                 // Toasts paint on the egui Foreground layer, above the chrome but
                 // below the launch-fade cover (Tooltip order), so the fade hides
                 // them too during the dissolve.
@@ -951,6 +958,17 @@ impl App {
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.reset_uv_camera();
                 }
+                self.redraw_requested = true;
+            }
+            return;
+        }
+
+        // The Tex workspace is a pure-egui 2D viewer; only F / R apply, refitting
+        // the image. The request makes the texture view ease to the fitted view on
+        // its next paint (the animated counterpart of the zoom-readout toggle).
+        if self.ui.mode == WorkspaceMode::Texture {
+            if event.state == ElementState::Pressed && matches!(character.as_str(), "f" | "r") {
+                self.ui.texture_view.request = Some(TexViewRequest::Fit);
                 self.redraw_requested = true;
             }
             return;

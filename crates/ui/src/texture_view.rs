@@ -1,28 +1,33 @@
 //! The Tex viewport: a 2D image viewer for the scene texture pool.
 //!
-//! Unlike the 3D / UV viewports (which paint through the wgpu scene callback),
-//! the Tex view is pure egui: the selected pooled texture is uploaded as an egui
-//! texture (with the chosen channel isolated on the CPU) and painted with
-//! interactive pan/zoom over a chosen background fill. All pixels come from the
-//! app-owned [`TexturePoolEntry`] snapshots (invariant 2) — this module owns no
-//! renderer/model state, only the [`TextureViewState`] view parameters.
-//!
-//! The toolbar's channel group + the status bar's background group + the texture
-//! picker drive the parameters; this module renders the central canvas and the
-//! floating stats panel.
+//! The viewed texture is painted by a wgpu paint callback ([`review_render::
+//! TexCallback`]) — the same egui-paint-callback funnel the 3D / UV viewports use,
+//! not a hand-rolled image blit. This module owns only the *interaction*: it lays
+//! out the canvas, handles pan/zoom/fit, paints the background fill, and then adds
+//! the callback that draws the image with the chosen channel isolated. Channel
+//! isolation is a uniform the shader swizzles on, so switching RGB/R/G/B/A is free
+//! (no CPU rebuild, no re-upload); the GPU texture is uploaded once per image and
+//! reused (invariant 2: the pixels live in the app-owned [`TexturePoolEntry`]; the
+//! UI emits only plain placement + channel values).
 
 use std::sync::Arc;
 
-use review_render::DecodedImage;
-
-use crate::state::{TextureChannelView, TexturePoolEntry, TextureViewState, UiState};
+use crate::state::{
+    TexViewRequest, TexViewTransition, TextureChannelView, TexturePoolEntry, TextureViewState,
+    UiState,
+};
 use crate::stats;
 use crate::theme::{self, color, font, size};
 
 /// Draw the Tex viewport: the central image canvas behind the chrome, plus the
 /// floating texture-stats panel when toggled on. Called from the overlay only in
-/// [`crate::state::WorkspaceMode::Texture`].
-pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
+/// [`crate::state::WorkspaceMode::Texture`]. `output_format` is egui's framebuffer
+/// format, needed to build the image paint callback's pipeline.
+pub(crate) fn draw(
+    ctx: &egui::Context,
+    state: &mut UiState,
+    output_format: egui_wgpu::wgpu::TextureFormat,
+) {
     // Keep the selection in range (a removed texture may have shrunk the pool).
     if state.texture_view.selected >= state.texture_pool.len() {
         state.texture_view.selected = 0;
@@ -39,7 +44,9 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
         .show(ctx, |ui| {
             let rect = ui.max_rect();
             match &entry {
-                Some(entry) => draw_canvas(ui, ctx, &mut state.texture_view, rect, entry),
+                Some(entry) => {
+                    draw_canvas(ui, ctx, &mut state.texture_view, rect, entry, output_format)
+                }
                 None => draw_empty_hint(ui, ctx, rect),
             }
         });
@@ -49,14 +56,15 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
     }
 }
 
-/// Paint the background fill, then the viewed texture with live pan/zoom and the
-/// selected channel isolated.
+/// Paint the background fill, then add the wgpu callback that draws the viewed
+/// texture with live pan/zoom and the selected channel isolated.
 fn draw_canvas(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
     view: &mut TextureViewState,
     rect: egui::Rect,
     entry: &TexturePoolEntry,
+    output_format: egui_wgpu::wgpu::TextureFormat,
 ) {
     paint_background(ui, ctx, rect, view.background);
 
@@ -72,50 +80,184 @@ fn draw_canvas(
         egui::Sense::click_and_drag(),
     );
 
-    // Fit the image to the viewport on first show, on a texture switch / disk
-    // reload (the decoded-image `Arc` identity changes), or on a double-click.
+    // Fit the image to the viewport instantly on first show or a texture switch /
+    // disk reload (the decoded-image `Arc` identity changes), and on a
+    // double-click — a new image should simply appear fitted, with no animation.
+    // Both cancel any in-flight ease / pending request.
     let identity = Arc::as_ptr(image) as usize;
     if view.fitted_key != Some(identity) || response.double_clicked() {
-        fit(view, rect, img_px);
+        let (zoom, pan) = fit_target(rect, img_px);
+        view.zoom = zoom;
+        view.pan = pan;
         view.fitted_key = Some(identity);
+        view.transition = None;
+        view.request = None;
     }
 
-    if response.dragged() {
+    // A pending animated request — the zoom-readout toggle (100% ↔ fit) or the
+    // `F` / `R` frame reset — resolved here (where the viewport rect is known) into
+    // a concrete pan/zoom target, then eased over `TEXTURE_ZOOM_ANIM_SECS`.
+    if let Some(request) = view.request.take() {
+        let (to_zoom, to_pan) = match request {
+            TexViewRequest::Zoom(zoom) => (zoom, view.pan),
+            TexViewRequest::Fit => fit_target(rect, img_px),
+        };
+        start_transition(view, ctx, to_zoom, to_pan);
+    }
+
+    // Left-drag pans. Right-drag zooms (drag down = zoom in), anchored on the
+    // viewport center to mirror the UV viewport's right-drag zoom. Any direct
+    // interaction cancels an in-flight ease so the user takes over immediately.
+    if response.dragged_by(egui::PointerButton::Primary) {
+        view.transition = None;
         view.pan += response.drag_delta();
+    } else if response.dragged_by(egui::PointerButton::Secondary) {
+        let dy = response.drag_delta().y;
+        if dy != 0.0 {
+            view.transition = None;
+            zoom_at(
+                view,
+                rect.center(),
+                rect.center(),
+                dy * size::TEXTURE_DRAG_ZOOM_SPEED,
+            );
+        }
     }
 
     // Wheel zoom, anchored at the cursor so the texel under the pointer stays put.
     if let Some(pointer) = response.hover_pos() {
         let scroll = ui.input(|input| input.smooth_scroll_delta.y);
         if scroll != 0.0 {
-            let old = view.zoom;
-            let new = (old * (scroll * size::TEXTURE_ZOOM_SPEED).exp())
-                .clamp(size::TEXTURE_ZOOM_MIN, size::TEXTURE_ZOOM_MAX);
-            let factor = new / old;
-            let to_pointer = pointer - (rect.center() + view.pan);
-            view.pan += to_pointer * (1.0 - factor);
-            view.zoom = new;
+            view.transition = None;
+            zoom_at(
+                view,
+                rect.center(),
+                pointer,
+                scroll * size::TEXTURE_ZOOM_SPEED,
+            );
         }
     }
 
+    // Advance any in-flight ease toward its target, requesting a repaint until it
+    // settles (the on-demand redraw loop honours egui's repaint request).
+    advance_transition(view, ctx);
+
+    // Hand the image off to the wgpu paint callback: where to draw it (image rect
+    // in egui points) + which channel to isolate. The callback uploads the texture
+    // once (mipped) and reuses it; channel switches are a uniform write.
     let img_rect = egui::Rect::from_center_size(rect.center() + view.pan, img_px * view.zoom);
-    if let Some(texture) = canvas_texture(ui, entry, view.channel, identity) {
-        egui::Image::from_texture(egui::load::SizedTexture::from_handle(&texture))
-            .paint_at(ui, img_rect);
+    let callback = review_render::TexCallback::new(
+        entry.path.clone(),
+        Arc::clone(&entry.image),
+        output_format,
+        shader_channel(view.channel),
+        [img_rect.min.x, img_rect.min.y],
+        [img_rect.size().x, img_rect.size().y],
+    );
+    // The callback rect is the canvas (the viewport the shader maps texels across);
+    // it draws only where the image lands and discards the rest, so the background
+    // fill painted above shows through everywhere else.
+    ui.painter()
+        .add(egui_wgpu::Callback::new_paint_callback(rect, callback));
+}
+
+/// The shader channel index (matching `tex.wgsl`) for a [`TextureChannelView`].
+fn shader_channel(channel: TextureChannelView) -> u32 {
+    match channel {
+        TextureChannelView::Rgb => 0,
+        TextureChannelView::R => 1,
+        TextureChannelView::G => 2,
+        TextureChannelView::B => 3,
+        TextureChannelView::A => 4,
     }
 }
 
-/// Reset the pan/zoom so the image fits the viewport (centered, with a small
-/// margin). A degenerate viewport falls back to 1:1.
-fn fit(view: &mut TextureViewState, rect: egui::Rect, img_px: egui::Vec2) {
+/// Apply an exponential zoom step (`exponent` measured in zoom e-folds) about a
+/// screen `anchor`, keeping the image texel under that anchor fixed while the
+/// `center`-relative pan is rescaled. The wheel anchors on the cursor; the
+/// right-drag zoom anchors on the viewport center.
+fn zoom_at(view: &mut TextureViewState, center: egui::Pos2, anchor: egui::Pos2, exponent: f32) {
+    let old = view.zoom;
+    let new = (old * exponent.exp()).clamp(size::TEXTURE_ZOOM_MIN, size::TEXTURE_ZOOM_MAX);
+    let factor = new / old;
+    let to_anchor = anchor - (center + view.pan);
+    view.pan += to_anchor * (1.0 - factor);
+    view.zoom = new;
+}
+
+/// The (zoom, pan) that fits the image to the viewport — centered (zero pan),
+/// with a small margin. A degenerate viewport falls back to 1:1.
+fn fit_target(rect: egui::Rect, img_px: egui::Vec2) -> (f32, egui::Vec2) {
     let avail = rect.size() * size::TEXTURE_FIT_MARGIN;
     let scale = (avail.x / img_px.x).min(avail.y / img_px.y);
-    view.zoom = if scale.is_finite() && scale > 0.0 {
+    let zoom = if scale.is_finite() && scale > 0.0 {
         scale.clamp(size::TEXTURE_ZOOM_MIN, size::TEXTURE_ZOOM_MAX)
     } else {
         1.0
     };
-    view.pan = egui::Vec2::ZERO;
+    (zoom, egui::Vec2::ZERO)
+}
+
+/// Begin a [`TexViewTransition`] easing the current pan/zoom toward
+/// `(to_zoom, to_pan)`. A no-op target (already there) is snapped without
+/// scheduling an animation, so the readout toggle never spins the redraw loop for
+/// nothing.
+fn start_transition(
+    view: &mut TextureViewState,
+    ctx: &egui::Context,
+    to_zoom: f32,
+    to_pan: egui::Vec2,
+) {
+    if (to_zoom - view.zoom).abs() <= f32::EPSILON && (to_pan - view.pan).length() <= f32::EPSILON {
+        view.zoom = to_zoom;
+        view.pan = to_pan;
+        view.transition = None;
+        return;
+    }
+    view.transition = Some(TexViewTransition {
+        from_zoom: view.zoom,
+        to_zoom,
+        from_pan: view.pan,
+        to_pan,
+        start_time: ctx.input(|input| input.time),
+    });
+    ctx.request_repaint();
+}
+
+/// Advance an in-flight pan/zoom ease, writing the eased values into `view` and
+/// requesting another frame until it completes (then snapping exactly to the
+/// target and clearing the transition).
+fn advance_transition(view: &mut TextureViewState, ctx: &egui::Context) {
+    let Some(transition) = view.transition else {
+        return;
+    };
+    let now = ctx.input(|input| input.time);
+    let elapsed = (now - transition.start_time) as f32;
+    let t = if size::TEXTURE_ZOOM_ANIM_SECS > 0.0 {
+        (elapsed / size::TEXTURE_ZOOM_ANIM_SECS).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let eased = ease_in_out_cubic(t);
+    view.zoom = transition.from_zoom + (transition.to_zoom - transition.from_zoom) * eased;
+    view.pan = transition.from_pan + (transition.to_pan - transition.from_pan) * eased;
+    if t >= 1.0 {
+        view.zoom = transition.to_zoom;
+        view.pan = transition.to_pan;
+        view.transition = None;
+    } else {
+        ctx.request_repaint();
+    }
+}
+
+/// Ease-in-out cubic on `t ∈ [0, 1]` — the same shape the 3D camera transition
+/// uses, so the Tex view's snaps read like the rest of the app.
+fn ease_in_out_cubic(t: f32) -> f32 {
+    if t < 0.5 {
+        4.0 * t * t * t
+    } else {
+        1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
+    }
 }
 
 /// Paint the chosen background fill across the canvas. The checker is a tiled 2×2
@@ -162,66 +304,6 @@ fn draw_empty_hint(ui: &mut egui::Ui, ctx: &egui::Context, rect: egui::Rect) {
         egui::FontId::proportional(theme::px(ctx, font::VIEWPORT_EMPTY_HINT)),
         color::TEXT_MUTED,
     );
-}
-
-/// Lazily build + cache the egui texture for the viewed image with the selected
-/// channel isolated. Single-slot cache in egui temp data keyed by the image
-/// identity + channel: switching texture or channel rebuilds (dropping the old
-/// handle frees its GPU texture). Magnified nearest (crisp texels when zoomed in),
-/// minified linear (smooth when fit).
-fn canvas_texture(
-    ui: &mut egui::Ui,
-    entry: &TexturePoolEntry,
-    channel: TextureChannelView,
-    identity: usize,
-) -> Option<egui::TextureHandle> {
-    let id = egui::Id::new("tex_canvas_texture");
-    if let Some((cached_id, cached_channel, handle)) =
-        ui.data(|data| data.get_temp::<(usize, TextureChannelView, egui::TextureHandle)>(id))
-    {
-        if cached_id == identity && cached_channel == channel {
-            return Some(handle);
-        }
-    }
-
-    let color_image = channel_color_image(&entry.image, channel)?;
-    let options = egui::TextureOptions {
-        magnification: egui::TextureFilter::Nearest,
-        ..egui::TextureOptions::LINEAR
-    };
-    let handle = ui.ctx().load_texture(
-        format!("tex:{}", entry.path.display()),
-        color_image,
-        options,
-    );
-    ui.data_mut(|data| data.insert_temp(id, (identity, channel, handle.clone())));
-    Some(handle)
-}
-
-/// Build the egui `ColorImage` for one channel view of a decoded image. `Rgb`
-/// keeps the full color + alpha (transparency composites over the background); a
-/// single channel is replicated across RGB as opaque greyscale.
-fn channel_color_image(
-    image: &DecodedImage,
-    channel: TextureChannelView,
-) -> Option<egui::ColorImage> {
-    let width = image.width.max(1) as usize;
-    let height = image.height.max(1) as usize;
-    if image.rgba.len() < width * height * 4 {
-        return None;
-    }
-    let size = [width, height];
-    match channel.channel_offset() {
-        None => Some(egui::ColorImage::from_rgba_unmultiplied(size, &image.rgba)),
-        Some(offset) => {
-            let mut gray = Vec::with_capacity(width * height * 4);
-            for pixel in image.rgba.chunks_exact(4) {
-                let value = pixel[offset];
-                gray.extend_from_slice(&[value, value, value, 255]);
-            }
-            Some(egui::ColorImage::from_rgba_unmultiplied(size, &gray))
-        }
-    }
 }
 
 /// Lazily build + cache the 2×2 checkerboard background texture (set to repeat).

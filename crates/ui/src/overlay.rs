@@ -95,6 +95,7 @@ pub fn draw_overlay(
     camera: OrbitCamera,
     model: &ModelData,
     bvh: Option<&SceneBvh>,
+    output_format: egui_wgpu::wgpu::TextureFormat,
 ) -> UiOutput {
     // Visuals + fonts are installed once at startup (`theme::init_style`); the
     // style is derived only from constant tokens, so there is nothing to re-apply
@@ -130,7 +131,10 @@ pub fn draw_overlay(
         // this rect so it never overlaps the toolbar icons or a side panel.
         let screen = ctx.screen_rect();
         let viewport = egui::Rect::from_min_max(
-            egui::pos2(screen.left() + side.left_inset, screen.top() + toolbar_height),
+            egui::pos2(
+                screen.left() + side.left_inset,
+                screen.top() + toolbar_height,
+            ),
             egui::pos2(
                 screen.right() - side.right_inset,
                 screen.bottom() - status_bar_height,
@@ -164,8 +168,10 @@ pub fn draw_overlay(
         draw_stats_overlay(ctx, state, status_bar_height, side.left_inset);
     } else if state.mode == WorkspaceMode::Texture {
         // The Tex workspace paints a 2D image viewer (channel-isolated, pan/zoom)
-        // over a chosen background fill, plus its own floating stats panel.
-        texture_view::draw(ctx, state);
+        // over a chosen background fill, plus its own floating stats panel. The
+        // image itself is drawn by a wgpu paint callback, which needs egui's
+        // framebuffer format to build its pipeline.
+        texture_view::draw(ctx, state, output_format);
     }
 
     // The startup cheat-sheet sits on top of all the chrome (drawn last). It

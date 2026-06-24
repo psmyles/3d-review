@@ -230,6 +230,36 @@ pub struct TextureViewState {
     /// mismatch re-fits the image to the viewport (on first show / texture switch /
     /// disk reload). `None` forces a fit on the next frame.
     pub fitted_key: Option<usize>,
+    /// A requested animated view change (the zoom-readout toggle / `F` frame
+    /// reset), resolved to a concrete pan/zoom target + eased on the next paint.
+    /// `None` when nothing is pending.
+    pub request: Option<TexViewRequest>,
+    /// An in-flight ease of the pan/zoom toward a target. `None` when settled.
+    pub transition: Option<TexViewTransition>,
+}
+
+/// A requested animated change to the Tex view, set by the zoom-readout toggle
+/// and the `F` / `R` frame reset and consumed by `texture_view` on the next paint
+/// (where the viewport rect — needed to compute a fit — is known). Resolving it
+/// starts a [`TexViewTransition`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TexViewRequest {
+    /// Ease to an absolute zoom, keeping the current pan (the 100% reset).
+    Zoom(f32),
+    /// Ease to the fitted view (computed from the current viewport).
+    Fit,
+}
+
+/// An in-flight ease of the Tex view's pan/zoom toward a target, run over
+/// [`crate::theme::size::TEXTURE_ZOOM_ANIM_SECS`]. `start_time` is egui's input
+/// time (monotonic seconds) at the ease's start.
+#[derive(Debug, Clone, Copy)]
+pub struct TexViewTransition {
+    pub from_zoom: f32,
+    pub to_zoom: f32,
+    pub from_pan: egui::Vec2,
+    pub to_pan: egui::Vec2,
+    pub start_time: f64,
 }
 
 impl Default for TextureViewState {
@@ -242,6 +272,8 @@ impl Default for TextureViewState {
             pan: egui::Vec2::ZERO,
             zoom: 1.0,
             fitted_key: None,
+            request: None,
+            transition: None,
         }
     }
 }
