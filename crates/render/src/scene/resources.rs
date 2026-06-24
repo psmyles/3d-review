@@ -14,11 +14,11 @@ use crate::geometry::{
     uv_fill_triangles, uv_grid_lines, uv_wireframe_lines, vertex_normal_lines, visible_geometry,
     wireframe_lines,
 };
+use crate::gtao::GtaoPass;
 use crate::ibl::{IblResources, PREFILTER_MAX_LOD};
 use crate::material::{MaterialState, MaterialTable, material_layout};
 use crate::post::PostPass;
 use crate::selection::SelectionView;
-use crate::ssao::SsaoPass;
 use crate::targets::SceneTargets;
 use crate::{
     ActiveMaterial, AntiAliasing, CameraProjection, EnvironmentSettings, OrbitCamera,
@@ -27,11 +27,11 @@ use crate::{
 
 use super::SceneResources;
 use super::buffers::{
-    bloom_fullscreen_pass, build_bloom_targets, build_ssao_targets, create_checker_bind_group,
+    bloom_fullscreen_pass, build_bloom_targets, build_gtao_targets, create_checker_bind_group,
     create_index_buffer, create_line_buffer, create_mesh_buffers,
 };
 use super::gpu_types::{SHADER, SceneUniforms, shading_mode_value, vertex_color_value};
-use super::pipelines::{build_scene_pipelines, create_ssao_gbuffer_pipeline};
+use super::pipelines::{build_scene_pipelines, create_gtao_gbuffer_pipeline};
 
 /// The three derived line views, used to address one for freeing.
 #[derive(Debug, Clone, Copy)]
@@ -174,7 +174,7 @@ impl SceneResources {
             selection_fill_pipeline,
             skybox_pipeline,
         ) = build_scene_pipelines(device, &pipeline_layout, &shader, scene_sample_count);
-        let ssao_gbuffer_pipeline = create_ssao_gbuffer_pipeline(device, &pipeline_layout, &shader);
+        let gtao_gbuffer_pipeline = create_gtao_gbuffer_pipeline(device, &pipeline_layout, &shader);
 
         // Offscreen targets + the composite pass. Targets start at 1x1 and are
         // recreated at the real framebuffer size on the first `prepare`
@@ -182,7 +182,7 @@ impl SceneResources {
         let targets = SceneTargets::new(device, queue, 1, 1, scene_sample_count);
         let post = PostPass::new(device, output_format);
         let bloom = BloomPass::new(device);
-        let ssao = SsaoPass::new(device);
+        let gtao = GtaoPass::new(device);
         let (
             bloom_tex_a,
             bloom_tex_b,
@@ -191,18 +191,18 @@ impl SceneResources {
             bloom_blur_v_bind_group,
         ) = build_bloom_targets(device, queue, &targets, &bloom);
         let (
-            ssao_gbuffer_view,
-            ssao_depth_view,
-            ssao_raw_view,
-            ssao_blur_view,
-            ssao_bind_group,
-            ssao_blur_bind_group,
-        ) = build_ssao_targets(device, queue, &targets, &ssao);
+            gtao_gbuffer_view,
+            gtao_depth_view,
+            gtao_raw_view,
+            gtao_blur_view,
+            gtao_bind_group,
+            gtao_blur_bind_group,
+        ) = build_gtao_targets(device, queue, &targets, &gtao);
         let post_bind_group = post.create_bind_group(
             device,
             targets.sampled_view(),
             &bloom_tex_a,
-            &ssao_blur_view,
+            &gtao_blur_view,
             targets.sampled_ambient_view(),
         );
         let line_vertices = scene_lines();
@@ -261,20 +261,20 @@ impl SceneResources {
             bloom_brightpass_bind_group,
             bloom_blur_h_bind_group,
             bloom_blur_v_bind_group,
-            ssao,
-            ssao_gbuffer_view,
-            ssao_depth_view,
-            ssao_raw_view,
-            ssao_blur_view,
-            ssao_bind_group,
-            ssao_blur_bind_group,
+            gtao,
+            gtao_gbuffer_view,
+            gtao_depth_view,
+            gtao_raw_view,
+            gtao_blur_view,
+            gtao_bind_group,
+            gtao_blur_bind_group,
             model_revision: u64::MAX,
             mesh_uv_channel: 0,
             mesh_pipeline,
             mesh_pipeline_double_sided,
             line_pipeline,
             selection_fill_pipeline,
-            ssao_gbuffer_pipeline,
+            gtao_gbuffer_pipeline,
             skybox_pipeline,
             uv_fill_pipeline,
             uniform_buffer,
@@ -352,7 +352,7 @@ impl SceneResources {
             || self.targets.sample_count != sample_count;
         if targets_stale {
             self.targets = SceneTargets::new(device, queue, width, height, sample_count);
-            // Every bind group reading the targets (bloom ping-pong, SSAO AO
+            // Every bind group reading the targets (bloom ping-pong, GTAO AO
             // textures, and the composite) is now stale; rebuild them all.
             let (
                 bloom_tex_a,
@@ -368,19 +368,19 @@ impl SceneResources {
             self.bloom_blur_v_bind_group = bloom_blur_v_bind_group;
 
             let (
-                ssao_gbuffer_view,
-                ssao_depth_view,
-                ssao_raw_view,
-                ssao_blur_view,
-                ssao_bind_group,
-                ssao_blur_bind_group,
-            ) = build_ssao_targets(device, queue, &self.targets, &self.ssao);
-            self.ssao_gbuffer_view = ssao_gbuffer_view;
-            self.ssao_depth_view = ssao_depth_view;
-            self.ssao_raw_view = ssao_raw_view;
-            self.ssao_blur_view = ssao_blur_view;
-            self.ssao_bind_group = ssao_bind_group;
-            self.ssao_blur_bind_group = ssao_blur_bind_group;
+                gtao_gbuffer_view,
+                gtao_depth_view,
+                gtao_raw_view,
+                gtao_blur_view,
+                gtao_bind_group,
+                gtao_blur_bind_group,
+            ) = build_gtao_targets(device, queue, &self.targets, &self.gtao);
+            self.gtao_gbuffer_view = gtao_gbuffer_view;
+            self.gtao_depth_view = gtao_depth_view;
+            self.gtao_raw_view = gtao_raw_view;
+            self.gtao_blur_view = gtao_blur_view;
+            self.gtao_bind_group = gtao_bind_group;
+            self.gtao_blur_bind_group = gtao_blur_bind_group;
 
             // The composite reads the resolved color, the blurred bloom, and the
             // blurred AO — all just recreated.
@@ -388,7 +388,7 @@ impl SceneResources {
                 device,
                 self.targets.sampled_view(),
                 &self.bloom_tex_a,
-                &self.ssao_blur_view,
+                &self.gtao_blur_view,
                 self.targets.sampled_ambient_view(),
             );
         }
@@ -425,10 +425,10 @@ impl SceneResources {
         }
     }
 
-    /// Render a single-sample, mesh-only normal/depth buffer for SSAO. This avoids
+    /// Render a single-sample, mesh-only normal/depth buffer for GTAO. This avoids
     /// MSAA resolve averaging view-space normals/Z across geometry edges before
     /// the occlusion and bilateral blur passes read them.
-    pub(super) fn encode_ssao_gbuffer(&self, encoder: &mut wgpu::CommandEncoder) {
+    pub(super) fn encode_gtao_gbuffer(&self, encoder: &mut wgpu::CommandEncoder) {
         // Match the shaded mesh draw's visibility: a hidden mesh casts no AO. Solo
         // is left out here (as before), so only the per-mesh hide filters the AO.
         let (index_buffer, index_count) = if self.visible_active {
@@ -441,9 +441,9 @@ impl SceneResources {
         }
 
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("review_ssao_gbuffer_pass"),
+            label: Some("review_gtao_gbuffer_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &self.ssao_gbuffer_view,
+                view: &self.gtao_gbuffer_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
@@ -451,7 +451,7 @@ impl SceneResources {
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &self.ssao_depth_view,
+                view: &self.gtao_depth_view,
                 depth_ops: Some(wgpu::Operations {
                     load: wgpu::LoadOp::Clear(0.0),
                     store: wgpu::StoreOp::Store,
@@ -468,31 +468,31 @@ impl SceneResources {
         // the G-buffer pass writes only normals/depth, so the all-fallback bind
         // group is fine. One draw over the whole index buffer (material irrelevant).
         render_pass.set_bind_group(3, self.material_table.fallback_bind_group(), &[]);
-        render_pass.set_pipeline(&self.ssao_gbuffer_pipeline);
+        render_pass.set_pipeline(&self.gtao_gbuffer_pipeline);
         render_pass.set_vertex_buffer(0, self.mesh_vertex_buffer.slice(..));
         render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         render_pass.draw_indexed(0..index_count, 0, 0..1);
     }
 
-    /// Run the SSAO passes on egui's encoder, after the scene pass: the occlusion
+    /// Run the GTAO passes on egui's encoder, after the scene pass: the occlusion
     /// pass reads the single-sample G-buffer into `raw`, then the bilateral blur
     /// denoises `raw` → `blur`, which the composite (`post`) samples. Reuses the
     /// bloom fullscreen-pass helper (single color attachment, no depth). Only
-    /// called when SSAO is active.
-    pub(super) fn encode_ssao(&self, encoder: &mut wgpu::CommandEncoder) {
+    /// called when GTAO is active.
+    pub(super) fn encode_gtao(&self, encoder: &mut wgpu::CommandEncoder) {
         bloom_fullscreen_pass(
             encoder,
-            &self.ssao.ssao_pipeline,
-            &self.ssao_bind_group,
-            &self.ssao_raw_view,
-            "review_ssao_pass",
+            &self.gtao.gtao_pipeline,
+            &self.gtao_bind_group,
+            &self.gtao_raw_view,
+            "review_gtao_pass",
         );
         bloom_fullscreen_pass(
             encoder,
-            &self.ssao.blur_pipeline,
-            &self.ssao_blur_bind_group,
-            &self.ssao_blur_view,
-            "review_ssao_blur_pass",
+            &self.gtao.blur_pipeline,
+            &self.gtao_blur_bind_group,
+            &self.gtao_blur_view,
+            "review_gtao_blur_pass",
         );
     }
 
@@ -958,7 +958,7 @@ impl SceneResources {
             // The UV path never reaches the IBL / skybox code, so these are unused.
             env_params: [0.0; 4],
             projection_params: [1.0, 0.0, 0.0, 0.0],
-            // No SSAO in the UV viewport, so the view matrix is unused here.
+            // No GTAO in the UV viewport, so the view matrix is unused here.
             view: [[0.0; 4]; 4],
             // No Outliner selection in the 2D UV viewport.
             selection_color: [0.0; 4],

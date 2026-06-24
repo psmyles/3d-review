@@ -31,7 +31,7 @@ pub(super) struct SceneUniforms {
     /// environment yaw in radians (IBL / skybox sample rotation), z/w unused.
     pub(super) projection_params: [f32; 4],
     /// View matrix (world → view), for writing the view-space normal + depth into
-    /// the SSAO G-buffer.
+    /// the GTAO G-buffer.
     pub(super) view: [[f32; 4]; 4],
     /// Selection-flash highlight: `rgb` = gamma-space highlight color, `w` = flash
     /// fade (1 at flash start → 0 when done). Read only by `fs_selection`; zero

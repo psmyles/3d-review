@@ -1,12 +1,12 @@
 //! Buffer + texture + bind-group construction for the scene: the mesh/index/line
-//! vertex buffers, the bloom + SSAO ping-pong/target textures and their bind
-//! groups, the one-shot target clear, the fullscreen bloom/SSAO pass helper, and
+//! vertex buffers, the bloom + GTAO ping-pong/target textures and their bind
+//! groups, the one-shot target clear, the fullscreen bloom/GTAO pass helper, and
 //! the baked UV-checker textures. Pure builders, no `SceneResources` state.
 
 use wgpu::util::DeviceExt;
 
 use crate::bloom::BloomPass;
-use crate::ssao::{SSAO_FORMAT, SsaoPass};
+use crate::gtao::{GTAO_FORMAT, GtaoPass};
 use crate::targets::{SCENE_HDR_FORMAT, SceneTargets};
 
 use super::SCENE_DEPTH_FORMAT;
@@ -126,7 +126,7 @@ fn create_bloom_texture(
 /// and refresh the blur sampling offsets for the new size. Called on creation and
 /// whenever the scene targets are recreated (resize / MSAA change). Returns the
 /// new `(bloom_a, bloom_b, brightpass_bg, blur_h_bg, blur_v_bg)`. The composite
-/// bind group is built by the caller (it also depends on the SSAO AO texture).
+/// bind group is built by the caller (it also depends on the GTAO AO texture).
 pub(super) fn build_bloom_targets(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -173,7 +173,7 @@ pub(super) fn build_bloom_targets(
 
 /// Create one full-resolution single-channel AO texture (render target + sampled
 /// in later passes) and return its view.
-fn create_ssao_texture(
+fn create_gtao_texture(
     device: &wgpu::Device,
     width: u32,
     height: u32,
@@ -190,15 +190,15 @@ fn create_ssao_texture(
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: SSAO_FORMAT,
+            format: GTAO_FORMAT,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         })
         .create_view(&wgpu::TextureViewDescriptor::default())
 }
 
-/// Create the single-sample SSAO G-buffer color+depth targets.
-fn create_ssao_gbuffer_targets(
+/// Create the single-sample GTAO G-buffer color+depth targets.
+fn create_gtao_gbuffer_targets(
     device: &wgpu::Device,
     width: u32,
     height: u32,
@@ -209,7 +209,7 @@ fn create_ssao_gbuffer_targets(
         depth_or_array_layers: 1,
     };
     let gbuffer = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("review_ssao_gbuffer"),
+        label: Some("review_gtao_gbuffer"),
         size: extent,
         mip_level_count: 1,
         sample_count: 1,
@@ -219,7 +219,7 @@ fn create_ssao_gbuffer_targets(
         view_formats: &[],
     });
     let depth = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("review_ssao_depth"),
+        label: Some("review_gtao_depth"),
         size: extent,
         mip_level_count: 1,
         sample_count: 1,
@@ -234,17 +234,17 @@ fn create_ssao_gbuffer_targets(
     )
 }
 
-/// (Re)create the full-resolution SSAO G-buffer, AO textures and bind groups.
+/// (Re)create the full-resolution GTAO G-buffer, AO textures and bind groups.
 /// The occlusion pass reads the single-sample G-buffer → `raw`; the bilateral
 /// blur reads both the same G-buffer and `raw` → `blur`. Called on creation and
 /// whenever scene targets are recreated. As with bloom, the composite binds the
-/// blurred AO every frame but only samples it when SSAO is on, so all sampled
+/// blurred AO every frame but only samples it when GTAO is on, so all sampled
 /// views are cleared once here to satisfy D3D12's read-before-init validation.
-pub(super) fn build_ssao_targets(
+pub(super) fn build_gtao_targets(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     targets: &SceneTargets,
-    ssao: &SsaoPass,
+    gtao: &GtaoPass,
 ) -> (
     wgpu::TextureView,
     wgpu::TextureView,
@@ -253,14 +253,14 @@ pub(super) fn build_ssao_targets(
     wgpu::BindGroup,
     wgpu::BindGroup,
 ) {
-    let (gbuffer, depth) = create_ssao_gbuffer_targets(device, targets.width, targets.height);
-    let raw = create_ssao_texture(device, targets.width, targets.height, "review_ssao_raw");
-    let blur = create_ssao_texture(device, targets.width, targets.height, "review_ssao_blur");
-    clear_views(device, queue, &[&gbuffer, &raw, &blur], "review_ssao_init");
+    let (gbuffer, depth) = create_gtao_gbuffer_targets(device, targets.width, targets.height);
+    let raw = create_gtao_texture(device, targets.width, targets.height, "review_gtao_raw");
+    let blur = create_gtao_texture(device, targets.width, targets.height, "review_gtao_blur");
+    clear_views(device, queue, &[&gbuffer, &raw, &blur], "review_gtao_init");
 
-    let ssao_bg = ssao.occlusion_bind_group(device, &gbuffer, &blur, "review_ssao_bg");
-    let blur_bg = ssao.blur_bind_group(device, &gbuffer, &raw, "review_ssao_blur_bg");
-    (gbuffer, depth, raw, blur, ssao_bg, blur_bg)
+    let gtao_bg = gtao.occlusion_bind_group(device, &gbuffer, &blur, "review_gtao_bg");
+    let blur_bg = gtao.blur_bind_group(device, &gbuffer, &raw, "review_gtao_blur_bg");
+    (gbuffer, depth, raw, blur, gtao_bg, blur_bg)
 }
 
 /// Clear a set of color views once (`LoadOp::Clear` to black), in a single

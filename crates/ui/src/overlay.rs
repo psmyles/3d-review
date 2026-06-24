@@ -44,7 +44,7 @@ pub fn draw_viewport_scene(
                 fade: state.selection_fade,
             };
             // The Outliner's hidden mesh nodes ride in so the scene pass can filter
-            // them out of the viewport draw + SSAO (Phase 2).
+            // them out of the viewport draw + GTAO (Phase 2).
             let hidden_meshes: Vec<u32> = state
                 .hidden_meshes
                 .iter()
@@ -60,7 +60,7 @@ pub fn draw_viewport_scene(
                 state.anti_aliasing,
                 state.environment,
                 state.bloom,
-                state.ssao,
+                state.gtao,
                 state.tonemap,
                 &materials,
                 state.material_revision,

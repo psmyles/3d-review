@@ -25,7 +25,7 @@ struct PostUniforms {
     fxaa_enabled: u32,
     bloom_enabled: u32,
     bloom_intensity: f32,
-    ssao_enabled: u32,
+    gtao_enabled: u32,
     /// Whether the tone curve runs (0 = linear pass-through to sRGB).
     tonemap_enabled: u32,
     /// Which tone-map operator the shader's `apply_tonemap` switch selects.
@@ -89,8 +89,8 @@ impl PostPass {
                     },
                     count: None,
                 },
-                // The blurred SSAO occlusion (R8, full-res), applied to the
-                // scene's ambient light when SSAO is enabled.
+                // The blurred GTAO occlusion (R8, full-res), applied to the
+                // scene's ambient light when GTAO is enabled.
                 wgpu::BindGroupLayoutEntry {
                     binding: 4,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -101,7 +101,7 @@ impl PostPass {
                     },
                     count: None,
                 },
-                // Linear HDR ambient radiance that SSAO is allowed to attenuate.
+                // Linear HDR ambient radiance that GTAO is allowed to attenuate.
                 wgpu::BindGroupLayoutEntry {
                     binding: 5,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -198,7 +198,7 @@ impl PostPass {
         device: &wgpu::Device,
         scene_color: &wgpu::TextureView,
         bloom: &wgpu::TextureView,
-        ssao: &wgpu::TextureView,
+        gtao: &wgpu::TextureView,
         ambient: &wgpu::TextureView,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -223,7 +223,7 @@ impl PostPass {
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
-                    resource: wgpu::BindingResource::TextureView(ssao),
+                    resource: wgpu::BindingResource::TextureView(gtao),
                 },
                 wgpu::BindGroupEntry {
                     binding: 5,
@@ -234,7 +234,7 @@ impl PostPass {
     }
 
     /// Write the per-frame composite uniform: the texel size (for FXAA taps), the
-    /// FXAA enable flag, the bloom enable + intensity, the SSAO enable flag, and
+    /// FXAA enable flag, the bloom enable + intensity, the GTAO enable flag, and
     /// the tone-map enable + operator. Cheap; called every frame from `prepare`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn update_uniform(
@@ -245,7 +245,7 @@ impl PostPass {
         fxaa: bool,
         bloom_enabled: bool,
         bloom_intensity: f32,
-        ssao_enabled: bool,
+        gtao_enabled: bool,
         tonemap_enabled: bool,
         tonemap_op: u32,
     ) {
@@ -254,7 +254,7 @@ impl PostPass {
             fxaa_enabled: u32::from(fxaa),
             bloom_enabled: u32::from(bloom_enabled),
             bloom_intensity: bloom_intensity.max(0.0),
-            ssao_enabled: u32::from(ssao_enabled),
+            gtao_enabled: u32::from(gtao_enabled),
             tonemap_enabled: u32::from(tonemap_enabled),
             tonemap_op,
         };

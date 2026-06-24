@@ -19,7 +19,7 @@ struct SceneUniforms {
     // yaw in radians (IBL / skybox sample rotation), z/w unused.
     projection_params: vec4<f32>,
     // View matrix (world -> view), for writing the view-space normal + depth into
-    // the separate SSAO G-buffer pass.
+    // the separate GTAO G-buffer pass.
     view: mat4x4<f32>,
     // Selection-flash highlight: rgb is the gamma-space highlight color, a is the
     // flash fade (1 at the start of a selection flash down to 0). Read only by
@@ -180,7 +180,7 @@ struct ShadingResult {
 
 // Environment-lit metallic-roughness PBR for the shaded path. `albedo`, `metallic`
 // and `roughness` come from the per-material uniform (bind group 3). Returns linear
-// radiance and the diffuse ambient term SSAO may attenuate (tone mapping happens in
+// radiance and the diffuse ambient term GTAO may attenuate (tone mapping happens in
 // post).
 fn shade_ibl(albedo: vec3<f32>, world_normal: vec3<f32>, world_pos: vec3<f32>, roughness: f32, metallic: f32) -> ShadingResult {
     let n = normalize(world_normal);
@@ -209,7 +209,7 @@ fn shade_ibl(albedo: vec3<f32>, world_normal: vec3<f32>, world_pos: vec3<f32>, r
 
 // Scene fragment output (MRT): location 0 is the linear HDR color the composite
 // tone-maps; location 1 is the linear HDR radiance bloom thresholds;
-// location 2 is the linear ambient radiance SSAO may attenuate. Overlays write 0
+// location 2 is the linear ambient radiance GTAO may attenuate. Overlays write 0
 // alpha to locations 1 and 2 so grid / wireframe / normal lines never glow and
 // never darken.
 struct FragOutput {
@@ -394,7 +394,7 @@ fn fs_main(input: VertexOutput) -> FragOutput {
 
     // Ambient occlusion darkens only the ambient term: remove the un-occluded
     // ambient from the lit color and add back the occluded fraction, leaving direct
-    // + specular light untouched (matching the post SSAO compose).
+    // + specular light untouched (matching the post GTAO compose).
     color_linear = color_linear + ambient_linear * (ao - 1.0);
     ambient_linear = ambient_linear * ao;
 
@@ -429,7 +429,7 @@ fn fs_main(input: VertexOutput) -> FragOutput {
 // buffer, drawn over the mesh vertices). Ignores the mesh's lighting and material
 // entirely — it emits the uniform highlight color tinted by the flash fade alpha.
 // Writes zero bloom so the flash never glows, and zero ambient *color* with the
-// fade alpha so it masks (rather than darkens via SSAO) the mesh ambient beneath,
+// fade alpha so it masks (rather than darkens via GTAO) the mesh ambient beneath,
 // matching the other overlays. As `selection_color.a` reaches 0 the fill blends
 // fully away.
 @fragment
@@ -443,12 +443,12 @@ fn fs_selection(input: VertexOutput) -> FragOutput {
 }
 
 @fragment
-fn fs_ssao_gbuffer(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_gtao_gbuffer(input: VertexOutput) -> @location(0) vec4<f32> {
     let normal_length_sq = dot(input.normal, input.normal);
     if (normal_length_sq < 1e-6) {
         return vec4<f32>(0.0, 0.0, 0.0, 0.0);
     }
-    // View Z is negative in front of the camera; SSAO treats zero as background.
+    // View Z is negative in front of the camera; GTAO treats zero as background.
     let view_pos = uniforms.view * vec4<f32>(input.world_position, 1.0);
     let view_normal = normalize((uniforms.view * vec4<f32>(input.normal, 0.0)).xyz);
     return vec4<f32>(view_normal, view_pos.z);
@@ -498,7 +498,7 @@ fn fs_skybox(input: SkyOutput) -> FragOutput {
     var out: FragOutput;
     out.color = vec4<f32>(color, 1.0);
     out.bloom = vec4<f32>(color, 1.0);
-    // The sky is background: no ambient target, so SSAO never darkens it.
+    // The sky is background: no ambient target, so GTAO never darkens it.
     out.ambient = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     return out;
 }

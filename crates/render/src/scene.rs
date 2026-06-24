@@ -6,11 +6,11 @@
 
 use crate::UvShadingMode;
 use crate::bloom::BloomPass;
+use crate::gtao::GtaoPass;
 use crate::ibl::IblResources;
 use crate::material::{MaterialDrawRange, MaterialTable};
 use crate::post::PostPass;
 use crate::selection::Selection;
-use crate::ssao::SsaoPass;
 use crate::targets::SceneTargets;
 
 mod buffers;
@@ -104,7 +104,7 @@ struct SceneResources {
     /// Total indices in `visible_index_buffer` (0 when every mesh is hidden).
     visible_index_count: u32,
     /// Whether the visibility filter is in effect (some mesh hidden and the model
-    /// carries per-triangle node info): when set, the mesh / SSAO passes draw
+    /// carries per-triangle node info): when set, the mesh / GTAO passes draw
     /// `visible_index_buffer` instead of the full mesh.
     visible_active: bool,
     /// `(model_revision, sorted hidden mesh nodes)` baked into the visibility
@@ -132,24 +132,24 @@ struct SceneResources {
     bloom_brightpass_bind_group: wgpu::BindGroup,
     bloom_blur_h_bind_group: wgpu::BindGroup,
     bloom_blur_v_bind_group: wgpu::BindGroup,
-    /// The SSAO occlusion + blur pass (Phase 5). Size-independent; the full-res AO
+    /// The GTAO occlusion + blur pass (Phase 5). Size-independent; the full-res AO
     /// textures + bind groups below are rebuilt with `targets`.
-    ssao: SsaoPass,
-    /// Single-sample SSAO G-buffer (view-space normal + view-space Z). Kept out
+    gtao: GtaoPass,
+    /// Single-sample GTAO G-buffer (view-space normal + view-space Z). Kept out
     /// of the MSAA scene MRTs so normals/depths are not averaged across geometry
     /// edges before the AO pass samples them.
-    ssao_gbuffer_view: wgpu::TextureView,
-    /// Reversed-Z depth used only by the single-sample SSAO G-buffer pass.
-    ssao_depth_view: wgpu::TextureView,
+    gtao_gbuffer_view: wgpu::TextureView,
+    /// Reversed-Z depth used only by the single-sample GTAO G-buffer pass.
+    gtao_depth_view: wgpu::TextureView,
     /// Full-resolution AO textures: `raw` holds the occlusion pass output, `blur`
     /// the denoised result the composite samples. Recreated on resize.
-    ssao_raw_view: wgpu::TextureView,
-    ssao_blur_view: wgpu::TextureView,
-    /// SSAO bind groups: the occlusion pass reads the single-sample G-buffer, the
+    gtao_raw_view: wgpu::TextureView,
+    gtao_blur_view: wgpu::TextureView,
+    /// GTAO bind groups: the occlusion pass reads the single-sample G-buffer, the
     /// blur reads that same G-buffer plus `raw`. Rebuilt when the AO textures /
     /// G-buffer are.
-    ssao_bind_group: wgpu::BindGroup,
-    ssao_blur_bind_group: wgpu::BindGroup,
+    gtao_bind_group: wgpu::BindGroup,
+    gtao_blur_bind_group: wgpu::BindGroup,
     model_revision: u64,
     mesh_uv_channel: u32,
     /// Default mesh pipeline: back faces culled (only camera-facing surfaces
@@ -164,8 +164,8 @@ struct SceneResources {
     /// (Reversed-Z `GreaterEqual`) but no depth write, MRT like the mesh, drawing
     /// `fs_selection` (uniform highlight color × flash fade).
     selection_fill_pipeline: wgpu::RenderPipeline,
-    /// Mesh-only pipeline that writes the single-sample SSAO normal/depth buffer.
-    ssao_gbuffer_pipeline: wgpu::RenderPipeline,
+    /// Mesh-only pipeline that writes the single-sample GTAO normal/depth buffer.
+    gtao_gbuffer_pipeline: wgpu::RenderPipeline,
     /// Fullscreen pipeline that draws the environment cubemap as the background.
     skybox_pipeline: wgpu::RenderPipeline,
     /// Flat-color triangle pipeline for the UV island fill: no lighting (the fill

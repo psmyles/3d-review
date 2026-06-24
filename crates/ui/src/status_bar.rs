@@ -1,5 +1,5 @@
 //! The bottom status bar: the Model Stats toggle inset on the left, and a
-//! rendering-quality group (IBL / Bloom / SSAO / Anti aliasing) mirrored to the
+//! rendering-quality group (IBL / Bloom / AO / Anti aliasing) mirrored to the
 //! right.
 
 use crate::assets::{
@@ -71,7 +71,7 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                 },
             );
 
-            // Rendering-quality group — IBL / Bloom / SSAO / Tonemapper / Anti
+            // Rendering-quality group — IBL / Bloom / AO / Tonemapper / Anti
             // aliasing in one recessed group mirrored to the right edge. Each tile
             // left-clicks to toggle its effect (highlighted while on) and
             // right-clicks to open its options panel, matching the top-toolbar
@@ -126,24 +126,24 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                             state.panels_open.toggle(OptionPanel::Bloom);
                         }
 
-                        // Screen-space ambient occlusion. Disabled + forced off when
-                        // the adapter can't run SSAO (invariant 4).
-                        if !state.ssao_supported {
-                            state.ssao.enabled = false;
+                        // Ambient occlusion (GTAO). Disabled + forced off when the
+                        // adapter can't run it (invariant 4).
+                        if !state.gtao_supported {
+                            state.gtao.enabled = false;
                         }
-                        ui.add_enabled_ui(state.ssao_supported, |ui| {
-                            let ssao = icon_toggle_button(
+                        ui.add_enabled_ui(state.gtao_supported, |ui| {
+                            let gtao = icon_toggle_button(
                                 ui,
                                 ctx,
                                 &ICON_AO,
-                                state.ssao.enabled,
+                                state.gtao.enabled,
                                 "Ambient occlusion (right-click for options)",
                             );
-                            if ssao.clicked() {
-                                state.ssao.enabled = !state.ssao.enabled;
+                            if gtao.clicked() {
+                                state.gtao.enabled = !state.gtao.enabled;
                             }
-                            if ssao.secondary_clicked() {
-                                state.panels_open.toggle(OptionPanel::Ssao);
+                            if gtao.secondary_clicked() {
+                                state.panels_open.toggle(OptionPanel::Gtao);
                             }
                         });
 

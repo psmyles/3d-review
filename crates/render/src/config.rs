@@ -1,5 +1,5 @@
 //! Renderer configuration + per-view option types: shading / projection /
-//! anti-aliasing / environment / bloom / SSAO / tone-map / UV / debug-overlay
+//! anti-aliasing / environment / bloom / GTAO / tone-map / UV / debug-overlay
 //! settings, the adapter-capability probe, and `RendererConfig`. These form the
 //! UI→render and model→render *option contract* (a clean seam for the future
 //! renderer swap); `Renderer` and the cameras live in the crate root and read
@@ -246,37 +246,78 @@ impl Default for BloomSettings {
     }
 }
 
-/// Screen-space ambient occlusion configuration for the shaded view (CLAUDE.md
-/// render roadmap, Phase 5). Read by [`SceneCallback`] to drive the SSAO + blur
-/// passes and the composite multiply.
+/// Ground-Truth Ambient Occlusion configuration for the shaded view (CLAUDE.md
+/// render roadmap, Phase 5). Read by [`SceneCallback`] to drive the GTAO + blur
+/// passes and the composite multiply. (User-facing UI calls this "Ambient
+/// Occlusion"; the internal implementation is GTAO.)
 ///
-/// SSAO samples a single-sample view-space normal + depth G-buffer, estimates how
-/// occluded each pixel is by nearby geometry, edge-aware blurs the result, and
-/// applies it only to the scene's ambient radiance in the composite — darkening
-/// contact creases and cavities without muting direct/specular light. `radius`
-/// and `bias` are expressed as **fractions of the framed model's bounding-sphere
-/// radius**, so the look is scale-invariant across models (the renderer
-/// multiplies them by the live scene radius). `enabled` is the toolbar toggle;
-/// the default is on but subtle.
+/// GTAO samples a single-sample view-space normal + depth G-buffer, marches the
+/// screen-space horizon per slice to estimate the cosine-weighted visible arc,
+/// edge-aware blurs the result, and applies it only to the scene's ambient
+/// radiance in the composite — darkening contact creases and cavities without
+/// muting direct/specular light. `radius` is expressed as a **fraction of the
+/// framed model's bounding-sphere radius**, so the look is scale-invariant across
+/// models (the renderer multiplies it by the live scene radius). `enabled` is the
+/// toolbar toggle; the default is on but subtle.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SsaoSettings {
+pub struct GtaoSettings {
     pub enabled: bool,
-    /// Sample hemisphere radius, as a fraction of the scene bounding-sphere radius.
+    /// Sample radius, as a fraction of the scene bounding-sphere radius.
     pub radius: f32,
-    /// Strength of the darkening (multiplier on the raw occlusion).
+    /// Strength of the darkening: a power on the GTAO visibility (1 = ground
+    /// truth, >1 darkens, 0 disables).
     pub intensity: f32,
-    /// Depth-comparison bias (fraction of the scene radius) that suppresses
-    /// self-occlusion acne on flat surfaces.
-    pub bias: f32,
+    /// Thickness heuristic (0..1): how much an occluder past the near horizon is
+    /// "seen through", keeping thin geometry from over-occluding.
+    pub thickness: f32,
+    /// Sampling quality — the slice / step counts of the horizon search.
+    pub quality: GtaoQuality,
 }
 
-impl Default for SsaoSettings {
+impl Default for GtaoSettings {
     fn default() -> Self {
         Self {
             enabled: true,
             radius: 0.35,
             intensity: 1.0,
-            bias: 0.02,
+            thickness: 0.25,
+            quality: GtaoQuality::Medium,
+        }
+    }
+}
+
+/// GTAO sampling quality: the number of slice directions and horizon steps per
+/// slice. More of each means smoother, more accurate occlusion at higher cost.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum GtaoQuality {
+    /// 2 slices × 3 steps — cheapest, noisier (the blur cleans most of it up).
+    Low,
+    /// 3 slices × 5 steps — the balanced default.
+    #[default]
+    Medium,
+    /// 4 slices × 8 steps — smoothest, most expensive.
+    High,
+}
+
+impl GtaoQuality {
+    /// Every variant in display order, for building UI menus.
+    pub const ALL: [GtaoQuality; 3] = [GtaoQuality::Low, GtaoQuality::Medium, GtaoQuality::High];
+
+    /// Short menu label.
+    pub fn label(self) -> &'static str {
+        match self {
+            GtaoQuality::Low => "Low",
+            GtaoQuality::Medium => "Medium",
+            GtaoQuality::High => "High",
+        }
+    }
+
+    /// `(slices, steps_per_slice)` fed into the GTAO horizon search.
+    pub fn slices_steps(self) -> (u32, u32) {
+        match self {
+            GtaoQuality::Low => (2, 3),
+            GtaoQuality::Medium => (3, 5),
+            GtaoQuality::High => (4, 8),
         }
     }
 }

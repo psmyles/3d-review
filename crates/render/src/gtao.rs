@@ -1,76 +1,71 @@
-//! Screen-space ambient occlusion (CLAUDE.md render roadmap, Phase 5): an
-//! occlusion pass over a single-sample view-space normal+depth G-buffer, then a
-//! bilateral blur to remove per-pixel-rotation noise while respecting geometry
-//! edges. The composite (`post.rs`) applies the blurred AO only to ambient light.
+//! Ground-Truth Ambient Occlusion (CLAUDE.md render roadmap, Phase 5): a
+//! horizon-based occlusion pass over a single-sample view-space normal+depth
+//! G-buffer, then a bilateral blur to remove per-pixel-rotation noise while
+//! respecting geometry edges. The composite (`post.rs`) applies the blurred AO
+//! only to ambient light.
 //!
-//! `SsaoPass` owns the (size-independent) pipelines, sampler and uniform (with the
-//! baked hemisphere kernel); the full-resolution AO ping/blur textures + the bind
-//! groups that point at them live in `SceneResources` (rebuilt on resize alongside
-//! the scene targets), mirroring how `BloomPass` / `PostPass` pair with their
-//! `SceneResources` bind groups.
+//! `GtaoPass` owns the (size-independent) pipelines, sampler and uniform; the
+//! full-resolution AO ping/blur textures + the bind groups that point at them live
+//! in `SceneResources` (rebuilt on resize alongside the scene targets), mirroring
+//! how `BloomPass` / `PostPass` pair with their `SceneResources` bind groups.
 
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat4, Vec3};
+use glam::Mat4;
 
-const SSAO_SHADER: &str = include_str!("ssao.wgsl");
-
-/// Number of hemisphere samples per pixel. Matches `KERNEL_SIZE` in `ssao.wgsl`.
-const KERNEL_SIZE: usize = 16;
+const GTAO_SHADER: &str = include_str!("gtao.wgsl");
 
 /// The AO texture format: a single 8-bit occlusion channel (0 = fully occluded,
-/// 1 = open). Universally renderable + filterable, so SSAO needs no extra gate
+/// 1 = open). Universally renderable + filterable, so GTAO needs no extra gate
 /// beyond the G-buffer's `Rgba16Float` (which the scene/IBL already require).
-pub(crate) const SSAO_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
+pub(crate) const GTAO_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 
-/// Whether the adapter can run SSAO: it samples the `Rgba16Float` G-buffer
+/// Whether the adapter can run GTAO: it samples the `Rgba16Float` G-buffer
 /// (filterable) and renders the `R8Unorm` AO target. Both are WebGPU-guaranteed on
 /// any adapter that already renders the HDR scene, so this is effectively always
 /// true — it exists to honour the capability-gate discipline (invariant 4) and to
 /// let the UI disable the toggle rather than crash on an exotic adapter.
-pub fn ssao_supported(adapter: &wgpu::Adapter) -> bool {
+pub fn gtao_supported(adapter: &wgpu::Adapter) -> bool {
     let gbuffer = adapter
         .get_texture_format_features(crate::targets::SCENE_HDR_FORMAT)
         .flags;
-    let ao = adapter.get_texture_format_features(SSAO_FORMAT).flags;
+    let ao = adapter.get_texture_format_features(GTAO_FORMAT).flags;
     gbuffer.contains(wgpu::TextureFormatFeatureFlags::FILTERABLE)
         && ao.contains(wgpu::TextureFormatFeatureFlags::FILTERABLE)
         && adapter
-            .get_texture_format_features(SSAO_FORMAT)
+            .get_texture_format_features(GTAO_FORMAT)
             .allowed_usages
             .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
 }
 
-/// SSAO uniform. `#[repr(C)]` + `Pod` to match the WGSL `SsaoUniforms` layout
+/// GTAO uniform. `#[repr(C)]` + `Pod` to match the WGSL `GtaoUniforms` layout
 /// (invariant 11).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct SsaoUniforms {
+struct GtaoUniforms {
     proj: [f32; 16],
-    /// x = radius (view units), y = bias (view units), z = intensity, w = count.
+    /// x = radius (view units), y = intensity, z = thickness, w = unused.
     params: [f32; 4],
-    /// x = is_ortho (1.0 / 0.0); y,z,w unused.
+    /// x = is_ortho (1.0 / 0.0); y = slice count; z = steps per slice; w unused.
     config: [f32; 4],
-    kernel: [[f32; 4]; KERNEL_SIZE],
 }
 
-pub(crate) struct SsaoPass {
-    pub(crate) ssao_pipeline: wgpu::RenderPipeline,
+pub(crate) struct GtaoPass {
+    pub(crate) gtao_pipeline: wgpu::RenderPipeline,
     pub(crate) blur_pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     uniform: wgpu::Buffer,
-    kernel: [[f32; 4]; KERNEL_SIZE],
 }
 
-impl SsaoPass {
+impl GtaoPass {
     pub(crate) fn new(device: &wgpu::Device) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("review_ssao_shader"),
-            source: wgpu::ShaderSource::Wgsl(SSAO_SHADER.into()),
+            label: Some("review_gtao_shader"),
+            source: wgpu::ShaderSource::Wgsl(GTAO_SHADER.into()),
         });
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("review_ssao_bind_group_layout"),
+            label: Some("review_gtao_bind_group_layout"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -114,7 +109,7 @@ impl SsaoPass {
         // Point-sample the G-buffer + AO so view normals / depths aren't blended
         // across edges; clamp so samples near the border don't wrap.
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("review_ssao_sampler"),
+            label: Some("review_gtao_sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
@@ -124,40 +119,39 @@ impl SsaoPass {
         });
 
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("review_ssao_uniform"),
-            size: std::mem::size_of::<SsaoUniforms>() as u64,
+            label: Some("review_gtao_uniform"),
+            size: std::mem::size_of::<GtaoUniforms>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("review_ssao_pipeline_layout"),
+            label: Some("review_gtao_pipeline_layout"),
             bind_group_layouts: &[&bind_group_layout],
             push_constant_ranges: &[],
         });
 
-        let ssao_pipeline = make_pipeline(
+        let gtao_pipeline = make_pipeline(
             device,
             &pipeline_layout,
             &shader,
-            "fs_ssao",
-            "review_ssao_pipeline",
+            "fs_gtao",
+            "review_gtao_pipeline",
         );
         let blur_pipeline = make_pipeline(
             device,
             &pipeline_layout,
             &shader,
             "fs_blur",
-            "review_ssao_blur_pipeline",
+            "review_gtao_blur_pipeline",
         );
 
         Self {
-            ssao_pipeline,
+            gtao_pipeline,
             blur_pipeline,
             bind_group_layout,
             sampler,
             uniform,
-            kernel: build_kernel(),
         }
     }
 
@@ -226,57 +220,40 @@ impl SsaoPass {
         })
     }
 
-    /// Write the per-frame SSAO uniform: the projection (for reconstruction +
-    /// sample projection), the live radius/bias/intensity, and the ortho flag.
-    /// `radius`/`bias` are already in view units (the caller scales the settings'
-    /// scene-radius fractions by the live scene radius). Cheap; called every frame
-    /// so the panel sliders are live.
+    /// Write the per-frame GTAO uniform: the projection (for reconstruction +
+    /// sample projection), the live radius/intensity/thickness, the slice/step
+    /// counts, and the ortho flag. `radius` is already in view units (the caller
+    /// scales the settings' scene-radius fraction by the live scene radius). Cheap;
+    /// called every frame so the panel sliders are live.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn update(
         &self,
         queue: &wgpu::Queue,
         projection: Mat4,
         is_ortho: bool,
         radius: f32,
-        bias: f32,
         intensity: f32,
+        thickness: f32,
+        slices: u32,
+        steps: u32,
     ) {
-        let uniforms = SsaoUniforms {
+        let uniforms = GtaoUniforms {
             proj: projection.to_cols_array(),
             params: [
                 radius.max(1e-4),
-                bias.max(0.0),
                 intensity.max(0.0),
-                KERNEL_SIZE as f32,
+                thickness.clamp(0.0, 1.0),
+                0.0,
             ],
-            config: [if is_ortho { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
-            kernel: self.kernel,
+            config: [
+                if is_ortho { 1.0 } else { 0.0 },
+                slices.max(1) as f32,
+                steps.max(1) as f32,
+                0.0,
+            ],
         };
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniforms));
     }
-}
-
-/// A deterministic hemisphere kernel (tangent space, +Z), with samples packed
-/// toward the origin so nearby occluders dominate. Built once; identical every
-/// run (a fixed-seed LCG, so there is no per-launch flicker in the AO pattern).
-fn build_kernel() -> [[f32; 4]; KERNEL_SIZE] {
-    let mut state: u32 = 0x1234_5678;
-    let mut rng = || {
-        // Numerical Recipes LCG → float in [0, 1).
-        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        (state >> 8) as f32 / (1u32 << 24) as f32
-    };
-
-    let mut kernel = [[0.0_f32; 4]; KERNEL_SIZE];
-    for (i, slot) in kernel.iter_mut().enumerate() {
-        // Direction in the +Z hemisphere.
-        let dir = Vec3::new(rng() * 2.0 - 1.0, rng() * 2.0 - 1.0, rng()).normalize_or_zero();
-        // Accelerate the distribution toward the origin (more close samples).
-        let t = i as f32 / KERNEL_SIZE as f32;
-        let scale = 0.1 + 0.9 * t * t;
-        let sample = dir * (scale * rng().max(0.05));
-        *slot = [sample.x, sample.y, sample.z, 0.0];
-    }
-    kernel
 }
 
 fn make_pipeline(
@@ -302,7 +279,7 @@ fn make_pipeline(
             module: shader,
             entry_point: Some(fragment_entry),
             targets: &[Some(wgpu::ColorTargetState {
-                format: SSAO_FORMAT,
+                format: GTAO_FORMAT,
                 blend: None,
                 write_mask: wgpu::ColorWrites::ALL,
             })],
@@ -311,4 +288,23 @@ fn make_pipeline(
         multiview: None,
         cache: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    /// The GTAO shader must parse + validate. The real check is GPU pipeline
+    /// creation, but validating with naga here catches type / control-flow /
+    /// binding mistakes without a GPU (matches the scene-shader guard).
+    #[test]
+    fn gtao_shader_validates() {
+        let module =
+            naga::front::wgsl::parse_str(super::GTAO_SHADER).expect("gtao.wgsl should parse");
+        let mut validator = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        );
+        validator
+            .validate(&module)
+            .expect("gtao.wgsl should validate");
+    }
 }
