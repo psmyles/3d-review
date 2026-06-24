@@ -133,8 +133,13 @@ crates/
             MRT + AO-eligible diffuse-ambient MRT, all
             Rgba16Float; separate single-sample GTAO normal/view-Z G-buffer) +
             composite/tone-map/FXAA seam -> src/targets.rs, src/post.rs(+post.wgsl).
-            HDR image-based lighting (env cube + irradiance + prefilter + BRDF LUT
-            precompute, PBR shaded path, skybox) -> src/ibl.rs, src/ibl.wgsl. Bloom
+            HDR image-based lighting: at runtime the env cube + irradiance +
+            prefilter + shared BRDF LUT are **loaded** from offline-baked assets
+            (`assets/ibl_baked/`) via `IblResources::from_baked` — a pure upload,
+            no startup precompute — for the PBR shaded path + skybox; the precompute
+            that bakes them (+ `ibl.wgsl`) compiles only into the offline `bake_ibl`
+            tool (render's `bake` feature, src/bin/bake_ibl.rs)
+            -> src/ibl.rs, src/ibl.wgsl. Bloom
             (bright-pass + separable blur, half-res) -> src/bloom.rs, src/bloom.wgsl.
             GTAO (horizon-based occlusion with a structured 4x4 spatial dither + 5x5
             bilateral blur over the single-sample G-buffer; post darkens the diffuse
@@ -358,3 +363,14 @@ render checks stay manual.
   (ImageMagick) regenerates them from `assets/textures/T_HDR_*.hdr`; the installer
   build (`build-windows-installer.ps1`) runs it automatically. Re-run it after
   adding/replacing an HDR.
+- Baked IBL maps (`assets/ibl_baked/T_IBL_*.bin`, raw little-endian f16) are
+  `include_bytes!`-embedded by `crates/render`, so they must exist before `cargo
+  build`. They're committed; `packaging/generate-ibl-bake.ps1` regenerates them by
+  running the `bake_ibl` tool (`cargo run -p review-render --features bake --bin
+  bake_ibl`, needs a real GPU). **Unlike** the thumbnails, the installer build does
+  *not* auto-run it (GPU + slow compile); re-run it manually after adding/replacing
+  an HDR or changing an IBL precompute constant (sizes/mips/format in `ibl.rs`).
+  The shipping binary carries the baked maps, not the raw HDRs — `T_HDR_*.hdr` are
+  bake-tool inputs only. The bake/upload `.bin` byte layout is mip-major with the
+  six cube faces contiguous per mip; `precompute_maps`/readback and the runtime
+  `upload_cube` must stay in lockstep on it.

@@ -48,6 +48,12 @@ impl SceneResources {
         queue: &wgpu::Queue,
         output_format: wgpu::TextureFormat,
     ) -> Self {
+        // Startup timing: this runs once, on the first frame, and is the bulk of
+        // the pre-viewport cost (shader/pipeline compilation + IBL precompute).
+        // Logged via `tracing::info!` (set RUST_LOG=info). Times are CPU-side —
+        // GPU execution of the encoded IBL passes is async.
+        let build_start = std::time::Instant::now();
+
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("review_scene_shader"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
@@ -136,12 +142,14 @@ impl SceneResources {
         // The IBL maps occupy bind group 2; its layout is part of the shared
         // pipeline layout, so every scene pipeline can sample the environment.
         let ibl_layout = IblResources::scene_layout(device);
-        let ibl = IblResources::new(
+        let ibl_start = std::time::Instant::now();
+        let ibl = IblResources::from_baked(
             device,
             queue,
             &ibl_layout,
             EnvironmentSettings::default().map,
         );
+        let ibl_ms = ibl_start.elapsed().as_secs_f64() * 1000.0;
 
         // The editable per-material uniforms occupy bind group 3; its layout joins
         // the shared pipeline layout so every scene pipeline can read a material.
@@ -166,6 +174,7 @@ impl SceneResources {
         // into a pipeline at creation). `build_scene_pipelines` carries the
         // depth-bias reasoning.
         let scene_sample_count = AntiAliasing::default().msaa.sample_count();
+        let pipelines_start = std::time::Instant::now();
         let (
             mesh_pipeline,
             mesh_pipeline_double_sided,
@@ -175,10 +184,15 @@ impl SceneResources {
             skybox_pipeline,
         ) = build_scene_pipelines(device, &pipeline_layout, &shader, scene_sample_count);
         let gtao_gbuffer_pipeline = create_gtao_gbuffer_pipeline(device, &pipeline_layout, &shader);
+        let pipelines_ms = pipelines_start.elapsed().as_secs_f64() * 1000.0;
 
-        // Offscreen targets + the composite pass. Targets start at 1x1 and are
-        // recreated at the real framebuffer size on the first `prepare`
-        // (`sync_anti_aliasing`); the post pass draws into egui's `output_format`.
+        // Offscreen targets + the composite/bloom/GTAO passes. Each `*Pass::new`
+        // compiles its own shader(s), so this chunk is the rest of the first-frame
+        // pipeline-compilation cost beyond the scene pipelines above.
+        let passes_start = std::time::Instant::now();
+        // Targets start at 1x1 and are recreated at the real framebuffer size on
+        // the first `prepare` (`sync_anti_aliasing`); the post pass draws into
+        // egui's `output_format`.
         let targets = SceneTargets::new(device, queue, 1, 1, scene_sample_count);
         let post = PostPass::new(device, output_format);
         let bloom = BloomPass::new(device);
@@ -205,6 +219,7 @@ impl SceneResources {
             &gtao_blur_view,
             targets.sampled_ambient_view(),
         );
+        let passes_ms = passes_start.elapsed().as_secs_f64() * 1000.0;
         let line_vertices = scene_lines();
         let (mesh_vertex_buffer, mesh_index_buffer, mesh_index_count) =
             create_mesh_buffers(device, &[], &[]);
@@ -228,6 +243,14 @@ impl SceneResources {
         let (uv_fill_vertex_buffer, uv_fill_vertex_count) = create_line_buffer(device, &[]);
         let (selection_index_buffer, selection_index_count) = create_index_buffer(device, &[]);
         let (visible_index_buffer, visible_index_count) = create_index_buffer(device, &[]);
+
+        tracing::info!(
+            total_ms = build_start.elapsed().as_secs_f64() * 1000.0,
+            ibl_ms,
+            scene_pipelines_ms = pipelines_ms,
+            post_bloom_gtao_ms = passes_ms,
+            "SceneResources::new (first-frame GPU resource build)"
+        );
 
         Self {
             output_format,
@@ -547,9 +570,9 @@ impl SceneResources {
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }
 
-    /// Rebuild the IBL maps when the chosen environment changes. One-time GPU
-    /// work (a burst of small precompute passes); a no-op when the map is
-    /// unchanged, so steady-state frames pay nothing.
+    /// Reload the IBL maps when the chosen environment changes. A pure upload of
+    /// the baked maps (no GPU precompute); a no-op when the map is unchanged, so
+    /// steady-state frames pay nothing.
     pub(super) fn sync_environment(
         &mut self,
         device: &wgpu::Device,
@@ -557,7 +580,7 @@ impl SceneResources {
         environment: EnvironmentSettings,
     ) {
         if self.ibl.environment != environment.map {
-            self.ibl = IblResources::new(device, queue, &self.ibl_layout, environment.map);
+            self.ibl = IblResources::from_baked(device, queue, &self.ibl_layout, environment.map);
         }
     }
 

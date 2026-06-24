@@ -2409,7 +2409,9 @@ dependencies = [
  "half",
  "image",
  "naga",
+ "pollster",
  "review-model",
+ "tracing",
  "wgpu",
 ]
 

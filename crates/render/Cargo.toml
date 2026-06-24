@@ -12,10 +12,28 @@ egui-wgpu.workspace = true
 glam.workspace = true
 half.workspace = true
 image.workspace = true
+# Only used by the offline `bake_ibl` tool (the `bake` feature) to block on the
+# headless device/queue requests; not linked into the shipping viewer.
+pollster = { workspace = true, optional = true }
 review-model = { path = "../model" }
+tracing.workspace = true
 wgpu.workspace = true
+
+[features]
+# Compiles the offline IBL bake path (the `precompute_maps` passes + the
+# `bake_ibl_assets` entry point + the `bake_ibl` binary). Off for normal builds,
+# so the shipping viewer carries the baked maps but neither the raw HDRs nor the
+# precompute/readback code. Enable with `--features bake` to re-bake.
+bake = ["dep:pollster"]
 
 [dev-dependencies]
 # Validate the hand-written WGSL (scene shader) at `cargo test` time, since the
 # real pipeline-creation check needs a GPU. Pinned to wgpu 24's naga.
 naga = { version = "24", features = ["wgsl-in"] }
+
+# The offline IBL bake tool. Dev-only (needs a real GPU); guarded by the `bake`
+# feature so `--all-targets` builds skip it unless the feature is on.
+[[bin]]
+name = "bake_ibl"
+path = "src/bin/bake_ibl.rs"
+required-features = ["bake"]

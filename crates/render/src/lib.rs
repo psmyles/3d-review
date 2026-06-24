@@ -20,6 +20,8 @@ mod texture;
 
 pub use config::*;
 pub use gtao::gtao_supported;
+#[cfg(feature = "bake")]
+pub use ibl::bake_ibl_assets;
 pub use ibl::ibl_supported;
 pub use material::{
     AlphaMode, MaterialChange, MaterialEdit, MaterialSnapshot, MaterialState, RoughnessWorkflow,

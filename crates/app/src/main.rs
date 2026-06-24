@@ -4,6 +4,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod startup_paint;
+mod startup_timing;
 mod texture_manager;
 mod window_state;
 
@@ -26,7 +27,7 @@ use review_render::{
 };
 use review_ui::{
     AxisGizmoAction, Notifications, Selection, TexViewRequest, TextureIntent, UiOutput, UiState,
-    WorkspaceMode, draw_overlay, draw_startup_fade, draw_viewport_scene, init_style,
+    WorkspaceMode, draw_overlay, draw_viewport_scene, init_style,
 };
 use tracing::{info, warn};
 use winit::{
@@ -132,16 +133,6 @@ struct App {
     /// on exit. Recorded only while the window isn't maximized, so un-maximizing
     /// a restored session returns to a real window rather than a fullscreen rect.
     last_windowed_bounds: Option<((i32, i32), (u32, u32))>,
-    /// Launch fade-in progress: while set, each frame paints a full-screen cover
-    /// that dissolves from the startup black to the live viewer (see
-    /// `startup_paint`). Seeded just before the first frame in `resumed` and
-    /// cleared once the fade completes, after which the steady state draws no
-    /// cover. Advanced by a *capped per-frame delta* (not absolute wall-clock
-    /// time) so a slow first frame — pipeline/shader warm-up, surface acquire,
-    /// the OS window-open animation — can't fast-forward the whole fade in one
-    /// stall and make the viewer snap in. Same guard `update_camera_animation`
-    /// uses for camera transitions.
-    fade: Option<FadeProgress>,
     /// Live selection-highlight flash, or `None` when none is playing. Started when
     /// [`Self::flashed_selection`] no longer matches the UI's current selection, and
     /// advanced each frame by [`Self::update_selection_flash`], which writes the
@@ -175,17 +166,10 @@ struct App {
     notifications: Notifications,
 }
 
-/// State of the launch fade-in. `elapsed` is animation time accumulated across
-/// rendered frames (capped per frame), `last_tick` is when it last advanced.
-struct FadeProgress {
-    elapsed: Duration,
-    last_tick: Instant,
-}
-
 /// State of the selection-highlight flash: a brief bright fill over a newly
 /// selected node/material that fades out. Same capped-per-frame accumulation as
-/// the launch fade / camera transitions, so an idle gap before the flash can't
-/// fast-forward it to the end. `None` when no flash is playing.
+/// camera transitions, so an idle gap before the flash can't fast-forward it to
+/// the end. `None` when no flash is playing.
 struct FlashProgress {
     elapsed: Duration,
     last_tick: Instant,
@@ -196,17 +180,8 @@ const SELECTION_FLASH: Duration = Duration::from_millis(500);
 
 /// Cap on how much the selection flash advances in one frame (≈30 Hz), so an idle
 /// gap before a selection change doesn't skip the flash. Matches the camera
-/// transition / startup-fade step guards.
+/// transition step guard.
 const MAX_FLASH_STEP: Duration = Duration::from_millis(33);
-
-/// Duration of the launch fade-in (startup black → viewer). Short on purpose:
-/// long enough to read as a dissolve, brief enough not to feel like a wait.
-const STARTUP_FADE: Duration = Duration::from_millis(200);
-
-/// Cap on how much the fade advances in a single frame. A startup stall yields
-/// one frame's worth of progress instead of the whole gap, so the dissolve
-/// always plays across real presented frames rather than being skipped.
-const MAX_FADE_STEP: Duration = Duration::from_millis(33);
 
 impl Default for App {
     fn default() -> Self {
@@ -241,7 +216,6 @@ impl Default for App {
             initial_model: None,
             start_maximized: false,
             last_windowed_bounds: None,
-            fade: None,
             selection_flash: None,
             flashed_selection: Selection::None,
             texture_proxy: None,
@@ -315,6 +289,8 @@ impl ApplicationHandler<UserEvent> for App {
             return;
         };
 
+        let mut timer = startup_timing::StartupTimer::start();
+
         // Honor the OS launch hint (e.g. a shortcut set to "Run: Maximized").
         // winit never consults `STARTUPINFO.wShowWindow`, so we query it and set
         // the initial state ourselves.
@@ -357,6 +333,7 @@ impl ApplicationHandler<UserEvent> for App {
         // the renderer comes up. See `startup_paint` (the one sanctioned exception
         // to invariant 9).
         startup_paint::paint_window_black(&window);
+        timer.lap("window_create");
 
         let renderer_config = RendererConfig::default();
         let mut renderer = Renderer::new(renderer_config);
@@ -375,6 +352,7 @@ impl ApplicationHandler<UserEvent> for App {
         // Install fonts + visuals once: the style is derived purely from the
         // central theme tokens (no per-frame state), so it never needs re-syncing.
         init_style(&egui_ctx);
+        timer.lap("renderer_init");
 
         let mut egui_painter = pollster::block_on(egui_wgpu::winit::Painter::new(
             egui_ctx.clone(),
@@ -384,8 +362,10 @@ impl ApplicationHandler<UserEvent> for App {
             false,
             true,
         ));
+        timer.lap("adapter_device");
         pollster::block_on(egui_painter.set_window(egui::ViewportId::ROOT, Some(window.clone())))
             .expect("failed to initialize wgpu surface");
+        timer.lap("surface_config");
 
         // Report which backend/adapter wgpu actually selected (see
         // RendererConfig::preferred_backends — DX12 on Windows). Logged via
@@ -429,28 +409,26 @@ impl ApplicationHandler<UserEvent> for App {
         self.refresh_interval = monitor_refresh_interval(&window);
         self.window = Some(window.clone());
         info!("application shell started");
+        timer.lap("gating_state");
 
         // Load a file passed on the command line (file association / CLI arg)
         // now that the renderer exists. Reuses the same path as drag-drop, so
         // framing/stats/redraw behave identically.
+        let had_initial_model = self.initial_model.is_some();
         if let Some(path) = self.initial_model.take() {
             self.open_model_from_path(&path);
         }
-
-        // Begin the launch fade-in from here: the renderer/chrome are ready, so
-        // the first frame starts fully covered by the startup black and dissolves
-        // to the live viewer over `STARTUP_FADE`. Starting it now (rather than at
-        // window creation) ties the fade to the moment there's actually something
-        // to reveal, so a slow surface setup doesn't eat into it.
-        self.fade = Some(FadeProgress {
-            elapsed: Duration::ZERO,
-            last_tick: Instant::now(),
-        });
+        if had_initial_model {
+            timer.lap("initial_model_load");
+        }
 
         // Paint the first frame directly rather than waiting on the first
         // `RedrawRequested`, so the window shows the rendered scene as soon as
-        // it appears instead of an unpainted surface.
+        // it appears instead of an unpainted surface. This is where the scene
+        // pipelines compile + the IBL maps precompute (see `SceneResources::new`).
         self.render();
+        timer.lap("first_frame");
+        timer.finish();
     }
 
     fn window_event(
@@ -719,12 +697,6 @@ impl App {
         // Outliner last frame) restarts it here.
         self.update_selection_flash();
 
-        // Opacity of the launch fade cover this frame (1 = startup black, 0 =
-        // fully revealed). Advancing here clears `fade_start` once it reaches 0,
-        // so the steady state draws no cover; while it's > 0 the pacing logic
-        // below keeps requesting frames so the dissolve animates.
-        let cover_opacity = self.advance_startup_fade();
-
         let output_format = {
             let Some(egui_painter) = self.egui_painter.as_ref() else {
                 return;
@@ -786,12 +758,8 @@ impl App {
                     occlusion_bvh,
                     output_format,
                 );
-                // Toasts paint on the egui Foreground layer, above the chrome but
-                // below the launch-fade cover (Tooltip order), so the fade hides
-                // them too during the dissolve.
+                // Toasts paint on the egui Foreground layer, above the chrome.
                 notifications.show(ctx);
-                // Above all chrome: the launch fade cover (no-op once revealed).
-                draw_startup_fade(ctx, cover_opacity);
             });
 
             egui_state.handle_platform_output(&window, full_output.platform_output.clone());
@@ -815,21 +783,17 @@ impl App {
             .renderer
             .as_ref()
             .is_some_and(Renderer::is_camera_animating);
-        // The launch fade is continuous motion too: keep pacing frames while the
-        // cover is still dissolving so it doesn't stall on a static partial fade.
-        let fade_active = cover_opacity > 0.0;
-        // The selection flash likewise animates over ~0.5s; keep pacing frames until
-        // it finishes so the highlight fades smoothly rather than freezing partway.
+        // The selection flash animates over ~0.5s; keep pacing frames until it
+        // finishes so the highlight fades smoothly rather than freezing partway.
         let flash_active = self.selection_flash.is_some();
-        self.repaint_at =
-            if repaint_delay.is_zero() || camera_animating || fade_active || flash_active {
-                let frame_start = self.last_render_instant.unwrap_or_else(Instant::now);
-                Some(frame_start + self.refresh_interval)
-            } else if repaint_delay == Duration::MAX {
-                None
-            } else {
-                Instant::now().checked_add(repaint_delay)
-            };
+        self.repaint_at = if repaint_delay.is_zero() || camera_animating || flash_active {
+            let frame_start = self.last_render_instant.unwrap_or_else(Instant::now);
+            Some(frame_start + self.refresh_interval)
+        } else if repaint_delay == Duration::MAX {
+            None
+        } else {
+            Instant::now().checked_add(repaint_delay)
+        };
 
         let pixels_per_point = full_output.pixels_per_point;
         let clipped_primitives = egui_ctx.tessellate(full_output.shapes, pixels_per_point);
@@ -1193,34 +1157,6 @@ impl App {
             height,
             maximized: window.is_maximized(),
         });
-    }
-
-    /// Advance the launch fade-in and return this frame's cover opacity (1 =
-    /// startup black, 0 = fully revealed). Returns 0 and clears `fade` once the
-    /// animation is done, so it's a cheap no-op every frame thereafter. The curve
-    /// is an inverted smoothstep: the reveal starts gently from full black,
-    /// accelerates, then eases out as the viewer settles in.
-    ///
-    /// Time is accumulated from a *capped* per-frame delta rather than absolute
-    /// wall-clock: a slow first frame (pipeline warm-up, surface acquire, the OS
-    /// window-open animation) advances the fade by one frame's worth instead of
-    /// the whole stall, so the dissolve plays across real presented frames
-    /// instead of being skipped — which read as a snap.
-    fn advance_startup_fade(&mut self) -> f32 {
-        let Some(fade) = self.fade.as_mut() else {
-            return 0.0;
-        };
-        let now = Instant::now();
-        let step = now.duration_since(fade.last_tick).min(MAX_FADE_STEP);
-        fade.last_tick = now;
-        fade.elapsed += step;
-
-        if fade.elapsed >= STARTUP_FADE {
-            self.fade = None;
-            return 0.0;
-        }
-        let t = (fade.elapsed.as_secs_f32() / STARTUP_FADE.as_secs_f32()).clamp(0.0, 1.0);
-        1.0 - t * t * (3.0 - 2.0 * t)
     }
 
     /// Advance the selection-highlight flash and write this frame's fade factor (1

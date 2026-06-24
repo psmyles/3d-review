@@ -31,7 +31,7 @@ mod widgets;
 
 pub use assets::install_fonts;
 pub use notifications::Notifications;
-pub use overlay::{draw_overlay, draw_startup_fade, draw_viewport_scene};
+pub use overlay::{draw_overlay, draw_viewport_scene};
 pub use review_render::{
     AntiAliasing, BloomSettings, ChannelSelect, EnvironmentMap, EnvironmentSettings, GtaoQuality,
     GtaoSettings, MsaaSamples, Selection, TextureSlot, gtao_supported, ibl_supported,

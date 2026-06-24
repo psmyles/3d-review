@@ -56,9 +56,9 @@ struct SceneResources {
     pipeline_layout: wgpu::PipelineLayout,
     /// Layout of the IBL bind group (group 2), embedded in `pipeline_layout`.
     /// Stable across environment switches so the pipelines stay valid; passed to
-    /// every [`IblResources::new`] to rebuild the bind group.
+    /// every [`IblResources::from_baked`] to rebuild the bind group.
     ibl_layout: wgpu::BindGroupLayout,
-    /// Precomputed image-based-lighting maps + their bind group. Rebuilt by
+    /// Baked image-based-lighting maps + their bind group. Reloaded by
     /// `sync_environment` only when the chosen environment changes.
     ibl: IblResources,
     /// Layout of the material bind group (group 3), embedded in `pipeline_layout`.

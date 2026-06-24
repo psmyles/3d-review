@@ -181,12 +181,6 @@ pub mod color {
     /// shadow strength lives under a semantic token (invariant 8).
     pub const WINDOW_SHADOW: Color32 = Color32::from_black_alpha(96);
 
-    // ── Startup fade-in ─────────────────────────────────────────────────────
-    /// Full-screen cover that dissolves the viewer in from black on launch.
-    /// Matches the startup GDI black-fill and the renderer's clear color so the
-    /// reveal is seamless (the cover and the surface beneath start identical).
-    pub const STARTUP_COVER: Color32 = Color32::BLACK;
-
     // ── Startup help overlay ────────────────────────────────────────────────
     /// Help-card surface (translucent, like the stats overlay — the viewport
     /// shows through faintly so the modal doesn't black out the scene) and border.
