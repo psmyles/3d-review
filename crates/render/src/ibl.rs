@@ -1065,6 +1065,12 @@ fn readback_to_file(
 /// GPU-native unsigned BC6H blocks the runtime uploads. Bake-only: the encoder
 /// (Intel ISPC, prebuilt kernels) trades offline bake time for an ~8× smaller,
 /// sample-bandwidth-cheaper runtime map.
+///
+/// Uses the encoder's **highest-quality** profile (`very_slow_settings`): this
+/// runs once offline, so we spend the extra bake time to make the shipped
+/// runtime map as accurate as BC6H allows (project rule — see CLAUDE.md §4).
+/// Output size is identical across profiles (BC6H is fixed-rate, 16 B/block);
+/// only encode time and per-block accuracy change.
 #[cfg(feature = "bake")]
 fn compress_bc6h_face(size: u32, rgba_f16: &[u8]) -> Vec<u8> {
     let surface = intel_tex_2::RgbaSurface {
@@ -1073,7 +1079,7 @@ fn compress_bc6h_face(size: u32, rgba_f16: &[u8]) -> Vec<u8> {
         stride: size * RGBA16F_BPP,
         data: rgba_f16,
     };
-    intel_tex_2::bc6h::compress_blocks(&intel_tex_2::bc6h::slow_settings(), &surface)
+    intel_tex_2::bc6h::compress_blocks(&intel_tex_2::bc6h::very_slow_settings(), &surface)
 }
 
 /// Offline IBL bake entry point: precompute every environment's maps on a

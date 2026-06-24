@@ -211,6 +211,15 @@ workspace still builds and FBX import returns a clear error.
 
 ## 4. Locked decisions — DO NOT RE-LITIGATE
 
+- **Spend dev-time freely to make the release runtime fast, efficient, and
+  accurate.** Offline/bake-time cost — CPU, wall-clock, build complexity — is
+  *not* a constraint; the shipped binary's speed, memory/VRAM footprint, and
+  output accuracy are what matter. So always prefer the highest-quality /
+  most-precomputed option for anything done ahead of runtime: e.g. the IBL maps
+  are baked offline (no startup precompute) and the BC6H cubes use the encoder's
+  slowest, **highest-quality** profile (`very_slow_settings`) because that work
+  happens once on a dev machine and only sharpens what runs. When a choice trades
+  dev-time effort for a better runtime, take it.
 - Native stack: direct `winit` + `wgpu` (not `eframe`); `egui` is an overlay
   drawn via an `egui_wgpu` paint callback. Prefer DX12 on Windows
   (DX12|Vulkan|Metal requested).
