@@ -58,14 +58,19 @@ impl SceneResources {
         // build (Phase B) it is now only the *core* cost — shader + line pipeline +
         // post composite + the IBL baked-map upload + checker decode — not the full
         // scene-pipeline + GTAO set, which `advance_build` compiles over the
-        // next frames. Logged via `tracing::info!` (set RUST_LOG=info).
+        // next frames. Logged via `tracing::info!`, but only under
+        // `--features startup-trace` (run with `RUST_LOG=info`); a default build
+        // takes none of these clocks and carries no `tracing` dep.
+        #[cfg(feature = "startup-trace")]
         let build_start = std::time::Instant::now();
 
+        #[cfg(feature = "startup-trace")]
         let shader_start = std::time::Instant::now();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("review_scene_shader"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
         });
+        #[cfg(feature = "startup-trace")]
         let shader_module_ms = shader_start.elapsed().as_secs_f64() * 1000.0;
 
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -151,6 +156,7 @@ impl SceneResources {
         // The IBL maps occupy bind group 2; its layout is part of the shared
         // pipeline layout, so every scene pipeline can sample the environment.
         let ibl_layout = IblResources::scene_layout(device);
+        #[cfg(feature = "startup-trace")]
         let ibl_start = std::time::Instant::now();
         let ibl = IblResources::from_baked(
             device,
@@ -158,6 +164,7 @@ impl SceneResources {
             &ibl_layout,
             EnvironmentSettings::default().map,
         );
+        #[cfg(feature = "startup-trace")]
         let ibl_ms = ibl_start.elapsed().as_secs_f64() * 1000.0;
 
         // The editable per-material uniforms occupy bind group 3; its layout joins
@@ -184,9 +191,11 @@ impl SceneResources {
         // built by `advance_build`, then rebuilt by `sync_anti_aliasing` on a level
         // change (the sample count is baked into a pipeline at creation).
         let scene_sample_count = AntiAliasing::default().msaa.sample_count();
+        #[cfg(feature = "startup-trace")]
         let line_start = std::time::Instant::now();
         let line_pipeline =
             build_line_pipeline(device, &pipeline_layout, &shader, scene_sample_count);
+        #[cfg(feature = "startup-trace")]
         let line_pipeline_ms = line_start.elapsed().as_secs_f64() * 1000.0;
 
         // Offscreen targets + the composite pass. The GTAO *textures* are built
@@ -196,8 +205,10 @@ impl SceneResources {
         // first `prepare` (`sync_anti_aliasing`); the post pass draws into egui's
         // `output_format`.
         let targets = SceneTargets::new(device, queue, 1, 1, scene_sample_count);
+        #[cfg(feature = "startup-trace")]
         let post_start = std::time::Instant::now();
         let post = PostPass::new(device, output_format);
+        #[cfg(feature = "startup-trace")]
         let post_ms = post_start.elapsed().as_secs_f64() * 1000.0;
         let (gtao_gbuffer_view, gtao_depth_view, gtao_raw_view, gtao_blur_view) =
             build_gtao_textures(device, queue, &targets);
@@ -231,6 +242,7 @@ impl SceneResources {
         let (selection_index_buffer, selection_index_count) = create_index_buffer(device, &[]);
         let (visible_index_buffer, visible_index_count) = create_index_buffer(device, &[]);
 
+        #[cfg(feature = "startup-trace")]
         tracing::info!(
             total_ms = build_start.elapsed().as_secs_f64() * 1000.0,
             shader_module_ms,

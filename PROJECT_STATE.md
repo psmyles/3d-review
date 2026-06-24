@@ -97,11 +97,16 @@ input/file path
 
 Startup was cut from ~1150ms to ~350ms (resumed → first frame submitted, release,
 RTX 4080 / DX12). The remaining budget is dominated by one intrinsic cost, below.
-Instrumentation is always on (`startup_timing.rs` laps + the `SceneResources::
-new_core` breakdown); `crates/app`'s `--features startup-trace` additionally turns
-egui-wgpu's + wgpu's `profiling::scope!`s into logged spans for a finer split.
-Re-measure with `RUST_LOG=3d_review=info,review_render=info` (narrow it — `info`
-alone pulls in wgpu's per-pipeline shader dumps, which inflate the timings).
+All startup instrumentation sits behind one switch — `crates/app`'s
+`--features startup-trace` — and is off in shipping builds, so a default release
+carries none of it (the `startup_timing.rs` laps become a zero-cost no-op and
+`review-render` drops its `tracing` dep). That feature compiles in the
+`startup_timing.rs` phase laps + the `SceneResources::new_core` breakdown, and
+turns egui-wgpu's + wgpu's `profiling::scope!`s into logged spans for a finer
+split. Re-measure with
+`cargo run -p review-app --features startup-trace` and
+`RUST_LOG=3d_review=info,review_render=info` (narrow it — `info` alone pulls in
+wgpu's per-pipeline shader dumps, which inflate the timings).
 
 Landed:
 - **IBL baked offline** — runtime IBL is a pure upload (`from_baked`), no startup

@@ -44,12 +44,15 @@ serde_json.workspace = true
 winresource.workspace = true
 
 [features]
-# Dev-only startup profiling. Enables `profiling`'s tracing backend across the
-# whole dependency graph (egui-wgpu, wgpu), so their internal `profiling::scope!`
-# spans surface as INFO tracing events; `main` then logs span CLOSE timing. Build
-# with `--features startup-trace` and run with `RUST_LOG=info` to see where the
-# `set_window` (adapter/device/surface) startup time goes. Off in shipping builds.
-startup-trace = ["dep:profiling", "profiling/profile-with-tracing"]
+# Dev-only startup profiling — the single switch for ALL startup instrumentation
+# (off in shipping builds, so a default release carries none). It (1) compiles in
+# the `StartupTimer` phase laps + `review-render`'s `SceneResources::new_core`
+# breakdown (both absent/no-op without it), and (2) enables `profiling`'s tracing
+# backend across the graph (egui-wgpu, wgpu), so their internal `profiling::scope!`
+# spans surface as INFO tracing events that `main` logs at CLOSE — breaking down
+# the otherwise-opaque `set_window` (adapter/device/surface) cost. Build with
+# `--features startup-trace` and run with `RUST_LOG=info` to see it all.
+startup-trace = ["dep:profiling", "profiling/profile-with-tracing", "review-render/startup-trace"]
 
 [[bin]]
 name = "3d-review"
