@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
-    Re-bake the image-based-lighting (IBL) maps that the viewer ships.
+    Re-bake the image-based-lighting (IBL) maps that the viewer ships, but only
+    when they are outdated.
 
 .DESCRIPTION
     Shaded mode is lit by precomputed IBL maps (env cube / diffuse irradiance /
@@ -16,8 +17,14 @@
     which decodes every `assets/textures/T_HDR_*.hdr`, runs the precompute on a
     headless GPU device, reads the results back, BC6H-encodes the cubes (via
     `intel_tex_2`) and writes the `.bin` files.
-    Re-run it whenever a source HDR changes (or a new `EnvironmentMap` variant is
-    added); the outputs are committed.
+
+    Because the bake needs a real GPU and a slow compile, it is *freshness-gated*:
+    the bake only runs when a baked `.bin` output is missing or older than an
+    input that determines its bytes (a source HDR, or the IBL precompute / encode
+    code — `ibl.rs`, `ibl.wgsl`, `bake_ibl.rs`). Otherwise the script is a fast
+    no-op (no GPU touched), which is what lets the installer build call it
+    unconditionally. Pass `-Force` to re-bake regardless. The mtime idiom mirrors
+    `generate-hdr-thumbnails.ps1`.
 
     Requires a real GPU (the bake creates a wgpu device) and the MSVC toolchain on
     PATH (the workspace compiles the vendored `ufbx.c`), i.e. run it from the
@@ -25,11 +32,16 @@
 
 .EXAMPLE
     pwsh packaging\generate-ibl-bake.ps1
+
+.EXAMPLE
+    pwsh packaging\generate-ibl-bake.ps1 -Force
 #>
 [CmdletBinding()]
 param(
     # Build + run the bake tool in release mode (faster readback; slower compile).
-    [switch] $Release
+    [switch] $Release,
+    # Re-bake even when the committed .bin outputs already look up to date.
+    [switch] $Force
 )
 
 $ErrorActionPreference = 'Stop'
@@ -37,6 +49,35 @@ $ErrorActionPreference = 'Stop'
 # Repo root = parent of this script's folder. Run cargo from there so the
 # workspace is in scope; the bake tool resolves asset paths itself.
 $repoRoot = Split-Path -Parent $PSScriptRoot
+
+# --- Freshness check -----------------------------------------------------------
+# Skip the (GPU + slow-compile) bake when the committed assets\ibl_baked\*.bin
+# outputs are already newer than every input that determines their bytes: the
+# source HDRs plus the bake/precompute code (constants, precompute shader, BC6H
+# encode path). A missing output is stale. Same mtime idiom as
+# generate-hdr-thumbnails.ps1.
+function Test-IblBakeStale {
+    $outputs = @(Get-ChildItem -Path (Join-Path $repoRoot 'assets\ibl_baked\T_IBL_*.bin') -ErrorAction SilentlyContinue)
+    if ($outputs.Count -eq 0) { return $true }   # nothing baked yet -> stale
+
+    $inputs = @()
+    $inputs += Get-ChildItem -Path (Join-Path $repoRoot 'assets\textures\T_HDR_*.hdr') -ErrorAction SilentlyContinue
+    foreach ($rel in @('crates\render\src\ibl.rs', 'crates\render\src\ibl.wgsl', 'crates\render\src\bin\bake_ibl.rs')) {
+        $inputs += Get-Item -Path (Join-Path $repoRoot $rel) -ErrorAction SilentlyContinue
+    }
+    if ($inputs.Count -eq 0) { return $false }   # no inputs resolved -> treat as fresh
+
+    $newestInput  = ($inputs  | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1).LastWriteTimeUtc
+    $oldestOutput = ($outputs | Sort-Object LastWriteTimeUtc | Select-Object -First 1).LastWriteTimeUtc
+    return $newestInput -gt $oldestOutput
+}
+
+if (-not $Force -and -not (Test-IblBakeStale)) {
+    Write-Host '==> IBL maps already up to date (skipping bake; pass -Force to re-bake).' -ForegroundColor DarkGray
+    return
+}
+
+# --- Run the bake --------------------------------------------------------------
 Push-Location $repoRoot
 try {
     $cargoArgs = @('run', '-p', 'review-render', '--features', 'bake', '--bin', 'bake_ibl')

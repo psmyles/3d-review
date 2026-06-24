@@ -387,9 +387,14 @@ check, run headless in CI); GPU render checks stay manual.
   (`crates/app/src/main.rs`) — universal on the desktop DX12/Vulkan/Metal targets.
   They're committed; `packaging/generate-ibl-bake.ps1` regenerates them by running
   the `bake_ibl` tool (`cargo run -p review-render --features bake --bin bake_ibl`,
-  needs a real GPU). **Unlike** the thumbnails, the installer build does *not*
-  auto-run it (GPU + slow compile); re-run it manually after adding/replacing an
-  HDR or changing an IBL precompute constant (sizes/mips/format in `ibl.rs`). The
+  needs a real GPU). The installer build (`build-windows-installer.ps1`) invokes
+  it, but it is **freshness-gated**: the script only runs the GPU bake when a
+  baked `.bin` is missing or older than an input that determines its bytes (a
+  source HDR, or `ibl.rs` / `ibl.wgsl` / `bake_ibl.rs` — i.e. an IBL precompute
+  constant like sizes/mips/format, or the encode path); otherwise it's a fast
+  no-op, so a normal build touches no GPU. Pass `-Force` to re-bake regardless,
+  or run it manually after adding/replacing an HDR or changing a precompute
+  constant. The
   shipping binary carries the baked maps, not the raw HDRs — `T_HDR_*.hdr` are
   bake-tool inputs only. The `.bin` byte layout is mip-major with the six cube
   faces contiguous per mip (each face a row-major grid of BC6H blocks);
