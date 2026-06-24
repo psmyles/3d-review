@@ -170,7 +170,7 @@ pub struct SceneBvh {
 
 #[derive(Debug, Clone)]
 struct ScenePart {
-    /// The scene node these triangles belong to (matches [`ModelData::tri_node`]),
+    /// The scene node these triangles belong to (matches [`crate::TriangleData::node`]),
     /// or [`NO_NODE`] when the model carries no per-triangle node info.
     node: u32,
     bvh: Bvh,
@@ -182,7 +182,7 @@ impl SceneBvh {
     /// parts); do this once per loaded model and reuse it across frames.
     pub fn build(model: &ModelData) -> Self {
         let tri_count = model.indices.len() / 3;
-        if model.tri_node.len() != tri_count {
+        if model.triangles.node.len() != tri_count {
             // No per-triangle node info: one part covering the whole model, which
             // visibility filtering can never exclude (it carries [`NO_NODE`]).
             let all = (0..tri_count as u32).collect();
@@ -199,7 +199,7 @@ impl SceneBvh {
         let mut by_node: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
         for t in 0..tri_count as u32 {
             by_node
-                .entry(model.tri_node[t as usize])
+                .entry(model.triangles.node[t as usize])
                 .or_default()
                 .push(t);
         }
@@ -504,7 +504,7 @@ mod tests {
     /// blocking part must drop the occlusion — and never test it.
     #[test]
     fn scene_bvh_skips_hidden_parts() {
-        use crate::Vertex;
+        use crate::{TriangleData, Vertex};
         use glam::{Vec2, Vec4};
 
         let positions = [
@@ -529,7 +529,10 @@ mod tests {
                 })
                 .collect(),
             indices: vec![0, 1, 2, 3, 4, 5],
-            tri_node: vec![0, 1],
+            triangles: TriangleData {
+                node: vec![0, 1],
+                ..Default::default()
+            },
             ..Default::default()
         };
         let bvh = SceneBvh::build(&model);

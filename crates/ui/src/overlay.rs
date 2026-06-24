@@ -121,10 +121,7 @@ pub fn draw_overlay(
         // material-edit intents for `app` to apply (invariant 2).
         let side = draw_side_panels(ctx, state, model);
         output.material_edit = side.inspector.material_edit;
-        output.texture_import = side.inspector.import;
-        output.texture_assign = side.inspector.assign;
-        output.texture_clear = side.inspector.clear;
-        output.texture_remove = side.inspector.remove;
+        output.texture = side.inspector.texture;
 
         // Bounding-box dimension labels sit on the viewport (under the chrome).
         // The measured box is resolved here (cached for the "visible only" scan)

@@ -107,11 +107,29 @@ pub struct TexturePoolEntry {
 
 /// The Inspector asked to bind a pooled texture to a material slot: `app` looks
 /// the decoded image up in its pool and assigns it (auto-detecting the channel
-/// routing). The matching "unbind" is [`UiOutput::texture_clear`].
+/// routing). The matching "unbind" is [`TextureIntent::Clear`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextureAssign {
     pub slot: TextureSlotRef,
     pub path: PathBuf,
+}
+
+/// A texture-pool command the Inspector emits (at most one per frame). `app` is
+/// the sole applier (invariant 2): all decode / pool / disk-watch work lives
+/// there. New texture intents (e.g. the Phase 6 Tex-viewport picks) add a variant
+/// here rather than another `Option` field on [`UiOutput`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TextureIntent {
+    /// "Add textures…" was clicked: open the image picker + import into the pool.
+    Import,
+    /// A pooled texture was chosen in a property's dropdown: bind it to the slot.
+    Assign(TextureAssign),
+    /// A property's dropdown was set back to "select texture": revert that slot to
+    /// the shader's neutral fallback.
+    Clear(TextureSlotRef),
+    /// A pooled texture's remove (✕) was clicked: drop it from the pool and unbind
+    /// every material slot that referenced it.
+    Remove(PathBuf),
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -121,18 +139,9 @@ pub struct UiOutput {
     /// metallic / roughness / emissive / channel routing / alpha). `app` applies
     /// it to the renderer's editable material table.
     pub material_edit: Option<MaterialEdit>,
-    /// The Inspector's "Add textures…" was clicked (Texture files section): `app`
-    /// opens the image picker and imports the chosen files into the scene pool.
-    pub texture_import: bool,
-    /// A pooled texture was chosen in a property's texture dropdown: `app` binds
-    /// the decoded image to the slot.
-    pub texture_assign: Option<TextureAssign>,
-    /// A property's texture dropdown was set back to "select texture": `app`
-    /// reverts that slot to the shader's neutral fallback.
-    pub texture_clear: Option<TextureSlotRef>,
-    /// A pooled texture's remove (✕) was clicked: `app` drops it from the pool and
-    /// unbinds every material slot that referenced it.
-    pub texture_remove: Option<PathBuf>,
+    /// A texture-pool command emitted by the Inspector this frame (import / assign
+    /// / clear / remove), or `None`. One intent at a time — `app` applies it.
+    pub texture: Option<TextureIntent>,
 }
 
 #[derive(Debug, Clone)]

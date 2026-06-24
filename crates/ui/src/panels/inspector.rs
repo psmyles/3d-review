@@ -12,7 +12,7 @@
 //! (invariant 2); the Inspector only emits import / assign / clear / remove
 //! intents and the live [`MaterialEdit`]s for the overlay to forward.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use review_model::ModelData;
@@ -21,7 +21,7 @@ use review_render::{
     RoughnessWorkflow, Selection, TextureSlot,
 };
 
-use crate::state::{TextureAssign, TexturePoolEntry, TextureSlotRef, UiState};
+use crate::state::{TextureAssign, TextureIntent, TexturePoolEntry, TextureSlotRef, UiState};
 use crate::theme::size;
 use crate::widgets::{labeled_color_button, labeled_combo, labeled_slider_with_value, panel_grid};
 
@@ -30,14 +30,9 @@ use crate::widgets::{labeled_color_button, labeled_combo, labeled_slider_with_va
 #[derive(Debug, Clone, Default)]
 pub(crate) struct InspectorOutput {
     pub material_edit: Option<MaterialEdit>,
-    /// A pooled texture was chosen in a property's texture dropdown.
-    pub assign: Option<TextureAssign>,
-    /// A property's texture dropdown was set back to "select texture".
-    pub clear: Option<TextureSlotRef>,
-    /// The "Add textures…" button was clicked (open the import picker).
-    pub import: bool,
-    /// A pooled texture's remove (✕) was clicked.
-    pub remove: Option<PathBuf>,
+    /// A texture-pool command emitted this frame (import / assign / clear /
+    /// remove), forwarded by the overlay into [`crate::state::UiOutput`].
+    pub texture: Option<TextureIntent>,
 }
 
 pub(crate) fn body(ui: &mut egui::Ui, state: &UiState, model: &ModelData) -> InspectorOutput {
@@ -262,7 +257,7 @@ fn texture_mapping_row(
                     .clicked()
                     && binding.is_some()
                 {
-                    out.clear = Some(slot_ref);
+                    out.texture = Some(TextureIntent::Clear(slot_ref));
                 }
                 for entry in pool {
                     let is_selected = binding.is_some_and(|binding| binding.path == entry.path);
@@ -271,10 +266,10 @@ fn texture_mapping_row(
                         .clicked()
                         && !is_selected
                     {
-                        out.assign = Some(TextureAssign {
+                        out.texture = Some(TextureIntent::Assign(TextureAssign {
                             slot: slot_ref,
                             path: entry.path.clone(),
-                        });
+                        }));
                     }
                 }
             });
@@ -332,7 +327,7 @@ fn texture_files_section(ui: &mut egui::Ui, pool: &[TexturePoolEntry], out: &mut
 
     ui.add_space(ui.spacing().item_spacing.y);
     if ui.button("Add textures\u{2026}").clicked() {
-        out.import = true;
+        out.texture = Some(TextureIntent::Import);
     }
     ui.weak("Drop texture files here to add");
 }
@@ -370,7 +365,7 @@ fn texture_file_row(ui: &mut egui::Ui, entry: &TexturePoolEntry, out: &mut Inspe
             .on_hover_text("Remove texture")
             .clicked()
         {
-            out.remove = Some(entry.path.clone());
+            out.texture = Some(TextureIntent::Remove(entry.path.clone()));
         }
     });
 }
@@ -463,7 +458,8 @@ fn node_inspector(ui: &mut egui::Ui, model: &ModelData, index: usize) {
     // Own triangles (this node's mesh), not the whole subtree — a quick audit
     // figure that matches what selecting just this node would isolate.
     let triangle_count = model
-        .tri_node
+        .triangles
+        .node
         .iter()
         .filter(|&&owner| owner as usize == index)
         .count();
