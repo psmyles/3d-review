@@ -124,13 +124,26 @@ pub fn draw_overlay(
         output.material_edit = side.inspector.material_edit;
         output.texture = side.inspector.texture;
 
+        // The free viewport: the screen minus the chrome bands (toolbar top,
+        // status bar bottom) and the open side panels (left/right). Floating
+        // chrome — the dimension labels and the option windows — is kept inside
+        // this rect so it never overlaps the toolbar icons or a side panel.
+        let screen = ctx.screen_rect();
+        let viewport = egui::Rect::from_min_max(
+            egui::pos2(screen.left() + side.left_inset, screen.top() + toolbar_height),
+            egui::pos2(
+                screen.right() - side.right_inset,
+                screen.bottom() - status_bar_height,
+            ),
+        );
+
         // Bounding-box dimension labels sit on the viewport (under the chrome).
         // The measured box is resolved here (cached for the "visible only" scan)
         // so the overlay never redoes the O(triangle) bounds walk per frame.
         let bounds = state.measured_bounds(model);
-        dimensions::draw_dimension_labels(ctx, state, camera, model, bvh, bounds);
+        dimensions::draw_dimension_labels(ctx, state, camera, model, bvh, bounds, viewport);
 
-        draw_option_panels(ctx, state, toolbar_height);
+        draw_option_panels(ctx, state, viewport);
 
         if state.show_axis_gizmo {
             let gizmo_response = egui::Area::new(egui::Id::new("axis_gizmo"))
@@ -184,22 +197,23 @@ pub fn draw_startup_fade(ctx: &egui::Context, opacity: f32) {
 
 /// Draw every open tool option panel as its own native `egui::Window`
 /// (resizable, collapsible, closable, drop-shadowed — egui owns each window's
-/// position/size/collapsed state in memory, so they auto-clamp to the screen and
-/// several can be open at once). A window's title-bar X clears it from
-/// [`UiState::panels_open`].
-fn draw_option_panels(ctx: &egui::Context, state: &mut UiState, toolbar_height: f32) {
+/// position/size/collapsed state in memory, constrained to `viewport` so they
+/// stay inside the free scene area, and several can be open at once). A window's
+/// title-bar X clears it from [`UiState::panels_open`].
+fn draw_option_panels(ctx: &egui::Context, state: &mut UiState, viewport: egui::Rect) {
     for (slot, panel) in OptionPanel::ALL.into_iter().enumerate() {
         if !state.panels_open.is_open(panel) {
             continue;
         }
-        // Cascade fresh windows down-right from just under the toolbar so several
+        // Cascade fresh windows down-right from the viewport's top-left so several
         // opened at once don't land exactly atop each other. egui only honors this
         // the first time a given window id appears; afterwards the user's dragged
         // position (kept in egui memory) wins.
         let step = size::PANEL_CASCADE_STEP * slot as f32;
+        let margin = theme::px(ctx, size::OVERLAY_MARGIN);
         let default_pos = egui::pos2(
-            theme::px(ctx, size::OVERLAY_MARGIN) + step,
-            toolbar_height + theme::px(ctx, size::OVERLAY_MARGIN) + step,
+            viewport.left() + margin + step,
+            viewport.top() + margin + step,
         );
         // egui's `.open(&mut bool)` paints the title-bar X and flips this false
         // when it's clicked; mirror that back into the open-set after the window.
@@ -213,6 +227,9 @@ fn draw_option_panels(ctx: &egui::Context, state: &mut UiState, toolbar_height: 
             .resizable(false)
             .collapsible(true)
             .default_pos(default_pos)
+            // Keep the window inside the free viewport so it can never be dragged
+            // over the toolbar, the status bar or a side panel.
+            .constrain_to(viewport)
             // Persistent chrome, not a transient popup: skip egui's fade so an
             // always-present window never spins the on-demand redraw loop
             // (invariant 6).

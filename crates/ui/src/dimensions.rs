@@ -42,6 +42,7 @@ pub(crate) fn draw_dimension_labels(
     model: &ModelData,
     bvh: Option<&SceneBvh>,
     bounds: Option<Bounds>,
+    viewport: egui::Rect,
 ) {
     if !state.debug.show_bounding_box {
         return;
@@ -100,7 +101,7 @@ pub(crate) fn draw_dimension_labels(
             continue;
         }
         if let Some(pos) = project(view_projection, midpoint, screen) {
-            draw_label(&painter, ctx, pos, &labels[axis], axis_colors[axis]);
+            draw_label(&painter, ctx, pos, &labels[axis], axis_colors[axis], viewport);
         }
     }
 }
@@ -147,13 +148,17 @@ fn project(view_projection: Mat4, world: Vec3, screen: egui::Rect) -> Option<egu
 }
 
 /// Paint one dimension label: a rounded pill centred on `center` with the axis
-/// length, the text tinted by the axis it measures (`text_color`).
+/// length, the text tinted by the axis it measures (`text_color`). The pill is
+/// nudged so it stays fully inside `viewport`, so a label whose edge midpoint
+/// projects near the screen edge never spills over the toolbar / status bar /
+/// side panels.
 fn draw_label(
     painter: &egui::Painter,
     ctx: &egui::Context,
     center: egui::Pos2,
     text: &str,
     text_color: egui::Color32,
+    viewport: egui::Rect,
 ) {
     let font_id = egui::FontId::monospace(theme::px(ctx, font::DIMENSION_LABEL));
     let galley = painter.layout_no_wrap(text.to_owned(), font_id, text_color);
@@ -161,13 +166,34 @@ fn draw_label(
         theme::px(ctx, size::DIMENSION_LABEL_PAD_X),
         theme::px(ctx, size::DIMENSION_LABEL_PAD_Y),
     );
-    let rect = egui::Rect::from_center_size(center, galley.size() + pad * 2.0);
+    let rect = clamp_to(
+        egui::Rect::from_center_size(center, galley.size() + pad * 2.0),
+        viewport,
+    );
     painter.rect_filled(
         rect,
         theme::px(ctx, size::DIMENSION_LABEL_CORNER_RADIUS),
         color::DIMENSION_LABEL_BG,
     );
     painter.galley(rect.min + pad, galley, text_color);
+}
+
+/// Translate `rect` by the smallest offset that brings it fully inside `bounds`
+/// (no scaling). When `rect` is larger than `bounds` on an axis it is pinned to
+/// that side's min so the value stays readable rather than centre-clipped.
+fn clamp_to(rect: egui::Rect, bounds: egui::Rect) -> egui::Rect {
+    let mut offset = egui::Vec2::ZERO;
+    if rect.left() < bounds.left() {
+        offset.x = bounds.left() - rect.left();
+    } else if rect.right() > bounds.right() {
+        offset.x = (bounds.right() - rect.right()).min(0.0);
+    }
+    if rect.top() < bounds.top() {
+        offset.y = bounds.top() - rect.top();
+    } else if rect.bottom() > bounds.bottom() {
+        offset.y = (bounds.bottom() - rect.bottom()).min(0.0);
+    }
+    rect.translate(offset)
 }
 
 /// Format an axis length (world meters) for display. Shows the file's authored
