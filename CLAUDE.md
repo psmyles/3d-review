@@ -148,10 +148,13 @@ crates/
             dockable, resizable `egui::SidePanel`s; the toolbar + status bar are
             `egui::TopBottomPanel` bands (interiors still hand-laid via
             `scope_builder` — the one remaining rework step). The 3D/UV scene
-            paints on the background layer behind the chrome. Plus axis gizmo,
+            paints on the background layer behind the chrome; the Tex viewport
+            (`texture_view.rs`) is a pure-egui 2D image viewer painted over that
+            same background. Plus axis gizmo,
             stats overlay, bounding-box dimension labels, startup help overlay;
             emits UiOutput intents. Thin root re-exports; modules: theme/state/
-            assets/widgets/overlay/toolbar/status_bar/stats/gizmo/dimensions/help
+            assets/widgets/overlay/toolbar/status_bar/stats/texture_view/gizmo/
+            dimensions/help
             + panels/ (mod.rs = width-pinning dispatch; one file per tool:
             anti_aliasing, bloom, bounding_box, environment, normals, ssao,
             tonemap, uv_checker, vertex_colors, wireframe; plus inspector +
@@ -211,7 +214,8 @@ workspace still builds and FBX import returns a clear error.
 - Shading is one inline WGSL scene shader covering shaded / unlit / wireframe /
   uv-checker / vertex-color paths; tone mapping + sRGB encoding live in the post
   shader, and the model wireframe is a depth-tested line-list draw in the scene
-  pass. `3D` and `UV` viewports are both implemented; `Tex` is still a placeholder.
+  pass. `3D`, `UV` and `Tex` viewports are all implemented (the `Tex` 2D image
+  viewer is pure-egui — it registers no scene callback).
 - Crate boundaries are load-bearing (invariants 2, 9, 10) — keep them.
 
 ## 5. Current state
@@ -223,7 +227,10 @@ axes; shaded / unlit / wireframe / shaded+wireframe, source-color / UV-checker /
 vertex-color materials, plus bounding-box, face- and vertex-normal debug
 overlays; orthographic/perspective toggle; animated axis gizmo (orbit +
 snap-to-axis); a 2D UV viewport (independent pan/zoom, UV channel picker, wire
-layout, shaded fill, per-island coloring). Windows packaging (exe icon/resource
+layout, shaded fill, per-island coloring); a 2D Tex viewport (pure-egui image
+viewer over the scene texture pool: texture picker, RGB/R/G/B/A channel isolation
+— the `A` segment auto-hides for opaque images — pan/zoom, black/white/grey/checker
+background fill, and a real-values stats panel). Windows packaging (exe icon/resource
 metadata + Inno Setup installer) is present.
 
 The `ui` crate was migrated off the old hand-rolled `egui::Area` + pixel-rect
@@ -277,7 +284,7 @@ scene pass via `line_pipeline`, so it depth-tests against the mesh (Reversed-Z
 `GreaterEqual`, no depth write) and edges on hidden faces are occluded, while the
 scene MSAA antialiases it (the trade-off is fixed 1px hardware line width).
 
-Known gaps: the `Tex` viewport pane, compressed textures (KTX2/DDS), in-app
+Known gaps: compressed textures (KTX2/DDS), in-app
 load-error/warning display, GPU-buffer visualization, and additional import
 formats (glTF/OBJ) are post-MVP (`TODO.md`). Tests exist (model / import / render
 unit tests + the `scene_shader_validates` naga check, run headless in CI); GPU

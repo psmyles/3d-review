@@ -168,6 +168,7 @@ impl SceneResources {
         let scene_sample_count = AntiAliasing::default().msaa.sample_count();
         let (
             mesh_pipeline,
+            mesh_pipeline_double_sided,
             line_pipeline,
             uv_fill_pipeline,
             selection_fill_pipeline,
@@ -270,6 +271,7 @@ impl SceneResources {
             model_revision: u64::MAX,
             mesh_uv_channel: 0,
             mesh_pipeline,
+            mesh_pipeline_double_sided,
             line_pipeline,
             selection_fill_pipeline,
             ssao_gbuffer_pipeline,
@@ -330,12 +332,14 @@ impl SceneResources {
         if self.scene_sample_count != sample_count {
             let (
                 mesh_pipeline,
+                mesh_pipeline_double_sided,
                 line_pipeline,
                 uv_fill_pipeline,
                 selection_fill_pipeline,
                 skybox_pipeline,
             ) = build_scene_pipelines(device, &self.pipeline_layout, &self.shader, sample_count);
             self.mesh_pipeline = mesh_pipeline;
+            self.mesh_pipeline_double_sided = mesh_pipeline_double_sided;
             self.line_pipeline = line_pipeline;
             self.uv_fill_pipeline = uv_fill_pipeline;
             self.selection_fill_pipeline = selection_fill_pipeline;

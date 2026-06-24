@@ -67,6 +67,9 @@ impl App {
                 self.texture_cache.get(path).map(|image| TexturePoolEntry {
                     path: path.clone(),
                     image: Arc::clone(image),
+                    // On-disk size for the Tex viewport's stats panel; 0 (shown as
+                    // "—") when the file can't be stat'd.
+                    file_size: std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0),
                 })
             })
             .collect();

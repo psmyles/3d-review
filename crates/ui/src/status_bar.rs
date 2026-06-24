@@ -5,9 +5,9 @@
 use crate::assets::{
     ICON_ANTI_ALIASING, ICON_AO, ICON_BLOOM, ICON_IBL, ICON_INFO, ICON_TONEMAPPER,
 };
-use crate::state::{OptionPanel, UiState, WorkspaceMode};
+use crate::state::{OptionPanel, TextureBackground, UiState, WorkspaceMode};
 use crate::theme::{self, color, size};
-use crate::widgets::{icon_toggle_button, toolbar_group_shell};
+use crate::widgets::{icon_toggle_button, segment_button, toolbar_group_shell};
 
 /// Background frame for the status bar: matches the toolbar fill with a top
 /// border. Zero inner margin — content is placed by rect math in [`draw`].
@@ -28,11 +28,17 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
         .exact_height(status_bar_height)
         .frame(status_bar_frame())
         .show(ctx, |ui| {
-            // The Model Stats overlay only renders in the 3D workspace, so its
-            // toggle is dead weight elsewhere — drop the button in UV / Texture
-            // mode and leave a clean status bar.
-            if state.mode != WorkspaceMode::ThreeD {
-                return;
+            // The UV workspace keeps a clean status bar (its tools are in the
+            // toolbar). The 3D workspace shows the model-stats toggle + the
+            // rendering-quality group; the Texture workspace shows the texture-stats
+            // toggle + the background-fill group.
+            match state.mode {
+                WorkspaceMode::Uv => return,
+                WorkspaceMode::ThreeD => {}
+                WorkspaceMode::Texture => {
+                    draw_texture_status_bar(ui, ctx, state, group_height);
+                    return;
+                }
             }
 
             // Inset the group equally on all sides: the vertical gap is fixed by
@@ -176,4 +182,89 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                 },
             );
         });
+}
+
+/// The Texture-workspace status bar: the texture-stats toggle inset on the left
+/// (the Tex viewport's analogue of the model-stats info button) and the
+/// background-fill radio group (Black / White / Grey / Checker) mirrored to the
+/// right. Laid out with the same edge inset as the 3D bar.
+fn draw_texture_status_bar(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    state: &mut UiState,
+    group_height: f32,
+) {
+    let single_icon_group_width = theme::px(ctx, size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH);
+    let bg_group_width = theme::px(ctx, size::TEXTURE_BG_GROUP_WIDTH);
+    let segment_w = theme::px(ctx, size::TEXTURE_BG_SEGMENT_WIDTH);
+
+    let bar_rect = ui.max_rect();
+    let edge_inset = (bar_rect.height() - group_height) * 0.5;
+
+    // Texture-stats toggle — single-icon group inset equally on the left.
+    let left_rect = egui::Rect::from_min_size(
+        egui::pos2(
+            bar_rect.left() + edge_inset,
+            bar_rect.center().y - group_height * 0.5,
+        ),
+        egui::vec2(single_icon_group_width, group_height),
+    );
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(left_rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        |ui| {
+            ui.set_height(group_height);
+            toolbar_group_shell(ui, ctx, single_icon_group_width, |ui| {
+                if icon_toggle_button(
+                    ui,
+                    ctx,
+                    &ICON_INFO,
+                    state.texture_view.show_stats,
+                    "Texture Info",
+                )
+                .clicked()
+                {
+                    state.texture_view.show_stats = !state.texture_view.show_stats;
+                }
+            });
+        },
+    );
+
+    // Background-fill radio group — mirrored to the right edge.
+    let right_rect = egui::Rect::from_min_size(
+        egui::pos2(
+            bar_rect.right() - edge_inset - bg_group_width,
+            bar_rect.center().y - group_height * 0.5,
+        ),
+        egui::vec2(bg_group_width, group_height),
+    );
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(right_rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        |ui| {
+            ui.set_height(group_height);
+            toolbar_group_shell(ui, ctx, bg_group_width, |ui| {
+                for background in TextureBackground::ALL {
+                    let selected = state.texture_view.background == background;
+                    let response = segment_button(ui, ctx, background.label(), selected, segment_w)
+                        .on_hover_text(background_tooltip(background));
+                    if response.clicked() {
+                        state.texture_view.background = background;
+                    }
+                }
+            });
+        },
+    );
+}
+
+/// Hover tooltip spelling out a background-fill segment's single-letter label.
+fn background_tooltip(background: TextureBackground) -> &'static str {
+    match background {
+        TextureBackground::Black => "Black background",
+        TextureBackground::White => "White background",
+        TextureBackground::Grey => "Grey background",
+        TextureBackground::Checker => "Checker background",
+    }
 }

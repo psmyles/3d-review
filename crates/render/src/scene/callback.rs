@@ -471,7 +471,14 @@ impl SceneCallback {
             && !matches!(self.debug_options.shading_mode, ShadingMode::Wireframe)
         {
             render_pass.set_bind_group(0, &resources.uniform_bind_group, &[]);
-            render_pass.set_pipeline(&resources.mesh_pipeline);
+            // Backface Rendering off (default) culls back faces; on draws the mesh
+            // double-sided. The two pipelines are prebuilt, so this is a pick.
+            let mesh_pipeline = if self.debug_options.render_backfaces {
+                &resources.mesh_pipeline_double_sided
+            } else {
+                &resources.mesh_pipeline
+            };
+            render_pass.set_pipeline(mesh_pipeline);
             render_pass.set_vertex_buffer(0, resources.mesh_vertex_buffer.slice(..));
             let (index_buffer, ranges) = if solo {
                 (

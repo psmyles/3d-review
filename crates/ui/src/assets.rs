@@ -31,6 +31,12 @@ pub(crate) const ICON_SHADING_SHADED: AppIcon = AppIcon {
     id: "icon_shading_shaded",
     png_bytes: include_bytes!("../../../assets/icons/icon_shading_shaded.png"),
 };
+/// "Backface Rendering" — independent toggle: when on, back faces are drawn
+/// (double-sided); when off (default) they are culled.
+pub(crate) const ICON_BACKFACE: AppIcon = AppIcon {
+    id: "icon_backface",
+    png_bytes: include_bytes!("../../../assets/icons/icon_backface.png"),
+};
 /// "Source Material" — show the model's imported material (default).
 pub(crate) const ICON_SHADING_TEXTURE: AppIcon = AppIcon {
     id: "icon_shading_texture",

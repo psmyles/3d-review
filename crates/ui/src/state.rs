@@ -96,13 +96,154 @@ pub struct TextureSlotRef {
 
 /// One imported texture in the scene-wide pool, surfaced to the Inspector so it
 /// can list the files (with a real thumbnail built from `image`) and offer them
-/// in each material property's texture dropdown. A plain app→UI snapshot value
-/// (invariant 2): `app` owns the decode + the pool, the UI only reads this. The
-/// `Arc` makes carrying it a refcount bump, not a pixel copy.
+/// in each material property's texture dropdown — and to the Tex viewport for the
+/// full-image view + its stats panel. A plain app→UI snapshot value (invariant 2):
+/// `app` owns the decode + the pool, the UI only reads this. The `Arc` makes
+/// carrying it a refcount bump, not a pixel copy.
 #[derive(Debug, Clone)]
 pub struct TexturePoolEntry {
     pub path: PathBuf,
     pub image: Arc<DecodedImage>,
+    /// Size of the source file on disk in bytes, measured by `app` when it builds
+    /// the pool (0 if the file could not be stat'd). Shown in the Tex viewport's
+    /// stats panel.
+    pub file_size: u64,
+}
+
+impl TexturePoolEntry {
+    /// Display name of this texture (its file name).
+    pub fn name(&self) -> String {
+        self.path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("<texture>")
+            .to_owned()
+    }
+
+    /// Uppercased source-file format label from the extension (e.g. `PNG`, `TGA`),
+    /// or `—` when the path carries none. Shown in the Tex viewport's stats panel.
+    pub fn format_label(&self) -> String {
+        self.path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_uppercase())
+            .unwrap_or_else(|| "—".to_owned())
+    }
+}
+
+/// Which channel(s) of the viewed texture the Tex viewport displays. `Rgb` shows
+/// the full color (transparency composites over the background fill); a single
+/// channel shows that channel replicated as opaque greyscale.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TextureChannelView {
+    #[default]
+    Rgb,
+    R,
+    G,
+    B,
+    A,
+}
+
+impl TextureChannelView {
+    /// In display order (the toolbar radio group), RGB first.
+    pub const ALL: [TextureChannelView; 5] = [
+        TextureChannelView::Rgb,
+        TextureChannelView::R,
+        TextureChannelView::G,
+        TextureChannelView::B,
+        TextureChannelView::A,
+    ];
+
+    /// Toolbar segment label.
+    pub fn label(self) -> &'static str {
+        match self {
+            TextureChannelView::Rgb => "RGB",
+            TextureChannelView::R => "R",
+            TextureChannelView::G => "G",
+            TextureChannelView::B => "B",
+            TextureChannelView::A => "A",
+        }
+    }
+
+    /// Byte offset of a single channel within an RGBA8 pixel, or `None` for the
+    /// full-RGB view.
+    pub fn channel_offset(self) -> Option<usize> {
+        match self {
+            TextureChannelView::Rgb => None,
+            TextureChannelView::R => Some(0),
+            TextureChannelView::G => Some(1),
+            TextureChannelView::B => Some(2),
+            TextureChannelView::A => Some(3),
+        }
+    }
+}
+
+/// The background fill drawn behind the viewed texture in the Tex viewport, so an
+/// image's transparency reads against a known backdrop.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TextureBackground {
+    #[default]
+    Black,
+    White,
+    Grey,
+    Checker,
+}
+
+impl TextureBackground {
+    /// In display order (the status-bar radio group).
+    pub const ALL: [TextureBackground; 4] = [
+        TextureBackground::Black,
+        TextureBackground::White,
+        TextureBackground::Grey,
+        TextureBackground::Checker,
+    ];
+
+    /// Single-letter status-bar segment label (Black / White / Grey / Checker).
+    pub fn label(self) -> &'static str {
+        match self {
+            TextureBackground::Black => "B",
+            TextureBackground::White => "W",
+            TextureBackground::Grey => "G",
+            TextureBackground::Checker => "C",
+        }
+    }
+}
+
+/// State backing the Tex viewport: which pooled texture is shown, the channel
+/// isolation + background fill, the floating stats toggle, and the pan/zoom view.
+/// All plain UI values (invariant 2) — the pixels live in [`UiState::texture_pool`].
+#[derive(Debug, Clone)]
+pub struct TextureViewState {
+    /// Index into [`UiState::texture_pool`] of the viewed texture. Clamped to the
+    /// pool each frame; ignored when the pool is empty.
+    pub selected: usize,
+    pub channel: TextureChannelView,
+    pub background: TextureBackground,
+    /// Whether the texture stats panel (Format / Dimension / Channels / Bit depth /
+    /// File size) is shown — the Tex viewport's analogue of the model-stats overlay.
+    pub show_stats: bool,
+    /// Screen-point offset of the image center from the viewport center (pan).
+    pub pan: egui::Vec2,
+    /// Image-pixels → screen-points scale (zoom). 1.0 = one texel per point.
+    pub zoom: f32,
+    /// Identity (decoded-image `Arc` pointer) the current pan/zoom was fit for; a
+    /// mismatch re-fits the image to the viewport (on first show / texture switch /
+    /// disk reload). `None` forces a fit on the next frame.
+    pub fitted_key: Option<usize>,
+}
+
+impl Default for TextureViewState {
+    fn default() -> Self {
+        Self {
+            selected: 0,
+            channel: TextureChannelView::default(),
+            background: TextureBackground::default(),
+            show_stats: true,
+            pan: egui::Vec2::ZERO,
+            zoom: 1.0,
+            fitted_key: None,
+        }
+    }
 }
 
 /// The Inspector asked to bind a pooled texture to a material slot: `app` looks
@@ -376,6 +517,10 @@ pub struct UiState {
     /// unique per-island colors. Selected by the UV-shading toolbar group (shown
     /// only in UV mode).
     pub uv_shading_mode: UvShadingMode,
+    /// The Tex viewport's state: which pooled texture is shown plus its channel /
+    /// background / pan-zoom view. Read by the texture-view chrome (toolbar channel
+    /// group, status-bar background group) and the central image painter.
+    pub texture_view: TextureViewState,
     pub wireframe: WireframePanelState,
     pub bounding_box: BoundingBoxPanelState,
     pub face_normals: NormalPanelState,
@@ -500,6 +645,7 @@ impl Default for UiState {
             uv_sets: Vec::new(),
             uv_view_channel: 0,
             uv_shading_mode: UvShadingMode::default(),
+            texture_view: TextureViewState::default(),
             wireframe: WireframePanelState::default(),
             bounding_box: BoundingBoxPanelState::default(),
             face_normals: NormalPanelState {

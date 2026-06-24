@@ -59,6 +59,10 @@ input/file path
   45 degree WASD orbit steps, and clickable/dragable axis gizmo.
 - 2D UV viewport with independent pan/zoom, UV channel picker, wire layout,
   shaded fill, and per-island coloring.
+- 2D Tex viewport (pure-egui image viewer over the scene texture pool): texture
+  picker, RGB/R/G/B/A channel isolation (the `A` segment auto-hides for opaque
+  images), pan/zoom, black/white/grey/checker background fill, and a real-values
+  stats panel (format, dimension, channels, bit depth, on-disk size).
 - Source material color, UV checker material, and vertex-color inspection modes.
 - Shaded, unlit, wireframe-only, and shaded-plus-wireframe modes.
 - Grid, bounding box, face-normal lines, and vertex-normal lines.
@@ -121,8 +125,12 @@ input/file path
   logged with `tracing::warn!`, but the viewer does not show an in-app error.
   `ModelWarning` exists in the data model, but warning generation/display is not
   active yet.
-- Finish or hide Texture mode. The toolbar exposes `Tex`, but `draw_viewport_scene`
-  returns immediately in that mode and no texture viewport is implemented.
+- Texture mode is implemented: the `Tex` tab is a pure-egui 2D image viewer over
+  the scene texture pool (`ui/src/texture_view.rs`) — texture picker, RGB/R/G/B/A
+  channel isolation (the `A` segment auto-hides for opaque images), pan/zoom,
+  black/white/grey/checker background fill, and a real-values stats panel. It
+  registers no scene callback, so `draw_viewport_scene` still returns early in
+  that mode. Future work: DDS/KTX2 (compressed) source support and per-mip view.
 - Decide what `LoadOptions::triangulate` means. It is passed through Rust/C, but
   the C bridge currently always triangulates render indices and ignores the
   option value.
@@ -146,7 +154,7 @@ input/file path
 | No automated tests | Renderer and importer changes can regress silently. | Add focused unit tests and fixture-based importer tests first. |
 | Minimal public docs | New contributors/users cannot build or understand the app from `README.md`. | Expand README and link these audit docs. |
 | Partial HDR color pipeline | Bloom/SSAO are useful, but final color is still tone-mapped in the scene shader before post. | Migrate to a fully linear HDR scene color and move tone mapping to post. |
-| Placeholder Texture workspace | Users can select a mode that intentionally draws nothing. | Implement texture inspection or hide the mode until ready. |
+| Texture viewer source-format coverage | The Tex viewer decodes PNG/JPG/TGA/etc. but not compressed (DDS/KTX2) game textures. | Add compressed-format decode so packed game assets can be inspected too. |
 | Import errors are invisible | A bad file appears to do nothing unless logs are visible. | Add status/toast/modal error reporting. |
 | GPU memory pressure at high MSAA | Three HDR MRTs plus resolves/depth scale quickly. | Show memory-aware limits or defaults, and profile common resolutions. |
 | IBL precompute submission burst | Environment changes submit many small GPU passes. | Batch precompute passes into fewer encoders/submissions if stalls appear. |
@@ -158,7 +166,7 @@ input/file path
 2. Add a small test suite around model helpers, camera math, UV island logic, and
    importer fixture loading.
 3. Add in-app load failure and warning display.
-4. Decide whether Texture mode stays visible before texture inspection exists.
+4. Extend the Tex viewer to compressed (DDS/KTX2) source textures.
 5. Start the full linear-HDR migration: scene color stays linear, tone mapping
    and output encoding move fully into post.
 6. Introduce lightweight renderer diagnostics: adapter name, active target size,

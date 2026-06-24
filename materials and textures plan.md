@@ -301,22 +301,34 @@ First user-visible feature; must work before textures.
   precedence. `cargo clippy` clean. **Do not start Phase 6 until the user confirms
   embedded textures load with no external files.**
 
-## Phase 6 — Finish the `Tex` viewport tab
+## Phase 6 — Finish the `Tex` viewport tab — **IMPLEMENTED**
 
-`WorkspaceMode::Texture` currently renders nothing
-([overlay.rs:47](crates/ui/src/overlay.rs#L47)).
-- **render:** `SceneCallback::new_tex(...)` (parallel to `new_uv`) drawing a
-  fullscreen triangle sampling the selected material slot's existing GPU view, with
-  a `channel_mask` uniform for R/G/B/A/all isolation (alpha shown greyscale).
-- **UI:** replace the `Texture => return` stub; add selected-texture + channel-mask
-  state; a Texture-mode toolbar to pick slot + toggle channels; an overlay showing
-  resolution/format/mips (theme tokens).
+`WorkspaceMode::Texture` now shows a 2D image viewer over the scene texture pool.
+**Built pure-egui rather than as a scene callback** (the plan's original
+`new_tex(...)` GPU approach): a scene callback would round-trip display-ready sRGB
+texels through the linear-HDR / tone-map / MRT pipeline and corrupt them, so
+Texture mode registers no callback and the image is painted directly in egui —
+shown exactly as decoded. The pixels still come from the app-owned texture pool
+(invariant 2); the UI owns only the view parameters.
+- **render/data:** no `new_tex`; instead `DecodedImage` carries `source_channels`
+  + `source_bit_depth` (captured at the single decode funnel) and `app` stamps each
+  `TexturePoolEntry` with the on-disk `file_size`, for the real-values stats panel.
+- **UI (`ui/src/texture_view.rs`):** replaces the `Texture => return` stub.
+  `TextureViewState` holds the selected pool index, channel, background fill,
+  stats toggle and pan/zoom. The toolbar's left cluster gains an RGB/R/G/B/A
+  channel group (the `A` segment auto-hides when the source has no alpha, and the
+  group shrinks to fit); the right cluster gains a texture picker. The status bar's
+  Tex layout gains a stats toggle (left) and a B/W/G/C background group (right,
+  default **Black**). Channel isolation replicates a single channel as opaque
+  greyscale; RGB keeps colour + alpha composited over the fill. The stats panel
+  (format / dimension / channels / bit depth / on-disk size) mirrors the model-stats
+  overlay and shows only real measured values (invariant 5).
 - **✋ User-verifiable checkpoint (gate to Phase 7):** the user switches to the
-  `Tex` tab and **sees the selected material slot's map full-screen**, toggles
-  **R/G/B/A isolation** (alpha shown greyscale), and reads a correct
-  **resolution/format/mips** overlay. `cargo clippy` clean. **Do not start Phase 7
-  until the user confirms the Tex viewer + channel isolation + readout are
-  correct.**
+  `Tex` tab and sees the selected texture, toggles **R/G/B/A isolation** (alpha
+  greyscale; `A` hidden for opaque images), pans/zooms, cycles the background fill,
+  and reads a correct stats panel. `cargo clippy` clean. **Hand-verify on a real
+  GPU before starting Phase 7** (per the phase-gating discipline; the checker
+  `Repeat` sampler + nearest/linear magnify can't be validated headlessly).
 
 ## Phase 7 — Opacity polish: alpha draw order (last, honestly approximate)
 

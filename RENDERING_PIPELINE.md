@@ -182,8 +182,14 @@ UV mode reuses the same callback/resource system but switches to `SceneCallback:
 - Filled UV triangles can be solid or per-island colored.
 - Bloom and SSAO are disabled.
 
-Texture mode currently returns before registering a scene callback, so it draws
-no viewport.
+Texture mode registers no scene callback by design: the `Tex` tab is a pure-egui
+2D image viewer (`ui/src/texture_view.rs`) painted on the background layer behind
+the chrome. The selected pooled texture is uploaded as an egui texture with the
+chosen channel isolated on the CPU (RGB keeps color+alpha; a single channel is
+replicated as opaque greyscale) and painted with interactive pan/zoom over a
+black/white/grey/checker background fill. Keeping it out of the wgpu scene path is
+deliberate — it avoids round-tripping display-ready sRGB texels through the
+linear-HDR / tone-map / MRT pipeline, so the pixels are shown exactly as decoded.
 
 ## Resource Lifecycle
 
@@ -237,8 +243,8 @@ Steady-state frames should allocate no major GPU resources.
   visible on slower systems.
 - Add renderer verification. There are no shader layout tests, no shader compile
   tests, no render golden tests, and no GPU timing diagnostics.
-- Make Texture mode real or remove it from the visible mode switcher until the
-  texture inspector exists.
+- Extend the Tex image viewer to compressed (DDS/KTX2) source textures, which the
+  CPU `image` decode path does not cover.
 
 ## Near-Term Renderer Roadmap
 
