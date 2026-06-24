@@ -271,13 +271,8 @@ pub mod size {
     pub const MODE_SEGMENT_HEIGHT: f32 = 42.0;
 
     // ── Notifications (egui-notify toasts) ────────────────────────────────
-    /// Minimum horizontal inset of the toast stacks. The toasts are centered on
-    /// the viewport, but never pulled closer than this to either screen edge.
+    /// Horizontal inset of the toast stacks from the right screen edge.
     pub const NOTIFICATION_MARGIN_X: f32 = OVERLAY_MARGIN;
-    /// egui-notify's internal per-toast box padding (it hard-codes `vec2(10, 10)`).
-    /// Mirrored here so we can reconstruct a toast's on-screen width and center it
-    /// horizontally — egui-notify has no center anchor of its own.
-    pub const NOTIFICATION_PADDING: f32 = 10.0;
     /// Vertical gap between stacked toasts (and the basis for one toast "row").
     pub const NOTIFICATION_SPACING: f32 = 8.0;
     /// Approximate height of one toast row (egui-notify's toast height plus the
