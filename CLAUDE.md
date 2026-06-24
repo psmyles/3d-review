@@ -228,8 +228,11 @@ Rendering pipeline (see `PROJECT_STATE.md` + `RENDERING_PIPELINE.md`): the scene
 renders into **offscreen linear-HDR MRT targets** composited by a fullscreen post
 pass; **anti-aliasing** has dynamic scene MSAA (Off/2×/4×/8×/16×, gated on
 `Depth32Float` support) + FXAA, on the status-bar AA button; **HDR image-based
-lighting + PBR** is the default Shaded look — three baked HDR environments,
-precomputed irradiance/prefilter/BRDF-LUT maps in `ibl.rs`, an optional skybox;
+lighting + PBR** is the default Shaded look — six baked HDR environments (each
+with a preview thumbnail shown in the Environment dropdown), precomputed
+irradiance/prefilter/BRDF-LUT maps in `ibl.rs`, an optional skybox, and a live
+0–360° environment yaw rotation (applied at sample time in `scene.wgsl` via
+`projection_params.y`, so it never rebuilds the IBL maps);
 **bloom** (HDR glow) is off by default — a bright-pass + separable blur over the
 linear-HDR bloom MRT so only bright highlights glow and overlays never do;
 **SSAO** is on by default — a hemisphere-kernel occlusion + 5×5 bilateral blur
@@ -290,3 +293,17 @@ formats (glTF/OBJ) are post-MVP (`TODO.md`).
   Add new debug views by following that ensure/free pattern.
 - Keep `model` + camera/debug math host-agnostic so a future renderer swap only
   touches `render`.
+- **IBL HDRs must stay finite.** Bright suns in an HDR exceed `f16`'s max
+  (65504), so `ibl.rs` `decode_hdr` clamps every channel to `F16_MAX` before the
+  `Rgba16Float` upload — otherwise they become `inf`, the (unbounded) irradiance
+  integral turns to `NaN`, and the model shows black speckles + a dead spot at
+  the sun. `ibl.wgsl` additionally clamps each *sampled* radiance to
+  `IBL_RADIANCE_CLAMP` in both convolutions (irradiance + prefilter) to kill
+  fireflies, and `scene.wgsl`'s skybox clamps `env * intensity` to f16 max so the
+  intensity multiply can't re-overflow the HDR target. Don't drop these clamps.
+- Environment-dropdown HDR thumbnails (`assets/thumbnails/T_HDR_*.png`) are
+  `include_bytes!`-embedded by `crates/ui`, so they must exist before `cargo
+  build`. They're committed, and `packaging/generate-hdr-thumbnails.ps1`
+  (ImageMagick) regenerates them from `assets/textures/T_HDR_*.hdr`; the installer
+  build (`build-windows-installer.ps1`) runs it automatically. Re-run it after
+  adding/replacing an HDR.

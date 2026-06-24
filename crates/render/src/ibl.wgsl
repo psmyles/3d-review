@@ -13,6 +13,14 @@
 
 const PI: f32 = 3.14159265359;
 
+// Ceiling for sampled environment radiance in the convolution passes. The
+// equirect upload is already clamped to finite f16 in `ibl.rs`, but a small,
+// very bright source texel (a sun in a high-range HDR) still dominates the
+// cosine / GGX integral, leaving fireflies in the diffuse irradiance and the
+// specular mips. Clamping the per-sample radiance tames those highlights so the
+// lighting stays balanced across environments.
+const IBL_RADIANCE_CLAMP: f32 = 64.0;
+
 // Per-face / per-pass parameters. `forward/right/up` are the cube face's basis:
 // a fullscreen-triangle position (clip xy in -1..1) maps to the world direction
 // `forward + x*right + y*up`. `params.x` carries the prefilter roughness.
@@ -105,7 +113,13 @@ fn fs_irradiance(in: VsOut) -> @location(0) vec4<f32> {
             let sample_vec = tangent_sample.x * tangent
                 + tangent_sample.y * bitangent
                 + tangent_sample.z * normal;
-            let radiance = textureSampleLevel(src_cube, src_sampler, sample_vec, 0.0).rgb;
+            // Clamp the sampled radiance (see IBL_RADIANCE_CLAMP): an HDR sun
+            // otherwise dominates the cosine integral and leaves fireflies / a
+            // blown-out diffuse term.
+            let radiance = min(
+                textureSampleLevel(src_cube, src_sampler, sample_vec, 0.0).rgb,
+                vec3<f32>(IBL_RADIANCE_CLAMP),
+            );
             irradiance += radiance * cos(theta) * sin(theta);
             samples += 1.0;
             theta += sample_delta;
@@ -165,11 +179,12 @@ fn fs_prefilter(in: VsOut) -> @location(0) vec4<f32> {
         let l = normalize(2.0 * dot(view_dir, h) * h - view_dir);
         let n_dot_l = max(dot(normal, l), 0.0);
         if (n_dot_l > 0.0) {
-            // Clamp the sampled radiance: importance sampling a tiny, very bright
-            // texel otherwise leaves sparkle (fireflies) in the prefiltered mip.
+            // Clamp the sampled radiance (see IBL_RADIANCE_CLAMP): importance
+            // sampling a tiny, very bright texel otherwise leaves sparkle
+            // (fireflies) in the prefiltered mip.
             let radiance = min(
                 textureSampleLevel(src_cube, src_sampler, l, 0.0).rgb,
-                vec3<f32>(64.0),
+                vec3<f32>(IBL_RADIANCE_CLAMP),
             );
             prefiltered += radiance * n_dot_l;
             total_weight += n_dot_l;

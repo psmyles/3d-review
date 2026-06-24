@@ -27,7 +27,8 @@ pub(super) struct SceneUniforms {
     /// Image-based lighting: `x` = IBL enabled (>0.5), `y` = intensity, `z` =
     /// show background skybox (>0.5), `w` = prefiltered-cube max mip LOD.
     pub(super) env_params: [f32; 4],
-    /// Projection metadata: `x` = orthographic projection (>0.5), y/z/w unused.
+    /// Projection metadata: `x` = orthographic projection (>0.5), `y` =
+    /// environment yaw in radians (IBL / skybox sample rotation), z/w unused.
     pub(super) projection_params: [f32; 4],
     /// View matrix (world → view), for writing the view-space normal + depth into
     /// the SSAO G-buffer.

@@ -145,22 +145,28 @@ pub fn supported_msaa_levels(adapter: &wgpu::Adapter) -> Vec<MsaaSamples> {
 }
 
 /// Which built-in HDR environment lights the scene (image-based lighting) and,
-/// optionally, is shown as the background. The three maps are baked into the
-/// binary from `assets/textures` (invariant: assets via `include_bytes!`).
+/// optionally, is shown as the background. The maps are baked into the binary
+/// from `assets/textures` (invariant: assets via `include_bytes!`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum EnvironmentMap {
     #[default]
     Hdr01,
     Hdr02,
     Hdr03,
+    Hdr04,
+    Hdr05,
+    Hdr06,
 }
 
 impl EnvironmentMap {
     /// Every variant in display order, for building UI menus.
-    pub const ALL: [EnvironmentMap; 3] = [
+    pub const ALL: [EnvironmentMap; 6] = [
         EnvironmentMap::Hdr01,
         EnvironmentMap::Hdr02,
         EnvironmentMap::Hdr03,
+        EnvironmentMap::Hdr04,
+        EnvironmentMap::Hdr05,
+        EnvironmentMap::Hdr06,
     ];
 
     /// Short menu label.
@@ -169,6 +175,9 @@ impl EnvironmentMap {
             EnvironmentMap::Hdr01 => "HDR 01",
             EnvironmentMap::Hdr02 => "HDR 02",
             EnvironmentMap::Hdr03 => "HDR 03",
+            EnvironmentMap::Hdr04 => "HDR 04",
+            EnvironmentMap::Hdr05 => "HDR 05",
+            EnvironmentMap::Hdr06 => "HDR 06",
         }
     }
 }
@@ -183,12 +192,17 @@ impl EnvironmentMap {
 /// draws the chosen map as a skybox behind the model (off by default — the
 /// neutral background is kept so the model stands out, while the surface still
 /// reflects the environment). `intensity` scales the IBL contribution.
+/// `rotation_degrees` spins the environment about the world Y axis (0..360, 0 =
+/// as-authored); applied live at sample time in the scene shader, so it never
+/// rebuilds the precomputed IBL maps.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EnvironmentSettings {
     pub ibl_enabled: bool,
     pub show_background: bool,
     pub map: EnvironmentMap,
     pub intensity: f32,
+    /// Yaw applied to the environment about the world Y axis, in degrees (0..360).
+    pub rotation_degrees: f32,
 }
 
 impl Default for EnvironmentSettings {
@@ -198,6 +212,7 @@ impl Default for EnvironmentSettings {
             show_background: false,
             map: EnvironmentMap::default(),
             intensity: 1.0,
+            rotation_degrees: 0.0,
         }
     }
 }

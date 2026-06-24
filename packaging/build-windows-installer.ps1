@@ -8,9 +8,11 @@
       1. Verifies the MSVC toolchain is on PATH (cc needs `cl`/`rc` to compile
          the vendored ufbx.c). Run from the "x64 Native Tools Command Prompt for
          VS 2022", or from a PowerShell launched within it.
-      2. cargo build --release -p review-app
-      3. Reads product.json (the canonical source of product identity).
-      4. Locates ISCC.exe (Inno Setup 6) and compiles packaging\3d-review.iss,
+      2. Regenerates the Environment-dropdown HDR thumbnails (they are baked into
+         the exe via include_bytes!, so they must be current before the build).
+      3. cargo build --release -p review-app
+      4. Reads product.json (the canonical source of product identity).
+      5. Locates ISCC.exe (Inno Setup 6) and compiles packaging\3d-review.iss,
          passing product metadata as /D defines.
 
     Output: dist\3D-Review-Setup-<version>.exe
@@ -37,7 +39,15 @@ if (-not $SkipBuild) {
     }
 }
 
-# --- 2. Build the release exe --------------------------------------------------
+# --- 2. Regenerate HDR thumbnails ----------------------------------------------
+# The Environment-dropdown previews are include_bytes!-embedded, so they must be
+# refreshed from the source HDRs before the build bakes them in.
+if (-not $SkipBuild) {
+    Write-Host '==> Regenerating HDR thumbnails...' -ForegroundColor Cyan
+    & (Join-Path $PSScriptRoot 'generate-hdr-thumbnails.ps1')
+}
+
+# --- 3. Build the release exe --------------------------------------------------
 if (-not $SkipBuild) {
     Write-Host '==> Building release exe (cargo build --release -p review-app)...' -ForegroundColor Cyan
     Push-Location $repoRoot
@@ -50,7 +60,7 @@ if (-not $SkipBuild) {
     }
 }
 
-# --- 3. Read product metadata --------------------------------------------------
+# --- 4. Read product metadata --------------------------------------------------
 if (-not (Test-Path $productJson)) { throw "product.json not found at $productJson." }
 $meta = Get-Content $productJson -Raw | ConvertFrom-Json
 
@@ -67,7 +77,7 @@ if (-not (Test-Path $exePath)) {
     throw "Release exe not found at $exePath. Run without -SkipBuild, or build first."
 }
 
-# --- 4. Locate ISCC and compile the installer ----------------------------------
+# --- 5. Locate ISCC and compile the installer ----------------------------------
 $iscc = (Get-Command 'ISCC.exe' -ErrorAction SilentlyContinue)?.Source
 if (-not $iscc) {
     $candidates = @(

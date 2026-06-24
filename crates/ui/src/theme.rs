@@ -365,6 +365,11 @@ pub mod size {
     pub const PANEL_COMBO_OPTION_H: f32 = 20.0;
     pub const PANEL_COMBO_OPTION_GAP: f32 = 2.0;
     pub const PANEL_COMBO_OPTION_PAD_Y: f32 = 2.0;
+    /// On-screen size of an HDR environment preview thumbnail shown beside each
+    /// option in the Environment dropdown. The source PNGs are 2:1
+    /// equirectangular previews, so the height is half the width.
+    pub const ENV_THUMB_WIDTH: f32 = 56.0;
+    pub const ENV_THUMB_HEIGHT: f32 = 28.0;
     pub const PANEL_CLOSE_ICON_SIZE: f32 = 20.0;
     /// Corner radius of a color swatch and the close-glyph hover backplate.
     pub const SWATCH_CORNER_RADIUS: f32 = 5.0;

@@ -15,7 +15,8 @@ struct SceneUniforms {
     // Image-based lighting: x = IBL enabled (>0.5), y = intensity, z = show
     // background skybox (>0.5), w = prefiltered-cube max mip LOD.
     env_params: vec4<f32>,
-    // Projection metadata: x = orthographic projection (>0.5), y/z/w unused.
+    // Projection metadata: x = orthographic projection (>0.5), y = environment
+    // yaw in radians (IBL / skybox sample rotation), z/w unused.
     projection_params: vec4<f32>,
     // View matrix (world -> view), for writing the view-space normal + depth into
     // the separate SSAO G-buffer pass.
@@ -153,6 +154,18 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     return select(hi, lo, c <= vec3<f32>(0.04045));
 }
 
+// Rotate an environment sample direction about the world Y axis by the negative
+// of the configured environment yaw (`projection_params.y`), so increasing the
+// yaw spins the whole environment. Applied to every cube lookup (irradiance,
+// prefiltered specular, skybox) so the IBL + skybox rotate together rigidly,
+// live, with no IBL-map rebuild.
+fn env_sample_dir(dir: vec3<f32>) -> vec3<f32> {
+    let angle = -uniforms.projection_params.y;
+    let s = sin(angle);
+    let c = cos(angle);
+    return vec3<f32>(c * dir.x + s * dir.z, dir.y, -s * dir.x + c * dir.z);
+}
+
 // Fresnel-Schlick with a roughness term, so rough surfaces don't over-brighten
 // at grazing angles (the IBL ambient form).
 fn fresnel_schlick_roughness(cos_theta: f32, f0: vec3<f32>, roughness: f32) -> vec3<f32> {
@@ -176,14 +189,15 @@ fn shade_ibl(albedo: vec3<f32>, world_normal: vec3<f32>, world_pos: vec3<f32>, r
     let n_dot_v = max(dot(n, v), 1e-4);
     let f0 = mix(vec3<f32>(0.04), albedo, metallic);
 
-    // Diffuse: cosine-convolved irradiance modulated by albedo.
-    let irradiance = textureSampleLevel(irradiance_cube, ibl_sampler, n, 0.0).rgb;
+    // Diffuse: cosine-convolved irradiance modulated by albedo. The lookup
+    // direction is yaw-rotated so the environment spins with the rotation slider.
+    let irradiance = textureSampleLevel(irradiance_cube, ibl_sampler, env_sample_dir(n), 0.0).rgb;
     let diffuse = irradiance * albedo;
 
     // Specular: split-sum — prefiltered env at the roughness mip, scaled by the
-    // BRDF LUT (scale + bias).
+    // BRDF LUT (scale + bias). Same yaw rotation applied to the reflection lookup.
     let max_lod = uniforms.env_params.w;
-    let prefiltered = textureSampleLevel(prefilter_cube, ibl_sampler, r, roughness * max_lod).rgb;
+    let prefiltered = textureSampleLevel(prefilter_cube, ibl_sampler, env_sample_dir(r), roughness * max_lod).rgb;
     let brdf = textureSampleLevel(brdf_lut, ibl_sampler, vec2<f32>(n_dot_v, roughness), 0.0).rg;
     let fresnel = fresnel_schlick_roughness(n_dot_v, f0, roughness);
     let specular = prefiltered * (fresnel * brdf.x + brdf.y);
@@ -475,7 +489,12 @@ fn fs_skybox(input: SkyOutput) -> FragOutput {
     let world = uniforms.inv_view_projection * vec4<f32>(input.ndc, unproject_depth, 1.0);
     let world_pos = world.xyz / world.w;
     let dir = normalize(world_pos - uniforms.camera_position.xyz);
-    let color = textureSampleLevel(env_cube, ibl_sampler, dir, 0.0).rgb * uniforms.env_params.y;
+    // Yaw-rotate the skybox lookup so the background spins with the IBL. The env
+    // cube is finite (clamped to f16 max on upload), but the intensity multiply
+    // can still push a bright sun past f16's range when stored into the HDR
+    // target; clamp so it saturates to white rather than overflowing to inf/NaN.
+    let raw = textureSampleLevel(env_cube, ibl_sampler, env_sample_dir(dir), 0.0).rgb * uniforms.env_params.y;
+    let color = min(raw, vec3<f32>(65504.0));
     var out: FragOutput;
     out.color = vec4<f32>(color, 1.0);
     out.bloom = vec4<f32>(color, 1.0);
