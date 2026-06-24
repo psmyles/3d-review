@@ -69,8 +69,11 @@ pub(crate) struct IblResources {
     /// on an actual change).
     pub(crate) environment: EnvironmentMap,
     pub(crate) bind_group: wgpu::BindGroup,
+    /// Diffuse irradiance cube. Kept alive for the scene bind group and also
+    /// re-sampled by the post pass to re-light the diffuse ambient with the GTAO
+    /// bent normal, so it is exposed via [`IblResources::irradiance_view`].
+    irradiance_view: wgpu::TextureView,
     // Views are kept alive for the bind group's lifetime.
-    _irradiance_view: wgpu::TextureView,
     _prefilter_view: wgpu::TextureView,
     _brdf_view: wgpu::TextureView,
     _env_cube_view: wgpu::TextureView,
@@ -367,11 +370,18 @@ impl IblResources {
         Self {
             environment,
             bind_group,
-            _irradiance_view: irradiance_view,
+            irradiance_view,
             _prefilter_view: prefilter_view,
             _brdf_view: brdf_view,
             _env_cube_view: env_cube_sample_view,
         }
+    }
+
+    /// The diffuse irradiance cube view, for the post pass's bent-normal ambient
+    /// re-lighting. Rebuilt with `IblResources` on every environment switch, so the
+    /// post bind group referencing it must be rebuilt too (`sync_environment`).
+    pub(crate) fn irradiance_view(&self) -> &wgpu::TextureView {
+        &self.irradiance_view
     }
 }
 

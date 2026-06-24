@@ -22,10 +22,11 @@ pub(crate) const SCENE_HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg
 /// wholesale when the framebuffer is resized or the sample count changes
 /// (textures are immutable in both), via `SceneResources::sync_targets`.
 ///
-/// The scene geometry pass renders to three color attachments (MRT): linear HDR
-/// `color`, linear HDR bloom source, and linear ambient radiance that GTAO is
-/// allowed to attenuate. The actual normal/depth GTAO G-buffer is a separate
-/// single-sample target owned alongside the AO pass.
+/// The scene geometry pass renders to four color attachments (MRT): linear HDR
+/// `color`, linear HDR bloom source, linear diffuse ambient radiance that GTAO is
+/// allowed to attenuate, and the linear IBL specular (+ roughness) GTAO applies
+/// bent-normal-aware specular occlusion to. The actual normal/depth GTAO G-buffer
+/// is a separate single-sample target owned alongside the AO pass.
 pub(crate) struct SceneTargets {
     pub(crate) width: u32,
     pub(crate) height: u32,
@@ -51,6 +52,13 @@ pub(crate) struct SceneTargets {
     /// Single-sample resolve of `ambient_render_view` (the texture post samples),
     /// present only when MSAA is on.
     pub(crate) ambient_resolve_view: Option<wgpu::TextureView>,
+    /// IBL specular attachment (MRT location 3), MSAA-matched to the scene. `rgb`
+    /// is the linear specular radiance, `a` the roughness it was sampled at, so
+    /// post can apply bent-normal-aware specular occlusion.
+    pub(crate) specular_render_view: wgpu::TextureView,
+    /// Single-sample resolve of `specular_render_view` (the texture post samples),
+    /// present only when MSAA is on.
+    pub(crate) specular_resolve_view: Option<wgpu::TextureView>,
     /// Depth used while drawing the scene, matching `sample_count`.
     pub(crate) depth_view: wgpu::TextureView,
 }
@@ -103,6 +111,7 @@ impl SceneTargets {
         let color_render_view = make_render("review_scene_color_render");
         let bloom_render_view = make_render("review_scene_bloom_render");
         let ambient_render_view = make_render("review_scene_ambient_render");
+        let specular_render_view = make_render("review_scene_specular_render");
 
         let depth = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("review_scene_depth"),
@@ -133,49 +142,57 @@ impl SceneTargets {
                 })
                 .create_view(&wgpu::TextureViewDescriptor::default())
         };
-        let (color_resolve_view, bloom_resolve_view, ambient_resolve_view) = if multisampled {
-            let color_resolve = make_resolve("review_scene_color_resolved");
-            let bloom_resolve = make_resolve("review_scene_bloom_resolved");
-            let ambient_resolve = make_resolve("review_scene_ambient_resolved");
+        let (color_resolve_view, bloom_resolve_view, ambient_resolve_view, specular_resolve_view) =
+            if multisampled {
+                let color_resolve = make_resolve("review_scene_color_resolved");
+                let bloom_resolve = make_resolve("review_scene_bloom_resolved");
+                let ambient_resolve = make_resolve("review_scene_ambient_resolved");
+                let specular_resolve = make_resolve("review_scene_specular_resolved");
 
-            // The resolve targets are only ever written by the MSAA resolve, never
-            // by a clear/discard. wgpu's lazy zero-init doesn't fire for a resolve
-            // destination, so D3D12's debug layer flags them as "used
-            // uninitialized" on the first resolve. The resolve fully overwrites
-            // each texture every frame (so this is benign), but a one-time clear
-            // here satisfies the validation requirement that a render-target
-            // resource be initialized before first use. The render colors + depth
-            // need no such clear — they are cleared every frame by the offscreen
-            // pass's `LoadOp::Clear`.
-            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("review_scene_resolve_init"),
-            });
-            for view in [&color_resolve, &bloom_resolve, &ambient_resolve] {
-                encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("review_scene_resolve_init_pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
+                // The resolve targets are only ever written by the MSAA resolve, never
+                // by a clear/discard. wgpu's lazy zero-init doesn't fire for a resolve
+                // destination, so D3D12's debug layer flags them as "used
+                // uninitialized" on the first resolve. The resolve fully overwrites
+                // each texture every frame (so this is benign), but a one-time clear
+                // here satisfies the validation requirement that a render-target
+                // resource be initialized before first use. The render colors + depth
+                // need no such clear — they are cleared every frame by the offscreen
+                // pass's `LoadOp::Clear`.
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("review_scene_resolve_init"),
                 });
-            }
-            queue.submit(std::iter::once(encoder.finish()));
+                for view in [
+                    &color_resolve,
+                    &bloom_resolve,
+                    &ambient_resolve,
+                    &specular_resolve,
+                ] {
+                    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("review_scene_resolve_init_pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                }
+                queue.submit(std::iter::once(encoder.finish()));
 
-            (
-                Some(color_resolve),
-                Some(bloom_resolve),
-                Some(ambient_resolve),
-            )
-        } else {
-            (None, None, None)
-        };
+                (
+                    Some(color_resolve),
+                    Some(bloom_resolve),
+                    Some(ambient_resolve),
+                    Some(specular_resolve),
+                )
+            } else {
+                (None, None, None, None)
+            };
 
         Self {
             width,
@@ -187,6 +204,8 @@ impl SceneTargets {
             bloom_resolve_view,
             ambient_render_view,
             ambient_resolve_view,
+            specular_render_view,
+            specular_resolve_view,
             depth_view,
         }
     }
@@ -215,5 +234,13 @@ impl SceneTargets {
         self.ambient_resolve_view
             .as_ref()
             .unwrap_or(&self.ambient_render_view)
+    }
+
+    /// The single-sample IBL specular texture the composite pass samples: the
+    /// resolve when MSAA is on, otherwise the already single-sample render texture.
+    pub(crate) fn sampled_specular_view(&self) -> &wgpu::TextureView {
+        self.specular_resolve_view
+            .as_ref()
+            .unwrap_or(&self.specular_render_view)
     }
 }

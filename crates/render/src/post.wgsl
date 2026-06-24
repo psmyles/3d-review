@@ -9,6 +9,10 @@ var scene_color: texture_2d<f32>;
 var scene_sampler: sampler;
 
 struct PostUniforms {
+    // view -> world, for the G-buffer's view-space geom + bent normals.
+    inv_view: mat4x4<f32>,
+    // view -> clip, to reconstruct view position from the G-buffer depth (n·v).
+    proj: mat4x4<f32>,
     inv_resolution: vec2<f32>,
     fxaa_enabled: u32,
     bloom_enabled: u32,
@@ -16,6 +20,14 @@ struct PostUniforms {
     gtao_enabled: u32,
     tonemap_enabled: u32,
     tonemap_op: u32,
+    // IBL on: gate the bent-normal diffuse re-lighting + split-specular occlusion.
+    ibl_enabled: u32,
+    // Environment yaw (radians), matching the scene shader's rotation.
+    env_yaw: f32,
+    // IBL intensity, to recover the ambient albedo proxy for multi-bounce.
+    ibl_intensity: f32,
+    // Orthographic projection flag (>0.5), for the view-position reconstruction.
+    is_ortho: f32,
 };
 @group(0) @binding(2)
 var<uniform> post: PostUniforms;
@@ -23,13 +35,24 @@ var<uniform> post: PostUniforms;
 // back over the scene when `bloom_enabled` is set.
 @group(0) @binding(3)
 var bloom_texture: texture_2d<f32>;
-// Blurred GTAO occlusion (R8, full-res). Multiplied into the scene's ambient
-// light when `gtao_enabled` is set.
+// Blurred GTAO output (Rgba16Float, full-res): view-space bent normal in xyz,
+// occlusion in w. Used to attenuate + re-light the scene's ambient when
+// `gtao_enabled` is set.
 @group(0) @binding(4)
 var gtao_texture: texture_2d<f32>;
-// Linear HDR ambient radiance eligible for GTAO attenuation.
+// Linear HDR diffuse ambient radiance eligible for GTAO attenuation / re-lighting.
 @group(0) @binding(5)
 var ambient_texture: texture_2d<f32>;
+// Linear HDR IBL specular (rgb) + roughness (a), for the bent-normal-aware
+// specular occlusion.
+@group(0) @binding(6)
+var specular_texture: texture_2d<f32>;
+// Single-sample GTAO G-buffer: view-space geom normal (xyz) + view Z (w).
+@group(0) @binding(7)
+var gtao_gbuffer: texture_2d<f32>;
+// Diffuse irradiance cube, re-sampled with the bent / geom normal.
+@group(0) @binding(8)
+var irradiance_cube: texture_cube<f32>;
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
@@ -188,15 +211,102 @@ fn apply_tonemap(color: vec3<f32>) -> vec3<f32> {
     }
 }
 
+// Rotate an irradiance lookup about world Y by the negative environment yaw, so
+// the re-sampled ambient tracks the rotation slider (matching `scene.wgsl`'s
+// `env_sample_dir`).
+fn env_dir(dir: vec3<f32>) -> vec3<f32> {
+    let angle = -post.env_yaw;
+    let s = sin(angle);
+    let c = cos(angle);
+    return vec3<f32>(c * dir.x + s * dir.z, dir.y, -s * dir.x + c * dir.z);
+}
+
+// Activision's GTAO multi-bounce: turns the scalar visibility into a colored
+// occlusion that lets light bounce back in bright-albedo cavities (a cubic fit per
+// channel, clamped to be no darker than the raw visibility).
+fn gtao_multibounce(visibility: f32, albedo: vec3<f32>) -> vec3<f32> {
+    let a = 2.0404 * albedo - vec3<f32>(0.3324);
+    let b = -4.7951 * albedo + vec3<f32>(0.6417);
+    let c = 2.7552 * albedo + vec3<f32>(0.6903);
+    return max(vec3<f32>(visibility), ((visibility * a + b) * visibility + c) * visibility);
+}
+
+// Lagarde/Frostbite specular occlusion: roughness- and view-aware so creases
+// occlude specular without flattening grazing reflections.
+fn specular_occlusion(n_dot_v: f32, ao: f32, roughness: f32) -> f32 {
+    return clamp(pow(n_dot_v + ao, exp2(-16.0 * roughness - 1.0)) - 1.0 + ao, 0.0, 1.0);
+}
+
+// Reconstruct view-space position from a pixel's uv + its stored view Z, mirroring
+// the GTAO shader (perspective divides by depth; orthographic is linear in ndc).
+fn reconstruct_view_pos(uv: vec2<f32>, view_z: f32) -> vec3<f32> {
+    let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    if (post.is_ortho > 0.5) {
+        let x = (ndc.x - post.proj[3][0]) / post.proj[0][0];
+        let y = (ndc.y - post.proj[3][1]) / post.proj[1][1];
+        return vec3<f32>(x, y, view_z);
+    }
+    let x = ndc.x * (-view_z) / post.proj[0][0];
+    let y = ndc.y * (-view_z) / post.proj[1][1];
+    return vec3<f32>(x, y, view_z);
+}
+
 fn compose_ldr(uv: vec2<f32>) -> vec3<f32> {
     var lit = textureSample(scene_color, scene_sampler, uv).rgb;
-    if (post.gtao_enabled != 0u) {
-        let ao = textureSample(gtao_texture, scene_sampler, uv).r;
-        let ambient = textureSample(ambient_texture, scene_sampler, uv).rgb;
-        lit = max(lit - ambient * (1.0 - ao), vec3<f32>(0.0));
+    // Sample every 2D source at the top level (uniform control flow) so the
+    // branches below stay valid; the cube uses explicit-LOD sampling, which is
+    // allowed in non-uniform flow.
+    let gt = textureSample(gtao_texture, scene_sampler, uv);
+    let gbuf = textureSample(gtao_gbuffer, scene_sampler, uv);
+    let ambient = textureSample(ambient_texture, scene_sampler, uv).rgb;
+    let spec = textureSample(specular_texture, scene_sampler, uv);
+    let bloom = textureSample(bloom_texture, scene_sampler, uv).rgb;
+
+    // GTAO only touches foreground mesh pixels (the G-buffer carries a unit normal
+    // and a negative view Z there; background wrote zero).
+    let is_foreground = dot(gbuf.xyz, gbuf.xyz) > 0.25 && gbuf.w < -1e-4;
+    if (post.gtao_enabled != 0u && is_foreground) {
+        let ao = clamp(gt.w, 0.0, 1.0);
+        if (post.ibl_enabled != 0u) {
+            let geom_v = normalize(gbuf.xyz);
+            var bent_v = gt.xyz;
+            if (dot(bent_v, bent_v) < 1e-6) {
+                bent_v = geom_v;
+            } else {
+                bent_v = normalize(bent_v);
+            }
+            // View-space normals -> world for the cube lookup.
+            let geom_w = normalize((post.inv_view * vec4<f32>(geom_v, 0.0)).xyz);
+            let bent_w = normalize((post.inv_view * vec4<f32>(bent_v, 0.0)).xyz);
+            let irr_geom = textureSampleLevel(irradiance_cube, scene_sampler, env_dir(geom_w), 0.0).rgb;
+            let irr_bent = textureSampleLevel(irradiance_cube, scene_sampler, env_dir(bent_w), 0.0).rgb;
+            let eps = vec3<f32>(1e-4);
+            // The diffuse ambient already encodes kd*albedo*intensity*irr_geom, so
+            // dividing recovers an albedo proxy for the colored multi-bounce, and
+            // the irradiance ratio swaps the geom-normal lighting for the bent one.
+            let albedo = clamp(ambient / max(irr_geom * post.ibl_intensity, eps), vec3<f32>(0.0), vec3<f32>(1.0));
+            let mb = gtao_multibounce(ao, albedo);
+            let amb_bent = ambient * (irr_bent / max(irr_geom, eps)) * mb;
+
+            // Bent-normal-aware specular occlusion on the split specular target.
+            let p = reconstruct_view_pos(uv, gbuf.w);
+            var view_v = vec3<f32>(0.0, 0.0, 1.0);
+            if (post.is_ortho <= 0.5) {
+                view_v = normalize(-p);
+            }
+            let n_dot_v = clamp(dot(geom_v, view_v), 1e-4, 1.0);
+            let so = specular_occlusion(n_dot_v, ao, spec.a);
+
+            // Additive correction over the full radiance (location 0): swap the
+            // geom-normal ambient for the bent-normal one and occlude the specular,
+            // leaving direct + emissive light untouched.
+            lit = max(lit - ambient + amb_bent - spec.rgb * (1.0 - so), vec3<f32>(0.0));
+        } else {
+            // IBL off (analytic ambient): the original scalar attenuation.
+            lit = max(lit - ambient * (1.0 - ao), vec3<f32>(0.0));
+        }
     }
     if (post.bloom_enabled != 0u) {
-        let bloom = textureSample(bloom_texture, scene_sampler, uv).rgb;
         lit = lit + bloom * post.bloom_intensity;
     }
     return linear_to_srgb(apply_tonemap(lit));

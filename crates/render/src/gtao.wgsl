@@ -143,13 +143,14 @@ fn horizon_cos(
 }
 
 @fragment
-fn fs_gtao(input: VertexOutput) -> @location(0) f32 {
+fn fs_gtao(input: VertexOutput) -> @location(0) vec4<f32> {
     let g = textureSampleLevel(gbuffer, gtao_sampler, input.uv, 0.0);
     let raw_normal = g.xyz;
     let view_z = g.w;
-    // Background (overlays / skybox / cleared frame write 0): no occlusion.
+    // Background (overlays / skybox / cleared frame write 0): no occlusion, no
+    // bent normal (post detects background from the G-buffer, not this output).
     if (dot(raw_normal, raw_normal) < 0.25 || view_z >= -1e-4) {
-        return 1.0;
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
 
     let n = normalize(raw_normal);
@@ -172,6 +173,10 @@ fn fs_gtao(input: VertexOutput) -> @location(0) f32 {
     let noise = hash12(input.clip_position.xy);
 
     var visibility = 0.0;
+    // Bent normal: the average unoccluded direction (view space), accumulated per
+    // slice as the visible-arc midpoint and weighted like the visibility, then
+    // normalized. Post re-lights the diffuse ambient with it.
+    var bent_normal = vec3<f32>(0.0);
     for (var s = 0u; s < slice_count; s = s + 1u) {
         let phi = (f32(s) + noise) * PI / f32(slice_count);
         let omega = vec2<f32>(cos(phi), sin(phi));
@@ -217,22 +222,45 @@ fn fs_gtao(input: VertexOutput) -> @location(0) f32 {
             + (-cos(2.0 * h2 - gamma) + cos_gamma + 2.0 * h2 * sin_gamma)
         );
         visibility = visibility + proj_len * arc;
+
+        // Bent normal contribution: the midpoint of the visible arc, expressed in
+        // the (v, in-plane tangent) basis. `t` is the slice direction's component
+        // perpendicular to v (the +omega side), so a positive angle leans the bent
+        // normal toward the open horizon. Weighted by proj_len, like visibility.
+        let t_axis = slice_dir - v * dot(slice_dir, v);
+        let t_len = length(t_axis);
+        if (t_len > 1e-4) {
+            let t = t_axis / t_len;
+            let bent_angle = 0.5 * (h1 + h2);
+            bent_normal = bent_normal + (v * cos(bent_angle) + t * sin(bent_angle)) * proj_len;
+        }
     }
 
     visibility = clamp(visibility / f32(slice_count), 0.0, 1.0);
     // Intensity sharpens the falloff (1 = ground truth, >1 darkens, 0 disables).
-    return pow(visibility, max(intensity, 0.0));
+    let ao = pow(visibility, max(intensity, 0.0));
+    // Fall back to the geometric normal if the bent normal degenerated (fully
+    // open or fully occluded). The blur renormalizes after filtering.
+    var bn = bent_normal;
+    if (dot(bn, bn) < 1e-8) {
+        bn = n;
+    } else {
+        bn = normalize(bn);
+    }
+    return vec4<f32>(bn, ao);
 }
 
-// 5x5 bilateral blur over the raw AO. Depth and normal weights keep occlusion
-// from bleeding across silhouettes and hard creases.
+// 5x5 bilateral blur over the raw AO + bent normal (`raw_ao` now carries the
+// view-space bent normal in xyz and the occlusion in w). Depth and normal weights
+// keep occlusion / bent normals from bleeding across silhouettes and hard creases;
+// the bent normal is renormalized after filtering.
 @fragment
-fn fs_blur(input: VertexOutput) -> @location(0) f32 {
+fn fs_blur(input: VertexOutput) -> @location(0) vec4<f32> {
     let center_g = textureSampleLevel(gbuffer, gtao_sampler, input.uv, 0.0);
     let center_n = center_g.xyz;
     let center_z = center_g.w;
     if (dot(center_n, center_n) < 0.25 || center_z >= -1e-4) {
-        return 1.0;
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
 
     let dims = vec2<f32>(textureDimensions(raw_ao));
@@ -240,7 +268,7 @@ fn fs_blur(input: VertexOutput) -> @location(0) f32 {
     let n0 = normalize(center_n);
     let depth_sigma = max(gtao.params.x * 0.12, 1e-4);
     let spatial_sigma = 2.0;
-    var sum = 0.0;
+    var sum = vec4<f32>(0.0);
     var weight_sum = 0.0;
     for (var x = -2; x <= 2; x = x + 1) {
         for (var y = -2; y <= 2; y = y + 1) {
@@ -261,13 +289,18 @@ fn fs_blur(input: VertexOutput) -> @location(0) f32 {
             let depth_weight = exp(-(dz * dz) / (2.0 * depth_sigma * depth_sigma));
             let normal_weight = smoothstep(0.75, 1.0, normal_dot);
             let weight = spatial_weight * depth_weight * normal_weight;
-            let ao = textureSampleLevel(raw_ao, gtao_sampler, uv, 0.0).r;
+            let ao = textureSampleLevel(raw_ao, gtao_sampler, uv, 0.0);
             sum = sum + ao * weight;
             weight_sum = weight_sum + weight;
         }
     }
     if (weight_sum <= 1e-5) {
-        return textureSampleLevel(raw_ao, gtao_sampler, input.uv, 0.0).r;
+        return textureSampleLevel(raw_ao, gtao_sampler, input.uv, 0.0);
     }
-    return sum / weight_sum;
+    var result = sum / weight_sum;
+    let bn = result.xyz;
+    if (dot(bn, bn) > 1e-8) {
+        result = vec4<f32>(normalize(bn), result.w);
+    }
+    return result;
 }

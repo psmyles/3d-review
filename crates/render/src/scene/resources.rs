@@ -204,6 +204,9 @@ impl SceneResources {
             &bloom_tex_a,
             &gtao_blur_view,
             targets.sampled_ambient_view(),
+            targets.sampled_specular_view(),
+            &gtao_gbuffer_view,
+            ibl.irradiance_view(),
         );
         let line_vertices = scene_lines();
         let (mesh_vertex_buffer, mesh_index_buffer, mesh_index_count) =
@@ -382,16 +385,29 @@ impl SceneResources {
             self.gtao_bind_group = gtao_bind_group;
             self.gtao_blur_bind_group = gtao_blur_bind_group;
 
-            // The composite reads the resolved color, the blurred bloom, and the
-            // blurred AO — all just recreated.
-            self.post_bind_group = self.post.create_bind_group(
-                device,
-                self.targets.sampled_view(),
-                &self.bloom_tex_a,
-                &self.gtao_blur_view,
-                self.targets.sampled_ambient_view(),
-            );
+            // The composite reads the resolved color/ambient/specular, the blurred
+            // bloom, the blurred AO + bent normal, the GTAO G-buffer and the
+            // irradiance cube — all just recreated (the cube is unchanged here but
+            // the helper rebinds it anyway).
+            self.rebuild_post_bind_group(device);
         }
+    }
+
+    /// Rebuild the composite bind group from the current targets, bloom/AO views,
+    /// GTAO G-buffer and irradiance cube. Called whenever any of those views go
+    /// stale: on resize / MSAA change (`sync_anti_aliasing`) and on environment
+    /// switch (`sync_environment`, which rebuilds the irradiance cube).
+    fn rebuild_post_bind_group(&mut self, device: &wgpu::Device) {
+        self.post_bind_group = self.post.create_bind_group(
+            device,
+            self.targets.sampled_view(),
+            &self.bloom_tex_a,
+            &self.gtao_blur_view,
+            self.targets.sampled_ambient_view(),
+            self.targets.sampled_specular_view(),
+            &self.gtao_gbuffer_view,
+            self.ibl.irradiance_view(),
+        );
     }
 
     /// Run the bloom passes on egui's encoder, after the scene pass: bright-pass
@@ -558,6 +574,10 @@ impl SceneResources {
     ) {
         if self.ibl.environment != environment.map {
             self.ibl = IblResources::new(device, queue, &self.ibl_layout, environment.map);
+            // The post pass re-samples the diffuse irradiance cube for the GTAO
+            // bent-normal ambient, so its bind group references must be refreshed
+            // when the environment (and thus the cube) changes.
+            self.rebuild_post_bind_group(device);
         }
     }
 

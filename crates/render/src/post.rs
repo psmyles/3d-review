@@ -14,13 +14,21 @@ use crate::scene::{EGUI_DEPTH_FORMAT, EGUI_MSAA_SAMPLE_COUNT};
 
 const POST_SHADER: &str = include_str!("post.wgsl");
 
-/// Composite-pass uniform: the inverse framebuffer resolution (texel size, for
-/// FXAA neighbor taps), whether FXAA is enabled, and the bloom enable + intensity
-/// for the additive bloom composite. `#[repr(C)]` + `Pod` to match the WGSL
-/// `PostUniforms` layout (invariant 11).
+/// Composite-pass uniform. Carries the FXAA / bloom / tonemap controls plus the
+/// GTAO bent-normal lighting inputs: `inv_view` (view→world for the bent / geom
+/// normals), `proj` (view→clip, to reconstruct view position for `n·v`), and the
+/// IBL parameters used to re-light the diffuse ambient. `#[repr(C)]` + `Pod` to
+/// match the WGSL `PostUniforms` layout (invariant 11). The two `mat4`s lead so
+/// their 16-byte alignment is satisfied; the trailing scalars pack into vec4 slots.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct PostUniforms {
+    /// Inverse view matrix (view→world), transforming the G-buffer's view-space
+    /// geom + bent normals to world for the irradiance cube lookup.
+    inv_view: [[f32; 4]; 4],
+    /// Projection matrix (view→clip), to reconstruct view position from the
+    /// G-buffer depth for the `n·v` specular-occlusion term.
+    proj: [[f32; 4]; 4],
     inv_resolution: [f32; 2],
     fxaa_enabled: u32,
     bloom_enabled: u32,
@@ -30,6 +38,16 @@ struct PostUniforms {
     tonemap_enabled: u32,
     /// Which tone-map operator the shader's `apply_tonemap` switch selects.
     tonemap_op: u32,
+    /// Whether IBL is on: gates the bent-normal diffuse re-lighting + split-specular
+    /// occlusion (0 falls back to the scalar ambient AO attenuation).
+    ibl_enabled: u32,
+    /// Environment yaw (radians), matching the scene shader's rotation so the
+    /// re-sampled irradiance tracks the rotation slider.
+    env_yaw: f32,
+    /// IBL intensity, to recover the ambient albedo proxy for multi-bounce.
+    ibl_intensity: f32,
+    /// Orthographic projection flag (>0.5), for the view-position reconstruction.
+    is_ortho: f32,
 }
 
 pub(crate) struct PostPass {
@@ -101,13 +119,51 @@ impl PostPass {
                     },
                     count: None,
                 },
-                // Linear HDR ambient radiance that GTAO is allowed to attenuate.
+                // Linear HDR diffuse ambient radiance that GTAO is allowed to
+                // attenuate / re-light with the bent normal.
                 wgpu::BindGroupLayoutEntry {
                     binding: 5,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // Linear HDR IBL specular (rgb) + roughness (a) for the bent-normal
+                // -aware specular occlusion.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // Single-sample GTAO G-buffer (view-space geom normal + view Z), for
+                // the geom-normal irradiance, view-position and `n·v` reconstruction.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // Diffuse irradiance cube, re-sampled for the bent-normal ambient
+                // re-lighting. Rebuilt on every environment switch, so the bind
+                // group is rebuilt in `sync_environment`.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::Cube,
                         multisampled: false,
                     },
                     count: None,
@@ -190,9 +246,11 @@ impl PostPass {
     }
 
     /// (Re)build the bind group pointing at the resolved scene color, blurred
-    /// bloom, blurred AO and ambient-radiance views. Called on creation and
-    /// whenever the targets are recreated (resize / MSAA change), since all views
-    /// are then stale.
+    /// bloom, blurred AO + bent normal, ambient + specular radiance, the
+    /// single-sample GTAO G-buffer and the diffuse irradiance cube. Called on
+    /// creation, whenever the targets are recreated (resize / MSAA change), and
+    /// whenever the environment changes (the irradiance cube is then stale).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn create_bind_group(
         &self,
         device: &wgpu::Device,
@@ -200,6 +258,9 @@ impl PostPass {
         bloom: &wgpu::TextureView,
         gtao: &wgpu::TextureView,
         ambient: &wgpu::TextureView,
+        specular: &wgpu::TextureView,
+        gtao_gbuffer: &wgpu::TextureView,
+        irradiance_cube: &wgpu::TextureView,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("review_post_bind_group"),
@@ -229,13 +290,26 @@ impl PostPass {
                     binding: 5,
                     resource: wgpu::BindingResource::TextureView(ambient),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(specular),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::TextureView(gtao_gbuffer),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::TextureView(irradiance_cube),
+                },
             ],
         })
     }
 
     /// Write the per-frame composite uniform: the texel size (for FXAA taps), the
-    /// FXAA enable flag, the bloom enable + intensity, the GTAO enable flag, and
-    /// the tone-map enable + operator. Cheap; called every frame from `prepare`.
+    /// FXAA / bloom / tonemap controls, and the GTAO bent-normal lighting inputs
+    /// (the inverse-view + projection matrices and the IBL parameters). Cheap;
+    /// called every frame from `prepare`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn update_uniform(
         &self,
@@ -248,8 +322,16 @@ impl PostPass {
         gtao_enabled: bool,
         tonemap_enabled: bool,
         tonemap_op: u32,
+        inv_view: glam::Mat4,
+        proj: glam::Mat4,
+        ibl_enabled: bool,
+        env_yaw: f32,
+        ibl_intensity: f32,
+        is_ortho: bool,
     ) {
         let uniforms = PostUniforms {
+            inv_view: inv_view.to_cols_array_2d(),
+            proj: proj.to_cols_array_2d(),
             inv_resolution: [1.0 / width.max(1) as f32, 1.0 / height.max(1) as f32],
             fxaa_enabled: u32::from(fxaa),
             bloom_enabled: u32::from(bloom_enabled),
@@ -257,6 +339,10 @@ impl PostPass {
             gtao_enabled: u32::from(gtao_enabled),
             tonemap_enabled: u32::from(tonemap_enabled),
             tonemap_op,
+            ibl_enabled: u32::from(ibl_enabled),
+            env_yaw,
+            ibl_intensity: ibl_intensity.max(0.0),
+            is_ortho: if is_ortho { 1.0 } else { 0.0 },
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }

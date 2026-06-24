@@ -130,14 +130,15 @@ crates/
             SCENE_DEPTH_FORMAT (Depth32Float,
             Reversed-Z) is separate from EGUI_DEPTH_FORMAT (Depth24Plus).
             Offscreen linear-HDR targets (linear scene radiance + linear-HDR bloom
-            MRT + AO-eligible ambient-radiance MRT, all Rgba16Float; separate
-            single-sample SSAO normal/view-Z G-buffer) + composite/tone-map/FXAA
-            seam -> src/targets.rs, src/post.rs(+post.wgsl). HDR image-based
-            lighting (env cube + irradiance + prefilter + BRDF LUT precompute, PBR
-            shaded path, skybox) -> src/ibl.rs, src/ibl.wgsl. Bloom (bright-pass +
-            separable blur, half-res) -> src/bloom.rs, src/bloom.wgsl. SSAO
-            (hemisphere-kernel occlusion + 5x5 bilateral blur over the single-sample
-            G-buffer) -> src/ssao.rs, src/ssao.wgsl. The model wireframe is a plain
+            MRT + AO-eligible diffuse-ambient MRT + split IBL-specular MRT, all
+            Rgba16Float; separate single-sample GTAO normal/view-Z G-buffer) +
+            composite/tone-map/FXAA seam -> src/targets.rs, src/post.rs(+post.wgsl).
+            HDR image-based lighting (env cube + irradiance + prefilter + BRDF LUT
+            precompute, PBR shaded path, skybox) -> src/ibl.rs, src/ibl.wgsl. Bloom
+            (bright-pass + separable blur, half-res) -> src/bloom.rs, src/bloom.wgsl.
+            GTAO (horizon-based occlusion + view-space bent normal + 5x5 bilateral
+            blur over the single-sample G-buffer; bent normal re-lights ambient in
+            post) -> src/gtao.rs, src/gtao.wgsl. The model wireframe is a plain
             LineList drawn in the scene pass via `line_pipeline` (depth-tested
             against the mesh so hidden-face edges are occluded; no thickness
             control) -> src/scene/ + src/geometry/ (`wireframe_lines`). The Tex
@@ -162,7 +163,7 @@ crates/
             assets/widgets/overlay/toolbar/status_bar/stats/texture_view/gizmo/
             dimensions/help
             + panels/ (mod.rs = width-pinning dispatch; one file per tool:
-            anti_aliasing, bloom, bounding_box, environment, normals, ssao,
+            anti_aliasing, bloom, bounding_box, environment, normals, gtao,
             tonemap, uv_checker, vertex_colors, wireframe; plus inspector +
             outliner for the side panels). -> src/lib.rs + src/*.rs
 third_party/ufbx/   vendored ufbx.c / ufbx.h (compiled only if present)
@@ -272,21 +273,27 @@ irradiance/prefilter/BRDF-LUT maps in `ibl.rs`, an optional skybox, and a live
 `projection_params.y`, so it never rebuilds the IBL maps);
 **bloom** (HDR glow) is off by default — a bright-pass + separable blur over the
 linear-HDR bloom MRT so only bright highlights glow and overlays never do;
-**SSAO** is on by default — a hemisphere-kernel occlusion + 5×5 bilateral blur
-over a *separate single-sample* view-normal/view-Z G-buffer (its own mesh-only
-pass, not an MSAA MRT), composed in post as ambient-only attenuation so direct
-and specular light are never darkened. **Tone mapping** is on by default — the
+**Ambient Occlusion** (GTAO internally) is on by default — horizon-based
+occlusion + a view-space bent normal + 5×5 bilateral blur over a *separate
+single-sample* view-normal/view-Z G-buffer (its own mesh-only pass, not an MSAA
+MRT). Composed in post as an additive correction over the full radiance: the bent
+normal re-lights the diffuse ambient against the irradiance cube (with Activision
+multi-bounce) and occludes the split IBL specular, so direct + emissive light are
+never darkened. UI knobs are Radius / Intensity / Thickness / Quality; user-facing
+strings stay "Ambient Occlusion". **Tone mapping** is on by default — the
 composite applies a selectable operator (Khronos PBR Neutral / Linear / Reinhard /
 ACES / AgX) to the linear-HDR radiance before sRGB encoding; toggling it off is a
-linear pass-through. The status bar's right group holds the IBL / Bloom / SSAO /
-Tonemapper / Anti-aliasing toggles (left-click toggles, right-click opens each
+linear pass-through. The status bar's right group holds the IBL / Bloom / Ambient
+Occlusion / Tonemapper / Anti-aliasing toggles (left-click toggles, right-click opens each
 tool's options panel — Environment / Bloom / Ambient Occlusion / Tonemapper / Anti
 Aliasing).
 
 The renderer is now **fully linear-HDR with Reversed-Z scene depth**: scene MRT
 location 0 carries linear radiance (PBR-Neutral tone mapping + `linear_to_srgb`
 moved into `post.wgsl`); location 1 is the linear-HDR bloom source; location 2 is
-the AO-eligible ambient radiance (IBL diffuse + analytic fill only). Scene depth
+the AO-eligible diffuse ambient radiance (IBL diffuse + analytic fill only);
+location 3 is the split IBL specular (`rgb`) + its roughness (`a`), which post
+applies bent-normal-aware specular occlusion to. Scene depth
 is `Depth32Float` cleared to 0 with `GreaterEqual` and infinite reversed
 perspective (`perspective_infinite_reverse_rh`); egui's framebuffer keeps its own
 `EGUI_DEPTH_FORMAT`. The model wireframe is a plain `LineList` drawn inside the
@@ -309,18 +316,25 @@ render checks stay manual.
   `include_str!` in `scene/gpu_types.rs`); update it in lockstep with the
   `#[repr(C)]` `SceneUniforms`/`SceneVertex` structs there (the
   `scene_shader_validates` naga test lives beside them) if you change them.
-- The scene geometry pass is **MRT** with **three** color targets: `scene.wgsl`'s
+- The scene geometry pass is **MRT** with **four** color targets: `scene.wgsl`'s
   `FragOutput` writes location 0 (linear scene radiance), location 1 (linear-HDR
-  bloom source) and location 2 (AO-eligible ambient radiance), so every scene
-  pipeline (mesh/line/uv-fill/skybox) must declare *three* color targets — built
-  via the shared `scene_color_targets` factory in `scene/pipelines.rs` — and the
-  offscreen pass *three* attachments + resolves — keep them in lockstep with
-  `FragOutput`. All three locations alpha-blend now (location 2 is ambient
-  radiance, no longer packed view-Z). Overlays (zero-normal verts) write 0 to
-  locations 1 and 2 so they neither bloom nor get AO-darkened. SSAO no longer
+  bloom source), location 2 (AO-eligible diffuse ambient radiance) and location 3
+  (split IBL specular `rgb` + roughness `a`), so every scene pipeline
+  (mesh/line/uv-fill/skybox) must declare *four* color targets — built via the
+  shared `scene_color_targets` factory in `scene/pipelines.rs` — and the offscreen
+  pass *four* attachments + resolves — keep them in lockstep with `FragOutput`. All
+  four locations alpha-blend now. Overlays (zero-normal verts) write 0 to locations
+  1, 2 and 3 so they neither bloom, get AO-darkened, nor get re-lit. GTAO no longer
   reads location 2's normal: it has its own single-sample mesh-only pass
-  (`fs_ssao_gbuffer`, one `@location(0)` output of view normal `xyz` + view Z `w`)
-  into a separate G-buffer target, avoiding MSAA edge averaging. Tone mapping +
+  (`fs_gtao_gbuffer`, one `@location(0)` output of view normal `xyz` + view Z `w`)
+  into a separate G-buffer target, avoiding MSAA edge averaging. GTAO is
+  horizon-based (`gtao.wgsl`) and outputs both occlusion and a **view-space bent
+  normal** (`Rgba16Float`: bent normal `xyz` + AO `w`); `post.wgsl` converts the
+  bent + geom normals to world (via `inv_view`), re-samples the diffuse irradiance
+  cube to re-light the ambient (with Activision multi-bounce), and occludes the
+  split specular — an additive correction over location 0 so bloom/MSAA stay
+  correct. Because post re-samples the irradiance cube, its bind group is rebuilt
+  on environment switch (`sync_environment`), not just on resize. Tone mapping +
   sRGB encoding happen once in `post.wgsl`, not in the scene shader. naga's WGSL
   rejects `_` digit separators in numeric literals (e.g. `0.227_027`) — write
   float constants without them, and use `textureSampleLevel` (not `textureSample`)

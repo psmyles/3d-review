@@ -311,6 +311,10 @@ impl CallbackTrait for SceneCallback {
                 steps,
             );
         }
+        // The post pass re-lights the GTAO bent-normal ambient, so it needs the
+        // inverse-view (view→world normals) + projection (view-position for n·v)
+        // matrices and the IBL parameters. Unused in UV mode (GTAO is off there).
+        let is_ortho = matches!(self.projection_mode, CameraProjection::Orthographic);
         resources.post.update_uniform(
             queue,
             width.max(1),
@@ -321,6 +325,12 @@ impl CallbackTrait for SceneCallback {
             gtao_active,
             self.tonemap.enabled,
             self.tonemap.operator.shader_index(),
+            self.camera.view_matrix().inverse(),
+            self.camera.projection_matrix(self.projection_mode),
+            self.environment.ibl_enabled,
+            self.environment.rotation_degrees.to_radians(),
+            self.environment.intensity,
+            is_ortho,
         );
         self.encode_scene(resources, egui_encoder);
         if gtao_active {
@@ -380,10 +390,20 @@ impl SceneCallback {
                         store: wgpu::StoreOp::Store,
                     },
                 }),
-                // Location 2: ambient radiance GTAO is allowed to attenuate.
+                // Location 2: diffuse ambient radiance GTAO is allowed to attenuate.
                 Some(wgpu::RenderPassColorAttachment {
                     view: &resources.targets.ambient_render_view,
                     resolve_target: resources.targets.ambient_resolve_view.as_ref(),
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+                // Location 3: IBL specular (+ roughness) for bent-normal-aware
+                // specular occlusion in post.
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &resources.targets.specular_render_view,
+                    resolve_target: resources.targets.specular_resolve_view.as_ref(),
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
