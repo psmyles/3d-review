@@ -1,6 +1,6 @@
 //! Scene render-pipeline construction: the mesh / line / UV-fill / selection-fill
 //! pipelines (rebuilt per MSAA level), the skybox pipeline, and the single-sample
-//! SSAO G-buffer pipeline. Pure builders over the shared pipeline layout + shader.
+//! GTAO G-buffer pipeline. Pure builders over the shared pipeline layout + shader.
 
 use super::SCENE_DEPTH_FORMAT;
 use super::SceneVertex;
@@ -167,15 +167,15 @@ pub(super) fn build_scene_pipelines(
 }
 
 /// Mesh-only pipeline that writes a single-sample view-space normal/Z buffer for
-/// SSAO. It deliberately has no MSAA so geometry-edge normals/depths are not
+/// GTAO. It deliberately has no MSAA so geometry-edge normals/depths are not
 /// averaged by a resolve before the AO shader samples them.
-pub(super) fn create_ssao_gbuffer_pipeline(
+pub(super) fn create_gtao_gbuffer_pipeline(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
     shader: &wgpu::ShaderModule,
 ) -> wgpu::RenderPipeline {
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("review_ssao_gbuffer_pipeline"),
+        label: Some("review_gtao_gbuffer_pipeline"),
         layout: Some(layout),
         vertex: wgpu::VertexState {
             module: shader,
@@ -202,7 +202,7 @@ pub(super) fn create_ssao_gbuffer_pipeline(
         multisample: wgpu::MultisampleState::default(),
         fragment: Some(wgpu::FragmentState {
             module: shader,
-            entry_point: Some("fs_ssao_gbuffer"),
+            entry_point: Some("fs_gtao_gbuffer"),
             targets: &[Some(wgpu::ColorTargetState {
                 format: SCENE_HDR_FORMAT,
                 blend: None,
@@ -252,7 +252,7 @@ fn create_skybox_pipeline(
             module: shader,
             entry_point: Some("fs_skybox"),
             // Opaque MRT (the skybox draws first over the cleared frame); writes
-            // zero ambient so SSAO never darkens the background.
+            // zero ambient so GTAO never darkens the background.
             targets: &scene_color_targets(None),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         }),

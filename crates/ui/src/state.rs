@@ -13,8 +13,8 @@ use glam::{Vec2, Vec3};
 use review_model::{Bounds, ModelData, ModelStats};
 use review_render::{
     AntiAliasing, BloomSettings, CameraProjection, CheckerTexture, DecodedImage,
-    EnvironmentSettings, MaterialEdit, MaterialSnapshot, MsaaSamples, SceneDebugOptions, Selection,
-    ShadingMode, SsaoSettings, TonemapSettings, UvShadingMode, VertexColorMode,
+    EnvironmentSettings, GtaoSettings, MaterialEdit, MaterialSnapshot, MsaaSamples,
+    SceneDebugOptions, Selection, ShadingMode, TonemapSettings, UvShadingMode, VertexColorMode,
 };
 
 use crate::theme;
@@ -431,7 +431,7 @@ pub enum OptionPanel {
     AntiAliasing,
     Environment,
     Bloom,
-    Ssao,
+    Gtao,
     Tonemap,
 }
 
@@ -448,7 +448,7 @@ impl OptionPanel {
         OptionPanel::AntiAliasing,
         OptionPanel::Environment,
         OptionPanel::Bloom,
-        OptionPanel::Ssao,
+        OptionPanel::Gtao,
         OptionPanel::Tonemap,
     ];
 
@@ -464,7 +464,7 @@ impl OptionPanel {
             OptionPanel::AntiAliasing => "Anti Aliasing",
             OptionPanel::Environment => "Environment",
             OptionPanel::Bloom => "Bloom",
-            OptionPanel::Ssao => "Ambient Occlusion",
+            OptionPanel::Gtao => "Ambient Occlusion",
             OptionPanel::Tonemap => "Tonemapper",
         }
     }
@@ -482,7 +482,7 @@ impl OptionPanel {
             OptionPanel::AntiAliasing => "panel_anti_aliasing",
             OptionPanel::Environment => "panel_environment",
             OptionPanel::Bloom => "panel_bloom",
-            OptionPanel::Ssao => "panel_ssao",
+            OptionPanel::Gtao => "panel_gtao",
             OptionPanel::Tonemap => "panel_tonemap",
         }
     }
@@ -578,14 +578,14 @@ pub struct UiState {
     /// debug option) and edited by the Bloom panel; the bloom status-bar button
     /// toggles `bloom.enabled`. Default is off (see [`BloomSettings`]).
     pub bloom: BloomSettings,
-    /// Screen-space ambient occlusion settings. Read straight by the viewport
-    /// callback and edited by the Ambient Occlusion panel; the SSAO status-bar
-    /// button toggles `ssao.enabled`. Default is on (see [`SsaoSettings`]).
-    pub ssao: SsaoSettings,
-    /// Whether the active adapter can run SSAO, set by `app` from
-    /// [`review_render::ssao_supported`]. The status-bar SSAO button is disabled
+    /// Ambient occlusion (GTAO) settings. Read straight by the viewport
+    /// callback and edited by the Ambient Occlusion panel; the AO status-bar
+    /// button toggles `gtao.enabled`. Default is on (see [`GtaoSettings`]).
+    pub gtao: GtaoSettings,
+    /// Whether the active adapter can run GTAO, set by `app` from
+    /// [`review_render::gtao_supported`]. The status-bar AO button is disabled
     /// (and forced off) when false (invariant 4).
-    pub ssao_supported: bool,
+    pub gtao_supported: bool,
     /// Tone-mapping settings. Read straight by the viewport callback (not a debug
     /// option) and edited by the Tonemapper panel; the status-bar tonemapper button
     /// toggles `tonemap.enabled`. Default is on with Khronos PBR Neutral (see
@@ -624,7 +624,7 @@ pub struct UiState {
     pub outliner_filter: String,
     /// Mesh nodes the user has hidden via the Outliner's per-row visibility
     /// checkbox (node indices into [`review_model::ModelData::nodes`]). The scene
-    /// callback filters these meshes' triangles out of the viewport draw + SSAO
+    /// callback filters these meshes' triangles out of the viewport draw + GTAO
     /// (Phase 2). Cleared by `app` on model load (the indices no longer apply).
     pub hidden_meshes: HashSet<usize>,
     /// Whether the dockable Outliner side panel (left) is open. egui owns its
@@ -696,8 +696,8 @@ impl Default for UiState {
             // once the device is known.
             ibl_supported: true,
             bloom: BloomSettings::default(),
-            ssao: SsaoSettings::default(),
-            ssao_supported: true,
+            gtao: GtaoSettings::default(),
+            gtao_supported: true,
             tonemap: TonemapSettings::default(),
             stats: ModelStats::default(),
             materials_snapshot: Vec::new(),

@@ -8,10 +8,10 @@ mod anti_aliasing;
 mod bloom;
 mod bounding_box;
 mod environment;
+mod gtao;
 pub(crate) mod inspector;
 mod normals;
 pub(crate) mod outliner;
-mod ssao;
 mod tonemap;
 mod uv_checker;
 mod vertex_colors;
@@ -58,7 +58,7 @@ pub(crate) fn draw_panel_body(ui: &mut egui::Ui, state: &mut UiState, panel: Opt
         OptionPanel::AntiAliasing => anti_aliasing::body(ui, state),
         OptionPanel::Environment => environment::body(ui, state),
         OptionPanel::Bloom => bloom::body(ui, state),
-        OptionPanel::Ssao => ssao::body(ui, state),
+        OptionPanel::Gtao => gtao::body(ui, state),
         OptionPanel::Tonemap => tonemap::body(ui, state),
     }
 }

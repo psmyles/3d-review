@@ -22,7 +22,7 @@ use review_import::{LoadOptions, load_model};
 use review_model::{ModelData, SceneBvh};
 use review_render::{
     DecodedImage, EGUI_DEPTH_FORMAT, EGUI_MSAA_SAMPLE_COUNT, Renderer, RendererConfig, ShadingMode,
-    TextureSlot, ibl_supported, ssao_supported, supported_msaa_levels,
+    TextureSlot, gtao_supported, ibl_supported, supported_msaa_levels,
 };
 use review_ui::{
     AxisGizmoAction, Notifications, Selection, TexViewRequest, TextureIntent, UiOutput, UiState,
@@ -406,8 +406,8 @@ impl ApplicationHandler<UserEvent> for App {
             // Gate the Environment IBL toggle on the adapter being able to build
             // the HDR maps (invariant 4).
             self.ui.ibl_supported = ibl_supported(&render_state.adapter);
-            // Gate the SSAO toggle on the adapter being able to run it (invariant 4).
-            self.ui.ssao_supported = ssao_supported(&render_state.adapter);
+            // Gate the AO toggle on the adapter being able to run GTAO (invariant 4).
+            self.ui.gtao_supported = gtao_supported(&render_state.adapter);
         }
 
         let egui_state = egui_winit::State::new(

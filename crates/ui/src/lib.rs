@@ -33,8 +33,9 @@ pub use assets::install_fonts;
 pub use notifications::Notifications;
 pub use overlay::{draw_overlay, draw_startup_fade, draw_viewport_scene};
 pub use review_render::{
-    AntiAliasing, BloomSettings, ChannelSelect, EnvironmentMap, EnvironmentSettings, MsaaSamples,
-    Selection, SsaoSettings, TextureSlot, ibl_supported, ssao_supported, supported_msaa_levels,
+    AntiAliasing, BloomSettings, ChannelSelect, EnvironmentMap, EnvironmentSettings, GtaoQuality,
+    GtaoSettings, MsaaSamples, Selection, TextureSlot, gtao_supported, ibl_supported,
+    supported_msaa_levels,
 };
 pub use state::{
     AxisGizmoAction, BoundingBoxPanelState, NormalPanelState, OptionPanel, OutlinerTab, PanelsOpen,

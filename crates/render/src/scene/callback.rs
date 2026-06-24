@@ -14,7 +14,7 @@ use crate::material::MaterialState;
 use crate::selection::SelectionView;
 use crate::{
     AntiAliasing, BloomSettings, CameraProjection, CheckerTexture, EnvironmentSettings,
-    OrbitCamera, SceneDebugOptions, ShadingMode, SsaoSettings, TonemapSettings, UvCamera,
+    GtaoSettings, OrbitCamera, SceneDebugOptions, ShadingMode, TonemapSettings, UvCamera,
     UvShadingMode,
 };
 
@@ -47,9 +47,9 @@ pub struct SceneCallback {
     environment: EnvironmentSettings,
     /// Bloom (HDR glow) settings. Drives the bloom passes + the composite add.
     bloom: BloomSettings,
-    /// Screen-space ambient occlusion settings. Drives the SSAO + blur passes and
+    /// Screen-space ambient occlusion settings. Drives the GTAO + blur passes and
     /// the composite multiply.
-    ssao: SsaoSettings,
+    gtao: GtaoSettings,
     /// Tone-mapping settings. Drives the tone-map stage of the composite shader.
     tonemap: TonemapSettings,
     /// Editable per-material PBR parameters (seeded from import defaults, edited
@@ -63,7 +63,7 @@ pub struct SceneCallback {
     /// outline and the solo (isolate) draw filter (Phase 2).
     selection: SelectionView,
     /// Mesh nodes the Outliner has hidden (node indices). Their triangles are
-    /// filtered out of the viewport draw + SSAO G-buffer (Phase 2). Empty means
+    /// filtered out of the viewport draw + GTAO G-buffer (Phase 2). Empty means
     /// everything is visible.
     hidden_meshes: Vec<u32>,
     /// `Some` renders the 2D UV viewport instead of the 3D scene.
@@ -87,7 +87,7 @@ impl SceneCallback {
         anti_aliasing: AntiAliasing,
         environment: EnvironmentSettings,
         bloom: BloomSettings,
-        ssao: SsaoSettings,
+        gtao: GtaoSettings,
         tonemap: TonemapSettings,
         materials: &[MaterialState],
         material_revision: u64,
@@ -104,7 +104,7 @@ impl SceneCallback {
             anti_aliasing,
             environment,
             bloom,
-            ssao,
+            gtao,
             tonemap,
             materials: materials.to_vec(),
             material_revision,
@@ -143,10 +143,10 @@ impl SceneCallback {
                 enabled: false,
                 ..BloomSettings::default()
             },
-            // SSAO is a 3D-only effect; the flat UV viewport has no depth to occlude.
-            ssao: SsaoSettings {
+            // GTAO is a 3D-only effect; the flat UV viewport has no depth to occlude.
+            gtao: GtaoSettings {
                 enabled: false,
-                ..SsaoSettings::default()
+                ..GtaoSettings::default()
             },
             // The UV viewport keeps the default tone mapping so its shaded fills
             // read the same as in the 3D scene.
@@ -286,26 +286,29 @@ impl CallbackTrait for SceneCallback {
         let [width, height] = screen_descriptor.size_in_pixels;
         resources.sync_anti_aliasing(device, queue, width, height, self.anti_aliasing);
 
-        // Bloom + SSAO are 3D-only effects (both forced off in UV mode). Feed the
-        // composite the FXAA / bloom / SSAO flags, and run their passes after the
+        // Bloom + GTAO are 3D-only effects (both forced off in UV mode). Feed the
+        // composite the FXAA / bloom / GTAO flags, and run their passes after the
         // scene so the blurred glow + AO are ready when `paint` composites them.
         let bloom_active = self.uv_view.is_none() && self.bloom.enabled;
-        let ssao_active = self.uv_view.is_none() && self.ssao.enabled;
+        let gtao_active = self.uv_view.is_none() && self.gtao.enabled;
         resources
             .bloom
             .update_threshold(queue, self.bloom.threshold);
-        if ssao_active {
+        if gtao_active {
             // The settings' radius/bias are fractions of the framed model's
             // bounding-sphere radius, so the AO look is scale-invariant; scale them
             // into view units by the live scene radius here.
             let scene_radius = self.camera.scene_radius.max(1e-3);
-            resources.ssao.update(
+            let (slices, steps) = self.gtao.quality.slices_steps();
+            resources.gtao.update(
                 queue,
                 self.camera.projection_matrix(self.projection_mode),
                 matches!(self.projection_mode, CameraProjection::Orthographic),
-                self.ssao.radius * scene_radius,
-                self.ssao.bias * scene_radius,
-                self.ssao.intensity,
+                self.gtao.radius * scene_radius,
+                self.gtao.intensity,
+                self.gtao.thickness,
+                slices,
+                steps,
             );
         }
         resources.post.update_uniform(
@@ -315,14 +318,14 @@ impl CallbackTrait for SceneCallback {
             self.anti_aliasing.effective_fxaa(),
             bloom_active,
             self.bloom.intensity,
-            ssao_active,
+            gtao_active,
             self.tonemap.enabled,
             self.tonemap.operator.shader_index(),
         );
         self.encode_scene(resources, egui_encoder);
-        if ssao_active {
-            resources.encode_ssao_gbuffer(egui_encoder);
-            resources.encode_ssao(egui_encoder);
+        if gtao_active {
+            resources.encode_gtao_gbuffer(egui_encoder);
+            resources.encode_gtao(egui_encoder);
         }
         if bloom_active {
             resources.encode_bloom(egui_encoder);
@@ -377,7 +380,7 @@ impl SceneCallback {
                         store: wgpu::StoreOp::Store,
                     },
                 }),
-                // Location 2: ambient radiance SSAO is allowed to attenuate.
+                // Location 2: ambient radiance GTAO is allowed to attenuate.
                 Some(wgpu::RenderPassColorAttachment {
                     view: &resources.targets.ambient_render_view,
                     resolve_target: resources.targets.ambient_resolve_view.as_ref(),

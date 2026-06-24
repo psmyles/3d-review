@@ -118,14 +118,14 @@ pub(crate) const ICON_BLOOM: AppIcon = AppIcon {
     id: "icon_bloom",
     png_bytes: include_bytes!("../../../assets/icons/icon_bloom.png"),
 };
-/// "Ambient occlusion" — toggles SSAO; right-click opens the Ambient Occlusion
+/// "Ambient occlusion" — toggles GTAO; right-click opens the Ambient Occlusion
 /// options panel (status bar, right, grouped with IBL + Bloom + Anti aliasing).
 pub(crate) const ICON_AO: AppIcon = AppIcon {
     id: "icon_ao",
     png_bytes: include_bytes!("../../../assets/icons/icon_ao.png"),
 };
 /// "Tonemapper" — toggles tone mapping; right-click opens the Tonemapper options
-/// panel (status bar, right, grouped with IBL + Bloom + SSAO + Anti aliasing).
+/// panel (status bar, right, grouped with IBL + Bloom + AO + Anti aliasing).
 pub(crate) const ICON_TONEMAPPER: AppIcon = AppIcon {
     id: "icon_tonemapper",
     png_bytes: include_bytes!("../../../assets/icons/icon_tonemapper.png"),

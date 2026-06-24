@@ -3,7 +3,7 @@
 //! drawing straight into egui's framebuffer, the scene renders into these
 //! render-owned textures and is composited back through the post pass
 //! (`post.rs`). That offscreen seam is what later passes (tone mapping, bloom,
-//! SSAO, IBL, GPU-buffer visualization) hook into.
+//! GTAO, IBL, GPU-buffer visualization) hook into.
 //!
 //! The targets carry the scene's MSAA level (`AntiAliasing::msaa`, Phase 2): at
 //! 2×/4×/8×/16× the color is multisampled and resolved into a single-sample
@@ -23,8 +23,8 @@ pub(crate) const SCENE_HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg
 /// (textures are immutable in both), via `SceneResources::sync_targets`.
 ///
 /// The scene geometry pass renders to three color attachments (MRT): linear HDR
-/// `color`, linear HDR bloom source, and linear ambient radiance that SSAO is
-/// allowed to attenuate. The actual normal/depth SSAO G-buffer is a separate
+/// `color`, linear HDR bloom source, and linear ambient radiance that GTAO is
+/// allowed to attenuate. The actual normal/depth GTAO G-buffer is a separate
 /// single-sample target owned alongside the AO pass.
 pub(crate) struct SceneTargets {
     pub(crate) width: u32,
@@ -46,7 +46,7 @@ pub(crate) struct SceneTargets {
     /// present only when MSAA is on.
     pub(crate) bloom_resolve_view: Option<wgpu::TextureView>,
     /// Ambient radiance attachment (MRT location 2), MSAA-matched to the scene.
-    /// This stores only the lighting terms SSAO may darken.
+    /// This stores only the lighting terms GTAO may darken.
     pub(crate) ambient_render_view: wgpu::TextureView,
     /// Single-sample resolve of `ambient_render_view` (the texture post samples),
     /// present only when MSAA is on.

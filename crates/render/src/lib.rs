@@ -7,18 +7,19 @@ use review_model::{Bounds, MaterialImportDefaults};
 mod bloom;
 mod config;
 mod geometry;
+mod gtao;
 mod ibl;
 mod material;
 mod mipmap;
 mod post;
 mod scene;
 mod selection;
-mod ssao;
 mod targets;
 mod tex;
 mod texture;
 
 pub use config::*;
+pub use gtao::gtao_supported;
 pub use ibl::ibl_supported;
 pub use material::{
     AlphaMode, MaterialChange, MaterialEdit, MaterialSnapshot, MaterialState, RoughnessWorkflow,
@@ -26,7 +27,6 @@ pub use material::{
 };
 pub use scene::{EGUI_DEPTH_FORMAT, EGUI_MSAA_SAMPLE_COUNT, SCENE_DEPTH_FORMAT, SceneCallback};
 pub use selection::{Selection, SelectionView};
-pub use ssao::ssao_supported;
 pub use tex::TexCallback;
 pub use texture::{
     ChannelSelect, DecodedImage, TEXTURE_SLOT_COUNT, TextureSlot, decode_image, suggested_channel,
@@ -346,7 +346,7 @@ impl OrbitCamera {
     }
 
     /// The projection matrix alone (view → clip), fit to the current near/far.
-    /// Split out from [`view_projection`] so passes that work in view space (SSAO
+    /// Split out from [`view_projection`] so passes that work in view space (GTAO
     /// reconstructs view-space position from this and projects sample points back
     /// through it) can get the projection without the view baked in.
     ///

@@ -1,5 +1,5 @@
 // Post / composite pass: samples the resolved linear-HDR offscreen scene targets,
-// applies ambient-only SSAO, adds bloom, tone-maps, encodes to sRGB, and writes
+// applies ambient-only GTAO, adds bloom, tone-maps, encodes to sRGB, and writes
 // the final LDR color into egui's framebuffer behind the chrome. FXAA operates on
 // the composed display-space result.
 
@@ -13,7 +13,7 @@ struct PostUniforms {
     fxaa_enabled: u32,
     bloom_enabled: u32,
     bloom_intensity: f32,
-    ssao_enabled: u32,
+    gtao_enabled: u32,
     tonemap_enabled: u32,
     tonemap_op: u32,
 };
@@ -23,11 +23,11 @@ var<uniform> post: PostUniforms;
 // back over the scene when `bloom_enabled` is set.
 @group(0) @binding(3)
 var bloom_texture: texture_2d<f32>;
-// Blurred SSAO occlusion (R8, full-res). Multiplied into the scene's ambient
-// light when `ssao_enabled` is set.
+// Blurred GTAO occlusion (R8, full-res). Multiplied into the scene's ambient
+// light when `gtao_enabled` is set.
 @group(0) @binding(4)
-var ssao_texture: texture_2d<f32>;
-// Linear HDR ambient radiance eligible for SSAO attenuation.
+var gtao_texture: texture_2d<f32>;
+// Linear HDR ambient radiance eligible for GTAO attenuation.
 @group(0) @binding(5)
 var ambient_texture: texture_2d<f32>;
 
@@ -190,8 +190,8 @@ fn apply_tonemap(color: vec3<f32>) -> vec3<f32> {
 
 fn compose_ldr(uv: vec2<f32>) -> vec3<f32> {
     var lit = textureSample(scene_color, scene_sampler, uv).rgb;
-    if (post.ssao_enabled != 0u) {
-        let ao = textureSample(ssao_texture, scene_sampler, uv).r;
+    if (post.gtao_enabled != 0u) {
+        let ao = textureSample(gtao_texture, scene_sampler, uv).r;
         let ambient = textureSample(ambient_texture, scene_sampler, uv).rgb;
         lit = max(lit - ambient * (1.0 - ao), vec3<f32>(0.0));
     }

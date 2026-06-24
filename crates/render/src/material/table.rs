@@ -96,7 +96,7 @@ pub(crate) struct MaterialTable {
     /// One bind group per material (binds its uniform slice + texture views).
     bind_groups: Vec<wgpu::BindGroup>,
     /// All-fallback bind group, bound for draws that don't sample a real material
-    /// (overlays, grid, skybox, UV, SSAO G-buffer).
+    /// (overlays, grid, skybox, UV, GTAO G-buffer).
     fallback_bind_group: wgpu::BindGroup,
 }
 
@@ -283,7 +283,7 @@ impl MaterialTable {
     }
 
     /// The all-fallback bind group, bound for draws that don't sample a real
-    /// material (overlays, grid, skybox, UV, SSAO G-buffer).
+    /// material (overlays, grid, skybox, UV, GTAO G-buffer).
     pub fn fallback_bind_group(&self) -> &wgpu::BindGroup {
         &self.fallback_bind_group
     }
