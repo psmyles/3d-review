@@ -208,20 +208,17 @@ fn shade_ibl(albedo: vec3<f32>, world_normal: vec3<f32>, world_pos: vec3<f32>, r
 }
 
 // Scene fragment output (MRT): location 0 is the linear HDR color the composite
-// tone-maps; location 1 is the linear HDR radiance bloom thresholds;
-// location 2 is the linear ambient radiance GTAO may attenuate. Overlays write 0
-// alpha to locations 1 and 2 so grid / wireframe / normal lines never glow and
-// never darken.
+// tone-maps; location 1 is the linear ambient radiance GTAO may attenuate.
+// Overlays write 0 alpha to location 1 so grid / wireframe / normal lines never
+// darken.
 struct FragOutput {
     @location(0) color: vec4<f32>,
-    @location(1) bloom: vec4<f32>,
-    @location(2) ambient: vec4<f32>,
+    @location(1) ambient: vec4<f32>,
 };
 
 @fragment
 fn fs_main(input: VertexOutput) -> FragOutput {
     var out: FragOutput;
-    out.bloom = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     out.ambient = vec4<f32>(0.0, 0.0, 0.0, 0.0);
 
     let shading_mode = uniforms.render_options.x;
@@ -253,9 +250,9 @@ fn fs_main(input: VertexOutput) -> FragOutput {
 
     // Grid / wireframe / normal lines carry a zero normal — they always render
     // their own vertex color and never pick up the checker / vertex-color tint.
-    // They emit no bloom. Their ambient output has zero color but the overlay
-    // alpha, masking the mesh ambient beneath them so post AO only darkens the
-    // still-visible mesh fraction, not the overlay color itself.
+    // Their ambient output has zero color but the overlay alpha, masking the mesh
+    // ambient beneath them so post AO only darkens the still-visible mesh
+    // fraction, not the overlay color itself.
     if (normal_length_sq < 1e-6) {
         out.color = vec4<f32>(srgb_to_linear(input.vertex_color.rgb), input.vertex_color.a);
         out.ambient = vec4<f32>(0.0, 0.0, 0.0, input.vertex_color.a);
@@ -315,10 +312,8 @@ fn fs_main(input: VertexOutput) -> FragOutput {
     }
 
     if (shading_mode < 1.5) {
-        // Unlit: flat emissive material color. Carry its linear value to the bloom
-        // target so a bright unlit surface can glow past the threshold.
+        // Unlit: flat emissive material color.
         out.color = vec4<f32>(base_color, out_alpha);
-        out.bloom = vec4<f32>(base_color, 1.0);
         return out;
     }
 
@@ -398,9 +393,8 @@ fn fs_main(input: VertexOutput) -> FragOutput {
     color_linear = color_linear + ambient_linear * (ao - 1.0);
     ambient_linear = ambient_linear * ao;
 
-    // Emissive adds on top of the lit result (linear), and contributes to bloom so
-    // a bright emissive surface can glow. Default emissive is black (no effect);
-    // an emissive texture (when bound) modulates it.
+    // Emissive adds on top of the lit result (linear). Default emissive is black
+    // (no effect); an emissive texture (when bound) modulates it.
     var emissive = material.emissive.rgb;
     if (has_emissive) {
         // An emissive map with the default (black) factor still shows at full
@@ -420,7 +414,6 @@ fn fs_main(input: VertexOutput) -> FragOutput {
     color_linear = color_linear + emissive;
 
     out.color = vec4<f32>(color_linear, out_alpha);
-    out.bloom = vec4<f32>(color_linear, 1.0);
     out.ambient = vec4<f32>(ambient_linear, out_alpha);
     return out;
 }
@@ -428,16 +421,14 @@ fn fs_main(input: VertexOutput) -> FragOutput {
 // Selection flash: a flat color fill over the selected triangles (the solo index
 // buffer, drawn over the mesh vertices). Ignores the mesh's lighting and material
 // entirely — it emits the uniform highlight color tinted by the flash fade alpha.
-// Writes zero bloom so the flash never glows, and zero ambient *color* with the
-// fade alpha so it masks (rather than darkens via GTAO) the mesh ambient beneath,
-// matching the other overlays. As `selection_color.a` reaches 0 the fill blends
-// fully away.
+// Writes zero ambient *color* with the fade alpha so it masks (rather than darkens
+// via GTAO) the mesh ambient beneath, matching the other overlays. As
+// `selection_color.a` reaches 0 the fill blends fully away.
 @fragment
 fn fs_selection(input: VertexOutput) -> FragOutput {
     var out: FragOutput;
     let fade = uniforms.selection_color.a;
     out.color = vec4<f32>(srgb_to_linear(uniforms.selection_color.rgb), fade);
-    out.bloom = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     out.ambient = vec4<f32>(0.0, 0.0, 0.0, fade);
     return out;
 }
@@ -497,7 +488,6 @@ fn fs_skybox(input: SkyOutput) -> FragOutput {
     let color = min(raw, vec3<f32>(65504.0));
     var out: FragOutput;
     out.color = vec4<f32>(color, 1.0);
-    out.bloom = vec4<f32>(color, 1.0);
     // The sky is background: no ambient target, so GTAO never darkens it.
     out.ambient = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     return out;

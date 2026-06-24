@@ -5,7 +5,6 @@
 //! [`pipelines`] / [`buffers`], and the WGSL-lockstep GPU types in [`gpu_types`].
 
 use crate::UvShadingMode;
-use crate::bloom::BloomPass;
 use crate::gtao::GtaoPass;
 use crate::ibl::IblResources;
 use crate::material::{MaterialDrawRange, MaterialTable};
@@ -21,6 +20,7 @@ mod resources;
 
 pub use callback::SceneCallback;
 pub(crate) use gpu_types::SceneVertex;
+use pipelines::ScenePipelines;
 
 pub const SCENE_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Depth format of egui's own framebuffer. The scene uses `Depth32Float`
@@ -116,25 +116,14 @@ struct SceneResources {
     targets: SceneTargets,
     /// The fullscreen composite pass (offscreen scene → egui's framebuffer).
     post: PostPass,
-    /// Bind group feeding the resolved scene color + blurred bloom to `post`;
-    /// rebuilt with `targets`.
+    /// Bind group feeding the resolved scene color + blurred AO + ambient radiance
+    /// to `post`; rebuilt with `targets`.
     post_bind_group: wgpu::BindGroup,
-    /// The bloom bright-pass + blur pass (Phase 4). Size-independent; the half-res
-    /// ping-pong textures + bind groups below are rebuilt with `targets`.
-    bloom: BloomPass,
-    /// Half-resolution HDR ping-pong textures the bloom blur bounces between.
-    /// `a` holds the bright-pass output and the final (post-blur) result `post`
-    /// samples; `b` is the intermediate. Recreated on resize.
-    bloom_tex_a: wgpu::TextureView,
-    bloom_tex_b: wgpu::TextureView,
-    /// Bloom bind groups: bright-pass reads the scene bloom source, the blur reads
-    /// `a` (→ `b`) then `b` (→ `a`). Rebuilt when the bloom textures are.
-    bloom_brightpass_bind_group: wgpu::BindGroup,
-    bloom_blur_h_bind_group: wgpu::BindGroup,
-    bloom_blur_v_bind_group: wgpu::BindGroup,
     /// The GTAO occlusion + blur pass (Phase 5). Size-independent; the full-res AO
-    /// textures + bind groups below are rebuilt with `targets`.
-    gtao: GtaoPass,
+    /// textures + bind groups below are rebuilt with `targets`. `None` until the
+    /// deferred `Gtao` build stage runs (Phase B); until then the composite treats
+    /// AO as inactive (an empty startup scene has nothing to occlude anyway).
+    gtao: Option<GtaoPass>,
     /// Single-sample GTAO G-buffer (view-space normal + view-space Z). Kept out
     /// of the MSAA scene MRTs so normals/depths are not averaged across geometry
     /// edges before the AO pass samples them.
@@ -146,32 +135,26 @@ struct SceneResources {
     gtao_raw_view: wgpu::TextureView,
     gtao_blur_view: wgpu::TextureView,
     /// GTAO bind groups: the occlusion pass reads the single-sample G-buffer, the
-    /// blur reads that same G-buffer plus `raw`. Rebuilt when the AO textures /
-    /// G-buffer are.
-    gtao_bind_group: wgpu::BindGroup,
-    gtao_blur_bind_group: wgpu::BindGroup,
+    /// blur reads that same G-buffer plus `raw`. `None` until the deferred GTAO
+    /// pass is built; rebuilt with it / when the AO textures / G-buffer are.
+    gtao_bind_group: Option<wgpu::BindGroup>,
+    gtao_blur_bind_group: Option<wgpu::BindGroup>,
     model_revision: u64,
     mesh_uv_channel: u32,
-    /// Default mesh pipeline: back faces culled (only camera-facing surfaces
-    /// drawn). Used when [`SceneDebugOptions::render_backfaces`] is off.
-    mesh_pipeline: wgpu::RenderPipeline,
-    /// Double-sided mesh pipeline: no face culling, so back faces are drawn too.
-    /// Used when [`SceneDebugOptions::render_backfaces`] is on. Built alongside
-    /// `mesh_pipeline` and rebuilt with it on MSAA change.
-    mesh_pipeline_double_sided: wgpu::RenderPipeline,
+    /// The deferred scene pipelines — mesh (culled + double-sided), UV-fill,
+    /// selection-fill, skybox, and the single-sample GTAO G-buffer — grouped so
+    /// they build together off the first frame (Phase B). `None` until the
+    /// `ScenePipelines` build stage runs; the grid-only first frame draws without
+    /// them, and a mesh / skybox / UV-fill / selection draw is skipped while they
+    /// are absent. Rebuilt (the MSAA-dependent subset) on antialiasing change.
+    scene_pipelines: Option<ScenePipelines>,
+    /// Line-list pipeline for the grid + every line overlay (wireframe, bounding
+    /// box, face/vertex normals). Part of the core build, since the grid-only
+    /// first frame draws with it; rebuilt on MSAA change.
     line_pipeline: wgpu::RenderPipeline,
-    /// Flat-color triangle pipeline for the selection-highlight flash: depth-tested
-    /// (Reversed-Z `GreaterEqual`) but no depth write, MRT like the mesh, drawing
-    /// `fs_selection` (uniform highlight color × flash fade).
-    selection_fill_pipeline: wgpu::RenderPipeline,
-    /// Mesh-only pipeline that writes the single-sample GTAO normal/depth buffer.
-    gtao_gbuffer_pipeline: wgpu::RenderPipeline,
-    /// Fullscreen pipeline that draws the environment cubemap as the background.
-    skybox_pipeline: wgpu::RenderPipeline,
-    /// Flat-color triangle pipeline for the UV island fill: no lighting (the fill
-    /// vertices carry a zero normal), no depth write/bias — it sits under the UV
-    /// wireframe and is composited by draw order in the 2D viewport.
-    uv_fill_pipeline: wgpu::RenderPipeline,
+    /// Cursor over the deferred GPU-resource build (Phase B), advanced one stage
+    /// per frame by [`SceneResources::advance_build`].
+    build_stage: BuildStage,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
     checker_bind_group_greyscale: wgpu::BindGroup,
@@ -231,3 +214,22 @@ type BoundingBoxParams = ([f32; 4], bool, Vec<u32>);
 /// date — including the Outliner's hidden set, so a hidden mesh's normal lines
 /// drop with the mesh itself.
 type NormalParams = (f32, [f32; 4], Vec<u32>);
+
+/// Cursor over the deferred GPU-resource build (Phase B). After the cheap core
+/// build ([`SceneResources::new_core`]) presents the grid-only first frame,
+/// [`SceneResources::advance_build`] walks these stages one per frame so the heavy
+/// pipeline compilation is spread across the first few frames behind the startup
+/// warmup, instead of all landing on frame 1. IBL stays in the core build (it is a
+/// cheap baked-map upload, not a precompute), so it is not a stage here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuildStage {
+    /// Build the deferred [`ScenePipelines`] (the five MSAA-dependent scene
+    /// pipelines + the GTAO G-buffer) — needed before a mesh / skybox / UV-fill /
+    /// selection can draw, so this runs first.
+    ScenePipelines,
+    /// Build the GTAO effect pass + its bind groups. A no-op on an empty startup
+    /// scene (nothing to occlude), so it builds last.
+    Gtao,
+    /// Everything built; [`SceneResources::advance_build`] is a no-op.
+    Done,
+}

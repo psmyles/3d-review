@@ -12,9 +12,9 @@ use std::sync::Arc;
 use glam::{Vec2, Vec3};
 use review_model::{Bounds, ModelData, ModelStats};
 use review_render::{
-    AntiAliasing, BloomSettings, CameraProjection, CheckerTexture, DecodedImage,
-    EnvironmentSettings, GtaoSettings, MaterialEdit, MaterialSnapshot, MsaaSamples,
-    SceneDebugOptions, Selection, ShadingMode, TonemapSettings, UvShadingMode, VertexColorMode,
+    AntiAliasing, CameraProjection, CheckerTexture, DecodedImage, EnvironmentSettings,
+    GtaoSettings, MaterialEdit, MaterialSnapshot, MsaaSamples, SceneDebugOptions, Selection,
+    ShadingMode, TonemapSettings, UvShadingMode, VertexColorMode,
 };
 
 use crate::theme;
@@ -430,7 +430,6 @@ pub enum OptionPanel {
     VertexColors,
     AntiAliasing,
     Environment,
-    Bloom,
     Gtao,
     Tonemap,
 }
@@ -438,7 +437,7 @@ pub enum OptionPanel {
 impl OptionPanel {
     /// Every panel, in toolbar order. Iterated each frame to draw the open ones
     /// (and to give each a stable cascade slot), so the order is deterministic.
-    pub(crate) const ALL: [OptionPanel; 11] = [
+    pub(crate) const ALL: [OptionPanel; 10] = [
         OptionPanel::Wireframe,
         OptionPanel::BoundingBox,
         OptionPanel::UvChecker,
@@ -447,7 +446,6 @@ impl OptionPanel {
         OptionPanel::VertexColors,
         OptionPanel::AntiAliasing,
         OptionPanel::Environment,
-        OptionPanel::Bloom,
         OptionPanel::Gtao,
         OptionPanel::Tonemap,
     ];
@@ -463,7 +461,6 @@ impl OptionPanel {
             OptionPanel::VertexColors => "Vertex Colors",
             OptionPanel::AntiAliasing => "Anti Aliasing",
             OptionPanel::Environment => "Environment",
-            OptionPanel::Bloom => "Bloom",
             OptionPanel::Gtao => "Ambient Occlusion",
             OptionPanel::Tonemap => "Tonemapper",
         }
@@ -481,7 +478,6 @@ impl OptionPanel {
             OptionPanel::VertexColors => "panel_vertex_colors",
             OptionPanel::AntiAliasing => "panel_anti_aliasing",
             OptionPanel::Environment => "panel_environment",
-            OptionPanel::Bloom => "panel_bloom",
             OptionPanel::Gtao => "panel_gtao",
             OptionPanel::Tonemap => "panel_tonemap",
         }
@@ -558,8 +554,8 @@ pub struct UiState {
     pub face_normals: NormalPanelState,
     pub vertex_normals: NormalPanelState,
     pub vertex_colors: VertexColorPanelState,
-    /// Scene antialiasing (MSAA level + FXAA). Read straight by the viewport
-    /// callback — not a debug option — and edited by the Anti Aliasing panel.
+    /// Scene antialiasing (MSAA level). Read straight by the viewport callback —
+    /// not a debug option — and edited by the Anti Aliasing panel.
     pub anti_aliasing: AntiAliasing,
     /// MSAA levels the active adapter actually supports, set by `app` from
     /// [`review_render::supported_msaa_levels`]. The Anti Aliasing menu disables
@@ -574,10 +570,6 @@ pub struct UiState {
     /// [`review_render::ibl_supported`]. The Environment panel disables (and
     /// forces off) the IBL toggle when false (invariant 4).
     pub ibl_supported: bool,
-    /// Bloom (HDR glow) settings. Read straight by the viewport callback (not a
-    /// debug option) and edited by the Bloom panel; the bloom status-bar button
-    /// toggles `bloom.enabled`. Default is off (see [`BloomSettings`]).
-    pub bloom: BloomSettings,
     /// Ambient occlusion (GTAO) settings. Read straight by the viewport
     /// callback and edited by the Ambient Occlusion panel; the AO status-bar
     /// button toggles `gtao.enabled`. Default is on (see [`GtaoSettings`]).
@@ -695,7 +687,6 @@ impl Default for UiState {
             // Assume supported until the adapter is queried; `app` corrects this
             // once the device is known.
             ibl_supported: true,
-            bloom: BloomSettings::default(),
             gtao: GtaoSettings::default(),
             gtao_supported: true,
             tonemap: TonemapSettings::default(),

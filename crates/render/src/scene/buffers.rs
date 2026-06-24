@@ -1,11 +1,10 @@
 //! Buffer + texture + bind-group construction for the scene: the mesh/index/line
-//! vertex buffers, the bloom + GTAO ping-pong/target textures and their bind
-//! groups, the one-shot target clear, the fullscreen bloom/GTAO pass helper, and
-//! the baked UV-checker textures. Pure builders, no `SceneResources` state.
+//! vertex buffers, the GTAO target textures and their bind groups, the one-shot
+//! target clear, the fullscreen pass helper, and the baked UV-checker textures.
+//! Pure builders, no `SceneResources` state.
 
 use wgpu::util::DeviceExt;
 
-use crate::bloom::BloomPass;
 use crate::gtao::{GTAO_FORMAT, GtaoPass};
 use crate::targets::{SCENE_HDR_FORMAT, SceneTargets};
 
@@ -96,81 +95,6 @@ pub(super) fn create_line_buffer(
     (vertex_buffer, vertices.len() as u32)
 }
 
-/// Create one half-resolution HDR bloom ping-pong texture (render target + sampled
-/// in later passes) and return its view.
-fn create_bloom_texture(
-    device: &wgpu::Device,
-    width: u32,
-    height: u32,
-    label: &str,
-) -> wgpu::TextureView {
-    device
-        .create_texture(&wgpu::TextureDescriptor {
-            label: Some(label),
-            size: wgpu::Extent3d {
-                width: width.max(1),
-                height: height.max(1),
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: SCENE_HDR_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        })
-        .create_view(&wgpu::TextureViewDescriptor::default())
-}
-
-/// (Re)create the half-resolution bloom textures + the three bloom bind groups,
-/// and refresh the blur sampling offsets for the new size. Called on creation and
-/// whenever the scene targets are recreated (resize / MSAA change). Returns the
-/// new `(bloom_a, bloom_b, brightpass_bg, blur_h_bg, blur_v_bg)`. The composite
-/// bind group is built by the caller (it also depends on the GTAO AO texture).
-pub(super) fn build_bloom_targets(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    targets: &SceneTargets,
-    bloom: &BloomPass,
-) -> (
-    wgpu::TextureView,
-    wgpu::TextureView,
-    wgpu::BindGroup,
-    wgpu::BindGroup,
-    wgpu::BindGroup,
-) {
-    let half_width = (targets.width / 2).max(1);
-    let half_height = (targets.height / 2).max(1);
-    let bloom_tex_a = create_bloom_texture(device, half_width, half_height, "review_bloom_tex_a");
-    let bloom_tex_b = create_bloom_texture(device, half_width, half_height, "review_bloom_tex_b");
-
-    // The composite binds `bloom_tex_a` every frame but only samples it when bloom
-    // is active. Clear both once at creation so D3D12's debug layer doesn't flag
-    // the texture as read-before-initialized while bloom is off (the bloom passes
-    // fully overwrite them with `LoadOp::Clear` whenever bloom is on).
-    clear_views(
-        device,
-        queue,
-        &[&bloom_tex_a, &bloom_tex_b],
-        "review_bloom_init",
-    );
-
-    bloom.update_blur_offsets(queue, half_width, half_height);
-
-    let brightpass_bg = bloom.brightpass_bind_group(device, targets.sampled_bloom_view());
-    // The horizontal blur reads `a` (→ `b`); the vertical reads `b` (→ `a`).
-    let blur_h_bg = bloom.blur_h_bind_group(device, &bloom_tex_a);
-    let blur_v_bg = bloom.blur_v_bind_group(device, &bloom_tex_b);
-
-    (
-        bloom_tex_a,
-        bloom_tex_b,
-        brightpass_bg,
-        blur_h_bg,
-        blur_v_bg,
-    )
-}
-
 /// Create one full-resolution single-channel AO texture (render target + sampled
 /// in later passes) and return its view.
 fn create_gtao_texture(
@@ -234,12 +158,34 @@ fn create_gtao_gbuffer_targets(
     )
 }
 
+/// (Re)create the full-resolution GTAO G-buffer + AO textures and clear the
+/// sampled ones. Pass-independent, so the core first-frame build can make them
+/// before the deferred GTAO pass exists (Phase B); [`build_gtao_targets`] adds
+/// the bind groups once the pass lands. Returns `(gbuffer, depth, raw, blur)`.
+pub(super) fn build_gtao_textures(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    targets: &SceneTargets,
+) -> (
+    wgpu::TextureView,
+    wgpu::TextureView,
+    wgpu::TextureView,
+    wgpu::TextureView,
+) {
+    let (gbuffer, depth) = create_gtao_gbuffer_targets(device, targets.width, targets.height);
+    let raw = create_gtao_texture(device, targets.width, targets.height, "review_gtao_raw");
+    let blur = create_gtao_texture(device, targets.width, targets.height, "review_gtao_blur");
+    // The composite binds the blurred AO every frame but only samples it when
+    // GTAO is on, so the sampled views are cleared once here to satisfy D3D12's
+    // read-before-init validation.
+    clear_views(device, queue, &[&gbuffer, &raw, &blur], "review_gtao_init");
+    (gbuffer, depth, raw, blur)
+}
+
 /// (Re)create the full-resolution GTAO G-buffer, AO textures and bind groups.
 /// The occlusion pass reads the single-sample G-buffer → `raw`; the bilateral
-/// blur reads both the same G-buffer and `raw` → `blur`. Called on creation and
-/// whenever scene targets are recreated. As with bloom, the composite binds the
-/// blurred AO every frame but only samples it when GTAO is on, so all sampled
-/// views are cleared once here to satisfy D3D12's read-before-init validation.
+/// blur reads both the same G-buffer and `raw` → `blur`. Called whenever scene
+/// targets are recreated while the GTAO pass is built.
 pub(super) fn build_gtao_targets(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -253,11 +199,7 @@ pub(super) fn build_gtao_targets(
     wgpu::BindGroup,
     wgpu::BindGroup,
 ) {
-    let (gbuffer, depth) = create_gtao_gbuffer_targets(device, targets.width, targets.height);
-    let raw = create_gtao_texture(device, targets.width, targets.height, "review_gtao_raw");
-    let blur = create_gtao_texture(device, targets.width, targets.height, "review_gtao_blur");
-    clear_views(device, queue, &[&gbuffer, &raw, &blur], "review_gtao_init");
-
+    let (gbuffer, depth, raw, blur) = build_gtao_textures(device, queue, targets);
     let gtao_bg = gtao.occlusion_bind_group(device, &gbuffer, &blur, "review_gtao_bg");
     let blur_bg = gtao.blur_bind_group(device, &gbuffer, &raw, "review_gtao_blur_bg");
     (gbuffer, depth, raw, blur, gtao_bg, blur_bg)
@@ -265,7 +207,7 @@ pub(super) fn build_gtao_targets(
 
 /// Clear a set of color views once (`LoadOp::Clear` to black), in a single
 /// throwaway encoder. Used to initialise render targets that a later pass binds
-/// but may not write before first read (bloom / AO when their effect is off).
+/// but may not write before first read (the GTAO textures when AO is off).
 fn clear_views(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -293,10 +235,10 @@ fn clear_views(
     queue.submit(std::iter::once(encoder.finish()));
 }
 
-/// Run one fullscreen bloom pass: clear `target`, bind `pipeline` + `bind_group`,
-/// draw the fullscreen triangle. The bloom textures are single-sample with no
-/// depth, so the pass is a bare color attachment.
-pub(super) fn bloom_fullscreen_pass(
+/// Run one fullscreen pass: clear `target`, bind `pipeline` + `bind_group`, draw
+/// the fullscreen triangle. The GTAO textures are single-sample with no depth, so
+/// the pass is a bare color attachment.
+pub(super) fn fullscreen_pass(
     encoder: &mut wgpu::CommandEncoder,
     pipeline: &wgpu::RenderPipeline,
     bind_group: &wgpu::BindGroup,

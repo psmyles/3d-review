@@ -5,7 +5,6 @@
 //! `egui::SidePanel`s. So this module only fills in controls.
 
 mod anti_aliasing;
-mod bloom;
 mod bounding_box;
 mod environment;
 mod gtao;
@@ -57,7 +56,6 @@ pub(crate) fn draw_panel_body(ui: &mut egui::Ui, state: &mut UiState, panel: Opt
         OptionPanel::VertexColors => vertex_colors::body(ui, state),
         OptionPanel::AntiAliasing => anti_aliasing::body(ui, state),
         OptionPanel::Environment => environment::body(ui, state),
-        OptionPanel::Bloom => bloom::body(ui, state),
         OptionPanel::Gtao => gtao::body(ui, state),
         OptionPanel::Tonemap => tonemap::body(ui, state),
     }

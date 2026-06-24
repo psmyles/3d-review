@@ -1,5 +1,5 @@
 //! Renderer configuration + per-view option types: shading / projection /
-//! anti-aliasing / environment / bloom / GTAO / tone-map / UV / debug-overlay
+//! anti-aliasing / environment / GTAO / tone-map / UV / debug-overlay
 //! settings, the adapter-capability probe, and `RendererConfig`. These form the
 //! UI→render and model→render *option contract* (a clean seam for the future
 //! renderer swap); `Renderer` and the cameras live in the crate root and read
@@ -62,19 +62,16 @@ impl MsaaSamples {
     }
 }
 
-/// The viewer's antialiasing configuration: a master on/off plus the MSAA level
-/// and an optional FXAA post-process pass. Read by [`SceneCallback`] to size the
-/// offscreen targets / scene pipelines and to drive the composite shader.
+/// The viewer's antialiasing configuration: a master on/off plus the MSAA level.
+/// Read by [`SceneCallback`] to size the offscreen targets / scene pipelines.
 ///
 /// `enabled` is the toolbar toggle (left-click): when off, the scene renders with
-/// no antialiasing at all regardless of `msaa` / `fxaa`, but those settings are
-/// retained so toggling back on restores them. The default (enabled, 4× MSAA,
-/// FXAA off) matches the pre-Phase-2 fixed pipeline.
+/// no antialiasing at all regardless of `msaa`, but the level is retained so
+/// toggling back on restores it. The default is enabled at 4× MSAA.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AntiAliasing {
     pub enabled: bool,
     pub msaa: MsaaSamples,
-    pub fxaa: bool,
 }
 
 impl Default for AntiAliasing {
@@ -82,7 +79,6 @@ impl Default for AntiAliasing {
         Self {
             enabled: true,
             msaa: MsaaSamples::X4,
-            fxaa: false,
         }
     }
 }
@@ -96,12 +92,6 @@ impl AntiAliasing {
         } else {
             1
         }
-    }
-
-    /// Whether the FXAA post pass should run: only when AA is enabled *and* FXAA
-    /// is ticked.
-    pub fn effective_fxaa(self) -> bool {
-        self.enabled && self.fxaa
     }
 }
 
@@ -213,35 +203,6 @@ impl Default for EnvironmentSettings {
             map: EnvironmentMap::default(),
             intensity: 1.0,
             rotation_degrees: 0.0,
-        }
-    }
-}
-
-/// Bloom (HDR glow) configuration for the shaded view. Read by [`SceneCallback`]
-/// to drive the bloom passes and the composite add.
-///
-/// Bloom thresholds the scene's linear HDR bloom source (carried in a second
-/// render target alongside the linear HDR scene color, so overlays never bloom),
-/// blurs what is brighter than `threshold`, and adds it back in the composite
-/// scaled by `intensity`.
-/// `enabled` is the toolbar toggle; the default is on with a threshold of 1.0, so
-/// only genuinely bright highlights (bright reflections / the skybox) glow while
-/// ordinary diffuse surfaces are untouched.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct BloomSettings {
-    pub enabled: bool,
-    /// Linear-HDR luminance above which a pixel contributes to bloom.
-    pub threshold: f32,
-    /// Multiplier on the blurred bloom when it is added back to the scene.
-    pub intensity: f32,
-}
-
-impl Default for BloomSettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            threshold: 1.0,
-            intensity: 0.6,
         }
     }
 }

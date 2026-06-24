@@ -105,6 +105,14 @@ struct App {
     /// triggering an immediate `request_redraw`, so a high-polling-rate mouse or
     /// key auto-repeat can't drive rendering faster than the monitor refresh.
     redraw_requested: bool,
+    /// Remaining startup "warmup" frames to pump (Phase B). The first frame builds
+    /// only the cheap core scene resources; the deferred scene pipelines + GTAO
+    /// pass then compile one stage per subsequent frame (in the scene callback's
+    /// `prepare`). While this is non-zero, `render` keeps scheduling the
+    /// next frame so the build drains behind the already-shown grid, then stops.
+    /// Seeded once in `resumed`; `app` can't see the render-side build state
+    /// (invariant 2), so it pumps a fixed, generous count rather than polling.
+    warmup_frames: u32,
     /// Minimum spacing between continuously-rendered frames, derived from the
     /// active monitor's refresh rate. Caps redraw to the display so animation
     /// doesn't render faster than it can be shown (the swapchain doesn't pace us
@@ -183,6 +191,14 @@ const SELECTION_FLASH: Duration = Duration::from_millis(500);
 /// transition step guard.
 const MAX_FLASH_STEP: Duration = Duration::from_millis(33);
 
+/// Startup warmup frames to pump after the first (core-only) frame (Phase B), so
+/// the deferred GPU-resource build drains behind the already-shown grid. The
+/// build completes in two stages (scene pipelines, then GTAO) — i.e. by the
+/// third frame — so the extra frames are a safety margin and cost only a few cheap
+/// grid redraws. `app` can't observe the render-side build state (invariant 2), so
+/// this is a fixed count rather than a completion signal.
+const STARTUP_WARMUP_FRAMES: u32 = 6;
+
 impl Default for App {
     fn default() -> Self {
         let scene_model = Arc::new(ModelData::default());
@@ -205,6 +221,7 @@ impl Default for App {
             last_render_instant: None,
             repaint_at: None,
             redraw_requested: false,
+            warmup_frames: 0,
             refresh_interval: Duration::from_secs_f64(1.0 / 60.0),
             scene_model,
             scene_revision: 0,
@@ -423,9 +440,12 @@ impl ApplicationHandler<UserEvent> for App {
         }
 
         // Paint the first frame directly rather than waiting on the first
-        // `RedrawRequested`, so the window shows the rendered scene as soon as
-        // it appears instead of an unpainted surface. This is where the scene
-        // pipelines compile + the IBL maps precompute (see `SceneResources::new`).
+        // `RedrawRequested`, so the window shows the rendered (grid-only) scene as
+        // soon as it appears instead of an unpainted surface. Only the cheap core
+        // resources build here (see `SceneResources::new_core`); the deferred scene
+        // pipelines + GTAO pass compile over the next few frames, which the
+        // startup warmup keeps pumping until the build drains.
+        self.warmup_frames = STARTUP_WARMUP_FRAMES;
         self.render();
         timer.lap("first_frame");
         timer.finish();
@@ -786,14 +806,20 @@ impl App {
         // The selection flash animates over ~0.5s; keep pacing frames until it
         // finishes so the highlight fades smoothly rather than freezing partway.
         let flash_active = self.selection_flash.is_some();
-        self.repaint_at = if repaint_delay.is_zero() || camera_animating || flash_active {
-            let frame_start = self.last_render_instant.unwrap_or_else(Instant::now);
-            Some(frame_start + self.refresh_interval)
-        } else if repaint_delay == Duration::MAX {
-            None
-        } else {
-            Instant::now().checked_add(repaint_delay)
-        };
+        // Pump startup warmup frames (Phase B) until the deferred GPU-resource
+        // build drains, so the scene pipelines + GTAO pass compile behind
+        // the already-shown grid. Paced like the other continuous-redraw sources.
+        let warming_up = self.warmup_frames > 0;
+        self.warmup_frames = self.warmup_frames.saturating_sub(1);
+        self.repaint_at =
+            if repaint_delay.is_zero() || camera_animating || flash_active || warming_up {
+                let frame_start = self.last_render_instant.unwrap_or_else(Instant::now);
+                Some(frame_start + self.refresh_interval)
+            } else if repaint_delay == Duration::MAX {
+                None
+            } else {
+                Instant::now().checked_add(repaint_delay)
+            };
 
         let pixels_per_point = full_output.pixels_per_point;
         let clipped_primitives = egui_ctx.tessellate(full_output.shapes, pixels_per_point);

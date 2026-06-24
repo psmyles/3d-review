@@ -8,7 +8,6 @@ use wgpu::util::DeviceExt;
 
 use review_model::ModelData;
 
-use crate::bloom::{BLOOM_BLUR_ITERATIONS, BloomPass};
 use crate::geometry::{
     bounding_box_lines, face_normal_lines, model_mesh, scene_lines, selection_geometry,
     uv_fill_triangles, uv_grid_lines, uv_wireframe_lines, vertex_normal_lines, visible_geometry,
@@ -25,13 +24,13 @@ use crate::{
     SceneDebugOptions, ShadingMode, UvCamera, UvShadingMode,
 };
 
-use super::SceneResources;
 use super::buffers::{
-    bloom_fullscreen_pass, build_bloom_targets, build_gtao_targets, create_checker_bind_group,
-    create_index_buffer, create_line_buffer, create_mesh_buffers,
+    build_gtao_targets, build_gtao_textures, create_checker_bind_group, create_index_buffer,
+    create_line_buffer, create_mesh_buffers, fullscreen_pass,
 };
 use super::gpu_types::{SHADER, SceneUniforms, shading_mode_value, vertex_color_value};
-use super::pipelines::{build_scene_pipelines, create_gtao_gbuffer_pipeline};
+use super::pipelines::{ScenePipelines, build_line_pipeline};
+use super::{BuildStage, SceneResources};
 
 /// The three derived line views, used to address one for freeing.
 #[derive(Debug, Clone, Copy)]
@@ -43,21 +42,31 @@ enum LineView {
 }
 
 impl SceneResources {
-    pub(super) fn new(
+    /// Build only the resources the grid-only first frame needs — the cheap
+    /// "core" of [`SceneResources`] (Phase B). The heavier deferred scene
+    /// pipelines and the GTAO effect pass are built afterwards, one stage
+    /// per frame, by [`Self::advance_build`] (driven across frames by `app`'s
+    /// startup warmup); until each lands, the matching draw / effect is skipped.
+    /// IBL stays in the core (a cheap baked-map upload, not a precompute), so the
+    /// shaded look is correct the instant a model appears.
+    pub(super) fn new_core(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         output_format: wgpu::TextureFormat,
     ) -> Self {
-        // Startup timing: this runs once, on the first frame, and is the bulk of
-        // the pre-viewport cost (shader/pipeline compilation + IBL precompute).
-        // Logged via `tracing::info!` (set RUST_LOG=info). Times are CPU-side —
-        // GPU execution of the encoded IBL passes is async.
+        // Startup timing: this runs once, on the first frame. With the deferred
+        // build (Phase B) it is now only the *core* cost — shader + line pipeline +
+        // post composite + the IBL baked-map upload + checker decode — not the full
+        // scene-pipeline + GTAO set, which `advance_build` compiles over the
+        // next frames. Logged via `tracing::info!` (set RUST_LOG=info).
         let build_start = std::time::Instant::now();
 
+        let shader_start = std::time::Instant::now();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("review_scene_shader"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
         });
+        let shader_module_ms = shader_start.elapsed().as_secs_f64() * 1000.0;
 
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("review_scene_uniform_buffer"),
@@ -169,57 +178,35 @@ impl SceneResources {
             push_constant_ranges: &[],
         });
 
-        // Scene pipelines start at the default MSAA level and are rebuilt by
-        // `sync_anti_aliasing` when the level changes (the sample count is baked
-        // into a pipeline at creation). `build_scene_pipelines` carries the
-        // depth-bias reasoning.
+        // Core pipeline: only the line pipeline (the grid-only first frame draws
+        // with it). The deferred scene pipelines (mesh / skybox / UV-fill /
+        // selection-fill + GTAO G-buffer) start at the default MSAA level and are
+        // built by `advance_build`, then rebuilt by `sync_anti_aliasing` on a level
+        // change (the sample count is baked into a pipeline at creation).
         let scene_sample_count = AntiAliasing::default().msaa.sample_count();
-        let pipelines_start = std::time::Instant::now();
-        let (
-            mesh_pipeline,
-            mesh_pipeline_double_sided,
-            line_pipeline,
-            uv_fill_pipeline,
-            selection_fill_pipeline,
-            skybox_pipeline,
-        ) = build_scene_pipelines(device, &pipeline_layout, &shader, scene_sample_count);
-        let gtao_gbuffer_pipeline = create_gtao_gbuffer_pipeline(device, &pipeline_layout, &shader);
-        let pipelines_ms = pipelines_start.elapsed().as_secs_f64() * 1000.0;
+        let line_start = std::time::Instant::now();
+        let line_pipeline =
+            build_line_pipeline(device, &pipeline_layout, &shader, scene_sample_count);
+        let line_pipeline_ms = line_start.elapsed().as_secs_f64() * 1000.0;
 
-        // Offscreen targets + the composite/bloom/GTAO passes. Each `*Pass::new`
-        // compiles its own shader(s), so this chunk is the rest of the first-frame
-        // pipeline-compilation cost beyond the scene pipelines above.
-        let passes_start = std::time::Instant::now();
-        // Targets start at 1x1 and are recreated at the real framebuffer size on
-        // the first `prepare` (`sync_anti_aliasing`); the post pass draws into
-        // egui's `output_format`.
+        // Offscreen targets + the composite pass. The GTAO *textures* are built
+        // here (the composite binds them from frame 1), but the GTAO effect *pass*
+        // — the expensive shader/pipeline compile — is deferred to `advance_build`.
+        // Targets start at 1x1 and are recreated at the real framebuffer size on the
+        // first `prepare` (`sync_anti_aliasing`); the post pass draws into egui's
+        // `output_format`.
         let targets = SceneTargets::new(device, queue, 1, 1, scene_sample_count);
+        let post_start = std::time::Instant::now();
         let post = PostPass::new(device, output_format);
-        let bloom = BloomPass::new(device);
-        let gtao = GtaoPass::new(device);
-        let (
-            bloom_tex_a,
-            bloom_tex_b,
-            bloom_brightpass_bind_group,
-            bloom_blur_h_bind_group,
-            bloom_blur_v_bind_group,
-        ) = build_bloom_targets(device, queue, &targets, &bloom);
-        let (
-            gtao_gbuffer_view,
-            gtao_depth_view,
-            gtao_raw_view,
-            gtao_blur_view,
-            gtao_bind_group,
-            gtao_blur_bind_group,
-        ) = build_gtao_targets(device, queue, &targets, &gtao);
+        let post_ms = post_start.elapsed().as_secs_f64() * 1000.0;
+        let (gtao_gbuffer_view, gtao_depth_view, gtao_raw_view, gtao_blur_view) =
+            build_gtao_textures(device, queue, &targets);
         let post_bind_group = post.create_bind_group(
             device,
             targets.sampled_view(),
-            &bloom_tex_a,
             &gtao_blur_view,
             targets.sampled_ambient_view(),
         );
-        let passes_ms = passes_start.elapsed().as_secs_f64() * 1000.0;
         let line_vertices = scene_lines();
         let (mesh_vertex_buffer, mesh_index_buffer, mesh_index_count) =
             create_mesh_buffers(device, &[], &[]);
@@ -246,10 +233,11 @@ impl SceneResources {
 
         tracing::info!(
             total_ms = build_start.elapsed().as_secs_f64() * 1000.0,
+            shader_module_ms,
+            line_pipeline_ms,
+            post_ms,
             ibl_ms,
-            scene_pipelines_ms = pipelines_ms,
-            post_bloom_gtao_ms = passes_ms,
-            "SceneResources::new (first-frame GPU resource build)"
+            "SceneResources::new_core (core first-frame GPU build; scene pipelines + GTAO deferred)"
         );
 
         Self {
@@ -278,28 +266,22 @@ impl SceneResources {
             targets,
             post,
             post_bind_group,
-            bloom,
-            bloom_tex_a,
-            bloom_tex_b,
-            bloom_brightpass_bind_group,
-            bloom_blur_h_bind_group,
-            bloom_blur_v_bind_group,
-            gtao,
+            // The GTAO effect pass + its bind groups are deferred to `advance_build`
+            // (Phase B); only its textures are built in the core.
+            gtao: None,
             gtao_gbuffer_view,
             gtao_depth_view,
             gtao_raw_view,
             gtao_blur_view,
-            gtao_bind_group,
-            gtao_blur_bind_group,
+            gtao_bind_group: None,
+            gtao_blur_bind_group: None,
             model_revision: u64::MAX,
             mesh_uv_channel: 0,
-            mesh_pipeline,
-            mesh_pipeline_double_sided,
+            // The deferred scene pipelines (built by `advance_build`); the core
+            // first frame draws with `line_pipeline` only.
+            scene_pipelines: None,
             line_pipeline,
-            selection_fill_pipeline,
-            gtao_gbuffer_pipeline,
-            skybox_pipeline,
-            uv_fill_pipeline,
+            build_stage: BuildStage::ScenePipelines,
             uniform_buffer,
             uniform_bind_group,
             checker_bind_group_greyscale,
@@ -332,12 +314,64 @@ impl SceneResources {
         }
     }
 
+    /// Advance the deferred GPU-resource build one stage (Phase B), compiling the
+    /// pipelines / passes that [`Self::new_core`] skipped so the grid-only first
+    /// frame stays cheap. Called once per frame from the scene callback's `prepare`
+    /// (after the frame that created the core), driven across frames by `app`'s
+    /// startup warmup. Returns whether more stages remain; a no-op once `Done`.
+    ///
+    /// Each stage reuses the existing builders verbatim, so once warm the resources
+    /// are identical to a one-shot build — only *when* they are built differs.
+    pub(super) fn advance_build(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> bool {
+        match self.build_stage {
+            BuildStage::ScenePipelines => {
+                // The five MSAA-dependent scene pipelines + the GTAO G-buffer, at
+                // the sample count `sync_anti_aliasing` settled the targets on. A
+                // CLI/file-association mesh needs these to draw, so they build first.
+                self.scene_pipelines = Some(ScenePipelines::build(
+                    device,
+                    &self.pipeline_layout,
+                    &self.shader,
+                    self.scene_sample_count,
+                ));
+                self.build_stage = BuildStage::Gtao;
+                true
+            }
+            BuildStage::Gtao => {
+                // GTAO pass + its bind groups (recreates the AO / G-buffer textures
+                // at the current size, so rebuild `post_bind_group` afterwards — it
+                // samples `gtao_blur_view`).
+                let gtao = GtaoPass::new(device);
+                let (gbuffer, depth, raw, blur, gtao_bg, blur_bg) =
+                    build_gtao_targets(device, queue, &self.targets, &gtao);
+                self.gtao_gbuffer_view = gbuffer;
+                self.gtao_depth_view = depth;
+                self.gtao_raw_view = raw;
+                self.gtao_blur_view = blur;
+                self.gtao_bind_group = Some(gtao_bg);
+                self.gtao_blur_bind_group = Some(blur_bg);
+                self.gtao = Some(gtao);
+
+                // The composite samples the just-recreated gtao_blur texture —
+                // repoint its bind group at it.
+                self.post_bind_group = self.post.create_bind_group(
+                    device,
+                    self.targets.sampled_view(),
+                    &self.gtao_blur_view,
+                    self.targets.sampled_ambient_view(),
+                );
+                self.build_stage = BuildStage::Done;
+                true
+            }
+            BuildStage::Done => false,
+        }
+    }
+
     /// Bring the offscreen targets, scene pipelines and composite uniform in line
     /// with the framebuffer size + the chosen antialiasing. Targets are recreated
     /// when the size or MSAA level changes; the scene pipelines are rebuilt only
-    /// when the MSAA level changes (their sample count is baked at creation); the
-    /// FXAA flag + texel size are written every frame (cheap). Steady-state frames
-    /// (unchanged size/level) allocate nothing.
+    /// when the MSAA level changes (their sample count is baked at creation).
+    /// Steady-state frames (unchanged size/level) allocate nothing.
     pub(super) fn sync_anti_aliasing(
         &mut self,
         device: &wgpu::Device,
@@ -348,25 +382,25 @@ impl SceneResources {
     ) {
         let width = width.max(1);
         let height = height.max(1);
-        // The master AA toggle collapses to single-sample + no FXAA when off; the
-        // panel's stored level/flag are honoured only while it is on.
+        // The master AA toggle collapses to single-sample when off; the panel's
+        // stored level is honoured only while it is on.
         let sample_count = anti_aliasing.effective_sample_count();
 
         if self.scene_sample_count != sample_count {
-            let (
-                mesh_pipeline,
-                mesh_pipeline_double_sided,
-                line_pipeline,
-                uv_fill_pipeline,
-                selection_fill_pipeline,
-                skybox_pipeline,
-            ) = build_scene_pipelines(device, &self.pipeline_layout, &self.shader, sample_count);
-            self.mesh_pipeline = mesh_pipeline;
-            self.mesh_pipeline_double_sided = mesh_pipeline_double_sided;
-            self.line_pipeline = line_pipeline;
-            self.uv_fill_pipeline = uv_fill_pipeline;
-            self.selection_fill_pipeline = selection_fill_pipeline;
-            self.skybox_pipeline = skybox_pipeline;
+            // The line pipeline is core (always present); rebuild it for the new
+            // level. The deferred scene pipelines rebuild their MSAA-dependent
+            // subset only if already built — otherwise the `ScenePipelines` build
+            // stage picks up the updated `scene_sample_count` set below.
+            self.line_pipeline =
+                build_line_pipeline(device, &self.pipeline_layout, &self.shader, sample_count);
+            if let Some(scene_pipelines) = &mut self.scene_pipelines {
+                scene_pipelines.rebuild_for_msaa(
+                    device,
+                    &self.pipeline_layout,
+                    &self.shader,
+                    sample_count,
+                );
+            }
             self.scene_sample_count = sample_count;
         }
 
@@ -375,75 +409,39 @@ impl SceneResources {
             || self.targets.sample_count != sample_count;
         if targets_stale {
             self.targets = SceneTargets::new(device, queue, width, height, sample_count);
-            // Every bind group reading the targets (bloom ping-pong, GTAO AO
-            // textures, and the composite) is now stale; rebuild them all.
-            let (
-                bloom_tex_a,
-                bloom_tex_b,
-                bloom_brightpass_bind_group,
-                bloom_blur_h_bind_group,
-                bloom_blur_v_bind_group,
-            ) = build_bloom_targets(device, queue, &self.targets, &self.bloom);
-            self.bloom_tex_a = bloom_tex_a;
-            self.bloom_tex_b = bloom_tex_b;
-            self.bloom_brightpass_bind_group = bloom_brightpass_bind_group;
-            self.bloom_blur_h_bind_group = bloom_blur_h_bind_group;
-            self.bloom_blur_v_bind_group = bloom_blur_v_bind_group;
 
-            let (
-                gtao_gbuffer_view,
-                gtao_depth_view,
-                gtao_raw_view,
-                gtao_blur_view,
-                gtao_bind_group,
-                gtao_blur_bind_group,
-            ) = build_gtao_targets(device, queue, &self.targets, &self.gtao);
+            // The GTAO *textures* always exist (the composite binds them); recreate
+            // them at the new size. Their pass bind groups are rebuilt only once the
+            // deferred GTAO pass is built (Phase B) — until then the composite treats
+            // AO as inactive, so the cleared textures are never sampled meaningfully.
+            let (gtao_gbuffer_view, gtao_depth_view, gtao_raw_view, gtao_blur_view) =
+                build_gtao_textures(device, queue, &self.targets);
             self.gtao_gbuffer_view = gtao_gbuffer_view;
             self.gtao_depth_view = gtao_depth_view;
             self.gtao_raw_view = gtao_raw_view;
             self.gtao_blur_view = gtao_blur_view;
-            self.gtao_bind_group = gtao_bind_group;
-            self.gtao_blur_bind_group = gtao_blur_bind_group;
+            if let Some(gtao) = &self.gtao {
+                self.gtao_bind_group = Some(gtao.occlusion_bind_group(
+                    device,
+                    &self.gtao_gbuffer_view,
+                    &self.gtao_blur_view,
+                    "review_gtao_bg",
+                ));
+                self.gtao_blur_bind_group = Some(gtao.blur_bind_group(
+                    device,
+                    &self.gtao_gbuffer_view,
+                    &self.gtao_raw_view,
+                    "review_gtao_blur_bg",
+                ));
+            }
 
-            // The composite reads the resolved color, the blurred bloom, and the
-            // blurred AO — all just recreated.
+            // The composite reads the resolved color, the (cleared-or-blurred) AO,
+            // and the ambient radiance — all just recreated.
             self.post_bind_group = self.post.create_bind_group(
                 device,
                 self.targets.sampled_view(),
-                &self.bloom_tex_a,
                 &self.gtao_blur_view,
                 self.targets.sampled_ambient_view(),
-            );
-        }
-    }
-
-    /// Run the bloom passes on egui's encoder, after the scene pass: bright-pass
-    /// the scene's resolved linear-HDR bloom source into the half-res `a`, then
-    /// ping-pong a separable Gaussian blur between `a` and `b`. Ends in `a`, which
-    /// the composite (`post`) samples. Only called when bloom is active.
-    pub(super) fn encode_bloom(&self, encoder: &mut wgpu::CommandEncoder) {
-        bloom_fullscreen_pass(
-            encoder,
-            &self.bloom.brightpass_pipeline,
-            &self.bloom_brightpass_bind_group,
-            &self.bloom_tex_a,
-            "review_bloom_brightpass_pass",
-        );
-        for _ in 0..BLOOM_BLUR_ITERATIONS {
-            // Horizontal: a → b, then vertical: b → a.
-            bloom_fullscreen_pass(
-                encoder,
-                &self.bloom.blur_pipeline,
-                &self.bloom_blur_h_bind_group,
-                &self.bloom_tex_b,
-                "review_bloom_blur_h_pass",
-            );
-            bloom_fullscreen_pass(
-                encoder,
-                &self.bloom.blur_pipeline,
-                &self.bloom_blur_v_bind_group,
-                &self.bloom_tex_a,
-                "review_bloom_blur_v_pass",
             );
         }
     }
@@ -452,6 +450,12 @@ impl SceneResources {
     /// MSAA resolve averaging view-space normals/Z across geometry edges before
     /// the occlusion and bilateral blur passes read them.
     pub(super) fn encode_gtao_gbuffer(&self, encoder: &mut wgpu::CommandEncoder) {
+        // The G-buffer pipeline is part of the deferred `ScenePipelines` (Phase B);
+        // it lands before GTAO is ever active (the GTAO pass builds in a later
+        // stage), so this guard is defensive.
+        let Some(scene_pipelines) = &self.scene_pipelines else {
+            return;
+        };
         // Match the shaded mesh draw's visibility: a hidden mesh casts no AO. Solo
         // is left out here (as before), so only the per-mesh hide filters the AO.
         let (index_buffer, index_count) = if self.visible_active {
@@ -491,7 +495,7 @@ impl SceneResources {
         // the G-buffer pass writes only normals/depth, so the all-fallback bind
         // group is fine. One draw over the whole index buffer (material irrelevant).
         render_pass.set_bind_group(3, self.material_table.fallback_bind_group(), &[]);
-        render_pass.set_pipeline(&self.gtao_gbuffer_pipeline);
+        render_pass.set_pipeline(&scene_pipelines.gtao_gbuffer);
         render_pass.set_vertex_buffer(0, self.mesh_vertex_buffer.slice(..));
         render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         render_pass.draw_indexed(0..index_count, 0, 0..1);
@@ -499,21 +503,30 @@ impl SceneResources {
 
     /// Run the GTAO passes on egui's encoder, after the scene pass: the occlusion
     /// pass reads the single-sample G-buffer into `raw`, then the bilateral blur
-    /// denoises `raw` → `blur`, which the composite (`post`) samples. Reuses the
-    /// bloom fullscreen-pass helper (single color attachment, no depth). Only
+    /// denoises `raw` → `blur`, which the composite (`post`) samples. Uses the
+    /// shared fullscreen-pass helper (single color attachment, no depth). Only
     /// called when GTAO is active.
     pub(super) fn encode_gtao(&self, encoder: &mut wgpu::CommandEncoder) {
-        bloom_fullscreen_pass(
-            encoder,
-            &self.gtao.gtao_pipeline,
+        // The deferred GTAO pass + its bind groups land together (Phase B); guarded
+        // defensively (the composite treats AO as inactive until they exist).
+        let (Some(gtao), Some(gtao_bg), Some(blur_bg)) = (
+            &self.gtao,
             &self.gtao_bind_group,
+            &self.gtao_blur_bind_group,
+        ) else {
+            return;
+        };
+        fullscreen_pass(
+            encoder,
+            &gtao.gtao_pipeline,
+            gtao_bg,
             &self.gtao_raw_view,
             "review_gtao_pass",
         );
-        bloom_fullscreen_pass(
+        fullscreen_pass(
             encoder,
-            &self.gtao.blur_pipeline,
-            &self.gtao_blur_bind_group,
+            &gtao.blur_pipeline,
+            blur_bg,
             &self.gtao_blur_view,
             "review_gtao_blur_pass",
         );

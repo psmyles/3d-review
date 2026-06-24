@@ -4,7 +4,6 @@ use std::sync::Arc;
 use glam::{Mat4, Vec2, Vec3};
 use review_model::{Bounds, MaterialImportDefaults};
 
-mod bloom;
 mod config;
 mod geometry;
 mod gtao;
