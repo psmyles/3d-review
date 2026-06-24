@@ -11,3 +11,5 @@
 UV view
 - wireframe color
 - uv overlap
+
+Tracy profiler integration

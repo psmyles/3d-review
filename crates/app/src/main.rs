@@ -55,9 +55,15 @@ use texture_manager::TextureDecode;
 use window_state::WindowPlacement;
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    let subscriber = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env());
+    // With `--features startup-trace`, egui-wgpu's + wgpu's `profiling::scope!`
+    // setup scopes become INFO spans; logging their CLOSE events prints each
+    // span's `time.busy`, breaking down the opaque `set_window` startup cost
+    // (adapter enumerate / request_device / surface configure / egui renderer).
+    #[cfg(feature = "startup-trace")]
+    let subscriber = subscriber.with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE);
+    subscriber.init();
 
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
@@ -380,6 +386,26 @@ impl ApplicationHandler<UserEvent> for App {
             true,
         ));
         timer.lap("adapter_device");
+        // This first `set_window` is the largest remaining startup chunk (~265ms on
+        // the RTX 4080 / DX12 dev box) and is INTRINSIC, not our overhead — do not
+        // re-investigate without new evidence. `Painter::new` above only built the
+        // wgpu *instance*; egui-wgpu defers all real GPU init to the first
+        // `set_window`, which runs `RenderState::create`: adapter enumerate +
+        // `request_device` + egui's `Renderer::new` + the first swapchain configure.
+        // Measured split (via `--features startup-trace`, which turns egui-wgpu's +
+        // wgpu's `profiling::scope!`s into logged spans): ~197ms `enumerate_adapters`
+        // + ~47ms `request_device` + ~13ms egui `Renderer::new` + ~4ms swapchain.
+        // The ~197ms is DX12 creating an `ID3D12Device` per adapter to probe its
+        // features (4 adapters on this box: the 4080 cold-loads the NVIDIA driver
+        // DLL, then 3 more probes). Phase D ruled out every angle: a background
+        // driver *pre-warm* can't help (the cold driver-DLL load ~130ms dwarfs the
+        // ~31ms head-start the main thread has before reaching here); *bypassing*
+        // egui to call `request_adapter` ourselves pays the SAME per-adapter probing
+        // cold (~200ms, measured), so it saves only noise; and it is unfixed upstream
+        // through wgpu 29 / egui-wgpu 0.34 + wgpu-hal trunk (wgpu #3332, closed
+        // "external: driver-bug"). Only a wgpu-hal fork skipping the 3 junk adapters
+        // could trim it (~61ms), not worth the maintenance. Do NOT trade away
+        // steady-state `AutoVsync` to chase it.
         pollster::block_on(egui_painter.set_window(egui::ViewportId::ROOT, Some(window.clone())))
             .expect("failed to initialize wgpu surface");
         timer.lap("surface_config");

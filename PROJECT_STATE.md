@@ -93,6 +93,38 @@ input/file path
   only while camera animation, pointer interaction, egui repaint, or startup fade
   needs it.
 
+## Startup Performance
+
+Startup was cut from ~1150ms to ~350ms (resumed → first frame submitted, release,
+RTX 4080 / DX12). The remaining budget is dominated by one intrinsic cost, below.
+Instrumentation is always on (`startup_timing.rs` laps + the `SceneResources::
+new_core` breakdown); `crates/app`'s `--features startup-trace` additionally turns
+egui-wgpu's + wgpu's `profiling::scope!`s into logged spans for a finer split.
+Re-measure with `RUST_LOG=3d_review=info,review_render=info` (narrow it — `info`
+alone pulls in wgpu's per-pipeline shader dumps, which inflate the timings).
+
+Landed:
+- **IBL baked offline** — runtime IBL is a pure upload (`from_baked`), no startup
+  precompute (was ~270ms).
+- **Deferred first frame** — `SceneResources::new_core` builds only what the
+  grid-only first frame needs; the heavy scene pipelines / GTAO / real IBL warm up
+  over the next few frames (`advance_build` + the app `warmup_frames` budget).
+- **Cheap line shader** — the one scene pipeline on the first-frame critical path
+  (the grid's `line_pipeline`) uses a dedicated flat-color `fs_line` entry instead
+  of the PBR `fs_main`. Measured A/B: its compile dropped 34.7ms → 7.4ms, taking
+  first_frame ~90ms → ~64ms and total ~388ms → ~352ms. Output is byte-identical to
+  `fs_main`'s zero-normal overlay branch.
+
+The floor — do NOT re-investigate without new evidence (fully detailed at the
+`set_window` call site in `crates/app/src/main.rs`): the first `set_window`
+(~265ms) is **intrinsic DX12 multi-adapter probing**, not our overhead. wgpu's
+`enumerate_adapters` creates an `ID3D12Device` per adapter to read its features
+(~197ms for 4 adapters, incl. the cold NVIDIA driver-DLL load), then
+`request_device` (~47ms) + egui `Renderer::new` (~13ms) + swapchain (~4ms). Phase
+D ruled out every workaround: driver pre-warm can't beat the cold-load timing,
+bypassing egui to call `request_adapter` ourselves pays the same per-adapter
+probing, and it is unfixed upstream through wgpu 29 / egui-wgpu 0.34 (wgpu #3332).
+
 ## What Is Good
 
 - The crate split is strong. `model` is renderer/UI agnostic, `render` avoids

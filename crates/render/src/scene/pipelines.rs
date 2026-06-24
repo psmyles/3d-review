@@ -95,6 +95,13 @@ impl ScenePipelines {
 /// alongside [`ScenePipelines::rebuild_for_msaa`]. It depth-tests (Reversed-Z
 /// `GreaterEqual`) but neither writes nor biases depth, so overlays win the test
 /// against the mesh that pushes itself back (see [`build_msaa_pipelines`]).
+///
+/// It uses the dedicated `fs_line` fragment entry, not the mesh's `fs_main`: lines
+/// only emit their flat vertex color, so building this (the one scene pipeline on
+/// the first-frame critical path) compiles a handful of instructions instead of
+/// all of `fs_main`'s PBR / IBL math — the cheap-overlay output is byte-identical
+/// to `fs_main`'s zero-normal branch. The heavier `fs_main` pipelines are deferred
+/// off the first frame ([`ScenePipelines::build`]), so they pay that compile later.
 pub(super) fn build_line_pipeline(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
@@ -112,7 +119,7 @@ pub(super) fn build_line_pipeline(
             bias: wgpu::DepthBiasState::default(),
         },
         sample_count,
-        "fs_main",
+        "fs_line",
         "review_scene_line_pipeline",
     )
 }

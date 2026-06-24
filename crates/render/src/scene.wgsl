@@ -418,6 +418,25 @@ fn fs_main(input: VertexOutput) -> FragOutput {
     return out;
 }
 
+// Flat-color fragment path for the grid + every line overlay (wireframe, bounding
+// box, face/vertex normal lines). These carry their color in the vertex-color
+// attribute and sample no texture and no light, so they get this dedicated tiny
+// entry instead of the full `fs_main`. The grid-only first frame builds its line
+// pipeline at startup (`build_line_pipeline`); pointing it here means that build
+// compiles only these few instructions rather than all of `fs_main`'s PBR / IBL
+// math, shaving most of that pipeline's compile off the first-frame cost. The
+// output is identical to `fs_main`'s zero-normal overlay branch above: linear
+// vertex color in location 0, and zero ambient *color* carrying the overlay alpha
+// in location 1 (so post GTAO darkens only the still-visible mesh fraction
+// beneath the line, never the overlay color itself).
+@fragment
+fn fs_line(input: VertexOutput) -> FragOutput {
+    var out: FragOutput;
+    out.color = vec4<f32>(srgb_to_linear(input.vertex_color.rgb), input.vertex_color.a);
+    out.ambient = vec4<f32>(0.0, 0.0, 0.0, input.vertex_color.a);
+    return out;
+}
+
 // Selection flash: a flat color fill over the selected triangles (the solo index
 // buffer, drawn over the mesh vertices). Ignores the mesh's lighting and material
 // entirely — it emits the uniform highlight color tinted by the flash fade alpha.
