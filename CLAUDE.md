@@ -6,8 +6,10 @@ Built on `winit` (window/event loop) + `wgpu` (GPU) + `egui` (overlay UI) +
 vendored `ufbx` (FBX parsing via a C bridge). Pure-Rust, no web/Electron layer.
 **Target priority: Windows.**
 
-Deeper docs: `PROJECT_STRUCTURE.md` (crate map, data flow, ownership),
-`MVP_PLAN.md` (goals + acceptance), `TODO.md` (running notes).
+Deeper docs: the crate map + data flow live in §2 below; `PROJECT_STATE.md`
+(architecture, status, risk register), `RENDERING_PIPELINE.md` (render-pass
+detail), `materials and textures plan.md` (the active materials/textures
+roadmap), and `TODO.md` (running notes).
 
 ## 1. Invariants — the rules an agent will break if not told
 
@@ -37,7 +39,8 @@ Deeper docs: `PROJECT_STRUCTURE.md` (crate map, data flow, ownership),
    barycentric buffers) is built when that view turns on and dropped when it
    turns off. The steady-state shaded view holds **zero** derived buffers.
    Implemented for the line views by `SceneResources::sync_line_views` in
-   `render/src/scene.rs` (build-on-demand, free-on-off, live param rebuild).
+   `render/src/scene/resources.rs` (build-on-demand, free-on-off, live param
+   rebuild).
 4. **Heavy derived views are GPU compute and capability-gated.** Compute-based
    views (normals/tangents/overdraw, post-MVP) read buffers already on the GPU
    and write transient storage buffers. Gate them on `wgpu` adapter features and
@@ -93,22 +96,38 @@ crates/
             (LMB orbit / RMB pan / wheel zoom / F frame / drag-drop /
             double-click-open), egui_winit + egui_wgpu wiring, redraw timing,
             applies UiOutput back to Renderer. -> src/main.rs;
+            scene texture pool + off-thread decode + disk-auto-reload
+            (an `impl App` block) -> src/texture_manager.rs;
             window position/size restore via %APPDATA% -> src/window_state.rs;
             startup black-fill (invariant 9 exception) -> src/startup_paint.rs
   model/    review-model: host-agnostic data only (glam dep only).
-            Vertex, Bounds, MaterialInfo, TopologyFace, ModelStats, ModelData,
-            recompute_bounds, demo_cube_model. -> src/lib.rs
+            Vertex, Bounds, MaterialImportDefaults, TopologyFace, ModelStats,
+            TriangleData (grouped per-triangle face/material/node arrays +
+            `validate` lockstep guard), ModelData, recompute_bounds,
+            demo_cube_model -> src/lib.rs; per-mesh-part triangle BVH (occlusion
+            for the dimension labels) -> src/bvh.rs
   import/   review-import: load_model/load_fbx, ImportError, the unsafe FFI
             (repr(C) mirror structs, checked_slice, model_from_bridge_scene),
             the vendored ufbx C + bridge, build.rs (cc, cfg(has_ufbx)).
             -> src/lib.rs, src/ufbx_bridge.c/.h, build.rs
-  render/   review-render: ShadingMode, VertexColorMode, ActiveMaterial,
-            CameraProjection, SceneDebugOptions, RendererConfig, OrbitCamera
-            (framing/orbit/pan/zoom/ortho+persp, Reversed-Z infinite perspective),
-            UvCamera (2D UV viewport), CameraTransition (0.3s ease-in-out cubic),
-            Renderer, SceneCallback (+ new_uv) + GPU resources/buffer upload.
-            -> src/lib.rs, src/scene.rs; CPU vertex generation -> src/geometry.rs;
-            scene shader -> src/scene.wgsl. SCENE_DEPTH_FORMAT (Depth32Float,
+  render/   review-render: per-view config/option types (ShadingMode,
+            VertexColorMode, ActiveMaterial, CameraProjection, AntiAliasing,
+            EnvironmentSettings, Bloom/Ssao/Tonemap settings, SceneDebugOptions,
+            RendererConfig) -> src/config.rs; OrbitCamera (framing/orbit/pan/zoom/
+            ortho+persp, Reversed-Z infinite perspective), UvCamera (2D UV
+            viewport), CameraTransition (0.3s ease-in-out cubic), Renderer ->
+            src/lib.rs. SceneCallback (+ new_uv) + the GPU resource cache split
+            into src/scene/: callback.rs (inputs + prepare/paint + the draw list),
+            resources.rs (SceneResources + sync/update/encode incl.
+            sync_line_views), pipelines.rs (pipeline builders + the 3-MRT
+            `scene_color_targets` factory), buffers.rs (buffer/texture/bind-group
+            builders), gpu_types.rs (the #[repr(C)] SceneUniforms/SceneVertex +
+            the scene.wgsl include + naga validation test). CPU vertex generation
+            -> src/geometry/ (vertex/grid/mesh/select/debug_lines/uv); editable
+            material table (group 3) + path-keyed texture cache -> src/material/
+            (state/table/upload); texture decode + filename channel auto-detect ->
+            src/texture.rs; scene shader -> src/scene.wgsl.
+            SCENE_DEPTH_FORMAT (Depth32Float,
             Reversed-Z) is separate from EGUI_DEPTH_FORMAT (Depth24Plus).
             Offscreen linear-HDR targets (linear scene radiance + linear-HDR bloom
             MRT + AO-eligible ambient-radiance MRT, all Rgba16Float; separate
@@ -121,7 +140,7 @@ crates/
             G-buffer) -> src/ssao.rs, src/ssao.wgsl. The model wireframe is a plain
             LineList drawn in the scene pass via `line_pipeline` (depth-tested
             against the mesh so hidden-face edges are occluded; no thickness
-            control) -> src/scene.rs + src/geometry.rs (`wireframe_lines`)
+            control) -> src/scene/ + src/geometry/ (`wireframe_lines`)
   ui/       review-ui: egui chrome built on egui's **native windowing**, not a
             hand-rolled layout system. Option tools are native `egui::Window`s
             (collapsible/closable, non-resizable, multi-open via
@@ -144,7 +163,7 @@ assets/test_models/ local FBX fixtures for manual checks
 
 Data flow: input/file-drop → `app` → `import` (FBX→`ModelData`) → `model`
 (shared) → `render` (camera + GPU buffers) → `ui` (overlays + scene callback) →
-`app` (applies UI intents, requests redraw). See `PROJECT_STRUCTURE.md`.
+`app` (applies UI intents, requests redraw). See §2 above + `PROJECT_STATE.md`.
 
 ## 3. Build & run
 
@@ -156,7 +175,8 @@ PATH so `cc` can compile `ufbx.c`).
 - `cargo clippy --workspace --all-targets -- -D warnings` — lint; **run before
   claiming done.**
 - `cargo fmt --all` — format.
-- `cargo test --workspace` — tests (currently none; add alongside changes).
+- `cargo test --workspace` — unit tests (model / import / render, incl. the
+  `scene_shader_validates` naga shader-validation test); add alongside changes.
 - `cargo build --release` — release binary.
 
 Pinned (workspace deps): `winit 0.30`, `wgpu 24`, `egui`/`egui-winit`/
@@ -219,7 +239,7 @@ dropped, but the Inter (proportional) + JetBrains Mono fonts are kept; only the
 numeric `DragValue` value boxes render in monospace (left-aligned, fixed width),
 everything else proportional. All visual values still come from the central
 `theme` module (invariant 8). Derived line views are freed on view-off and the
-normal length/color sliders update live (invariant 3, via `scene.rs`
+normal length/color sliders update live (invariant 3, via `scene/resources.rs`
 `sync_line_views`). The stats panel shows only measured values (invariant 5).
 Still pending: the toolbar/status-bar *interiors* are the last hand-laid
 (`scope_builder`) bit awaiting a native-layout rebuild.
@@ -257,10 +277,11 @@ scene pass via `line_pipeline`, so it depth-tests against the mesh (Reversed-Z
 `GreaterEqual`, no depth write) and edges on hidden faces are occluded, while the
 scene MSAA antialiases it (the trade-off is fixed 1px hardware line width).
 
-Known gaps (see MSRV note): no tests yet though `cargo test` is an acceptance
-criterion. Texture pane, texture loading/KTX2, a real material/texture table,
-in-app load-error/warning display, GPU-buffer visualization, and additional
-formats (glTF/OBJ) are post-MVP (`TODO.md`).
+Known gaps: the `Tex` viewport pane, compressed textures (KTX2/DDS), in-app
+load-error/warning display, GPU-buffer visualization, and additional import
+formats (glTF/OBJ) are post-MVP (`TODO.md`). Tests exist (model / import / render
+unit tests + the `scene_shader_validates` naga check, run headless in CI); GPU
+render checks stay manual.
 
 ## 6. Gotchas
 
@@ -268,12 +289,14 @@ formats (glTF/OBJ) are post-MVP (`TODO.md`).
   import unit tests.
 - GPU struct field order must match the WGSL `Uniforms`/vertex layouts
   (invariant 11) — the shader lives in `crates/render/src/scene.wgsl` (loaded via
-  `include_str!` in `scene.rs`); update it in lockstep with the `#[repr(C)]`
-  `SceneUniforms`/`SceneVertex` structs in `scene.rs` if you change them.
+  `include_str!` in `scene/gpu_types.rs`); update it in lockstep with the
+  `#[repr(C)]` `SceneUniforms`/`SceneVertex` structs there (the
+  `scene_shader_validates` naga test lives beside them) if you change them.
 - The scene geometry pass is **MRT** with **three** color targets: `scene.wgsl`'s
   `FragOutput` writes location 0 (linear scene radiance), location 1 (linear-HDR
   bloom source) and location 2 (AO-eligible ambient radiance), so every scene
-  pipeline (mesh/line/uv-fill/skybox) must declare *three* color targets and the
+  pipeline (mesh/line/uv-fill/skybox) must declare *three* color targets — built
+  via the shared `scene_color_targets` factory in `scene/pipelines.rs` — and the
   offscreen pass *three* attachments + resolves — keep them in lockstep with
   `FragOutput`. All three locations alpha-blend now (location 2 is ambient
   radiance, no longer packed view-Z). Overlays (zero-normal verts) write 0 to
@@ -286,8 +309,9 @@ formats (glTF/OBJ) are post-MVP (`TODO.md`).
   float constants without them, and use `textureSampleLevel` (not `textureSample`)
   anywhere a texture is read inside a loop/branch (non-uniform control flow).
 - CPU-side vertex generation (grid, wireframe, face/vertex normal lines) lives in
-  `crates/render/src/geometry.rs`; `scene.rs` owns the callback, GPU resources
-  and buffer upload. Derived line views are built-on-demand and freed-on-off by
+  `crates/render/src/geometry/` (one file per category); `scene/callback.rs` owns
+  the callback + draw list, `scene/resources.rs` the GPU resource cache + buffer
+  upload. Derived line views are built-on-demand and freed-on-off by
   `SceneResources::sync_line_views` (invariant 3) — a view's buffer exists only
   while its toggle is on and is rebuilt live when its baked length/color drifts.
   Add new debug views by following that ensure/free pattern.

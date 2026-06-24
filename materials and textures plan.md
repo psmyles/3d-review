@@ -57,22 +57,38 @@ later materials feature (per-channel views, mesh-audit overlays, etc.).
    UV, and wireframe builders.
 
 ## Patterns to reuse (don't reinvent)
+
+> Note: `scene.rs`, `geometry.rs` and `material.rs` were split into submodule
+> trees by the modularity refactor — the functions below now live under
+> `scene/`, `geometry/` and `material/`.
+
 - **Texture create/upload/sampler/bind-group + 1×1 fallback:** `IblResources`
-  ([ibl.rs:111](crates/render/src/ibl.rs#L111)) and `create_checker_bind_group`
-  ([scene.rs:1833](crates/render/src/scene.rs#L1833)).
+  ([ibl.rs](crates/render/src/ibl.rs)), `create_checker_bind_group`
+  ([scene/buffers.rs](crates/render/src/scene/buffers.rs)), and the editable
+  material table's texture upload/cache
+  ([material/upload.rs](crates/render/src/material/upload.rs) +
+  [material/table.rs](crates/render/src/material/table.rs)).
 - **Import FFI discipline (two-pass count→fill, `checked_slice`, free on every
   error path):** [ufbx_bridge.c](crates/import/src/ufbx_bridge.c) + the repr(C)
   mirrors in [import/src/lib.rs](crates/import/src/lib.rs).
 - **Panel recipe** (`body(ui, &mut UiState)` → register in
-  [panels/mod.rs:30](crates/ui/src/panels/mod.rs#L30) → `open_panel` from
+  [panels/mod.rs](crates/ui/src/panels/mod.rs) → `open_panel` from
   toolbar/status-bar right-click), all visuals from
   [theme.rs](crates/ui/src/theme.rs) (invariant 8).
 - **Build-on-change / free-on-off** cadence: `sync_line_views` /
-  `sync_environment` in [scene.rs](crates/render/src/scene.rs) (invariant 3).
-- **File dialog:** `rfd` (already used at [main.rs:714](crates/app/src/main.rs#L714)).
-- **Mesh build / single draw:** `model_mesh`
-  ([geometry.rs:348](crates/render/src/geometry.rs#L348)), `record_scene`
-  ([scene.rs:410](crates/render/src/scene.rs#L410)).
+  `sync_environment` /`sync_materials` in
+  [scene/resources.rs](crates/render/src/scene/resources.rs) (invariant 3).
+- **UI→app intent flow:** the Inspector emits `MaterialEdit` / `TextureIntent`
+  via `UiOutput`; `app` applies them in `apply_ui_output`
+  ([app/src/main.rs](crates/app/src/main.rs)) and the texture-pool side in
+  [app/src/texture_manager.rs](crates/app/src/texture_manager.rs) (invariant 2).
+- **File dialog:** `rfd` (already used in
+  [texture_manager.rs](crates/app/src/texture_manager.rs)).
+- **Mesh build / per-material draw ranges:** `model_mesh`
+  ([geometry/mesh.rs](crates/render/src/geometry/mesh.rs)), the per-material draw
+  loop in `record_scene` ([scene/callback.rs](crates/render/src/scene/callback.rs)),
+  the 3-MRT `scene_color_targets` factory
+  ([scene/pipelines.rs](crates/render/src/scene/pipelines.rs)).
 
 ---
 
@@ -368,21 +384,28 @@ before any work on the following phase begins. The checks below back those gates
 
 ## Critical files
 
-- [render/src/scene.rs](crates/render/src/scene.rs) — pipeline layout, per-material/
-  per-node draw loop, `SceneVertex`, `SceneResources`, selection/solo,
-  `material_revision`
+- [render/src/scene/](crates/render/src/scene/) — pipeline layout +
+  `scene_color_targets` factory (`pipelines.rs`), per-material/per-node draw loop
+  (`callback.rs`'s `record_scene`), `SceneResources` + selection/solo +
+  `material_revision` (`resources.rs`), `SceneVertex`/`SceneUniforms` (`gpu_types.rs`)
 - [render/src/scene.wgsl](crates/render/src/scene.wgsl) — `MaterialUniform`, group
   3, metallic, normal mapping, opacity, channel isolation (lockstep with
-  `SceneVertex`)
+  `SceneVertex` in `scene/gpu_types.rs`)
+- [render/src/material/](crates/render/src/material/) — the editable `MaterialTable`
+  + per-material bind group + path-keyed texture cache + channel routing
+  (`state.rs`/`table.rs`/`upload.rs`); decode dispatch incl. bundled `magick.exe` +
+  the `notify` watcher hook in [render/src/texture.rs](crates/render/src/texture.rs)
 - [import/src/ufbx_bridge.c](crates/import/src/ufbx_bridge.c) +
   [import/src/lib.rs](crates/import/src/lib.rs) — node tree, per-triangle material,
   referenced paths, embedded blobs (all FFI here)
-- [model/src/lib.rs](crates/model/src/lib.rs) — `SceneNode`, `tri_material`,
-  `MaterialInfo` extensions (host-agnostic)
-- [ui/src/state.rs](crates/ui/src/state.rs) — `Selection`, expanded `UiOutput`,
-  snapshots; new `ui/src/panels/outliner.rs` + `inspector.rs`; new
-  `render/src/material.rs` (table, cache, channel routing) + `render/src/texture.rs`
-  (decode dispatch incl. bundled `magick.exe`, `notify` watcher)
+- [model/src/lib.rs](crates/model/src/lib.rs) — `SceneNode`, `TriangleData`
+  (per-triangle `material`/`node`/`to_face` + `validate`), `MaterialImportDefaults`
+  extensions (host-agnostic)
+- [ui/src/state.rs](crates/ui/src/state.rs) — `Selection`, `UiOutput` +
+  `TextureIntent`, snapshots; `ui/src/panels/outliner.rs` + `inspector.rs`
+- [app/src/main.rs](crates/app/src/main.rs) + [app/src/texture_manager.rs](crates/app/src/texture_manager.rs)
+  — `apply_ui_output` intent dispatch + the texture pool / off-thread decode /
+  disk-auto-reload subsystem
 - [Cargo.toml](Cargo.toml) — `image` features (`tga`/`tiff`/`jpeg`/`pnm`) + `notify`
   dep;
   packaging (Inno Setup) bundles `magick.exe` beside the app exe

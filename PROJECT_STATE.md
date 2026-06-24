@@ -135,7 +135,7 @@ input/file path
   overlays can be expensive on dense meshes.
 - Consider an explicit render graph once more effects arrive. `targets.rs` is a
   good seed, but the pass order and resource dependencies are still hand-wired in
-  `scene.rs`.
+  the `scene/` module (`scene/callback.rs` orchestration + `scene/resources.rs`).
 - Add CI or at least documented local acceptance commands. `CLAUDE.md` says to
   run check/clippy/test, but the repo does not yet encode that policy.
 
