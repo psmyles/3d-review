@@ -171,9 +171,8 @@ pub(super) fn build_bloom_targets(
     )
 }
 
-/// Create one full-resolution AO + bent-normal texture (`Rgba16Float`: bent
-/// normal in xyz, occlusion in w; render target + sampled in later passes) and
-/// return its view.
+/// Create one full-resolution single-channel AO texture (render target + sampled
+/// in later passes) and return its view.
 fn create_gtao_texture(
     device: &wgpu::Device,
     width: u32,

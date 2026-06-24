@@ -14,28 +14,25 @@ use glam::Mat4;
 
 const GTAO_SHADER: &str = include_str!("gtao.wgsl");
 
-/// The AO texture format. `Rgba16Float` because the AO pass now also carries the
-/// view-space **bent normal** (xyz) alongside the occlusion (w), so post can
-/// re-light the diffuse ambient with the bent normal. Same format the scene/IBL
-/// already require, so GTAO needs no extra gate beyond the G-buffer.
-pub(crate) const GTAO_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// The AO texture format: a single 8-bit occlusion channel (0 = fully occluded,
+/// 1 = open). Universally renderable + filterable, so GTAO needs no extra gate
+/// beyond the G-buffer's `Rgba16Float` (which the scene/IBL already require).
+pub(crate) const GTAO_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 
-/// Whether the adapter can run GTAO: it samples the `Rgba16Float` G-buffer and
-/// renders the `Rgba16Float` AO + bent-normal target (both must be filterable +
-/// renderable). These are WebGPU-guaranteed on any adapter that already renders the
-/// HDR scene, so this is effectively always true — it exists to honour the
-/// capability-gate discipline (invariant 4) and to let the UI disable the toggle
-/// rather than crash on an exotic adapter.
+/// Whether the adapter can run GTAO: it samples the `Rgba16Float` G-buffer
+/// (filterable) and renders the `R8Unorm` AO target. Both are WebGPU-guaranteed on
+/// any adapter that already renders the HDR scene, so this is effectively always
+/// true — it exists to honour the capability-gate discipline (invariant 4) and to
+/// let the UI disable the toggle rather than crash on an exotic adapter.
 pub fn gtao_supported(adapter: &wgpu::Adapter) -> bool {
     let gbuffer = adapter
         .get_texture_format_features(crate::targets::SCENE_HDR_FORMAT)
         .flags;
-    let ao = adapter.get_texture_format_features(GTAO_FORMAT);
+    let ao = adapter.get_texture_format_features(GTAO_FORMAT).flags;
     gbuffer.contains(wgpu::TextureFormatFeatureFlags::FILTERABLE)
-        && ao
-            .flags
-            .contains(wgpu::TextureFormatFeatureFlags::FILTERABLE)
-        && ao
+        && ao.contains(wgpu::TextureFormatFeatureFlags::FILTERABLE)
+        && adapter
+            .get_texture_format_features(GTAO_FORMAT)
             .allowed_usages
             .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
 }

@@ -176,14 +176,12 @@ fn fresnel_schlick_roughness(cos_theta: f32, f0: vec3<f32>, roughness: f32) -> v
 struct ShadingResult {
     color: vec3<f32>,
     ambient: vec3<f32>,
-    specular: vec3<f32>,
 };
 
 // Environment-lit metallic-roughness PBR for the shaded path. `albedo`, `metallic`
 // and `roughness` come from the per-material uniform (bind group 3). Returns linear
-// radiance, the diffuse ambient term GTAO may attenuate, and the IBL specular term
-// split out so post can apply bent-normal-aware specular occlusion (tone mapping
-// happens in post).
+// radiance and the diffuse ambient term GTAO may attenuate (tone mapping happens in
+// post).
 fn shade_ibl(albedo: vec3<f32>, world_normal: vec3<f32>, world_pos: vec3<f32>, roughness: f32, metallic: f32) -> ShadingResult {
     let n = normalize(world_normal);
     let v = normalize(uniforms.camera_position.xyz - world_pos);
@@ -206,21 +204,18 @@ fn shade_ibl(albedo: vec3<f32>, world_normal: vec3<f32>, world_pos: vec3<f32>, r
 
     let kd = (vec3<f32>(1.0) - fresnel) * (1.0 - metallic);
     let ambient = kd * diffuse * uniforms.env_params.y;
-    let specular_scaled = specular * uniforms.env_params.y;
-    return ShadingResult(ambient + specular_scaled, ambient, specular_scaled);
+    return ShadingResult(ambient + specular * uniforms.env_params.y, ambient);
 }
 
 // Scene fragment output (MRT): location 0 is the linear HDR color the composite
 // tone-maps; location 1 is the linear HDR radiance bloom thresholds;
-// location 2 is the linear diffuse ambient radiance GTAO may attenuate; location 3
-// is the linear IBL specular (rgb) + its roughness (a), split out so post can
-// apply bent-normal-aware specular occlusion. Overlays write 0 to locations 1, 2
-// and 3 so grid / wireframe / normal lines never glow, darken, or get re-lit.
+// location 2 is the linear ambient radiance GTAO may attenuate. Overlays write 0
+// alpha to locations 1 and 2 so grid / wireframe / normal lines never glow and
+// never darken.
 struct FragOutput {
     @location(0) color: vec4<f32>,
     @location(1) bloom: vec4<f32>,
     @location(2) ambient: vec4<f32>,
-    @location(3) specular: vec4<f32>,
 };
 
 @fragment
@@ -228,7 +223,6 @@ fn fs_main(input: VertexOutput) -> FragOutput {
     var out: FragOutput;
     out.bloom = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     out.ambient = vec4<f32>(0.0, 0.0, 0.0, 0.0);
-    out.specular = vec4<f32>(0.0, 0.0, 0.0, 0.0);
 
     let shading_mode = uniforms.render_options.x;
     let uv_checker_enabled = uniforms.render_options.y > 0.5;
@@ -366,12 +360,6 @@ fn fs_main(input: VertexOutput) -> FragOutput {
 
     var color_linear: vec3<f32>;
     var ambient_linear: vec3<f32>;
-    // IBL specular, split into location 3 for the post bent-normal-aware specular
-    // occlusion. rgb is the linear specular radiance, a carries the roughness it
-    // was sampled at. Zero (with roughness 1) on the analytic path — post only
-    // reads it when IBL is enabled.
-    var specular_linear = vec3<f32>(0.0);
-    var specular_roughness = 1.0;
     if (uniforms.env_params.x > 0.5) {
         // Image-based lighting (the default Shaded look): metallic-roughness PBR
         // sampling the precomputed environment maps. Roughness clamped away from a
@@ -380,8 +368,6 @@ fn fs_main(input: VertexOutput) -> FragOutput {
         let shaded = shade_ibl(base_color, world_normal, input.world_position, roughness, metallic);
         color_linear = shaded.color;
         ambient_linear = shaded.ambient;
-        specular_linear = shaded.specular;
-        specular_roughness = roughness;
     } else {
         // Analytic fallback: the neutral-grey hemisphere + Blinn-Phong specular
         // used before IBL. Kept so disabling IBL restores the previous look.
@@ -436,7 +422,6 @@ fn fs_main(input: VertexOutput) -> FragOutput {
     out.color = vec4<f32>(color_linear, out_alpha);
     out.bloom = vec4<f32>(color_linear, 1.0);
     out.ambient = vec4<f32>(ambient_linear, out_alpha);
-    out.specular = vec4<f32>(specular_linear, specular_roughness);
     return out;
 }
 
@@ -454,7 +439,6 @@ fn fs_selection(input: VertexOutput) -> FragOutput {
     out.color = vec4<f32>(srgb_to_linear(uniforms.selection_color.rgb), fade);
     out.bloom = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     out.ambient = vec4<f32>(0.0, 0.0, 0.0, fade);
-    out.specular = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     return out;
 }
 
@@ -514,9 +498,7 @@ fn fs_skybox(input: SkyOutput) -> FragOutput {
     var out: FragOutput;
     out.color = vec4<f32>(color, 1.0);
     out.bloom = vec4<f32>(color, 1.0);
-    // The sky is background: no ambient / specular target, so GTAO never darkens
-    // or re-lights it.
+    // The sky is background: no ambient target, so GTAO never darkens it.
     out.ambient = vec4<f32>(0.0, 0.0, 0.0, 0.0);
-    out.specular = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     return out;
 }

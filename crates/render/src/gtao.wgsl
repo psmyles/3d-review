@@ -82,10 +82,15 @@ fn project_to_uv(view_pos: vec3<f32>) -> vec2<f32> {
     return vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
 }
 
-// Hash a screen coordinate to [0,1); used for the per-pixel slice rotation so the
-// occlusion noise is high-frequency (and removed by the blur) rather than banded.
-fn hash12(p: vec2<f32>) -> f32 {
-    return fract(sin(dot(p, vec2<f32>(12.9898, 78.233))) * 43758.5453);
+// Jimenez 2016 (Activision GTAO) structured 4x4 spatial dither. Returns the slice
+// rotation in x and the step offset in y, both in [0,1). Unlike a white-noise hash,
+// adjacent pixels get evenly spread rotations/offsets, so the bilateral denoiser
+// averages complementary slice directions over a small block and resolves to a
+// clean result at low sample counts instead of leaving high-variance speckle.
+fn spatial_dither(pix: vec2<u32>) -> vec2<f32> {
+    let rot = (1.0 / 16.0) * f32((((pix.x + pix.y) & 3u) << 2u) + (pix.x & 3u));
+    let offset = (1.0 / 4.0) * f32((pix.y - pix.x) & 3u);
+    return vec2<f32>(rot, offset);
 }
 
 // Reconstruct the view-space position at `uv` (xyz) + a foreground flag (w): 0 for
@@ -143,14 +148,13 @@ fn horizon_cos(
 }
 
 @fragment
-fn fs_gtao(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_gtao(input: VertexOutput) -> @location(0) f32 {
     let g = textureSampleLevel(gbuffer, gtao_sampler, input.uv, 0.0);
     let raw_normal = g.xyz;
     let view_z = g.w;
-    // Background (overlays / skybox / cleared frame write 0): no occlusion, no
-    // bent normal (post detects background from the G-buffer, not this output).
+    // Background (overlays / skybox / cleared frame write 0): no occlusion.
     if (dot(raw_normal, raw_normal) < 0.25 || view_z >= -1e-4) {
-        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        return 1.0;
     }
 
     let n = normalize(raw_normal);
@@ -169,16 +173,15 @@ fn fs_gtao(input: VertexOutput) -> @location(0) vec4<f32> {
     let edge_uv = project_to_uv(p + vec3<f32>(radius, 0.0, 0.0));
     let radius_px = clamp(abs(edge_uv.x - input.uv.x) * dims.x, 1.0, max(dims.x, dims.y));
 
-    // Per-pixel rotation + jitter so slices/steps decorrelate (blur removes noise).
-    let noise = hash12(input.clip_position.xy);
+    // Structured per-pixel rotation + step offset so slices/steps decorrelate over a
+    // 4x4 block (the blur then resolves them to a clean result — see spatial_dither).
+    let dither = spatial_dither(vec2<u32>(u32(input.clip_position.x), u32(input.clip_position.y)));
+    let rot_noise = dither.x;
+    let offset_noise = dither.y;
 
     var visibility = 0.0;
-    // Bent normal: the average unoccluded direction (view space), accumulated per
-    // slice as the visible-arc midpoint and weighted like the visibility, then
-    // normalized. Post re-lights the diffuse ambient with it.
-    var bent_normal = vec3<f32>(0.0);
     for (var s = 0u; s < slice_count; s = s + 1u) {
-        let phi = (f32(s) + noise) * PI / f32(slice_count);
+        let phi = (f32(s) + rot_noise) * PI / f32(slice_count);
         let omega = vec2<f32>(cos(phi), sin(phi));
 
         // View-space slice direction: reconstruct a neighbor a few px along omega.
@@ -205,10 +208,10 @@ fn fs_gtao(input: VertexOutput) -> @location(0) vec4<f32> {
 
         // Search both horizons (positive omega and negative omega side).
         let cos_pos = horizon_cos(
-            input.uv, p, v, omega, radius_px, radius, thickness, step_count, noise, inv_dims,
+            input.uv, p, v, omega, radius_px, radius, thickness, step_count, offset_noise, inv_dims,
         );
         let cos_neg = horizon_cos(
-            input.uv, p, v, -omega, radius_px, radius, thickness, step_count, noise, inv_dims,
+            input.uv, p, v, -omega, radius_px, radius, thickness, step_count, offset_noise, inv_dims,
         );
 
         // Clamp horizons into the hemisphere around the (projected) normal, then
@@ -222,45 +225,22 @@ fn fs_gtao(input: VertexOutput) -> @location(0) vec4<f32> {
             + (-cos(2.0 * h2 - gamma) + cos_gamma + 2.0 * h2 * sin_gamma)
         );
         visibility = visibility + proj_len * arc;
-
-        // Bent normal contribution: the midpoint of the visible arc, expressed in
-        // the (v, in-plane tangent) basis. `t` is the slice direction's component
-        // perpendicular to v (the +omega side), so a positive angle leans the bent
-        // normal toward the open horizon. Weighted by proj_len, like visibility.
-        let t_axis = slice_dir - v * dot(slice_dir, v);
-        let t_len = length(t_axis);
-        if (t_len > 1e-4) {
-            let t = t_axis / t_len;
-            let bent_angle = 0.5 * (h1 + h2);
-            bent_normal = bent_normal + (v * cos(bent_angle) + t * sin(bent_angle)) * proj_len;
-        }
     }
 
     visibility = clamp(visibility / f32(slice_count), 0.0, 1.0);
     // Intensity sharpens the falloff (1 = ground truth, >1 darkens, 0 disables).
-    let ao = pow(visibility, max(intensity, 0.0));
-    // Fall back to the geometric normal if the bent normal degenerated (fully
-    // open or fully occluded). The blur renormalizes after filtering.
-    var bn = bent_normal;
-    if (dot(bn, bn) < 1e-8) {
-        bn = n;
-    } else {
-        bn = normalize(bn);
-    }
-    return vec4<f32>(bn, ao);
+    return pow(visibility, max(intensity, 0.0));
 }
 
-// 5x5 bilateral blur over the raw AO + bent normal (`raw_ao` now carries the
-// view-space bent normal in xyz and the occlusion in w). Depth and normal weights
-// keep occlusion / bent normals from bleeding across silhouettes and hard creases;
-// the bent normal is renormalized after filtering.
+// 5x5 bilateral blur over the raw AO. Depth and normal weights keep occlusion
+// from bleeding across silhouettes and hard creases.
 @fragment
-fn fs_blur(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_blur(input: VertexOutput) -> @location(0) f32 {
     let center_g = textureSampleLevel(gbuffer, gtao_sampler, input.uv, 0.0);
     let center_n = center_g.xyz;
     let center_z = center_g.w;
     if (dot(center_n, center_n) < 0.25 || center_z >= -1e-4) {
-        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        return 1.0;
     }
 
     let dims = vec2<f32>(textureDimensions(raw_ao));
@@ -268,7 +248,7 @@ fn fs_blur(input: VertexOutput) -> @location(0) vec4<f32> {
     let n0 = normalize(center_n);
     let depth_sigma = max(gtao.params.x * 0.12, 1e-4);
     let spatial_sigma = 2.0;
-    var sum = vec4<f32>(0.0);
+    var sum = 0.0;
     var weight_sum = 0.0;
     for (var x = -2; x <= 2; x = x + 1) {
         for (var y = -2; y <= 2; y = y + 1) {
@@ -289,18 +269,13 @@ fn fs_blur(input: VertexOutput) -> @location(0) vec4<f32> {
             let depth_weight = exp(-(dz * dz) / (2.0 * depth_sigma * depth_sigma));
             let normal_weight = smoothstep(0.75, 1.0, normal_dot);
             let weight = spatial_weight * depth_weight * normal_weight;
-            let ao = textureSampleLevel(raw_ao, gtao_sampler, uv, 0.0);
+            let ao = textureSampleLevel(raw_ao, gtao_sampler, uv, 0.0).r;
             sum = sum + ao * weight;
             weight_sum = weight_sum + weight;
         }
     }
     if (weight_sum <= 1e-5) {
-        return textureSampleLevel(raw_ao, gtao_sampler, input.uv, 0.0);
+        return textureSampleLevel(raw_ao, gtao_sampler, input.uv, 0.0).r;
     }
-    var result = sum / weight_sum;
-    let bn = result.xyz;
-    if (dot(bn, bn) > 1e-8) {
-        result = vec4<f32>(normalize(bn), result.w);
-    }
-    return result;
+    return sum / weight_sum;
 }

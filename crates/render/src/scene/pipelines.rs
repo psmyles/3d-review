@@ -6,29 +6,22 @@ use super::SCENE_DEPTH_FORMAT;
 use super::SceneVertex;
 use crate::targets::SCENE_HDR_FORMAT;
 
-/// The scene pass's four MRT color targets — the single source of truth for the
-/// `FragOutput` lockstep (the CLAUDE.md "four color targets" gotcha): location 0
+/// The scene pass's three MRT color targets — the single source of truth for the
+/// `FragOutput` lockstep (the CLAUDE.md "three color targets" gotcha): location 0
 /// = linear HDR scene color, location 1 = linear-HDR bloom source, location 2 =
-/// AO-eligible diffuse ambient radiance, location 3 = IBL specular (rgb) +
-/// roughness (a) for bent-normal-aware specular occlusion. `blend` applies to all
-/// four: the geometry pipelines alpha-blend (transparent coverage handled in
-/// linear light; overlays write zero ambient/specular to mask the mesh terms so
-/// AO doesn't darken them), the skybox draws opaque (`None`) over the cleared
-/// frame. Any new scene-pass pipeline (e.g. Phase 7's alpha-sort write-off
-/// variant) gets the right shape by calling this rather than re-listing four
-/// targets.
-fn scene_color_targets(blend: Option<wgpu::BlendState>) -> [Option<wgpu::ColorTargetState>; 4] {
+/// AO-eligible ambient radiance. `blend` applies to all three: the geometry
+/// pipelines alpha-blend (transparent coverage handled in linear light; overlays
+/// write zero ambient to mask the mesh ambient so AO doesn't darken them), the
+/// skybox draws opaque (`None`) over the cleared frame. Any new scene-pass
+/// pipeline (e.g. Phase 7's alpha-sort write-off variant) gets the right shape by
+/// calling this rather than re-listing three targets.
+fn scene_color_targets(blend: Option<wgpu::BlendState>) -> [Option<wgpu::ColorTargetState>; 3] {
     let target = wgpu::ColorTargetState {
         format: SCENE_HDR_FORMAT,
         blend,
         write_mask: wgpu::ColorWrites::ALL,
     };
-    [
-        Some(target.clone()),
-        Some(target.clone()),
-        Some(target.clone()),
-        Some(target),
-    ]
+    [Some(target.clone()), Some(target.clone()), Some(target)]
 }
 
 /// Depth behavior for a pipeline: whether it writes depth, and how much it biases
@@ -318,7 +311,7 @@ fn create_pipeline(
         fragment: Some(wgpu::FragmentState {
             module: shader,
             entry_point: Some(fragment_entry),
-            // The four alpha-blended scene-pass MRT targets (invariant 11).
+            // The three alpha-blended scene-pass MRT targets (invariant 11).
             targets: &scene_color_targets(Some(wgpu::BlendState::ALPHA_BLENDING)),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         }),
