@@ -13,7 +13,7 @@ pub struct Vertex {
     /// color set). White when the mesh carries no vertex-color layer. Visualized
     /// by the vertex-color debug view. The resolved material base color and
     /// smoothness are no longer baked per vertex (Phase 1): they live on
-    /// [`MaterialInfo`] and drive the per-material draws via the renderer's
+    /// [`MaterialImportDefaults`] and drive the per-material draws via the renderer's
     /// material table.
     pub vertex_color: Vec4,
 }
@@ -64,9 +64,16 @@ impl Bounds {
     }
 }
 
+/// A material's *import-time defaults* — the immutable source values an FBX
+/// declares, used only to seed the renderer's editable material table (the
+/// load-bearing source-vs-editable split: edits live renderer-side, not here).
 #[derive(Debug, Clone, PartialEq)]
-pub struct MaterialInfo {
+pub struct MaterialImportDefaults {
     pub name: String,
+    // TODO: `draw_count` is a renderer-computed stat, not an import default — the
+    // bridge fills a per-node tally that import then overwrites at the model level
+    // (`ModelStats::draw_count`). Nothing reads this per-material copy; drop it
+    // from here + the C FFI struct in a future FFI-touching phase.
     pub draw_count: usize,
     /// Import default base color (linear RGB), seeding the editable material
     /// table. White when the source material declared none.
@@ -125,23 +132,65 @@ pub struct ModelStats {
     pub source_unit_meters: f32,
 }
 
+/// Per-triangle metadata, grouped so the parallel arrays stay in lockstep. Each
+/// array is either empty or exactly `triangle_count` (= `indices.len() / 3`) long
+/// and ordered by triangle index; [`TriangleData::validate`] asserts this at the
+/// import funnel (invariant 7) so a drifted array is caught once, not by every
+/// reader's ad-hoc length guard. Future per-triangle audit data (Phase 7
+/// centroids, etc.) lands here with the same guard.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TriangleData {
+    /// Owning original polygon, indexing [`ModelData::faces`].
+    pub to_face: Vec<u32>,
+    /// Material slot, indexing [`ModelData::materials`], or `u32::MAX` for a
+    /// triangle whose face carried no material. Drives the per-material draw
+    /// grouping (Phase 1) without a per-vertex `material_id`.
+    pub material: Vec<u32>,
+    /// Owning scene-graph node, indexing [`ModelData::nodes`] — drives the
+    /// Outliner's per-node selection / solo (Phase 2). Empty for models with no
+    /// node hierarchy.
+    pub node: Vec<u32>,
+}
+
+impl TriangleData {
+    /// Number of triangles, inferred from the (mutually equal-length) arrays.
+    pub fn len(&self) -> usize {
+        self.to_face.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.to_face.is_empty()
+    }
+
+    /// Each present (non-empty) array must be exactly `triangle_count` long; an
+    /// empty array means "this model carries no such per-triangle info" and is
+    /// allowed. Returns `Err` describing the first array that drifted.
+    pub fn validate(&self, triangle_count: usize) -> Result<(), String> {
+        for (name, array) in [
+            ("to_face", &self.to_face),
+            ("material", &self.material),
+            ("node", &self.node),
+        ] {
+            if !array.is_empty() && array.len() != triangle_count {
+                return Err(format!(
+                    "tri_{name} has {} entries, expected {triangle_count}",
+                    array.len()
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ModelData {
     pub name: String,
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
     pub faces: Vec<TopologyFace>,
-    pub tri_to_face: Vec<u32>,
-    /// Per-triangle material slot, parallel to [`ModelData::tri_to_face`] (same
-    /// length and ordering). Each entry indexes [`ModelData::materials`], or
-    /// `u32::MAX` for a triangle whose face carried no material. Drives the
-    /// per-material draw grouping (Phase 1) without a per-vertex `material_id`.
-    pub tri_material: Vec<u32>,
-    /// Per-triangle owning scene-graph node, parallel to [`ModelData::tri_to_face`]
-    /// (same length and ordering). Each entry indexes [`ModelData::nodes`] — the
-    /// node whose mesh the triangle came from — driving the Outliner's per-node
-    /// selection / solo (Phase 2). Empty for models with no node hierarchy.
-    pub tri_node: Vec<u32>,
+    /// Per-triangle metadata (face / material / node), grouped so the parallel
+    /// arrays stay in lockstep — see [`TriangleData`].
+    pub triangles: TriangleData,
     /// The imported scene-graph hierarchy (every node, mesh-bearing or not), for
     /// the Outliner. Empty for procedurally-built models with no hierarchy.
     pub nodes: Vec<SceneNode>,
@@ -159,7 +208,7 @@ pub struct ModelData {
     pub uv_set_names: Vec<String>,
     pub bounds: Option<Bounds>,
     pub stats: ModelStats,
-    pub materials: Vec<MaterialInfo>,
+    pub materials: Vec<MaterialImportDefaults>,
     pub warnings: Vec<ModelWarning>,
 }
 
@@ -198,7 +247,7 @@ impl ModelData {
     }
 
     /// Number of per-material draw ranges the renderer issues for this mesh —
-    /// one per distinct [`ModelData::tri_material`] slot, in first-seen order.
+    /// one per distinct [`TriangleData::material`] slot, in first-seen order.
     /// Mirrors the grouping in the renderer's `model_mesh`, so the Draws stat
     /// reflects the real draw-call count (invariant 5). `0` when the mesh has no
     /// triangles; `1` when triangles exist but carry no per-triangle material.
@@ -207,11 +256,11 @@ impl ModelData {
         if triangle_count == 0 {
             return 0;
         }
-        if self.tri_material.len() != triangle_count {
+        if self.triangles.material.len() != triangle_count {
             return 1;
         }
         let mut seen: Vec<u32> = Vec::new();
-        for &slot in &self.tri_material {
+        for &slot in &self.triangles.material {
             if !seen.contains(&slot) {
                 seen.push(slot);
             }
@@ -236,13 +285,13 @@ impl ModelData {
     /// visible geometry remains (every mesh hidden, or an empty model).
     pub fn visible_bounds(&self, hidden_nodes: &[u32]) -> Option<Bounds> {
         let triangle_count = self.indices.len() / 3;
-        if hidden_nodes.is_empty() || self.tri_node.len() != triangle_count {
+        if hidden_nodes.is_empty() || self.triangles.node.len() != triangle_count {
             return self.bounds;
         }
         let hidden: std::collections::HashSet<u32> = hidden_nodes.iter().copied().collect();
         let mut bounds = Bounds::EMPTY;
         for (triangle_index, triangle) in self.indices.chunks_exact(3).enumerate() {
-            if hidden.contains(&self.tri_node[triangle_index]) {
+            if hidden.contains(&self.triangles.node[triangle_index]) {
                 continue;
             }
             for &corner in triangle {
@@ -266,10 +315,12 @@ pub fn demo_cube_model() -> ModelData {
                 index_count: 4,
             })
             .collect(),
-        tri_to_face: vec![0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5],
-        tri_material: vec![0; 12],
-        // The demo cube is a single node, so every triangle belongs to node 0.
-        tri_node: vec![0; 12],
+        triangles: TriangleData {
+            to_face: vec![0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5],
+            material: vec![0; 12],
+            // The demo cube is a single node, so every triangle belongs to node 0.
+            node: vec![0; 12],
+        },
         nodes: vec![SceneNode {
             name: "Demo Cube".to_owned(),
             parent: None,
@@ -286,7 +337,7 @@ pub fn demo_cube_model() -> ModelData {
             draw_count: 1,
             source_unit_meters: 1.0,
         },
-        materials: vec![MaterialInfo {
+        materials: vec![MaterialImportDefaults {
             name: "Default".to_owned(),
             draw_count: 1,
             base_color: Vec3::ONE,
@@ -377,13 +428,64 @@ mod tests {
     fn demo_cube_carries_nodes_and_per_triangle_material() {
         let model = demo_cube_model();
 
+        let tris = &model.triangles;
         assert!(!model.nodes.is_empty());
-        assert_eq!(model.tri_material.len(), model.stats.triangle_count);
-        assert_eq!(model.tri_material.len(), model.tri_to_face.len());
-        assert!(model.tri_material.iter().all(|&slot| slot == 0));
+        assert_eq!(tris.material.len(), model.stats.triangle_count);
+        assert_eq!(tris.material.len(), tris.to_face.len());
+        assert!(tris.material.iter().all(|&slot| slot == 0));
         // Per-triangle node index runs parallel and points at the single node.
-        assert_eq!(model.tri_node.len(), model.stats.triangle_count);
-        assert!(model.tri_node.iter().all(|&node| node == 0));
+        assert_eq!(tris.node.len(), model.stats.triangle_count);
+        assert!(tris.node.iter().all(|&node| node == 0));
+
+        // The parallel per-triangle arrays stay mutually in lockstep, and every
+        // index they carry points at a real face / material / node.
+        assert!(tris.validate(model.stats.triangle_count).is_ok());
+        for &face in &tris.to_face {
+            assert!(
+                (face as usize) < model.faces.len(),
+                "tri_to_face out of range"
+            );
+        }
+        for &slot in &tris.material {
+            assert!(
+                (slot as usize) < model.materials.len(),
+                "tri_material out of range"
+            );
+        }
+        for &node in &tris.node {
+            assert!((node as usize) < model.nodes.len(), "tri_node out of range");
+        }
+    }
+
+    #[test]
+    fn triangle_data_validate_catches_drift() {
+        // Equal-length arrays pass.
+        let ok = TriangleData {
+            to_face: vec![0, 0, 1],
+            material: vec![0, 0, 0],
+            node: vec![0, 0, 0],
+        };
+        assert!(ok.validate(3).is_ok());
+
+        // An empty array means "no such info" and is allowed.
+        let no_nodes = TriangleData {
+            to_face: vec![0, 0, 1],
+            material: vec![0, 0, 0],
+            node: Vec::new(),
+        };
+        assert!(no_nodes.validate(3).is_ok());
+
+        // A present-but-short array is a drift and is rejected with a clear message.
+        let drifted = TriangleData {
+            to_face: vec![0, 0, 1],
+            material: vec![0, 0],
+            node: vec![0, 0, 0],
+        };
+        let err = drifted.validate(3).unwrap_err();
+        assert!(err.contains("material"), "message names the drifted array");
+
+        // All-empty (a model with no per-triangle info) passes for any count.
+        assert!(TriangleData::default().validate(0).is_ok());
     }
 
     #[test]
@@ -393,7 +495,7 @@ mod tests {
         assert_eq!(model.material_draw_count(), 1);
 
         // Three distinct slots -> three draws, regardless of ordering/repeats.
-        model.tri_material = vec![0, 0, 1, 1, 2, 2, 0, 1, 2, 2, 1, 0];
+        model.triangles.material = vec![0, 0, 1, 1, 2, 2, 0, 1, 2, 2, 1, 0];
         assert_eq!(model.material_draw_count(), 3);
 
         // No triangles -> no draws.
@@ -424,7 +526,10 @@ mod tests {
                 })
                 .collect(),
             indices: vec![0, 1, 2, 3, 4, 5],
-            tri_node: vec![0, 1],
+            triangles: TriangleData {
+                node: vec![0, 1],
+                ..Default::default()
+            },
             ..Default::default()
         };
         model.recompute_bounds();
