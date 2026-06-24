@@ -5,14 +5,17 @@
 .DESCRIPTION
     Shaded mode is lit by precomputed IBL maps (env cube / diffuse irradiance /
     prefiltered specular per environment, plus a shared BRDF integration LUT).
-    These are baked offline into `assets/ibl_baked/*.bin` (raw little-endian f16)
-    and embedded by the `render` crate via `include_bytes!`, so the shipping
-    viewer loads them by a plain GPU upload instead of running the ~40-pass
-    precompute at startup. They must exist on disk before `cargo build`.
+    These are baked offline into `assets/ibl_baked/*.bin` and embedded by the
+    `render` crate via `include_bytes!`, so the shipping viewer loads them by a
+    plain GPU upload instead of running the ~40-pass precompute at startup. The
+    three HDR cubes are BC6H block-compressed (`Bc6hRgbUfloat`, ~8× smaller than
+    raw f16); the shared BRDF LUT stays raw little-endian f16 (`Rg16Float`). They
+    must exist on disk before `cargo build`.
 
     This script runs the `bake_ibl` tool (the render crate's `bake` feature),
     which decodes every `assets/textures/T_HDR_*.hdr`, runs the precompute on a
-    headless GPU device, reads the results back and writes the `.bin` files.
+    headless GPU device, reads the results back, BC6H-encodes the cubes (via
+    `intel_tex_2`) and writes the `.bin` files.
     Re-run it whenever a source HDR changes (or a new `EnvironmentMap` variant is
     added); the outputs are committed.
 

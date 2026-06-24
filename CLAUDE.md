@@ -136,10 +136,12 @@ crates/
             HDR image-based lighting: at runtime the env cube + irradiance +
             prefilter + shared BRDF LUT are **loaded** from offline-baked assets
             (`assets/ibl_baked/`) via `IblResources::from_baked` — a pure upload,
-            no startup precompute — for the PBR shaded path + skybox; the precompute
-            that bakes them (+ `ibl.wgsl`) compiles only into the offline `bake_ibl`
-            tool (render's `bake` feature, src/bin/bake_ibl.rs)
-            -> src/ibl.rs, src/ibl.wgsl. Bloom
+            no startup precompute — for the PBR shaded path + skybox. The three HDR
+            cubes ship **BC6H** block-compressed (`Bc6hRgbUfloat`, ~8× smaller than
+            `Rgba16Float`, GPU-native so no decode); the shared BRDF LUT stays
+            `Rg16Float`. The precompute that bakes + BC6H-encodes them (+
+            `ibl.wgsl`) compiles only into the offline `bake_ibl` tool (render's
+            `bake` feature, src/bin/bake_ibl.rs) -> src/ibl.rs, src/ibl.wgsl. Bloom
             (bright-pass + separable blur, half-res) -> src/bloom.rs, src/bloom.wgsl.
             GTAO (horizon-based occlusion with a structured 4x4 spatial dither + 5x5
             bilateral blur over the single-sample G-buffer; post darkens the diffuse
@@ -305,11 +307,15 @@ scene pass via `line_pipeline`, so it depth-tests against the mesh (Reversed-Z
 `GreaterEqual`, no depth write) and edges on hidden faces are occluded, while the
 scene MSAA antialiases it (the trade-off is fixed 1px hardware line width).
 
-Known gaps: compressed textures (KTX2/DDS), in-app
-load-error/warning display, GPU-buffer visualization, and additional import
-formats (glTF/OBJ) are post-MVP (`TODO.md`). Tests exist (model / import / render
-unit tests + the `scene_shader_validates` naga check, run headless in CI); GPU
-render checks stay manual.
+Known gaps: in-app load-error/warning display, GPU-buffer visualization, and
+additional import formats (glTF/OBJ) are post-MVP (`TODO.md`). Importing
+engine-cooked compressed textures (KTX2/DDS) is intentionally **not** a goal:
+artists test *source* assets (PNG/TGA/…); KTX2/DDS are produced inside an
+engine's content pipeline and never hand-authored or carried, so the viewer is
+never handed one. (We do use GPU block compression internally — the baked IBL
+cubes are BC6H — but that's our own offline bake, not an import path.) Tests
+exist (model / import / render unit tests + the `scene_shader_validates` naga
+check, run headless in CI); GPU render checks stay manual.
 
 ## 6. Gotchas
 
@@ -363,14 +369,20 @@ render checks stay manual.
   (ImageMagick) regenerates them from `assets/textures/T_HDR_*.hdr`; the installer
   build (`build-windows-installer.ps1`) runs it automatically. Re-run it after
   adding/replacing an HDR.
-- Baked IBL maps (`assets/ibl_baked/T_IBL_*.bin`, raw little-endian f16) are
-  `include_bytes!`-embedded by `crates/render`, so they must exist before `cargo
-  build`. They're committed; `packaging/generate-ibl-bake.ps1` regenerates them by
-  running the `bake_ibl` tool (`cargo run -p review-render --features bake --bin
-  bake_ibl`, needs a real GPU). **Unlike** the thumbnails, the installer build does
-  *not* auto-run it (GPU + slow compile); re-run it manually after adding/replacing
-  an HDR or changing an IBL precompute constant (sizes/mips/format in `ibl.rs`).
-  The shipping binary carries the baked maps, not the raw HDRs — `T_HDR_*.hdr` are
-  bake-tool inputs only. The bake/upload `.bin` byte layout is mip-major with the
-  six cube faces contiguous per mip; `precompute_maps`/readback and the runtime
-  `upload_cube` must stay in lockstep on it.
+- Baked IBL maps (`assets/ibl_baked/T_IBL_*.bin`) are `include_bytes!`-embedded by
+  `crates/render`, so they must exist before `cargo build`. The three HDR cubes
+  (env / irradiance / prefilter) are **BC6H** block-compressed (`Bc6hRgbUfloat`, 16
+  bytes per 4×4 block — the bake tool encodes them with `intel_tex_2`, a bake-only
+  dep); the shared BRDF LUT stays raw little-endian f16 (`Rg16Float`). Because the
+  runtime creates BC6H textures, the device hard-requests `TEXTURE_COMPRESSION_BC`
+  (`crates/app/src/main.rs`) — universal on the desktop DX12/Vulkan/Metal targets.
+  They're committed; `packaging/generate-ibl-bake.ps1` regenerates them by running
+  the `bake_ibl` tool (`cargo run -p review-render --features bake --bin bake_ibl`,
+  needs a real GPU). **Unlike** the thumbnails, the installer build does *not*
+  auto-run it (GPU + slow compile); re-run it manually after adding/replacing an
+  HDR or changing an IBL precompute constant (sizes/mips/format in `ibl.rs`). The
+  shipping binary carries the baked maps, not the raw HDRs — `T_HDR_*.hdr` are
+  bake-tool inputs only. The `.bin` byte layout is mip-major with the six cube
+  faces contiguous per mip (each face a row-major grid of BC6H blocks);
+  `compress_bc6h_face`/readback and the runtime `upload_cube` must stay in lockstep
+  on it.

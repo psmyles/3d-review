@@ -44,12 +44,27 @@ const PREFILTER_MIPS: u32 = 5;
 /// BRDF integration LUT resolution.
 const BRDF_SIZE: u32 = 512;
 
+/// The HDR color format the precompute *renders* into and reads back (bake only).
+/// The baked cube payloads are then BC6H-compressed offline, so the runtime cube
+/// textures use [`ENV_RUNTIME_FORMAT`] instead.
+#[cfg(feature = "bake")]
 const ENV_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// Runtime cube format for the env / irradiance / prefilter maps: BC6H unsigned
+/// (`Bc6hRgbUfloat`), the GPU-native HDR block format. The maps carry no alpha
+/// (the scene shader samples only `.rgb`), so dropping it is free; BC6H is 1
+/// byte/texel vs 8 for `Rgba16Float` (~8× smaller, less sample bandwidth) and the
+/// hardware decodes it natively, so the load stays a plain `write_texture`.
+const ENV_RUNTIME_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bc6hRgbUfloat;
 const BRDF_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
 
-/// Bytes per texel of the baked maps — `Rgba16Float` is 4×f16, `Rg16Float` is
-/// 2×f16. Used by the offline readback (bake tool) and the runtime upload
-/// (`from_baked`) to size and stride the raw `.bin` payloads identically.
+/// Bytes of one BC6H 4×4 block (128-bit). The runtime cube upload strides the
+/// baked payload by whole rows of blocks.
+const BC6H_BLOCK_BYTES: u32 = 16;
+
+/// Bytes per texel of the *uncompressed* maps. `Rgba16Float` (4×f16) sizes the
+/// bake readback before BC6H compression; `Rg16Float` (2×f16) is the BRDF LUT,
+/// which stays uncompressed and is uploaded raw by `from_baked`.
+#[cfg(feature = "bake")]
 const RGBA16F_BPP: u32 = 8;
 const RG16F_BPP: u32 = 4;
 
@@ -57,23 +72,16 @@ const RG16F_BPP: u32 = 4;
 /// shader so it can map roughness → mip LOD. Kept here so the two stay in step.
 pub(crate) const PREFILTER_MAX_LOD: f32 = (PREFILTER_MIPS - 1) as f32;
 
-/// Whether the adapter can build the IBL maps: the HDR color + BRDF formats must
-/// be renderable, and the color format filterable (the maps are sampled with
-/// linear/trilinear filtering). `Rgba16Float` filtering is core WebGPU, so this
-/// is effectively always true on a desktop adapter — but invariant 4 says gate,
-/// not assume, so the UI can disable IBL rather than crash on an exotic adapter.
+/// Whether the adapter can load the baked IBL maps. The env / irradiance /
+/// prefilter cubes ship as BC6H ([`ENV_RUNTIME_FORMAT`]), so the device must
+/// expose `TEXTURE_COMPRESSION_BC` — universal on the desktop DX12/Vulkan/Metal
+/// target, but per invariant 4 gated rather than assumed so the UI disables IBL
+/// instead of crashing on an adapter that lacks it. The shared BRDF LUT stays
+/// `Rg16Float` (core, always filterable).
 pub fn ibl_supported(adapter: &wgpu::Adapter) -> bool {
-    let color = adapter.get_texture_format_features(ENV_FORMAT);
-    let brdf = adapter.get_texture_format_features(BRDF_FORMAT);
-    color
-        .allowed_usages
-        .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
-        && color
-            .flags
-            .contains(wgpu::TextureFormatFeatureFlags::FILTERABLE)
-        && brdf
-            .allowed_usages
-            .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+    adapter
+        .features()
+        .contains(wgpu::Features::TEXTURE_COMPRESSION_BC)
 }
 
 /// The precomputed IBL maps + the scene-facing bind group (group 2).
@@ -182,14 +190,28 @@ impl IblResources {
         environment: EnvironmentMap,
     ) -> Self {
         let usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
-        let env_cube = create_cube_texture(device, "review_ibl_env_cube", ENV_CUBE_SIZE, 1, usage);
-        let irradiance =
-            create_cube_texture(device, "review_ibl_irradiance", IRRADIANCE_SIZE, 1, usage);
+        let env_cube = create_cube_texture(
+            device,
+            "review_ibl_env_cube",
+            ENV_CUBE_SIZE,
+            1,
+            ENV_RUNTIME_FORMAT,
+            usage,
+        );
+        let irradiance = create_cube_texture(
+            device,
+            "review_ibl_irradiance",
+            IRRADIANCE_SIZE,
+            1,
+            ENV_RUNTIME_FORMAT,
+            usage,
+        );
         let prefilter = create_cube_texture(
             device,
             "review_ibl_prefilter",
             PREFILTER_SIZE,
             PREFILTER_MIPS,
+            ENV_RUNTIME_FORMAT,
             usage,
         );
         let brdf = create_brdf_texture(device, usage);
@@ -267,14 +289,28 @@ fn precompute_maps(
     let usage = wgpu::TextureUsages::RENDER_ATTACHMENT
         | wgpu::TextureUsages::TEXTURE_BINDING
         | wgpu::TextureUsages::COPY_SRC;
-    let env_cube = create_cube_texture(device, "review_ibl_env_cube", ENV_CUBE_SIZE, 1, usage);
-    let irradiance =
-        create_cube_texture(device, "review_ibl_irradiance", IRRADIANCE_SIZE, 1, usage);
+    let env_cube = create_cube_texture(
+        device,
+        "review_ibl_env_cube",
+        ENV_CUBE_SIZE,
+        1,
+        ENV_FORMAT,
+        usage,
+    );
+    let irradiance = create_cube_texture(
+        device,
+        "review_ibl_irradiance",
+        IRRADIANCE_SIZE,
+        1,
+        ENV_FORMAT,
+        usage,
+    );
     let prefilter = create_cube_texture(
         device,
         "review_ibl_prefilter",
         PREFILTER_SIZE,
         PREFILTER_MIPS,
+        ENV_FORMAT,
         usage,
     );
 
@@ -501,8 +537,9 @@ fn create_brdf_texture(device: &wgpu::Device, usage: wgpu::TextureUsages) -> wgp
 }
 
 /// Upload a baked cube map into `texture`. `data` is mip-major with the six faces
-/// contiguous within each mip — exactly how the bake tool's readback wrote it. All
-/// cube maps are `Rgba16Float`.
+/// contiguous within each mip — exactly how the bake tool wrote it — and each face
+/// is BC6H block data (16 bytes per 4×4 texel block). All cube maps are
+/// [`ENV_RUNTIME_FORMAT`] (`Bc6hRgbUfloat`).
 fn upload_cube(
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
@@ -513,7 +550,11 @@ fn upload_cube(
     let mut offset = 0usize;
     for mip in 0..mips {
         let size = base_size >> mip;
-        let len = (size * size * RGBA16F_BPP) as usize;
+        // BC6H stores one 16-byte block per 4×4 texels. Every IBL face size is a
+        // multiple of 4, so the block grid divides evenly (no partial blocks).
+        let blocks = size.div_ceil(4);
+        let bytes_per_row = blocks * BC6H_BLOCK_BYTES;
+        let len = (bytes_per_row * blocks) as usize;
         for face in 0..6 {
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
@@ -529,8 +570,8 @@ fn upload_cube(
                 &data[offset..offset + len],
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(size * RGBA16F_BPP),
-                    rows_per_image: Some(size),
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(blocks),
                 },
                 wgpu::Extent3d {
                     width: size,
@@ -795,6 +836,7 @@ fn create_cube_texture(
     label: &str,
     size: u32,
     mips: u32,
+    format: wgpu::TextureFormat,
     usage: wgpu::TextureUsages,
 ) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
@@ -807,7 +849,7 @@ fn create_cube_texture(
         mip_level_count: mips,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: ENV_FORMAT,
+        format,
         usage,
         view_formats: &[],
     })
@@ -987,10 +1029,15 @@ struct BakedMapLayout {
     mips: u32,
     layers: u32,
     bpp: u32,
+    /// BC6H-compress each subresource before writing (the HDR cubes). The BRDF LUT
+    /// stays uncompressed (`false`), so the runtime uploads it raw.
+    bc6h: bool,
 }
 
 /// Read a whole texture (all mips × layers) back to `path` in mip-major,
-/// faces-contiguous order — the exact byte layout the runtime upload re-reads.
+/// faces-contiguous order — the exact byte layout the runtime upload re-reads. The
+/// HDR cubes (`layout.bc6h`) are BC6H-compressed per subresource on the way out;
+/// the BRDF LUT is written as raw f16.
 #[cfg(feature = "bake")]
 fn readback_to_file(
     device: &wgpu::Device,
@@ -1003,12 +1050,30 @@ fn readback_to_file(
     for mip in 0..layout.mips {
         let size = layout.base_size >> mip;
         for layer in 0..layout.layers {
-            data.extend_from_slice(&readback_subresource(
-                device, queue, texture, mip, layer, size, layout.bpp,
-            ));
+            let raw = readback_subresource(device, queue, texture, mip, layer, size, layout.bpp);
+            if layout.bc6h {
+                data.extend_from_slice(&compress_bc6h_face(size, &raw));
+            } else {
+                data.extend_from_slice(&raw);
+            }
         }
     }
     std::fs::write(path, &data)
+}
+
+/// BC6H-compress one `size`×`size` face of `Rgba16Float` (FP16) texels into the
+/// GPU-native unsigned BC6H blocks the runtime uploads. Bake-only: the encoder
+/// (Intel ISPC, prebuilt kernels) trades offline bake time for an ~8× smaller,
+/// sample-bandwidth-cheaper runtime map.
+#[cfg(feature = "bake")]
+fn compress_bc6h_face(size: u32, rgba_f16: &[u8]) -> Vec<u8> {
+    let surface = intel_tex_2::RgbaSurface {
+        width: size,
+        height: size,
+        stride: size * RGBA16F_BPP,
+        data: rgba_f16,
+    };
+    intel_tex_2::bc6h::compress_blocks(&intel_tex_2::bc6h::slow_settings(), &surface)
 }
 
 /// Offline IBL bake entry point: precompute every environment's maps on a
@@ -1046,6 +1111,7 @@ pub fn bake_ibl_assets() -> Result<(), Box<dyn std::error::Error>> {
             mips,
             layers: 6,
             bpp: RGBA16F_BPP,
+            bc6h: true,
         };
         readback_to_file(
             &device,
@@ -1079,6 +1145,7 @@ pub fn bake_ibl_assets() -> Result<(), Box<dyn std::error::Error>> {
                     mips: 1,
                     layers: 1,
                     bpp: RG16F_BPP,
+                    bc6h: false,
                 },
                 &out_dir.join("T_IBL_BRDF.bin"),
             )?;

@@ -1342,8 +1342,14 @@ fn wgpu_configuration(renderer_config: RendererConfig) -> egui_wgpu::WgpuConfigu
         };
         wgpu::DeviceDescriptor {
             label: Some("egui wgpu device"),
-            required_features: adapter.features()
-                & wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+            // BC is OR'd in unmasked (not `& adapter.features()`): the baked IBL
+            // cubes ship as BC6H, so the renderer hard-requires `TEXTURE_COMPRESSION_BC`.
+            // It's universal on the desktop DX12/Vulkan/Metal targets; if some
+            // adapter lacked it, device creation fails loudly here rather than
+            // later at the IBL upload.
+            required_features: (adapter.features()
+                & wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES)
+                | wgpu::Features::TEXTURE_COMPRESSION_BC,
             required_limits: wgpu::Limits {
                 // Match egui's default: large enough for 4k+ surfaces with a depth
                 // buffer.
