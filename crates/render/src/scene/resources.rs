@@ -15,13 +15,15 @@ use crate::geometry::{
 };
 use crate::gtao::GtaoPass;
 use crate::ibl::{IblResources, PREFILTER_MAX_LOD};
-use crate::material::{MaterialState, MaterialTable, material_layout};
+use crate::material::{
+    MaterialState, MaterialTable, build_part_key, effective_materials, material_layout,
+};
 use crate::post::PostPass;
 use crate::selection::{Selection, SelectionView, selection_bounds};
 use crate::targets::SceneTargets;
 use crate::{
     ActiveMaterial, AntiAliasing, BoundingBoxScope, CameraProjection, EnvironmentSettings,
-    OrbitCamera, SceneDebugOptions, ShadingMode, UvCamera, UvShadingMode,
+    MaterialMode, OrbitCamera, SceneDebugOptions, ShadingMode, UvCamera, UvShadingMode,
 };
 
 use super::buffers::{
@@ -248,6 +250,11 @@ impl SceneResources {
             // Sentinel distinct from any real revision so the first 3D frame uploads
             // the (initially fallback-only) table.
             material_revision: u64::MAX,
+            synced_material_mode: MaterialMode::Source,
+            mesh_material_mode: MaterialMode::Source,
+            unique_part_key: Vec::new(),
+            unique_part_count: 0,
+            unique_baked: None,
             selection_index_buffer,
             selection_ranges: Vec::new(),
             selection_index_count,
@@ -631,6 +638,47 @@ impl SceneResources {
         }
     }
 
+    /// Build (or free) the global per-triangle mesh-part key for Unique material
+    /// mode. The key depends only on the model, so it's cached by `model_revision`
+    /// while Unique is active and freed back to empty on any other mode (invariant
+    /// 3). Shared by the mesh / solo / visibility draw lists so every Unique draw
+    /// groups by the same parts and a range's `material` field indexes the same
+    /// per-part material table. Cheap no-op once baked; call before the mesh /
+    /// material / selection / visibility syncs so they read a reconciled key.
+    pub(super) fn sync_unique_parts(
+        &mut self,
+        model: &ModelData,
+        model_revision: u64,
+        mode: MaterialMode,
+    ) {
+        let want = matches!(mode, MaterialMode::Unique).then_some(model_revision);
+        if self.unique_baked == want {
+            return;
+        }
+        match want {
+            Some(_) => {
+                let (key, count) = build_part_key(model);
+                self.unique_part_key = key;
+                self.unique_part_count = count;
+            }
+            None => {
+                self.unique_part_key = Vec::new();
+                self.unique_part_count = 0;
+            }
+        }
+        self.unique_baked = want;
+    }
+
+    /// The per-triangle grouping key for `mode`: the cached mesh-part key in Unique
+    /// mode (when the model carries per-triangle node info), else `None` to group by
+    /// material slot. Call after [`Self::sync_unique_parts`] reconciles the cache.
+    fn grouping_key(&self, mode: MaterialMode) -> Option<&[u32]> {
+        match mode {
+            MaterialMode::Unique if !self.unique_part_key.is_empty() => Some(&self.unique_part_key),
+            _ => None,
+        }
+    }
+
     /// Rebuild the steady-state mesh for a new model and free every derived line
     /// view (the views are rebuilt on demand by [`sync_line_views`] for whichever
     /// toggles are on). Per invariant 3 the steady-state shaded view then holds
@@ -642,8 +690,13 @@ impl SceneResources {
         model_revision: u64,
         debug_options: SceneDebugOptions,
     ) {
-        let (mesh_vertices, mesh_indices, mesh_ranges) =
-            model_mesh(model, debug_options.uv_channel);
+        // The index reorder groups by the active mode's key (mesh part in Unique,
+        // material slot otherwise); `sync_unique_parts` has already reconciled the
+        // part key this reads.
+        let (mesh_vertices, mesh_indices, mesh_ranges) = {
+            let key = self.grouping_key(debug_options.material_mode);
+            model_mesh(model, debug_options.uv_channel, key)
+        };
         let (mesh_vertex_buffer, mesh_index_buffer, mesh_index_count) =
             create_mesh_buffers(device, &mesh_vertices, &mesh_indices);
 
@@ -653,6 +706,7 @@ impl SceneResources {
         self.material_ranges = mesh_ranges;
         self.model_revision = model_revision;
         self.mesh_uv_channel = debug_options.uv_channel;
+        self.mesh_material_mode = debug_options.material_mode;
 
         // Drop the previous model's derived geometry; `sync_line_views` rebuilds
         // whatever is currently switched on.
@@ -807,47 +861,61 @@ impl SceneResources {
         }
     }
 
+    /// Rebuild the mesh vertex/index buffers + draw ranges for a new UV channel or
+    /// material mode (both keep the same model). The vertices change with the
+    /// channel; the index reorder + ranges change with the grouping key (Unique
+    /// groups by mesh part, not material), so both are rebuilt together.
     pub(super) fn update_mesh_channel(
         &mut self,
         device: &wgpu::Device,
         model: &ModelData,
         uv_channel: u32,
+        mode: MaterialMode,
     ) {
-        let (mesh_vertices, mesh_indices, mesh_ranges) = model_mesh(model, uv_channel);
+        let (mesh_vertices, mesh_indices, mesh_ranges) = {
+            let key = self.grouping_key(mode);
+            model_mesh(model, uv_channel, key)
+        };
         let (mesh_vertex_buffer, mesh_index_buffer, mesh_index_count) =
             create_mesh_buffers(device, &mesh_vertices, &mesh_indices);
         self.mesh_vertex_buffer = mesh_vertex_buffer;
         self.mesh_index_buffer = mesh_index_buffer;
         self.mesh_index_count = mesh_index_count;
-        // The index reordering depends only on `tri_material`, so the ranges are
-        // unchanged by a UV-channel switch — but reassign them to stay in lockstep
-        // with the freshly rebuilt index buffer.
         self.material_ranges = mesh_ranges;
         self.mesh_uv_channel = uv_channel;
+        self.mesh_material_mode = mode;
     }
 
-    /// Bring the material table in line with the current editable values. Rebuilds
-    /// the table (buffer + bind group) when the material count changes (a new
-    /// model), re-uploads when an edit bumped the revision, and otherwise does
-    /// nothing — so steady-state frames pay nothing (the same cadence as
-    /// `sync_environment`).
+    /// Bring the material table in line with the current editable values + material
+    /// mode. The uploaded table is the *effective* one: the imported `materials` in
+    /// Source mode, or the standard / per-part replacement in Standard / Unique
+    /// (the imported values are left untouched, invariant 1). Rebuilds when the
+    /// effective count changes (a new model, or a mode that changes the entry
+    /// count), re-uploads when an edit bumped the revision *or* the mode changed,
+    /// and otherwise does nothing — so steady-state frames pay nothing (the same
+    /// cadence as `sync_environment`). Reads `unique_part_count`, so call after
+    /// [`Self::sync_unique_parts`].
     pub(super) fn sync_materials(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         materials: &[MaterialState],
         material_revision: u64,
+        mode: MaterialMode,
     ) {
-        let count_changed = self.material_table.material_count() != materials.len();
-        if count_changed || self.material_revision != material_revision {
+        let effective = effective_materials(mode, materials, self.unique_part_count);
+        let count_changed = self.material_table.material_count() != effective.len();
+        let mode_changed = self.synced_material_mode != mode;
+        if count_changed || mode_changed || self.material_revision != material_revision {
             self.material_table.sync(
                 device,
                 queue,
                 &self.material_layout,
                 self.material_alignment,
-                materials,
+                &effective,
             );
             self.material_revision = material_revision;
+            self.synced_material_mode = mode;
         }
     }
 
@@ -864,27 +932,35 @@ impl SceneResources {
         model_revision: u64,
         view: SelectionView,
         hidden: &[u32],
+        mode: MaterialMode,
     ) {
         let want = view
             .selection
             .is_active()
-            .then(|| (model_revision, view.selection, hidden.to_vec()));
+            .then(|| (model_revision, view.selection, hidden.to_vec(), mode));
         if self.selection_baked == want {
             return;
         }
         match &want {
             // The selection resolved to no usable geometry (e.g. the model lacks the
             // parallel arrays, or every selected mesh is hidden) -> clear; otherwise
-            // upload the visible selected indices.
-            Some((_, selection, hidden)) => match selection_geometry(model, *selection, hidden) {
-                Some((indices, ranges)) => {
-                    let (index_buffer, index_count) = create_index_buffer(device, &indices);
-                    self.selection_index_buffer = index_buffer;
-                    self.selection_index_count = index_count;
-                    self.selection_ranges = ranges;
+            // upload the visible selected indices. The solo list groups by the same
+            // key as the main mesh so each range binds the right effective material.
+            Some((_, selection, hidden, _)) => {
+                let geometry = {
+                    let key = self.grouping_key(mode);
+                    selection_geometry(model, *selection, hidden, key)
+                };
+                match geometry {
+                    Some((indices, ranges)) => {
+                        let (index_buffer, index_count) = create_index_buffer(device, &indices);
+                        self.selection_index_buffer = index_buffer;
+                        self.selection_index_count = index_count;
+                        self.selection_ranges = ranges;
+                    }
+                    None => self.clear_selection_buffers(device),
                 }
-                None => self.clear_selection_buffers(device),
-            },
+            }
             None => self.clear_selection_buffers(device),
         }
         self.selection_baked = want;
@@ -920,24 +996,32 @@ impl SceneResources {
         model: &ModelData,
         model_revision: u64,
         hidden: &[u32],
+        mode: MaterialMode,
     ) {
-        let want = (!hidden.is_empty()).then(|| (model_revision, hidden.to_vec()));
+        let want = (!hidden.is_empty()).then(|| (model_revision, hidden.to_vec(), mode));
         if self.visibility_baked == want {
             return;
         }
         match &want {
             // Something is hidden: build the filtered draw list, or fall back to the
-            // full mesh when the model carries no per-triangle node info.
-            Some((_, hidden)) => match visible_geometry(model, hidden) {
-                Some((indices, ranges)) => {
-                    let (index_buffer, index_count) = create_index_buffer(device, &indices);
-                    self.visible_index_buffer = index_buffer;
-                    self.visible_index_count = index_count;
-                    self.visible_ranges = ranges;
-                    self.visible_active = true;
+            // full mesh when the model carries no per-triangle node info. Grouped by
+            // the same key as the main mesh so each range binds the right material.
+            Some((_, hidden, _)) => {
+                let geometry = {
+                    let key = self.grouping_key(mode);
+                    visible_geometry(model, hidden, key)
+                };
+                match geometry {
+                    Some((indices, ranges)) => {
+                        let (index_buffer, index_count) = create_index_buffer(device, &indices);
+                        self.visible_index_buffer = index_buffer;
+                        self.visible_index_count = index_count;
+                        self.visible_ranges = ranges;
+                        self.visible_active = true;
+                    }
+                    None => self.clear_visibility_buffers(device),
                 }
-                None => self.clear_visibility_buffers(device),
-            },
+            }
             None => self.clear_visibility_buffers(device),
         }
         self.visibility_baked = want;

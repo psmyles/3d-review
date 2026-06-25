@@ -9,6 +9,7 @@ mod bounding_box;
 mod environment;
 mod gtao;
 pub(crate) mod inspector;
+mod material_mode;
 mod normals;
 pub(crate) mod outliner;
 mod tonemap;
@@ -49,6 +50,7 @@ pub(crate) fn draw_panel_body(ui: &mut egui::Ui, state: &mut UiState, panel: Opt
     style.drag_value_text_style = egui::TextStyle::Monospace;
     match panel {
         OptionPanel::Wireframe => wireframe::body(ui, state),
+        OptionPanel::MaterialMode => material_mode::body(ui, state),
         OptionPanel::BoundingBox => bounding_box::body(ui, state),
         OptionPanel::UvChecker => uv_checker::body(ui, state),
         OptionPanel::FaceNormals => normals::face_body(ui, state),

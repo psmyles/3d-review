@@ -14,10 +14,12 @@
 //! Organized into [`state`] (CPU/GPU data types), [`table`] (the GPU table +
 //! group-3 layout) and [`upload`] (generic texture/bind-group plumbing).
 
+mod mode;
 mod state;
 mod table;
 mod upload;
 
+pub(crate) use mode::{build_part_key, effective_materials};
 pub(crate) use state::MaterialDrawRange;
 pub use state::{
     AlphaMode, MaterialChange, MaterialEdit, MaterialSnapshot, MaterialState, RoughnessWorkflow,

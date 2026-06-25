@@ -22,6 +22,7 @@ pub(crate) fn selection_geometry(
     model: &ModelData,
     selection: Selection,
     hidden_nodes: &[u32],
+    tri_key: Option<&[u32]>,
 ) -> Option<(Vec<u32>, Vec<MaterialDrawRange>)> {
     let mut mask = selected_triangle_mask(model, selection)?;
     // A hidden mesh isn't drawn, so its triangles must drop out of both the solo
@@ -35,7 +36,7 @@ pub(crate) fn selection_geometry(
             }
         }
     }
-    Some(selection_mesh(model, &mask))
+    Some(selection_mesh(model, &mask, tri_key))
 }
 
 /// The renderer-side geometry for per-mesh visibility: every triangle whose owning
@@ -49,6 +50,7 @@ pub(crate) fn selection_geometry(
 pub(crate) fn visible_geometry(
     model: &ModelData,
     hidden_nodes: &[u32],
+    tri_key: Option<&[u32]>,
 ) -> Option<(Vec<u32>, Vec<MaterialDrawRange>)> {
     let triangle_count = model.indices.len() / 3;
     if triangle_count == 0
@@ -64,7 +66,7 @@ pub(crate) fn visible_geometry(
         .iter()
         .map(|node| !hidden.contains(node))
         .collect();
-    Some(selection_mesh(model, &mask))
+    Some(selection_mesh(model, &mask, tri_key))
 }
 
 /// A per-triangle boolean mask of the triangles `selection` covers, or `None` when
@@ -135,24 +137,33 @@ fn node_subtree(model: &ModelData, root: usize) -> HashSet<u32> {
     set
 }
 
-/// Reorder the masked triangles' indices grouped by material — one
-/// [`MaterialDrawRange`] per material, in first-seen order — over a fresh index
-/// buffer that shares the steady-state mesh vertex buffer. Used by the solo view
-/// to draw only the selection while still feeding each material's uniform.
-fn selection_mesh(model: &ModelData, mask: &[bool]) -> (Vec<u32>, Vec<MaterialDrawRange>) {
+/// Reorder the masked triangles' indices grouped by `tri_key` (the Unique
+/// mesh-part index) when given, else by material slot — one [`MaterialDrawRange`]
+/// per group, in first-seen order — over a fresh index buffer that shares the
+/// steady-state mesh vertex buffer. Used by the solo view to draw only the
+/// selection while still feeding each group's uniform; the grouping must match the
+/// main mesh's so a range's `material` field indexes the same effective table.
+fn selection_mesh(
+    model: &ModelData,
+    mask: &[bool],
+    tri_key: Option<&[u32]>,
+) -> (Vec<u32>, Vec<MaterialDrawRange>) {
     let triangle_count = model.indices.len() / 3;
-    let has_material = model.triangles.material.len() == triangle_count;
+    // Same grouping precedence as `material_draw_ranges`: explicit key, else the
+    // per-triangle material slot, else a single group (slot 0).
+    let key = tri_key
+        .filter(|key| key.len() == triangle_count)
+        .or_else(|| {
+            (model.triangles.material.len() == triangle_count)
+                .then_some(model.triangles.material.as_slice())
+        });
     let mut order: Vec<u32> = Vec::new();
     let mut groups: HashMap<u32, Vec<usize>> = HashMap::new();
     for triangle in 0..triangle_count {
         if !mask.get(triangle).copied().unwrap_or(false) {
             continue;
         }
-        let slot = if has_material {
-            model.triangles.material[triangle]
-        } else {
-            0
-        };
+        let slot = key.map(|key| key[triangle]).unwrap_or(0);
         groups
             .entry(slot)
             .or_insert_with(|| {
@@ -214,7 +225,7 @@ mod tests {
             ..Default::default()
         };
 
-        let (_, ranges) = selection_geometry(&model, Selection::Material(2), &[]).unwrap();
+        let (_, ranges) = selection_geometry(&model, Selection::Material(2), &[], None).unwrap();
         // Material 2 owns triangles {2, 4}: one range, six indices.
         assert_eq!(ranges.len(), 1);
         assert_eq!(ranges[0].material, 2);
@@ -222,7 +233,7 @@ mod tests {
         assert_eq!(ranges[0].first_index, 0);
 
         // Nothing selected -> no geometry.
-        assert!(selection_geometry(&model, Selection::None, &[]).is_none());
+        assert!(selection_geometry(&model, Selection::None, &[], None).is_none());
     }
 
     /// A node selection covers the node's subtree: selecting a parent isolates the
@@ -262,13 +273,13 @@ mod tests {
         };
 
         // Root subtree = both nodes -> all three triangles (9 indices).
-        let (root_indices, _) = selection_geometry(&model, Selection::Node(0), &[]).unwrap();
+        let (root_indices, _) = selection_geometry(&model, Selection::Node(0), &[], None).unwrap();
         assert_eq!(root_indices.len(), 9);
         // Child only -> just triangle 2 (3 indices).
-        let (child_indices, _) = selection_geometry(&model, Selection::Node(1), &[]).unwrap();
+        let (child_indices, _) = selection_geometry(&model, Selection::Node(1), &[], None).unwrap();
         assert_eq!(child_indices.len(), 3);
         // Hiding the child drops its triangle from the parent's selection list.
-        let (root_visible, _) = selection_geometry(&model, Selection::Node(0), &[1]).unwrap();
+        let (root_visible, _) = selection_geometry(&model, Selection::Node(0), &[1], None).unwrap();
         assert_eq!(root_visible.len(), 6);
     }
 
@@ -293,14 +304,14 @@ mod tests {
         };
 
         // Nothing hidden -> draw the full mesh (no filtered buffer).
-        assert!(visible_geometry(&model, &[]).is_none());
+        assert!(visible_geometry(&model, &[], None).is_none());
 
         // Hide node 0 -> only node 1's single triangle (3 indices) survives.
-        let (visible_indices, _) = visible_geometry(&model, &[0]).unwrap();
+        let (visible_indices, _) = visible_geometry(&model, &[0], None).unwrap();
         assert_eq!(visible_indices.len(), 3);
 
         // Hide both nodes -> empty draw list (the caller draws nothing).
-        let (none_visible, ranges) = visible_geometry(&model, &[0, 1]).unwrap();
+        let (none_visible, ranges) = visible_geometry(&model, &[0, 1], None).unwrap();
         assert!(none_visible.is_empty());
         assert!(ranges.is_empty());
     }

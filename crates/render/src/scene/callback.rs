@@ -212,6 +212,12 @@ impl CallbackTrait for SceneCallback {
             // the steady-state view holds no derived UV buffer (invariant 3).
             resources.free_uv_view(device);
 
+            // Reconcile the Unique-mode mesh-part key first (build-on-demand /
+            // free-on-off): the mesh / material / selection / visibility syncs below
+            // all read it to group + color by part.
+            let material_mode = self.debug_options.material_mode;
+            resources.sync_unique_parts(&self.model, self.model_revision, material_mode);
+
             if resources.model_revision != self.model_revision {
                 // A new model rebuilds the steady-state mesh and resets every
                 // derived line view to "not built" — they are (re)built on demand
@@ -222,10 +228,18 @@ impl CallbackTrait for SceneCallback {
                     self.model_revision,
                     self.debug_options,
                 );
-            } else if resources.mesh_uv_channel != self.debug_options.uv_channel {
-                // Switching UV channel only rebuilds the mesh vertex buffer's UVs;
-                // the rest of the derived geometry is channel-independent.
-                resources.update_mesh_channel(device, &self.model, self.debug_options.uv_channel);
+            } else if resources.mesh_uv_channel != self.debug_options.uv_channel
+                || resources.mesh_material_mode != material_mode
+            {
+                // Switching UV channel rebuilds the mesh vertex buffer's UVs;
+                // switching material mode re-groups the index reorder (Unique groups
+                // by mesh part, not material). Either rebuilds the mesh + ranges.
+                resources.update_mesh_channel(
+                    device,
+                    &self.model,
+                    self.debug_options.uv_channel,
+                    material_mode,
+                );
             }
 
             // Build-on-demand / free-on-off for the derived line views: a view's
@@ -237,30 +251,39 @@ impl CallbackTrait for SceneCallback {
             // frame); only the 3D path uses them.
             resources.sync_environment(device, queue, self.environment);
 
-            // Bring the editable material table in line with the current values:
-            // rebuilt when the material count changes (new model), re-uploaded when
-            // an edit bumps the revision, otherwise left untouched.
-            resources.sync_materials(device, queue, &self.materials, self.material_revision);
+            // Bring the editable material table in line with the current values +
+            // material mode: rebuilt when the effective count changes (new model /
+            // mode), re-uploaded when an edit bumps the revision or the mode changes,
+            // otherwise left untouched.
+            resources.sync_materials(
+                device,
+                queue,
+                &self.materials,
+                self.material_revision,
+                material_mode,
+            );
 
             // Build (or free) the selected-triangle index buffer (solo isolate +
-            // highlight-flash fill source) when the Outliner selection changes
-            // (invariant 3).
+            // highlight-flash fill source) when the Outliner selection (or material
+            // mode's grouping) changes (invariant 3).
             resources.sync_selection(
                 device,
                 &self.model,
                 self.model_revision,
                 self.selection,
                 &self.hidden_meshes,
+                material_mode,
             );
 
             // Build (or free) the per-mesh visibility draw list when the Outliner's
-            // hidden-mesh set changes (invariant 3): the filtered index buffer
-            // exists only while some mesh is hidden.
+            // hidden-mesh set (or material mode's grouping) changes (invariant 3):
+            // the filtered index buffer exists only while some mesh is hidden.
             resources.sync_visibility(
                 device,
                 &self.model,
                 self.model_revision,
                 &self.hidden_meshes,
+                material_mode,
             );
 
             // The highlight flash rides in the uniform: gamma-space color in rgb,

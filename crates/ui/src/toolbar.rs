@@ -251,8 +251,24 @@ fn draw_material_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiSta
         let uv_active = state.debug.active_material == ActiveMaterial::UvChecker;
         let vertex_colors_active = state.debug.active_material == ActiveMaterial::VertexColors;
 
-        if icon_toggle_button(ui, ctx, &ICON_SHADING_TEXTURE, source, "Source Material").clicked() {
-            state.debug.active_material = ActiveMaterial::Source;
+        let source_material = icon_toggle_button_with_options(
+            ui,
+            ctx,
+            &ICON_SHADING_TEXTURE,
+            source,
+            "Source Material (click to cycle modes, right-click for options)",
+        );
+        if source_material.clicked() {
+            // First click activates the source-material shading; clicking again
+            // while already active cycles Source -> Standard -> Unique -> Source.
+            if source {
+                state.debug.material_mode = state.debug.material_mode.next();
+            } else {
+                state.debug.active_material = ActiveMaterial::Source;
+            }
+        }
+        if source_material.secondary_clicked() {
+            state.panels_open.toggle(OptionPanel::MaterialMode);
         }
 
         let uv = icon_toggle_button_with_options(

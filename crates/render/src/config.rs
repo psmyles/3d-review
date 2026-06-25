@@ -410,6 +410,61 @@ pub enum ActiveMaterial {
     VertexColors,
 }
 
+/// How the source-material faces are shaded — the "Material Mode" option behind
+/// the Source Material button. [`Source`] keeps the imported (and user-edited)
+/// materials; the other two replace every mesh part's material with a uniform
+/// matte standard material so geometry can be read without texture/material
+/// noise. The replacement is applied renderer-side as an *effective* material
+/// table (the imported materials are untouched), so switching back is free.
+///
+/// [`Source`]: MaterialMode::Source
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MaterialMode {
+    /// The material as imported from the source file plus any user edits (the
+    /// default, the renderer's pre-existing behavior).
+    #[default]
+    Source,
+    /// Every mesh part replaced by one uniform matte mid-grey material (fully
+    /// rough, non-metallic, no emissive).
+    Standard,
+    /// Like [`Standard`], but each unique mesh part gets its own randomized hue
+    /// at the same mid brightness — so the parts of the model read apart.
+    ///
+    /// [`Standard`]: MaterialMode::Standard
+    Unique,
+}
+
+impl MaterialMode {
+    /// Every variant in display order, for building the dropdown.
+    pub const ALL: [MaterialMode; 3] = [
+        MaterialMode::Source,
+        MaterialMode::Standard,
+        MaterialMode::Unique,
+    ];
+
+    /// Dropdown label.
+    pub fn label(self) -> &'static str {
+        match self {
+            MaterialMode::Source => "Source Material",
+            MaterialMode::Standard => "Standard Material",
+            MaterialMode::Unique => "Unique Mesh",
+        }
+    }
+
+    /// The next mode in display order, wrapping back to [`Source`] after
+    /// [`Unique`] — for cycling by re-clicking the active Source Material button.
+    ///
+    /// [`Source`]: MaterialMode::Source
+    /// [`Unique`]: MaterialMode::Unique
+    pub fn next(self) -> MaterialMode {
+        match self {
+            MaterialMode::Source => MaterialMode::Standard,
+            MaterialMode::Standard => MaterialMode::Unique,
+            MaterialMode::Unique => MaterialMode::Source,
+        }
+    }
+}
+
 /// Which geometry the bounding box (and its dimension labels) wraps: the whole
 /// model, only the currently-selected mesh part / material, or only the
 /// Outliner-visible meshes. Baked into the box line buffer so it rebuilds when
@@ -437,6 +492,11 @@ pub struct SceneDebugOptions {
     /// Which material the filled faces show (source / UV checker / vertex colors).
     /// Mutually exclusive; applies in every filled-face mode.
     pub active_material: ActiveMaterial,
+    /// How the source material is shaded (imported / uniform standard / unique
+    /// per-part hue). Behind the Source Material button's options panel; replaces
+    /// the effective material table renderer-side, leaving the imported materials
+    /// untouched.
+    pub material_mode: MaterialMode,
     pub uv_checker_texture: CheckerTexture,
     /// Which vertex-color channels the view shows when `active_material` is
     /// [`ActiveMaterial::VertexColors`].
@@ -483,6 +543,7 @@ impl Default for SceneDebugOptions {
             shading_mode: ShadingMode::Shaded,
             wireframe_overlay: false,
             active_material: ActiveMaterial::Source,
+            material_mode: MaterialMode::Source,
             uv_checker_texture: CheckerTexture::Greyscale,
             vertex_color_mode: VertexColorMode::Rgb,
             uv_checker_tiling: 4,
