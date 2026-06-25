@@ -22,11 +22,39 @@ pub(crate) fn icon_toggle_button(
             theme::px(ctx, size::TOOLBAR_ICON_SIZE),
             theme::px(ctx, size::TOOLBAR_ICON_SIZE),
         ),
+        false,
+    )
+}
+
+/// A standard icon toggle for a button that also exposes a right-click options
+/// panel: identical to [`icon_toggle_button`] but while hovered it paints a thin
+/// green line along the tile's top edge — end to end, fading from transparent at
+/// both ends to opaque at the center — hinting that there are more options behind
+/// it.
+pub(crate) fn icon_toggle_button_with_options(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    icon: &AppIcon,
+    selected: bool,
+    tooltip: &str,
+) -> egui::Response {
+    icon_tile_button(
+        ui,
+        ctx,
+        icon,
+        selected,
+        tooltip,
+        egui::vec2(
+            theme::px(ctx, size::TOOLBAR_ICON_SIZE),
+            theme::px(ctx, size::TOOLBAR_ICON_SIZE),
+        ),
+        true,
     )
 }
 
 /// A custom-painted icon tile button: recessed when idle, accent-filled when
-/// selected, lifted on hover. The icon is tinted brighter when selected.
+/// selected, lifted on hover. The icon is tinted brighter when selected. When
+/// `has_options` is set, a hover paints the green options-hint underline.
 pub(crate) fn icon_tile_button(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
@@ -34,6 +62,7 @@ pub(crate) fn icon_tile_button(
     selected: bool,
     tooltip: &str,
     tile_size: egui::Vec2,
+    has_options: bool,
 ) -> egui::Response {
     let tint = if selected {
         color::TEXT_PRIMARY
@@ -64,6 +93,31 @@ pub(crate) fn icon_tile_button(
             .fit_to_exact_size(image_rect.size())
             .tint(tint)
             .paint_at(ui, image_rect);
+    }
+
+    // Hint that this button has a right-click options panel: a thin green line
+    // along the top edge, end to end, fading from transparent at both ends to
+    // opaque at the center. egui has no gradient-stroke primitive, so it's a
+    // 1px-tall two-quad mesh with per-vertex colors, painted last so it sits over
+    // the fill/icon.
+    if has_options && response.hovered() {
+        let edge = theme::with_opacity(color::OPTIONS_HINT, 0.0);
+        let center = color::OPTIONS_HINT;
+        let top = rect.top();
+        let bottom = top + size::OPTIONS_HINT_THICKNESS;
+        let mid_x = rect.center().x;
+        let mut mesh = egui::Mesh::default();
+        mesh.colored_vertex(egui::pos2(rect.left(), top), edge); // 0
+        mesh.colored_vertex(egui::pos2(rect.left(), bottom), edge); // 1
+        mesh.colored_vertex(egui::pos2(mid_x, top), center); // 2
+        mesh.colored_vertex(egui::pos2(mid_x, bottom), center); // 3
+        mesh.colored_vertex(egui::pos2(rect.right(), top), edge); // 4
+        mesh.colored_vertex(egui::pos2(rect.right(), bottom), edge); // 5
+        mesh.add_triangle(0, 1, 2);
+        mesh.add_triangle(1, 3, 2);
+        mesh.add_triangle(2, 3, 4);
+        mesh.add_triangle(3, 5, 4);
+        ui.painter().add(egui::Shape::mesh(mesh));
     }
 
     response.on_hover_text(tooltip)

@@ -14,7 +14,10 @@ use crate::state::{
     OptionPanel, TextureChannelView, TexturePoolEntry, UiState, ViewProjectionMode, WorkspaceMode,
 };
 use crate::theme::{self, color, size};
-use crate::widgets::{compact_combo, icon_toggle_button, segment_button, toolbar_group_shell};
+use crate::widgets::{
+    compact_combo, icon_toggle_button, icon_toggle_button_with_options, segment_button,
+    toolbar_group_shell,
+};
 
 /// Background frame shared by the toolbar (and matched by the status bar). Zero
 /// inner margin: content is placed by px-converted rect math below, so no raw
@@ -163,7 +166,7 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
 fn draw_shading_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState, width: f32) {
     toolbar_group_shell(ui, ctx, width, |ui| {
         // 1. Show Wireframe — independent overlay toggle; retains its options panel.
-        let wire_overlay = icon_toggle_button(
+        let wire_overlay = icon_toggle_button_with_options(
             ui,
             ctx,
             &ICON_SHADING_WIRE,
@@ -252,7 +255,7 @@ fn draw_material_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiSta
             state.debug.active_material = ActiveMaterial::Source;
         }
 
-        let uv = icon_toggle_button(
+        let uv = icon_toggle_button_with_options(
             ui,
             ctx,
             &ICON_UV,
@@ -266,7 +269,7 @@ fn draw_material_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiSta
             state.panels_open.toggle(OptionPanel::UvChecker);
         }
 
-        let vertex_colors = icon_toggle_button(
+        let vertex_colors = icon_toggle_button_with_options(
             ui,
             ctx,
             &ICON_VERTEX_COLORS,
@@ -286,7 +289,7 @@ fn draw_material_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiSta
 /// toggles — any combination can be active. Each retains its options panel.
 fn draw_normals_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState, width: f32) {
     toolbar_group_shell(ui, ctx, width, |ui| {
-        let face = icon_toggle_button(
+        let face = icon_toggle_button_with_options(
             ui,
             ctx,
             &ICON_NORMALS_FACE,
@@ -300,7 +303,7 @@ fn draw_normals_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiStat
             state.panels_open.toggle(OptionPanel::FaceNormals);
         }
 
-        let vertex = icon_toggle_button(
+        let vertex = icon_toggle_button_with_options(
             ui,
             ctx,
             &ICON_NORMALS_VERTEX,
@@ -318,7 +321,7 @@ fn draw_normals_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiStat
 
 fn draw_view_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState, width: f32) {
     toolbar_group_shell(ui, ctx, width, |ui| {
-        let bbox = icon_toggle_button(
+        let bbox = icon_toggle_button_with_options(
             ui,
             ctx,
             &ICON_BBOX,

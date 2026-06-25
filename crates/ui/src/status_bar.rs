@@ -5,7 +5,9 @@
 use crate::assets::{ICON_ANTI_ALIASING, ICON_AO, ICON_IBL, ICON_INFO, ICON_TONEMAPPER};
 use crate::state::{OptionPanel, TexViewRequest, TextureBackground, UiState, WorkspaceMode};
 use crate::theme::{self, color, font, size};
-use crate::widgets::{icon_toggle_button, segment_button, toolbar_group_shell};
+use crate::widgets::{
+    icon_toggle_button, icon_toggle_button_with_options, segment_button, toolbar_group_shell,
+};
 
 /// Background frame for the status bar: matches the toolbar fill with a top
 /// border. Zero inner margin — content is placed by rect math in [`draw`].
@@ -94,7 +96,7 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                             state.environment.ibl_enabled = false;
                         }
                         ui.add_enabled_ui(state.ibl_supported, |ui| {
-                            let ibl = icon_toggle_button(
+                            let ibl = icon_toggle_button_with_options(
                                 ui,
                                 ctx,
                                 &ICON_IBL,
@@ -115,7 +117,7 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                             state.gtao.enabled = false;
                         }
                         ui.add_enabled_ui(state.gtao_supported, |ui| {
-                            let gtao = icon_toggle_button(
+                            let gtao = icon_toggle_button_with_options(
                                 ui,
                                 ctx,
                                 &ICON_AO,
@@ -133,7 +135,7 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                         // Tone mapping. Left-click toggles the tone curve on/off
                         // (off = linear → sRGB); right-click opens the operator
                         // picker.
-                        let tonemap = icon_toggle_button(
+                        let tonemap = icon_toggle_button_with_options(
                             ui,
                             ctx,
                             &ICON_TONEMAPPER,
@@ -148,7 +150,7 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                         }
 
                         // Anti aliasing.
-                        let aa = icon_toggle_button(
+                        let aa = icon_toggle_button_with_options(
                             ui,
                             ctx,
                             &ICON_ANTI_ALIASING,

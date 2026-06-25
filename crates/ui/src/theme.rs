@@ -62,6 +62,11 @@ pub mod color {
     pub const SELECTION_OUTLINE: Color32 = Color32::from_rgb(255, 140, 35);
     /// Hover fill for custom-painted tiles (icon tiles, mode segments).
     pub const HOVER_BG: Color32 = Color32::from_rgb(54, 56, 61);
+    /// Gradient line drawn along the top of a hovered toolbar/status-bar icon tile
+    /// that carries a right-click options panel — a quiet affordance hint that the
+    /// button has more behind it. Opaque at the center, faded to transparent at
+    /// both ends.
+    pub const OPTIONS_HINT: Color32 = Color32::from_rgb(120, 226, 96);
     /// Reset-button fills (idle / hovered).
     pub const BUTTON_BG: Color32 = Color32::from_rgb(20, 23, 26);
     pub const BUTTON_HOVER_BG: Color32 = Color32::from_rgb(28, 32, 37);
@@ -413,6 +418,9 @@ pub mod size {
     pub const HAIRLINE: f32 = 1.0;
     /// Selected-swatch outline width.
     pub const SELECTION_STROKE_WIDTH: f32 = 2.0;
+    /// Height of the options-hint gradient line atop a hovered icon tile. Two
+    /// pixels so it stays visible over the accent fill of an active button.
+    pub const OPTIONS_HINT_THICKNESS: f32 = 2.0;
 
     // ── Gizmo strokes / interaction ───────────────────────────────────────
     pub const GIZMO_LINE_WIDTH: f32 = 2.5;
