@@ -71,7 +71,7 @@ pub(crate) fn visible_geometry(
 /// nothing is selected (or the model lacks the parallel arrays the selection
 /// needs). A node selection includes the node's subtree; a material selection
 /// every triangle of that slot.
-fn selected_triangle_mask(model: &ModelData, selection: Selection) -> Option<Vec<bool>> {
+pub(crate) fn selected_triangle_mask(model: &ModelData, selection: Selection) -> Option<Vec<bool>> {
     let triangle_count = model.indices.len() / 3;
     if triangle_count == 0 {
         return None;

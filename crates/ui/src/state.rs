@@ -12,9 +12,10 @@ use std::sync::Arc;
 use glam::{Vec2, Vec3};
 use review_model::{Bounds, ModelData, ModelStats};
 use review_render::{
-    AntiAliasing, CameraProjection, CheckerTexture, DecodedImage, EnvironmentSettings,
-    GtaoSettings, MaterialEdit, MaterialSnapshot, MsaaSamples, SceneDebugOptions, Selection,
-    ShadingMode, TonemapSettings, UvShadingMode, VertexColorMode,
+    AntiAliasing, BoundingBoxScope, CameraProjection, CheckerTexture, DecodedImage,
+    EnvironmentSettings, GtaoSettings, MaterialEdit, MaterialSnapshot, MsaaSamples,
+    SceneDebugOptions, Selection, ShadingMode, TonemapSettings, UvShadingMode, VertexColorMode,
+    selection_bounds,
 };
 
 use crate::theme;
@@ -343,21 +344,28 @@ impl Default for WireframePanelState {
 /// the Outliner currently shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BoundsScope {
-    /// Wrap every mesh, regardless of Outliner visibility (the default).
+    /// Wrap every mesh, regardless of selection or Outliner visibility (default).
     #[default]
     AllMeshes,
+    /// Wrap only the geometry the current Outliner selection covers.
+    OnlySelection,
     /// Wrap only the currently-visible meshes (Outliner-hidden meshes excluded).
     VisibleOnly,
 }
 
 impl BoundsScope {
-    pub const ALL: [BoundsScope; 2] = [BoundsScope::AllMeshes, BoundsScope::VisibleOnly];
+    pub const ALL: [BoundsScope; 3] = [
+        BoundsScope::AllMeshes,
+        BoundsScope::OnlySelection,
+        BoundsScope::VisibleOnly,
+    ];
 
     /// The dropdown label for this scope.
     pub fn label(self) -> &'static str {
         match self {
-            BoundsScope::AllMeshes => "all meshes",
-            BoundsScope::VisibleOnly => "visible only",
+            BoundsScope::AllMeshes => "All Meshes",
+            BoundsScope::OnlySelection => "Only Selection",
+            BoundsScope::VisibleOnly => "Only Visible",
         }
     }
 }
@@ -639,6 +647,13 @@ pub struct UiState {
     /// The sorted hidden-node set [`UiState::visible_bounds_cache`] was built for;
     /// a mismatch with the live hidden set invalidates the cache.
     pub visible_bounds_key: Vec<u32>,
+    /// Cached `selection_bounds(selection)` for the dimension-label overlay's
+    /// "only selection" box (same O(triangles) caching as the visible-only box,
+    /// keyed by the selection it was computed for).
+    pub selection_bounds_cache: Option<Bounds>,
+    /// The selection [`UiState::selection_bounds_cache`] was built for; a mismatch
+    /// with the live selection invalidates the cache.
+    pub selection_bounds_key: Selection,
     /// Most recent measured frames-per-second, fed by `app` from the render
     /// loop. Zero while idle (the viewer redraws on demand, not continuously).
     pub fps: f32,
@@ -705,6 +720,8 @@ impl Default for UiState {
             bounds: None,
             visible_bounds_cache: None,
             visible_bounds_key: Vec::new(),
+            selection_bounds_cache: None,
+            selection_bounds_key: Selection::None,
             fps: 0.0,
             show_help_overlay: true,
             app_version: String::new(),
@@ -721,22 +738,35 @@ impl UiState {
     /// and whenever nothing is hidden, it's the whole-model [`UiState::bounds`]
     /// (no scan). Mirrors the box the renderer draws.
     pub(crate) fn measured_bounds(&mut self, model: &ModelData) -> Option<Bounds> {
-        if !self.debug.bounding_box_visible_only {
-            return self.bounds;
+        match self.bounding_box.scope {
+            BoundsScope::AllMeshes => self.bounds,
+            BoundsScope::OnlySelection => {
+                // The selection scan ([`selection_bounds`]) is O(triangles), so
+                // cache it and rebuild only when the selection changes — never
+                // per-frame. (Model loads clear the selection, so the cache is
+                // never served across a model swap.)
+                if self.selection_bounds_key != self.selection {
+                    self.selection_bounds_cache = selection_bounds(model, self.selection);
+                    self.selection_bounds_key = self.selection;
+                }
+                self.selection_bounds_cache
+            }
+            BoundsScope::VisibleOnly => {
+                let mut hidden: Vec<u32> = self.hidden_meshes.iter().map(|&i| i as u32).collect();
+                hidden.sort_unstable();
+                // An empty hidden set makes `visible_bounds` the whole-model box, so
+                // skip both the scan and the cache. (Model loads clear the hidden
+                // set, so the cache below is never served across a model swap.)
+                if hidden.is_empty() {
+                    return self.bounds;
+                }
+                if self.visible_bounds_key != hidden {
+                    self.visible_bounds_cache = model.visible_bounds(&hidden);
+                    self.visible_bounds_key = hidden;
+                }
+                self.visible_bounds_cache
+            }
         }
-        let mut hidden: Vec<u32> = self.hidden_meshes.iter().map(|&i| i as u32).collect();
-        hidden.sort_unstable();
-        // An empty hidden set makes `visible_bounds` the whole-model box, so skip
-        // both the scan and the cache. (Model loads clear the hidden set, so the
-        // cache below is never served across a model swap.)
-        if hidden.is_empty() {
-            return self.bounds;
-        }
-        if self.visible_bounds_key != hidden {
-            self.visible_bounds_cache = model.visible_bounds(&hidden);
-            self.visible_bounds_key = hidden;
-        }
-        self.visible_bounds_cache
     }
 }
 
@@ -755,6 +785,10 @@ pub(crate) fn sync_debug_state(state: &mut UiState) {
     state.debug.vertex_normal_color = theme::color32_to_rgba(state.vertex_normals.color);
     state.debug.wireframe_color = theme::color32_to_rgba(state.wireframe.color);
     state.debug.bounding_box_color = theme::color32_to_rgba(state.bounding_box.color);
-    state.debug.bounding_box_visible_only =
-        matches!(state.bounding_box.scope, BoundsScope::VisibleOnly);
+    state.debug.bounding_box_scope = match state.bounding_box.scope {
+        BoundsScope::AllMeshes => BoundingBoxScope::AllMeshes,
+        BoundsScope::OnlySelection => BoundingBoxScope::OnlySelection,
+        BoundsScope::VisibleOnly => BoundingBoxScope::VisibleOnly,
+    };
+    state.debug.bounding_box_selection = state.selection;
 }

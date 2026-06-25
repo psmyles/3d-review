@@ -4,6 +4,7 @@
 //! can both reach its fields). Pipeline + buffer construction live in
 //! [`pipelines`] / [`buffers`], and the WGSL-lockstep GPU types in [`gpu_types`].
 
+use crate::config::BoundingBoxScope;
 use crate::UvShadingMode;
 use crate::gtao::GtaoPass;
 use crate::ibl::IblResources;
@@ -204,10 +205,11 @@ struct SceneResources {
     uv_fill_baked: Option<(u64, u32, UvShadingMode)>,
 }
 
-/// Baked parameters for the bounding-box view: `(color, visible_only,
-/// hidden_nodes)`. The hidden set only changes the box in `visible_only` mode,
-/// but baking it unconditionally keeps the comparison a plain value equality.
-type BoundingBoxParams = ([f32; 4], bool, Vec<u32>);
+/// Baked parameters for the bounding-box view: `(color, scope, hidden_nodes,
+/// selection)`. Only the inputs the chosen scope depends on are populated (the
+/// hidden set for `VisibleOnly`, the selection for `OnlySelection`); the rest
+/// are left at their neutral value so an unrelated change can't rebuild the box.
+type BoundingBoxParams = ([f32; 4], BoundingBoxScope, Vec<u32>, Selection);
 
 /// Baked parameters for a normal-line view: `(length_scale, color, hidden_nodes)`.
 /// Compared by value each frame to decide whether the view's buffer is up to

@@ -27,7 +27,7 @@ pub use material::{
     TextureBinding,
 };
 pub use scene::{EGUI_DEPTH_FORMAT, EGUI_MSAA_SAMPLE_COUNT, SCENE_DEPTH_FORMAT, SceneCallback};
-pub use selection::{Selection, SelectionView};
+pub use selection::{Selection, SelectionView, selection_bounds};
 pub use tex::TexCallback;
 pub use texture::{
     ChannelSelect, DecodedImage, TEXTURE_SLOT_COUNT, TextureSlot, decode_image, suggested_channel,

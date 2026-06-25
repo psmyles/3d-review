@@ -6,6 +6,7 @@
 //! these as plain values.
 
 use crate::scene::SCENE_DEPTH_FORMAT;
+use crate::selection::Selection;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ShadingMode {
@@ -409,6 +410,22 @@ pub enum ActiveMaterial {
     VertexColors,
 }
 
+/// Which geometry the bounding box (and its dimension labels) wraps: the whole
+/// model, only the currently-selected mesh part / material, or only the
+/// Outliner-visible meshes. Baked into the box line buffer so it rebuilds when
+/// the scope — or the inputs the scope depends on — change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BoundingBoxScope {
+    /// Wrap every mesh, regardless of selection or Outliner visibility.
+    #[default]
+    AllMeshes,
+    /// Wrap only the geometry the current Outliner selection covers (a node's
+    /// subtree or a material slot); empty when nothing is selected.
+    OnlySelection,
+    /// Wrap only the currently-visible meshes (Outliner-hidden meshes excluded).
+    VisibleOnly,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SceneDebugOptions {
     pub shading_mode: ShadingMode,
@@ -444,11 +461,14 @@ pub struct SceneDebugOptions {
     /// Color of the bounding-box edges, baked into its line buffer and rebuilt
     /// when it changes.
     pub bounding_box_color: [f32; 4],
-    /// When `true` the bounding box (and its dimension labels) wraps only the
-    /// Outliner's currently-visible geometry rather than the whole model. Baked
-    /// into the box line buffer alongside the hidden set, so it rebuilds when the
-    /// scope or the visible meshes change.
-    pub bounding_box_visible_only: bool,
+    /// Which geometry the bounding box wraps (whole model / only the selection /
+    /// only the visible meshes). Baked into the box line buffer alongside the
+    /// inputs the chosen scope depends on, so it rebuilds when they change.
+    pub bounding_box_scope: BoundingBoxScope,
+    /// The Outliner selection the box wraps in [`BoundingBoxScope::OnlySelection`]
+    /// mode (ignored otherwise). Carried here so the box can be baked from the
+    /// scene callback without threading the selection through separately.
+    pub bounding_box_selection: Selection,
     /// When `true` back-facing triangles are drawn (the mesh is double-sided);
     /// when `false` (the default) they are culled, so only camera-facing surfaces
     /// are rendered. The renderer keeps two mesh pipelines — culling vs.
@@ -477,7 +497,8 @@ impl Default for SceneDebugOptions {
             vertex_normal_color: [0.14, 0.92, 0.96, 0.95],
             wireframe_color: [0.6, 0.6, 0.6, 1.0],
             bounding_box_color: [1.0, 0.803_921_6, 0.250_980_4, 1.0],
-            bounding_box_visible_only: false,
+            bounding_box_scope: BoundingBoxScope::default(),
+            bounding_box_selection: Selection::None,
             render_backfaces: false,
         }
     }

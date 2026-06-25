@@ -23,7 +23,7 @@ use review_import::{LoadOptions, load_model};
 use review_model::{ModelData, SceneBvh};
 use review_render::{
     DecodedImage, EGUI_DEPTH_FORMAT, EGUI_MSAA_SAMPLE_COUNT, Renderer, RendererConfig, ShadingMode,
-    TextureSlot, gtao_supported, ibl_supported, supported_msaa_levels,
+    TextureSlot, gtao_supported, ibl_supported, selection_bounds, supported_msaa_levels,
 };
 use review_ui::{
     AxisGizmoAction, Notifications, Selection, TexViewRequest, TextureIntent, UiOutput, UiState,
@@ -34,7 +34,7 @@ use winit::{
     application::ApplicationHandler,
     event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
-    keyboard::{Key, ModifiersState},
+    keyboard::{Key, ModifiersState, NamedKey},
     window::{Window, WindowAttributes, WindowId},
 };
 
@@ -156,6 +156,21 @@ struct App {
     /// change to a *different* node/material restarts the flash and selecting
     /// nothing ends it.
     flashed_selection: Selection,
+    /// Undo stack of past Outliner selections, newest last. Each committed change
+    /// (from an Outliner click or `Esc` deselect) pushes the prior selection here;
+    /// `Ctrl+Z` pops it back. Tracked in `app` (like the flash) because the redraw
+    /// loop and keyboard routing live here. Capped at [`SELECTION_HISTORY_LIMIT`].
+    selection_history: Vec<Selection>,
+    /// The last selection recorded into [`Self::selection_history`], so a change is
+    /// detected once per frame (an Outliner click mutates the selection during the
+    /// egui run; the change is recorded on the next frame). Set to the restored
+    /// value on undo so the undo itself isn't re-recorded as a new change.
+    recorded_selection: Selection,
+    /// Whether the camera is currently framed on the selection rather than the
+    /// whole model, so `F` alternates between the two while a mesh part is
+    /// selected. Reset whenever the selection changes (the next `F` frames the
+    /// part first).
+    frame_showing_selection: bool,
     /// Proxy used by the texture file-watcher thread to post reload events to the
     /// event loop (set in `main` before the loop runs).
     texture_proxy: Option<EventLoopProxy<UserEvent>>,
@@ -191,6 +206,10 @@ struct FlashProgress {
 
 /// How long the selection-highlight flash takes to fade from full to gone.
 const SELECTION_FLASH: Duration = Duration::from_millis(500);
+
+/// Cap on the selection undo stack, so a long session of selection changes can't
+/// grow it unbounded. Older entries fall off the bottom once the cap is reached.
+const SELECTION_HISTORY_LIMIT: usize = 128;
 
 /// Cap on how much the selection flash advances in one frame (≈30 Hz), so an idle
 /// gap before a selection change doesn't skip the flash. Matches the camera
@@ -241,6 +260,9 @@ impl Default for App {
             last_windowed_bounds: None,
             selection_flash: None,
             flashed_selection: Selection::None,
+            selection_history: Vec::new(),
+            recorded_selection: Selection::None,
+            frame_showing_selection: false,
             texture_proxy: None,
             texture_watcher: None,
             watched_dirs: HashSet::new(),
@@ -742,6 +764,9 @@ impl App {
         // viewport reflects the current fade; a change of selection (set by the
         // Outliner last frame) restarts it here.
         self.update_selection_flash();
+        // Record any selection change the Outliner committed last frame into the
+        // undo stack (and reset the F-frame toggle) before this frame's egui pass.
+        self.record_selection_history();
 
         let output_format = {
             let Some(egui_painter) = self.egui_painter.as_ref() else {
@@ -909,6 +934,8 @@ impl App {
                 self.ui.selection = Selection::None;
                 self.ui.solo = false;
                 self.ui.hidden_meshes.clear();
+                // The undo stack holds the old model's selection indices; drop it.
+                self.clear_selection_history();
                 // The previous model's texture watches / decode cache no longer
                 // apply (the fresh materials carry no slots).
                 self.reset_texture_state();
@@ -946,6 +973,18 @@ impl App {
     /// when no modifier is held (so Shift/Alt/Ctrl combinations stay free).
     /// Keyboard events egui has already consumed are filtered out by the caller.
     fn handle_keyboard_shortcut(&mut self, event: &KeyEvent) {
+        // Escape clears any Outliner selection (mesh part or material). It's a Named
+        // key, so handle it before the Character extraction below.
+        if event.state == ElementState::Pressed
+            && matches!(&event.logical_key, Key::Named(NamedKey::Escape))
+        {
+            if self.ui.selection.is_active() {
+                self.ui.selection = Selection::None;
+                self.redraw_requested = true;
+            }
+            return;
+        }
+
         let Key::Character(character) = &event.logical_key else {
             return;
         };
@@ -959,6 +998,8 @@ impl App {
                 self.reset_to_start_state();
             } else if character.eq_ignore_ascii_case("o") {
                 self.open_model_from_dialog();
+            } else if character.eq_ignore_ascii_case("z") {
+                self.undo_selection();
             }
             return;
         }
@@ -1017,11 +1058,7 @@ impl App {
             "3" => self.ui.shading_mode = ShadingMode::Shaded,
             "i" => self.ui.show_stats = !self.ui.show_stats,
             "g" => self.ui.show_grid = !self.ui.show_grid,
-            "f" => {
-                if let Some(renderer) = self.renderer.as_mut() {
-                    frame_camera_to_model(renderer, &self.scene_model);
-                }
-            }
+            "f" => self.frame_camera_on_key(),
             "r" => {
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.animate_camera_to_home();
@@ -1068,6 +1105,7 @@ impl App {
         self.ui.selection = Selection::None;
         self.ui.solo = false;
         self.ui.hidden_meshes.clear();
+        self.clear_selection_history();
         self.reset_texture_state();
 
         info!("reset to start state");
@@ -1253,6 +1291,70 @@ impl App {
             None => 0.0,
         };
         self.ui.selection_fade = fade;
+    }
+
+    /// Record a committed selection change into the undo stack, run once per frame
+    /// before the egui pass. The Outliner mutates the selection during the egui run,
+    /// so the change is observed (and the prior value pushed) on the following frame.
+    /// Also resets the `F`-frame toggle so a fresh selection frames the part first.
+    fn record_selection_history(&mut self) {
+        if self.ui.selection == self.recorded_selection {
+            return;
+        }
+        if self.selection_history.len() >= SELECTION_HISTORY_LIMIT {
+            self.selection_history.remove(0);
+        }
+        self.selection_history.push(self.recorded_selection);
+        self.recorded_selection = self.ui.selection;
+        self.frame_showing_selection = false;
+    }
+
+    /// Drop the selection undo stack and reset its change tracker, called when a
+    /// new model loads (or the viewer resets): the stored node / material indices
+    /// belong to the previous model. The caller has already set the live selection
+    /// to `None`, so the tracker is synced to that.
+    fn clear_selection_history(&mut self) {
+        self.selection_history.clear();
+        self.recorded_selection = Selection::None;
+        self.frame_showing_selection = false;
+    }
+
+    /// Undo the most recent selection change (`Ctrl+Z`): pop the prior selection and
+    /// restore it. Setting `recorded_selection` to the restored value keeps
+    /// [`Self::record_selection_history`] from re-recording the undo as a new change.
+    fn undo_selection(&mut self) {
+        if let Some(previous) = self.selection_history.pop() {
+            self.ui.selection = previous;
+            self.recorded_selection = previous;
+            self.frame_showing_selection = false;
+            self.redraw_requested = true;
+        }
+    }
+
+    /// Frame the camera on `F`. With a mesh part (a node) selected, alternate
+    /// between framing just that part and the whole model on successive presses;
+    /// otherwise (nothing, or a material, selected) always frame the whole model.
+    fn frame_camera_on_key(&mut self) {
+        // Resolve the selected part's bounds first, before the renderer is borrowed
+        // mutably (both borrow `self`). Only a node counts as a "mesh part" here.
+        let part_bounds = match self.ui.selection {
+            Selection::Node(_) => selection_bounds(&self.scene_model, self.ui.selection),
+            _ => None,
+        };
+        let target = match part_bounds {
+            Some(part) => {
+                self.frame_showing_selection = !self.frame_showing_selection;
+                if self.frame_showing_selection {
+                    Some(part)
+                } else {
+                    self.scene_model.bounds.or(Some(part))
+                }
+            }
+            None => self.scene_model.bounds,
+        };
+        if let (Some(renderer), Some(bounds)) = (self.renderer.as_mut(), target) {
+            renderer.animate_camera_to_bounds(bounds);
+        }
     }
 
     fn update_camera_animation(&mut self) {

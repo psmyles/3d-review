@@ -17,11 +17,11 @@ use crate::gtao::GtaoPass;
 use crate::ibl::{IblResources, PREFILTER_MAX_LOD};
 use crate::material::{MaterialState, MaterialTable, material_layout};
 use crate::post::PostPass;
-use crate::selection::SelectionView;
+use crate::selection::{Selection, SelectionView, selection_bounds};
 use crate::targets::SceneTargets;
 use crate::{
-    ActiveMaterial, AntiAliasing, CameraProjection, EnvironmentSettings, OrbitCamera,
-    SceneDebugOptions, ShadingMode, UvCamera, UvShadingMode,
+    ActiveMaterial, AntiAliasing, BoundingBoxScope, CameraProjection, EnvironmentSettings,
+    OrbitCamera, SceneDebugOptions, ShadingMode, UvCamera, UvShadingMode,
 };
 
 use super::buffers::{
@@ -675,27 +675,31 @@ impl SceneResources {
         }
 
         let want_bounding_box = debug_options.show_bounding_box.then(|| {
-            // The hidden set only affects the box in "visible only" mode, so leave
-            // it out of the bake key otherwise — toggling a mesh's visibility then
-            // never rebuilds the (identical) whole-model box.
-            let visible_only = debug_options.bounding_box_visible_only;
-            let hidden = if visible_only {
-                hidden_meshes.to_vec()
-            } else {
-                Vec::new()
+            // Only the inputs the chosen scope depends on go in the bake key, so an
+            // unrelated change (hiding a mesh in "all meshes" mode, moving the
+            // selection while the box wraps everything) can't rebuild the box.
+            let scope = debug_options.bounding_box_scope;
+            let hidden = match scope {
+                BoundingBoxScope::VisibleOnly => hidden_meshes.to_vec(),
+                _ => Vec::new(),
             };
-            (debug_options.bounding_box_color, visible_only, hidden)
+            let selection = match scope {
+                BoundingBoxScope::OnlySelection => debug_options.bounding_box_selection,
+                _ => Selection::None,
+            };
+            (debug_options.bounding_box_color, scope, hidden, selection)
         });
         if self.bounding_box_baked != want_bounding_box {
             let (buffer, count) = match &want_bounding_box {
-                // In "visible only" mode the box wraps just the unhidden geometry;
-                // otherwise it wraps the whole model. Either way it's empty when no
-                // bounds remain (every mesh hidden, or an empty model).
-                Some((color, visible_only, hidden)) => {
-                    let bounds = if *visible_only {
-                        model.visible_bounds(hidden)
-                    } else {
-                        model.bounds
+                // The box wraps whichever geometry the scope picks: the whole model,
+                // just the selection, or just the unhidden meshes. Either way it's
+                // empty when no bounds remain (nothing selected / every mesh hidden /
+                // an empty model).
+                Some((color, scope, hidden, selection)) => {
+                    let bounds = match scope {
+                        BoundingBoxScope::AllMeshes => model.bounds,
+                        BoundingBoxScope::OnlySelection => selection_bounds(model, *selection),
+                        BoundingBoxScope::VisibleOnly => model.visible_bounds(hidden),
                     };
                     match bounds {
                         Some(bounds) => {
