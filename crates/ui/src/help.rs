@@ -118,7 +118,9 @@ fn draw_card_contents(ui: &mut egui::Ui, state: &UiState) {
     ui.add_space(size::HELP_ROW_GAP);
     shortcut_row(ui, &["Ctrl", "O"], "Open model from file dialog");
     ui.add_space(size::HELP_ROW_GAP);
-    shortcut_row(ui, &["Ctrl", "Z"], "Undo selection change");
+    shortcut_row(ui, &["Ctrl", "Z"], "Undo");
+    ui.add_space(size::HELP_ROW_GAP);
+    shortcut_row(ui, &["Ctrl", "Y"], "Redo");
     ui.add_space(size::HELP_ROW_GAP);
     shortcut_row(ui, &["Esc"], "Clear selection");
 

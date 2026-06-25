@@ -6,6 +6,7 @@
 mod startup_paint;
 mod startup_timing;
 mod texture_manager;
+mod undo;
 mod window_state;
 
 use std::{
@@ -52,6 +53,7 @@ enum UserEvent {
 }
 
 use texture_manager::TextureDecode;
+use undo::UndoStack;
 use window_state::WindowPlacement;
 
 fn main() -> anyhow::Result<()> {
@@ -156,16 +158,22 @@ struct App {
     /// change to a *different* node/material restarts the flash and selecting
     /// nothing ends it.
     flashed_selection: Selection,
-    /// Undo stack of past Outliner selections, newest last. Each committed change
-    /// (from an Outliner click or `Esc` deselect) pushes the prior selection here;
-    /// `Ctrl+Z` pops it back. Tracked in `app` (like the flash) because the redraw
-    /// loop and keyboard routing live here. Capped at [`SELECTION_HISTORY_LIMIT`].
-    selection_history: Vec<Selection>,
-    /// The last selection recorded into [`Self::selection_history`], so a change is
-    /// detected once per frame (an Outliner click mutates the selection during the
-    /// egui run; the change is recorded on the next frame). Set to the restored
-    /// value on undo so the undo itself isn't re-recorded as a new change.
-    recorded_selection: Selection,
+    /// The unified undo/redo history for all document edits (selection, hide/
+    /// unhide, material params, texture slot bindings, and the texture pool). Fed
+    /// once per frame by [`Self::observe_edit_state`]; `Ctrl+Z` / `Ctrl+Y` restore
+    /// a step. Lives in `app` because it coordinates the UI + renderer + pool state
+    /// (invariant 2) and the redraw loop / keyboard routing are here. See
+    /// `undo.rs`.
+    undo: UndoStack,
+    /// Whether a material editor widget is being actively dragged this frame
+    /// (mirrored from [`UiOutput::material_edit_active`] after the egui pass), so
+    /// the undo observer coalesces a continuous drag into a single step.
+    drag_in_progress: bool,
+    /// Monotonic change tag for the scene texture pool + decode cache, bumped on
+    /// every pool/cache mutation. Lets [`Self::capture_edit_state`] detect pool
+    /// changes (and share the pool snapshot `Arc` when unchanged) as cheaply as the
+    /// renderer's `material_revision` does for the material table.
+    texture_revision: u64,
     /// Whether the camera is currently framed on the selection rather than the
     /// whole model, so `F` alternates between the two while a mesh part is
     /// selected. Reset whenever the selection changes (the next `F` frames the
@@ -206,10 +214,6 @@ struct FlashProgress {
 
 /// How long the selection-highlight flash takes to fade from full to gone.
 const SELECTION_FLASH: Duration = Duration::from_millis(500);
-
-/// Cap on the selection undo stack, so a long session of selection changes can't
-/// grow it unbounded. Older entries fall off the bottom once the cap is reached.
-const SELECTION_HISTORY_LIMIT: usize = 128;
 
 /// Cap on how much the selection flash advances in one frame (≈30 Hz), so an idle
 /// gap before a selection change doesn't skip the flash. Matches the camera
@@ -260,8 +264,9 @@ impl Default for App {
             last_windowed_bounds: None,
             selection_flash: None,
             flashed_selection: Selection::None,
-            selection_history: Vec::new(),
-            recorded_selection: Selection::None,
+            undo: UndoStack::new(),
+            drag_in_progress: false,
+            texture_revision: 0,
             frame_showing_selection: false,
             texture_proxy: None,
             texture_watcher: None,
@@ -764,9 +769,9 @@ impl App {
         // viewport reflects the current fade; a change of selection (set by the
         // Outliner last frame) restarts it here.
         self.update_selection_flash();
-        // Record any selection change the Outliner committed last frame into the
-        // undo stack (and reset the F-frame toggle) before this frame's egui pass.
-        self.record_selection_history();
+        // Record any edit the UI committed last frame (selection / hide / material /
+        // texture) into the undo history before this frame's egui pass.
+        self.observe_edit_state();
 
         let output_format = {
             let Some(egui_painter) = self.egui_painter.as_ref() else {
@@ -934,11 +939,12 @@ impl App {
                 self.ui.selection = Selection::None;
                 self.ui.solo = false;
                 self.ui.hidden_meshes.clear();
-                // The undo stack holds the old model's selection indices; drop it.
-                self.clear_selection_history();
                 // The previous model's texture watches / decode cache no longer
                 // apply (the fresh materials carry no slots).
                 self.reset_texture_state();
+                // The undo history references the old model's indices / materials /
+                // pool; drop it and rebaseline to this freshly-loaded state.
+                self.reset_undo_history();
 
                 self.ui.stats = model.stats;
                 self.ui.bounds = model.bounds;
@@ -999,7 +1005,14 @@ impl App {
             } else if character.eq_ignore_ascii_case("o") {
                 self.open_model_from_dialog();
             } else if character.eq_ignore_ascii_case("z") {
-                self.undo_selection();
+                // Ctrl+Z undoes; Ctrl+Shift+Z redoes (the common alt-redo chord).
+                if self.modifiers.shift_key() {
+                    self.redo();
+                } else {
+                    self.undo();
+                }
+            } else if character.eq_ignore_ascii_case("y") {
+                self.redo();
             }
             return;
         }
@@ -1105,8 +1118,10 @@ impl App {
         self.ui.selection = Selection::None;
         self.ui.solo = false;
         self.ui.hidden_meshes.clear();
-        self.clear_selection_history();
         self.reset_texture_state();
+        // Drop the undo history (it references the previous model) and rebaseline
+        // to the empty start state.
+        self.reset_undo_history();
 
         info!("reset to start state");
         self.redraw_requested = true;
@@ -1129,6 +1144,11 @@ impl App {
     }
 
     fn apply_ui_output(&mut self, output: UiOutput) {
+        // Mirror this frame's material-drag state for the undo observer (read at the
+        // top of the next frame), so a continuous slider / color drag coalesces into
+        // a single undo step. Tracked even when the renderer isn't ready yet.
+        self.drag_in_progress = output.material_edit_active;
+
         if self.renderer.is_none() {
             return;
         }
@@ -1291,44 +1311,6 @@ impl App {
             None => 0.0,
         };
         self.ui.selection_fade = fade;
-    }
-
-    /// Record a committed selection change into the undo stack, run once per frame
-    /// before the egui pass. The Outliner mutates the selection during the egui run,
-    /// so the change is observed (and the prior value pushed) on the following frame.
-    /// Also resets the `F`-frame toggle so a fresh selection frames the part first.
-    fn record_selection_history(&mut self) {
-        if self.ui.selection == self.recorded_selection {
-            return;
-        }
-        if self.selection_history.len() >= SELECTION_HISTORY_LIMIT {
-            self.selection_history.remove(0);
-        }
-        self.selection_history.push(self.recorded_selection);
-        self.recorded_selection = self.ui.selection;
-        self.frame_showing_selection = false;
-    }
-
-    /// Drop the selection undo stack and reset its change tracker, called when a
-    /// new model loads (or the viewer resets): the stored node / material indices
-    /// belong to the previous model. The caller has already set the live selection
-    /// to `None`, so the tracker is synced to that.
-    fn clear_selection_history(&mut self) {
-        self.selection_history.clear();
-        self.recorded_selection = Selection::None;
-        self.frame_showing_selection = false;
-    }
-
-    /// Undo the most recent selection change (`Ctrl+Z`): pop the prior selection and
-    /// restore it. Setting `recorded_selection` to the restored value keeps
-    /// [`Self::record_selection_history`] from re-recording the undo as a new change.
-    fn undo_selection(&mut self) {
-        if let Some(previous) = self.selection_history.pop() {
-            self.ui.selection = previous;
-            self.recorded_selection = previous;
-            self.frame_showing_selection = false;
-            self.redraw_requested = true;
-        }
     }
 
     /// Frame the camera on `F`. With a mesh part (a node) selected, alternate

@@ -101,6 +101,7 @@ impl App {
         // Already decoded (a prior import that was removed, say): pool on the spot.
         if self.texture_cache.contains_key(&path) {
             self.texture_pool.push(path.clone());
+            self.texture_revision = self.texture_revision.wrapping_add(1);
             self.watch_texture(&path);
             self.refresh_texture_pool();
             self.redraw_requested = true;
@@ -147,6 +148,7 @@ impl App {
         }
         self.texture_pool.retain(|pooled| pooled != path);
         self.texture_cache.remove(path);
+        self.texture_revision = self.texture_revision.wrapping_add(1);
         self.refresh_materials();
         self.refresh_texture_pool();
     }
@@ -199,6 +201,9 @@ impl App {
             Ok(image) => {
                 let image = Arc::new(image);
                 self.texture_cache.insert(path.clone(), Arc::clone(&image));
+                // The pool/cache changed (an import landed, or a watched file
+                // re-decoded), so bump the undo system's texture change tag.
+                self.texture_revision = self.texture_revision.wrapping_add(1);
                 match request {
                     TextureDecodeRequest::Import { .. } => {
                         if !self.texture_pool.contains(&path) {
@@ -306,6 +311,7 @@ impl App {
     pub(crate) fn reset_texture_state(&mut self) {
         self.texture_cache.clear();
         self.texture_pool.clear();
+        self.texture_revision = self.texture_revision.wrapping_add(1);
         self.ui.texture_pool = Vec::new();
         self.watched_dirs.clear();
         // Dropping the watcher unregisters every directory.

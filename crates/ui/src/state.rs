@@ -316,6 +316,10 @@ pub struct UiOutput {
     /// A texture-pool command emitted by the Inspector this frame (import / assign
     /// / clear / remove), or `None`. One intent at a time — `app` applies it.
     pub texture: Option<TextureIntent>,
+    /// Whether a material editor widget is being *actively dragged* this frame (a
+    /// slider handle or a color-picker). `app` uses it to coalesce a continuous
+    /// drag into a single undo step instead of one per intermediate value.
+    pub material_edit_active: bool,
 }
 
 #[derive(Debug, Clone)]

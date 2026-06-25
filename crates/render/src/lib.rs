@@ -607,6 +607,16 @@ impl Renderer {
             .collect()
     }
 
+    /// Replace the entire editable material table with a captured set of states
+    /// (the undo/redo restore path). Bumps the revision so the GPU table
+    /// re-uploads on the next frame. The names are left untouched: the material
+    /// count only changes on model load (which clears the undo history), so the
+    /// restored states always line up with the current `material_names`.
+    pub fn restore_materials(&mut self, states: Vec<MaterialState>) {
+        self.material_states = states;
+        self.material_revision = self.material_revision.wrapping_add(1);
+    }
+
     /// Assign (or replace) a decoded image to one of a material's seven texture
     /// slots, with the chosen channel routing. The image is shared by `Arc` (the
     /// app decodes once and may reuse it across slots / materials). Bumps the

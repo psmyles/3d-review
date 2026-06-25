@@ -123,6 +123,7 @@ pub fn draw_overlay(
         let side = draw_side_panels(ctx, state, model);
         output.material_edit = side.inspector.material_edit;
         output.texture = side.inspector.texture;
+        output.material_edit_active = side.inspector.material_edit_active;
 
         // The free viewport: the screen minus the chrome bands (toolbar top,
         // status bar bottom) and the open side panels (left/right). Floating
