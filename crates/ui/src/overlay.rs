@@ -23,6 +23,7 @@ pub fn draw_viewport_scene(
     model_revision: u64,
     output_format: egui_wgpu::wgpu::TextureFormat,
 ) {
+    let _z = crate::prof::zone!("Draw Viewport Scene");
     let callback = match state.mode {
         WorkspaceMode::ThreeD => {
             // The editable material values ride in from the app→UI snapshot; the
@@ -96,6 +97,7 @@ pub fn draw_overlay(
     bvh: Option<&SceneBvh>,
     output_format: egui_wgpu::wgpu::TextureFormat,
 ) -> UiOutput {
+    let _z = crate::prof::zone!("Draw Overlay");
     // Visuals + fonts are installed once at startup (`theme::init_style`); the
     // style is derived only from constant tokens, so there is nothing to re-apply
     // here each frame.

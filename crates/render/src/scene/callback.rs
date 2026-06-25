@@ -19,6 +19,7 @@ use crate::{
 
 use super::SCENE_CLEAR_COLOR;
 use super::SceneResources;
+use super::gpu_profiler::{Zone, frame_mask};
 
 /// The 2D UV viewport view: which UV channel to draw, how to shade it, and the
 /// camera framing it. `Some` switches [`SceneCallback`] to the UV path (grid +
@@ -165,6 +166,7 @@ impl CallbackTrait for SceneCallback {
         egui_encoder: &mut wgpu::CommandEncoder,
         callback_resources: &mut CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
+        let _z = crate::prof::zone!("Scene Prepare");
         // Create the cheap core resources on the first frame (Phase B). The heavy
         // scene pipelines + GTAO pass are compiled afterwards, one stage per frame,
         // by `advance_build`.
@@ -321,10 +323,30 @@ impl CallbackTrait for SceneCallback {
             self.tonemap.enabled,
             self.tonemap.operator.shader_index(),
         );
-        self.encode_scene(resources, egui_encoder);
+
+        // GPU profiling (only on a `--tracy` launch with `TIMESTAMP_QUERY`): bring
+        // the profiler up, drain any ready readbacks, and arm this frame's slot
+        // before encoding. The encode passes pull their `timestamp_writes` from the
+        // profiler; the resolve/copy is appended after, onto egui's encoder, so it
+        // rides the same submission. When inactive this is all a no-op.
+        resources.ensure_gpu_profiler(device, queue);
+        let gpu_mask = frame_mask(gtao_active);
+        if let Some(profiler) = resources.gpu_profiler_mut() {
+            profiler.begin(device, gpu_mask);
+        }
+
+        {
+            let _z = crate::prof::zone!("Encode Scene");
+            self.encode_scene(resources, egui_encoder);
+        }
         if gtao_active {
+            let _z = crate::prof::zone!("Encode GTAO");
             resources.encode_gtao_gbuffer(egui_encoder);
             resources.encode_gtao(egui_encoder);
+        }
+
+        if let Some(profiler) = resources.gpu_profiler_mut() {
+            profiler.finish(egui_encoder);
         }
 
         Vec::new()
@@ -354,6 +376,10 @@ impl SceneCallback {
     /// is identical to what used to run directly in egui's pass — only the target
     /// changed — so the composited image is unchanged (Phase 1).
     fn encode_scene(&self, resources: &SceneResources, encoder: &mut wgpu::CommandEncoder) {
+        let timestamp_writes = resources
+            .gpu_profiler
+            .as_ref()
+            .and_then(|profiler| profiler.writes(Zone::Scene));
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("review_scene_offscreen_pass"),
             color_attachments: &[
@@ -384,7 +410,7 @@ impl SceneCallback {
                 }),
                 stencil_ops: None,
             }),
-            timestamp_writes: None,
+            timestamp_writes,
             occlusion_query_set: None,
         });
         self.record_scene(resources, &mut render_pass);

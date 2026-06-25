@@ -21,6 +21,7 @@ mod help;
 mod notifications;
 mod overlay;
 mod panels;
+mod prof;
 mod state;
 mod stats;
 mod status_bar;

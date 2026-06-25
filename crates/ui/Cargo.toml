@@ -13,3 +13,6 @@ glam.workspace = true
 image.workspace = true
 review-model = { path = "../model" }
 review-render = { path = "../render" }
+# Tracy profiler client — always compiled in, inert until started (`--tracy`).
+# Used for the per-frame UI CPU zones (Draw Viewport Scene / Draw Overlay).
+tracy-client.workspace = true

@@ -237,13 +237,15 @@ fn clear_views(
 
 /// Run one fullscreen pass: clear `target`, bind `pipeline` + `bind_group`, draw
 /// the fullscreen triangle. The GTAO textures are single-sample with no depth, so
-/// the pass is a bare color attachment.
+/// the pass is a bare color attachment. `timestamp_writes` is `Some` only while
+/// the Tracy GPU profiler is active (otherwise `None`, exactly as before).
 pub(super) fn fullscreen_pass(
     encoder: &mut wgpu::CommandEncoder,
     pipeline: &wgpu::RenderPipeline,
     bind_group: &wgpu::BindGroup,
     target: &wgpu::TextureView,
     label: &str,
+    timestamp_writes: Option<wgpu::RenderPassTimestampWrites>,
 ) {
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some(label),
@@ -256,7 +258,7 @@ pub(super) fn fullscreen_pass(
             },
         })],
         depth_stencil_attachment: None,
-        timestamp_writes: None,
+        timestamp_writes,
         occlusion_query_set: None,
     });
     pass.set_pipeline(pipeline);

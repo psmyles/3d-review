@@ -14,9 +14,8 @@ use std::sync::Arc;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use review_render::{ChannelSelect, DecodedImage, TextureSlot, decode_image, suggested_channel};
 use review_ui::{TexturePoolEntry, TextureSlotRef};
-use tracing::warn;
 
-use crate::{App, TEXTURE_EXTENSIONS, UserEvent, file_label};
+use crate::{App, TEXTURE_EXTENSIONS, UserEvent, file_label, prof};
 
 /// A finished background texture decode, posted back to the event loop. Carries
 /// what the decode was *for* ([`TextureDecodeRequest`]) so the main thread knows
@@ -121,7 +120,10 @@ impl App {
             return;
         };
         let Some(image) = self.texture_cache.get(&path).cloned() else {
-            warn!(path = %path.display(), "assign of a texture not in the pool");
+            prof::msg(&format!(
+                "assign of a texture not in the pool: {}",
+                path.display()
+            ));
             return;
         };
         let channel = suggested_channel(&path, slot);
@@ -179,11 +181,17 @@ impl App {
     /// path) can take seconds, so it must never run on the main thread.
     fn spawn_decode(&self, request: TextureDecodeRequest) {
         let Some(proxy) = self.texture_proxy.clone() else {
-            warn!("no event-loop proxy; cannot decode texture off-thread");
+            prof::msg("no event-loop proxy; cannot decode texture off-thread");
             return;
         };
         std::thread::spawn(move || {
-            let result = decode_image(request.path());
+            // Name the decode thread + time the decode in Tracy (both no-op unless
+            // `--tracy`).
+            prof::thread_name("texture-decode");
+            let result = {
+                let _z = prof::zone!("Decode Image");
+                decode_image(request.path())
+            };
             // A send failure only means the event loop has exited; nothing to do.
             let _ = proxy.send_event(UserEvent::TextureDecoded(TextureDecode { request, result }));
         });
@@ -231,7 +239,10 @@ impl App {
                 }
             }
             Err(error) => {
-                warn!(path = %path.display(), error = %error, "texture decode failed");
+                prof::msg(&format!(
+                    "texture decode failed {}: {error}",
+                    path.display()
+                ));
                 self.notifications.error(format!("Couldn't load {name}"));
             }
         }
@@ -267,7 +278,7 @@ impl App {
             match RecommendedWatcher::new(handler, notify::Config::default()) {
                 Ok(watcher) => self.texture_watcher = Some(watcher),
                 Err(error) => {
-                    warn!(error = %error, "failed to create texture watcher");
+                    prof::msg(&format!("failed to create texture watcher: {error}"));
                     return;
                 }
             }
@@ -278,7 +289,10 @@ impl App {
                     self.watched_dirs.insert(dir);
                 }
                 Err(error) => {
-                    warn!(dir = %dir.display(), error = %error, "failed to watch texture directory");
+                    prof::msg(&format!(
+                        "failed to watch texture directory {}: {error}",
+                        dir.display()
+                    ));
                 }
             }
         }

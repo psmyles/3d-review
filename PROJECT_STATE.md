@@ -128,16 +128,16 @@ input/file path
 
 Startup was cut from ~1150ms to ~350ms (resumed → first frame submitted, release,
 RTX 4080 / DX12). The remaining budget is dominated by one intrinsic cost, below.
-All startup instrumentation sits behind one switch — `crates/app`'s
-`--features startup-trace` — and is off in shipping builds, so a default release
-carries none of it (the `startup_timing.rs` laps become a zero-cost no-op and
-`review-render` drops its `tracing` dep). That feature compiles in the
-`startup_timing.rs` phase laps + the `SceneResources::new_core` breakdown, and
-turns egui-wgpu's + wgpu's `profiling::scope!`s into logged spans for a finer
-split. Re-measure with
-`cargo run -p review-app --features startup-trace` and
-`RUST_LOG=3d_review=info,review_render=info` (narrow it — `info` alone pulls in
-wgpu's per-pipeline shader dumps, which inflate the timings).
+Startup is instrumented with **Tracy** zones: `resumed` opens a sequence of named
+phase zones ("Window Create" → "Renderer Init" → "Set Window (adapter/device/
+surface)" → "Shell Init" → "Initial Model Load" → "First Frame"), and
+`SceneResources::new_core` opens the first-frame GPU-build sub-zones ("Shader
+Module" / "IBL Upload" / "Line Pipeline" / "Post Pass"). Tracy is compiled into
+every build (incl. release) but is runtime-gated: it only runs when launched with
+`--tracy`, so a default launch starts no client, opens no socket, and pays ~one
+atomic load per zone/alloc. Re-measure by running a Tracy server, then
+`cargo run --release -p review-app -- --tracy <model.fbx>`. See `Tracy profiling.md`
+for the full CPU/GPU/memory instrumentation.
 
 Landed:
 - **IBL baked offline** — runtime IBL is a pure upload (`from_baked`), no startup
@@ -192,9 +192,10 @@ probing, and it is unfixed upstream through wgpu 29 / egui-wgpu 0.34 (wgpu #3332
 
 - Write the public `README.md`. It is still a one-line stub; it needs purpose,
   prerequisites, build/run commands, controls, supported formats, and packaging.
-- Surface import errors and model warnings in the UI. Today failed loads are
-  logged with `tracing::warn!` but not shown in-app. `ModelWarning` exists in the
-  data model, but warning generation/display is not active yet.
+- Surface import errors and model warnings in the UI. Today failed loads emit a
+  toast + a Tracy message (`prof::msg`) but warnings aren't shown in-app.
+  `ModelWarning` exists in the data model, but warning generation/display is not
+  active yet.
 - Finish opacity polish (TODO Phase 7). The scene pass is single-forward
   alpha-blended MRT, so translucent materials can blend out of order; the planned
   fix is opaque-first then translucent back-to-front by per-range centroid.

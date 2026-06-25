@@ -4,8 +4,8 @@
 //! can both reach its fields). Pipeline + buffer construction live in
 //! [`pipelines`] / [`buffers`], and the WGSL-lockstep GPU types in [`gpu_types`].
 
-use crate::config::BoundingBoxScope;
 use crate::UvShadingMode;
+use crate::config::BoundingBoxScope;
 use crate::gtao::GtaoPass;
 use crate::ibl::IblResources;
 use crate::material::{MaterialDrawRange, MaterialTable};
@@ -15,11 +15,14 @@ use crate::targets::SceneTargets;
 
 mod buffers;
 mod callback;
+mod gpu_profiler;
 mod gpu_types;
 mod pipelines;
 mod resources;
 
 pub use callback::SceneCallback;
+use gpu_profiler::GpuProfiler;
+pub use gpu_profiler::enable_tracy_gpu;
 pub(crate) use gpu_types::SceneVertex;
 use pipelines::ScenePipelines;
 
@@ -203,6 +206,11 @@ struct SceneResources {
     /// `(model_revision, channel, shading_mode)` baked into the UV fill, or
     /// `None` when no fill is drawn (its buffer holds only a placeholder).
     uv_fill_baked: Option<(u64, u32, UvShadingMode)>,
+    /// Hand-rolled GPU timestamp profiler feeding Tracy (Phase: Tracy). `None`
+    /// unless `--tracy` armed it and the device has `TIMESTAMP_QUERY`; built lazily
+    /// in `prepare` and size-independent (the resize/MSAA paths never touch it).
+    /// While `None`, every scene pass keeps `timestamp_writes: None` as before.
+    gpu_profiler: Option<GpuProfiler>,
 }
 
 /// Baked parameters for the bounding-box view: `(color, scope, hidden_nodes,

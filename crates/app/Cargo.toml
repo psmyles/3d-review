@@ -14,19 +14,12 @@ glam.workspace = true
 image.workspace = true
 notify.workspace = true
 pollster.workspace = true
-# Off by default. The `startup-trace` feature flips `profiling`'s tracing backend
-# on for the whole graph, turning egui-wgpu's + wgpu's `profiling::scope!`
-# annotations (RenderState::create / request_device / configure_surface / …) into
-# INFO tracing spans so the otherwise-opaque `set_window` startup cost can be
-# broken down. See the `startup-trace` feature + `startup_timing`.
-profiling = { workspace = true, optional = true }
 review-import = { path = "../import" }
 review-model = { path = "../model" }
 review-render = { path = "../render" }
 review-ui = { path = "../ui" }
 rfd.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
+tracy-client.workspace = true
 wgpu.workspace = true
 winit.workspace = true
 
@@ -42,17 +35,6 @@ windows-sys = { workspace = true, features = [
 [target.'cfg(windows)'.build-dependencies]
 serde_json.workspace = true
 winresource.workspace = true
-
-[features]
-# Dev-only startup profiling — the single switch for ALL startup instrumentation
-# (off in shipping builds, so a default release carries none). It (1) compiles in
-# the `StartupTimer` phase laps + `review-render`'s `SceneResources::new_core`
-# breakdown (both absent/no-op without it), and (2) enables `profiling`'s tracing
-# backend across the graph (egui-wgpu, wgpu), so their internal `profiling::scope!`
-# spans surface as INFO tracing events that `main` logs at CLOSE — breaking down
-# the otherwise-opaque `set_window` (adapter/device/surface) cost. Build with
-# `--features startup-trace` and run with `RUST_LOG=info` to see it all.
-startup-trace = ["dep:profiling", "profiling/profile-with-tracing", "review-render/startup-trace"]
 
 [[bin]]
 name = "3d-review"

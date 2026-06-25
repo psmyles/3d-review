@@ -34,12 +34,20 @@ image = { version = "0.25", default-features = false, features = [
 ] }
 notify = "8"
 pollster = "0.4"
-profiling = "1"
 rfd = "0.15"
 serde_json = "1"
 thiserror = "2"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# Tracy profiler client. Always compiled into the binary (incl. release) but
+# runtime-gated: `manual-lifetime` means the client never auto-starts — `main`
+# calls `Client::start()` only when `--tracy` is passed; `ondemand` means a
+# started client buffers nothing until a Tracy server actually connects. Every
+# zone/plot/message/alloc hook no-ops when the client isn't running, so a normal
+# run pays ~nothing and opens no socket. We deliberately do NOT enable
+# `profiling/profile-with-tracy`: that backend lowers wgpu's/egui-wgpu's internal
+# `profiling::scope!` calls to `tracy_client::span!`, which *panics* when no client
+# is running — i.e. it would crash every non-`--tracy` launch. Our own zones cover
+# the app/render structure instead. See `Tracy profiling.md`.
+tracy-client = { version = "0.18", features = ["manual-lifetime", "ondemand"] }
 wgpu = "24"
 windows-sys = "0.52"
 winit = "0.30"

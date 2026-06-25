@@ -1,13 +1,19 @@
 // Suppress the console window in release builds — a shipped GUI viewer should
-// open as a window, not alongside a terminal. Debug builds keep the console so
-// `tracing` output stays visible during development.
+// open as a window, not alongside a terminal.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod prof;
 mod startup_paint;
-mod startup_timing;
 mod texture_manager;
 mod undo;
 mod window_state;
+
+/// Stream allocations to Tracy, but only while the client is running (started by
+/// `--tracy`). On a normal launch this never starts the client and costs one
+/// atomic load per allocation; the `unsafe` lives in `review_import` (invariant 9).
+#[global_allocator]
+static GLOBAL: review_import::TracyAllocator<std::alloc::System> =
+    review_import::TracyAllocator::new(std::alloc::System);
 
 use std::{
     collections::{HashMap, HashSet},
@@ -30,7 +36,6 @@ use review_ui::{
     AxisGizmoAction, Notifications, Selection, TexViewRequest, TextureIntent, UiOutput, UiState,
     WorkspaceMode, draw_overlay, draw_viewport_scene, init_style,
 };
-use tracing::{info, warn};
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
@@ -57,25 +62,36 @@ use undo::UndoStack;
 use window_state::WindowPlacement;
 
 fn main() -> anyhow::Result<()> {
-    let subscriber = tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env());
-    // With `--features startup-trace`, egui-wgpu's + wgpu's `profiling::scope!`
-    // setup scopes become INFO spans; logging their CLOSE events prints each
-    // span's `time.busy`, breaking down the opaque `set_window` startup cost
-    // (adapter enumerate / request_device / surface configure / egui renderer).
-    #[cfg(feature = "startup-trace")]
-    let subscriber = subscriber.with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE);
-    subscriber.init();
+    // Tiny manual arg scan (the workspace has no arg parser and needs exactly one
+    // flag): `--tracy` turns profiling on; the first non-flag argument is the model
+    // path to open (Windows passes it for a double-clicked `.fbx` via the file
+    // association). The two coexist in any order, e.g. `3d-review --tracy a.fbx`.
+    let mut tracy_enabled = false;
+    let mut initial_model: Option<PathBuf> = None;
+    for arg in std::env::args_os().skip(1) {
+        if arg == "--tracy" {
+            tracy_enabled = true;
+        } else if initial_model.is_none() && !arg.to_string_lossy().starts_with("--") {
+            initial_model = Some(PathBuf::from(arg));
+        }
+    }
+
+    // Start the Tracy client only when asked, and keep the handle alive for the
+    // whole process (dropping the last handle disconnects). With `manual-lifetime`
+    // the client never auto-starts, so a normal launch opens no socket and every
+    // zone/plot/message/alloc hook no-ops. `ondemand` means even a started client
+    // buffers nothing until a Tracy server connects.
+    let tracy = tracy_enabled.then(|| {
+        let client = tracy_client::Client::start();
+        prof::thread_name("main");
+        prof::msg("3d-review: Tracy profiling enabled (--tracy)");
+        client
+    });
 
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
         .context("failed to create winit event loop")?;
     event_loop.set_control_flow(ControlFlow::Wait);
-
-    // A file path passed on the command line (e.g. when Windows launches the exe
-    // for a double-clicked `.fbx` via the registered file association) is loaded
-    // once the window is up. See `resumed`.
-    let initial_model = std::env::args_os().nth(1).map(PathBuf::from);
 
     // The texture file-watcher posts reload events back through this proxy.
     let texture_proxy = event_loop.create_proxy();
@@ -83,6 +99,8 @@ fn main() -> anyhow::Result<()> {
     let mut app = App {
         initial_model,
         texture_proxy: Some(texture_proxy),
+        tracy_enabled,
+        _tracy: tracy,
         ..App::default()
     };
     event_loop
@@ -201,6 +219,14 @@ struct App {
     /// the egui frame and triggers the notifications (texture decode start/finish);
     /// the UI crate only provides the themed type. Shown once per frame in `render`.
     notifications: Notifications,
+    /// Whether `--tracy` was passed: gates the (otherwise-identical) device feature
+    /// request for `TIMESTAMP_QUERY` and the GPU-profiler arming. Read in
+    /// `wgpu_configuration`.
+    tracy_enabled: bool,
+    /// The live Tracy client handle, held for the whole process so the profiler
+    /// session stays up (dropping the last handle disconnects). `None` on a normal
+    /// launch — the client is never started, so all instrumentation no-ops.
+    _tracy: Option<tracy_client::Client>,
 }
 
 /// State of the selection-highlight flash: a brief bright fill over a newly
@@ -274,6 +300,8 @@ impl Default for App {
             texture_cache: HashMap::new(),
             texture_pool: Vec::new(),
             notifications: Notifications::new(),
+            tracy_enabled: false,
+            _tracy: None,
         }
     }
 }
@@ -339,7 +367,11 @@ impl ApplicationHandler<UserEvent> for App {
             return;
         };
 
-        let mut timer = startup_timing::StartupTimer::start();
+        // Startup phase timing, as a sequence of Tracy zones (replacing the old
+        // `StartupTimer` laps): `phase` holds the current zone and is ended by
+        // dropping its guard before the next begins, so they read as adjacent spans
+        // under the "main" thread. All no-op unless `--tracy` started the client.
+        let mut phase = prof::zone!("Window Create");
 
         // Honor the OS launch hint (e.g. a shortcut set to "Run: Maximized").
         // winit never consults `STARTUPINFO.wShowWindow`, so we query it and set
@@ -383,7 +415,8 @@ impl ApplicationHandler<UserEvent> for App {
         // the renderer comes up. See `startup_paint` (the one sanctioned exception
         // to invariant 9).
         startup_paint::paint_window_black(&window);
-        timer.lap("window_create");
+        drop(phase.take());
+        phase = prof::zone!("Renderer Init");
 
         let renderer_config = RendererConfig::default();
         let mut renderer = Renderer::new(renderer_config);
@@ -402,25 +435,25 @@ impl ApplicationHandler<UserEvent> for App {
         // Install fonts + visuals once: the style is derived purely from the
         // central theme tokens (no per-frame state), so it never needs re-syncing.
         init_style(&egui_ctx);
-        timer.lap("renderer_init");
+        drop(phase.take());
+        phase = prof::zone!("Set Window (adapter/device/surface)");
 
         let mut egui_painter = pollster::block_on(egui_wgpu::winit::Painter::new(
             egui_ctx.clone(),
-            wgpu_configuration(renderer_config),
+            wgpu_configuration(renderer_config, self.tracy_enabled),
             EGUI_MSAA_SAMPLE_COUNT,
             Some(EGUI_DEPTH_FORMAT),
             false,
             true,
         ));
-        timer.lap("adapter_device");
         // This first `set_window` is the largest remaining startup chunk (~265ms on
         // the RTX 4080 / DX12 dev box) and is INTRINSIC, not our overhead — do not
         // re-investigate without new evidence. `Painter::new` above only built the
         // wgpu *instance*; egui-wgpu defers all real GPU init to the first
         // `set_window`, which runs `RenderState::create`: adapter enumerate +
         // `request_device` + egui's `Renderer::new` + the first swapchain configure.
-        // Measured split (via `--features startup-trace`, which turns egui-wgpu's +
-        // wgpu's `profiling::scope!`s into logged spans): ~197ms `enumerate_adapters`
+        // Measured split (via the `--tracy` GPU/CPU zones, which surface egui-wgpu's
+        // + wgpu's `profiling::scope!`s as Tracy zones): ~197ms `enumerate_adapters`
         // + ~47ms `request_device` + ~13ms egui `Renderer::new` + ~4ms swapchain.
         // The ~197ms is DX12 creating an `ID3D12Device` per adapter to probe its
         // features (4 adapters on this box: the 4080 cold-loads the NVIDIA driver
@@ -435,19 +468,18 @@ impl ApplicationHandler<UserEvent> for App {
         // steady-state `AutoVsync` to chase it.
         pollster::block_on(egui_painter.set_window(egui::ViewportId::ROOT, Some(window.clone())))
             .expect("failed to initialize wgpu surface");
-        timer.lap("surface_config");
+        drop(phase.take());
+        phase = prof::zone!("Shell Init");
 
         // Report which backend/adapter wgpu actually selected (see
-        // RendererConfig::preferred_backends — DX12 on Windows). Logged via
-        // `tracing`; set RUST_LOG=info to see it.
+        // RendererConfig::preferred_backends — DX12 on Windows). Surfaced as a Tracy
+        // message on a `--tracy` run.
         if let Some(render_state) = egui_painter.render_state() {
             let adapter_info = render_state.adapter.get_info();
-            info!(
-                backend = ?adapter_info.backend,
-                adapter = %adapter_info.name,
-                device_type = ?adapter_info.device_type,
-                "selected wgpu adapter"
-            );
+            prof::msg(&format!(
+                "selected wgpu adapter: {:?} / {} / {:?}",
+                adapter_info.backend, adapter_info.name, adapter_info.device_type
+            ));
             // Surface the chosen backend in the startup help overlay.
             self.ui.gpu_backend = friendly_backend_name(adapter_info.backend);
             // Gate the Anti Aliasing menu to the MSAA levels this adapter can
@@ -478,18 +510,15 @@ impl ApplicationHandler<UserEvent> for App {
         self.ui.uv_sets = self.scene_model.uv_set_labels();
         self.refresh_interval = monitor_refresh_interval(&window);
         self.window = Some(window.clone());
-        info!("application shell started");
-        timer.lap("gating_state");
+        prof::msg("application shell started");
+        drop(phase.take());
+        phase = prof::zone!("Initial Model Load");
 
         // Load a file passed on the command line (file association / CLI arg)
         // now that the renderer exists. Reuses the same path as drag-drop, so
         // framing/stats/redraw behave identically.
-        let had_initial_model = self.initial_model.is_some();
         if let Some(path) = self.initial_model.take() {
             self.open_model_from_path(&path);
-        }
-        if had_initial_model {
-            timer.lap("initial_model_load");
         }
 
         // Paint the first frame directly rather than waiting on the first
@@ -499,9 +528,10 @@ impl ApplicationHandler<UserEvent> for App {
         // pipelines + GTAO pass compile over the next few frames, which the
         // startup warmup keeps pumping until the build drains.
         self.warmup_frames = STARTUP_WARMUP_FRAMES;
+        drop(phase.take());
+        phase = prof::zone!("First Frame");
         self.render();
-        timer.lap("first_frame");
-        timer.finish();
+        drop(phase);
     }
 
     fn window_event(
@@ -755,6 +785,7 @@ impl ApplicationHandler<UserEvent> for App {
 
 impl App {
     fn render(&mut self) {
+        let _frame = prof::zone!("Frame");
         let Some(window) = self.window.as_ref().cloned() else {
             return;
         };
@@ -763,7 +794,10 @@ impl App {
         };
 
         window.set_title("3D Review");
-        self.update_camera_animation();
+        {
+            let _z = prof::zone!("Camera Animation");
+            self.update_camera_animation();
+        }
         // Advance the selection-highlight flash and feed this frame's fade into the
         // UI snapshot the scene callback reads. Done before the egui run below so the
         // viewport reflects the current fade; a change of selection (set by the
@@ -816,6 +850,7 @@ impl App {
             // alongside its `&mut self.ui` borrow (the toast system lives in `app`).
             let notifications = &mut self.notifications;
             let mut ui_output = UiOutput::default();
+            let _z = prof::zone!("egui Run");
             let full_output = egui_ctx.run(raw_input, |ctx| {
                 draw_viewport_scene(
                     ctx,
@@ -842,7 +877,10 @@ impl App {
             (full_output, clear, ui_output)
         };
 
-        self.apply_ui_output(ui_output);
+        {
+            let _z = prof::zone!("Apply UI Output");
+            self.apply_ui_output(ui_output);
+        }
 
         // Decide when the next frame should be drawn. Continuous motion — a live
         // camera transition, or egui asking to "repaint immediately" (zero delay)
@@ -878,25 +916,36 @@ impl App {
             };
 
         let pixels_per_point = full_output.pixels_per_point;
-        let clipped_primitives = egui_ctx.tessellate(full_output.shapes, pixels_per_point);
+        let clipped_primitives = {
+            let _z = prof::zone!("Tessellate");
+            egui_ctx.tessellate(full_output.shapes, pixels_per_point)
+        };
 
         let Some(egui_painter) = self.egui_painter.as_mut() else {
             return;
         };
 
-        egui_painter.paint_and_update_textures(
-            egui::ViewportId::ROOT,
-            pixels_per_point,
-            [
-                clear.r as f32,
-                clear.g as f32,
-                clear.b as f32,
-                clear.a as f32,
-            ],
-            &clipped_primitives,
-            &full_output.textures_delta,
-            Vec::new(),
-        );
+        {
+            // The scene's `prepare` (offscreen render + GPU-profiler drain/resolve)
+            // and egui's `submit` + present both happen inside this call.
+            let _z = prof::zone!("Paint + Present");
+            egui_painter.paint_and_update_textures(
+                egui::ViewportId::ROOT,
+                pixels_per_point,
+                [
+                    clear.r as f32,
+                    clear.g as f32,
+                    clear.b as f32,
+                    clear.a as f32,
+                ],
+                &clipped_primitives,
+                &full_output.textures_delta,
+                Vec::new(),
+            );
+        }
+
+        // Delimit the frame for Tracy's frame view (no-op unless `--tracy`).
+        prof::frame_mark();
     }
 
     fn open_model_from_dialog(&mut self) {
@@ -960,12 +1009,12 @@ impl App {
                 self.scene_revision = self.scene_revision.saturating_add(1);
                 self.notifications
                     .success(format!("Loaded {}", file_label(path)));
-                info!(path = %path.display(), "model loaded");
+                prof::msg(&format!("model loaded: {}", path.display()));
             }
             Err(error) => {
                 self.notifications
                     .error(format!("Couldn't load {}", file_label(path)));
-                warn!(path = %path.display(), error = %error, "model load failed");
+                prof::msg(&format!("model load failed: {} ({error})", path.display()));
             }
         }
 
@@ -1123,7 +1172,7 @@ impl App {
         // to the empty start state.
         self.reset_undo_history();
 
-        info!("reset to start state");
+        prof::msg("reset to start state");
         self.redraw_requested = true;
     }
 
@@ -1358,6 +1407,12 @@ impl App {
             };
         }
 
+        // Tracy plots (no-op unless `--tracy`): the live smoothed frame rate plus
+        // the measured model stats, so they read alongside the timeline.
+        prof::plot!("FPS", self.ui.fps);
+        prof::plot!("Triangles", self.ui.stats.triangle_count as f64);
+        prof::plot!("Draw Calls", self.ui.stats.draw_count as f64);
+
         // Advance any live camera transition. The follow-up redraw is scheduled
         // by the paced `repaint_at` logic in `render` (which checks
         // `is_camera_animating`), so we don't request one directly here — doing so
@@ -1457,7 +1512,10 @@ fn friendly_backend_name(backend: wgpu::Backend) -> String {
     }
 }
 
-fn wgpu_configuration(renderer_config: RendererConfig) -> egui_wgpu::WgpuConfiguration {
+fn wgpu_configuration(
+    renderer_config: RendererConfig,
+    tracy_enabled: bool,
+) -> egui_wgpu::WgpuConfiguration {
     let mut setup = egui_wgpu::WgpuSetupCreateNew::default();
     setup.instance_descriptor.backends = renderer_config.preferred_backends;
 
@@ -1470,12 +1528,25 @@ fn wgpu_configuration(renderer_config: RendererConfig) -> egui_wgpu::WgpuConfigu
     // masked against the adapter's own features so we never request something it
     // lacks (invariant 4); `supported_msaa_levels` mirrors this gating so the UI
     // only offers what the device will actually accept.
-    setup.device_descriptor = std::sync::Arc::new(|adapter: &wgpu::Adapter| {
+    setup.device_descriptor = std::sync::Arc::new(move |adapter: &wgpu::Adapter| {
         let base_limits = if adapter.get_info().backend == wgpu::Backend::Gl {
             wgpu::Limits::downlevel_webgl2_defaults()
         } else {
             wgpu::Limits::default()
         };
+        // On a `--tracy` launch, additionally request `TIMESTAMP_QUERY` for the
+        // hand-rolled GPU profiler — but masked against the adapter, so a device
+        // that lacks it is created exactly as before (and a normal launch requests
+        // nothing extra, so its device is byte-for-byte the current one). Arm the
+        // GPU profiler only if the device will actually carry the feature.
+        let timestamp = if tracy_enabled {
+            adapter.features() & wgpu::Features::TIMESTAMP_QUERY
+        } else {
+            wgpu::Features::empty()
+        };
+        if timestamp.contains(wgpu::Features::TIMESTAMP_QUERY) {
+            review_render::enable_tracy_gpu(adapter.get_info().backend);
+        }
         wgpu::DeviceDescriptor {
             label: Some("egui wgpu device"),
             // BC is OR'd in unmasked (not `& adapter.features()`): the baked IBL
@@ -1485,7 +1556,8 @@ fn wgpu_configuration(renderer_config: RendererConfig) -> egui_wgpu::WgpuConfigu
             // later at the IBL upload.
             required_features: (adapter.features()
                 & wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES)
-                | wgpu::Features::TEXTURE_COMPRESSION_BC,
+                | wgpu::Features::TEXTURE_COMPRESSION_BC
+                | timestamp,
             required_limits: wgpu::Limits {
                 // Match egui's default: large enough for 4k+ surfaces with a depth
                 // buffer.

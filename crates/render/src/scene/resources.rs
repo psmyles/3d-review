@@ -28,6 +28,7 @@ use super::buffers::{
     build_gtao_targets, build_gtao_textures, create_checker_bind_group, create_index_buffer,
     create_line_buffer, create_mesh_buffers, fullscreen_pass,
 };
+use super::gpu_profiler::{GpuProfiler, Zone, tracy_gpu_enabled};
 use super::gpu_types::{SHADER, SceneUniforms, shading_mode_value, vertex_color_value};
 use super::pipelines::{ScenePipelines, build_line_pipeline};
 use super::{BuildStage, SceneResources};
@@ -57,21 +58,16 @@ impl SceneResources {
         // Startup timing: this runs once, on the first frame. With the deferred
         // build (Phase B) it is now only the *core* cost — shader + line pipeline +
         // post composite + the IBL baked-map upload + checker decode — not the full
-        // scene-pipeline + GTAO set, which `advance_build` compiles over the
-        // next frames. Logged via `tracing::info!`, but only under
-        // `--features startup-trace` (run with `RUST_LOG=info`); a default build
-        // takes none of these clocks and carries no `tracing` dep.
-        #[cfg(feature = "startup-trace")]
-        let build_start = std::time::Instant::now();
-
-        #[cfg(feature = "startup-trace")]
-        let shader_start = std::time::Instant::now();
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("review_scene_shader"),
-            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
-        });
-        #[cfg(feature = "startup-trace")]
-        let shader_module_ms = shader_start.elapsed().as_secs_f64() * 1000.0;
+        // scene-pipeline + GTAO set, which `advance_build` compiles over the next
+        // frames. Each step opens a Tracy zone (named below); they nest under the
+        // app's "First Frame" startup zone and cost nothing unless `--tracy` ran.
+        let shader = {
+            let _z = crate::prof::zone!("Shader Module");
+            device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("review_scene_shader"),
+                source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+            })
+        };
 
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("review_scene_uniform_buffer"),
@@ -156,16 +152,15 @@ impl SceneResources {
         // The IBL maps occupy bind group 2; its layout is part of the shared
         // pipeline layout, so every scene pipeline can sample the environment.
         let ibl_layout = IblResources::scene_layout(device);
-        #[cfg(feature = "startup-trace")]
-        let ibl_start = std::time::Instant::now();
-        let ibl = IblResources::from_baked(
-            device,
-            queue,
-            &ibl_layout,
-            EnvironmentSettings::default().map,
-        );
-        #[cfg(feature = "startup-trace")]
-        let ibl_ms = ibl_start.elapsed().as_secs_f64() * 1000.0;
+        let ibl = {
+            let _z = crate::prof::zone!("IBL Upload");
+            IblResources::from_baked(
+                device,
+                queue,
+                &ibl_layout,
+                EnvironmentSettings::default().map,
+            )
+        };
 
         // The editable per-material uniforms occupy bind group 3; its layout joins
         // the shared pipeline layout so every scene pipeline can read a material.
@@ -191,12 +186,10 @@ impl SceneResources {
         // built by `advance_build`, then rebuilt by `sync_anti_aliasing` on a level
         // change (the sample count is baked into a pipeline at creation).
         let scene_sample_count = AntiAliasing::default().msaa.sample_count();
-        #[cfg(feature = "startup-trace")]
-        let line_start = std::time::Instant::now();
-        let line_pipeline =
-            build_line_pipeline(device, &pipeline_layout, &shader, scene_sample_count);
-        #[cfg(feature = "startup-trace")]
-        let line_pipeline_ms = line_start.elapsed().as_secs_f64() * 1000.0;
+        let line_pipeline = {
+            let _z = crate::prof::zone!("Line Pipeline");
+            build_line_pipeline(device, &pipeline_layout, &shader, scene_sample_count)
+        };
 
         // Offscreen targets + the composite pass. The GTAO *textures* are built
         // here (the composite binds them from frame 1), but the GTAO effect *pass*
@@ -205,11 +198,10 @@ impl SceneResources {
         // first `prepare` (`sync_anti_aliasing`); the post pass draws into egui's
         // `output_format`.
         let targets = SceneTargets::new(device, queue, 1, 1, scene_sample_count);
-        #[cfg(feature = "startup-trace")]
-        let post_start = std::time::Instant::now();
-        let post = PostPass::new(device, output_format);
-        #[cfg(feature = "startup-trace")]
-        let post_ms = post_start.elapsed().as_secs_f64() * 1000.0;
+        let post = {
+            let _z = crate::prof::zone!("Post Pass");
+            PostPass::new(device, output_format)
+        };
         let (gtao_gbuffer_view, gtao_depth_view, gtao_raw_view, gtao_blur_view) =
             build_gtao_textures(device, queue, &targets);
         let post_bind_group = post.create_bind_group(
@@ -241,16 +233,6 @@ impl SceneResources {
         let (uv_fill_vertex_buffer, uv_fill_vertex_count) = create_line_buffer(device, &[]);
         let (selection_index_buffer, selection_index_count) = create_index_buffer(device, &[]);
         let (visible_index_buffer, visible_index_count) = create_index_buffer(device, &[]);
-
-        #[cfg(feature = "startup-trace")]
-        tracing::info!(
-            total_ms = build_start.elapsed().as_secs_f64() * 1000.0,
-            shader_module_ms,
-            line_pipeline_ms,
-            post_ms,
-            ibl_ms,
-            "SceneResources::new_core (core first-frame GPU build; scene pipelines + GTAO deferred)"
-        );
 
         Self {
             output_format,
@@ -323,6 +305,9 @@ impl SceneResources {
             uv_fill_vertex_buffer,
             uv_fill_vertex_count,
             uv_fill_baked: None,
+            // Built lazily in `prepare` only on a `--tracy` launch (invariant: zero
+            // behavior change otherwise).
+            gpu_profiler: None,
         }
     }
 
@@ -458,6 +443,29 @@ impl SceneResources {
         }
     }
 
+    /// Build the GPU timestamp profiler the first time it is allowed to, otherwise
+    /// leave it `None`. Active only on a `--tracy` launch (`tracy_gpu_enabled`),
+    /// with a device that actually has `TIMESTAMP_QUERY`, and a running Tracy
+    /// client. Idempotent and size-independent, so resize / MSAA changes never
+    /// touch it. While `None`, every scene pass keeps `timestamp_writes: None`.
+    pub(super) fn ensure_gpu_profiler(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        if self.gpu_profiler.is_some() {
+            return;
+        }
+        if tracy_gpu_enabled()
+            && device.features().contains(wgpu::Features::TIMESTAMP_QUERY)
+            && tracy_client::Client::running().is_some()
+        {
+            self.gpu_profiler = Some(GpuProfiler::new(device, queue));
+        }
+    }
+
+    /// Whether GPU profiling is active (the profiler was built). Used by the
+    /// callback to bracket the per-frame drain/encode/resolve.
+    pub(super) fn gpu_profiler_mut(&mut self) -> Option<&mut GpuProfiler> {
+        self.gpu_profiler.as_mut()
+    }
+
     /// Render a single-sample, mesh-only normal/depth buffer for GTAO. This avoids
     /// MSAA resolve averaging view-space normals/Z across geometry edges before
     /// the occlusion and bilateral blur passes read them.
@@ -479,6 +487,10 @@ impl SceneResources {
             return;
         }
 
+        let timestamp_writes = self
+            .gpu_profiler
+            .as_ref()
+            .and_then(|profiler| profiler.writes(Zone::GtaoGbuffer));
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("review_gtao_gbuffer_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -497,7 +509,7 @@ impl SceneResources {
                 }),
                 stencil_ops: None,
             }),
-            timestamp_writes: None,
+            timestamp_writes,
             occlusion_query_set: None,
         });
         render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
@@ -528,19 +540,29 @@ impl SceneResources {
         ) else {
             return;
         };
+        let gtao_writes = self
+            .gpu_profiler
+            .as_ref()
+            .and_then(|profiler| profiler.writes(Zone::Gtao));
         fullscreen_pass(
             encoder,
             &gtao.gtao_pipeline,
             gtao_bg,
             &self.gtao_raw_view,
             "review_gtao_pass",
+            gtao_writes,
         );
+        let blur_writes = self
+            .gpu_profiler
+            .as_ref()
+            .and_then(|profiler| profiler.writes(Zone::GtaoBlur));
         fullscreen_pass(
             encoder,
             &gtao.blur_pipeline,
             blur_bg,
             &self.gtao_blur_view,
             "review_gtao_blur_pass",
+            blur_writes,
         );
     }
 
