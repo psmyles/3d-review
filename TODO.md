@@ -1,16 +1,17 @@
 3D view
-- show buttons that have options a green bottom line on hover
 - viewport background controls
 - buffer views
 - UV stretching
 - overdraw
-- Solid color, unique object color, material color
 - texture name auto matching
 - camera FOV controls
 
 UV view
 - wireframe color
 - uv overlap
+
+Texture
+- flipbook player
 
 Tracy profiler integration
 

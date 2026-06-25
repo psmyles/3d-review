@@ -1,8 +1,10 @@
 //! The app's toast notification system, built on `egui-notify`.
 //!
 //! A single facility the rest of the app posts messages to: transient *result*
-//! toasts (success / error / info) that expire on their own, plus a persistent
-//! *activity* toast that stays up while a background job runs (texture decode).
+//! toasts (success / error / info) that expire on their own, a persistent
+//! *activity* toast that stays up while a background job runs (texture decode),
+//! and a single-slot *mode* toast that names the current view mode and replaces
+//! itself on each switch (so rapid mode flipping doesn't stack toasts up).
 //!
 //! Per invariant 2 the UI never drives work: `app` owns this, calls
 //! [`Notifications::begin_activity`] / [`Notifications::end_activity`] around a
@@ -38,6 +40,11 @@ pub struct Notifications {
     /// that one toast, so [`Toasts::dismiss_all_toasts`] targets exactly it (egui-
     /// notify gives toasts no stable id, so a shared collector couldn't).
     activity: Toasts,
+    /// The single-slot mode-switch toast (e.g. the material mode name), in its
+    /// **own** collector for the same reason as `activity`: each switch dismisses
+    /// the prior toast before pushing the new one, so flipping modes quickly
+    /// replaces the visible toast rather than stacking a fresh one each time.
+    mode: Toasts,
     /// In-flight background jobs. The activity toast shows while this is `> 0` and
     /// is dismissed when it returns to `0`, so overlapping jobs share one indicator.
     active: usize,
@@ -70,9 +77,19 @@ impl Notifications {
                 size::NOTIFICATION_ACTIVITY_MARGIN_Y,
             ))
             .with_spacing(size::NOTIFICATION_SPACING);
+        // The mode toast shares the event row's anchor/margin: it is a transient
+        // event-class toast, just one kept to a single replaceable slot.
+        let mode = Toasts::new()
+            .with_anchor(Anchor::BottomRight)
+            .with_margin(egui::vec2(
+                size::NOTIFICATION_MARGIN_X,
+                size::NOTIFICATION_EVENT_MARGIN_Y,
+            ))
+            .with_spacing(size::NOTIFICATION_SPACING);
         Self {
             events,
             activity,
+            mode,
             active: 0,
         }
     }
@@ -94,6 +111,18 @@ impl Notifications {
     /// Push a transient info toast.
     pub fn info(&mut self, message: impl Into<String>) {
         self.events
+            .info(message.into())
+            .duration(Some(EVENT_DURATION));
+    }
+
+    /// Show the current view mode (e.g. the material mode name) as a transient
+    /// toast, **replacing** any mode toast still on screen. The dedicated `mode`
+    /// collector holds only this toast, so dismissing it first means rapid mode
+    /// switching cross-fades one toast in place instead of stacking a new one per
+    /// switch.
+    pub fn mode(&mut self, message: impl Into<String>) {
+        self.mode.dismiss_all_toasts();
+        self.mode
             .info(message.into())
             .duration(Some(EVENT_DURATION));
     }
@@ -127,6 +156,7 @@ impl Notifications {
     /// persistent activity toast requests none, so it never spins the loop.
     pub fn show(&mut self, ctx: &Context) {
         self.activity.show(ctx);
+        self.mode.show(ctx);
         self.events.show(ctx);
     }
 }

@@ -850,6 +850,11 @@ impl App {
             // alongside its `&mut self.ui` borrow (the toast system lives in `app`).
             let notifications = &mut self.notifications;
             let mut ui_output = UiOutput::default();
+            // The material mode before the egui pass; the toolbar / Material Mode
+            // panel mutate it during the pass, so a post-pass mismatch means the
+            // user switched modes this frame — surface its name as a toast (app
+            // owns the toast facility; the UI only holds the plain value).
+            let prev_material_mode = self.ui.debug.material_mode;
             let _z = prof::zone!("egui Run");
             let full_output = egui_ctx.run(raw_input, |ctx| {
                 draw_viewport_scene(
@@ -869,6 +874,9 @@ impl App {
                     occlusion_bvh,
                     output_format,
                 );
+                if self.ui.debug.material_mode != prev_material_mode {
+                    notifications.mode(self.ui.debug.material_mode.label());
+                }
                 // Toasts paint on the egui Foreground layer, above the chrome.
                 notifications.show(ctx);
             });
