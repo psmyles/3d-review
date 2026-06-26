@@ -8,7 +8,6 @@ use wgpu::util::DeviceExt;
 
 use review_model::ModelData;
 
-use crate::bloom::{BLOOM_BLUR_ITERATIONS, BloomPass};
 use crate::geometry::{
     bounding_box_lines, face_normal_lines, model_mesh, scene_lines, selection_geometry,
     uv_fill_triangles, uv_grid_lines, uv_wireframe_lines, vertex_normal_lines, visible_geometry,
@@ -16,22 +15,25 @@ use crate::geometry::{
 };
 use crate::gtao::GtaoPass;
 use crate::ibl::{IblResources, PREFILTER_MAX_LOD};
-use crate::material::{MaterialState, MaterialTable, material_layout};
+use crate::material::{
+    MaterialState, MaterialTable, build_part_key, effective_materials, material_layout,
+};
 use crate::post::PostPass;
-use crate::selection::SelectionView;
+use crate::selection::{Selection, SelectionView, selection_bounds};
 use crate::targets::SceneTargets;
 use crate::{
-    ActiveMaterial, AntiAliasing, CameraProjection, EnvironmentSettings, OrbitCamera,
-    SceneDebugOptions, ShadingMode, UvCamera, UvShadingMode,
+    ActiveMaterial, AntiAliasing, BoundingBoxScope, CameraProjection, EnvironmentSettings,
+    MaterialMode, OrbitCamera, SceneDebugOptions, ShadingMode, UvCamera, UvShadingMode,
 };
 
-use super::SceneResources;
 use super::buffers::{
-    bloom_fullscreen_pass, build_bloom_targets, build_gtao_targets, create_checker_bind_group,
-    create_index_buffer, create_line_buffer, create_mesh_buffers,
+    build_gtao_targets, build_gtao_textures, create_checker_bind_group, create_index_buffer,
+    create_line_buffer, create_mesh_buffers, fullscreen_pass,
 };
+use super::gpu_profiler::{GpuProfiler, Zone, tracy_gpu_enabled};
 use super::gpu_types::{SHADER, SceneUniforms, shading_mode_value, vertex_color_value};
-use super::pipelines::{build_scene_pipelines, create_gtao_gbuffer_pipeline};
+use super::pipelines::{ScenePipelines, build_line_pipeline};
+use super::{BuildStage, SceneResources};
 
 /// The three derived line views, used to address one for freeing.
 #[derive(Debug, Clone, Copy)]
@@ -43,15 +45,31 @@ enum LineView {
 }
 
 impl SceneResources {
-    pub(super) fn new(
+    /// Build only the resources the grid-only first frame needs — the cheap
+    /// "core" of [`SceneResources`] (Phase B). The heavier deferred scene
+    /// pipelines and the GTAO effect pass are built afterwards, one stage
+    /// per frame, by [`Self::advance_build`] (driven across frames by `app`'s
+    /// startup warmup); until each lands, the matching draw / effect is skipped.
+    /// IBL stays in the core (a cheap baked-map upload, not a precompute), so the
+    /// shaded look is correct the instant a model appears.
+    pub(super) fn new_core(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         output_format: wgpu::TextureFormat,
     ) -> Self {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("review_scene_shader"),
-            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
-        });
+        // Startup timing: this runs once, on the first frame. With the deferred
+        // build (Phase B) it is now only the *core* cost — shader + line pipeline +
+        // post composite + the IBL baked-map upload + checker decode — not the full
+        // scene-pipeline + GTAO set, which `advance_build` compiles over the next
+        // frames. Each step opens a Tracy zone (named below); they nest under the
+        // app's "First Frame" startup zone and cost nothing unless `--tracy` ran.
+        let shader = {
+            let _z = crate::prof::zone!("Shader Module");
+            device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("review_scene_shader"),
+                source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+            })
+        };
 
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("review_scene_uniform_buffer"),
@@ -136,12 +154,15 @@ impl SceneResources {
         // The IBL maps occupy bind group 2; its layout is part of the shared
         // pipeline layout, so every scene pipeline can sample the environment.
         let ibl_layout = IblResources::scene_layout(device);
-        let ibl = IblResources::new(
-            device,
-            queue,
-            &ibl_layout,
-            EnvironmentSettings::default().map,
-        );
+        let ibl = {
+            let _z = crate::prof::zone!("IBL Upload");
+            IblResources::from_baked(
+                device,
+                queue,
+                &ibl_layout,
+                EnvironmentSettings::default().map,
+            )
+        };
 
         // The editable per-material uniforms occupy bind group 3; its layout joins
         // the shared pipeline layout so every scene pipeline can read a material.
@@ -161,47 +182,33 @@ impl SceneResources {
             push_constant_ranges: &[],
         });
 
-        // Scene pipelines start at the default MSAA level and are rebuilt by
-        // `sync_anti_aliasing` when the level changes (the sample count is baked
-        // into a pipeline at creation). `build_scene_pipelines` carries the
-        // depth-bias reasoning.
+        // Core pipeline: only the line pipeline (the grid-only first frame draws
+        // with it). The deferred scene pipelines (mesh / skybox / UV-fill /
+        // selection-fill + GTAO G-buffer) start at the default MSAA level and are
+        // built by `advance_build`, then rebuilt by `sync_anti_aliasing` on a level
+        // change (the sample count is baked into a pipeline at creation).
         let scene_sample_count = AntiAliasing::default().msaa.sample_count();
-        let (
-            mesh_pipeline,
-            mesh_pipeline_double_sided,
-            line_pipeline,
-            uv_fill_pipeline,
-            selection_fill_pipeline,
-            skybox_pipeline,
-        ) = build_scene_pipelines(device, &pipeline_layout, &shader, scene_sample_count);
-        let gtao_gbuffer_pipeline = create_gtao_gbuffer_pipeline(device, &pipeline_layout, &shader);
+        let line_pipeline = {
+            let _z = crate::prof::zone!("Line Pipeline");
+            build_line_pipeline(device, &pipeline_layout, &shader, scene_sample_count)
+        };
 
-        // Offscreen targets + the composite pass. Targets start at 1x1 and are
-        // recreated at the real framebuffer size on the first `prepare`
-        // (`sync_anti_aliasing`); the post pass draws into egui's `output_format`.
+        // Offscreen targets + the composite pass. The GTAO *textures* are built
+        // here (the composite binds them from frame 1), but the GTAO effect *pass*
+        // — the expensive shader/pipeline compile — is deferred to `advance_build`.
+        // Targets start at 1x1 and are recreated at the real framebuffer size on the
+        // first `prepare` (`sync_anti_aliasing`); the post pass draws into egui's
+        // `output_format`.
         let targets = SceneTargets::new(device, queue, 1, 1, scene_sample_count);
-        let post = PostPass::new(device, output_format);
-        let bloom = BloomPass::new(device);
-        let gtao = GtaoPass::new(device);
-        let (
-            bloom_tex_a,
-            bloom_tex_b,
-            bloom_brightpass_bind_group,
-            bloom_blur_h_bind_group,
-            bloom_blur_v_bind_group,
-        ) = build_bloom_targets(device, queue, &targets, &bloom);
-        let (
-            gtao_gbuffer_view,
-            gtao_depth_view,
-            gtao_raw_view,
-            gtao_blur_view,
-            gtao_bind_group,
-            gtao_blur_bind_group,
-        ) = build_gtao_targets(device, queue, &targets, &gtao);
+        let post = {
+            let _z = crate::prof::zone!("Post Pass");
+            PostPass::new(device, output_format)
+        };
+        let (gtao_gbuffer_view, gtao_depth_view, gtao_raw_view, gtao_blur_view) =
+            build_gtao_textures(device, queue, &targets);
         let post_bind_group = post.create_bind_group(
             device,
             targets.sampled_view(),
-            &bloom_tex_a,
             &gtao_blur_view,
             targets.sampled_ambient_view(),
         );
@@ -243,6 +250,11 @@ impl SceneResources {
             // Sentinel distinct from any real revision so the first 3D frame uploads
             // the (initially fallback-only) table.
             material_revision: u64::MAX,
+            synced_material_mode: MaterialMode::Source,
+            mesh_material_mode: MaterialMode::Source,
+            unique_part_key: Vec::new(),
+            unique_part_count: 0,
+            unique_baked: None,
             selection_index_buffer,
             selection_ranges: Vec::new(),
             selection_index_count,
@@ -255,28 +267,22 @@ impl SceneResources {
             targets,
             post,
             post_bind_group,
-            bloom,
-            bloom_tex_a,
-            bloom_tex_b,
-            bloom_brightpass_bind_group,
-            bloom_blur_h_bind_group,
-            bloom_blur_v_bind_group,
-            gtao,
+            // The GTAO effect pass + its bind groups are deferred to `advance_build`
+            // (Phase B); only its textures are built in the core.
+            gtao: None,
             gtao_gbuffer_view,
             gtao_depth_view,
             gtao_raw_view,
             gtao_blur_view,
-            gtao_bind_group,
-            gtao_blur_bind_group,
+            gtao_bind_group: None,
+            gtao_blur_bind_group: None,
             model_revision: u64::MAX,
             mesh_uv_channel: 0,
-            mesh_pipeline,
-            mesh_pipeline_double_sided,
+            // The deferred scene pipelines (built by `advance_build`); the core
+            // first frame draws with `line_pipeline` only.
+            scene_pipelines: None,
             line_pipeline,
-            selection_fill_pipeline,
-            gtao_gbuffer_pipeline,
-            skybox_pipeline,
-            uv_fill_pipeline,
+            build_stage: BuildStage::ScenePipelines,
             uniform_buffer,
             uniform_bind_group,
             checker_bind_group_greyscale,
@@ -306,15 +312,70 @@ impl SceneResources {
             uv_fill_vertex_buffer,
             uv_fill_vertex_count,
             uv_fill_baked: None,
+            // Built lazily in `prepare` only on a `--tracy` launch (invariant: zero
+            // behavior change otherwise).
+            gpu_profiler: None,
+        }
+    }
+
+    /// Advance the deferred GPU-resource build one stage (Phase B), compiling the
+    /// pipelines / passes that [`Self::new_core`] skipped so the grid-only first
+    /// frame stays cheap. Called once per frame from the scene callback's `prepare`
+    /// (after the frame that created the core), driven across frames by `app`'s
+    /// startup warmup. Returns whether more stages remain; a no-op once `Done`.
+    ///
+    /// Each stage reuses the existing builders verbatim, so once warm the resources
+    /// are identical to a one-shot build — only *when* they are built differs.
+    pub(super) fn advance_build(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> bool {
+        match self.build_stage {
+            BuildStage::ScenePipelines => {
+                // The five MSAA-dependent scene pipelines + the GTAO G-buffer, at
+                // the sample count `sync_anti_aliasing` settled the targets on. A
+                // CLI/file-association mesh needs these to draw, so they build first.
+                self.scene_pipelines = Some(ScenePipelines::build(
+                    device,
+                    &self.pipeline_layout,
+                    &self.shader,
+                    self.scene_sample_count,
+                ));
+                self.build_stage = BuildStage::Gtao;
+                true
+            }
+            BuildStage::Gtao => {
+                // GTAO pass + its bind groups (recreates the AO / G-buffer textures
+                // at the current size, so rebuild `post_bind_group` afterwards — it
+                // samples `gtao_blur_view`).
+                let gtao = GtaoPass::new(device);
+                let (gbuffer, depth, raw, blur, gtao_bg, blur_bg) =
+                    build_gtao_targets(device, queue, &self.targets, &gtao);
+                self.gtao_gbuffer_view = gbuffer;
+                self.gtao_depth_view = depth;
+                self.gtao_raw_view = raw;
+                self.gtao_blur_view = blur;
+                self.gtao_bind_group = Some(gtao_bg);
+                self.gtao_blur_bind_group = Some(blur_bg);
+                self.gtao = Some(gtao);
+
+                // The composite samples the just-recreated gtao_blur texture —
+                // repoint its bind group at it.
+                self.post_bind_group = self.post.create_bind_group(
+                    device,
+                    self.targets.sampled_view(),
+                    &self.gtao_blur_view,
+                    self.targets.sampled_ambient_view(),
+                );
+                self.build_stage = BuildStage::Done;
+                true
+            }
+            BuildStage::Done => false,
         }
     }
 
     /// Bring the offscreen targets, scene pipelines and composite uniform in line
     /// with the framebuffer size + the chosen antialiasing. Targets are recreated
     /// when the size or MSAA level changes; the scene pipelines are rebuilt only
-    /// when the MSAA level changes (their sample count is baked at creation); the
-    /// FXAA flag + texel size are written every frame (cheap). Steady-state frames
-    /// (unchanged size/level) allocate nothing.
+    /// when the MSAA level changes (their sample count is baked at creation).
+    /// Steady-state frames (unchanged size/level) allocate nothing.
     pub(super) fn sync_anti_aliasing(
         &mut self,
         device: &wgpu::Device,
@@ -325,25 +386,25 @@ impl SceneResources {
     ) {
         let width = width.max(1);
         let height = height.max(1);
-        // The master AA toggle collapses to single-sample + no FXAA when off; the
-        // panel's stored level/flag are honoured only while it is on.
+        // The master AA toggle collapses to single-sample when off; the panel's
+        // stored level is honoured only while it is on.
         let sample_count = anti_aliasing.effective_sample_count();
 
         if self.scene_sample_count != sample_count {
-            let (
-                mesh_pipeline,
-                mesh_pipeline_double_sided,
-                line_pipeline,
-                uv_fill_pipeline,
-                selection_fill_pipeline,
-                skybox_pipeline,
-            ) = build_scene_pipelines(device, &self.pipeline_layout, &self.shader, sample_count);
-            self.mesh_pipeline = mesh_pipeline;
-            self.mesh_pipeline_double_sided = mesh_pipeline_double_sided;
-            self.line_pipeline = line_pipeline;
-            self.uv_fill_pipeline = uv_fill_pipeline;
-            self.selection_fill_pipeline = selection_fill_pipeline;
-            self.skybox_pipeline = skybox_pipeline;
+            // The line pipeline is core (always present); rebuild it for the new
+            // level. The deferred scene pipelines rebuild their MSAA-dependent
+            // subset only if already built — otherwise the `ScenePipelines` build
+            // stage picks up the updated `scene_sample_count` set below.
+            self.line_pipeline =
+                build_line_pipeline(device, &self.pipeline_layout, &self.shader, sample_count);
+            if let Some(scene_pipelines) = &mut self.scene_pipelines {
+                scene_pipelines.rebuild_for_msaa(
+                    device,
+                    &self.pipeline_layout,
+                    &self.shader,
+                    sample_count,
+                );
+            }
             self.scene_sample_count = sample_count;
         }
 
@@ -352,83 +413,76 @@ impl SceneResources {
             || self.targets.sample_count != sample_count;
         if targets_stale {
             self.targets = SceneTargets::new(device, queue, width, height, sample_count);
-            // Every bind group reading the targets (bloom ping-pong, GTAO AO
-            // textures, and the composite) is now stale; rebuild them all.
-            let (
-                bloom_tex_a,
-                bloom_tex_b,
-                bloom_brightpass_bind_group,
-                bloom_blur_h_bind_group,
-                bloom_blur_v_bind_group,
-            ) = build_bloom_targets(device, queue, &self.targets, &self.bloom);
-            self.bloom_tex_a = bloom_tex_a;
-            self.bloom_tex_b = bloom_tex_b;
-            self.bloom_brightpass_bind_group = bloom_brightpass_bind_group;
-            self.bloom_blur_h_bind_group = bloom_blur_h_bind_group;
-            self.bloom_blur_v_bind_group = bloom_blur_v_bind_group;
 
-            let (
-                gtao_gbuffer_view,
-                gtao_depth_view,
-                gtao_raw_view,
-                gtao_blur_view,
-                gtao_bind_group,
-                gtao_blur_bind_group,
-            ) = build_gtao_targets(device, queue, &self.targets, &self.gtao);
+            // The GTAO *textures* always exist (the composite binds them); recreate
+            // them at the new size. Their pass bind groups are rebuilt only once the
+            // deferred GTAO pass is built (Phase B) — until then the composite treats
+            // AO as inactive, so the cleared textures are never sampled meaningfully.
+            let (gtao_gbuffer_view, gtao_depth_view, gtao_raw_view, gtao_blur_view) =
+                build_gtao_textures(device, queue, &self.targets);
             self.gtao_gbuffer_view = gtao_gbuffer_view;
             self.gtao_depth_view = gtao_depth_view;
             self.gtao_raw_view = gtao_raw_view;
             self.gtao_blur_view = gtao_blur_view;
-            self.gtao_bind_group = gtao_bind_group;
-            self.gtao_blur_bind_group = gtao_blur_bind_group;
+            if let Some(gtao) = &self.gtao {
+                self.gtao_bind_group = Some(gtao.occlusion_bind_group(
+                    device,
+                    &self.gtao_gbuffer_view,
+                    &self.gtao_blur_view,
+                    "review_gtao_bg",
+                ));
+                self.gtao_blur_bind_group = Some(gtao.blur_bind_group(
+                    device,
+                    &self.gtao_gbuffer_view,
+                    &self.gtao_raw_view,
+                    "review_gtao_blur_bg",
+                ));
+            }
 
-            // The composite reads the resolved color, the blurred bloom, and the
-            // blurred AO — all just recreated.
+            // The composite reads the resolved color, the (cleared-or-blurred) AO,
+            // and the ambient radiance — all just recreated.
             self.post_bind_group = self.post.create_bind_group(
                 device,
                 self.targets.sampled_view(),
-                &self.bloom_tex_a,
                 &self.gtao_blur_view,
                 self.targets.sampled_ambient_view(),
             );
         }
     }
 
-    /// Run the bloom passes on egui's encoder, after the scene pass: bright-pass
-    /// the scene's resolved linear-HDR bloom source into the half-res `a`, then
-    /// ping-pong a separable Gaussian blur between `a` and `b`. Ends in `a`, which
-    /// the composite (`post`) samples. Only called when bloom is active.
-    pub(super) fn encode_bloom(&self, encoder: &mut wgpu::CommandEncoder) {
-        bloom_fullscreen_pass(
-            encoder,
-            &self.bloom.brightpass_pipeline,
-            &self.bloom_brightpass_bind_group,
-            &self.bloom_tex_a,
-            "review_bloom_brightpass_pass",
-        );
-        for _ in 0..BLOOM_BLUR_ITERATIONS {
-            // Horizontal: a → b, then vertical: b → a.
-            bloom_fullscreen_pass(
-                encoder,
-                &self.bloom.blur_pipeline,
-                &self.bloom_blur_h_bind_group,
-                &self.bloom_tex_b,
-                "review_bloom_blur_h_pass",
-            );
-            bloom_fullscreen_pass(
-                encoder,
-                &self.bloom.blur_pipeline,
-                &self.bloom_blur_v_bind_group,
-                &self.bloom_tex_a,
-                "review_bloom_blur_v_pass",
-            );
+    /// Build the GPU timestamp profiler the first time it is allowed to, otherwise
+    /// leave it `None`. Active only on a `--tracy` launch (`tracy_gpu_enabled`),
+    /// with a device that actually has `TIMESTAMP_QUERY`, and a running Tracy
+    /// client. Idempotent and size-independent, so resize / MSAA changes never
+    /// touch it. While `None`, every scene pass keeps `timestamp_writes: None`.
+    pub(super) fn ensure_gpu_profiler(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        if self.gpu_profiler.is_some() {
+            return;
         }
+        if tracy_gpu_enabled()
+            && device.features().contains(wgpu::Features::TIMESTAMP_QUERY)
+            && tracy_client::Client::running().is_some()
+        {
+            self.gpu_profiler = Some(GpuProfiler::new(device, queue));
+        }
+    }
+
+    /// Whether GPU profiling is active (the profiler was built). Used by the
+    /// callback to bracket the per-frame drain/encode/resolve.
+    pub(super) fn gpu_profiler_mut(&mut self) -> Option<&mut GpuProfiler> {
+        self.gpu_profiler.as_mut()
     }
 
     /// Render a single-sample, mesh-only normal/depth buffer for GTAO. This avoids
     /// MSAA resolve averaging view-space normals/Z across geometry edges before
     /// the occlusion and bilateral blur passes read them.
     pub(super) fn encode_gtao_gbuffer(&self, encoder: &mut wgpu::CommandEncoder) {
+        // The G-buffer pipeline is part of the deferred `ScenePipelines` (Phase B);
+        // it lands before GTAO is ever active (the GTAO pass builds in a later
+        // stage), so this guard is defensive.
+        let Some(scene_pipelines) = &self.scene_pipelines else {
+            return;
+        };
         // Match the shaded mesh draw's visibility: a hidden mesh casts no AO. Solo
         // is left out here (as before), so only the per-mesh hide filters the AO.
         let (index_buffer, index_count) = if self.visible_active {
@@ -440,6 +494,10 @@ impl SceneResources {
             return;
         }
 
+        let timestamp_writes = self
+            .gpu_profiler
+            .as_ref()
+            .and_then(|profiler| profiler.writes(Zone::GtaoGbuffer));
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("review_gtao_gbuffer_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -458,7 +516,7 @@ impl SceneResources {
                 }),
                 stencil_ops: None,
             }),
-            timestamp_writes: None,
+            timestamp_writes,
             occlusion_query_set: None,
         });
         render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
@@ -468,7 +526,7 @@ impl SceneResources {
         // the G-buffer pass writes only normals/depth, so the all-fallback bind
         // group is fine. One draw over the whole index buffer (material irrelevant).
         render_pass.set_bind_group(3, self.material_table.fallback_bind_group(), &[]);
-        render_pass.set_pipeline(&self.gtao_gbuffer_pipeline);
+        render_pass.set_pipeline(&scene_pipelines.gtao_gbuffer);
         render_pass.set_vertex_buffer(0, self.mesh_vertex_buffer.slice(..));
         render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         render_pass.draw_indexed(0..index_count, 0, 0..1);
@@ -476,23 +534,42 @@ impl SceneResources {
 
     /// Run the GTAO passes on egui's encoder, after the scene pass: the occlusion
     /// pass reads the single-sample G-buffer into `raw`, then the bilateral blur
-    /// denoises `raw` → `blur`, which the composite (`post`) samples. Reuses the
-    /// bloom fullscreen-pass helper (single color attachment, no depth). Only
+    /// denoises `raw` → `blur`, which the composite (`post`) samples. Uses the
+    /// shared fullscreen-pass helper (single color attachment, no depth). Only
     /// called when GTAO is active.
     pub(super) fn encode_gtao(&self, encoder: &mut wgpu::CommandEncoder) {
-        bloom_fullscreen_pass(
-            encoder,
-            &self.gtao.gtao_pipeline,
+        // The deferred GTAO pass + its bind groups land together (Phase B); guarded
+        // defensively (the composite treats AO as inactive until they exist).
+        let (Some(gtao), Some(gtao_bg), Some(blur_bg)) = (
+            &self.gtao,
             &self.gtao_bind_group,
+            &self.gtao_blur_bind_group,
+        ) else {
+            return;
+        };
+        let gtao_writes = self
+            .gpu_profiler
+            .as_ref()
+            .and_then(|profiler| profiler.writes(Zone::Gtao));
+        fullscreen_pass(
+            encoder,
+            &gtao.gtao_pipeline,
+            gtao_bg,
             &self.gtao_raw_view,
             "review_gtao_pass",
+            gtao_writes,
         );
-        bloom_fullscreen_pass(
+        let blur_writes = self
+            .gpu_profiler
+            .as_ref()
+            .and_then(|profiler| profiler.writes(Zone::GtaoBlur));
+        fullscreen_pass(
             encoder,
-            &self.gtao.blur_pipeline,
-            &self.gtao_blur_bind_group,
+            &gtao.blur_pipeline,
+            blur_bg,
             &self.gtao_blur_view,
             "review_gtao_blur_pass",
+            blur_writes,
         );
     }
 
@@ -547,9 +624,9 @@ impl SceneResources {
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }
 
-    /// Rebuild the IBL maps when the chosen environment changes. One-time GPU
-    /// work (a burst of small precompute passes); a no-op when the map is
-    /// unchanged, so steady-state frames pay nothing.
+    /// Reload the IBL maps when the chosen environment changes. A pure upload of
+    /// the baked maps (no GPU precompute); a no-op when the map is unchanged, so
+    /// steady-state frames pay nothing.
     pub(super) fn sync_environment(
         &mut self,
         device: &wgpu::Device,
@@ -557,7 +634,48 @@ impl SceneResources {
         environment: EnvironmentSettings,
     ) {
         if self.ibl.environment != environment.map {
-            self.ibl = IblResources::new(device, queue, &self.ibl_layout, environment.map);
+            self.ibl = IblResources::from_baked(device, queue, &self.ibl_layout, environment.map);
+        }
+    }
+
+    /// Build (or free) the global per-triangle mesh-part key for Unique material
+    /// mode. The key depends only on the model, so it's cached by `model_revision`
+    /// while Unique is active and freed back to empty on any other mode (invariant
+    /// 3). Shared by the mesh / solo / visibility draw lists so every Unique draw
+    /// groups by the same parts and a range's `material` field indexes the same
+    /// per-part material table. Cheap no-op once baked; call before the mesh /
+    /// material / selection / visibility syncs so they read a reconciled key.
+    pub(super) fn sync_unique_parts(
+        &mut self,
+        model: &ModelData,
+        model_revision: u64,
+        mode: MaterialMode,
+    ) {
+        let want = matches!(mode, MaterialMode::Unique).then_some(model_revision);
+        if self.unique_baked == want {
+            return;
+        }
+        match want {
+            Some(_) => {
+                let (key, count) = build_part_key(model);
+                self.unique_part_key = key;
+                self.unique_part_count = count;
+            }
+            None => {
+                self.unique_part_key = Vec::new();
+                self.unique_part_count = 0;
+            }
+        }
+        self.unique_baked = want;
+    }
+
+    /// The per-triangle grouping key for `mode`: the cached mesh-part key in Unique
+    /// mode (when the model carries per-triangle node info), else `None` to group by
+    /// material slot. Call after [`Self::sync_unique_parts`] reconciles the cache.
+    fn grouping_key(&self, mode: MaterialMode) -> Option<&[u32]> {
+        match mode {
+            MaterialMode::Unique if !self.unique_part_key.is_empty() => Some(&self.unique_part_key),
+            _ => None,
         }
     }
 
@@ -572,8 +690,13 @@ impl SceneResources {
         model_revision: u64,
         debug_options: SceneDebugOptions,
     ) {
-        let (mesh_vertices, mesh_indices, mesh_ranges) =
-            model_mesh(model, debug_options.uv_channel);
+        // The index reorder groups by the active mode's key (mesh part in Unique,
+        // material slot otherwise); `sync_unique_parts` has already reconciled the
+        // part key this reads.
+        let (mesh_vertices, mesh_indices, mesh_ranges) = {
+            let key = self.grouping_key(debug_options.material_mode);
+            model_mesh(model, debug_options.uv_channel, key)
+        };
         let (mesh_vertex_buffer, mesh_index_buffer, mesh_index_count) =
             create_mesh_buffers(device, &mesh_vertices, &mesh_indices);
 
@@ -583,6 +706,7 @@ impl SceneResources {
         self.material_ranges = mesh_ranges;
         self.model_revision = model_revision;
         self.mesh_uv_channel = debug_options.uv_channel;
+        self.mesh_material_mode = debug_options.material_mode;
 
         // Drop the previous model's derived geometry; `sync_line_views` rebuilds
         // whatever is currently switched on.
@@ -627,27 +751,31 @@ impl SceneResources {
         }
 
         let want_bounding_box = debug_options.show_bounding_box.then(|| {
-            // The hidden set only affects the box in "visible only" mode, so leave
-            // it out of the bake key otherwise — toggling a mesh's visibility then
-            // never rebuilds the (identical) whole-model box.
-            let visible_only = debug_options.bounding_box_visible_only;
-            let hidden = if visible_only {
-                hidden_meshes.to_vec()
-            } else {
-                Vec::new()
+            // Only the inputs the chosen scope depends on go in the bake key, so an
+            // unrelated change (hiding a mesh in "all meshes" mode, moving the
+            // selection while the box wraps everything) can't rebuild the box.
+            let scope = debug_options.bounding_box_scope;
+            let hidden = match scope {
+                BoundingBoxScope::VisibleOnly => hidden_meshes.to_vec(),
+                _ => Vec::new(),
             };
-            (debug_options.bounding_box_color, visible_only, hidden)
+            let selection = match scope {
+                BoundingBoxScope::OnlySelection => debug_options.bounding_box_selection,
+                _ => Selection::None,
+            };
+            (debug_options.bounding_box_color, scope, hidden, selection)
         });
         if self.bounding_box_baked != want_bounding_box {
             let (buffer, count) = match &want_bounding_box {
-                // In "visible only" mode the box wraps just the unhidden geometry;
-                // otherwise it wraps the whole model. Either way it's empty when no
-                // bounds remain (every mesh hidden, or an empty model).
-                Some((color, visible_only, hidden)) => {
-                    let bounds = if *visible_only {
-                        model.visible_bounds(hidden)
-                    } else {
-                        model.bounds
+                // The box wraps whichever geometry the scope picks: the whole model,
+                // just the selection, or just the unhidden meshes. Either way it's
+                // empty when no bounds remain (nothing selected / every mesh hidden /
+                // an empty model).
+                Some((color, scope, hidden, selection)) => {
+                    let bounds = match scope {
+                        BoundingBoxScope::AllMeshes => model.bounds,
+                        BoundingBoxScope::OnlySelection => selection_bounds(model, *selection),
+                        BoundingBoxScope::VisibleOnly => model.visible_bounds(hidden),
                     };
                     match bounds {
                         Some(bounds) => {
@@ -733,47 +861,61 @@ impl SceneResources {
         }
     }
 
+    /// Rebuild the mesh vertex/index buffers + draw ranges for a new UV channel or
+    /// material mode (both keep the same model). The vertices change with the
+    /// channel; the index reorder + ranges change with the grouping key (Unique
+    /// groups by mesh part, not material), so both are rebuilt together.
     pub(super) fn update_mesh_channel(
         &mut self,
         device: &wgpu::Device,
         model: &ModelData,
         uv_channel: u32,
+        mode: MaterialMode,
     ) {
-        let (mesh_vertices, mesh_indices, mesh_ranges) = model_mesh(model, uv_channel);
+        let (mesh_vertices, mesh_indices, mesh_ranges) = {
+            let key = self.grouping_key(mode);
+            model_mesh(model, uv_channel, key)
+        };
         let (mesh_vertex_buffer, mesh_index_buffer, mesh_index_count) =
             create_mesh_buffers(device, &mesh_vertices, &mesh_indices);
         self.mesh_vertex_buffer = mesh_vertex_buffer;
         self.mesh_index_buffer = mesh_index_buffer;
         self.mesh_index_count = mesh_index_count;
-        // The index reordering depends only on `tri_material`, so the ranges are
-        // unchanged by a UV-channel switch — but reassign them to stay in lockstep
-        // with the freshly rebuilt index buffer.
         self.material_ranges = mesh_ranges;
         self.mesh_uv_channel = uv_channel;
+        self.mesh_material_mode = mode;
     }
 
-    /// Bring the material table in line with the current editable values. Rebuilds
-    /// the table (buffer + bind group) when the material count changes (a new
-    /// model), re-uploads when an edit bumped the revision, and otherwise does
-    /// nothing — so steady-state frames pay nothing (the same cadence as
-    /// `sync_environment`).
+    /// Bring the material table in line with the current editable values + material
+    /// mode. The uploaded table is the *effective* one: the imported `materials` in
+    /// Source mode, or the standard / per-part replacement in Standard / Unique
+    /// (the imported values are left untouched, invariant 1). Rebuilds when the
+    /// effective count changes (a new model, or a mode that changes the entry
+    /// count), re-uploads when an edit bumped the revision *or* the mode changed,
+    /// and otherwise does nothing — so steady-state frames pay nothing (the same
+    /// cadence as `sync_environment`). Reads `unique_part_count`, so call after
+    /// [`Self::sync_unique_parts`].
     pub(super) fn sync_materials(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         materials: &[MaterialState],
         material_revision: u64,
+        mode: MaterialMode,
     ) {
-        let count_changed = self.material_table.material_count() != materials.len();
-        if count_changed || self.material_revision != material_revision {
+        let effective = effective_materials(mode, materials, self.unique_part_count);
+        let count_changed = self.material_table.material_count() != effective.len();
+        let mode_changed = self.synced_material_mode != mode;
+        if count_changed || mode_changed || self.material_revision != material_revision {
             self.material_table.sync(
                 device,
                 queue,
                 &self.material_layout,
                 self.material_alignment,
-                materials,
+                &effective,
             );
             self.material_revision = material_revision;
+            self.synced_material_mode = mode;
         }
     }
 
@@ -790,27 +932,35 @@ impl SceneResources {
         model_revision: u64,
         view: SelectionView,
         hidden: &[u32],
+        mode: MaterialMode,
     ) {
         let want = view
             .selection
             .is_active()
-            .then(|| (model_revision, view.selection, hidden.to_vec()));
+            .then(|| (model_revision, view.selection, hidden.to_vec(), mode));
         if self.selection_baked == want {
             return;
         }
         match &want {
             // The selection resolved to no usable geometry (e.g. the model lacks the
             // parallel arrays, or every selected mesh is hidden) -> clear; otherwise
-            // upload the visible selected indices.
-            Some((_, selection, hidden)) => match selection_geometry(model, *selection, hidden) {
-                Some((indices, ranges)) => {
-                    let (index_buffer, index_count) = create_index_buffer(device, &indices);
-                    self.selection_index_buffer = index_buffer;
-                    self.selection_index_count = index_count;
-                    self.selection_ranges = ranges;
+            // upload the visible selected indices. The solo list groups by the same
+            // key as the main mesh so each range binds the right effective material.
+            Some((_, selection, hidden, _)) => {
+                let geometry = {
+                    let key = self.grouping_key(mode);
+                    selection_geometry(model, *selection, hidden, key)
+                };
+                match geometry {
+                    Some((indices, ranges)) => {
+                        let (index_buffer, index_count) = create_index_buffer(device, &indices);
+                        self.selection_index_buffer = index_buffer;
+                        self.selection_index_count = index_count;
+                        self.selection_ranges = ranges;
+                    }
+                    None => self.clear_selection_buffers(device),
                 }
-                None => self.clear_selection_buffers(device),
-            },
+            }
             None => self.clear_selection_buffers(device),
         }
         self.selection_baked = want;
@@ -846,24 +996,32 @@ impl SceneResources {
         model: &ModelData,
         model_revision: u64,
         hidden: &[u32],
+        mode: MaterialMode,
     ) {
-        let want = (!hidden.is_empty()).then(|| (model_revision, hidden.to_vec()));
+        let want = (!hidden.is_empty()).then(|| (model_revision, hidden.to_vec(), mode));
         if self.visibility_baked == want {
             return;
         }
         match &want {
             // Something is hidden: build the filtered draw list, or fall back to the
-            // full mesh when the model carries no per-triangle node info.
-            Some((_, hidden)) => match visible_geometry(model, hidden) {
-                Some((indices, ranges)) => {
-                    let (index_buffer, index_count) = create_index_buffer(device, &indices);
-                    self.visible_index_buffer = index_buffer;
-                    self.visible_index_count = index_count;
-                    self.visible_ranges = ranges;
-                    self.visible_active = true;
+            // full mesh when the model carries no per-triangle node info. Grouped by
+            // the same key as the main mesh so each range binds the right material.
+            Some((_, hidden, _)) => {
+                let geometry = {
+                    let key = self.grouping_key(mode);
+                    visible_geometry(model, hidden, key)
+                };
+                match geometry {
+                    Some((indices, ranges)) => {
+                        let (index_buffer, index_count) = create_index_buffer(device, &indices);
+                        self.visible_index_buffer = index_buffer;
+                        self.visible_index_count = index_count;
+                        self.visible_ranges = ranges;
+                        self.visible_active = true;
+                    }
+                    None => self.clear_visibility_buffers(device),
                 }
-                None => self.clear_visibility_buffers(device),
-            },
+            }
             None => self.clear_visibility_buffers(device),
         }
         self.visibility_baked = want;

@@ -12,9 +12,10 @@ use std::sync::Arc;
 use glam::{Vec2, Vec3};
 use review_model::{Bounds, ModelData, ModelStats};
 use review_render::{
-    AntiAliasing, BloomSettings, CameraProjection, CheckerTexture, DecodedImage,
+    AntiAliasing, BoundingBoxScope, CameraProjection, CheckerTexture, DecodedImage,
     EnvironmentSettings, GtaoSettings, MaterialEdit, MaterialSnapshot, MsaaSamples,
     SceneDebugOptions, Selection, ShadingMode, TonemapSettings, UvShadingMode, VertexColorMode,
+    selection_bounds,
 };
 
 use crate::theme;
@@ -315,6 +316,10 @@ pub struct UiOutput {
     /// A texture-pool command emitted by the Inspector this frame (import / assign
     /// / clear / remove), or `None`. One intent at a time — `app` applies it.
     pub texture: Option<TextureIntent>,
+    /// Whether a material editor widget is being *actively dragged* this frame (a
+    /// slider handle or a color-picker). `app` uses it to coalesce a continuous
+    /// drag into a single undo step instead of one per intermediate value.
+    pub material_edit_active: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -343,21 +348,28 @@ impl Default for WireframePanelState {
 /// the Outliner currently shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BoundsScope {
-    /// Wrap every mesh, regardless of Outliner visibility (the default).
+    /// Wrap every mesh, regardless of selection or Outliner visibility (default).
     #[default]
     AllMeshes,
+    /// Wrap only the geometry the current Outliner selection covers.
+    OnlySelection,
     /// Wrap only the currently-visible meshes (Outliner-hidden meshes excluded).
     VisibleOnly,
 }
 
 impl BoundsScope {
-    pub const ALL: [BoundsScope; 2] = [BoundsScope::AllMeshes, BoundsScope::VisibleOnly];
+    pub const ALL: [BoundsScope; 3] = [
+        BoundsScope::AllMeshes,
+        BoundsScope::OnlySelection,
+        BoundsScope::VisibleOnly,
+    ];
 
     /// The dropdown label for this scope.
     pub fn label(self) -> &'static str {
         match self {
-            BoundsScope::AllMeshes => "all meshes",
-            BoundsScope::VisibleOnly => "visible only",
+            BoundsScope::AllMeshes => "All Meshes",
+            BoundsScope::OnlySelection => "Only Selection",
+            BoundsScope::VisibleOnly => "Only Visible",
         }
     }
 }
@@ -423,6 +435,7 @@ pub enum OutlinerTab {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OptionPanel {
     Wireframe,
+    MaterialMode,
     BoundingBox,
     UvChecker,
     FaceNormals,
@@ -430,7 +443,6 @@ pub enum OptionPanel {
     VertexColors,
     AntiAliasing,
     Environment,
-    Bloom,
     Gtao,
     Tonemap,
 }
@@ -440,6 +452,7 @@ impl OptionPanel {
     /// (and to give each a stable cascade slot), so the order is deterministic.
     pub(crate) const ALL: [OptionPanel; 11] = [
         OptionPanel::Wireframe,
+        OptionPanel::MaterialMode,
         OptionPanel::BoundingBox,
         OptionPanel::UvChecker,
         OptionPanel::FaceNormals,
@@ -447,7 +460,6 @@ impl OptionPanel {
         OptionPanel::VertexColors,
         OptionPanel::AntiAliasing,
         OptionPanel::Environment,
-        OptionPanel::Bloom,
         OptionPanel::Gtao,
         OptionPanel::Tonemap,
     ];
@@ -456,6 +468,7 @@ impl OptionPanel {
     pub(crate) fn title(self) -> &'static str {
         match self {
             OptionPanel::Wireframe => "Wireframe",
+            OptionPanel::MaterialMode => "Material Mode",
             OptionPanel::BoundingBox => "Bounding Box",
             OptionPanel::UvChecker => "UV Checker",
             OptionPanel::FaceNormals => "Face Normals",
@@ -463,7 +476,6 @@ impl OptionPanel {
             OptionPanel::VertexColors => "Vertex Colors",
             OptionPanel::AntiAliasing => "Anti Aliasing",
             OptionPanel::Environment => "Environment",
-            OptionPanel::Bloom => "Bloom",
             OptionPanel::Gtao => "Ambient Occlusion",
             OptionPanel::Tonemap => "Tonemapper",
         }
@@ -474,6 +486,7 @@ impl OptionPanel {
     pub(crate) fn window_id(self) -> &'static str {
         match self {
             OptionPanel::Wireframe => "panel_wireframe",
+            OptionPanel::MaterialMode => "panel_material_mode",
             OptionPanel::BoundingBox => "panel_bounding_box",
             OptionPanel::UvChecker => "panel_uv_checker",
             OptionPanel::FaceNormals => "panel_face_normals",
@@ -481,7 +494,6 @@ impl OptionPanel {
             OptionPanel::VertexColors => "panel_vertex_colors",
             OptionPanel::AntiAliasing => "panel_anti_aliasing",
             OptionPanel::Environment => "panel_environment",
-            OptionPanel::Bloom => "panel_bloom",
             OptionPanel::Gtao => "panel_gtao",
             OptionPanel::Tonemap => "panel_tonemap",
         }
@@ -558,8 +570,8 @@ pub struct UiState {
     pub face_normals: NormalPanelState,
     pub vertex_normals: NormalPanelState,
     pub vertex_colors: VertexColorPanelState,
-    /// Scene antialiasing (MSAA level + FXAA). Read straight by the viewport
-    /// callback — not a debug option — and edited by the Anti Aliasing panel.
+    /// Scene antialiasing (MSAA level). Read straight by the viewport callback —
+    /// not a debug option — and edited by the Anti Aliasing panel.
     pub anti_aliasing: AntiAliasing,
     /// MSAA levels the active adapter actually supports, set by `app` from
     /// [`review_render::supported_msaa_levels`]. The Anti Aliasing menu disables
@@ -574,10 +586,6 @@ pub struct UiState {
     /// [`review_render::ibl_supported`]. The Environment panel disables (and
     /// forces off) the IBL toggle when false (invariant 4).
     pub ibl_supported: bool,
-    /// Bloom (HDR glow) settings. Read straight by the viewport callback (not a
-    /// debug option) and edited by the Bloom panel; the bloom status-bar button
-    /// toggles `bloom.enabled`. Default is off (see [`BloomSettings`]).
-    pub bloom: BloomSettings,
     /// Ambient occlusion (GTAO) settings. Read straight by the viewport
     /// callback and edited by the Ambient Occlusion panel; the AO status-bar
     /// button toggles `gtao.enabled`. Default is on (see [`GtaoSettings`]).
@@ -647,6 +655,13 @@ pub struct UiState {
     /// The sorted hidden-node set [`UiState::visible_bounds_cache`] was built for;
     /// a mismatch with the live hidden set invalidates the cache.
     pub visible_bounds_key: Vec<u32>,
+    /// Cached `selection_bounds(selection)` for the dimension-label overlay's
+    /// "only selection" box (same O(triangles) caching as the visible-only box,
+    /// keyed by the selection it was computed for).
+    pub selection_bounds_cache: Option<Bounds>,
+    /// The selection [`UiState::selection_bounds_cache`] was built for; a mismatch
+    /// with the live selection invalidates the cache.
+    pub selection_bounds_key: Selection,
     /// Most recent measured frames-per-second, fed by `app` from the render
     /// loop. Zero while idle (the viewer redraws on demand, not continuously).
     pub fps: f32,
@@ -695,7 +710,6 @@ impl Default for UiState {
             // Assume supported until the adapter is queried; `app` corrects this
             // once the device is known.
             ibl_supported: true,
-            bloom: BloomSettings::default(),
             gtao: GtaoSettings::default(),
             gtao_supported: true,
             tonemap: TonemapSettings::default(),
@@ -714,6 +728,8 @@ impl Default for UiState {
             bounds: None,
             visible_bounds_cache: None,
             visible_bounds_key: Vec::new(),
+            selection_bounds_cache: None,
+            selection_bounds_key: Selection::None,
             fps: 0.0,
             show_help_overlay: true,
             app_version: String::new(),
@@ -730,22 +746,35 @@ impl UiState {
     /// and whenever nothing is hidden, it's the whole-model [`UiState::bounds`]
     /// (no scan). Mirrors the box the renderer draws.
     pub(crate) fn measured_bounds(&mut self, model: &ModelData) -> Option<Bounds> {
-        if !self.debug.bounding_box_visible_only {
-            return self.bounds;
+        match self.bounding_box.scope {
+            BoundsScope::AllMeshes => self.bounds,
+            BoundsScope::OnlySelection => {
+                // The selection scan ([`selection_bounds`]) is O(triangles), so
+                // cache it and rebuild only when the selection changes — never
+                // per-frame. (Model loads clear the selection, so the cache is
+                // never served across a model swap.)
+                if self.selection_bounds_key != self.selection {
+                    self.selection_bounds_cache = selection_bounds(model, self.selection);
+                    self.selection_bounds_key = self.selection;
+                }
+                self.selection_bounds_cache
+            }
+            BoundsScope::VisibleOnly => {
+                let mut hidden: Vec<u32> = self.hidden_meshes.iter().map(|&i| i as u32).collect();
+                hidden.sort_unstable();
+                // An empty hidden set makes `visible_bounds` the whole-model box, so
+                // skip both the scan and the cache. (Model loads clear the hidden
+                // set, so the cache below is never served across a model swap.)
+                if hidden.is_empty() {
+                    return self.bounds;
+                }
+                if self.visible_bounds_key != hidden {
+                    self.visible_bounds_cache = model.visible_bounds(&hidden);
+                    self.visible_bounds_key = hidden;
+                }
+                self.visible_bounds_cache
+            }
         }
-        let mut hidden: Vec<u32> = self.hidden_meshes.iter().map(|&i| i as u32).collect();
-        hidden.sort_unstable();
-        // An empty hidden set makes `visible_bounds` the whole-model box, so skip
-        // both the scan and the cache. (Model loads clear the hidden set, so the
-        // cache below is never served across a model swap.)
-        if hidden.is_empty() {
-            return self.bounds;
-        }
-        if self.visible_bounds_key != hidden {
-            self.visible_bounds_cache = model.visible_bounds(&hidden);
-            self.visible_bounds_key = hidden;
-        }
-        self.visible_bounds_cache
     }
 }
 
@@ -764,6 +793,10 @@ pub(crate) fn sync_debug_state(state: &mut UiState) {
     state.debug.vertex_normal_color = theme::color32_to_rgba(state.vertex_normals.color);
     state.debug.wireframe_color = theme::color32_to_rgba(state.wireframe.color);
     state.debug.bounding_box_color = theme::color32_to_rgba(state.bounding_box.color);
-    state.debug.bounding_box_visible_only =
-        matches!(state.bounding_box.scope, BoundsScope::VisibleOnly);
+    state.debug.bounding_box_scope = match state.bounding_box.scope {
+        BoundsScope::AllMeshes => BoundingBoxScope::AllMeshes,
+        BoundsScope::OnlySelection => BoundingBoxScope::OnlySelection,
+        BoundsScope::VisibleOnly => BoundingBoxScope::VisibleOnly,
+    };
+    state.debug.bounding_box_selection = state.selection;
 }

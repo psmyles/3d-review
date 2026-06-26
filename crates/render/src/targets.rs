@@ -2,8 +2,8 @@
 //! `RenderTargets` registry (CLAUDE.md render roadmap, Phase 1). Rather than
 //! drawing straight into egui's framebuffer, the scene renders into these
 //! render-owned textures and is composited back through the post pass
-//! (`post.rs`). That offscreen seam is what later passes (tone mapping, bloom,
-//! GTAO, IBL, GPU-buffer visualization) hook into.
+//! (`post.rs`). That offscreen seam is what later passes (tone mapping, GTAO,
+//! IBL, GPU-buffer visualization) hook into.
 //!
 //! The targets carry the scene's MSAA level (`AntiAliasing::msaa`, Phase 2): at
 //! 2×/4×/8×/16× the color is multisampled and resolved into a single-sample
@@ -14,18 +14,18 @@
 use crate::scene::SCENE_DEPTH_FORMAT;
 
 /// Color format of the offscreen scene targets. `Rgba16Float` is linear and
-/// HDR-capable: scene color, bloom source and ambient radiance all stay in linear
-/// light until the post pass tone-maps and encodes for display.
+/// HDR-capable: scene color and ambient radiance stay in linear light until the
+/// post pass tone-maps and encodes for display.
 pub(crate) const SCENE_HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// The named offscreen targets for one framebuffer size + MSAA level. Recreated
 /// wholesale when the framebuffer is resized or the sample count changes
 /// (textures are immutable in both), via `SceneResources::sync_targets`.
 ///
-/// The scene geometry pass renders to three color attachments (MRT): linear HDR
-/// `color`, linear HDR bloom source, and linear ambient radiance that GTAO is
-/// allowed to attenuate. The actual normal/depth GTAO G-buffer is a separate
-/// single-sample target owned alongside the AO pass.
+/// The scene geometry pass renders to two color attachments (MRT): linear HDR
+/// `color` and linear ambient radiance that GTAO is allowed to attenuate. The
+/// actual normal/depth GTAO G-buffer is a separate single-sample target owned
+/// alongside the AO pass.
 pub(crate) struct SceneTargets {
     pub(crate) width: u32,
     pub(crate) height: u32,
@@ -39,13 +39,7 @@ pub(crate) struct SceneTargets {
     /// (`sample_count > 1`). `None` at 1× — the render texture is already
     /// single-sample and is sampled directly.
     pub(crate) color_resolve_view: Option<wgpu::TextureView>,
-    /// Linear-HDR bloom-source attachment (MRT location 1), MSAA-matched to
-    /// `color_render_view`.
-    pub(crate) bloom_render_view: wgpu::TextureView,
-    /// Single-sample resolve of `bloom_render_view` (the texture bloom samples),
-    /// present only when MSAA is on.
-    pub(crate) bloom_resolve_view: Option<wgpu::TextureView>,
-    /// Ambient radiance attachment (MRT location 2), MSAA-matched to the scene.
+    /// Ambient radiance attachment (MRT location 1), MSAA-matched to the scene.
     /// This stores only the lighting terms GTAO may darken.
     pub(crate) ambient_render_view: wgpu::TextureView,
     /// Single-sample resolve of `ambient_render_view` (the texture post samples),
@@ -101,7 +95,6 @@ impl SceneTargets {
                 .create_view(&wgpu::TextureViewDescriptor::default())
         };
         let color_render_view = make_render("review_scene_color_render");
-        let bloom_render_view = make_render("review_scene_bloom_render");
         let ambient_render_view = make_render("review_scene_ambient_render");
 
         let depth = device.create_texture(&wgpu::TextureDescriptor {
@@ -133,9 +126,8 @@ impl SceneTargets {
                 })
                 .create_view(&wgpu::TextureViewDescriptor::default())
         };
-        let (color_resolve_view, bloom_resolve_view, ambient_resolve_view) = if multisampled {
+        let (color_resolve_view, ambient_resolve_view) = if multisampled {
             let color_resolve = make_resolve("review_scene_color_resolved");
-            let bloom_resolve = make_resolve("review_scene_bloom_resolved");
             let ambient_resolve = make_resolve("review_scene_ambient_resolved");
 
             // The resolve targets are only ever written by the MSAA resolve, never
@@ -150,7 +142,7 @@ impl SceneTargets {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("review_scene_resolve_init"),
             });
-            for view in [&color_resolve, &bloom_resolve, &ambient_resolve] {
+            for view in [&color_resolve, &ambient_resolve] {
                 encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("review_scene_resolve_init_pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -168,13 +160,9 @@ impl SceneTargets {
             }
             queue.submit(std::iter::once(encoder.finish()));
 
-            (
-                Some(color_resolve),
-                Some(bloom_resolve),
-                Some(ambient_resolve),
-            )
+            (Some(color_resolve), Some(ambient_resolve))
         } else {
-            (None, None, None)
+            (None, None)
         };
 
         Self {
@@ -183,8 +171,6 @@ impl SceneTargets {
             sample_count,
             color_render_view,
             color_resolve_view,
-            bloom_render_view,
-            bloom_resolve_view,
             ambient_render_view,
             ambient_resolve_view,
             depth_view,
@@ -197,15 +183,6 @@ impl SceneTargets {
         self.color_resolve_view
             .as_ref()
             .unwrap_or(&self.color_render_view)
-    }
-
-    /// The single-sample linear-HDR bloom source bloom passes read: the bloom
-    /// resolve when MSAA is on, otherwise the (already single-sample) bloom render
-    /// texture.
-    pub(crate) fn sampled_bloom_view(&self) -> &wgpu::TextureView {
-        self.bloom_resolve_view
-            .as_ref()
-            .unwrap_or(&self.bloom_render_view)
     }
 
     /// The single-sample ambient radiance texture the composite pass samples:

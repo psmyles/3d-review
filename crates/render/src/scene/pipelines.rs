@@ -6,22 +6,21 @@ use super::SCENE_DEPTH_FORMAT;
 use super::SceneVertex;
 use crate::targets::SCENE_HDR_FORMAT;
 
-/// The scene pass's three MRT color targets — the single source of truth for the
-/// `FragOutput` lockstep (the CLAUDE.md "three color targets" gotcha): location 0
-/// = linear HDR scene color, location 1 = linear-HDR bloom source, location 2 =
-/// AO-eligible ambient radiance. `blend` applies to all three: the geometry
-/// pipelines alpha-blend (transparent coverage handled in linear light; overlays
-/// write zero ambient to mask the mesh ambient so AO doesn't darken them), the
-/// skybox draws opaque (`None`) over the cleared frame. Any new scene-pass
-/// pipeline (e.g. Phase 7's alpha-sort write-off variant) gets the right shape by
-/// calling this rather than re-listing three targets.
-fn scene_color_targets(blend: Option<wgpu::BlendState>) -> [Option<wgpu::ColorTargetState>; 3] {
+/// The scene pass's two MRT color targets — the single source of truth for the
+/// `FragOutput` lockstep (the CLAUDE.md MRT-targets gotcha): location 0 = linear
+/// HDR scene color, location 1 = AO-eligible ambient radiance. `blend` applies to
+/// both: the geometry pipelines alpha-blend (transparent coverage handled in
+/// linear light; overlays write zero ambient to mask the mesh ambient so AO
+/// doesn't darken them), the skybox draws opaque (`None`) over the cleared frame.
+/// Any new scene-pass pipeline gets the right shape by calling this rather than
+/// re-listing the targets.
+fn scene_color_targets(blend: Option<wgpu::BlendState>) -> [Option<wgpu::ColorTargetState>; 2] {
     let target = wgpu::ColorTargetState {
         format: SCENE_HDR_FORMAT,
         blend,
         write_mask: wgpu::ColorWrites::ALL,
     };
-    [Some(target.clone()), Some(target.clone()), Some(target)]
+    [Some(target.clone()), Some(target)]
 }
 
 /// Depth behavior for a pipeline: whether it writes depth, and how much it biases
@@ -32,39 +31,131 @@ struct DepthConfig {
     bias: wgpu::DepthBiasState,
 }
 
-/// Build the scene pipelines (mesh / double-sided mesh / line / UV-fill /
-/// selection-fill / skybox) for a given MSAA sample count. Rebuilt whenever the
-/// level changes, since the sample count is baked into pipeline state.
+/// The deferred scene render pipelines, built off the first frame by
+/// `SceneResources::advance_build` (Phase B). It groups the five MSAA-dependent
+/// pipelines (mesh / double-sided mesh / UV-fill / selection-fill / skybox),
+/// rebuilt by [`Self::rebuild_for_msaa`] when the antialiasing level changes,
+/// plus the single-sample GTAO G-buffer pipeline (MSAA-independent). The
+/// `line_pipeline` is built separately ([`build_line_pipeline`]) and lives in the
+/// core build, since the grid-only first frame draws with it.
+pub(super) struct ScenePipelines {
+    pub(super) mesh: wgpu::RenderPipeline,
+    pub(super) mesh_double_sided: wgpu::RenderPipeline,
+    pub(super) uv_fill: wgpu::RenderPipeline,
+    pub(super) selection_fill: wgpu::RenderPipeline,
+    pub(super) skybox: wgpu::RenderPipeline,
+    pub(super) gtao_gbuffer: wgpu::RenderPipeline,
+}
+
+impl ScenePipelines {
+    /// Build the full deferred set at `sample_count`: the five MSAA-dependent
+    /// pipelines + the single-sample GTAO G-buffer pipeline.
+    pub(super) fn build(
+        device: &wgpu::Device,
+        layout: &wgpu::PipelineLayout,
+        shader: &wgpu::ShaderModule,
+        sample_count: u32,
+    ) -> Self {
+        let (mesh, mesh_double_sided, uv_fill, selection_fill, skybox) =
+            build_msaa_pipelines(device, layout, shader, sample_count);
+        let gtao_gbuffer = create_gtao_gbuffer_pipeline(device, layout, shader);
+        Self {
+            mesh,
+            mesh_double_sided,
+            uv_fill,
+            selection_fill,
+            skybox,
+            gtao_gbuffer,
+        }
+    }
+
+    /// Rebuild only the MSAA-dependent pipelines in place when the antialiasing
+    /// level changes (their sample count is baked at creation). The single-sample
+    /// GTAO G-buffer pipeline is unaffected, so it is left untouched.
+    pub(super) fn rebuild_for_msaa(
+        &mut self,
+        device: &wgpu::Device,
+        layout: &wgpu::PipelineLayout,
+        shader: &wgpu::ShaderModule,
+        sample_count: u32,
+    ) {
+        let (mesh, mesh_double_sided, uv_fill, selection_fill, skybox) =
+            build_msaa_pipelines(device, layout, shader, sample_count);
+        self.mesh = mesh;
+        self.mesh_double_sided = mesh_double_sided;
+        self.uv_fill = uv_fill;
+        self.selection_fill = selection_fill;
+        self.skybox = skybox;
+    }
+}
+
+/// The line-list pipeline used by the grid + every line overlay (wireframe,
+/// bounding box, face/vertex normals). Built in the core first-frame resources —
+/// the grid-only first frame draws with it — and rebuilt on an MSAA change
+/// alongside [`ScenePipelines::rebuild_for_msaa`]. It depth-tests (Reversed-Z
+/// `GreaterEqual`) but neither writes nor biases depth, so overlays win the test
+/// against the mesh that pushes itself back (see [`build_msaa_pipelines`]).
 ///
-/// The mesh is built twice — once culling back faces (`mesh_pipeline`, the
-/// default) and once double-sided (`mesh_pipeline_double_sided`, no culling) —
-/// so the "Backface Rendering" toggle is a per-frame pipeline pick rather than a
-/// rebuild (front faces are CCW: glam's `_rh` projection + wgpu's framebuffer
-/// winding, unaffected by the reversed-Z / ortho near-far swap). Only the mesh
-/// needs the pair: lines aren't subject to face culling, the UV fill and
-/// selection flash stay double-sided so they always show.
+/// It uses the dedicated `fs_line` fragment entry, not the mesh's `fs_main`: lines
+/// only emit their flat vertex color, so building this (the one scene pipeline on
+/// the first-frame critical path) compiles a handful of instructions instead of
+/// all of `fs_main`'s PBR / IBL math — the cheap-overlay output is byte-identical
+/// to `fs_main`'s zero-normal branch. The heavier `fs_main` pipelines are deferred
+/// off the first frame ([`ScenePipelines::build`]), so they pay that compile later.
+pub(super) fn build_line_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
+    create_pipeline(
+        device,
+        layout,
+        shader,
+        wgpu::PrimitiveTopology::LineList,
+        None,
+        DepthConfig {
+            write_enabled: false,
+            bias: wgpu::DepthBiasState::default(),
+        },
+        sample_count,
+        "fs_line",
+        "review_scene_line_pipeline",
+    )
+}
+
+/// Build the five MSAA-dependent scene pipelines (mesh / double-sided mesh /
+/// UV-fill / selection-fill / skybox) for a given sample count. Rebuilt whenever
+/// the level changes, since the sample count is baked into pipeline state.
 ///
-/// The wireframe (and other line overlays) share vertex positions with the
-/// shaded surface they trace, so they z-fight it: on curved faces edges sink
-/// behind the surface and drop out, and MSAA partial occlusion leaves the
-/// survivors uneven in opacity/thickness. We can't bias the lines directly — on
-/// DX12 depth bias applies only to triangle primitives — so instead the mesh
-/// pipeline pushes the shaded surface a hair *away* from the camera with a
-/// slope-scaled depth bias. In Reversed-Z, away from the camera is a smaller
-/// depth value, so the bias is negative. Lines then render at their true depth
-/// and win the `GreaterEqual` test against the receded surface, while still being correctly
-/// occluded by geometry genuinely in front of them (slope-scaled bias is in real
-/// depth-buffer units, so it never over-pulls the far side through the front the
-/// way a constant clip-space line offset did). The scene pipelines render into
-/// the offscreen HDR target (`SCENE_HDR_FORMAT`), not egui's framebuffer; the
-/// post pass composites the result back.
-pub(super) fn build_scene_pipelines(
+/// The mesh is built twice — once culling back faces (`mesh`, the default) and
+/// once double-sided (`mesh_double_sided`, no culling) — so the "Backface
+/// Rendering" toggle is a per-frame pipeline pick rather than a rebuild (front
+/// faces are CCW: glam's `_rh` projection + wgpu's framebuffer winding,
+/// unaffected by the reversed-Z / ortho near-far swap). Only the mesh needs the
+/// pair: lines aren't subject to face culling, the UV fill and selection flash
+/// stay double-sided so they always show.
+///
+/// The wireframe (and other line overlays, drawn with [`build_line_pipeline`])
+/// share vertex positions with the shaded surface they trace, so they z-fight it:
+/// on curved faces edges sink behind the surface and drop out, and MSAA partial
+/// occlusion leaves the survivors uneven in opacity/thickness. We can't bias the
+/// lines directly — on DX12 depth bias applies only to triangle primitives — so
+/// instead the mesh pipeline pushes the shaded surface a hair *away* from the
+/// camera with a slope-scaled depth bias. In Reversed-Z, away from the camera is
+/// a smaller depth value, so the bias is negative. Lines then render at their
+/// true depth and win the `GreaterEqual` test against the receded surface, while
+/// still being correctly occluded by geometry genuinely in front of them
+/// (slope-scaled bias is in real depth-buffer units, so it never over-pulls the
+/// far side through the front the way a constant clip-space line offset did). The
+/// scene pipelines render into the offscreen HDR target (`SCENE_HDR_FORMAT`), not
+/// egui's framebuffer; the post pass composites the result back.
+fn build_msaa_pipelines(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
     shader: &wgpu::ShaderModule,
     sample_count: u32,
 ) -> (
-    wgpu::RenderPipeline,
     wgpu::RenderPipeline,
     wgpu::RenderPipeline,
     wgpu::RenderPipeline,
@@ -81,7 +172,7 @@ pub(super) fn build_scene_pipelines(
             clamp: 0.0,
         },
     };
-    let mesh_pipeline = create_pipeline(
+    let mesh = create_pipeline(
         device,
         layout,
         shader,
@@ -94,7 +185,7 @@ pub(super) fn build_scene_pipelines(
     );
     // The "Backface Rendering" on variant: identical to the mesh pipeline but with
     // culling disabled, so both sides of the surface are drawn.
-    let mesh_pipeline_double_sided = create_pipeline(
+    let mesh_double_sided = create_pipeline(
         device,
         layout,
         shader,
@@ -105,24 +196,10 @@ pub(super) fn build_scene_pipelines(
         "fs_main",
         "review_scene_mesh_double_sided_pipeline",
     );
-    let line_pipeline = create_pipeline(
-        device,
-        layout,
-        shader,
-        wgpu::PrimitiveTopology::LineList,
-        None,
-        DepthConfig {
-            write_enabled: false,
-            bias: wgpu::DepthBiasState::default(),
-        },
-        sample_count,
-        "fs_main",
-        "review_scene_line_pipeline",
-    );
     // The UV island fill draws flat-color triangles in the 2D viewport. It never
     // writes depth (everything sits at z=0) so the grid below and the wireframe
     // above composite purely by draw order.
-    let uv_fill_pipeline = create_pipeline(
+    let uv_fill = create_pipeline(
         device,
         layout,
         shader,
@@ -141,7 +218,7 @@ pub(super) fn build_scene_pipelines(
     // (Reversed-Z `GreaterEqual`) but never writes depth, so it is occluded by
     // geometry genuinely in front of the selection yet wins over the coplanar
     // surface it tints. `fs_selection` emits the uniform highlight color × fade.
-    let selection_fill_pipeline = create_pipeline(
+    let selection_fill = create_pipeline(
         device,
         layout,
         shader,
@@ -155,15 +232,8 @@ pub(super) fn build_scene_pipelines(
         "fs_selection",
         "review_scene_selection_fill_pipeline",
     );
-    let skybox_pipeline = create_skybox_pipeline(device, layout, shader, sample_count);
-    (
-        mesh_pipeline,
-        mesh_pipeline_double_sided,
-        line_pipeline,
-        uv_fill_pipeline,
-        selection_fill_pipeline,
-        skybox_pipeline,
-    )
+    let skybox = create_skybox_pipeline(device, layout, shader, sample_count);
+    (mesh, mesh_double_sided, uv_fill, selection_fill, skybox)
 }
 
 /// Mesh-only pipeline that writes a single-sample view-space normal/Z buffer for

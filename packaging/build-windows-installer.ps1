@@ -10,9 +10,13 @@
          VS 2022", or from a PowerShell launched within it.
       2. Regenerates the Environment-dropdown HDR thumbnails (they are baked into
          the exe via include_bytes!, so they must be current before the build).
-      3. cargo build --release -p review-app
-      4. Reads product.json (the canonical source of product identity).
-      5. Locates ISCC.exe (Inno Setup 6) and compiles packaging\3d-review.iss,
+      3. Re-bakes the BC6H IBL maps *only if* they are outdated (the .bin outputs
+         are also include_bytes!'d, so they must be current before the build).
+         The freshness gate keeps this a fast no-op unless a source HDR or the IBL
+         precompute code changed; an actual re-bake needs a GPU.
+      4. cargo build --release -p review-app
+      5. Reads product.json (the canonical source of product identity).
+      6. Locates ISCC.exe (Inno Setup 6) and compiles packaging\3d-review.iss,
          passing product metadata as /D defines.
 
     Output: dist\3D-Review-Setup-<version>.exe
@@ -47,7 +51,18 @@ if (-not $SkipBuild) {
     & (Join-Path $PSScriptRoot 'generate-hdr-thumbnails.ps1')
 }
 
-# --- 3. Build the release exe --------------------------------------------------
+# --- 3. Re-bake IBL maps if outdated -------------------------------------------
+# The baked IBL maps (BC6H env/irradiance/prefilter cubes + the BRDF LUT) are
+# include_bytes!-embedded too, so they must be current before the build. Unlike
+# the thumbnails, baking is a GPU + slow-compile step — so the script only runs
+# the actual bake when its .bin outputs are stale vs the source HDRs / IBL code;
+# otherwise this is a fast no-op (no GPU touched).
+if (-not $SkipBuild) {
+    Write-Host '==> Checking IBL bake freshness...' -ForegroundColor Cyan
+    & (Join-Path $PSScriptRoot 'generate-ibl-bake.ps1')
+}
+
+# --- 4. Build the release exe --------------------------------------------------
 if (-not $SkipBuild) {
     Write-Host '==> Building release exe (cargo build --release -p review-app)...' -ForegroundColor Cyan
     Push-Location $repoRoot
@@ -60,7 +75,7 @@ if (-not $SkipBuild) {
     }
 }
 
-# --- 4. Read product metadata --------------------------------------------------
+# --- 5. Read product metadata --------------------------------------------------
 if (-not (Test-Path $productJson)) { throw "product.json not found at $productJson." }
 $meta = Get-Content $productJson -Raw | ConvertFrom-Json
 
@@ -77,7 +92,7 @@ if (-not (Test-Path $exePath)) {
     throw "Release exe not found at $exePath. Run without -SkipBuild, or build first."
 }
 
-# --- 5. Locate ISCC and compile the installer ----------------------------------
+# --- 6. Locate ISCC and compile the installer ----------------------------------
 $iscc = (Get-Command 'ISCC.exe' -ErrorAction SilentlyContinue)?.Source
 if (-not $iscc) {
     $candidates = @(

@@ -7,7 +7,7 @@
 //! `GtaoPass` owns the (size-independent) pipelines, sampler and uniform; the
 //! full-resolution AO ping/blur textures + the bind groups that point at them live
 //! in `SceneResources` (rebuilt on resize alongside the scene targets), mirroring
-//! how `BloomPass` / `PostPass` pair with their `SceneResources` bind groups.
+//! how `PostPass` pairs with its `SceneResources` bind groups.
 
 use bytemuck::{Pod, Zeroable};
 use glam::Mat4;

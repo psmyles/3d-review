@@ -33,6 +33,9 @@ pub(crate) struct InspectorOutput {
     /// A texture-pool command emitted this frame (import / assign / clear /
     /// remove), forwarded by the overlay into [`crate::state::UiOutput`].
     pub texture: Option<TextureIntent>,
+    /// Whether a material slider / color-picker is being actively dragged this
+    /// frame, so `app` can coalesce a continuous drag into one undo step.
+    pub material_edit_active: bool,
 }
 
 pub(crate) fn body(ui: &mut egui::Ui, state: &UiState, model: &ModelData) -> InspectorOutput {
@@ -89,6 +92,11 @@ fn material_inspector(ui: &mut egui::Ui, state: &UiState, index: usize) -> Inspe
         .show(ui, |ui| {
             texture_files_section(ui, &state.texture_pool, &mut out)
         });
+
+    // A material slider handle / color-picker being dragged keeps egui's pointer
+    // captured (the background 3D viewport isn't an egui widget, so camera orbit
+    // never sets this). `app` coalesces the whole drag into one undo step.
+    out.material_edit_active = ui.ctx().is_using_pointer();
 
     out
 }

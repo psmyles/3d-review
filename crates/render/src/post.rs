@@ -1,12 +1,11 @@
 //! The post / composite pass that draws the offscreen scene color into egui's
-//! framebuffer behind the chrome (CLAUDE.md render roadmap, Phase 1), with an
-//! optional FXAA edge-blend (Phase 2).
+//! framebuffer behind the chrome (CLAUDE.md render roadmap, Phase 1): it applies
+//! ambient-only GTAO, tone-maps, and encodes to sRGB.
 //!
 //! Owns the fullscreen-triangle pipeline, the sampler used to read the resolved
-//! scene targets, and a small uniform carrying the inverse resolution + effect
-//! flags. The bind group is rebuilt by the caller whenever targets are recreated
-//! (resize / MSAA change), since it references their texture views; the uniform
-//! is rewritten each frame.
+//! scene targets, and a small uniform carrying the effect flags. The bind group is
+//! rebuilt by the caller whenever targets are recreated (resize / MSAA change),
+//! since it references their texture views; the uniform is rewritten each frame.
 
 use bytemuck::{Pod, Zeroable};
 
@@ -14,17 +13,11 @@ use crate::scene::{EGUI_DEPTH_FORMAT, EGUI_MSAA_SAMPLE_COUNT};
 
 const POST_SHADER: &str = include_str!("post.wgsl");
 
-/// Composite-pass uniform: the inverse framebuffer resolution (texel size, for
-/// FXAA neighbor taps), whether FXAA is enabled, and the bloom enable + intensity
-/// for the additive bloom composite. `#[repr(C)]` + `Pod` to match the WGSL
-/// `PostUniforms` layout (invariant 11).
+/// Composite-pass uniform: the GTAO enable flag and the tone-map enable + operator.
+/// `#[repr(C)]` + `Pod` to match the WGSL `PostUniforms` layout (invariant 11).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct PostUniforms {
-    inv_resolution: [f32; 2],
-    fxaa_enabled: u32,
-    bloom_enabled: u32,
-    bloom_intensity: f32,
     gtao_enabled: u32,
     /// Whether the tone curve runs (0 = linear pass-through to sRGB).
     tonemap_enabled: u32,
@@ -77,8 +70,8 @@ impl PostPass {
                     },
                     count: None,
                 },
-                // The blurred bloom texture, sampled with the same filtering
-                // sampler (it is half-res, so it is upsampled here).
+                // The blurred GTAO occlusion (R8, full-res), applied to the
+                // scene's ambient light when GTAO is enabled.
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -89,21 +82,9 @@ impl PostPass {
                     },
                     count: None,
                 },
-                // The blurred GTAO occlusion (R8, full-res), applied to the
-                // scene's ambient light when GTAO is enabled.
-                wgpu::BindGroupLayoutEntry {
-                    binding: 4,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
                 // Linear HDR ambient radiance that GTAO is allowed to attenuate.
                 wgpu::BindGroupLayoutEntry {
-                    binding: 5,
+                    binding: 4,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
@@ -115,8 +96,8 @@ impl PostPass {
             ],
         });
 
-        // FXAA needs bilinear taps between texels; the passthrough path samples
-        // the target 1:1 (no magnify/minify), so linear is harmless there too.
+        // Linear filtering; every target the composite samples is full-res (1:1),
+        // so this neither magnifies nor minifies — it is just the default.
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("review_post_sampler"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -189,15 +170,13 @@ impl PostPass {
         }
     }
 
-    /// (Re)build the bind group pointing at the resolved scene color, blurred
-    /// bloom, blurred AO and ambient-radiance views. Called on creation and
-    /// whenever the targets are recreated (resize / MSAA change), since all views
-    /// are then stale.
+    /// (Re)build the bind group pointing at the resolved scene color, blurred AO
+    /// and ambient-radiance views. Called on creation and whenever the targets are
+    /// recreated (resize / MSAA change), since all views are then stale.
     pub(crate) fn create_bind_group(
         &self,
         device: &wgpu::Device,
         scene_color: &wgpu::TextureView,
-        bloom: &wgpu::TextureView,
         gtao: &wgpu::TextureView,
         ambient: &wgpu::TextureView,
     ) -> wgpu::BindGroup {
@@ -219,41 +198,26 @@ impl PostPass {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: wgpu::BindingResource::TextureView(bloom),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
                     resource: wgpu::BindingResource::TextureView(gtao),
                 },
                 wgpu::BindGroupEntry {
-                    binding: 5,
+                    binding: 4,
                     resource: wgpu::BindingResource::TextureView(ambient),
                 },
             ],
         })
     }
 
-    /// Write the per-frame composite uniform: the texel size (for FXAA taps), the
-    /// FXAA enable flag, the bloom enable + intensity, the GTAO enable flag, and
-    /// the tone-map enable + operator. Cheap; called every frame from `prepare`.
-    #[allow(clippy::too_many_arguments)]
+    /// Write the per-frame composite uniform: the GTAO enable flag and the
+    /// tone-map enable + operator. Cheap; called every frame from `prepare`.
     pub(crate) fn update_uniform(
         &self,
         queue: &wgpu::Queue,
-        width: u32,
-        height: u32,
-        fxaa: bool,
-        bloom_enabled: bool,
-        bloom_intensity: f32,
         gtao_enabled: bool,
         tonemap_enabled: bool,
         tonemap_op: u32,
     ) {
         let uniforms = PostUniforms {
-            inv_resolution: [1.0 / width.max(1) as f32, 1.0 / height.max(1) as f32],
-            fxaa_enabled: u32::from(fxaa),
-            bloom_enabled: u32::from(bloom_enabled),
-            bloom_intensity: bloom_intensity.max(0.0),
             gtao_enabled: u32::from(gtao_enabled),
             tonemap_enabled: u32::from(tonemap_enabled),
             tonemap_op,

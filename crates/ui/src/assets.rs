@@ -101,7 +101,7 @@ pub(crate) const ICON_INFO: AppIcon = AppIcon {
     id: "icon_info",
     png_bytes: include_bytes!("../../../assets/icons/icon_info.png"),
 };
-/// "Anti aliasing" — opens the MSAA / FXAA options panel (status bar, right).
+/// "Anti aliasing" — opens the MSAA options panel (status bar, right).
 pub(crate) const ICON_ANTI_ALIASING: AppIcon = AppIcon {
     id: "icon_anti_aliasing",
     png_bytes: include_bytes!("../../../assets/icons/icon_anti_aliasing.png"),
@@ -112,20 +112,14 @@ pub(crate) const ICON_IBL: AppIcon = AppIcon {
     id: "icon_ibl",
     png_bytes: include_bytes!("../../../assets/icons/icon_ibl.png"),
 };
-/// "Bloom" — toggles HDR bloom; right-click opens the Bloom options panel (status
-/// bar, right, grouped with IBL + Anti aliasing).
-pub(crate) const ICON_BLOOM: AppIcon = AppIcon {
-    id: "icon_bloom",
-    png_bytes: include_bytes!("../../../assets/icons/icon_bloom.png"),
-};
 /// "Ambient occlusion" — toggles GTAO; right-click opens the Ambient Occlusion
-/// options panel (status bar, right, grouped with IBL + Bloom + Anti aliasing).
+/// options panel (status bar, right, grouped with IBL + Anti aliasing).
 pub(crate) const ICON_AO: AppIcon = AppIcon {
     id: "icon_ao",
     png_bytes: include_bytes!("../../../assets/icons/icon_ao.png"),
 };
 /// "Tonemapper" — toggles tone mapping; right-click opens the Tonemapper options
-/// panel (status bar, right, grouped with IBL + Bloom + AO + Anti aliasing).
+/// panel (status bar, right, grouped with IBL + AO + Anti aliasing).
 pub(crate) const ICON_TONEMAPPER: AppIcon = AppIcon {
     id: "icon_tonemapper",
     png_bytes: include_bytes!("../../../assets/icons/icon_tonemapper.png"),

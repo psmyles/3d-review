@@ -13,13 +13,13 @@ use review_model::ModelData;
 use crate::material::MaterialState;
 use crate::selection::SelectionView;
 use crate::{
-    AntiAliasing, BloomSettings, CameraProjection, CheckerTexture, EnvironmentSettings,
-    GtaoSettings, OrbitCamera, SceneDebugOptions, ShadingMode, TonemapSettings, UvCamera,
-    UvShadingMode,
+    AntiAliasing, CameraProjection, CheckerTexture, EnvironmentSettings, GtaoSettings, OrbitCamera,
+    SceneDebugOptions, ShadingMode, TonemapSettings, UvCamera, UvShadingMode,
 };
 
 use super::SCENE_CLEAR_COLOR;
 use super::SceneResources;
+use super::gpu_profiler::{Zone, frame_mask};
 
 /// The 2D UV viewport view: which UV channel to draw, how to shade it, and the
 /// camera framing it. `Some` switches [`SceneCallback`] to the UV path (grid +
@@ -39,14 +39,11 @@ pub struct SceneCallback {
     model: Arc<ModelData>,
     model_revision: u64,
     debug_options: SceneDebugOptions,
-    /// Scene MSAA level + FXAA toggle. Drives the offscreen target / scene
-    /// pipeline sample count and the composite shader.
+    /// Scene MSAA level. Drives the offscreen target / scene pipeline sample count.
     anti_aliasing: AntiAliasing,
     /// Image-based lighting / environment selection. Drives the precomputed IBL
     /// maps, the PBR shaded path, and the optional skybox.
     environment: EnvironmentSettings,
-    /// Bloom (HDR glow) settings. Drives the bloom passes + the composite add.
-    bloom: BloomSettings,
     /// Screen-space ambient occlusion settings. Drives the GTAO + blur passes and
     /// the composite multiply.
     gtao: GtaoSettings,
@@ -71,8 +68,8 @@ pub struct SceneCallback {
 }
 
 impl SceneCallback {
-    // Fifteen distinct, independent inputs (camera + projection + target + model +
-    // revision + the six UI option bundles + the editable material table + its
+    // Fourteen distinct, independent inputs (camera + projection + target + model +
+    // revision + the five UI option bundles + the editable material table + its
     // revision + the Outliner selection + the hidden-mesh set); there is no
     // redundant pair to fold away, and a params struct would only move the same
     // values behind one name.
@@ -86,7 +83,6 @@ impl SceneCallback {
         debug_options: SceneDebugOptions,
         anti_aliasing: AntiAliasing,
         environment: EnvironmentSettings,
-        bloom: BloomSettings,
         gtao: GtaoSettings,
         tonemap: TonemapSettings,
         materials: &[MaterialState],
@@ -103,7 +99,6 @@ impl SceneCallback {
             debug_options,
             anti_aliasing,
             environment,
-            bloom,
             gtao,
             tonemap,
             materials: materials.to_vec(),
@@ -131,18 +126,12 @@ impl SceneCallback {
             model,
             model_revision,
             debug_options: SceneDebugOptions::default(),
-            // The UV viewport keeps the default scene AA (4× MSAA, no FXAA), so
-            // switching to UV mode renders exactly as it did pre-Phase-2.
+            // The UV viewport keeps the default scene AA (4× MSAA), so switching
+            // to UV mode renders exactly as it did pre-Phase-2.
             anti_aliasing: AntiAliasing::default(),
             // IBL is irrelevant to the 2D UV viewport; the skybox/IBL paths are
             // never reached there (the UV path returns before them).
             environment: EnvironmentSettings::default(),
-            // Bloom is a 3D-only effect; the UV viewport never glows. Disable it so
-            // the composite skips the bloom add in UV mode.
-            bloom: BloomSettings {
-                enabled: false,
-                ..BloomSettings::default()
-            },
             // GTAO is a 3D-only effect; the flat UV viewport has no depth to occlude.
             gtao: GtaoSettings {
                 enabled: false,
@@ -177,12 +166,28 @@ impl CallbackTrait for SceneCallback {
         egui_encoder: &mut wgpu::CommandEncoder,
         callback_resources: &mut CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
+        let _z = crate::prof::zone!("Scene Prepare");
+        // Create the cheap core resources on the first frame (Phase B). The heavy
+        // scene pipelines + GTAO pass are compiled afterwards, one stage per frame,
+        // by `advance_build`.
+        let fresh = callback_resources.get::<SceneResources>().is_none();
         let resources = callback_resources
             .entry::<SceneResources>()
-            .or_insert_with(|| SceneResources::new(device, queue, self.output_format));
+            .or_insert_with(|| SceneResources::new_core(device, queue, self.output_format));
 
-        if resources.output_format != self.output_format {
-            *resources = SceneResources::new(device, queue, self.output_format);
+        let recreated = if resources.output_format != self.output_format {
+            *resources = SceneResources::new_core(device, queue, self.output_format);
+            true
+        } else {
+            false
+        };
+
+        // Walk the deferred build forward one stage per frame, driven across frames
+        // by `app`'s startup warmup. Skipped on the frame that just built the core
+        // (fresh / format change), so the first presented (grid-only) frame pays
+        // only the core cost.
+        if !fresh && !recreated {
+            resources.advance_build(device, queue);
         }
 
         if let Some(uv) = self.uv_view {
@@ -207,6 +212,12 @@ impl CallbackTrait for SceneCallback {
             // the steady-state view holds no derived UV buffer (invariant 3).
             resources.free_uv_view(device);
 
+            // Reconcile the Unique-mode mesh-part key first (build-on-demand /
+            // free-on-off): the mesh / material / selection / visibility syncs below
+            // all read it to group + color by part.
+            let material_mode = self.debug_options.material_mode;
+            resources.sync_unique_parts(&self.model, self.model_revision, material_mode);
+
             if resources.model_revision != self.model_revision {
                 // A new model rebuilds the steady-state mesh and resets every
                 // derived line view to "not built" — they are (re)built on demand
@@ -217,10 +228,18 @@ impl CallbackTrait for SceneCallback {
                     self.model_revision,
                     self.debug_options,
                 );
-            } else if resources.mesh_uv_channel != self.debug_options.uv_channel {
-                // Switching UV channel only rebuilds the mesh vertex buffer's UVs;
-                // the rest of the derived geometry is channel-independent.
-                resources.update_mesh_channel(device, &self.model, self.debug_options.uv_channel);
+            } else if resources.mesh_uv_channel != self.debug_options.uv_channel
+                || resources.mesh_material_mode != material_mode
+            {
+                // Switching UV channel rebuilds the mesh vertex buffer's UVs;
+                // switching material mode re-groups the index reorder (Unique groups
+                // by mesh part, not material). Either rebuilds the mesh + ranges.
+                resources.update_mesh_channel(
+                    device,
+                    &self.model,
+                    self.debug_options.uv_channel,
+                    material_mode,
+                );
             }
 
             // Build-on-demand / free-on-off for the derived line views: a view's
@@ -232,30 +251,39 @@ impl CallbackTrait for SceneCallback {
             // frame); only the 3D path uses them.
             resources.sync_environment(device, queue, self.environment);
 
-            // Bring the editable material table in line with the current values:
-            // rebuilt when the material count changes (new model), re-uploaded when
-            // an edit bumps the revision, otherwise left untouched.
-            resources.sync_materials(device, queue, &self.materials, self.material_revision);
+            // Bring the editable material table in line with the current values +
+            // material mode: rebuilt when the effective count changes (new model /
+            // mode), re-uploaded when an edit bumps the revision or the mode changes,
+            // otherwise left untouched.
+            resources.sync_materials(
+                device,
+                queue,
+                &self.materials,
+                self.material_revision,
+                material_mode,
+            );
 
             // Build (or free) the selected-triangle index buffer (solo isolate +
-            // highlight-flash fill source) when the Outliner selection changes
-            // (invariant 3).
+            // highlight-flash fill source) when the Outliner selection (or material
+            // mode's grouping) changes (invariant 3).
             resources.sync_selection(
                 device,
                 &self.model,
                 self.model_revision,
                 self.selection,
                 &self.hidden_meshes,
+                material_mode,
             );
 
             // Build (or free) the per-mesh visibility draw list when the Outliner's
-            // hidden-mesh set changes (invariant 3): the filtered index buffer
-            // exists only while some mesh is hidden.
+            // hidden-mesh set (or material mode's grouping) changes (invariant 3):
+            // the filtered index buffer exists only while some mesh is hidden.
             resources.sync_visibility(
                 device,
                 &self.model,
                 self.model_revision,
                 &self.hidden_meshes,
+                material_mode,
             );
 
             // The highlight flash rides in the uniform: gamma-space color in rgb,
@@ -286,49 +314,62 @@ impl CallbackTrait for SceneCallback {
         let [width, height] = screen_descriptor.size_in_pixels;
         resources.sync_anti_aliasing(device, queue, width, height, self.anti_aliasing);
 
-        // Bloom + GTAO are 3D-only effects (both forced off in UV mode). Feed the
-        // composite the FXAA / bloom / GTAO flags, and run their passes after the
-        // scene so the blurred glow + AO are ready when `paint` composites them.
-        let bloom_active = self.uv_view.is_none() && self.bloom.enabled;
-        let gtao_active = self.uv_view.is_none() && self.gtao.enabled;
-        resources
-            .bloom
-            .update_threshold(queue, self.bloom.threshold);
+        // GTAO is a 3D-only effect (forced off in UV mode), and is only active once
+        // its deferred pass is built (Phase B) — until then it reports inactive, so
+        // the composite doesn't darken by AO (an empty startup scene has nothing to
+        // occlude anyway). Feed the composite the GTAO flag and run its passes after
+        // the scene so the blurred AO is ready when `paint` composites it.
+        let gtao_active = self.uv_view.is_none() && self.gtao.enabled && resources.gtao.is_some();
         if gtao_active {
-            // The settings' radius/bias are fractions of the framed model's
-            // bounding-sphere radius, so the AO look is scale-invariant; scale them
-            // into view units by the live scene radius here.
-            let scene_radius = self.camera.scene_radius.max(1e-3);
-            let (slices, steps) = self.gtao.quality.slices_steps();
-            resources.gtao.update(
-                queue,
-                self.camera.projection_matrix(self.projection_mode),
-                matches!(self.projection_mode, CameraProjection::Orthographic),
-                self.gtao.radius * scene_radius,
-                self.gtao.intensity,
-                self.gtao.thickness,
-                slices,
-                steps,
-            );
+            // gtao_active implies the deferred GTAO pass is built.
+            if let Some(gtao) = &resources.gtao {
+                // The settings' radius/bias are fractions of the framed model's
+                // bounding-sphere radius, so the AO look is scale-invariant; scale
+                // them into view units by the live scene radius here.
+                let scene_radius = self.camera.scene_radius.max(1e-3);
+                let (slices, steps) = self.gtao.quality.slices_steps();
+                gtao.update(
+                    queue,
+                    self.camera.projection_matrix(self.projection_mode),
+                    matches!(self.projection_mode, CameraProjection::Orthographic),
+                    self.gtao.radius * scene_radius,
+                    self.gtao.intensity,
+                    self.gtao.thickness,
+                    slices,
+                    steps,
+                );
+            }
         }
         resources.post.update_uniform(
             queue,
-            width.max(1),
-            height.max(1),
-            self.anti_aliasing.effective_fxaa(),
-            bloom_active,
-            self.bloom.intensity,
             gtao_active,
             self.tonemap.enabled,
             self.tonemap.operator.shader_index(),
         );
-        self.encode_scene(resources, egui_encoder);
+
+        // GPU profiling (only on a `--tracy` launch with `TIMESTAMP_QUERY`): bring
+        // the profiler up, drain any ready readbacks, and arm this frame's slot
+        // before encoding. The encode passes pull their `timestamp_writes` from the
+        // profiler; the resolve/copy is appended after, onto egui's encoder, so it
+        // rides the same submission. When inactive this is all a no-op.
+        resources.ensure_gpu_profiler(device, queue);
+        let gpu_mask = frame_mask(gtao_active);
+        if let Some(profiler) = resources.gpu_profiler_mut() {
+            profiler.begin(device, gpu_mask);
+        }
+
+        {
+            let _z = crate::prof::zone!("Encode Scene");
+            self.encode_scene(resources, egui_encoder);
+        }
         if gtao_active {
+            let _z = crate::prof::zone!("Encode GTAO");
             resources.encode_gtao_gbuffer(egui_encoder);
             resources.encode_gtao(egui_encoder);
         }
-        if bloom_active {
-            resources.encode_bloom(egui_encoder);
+
+        if let Some(profiler) = resources.gpu_profiler_mut() {
+            profiler.finish(egui_encoder);
         }
 
         Vec::new()
@@ -358,6 +399,10 @@ impl SceneCallback {
     /// is identical to what used to run directly in egui's pass — only the target
     /// changed — so the composited image is unchanged (Phase 1).
     fn encode_scene(&self, resources: &SceneResources, encoder: &mut wgpu::CommandEncoder) {
+        let timestamp_writes = resources
+            .gpu_profiler
+            .as_ref()
+            .and_then(|profiler| profiler.writes(Zone::Scene));
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("review_scene_offscreen_pass"),
             color_attachments: &[
@@ -370,17 +415,7 @@ impl SceneCallback {
                         store: wgpu::StoreOp::Store,
                     },
                 }),
-                // Location 1: linear-HDR bloom source (cleared to black so empty
-                // background contributes no glow).
-                Some(wgpu::RenderPassColorAttachment {
-                    view: &resources.targets.bloom_render_view,
-                    resolve_target: resources.targets.bloom_resolve_view.as_ref(),
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(SCENE_CLEAR_COLOR),
-                        store: wgpu::StoreOp::Store,
-                    },
-                }),
-                // Location 2: ambient radiance GTAO is allowed to attenuate.
+                // Location 1: ambient radiance GTAO is allowed to attenuate.
                 Some(wgpu::RenderPassColorAttachment {
                     view: &resources.targets.ambient_render_view,
                     resolve_target: resources.targets.ambient_resolve_view.as_ref(),
@@ -398,7 +433,7 @@ impl SceneCallback {
                 }),
                 stencil_ops: None,
             }),
-            timestamp_writes: None,
+            timestamp_writes,
             occlusion_query_set: None,
         });
         self.record_scene(resources, &mut render_pass);
@@ -411,6 +446,12 @@ impl SceneCallback {
         resources: &'pass SceneResources,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
+        // The deferred scene pipelines (Phase B): `None` during the first warmup
+        // frames, so any draw that needs one (mesh / skybox / UV-fill / selection
+        // flash) is skipped until they land. The grid + line overlays use the core
+        // `line_pipeline`, so they always draw.
+        let scene_pipelines = resources.scene_pipelines.as_ref();
+
         // UV viewport: draw the 0..1 grid, then the island fill (solid-shaded /
         // per-island modes only — empty otherwise), then the model's UV edges on
         // top. group 1 must still be bound to satisfy the shared pipeline layout
@@ -429,8 +470,10 @@ impl SceneCallback {
                 render_pass.set_vertex_buffer(0, resources.uv_grid_vertex_buffer.slice(..));
                 render_pass.draw(0..resources.uv_grid_vertex_count, 0..1);
             }
-            if resources.uv_fill_vertex_count > 0 {
-                render_pass.set_pipeline(&resources.uv_fill_pipeline);
+            if let (Some(scene_pipelines), true) =
+                (scene_pipelines, resources.uv_fill_vertex_count > 0)
+            {
+                render_pass.set_pipeline(&scene_pipelines.uv_fill);
                 render_pass.set_vertex_buffer(0, resources.uv_fill_vertex_buffer.slice(..));
                 render_pass.draw(0..resources.uv_fill_vertex_count, 0..1);
             }
@@ -459,9 +502,9 @@ impl SceneCallback {
 
         // Skybox background first, behind all geometry (depth-test always, no
         // write), when the environment is shown as the background.
-        if self.environment.show_background {
+        if let (true, Some(scene_pipelines)) = (self.environment.show_background, scene_pipelines) {
             render_pass.set_bind_group(0, &resources.uniform_bind_group, &[]);
-            render_pass.set_pipeline(&resources.skybox_pipeline);
+            render_pass.set_pipeline(&scene_pipelines.skybox);
             render_pass.draw(0..3, 0..1);
         }
 
@@ -470,16 +513,16 @@ impl SceneCallback {
         // mesh is hidden); otherwise the whole mesh. All three share the mesh vertex
         // buffer, so only the index source + ranges differ.
         let solo = self.selection.solo && self.selection.selection.is_active();
-        if resources.mesh_index_count > 0
-            && !matches!(self.debug_options.shading_mode, ShadingMode::Wireframe)
-        {
+        let draw_mesh = resources.mesh_index_count > 0
+            && !matches!(self.debug_options.shading_mode, ShadingMode::Wireframe);
+        if let (Some(scene_pipelines), true) = (scene_pipelines, draw_mesh) {
             render_pass.set_bind_group(0, &resources.uniform_bind_group, &[]);
             // Backface Rendering off (default) culls back faces; on draws the mesh
             // double-sided. The two pipelines are prebuilt, so this is a pick.
             let mesh_pipeline = if self.debug_options.render_backfaces {
-                &resources.mesh_pipeline_double_sided
+                &scene_pipelines.mesh_double_sided
             } else {
-                &resources.mesh_pipeline
+                &scene_pipelines.mesh
             };
             render_pass.set_pipeline(mesh_pipeline);
             render_pass.set_vertex_buffer(0, resources.mesh_vertex_buffer.slice(..));
@@ -559,12 +602,12 @@ impl SceneCallback {
         // selection hides behind other geometry but wins over the coplanar surface
         // it tints. Skipped once the flash has fully faded, so the steady state (and
         // a still-active-but-faded selection) pays nothing.
-        if self.selection.selection.is_active()
+        let flash = self.selection.selection.is_active()
             && self.selection.fade > 0.0
-            && resources.selection_index_count > 0
-        {
+            && resources.selection_index_count > 0;
+        if let (Some(scene_pipelines), true) = (scene_pipelines, flash) {
             render_pass.set_bind_group(0, &resources.uniform_bind_group, &[]);
-            render_pass.set_pipeline(&resources.selection_fill_pipeline);
+            render_pass.set_pipeline(&scene_pipelines.selection_fill);
             render_pass.set_vertex_buffer(0, resources.mesh_vertex_buffer.slice(..));
             render_pass.set_index_buffer(
                 resources.selection_index_buffer.slice(..),

@@ -82,10 +82,15 @@ fn project_to_uv(view_pos: vec3<f32>) -> vec2<f32> {
     return vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
 }
 
-// Hash a screen coordinate to [0,1); used for the per-pixel slice rotation so the
-// occlusion noise is high-frequency (and removed by the blur) rather than banded.
-fn hash12(p: vec2<f32>) -> f32 {
-    return fract(sin(dot(p, vec2<f32>(12.9898, 78.233))) * 43758.5453);
+// Jimenez 2016 (Activision GTAO) structured 4x4 spatial dither. Returns the slice
+// rotation in x and the step offset in y, both in [0,1). Unlike a white-noise hash,
+// adjacent pixels get evenly spread rotations/offsets, so the bilateral denoiser
+// averages complementary slice directions over a small block and resolves to a
+// clean result at low sample counts instead of leaving high-variance speckle.
+fn spatial_dither(pix: vec2<u32>) -> vec2<f32> {
+    let rot = (1.0 / 16.0) * f32((((pix.x + pix.y) & 3u) << 2u) + (pix.x & 3u));
+    let offset = (1.0 / 4.0) * f32((pix.y - pix.x) & 3u);
+    return vec2<f32>(rot, offset);
 }
 
 // Reconstruct the view-space position at `uv` (xyz) + a foreground flag (w): 0 for
@@ -168,12 +173,15 @@ fn fs_gtao(input: VertexOutput) -> @location(0) f32 {
     let edge_uv = project_to_uv(p + vec3<f32>(radius, 0.0, 0.0));
     let radius_px = clamp(abs(edge_uv.x - input.uv.x) * dims.x, 1.0, max(dims.x, dims.y));
 
-    // Per-pixel rotation + jitter so slices/steps decorrelate (blur removes noise).
-    let noise = hash12(input.clip_position.xy);
+    // Structured per-pixel rotation + step offset so slices/steps decorrelate over a
+    // 4x4 block (the blur then resolves them to a clean result — see spatial_dither).
+    let dither = spatial_dither(vec2<u32>(u32(input.clip_position.x), u32(input.clip_position.y)));
+    let rot_noise = dither.x;
+    let offset_noise = dither.y;
 
     var visibility = 0.0;
     for (var s = 0u; s < slice_count; s = s + 1u) {
-        let phi = (f32(s) + noise) * PI / f32(slice_count);
+        let phi = (f32(s) + rot_noise) * PI / f32(slice_count);
         let omega = vec2<f32>(cos(phi), sin(phi));
 
         // View-space slice direction: reconstruct a neighbor a few px along omega.
@@ -200,10 +208,10 @@ fn fs_gtao(input: VertexOutput) -> @location(0) f32 {
 
         // Search both horizons (positive omega and negative omega side).
         let cos_pos = horizon_cos(
-            input.uv, p, v, omega, radius_px, radius, thickness, step_count, noise, inv_dims,
+            input.uv, p, v, omega, radius_px, radius, thickness, step_count, offset_noise, inv_dims,
         );
         let cos_neg = horizon_cos(
-            input.uv, p, v, -omega, radius_px, radius, thickness, step_count, noise, inv_dims,
+            input.uv, p, v, -omega, radius_px, radius, thickness, step_count, offset_noise, inv_dims,
         );
 
         // Clamp horizons into the hemisphere around the (projected) normal, then

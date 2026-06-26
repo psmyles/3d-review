@@ -25,5 +25,5 @@ pub(crate) use debug_lines::{
 };
 pub(crate) use grid::{scene_lines, uv_grid_lines};
 pub(crate) use mesh::model_mesh;
-pub(crate) use select::{selection_geometry, visible_geometry};
+pub(crate) use select::{selected_triangle_mask, selection_geometry, visible_geometry};
 pub(crate) use uv::{uv_fill_triangles, uv_wireframe_lines};

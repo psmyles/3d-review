@@ -14,9 +14,8 @@ use std::sync::Arc;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use review_render::{ChannelSelect, DecodedImage, TextureSlot, decode_image, suggested_channel};
 use review_ui::{TexturePoolEntry, TextureSlotRef};
-use tracing::warn;
 
-use crate::{App, TEXTURE_EXTENSIONS, UserEvent, file_label};
+use crate::{App, TEXTURE_EXTENSIONS, UserEvent, file_label, prof};
 
 /// A finished background texture decode, posted back to the event loop. Carries
 /// what the decode was *for* ([`TextureDecodeRequest`]) so the main thread knows
@@ -101,6 +100,7 @@ impl App {
         // Already decoded (a prior import that was removed, say): pool on the spot.
         if self.texture_cache.contains_key(&path) {
             self.texture_pool.push(path.clone());
+            self.texture_revision = self.texture_revision.wrapping_add(1);
             self.watch_texture(&path);
             self.refresh_texture_pool();
             self.redraw_requested = true;
@@ -120,7 +120,10 @@ impl App {
             return;
         };
         let Some(image) = self.texture_cache.get(&path).cloned() else {
-            warn!(path = %path.display(), "assign of a texture not in the pool");
+            prof::msg(&format!(
+                "assign of a texture not in the pool: {}",
+                path.display()
+            ));
             return;
         };
         let channel = suggested_channel(&path, slot);
@@ -147,6 +150,7 @@ impl App {
         }
         self.texture_pool.retain(|pooled| pooled != path);
         self.texture_cache.remove(path);
+        self.texture_revision = self.texture_revision.wrapping_add(1);
         self.refresh_materials();
         self.refresh_texture_pool();
     }
@@ -177,11 +181,17 @@ impl App {
     /// path) can take seconds, so it must never run on the main thread.
     fn spawn_decode(&self, request: TextureDecodeRequest) {
         let Some(proxy) = self.texture_proxy.clone() else {
-            warn!("no event-loop proxy; cannot decode texture off-thread");
+            prof::msg("no event-loop proxy; cannot decode texture off-thread");
             return;
         };
         std::thread::spawn(move || {
-            let result = decode_image(request.path());
+            // Name the decode thread + time the decode in Tracy (both no-op unless
+            // `--tracy`).
+            prof::thread_name("texture-decode");
+            let result = {
+                let _z = prof::zone!("Decode Image");
+                decode_image(request.path())
+            };
             // A send failure only means the event loop has exited; nothing to do.
             let _ = proxy.send_event(UserEvent::TextureDecoded(TextureDecode { request, result }));
         });
@@ -199,6 +209,9 @@ impl App {
             Ok(image) => {
                 let image = Arc::new(image);
                 self.texture_cache.insert(path.clone(), Arc::clone(&image));
+                // The pool/cache changed (an import landed, or a watched file
+                // re-decoded), so bump the undo system's texture change tag.
+                self.texture_revision = self.texture_revision.wrapping_add(1);
                 match request {
                     TextureDecodeRequest::Import { .. } => {
                         if !self.texture_pool.contains(&path) {
@@ -226,7 +239,10 @@ impl App {
                 }
             }
             Err(error) => {
-                warn!(path = %path.display(), error = %error, "texture decode failed");
+                prof::msg(&format!(
+                    "texture decode failed {}: {error}",
+                    path.display()
+                ));
                 self.notifications.error(format!("Couldn't load {name}"));
             }
         }
@@ -262,7 +278,7 @@ impl App {
             match RecommendedWatcher::new(handler, notify::Config::default()) {
                 Ok(watcher) => self.texture_watcher = Some(watcher),
                 Err(error) => {
-                    warn!(error = %error, "failed to create texture watcher");
+                    prof::msg(&format!("failed to create texture watcher: {error}"));
                     return;
                 }
             }
@@ -273,7 +289,10 @@ impl App {
                     self.watched_dirs.insert(dir);
                 }
                 Err(error) => {
-                    warn!(dir = %dir.display(), error = %error, "failed to watch texture directory");
+                    prof::msg(&format!(
+                        "failed to watch texture directory {}: {error}",
+                        dir.display()
+                    ));
                 }
             }
         }
@@ -306,6 +325,7 @@ impl App {
     pub(crate) fn reset_texture_state(&mut self) {
         self.texture_cache.clear();
         self.texture_pool.clear();
+        self.texture_revision = self.texture_revision.wrapping_add(1);
         self.ui.texture_pool = Vec::new();
         self.watched_dirs.clear();
         // Dropping the watcher unregisters every directory.

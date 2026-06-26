@@ -1,20 +1,19 @@
-//! Anti Aliasing tool options: the scene MSAA level and an FXAA toggle.
+//! Anti Aliasing tool options: the scene MSAA level.
 //!
-//! Both write straight into [`UiState::anti_aliasing`], which the viewport
-//! callback reads each frame — there is no separate commit step. MSAA levels the
-//! active adapter can't render are omitted from the dropdown entirely (invariant
-//! 4); the currently-selected level is always offered so the menu can't strand
-//! its own value.
+//! Writes straight into [`UiState::anti_aliasing`], which the viewport callback
+//! reads each frame — there is no separate commit step. MSAA levels the active
+//! adapter can't render are omitted from the dropdown entirely (invariant 4); the
+//! currently-selected level is always offered so the menu can't strand its own
+//! value.
 
 use review_render::{AntiAliasing, MsaaSamples};
 
 use crate::state::UiState;
-use crate::widgets::{labeled_checkbox, labeled_combo, panel_grid, reset_button};
+use crate::widgets::{labeled_combo, panel_grid, reset_button};
 
 pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
     panel_grid(ui, "anti_aliasing", |ui| {
         msaa_row(ui, state);
-        labeled_checkbox(ui, "FXAA", &mut state.anti_aliasing.fxaa);
     });
     ui.separator();
     if reset_button(ui).clicked() {

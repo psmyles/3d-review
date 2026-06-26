@@ -21,6 +21,7 @@ mod help;
 mod notifications;
 mod overlay;
 mod panels;
+mod prof;
 mod state;
 mod stats;
 mod status_bar;
@@ -31,11 +32,10 @@ mod widgets;
 
 pub use assets::install_fonts;
 pub use notifications::Notifications;
-pub use overlay::{draw_overlay, draw_startup_fade, draw_viewport_scene};
+pub use overlay::{draw_overlay, draw_viewport_scene};
 pub use review_render::{
-    AntiAliasing, BloomSettings, ChannelSelect, EnvironmentMap, EnvironmentSettings, GtaoQuality,
-    GtaoSettings, MsaaSamples, Selection, TextureSlot, gtao_supported, ibl_supported,
-    supported_msaa_levels,
+    AntiAliasing, ChannelSelect, EnvironmentMap, EnvironmentSettings, GtaoQuality, GtaoSettings,
+    MsaaSamples, Selection, TextureSlot, gtao_supported, ibl_supported, supported_msaa_levels,
 };
 pub use state::{
     AxisGizmoAction, BoundingBoxPanelState, NormalPanelState, OptionPanel, OutlinerTab, PanelsOpen,

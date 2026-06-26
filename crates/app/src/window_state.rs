@@ -13,7 +13,7 @@
 
 use std::path::PathBuf;
 
-use tracing::{debug, warn};
+use crate::prof;
 
 /// The window placement we save and restore: outer position (including
 /// decorations) plus the inner client size, and whether the window was
@@ -84,7 +84,7 @@ pub fn load() -> Option<WindowPlacement> {
         return None;
     }
 
-    debug!(?placement, "restored window placement");
+    prof::msg(&format!("restored window placement: {placement:?}"));
     Some(placement)
 }
 
@@ -99,7 +99,10 @@ pub fn save(placement: WindowPlacement) {
     };
 
     if let Err(error) = std::fs::create_dir_all(&dir) {
-        warn!(%error, dir = %dir.display(), "failed to create window-state directory");
+        prof::msg(&format!(
+            "failed to create window-state directory {}: {error}",
+            dir.display()
+        ));
         return;
     }
 
@@ -109,6 +112,9 @@ pub fn save(placement: WindowPlacement) {
     );
 
     if let Err(error) = std::fs::write(&path, contents) {
-        warn!(%error, path = %path.display(), "failed to write window state");
+        prof::msg(&format!(
+            "failed to write window state {}: {error}",
+            path.display()
+        ));
     }
 }

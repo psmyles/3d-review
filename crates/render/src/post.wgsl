@@ -1,7 +1,6 @@
 // Post / composite pass: samples the resolved linear-HDR offscreen scene targets,
-// applies ambient-only GTAO, adds bloom, tone-maps, encodes to sRGB, and writes
-// the final LDR color into egui's framebuffer behind the chrome. FXAA operates on
-// the composed display-space result.
+// applies ambient-only GTAO, tone-maps, encodes to sRGB, and writes the final LDR
+// color into egui's framebuffer behind the chrome.
 
 @group(0) @binding(0)
 var scene_color: texture_2d<f32>;
@@ -9,26 +8,18 @@ var scene_color: texture_2d<f32>;
 var scene_sampler: sampler;
 
 struct PostUniforms {
-    inv_resolution: vec2<f32>,
-    fxaa_enabled: u32,
-    bloom_enabled: u32,
-    bloom_intensity: f32,
     gtao_enabled: u32,
     tonemap_enabled: u32,
     tonemap_op: u32,
 };
 @group(0) @binding(2)
 var<uniform> post: PostUniforms;
-// Blurred linear-HDR bloom (half-res; the filtering sampler upsamples it). Added
-// back over the scene when `bloom_enabled` is set.
-@group(0) @binding(3)
-var bloom_texture: texture_2d<f32>;
 // Blurred GTAO occlusion (R8, full-res). Multiplied into the scene's ambient
 // light when `gtao_enabled` is set.
-@group(0) @binding(4)
+@group(0) @binding(3)
 var gtao_texture: texture_2d<f32>;
 // Linear HDR ambient radiance eligible for GTAO attenuation.
-@group(0) @binding(5)
+@group(0) @binding(4)
 var ambient_texture: texture_2d<f32>;
 
 struct VertexOutput {
@@ -54,9 +45,6 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
     out.uv = uv;
     return out;
 }
-
-// Perceptual luma weights (Rec. 601), the standard FXAA edge metric.
-const LUMA: vec3<f32> = vec3<f32>(0.299, 0.587, 0.114);
 
 fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
     let lo = c * 12.92;
@@ -195,69 +183,10 @@ fn compose_ldr(uv: vec2<f32>) -> vec3<f32> {
         let ambient = textureSample(ambient_texture, scene_sampler, uv).rgb;
         lit = max(lit - ambient * (1.0 - ao), vec3<f32>(0.0));
     }
-    if (post.bloom_enabled != 0u) {
-        let bloom = textureSample(bloom_texture, scene_sampler, uv).rgb;
-        lit = lit + bloom * post.bloom_intensity;
-    }
     return linear_to_srgb(apply_tonemap(lit));
-}
-
-// Classic NVIDIA FXAA II ("console" quality) edge-blend. Cheap, dependency-free,
-// and a good match for a single full-screen post pass over LDR color.
-fn fxaa(uv: vec2<f32>) -> vec3<f32> {
-    let span_max = 8.0;
-    let reduce_mul = 1.0 / 8.0;
-    let reduce_min = 1.0 / 128.0;
-    let inv = post.inv_resolution;
-
-    let rgb_nw = compose_ldr(uv + vec2<f32>(-1.0, -1.0) * inv);
-    let rgb_ne = compose_ldr(uv + vec2<f32>(1.0, -1.0) * inv);
-    let rgb_sw = compose_ldr(uv + vec2<f32>(-1.0, 1.0) * inv);
-    let rgb_se = compose_ldr(uv + vec2<f32>(1.0, 1.0) * inv);
-    let rgb_m = compose_ldr(uv);
-
-    let luma_nw = dot(rgb_nw, LUMA);
-    let luma_ne = dot(rgb_ne, LUMA);
-    let luma_sw = dot(rgb_sw, LUMA);
-    let luma_se = dot(rgb_se, LUMA);
-    let luma_m = dot(rgb_m, LUMA);
-
-    let luma_min = min(luma_m, min(min(luma_nw, luma_ne), min(luma_sw, luma_se)));
-    let luma_max = max(luma_m, max(max(luma_nw, luma_ne), max(luma_sw, luma_se)));
-
-    // Edge direction perpendicular to the local luma gradient.
-    var dir = vec2<f32>(
-        -((luma_nw + luma_ne) - (luma_sw + luma_se)),
-        ((luma_nw + luma_sw) - (luma_ne + luma_se)),
-    );
-
-    let dir_reduce = max((luma_nw + luma_ne + luma_sw + luma_se) * 0.25 * reduce_mul, reduce_min);
-    let rcp_dir_min = 1.0 / (min(abs(dir.x), abs(dir.y)) + dir_reduce);
-    dir = clamp(dir * rcp_dir_min, vec2<f32>(-span_max), vec2<f32>(span_max)) * inv;
-
-    // Two-tap inner average and a four-tap wider average; pick the wider one
-    // unless it strays outside the local luma range (which would over-blur).
-    let rgb_a = 0.5 * (
-        compose_ldr(uv + dir * (1.0 / 3.0 - 0.5))
-        + compose_ldr(uv + dir * (2.0 / 3.0 - 0.5))
-    );
-    let rgb_b = rgb_a * 0.5 + 0.25 * (
-        compose_ldr(uv + dir * -0.5)
-        + compose_ldr(uv + dir * 0.5)
-    );
-
-    let luma_b = dot(rgb_b, LUMA);
-    if (luma_b < luma_min || luma_b > luma_max) {
-        return rgb_a;
-    }
-    return rgb_b;
 }
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    var color = compose_ldr(input.uv);
-    if (post.fxaa_enabled != 0u) {
-        color = fxaa(input.uv);
-    }
-    return vec4<f32>(color, 1.0);
+    return vec4<f32>(compose_ldr(input.uv), 1.0);
 }

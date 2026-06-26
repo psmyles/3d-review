@@ -8,6 +8,10 @@
 //!
 //! [`SceneCallback`]: crate::SceneCallback
 
+use review_model::{Bounds, ModelData};
+
+use crate::geometry::selected_triangle_mask;
+
 /// What the user has selected in the Outliner, driving the viewport highlight and
 /// the solo (isolate) filter. A [`Node`] selection covers the node's own mesh and
 /// every descendant node's mesh; a [`Material`] selection covers every triangle of
@@ -35,6 +39,29 @@ impl Selection {
     pub fn is_active(self) -> bool {
         !matches!(self, Selection::None)
     }
+}
+
+/// Axis-aligned bounds over exactly the geometry `selection` covers — a node's
+/// subtree, or every triangle of a material slot — matching the triangles the
+/// viewport highlight isolates (so the "only selection" bounding box and the
+/// frame-on-selection camera wrap precisely what's highlighted). `None` when
+/// nothing is selected, the model lacks the per-triangle arrays the selection
+/// needs, or the selection resolves to no geometry (e.g. an empty group node).
+pub fn selection_bounds(model: &ModelData, selection: Selection) -> Option<Bounds> {
+    let mask = selected_triangle_mask(model, selection)?;
+    let mut bounds = Bounds::EMPTY;
+    for (triangle, &included) in mask.iter().enumerate() {
+        if !included {
+            continue;
+        }
+        let base = triangle * 3;
+        for &corner in &model.indices[base..base + 3] {
+            if let Some(vertex) = model.vertices.get(corner as usize) {
+                bounds.include_point(vertex.position);
+            }
+        }
+    }
+    (!bounds.is_empty()).then_some(bounds)
 }
 
 /// The selection view carried into the scene callback each frame: what is

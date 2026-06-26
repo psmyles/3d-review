@@ -3,6 +3,11 @@ use std::path::Path;
 use review_model::ModelData;
 use thiserror::Error;
 
+mod prof;
+mod tracy_alloc;
+
+pub use tracy_alloc::TracyAllocator;
+
 #[derive(Debug, Error)]
 pub enum ImportError {
     #[error("FBX import is unavailable until third_party/ufbx contains ufbx.c and ufbx.h")]
@@ -179,6 +184,7 @@ mod ffi {
     }
 
     pub(super) fn load_fbx(path: &Path, options: LoadOptions) -> Result<ModelData, ImportError> {
+        let _z = crate::prof::zone!("Load FBX");
         let path_string = path.to_string_lossy();
         let c_path = CString::new(path_string.as_bytes())
             .map_err(|_| ImportError::LoadFailed("path contains embedded NUL byte".to_owned()))?;
@@ -188,13 +194,18 @@ mod ffi {
         let mut scene = MaybeUninit::<ReviewImportScene>::zeroed();
         let mut error = ReviewImportError { message: [0; 256] };
 
-        let loaded = unsafe {
-            review_import_load_fbx(
-                c_path.as_ptr(),
-                &bridge_options,
-                scene.as_mut_ptr(),
-                &mut error,
-            )
+        let loaded = {
+            // The ufbx C parse + the bridge's two-pass extraction (the bulk of a
+            // load), measured as one GPU-free CPU zone.
+            let _z = crate::prof::zone!("ufbx Parse");
+            unsafe {
+                review_import_load_fbx(
+                    c_path.as_ptr(),
+                    &bridge_options,
+                    scene.as_mut_ptr(),
+                    &mut error,
+                )
+            }
         };
 
         if loaded == 0 {
@@ -202,7 +213,11 @@ mod ffi {
         }
 
         let mut scene = unsafe { scene.assume_init() };
-        let model = model_from_bridge_scene(path, &scene);
+        let model = {
+            // Walk the flat bridge arrays into our `ModelData` (slices, bounds, BVH).
+            let _z = crate::prof::zone!("Build ModelData");
+            model_from_bridge_scene(path, &scene)
+        };
         unsafe {
             review_import_free_scene(&mut scene);
         }
