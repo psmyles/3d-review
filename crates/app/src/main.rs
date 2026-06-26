@@ -1572,7 +1572,14 @@ fn wgpu_configuration(
                 max_texture_dimension_2d: 8192,
                 ..base_limits
             },
-            memory_hints: wgpu::MemoryHints::default(),
+            // Ask wgpu's DX12 suballocator to reserve in smaller blocks rather than
+            // the default large-block strategy. Measured (experiments/stack-bench)
+            // this cuts dedicated VRAM ~868 -> ~608 MB (-30%) and resident RAM
+            // ~236 -> ~197 MB at idle, with no startup or quality cost — the bulk of
+            // our VRAM was allocator heap reservation, not live texels. The trade is
+            // a touch more allocation-time work, which is invisible here: geometry
+            // and textures upload once at model load, not per frame.
+            memory_hints: wgpu::MemoryHints::MemoryUsage,
         }
     });
 
