@@ -64,6 +64,12 @@ const SHADERS: &[ShaderJob] = &[
     ShaderJob {
         source: "scene.hlsl",
         profile: "ps_5_0",
+        entry: "fs_selection",
+        output: "scene.selection.ps.dxbc",
+    },
+    ShaderJob {
+        source: "scene.hlsl",
+        profile: "ps_5_0",
         entry: "fs_gtao_gbuffer",
         output: "scene.gtao_gbuffer.ps.dxbc",
     },
@@ -96,6 +102,24 @@ const SHADERS: &[ShaderJob] = &[
         profile: "ps_5_0",
         entry: "fs_post",
         output: "post.ps.dxbc",
+    },
+    ShaderJob {
+        source: "tex.hlsl",
+        profile: "vs_5_0",
+        entry: "vs_fullscreen",
+        output: "tex.vs.dxbc",
+    },
+    ShaderJob {
+        source: "tex.hlsl",
+        profile: "ps_5_0",
+        entry: "fs_image",
+        output: "tex.image.ps.dxbc",
+    },
+    ShaderJob {
+        source: "tex.hlsl",
+        profile: "ps_5_0",
+        entry: "fs_checker",
+        output: "tex.checker.ps.dxbc",
     },
 ];
 

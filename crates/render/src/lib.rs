@@ -17,6 +17,7 @@ mod scene;
 mod selection;
 mod targets;
 mod tex;
+mod tex_d3d;
 mod texture;
 
 pub use config::*;
@@ -35,6 +36,8 @@ pub use scene::{
 };
 pub use selection::{Selection, SelectionView, selection_bounds};
 pub use tex::TexCallback;
+use tex_d3d::TexGpu;
+pub use tex_d3d::{TexBackground, TexImage};
 pub use texture::{
     ChannelSelect, DecodedImage, TEXTURE_SLOT_COUNT, TextureSlot, decode_image, suggested_channel,
 };
@@ -533,6 +536,9 @@ pub struct Renderer {
     /// lazily on the first [`Self::render_scene`] (the D3D11 device doesn't exist
     /// when [`Self::new`] runs); `None` until then.
     scene_gpu: Option<SceneGpu>,
+    /// The Tex viewport GPU resources (image pipeline + texture cache). Built lazily
+    /// on the first [`Self::render_texture`]; `None` until then.
+    tex_gpu: Option<TexGpu>,
 }
 
 impl Renderer {
@@ -547,6 +553,7 @@ impl Renderer {
             material_names: Vec::new(),
             material_revision: 0,
             scene_gpu: None,
+            tex_gpu: None,
         }
     }
 
@@ -564,6 +571,8 @@ impl Renderer {
         environment: EnvironmentSettings,
         gtao: GtaoSettings,
         tonemap: TonemapSettings,
+        selection: SelectionView,
+        hidden_meshes: &[u32],
         clear: [f32; 4],
     ) -> windows::core::Result<()> {
         if self.scene_gpu.is_none() {
@@ -583,9 +592,56 @@ impl Renderer {
             environment,
             gtao,
             tonemap,
+            selection,
             debug,
+            hidden_meshes,
             clear,
         )
+    }
+
+    /// Render the 2D UV viewport through Direct3D 11 (instead of the 3D scene): the
+    /// 0..1 grid + the optional island fill + the model's UV edges, framed by the
+    /// renderer's `uv_camera` and composited to the backbuffer. Builds the GPU
+    /// resources on the first call, like [`Self::render_scene`].
+    pub fn render_uv_scene(
+        &mut self,
+        gpu: &Gpu,
+        model: &ModelData,
+        model_revision: u64,
+        channel: u32,
+        shading_mode: UvShadingMode,
+        clear: [f32; 4],
+    ) -> windows::core::Result<()> {
+        if self.scene_gpu.is_none() {
+            self.scene_gpu = Some(SceneGpu::new(gpu)?);
+        }
+        let scene = self.scene_gpu.as_mut().unwrap();
+        scene.render_uv(
+            gpu,
+            model,
+            model_revision,
+            self.uv_camera,
+            channel,
+            shading_mode,
+            clear,
+        )
+    }
+
+    /// Render the 2D Tex viewport through Direct3D 11 (instead of the 3D scene): the
+    /// chosen background fill, then the selected image (channel-isolated, placed by
+    /// `image`'s pixel rectangle) when one is present. Builds the GPU resources on the
+    /// first call. The egui chrome is drawn on top afterwards by `app`.
+    pub fn render_texture(
+        &mut self,
+        gpu: &Gpu,
+        image: Option<TexImage>,
+        background: TexBackground,
+    ) -> windows::core::Result<()> {
+        if self.tex_gpu.is_none() {
+            self.tex_gpu = Some(TexGpu::new(gpu)?);
+        }
+        let tex = self.tex_gpu.as_mut().unwrap();
+        tex.render(gpu, image, background)
     }
 
     /// Seed the editable material table from a freshly loaded model's import

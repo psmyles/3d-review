@@ -28,12 +28,12 @@ use notify::RecommendedWatcher;
 use review_import::{LoadOptions, load_model};
 use review_model::{ModelData, SceneBvh};
 use review_render::{
-    CameraProjection, DecodedImage, Gpu, Renderer, RendererConfig, ShadingMode, TextureSlot,
-    selection_bounds,
+    CameraProjection, DecodedImage, Gpu, Renderer, RendererConfig, ShadingMode, TexBackground,
+    TexImage, TextureSlot, selection_bounds,
 };
 use review_ui::{
-    AxisGizmoAction, Notifications, Selection, TexViewRequest, TextureIntent, UiOutput, UiState,
-    WorkspaceMode, draw_overlay, draw_viewport_scene, init_style,
+    AxisGizmoAction, Notifications, Selection, TexViewRequest, TextureBackground, TextureIntent,
+    UiOutput, UiState, WorkspaceMode, draw_overlay, draw_viewport_scene, init_style,
 };
 use windows::Win32::Foundation::HWND;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -886,6 +886,17 @@ impl App {
         let environment = self.ui.environment;
         let gtao = self.ui.gtao;
         let tonemap = self.ui.tonemap;
+        let selection = self.ui.selection_view();
+        let hidden_meshes = self.ui.hidden_mesh_nodes();
+        let workspace = self.ui.mode;
+        let uv_channel = self.ui.uv_view_channel;
+        let uv_shading = self.ui.uv_shading_mode;
+        // The Tex viewport's draw inputs (background + placed image), resolved from
+        // the live UI state only in Texture mode. Built before the renderer borrow
+        // below; `pixels_per_point` converts the canvas/placement from egui points to
+        // physical pixels for the D3D11 image draw.
+        let texture_draw = (workspace == WorkspaceMode::Texture)
+            .then(|| self.build_texture_draw(full_output.pixels_per_point));
         let model = self.scene_model.clone();
         let model_revision = self.scene_revision;
         let clear_rgba = [
@@ -912,17 +923,34 @@ impl App {
             // viewport area of the chrome is transparent, so the scene shows
             // through. egui-directx11 tessellates the shapes internally and manages
             // its own font/texture atlas.
-            if let Err(err) = renderer.render_scene(
-                gpu,
-                &model,
-                model_revision,
-                debug,
-                projection,
-                environment,
-                gtao,
-                tonemap,
-                clear_rgba,
-            ) {
+            let render_result = match workspace {
+                WorkspaceMode::Uv => renderer.render_uv_scene(
+                    gpu,
+                    &model,
+                    model_revision,
+                    uv_channel,
+                    uv_shading,
+                    clear_rgba,
+                ),
+                WorkspaceMode::Texture => {
+                    let (image, background) = texture_draw.unwrap_or((None, TexBackground::Black));
+                    renderer.render_texture(gpu, image, background)
+                }
+                WorkspaceMode::ThreeD => renderer.render_scene(
+                    gpu,
+                    &model,
+                    model_revision,
+                    debug,
+                    projection,
+                    environment,
+                    gtao,
+                    tonemap,
+                    selection,
+                    &hidden_meshes,
+                    clear_rgba,
+                ),
+            };
+            if let Err(err) = render_result {
                 prof::msg(&format!("scene D3D11 render failed: {err}"));
             }
             let egui_output = egui_directx11::RendererOutput {
@@ -940,6 +968,49 @@ impl App {
 
         // Delimit the frame for Tracy's frame view (no-op unless `--tracy`).
         prof::frame_mark();
+    }
+
+    /// Resolve the Tex viewport's D3D11 draw inputs from the live UI state: the
+    /// background fill, plus — when a texture is selected and the canvas has been laid
+    /// out — the image placed by the canvas center + pan/zoom (egui points → physical
+    /// pixels via `ppp`). The UI emits only plain values (invariant 2); `app` owns the
+    /// pool and resolves placement here. Mirrors the old wgpu `TexCallback` setup.
+    fn build_texture_draw(&self, ppp: f32) -> (Option<TexImage>, TexBackground) {
+        // Matches the UI theme's 12-point checker cell, scaled to physical pixels.
+        const CHECKER_CELL_POINTS: f32 = 12.0;
+        let background = match self.ui.texture_view.background {
+            TextureBackground::Black => TexBackground::Black,
+            TextureBackground::White => TexBackground::White,
+            TextureBackground::Grey => TexBackground::Grey,
+            TextureBackground::Checker => TexBackground::Checker {
+                cell_px: CHECKER_CELL_POINTS * ppp,
+            },
+        };
+
+        let view = &self.ui.texture_view;
+        let (Some(canvas), Some(entry)) = (
+            self.ui.texture_canvas,
+            self.ui.texture_pool.get(view.selected),
+        ) else {
+            return (None, background);
+        };
+
+        // The image is centered at the canvas center + pan, sized by the zoom (image
+        // texels → points). The shader discards fragments outside this rect, so the
+        // background shows around it.
+        let image = &entry.image;
+        let img_px = egui::vec2(image.width.max(1) as f32, image.height.max(1) as f32);
+        let size_pts = img_px * view.zoom;
+        let center = canvas.center() + view.pan;
+        let min_pts = center - size_pts * 0.5;
+        let tex_image = TexImage {
+            path: entry.path.clone(),
+            image: Arc::clone(&entry.image),
+            channel: view.channel.shader_index(),
+            min_px: [min_pts.x * ppp, min_pts.y * ppp],
+            size_px: [size_pts.x * ppp, size_pts.y * ppp],
+        };
+        (Some(tex_image), background)
     }
 
     fn open_model_from_dialog(&mut self) {

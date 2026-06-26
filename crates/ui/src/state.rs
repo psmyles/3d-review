@@ -177,6 +177,18 @@ impl TextureChannelView {
             TextureChannelView::A => Some(3),
         }
     }
+
+    /// The channel index the Tex viewport shader reads (`0` RGB, `1..4` R/G/B/A).
+    /// Must match `tex.hlsl`'s `channel` switch.
+    pub fn shader_index(self) -> u32 {
+        match self {
+            TextureChannelView::Rgb => 0,
+            TextureChannelView::R => 1,
+            TextureChannelView::G => 2,
+            TextureChannelView::B => 3,
+            TextureChannelView::A => 4,
+        }
+    }
 }
 
 /// The background fill drawn behind the viewed texture in the Tex viewport, so an
@@ -565,6 +577,11 @@ pub struct UiState {
     /// background / pan-zoom view. Read by the texture-view chrome (toolbar channel
     /// group, status-bar background group) and the central image painter.
     pub texture_view: TextureViewState,
+    /// The Tex viewport's central canvas rect (egui points), written by
+    /// [`crate::texture_view`] each Tex frame and read by `app` to place the image in
+    /// the D3D11 Tex draw (migration Phase 4). `None` until the Tex viewport has been
+    /// laid out at least once.
+    pub texture_canvas: Option<egui::Rect>,
     pub wireframe: WireframePanelState,
     pub bounding_box: BoundingBoxPanelState,
     pub face_normals: NormalPanelState,
@@ -693,6 +710,7 @@ impl Default for UiState {
             uv_view_channel: 0,
             uv_shading_mode: UvShadingMode::default(),
             texture_view: TextureViewState::default(),
+            texture_canvas: None,
             wireframe: WireframePanelState::default(),
             bounding_box: BoundingBoxPanelState::default(),
             face_normals: NormalPanelState {
@@ -775,6 +793,30 @@ impl UiState {
                 self.visible_bounds_cache
             }
         }
+    }
+
+    /// The selection view the renderer reads each frame (invariant 2: a plain
+    /// value): what is selected, whether it is isolated (solo), the gamma-space
+    /// highlight color sourced from the theme, and the live flash fade.
+    pub fn selection_view(&self) -> review_render::SelectionView {
+        review_render::SelectionView {
+            selection: self.selection,
+            solo: self.solo,
+            highlight_color: theme::color32_to_rgba(theme::color::SELECTION_OUTLINE),
+            fade: self.selection_fade,
+        }
+    }
+
+    /// The Outliner-hidden mesh nodes as a sorted `u32` list (the renderer's
+    /// per-mesh visibility + the line-overlay hidden filter read this).
+    pub fn hidden_mesh_nodes(&self) -> Vec<u32> {
+        let mut hidden: Vec<u32> = self
+            .hidden_meshes
+            .iter()
+            .map(|&index| index as u32)
+            .collect();
+        hidden.sort_unstable();
+        hidden
     }
 }
 

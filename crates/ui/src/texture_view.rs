@@ -32,9 +32,10 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
     // with the `state.texture_pool` borrow.
     let entry = state.texture_pool.get(state.texture_view.selected).cloned();
 
-    egui::CentralPanel::default()
-        // No frame fill: this module paints its own background (the chosen fill),
-        // and the wgpu clear shows through the transparent margins.
+    // No frame fill: the background fill + the image are drawn by `app` through the
+    // D3D11 RHI (migration Phase 4), behind this transparent CentralPanel. The canvas
+    // rect is captured here and handed to `app` to place the image.
+    let canvas_rect = egui::CentralPanel::default()
         .frame(egui::Frame::NONE)
         .show(ctx, |ui| {
             let rect = ui.max_rect();
@@ -42,15 +43,19 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                 Some(entry) => draw_canvas(ui, ctx, &mut state.texture_view, rect, entry),
                 None => draw_empty_hint(ui, ctx, rect),
             }
-        });
+            rect
+        })
+        .inner;
+    state.texture_canvas = Some(canvas_rect);
 
     if let (Some(entry), true) = (&entry, state.texture_view.show_stats) {
         draw_texture_stats_overlay(ctx, entry);
     }
 }
 
-/// Paint the background fill, then add the wgpu callback that draws the viewed
-/// texture with live pan/zoom and the selected channel isolated.
+/// Handle the canvas interaction (pan / zoom / fit). The background fill + the image
+/// itself are drawn by `app` through the D3D11 RHI (migration Phase 4); this module
+/// owns only placement + interaction.
 fn draw_canvas(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
@@ -58,8 +63,6 @@ fn draw_canvas(
     rect: egui::Rect,
     entry: &TexturePoolEntry,
 ) {
-    paint_background(ui, ctx, rect, view.background);
-
     let image = &entry.image;
     let img_px = egui::vec2(image.width.max(1) as f32, image.height.max(1) as f32);
 
@@ -228,41 +231,6 @@ fn ease_in_out_cubic(t: f32) -> f32 {
     }
 }
 
-/// Paint the chosen background fill across the canvas. The checker is a tiled 2×2
-/// texture (so transparency in the image reads against it); the solids are a
-/// single filled rect.
-fn paint_background(
-    ui: &mut egui::Ui,
-    ctx: &egui::Context,
-    rect: egui::Rect,
-    background: crate::state::TextureBackground,
-) {
-    use crate::state::TextureBackground::*;
-    let painter = ui.painter().clone();
-    match background {
-        Black => {
-            painter.rect_filled(rect, 0.0, egui::Color32::BLACK);
-        }
-        White => {
-            painter.rect_filled(rect, 0.0, egui::Color32::WHITE);
-        }
-        Grey => {
-            painter.rect_filled(rect, 0.0, color::TEXTURE_BG_GREY);
-        }
-        Checker => {
-            let texture = checker_texture(ui);
-            // The 2×2 texture spans one full checker period over two cells, so the
-            // uv extent is the rect measured in periods.
-            let period = (2.0 * theme::px(ctx, size::TEXTURE_CHECKER_CELL)).max(1.0);
-            let uv = egui::Rect::from_min_max(
-                egui::pos2(0.0, 0.0),
-                egui::pos2(rect.width() / period, rect.height() / period),
-            );
-            painter.image(texture.id(), rect, uv, egui::Color32::WHITE);
-        }
-    }
-}
-
 /// The centered hint shown when the texture pool is empty.
 fn draw_empty_hint(ui: &mut egui::Ui, ctx: &egui::Context, rect: egui::Rect) {
     ui.painter().text(
@@ -272,28 +240,6 @@ fn draw_empty_hint(ui: &mut egui::Ui, ctx: &egui::Context, rect: egui::Rect) {
         egui::FontId::proportional(theme::px(ctx, font::VIEWPORT_EMPTY_HINT)),
         color::TEXT_MUTED,
     );
-}
-
-/// Lazily build + cache the 2×2 checkerboard background texture (set to repeat).
-/// Cached in egui temp data so the handle outlives the frame that paints with it.
-fn checker_texture(ui: &mut egui::Ui) -> egui::TextureHandle {
-    let id = egui::Id::new("tex_checker_texture");
-    if let Some(handle) = ui.data(|data| data.get_temp::<egui::TextureHandle>(id)) {
-        return handle;
-    }
-    let (light, dark) = (color::TEXTURE_CHECKER_LIGHT, color::TEXTURE_CHECKER_DARK);
-    let image = egui::ColorImage {
-        size: [2, 2],
-        source_size: egui::vec2(2.0, 2.0),
-        pixels: vec![light, dark, dark, light],
-    };
-    let options = egui::TextureOptions {
-        wrap_mode: egui::TextureWrapMode::Repeat,
-        ..egui::TextureOptions::NEAREST
-    };
-    let handle = ui.ctx().load_texture("tex_checker", image, options);
-    ui.data_mut(|data| data.insert_temp(id, handle.clone()));
-    handle
 }
 
 /// The floating texture-stats panel, anchored bottom-left above the status bar —

@@ -3,10 +3,10 @@
 //! (`s2`).
 
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_COMPARISON_NEVER, D3D11_FILTER_ANISOTROPIC, D3D11_FILTER_MIN_MAG_MIP_LINEAR,
-    D3D11_FILTER_MIN_MAG_MIP_POINT, D3D11_FLOAT32_MAX, D3D11_SAMPLER_DESC,
-    D3D11_TEXTURE_ADDRESS_CLAMP, D3D11_TEXTURE_ADDRESS_WRAP, ID3D11Device, ID3D11DeviceContext,
-    ID3D11SamplerState,
+    D3D11_COMPARISON_NEVER, D3D11_FILTER_ANISOTROPIC, D3D11_FILTER_MIN_LINEAR_MAG_POINT_MIP_LINEAR,
+    D3D11_FILTER_MIN_MAG_MIP_LINEAR, D3D11_FILTER_MIN_MAG_MIP_POINT, D3D11_FLOAT32_MAX,
+    D3D11_SAMPLER_DESC, D3D11_TEXTURE_ADDRESS_CLAMP, D3D11_TEXTURE_ADDRESS_WRAP, ID3D11Device,
+    ID3D11DeviceContext, ID3D11SamplerState,
 };
 use windows::core::Result;
 
@@ -74,6 +74,31 @@ impl Sampler {
     pub(crate) fn point_clamp(device: &ID3D11Device) -> Result<Self> {
         let desc = D3D11_SAMPLER_DESC {
             Filter: D3D11_FILTER_MIN_MAG_MIP_POINT,
+            AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
+            AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
+            AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
+            MipLODBias: 0.0,
+            MaxAnisotropy: 1,
+            ComparisonFunc: D3D11_COMPARISON_NEVER,
+            BorderColor: [0.0; 4],
+            MinLOD: 0.0,
+            MaxLOD: D3D11_FLOAT32_MAX,
+        };
+        let mut state = None;
+        // SAFETY: `desc` is a well-formed sampler description; the out-param is set.
+        unsafe { device.CreateSamplerState(&desc, Some(&mut state))? };
+        Ok(Self {
+            state: state.unwrap(),
+        })
+    }
+
+    /// A linear-minify / point-magnify, clamp-addressed sampler — the Tex viewport
+    /// sampler. Crisp texels when zoomed in (nearest magnify), smooth when zoomed out
+    /// (linear minify over the mip chain); clamp keeps the border from wrapping.
+    /// Mirrors the wgpu Tex sampler.
+    pub(crate) fn tex_view(device: &ID3D11Device) -> Result<Self> {
+        let desc = D3D11_SAMPLER_DESC {
+            Filter: D3D11_FILTER_MIN_LINEAR_MAG_POINT_MIP_LINEAR,
             AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
             AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
             AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,

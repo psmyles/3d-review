@@ -443,6 +443,21 @@ FragOutput fs_line(VsOutput input)
     return output;
 }
 
+// Selection flash: a flat color fill over the selected triangles (the solo index
+// buffer redrawn over the mesh). Ignores the mesh's lighting / material — it emits
+// the uniform highlight color (`selection_color.rgb`, gamma-space) tinted by the
+// flash fade (`selection_color.a`). Writes zero ambient *color* with the fade alpha
+// so it masks (rather than GTAO-darkens) the mesh ambient beneath, like the other
+// overlays. Mirrors `scene.wgsl`'s `fs_selection`.
+FragOutput fs_selection(VsOutput input)
+{
+    FragOutput output;
+    float fade = selection_color.a;
+    output.color = float4(srgb_to_linear(selection_color.rgb), fade);
+    output.ambient = float4(0.0, 0.0, 0.0, fade);
+    return output;
+}
+
 // --- GTAO G-buffer: a mesh-only pass writing the view-space normal (xyz) + the
 // linear view-space Z (w) into a single-sample target the GTAO occlusion pass
 // reads. Single-sample (no MSAA) so geometry-edge normals/depths aren't averaged
