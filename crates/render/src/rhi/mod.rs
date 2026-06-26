@@ -13,6 +13,7 @@ mod buffer;
 mod pipeline;
 mod sampler;
 mod target;
+mod texture;
 
 pub(crate) use buffer::{DynamicConstantBuffer, IndexBuffer, VertexBuffer};
 pub(crate) use pipeline::{
@@ -21,6 +22,7 @@ pub(crate) use pipeline::{
 };
 pub(crate) use sampler::Sampler;
 pub(crate) use target::{ColorTarget, DepthTarget};
+pub(crate) use texture::{Texture, bind_ps_textures};
 
 use windows::Win32::Foundation::{HMODULE, HWND};
 use windows::Win32::Graphics::Direct3D::{
@@ -161,13 +163,14 @@ impl Gpu {
         }
     }
 
-    /// Issue an indexed draw of `count` indices from index 0. The pipeline + vertex
-    /// + index buffers + constants must already be bound.
-    pub(crate) fn draw_indexed(&self, count: u32) {
+    /// Issue an indexed draw of `count` indices starting at `start_index` in the
+    /// bound index buffer — one per-material draw range over the reordered mesh.
+    /// Pass `start_index = 0` to draw the whole buffer.
+    pub(crate) fn draw_indexed_range(&self, count: u32, start_index: u32) {
         // SAFETY: indexed draw on the immediate context; bound state is the
         // caller's responsibility.
         unsafe {
-            self.context.DrawIndexed(count, 0, 0);
+            self.context.DrawIndexed(count, start_index, 0);
         }
     }
 

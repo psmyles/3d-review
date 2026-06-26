@@ -14,11 +14,13 @@
 //! Organized into [`state`] (CPU/GPU data types), [`table`] (the GPU table +
 //! group-3 layout) and [`upload`] (generic texture/bind-group plumbing).
 
+mod d3d;
 mod mode;
 mod state;
 mod table;
 mod upload;
 
+pub(crate) use d3d::MaterialTableD3d;
 pub(crate) use mode::{build_part_key, effective_materials};
 pub(crate) use state::MaterialDrawRange;
 pub use state::{

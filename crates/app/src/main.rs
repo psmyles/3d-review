@@ -883,6 +883,7 @@ impl App {
         // perspective/orthographic toggle; the model + revision drive the mesh.
         let debug = self.ui.debug;
         let projection: CameraProjection = self.ui.projection_mode.into();
+        let environment = self.ui.environment;
         let model = self.scene_model.clone();
         let model_revision = self.scene_revision;
         let clear_rgba = [
@@ -909,9 +910,15 @@ impl App {
             // viewport area of the chrome is transparent, so the scene shows
             // through. egui-directx11 tessellates the shapes internally and manages
             // its own font/texture atlas.
-            if let Err(err) =
-                renderer.render_scene(gpu, &model, model_revision, debug, projection, clear_rgba)
-            {
+            if let Err(err) = renderer.render_scene(
+                gpu,
+                &model,
+                model_revision,
+                debug,
+                projection,
+                environment,
+                clear_rgba,
+            ) {
                 prof::msg(&format!("scene D3D11 render failed: {err}"));
             }
             let egui_output = egui_directx11::RendererOutput {

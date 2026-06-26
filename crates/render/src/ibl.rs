@@ -24,8 +24,11 @@
 use bytemuck::{Pod, Zeroable};
 #[cfg(feature = "bake")]
 use wgpu::util::DeviceExt;
+use windows::Win32::Graphics::Direct3D11::ID3D11DeviceContext;
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_BC6H_UF16, DXGI_FORMAT_R16G16_FLOAT};
 
 use crate::EnvironmentMap;
+use crate::rhi::{Gpu, Texture};
 
 /// The IBL precompute WGSL. Only compiled into the bake path (and the WGSL
 /// validation test); the runtime samples the baked maps and never builds these
@@ -248,6 +251,82 @@ impl IblResources {
             &prefilter,
             &brdf,
         )
+    }
+}
+
+/// The Direct3D 11 image-based-lighting maps: the baked BC6H cubes (irradiance /
+/// prefilter / env) + the raw `Rg16Float` BRDF LUT, each as a sampled [`Texture`].
+/// The runtime counterpart of the dormant wgpu [`IblResources`] (migration). Bound
+/// for every scene draw at the fixed PS slots `t1..t4`; only the shaded path + the
+/// skybox sample them. Reloaded (a pure upload) when the chosen environment changes.
+pub(crate) struct IblD3d {
+    /// Which environment these maps were loaded from (so the scene only reloads on
+    /// an actual change).
+    pub(crate) environment: EnvironmentMap,
+    irradiance: Texture,
+    prefilter: Texture,
+    brdf: Texture,
+    env_cube: Texture,
+}
+
+impl IblD3d {
+    /// Load the baked maps for `environment` as D3D11 textures — the three HDR cubes
+    /// from their mip-major BC6H `.bin` payloads, the shared BRDF LUT from raw f16.
+    /// A pure upload (no precompute), so the first frame and every environment switch
+    /// are near-instant. Mirrors [`IblResources::from_baked`].
+    pub(crate) fn from_baked(
+        gpu: &Gpu,
+        environment: EnvironmentMap,
+    ) -> windows::core::Result<Self> {
+        let device = gpu.device();
+        let irradiance = Texture::cube_block_compressed(
+            device,
+            IRRADIANCE_SIZE,
+            1,
+            DXGI_FORMAT_BC6H_UF16,
+            BC6H_BLOCK_BYTES,
+            baked_irradiance_bytes(environment),
+        )?;
+        let prefilter = Texture::cube_block_compressed(
+            device,
+            PREFILTER_SIZE,
+            PREFILTER_MIPS,
+            DXGI_FORMAT_BC6H_UF16,
+            BC6H_BLOCK_BYTES,
+            baked_prefilter_bytes(environment),
+        )?;
+        let env_cube = Texture::cube_block_compressed(
+            device,
+            ENV_CUBE_SIZE,
+            1,
+            DXGI_FORMAT_BC6H_UF16,
+            BC6H_BLOCK_BYTES,
+            baked_env_bytes(environment),
+        )?;
+        let brdf = Texture::immutable_2d(
+            device,
+            BRDF_SIZE,
+            BRDF_SIZE,
+            DXGI_FORMAT_R16G16_FLOAT,
+            BRDF_SIZE * RG16F_BPP,
+            BAKED_BRDF_BYTES,
+        )?;
+        Ok(Self {
+            environment,
+            irradiance,
+            prefilter,
+            brdf,
+            env_cube,
+        })
+    }
+
+    /// Bind the IBL maps to the scene pixel-shader slots `irradiance t1`,
+    /// `prefilter t2`, `brdf t3`, `env t4` (see the register plan in `scene.hlsl`).
+    pub(crate) fn bind_ps(&self, ctx: &ID3D11DeviceContext) {
+        self.irradiance.bind_ps(ctx, 1);
+        self.prefilter.bind_ps(ctx, 2);
+        self.brdf.bind_ps(ctx, 3);
+        self.env_cube.bind_ps(ctx, 4);
     }
 }
 

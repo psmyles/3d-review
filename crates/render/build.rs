@@ -46,8 +46,20 @@ const SHADERS: &[ShaderJob] = &[
     ShaderJob {
         source: "scene.hlsl",
         profile: "ps_5_0",
-        entry: "fs_mesh",
+        entry: "fs_main",
         output: "scene.mesh.ps.dxbc",
+    },
+    ShaderJob {
+        source: "scene.hlsl",
+        profile: "vs_5_0",
+        entry: "vs_skybox",
+        output: "scene.skybox.vs.dxbc",
+    },
+    ShaderJob {
+        source: "scene.hlsl",
+        profile: "ps_5_0",
+        entry: "fs_skybox",
+        output: "scene.skybox.ps.dxbc",
     },
     ShaderJob {
         source: "post.hlsl",

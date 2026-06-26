@@ -550,11 +550,10 @@ impl Renderer {
         }
     }
 
-    /// Render the scene through Direct3D 11: the mesh + grid into offscreen
-    /// linear-HDR targets, then a tone-mapped composite to the swapchain backbuffer,
-    /// behind the egui chrome `app` draws next. Builds the GPU resources on the
-    /// first call (the device only exists once the window is up). Phase 2a shades
-    /// the mesh with analytic lighting; per-material PBR/IBL lands in Phase 2b.
+    /// Render the scene through Direct3D 11: the skybox + per-material PBR/IBL mesh
+    /// + grid into offscreen linear-HDR targets, then a tone-mapped composite to the
+    /// swapchain backbuffer, behind the egui chrome `app` draws next. Builds the GPU
+    /// resources on the first call (the device only exists once the window is up).
     pub fn render_scene(
         &mut self,
         gpu: &Gpu,
@@ -562,18 +561,24 @@ impl Renderer {
         model_revision: u64,
         debug: SceneDebugOptions,
         projection: CameraProjection,
+        environment: EnvironmentSettings,
         clear: [f32; 4],
     ) -> windows::core::Result<()> {
         if self.scene_gpu.is_none() {
             self.scene_gpu = Some(SceneGpu::new(gpu)?);
         }
+        // Disjoint field borrows: `scene` borrows `self.scene_gpu` mutably while the
+        // material table + camera are borrowed from their own fields.
         let scene = self.scene_gpu.as_mut().unwrap();
         scene.render(
             gpu,
             model,
             model_revision,
+            &self.material_states,
+            self.material_revision,
             self.camera,
             projection,
+            environment,
             debug,
             clear,
         )
