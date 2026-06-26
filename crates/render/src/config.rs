@@ -1,11 +1,12 @@
 //! Renderer configuration + per-view option types: shading / projection /
-//! anti-aliasing / environment / bloom / GTAO / tone-map / UV / debug-overlay
+//! anti-aliasing / environment / GTAO / tone-map / UV / debug-overlay
 //! settings, the adapter-capability probe, and `RendererConfig`. These form the
 //! UI→render and model→render *option contract* (a clean seam for the future
 //! renderer swap); `Renderer` and the cameras live in the crate root and read
 //! these as plain values.
 
 use crate::scene::SCENE_DEPTH_FORMAT;
+use crate::selection::Selection;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ShadingMode {
@@ -62,19 +63,16 @@ impl MsaaSamples {
     }
 }
 
-/// The viewer's antialiasing configuration: a master on/off plus the MSAA level
-/// and an optional FXAA post-process pass. Read by [`SceneCallback`] to size the
-/// offscreen targets / scene pipelines and to drive the composite shader.
+/// The viewer's antialiasing configuration: a master on/off plus the MSAA level.
+/// Read by [`SceneCallback`] to size the offscreen targets / scene pipelines.
 ///
 /// `enabled` is the toolbar toggle (left-click): when off, the scene renders with
-/// no antialiasing at all regardless of `msaa` / `fxaa`, but those settings are
-/// retained so toggling back on restores them. The default (enabled, 4× MSAA,
-/// FXAA off) matches the pre-Phase-2 fixed pipeline.
+/// no antialiasing at all regardless of `msaa`, but the level is retained so
+/// toggling back on restores it. The default is enabled at 4× MSAA.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AntiAliasing {
     pub enabled: bool,
     pub msaa: MsaaSamples,
-    pub fxaa: bool,
 }
 
 impl Default for AntiAliasing {
@@ -82,7 +80,6 @@ impl Default for AntiAliasing {
         Self {
             enabled: true,
             msaa: MsaaSamples::X4,
-            fxaa: false,
         }
     }
 }
@@ -96,12 +93,6 @@ impl AntiAliasing {
         } else {
             1
         }
-    }
-
-    /// Whether the FXAA post pass should run: only when AA is enabled *and* FXAA
-    /// is ticked.
-    pub fn effective_fxaa(self) -> bool {
-        self.enabled && self.fxaa
     }
 }
 
@@ -213,35 +204,6 @@ impl Default for EnvironmentSettings {
             map: EnvironmentMap::default(),
             intensity: 1.0,
             rotation_degrees: 0.0,
-        }
-    }
-}
-
-/// Bloom (HDR glow) configuration for the shaded view. Read by [`SceneCallback`]
-/// to drive the bloom passes and the composite add.
-///
-/// Bloom thresholds the scene's linear HDR bloom source (carried in a second
-/// render target alongside the linear HDR scene color, so overlays never bloom),
-/// blurs what is brighter than `threshold`, and adds it back in the composite
-/// scaled by `intensity`.
-/// `enabled` is the toolbar toggle; the default is on with a threshold of 1.0, so
-/// only genuinely bright highlights (bright reflections / the skybox) glow while
-/// ordinary diffuse surfaces are untouched.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct BloomSettings {
-    pub enabled: bool,
-    /// Linear-HDR luminance above which a pixel contributes to bloom.
-    pub threshold: f32,
-    /// Multiplier on the blurred bloom when it is added back to the scene.
-    pub intensity: f32,
-}
-
-impl Default for BloomSettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            threshold: 1.0,
-            intensity: 0.6,
         }
     }
 }
@@ -448,6 +410,77 @@ pub enum ActiveMaterial {
     VertexColors,
 }
 
+/// How the source-material faces are shaded — the "Material Mode" option behind
+/// the Source Material button. [`Source`] keeps the imported (and user-edited)
+/// materials; the other two replace every mesh part's material with a uniform
+/// matte standard material so geometry can be read without texture/material
+/// noise. The replacement is applied renderer-side as an *effective* material
+/// table (the imported materials are untouched), so switching back is free.
+///
+/// [`Source`]: MaterialMode::Source
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MaterialMode {
+    /// The material as imported from the source file plus any user edits (the
+    /// default, the renderer's pre-existing behavior).
+    #[default]
+    Source,
+    /// Every mesh part replaced by one uniform matte mid-grey material (fully
+    /// rough, non-metallic, no emissive).
+    Standard,
+    /// Like [`Standard`], but each unique mesh part gets its own randomized hue
+    /// at the same mid brightness — so the parts of the model read apart.
+    ///
+    /// [`Standard`]: MaterialMode::Standard
+    Unique,
+}
+
+impl MaterialMode {
+    /// Every variant in display order, for building the dropdown.
+    pub const ALL: [MaterialMode; 3] = [
+        MaterialMode::Source,
+        MaterialMode::Standard,
+        MaterialMode::Unique,
+    ];
+
+    /// Dropdown label.
+    pub fn label(self) -> &'static str {
+        match self {
+            MaterialMode::Source => "Source Material",
+            MaterialMode::Standard => "Standard Material",
+            MaterialMode::Unique => "Unique Mesh",
+        }
+    }
+
+    /// The next mode in display order, wrapping back to [`Source`] after
+    /// [`Unique`] — for cycling by re-clicking the active Source Material button.
+    ///
+    /// [`Source`]: MaterialMode::Source
+    /// [`Unique`]: MaterialMode::Unique
+    pub fn next(self) -> MaterialMode {
+        match self {
+            MaterialMode::Source => MaterialMode::Standard,
+            MaterialMode::Standard => MaterialMode::Unique,
+            MaterialMode::Unique => MaterialMode::Source,
+        }
+    }
+}
+
+/// Which geometry the bounding box (and its dimension labels) wraps: the whole
+/// model, only the currently-selected mesh part / material, or only the
+/// Outliner-visible meshes. Baked into the box line buffer so it rebuilds when
+/// the scope — or the inputs the scope depends on — change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BoundingBoxScope {
+    /// Wrap every mesh, regardless of selection or Outliner visibility.
+    #[default]
+    AllMeshes,
+    /// Wrap only the geometry the current Outliner selection covers (a node's
+    /// subtree or a material slot); empty when nothing is selected.
+    OnlySelection,
+    /// Wrap only the currently-visible meshes (Outliner-hidden meshes excluded).
+    VisibleOnly,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SceneDebugOptions {
     pub shading_mode: ShadingMode,
@@ -459,6 +492,11 @@ pub struct SceneDebugOptions {
     /// Which material the filled faces show (source / UV checker / vertex colors).
     /// Mutually exclusive; applies in every filled-face mode.
     pub active_material: ActiveMaterial,
+    /// How the source material is shaded (imported / uniform standard / unique
+    /// per-part hue). Behind the Source Material button's options panel; replaces
+    /// the effective material table renderer-side, leaving the imported materials
+    /// untouched.
+    pub material_mode: MaterialMode,
     pub uv_checker_texture: CheckerTexture,
     /// Which vertex-color channels the view shows when `active_material` is
     /// [`ActiveMaterial::VertexColors`].
@@ -483,11 +521,14 @@ pub struct SceneDebugOptions {
     /// Color of the bounding-box edges, baked into its line buffer and rebuilt
     /// when it changes.
     pub bounding_box_color: [f32; 4],
-    /// When `true` the bounding box (and its dimension labels) wraps only the
-    /// Outliner's currently-visible geometry rather than the whole model. Baked
-    /// into the box line buffer alongside the hidden set, so it rebuilds when the
-    /// scope or the visible meshes change.
-    pub bounding_box_visible_only: bool,
+    /// Which geometry the bounding box wraps (whole model / only the selection /
+    /// only the visible meshes). Baked into the box line buffer alongside the
+    /// inputs the chosen scope depends on, so it rebuilds when they change.
+    pub bounding_box_scope: BoundingBoxScope,
+    /// The Outliner selection the box wraps in [`BoundingBoxScope::OnlySelection`]
+    /// mode (ignored otherwise). Carried here so the box can be baked from the
+    /// scene callback without threading the selection through separately.
+    pub bounding_box_selection: Selection,
     /// When `true` back-facing triangles are drawn (the mesh is double-sided);
     /// when `false` (the default) they are culled, so only camera-facing surfaces
     /// are rendered. The renderer keeps two mesh pipelines — culling vs.
@@ -502,6 +543,7 @@ impl Default for SceneDebugOptions {
             shading_mode: ShadingMode::Shaded,
             wireframe_overlay: false,
             active_material: ActiveMaterial::Source,
+            material_mode: MaterialMode::Source,
             uv_checker_texture: CheckerTexture::Greyscale,
             vertex_color_mode: VertexColorMode::Rgb,
             uv_checker_tiling: 4,
@@ -516,7 +558,8 @@ impl Default for SceneDebugOptions {
             vertex_normal_color: [0.14, 0.92, 0.96, 0.95],
             wireframe_color: [0.6, 0.6, 0.6, 1.0],
             bounding_box_color: [1.0, 0.803_921_6, 0.250_980_4, 1.0],
-            bounding_box_visible_only: false,
+            bounding_box_scope: BoundingBoxScope::default(),
+            bounding_box_selection: Selection::None,
             render_backfaces: false,
         }
     }

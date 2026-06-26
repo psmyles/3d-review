@@ -4,7 +4,6 @@ use std::sync::Arc;
 use glam::{Mat4, Vec2, Vec3};
 use review_model::{Bounds, MaterialImportDefaults};
 
-mod bloom;
 mod config;
 mod geometry;
 mod gtao;
@@ -12,6 +11,7 @@ mod ibl;
 mod material;
 mod mipmap;
 mod post;
+mod prof;
 mod scene;
 mod selection;
 mod targets;
@@ -20,13 +20,17 @@ mod texture;
 
 pub use config::*;
 pub use gtao::gtao_supported;
+#[cfg(feature = "bake")]
+pub use ibl::bake_ibl_assets;
 pub use ibl::ibl_supported;
 pub use material::{
     AlphaMode, MaterialChange, MaterialEdit, MaterialSnapshot, MaterialState, RoughnessWorkflow,
     TextureBinding,
 };
-pub use scene::{EGUI_DEPTH_FORMAT, EGUI_MSAA_SAMPLE_COUNT, SCENE_DEPTH_FORMAT, SceneCallback};
-pub use selection::{Selection, SelectionView};
+pub use scene::{
+    EGUI_DEPTH_FORMAT, EGUI_MSAA_SAMPLE_COUNT, SCENE_DEPTH_FORMAT, SceneCallback, enable_tracy_gpu,
+};
+pub use selection::{Selection, SelectionView, selection_bounds};
 pub use tex::TexCallback;
 pub use texture::{
     ChannelSelect, DecodedImage, TEXTURE_SLOT_COUNT, TextureSlot, decode_image, suggested_channel,
@@ -604,6 +608,16 @@ impl Renderer {
             .zip(self.material_states.iter().cloned())
             .map(|(name, state)| MaterialSnapshot { name, state })
             .collect()
+    }
+
+    /// Replace the entire editable material table with a captured set of states
+    /// (the undo/redo restore path). Bumps the revision so the GPU table
+    /// re-uploads on the next frame. The names are left untouched: the material
+    /// count only changes on model load (which clears the undo history), so the
+    /// restored states always line up with the current `material_names`.
+    pub fn restore_materials(&mut self, states: Vec<MaterialState>) {
+        self.material_states = states;
+        self.material_revision = self.material_revision.wrapping_add(1);
     }
 
     /// Assign (or replace) a decoded image to one of a material's seven texture

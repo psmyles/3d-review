@@ -23,6 +23,7 @@ pub fn draw_viewport_scene(
     model_revision: u64,
     output_format: egui_wgpu::wgpu::TextureFormat,
 ) {
+    let _z = crate::prof::zone!("Draw Viewport Scene");
     let callback = match state.mode {
         WorkspaceMode::ThreeD => {
             // The editable material values ride in from the app→UI snapshot; the
@@ -59,7 +60,6 @@ pub fn draw_viewport_scene(
                 state.debug,
                 state.anti_aliasing,
                 state.environment,
-                state.bloom,
                 state.gtao,
                 state.tonemap,
                 &materials,
@@ -97,6 +97,7 @@ pub fn draw_overlay(
     bvh: Option<&SceneBvh>,
     output_format: egui_wgpu::wgpu::TextureFormat,
 ) -> UiOutput {
+    let _z = crate::prof::zone!("Draw Overlay");
     // Visuals + fonts are installed once at startup (`theme::init_style`); the
     // style is derived only from constant tokens, so there is nothing to re-apply
     // here each frame.
@@ -124,6 +125,7 @@ pub fn draw_overlay(
         let side = draw_side_panels(ctx, state, model);
         output.material_edit = side.inspector.material_edit;
         output.texture = side.inspector.texture;
+        output.material_edit_active = side.inspector.material_edit_active;
 
         // The free viewport: the screen minus the chrome bands (toolbar top,
         // status bar bottom) and the open side panels (left/right). Floating
@@ -181,24 +183,6 @@ pub fn draw_overlay(
     help::draw_help_overlay(ctx, state);
 
     output
-}
-
-/// Paint a full-screen cover over the entire viewer — the 3D/UV viewport *and*
-/// the egui chrome — at `opacity` (1 = fully hidden, 0 = fully revealed). `app`
-/// drives `opacity` from 1 down to 0 over the launch animation so the viewer
-/// dissolves in from the startup black instead of popping in at once. At
-/// `opacity <= 0` it draws nothing, so the steady state pays for no extra shape.
-///
-/// Drawn above every other layer (including the help overlay, which sits in
-/// `Foreground`) so the whole composed frame fades together.
-pub fn draw_startup_fade(ctx: &egui::Context, opacity: f32) {
-    if opacity <= 0.0 {
-        return;
-    }
-    let rect = ctx.screen_rect();
-    let cover = theme::with_opacity(color::STARTUP_COVER, opacity);
-    let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("startup_fade"));
-    ctx.layer_painter(layer).rect_filled(rect, 0.0, cover);
 }
 
 /// Draw every open tool option panel as its own native `egui::Window`

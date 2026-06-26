@@ -5,7 +5,7 @@
 //! [`pipelines`] / [`buffers`], and the WGSL-lockstep GPU types in [`gpu_types`].
 
 use crate::UvShadingMode;
-use crate::bloom::BloomPass;
+use crate::config::{BoundingBoxScope, MaterialMode};
 use crate::gtao::GtaoPass;
 use crate::ibl::IblResources;
 use crate::material::{MaterialDrawRange, MaterialTable};
@@ -15,12 +15,16 @@ use crate::targets::SceneTargets;
 
 mod buffers;
 mod callback;
+mod gpu_profiler;
 mod gpu_types;
 mod pipelines;
 mod resources;
 
 pub use callback::SceneCallback;
+use gpu_profiler::GpuProfiler;
+pub use gpu_profiler::enable_tracy_gpu;
 pub(crate) use gpu_types::SceneVertex;
+use pipelines::ScenePipelines;
 
 pub const SCENE_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Depth format of egui's own framebuffer. The scene uses `Depth32Float`
@@ -56,9 +60,9 @@ struct SceneResources {
     pipeline_layout: wgpu::PipelineLayout,
     /// Layout of the IBL bind group (group 2), embedded in `pipeline_layout`.
     /// Stable across environment switches so the pipelines stay valid; passed to
-    /// every [`IblResources::new`] to rebuild the bind group.
+    /// every [`IblResources::from_baked`] to rebuild the bind group.
     ibl_layout: wgpu::BindGroupLayout,
-    /// Precomputed image-based-lighting maps + their bind group. Rebuilt by
+    /// Baked image-based-lighting maps + their bind group. Reloaded by
     /// `sync_environment` only when the chosen environment changes.
     ibl: IblResources,
     /// Layout of the material bind group (group 3), embedded in `pipeline_layout`.
@@ -70,12 +74,34 @@ struct SceneResources {
     /// Editable per-material PBR uniform table (group 3), seeded from import
     /// defaults and re-uploaded on edit by `sync_materials`.
     material_table: MaterialTable,
-    /// Per-material draw ranges over the reordered mesh index buffer; one draw per
-    /// entry. Rebuilt with the mesh in `update_model` / `update_mesh_channel`.
+    /// Per-group draw ranges over the reordered mesh index buffer; one draw per
+    /// entry. Grouped by material slot (Source/Standard) or mesh part (Unique).
+    /// Rebuilt with the mesh in `update_model` / `update_mesh_channel`.
     material_ranges: Vec<MaterialDrawRange>,
     /// Last material revision uploaded into `material_table`; compared against the
     /// callback's to drive re-uploads on edit (separate from `model_revision`).
     material_revision: u64,
+    /// Material mode the *effective* `material_table` was last uploaded for. The
+    /// table is re-synced when this drifts (Standard/Unique replace the imported
+    /// uniforms with the standard / per-part materials) even at an unchanged
+    /// revision.
+    synced_material_mode: MaterialMode,
+    /// Material mode the mesh index reorder + `material_ranges` were built for.
+    /// Switching mode re-groups the mesh (Unique groups by part, not material), so
+    /// the mesh is rebuilt when this drifts.
+    mesh_material_mode: MaterialMode,
+    /// Global per-triangle mesh-part index (dense, first-seen node order) shared by
+    /// every Unique-mode draw list so a range's `material` field indexes the same
+    /// per-part material table. Empty while not in Unique mode, or when the model
+    /// carries no per-triangle node info (then Unique degrades to the standard
+    /// table grouped by material slot). Built on demand, freed on mode-off
+    /// (invariant 3) by `sync_unique_parts`.
+    unique_part_key: Vec<u32>,
+    /// Number of unique mesh parts in `unique_part_key` (0 when empty).
+    unique_part_count: usize,
+    /// `model_revision` the part key was built for while Unique is active, or
+    /// `None` while not in Unique mode — compared each frame to drive build / free.
+    unique_baked: Option<u64>,
     /// Selected-triangle index buffer: the selection reordered grouped by material,
     /// sharing `mesh_vertex_buffer`. Drawn via `selection_ranges` when solo is on
     /// (the isolate view), and redrawn whole by the highlight flash (a flat color
@@ -88,13 +114,14 @@ struct SceneResources {
     /// in one call (material is irrelevant to the flat fill). 0 while nothing is
     /// selected (the buffer then holds only a placeholder index).
     selection_index_count: u32,
-    /// `(model_revision, selection, sorted hidden meshes)` baked into the selection
-    /// buffer, or `None` while nothing is selected — compared each frame to drive
-    /// build / free (invariant 3). The hidden set is part of the key because hiding
-    /// a selected mesh must drop it from the solo list + highlight flash. The
-    /// highlight color + flash fade ride in the uniform, not the geometry, so they
-    /// are not part of the key.
-    selection_baked: Option<(u64, Selection, Vec<u32>)>,
+    /// `(model_revision, selection, sorted hidden meshes, material mode)` baked into
+    /// the selection buffer, or `None` while nothing is selected — compared each
+    /// frame to drive build / free (invariant 3). The hidden set is part of the key
+    /// because hiding a selected mesh must drop it from the solo list + highlight
+    /// flash; the material mode is, because Unique re-groups the solo list by part.
+    /// The highlight color + flash fade ride in the uniform, not the geometry, so
+    /// they are not part of the key.
+    selection_baked: Option<(u64, Selection, Vec<u32>, MaterialMode)>,
     /// Per-mesh visibility draw list: the visible triangles reordered grouped by
     /// material, sharing `mesh_vertex_buffer`. Drawn instead of the full mesh
     /// whenever `visible_active`. Holds a placeholder while nothing is hidden.
@@ -107,34 +134,24 @@ struct SceneResources {
     /// carries per-triangle node info): when set, the mesh / GTAO passes draw
     /// `visible_index_buffer` instead of the full mesh.
     visible_active: bool,
-    /// `(model_revision, sorted hidden mesh nodes)` baked into the visibility
-    /// buffer, or `None` while nothing is hidden — compared each frame to drive
-    /// build / free (invariant 3).
-    visibility_baked: Option<(u64, Vec<u32>)>,
+    /// `(model_revision, sorted hidden mesh nodes, material mode)` baked into the
+    /// visibility buffer, or `None` while nothing is hidden — compared each frame to
+    /// drive build / free (invariant 3). The material mode is part of the key
+    /// because Unique re-groups the filtered list by part, not material.
+    visibility_baked: Option<(u64, Vec<u32>, MaterialMode)>,
     /// Offscreen HDR color + depth the scene renders into, recreated on resize or
     /// MSAA change.
     targets: SceneTargets,
     /// The fullscreen composite pass (offscreen scene → egui's framebuffer).
     post: PostPass,
-    /// Bind group feeding the resolved scene color + blurred bloom to `post`;
-    /// rebuilt with `targets`.
+    /// Bind group feeding the resolved scene color + blurred AO + ambient radiance
+    /// to `post`; rebuilt with `targets`.
     post_bind_group: wgpu::BindGroup,
-    /// The bloom bright-pass + blur pass (Phase 4). Size-independent; the half-res
-    /// ping-pong textures + bind groups below are rebuilt with `targets`.
-    bloom: BloomPass,
-    /// Half-resolution HDR ping-pong textures the bloom blur bounces between.
-    /// `a` holds the bright-pass output and the final (post-blur) result `post`
-    /// samples; `b` is the intermediate. Recreated on resize.
-    bloom_tex_a: wgpu::TextureView,
-    bloom_tex_b: wgpu::TextureView,
-    /// Bloom bind groups: bright-pass reads the scene bloom source, the blur reads
-    /// `a` (→ `b`) then `b` (→ `a`). Rebuilt when the bloom textures are.
-    bloom_brightpass_bind_group: wgpu::BindGroup,
-    bloom_blur_h_bind_group: wgpu::BindGroup,
-    bloom_blur_v_bind_group: wgpu::BindGroup,
     /// The GTAO occlusion + blur pass (Phase 5). Size-independent; the full-res AO
-    /// textures + bind groups below are rebuilt with `targets`.
-    gtao: GtaoPass,
+    /// textures + bind groups below are rebuilt with `targets`. `None` until the
+    /// deferred `Gtao` build stage runs (Phase B); until then the composite treats
+    /// AO as inactive (an empty startup scene has nothing to occlude anyway).
+    gtao: Option<GtaoPass>,
     /// Single-sample GTAO G-buffer (view-space normal + view-space Z). Kept out
     /// of the MSAA scene MRTs so normals/depths are not averaged across geometry
     /// edges before the AO pass samples them.
@@ -146,32 +163,26 @@ struct SceneResources {
     gtao_raw_view: wgpu::TextureView,
     gtao_blur_view: wgpu::TextureView,
     /// GTAO bind groups: the occlusion pass reads the single-sample G-buffer, the
-    /// blur reads that same G-buffer plus `raw`. Rebuilt when the AO textures /
-    /// G-buffer are.
-    gtao_bind_group: wgpu::BindGroup,
-    gtao_blur_bind_group: wgpu::BindGroup,
+    /// blur reads that same G-buffer plus `raw`. `None` until the deferred GTAO
+    /// pass is built; rebuilt with it / when the AO textures / G-buffer are.
+    gtao_bind_group: Option<wgpu::BindGroup>,
+    gtao_blur_bind_group: Option<wgpu::BindGroup>,
     model_revision: u64,
     mesh_uv_channel: u32,
-    /// Default mesh pipeline: back faces culled (only camera-facing surfaces
-    /// drawn). Used when [`SceneDebugOptions::render_backfaces`] is off.
-    mesh_pipeline: wgpu::RenderPipeline,
-    /// Double-sided mesh pipeline: no face culling, so back faces are drawn too.
-    /// Used when [`SceneDebugOptions::render_backfaces`] is on. Built alongside
-    /// `mesh_pipeline` and rebuilt with it on MSAA change.
-    mesh_pipeline_double_sided: wgpu::RenderPipeline,
+    /// The deferred scene pipelines — mesh (culled + double-sided), UV-fill,
+    /// selection-fill, skybox, and the single-sample GTAO G-buffer — grouped so
+    /// they build together off the first frame (Phase B). `None` until the
+    /// `ScenePipelines` build stage runs; the grid-only first frame draws without
+    /// them, and a mesh / skybox / UV-fill / selection draw is skipped while they
+    /// are absent. Rebuilt (the MSAA-dependent subset) on antialiasing change.
+    scene_pipelines: Option<ScenePipelines>,
+    /// Line-list pipeline for the grid + every line overlay (wireframe, bounding
+    /// box, face/vertex normals). Part of the core build, since the grid-only
+    /// first frame draws with it; rebuilt on MSAA change.
     line_pipeline: wgpu::RenderPipeline,
-    /// Flat-color triangle pipeline for the selection-highlight flash: depth-tested
-    /// (Reversed-Z `GreaterEqual`) but no depth write, MRT like the mesh, drawing
-    /// `fs_selection` (uniform highlight color × flash fade).
-    selection_fill_pipeline: wgpu::RenderPipeline,
-    /// Mesh-only pipeline that writes the single-sample GTAO normal/depth buffer.
-    gtao_gbuffer_pipeline: wgpu::RenderPipeline,
-    /// Fullscreen pipeline that draws the environment cubemap as the background.
-    skybox_pipeline: wgpu::RenderPipeline,
-    /// Flat-color triangle pipeline for the UV island fill: no lighting (the fill
-    /// vertices carry a zero normal), no depth write/bias — it sits under the UV
-    /// wireframe and is composited by draw order in the 2D viewport.
-    uv_fill_pipeline: wgpu::RenderPipeline,
+    /// Cursor over the deferred GPU-resource build (Phase B), advanced one stage
+    /// per frame by [`SceneResources::advance_build`].
+    build_stage: BuildStage,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
     checker_bind_group_greyscale: wgpu::BindGroup,
@@ -219,15 +230,40 @@ struct SceneResources {
     /// `(model_revision, channel, shading_mode)` baked into the UV fill, or
     /// `None` when no fill is drawn (its buffer holds only a placeholder).
     uv_fill_baked: Option<(u64, u32, UvShadingMode)>,
+    /// Hand-rolled GPU timestamp profiler feeding Tracy (Phase: Tracy). `None`
+    /// unless `--tracy` armed it and the device has `TIMESTAMP_QUERY`; built lazily
+    /// in `prepare` and size-independent (the resize/MSAA paths never touch it).
+    /// While `None`, every scene pass keeps `timestamp_writes: None` as before.
+    gpu_profiler: Option<GpuProfiler>,
 }
 
-/// Baked parameters for the bounding-box view: `(color, visible_only,
-/// hidden_nodes)`. The hidden set only changes the box in `visible_only` mode,
-/// but baking it unconditionally keeps the comparison a plain value equality.
-type BoundingBoxParams = ([f32; 4], bool, Vec<u32>);
+/// Baked parameters for the bounding-box view: `(color, scope, hidden_nodes,
+/// selection)`. Only the inputs the chosen scope depends on are populated (the
+/// hidden set for `VisibleOnly`, the selection for `OnlySelection`); the rest
+/// are left at their neutral value so an unrelated change can't rebuild the box.
+type BoundingBoxParams = ([f32; 4], BoundingBoxScope, Vec<u32>, Selection);
 
 /// Baked parameters for a normal-line view: `(length_scale, color, hidden_nodes)`.
 /// Compared by value each frame to decide whether the view's buffer is up to
 /// date — including the Outliner's hidden set, so a hidden mesh's normal lines
 /// drop with the mesh itself.
 type NormalParams = (f32, [f32; 4], Vec<u32>);
+
+/// Cursor over the deferred GPU-resource build (Phase B). After the cheap core
+/// build ([`SceneResources::new_core`]) presents the grid-only first frame,
+/// [`SceneResources::advance_build`] walks these stages one per frame so the heavy
+/// pipeline compilation is spread across the first few frames behind the startup
+/// warmup, instead of all landing on frame 1. IBL stays in the core build (it is a
+/// cheap baked-map upload, not a precompute), so it is not a stage here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuildStage {
+    /// Build the deferred [`ScenePipelines`] (the five MSAA-dependent scene
+    /// pipelines + the GTAO G-buffer) — needed before a mesh / skybox / UV-fill /
+    /// selection can draw, so this runs first.
+    ScenePipelines,
+    /// Build the GTAO effect pass + its bind groups. A no-op on an empty startup
+    /// scene (nothing to occlude), so it builds last.
+    Gtao,
+    /// Everything built; [`SceneResources::advance_build`] is a no-op.
+    Done,
+}

@@ -21,8 +21,8 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
     }
 }
 
-/// "Bounds" row: a dropdown choosing whether the box covers all meshes or only
-/// the Outliner's currently-visible meshes.
+/// "Bounds" row: a dropdown choosing whether the box covers all meshes, only the
+/// current Outliner selection, or only the Outliner's currently-visible meshes.
 fn scope_row(ui: &mut egui::Ui, state: &mut UiState) {
     labeled_combo(
         ui,

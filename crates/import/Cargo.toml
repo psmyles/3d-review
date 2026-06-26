@@ -10,6 +10,10 @@ build = "build.rs"
 glam.workspace = true
 review-model = { path = "../model" }
 thiserror.workspace = true
+# Tracy profiler client — always compiled in, inert until started (`--tracy`).
+# Used for the FBX-import CPU zones (Load FBX / Build ModelData); the C-side ufbx
+# parse stays un-instrumented.
+tracy-client.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [

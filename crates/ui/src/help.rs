@@ -21,7 +21,7 @@ const LEFT_SHORTCUTS: [(&str, &str); 6] = [
 
 /// Right-column shortcut rows (camera framing + WASD orbit steps).
 const RIGHT_SHORTCUTS: [(&str, &str); 6] = [
-    ("F", "Frame camera"),
+    ("F", "Frame model / selection"),
     ("R", "Reset camera"),
     ("W", "Orbit camera up"),
     ("A", "Orbit camera left"),
@@ -117,6 +117,12 @@ fn draw_card_contents(ui: &mut egui::Ui, state: &UiState) {
     shortcut_row(ui, &["Ctrl", "N"], "Reset 3D Review to start state");
     ui.add_space(size::HELP_ROW_GAP);
     shortcut_row(ui, &["Ctrl", "O"], "Open model from file dialog");
+    ui.add_space(size::HELP_ROW_GAP);
+    shortcut_row(ui, &["Ctrl", "Z"], "Undo");
+    ui.add_space(size::HELP_ROW_GAP);
+    shortcut_row(ui, &["Ctrl", "Y"], "Redo");
+    ui.add_space(size::HELP_ROW_GAP);
+    shortcut_row(ui, &["Esc"], "Clear selection");
 
     section_divider(ui);
     centered_text(

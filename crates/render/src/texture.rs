@@ -183,7 +183,7 @@ pub fn decode_image(path: &Path) -> Result<DecodedImage, String> {
         .unwrap_or_default();
 
     let image = if image_crate_handles(&extension) {
-        image::open(path).map_err(|error| format!("decode {}: {error}", path.display()))?
+        decode_via_image_crate(path)?
     } else {
         decode_via_magick(path)?
     };
@@ -203,6 +203,20 @@ pub fn decode_image(path: &Path) -> Result<DecodedImage, String> {
         source_channels,
         source_bit_depth,
     })
+}
+
+/// Decode `path` with the `image` crate, guessing the format from the file's
+/// magic bytes rather than its extension. `image::open` trusts the extension
+/// alone, so a mislabeled file (e.g. a PNG saved as `.jpg` — common in game-asset
+/// exports) would be fed to the wrong decoder and fail; `with_guessed_format`
+/// sniffs the content and only falls back to the extension when it can't.
+fn decode_via_image_crate(path: &Path) -> Result<image::DynamicImage, String> {
+    image::ImageReader::open(path)
+        .map_err(|error| format!("open {}: {error}", path.display()))?
+        .with_guessed_format()
+        .map_err(|error| format!("read {}: {error}", path.display()))?
+        .decode()
+        .map_err(|error| format!("decode {}: {error}", path.display()))
 }
 
 /// Whether the `image` crate (with this workspace's enabled features) decodes a

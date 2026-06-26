@@ -1,11 +1,19 @@
 // Suppress the console window in release builds — a shipped GUI viewer should
-// open as a window, not alongside a terminal. Debug builds keep the console so
-// `tracing` output stays visible during development.
+// open as a window, not alongside a terminal.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod prof;
 mod startup_paint;
 mod texture_manager;
+mod undo;
 mod window_state;
+
+/// Stream allocations to Tracy, but only while the client is running (started by
+/// `--tracy`). On a normal launch this never starts the client and costs one
+/// atomic load per allocation; the `unsafe` lives in `review_import` (invariant 9).
+#[global_allocator]
+static GLOBAL: review_import::TracyAllocator<std::alloc::System> =
+    review_import::TracyAllocator::new(std::alloc::System);
 
 use std::{
     collections::{HashMap, HashSet},
@@ -22,18 +30,17 @@ use review_import::{LoadOptions, load_model};
 use review_model::{ModelData, SceneBvh};
 use review_render::{
     DecodedImage, EGUI_DEPTH_FORMAT, EGUI_MSAA_SAMPLE_COUNT, Renderer, RendererConfig, ShadingMode,
-    TextureSlot, gtao_supported, ibl_supported, supported_msaa_levels,
+    TextureSlot, gtao_supported, ibl_supported, selection_bounds, supported_msaa_levels,
 };
 use review_ui::{
     AxisGizmoAction, Notifications, Selection, TexViewRequest, TextureIntent, UiOutput, UiState,
-    WorkspaceMode, draw_overlay, draw_startup_fade, draw_viewport_scene, init_style,
+    WorkspaceMode, draw_overlay, draw_viewport_scene, init_style,
 };
-use tracing::{info, warn};
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
-    keyboard::{Key, ModifiersState},
+    keyboard::{Key, ModifiersState, NamedKey},
     window::{Window, WindowAttributes, WindowId},
 };
 
@@ -51,22 +58,40 @@ enum UserEvent {
 }
 
 use texture_manager::TextureDecode;
+use undo::UndoStack;
 use window_state::WindowPlacement;
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    // Tiny manual arg scan (the workspace has no arg parser and needs exactly one
+    // flag): `--tracy` turns profiling on; the first non-flag argument is the model
+    // path to open (Windows passes it for a double-clicked `.fbx` via the file
+    // association). The two coexist in any order, e.g. `3d-review --tracy a.fbx`.
+    let mut tracy_enabled = false;
+    let mut initial_model: Option<PathBuf> = None;
+    for arg in std::env::args_os().skip(1) {
+        if arg == "--tracy" {
+            tracy_enabled = true;
+        } else if initial_model.is_none() && !arg.to_string_lossy().starts_with("--") {
+            initial_model = Some(PathBuf::from(arg));
+        }
+    }
+
+    // Start the Tracy client only when asked, and keep the handle alive for the
+    // whole process (dropping the last handle disconnects). With `manual-lifetime`
+    // the client never auto-starts, so a normal launch opens no socket and every
+    // zone/plot/message/alloc hook no-ops. `ondemand` means even a started client
+    // buffers nothing until a Tracy server connects.
+    let tracy = tracy_enabled.then(|| {
+        let client = tracy_client::Client::start();
+        prof::thread_name("main");
+        prof::msg("3d-review: Tracy profiling enabled (--tracy)");
+        client
+    });
 
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
         .context("failed to create winit event loop")?;
     event_loop.set_control_flow(ControlFlow::Wait);
-
-    // A file path passed on the command line (e.g. when Windows launches the exe
-    // for a double-clicked `.fbx` via the registered file association) is loaded
-    // once the window is up. See `resumed`.
-    let initial_model = std::env::args_os().nth(1).map(PathBuf::from);
 
     // The texture file-watcher posts reload events back through this proxy.
     let texture_proxy = event_loop.create_proxy();
@@ -74,6 +99,8 @@ fn main() -> anyhow::Result<()> {
     let mut app = App {
         initial_model,
         texture_proxy: Some(texture_proxy),
+        tracy_enabled,
+        _tracy: tracy,
         ..App::default()
     };
     event_loop
@@ -104,6 +131,14 @@ struct App {
     /// triggering an immediate `request_redraw`, so a high-polling-rate mouse or
     /// key auto-repeat can't drive rendering faster than the monitor refresh.
     redraw_requested: bool,
+    /// Remaining startup "warmup" frames to pump (Phase B). The first frame builds
+    /// only the cheap core scene resources; the deferred scene pipelines + GTAO
+    /// pass then compile one stage per subsequent frame (in the scene callback's
+    /// `prepare`). While this is non-zero, `render` keeps scheduling the
+    /// next frame so the build drains behind the already-shown grid, then stops.
+    /// Seeded once in `resumed`; `app` can't see the render-side build state
+    /// (invariant 2), so it pumps a fixed, generous count rather than polling.
+    warmup_frames: u32,
     /// Minimum spacing between continuously-rendered frames, derived from the
     /// active monitor's refresh rate. Caps redraw to the display so animation
     /// doesn't render faster than it can be shown (the swapchain doesn't pace us
@@ -132,16 +167,6 @@ struct App {
     /// on exit. Recorded only while the window isn't maximized, so un-maximizing
     /// a restored session returns to a real window rather than a fullscreen rect.
     last_windowed_bounds: Option<((i32, i32), (u32, u32))>,
-    /// Launch fade-in progress: while set, each frame paints a full-screen cover
-    /// that dissolves from the startup black to the live viewer (see
-    /// `startup_paint`). Seeded just before the first frame in `resumed` and
-    /// cleared once the fade completes, after which the steady state draws no
-    /// cover. Advanced by a *capped per-frame delta* (not absolute wall-clock
-    /// time) so a slow first frame — pipeline/shader warm-up, surface acquire,
-    /// the OS window-open animation — can't fast-forward the whole fade in one
-    /// stall and make the viewer snap in. Same guard `update_camera_animation`
-    /// uses for camera transitions.
-    fade: Option<FadeProgress>,
     /// Live selection-highlight flash, or `None` when none is playing. Started when
     /// [`Self::flashed_selection`] no longer matches the UI's current selection, and
     /// advanced each frame by [`Self::update_selection_flash`], which writes the
@@ -151,6 +176,27 @@ struct App {
     /// change to a *different* node/material restarts the flash and selecting
     /// nothing ends it.
     flashed_selection: Selection,
+    /// The unified undo/redo history for all document edits (selection, hide/
+    /// unhide, material params, texture slot bindings, and the texture pool). Fed
+    /// once per frame by [`Self::observe_edit_state`]; `Ctrl+Z` / `Ctrl+Y` restore
+    /// a step. Lives in `app` because it coordinates the UI + renderer + pool state
+    /// (invariant 2) and the redraw loop / keyboard routing are here. See
+    /// `undo.rs`.
+    undo: UndoStack,
+    /// Whether a material editor widget is being actively dragged this frame
+    /// (mirrored from [`UiOutput::material_edit_active`] after the egui pass), so
+    /// the undo observer coalesces a continuous drag into a single step.
+    drag_in_progress: bool,
+    /// Monotonic change tag for the scene texture pool + decode cache, bumped on
+    /// every pool/cache mutation. Lets [`Self::capture_edit_state`] detect pool
+    /// changes (and share the pool snapshot `Arc` when unchanged) as cheaply as the
+    /// renderer's `material_revision` does for the material table.
+    texture_revision: u64,
+    /// Whether the camera is currently framed on the selection rather than the
+    /// whole model, so `F` alternates between the two while a mesh part is
+    /// selected. Reset whenever the selection changes (the next `F` frames the
+    /// part first).
+    frame_showing_selection: bool,
     /// Proxy used by the texture file-watcher thread to post reload events to the
     /// event loop (set in `main` before the loop runs).
     texture_proxy: Option<EventLoopProxy<UserEvent>>,
@@ -173,19 +219,20 @@ struct App {
     /// the egui frame and triggers the notifications (texture decode start/finish);
     /// the UI crate only provides the themed type. Shown once per frame in `render`.
     notifications: Notifications,
-}
-
-/// State of the launch fade-in. `elapsed` is animation time accumulated across
-/// rendered frames (capped per frame), `last_tick` is when it last advanced.
-struct FadeProgress {
-    elapsed: Duration,
-    last_tick: Instant,
+    /// Whether `--tracy` was passed: gates the (otherwise-identical) device feature
+    /// request for `TIMESTAMP_QUERY` and the GPU-profiler arming. Read in
+    /// `wgpu_configuration`.
+    tracy_enabled: bool,
+    /// The live Tracy client handle, held for the whole process so the profiler
+    /// session stays up (dropping the last handle disconnects). `None` on a normal
+    /// launch — the client is never started, so all instrumentation no-ops.
+    _tracy: Option<tracy_client::Client>,
 }
 
 /// State of the selection-highlight flash: a brief bright fill over a newly
 /// selected node/material that fades out. Same capped-per-frame accumulation as
-/// the launch fade / camera transitions, so an idle gap before the flash can't
-/// fast-forward it to the end. `None` when no flash is playing.
+/// camera transitions, so an idle gap before the flash can't fast-forward it to
+/// the end. `None` when no flash is playing.
 struct FlashProgress {
     elapsed: Duration,
     last_tick: Instant,
@@ -196,17 +243,16 @@ const SELECTION_FLASH: Duration = Duration::from_millis(500);
 
 /// Cap on how much the selection flash advances in one frame (≈30 Hz), so an idle
 /// gap before a selection change doesn't skip the flash. Matches the camera
-/// transition / startup-fade step guards.
+/// transition step guard.
 const MAX_FLASH_STEP: Duration = Duration::from_millis(33);
 
-/// Duration of the launch fade-in (startup black → viewer). Short on purpose:
-/// long enough to read as a dissolve, brief enough not to feel like a wait.
-const STARTUP_FADE: Duration = Duration::from_millis(200);
-
-/// Cap on how much the fade advances in a single frame. A startup stall yields
-/// one frame's worth of progress instead of the whole gap, so the dissolve
-/// always plays across real presented frames rather than being skipped.
-const MAX_FADE_STEP: Duration = Duration::from_millis(33);
+/// Startup warmup frames to pump after the first (core-only) frame (Phase B), so
+/// the deferred GPU-resource build drains behind the already-shown grid. The
+/// build completes in two stages (scene pipelines, then GTAO) — i.e. by the
+/// third frame — so the extra frames are a safety margin and cost only a few cheap
+/// grid redraws. `app` can't observe the render-side build state (invariant 2), so
+/// this is a fixed count rather than a completion signal.
+const STARTUP_WARMUP_FRAMES: u32 = 6;
 
 impl Default for App {
     fn default() -> Self {
@@ -230,6 +276,7 @@ impl Default for App {
             last_render_instant: None,
             repaint_at: None,
             redraw_requested: false,
+            warmup_frames: 0,
             refresh_interval: Duration::from_secs_f64(1.0 / 60.0),
             scene_model,
             scene_revision: 0,
@@ -241,15 +288,20 @@ impl Default for App {
             initial_model: None,
             start_maximized: false,
             last_windowed_bounds: None,
-            fade: None,
             selection_flash: None,
             flashed_selection: Selection::None,
+            undo: UndoStack::new(),
+            drag_in_progress: false,
+            texture_revision: 0,
+            frame_showing_selection: false,
             texture_proxy: None,
             texture_watcher: None,
             watched_dirs: HashSet::new(),
             texture_cache: HashMap::new(),
             texture_pool: Vec::new(),
             notifications: Notifications::new(),
+            tracy_enabled: false,
+            _tracy: None,
         }
     }
 }
@@ -315,6 +367,12 @@ impl ApplicationHandler<UserEvent> for App {
             return;
         };
 
+        // Startup phase timing, as a sequence of Tracy zones (replacing the old
+        // `StartupTimer` laps): `phase` holds the current zone and is ended by
+        // dropping its guard before the next begins, so they read as adjacent spans
+        // under the "main" thread. All no-op unless `--tracy` started the client.
+        let mut phase = prof::zone!("Window Create");
+
         // Honor the OS launch hint (e.g. a shortcut set to "Run: Maximized").
         // winit never consults `STARTUPINFO.wShowWindow`, so we query it and set
         // the initial state ourselves.
@@ -357,6 +415,8 @@ impl ApplicationHandler<UserEvent> for App {
         // the renderer comes up. See `startup_paint` (the one sanctioned exception
         // to invariant 9).
         startup_paint::paint_window_black(&window);
+        drop(phase.take());
+        phase = prof::zone!("Renderer Init");
 
         let renderer_config = RendererConfig::default();
         let mut renderer = Renderer::new(renderer_config);
@@ -375,29 +435,51 @@ impl ApplicationHandler<UserEvent> for App {
         // Install fonts + visuals once: the style is derived purely from the
         // central theme tokens (no per-frame state), so it never needs re-syncing.
         init_style(&egui_ctx);
+        drop(phase.take());
+        phase = prof::zone!("Set Window (adapter/device/surface)");
 
         let mut egui_painter = pollster::block_on(egui_wgpu::winit::Painter::new(
             egui_ctx.clone(),
-            wgpu_configuration(renderer_config),
+            wgpu_configuration(renderer_config, self.tracy_enabled),
             EGUI_MSAA_SAMPLE_COUNT,
             Some(EGUI_DEPTH_FORMAT),
             false,
             true,
         ));
+        // This first `set_window` is the largest remaining startup chunk (~265ms on
+        // the RTX 4080 / DX12 dev box) and is INTRINSIC, not our overhead — do not
+        // re-investigate without new evidence. `Painter::new` above only built the
+        // wgpu *instance*; egui-wgpu defers all real GPU init to the first
+        // `set_window`, which runs `RenderState::create`: adapter enumerate +
+        // `request_device` + egui's `Renderer::new` + the first swapchain configure.
+        // Measured split (via the `--tracy` GPU/CPU zones, which surface egui-wgpu's
+        // + wgpu's `profiling::scope!`s as Tracy zones): ~197ms `enumerate_adapters`
+        // + ~47ms `request_device` + ~13ms egui `Renderer::new` + ~4ms swapchain.
+        // The ~197ms is DX12 creating an `ID3D12Device` per adapter to probe its
+        // features (4 adapters on this box: the 4080 cold-loads the NVIDIA driver
+        // DLL, then 3 more probes). Phase D ruled out every angle: a background
+        // driver *pre-warm* can't help (the cold driver-DLL load ~130ms dwarfs the
+        // ~31ms head-start the main thread has before reaching here); *bypassing*
+        // egui to call `request_adapter` ourselves pays the SAME per-adapter probing
+        // cold (~200ms, measured), so it saves only noise; and it is unfixed upstream
+        // through wgpu 29 / egui-wgpu 0.34 + wgpu-hal trunk (wgpu #3332, closed
+        // "external: driver-bug"). Only a wgpu-hal fork skipping the 3 junk adapters
+        // could trim it (~61ms), not worth the maintenance. Do NOT trade away
+        // steady-state `AutoVsync` to chase it.
         pollster::block_on(egui_painter.set_window(egui::ViewportId::ROOT, Some(window.clone())))
             .expect("failed to initialize wgpu surface");
+        drop(phase.take());
+        phase = prof::zone!("Shell Init");
 
         // Report which backend/adapter wgpu actually selected (see
-        // RendererConfig::preferred_backends — DX12 on Windows). Logged via
-        // `tracing`; set RUST_LOG=info to see it.
+        // RendererConfig::preferred_backends — DX12 on Windows). Surfaced as a Tracy
+        // message on a `--tracy` run.
         if let Some(render_state) = egui_painter.render_state() {
             let adapter_info = render_state.adapter.get_info();
-            info!(
-                backend = ?adapter_info.backend,
-                adapter = %adapter_info.name,
-                device_type = ?adapter_info.device_type,
-                "selected wgpu adapter"
-            );
+            prof::msg(&format!(
+                "selected wgpu adapter: {:?} / {} / {:?}",
+                adapter_info.backend, adapter_info.name, adapter_info.device_type
+            ));
             // Surface the chosen backend in the startup help overlay.
             self.ui.gpu_backend = friendly_backend_name(adapter_info.backend);
             // Gate the Anti Aliasing menu to the MSAA levels this adapter can
@@ -428,7 +510,9 @@ impl ApplicationHandler<UserEvent> for App {
         self.ui.uv_sets = self.scene_model.uv_set_labels();
         self.refresh_interval = monitor_refresh_interval(&window);
         self.window = Some(window.clone());
-        info!("application shell started");
+        prof::msg("application shell started");
+        drop(phase.take());
+        phase = prof::zone!("Initial Model Load");
 
         // Load a file passed on the command line (file association / CLI arg)
         // now that the renderer exists. Reuses the same path as drag-drop, so
@@ -437,20 +521,17 @@ impl ApplicationHandler<UserEvent> for App {
             self.open_model_from_path(&path);
         }
 
-        // Begin the launch fade-in from here: the renderer/chrome are ready, so
-        // the first frame starts fully covered by the startup black and dissolves
-        // to the live viewer over `STARTUP_FADE`. Starting it now (rather than at
-        // window creation) ties the fade to the moment there's actually something
-        // to reveal, so a slow surface setup doesn't eat into it.
-        self.fade = Some(FadeProgress {
-            elapsed: Duration::ZERO,
-            last_tick: Instant::now(),
-        });
-
         // Paint the first frame directly rather than waiting on the first
-        // `RedrawRequested`, so the window shows the rendered scene as soon as
-        // it appears instead of an unpainted surface.
+        // `RedrawRequested`, so the window shows the rendered (grid-only) scene as
+        // soon as it appears instead of an unpainted surface. Only the cheap core
+        // resources build here (see `SceneResources::new_core`); the deferred scene
+        // pipelines + GTAO pass compile over the next few frames, which the
+        // startup warmup keeps pumping until the build drains.
+        self.warmup_frames = STARTUP_WARMUP_FRAMES;
+        drop(phase.take());
+        phase = prof::zone!("First Frame");
         self.render();
+        drop(phase);
     }
 
     fn window_event(
@@ -704,6 +785,7 @@ impl ApplicationHandler<UserEvent> for App {
 
 impl App {
     fn render(&mut self) {
+        let _frame = prof::zone!("Frame");
         let Some(window) = self.window.as_ref().cloned() else {
             return;
         };
@@ -712,18 +794,18 @@ impl App {
         };
 
         window.set_title("3D Review");
-        self.update_camera_animation();
+        {
+            let _z = prof::zone!("Camera Animation");
+            self.update_camera_animation();
+        }
         // Advance the selection-highlight flash and feed this frame's fade into the
         // UI snapshot the scene callback reads. Done before the egui run below so the
         // viewport reflects the current fade; a change of selection (set by the
         // Outliner last frame) restarts it here.
         self.update_selection_flash();
-
-        // Opacity of the launch fade cover this frame (1 = startup black, 0 =
-        // fully revealed). Advancing here clears `fade_start` once it reaches 0,
-        // so the steady state draws no cover; while it's > 0 the pacing logic
-        // below keeps requesting frames so the dissolve animates.
-        let cover_opacity = self.advance_startup_fade();
+        // Record any edit the UI committed last frame (selection / hide / material /
+        // texture) into the undo history before this frame's egui pass.
+        self.observe_edit_state();
 
         let output_format = {
             let Some(egui_painter) = self.egui_painter.as_ref() else {
@@ -768,6 +850,12 @@ impl App {
             // alongside its `&mut self.ui` borrow (the toast system lives in `app`).
             let notifications = &mut self.notifications;
             let mut ui_output = UiOutput::default();
+            // The material mode before the egui pass; the toolbar / Material Mode
+            // panel mutate it during the pass, so a post-pass mismatch means the
+            // user switched modes this frame — surface its name as a toast (app
+            // owns the toast facility; the UI only holds the plain value).
+            let prev_material_mode = self.ui.debug.material_mode;
+            let _z = prof::zone!("egui Run");
             let full_output = egui_ctx.run(raw_input, |ctx| {
                 draw_viewport_scene(
                     ctx,
@@ -786,19 +874,21 @@ impl App {
                     occlusion_bvh,
                     output_format,
                 );
-                // Toasts paint on the egui Foreground layer, above the chrome but
-                // below the launch-fade cover (Tooltip order), so the fade hides
-                // them too during the dissolve.
+                if self.ui.debug.material_mode != prev_material_mode {
+                    notifications.mode(self.ui.debug.material_mode.label());
+                }
+                // Toasts paint on the egui Foreground layer, above the chrome.
                 notifications.show(ctx);
-                // Above all chrome: the launch fade cover (no-op once revealed).
-                draw_startup_fade(ctx, cover_opacity);
             });
 
             egui_state.handle_platform_output(&window, full_output.platform_output.clone());
             (full_output, clear, ui_output)
         };
 
-        self.apply_ui_output(ui_output);
+        {
+            let _z = prof::zone!("Apply UI Output");
+            self.apply_ui_output(ui_output);
+        }
 
         // Decide when the next frame should be drawn. Continuous motion — a live
         // camera transition, or egui asking to "repaint immediately" (zero delay)
@@ -815,14 +905,16 @@ impl App {
             .renderer
             .as_ref()
             .is_some_and(Renderer::is_camera_animating);
-        // The launch fade is continuous motion too: keep pacing frames while the
-        // cover is still dissolving so it doesn't stall on a static partial fade.
-        let fade_active = cover_opacity > 0.0;
-        // The selection flash likewise animates over ~0.5s; keep pacing frames until
-        // it finishes so the highlight fades smoothly rather than freezing partway.
+        // The selection flash animates over ~0.5s; keep pacing frames until it
+        // finishes so the highlight fades smoothly rather than freezing partway.
         let flash_active = self.selection_flash.is_some();
+        // Pump startup warmup frames (Phase B) until the deferred GPU-resource
+        // build drains, so the scene pipelines + GTAO pass compile behind
+        // the already-shown grid. Paced like the other continuous-redraw sources.
+        let warming_up = self.warmup_frames > 0;
+        self.warmup_frames = self.warmup_frames.saturating_sub(1);
         self.repaint_at =
-            if repaint_delay.is_zero() || camera_animating || fade_active || flash_active {
+            if repaint_delay.is_zero() || camera_animating || flash_active || warming_up {
                 let frame_start = self.last_render_instant.unwrap_or_else(Instant::now);
                 Some(frame_start + self.refresh_interval)
             } else if repaint_delay == Duration::MAX {
@@ -832,25 +924,36 @@ impl App {
             };
 
         let pixels_per_point = full_output.pixels_per_point;
-        let clipped_primitives = egui_ctx.tessellate(full_output.shapes, pixels_per_point);
+        let clipped_primitives = {
+            let _z = prof::zone!("Tessellate");
+            egui_ctx.tessellate(full_output.shapes, pixels_per_point)
+        };
 
         let Some(egui_painter) = self.egui_painter.as_mut() else {
             return;
         };
 
-        egui_painter.paint_and_update_textures(
-            egui::ViewportId::ROOT,
-            pixels_per_point,
-            [
-                clear.r as f32,
-                clear.g as f32,
-                clear.b as f32,
-                clear.a as f32,
-            ],
-            &clipped_primitives,
-            &full_output.textures_delta,
-            Vec::new(),
-        );
+        {
+            // The scene's `prepare` (offscreen render + GPU-profiler drain/resolve)
+            // and egui's `submit` + present both happen inside this call.
+            let _z = prof::zone!("Paint + Present");
+            egui_painter.paint_and_update_textures(
+                egui::ViewportId::ROOT,
+                pixels_per_point,
+                [
+                    clear.r as f32,
+                    clear.g as f32,
+                    clear.b as f32,
+                    clear.a as f32,
+                ],
+                &clipped_primitives,
+                &full_output.textures_delta,
+                Vec::new(),
+            );
+        }
+
+        // Delimit the frame for Tracy's frame view (no-op unless `--tracy`).
+        prof::frame_mark();
     }
 
     fn open_model_from_dialog(&mut self) {
@@ -896,6 +999,9 @@ impl App {
                 // The previous model's texture watches / decode cache no longer
                 // apply (the fresh materials carry no slots).
                 self.reset_texture_state();
+                // The undo history references the old model's indices / materials /
+                // pool; drop it and rebaseline to this freshly-loaded state.
+                self.reset_undo_history();
 
                 self.ui.stats = model.stats;
                 self.ui.bounds = model.bounds;
@@ -911,12 +1017,12 @@ impl App {
                 self.scene_revision = self.scene_revision.saturating_add(1);
                 self.notifications
                     .success(format!("Loaded {}", file_label(path)));
-                info!(path = %path.display(), "model loaded");
+                prof::msg(&format!("model loaded: {}", path.display()));
             }
             Err(error) => {
                 self.notifications
                     .error(format!("Couldn't load {}", file_label(path)));
-                warn!(path = %path.display(), error = %error, "model load failed");
+                prof::msg(&format!("model load failed: {} ({error})", path.display()));
             }
         }
 
@@ -930,6 +1036,18 @@ impl App {
     /// when no modifier is held (so Shift/Alt/Ctrl combinations stay free).
     /// Keyboard events egui has already consumed are filtered out by the caller.
     fn handle_keyboard_shortcut(&mut self, event: &KeyEvent) {
+        // Escape clears any Outliner selection (mesh part or material). It's a Named
+        // key, so handle it before the Character extraction below.
+        if event.state == ElementState::Pressed
+            && matches!(&event.logical_key, Key::Named(NamedKey::Escape))
+        {
+            if self.ui.selection.is_active() {
+                self.ui.selection = Selection::None;
+                self.redraw_requested = true;
+            }
+            return;
+        }
+
         let Key::Character(character) = &event.logical_key else {
             return;
         };
@@ -943,6 +1061,15 @@ impl App {
                 self.reset_to_start_state();
             } else if character.eq_ignore_ascii_case("o") {
                 self.open_model_from_dialog();
+            } else if character.eq_ignore_ascii_case("z") {
+                // Ctrl+Z undoes; Ctrl+Shift+Z redoes (the common alt-redo chord).
+                if self.modifiers.shift_key() {
+                    self.redo();
+                } else {
+                    self.undo();
+                }
+            } else if character.eq_ignore_ascii_case("y") {
+                self.redo();
             }
             return;
         }
@@ -1001,11 +1128,7 @@ impl App {
             "3" => self.ui.shading_mode = ShadingMode::Shaded,
             "i" => self.ui.show_stats = !self.ui.show_stats,
             "g" => self.ui.show_grid = !self.ui.show_grid,
-            "f" => {
-                if let Some(renderer) = self.renderer.as_mut() {
-                    frame_camera_to_model(renderer, &self.scene_model);
-                }
-            }
+            "f" => self.frame_camera_on_key(),
             "r" => {
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.animate_camera_to_home();
@@ -1053,8 +1176,11 @@ impl App {
         self.ui.solo = false;
         self.ui.hidden_meshes.clear();
         self.reset_texture_state();
+        // Drop the undo history (it references the previous model) and rebaseline
+        // to the empty start state.
+        self.reset_undo_history();
 
-        info!("reset to start state");
+        prof::msg("reset to start state");
         self.redraw_requested = true;
     }
 
@@ -1075,6 +1201,11 @@ impl App {
     }
 
     fn apply_ui_output(&mut self, output: UiOutput) {
+        // Mirror this frame's material-drag state for the undo observer (read at the
+        // top of the next frame), so a continuous slider / color drag coalesces into
+        // a single undo step. Tracked even when the renderer isn't ready yet.
+        self.drag_in_progress = output.material_edit_active;
+
         if self.renderer.is_none() {
             return;
         }
@@ -1195,34 +1326,6 @@ impl App {
         });
     }
 
-    /// Advance the launch fade-in and return this frame's cover opacity (1 =
-    /// startup black, 0 = fully revealed). Returns 0 and clears `fade` once the
-    /// animation is done, so it's a cheap no-op every frame thereafter. The curve
-    /// is an inverted smoothstep: the reveal starts gently from full black,
-    /// accelerates, then eases out as the viewer settles in.
-    ///
-    /// Time is accumulated from a *capped* per-frame delta rather than absolute
-    /// wall-clock: a slow first frame (pipeline warm-up, surface acquire, the OS
-    /// window-open animation) advances the fade by one frame's worth instead of
-    /// the whole stall, so the dissolve plays across real presented frames
-    /// instead of being skipped — which read as a snap.
-    fn advance_startup_fade(&mut self) -> f32 {
-        let Some(fade) = self.fade.as_mut() else {
-            return 0.0;
-        };
-        let now = Instant::now();
-        let step = now.duration_since(fade.last_tick).min(MAX_FADE_STEP);
-        fade.last_tick = now;
-        fade.elapsed += step;
-
-        if fade.elapsed >= STARTUP_FADE {
-            self.fade = None;
-            return 0.0;
-        }
-        let t = (fade.elapsed.as_secs_f32() / STARTUP_FADE.as_secs_f32()).clamp(0.0, 1.0);
-        1.0 - t * t * (3.0 - 2.0 * t)
-    }
-
     /// Advance the selection-highlight flash and write this frame's fade factor (1
     /// → 0 over [`SELECTION_FLASH`]) into [`UiState::selection_fade`], where the
     /// scene callback reads it. A change to a different node/material (set by the
@@ -1267,6 +1370,32 @@ impl App {
         self.ui.selection_fade = fade;
     }
 
+    /// Frame the camera on `F`. With a mesh part (a node) selected, alternate
+    /// between framing just that part and the whole model on successive presses;
+    /// otherwise (nothing, or a material, selected) always frame the whole model.
+    fn frame_camera_on_key(&mut self) {
+        // Resolve the selected part's bounds first, before the renderer is borrowed
+        // mutably (both borrow `self`). Only a node counts as a "mesh part" here.
+        let part_bounds = match self.ui.selection {
+            Selection::Node(_) => selection_bounds(&self.scene_model, self.ui.selection),
+            _ => None,
+        };
+        let target = match part_bounds {
+            Some(part) => {
+                self.frame_showing_selection = !self.frame_showing_selection;
+                if self.frame_showing_selection {
+                    Some(part)
+                } else {
+                    self.scene_model.bounds.or(Some(part))
+                }
+            }
+            None => self.scene_model.bounds,
+        };
+        if let (Some(renderer), Some(bounds)) = (self.renderer.as_mut(), target) {
+            renderer.animate_camera_to_bounds(bounds);
+        }
+    }
+
     fn update_camera_animation(&mut self) {
         let now = Instant::now();
         let delta_seconds = self
@@ -1285,6 +1414,12 @@ impl App {
                 instant_fps
             };
         }
+
+        // Tracy plots (no-op unless `--tracy`): the live smoothed frame rate plus
+        // the measured model stats, so they read alongside the timeline.
+        prof::plot!("FPS", self.ui.fps);
+        prof::plot!("Triangles", self.ui.stats.triangle_count as f64);
+        prof::plot!("Draw Calls", self.ui.stats.draw_count as f64);
 
         // Advance any live camera transition. The follow-up redraw is scheduled
         // by the paced `repaint_at` logic in `render` (which checks
@@ -1385,7 +1520,10 @@ fn friendly_backend_name(backend: wgpu::Backend) -> String {
     }
 }
 
-fn wgpu_configuration(renderer_config: RendererConfig) -> egui_wgpu::WgpuConfiguration {
+fn wgpu_configuration(
+    renderer_config: RendererConfig,
+    tracy_enabled: bool,
+) -> egui_wgpu::WgpuConfiguration {
     let mut setup = egui_wgpu::WgpuSetupCreateNew::default();
     setup.instance_descriptor.backends = renderer_config.preferred_backends;
 
@@ -1398,16 +1536,36 @@ fn wgpu_configuration(renderer_config: RendererConfig) -> egui_wgpu::WgpuConfigu
     // masked against the adapter's own features so we never request something it
     // lacks (invariant 4); `supported_msaa_levels` mirrors this gating so the UI
     // only offers what the device will actually accept.
-    setup.device_descriptor = std::sync::Arc::new(|adapter: &wgpu::Adapter| {
+    setup.device_descriptor = std::sync::Arc::new(move |adapter: &wgpu::Adapter| {
         let base_limits = if adapter.get_info().backend == wgpu::Backend::Gl {
             wgpu::Limits::downlevel_webgl2_defaults()
         } else {
             wgpu::Limits::default()
         };
+        // On a `--tracy` launch, additionally request `TIMESTAMP_QUERY` for the
+        // hand-rolled GPU profiler — but masked against the adapter, so a device
+        // that lacks it is created exactly as before (and a normal launch requests
+        // nothing extra, so its device is byte-for-byte the current one). Arm the
+        // GPU profiler only if the device will actually carry the feature.
+        let timestamp = if tracy_enabled {
+            adapter.features() & wgpu::Features::TIMESTAMP_QUERY
+        } else {
+            wgpu::Features::empty()
+        };
+        if timestamp.contains(wgpu::Features::TIMESTAMP_QUERY) {
+            review_render::enable_tracy_gpu(adapter.get_info().backend);
+        }
         wgpu::DeviceDescriptor {
             label: Some("egui wgpu device"),
-            required_features: adapter.features()
-                & wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+            // BC is OR'd in unmasked (not `& adapter.features()`): the baked IBL
+            // cubes ship as BC6H, so the renderer hard-requires `TEXTURE_COMPRESSION_BC`.
+            // It's universal on the desktop DX12/Vulkan/Metal targets; if some
+            // adapter lacked it, device creation fails loudly here rather than
+            // later at the IBL upload.
+            required_features: (adapter.features()
+                & wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES)
+                | wgpu::Features::TEXTURE_COMPRESSION_BC
+                | timestamp,
             required_limits: wgpu::Limits {
                 // Match egui's default: large enough for 4k+ surfaces with a depth
                 // buffer.

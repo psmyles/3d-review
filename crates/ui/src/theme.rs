@@ -62,6 +62,11 @@ pub mod color {
     pub const SELECTION_OUTLINE: Color32 = Color32::from_rgb(255, 140, 35);
     /// Hover fill for custom-painted tiles (icon tiles, mode segments).
     pub const HOVER_BG: Color32 = Color32::from_rgb(54, 56, 61);
+    /// Gradient line drawn along the top of a hovered toolbar/status-bar icon tile
+    /// that carries a right-click options panel — a quiet affordance hint that the
+    /// button has more behind it. Opaque at the center, faded to transparent at
+    /// both ends.
+    pub const OPTIONS_HINT: Color32 = Color32::from_rgb(120, 226, 96);
     /// Reset-button fills (idle / hovered).
     pub const BUTTON_BG: Color32 = Color32::from_rgb(20, 23, 26);
     pub const BUTTON_HOVER_BG: Color32 = Color32::from_rgb(28, 32, 37);
@@ -181,12 +186,6 @@ pub mod color {
     /// shadow strength lives under a semantic token (invariant 8).
     pub const WINDOW_SHADOW: Color32 = Color32::from_black_alpha(96);
 
-    // ── Startup fade-in ─────────────────────────────────────────────────────
-    /// Full-screen cover that dissolves the viewer in from black on launch.
-    /// Matches the startup GDI black-fill and the renderer's clear color so the
-    /// reveal is seamless (the cover and the surface beneath start identical).
-    pub const STARTUP_COVER: Color32 = Color32::BLACK;
-
     // ── Startup help overlay ────────────────────────────────────────────────
     /// Help-card surface (translucent, like the stats overlay — the viewport
     /// shows through faintly so the modal doesn't black out the scene) and border.
@@ -252,13 +251,9 @@ pub mod size {
     pub const TOOLBAR_SINGLE_ICON_GROUP_WIDTH: f32 = 48.0;
     /// Width of a three-icon toolbar group (e.g. bounding box / gizmo / grid).
     pub const TOOLBAR_TRIPLE_ICON_GROUP_WIDTH: f32 = 138.0;
-    /// Width of a four-icon toolbar group (the status bar's IBL / Bloom / AO /
+    /// Width of a four-icon toolbar group (the status bar's IBL / AO / Tonemapper /
     /// Anti-aliasing rendering-quality cluster): 6 padding + 4×42 icons + 3×3 gaps.
     pub const TOOLBAR_QUAD_ICON_GROUP_WIDTH: f32 = 183.0;
-    /// Width of a five-icon toolbar group (the status bar's IBL / Bloom / AO /
-    /// Tonemapper / Anti-aliasing rendering-quality cluster). One icon step (45 px)
-    /// wider than the four-icon group.
-    pub const TOOLBAR_QUINT_ICON_GROUP_WIDTH: f32 = 228.0;
     pub const TOOLBAR_MODE_GROUP_WIDTH: f32 = 180.0;
     /// Width of the UV-set dropdown shown on the right of the toolbar in UV mode.
     pub const TOOLBAR_UV_DROPDOWN_WIDTH: f32 = 200.0;
@@ -271,13 +266,8 @@ pub mod size {
     pub const MODE_SEGMENT_HEIGHT: f32 = 42.0;
 
     // ── Notifications (egui-notify toasts) ────────────────────────────────
-    /// Minimum horizontal inset of the toast stacks. The toasts are centered on
-    /// the viewport, but never pulled closer than this to either screen edge.
+    /// Horizontal inset of the toast stacks from the right screen edge.
     pub const NOTIFICATION_MARGIN_X: f32 = OVERLAY_MARGIN;
-    /// egui-notify's internal per-toast box padding (it hard-codes `vec2(10, 10)`).
-    /// Mirrored here so we can reconstruct a toast's on-screen width and center it
-    /// horizontally — egui-notify has no center anchor of its own.
-    pub const NOTIFICATION_PADDING: f32 = 10.0;
     /// Vertical gap between stacked toasts (and the basis for one toast "row").
     pub const NOTIFICATION_SPACING: f32 = 8.0;
     /// Approximate height of one toast row (egui-notify's toast height plus the
@@ -428,6 +418,9 @@ pub mod size {
     pub const HAIRLINE: f32 = 1.0;
     /// Selected-swatch outline width.
     pub const SELECTION_STROKE_WIDTH: f32 = 2.0;
+    /// Height of the options-hint gradient line atop a hovered icon tile. Two
+    /// pixels so it stays visible over the accent fill of an active button.
+    pub const OPTIONS_HINT_THICKNESS: f32 = 2.0;
 
     // ── Gizmo strokes / interaction ───────────────────────────────────────
     pub const GIZMO_LINE_WIDTH: f32 = 2.5;
