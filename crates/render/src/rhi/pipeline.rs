@@ -162,7 +162,9 @@ pub(crate) struct PipelineDesc<'a> {
 pub(crate) struct Pipeline {
     vertex_shader: ID3D11VertexShader,
     pixel_shader: ID3D11PixelShader,
-    input_layout: ID3D11InputLayout,
+    /// `None` for vertex-buffer-less passes (the fullscreen composite, which builds
+    /// its vertices from `SV_VertexID`).
+    input_layout: Option<ID3D11InputLayout>,
     rasterizer: ID3D11RasterizerState,
     depth_stencil: ID3D11DepthStencilState,
     blend: ID3D11BlendState,
@@ -173,7 +175,11 @@ impl Pipeline {
     pub(crate) fn new(device: &ID3D11Device, desc: &PipelineDesc) -> Result<Self> {
         let vertex_shader = create_vertex_shader(device, desc.vs)?;
         let pixel_shader = create_pixel_shader(device, desc.ps)?;
-        let input_layout = create_input_layout(device, desc.input, desc.vs)?;
+        let input_layout = if desc.input.is_empty() {
+            None
+        } else {
+            Some(create_input_layout(device, desc.input, desc.vs)?)
+        };
         let rasterizer = create_rasterizer(device, desc.cull, desc.depth_bias, desc.sample_count)?;
         let depth_stencil = create_depth_stencil(device, desc.depth)?;
         let blend = create_blend(device, desc.blend)?;
@@ -194,7 +200,10 @@ impl Pipeline {
         // SAFETY: all handles are live for `self`'s lifetime; the immediate context
         // owns them for the duration of these state-setting calls.
         unsafe {
-            ctx.IASetInputLayout(&self.input_layout);
+            match &self.input_layout {
+                Some(layout) => ctx.IASetInputLayout(layout),
+                None => ctx.IASetInputLayout(None),
+            }
             ctx.IASetPrimitiveTopology(self.topology);
             ctx.VSSetShader(&self.vertex_shader, None);
             ctx.PSSetShader(&self.pixel_shader, None);

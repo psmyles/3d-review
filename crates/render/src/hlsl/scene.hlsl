@@ -64,16 +64,76 @@ VsOutput vs_main(VsInput input)
     return output;
 }
 
+// Decode an sRGB-authored color into the scene's linear-HDR working space. Tone
+// mapping + the final sRGB encode happen once in the post composite (`post.hlsl`).
+// Mirrors `scene.wgsl`'s `srgb_to_linear` (WGSL `select(hi, lo, c <= 0.04045)`;
+// here `step(c, edge)` is 1 where `c <= edge`, so `lerp(hi, lo, cutoff)` picks the
+// low branch there).
+float3 srgb_to_linear(float3 c)
+{
+    float3 lo = c / 12.92;
+    // max() guards fxc's negative-base pow warning (/WX); the base is >= 0 for any
+    // valid (non-negative) color, so this changes nothing for real inputs.
+    float3 hi = pow(max((c + 0.055) / 1.055, 0.0), 2.4);
+    float3 cutoff = step(c, 0.04045);
+    return lerp(hi, lo, cutoff);
+}
+
+// Scene fragment output (MRT): location 0 is the linear-HDR color the composite
+// tone-maps; location 1 is the linear ambient radiance GTAO may attenuate (Phase
+// 3). Overlays/lines write 0 ambient *color* with the overlay alpha so they never
+// bloom or get AO-darkened. Mirrors `scene.wgsl`'s `FragOutput`.
+struct FragOutput
+{
+    float4 color   : SV_Target0;
+    float4 ambient : SV_Target1;
+};
+
 // Flat-color path for the grid + every line overlay (wireframe, bounding box,
 // face/vertex normal lines). The vertices carry their color in the `COLOR0`
-// channel; lines sample no texture and no light.
-//
-// Phase 1 renders the scene straight to the gamma (non-sRGB) backbuffer, so the
-// authored gamma-space line colors are emitted directly. Once the offscreen
-// linear-HDR target + the post composite land (Phase 2/3), this returns to
-// writing linear color (`srgb_to_linear`) into the HDR MRT and the post pass does
-// the sRGB encode — mirroring `scene.wgsl`'s `fs_line`.
-float4 fs_line(VsOutput input) : SV_Target
+// channel; lines sample no texture and no light. Writes the authored gamma color
+// decoded to linear into the HDR MRT; the post pass encodes sRGB. Mirrors
+// `scene.wgsl`'s `fs_line`.
+FragOutput fs_line(VsOutput input)
 {
-    return input.color;
+    FragOutput output;
+    output.color = float4(srgb_to_linear(input.color.rgb), input.color.a);
+    output.ambient = float4(0.0, 0.0, 0.0, input.color.a);
+    return output;
+}
+
+// Phase 2a mesh path: the analytic neutral-hemisphere + Blinn-Phong lighting from
+// `scene.wgsl`'s IBL-disabled fallback, with a fixed neutral base color and
+// roughness. This makes a loaded model appear as a lit solid and exercises the
+// offscreen-MRT + composite seam + the mesh pipeline (triangle list, back-face
+// cull, depth write + bias). Phase 2b replaces this with the full `fs_main`
+// (per-material PBR, IBL, textures, checker, vertex-color, unlit, alpha) reading
+// the material cbuffer + texture/IBL SRVs.
+FragOutput fs_mesh(VsOutput input)
+{
+    const float3 base_color = float3(0.8, 0.8, 0.8);
+    const float roughness_value = 0.5;
+
+    float3 n = normalize(input.normal);
+    float smoothness = clamp(1.0 - roughness_value, 0.0, 1.0);
+    float3 light_dir = normalize(float3(0.35, 0.82, 0.44));
+    float diffuse = max(dot(n, light_dir), 0.0);
+    float hemi_t = clamp(n.y * 0.5 + 0.5, 0.0, 1.0);
+    float3 sky = float3(0.63, 0.63, 0.63);
+    float3 ground = float3(0.11, 0.11, 0.11);
+    float3 hemi = lerp(ground, sky, hemi_t);
+    float3 ambient_light = hemi * 0.55 + float3(1.0, 1.0, 1.0) * 0.20;
+    float3 direct_light = float3(1.0, 1.0, 1.0) * (diffuse * 0.75);
+    float3 lighting = ambient_light + direct_light;
+    float3 lit = base_color * lighting;
+
+    float3 view_dir = normalize(camera_position.xyz - input.world_position);
+    float3 half_dir = normalize(light_dir + view_dir);
+    float shininess = exp2(1.0 + smoothness * 10.0);
+    float spec = pow(max(dot(n, half_dir), 0.0), shininess) * smoothness * step(0.0, diffuse);
+
+    FragOutput output;
+    output.color = float4(lit + float3(spec, spec, spec), 1.0);
+    output.ambient = float4(base_color * ambient_light, 1.0);
+    return output;
 }

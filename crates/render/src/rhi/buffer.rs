@@ -4,11 +4,12 @@
 
 use bytemuck::Pod;
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_BIND_CONSTANT_BUFFER, D3D11_BIND_VERTEX_BUFFER, D3D11_BUFFER_DESC,
-    D3D11_CPU_ACCESS_WRITE, D3D11_MAP_WRITE_DISCARD, D3D11_MAPPED_SUBRESOURCE,
+    D3D11_BIND_CONSTANT_BUFFER, D3D11_BIND_INDEX_BUFFER, D3D11_BIND_VERTEX_BUFFER,
+    D3D11_BUFFER_DESC, D3D11_CPU_ACCESS_WRITE, D3D11_MAP_WRITE_DISCARD, D3D11_MAPPED_SUBRESOURCE,
     D3D11_SUBRESOURCE_DATA, D3D11_USAGE_DYNAMIC, D3D11_USAGE_IMMUTABLE, ID3D11Buffer, ID3D11Device,
     ID3D11DeviceContext,
 };
+use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32_UINT;
 use windows::core::Result;
 
 /// An immutable vertex buffer + its stride and vertex count. Geometry is rebuilt
@@ -66,6 +67,54 @@ impl VertexBuffer {
                 Some(&self.stride),
                 Some(&0),
             );
+        }
+    }
+}
+
+/// An immutable 32-bit index buffer + its index count. Like [`VertexBuffer`],
+/// rebuilt wholesale when the mesh changes.
+pub(crate) struct IndexBuffer {
+    buffer: ID3D11Buffer,
+    count: u32,
+}
+
+impl IndexBuffer {
+    /// Create an immutable index buffer from `indices` (must be non-empty).
+    pub(crate) fn new(device: &ID3D11Device, indices: &[u32]) -> Result<Self> {
+        debug_assert!(!indices.is_empty(), "index buffer must be non-empty");
+        let bytes: &[u8] = bytemuck::cast_slice(indices);
+        let desc = D3D11_BUFFER_DESC {
+            ByteWidth: std::mem::size_of_val(bytes) as u32,
+            Usage: D3D11_USAGE_IMMUTABLE,
+            BindFlags: D3D11_BIND_INDEX_BUFFER.0 as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+            StructureByteStride: 0,
+        };
+        let init = D3D11_SUBRESOURCE_DATA {
+            pSysMem: bytes.as_ptr() as *const _,
+            SysMemPitch: 0,
+            SysMemSlicePitch: 0,
+        };
+        let mut buffer = None;
+        // SAFETY: immutable buffer with full initial data; `init.pSysMem` points at
+        // `bytes`, alive for the call. The out-param is set.
+        unsafe { device.CreateBuffer(&desc, Some(&init), Some(&mut buffer))? };
+        Ok(Self {
+            buffer: buffer.unwrap(),
+            count: indices.len() as u32,
+        })
+    }
+
+    pub(crate) fn count(&self) -> u32 {
+        self.count
+    }
+
+    /// Bind this index buffer (32-bit indices) to the input assembler.
+    pub(crate) fn bind(&self, ctx: &ID3D11DeviceContext) {
+        // SAFETY: the buffer is live for the duration of the call.
+        unsafe {
+            ctx.IASetIndexBuffer(&self.buffer, DXGI_FORMAT_R32_UINT, 0);
         }
     }
 }
@@ -128,9 +177,6 @@ impl DynamicConstantBuffer {
     }
 
     /// Bind this buffer to the pixel-shader constant slot `slot`.
-    // The fragment stage reads the scene uniforms once the mesh's `fs_main` lands
-    // (Phase 2); Phase 1's `fs_line` reads no constants.
-    #[allow(dead_code)]
     pub(crate) fn bind_ps(&self, ctx: &ID3D11DeviceContext, slot: u32) {
         // SAFETY: the buffer is live; the one-element array outlives the call.
         unsafe {

@@ -1,20 +1,89 @@
-//! Render-target plumbing. Phase 1 needs only a depth target (the scene draws
-//! straight to the swapchain backbuffer); the offscreen linear-HDR MRT color
-//! targets + MSAA resolves join this module in Phases 2/5.
+//! Render-target plumbing: the depth target plus the offscreen linear-HDR color
+//! targets the scene renders into (Phase 2). MSAA-resolve variants join in Phase 5.
 
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_BIND_DEPTH_STENCIL, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, ID3D11DepthStencilView,
-    ID3D11Device,
+    D3D11_BIND_DEPTH_STENCIL, D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE,
+    D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, ID3D11DepthStencilView, ID3D11Device,
+    ID3D11DeviceContext, ID3D11RenderTargetView, ID3D11ShaderResourceView,
 };
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_D32_FLOAT, DXGI_SAMPLE_DESC};
+use windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_SAMPLE_DESC,
+};
 use windows::core::Result;
 
-/// The scene depth buffer (`D32_FLOAT`, Reversed-Z). Recreated when the
-/// framebuffer size changes; single-sample in Phase 1 (MSAA lands in Phase 5).
-pub(crate) struct DepthTarget {
-    view: ID3D11DepthStencilView,
+/// An offscreen linear-HDR color target (`R16G16B16A16_FLOAT`): a texture with
+/// both a render-target view (the scene draws into it) and a shader-resource view
+/// (the composite samples it). Single-sample in Phase 2; the MSAA-resolved variant
+/// lands in Phase 5. Recreated on resize.
+pub(crate) struct ColorTarget {
+    rtv: ID3D11RenderTargetView,
+    srv: ID3D11ShaderResourceView,
     width: u32,
     height: u32,
+}
+
+impl ColorTarget {
+    pub(crate) fn new(device: &ID3D11Device, width: u32, height: u32) -> Result<Self> {
+        let width = width.max(1);
+        let height = height.max(1);
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: width,
+            Height: height,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_R16G16B16A16_FLOAT,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let mut texture = None;
+        // SAFETY: `desc` is a well-formed HDR render texture; the out-param is set.
+        unsafe { device.CreateTexture2D(&desc, None, Some(&mut texture))? };
+        let texture = texture.unwrap();
+        let mut rtv = None;
+        let mut srv = None;
+        // SAFETY: `texture` is render-target- and shader-resource-bindable; default
+        // view descs (None) match its typed format. Out-params set.
+        unsafe {
+            device.CreateRenderTargetView(&texture, None, Some(&mut rtv))?;
+            device.CreateShaderResourceView(&texture, None, Some(&mut srv))?;
+        }
+        Ok(Self {
+            rtv: rtv.unwrap(),
+            srv: srv.unwrap(),
+            width,
+            height,
+        })
+    }
+
+    pub(crate) fn rtv(&self) -> &ID3D11RenderTargetView {
+        &self.rtv
+    }
+
+    pub(crate) fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// Bind this target's shader-resource view to pixel-shader slot `slot` (for the
+    /// composite to sample).
+    pub(crate) fn bind_ps_srv(&self, ctx: &ID3D11DeviceContext, slot: u32) {
+        // SAFETY: the SRV is live; the one-element array outlives the call.
+        unsafe {
+            ctx.PSSetShaderResources(slot, Some(&[Some(self.srv.clone())]));
+        }
+    }
+}
+
+/// The scene depth buffer (`D32_FLOAT`, Reversed-Z). Recreated alongside the
+/// color targets when the framebuffer resizes; single-sample in Phase 2 (MSAA
+/// lands in Phase 5).
+pub(crate) struct DepthTarget {
+    view: ID3D11DepthStencilView,
 }
 
 impl DepthTarget {
@@ -46,16 +115,10 @@ impl DepthTarget {
         unsafe { device.CreateDepthStencilView(&texture, None, Some(&mut view))? };
         Ok(Self {
             view: view.unwrap(),
-            width,
-            height,
         })
     }
 
     pub(crate) fn view(&self) -> &ID3D11DepthStencilView {
         &self.view
-    }
-
-    pub(crate) fn size(&self) -> (u32, u32) {
-        (self.width, self.height)
     }
 }

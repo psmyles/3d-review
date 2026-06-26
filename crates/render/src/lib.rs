@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use glam::{Mat4, Vec2, Vec3};
-use review_model::{Bounds, MaterialImportDefaults};
+use review_model::{Bounds, MaterialImportDefaults, ModelData};
 
 mod config;
 mod geometry;
@@ -550,13 +550,16 @@ impl Renderer {
         }
     }
 
-    /// Render the scene through Direct3D 11 to the swapchain backbuffer, behind the
-    /// egui chrome `app` draws next. Builds the GPU resources on the first call
-    /// (the device only exists once the window is up). Phase 1 draws the reference
-    /// grid; the mesh / overlays / offscreen-HDR composite land in later phases.
+    /// Render the scene through Direct3D 11: the mesh + grid into offscreen
+    /// linear-HDR targets, then a tone-mapped composite to the swapchain backbuffer,
+    /// behind the egui chrome `app` draws next. Builds the GPU resources on the
+    /// first call (the device only exists once the window is up). Phase 2a shades
+    /// the mesh with analytic lighting; per-material PBR/IBL lands in Phase 2b.
     pub fn render_scene(
         &mut self,
         gpu: &Gpu,
+        model: &ModelData,
+        model_revision: u64,
         debug: SceneDebugOptions,
         projection: CameraProjection,
         clear: [f32; 4],
@@ -565,7 +568,15 @@ impl Renderer {
             self.scene_gpu = Some(SceneGpu::new(gpu)?);
         }
         let scene = self.scene_gpu.as_mut().unwrap();
-        scene.render(gpu, self.camera, projection, debug, clear)
+        scene.render(
+            gpu,
+            model,
+            model_revision,
+            self.camera,
+            projection,
+            debug,
+            clear,
+        )
     }
 
     /// Seed the editable material table from a freshly loaded model's import

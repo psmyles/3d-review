@@ -43,6 +43,24 @@ const SHADERS: &[ShaderJob] = &[
         entry: "fs_line",
         output: "scene.line.ps.dxbc",
     },
+    ShaderJob {
+        source: "scene.hlsl",
+        profile: "ps_5_0",
+        entry: "fs_mesh",
+        output: "scene.mesh.ps.dxbc",
+    },
+    ShaderJob {
+        source: "post.hlsl",
+        profile: "vs_5_0",
+        entry: "vs_fullscreen",
+        output: "post.vs.dxbc",
+    },
+    ShaderJob {
+        source: "post.hlsl",
+        profile: "ps_5_0",
+        entry: "fs_post",
+        output: "post.ps.dxbc",
+    },
 ];
 
 fn main() {

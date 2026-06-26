@@ -11,14 +11,16 @@
 
 mod buffer;
 mod pipeline;
+mod sampler;
 mod target;
 
-pub(crate) use buffer::{DynamicConstantBuffer, VertexBuffer};
+pub(crate) use buffer::{DynamicConstantBuffer, IndexBuffer, VertexBuffer};
 pub(crate) use pipeline::{
     BlendMode, Cull, DepthBias, DepthCompare, DepthState, InputElement, Pipeline, PipelineDesc,
     Topology, VertexFormat,
 };
-pub(crate) use target::DepthTarget;
+pub(crate) use sampler::Sampler;
+pub(crate) use target::{ColorTarget, DepthTarget};
 
 use windows::Win32::Foundation::{HMODULE, HWND};
 use windows::Win32::Graphics::Direct3D::{
@@ -27,7 +29,7 @@ use windows::Win32::Graphics::Direct3D::{
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_CLEAR_DEPTH, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_DEBUG,
     D3D11_CREATE_DEVICE_FLAG, D3D11_SDK_VERSION, D3D11_VIEWPORT, D3D11CreateDevice, ID3D11Device,
-    ID3D11DeviceContext, ID3D11RenderTargetView, ID3D11Texture2D,
+    ID3D11DeviceContext, ID3D11RenderTargetView, ID3D11ShaderResourceView, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_UNKNOWN,
@@ -149,34 +151,6 @@ impl Gpu {
         Ok(())
     }
 
-    /// Begin a scene pass that draws straight to the swapchain backbuffer with
-    /// `depth` attached: bind the backbuffer RTV + depth DSV, clear the color to
-    /// `clear` and the depth to the Reversed-Z far value (0), and set the viewport
-    /// to the full backbuffer. The scene pipelines + draws follow on the immediate
-    /// context. (Phase 1 renders directly to the backbuffer; the offscreen MRT seam
-    /// lands in Phase 2.)
-    pub(crate) fn begin_backbuffer_pass(&self, depth: &DepthTarget, clear: [f32; 4]) {
-        let (width, height) = self.size;
-        // SAFETY: the backbuffer RTV + `depth`'s DSV are live; the viewport array
-        // outlives the call. The immediate context owns all bound resources.
-        unsafe {
-            self.context
-                .OMSetRenderTargets(Some(&[Some(self.backbuffer_rtv().clone())]), depth.view());
-            self.context
-                .ClearRenderTargetView(self.backbuffer_rtv(), &clear);
-            self.context
-                .ClearDepthStencilView(depth.view(), D3D11_CLEAR_DEPTH.0, 0.0, 0);
-            self.context.RSSetViewports(Some(&[D3D11_VIEWPORT {
-                TopLeftX: 0.0,
-                TopLeftY: 0.0,
-                Width: width as f32,
-                Height: height as f32,
-                MinDepth: 0.0,
-                MaxDepth: 1.0,
-            }]));
-        }
-    }
-
     /// Issue a non-indexed draw of `count` vertices from vertex 0. The pipeline +
     /// vertex buffer + constant buffers must already be bound.
     pub(crate) fn draw(&self, count: u32) {
@@ -184,6 +158,71 @@ impl Gpu {
         // caller's responsibility (set just before via the rhi wrappers).
         unsafe {
             self.context.Draw(count, 0);
+        }
+    }
+
+    /// Issue an indexed draw of `count` indices from index 0. The pipeline + vertex
+    /// + index buffers + constants must already be bound.
+    pub(crate) fn draw_indexed(&self, count: u32) {
+        // SAFETY: indexed draw on the immediate context; bound state is the
+        // caller's responsibility.
+        unsafe {
+            self.context.DrawIndexed(count, 0, 0);
+        }
+    }
+
+    /// Begin the offscreen scene pass: bind `colors` as MRT render targets + `depth`
+    /// as the DSV, clear color 0 to `clear` and any further colors to transparent,
+    /// clear depth to the Reversed-Z far value (0), and set the viewport to the
+    /// first color target's size. The scene draws into these; the composite then
+    /// samples them.
+    pub(crate) fn begin_scene_pass(
+        &self,
+        colors: &[&ColorTarget],
+        depth: &DepthTarget,
+        clear: [f32; 4],
+    ) {
+        let rtvs: Vec<Option<ID3D11RenderTargetView>> =
+            colors.iter().map(|c| Some(c.rtv().clone())).collect();
+        let (width, height) = colors.first().map_or(self.size, |c| c.size());
+        // SAFETY: every RTV + the DSV are live; the local arrays/viewport outlive
+        // the calls. The immediate context owns the bound targets.
+        unsafe {
+            self.context.OMSetRenderTargets(Some(&rtvs), depth.view());
+            for (index, color) in colors.iter().enumerate() {
+                let value = if index == 0 { clear } else { [0.0; 4] };
+                self.context.ClearRenderTargetView(color.rtv(), &value);
+            }
+            self.context
+                .ClearDepthStencilView(depth.view(), D3D11_CLEAR_DEPTH.0, 0.0, 0);
+            self.context
+                .RSSetViewports(Some(&[viewport(width, height)]));
+        }
+    }
+
+    /// Begin the backbuffer composite pass: bind the backbuffer RTV (no depth) and
+    /// set the full-backbuffer viewport. The composite overwrites every pixel, so
+    /// no clear is issued.
+    pub(crate) fn begin_backbuffer_blit(&self) {
+        let (width, height) = self.size;
+        // SAFETY: the backbuffer RTV is live; the viewport array outlives the call.
+        unsafe {
+            self.context
+                .OMSetRenderTargets(Some(&[Some(self.backbuffer_rtv().clone())]), None);
+            self.context
+                .RSSetViewports(Some(&[viewport(width, height)]));
+        }
+    }
+
+    /// Unbind `count` pixel-shader shader-resource slots (starting at 0). Called
+    /// after the composite so the offscreen color targets aren't still bound as
+    /// SRVs when the next frame binds them as render targets (which the D3D11 debug
+    /// layer would otherwise flag).
+    pub(crate) fn unbind_ps_srvs(&self, count: usize) {
+        let nulls: Vec<Option<ID3D11ShaderResourceView>> = vec![None; count];
+        // SAFETY: clearing SRV slots with null views; the local array outlives call.
+        unsafe {
+            self.context.PSSetShaderResources(0, Some(&nulls));
         }
     }
 
@@ -196,6 +235,18 @@ impl Gpu {
             // is hidden); none is actionable here, so it's deliberately ignored.
             let _ = self.swap_chain.Present(u32::from(vsync), DXGI_PRESENT(0));
         }
+    }
+}
+
+/// A full-target viewport (top-left origin, depth 0..1) at `width`×`height`.
+fn viewport(width: u32, height: u32) -> D3D11_VIEWPORT {
+    D3D11_VIEWPORT {
+        TopLeftX: 0.0,
+        TopLeftY: 0.0,
+        Width: width as f32,
+        Height: height as f32,
+        MinDepth: 0.0,
+        MaxDepth: 1.0,
     }
 }
 
