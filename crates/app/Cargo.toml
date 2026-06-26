@@ -8,7 +8,7 @@ rust-version.workspace = true
 [dependencies]
 anyhow.workspace = true
 egui.workspace = true
-egui-wgpu = { workspace = true, features = ["winit"] }
+egui-directx11.workspace = true
 egui-winit.workspace = true
 glam.workspace = true
 image.workspace = true
@@ -22,14 +22,15 @@ rfd.workspace = true
 tracy-client.workspace = true
 wgpu.workspace = true
 winit.workspace = true
-
-[target.'cfg(windows)'.dependencies]
-# GDI used only by `startup_paint` to fill the new window black before the first
-# wgpu present (the one sanctioned exception to invariant 9).
-windows-sys = { workspace = true, features = [
+# Direct3D 11 / DXGI for the device + swapchain bootstrap and first-frame present
+# (the startup black-fill, replacing the old GDI hack). Scoped to the window/
+# swapchain setup; the renderer's D3D11 lives in `review-render`'s `rhi` module.
+windows = { workspace = true, features = [
     "Win32_Foundation",
-    "Win32_Graphics_Gdi",
-    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
 ] }
 
 [target.'cfg(windows)'.build-dependencies]

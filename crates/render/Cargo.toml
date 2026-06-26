@@ -8,8 +8,17 @@ rust-version.workspace = true
 [dependencies]
 bytemuck.workspace = true
 egui.workspace = true
-egui-wgpu.workspace = true
 glam.workspace = true
+# Direct3D 11 / DXGI. The renderer talks to the GPU natively via the `windows`
+# crate; all D3D11 `unsafe`/COM is confined to the `rhi` module (the second
+# sanctioned exception to invariant 9). Shared by the runtime and the bake binary.
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+] }
 half.workspace = true
 image.workspace = true
 # Both only used by the offline `bake_ibl` tool (the `bake` feature), not linked

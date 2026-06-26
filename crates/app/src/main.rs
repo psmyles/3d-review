@@ -3,7 +3,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod prof;
-mod startup_paint;
 mod texture_manager;
 mod undo;
 mod window_state;
@@ -29,13 +28,14 @@ use notify::RecommendedWatcher;
 use review_import::{LoadOptions, load_model};
 use review_model::{ModelData, SceneBvh};
 use review_render::{
-    DecodedImage, EGUI_DEPTH_FORMAT, EGUI_MSAA_SAMPLE_COUNT, Renderer, RendererConfig, ShadingMode,
-    TextureSlot, gtao_supported, ibl_supported, selection_bounds, supported_msaa_levels,
+    DecodedImage, Gpu, Renderer, RendererConfig, ShadingMode, TextureSlot, selection_bounds,
 };
 use review_ui::{
     AxisGizmoAction, Notifications, Selection, TexViewRequest, TextureIntent, UiOutput, UiState,
     WorkspaceMode, draw_overlay, draw_viewport_scene, init_style,
 };
+use windows::Win32::Foundation::HWND;
+use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
@@ -113,7 +113,11 @@ struct App {
     renderer: Option<Renderer>,
     egui_ctx: Option<egui::Context>,
     egui_state: Option<egui_winit::State>,
-    egui_painter: Option<egui_wgpu::winit::Painter>,
+    /// The Direct3D 11 device + immediate context + window swapchain.
+    gpu: Option<Gpu>,
+    /// egui's Direct3D 11 renderer (replaces egui-wgpu). Draws the chrome on top of
+    /// the scene each frame.
+    egui_renderer: Option<egui_directx11::Renderer>,
     drag_mode: Option<DragMode>,
     last_pointer_position: Option<Vec2>,
     last_primary_click: Option<(Instant, Vec2)>,
@@ -268,7 +272,8 @@ impl Default for App {
             renderer: None,
             egui_ctx: None,
             egui_state: None,
-            egui_painter: None,
+            gpu: None,
+            egui_renderer: None,
             drag_mode: None,
             last_pointer_position: None,
             last_primary_click: None,
@@ -410,11 +415,6 @@ impl ApplicationHandler<UserEvent> for App {
             .expect("failed to create application window");
         let window = Arc::new(window);
 
-        // Paint the client area black immediately, before the (non-instant) wgpu
-        // surface setup below, so the window never flashes its default white while
-        // the renderer comes up. See `startup_paint` (the one sanctioned exception
-        // to invariant 9).
-        startup_paint::paint_window_black(&window);
         drop(phase.take());
         phase = prof::zone!("Renderer Init");
 
@@ -436,61 +436,32 @@ impl ApplicationHandler<UserEvent> for App {
         // central theme tokens (no per-frame state), so it never needs re-syncing.
         init_style(&egui_ctx);
         drop(phase.take());
-        phase = prof::zone!("Set Window (adapter/device/surface)");
+        phase = prof::zone!("D3D11 Device + Swapchain");
 
-        let mut egui_painter = pollster::block_on(egui_wgpu::winit::Painter::new(
-            egui_ctx.clone(),
-            wgpu_configuration(renderer_config, self.tracy_enabled),
-            EGUI_MSAA_SAMPLE_COUNT,
-            Some(EGUI_DEPTH_FORMAT),
-            false,
-            true,
-        ));
-        // This first `set_window` is the largest remaining startup chunk (~265ms on
-        // the RTX 4080 / DX12 dev box) and is INTRINSIC, not our overhead — do not
-        // re-investigate without new evidence. `Painter::new` above only built the
-        // wgpu *instance*; egui-wgpu defers all real GPU init to the first
-        // `set_window`, which runs `RenderState::create`: adapter enumerate +
-        // `request_device` + egui's `Renderer::new` + the first swapchain configure.
-        // Measured split (via the `--tracy` GPU/CPU zones, which surface egui-wgpu's
-        // + wgpu's `profiling::scope!`s as Tracy zones): ~197ms `enumerate_adapters`
-        // + ~47ms `request_device` + ~13ms egui `Renderer::new` + ~4ms swapchain.
-        // The ~197ms is DX12 creating an `ID3D12Device` per adapter to probe its
-        // features (4 adapters on this box: the 4080 cold-loads the NVIDIA driver
-        // DLL, then 3 more probes). Phase D ruled out every angle: a background
-        // driver *pre-warm* can't help (the cold driver-DLL load ~130ms dwarfs the
-        // ~31ms head-start the main thread has before reaching here); *bypassing*
-        // egui to call `request_adapter` ourselves pays the SAME per-adapter probing
-        // cold (~200ms, measured), so it saves only noise; and it is unfixed upstream
-        // through wgpu 29 / egui-wgpu 0.34 + wgpu-hal trunk (wgpu #3332, closed
-        // "external: driver-bug"). Only a wgpu-hal fork skipping the 3 junk adapters
-        // could trim it (~61ms), not worth the maintenance. Do NOT trade away
-        // steady-state `AutoVsync` to chase it.
-        pollster::block_on(egui_painter.set_window(egui::ViewportId::ROOT, Some(window.clone())))
-            .expect("failed to initialize wgpu surface");
+        // Create the Direct3D 11 device + immediate context + a flip-model swapchain
+        // on the window. A single `D3D11CreateDevice` on the default adapter — no
+        // DX12 multi-adapter probing, no naga — so this is far cheaper than the old
+        // egui-wgpu `set_window` (~265ms, of which ~197ms was DX12 enumerating every
+        // adapter by creating an `ID3D12Device` per adapter to probe features).
+        let gpu = Gpu::new(win32_hwnd(&window), size.width, size.height)
+            .expect("failed to create the Direct3D 11 device + swapchain");
+        // Kill the white startup flash: clear the backbuffer black and present once,
+        // before any scene exists. This replaces the old GDI startup paint (the
+        // removed first exception to invariant 9) using the swapchain we just made.
+        gpu.clear_backbuffer([0.0, 0.0, 0.0, 1.0]);
+        gpu.present(false);
+        // egui renders through egui-directx11 on the same device/context.
+        let egui_renderer = egui_directx11::Renderer::new(gpu.device())
+            .expect("failed to create the egui Direct3D 11 renderer");
         drop(phase.take());
         phase = prof::zone!("Shell Init");
 
-        // Report which backend/adapter wgpu actually selected (see
-        // RendererConfig::preferred_backends — DX12 on Windows). Surfaced as a Tracy
-        // message on a `--tracy` run.
-        if let Some(render_state) = egui_painter.render_state() {
-            let adapter_info = render_state.adapter.get_info();
-            prof::msg(&format!(
-                "selected wgpu adapter: {:?} / {} / {:?}",
-                adapter_info.backend, adapter_info.name, adapter_info.device_type
-            ));
-            // Surface the chosen backend in the startup help overlay.
-            self.ui.gpu_backend = friendly_backend_name(adapter_info.backend);
-            // Gate the Anti Aliasing menu to the MSAA levels this adapter can
-            // actually render the scene at (invariant 4).
-            self.ui.supported_msaa = supported_msaa_levels(&render_state.adapter);
-            // Gate the Environment IBL toggle on the adapter being able to build
-            // the HDR maps (invariant 4).
-            self.ui.ibl_supported = ibl_supported(&render_state.adapter);
-            // Gate the AO toggle on the adapter being able to run GTAO (invariant 4).
-            self.ui.gtao_supported = gtao_supported(&render_state.adapter);
-        }
+        // The viewer talks to the GPU through Direct3D 11.
+        self.ui.gpu_backend = "DX11".to_string();
+        // TODO(migration Phase 5): gate the Anti-Aliasing menu / IBL / AO toggles on
+        // real D3D11 capability queries (CheckMultisampleQualityLevels /
+        // CheckFormatSupport). Until the scene path is on D3D11, the UiState defaults
+        // apply (IBL + AO enabled; the MSAA menu offers Off only).
 
         let egui_state = egui_winit::State::new(
             egui_ctx.clone(),
@@ -498,13 +469,15 @@ impl ApplicationHandler<UserEvent> for App {
             event_loop,
             Some(window.scale_factor() as f32),
             window.theme(),
-            egui_painter.max_texture_side(),
+            // D3D11 feature level 11_0+ guarantees 16384 max 2D texture dimension.
+            Some(16384),
         );
 
         self.renderer = Some(renderer);
         self.egui_ctx = Some(egui_ctx);
         self.egui_state = Some(egui_state);
-        self.egui_painter = Some(egui_painter);
+        self.gpu = Some(gpu);
+        self.egui_renderer = Some(egui_renderer);
         self.ui.stats = self.scene_model.stats;
         self.ui.bounds = self.scene_model.bounds;
         self.ui.uv_sets = self.scene_model.uv_set_labels();
@@ -601,12 +574,10 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 }
 
-                if let (Some(width), Some(height), Some(painter)) = (
-                    NonZeroU32::new(size.width),
-                    NonZeroU32::new(size.height),
-                    self.egui_painter.as_mut(),
-                ) {
-                    painter.on_window_resized(egui::ViewportId::ROOT, width, height);
+                if let Some(gpu) = self.gpu.as_mut() {
+                    // Resize the swapchain to the new backbuffer size. A failed resize
+                    // is non-fatal — the old buffers stay valid for this frame.
+                    let _ = gpu.resize(size.width, size.height);
                 }
 
                 window.request_redraw();
@@ -807,20 +778,10 @@ impl App {
         // texture) into the undo history before this frame's egui pass.
         self.observe_edit_state();
 
-        let output_format = {
-            let Some(egui_painter) = self.egui_painter.as_ref() else {
-                return;
-            };
-
-            let Some(output_format) = egui_painter
-                .render_state()
-                .map(|render_state| render_state.target_format)
-            else {
-                return;
-            };
-
-            output_format
-        };
+        // Bail until the D3D11 device + egui renderer exist (built in `resumed`).
+        if self.gpu.is_none() || self.egui_renderer.is_none() {
+            return;
+        }
 
         // The bounding-box dimension labels occlude against the mesh through a
         // triangle BVH. Build it lazily the first frame the labels are shown for a
@@ -864,16 +825,8 @@ impl App {
                     uv_camera,
                     scene_model.clone(),
                     scene_revision,
-                    output_format,
                 );
-                ui_output = draw_overlay(
-                    ctx,
-                    &mut self.ui,
-                    camera,
-                    &scene_model,
-                    occlusion_bvh,
-                    output_format,
-                );
+                ui_output = draw_overlay(ctx, &mut self.ui, camera, &scene_model, occlusion_bvh);
                 if self.ui.debug.material_mode != prev_material_mode {
                     notifications.mode(self.ui.debug.material_mode.label());
                 }
@@ -923,33 +876,36 @@ impl App {
                 Instant::now().checked_add(repaint_delay)
             };
 
-        let pixels_per_point = full_output.pixels_per_point;
-        let clipped_primitives = {
-            let _z = prof::zone!("Tessellate");
-            egui_ctx.tessellate(full_output.shapes, pixels_per_point)
+        let Some(gpu) = self.gpu.as_ref() else {
+            return;
         };
-
-        let Some(egui_painter) = self.egui_painter.as_mut() else {
+        let Some(egui_renderer) = self.egui_renderer.as_mut() else {
             return;
         };
 
         {
-            // The scene's `prepare` (offscreen render + GPU-profiler drain/resolve)
-            // and egui's `submit` + present both happen inside this call.
             let _z = prof::zone!("Paint + Present");
-            egui_painter.paint_and_update_textures(
-                egui::ViewportId::ROOT,
-                pixels_per_point,
-                [
-                    clear.r as f32,
-                    clear.g as f32,
-                    clear.b as f32,
-                    clear.a as f32,
-                ],
-                &clipped_primitives,
-                &full_output.textures_delta,
-                Vec::new(),
-            );
+            // Clear the backbuffer to the scene clear color (until the D3D11 scene
+            // path lands the blank viewport shows this color through the chrome),
+            // draw the egui chrome on top, then present. egui-directx11 tessellates
+            // the shapes internally and manages its own font/texture atlas.
+            gpu.clear_backbuffer([
+                clear.r as f32,
+                clear.g as f32,
+                clear.b as f32,
+                clear.a as f32,
+            ]);
+            let egui_output = egui_directx11::RendererOutput {
+                textures_delta: full_output.textures_delta,
+                shapes: full_output.shapes,
+                pixels_per_point: full_output.pixels_per_point,
+            };
+            if let Err(err) =
+                egui_renderer.render(gpu.context(), gpu.backbuffer_rtv(), &egui_ctx, egui_output)
+            {
+                prof::msg(&format!("egui D3D11 render failed: {err}"));
+            }
+            gpu.present(true);
         }
 
         // Delimit the frame for Tracy's frame view (no-op unless `--tracy`).
@@ -1506,88 +1462,11 @@ fn frame_camera_to_model(renderer: &mut Renderer, model: &ModelData) {
     }
 }
 
-/// Map the wgpu backend wgpu actually selected to a short label for the help
-/// overlay title (e.g. `Backend::Dx12` → "DX12"). Falls back to the enum's debug
-/// name for any backend without a custom label.
-fn friendly_backend_name(backend: wgpu::Backend) -> String {
-    match backend {
-        wgpu::Backend::Dx12 => "DX12".to_string(),
-        wgpu::Backend::Vulkan => "Vulkan".to_string(),
-        wgpu::Backend::Metal => "Metal".to_string(),
-        wgpu::Backend::Gl => "OpenGL".to_string(),
-        wgpu::Backend::BrowserWebGpu => "WebGPU".to_string(),
-        other => format!("{other:?}"),
-    }
-}
-
-fn wgpu_configuration(
-    renderer_config: RendererConfig,
-    tracy_enabled: bool,
-) -> egui_wgpu::WgpuConfiguration {
-    let mut setup = egui_wgpu::WgpuSetupCreateNew::default();
-    setup.instance_descriptor.backends = renderer_config.preferred_backends;
-
-    // Mirror egui_wgpu's default device descriptor, but additionally request
-    // `TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES` when the adapter offers it. The
-    // WebGPU spec only guarantees sample counts [1, 4] for our HDR/depth render
-    // formats; the intermediate/high counts the adapter reports (2× / 8× here)
-    // are only usable on the device once that feature is enabled. Without it,
-    // building a scene pipeline at e.g. 2× MSAA fails validation. The feature is
-    // masked against the adapter's own features so we never request something it
-    // lacks (invariant 4); `supported_msaa_levels` mirrors this gating so the UI
-    // only offers what the device will actually accept.
-    setup.device_descriptor = std::sync::Arc::new(move |adapter: &wgpu::Adapter| {
-        let base_limits = if adapter.get_info().backend == wgpu::Backend::Gl {
-            wgpu::Limits::downlevel_webgl2_defaults()
-        } else {
-            wgpu::Limits::default()
-        };
-        // On a `--tracy` launch, additionally request `TIMESTAMP_QUERY` for the
-        // hand-rolled GPU profiler — but masked against the adapter, so a device
-        // that lacks it is created exactly as before (and a normal launch requests
-        // nothing extra, so its device is byte-for-byte the current one). Arm the
-        // GPU profiler only if the device will actually carry the feature.
-        let timestamp = if tracy_enabled {
-            adapter.features() & wgpu::Features::TIMESTAMP_QUERY
-        } else {
-            wgpu::Features::empty()
-        };
-        if timestamp.contains(wgpu::Features::TIMESTAMP_QUERY) {
-            review_render::enable_tracy_gpu(adapter.get_info().backend);
-        }
-        wgpu::DeviceDescriptor {
-            label: Some("egui wgpu device"),
-            // BC is OR'd in unmasked (not `& adapter.features()`): the baked IBL
-            // cubes ship as BC6H, so the renderer hard-requires `TEXTURE_COMPRESSION_BC`.
-            // It's universal on the desktop DX12/Vulkan/Metal targets; if some
-            // adapter lacked it, device creation fails loudly here rather than
-            // later at the IBL upload.
-            required_features: (adapter.features()
-                & wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES)
-                | wgpu::Features::TEXTURE_COMPRESSION_BC
-                | timestamp,
-            required_limits: wgpu::Limits {
-                // Match egui's default: large enough for 4k+ surfaces with a depth
-                // buffer.
-                max_texture_dimension_2d: 8192,
-                ..base_limits
-            },
-            // Ask wgpu's DX12 suballocator to reserve in smaller blocks rather than
-            // the default large-block strategy. Measured (experiments/stack-bench)
-            // this cuts dedicated VRAM ~868 -> ~608 MB (-30%) and resident RAM
-            // ~236 -> ~197 MB at idle, with no startup or quality cost — the bulk of
-            // our VRAM was allocator heap reservation, not live texels. The trade is
-            // a touch more allocation-time work, which is invisible here: geometry
-            // and textures upload once at model load, not per frame.
-            memory_hints: wgpu::MemoryHints::MemoryUsage,
-        }
-    });
-
-    egui_wgpu::WgpuConfiguration {
-        wgpu_setup: egui_wgpu::WgpuSetup::CreateNew(setup),
-        // Vsync: present in FIFO so the swapchain paces frames to the monitor's
-        // refresh and the viewer never renders faster than the display.
-        present_mode: wgpu::PresentMode::AutoVsync,
-        ..Default::default()
+/// Extract the Win32 `HWND` from a winit window, for DXGI swapchain creation. The
+/// viewer is Windows-only, so a non-Win32 handle is an unrecoverable error.
+fn win32_hwnd(window: &Window) -> HWND {
+    match window.window_handle().map(|handle| handle.as_raw()) {
+        Ok(RawWindowHandle::Win32(handle)) => HWND(handle.hwnd.get() as *mut core::ffi::c_void),
+        other => panic!("expected a Win32 window handle, got {other:?}"),
     }
 }

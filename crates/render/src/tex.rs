@@ -19,8 +19,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
-use egui::epaint::PaintCallbackInfo;
-use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 
 use crate::mipmap::{MipGenerator, mip_level_count};
 use crate::texture::DecodedImage;
@@ -386,6 +384,10 @@ impl TexCallback {
     }
 }
 
+// DORMANT (D3D11 migration): the egui-wgpu paint-callback path is removed. The Tex
+// viewport image is drawn by `app` through the RHI (migration Phase 4). Kept
+// (commented) as the reference for that port.
+/*
 impl CallbackTrait for TexCallback {
     fn prepare(
         &self,
@@ -438,6 +440,7 @@ impl CallbackTrait for TexCallback {
         render_pass.draw(0..3, 0..1);
     }
 }
+*/
 
 #[cfg(test)]
 mod shader_tests {

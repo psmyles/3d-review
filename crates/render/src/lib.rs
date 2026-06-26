@@ -12,6 +12,7 @@ mod material;
 mod mipmap;
 mod post;
 mod prof;
+mod rhi;
 mod scene;
 mod selection;
 mod targets;
@@ -27,6 +28,7 @@ pub use material::{
     AlphaMode, MaterialChange, MaterialEdit, MaterialSnapshot, MaterialState, RoughnessWorkflow,
     TextureBinding,
 };
+pub use rhi::Gpu;
 pub use scene::{
     EGUI_DEPTH_FORMAT, EGUI_MSAA_SAMPLE_COUNT, SCENE_DEPTH_FORMAT, SceneCallback, enable_tracy_gpu,
 };

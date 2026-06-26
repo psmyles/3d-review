@@ -6,8 +6,6 @@
 
 use std::sync::Arc;
 
-use egui::epaint::PaintCallbackInfo;
-use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use review_model::ModelData;
 
 use crate::material::MaterialState;
@@ -157,6 +155,12 @@ impl SceneCallback {
     }
 }
 
+// DORMANT (D3D11 migration): the egui-wgpu paint-callback path is removed. The
+// scene is rendered by `app` through the RHI module (migration Phase 1+). The
+// prepare/paint orchestration below is kept (commented) as the reference for that
+// port and is deleted once `render_scene` replaces it. The `encode_scene` /
+// `record_scene` draw-list methods further down stay live (dormant) for reuse.
+/*
 impl CallbackTrait for SceneCallback {
     fn prepare(
         &self,
@@ -392,6 +396,7 @@ impl CallbackTrait for SceneCallback {
         render_pass.draw(0..3, 0..1);
     }
 }
+*/
 
 impl SceneCallback {
     /// Record the scene into the offscreen HDR target: a single MSAA color pass

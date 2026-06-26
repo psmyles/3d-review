@@ -12,16 +12,19 @@ resolver = "2"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/chandan/3d-review-rs"
-rust-version = "1.85"
+rust-version = "1.88"
 
 [workspace.dependencies]
 anyhow = "1"
 bytemuck = { version = "1", features = ["derive"] }
 cc = "1"
-egui = "0.31"
-egui-notify = "0.19"
-egui-wgpu = "0.31"
-egui-winit = "0.31"
+# egui 0.33 is the ceiling set by egui-directx11 0.12.1 (`^0.33`). egui-wgpu was
+# dropped in the D3D11 migration; egui now renders via egui-directx11 (D3D11) and
+# the scene is drawn by our own D3D11 path. egui-notify 0.21 tracks egui 0.33.
+egui = "0.33.3"
+egui-directx11 = "0.12.1"
+egui-notify = "0.21"
+egui-winit = "0.33"
 glam = "0.30"
 half = "2"
 image = { version = "0.25", default-features = false, features = [
@@ -48,7 +51,11 @@ thiserror = "2"
 # is running — i.e. it would crash every non-`--tracy` launch. Our own zones cover
 # the app/render structure instead. See `Tracy profiling.md`.
 tracy-client = { version = "0.18", features = ["manual-lifetime", "ondemand"] }
+# wgpu is being removed (D3D11 migration). It is still present, dormant, in
+# `render` until the scene passes are fully ported to D3D11 (migration Phase 5),
+# and under the `bake` feature until Phase 6. New GPU code uses `windows` (D3D11/DXGI).
 wgpu = "24"
+windows = "0.62.2"
 windows-sys = "0.52"
 winit = "0.30"
 winresource = "0.1"
