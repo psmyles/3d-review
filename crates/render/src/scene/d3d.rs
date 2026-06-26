@@ -26,8 +26,8 @@ use crate::rhi::{
     Texture, Topology, VertexBuffer, VertexFormat,
 };
 use crate::{
-    ActiveMaterial, CameraProjection, CheckerTexture, EnvironmentSettings, MaterialMode,
-    OrbitCamera, SceneDebugOptions, ShadingMode,
+    ActiveMaterial, CameraProjection, CheckerTexture, EnvironmentSettings, GtaoSettings,
+    MaterialMode, OrbitCamera, SceneDebugOptions, ShadingMode, TonemapSettings,
 };
 
 use super::gpu_types::{SceneUniforms, shading_mode_value, vertex_color_value};
@@ -38,6 +38,10 @@ const SCENE_LINE_PS: &[u8] = include_bytes!("../hlsl/scene.line.ps.dxbc");
 const SCENE_MESH_PS: &[u8] = include_bytes!("../hlsl/scene.mesh.ps.dxbc");
 const SCENE_SKYBOX_VS: &[u8] = include_bytes!("../hlsl/scene.skybox.vs.dxbc");
 const SCENE_SKYBOX_PS: &[u8] = include_bytes!("../hlsl/scene.skybox.ps.dxbc");
+const SCENE_GTAO_GBUFFER_PS: &[u8] = include_bytes!("../hlsl/scene.gtao_gbuffer.ps.dxbc");
+const GTAO_VS: &[u8] = include_bytes!("../hlsl/gtao.vs.dxbc");
+const GTAO_PS: &[u8] = include_bytes!("../hlsl/gtao.ps.dxbc");
+const GTAO_BLUR_PS: &[u8] = include_bytes!("../hlsl/gtao.blur.ps.dxbc");
 const POST_VS: &[u8] = include_bytes!("../hlsl/post.vs.dxbc");
 const POST_PS: &[u8] = include_bytes!("../hlsl/post.ps.dxbc");
 
@@ -57,14 +61,28 @@ const SCENE_VERTEX_LAYOUT: [InputElement; 5] = [
     InputElement::new("COLOR", 0, VertexFormat::Float4),
 ];
 
-/// Composite-pass uniform (cbuffer `b0` in `post.hlsl`). Phase 2b keeps GTAO off
-/// and tone mapping on (PBR-Neutral); Phase 3 drives these from the live settings.
+/// Composite-pass uniform (cbuffer `b0` in `post.hlsl`): the GTAO enable flag and
+/// the tone-map enable + operator, all driven from the live settings each frame.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct PostUniforms {
     gtao_enabled: u32,
     tonemap_enabled: u32,
     tonemap_op: u32,
+}
+
+/// GTAO-pass uniform (cbuffer `b0` in `gtao.hlsl`). `#[repr(C)]` + `Pod` to match
+/// the HLSL `GtaoUniforms` layout (invariant 11): a `float4x4` + two `float4`s, all
+/// 16-byte aligned. Uploaded each frame so the panel sliders stay live.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct GtaoUniforms {
+    /// View → clip projection (column-major), for reconstruction + sample projection.
+    proj: [[f32; 4]; 4],
+    /// x = radius (view units), y = intensity, z = thickness, w unused.
+    params: [f32; 4],
+    /// x = is_ortho (1.0 / 0.0), y = slice count, z = steps per slice, w unused.
+    config: [f32; 4],
 }
 
 /// The mesh's GPU buffers + per-material draw ranges, rebuilt when the model (or UV
@@ -83,16 +101,27 @@ pub(crate) struct SceneGpu {
     uniforms: DynamicConstantBuffer,
     /// Composite-pass uniform (cbuffer `b0` in the post shader).
     post_uniforms: DynamicConstantBuffer,
+    /// GTAO-pass uniform (cbuffer `b0` in the gtao shader).
+    gtao_uniforms: DynamicConstantBuffer,
     line_pipeline: Pipeline,
     mesh_pipeline: Pipeline,
     mesh_double_sided_pipeline: Pipeline,
     skybox_pipeline: Pipeline,
     composite_pipeline: Pipeline,
+    /// Mesh-only single-sample view-normal/Z G-buffer pipeline (`fs_gtao_gbuffer`).
+    gtao_gbuffer_pipeline: Pipeline,
+    /// Horizon-based occlusion fullscreen pass (`fs_gtao`).
+    gtao_pipeline: Pipeline,
+    /// 5×5 bilateral-blur fullscreen pass (`fs_blur`).
+    gtao_blur_pipeline: Pipeline,
     /// Linear clamp sampler — the composite's input sampler (`s0` of the post pass)
     /// and the IBL sampler (`s1` of the scene pass).
     sampler: Sampler,
     /// Repeat sampler for the UV checker (`s0` of the scene pass).
     checker_sampler: Sampler,
+    /// Point-clamp sampler for the GTAO passes (`s0`), so view normals / depths are
+    /// never blended across geometry edges.
+    gtao_sampler: Sampler,
     /// The two baked UV-checker textures (`t0`), picked per frame.
     checker_greyscale: Texture,
     checker_color: Texture,
@@ -106,6 +135,13 @@ pub(crate) struct SceneGpu {
     color: ColorTarget,
     ambient: ColorTarget,
     depth: DepthTarget,
+    /// GTAO targets, all full-resolution + recreated on resize: the single-sample
+    /// view-normal/Z G-buffer (HDR) + its own depth, then the raw and blurred
+    /// occlusion (`R8`). Sized to the framebuffer like the scene targets.
+    gtao_gbuffer: ColorTarget,
+    gtao_depth: DepthTarget,
+    gtao_raw: ColorTarget,
+    gtao_blur: ColorTarget,
     mesh: Option<MeshBuffers>,
     mesh_revision: u64,
     mesh_uv_channel: u32,
@@ -131,6 +167,7 @@ impl SceneGpu {
 
         let uniforms = DynamicConstantBuffer::new::<SceneUniforms>(device)?;
         let post_uniforms = DynamicConstantBuffer::new::<PostUniforms>(device)?;
+        let gtao_uniforms = DynamicConstantBuffer::new::<GtaoUniforms>(device)?;
 
         // The line pipeline: depth-tested (Reversed-Z `GreaterEqual`) but neither
         // writing nor biasing depth, alpha-blended, single-sample (MSAA in Phase 5).
@@ -219,8 +256,52 @@ impl SceneGpu {
             },
         )?;
 
+        // GTAO G-buffer: a mesh-only pass writing the single-sample view normal/Z.
+        // No culling (matches the wgpu G-buffer), writes + tests depth (Reversed-Z
+        // `GreaterEqual`), no bias, opaque single target.
+        let gtao_gbuffer_pipeline = Pipeline::new(
+            device,
+            &PipelineDesc {
+                vs: SCENE_VS,
+                ps: SCENE_GTAO_GBUFFER_PS,
+                input: &SCENE_VERTEX_LAYOUT,
+                topology: Topology::TriangleList,
+                cull: Cull::None,
+                depth: DepthState {
+                    test: true,
+                    write: true,
+                    compare: DepthCompare::GreaterEqual,
+                },
+                blend: BlendMode::Opaque,
+                depth_bias: DepthBias::default(),
+                sample_count: 1,
+            },
+        )?;
+
+        // The two GTAO fullscreen passes (occlusion + bilateral blur): a fullscreen
+        // triangle (no vertex buffer / input layout), depth disabled, opaque write
+        // into the `R8` AO targets. Shared `PipelineDesc` differing only in the PS.
+        let gtao_fullscreen_desc = |ps| PipelineDesc {
+            vs: GTAO_VS,
+            ps,
+            input: &[],
+            topology: Topology::TriangleList,
+            cull: Cull::None,
+            depth: DepthState {
+                test: false,
+                write: false,
+                compare: DepthCompare::Always,
+            },
+            blend: BlendMode::Opaque,
+            depth_bias: DepthBias::default(),
+            sample_count: 1,
+        };
+        let gtao_pipeline = Pipeline::new(device, &gtao_fullscreen_desc(GTAO_PS))?;
+        let gtao_blur_pipeline = Pipeline::new(device, &gtao_fullscreen_desc(GTAO_BLUR_PS))?;
+
         let sampler = Sampler::linear_clamp(device)?;
         let checker_sampler = Sampler::linear_repeat(device)?;
+        let gtao_sampler = Sampler::point_clamp(device)?;
         let checker_greyscale = decode_checker(device, CHECKER_GREYSCALE_PNG)?;
         let checker_color = decode_checker(device, CHECKER_COLOR_PNG)?;
         let ibl = IblD3d::from_baked(gpu, EnvironmentSettings::default().map)?;
@@ -229,17 +310,26 @@ impl SceneGpu {
         let color = ColorTarget::new(device, width, height)?;
         let ambient = ColorTarget::new(device, width, height)?;
         let depth = DepthTarget::new(device, width, height)?;
+        let gtao_gbuffer = ColorTarget::new(device, width, height)?;
+        let gtao_depth = DepthTarget::new(device, width, height)?;
+        let gtao_raw = ColorTarget::r8(device, width, height)?;
+        let gtao_blur = ColorTarget::r8(device, width, height)?;
 
         Ok(Self {
             uniforms,
             post_uniforms,
+            gtao_uniforms,
             line_pipeline,
             mesh_pipeline,
             mesh_double_sided_pipeline,
             skybox_pipeline,
             composite_pipeline,
+            gtao_gbuffer_pipeline,
+            gtao_pipeline,
+            gtao_blur_pipeline,
             sampler,
             checker_sampler,
+            gtao_sampler,
             checker_greyscale,
             checker_color,
             ibl,
@@ -248,6 +338,10 @@ impl SceneGpu {
             color,
             ambient,
             depth,
+            gtao_gbuffer,
+            gtao_depth,
+            gtao_raw,
+            gtao_blur,
             mesh: None,
             // Sentinel distinct from any real revision so the first frame builds the
             // mesh (or leaves it None for an empty model).
@@ -261,10 +355,12 @@ impl SceneGpu {
     }
 
     /// Render the scene: skybox + mesh (per-material PBR/IBL) + grid into the
-    /// offscreen HDR MRT, then composite (tone map + sRGB) to the backbuffer. The
-    /// egui chrome is drawn on top afterwards by `app`.
+    /// offscreen HDR MRT, then — when GTAO is on — a single-sample G-buffer +
+    /// horizon occlusion + bilateral blur, and finally a composite (ambient-only AO
+    /// darkening + tone map + sRGB) to the backbuffer. The egui chrome is drawn on
+    /// top afterwards by `app`.
     // Independent per-frame inputs (gpu + model + revisions + materials + camera +
-    // projection + environment + debug + clear); none is redundant.
+    // projection + environment + gtao + tonemap + debug + clear); none is redundant.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn render(
         &mut self,
@@ -276,19 +372,25 @@ impl SceneGpu {
         camera: OrbitCamera,
         projection: CameraProjection,
         environment: EnvironmentSettings,
+        gtao: GtaoSettings,
+        tonemap: TonemapSettings,
         debug: SceneDebugOptions,
         clear: [f32; 4],
     ) -> windows::core::Result<()> {
         let device = gpu.device();
         let ctx = gpu.context();
 
-        // Keep the offscreen targets + depth matched to the (already-resized)
-        // backbuffer.
+        // Keep the offscreen targets + depth (and the GTAO targets, all full-res)
+        // matched to the (already-resized) backbuffer.
         if self.color.size() != gpu.size() {
             let (width, height) = gpu.size();
             self.color = ColorTarget::new(device, width, height)?;
             self.ambient = ColorTarget::new(device, width, height)?;
             self.depth = DepthTarget::new(device, width, height)?;
+            self.gtao_gbuffer = ColorTarget::new(device, width, height)?;
+            self.gtao_depth = DepthTarget::new(device, width, height)?;
+            self.gtao_raw = ColorTarget::r8(device, width, height)?;
+            self.gtao_blur = ColorTarget::r8(device, width, height)?;
         }
 
         // Reconcile the Unique-mode part key, then the mesh + the effective material
@@ -368,22 +470,69 @@ impl SceneGpu {
             gpu.draw(self.grid.count());
         }
 
-        // --- Composite to the backbuffer. ---
-        // Phase 2b: GTAO off, tone mapping on (PBR-Neutral). Phase 3 drives these
-        // from the live tonemap/GTAO settings.
+        // --- GTAO (ambient occlusion), only when enabled and a mesh is present. ---
+        // A single-sample mesh-only G-buffer (view normal + Z), then the horizon
+        // occlusion pass (→ raw `R8`) and the bilateral blur (→ blurred `R8`) the
+        // composite darkens the ambient radiance by. The G-buffer has its own depth
+        // (nearest-surface) and shares `b0` (the scene uniforms carry `view`); the
+        // fullscreen passes read `b0` as the GTAO uniform + `s0` as the point sampler.
+        let gtao_active = gtao.enabled && self.mesh.is_some();
+        if gtao_active {
+            let gtao_uniforms = build_gtao_uniforms(camera, projection, gtao);
+            self.gtao_uniforms.update(ctx, &gtao_uniforms)?;
+
+            // G-buffer: redraw the whole mesh (material irrelevant) into the
+            // single-sample normal/Z target, clearing the target + its depth.
+            gpu.begin_scene_pass(&[&self.gtao_gbuffer], &self.gtao_depth, [0.0; 4]);
+            self.uniforms.bind_vs(ctx, 0);
+            self.uniforms.bind_ps(ctx, 0);
+            self.gtao_gbuffer_pipeline.bind(ctx);
+            if let Some(mesh) = &self.mesh {
+                mesh.vertices.bind(ctx);
+                mesh.indices.bind(ctx);
+                gpu.draw_indexed_range(mesh.indices.count(), 0);
+            }
+
+            // Occlusion: a fullscreen pass reading the G-buffer (`t0`) → raw AO.
+            gpu.begin_color_pass(&self.gtao_raw);
+            self.gtao_pipeline.bind(ctx);
+            self.gtao_uniforms.bind_ps(ctx, 0);
+            self.gtao_sampler.bind_ps(ctx, 0);
+            self.gtao_gbuffer.bind_ps_srv(ctx, 0);
+            gpu.draw(3);
+
+            // Bilateral blur: reads the G-buffer (`t0`) + raw AO (`t1`) → blurred AO.
+            // `begin_color_pass` rebinds the RTV to `gtao_blur`, releasing `gtao_raw`
+            // as a render target before it's bound below as an SRV.
+            gpu.begin_color_pass(&self.gtao_blur);
+            self.gtao_blur_pipeline.bind(ctx);
+            self.gtao_gbuffer.bind_ps_srv(ctx, 0);
+            self.gtao_raw.bind_ps_srv(ctx, 1);
+            gpu.draw(3);
+            // Drop the G-buffer / raw SRVs before the composite binds the scene
+            // targets (and before next frame rebinds them as render targets).
+            gpu.unbind_ps_srvs(2);
+        }
+
+        // --- Composite to the backbuffer (ambient-only AO + tone map + sRGB). ---
         let post = PostUniforms {
-            gtao_enabled: 0,
-            tonemap_enabled: 1,
-            tonemap_op: 0,
+            gtao_enabled: u32::from(gtao_active),
+            tonemap_enabled: u32::from(tonemap.enabled),
+            tonemap_op: tonemap.operator.shader_index(),
         };
         self.post_uniforms.update(ctx, &post)?;
         gpu.begin_backbuffer_blit();
         self.composite_pipeline.bind(ctx);
         self.post_uniforms.bind_ps(ctx, 0);
         self.color.bind_ps_srv(ctx, 0);
-        // t1 (GTAO) is unused while GTAO is off; bind the ambient view as a harmless
-        // placeholder so the slot isn't left dangling. t2 is the real ambient.
-        self.ambient.bind_ps_srv(ctx, 1);
+        // t1 = the blurred GTAO when active; otherwise a harmless placeholder (the
+        // shader ignores it when `gtao_enabled` is 0). t2 is the ambient radiance.
+        // `self.sampler` (linear clamp) replaces the GTAO point sampler at `s0`.
+        if gtao_active {
+            self.gtao_blur.bind_ps_srv(ctx, 1);
+        } else {
+            self.ambient.bind_ps_srv(ctx, 1);
+        }
         self.ambient.bind_ps_srv(ctx, 2);
         self.sampler.bind_ps(ctx, 0);
         gpu.draw(3);
@@ -515,5 +664,37 @@ fn scene_uniforms(
         ],
         view: camera.view_matrix().to_cols_array_2d(),
         selection_color: [0.0; 4],
+    }
+}
+
+/// Build the per-frame [`GtaoUniforms`] from the camera, projection and GTAO
+/// settings. Mirrors the wgpu `GtaoPass::update`: the settings' `radius` is a
+/// fraction of the framed model's bounding-sphere radius, so it's scaled into view
+/// units by the live `scene_radius` here, keeping the AO look scale-invariant.
+fn build_gtao_uniforms(
+    camera: OrbitCamera,
+    projection: CameraProjection,
+    gtao: GtaoSettings,
+) -> GtaoUniforms {
+    let scene_radius = camera.scene_radius.max(1e-3);
+    let (slices, steps) = gtao.quality.slices_steps();
+    GtaoUniforms {
+        proj: camera.projection_matrix(projection).to_cols_array_2d(),
+        params: [
+            (gtao.radius * scene_radius).max(1e-4),
+            gtao.intensity.max(0.0),
+            gtao.thickness.clamp(0.0, 1.0),
+            0.0,
+        ],
+        config: [
+            if matches!(projection, CameraProjection::Orthographic) {
+                1.0
+            } else {
+                0.0
+            },
+            slices.max(1) as f32,
+            steps.max(1) as f32,
+            0.0,
+        ],
     }
 }

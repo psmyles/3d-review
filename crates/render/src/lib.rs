@@ -562,6 +562,8 @@ impl Renderer {
         debug: SceneDebugOptions,
         projection: CameraProjection,
         environment: EnvironmentSettings,
+        gtao: GtaoSettings,
+        tonemap: TonemapSettings,
         clear: [f32; 4],
     ) -> windows::core::Result<()> {
         if self.scene_gpu.is_none() {
@@ -579,6 +581,8 @@ impl Renderer {
             self.camera,
             projection,
             environment,
+            gtao,
+            tonemap,
             debug,
             clear,
         )

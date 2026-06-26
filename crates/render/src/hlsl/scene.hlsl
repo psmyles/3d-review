@@ -443,6 +443,26 @@ FragOutput fs_line(VsOutput input)
     return output;
 }
 
+// --- GTAO G-buffer: a mesh-only pass writing the view-space normal (xyz) + the
+// linear view-space Z (w) into a single-sample target the GTAO occlusion pass
+// reads. Single-sample (no MSAA) so geometry-edge normals/depths aren't averaged
+// by a resolve before the occlusion + bilateral blur read them. Uses `vs_main` and
+// reads the `view` matrix from `b0`. Mirrors `scene.wgsl`'s `fs_gtao_gbuffer`.
+float4 fs_gtao_gbuffer(VsOutput input) : SV_Target
+{
+    float normal_length_sq = dot(input.normal, input.normal);
+    // Overlays / lines (zero normal) write a zero G-buffer entry → GTAO treats them
+    // as background and applies no occlusion there.
+    if (normal_length_sq < 1e-6)
+    {
+        return float4(0.0, 0.0, 0.0, 0.0);
+    }
+    // View Z is negative in front of the camera; GTAO treats zero as background.
+    float4 view_pos = mul(view, float4(input.world_position, 1.0));
+    float3 view_normal = normalize(mul(view, float4(input.normal, 0.0)).xyz);
+    return float4(view_normal, view_pos.z);
+}
+
 // --- Skybox: draw the environment cubemap as the viewport background. -----------
 // A fullscreen triangle whose per-pixel world ray direction is reconstructed from
 // the inverse view-projection, sampled into the env cube. Drawn first in the

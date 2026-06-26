@@ -62,6 +62,30 @@ const SHADERS: &[ShaderJob] = &[
         output: "scene.skybox.ps.dxbc",
     },
     ShaderJob {
+        source: "scene.hlsl",
+        profile: "ps_5_0",
+        entry: "fs_gtao_gbuffer",
+        output: "scene.gtao_gbuffer.ps.dxbc",
+    },
+    ShaderJob {
+        source: "gtao.hlsl",
+        profile: "vs_5_0",
+        entry: "vs_fullscreen",
+        output: "gtao.vs.dxbc",
+    },
+    ShaderJob {
+        source: "gtao.hlsl",
+        profile: "ps_5_0",
+        entry: "fs_gtao",
+        output: "gtao.ps.dxbc",
+    },
+    ShaderJob {
+        source: "gtao.hlsl",
+        profile: "ps_5_0",
+        entry: "fs_blur",
+        output: "gtao.blur.ps.dxbc",
+    },
+    ShaderJob {
         source: "post.hlsl",
         profile: "vs_5_0",
         entry: "vs_fullscreen",

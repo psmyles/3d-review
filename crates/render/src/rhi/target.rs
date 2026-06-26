@@ -7,14 +7,17 @@ use windows::Win32::Graphics::Direct3D11::{
     ID3D11DeviceContext, ID3D11RenderTargetView, ID3D11ShaderResourceView,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_SAMPLE_DESC,
+    DXGI_FORMAT, DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT,
+    DXGI_SAMPLE_DESC,
 };
 use windows::core::Result;
 
-/// An offscreen linear-HDR color target (`R16G16B16A16_FLOAT`): a texture with
-/// both a render-target view (the scene draws into it) and a shader-resource view
-/// (the composite samples it). Single-sample in Phase 2; the MSAA-resolved variant
-/// lands in Phase 5. Recreated on resize.
+/// An offscreen color target: a texture with both a render-target view (a pass
+/// draws into it) and a shader-resource view (a later pass samples it). Single-
+/// sample; the MSAA-resolved variant lands in Phase 5. Recreated on resize. The
+/// scene color / ambient targets are linear-HDR (`R16G16B16A16_FLOAT`); the GTAO
+/// G-buffer reuses that HDR format (view normal + Z), and the raw / blurred AO
+/// targets are single-channel `R8_UNORM`.
 pub(crate) struct ColorTarget {
     rtv: ID3D11RenderTargetView,
     srv: ID3D11ShaderResourceView,
@@ -23,7 +26,23 @@ pub(crate) struct ColorTarget {
 }
 
 impl ColorTarget {
+    /// A linear-HDR (`R16G16B16A16_FLOAT`) target — the scene color / ambient MRT
+    /// and the GTAO view normal/Z G-buffer.
     pub(crate) fn new(device: &ID3D11Device, width: u32, height: u32) -> Result<Self> {
+        Self::with_format(device, width, height, DXGI_FORMAT_R16G16B16A16_FLOAT)
+    }
+
+    /// A single-channel `R8_UNORM` target — the raw + blurred GTAO occlusion.
+    pub(crate) fn r8(device: &ID3D11Device, width: u32, height: u32) -> Result<Self> {
+        Self::with_format(device, width, height, DXGI_FORMAT_R8_UNORM)
+    }
+
+    fn with_format(
+        device: &ID3D11Device,
+        width: u32,
+        height: u32,
+        format: DXGI_FORMAT,
+    ) -> Result<Self> {
         let width = width.max(1);
         let height = height.max(1);
         let desc = D3D11_TEXTURE2D_DESC {
@@ -31,7 +50,7 @@ impl ColorTarget {
             Height: height,
             MipLevels: 1,
             ArraySize: 1,
-            Format: DXGI_FORMAT_R16G16B16A16_FLOAT,
+            Format: format,
             SampleDesc: DXGI_SAMPLE_DESC {
                 Count: 1,
                 Quality: 0,
@@ -42,7 +61,7 @@ impl ColorTarget {
             MiscFlags: 0,
         };
         let mut texture = None;
-        // SAFETY: `desc` is a well-formed HDR render texture; the out-param is set.
+        // SAFETY: `desc` is a well-formed render texture; the out-param is set.
         unsafe { device.CreateTexture2D(&desc, None, Some(&mut texture))? };
         let texture = texture.unwrap();
         let mut rtv = None;

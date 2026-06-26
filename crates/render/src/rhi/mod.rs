@@ -203,6 +203,22 @@ impl Gpu {
         }
     }
 
+    /// Begin a single-color, depth-less pass into `target` (the GTAO occlusion +
+    /// bilateral-blur fullscreen passes): bind its RTV with no DSV and set its
+    /// viewport. No clear is issued — the fullscreen triangle overwrites every
+    /// pixel of the target.
+    pub(crate) fn begin_color_pass(&self, target: &ColorTarget) {
+        let (width, height) = target.size();
+        // SAFETY: the target RTV is live; the local arrays/viewport outlive the
+        // calls. The immediate context owns the bound target.
+        unsafe {
+            self.context
+                .OMSetRenderTargets(Some(&[Some(target.rtv().clone())]), None);
+            self.context
+                .RSSetViewports(Some(&[viewport(width, height)]));
+        }
+    }
+
     /// Begin the backbuffer composite pass: bind the backbuffer RTV (no depth) and
     /// set the full-backbuffer viewport. The composite overwrites every pixel, so
     /// no clear is issued.

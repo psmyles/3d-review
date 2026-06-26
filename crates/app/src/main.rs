@@ -884,6 +884,8 @@ impl App {
         let debug = self.ui.debug;
         let projection: CameraProjection = self.ui.projection_mode.into();
         let environment = self.ui.environment;
+        let gtao = self.ui.gtao;
+        let tonemap = self.ui.tonemap;
         let model = self.scene_model.clone();
         let model_revision = self.scene_revision;
         let clear_rgba = [
@@ -917,6 +919,8 @@ impl App {
                 debug,
                 projection,
                 environment,
+                gtao,
+                tonemap,
                 clear_rgba,
             ) {
                 prof::msg(&format!("scene D3D11 render failed: {err}"));
