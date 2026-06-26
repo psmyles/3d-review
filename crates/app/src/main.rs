@@ -28,7 +28,8 @@ use notify::RecommendedWatcher;
 use review_import::{LoadOptions, load_model};
 use review_model::{ModelData, SceneBvh};
 use review_render::{
-    DecodedImage, Gpu, Renderer, RendererConfig, ShadingMode, TextureSlot, selection_bounds,
+    CameraProjection, DecodedImage, Gpu, Renderer, RendererConfig, ShadingMode, TextureSlot,
+    selection_bounds,
 };
 use review_ui::{
     AxisGizmoAction, Notifications, Selection, TexViewRequest, TextureIntent, UiOutput, UiState,
@@ -876,6 +877,22 @@ impl App {
                 Instant::now().checked_add(repaint_delay)
             };
 
+        // The synced scene inputs the renderer draws this frame (read before the
+        // disjoint renderer/gpu borrows below). `debug` carries show_grid / shading
+        // / overlay flags (synced during the egui pass); `projection` the
+        // perspective/orthographic toggle.
+        let debug = self.ui.debug;
+        let projection: CameraProjection = self.ui.projection_mode.into();
+        let clear_rgba = [
+            clear.r as f32,
+            clear.g as f32,
+            clear.b as f32,
+            clear.a as f32,
+        ];
+
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
         let Some(gpu) = self.gpu.as_ref() else {
             return;
         };
@@ -885,16 +902,14 @@ impl App {
 
         {
             let _z = prof::zone!("Paint + Present");
-            // Clear the backbuffer to the scene clear color (until the D3D11 scene
-            // path lands the blank viewport shows this color through the chrome),
-            // draw the egui chrome on top, then present. egui-directx11 tessellates
-            // the shapes internally and manages its own font/texture atlas.
-            gpu.clear_backbuffer([
-                clear.r as f32,
-                clear.g as f32,
-                clear.b as f32,
-                clear.a as f32,
-            ]);
+            // Render the 3D scene through Direct3D 11 straight to the backbuffer
+            // (the call clears it), then draw the egui chrome on top — the central
+            // viewport area of the chrome is transparent, so the scene shows
+            // through. egui-directx11 tessellates the shapes internally and manages
+            // its own font/texture atlas.
+            if let Err(err) = renderer.render_scene(gpu, debug, projection, clear_rgba) {
+                prof::msg(&format!("scene D3D11 render failed: {err}"));
+            }
             let egui_output = egui_directx11::RendererOutput {
                 textures_delta: full_output.textures_delta,
                 shapes: full_output.shapes,

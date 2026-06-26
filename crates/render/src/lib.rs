@@ -29,6 +29,7 @@ pub use material::{
     TextureBinding,
 };
 pub use rhi::Gpu;
+use scene::SceneGpu;
 pub use scene::{
     EGUI_DEPTH_FORMAT, EGUI_MSAA_SAMPLE_COUNT, SCENE_DEPTH_FORMAT, SceneCallback, enable_tracy_gpu,
 };
@@ -528,6 +529,10 @@ pub struct Renderer {
     /// Bumped on every material edit (and on model load) so the GPU table is
     /// re-uploaded without a full mesh rebuild.
     material_revision: u64,
+    /// The Direct3D 11 scene GPU resources (pipelines / buffers / depth). Built
+    /// lazily on the first [`Self::render_scene`] (the D3D11 device doesn't exist
+    /// when [`Self::new`] runs); `None` until then.
+    scene_gpu: Option<SceneGpu>,
 }
 
 impl Renderer {
@@ -541,7 +546,26 @@ impl Renderer {
             material_states: Vec::new(),
             material_names: Vec::new(),
             material_revision: 0,
+            scene_gpu: None,
         }
+    }
+
+    /// Render the scene through Direct3D 11 to the swapchain backbuffer, behind the
+    /// egui chrome `app` draws next. Builds the GPU resources on the first call
+    /// (the device only exists once the window is up). Phase 1 draws the reference
+    /// grid; the mesh / overlays / offscreen-HDR composite land in later phases.
+    pub fn render_scene(
+        &mut self,
+        gpu: &Gpu,
+        debug: SceneDebugOptions,
+        projection: CameraProjection,
+        clear: [f32; 4],
+    ) -> windows::core::Result<()> {
+        if self.scene_gpu.is_none() {
+            self.scene_gpu = Some(SceneGpu::new(gpu)?);
+        }
+        let scene = self.scene_gpu.as_mut().unwrap();
+        scene.render(gpu, self.camera, projection, debug, clear)
     }
 
     /// Seed the editable material table from a freshly loaded model's import

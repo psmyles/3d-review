@@ -6,17 +6,28 @@
 //! `app`'s window/swapchain bootstrap). Everything here is GPU plumbing only; no
 //! model geometry, camera math, or material logic lives in `unsafe`. As the scene
 //! passes are ported off wgpu (migration Phases 1–5) the pipeline/buffer/pass/
-//! upload wrappers join this module; for now it carries just the device + swapchain
-//! that back the egui-directx11 UI and the first-frame present.
+//! upload wrappers join this module; it now also carries the [`Pipeline`],
+//! vertex/constant buffers, and the depth target the scene path draws with.
+
+mod buffer;
+mod pipeline;
+mod target;
+
+pub(crate) use buffer::{DynamicConstantBuffer, VertexBuffer};
+pub(crate) use pipeline::{
+    BlendMode, Cull, DepthBias, DepthCompare, DepthState, InputElement, Pipeline, PipelineDesc,
+    Topology, VertexFormat,
+};
+pub(crate) use target::DepthTarget;
 
 use windows::Win32::Foundation::{HMODULE, HWND};
 use windows::Win32::Graphics::Direct3D::{
     D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1,
 };
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_DEBUG, D3D11_CREATE_DEVICE_FLAG,
-    D3D11_SDK_VERSION, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext,
-    ID3D11RenderTargetView, ID3D11Texture2D,
+    D3D11_CLEAR_DEPTH, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_DEBUG,
+    D3D11_CREATE_DEVICE_FLAG, D3D11_SDK_VERSION, D3D11_VIEWPORT, D3D11CreateDevice, ID3D11Device,
+    ID3D11DeviceContext, ID3D11RenderTargetView, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_UNKNOWN,
@@ -138,12 +149,52 @@ impl Gpu {
         Ok(())
     }
 
+    /// Begin a scene pass that draws straight to the swapchain backbuffer with
+    /// `depth` attached: bind the backbuffer RTV + depth DSV, clear the color to
+    /// `clear` and the depth to the Reversed-Z far value (0), and set the viewport
+    /// to the full backbuffer. The scene pipelines + draws follow on the immediate
+    /// context. (Phase 1 renders directly to the backbuffer; the offscreen MRT seam
+    /// lands in Phase 2.)
+    pub(crate) fn begin_backbuffer_pass(&self, depth: &DepthTarget, clear: [f32; 4]) {
+        let (width, height) = self.size;
+        // SAFETY: the backbuffer RTV + `depth`'s DSV are live; the viewport array
+        // outlives the call. The immediate context owns all bound resources.
+        unsafe {
+            self.context
+                .OMSetRenderTargets(Some(&[Some(self.backbuffer_rtv().clone())]), depth.view());
+            self.context
+                .ClearRenderTargetView(self.backbuffer_rtv(), &clear);
+            self.context
+                .ClearDepthStencilView(depth.view(), D3D11_CLEAR_DEPTH.0, 0.0, 0);
+            self.context.RSSetViewports(Some(&[D3D11_VIEWPORT {
+                TopLeftX: 0.0,
+                TopLeftY: 0.0,
+                Width: width as f32,
+                Height: height as f32,
+                MinDepth: 0.0,
+                MaxDepth: 1.0,
+            }]));
+        }
+    }
+
+    /// Issue a non-indexed draw of `count` vertices from vertex 0. The pipeline +
+    /// vertex buffer + constant buffers must already be bound.
+    pub(crate) fn draw(&self, count: u32) {
+        // SAFETY: a plain draw on the immediate context; bound state is the
+        // caller's responsibility (set just before via the rhi wrappers).
+        unsafe {
+            self.context.Draw(count, 0);
+        }
+    }
+
     /// Present the backbuffer. `vsync` selects a sync interval of 1 (wait for
     /// vblank) vs 0 (immediate) — mirrors the old `AutoVsync` present mode.
     pub fn present(&self, vsync: bool) {
         // SAFETY: presenting the live swapchain; no resources are mapped.
         unsafe {
-            self.swap_chain.Present(u32::from(vsync), DXGI_PRESENT(0));
+            // Present returns an HRESULT (e.g. DXGI_STATUS_OCCLUDED when the window
+            // is hidden); none is actionable here, so it's deliberately ignored.
+            let _ = self.swap_chain.Present(u32::from(vsync), DXGI_PRESENT(0));
         }
     }
 }

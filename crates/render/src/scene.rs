@@ -15,12 +15,14 @@ use crate::targets::SceneTargets;
 
 mod buffers;
 mod callback;
+mod d3d;
 mod gpu_profiler;
 mod gpu_types;
 mod pipelines;
 mod resources;
 
 pub use callback::SceneCallback;
+pub(crate) use d3d::SceneGpu;
 use gpu_profiler::GpuProfiler;
 pub use gpu_profiler::enable_tracy_gpu;
 pub(crate) use gpu_types::SceneVertex;
