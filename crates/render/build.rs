@@ -121,6 +121,38 @@ const SHADERS: &[ShaderJob] = &[
         entry: "fs_checker",
         output: "tex.checker.ps.dxbc",
     },
+    // IBL precompute (offline `bake` feature only at runtime, but always compiled
+    // here so the committed blobs stay fresh): one fullscreen VS + four passes.
+    ShaderJob {
+        source: "ibl.hlsl",
+        profile: "vs_5_0",
+        entry: "vs_fullscreen",
+        output: "ibl.vs.dxbc",
+    },
+    ShaderJob {
+        source: "ibl.hlsl",
+        profile: "ps_5_0",
+        entry: "fs_equirect_to_cube",
+        output: "ibl.equirect.ps.dxbc",
+    },
+    ShaderJob {
+        source: "ibl.hlsl",
+        profile: "ps_5_0",
+        entry: "fs_irradiance",
+        output: "ibl.irradiance.ps.dxbc",
+    },
+    ShaderJob {
+        source: "ibl.hlsl",
+        profile: "ps_5_0",
+        entry: "fs_prefilter",
+        output: "ibl.prefilter.ps.dxbc",
+    },
+    ShaderJob {
+        source: "ibl.hlsl",
+        profile: "ps_5_0",
+        entry: "fs_brdf",
+        output: "ibl.brdf.ps.dxbc",
+    },
 ];
 
 fn main() {

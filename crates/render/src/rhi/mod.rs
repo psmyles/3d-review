@@ -9,6 +9,8 @@
 //! upload wrappers join this module; it now also carries the [`Pipeline`],
 //! vertex/constant buffers, and the depth target the scene path draws with.
 
+#[cfg(feature = "bake")]
+pub(crate) mod bake;
 mod buffer;
 mod pipeline;
 mod sampler;

@@ -20,14 +20,12 @@ windows = { workspace = true, features = [
 ] }
 half.workspace = true
 image.workspace = true
-# All three are used only by the offline `bake_ibl` tool (the `bake` feature), not
-# linked into the shipping viewer: `wgpu` runs the IBL precompute passes; `pollster`
-# blocks on its headless device/queue requests; `intel_tex_2` BC6H-compresses the
-# baked IBL cubes (it ships prebuilt ISPC kernels, so no ISPC/libclang toolchain is
-# needed — just the MSVC `cc` the workspace already requires). The runtime renderer
-# is pure Direct3D 11 via `windows`, so wgpu/pollster are gone from a normal build.
-wgpu = { workspace = true, optional = true }
-pollster = { workspace = true, optional = true }
+# Used only by the offline `bake_ibl` tool (the `bake` feature), never linked into
+# the shipping viewer: `intel_tex_2` BC6H-compresses the baked IBL cubes (it ships
+# prebuilt ISPC kernels, so no ISPC/libclang toolchain is needed — just the MSVC
+# `cc` the workspace already requires). The bake runs its IBL precompute passes on a
+# headless Direct3D 11 device (the same `rhi` module the runtime uses), so it pulls
+# in neither wgpu nor pollster — the whole workspace is Direct3D 11.
 intel_tex_2 = { version = "0.5", optional = true }
 review-model = { path = "../model" }
 # Tracy profiler client — always compiled in, inert until the client is started
@@ -36,18 +34,13 @@ review-model = { path = "../model" }
 tracy-client.workspace = true
 
 [features]
-# Compiles the offline IBL bake path (the `precompute_maps` passes + the
-# `bake_ibl_assets` entry point + the `bake_ibl` binary). Off for normal builds,
-# so the shipping viewer carries the baked maps but neither the raw HDRs nor the
-# precompute/readback code — and pulls in neither wgpu nor pollster. Enable with
-# `--features bake` to re-bake.
-bake = ["dep:wgpu", "dep:pollster", "dep:intel_tex_2"]
-
-[dev-dependencies]
-# Validate the hand-written IBL precompute WGSL (`ibl.wgsl`) at `cargo test` time;
-# the real pipeline-creation check runs under the `bake` feature and needs a GPU.
-# Pinned to wgpu 24's naga. (Phase 6 will port `ibl.wgsl` to HLSL and drop this.)
-naga = { version = "24", features = ["wgsl-in"] }
+# Compiles the offline IBL bake path (the `bake_ibl_assets` entry point + the
+# `bake_ibl` binary + the `rhi::bake` D3D11 plumbing). Off for normal builds, so the
+# shipping viewer carries the baked maps but neither the raw HDRs nor the precompute/
+# readback code. Enable with `--features bake` to re-bake (needs a real GPU). The IBL
+# precompute is HLSL now (`hlsl/ibl.hlsl`), validated by `fxc` at build time
+# (`build.rs`), so there is no longer a naga shader-validation dev-dependency.
+bake = ["dep:intel_tex_2"]
 
 # The offline IBL bake tool. Dev-only (needs a real GPU); guarded by the `bake`
 # feature so `--all-targets` builds skip it unless the feature is on.
