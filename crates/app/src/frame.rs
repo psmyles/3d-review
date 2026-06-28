@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use review_model::SceneBvh;
-use review_render::{CameraProjection, Renderer, TexBackground, TexImage};
+use review_render::{ActiveMaterial, CameraProjection, Renderer, TexBackground, TexImage};
 use review_ui::{TextureBackground, UiOutput, WorkspaceMode, draw_overlay, draw_viewport_scene};
 
 use crate::App;
@@ -77,8 +77,13 @@ impl App {
             // The material mode before the egui pass; the toolbar / Material Mode
             // panel mutate it during the pass, so a post-pass mismatch means the
             // user switched modes this frame — surface its name as a toast (app
-            // owns the toast facility; the UI only holds the plain value).
+            // owns the toast facility; the UI only holds the plain value). The
+            // active material + buffer view are snapshotted the same way so the
+            // Buffers button's cycle (and entering the Buffers view) announces the
+            // current buffer.
             let prev_material_mode = self.ui.debug.material_mode;
+            let prev_active_material = self.ui.debug.active_material;
+            let prev_buffer_view = self.ui.debug.buffer_view;
             let _z = prof::zone!("egui Run");
             let full_output = egui_ctx.run(raw_input, |ctx| {
                 draw_viewport_scene(
@@ -92,6 +97,16 @@ impl App {
                 ui_output = draw_overlay(ctx, &mut self.ui, camera, &scene_model, occlusion_bvh);
                 if self.ui.debug.material_mode != prev_material_mode {
                     notifications.mode(self.ui.debug.material_mode.label());
+                }
+                // Announce the buffer being viewed when the user switches *into* the
+                // Buffers view or cycles to the next buffer (mirrors the material-
+                // mode toast above).
+                let buffers_now = self.ui.debug.active_material == ActiveMaterial::Buffers;
+                let entered_buffers =
+                    buffers_now && prev_active_material != ActiveMaterial::Buffers;
+                let cycled_buffer = buffers_now && self.ui.debug.buffer_view != prev_buffer_view;
+                if entered_buffers || cycled_buffer {
+                    notifications.mode(format!("Buffer: {}", self.ui.debug.buffer_view.label()));
                 }
                 // Toasts paint on the egui Foreground layer, above the chrome.
                 notifications.show(ctx);

@@ -6,6 +6,7 @@
 
 mod anti_aliasing;
 mod bounding_box;
+mod buffer_view;
 mod environment;
 mod gtao;
 pub(crate) mod inspector;
@@ -51,6 +52,7 @@ pub(crate) fn draw_panel_body(ui: &mut egui::Ui, state: &mut UiState, panel: Opt
     match panel {
         OptionPanel::Wireframe => wireframe::body(ui, state),
         OptionPanel::MaterialMode => material_mode::body(ui, state),
+        OptionPanel::BufferView => buffer_view::body(ui, state),
         OptionPanel::BoundingBox => bounding_box::body(ui, state),
         OptionPanel::UvChecker => uv_checker::body(ui, state),
         OptionPanel::FaceNormals => normals::face_body(ui, state),

@@ -16,6 +16,10 @@ cbuffer PostUniforms : register(b0)
     uint gtao_enabled;
     uint tonemap_enabled;
     uint tonemap_op;
+    // When non-zero, blit the (already display-ready) scene color straight to the
+    // backbuffer — no GTAO, tone map or sRGB encode. Set for the buffer-inspection
+    // view, whose scene shader emits faithful final pixels itself.
+    uint passthrough;
 };
 
 struct VsOutput
@@ -182,6 +186,12 @@ float3 apply_tonemap(float3 color)
 float4 fs_post(VsOutput input) : SV_Target
 {
     float3 lit = scene_color.Sample(scene_sampler, input.uv).rgb;
+    // Buffer-inspection view: the scene shader already wrote final display pixels,
+    // so pass them through unchanged (faithful — the shown value is the data).
+    if (passthrough != 0u)
+    {
+        return float4(lit, 1.0);
+    }
     if (gtao_enabled != 0u)
     {
         float ao = gtao_texture.Sample(scene_sampler, input.uv).r;

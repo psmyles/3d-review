@@ -36,7 +36,7 @@ use crate::{
 };
 
 use super::gpu_profiler::{self, GpuProfiler, Zone};
-use super::gpu_types::{SceneUniforms, shading_mode_value, vertex_color_value};
+use super::gpu_types::{SceneUniforms, buffer_view_value, shading_mode_value, vertex_color_value};
 
 /// Compiled DXBC — see `build.rs`.
 const SCENE_VS: &[u8] = include_bytes!("../hlsl/scene.vs.dxbc");
@@ -68,14 +68,20 @@ const SCENE_VERTEX_LAYOUT: [InputElement; 5] = [
     InputElement::new("COLOR", 0, VertexFormat::Float4),
 ];
 
-/// Composite-pass uniform (cbuffer `b0` in `post.hlsl`): the GTAO enable flag and
-/// the tone-map enable + operator, all driven from the live settings each frame.
+/// Composite-pass uniform (cbuffer `b0` in `post.hlsl`): the GTAO enable flag, the
+/// tone-map enable + operator, and a raw-passthrough flag, all driven from the
+/// live settings each frame.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct PostUniforms {
     gtao_enabled: u32,
     tonemap_enabled: u32,
     tonemap_op: u32,
+    /// When non-zero the composite blits the (already display-ready) scene color
+    /// straight to the backbuffer — no GTAO, tone map or sRGB encode. Set for the
+    /// [`ActiveMaterial::Buffers`] data-inspection view, whose scene shader emits
+    /// final display pixels itself so the shown value is faithful.
+    passthrough: u32,
 }
 
 /// GTAO-pass uniform (cbuffer `b0` in `gtao.hlsl`). `#[repr(C)]` + `Pod` to match
@@ -562,9 +568,15 @@ impl SceneGpu {
         let uniforms = scene_uniforms(camera, projection, environment, selection, debug);
         self.uniforms.update(ctx, &uniforms)?;
 
-        // GTAO runs only when enabled and a mesh is present; computed up front so it
-        // also drives the GPU profiler's per-frame zone mask.
-        let gtao_active = gtao.enabled && self.mesh.is_some();
+        // The buffer-inspection view bypasses lighting + the composite's tone
+        // map/GTAO entirely (the scene shader emits final display pixels), so the
+        // composite blits straight through and the GTAO passes are skipped.
+        let buffer_view_active = debug.active_material == ActiveMaterial::Buffers;
+
+        // GTAO runs only when enabled, a mesh is present, and we're not in the
+        // flat buffer-inspection view; computed up front so it also drives the GPU
+        // profiler's per-frame zone mask.
+        let gtao_active = gtao.enabled && self.mesh.is_some() && !buffer_view_active;
 
         // Arm the GPU profiler (lazily, only under `--tracy` with a running client),
         // then open this frame's timing window. Absent on a normal launch, so the
@@ -761,6 +773,7 @@ impl SceneGpu {
             gtao_enabled: u32::from(gtao_active),
             tonemap_enabled: u32::from(tonemap.enabled),
             tonemap_op: tonemap.operator.shader_index(),
+            passthrough: u32::from(buffer_view_active),
         };
         self.post_uniforms.update(ctx, &post)?;
         if let Some(profiler) = self.gpu_profiler.as_ref() {
@@ -870,6 +883,7 @@ impl SceneGpu {
             gtao_enabled: 0,
             tonemap_enabled: 1,
             tonemap_op: 0,
+            passthrough: 0,
         };
         self.post_uniforms.update(ctx, &post)?;
         gpu.begin_backbuffer_blit();
@@ -1428,7 +1442,8 @@ fn scene_uniforms(
                 0.0
             },
             environment.rotation_degrees.to_radians(),
-            0.0,
+            // `z` carries the active buffer-inspection view index (-1 when off).
+            buffer_view_value(debug),
             0.0,
         ],
         view: camera.view_matrix().to_cols_array_2d(),

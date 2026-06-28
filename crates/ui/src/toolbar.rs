@@ -5,10 +5,11 @@
 use review_render::{ActiveMaterial, ShadingMode, UvShadingMode};
 
 use crate::assets::{
-    ICON_AXIS_GIZMO, ICON_BACKFACE, ICON_BBOX, ICON_GRID, ICON_INSPECTOR, ICON_NORMALS_FACE,
-    ICON_NORMALS_VERTEX, ICON_OUTLINER, ICON_SHADING_SHADED, ICON_SHADING_TEXTURE,
-    ICON_SHADING_UNLIT, ICON_SHADING_WIRE, ICON_SHADING_WIRE_ONLY, ICON_UV, ICON_UV_ISLANDS,
-    ICON_UV_SHADED, ICON_UV_WIRE, ICON_VERTEX_COLORS, ICON_VIEW_ORTHO, ICON_VIEW_PERSPECTIVE,
+    ICON_AXIS_GIZMO, ICON_BACKFACE, ICON_BBOX, ICON_BUFFERS, ICON_GRID, ICON_INSPECTOR,
+    ICON_NORMALS_FACE, ICON_NORMALS_VERTEX, ICON_OUTLINER, ICON_SHADING_SHADED,
+    ICON_SHADING_TEXTURE, ICON_SHADING_UNLIT, ICON_SHADING_WIRE, ICON_SHADING_WIRE_ONLY, ICON_UV,
+    ICON_UV_ISLANDS, ICON_UV_SHADED, ICON_UV_WIRE, ICON_VERTEX_COLORS, ICON_VIEW_ORTHO,
+    ICON_VIEW_PERSPECTIVE,
 };
 use crate::state::{
     OptionPanel, TextureChannelView, TexturePoolEntry, UiState, ViewProjectionMode, WorkspaceMode,
@@ -243,13 +244,15 @@ fn draw_uv_shading_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiS
 }
 
 /// Active-material group: a radio selection of which material the filled faces
-/// show — source material, UV checker, or vertex colors. The UV-checker and
-/// vertex-color buttons each retain their right-click options panel.
+/// show — source material, UV checker, vertex colors, or a buffer-inspection view.
+/// The UV-checker, vertex-color and buffers buttons each retain their right-click
+/// options panel.
 fn draw_material_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState, width: f32) {
     toolbar_group_shell(ui, ctx, width, |ui| {
         let source = state.debug.active_material == ActiveMaterial::Source;
         let uv_active = state.debug.active_material == ActiveMaterial::UvChecker;
         let vertex_colors_active = state.debug.active_material == ActiveMaterial::VertexColors;
+        let buffers_active = state.debug.active_material == ActiveMaterial::Buffers;
 
         let source_material = icon_toggle_button_with_options(
             ui,
@@ -297,6 +300,26 @@ fn draw_material_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiSta
         }
         if vertex_colors.secondary_clicked() {
             state.panels_open.toggle(OptionPanel::VertexColors);
+        }
+
+        let buffers = icon_toggle_button_with_options(
+            ui,
+            ctx,
+            &ICON_BUFFERS,
+            buffers_active,
+            "Buffers (click to cycle buffers, right-click for options)",
+        );
+        if buffers.clicked() {
+            // First click activates the buffer-inspection view; clicking again
+            // while already active cycles through the individual buffers.
+            if buffers_active {
+                state.debug.buffer_view = state.debug.buffer_view.next();
+            } else {
+                state.debug.active_material = ActiveMaterial::Buffers;
+            }
+        }
+        if buffers.secondary_clicked() {
+            state.panels_open.toggle(OptionPanel::BufferView);
         }
     });
 }

@@ -354,7 +354,7 @@ pub enum VertexColorMode {
 
 /// Which material the filled faces display. The choices are mutually exclusive
 /// (the toolbar's material group is a radio selection). [`Source`] is the
-/// model's imported material; the other two replace it for inspection and apply
+/// model's imported material; the others replace it for inspection and apply
 /// in every filled-face mode (unlit / shaded).
 ///
 /// [`Source`]: ActiveMaterial::Source
@@ -367,6 +367,111 @@ pub enum ActiveMaterial {
     UvChecker,
     /// The mesh's per-vertex color attribute.
     VertexColors,
+    /// A single material/geometry buffer shown flat for data inspection — base
+    /// color, the world/geometric normal, roughness, metallic, AO, emission, … —
+    /// selected by [`SceneDebugOptions::buffer_view`]. Bypasses lighting + tone
+    /// mapping so the displayed pixel is the value itself.
+    Buffers,
+}
+
+/// Which single material/geometry buffer the [`ActiveMaterial::Buffers`] view
+/// displays. A data-inspection visualization: each variant renders one shading
+/// input (or a raw authored map) flat to the screen, bypassing lighting + tone
+/// mapping so the shown pixel *is* the value. The two "color" buffers (base color
+/// / emission) are sRGB-encoded for display; the rest are written raw (a 0.5
+/// scalar reads as mid-grey, a normal's `xyz` is remapped to `0..1` RGB).
+///
+/// Both a *final computed* normal (with the normal map applied) and the *raw
+/// authored* normal map are offered, plus the geometric normal + tangent basis, so
+/// a misbehaving normal map can be pinned down (handedness, green-channel
+/// convention, missing tangents). The shader reads [`BufferView::shader_index`]
+/// from `projection_params.z`; keep the two in lockstep (invariant 11).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BufferView {
+    /// Final albedo: base-color factor × base-color map (channel-routed), sRGB-encoded.
+    #[default]
+    BaseColor,
+    /// Final world-space shading normal (with the normal map applied), remapped to RGB.
+    WorldNormal,
+    /// The raw tangent-space normal-map texels, as authored (linear data, shown directly).
+    NormalMap,
+    /// The geometric (interpolated vertex) world normal, *without* the normal map.
+    GeometricNormal,
+    /// The vertex tangent (`xyz` remapped to RGB), tinted by its handedness sign.
+    Tangent,
+    /// Final roughness scalar (factor × map, channel-routed), as greyscale.
+    Roughness,
+    /// Final metallic scalar (factor × map, channel-routed), as greyscale.
+    Metallic,
+    /// Final ambient-occlusion scalar (map, channel-routed), as greyscale.
+    AmbientOcclusion,
+    /// Final emissive radiance (factor × map), sRGB-encoded.
+    Emission,
+    /// Final opacity (base-color alpha × opacity map), as greyscale.
+    Opacity,
+    /// UV0 coordinates shown as R = U, G = V.
+    Uv,
+}
+
+impl BufferView {
+    /// Every variant in display / cycle order, for the toolbar cycle + dropdown.
+    pub const ALL: [BufferView; 11] = [
+        BufferView::BaseColor,
+        BufferView::WorldNormal,
+        BufferView::NormalMap,
+        BufferView::GeometricNormal,
+        BufferView::Tangent,
+        BufferView::Roughness,
+        BufferView::Metallic,
+        BufferView::AmbientOcclusion,
+        BufferView::Emission,
+        BufferView::Opacity,
+        BufferView::Uv,
+    ];
+
+    /// Menu / notification label.
+    pub fn label(self) -> &'static str {
+        match self {
+            BufferView::BaseColor => "Base Color",
+            BufferView::WorldNormal => "Normal (World)",
+            BufferView::NormalMap => "Normal Map (Tangent)",
+            BufferView::GeometricNormal => "Geometric Normal",
+            BufferView::Tangent => "Tangent",
+            BufferView::Roughness => "Roughness",
+            BufferView::Metallic => "Metallic",
+            BufferView::AmbientOcclusion => "Ambient Occlusion",
+            BufferView::Emission => "Emission",
+            BufferView::Opacity => "Opacity",
+            BufferView::Uv => "UV",
+        }
+    }
+
+    /// The next buffer in [`BufferView::ALL`] order, wrapping after the last — for
+    /// cycling by re-clicking the active Buffers button.
+    pub fn next(self) -> BufferView {
+        let all = BufferView::ALL;
+        let index = all.iter().position(|&v| v == self).unwrap_or(0);
+        all[(index + 1) % all.len()]
+    }
+
+    /// The index the scene shader's buffer-view switch reads from
+    /// `projection_params.z`. Must match the `idx` arms in `scene.hlsl`'s
+    /// `fs_main` buffer-view block (invariant 11).
+    pub fn shader_index(self) -> f32 {
+        match self {
+            BufferView::BaseColor => 0.0,
+            BufferView::WorldNormal => 1.0,
+            BufferView::NormalMap => 2.0,
+            BufferView::GeometricNormal => 3.0,
+            BufferView::Tangent => 4.0,
+            BufferView::Roughness => 5.0,
+            BufferView::Metallic => 6.0,
+            BufferView::AmbientOcclusion => 7.0,
+            BufferView::Emission => 8.0,
+            BufferView::Opacity => 9.0,
+            BufferView::Uv => 10.0,
+        }
+    }
 }
 
 /// How the source-material faces are shaded — the "Material Mode" option behind
@@ -448,9 +553,12 @@ pub struct SceneDebugOptions {
     /// shaded modes; it is also implied when `shading_mode` is
     /// [`ShadingMode::Wireframe`] (which draws the edges as the only geometry).
     pub wireframe_overlay: bool,
-    /// Which material the filled faces show (source / UV checker / vertex colors).
-    /// Mutually exclusive; applies in every filled-face mode.
+    /// Which material the filled faces show (source / UV checker / vertex colors /
+    /// buffer view). Mutually exclusive; applies in every filled-face mode.
     pub active_material: ActiveMaterial,
+    /// Which single buffer the filled faces show when `active_material` is
+    /// [`ActiveMaterial::Buffers`] (ignored otherwise).
+    pub buffer_view: BufferView,
     /// How the source material is shaded (imported / uniform standard / unique
     /// per-part hue). Behind the Source Material button's options panel; replaces
     /// the effective material table renderer-side, leaving the imported materials
@@ -502,6 +610,7 @@ impl Default for SceneDebugOptions {
             shading_mode: ShadingMode::Shaded,
             wireframe_overlay: false,
             active_material: ActiveMaterial::Source,
+            buffer_view: BufferView::default(),
             material_mode: MaterialMode::Source,
             uv_checker_texture: CheckerTexture::Greyscale,
             vertex_color_mode: VertexColorMode::Rgb,
@@ -536,6 +645,36 @@ impl Default for RendererConfig {
     fn default() -> Self {
         Self {
             clear_color: [0.0, 0.0, 0.0, 1.0],
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn buffer_view_next_cycles_through_all_in_order() {
+        // `next` walks `ALL` in order and wraps after the last back to the first.
+        let mut view = BufferView::ALL[0];
+        for expected in BufferView::ALL
+            .iter()
+            .skip(1)
+            .chain(std::iter::once(&BufferView::ALL[0]))
+        {
+            view = view.next();
+            assert_eq!(view, *expected);
+        }
+        // A full lap returns to the start.
+        assert_eq!(view, BufferView::ALL[0]);
+    }
+
+    #[test]
+    fn buffer_view_shader_indices_are_unique_and_match_all_order() {
+        // Each variant's shader index equals its position in `ALL` (the order the
+        // `fs_main` buffer-view switch arms read), so the two stay in lockstep.
+        for (position, view) in BufferView::ALL.into_iter().enumerate() {
+            assert_eq!(view.shader_index(), position as f32, "{view:?}");
         }
     }
 }
