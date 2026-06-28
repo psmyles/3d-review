@@ -34,8 +34,8 @@ use windows::Win32::Graphics::Direct3D11::{
     ID3D11DeviceContext, ID3D11RenderTargetView, ID3D11ShaderResourceView, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_UNKNOWN,
-    DXGI_SAMPLE_DESC,
+    DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT, DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R8G8B8A8_UNORM,
+    DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
     DXGI_PRESENT, DXGI_SCALING_NONE, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG,
@@ -114,6 +114,30 @@ impl Gpu {
     /// The current backbuffer size in physical pixels.
     pub fn size(&self) -> (u32, u32) {
         self.size
+    }
+
+    /// The MSAA sample counts the adapter supports for **both** the scene HDR color
+    /// format (`Rgba16Float`) and the scene depth format (`D32_FLOAT`) — the subset
+    /// of `[1, 2, 4, 8, 16]` the scene can actually render at (invariant 4:
+    /// capability-gate, never crash). `1` (single-sample) is always included. The UI
+    /// drops unsupported entries from the Anti-Aliasing menu.
+    pub fn supported_msaa_counts(&self) -> Vec<u32> {
+        [1u32, 2, 4, 8, 16]
+            .into_iter()
+            .filter(|&count| count == 1 || self.supports_sample_count(count))
+            .collect()
+    }
+
+    /// Whether the adapter supports `count`× MSAA for both the scene color + depth
+    /// formats (`CheckMultisampleQualityLevels > 0` for each).
+    fn supports_sample_count(&self, count: u32) -> bool {
+        // SAFETY: `device` is live; `CheckMultisampleQualityLevels` is a pure query.
+        let levels = |format: DXGI_FORMAT| unsafe {
+            self.device
+                .CheckMultisampleQualityLevels(format, count)
+                .unwrap_or(0)
+        };
+        levels(DXGI_FORMAT_R16G16B16A16_FLOAT) > 0 && levels(DXGI_FORMAT_D32_FLOAT) > 0
     }
 
     /// Clear the backbuffer to `rgba` (gamma-space). Used for the first-frame

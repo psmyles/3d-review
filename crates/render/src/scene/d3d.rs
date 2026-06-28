@@ -31,9 +31,9 @@ use crate::rhi::{
 };
 use crate::selection::{Selection, SelectionView, selection_bounds};
 use crate::{
-    ActiveMaterial, BoundingBoxScope, CameraProjection, CheckerTexture, EnvironmentSettings,
-    GtaoSettings, MaterialMode, OrbitCamera, SceneDebugOptions, ShadingMode, TonemapSettings,
-    UvCamera, UvShadingMode,
+    ActiveMaterial, AntiAliasing, BoundingBoxScope, CameraProjection, CheckerTexture,
+    EnvironmentSettings, GtaoSettings, MaterialMode, OrbitCamera, SceneDebugOptions, ShadingMode,
+    TonemapSettings, UvCamera, UvShadingMode,
 };
 
 use super::gpu_types::{SceneUniforms, shading_mode_value, vertex_color_value};
@@ -139,6 +139,9 @@ pub(crate) struct SceneGpu {
     gtao_pipeline: Pipeline,
     /// 5×5 bilateral-blur fullscreen pass (`fs_blur`).
     gtao_blur_pipeline: Pipeline,
+    /// Scene MSAA sample count the MSAA-dependent pipelines + targets are built for
+    /// (1 = no multisampling). Rebuilt when the live AA level changes.
+    scene_sample_count: u32,
     /// Linear clamp sampler — the composite's input sampler (`s0` of the post pass)
     /// and the IBL sampler (`s1` of the scene pass).
     sampler: Sampler,
@@ -237,83 +240,27 @@ impl std::fmt::Debug for SceneGpu {
 }
 
 impl SceneGpu {
-    /// Build the scene GPU resources. Called once on the first frame.
-    pub(crate) fn new(gpu: &Gpu) -> windows::core::Result<Self> {
+    /// Build the scene GPU resources. Called once on the first frame; `sample_count`
+    /// is the initial scene MSAA level (the live AA setting), so the scene pipelines +
+    /// targets start at the right level and the first frame needs no rebuild.
+    pub(crate) fn new(gpu: &Gpu, sample_count: u32) -> windows::core::Result<Self> {
         let device = gpu.device();
         let (width, height) = gpu.size();
+        let sample_count = sample_count.max(1);
 
         let uniforms = DynamicConstantBuffer::new::<SceneUniforms>(device)?;
         let post_uniforms = DynamicConstantBuffer::new::<PostUniforms>(device)?;
         let gtao_uniforms = DynamicConstantBuffer::new::<GtaoUniforms>(device)?;
 
-        // The line pipeline: depth-tested (Reversed-Z `GreaterEqual`) but neither
-        // writing nor biasing depth, alpha-blended, single-sample (MSAA in Phase 5).
-        let line_pipeline = Pipeline::new(
-            device,
-            &PipelineDesc {
-                vs: SCENE_VS,
-                ps: SCENE_LINE_PS,
-                input: &SCENE_VERTEX_LAYOUT,
-                topology: Topology::LineList,
-                cull: Cull::None,
-                depth: DepthState {
-                    test: true,
-                    write: false,
-                    compare: DepthCompare::GreaterEqual,
-                },
-                blend: BlendMode::AlphaBlend,
-                depth_bias: DepthBias::default(),
-                sample_count: 1,
-            },
-        )?;
-
-        // The mesh pipeline: back-face culled, writes depth + pushes the surface
-        // back (slope-scaled bias) so coplanar line overlays win the test.
-        let mesh_desc = |cull| PipelineDesc {
-            vs: SCENE_VS,
-            ps: SCENE_MESH_PS,
-            input: &SCENE_VERTEX_LAYOUT,
-            topology: Topology::TriangleList,
-            cull,
-            depth: DepthState {
-                test: true,
-                write: true,
-                compare: DepthCompare::GreaterEqual,
-            },
-            blend: BlendMode::AlphaBlend,
-            depth_bias: DepthBias {
-                constant: -2,
-                slope_scaled: -2.0,
-            },
-            sample_count: 1,
-        };
-        let mesh_pipeline = Pipeline::new(device, &mesh_desc(Cull::Back))?;
-        // Double-sided variant for Backface Rendering: identical but uncull.
-        let mesh_double_sided_pipeline = Pipeline::new(device, &mesh_desc(Cull::None))?;
-
-        // The skybox: a fullscreen triangle (no vertex buffer / input layout) drawn
-        // first, behind geometry — depth-test always, no write, opaque overwrite.
-        let skybox_pipeline = Pipeline::new(
-            device,
-            &PipelineDesc {
-                vs: SCENE_SKYBOX_VS,
-                ps: SCENE_SKYBOX_PS,
-                input: &[],
-                topology: Topology::TriangleList,
-                cull: Cull::None,
-                depth: DepthState {
-                    test: true,
-                    write: false,
-                    compare: DepthCompare::Always,
-                },
-                blend: BlendMode::Opaque,
-                depth_bias: DepthBias::default(),
-                sample_count: 1,
-            },
-        )?;
+        // The MSAA-dependent scene pipelines (line / mesh / double-sided mesh /
+        // skybox / UV fill / selection fill) — all draw into the MSAA scene MRT, so
+        // their sample count is baked at the live AA level and rebuilt when it changes
+        // ([`Self::rebuild_scene_pipelines`]).
+        let scene = build_scene_pipelines(device, sample_count)?;
 
         // The composite: a fullscreen triangle (no vertex buffer / input layout),
-        // depth disabled, opaque overwrite of the backbuffer.
+        // depth disabled, opaque overwrite of the backbuffer. Always single-sample —
+        // it draws to the backbuffer, not the MSAA MRT.
         let composite_pipeline = Pipeline::new(
             device,
             &PipelineDesc {
@@ -328,53 +275,6 @@ impl SceneGpu {
                     compare: DepthCompare::Always,
                 },
                 blend: BlendMode::Opaque,
-                depth_bias: DepthBias::default(),
-                sample_count: 1,
-            },
-        )?;
-
-        // The selection flash: a flat-color triangle fill (`fs_selection`) redrawing
-        // the selected triangles over the shaded mesh. Like the line overlays it
-        // depth-tests (Reversed-Z `GreaterEqual`) but never writes depth, so it's
-        // occluded by geometry genuinely in front of the selection yet wins over the
-        // coplanar surface it tints. Double-sided + alpha-blended.
-        let selection_pipeline = Pipeline::new(
-            device,
-            &PipelineDesc {
-                vs: SCENE_VS,
-                ps: SCENE_SELECTION_PS,
-                input: &SCENE_VERTEX_LAYOUT,
-                topology: Topology::TriangleList,
-                cull: Cull::None,
-                depth: DepthState {
-                    test: true,
-                    write: false,
-                    compare: DepthCompare::GreaterEqual,
-                },
-                blend: BlendMode::AlphaBlend,
-                depth_bias: DepthBias::default(),
-                sample_count: 1,
-            },
-        )?;
-
-        // The UV island fill: flat-color triangles in the 2D viewport. Uses `fs_main`
-        // (zero-normal fill verts take its overlay branch, returning the flat vertex
-        // color); never writes depth (everything sits at z=0) so the grid below and
-        // the wireframe above composite by draw order. Double-sided + alpha-blended.
-        let uv_fill_pipeline = Pipeline::new(
-            device,
-            &PipelineDesc {
-                vs: SCENE_VS,
-                ps: SCENE_MESH_PS,
-                input: &SCENE_VERTEX_LAYOUT,
-                topology: Topology::TriangleList,
-                cull: Cull::None,
-                depth: DepthState {
-                    test: true,
-                    write: false,
-                    compare: DepthCompare::GreaterEqual,
-                },
-                blend: BlendMode::AlphaBlend,
                 depth_bias: DepthBias::default(),
                 sample_count: 1,
             },
@@ -432,9 +332,11 @@ impl SceneGpu {
         let materials = MaterialTableD3d::new(device)?;
         let grid = VertexBuffer::new(device, &scene_lines())?;
         let uv_grid = VertexBuffer::new(device, &uv_grid_lines())?;
-        let color = ColorTarget::new(device, width, height)?;
-        let ambient = ColorTarget::new(device, width, height)?;
-        let depth = DepthTarget::new(device, width, height)?;
+        // The scene MRT + depth carry the MSAA level; the GTAO targets stay single-
+        // sample (its own mesh-only pass, never resolved).
+        let color = ColorTarget::hdr_msaa(device, width, height, sample_count)?;
+        let ambient = ColorTarget::hdr_msaa(device, width, height, sample_count)?;
+        let depth = DepthTarget::with_samples(device, width, height, sample_count)?;
         let gtao_gbuffer = ColorTarget::new(device, width, height)?;
         let gtao_depth = DepthTarget::new(device, width, height)?;
         let gtao_raw = ColorTarget::r8(device, width, height)?;
@@ -444,14 +346,15 @@ impl SceneGpu {
             uniforms,
             post_uniforms,
             gtao_uniforms,
-            line_pipeline,
-            mesh_pipeline,
-            mesh_double_sided_pipeline,
-            skybox_pipeline,
+            line_pipeline: scene.line,
+            mesh_pipeline: scene.mesh,
+            mesh_double_sided_pipeline: scene.mesh_double_sided,
+            skybox_pipeline: scene.skybox,
             composite_pipeline,
             gtao_gbuffer_pipeline,
             gtao_pipeline,
             gtao_blur_pipeline,
+            scene_sample_count: sample_count,
             sampler,
             checker_sampler,
             gtao_sampler,
@@ -484,7 +387,7 @@ impl SceneGpu {
             face_baked: None,
             vertex_normal_buf: None,
             vertex_baked: None,
-            selection_pipeline,
+            selection_pipeline: scene.selection,
             selection_index: None,
             selection_ranges: Vec::new(),
             selection_baked: None,
@@ -493,7 +396,7 @@ impl SceneGpu {
             visible_active: false,
             visibility_baked: None,
             uv_grid,
-            uv_fill_pipeline,
+            uv_fill_pipeline: scene.uv_fill,
             uv_wireframe_buf: None,
             uv_wireframe_baked: None,
             uv_fill_buf: None,
@@ -501,21 +404,52 @@ impl SceneGpu {
         })
     }
 
-    /// Recreate the offscreen targets + depth (and the GTAO targets, all full-res)
-    /// when the backbuffer size changes. Shared by the 3D scene + UV viewport paths.
-    fn sync_targets(&mut self, gpu: &Gpu) -> windows::core::Result<()> {
-        if self.color.size() == gpu.size() {
-            return Ok(());
-        }
+    /// Reconcile the offscreen targets + scene pipelines with the backbuffer size +
+    /// the scene MSAA level. The scene MRT + depth carry the MSAA level (recreated on
+    /// a size *or* sample-count change); the GTAO targets stay single-sample (size
+    /// only); the MSAA-dependent scene pipelines rebuild on a sample-count change
+    /// (their sample count is baked at creation). Steady-state frames allocate
+    /// nothing. Shared by the 3D scene + UV viewport paths.
+    fn sync_targets(&mut self, gpu: &Gpu, sample_count: u32) -> windows::core::Result<()> {
         let device = gpu.device();
         let (width, height) = gpu.size();
-        self.color = ColorTarget::new(device, width, height)?;
-        self.ambient = ColorTarget::new(device, width, height)?;
-        self.depth = DepthTarget::new(device, width, height)?;
-        self.gtao_gbuffer = ColorTarget::new(device, width, height)?;
-        self.gtao_depth = DepthTarget::new(device, width, height)?;
-        self.gtao_raw = ColorTarget::r8(device, width, height)?;
-        self.gtao_blur = ColorTarget::r8(device, width, height)?;
+        let sample_count = sample_count.max(1);
+        let size_changed = self.color.size() != (width, height);
+        let samples_changed = self.scene_sample_count != sample_count;
+
+        if size_changed || samples_changed {
+            self.color = ColorTarget::hdr_msaa(device, width, height, sample_count)?;
+            self.ambient = ColorTarget::hdr_msaa(device, width, height, sample_count)?;
+            self.depth = DepthTarget::with_samples(device, width, height, sample_count)?;
+        }
+        if size_changed {
+            self.gtao_gbuffer = ColorTarget::new(device, width, height)?;
+            self.gtao_depth = DepthTarget::new(device, width, height)?;
+            self.gtao_raw = ColorTarget::r8(device, width, height)?;
+            self.gtao_blur = ColorTarget::r8(device, width, height)?;
+        }
+        if samples_changed {
+            self.rebuild_scene_pipelines(device, sample_count)?;
+            self.scene_sample_count = sample_count;
+        }
+        Ok(())
+    }
+
+    /// Rebuild the MSAA-dependent scene pipelines at `sample_count` (their sample
+    /// count is baked into the rasterizer + must match the MSAA targets). The
+    /// composite + GTAO pipelines are single-sample and untouched.
+    fn rebuild_scene_pipelines(
+        &mut self,
+        device: &ID3D11Device,
+        sample_count: u32,
+    ) -> windows::core::Result<()> {
+        let scene = build_scene_pipelines(device, sample_count)?;
+        self.line_pipeline = scene.line;
+        self.mesh_pipeline = scene.mesh;
+        self.mesh_double_sided_pipeline = scene.mesh_double_sided;
+        self.skybox_pipeline = scene.skybox;
+        self.uv_fill_pipeline = scene.uv_fill;
+        self.selection_pipeline = scene.selection;
         Ok(())
     }
 
@@ -539,6 +473,7 @@ impl SceneGpu {
         environment: EnvironmentSettings,
         gtao: GtaoSettings,
         tonemap: TonemapSettings,
+        anti_aliasing: AntiAliasing,
         selection: SelectionView,
         debug: SceneDebugOptions,
         hidden_meshes: &[u32],
@@ -547,9 +482,9 @@ impl SceneGpu {
         let device = gpu.device();
         let ctx = gpu.context();
 
-        // Keep the offscreen targets + depth (and the GTAO targets, all full-res)
-        // matched to the (already-resized) backbuffer.
-        self.sync_targets(gpu)?;
+        // Reconcile the offscreen targets + scene pipelines with the backbuffer size +
+        // the scene MSAA level.
+        self.sync_targets(gpu, anti_aliasing.effective_sample_count())?;
 
         // Reconcile the Unique-mode part key, then the mesh + the effective material
         // table (both depend on the active material mode's grouping).
@@ -768,6 +703,11 @@ impl SceneGpu {
         };
         self.post_uniforms.update(ctx, &post)?;
         gpu.begin_backbuffer_blit();
+        // Resolve the MSAA scene MRT into the single-sample textures the composite
+        // samples (a no-op at 1×). The scene RTVs are unbound now (the backbuffer is
+        // the only bound target), so the multisample resolve source is free.
+        self.color.resolve(ctx);
+        self.ambient.resolve(ctx);
         self.composite_pipeline.bind(ctx);
         self.post_uniforms.bind_ps(ctx, 0);
         self.color.bind_ps_srv(ctx, 0);
@@ -803,12 +743,13 @@ impl SceneGpu {
         uv_camera: UvCamera,
         channel: u32,
         shading_mode: UvShadingMode,
+        anti_aliasing: AntiAliasing,
         clear: [f32; 4],
     ) -> windows::core::Result<()> {
         let device = gpu.device();
         let ctx = gpu.context();
 
-        self.sync_targets(gpu)?;
+        self.sync_targets(gpu, anti_aliasing.effective_sample_count())?;
         self.sync_uv_view(device, model, model_revision, channel, shading_mode)?;
 
         // The UV camera's orthographic view-projection; the rest of the uniform is
@@ -859,6 +800,9 @@ impl SceneGpu {
         };
         self.post_uniforms.update(ctx, &post)?;
         gpu.begin_backbuffer_blit();
+        // Resolve the MSAA scene MRT (no-op at 1×) before the composite samples it.
+        self.color.resolve(ctx);
+        self.ambient.resolve(ctx);
         self.composite_pipeline.bind(ctx);
         self.post_uniforms.bind_ps(ctx, 0);
         self.color.bind_ps_srv(ctx, 0);
@@ -1173,6 +1117,142 @@ impl SceneGpu {
         self.visibility_baked = want;
         Ok(())
     }
+}
+
+/// The six MSAA-dependent scene pipelines (line / mesh / double-sided mesh / skybox /
+/// UV fill / selection fill). They all draw into the MSAA scene MRT, so their sample
+/// count is baked at the live AA level; `SceneGpu::new` + `rebuild_scene_pipelines`
+/// build them together via this helper so they stay in lockstep with the targets.
+struct ScenePipelineSet {
+    line: Pipeline,
+    mesh: Pipeline,
+    mesh_double_sided: Pipeline,
+    skybox: Pipeline,
+    uv_fill: Pipeline,
+    selection: Pipeline,
+}
+
+fn build_scene_pipelines(
+    device: &ID3D11Device,
+    sample_count: u32,
+) -> windows::core::Result<ScenePipelineSet> {
+    // Line overlays (grid / wireframe / bounding box / normals): depth-tested
+    // (Reversed-Z `GreaterEqual`) but neither writing nor biasing depth, alpha-blended.
+    let line = Pipeline::new(
+        device,
+        &PipelineDesc {
+            vs: SCENE_VS,
+            ps: SCENE_LINE_PS,
+            input: &SCENE_VERTEX_LAYOUT,
+            topology: Topology::LineList,
+            cull: Cull::None,
+            depth: DepthState {
+                test: true,
+                write: false,
+                compare: DepthCompare::GreaterEqual,
+            },
+            blend: BlendMode::AlphaBlend,
+            depth_bias: DepthBias::default(),
+            sample_count,
+        },
+    )?;
+
+    // Mesh: back-face culled, writes depth + pushes the surface back (slope-scaled
+    // bias) so coplanar line overlays win the test. The double-sided variant (Backface
+    // Rendering) is identical but unculled.
+    let mesh_desc = |cull| PipelineDesc {
+        vs: SCENE_VS,
+        ps: SCENE_MESH_PS,
+        input: &SCENE_VERTEX_LAYOUT,
+        topology: Topology::TriangleList,
+        cull,
+        depth: DepthState {
+            test: true,
+            write: true,
+            compare: DepthCompare::GreaterEqual,
+        },
+        blend: BlendMode::AlphaBlend,
+        depth_bias: DepthBias {
+            constant: -2,
+            slope_scaled: -2.0,
+        },
+        sample_count,
+    };
+    let mesh = Pipeline::new(device, &mesh_desc(Cull::Back))?;
+    let mesh_double_sided = Pipeline::new(device, &mesh_desc(Cull::None))?;
+
+    // Skybox: a fullscreen triangle drawn first behind geometry — depth-test always,
+    // no write, opaque overwrite.
+    let skybox = Pipeline::new(
+        device,
+        &PipelineDesc {
+            vs: SCENE_SKYBOX_VS,
+            ps: SCENE_SKYBOX_PS,
+            input: &[],
+            topology: Topology::TriangleList,
+            cull: Cull::None,
+            depth: DepthState {
+                test: true,
+                write: false,
+                compare: DepthCompare::Always,
+            },
+            blend: BlendMode::Opaque,
+            depth_bias: DepthBias::default(),
+            sample_count,
+        },
+    )?;
+
+    // UV island fill: `fs_main` (zero-normal fill verts take its overlay branch);
+    // never writes depth (everything at z=0) so grid + wireframe layer by draw order.
+    let uv_fill = Pipeline::new(
+        device,
+        &PipelineDesc {
+            vs: SCENE_VS,
+            ps: SCENE_MESH_PS,
+            input: &SCENE_VERTEX_LAYOUT,
+            topology: Topology::TriangleList,
+            cull: Cull::None,
+            depth: DepthState {
+                test: true,
+                write: false,
+                compare: DepthCompare::GreaterEqual,
+            },
+            blend: BlendMode::AlphaBlend,
+            depth_bias: DepthBias::default(),
+            sample_count,
+        },
+    )?;
+
+    // Selection flash: `fs_selection` flat fill, depth-tested (Reversed-Z) but no
+    // depth write, so it's occluded by geometry in front yet wins over the coplanar
+    // surface it tints.
+    let selection = Pipeline::new(
+        device,
+        &PipelineDesc {
+            vs: SCENE_VS,
+            ps: SCENE_SELECTION_PS,
+            input: &SCENE_VERTEX_LAYOUT,
+            topology: Topology::TriangleList,
+            cull: Cull::None,
+            depth: DepthState {
+                test: true,
+                write: false,
+                compare: DepthCompare::GreaterEqual,
+            },
+            blend: BlendMode::AlphaBlend,
+            depth_bias: DepthBias::default(),
+            sample_count,
+        },
+    )?;
+
+    Ok(ScenePipelineSet {
+        line,
+        mesh,
+        mesh_double_sided,
+        skybox,
+        uv_fill,
+        selection,
+    })
 }
 
 /// Build an optional vertex buffer from `vertices`: `None` for an empty set (D3D11

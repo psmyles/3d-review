@@ -571,12 +571,13 @@ impl Renderer {
         environment: EnvironmentSettings,
         gtao: GtaoSettings,
         tonemap: TonemapSettings,
+        anti_aliasing: AntiAliasing,
         selection: SelectionView,
         hidden_meshes: &[u32],
         clear: [f32; 4],
     ) -> windows::core::Result<()> {
         if self.scene_gpu.is_none() {
-            self.scene_gpu = Some(SceneGpu::new(gpu)?);
+            self.scene_gpu = Some(SceneGpu::new(gpu, anti_aliasing.effective_sample_count())?);
         }
         // Disjoint field borrows: `scene` borrows `self.scene_gpu` mutably while the
         // material table + camera are borrowed from their own fields.
@@ -592,6 +593,7 @@ impl Renderer {
             environment,
             gtao,
             tonemap,
+            anti_aliasing,
             selection,
             debug,
             hidden_meshes,
@@ -610,10 +612,11 @@ impl Renderer {
         model_revision: u64,
         channel: u32,
         shading_mode: UvShadingMode,
+        anti_aliasing: AntiAliasing,
         clear: [f32; 4],
     ) -> windows::core::Result<()> {
         if self.scene_gpu.is_none() {
-            self.scene_gpu = Some(SceneGpu::new(gpu)?);
+            self.scene_gpu = Some(SceneGpu::new(gpu, anti_aliasing.effective_sample_count())?);
         }
         let scene = self.scene_gpu.as_mut().unwrap();
         scene.render_uv(
@@ -623,6 +626,7 @@ impl Renderer {
             self.uv_camera,
             channel,
             shading_mode,
+            anti_aliasing,
             clear,
         )
     }

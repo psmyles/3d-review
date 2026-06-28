@@ -32,8 +32,8 @@ use review_render::{
     TexImage, TextureSlot, selection_bounds,
 };
 use review_ui::{
-    AxisGizmoAction, Notifications, Selection, TexViewRequest, TextureBackground, TextureIntent,
-    UiOutput, UiState, WorkspaceMode, draw_overlay, draw_viewport_scene, init_style,
+    AxisGizmoAction, MsaaSamples, Notifications, Selection, TexViewRequest, TextureBackground,
+    TextureIntent, UiOutput, UiState, WorkspaceMode, draw_overlay, draw_viewport_scene, init_style,
 };
 use windows::Win32::Foundation::HWND;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -459,10 +459,16 @@ impl ApplicationHandler<UserEvent> for App {
 
         // The viewer talks to the GPU through Direct3D 11.
         self.ui.gpu_backend = "DX11".to_string();
-        // TODO(migration Phase 5): gate the Anti-Aliasing menu / IBL / AO toggles on
-        // real D3D11 capability queries (CheckMultisampleQualityLevels /
-        // CheckFormatSupport). Until the scene path is on D3D11, the UiState defaults
-        // apply (IBL + AO enabled; the MSAA menu offers Off only).
+        // Gate the Anti-Aliasing menu on the adapter's real MSAA support (D3D11
+        // `CheckMultisampleQualityLevels` for the scene HDR + depth formats). IBL + AO
+        // stay enabled — the device requires `TEXTURE_COMPRESSION_BC` and feature
+        // level 11_0+ guarantees the `Rgba16Float`/`Rg16Float` + compute they need, so
+        // both are universal on the desktop DX11 targets.
+        let supported_counts = gpu.supported_msaa_counts();
+        self.ui.supported_msaa = MsaaSamples::ALL
+            .into_iter()
+            .filter(|level| supported_counts.contains(&level.sample_count()))
+            .collect();
 
         let egui_state = egui_winit::State::new(
             egui_ctx.clone(),
@@ -886,6 +892,7 @@ impl App {
         let environment = self.ui.environment;
         let gtao = self.ui.gtao;
         let tonemap = self.ui.tonemap;
+        let anti_aliasing = self.ui.anti_aliasing;
         let selection = self.ui.selection_view();
         let hidden_meshes = self.ui.hidden_mesh_nodes();
         let workspace = self.ui.mode;
@@ -930,6 +937,7 @@ impl App {
                     model_revision,
                     uv_channel,
                     uv_shading,
+                    anti_aliasing,
                     clear_rgba,
                 ),
                 WorkspaceMode::Texture => {
@@ -945,6 +953,7 @@ impl App {
                     environment,
                     gtao,
                     tonemap,
+                    anti_aliasing,
                     selection,
                     &hidden_meshes,
                     clear_rgba,
