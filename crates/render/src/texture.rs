@@ -8,9 +8,8 @@
 //!
 //! [`decode_image`] runs on the app thread when the user assigns a slot — never in
 //! the render `prepare` callback. The decoded RGBA8 pixels live behind an `Arc`
-//! ([`DecodedImage`]) so the per-frame scene callback shares them by refcount, and
-//! the GPU upload (still inside `prepare`) is deduplicated by path
-//! ([`crate::material::MaterialTable`]).
+//! ([`DecodedImage`]) so the per-frame scene render shares them by refcount, and
+//! the GPU upload is deduplicated by path (the material table's path-keyed cache).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -263,16 +262,16 @@ fn decode_via_magick(path: &Path) -> Result<image::DynamicImage, String> {
 /// neither resolves (the caller then warns + falls back to the slot's neutral
 /// texture).
 fn locate_magick() -> Option<PathBuf> {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join(if cfg!(windows) {
-                "magick.exe"
-            } else {
-                "magick"
-            });
-            if candidate.is_file() {
-                return Some(candidate);
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let candidate = dir.join(if cfg!(windows) {
+            "magick.exe"
+        } else {
+            "magick"
+        });
+        if candidate.is_file() {
+            return Some(candidate);
         }
     }
     // Defer to PATH resolution by the OS when launching the bare command name.
@@ -294,10 +293,10 @@ pub fn suggested_channel(path: &Path, slot: TextureSlot) -> ChannelSelect {
         .and_then(|stem| stem.to_str())
         .unwrap_or_default();
     // The packed token is the trailing `_XYZ` group (e.g. `_ORM`, `_RMA`).
-    if let Some(token) = stem.rsplit(['_', '-', '.']).next() {
-        if let Some(channel) = packed_channel(token, slot) {
-            return channel;
-        }
+    if let Some(token) = stem.rsplit(['_', '-', '.']).next()
+        && let Some(channel) = packed_channel(token, slot)
+    {
+        return channel;
     }
 
     ChannelSelect::R

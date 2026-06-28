@@ -5,7 +5,6 @@
 //! renderer swap); `Renderer` and the cameras live in the crate root and read
 //! these as plain values.
 
-use crate::scene::SCENE_DEPTH_FORMAT;
 use crate::selection::Selection;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -26,9 +25,8 @@ pub enum CameraProjection {
     Orthographic,
 }
 
-/// Multisample level for the offscreen scene render (the geometry MSAA). Distinct
-/// from egui's own framebuffer MSAA ([`EGUI_MSAA_SAMPLE_COUNT`], fixed): this is
-/// the per-edge antialiasing of the 3D scene, chosen at runtime. `Off` renders
+/// Multisample level for the offscreen scene render (the geometry MSAA): the
+/// per-edge antialiasing of the 3D scene, chosen at runtime. `Off` renders
 /// single-sample (no resolve); the rest render multisampled and resolve to a
 /// single-sample texture the composite pass samples.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -51,7 +49,7 @@ impl MsaaSamples {
         MsaaSamples::X16,
     ];
 
-    /// The wgpu sample count this level maps to (`Off` = 1).
+    /// The MSAA sample count this level maps to (`Off` = 1).
     pub fn sample_count(self) -> u32 {
         match self {
             MsaaSamples::Off => 1,
@@ -64,7 +62,7 @@ impl MsaaSamples {
 }
 
 /// The viewer's antialiasing configuration: a master on/off plus the MSAA level.
-/// Read by [`SceneCallback`] to size the offscreen targets / scene pipelines.
+/// Read by the scene renderer to size the offscreen targets / scene pipelines.
 ///
 /// `enabled` is the toolbar toggle (left-click): when off, the scene renders with
 /// no antialiasing at all regardless of `msaa`, but the level is retained so
@@ -94,45 +92,6 @@ impl AntiAliasing {
             1
         }
     }
-}
-
-/// The MSAA levels the active adapter can actually render the scene at, in
-/// ascending order. Queried against both the HDR color and depth target formats
-/// so a level is only offered when both support it (invariant 4: capability-gate,
-/// never crash). `Off` (single-sample) is always included. The UI uses this to
-/// drop unsupported entries from the antialiasing menu.
-///
-/// `Adapter::get_texture_format_features` reports the adapter's full
-/// (adapter-specific) sample-count support regardless of which device features
-/// are enabled. We only get those extra counts on the *device* when
-/// `TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES` is enabled (the app enables it iff
-/// the adapter offers it). So unless that feature is present we clamp to the
-/// WebGPU-guaranteed counts (1 and 4) for these render formats — otherwise we'd
-/// offer a level whose pipeline build the device would reject.
-pub fn supported_msaa_levels(adapter: &wgpu::Adapter) -> Vec<MsaaSamples> {
-    let adapter_specific = adapter
-        .features()
-        .contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES);
-    let color = adapter
-        .get_texture_format_features(crate::targets::SCENE_HDR_FORMAT)
-        .flags;
-    let depth = adapter
-        .get_texture_format_features(SCENE_DEPTH_FORMAT)
-        .flags;
-    MsaaSamples::ALL
-        .into_iter()
-        .filter(|level| {
-            let count = level.sample_count();
-            // Single-sample and the WebGPU-guaranteed 4× are always safe; any
-            // other count requires the adapter to both report it and have the
-            // adapter-specific feature enabled on the device.
-            count == 1
-                || count == 4
-                || (adapter_specific
-                    && color.sample_count_supported(count)
-                    && depth.sample_count_supported(count))
-        })
-        .collect()
 }
 
 /// Which built-in HDR environment lights the scene (image-based lighting) and,
@@ -174,7 +133,7 @@ impl EnvironmentMap {
 }
 
 /// Image-based lighting / environment configuration for the shaded view. Read by
-/// [`SceneCallback`] to choose + precompute the IBL maps and drive the PBR shaded
+/// the scene renderer to choose + precompute the IBL maps and drive the PBR shaded
 /// path and optional skybox.
 ///
 /// `ibl_enabled` is the default lighting for Shaded mode: on (the env lights the
@@ -209,7 +168,7 @@ impl Default for EnvironmentSettings {
 }
 
 /// Ground-Truth Ambient Occlusion configuration for the shaded view (CLAUDE.md
-/// render roadmap, Phase 5). Read by [`SceneCallback`] to drive the GTAO + blur
+/// render roadmap, Phase 5). Read by the scene renderer to drive the GTAO + blur
 /// passes and the composite multiply. (User-facing UI calls this "Ambient
 /// Occlusion"; the internal implementation is GTAO.)
 ///
@@ -337,7 +296,7 @@ impl TonemapOperator {
     }
 }
 
-/// Tone-mapping configuration for the composite pass. Read by [`SceneCallback`] to
+/// Tone-mapping configuration for the composite pass. Read by the scene renderer to
 /// drive the tone-map stage of the post shader.
 ///
 /// `enabled` is the status-bar toggle; when off the composite skips the tone curve
@@ -567,30 +526,16 @@ impl Default for SceneDebugOptions {
 
 #[derive(Debug, Clone, Copy)]
 pub struct RendererConfig {
-    pub preferred_backends: wgpu::Backends,
-    pub clear_color: wgpu::Color,
+    /// Background the scene viewport is cleared to (linear RGBA, 0..1). The GPU is
+    /// reached directly through Direct3D 11, so there is no backend selection to
+    /// configure here anymore.
+    pub clear_color: [f32; 4],
 }
 
 impl Default for RendererConfig {
     fn default() -> Self {
-        // On Windows, request DX12 only: adapter/device creation is ~100 ms
-        // cheaper than bringing up the Vulkan loader + ICD (measured on an RTX
-        // 4080), and DX12 is guaranteed on Windows 10+. Other platforms keep
-        // Vulkan/Metal. This is the "prefer DX12 on Windows" decision in
-        // CLAUDE.md §4, now enforced rather than left to adapter selection.
-        #[cfg(windows)]
-        let preferred_backends = wgpu::Backends::DX12;
-        #[cfg(not(windows))]
-        let preferred_backends = wgpu::Backends::VULKAN | wgpu::Backends::METAL;
-
         Self {
-            preferred_backends,
-            clear_color: wgpu::Color {
-                r: 0.0,
-                g: 0.0,
-                b: 0.0,
-                a: 1.0,
-            },
+            clear_color: [0.0, 0.0, 0.0, 1.0],
         }
     }
 }

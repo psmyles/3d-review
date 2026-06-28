@@ -1,69 +1,69 @@
-//! Hand-rolled wgpu timestamp-query → Tracy GPU profiler.
+//! Hand-rolled Direct3D 11 timestamp-query → Tracy GPU profiler.
 //!
-//! ## Why a cross-frame readback ring
+//! ## How it times the GPU on D3D11
 //!
-//! The scene is encoded inside an egui paint callback, and **egui owns
-//! `queue.submit` + present** — our code never submits. So we cannot do the
-//! textbook "write timestamps, submit, block, read" sequence: we can only *record*
-//! timestamp writes onto egui's encoder and append a resolve/copy at the end of the
-//! same `prepare`. The values become readable only after egui submits (later) and
-//! the GPU finishes. We therefore read each frame's timestamps a few frames later
-//! through a small ring of resolve+readback buffers, polling the device
-//! **non-blocking** once per frame. Tracy doesn't care that the numbers arrive
-//! late — it aligns them under the right frame using the GPU's own clock.
+//! D3D11 has no "begin/end pass with timestamp writes" like wgpu; instead each
+//! `ID3D11Query` of type `TIMESTAMP` records the GPU clock at the point `End` is
+//! called in the command stream (`Begin` is a no-op for timestamps). A sibling
+//! `TIMESTAMP_DISJOINT` query, `Begin`/`End`-bracketed around the whole frame,
+//! yields the tick `Frequency` (ticks/sec) and a `Disjoint` flag that invalidates a
+//! frame whose clock skipped. So each profiled zone records two timestamps (begin,
+//! end) and the elapsed time is `(end - begin) / Frequency`.
+//!
+//! ## Cross-frame readback ring
+//!
+//! Query results aren't ready the moment the frame is encoded — the GPU has to
+//! finish first. We therefore keep a small ring of per-frame query sets and read a
+//! slot back only when we're about to reuse it (`RING` frames later), by which point
+//! it is long done. `GetData` through the `windows` wrapper can't distinguish "ready"
+//! (`S_OK`) from "not ready" (`S_FALSE`) — both map to `Ok(())` since `S_FALSE` is a
+//! success HRESULT — so we **pre-zero** the output structs and treat a zero
+//! `Frequency` (which `GetData` leaves untouched when not ready) as "skip this
+//! frame". Tracy doesn't care that the numbers arrive a few frames late; it aligns
+//! them under the right frame using the GPU's own clock.
 //!
 //! ## Runtime gating
 //!
 //! Always compiled in, never active unless `--tracy` was passed: `app` calls
-//! [`enable_tracy_gpu`] (which also records the GPU backend for the Tracy context
-//! type), and the device is only asked for `TIMESTAMP_QUERY` on a `--tracy` launch.
-//! The profiler is created lazily in `prepare` only when all of: the flag is set,
-//! the device actually has `TIMESTAMP_QUERY`, and a Tracy client is running. When
-//! it stays `None`, every pass keeps `timestamp_writes: None` exactly as before.
+//! [`enable_tracy_gpu`], and the profiler is built lazily by the scene renderer only
+//! when the flag is set *and* a Tracy client is running. When it stays absent every
+//! scene pass runs exactly as before (no `Begin`/`End` calls at all).
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tracy_client::{Client, GpuContext, GpuContextType};
+use windows::Win32::Graphics::Direct3D11::{
+    D3D11_QUERY, D3D11_QUERY_DATA_TIMESTAMP_DISJOINT, D3D11_QUERY_DESC, D3D11_QUERY_TIMESTAMP,
+    D3D11_QUERY_TIMESTAMP_DISJOINT, ID3D11Device, ID3D11DeviceContext, ID3D11Query,
+};
+use windows::core::Result;
 
-/// Set by `app` on a `--tracy` launch once the adapter is known. Read by the scene
-/// callback (which has no channel from `app`) to decide whether to build the
-/// profiler. Also stores the GPU backend so the Tracy GPU context reports the
-/// right API.
+/// Set by `app` on a `--tracy` launch. Read by the scene renderer (which has no
+/// channel from `app`) to decide whether to build the profiler. The D3D11 backend is
+/// fixed, so unlike the old wgpu profiler this carries no backend value.
 static TRACY_GPU_ENABLED: AtomicBool = AtomicBool::new(false);
-static TRACY_GPU_BACKEND: AtomicU8 = AtomicU8::new(GpuContextType::Invalid as u8);
 
-/// Arm the hand-rolled GPU profiler and record the backend for the Tracy GPU
-/// context. Called once from `app` on a `--tracy` launch, after the adapter is
-/// chosen and the device was requested with `TIMESTAMP_QUERY`. A no-op on a normal
-/// launch (never called), so the scene callback never builds the profiler.
-pub fn enable_tracy_gpu(backend: wgpu::Backend) {
-    let ty = match backend {
-        wgpu::Backend::Vulkan => GpuContextType::Vulkan,
-        wgpu::Backend::Dx12 => GpuContextType::Direct3D12,
-        wgpu::Backend::Gl => GpuContextType::OpenGL,
-        _ => GpuContextType::Invalid,
-    };
-    TRACY_GPU_BACKEND.store(ty as u8, Ordering::Relaxed);
+/// Arm the hand-rolled GPU profiler. Called once from `app` on a `--tracy` launch. A
+/// no-op on a normal launch (never called), so the scene renderer never builds the
+/// profiler.
+pub fn enable_tracy_gpu() {
     TRACY_GPU_ENABLED.store(true, Ordering::Relaxed);
 }
 
 /// Whether `app` armed GPU profiling this run (see [`enable_tracy_gpu`]).
-pub(crate) fn tracy_gpu_enabled() -> bool {
+fn tracy_gpu_enabled() -> bool {
     TRACY_GPU_ENABLED.load(Ordering::Relaxed)
 }
 
-fn backend_context_type() -> GpuContextType {
-    match TRACY_GPU_BACKEND.load(Ordering::Relaxed) {
-        x if x == GpuContextType::Vulkan as u8 => GpuContextType::Vulkan,
-        x if x == GpuContextType::Direct3D12 as u8 => GpuContextType::Direct3D12,
-        x if x == GpuContextType::OpenGL as u8 => GpuContextType::OpenGL,
-        _ => GpuContextType::Invalid,
-    }
+/// Whether the scene renderer should build the profiler this frame: profiling was
+/// armed *and* a Tracy client is actually running (so a `--tracy` launch with no
+/// connected server still pays nothing for query objects it would never read).
+pub(crate) fn should_enable() -> bool {
+    tracy_gpu_enabled() && Client::running().is_some()
 }
 
-/// One profiled scene pass. Each owns a fixed pair of timestamp-query slots (begin,
-/// end) in the shared query set, in GPU encode order, so a conditional pass (GTAO)
+/// One profiled scene pass. Each owns a fixed pair of timestamp slots (begin, end)
+/// in the per-frame query array, in GPU encode order, so a conditional pass (GTAO)
 /// keeps a stable identity in Tracy whether or not it ran a given frame.
 #[derive(Clone, Copy)]
 pub(crate) enum Zone {
@@ -71,16 +71,18 @@ pub(crate) enum Zone {
     GtaoGbuffer,
     Gtao,
     GtaoBlur,
+    Composite,
 }
 
 impl Zone {
-    /// Index of this zone's *begin* timestamp in the query set; the *end* is +1.
-    const fn base(self) -> u32 {
+    /// Index of this zone's *begin* timestamp; the *end* is +1.
+    const fn base(self) -> usize {
         match self {
             Zone::Scene => 0,
             Zone::GtaoGbuffer => 2,
             Zone::Gtao => 4,
             Zone::GtaoBlur => 6,
+            Zone::Composite => 8,
         }
     }
 
@@ -91,6 +93,7 @@ impl Zone {
             Zone::GtaoGbuffer => "GTAO G-Buffer",
             Zone::Gtao => "GTAO Occlusion",
             Zone::GtaoBlur => "GTAO Blur",
+            Zone::Composite => "Composite",
         }
     }
 
@@ -101,239 +104,188 @@ impl Zone {
 }
 
 /// Encode order, used to walk timestamps when feeding Tracy.
-const ZONES: [Zone; 4] = [Zone::Scene, Zone::GtaoGbuffer, Zone::Gtao, Zone::GtaoBlur];
+const ZONES: [Zone; 5] = [
+    Zone::Scene,
+    Zone::GtaoGbuffer,
+    Zone::Gtao,
+    Zone::GtaoBlur,
+    Zone::Composite,
+];
 
 /// Mask bit set whenever the GTAO passes ran (gbuffer + occlusion + blur encode
-/// together), used to size the resolve range.
+/// together).
 const GTAO_MASK: u16 = Zone::GtaoGbuffer.bit() | Zone::Gtao.bit() | Zone::GtaoBlur.bit();
 
-/// The set of zones a frame encodes: always the scene pass, plus the three GTAO
-/// passes when AO is active. Passed to [`GpuProfiler::begin`].
+/// The set of zones a frame encodes: always the scene + composite, plus the three
+/// GTAO passes when AO is active. Passed to [`GpuProfiler::begin_frame`].
 pub(crate) fn frame_mask(gtao_active: bool) -> u16 {
-    if gtao_active {
-        Zone::Scene.bit() | GTAO_MASK
-    } else {
-        Zone::Scene.bit()
-    }
+    let base = Zone::Scene.bit() | Zone::Composite.bit();
+    if gtao_active { base | GTAO_MASK } else { base }
 }
 
-/// Number of timestamp slots in the shared query set (zones × 2). The last pair is
-/// reserved for a future bloom pass so its addition won't renumber existing zones.
-const SLOTS: u32 = 10;
-const SLOT_BYTES: u64 = SLOTS as u64 * 8;
+/// Number of timestamp slots per frame (zones × 2).
+const SLOTS: usize = 10;
 /// Ring depth. Generous enough that a slot written at frame N is read and free well
-/// before it is reused at N+RING, regardless of map-callback latency.
+/// before it is reused at N+RING, so its query results are always ready by then.
 const RING: usize = 4;
 
-const MAP_IDLE: u8 = 0;
-const MAP_MAPPING: u8 = 1;
-const MAP_MAPPED: u8 = 2;
-
-/// One ring entry: a GPU-side resolve buffer plus a CPU-mappable readback buffer,
-/// and the bookkeeping to drain it a few frames after it was written.
+/// One ring entry: a disjoint query (frequency + validity for the frame) plus the
+/// per-zone begin/end timestamp queries, and the bookkeeping to drain it a few
+/// frames after it was written.
 struct RingSlot {
-    /// `resolve_query_set` destination (`QUERY_RESOLVE | COPY_SRC`).
-    resolve: wgpu::Buffer,
-    /// `MAP_READ | COPY_DST` copy target the CPU reads.
-    readback: wgpu::Buffer,
-    /// Shared with the `map_async` callback (which runs on the poll thread and must
-    /// not borrow `self`): `IDLE → MAPPING → MAPPED`.
-    state: Arc<AtomicU8>,
-    /// `true` once timestamps have been resolved+copied here and not yet read back.
+    disjoint: ID3D11Query,
+    /// `SLOTS` timestamp queries (zone begin/end pairs).
+    timestamps: Vec<ID3D11Query>,
+    /// `true` once this slot's queries have been `End`-ed for a frame and not yet
+    /// read back.
     pending: bool,
-    /// Frame number the resolve was encoded at; a slot is only mapped once a later
-    /// frame has run (so egui has submitted the copy).
-    resolved_at: u64,
-    /// Which zones were written this slot (so the reader skips unran passes).
-    active_mask: u16,
-    /// Contiguous timestamp count actually resolved (2 for scene-only, 8 with GTAO).
-    used: u32,
+    /// Which zones were armed this slot, so the reader skips unran passes (whose
+    /// timestamp queries hold stale data from an earlier frame).
+    mask: u16,
 }
 
-/// The GPU profiler: a single shared timestamp query set + a ring of
-/// resolve/readback buffers + the Tracy GPU context the readbacks feed.
+/// The GPU profiler: a ring of per-frame query sets + the Tracy GPU context the
+/// readbacks feed.
 pub(crate) struct GpuProfiler {
-    query_set: wgpu::QuerySet,
     ring: Vec<RingSlot>,
-    /// Nanoseconds per GPU tick, from `Queue::get_timestamp_period`.
-    period: f32,
-    /// Created lazily on the first successful readback so its calibration baseline
-    /// is a real GPU tick.
+    /// Created lazily on the first successful readback so its calibration baseline +
+    /// tick period come from a real disjoint query.
     ctx: Option<GpuContext>,
     frame_no: u64,
     /// Ring slot encoded this frame.
     cur_slot: usize,
-    /// Mask of zones armed this frame.
-    cur_mask: u16,
-    /// Whether this frame's slot was free, so it is safe to write timestamps. When
-    /// `false`, `writes` returns `None` and the frame is simply not profiled.
-    armed: bool,
 }
 
 impl GpuProfiler {
-    pub(crate) fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
-        let query_set = device.create_query_set(&wgpu::QuerySetDescriptor {
-            label: Some("review_gpu_profiler_timestamps"),
-            ty: wgpu::QueryType::Timestamp,
-            count: SLOTS,
-        });
-        let ring = (0..RING)
-            .map(|_| RingSlot {
-                resolve: device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("review_gpu_profiler_resolve"),
-                    size: SLOT_BYTES,
-                    usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
-                    mapped_at_creation: false,
-                }),
-                readback: device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("review_gpu_profiler_readback"),
-                    size: SLOT_BYTES,
-                    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                }),
-                state: Arc::new(AtomicU8::new(MAP_IDLE)),
+    /// Build the query ring. Timestamp + disjoint queries are core to D3D11 feature
+    /// level 11_0+, but `CreateQuery` can still fail on an exotic driver, so this is
+    /// fallible and the caller treats `Err` as "no profiling this run".
+    pub(crate) fn new(device: &ID3D11Device) -> Result<Self> {
+        let mut ring = Vec::with_capacity(RING);
+        for _ in 0..RING {
+            let disjoint = create_query(device, D3D11_QUERY_TIMESTAMP_DISJOINT)?;
+            let mut timestamps = Vec::with_capacity(SLOTS);
+            for _ in 0..SLOTS {
+                timestamps.push(create_query(device, D3D11_QUERY_TIMESTAMP)?);
+            }
+            ring.push(RingSlot {
+                disjoint,
+                timestamps,
                 pending: false,
-                resolved_at: 0,
-                active_mask: 0,
-                used: 0,
-            })
-            .collect::<Vec<_>>();
-
-        Self {
-            query_set,
+                mask: 0,
+            });
+        }
+        Ok(Self {
             ring,
-            period: queue.get_timestamp_period(),
             ctx: None,
             frame_no: 0,
             cur_slot: 0,
-            cur_mask: 0,
-            armed: false,
-        }
-    }
-
-    /// Start a frame: advance the frame counter, read back any slots whose data is
-    /// ready (and request maps for those whose copy has been submitted), then arm
-    /// this frame's slot if it is free. `mask` is the set of zones about to be
-    /// encoded. Must be called once per `prepare`, before encoding.
-    pub(crate) fn begin(&mut self, device: &wgpu::Device, mask: u16) {
-        self.frame_no += 1;
-        self.pump(device);
-
-        let slot = (self.frame_no % RING as u64) as usize;
-        let free =
-            !self.ring[slot].pending && self.ring[slot].state.load(Ordering::Acquire) == MAP_IDLE;
-        self.cur_slot = slot;
-        self.armed = free;
-        self.cur_mask = if free { mask } else { 0 };
-    }
-
-    /// Timestamp writes for `zone`, or `None` when this frame isn't being profiled
-    /// (the inactive path keeps `timestamp_writes: None`, unchanged behavior).
-    pub(crate) fn writes(&self, zone: Zone) -> Option<wgpu::RenderPassTimestampWrites<'_>> {
-        if !self.armed || self.cur_mask & zone.bit() == 0 {
-            return None;
-        }
-        let base = zone.base();
-        Some(wgpu::RenderPassTimestampWrites {
-            query_set: &self.query_set,
-            beginning_of_pass_write_index: Some(base),
-            end_of_pass_write_index: Some(base + 1),
         })
     }
 
-    /// Append the resolve + copy for this frame's slot onto egui's encoder (egui
-    /// submits it later in the same submission as the timestamp writes). Must be
-    /// called once per `prepare`, after encoding.
-    pub(crate) fn finish(&mut self, encoder: &mut wgpu::CommandEncoder) {
-        if !self.armed {
+    /// Start a frame: pick this frame's ring slot, drain it if it still holds an
+    /// unread result (it was written `RING` frames ago, so it is done), then begin
+    /// the disjoint query for the new frame. `mask` is the set of zones about to be
+    /// encoded. Call once per `render`, before encoding.
+    pub(crate) fn begin_frame(&mut self, ctx: &ID3D11DeviceContext, mask: u16) {
+        self.frame_no += 1;
+        let slot = (self.frame_no % RING as u64) as usize;
+        self.cur_slot = slot;
+        if self.ring[slot].pending {
+            self.read_slot(ctx, slot);
+        }
+        self.ring[slot].mask = mask;
+        // SAFETY: `disjoint` is a live query owned by the ring; the immediate context
+        // records into it. `Begin` is valid for a disjoint query.
+        unsafe { ctx.Begin(&self.ring[slot].disjoint) };
+    }
+
+    /// Record this zone's *begin* timestamp at the current point in the command
+    /// stream. Call right before the zone's draws.
+    pub(crate) fn zone_begin(&self, ctx: &ID3D11DeviceContext, zone: Zone) {
+        self.end_timestamp(ctx, zone.base());
+    }
+
+    /// Record this zone's *end* timestamp. Call right after the zone's draws.
+    pub(crate) fn zone_end(&self, ctx: &ID3D11DeviceContext, zone: Zone) {
+        self.end_timestamp(ctx, zone.base() + 1);
+    }
+
+    /// `End` the timestamp query at `index` in this frame's slot (records the GPU
+    /// clock there).
+    fn end_timestamp(&self, ctx: &ID3D11DeviceContext, index: usize) {
+        // SAFETY: the timestamp query is live; `End` records the timestamp. The slot
+        // is the one `begin_frame` selected this frame.
+        unsafe { ctx.End(&self.ring[self.cur_slot].timestamps[index]) };
+    }
+
+    /// End the disjoint query, closing the frame's timing window, and mark the slot
+    /// pending so a later `begin_frame` reads it back. Call once per `render`, after
+    /// encoding.
+    pub(crate) fn end_frame(&mut self, ctx: &ID3D11DeviceContext) {
+        let slot = self.cur_slot;
+        // SAFETY: the disjoint query is live and was `Begin`-ed this frame.
+        unsafe { ctx.End(&self.ring[slot].disjoint) };
+        self.ring[slot].pending = true;
+    }
+
+    /// Read one slot's disjoint + timestamps (which are ready by now), feed the zones
+    /// to Tracy, and free the slot. A not-ready or disjoint frame is skipped.
+    fn read_slot(&mut self, ctx: &ID3D11DeviceContext, slot: usize) {
+        self.ring[slot].pending = false;
+        let mask = self.ring[slot].mask;
+
+        // Pre-zeroed so a not-ready `GetData` (which leaves the output untouched and
+        // still returns `Ok` because `S_FALSE` is a success HRESULT) reads as
+        // `Frequency == 0` and is skipped below.
+        let mut disjoint = D3D11_QUERY_DATA_TIMESTAMP_DISJOINT::default();
+        // SAFETY: the disjoint query is live; the output struct is sized exactly and
+        // outlives the call. `GetData` may return `S_FALSE` (mapped to `Ok`), which
+        // leaves `disjoint` zeroed — handled by the `Frequency == 0` check.
+        let _ = unsafe {
+            ctx.GetData(
+                &self.ring[slot].disjoint,
+                Some((&mut disjoint as *mut D3D11_QUERY_DATA_TIMESTAMP_DISJOINT).cast()),
+                size_of::<D3D11_QUERY_DATA_TIMESTAMP_DISJOINT>() as u32,
+                0,
+            )
+        };
+        if disjoint.Frequency == 0 || disjoint.Disjoint.as_bool() {
             return;
         }
-        let used = if self.cur_mask & GTAO_MASK != 0 { 8 } else { 2 };
-        let slot = self.cur_slot;
-        encoder.resolve_query_set(&self.query_set, 0..used, &self.ring[slot].resolve, 0);
-        encoder.copy_buffer_to_buffer(
-            &self.ring[slot].resolve,
-            0,
-            &self.ring[slot].readback,
-            0,
-            used as u64 * 8,
-        );
-        let s = &mut self.ring[slot];
-        s.pending = true;
-        s.resolved_at = self.frame_no;
-        s.active_mask = self.cur_mask;
-        s.used = used;
-        s.state.store(MAP_IDLE, Ordering::Release);
-    }
 
-    /// Drain ready readbacks and request maps for submitted-but-unmapped slots, then
-    /// poll the device once (non-blocking — never `Wait`).
-    fn pump(&mut self, device: &wgpu::Device) {
-        for slot in 0..self.ring.len() {
-            if !self.ring[slot].pending {
-                continue;
-            }
-            match self.ring[slot].state.load(Ordering::Acquire) {
-                MAP_MAPPED => self.read_slot(slot),
-                MAP_IDLE if self.ring[slot].resolved_at < self.frame_no => {
-                    // The copy was encoded on an earlier frame's encoder, so egui has
-                    // since submitted it; safe to map now.
-                    let state = self.ring[slot].state.clone();
-                    self.ring[slot].state.store(MAP_MAPPING, Ordering::Release);
-                    self.ring[slot].readback.slice(..).map_async(
-                        wgpu::MapMode::Read,
-                        move |result| {
-                            state.store(
-                                if result.is_ok() { MAP_MAPPED } else { MAP_IDLE },
-                                Ordering::Release,
-                            );
-                        },
-                    );
-                }
-                _ => {}
-            }
+        let mut times = [0u64; SLOTS];
+        for (index, value) in times.iter_mut().enumerate() {
+            // SAFETY: each timestamp query is live; `value` is a `u64` output slot.
+            let _ = unsafe {
+                ctx.GetData(
+                    &self.ring[slot].timestamps[index],
+                    Some((value as *mut u64).cast()),
+                    size_of::<u64>() as u32,
+                    0,
+                )
+            };
         }
-        let _ = device.poll(wgpu::Maintain::Poll);
-    }
 
-    /// Read one mapped slot's timestamps, feed them to Tracy, and free the slot.
-    fn read_slot(&mut self, slot: usize) {
-        let used = self.ring[slot].used as usize;
-        let mask = self.ring[slot].active_mask;
-        // Copy out before touching `&mut self` again (the mapped view borrows the
-        // buffer, hence `self.ring`).
-        let mut times = [0u64; SLOTS as usize];
-        {
-            let view = self.ring[slot]
-                .readback
-                .slice(0..self.ring[slot].used as u64 * 8)
-                .get_mapped_range();
-            let src: &[u64] = bytemuck::cast_slice(&view);
-            let n = src.len().min(times.len());
-            times[..n].copy_from_slice(&src[..n]);
-        }
-        self.ring[slot].readback.unmap();
-        self.ring[slot].state.store(MAP_IDLE, Ordering::Release);
-        self.ring[slot].pending = false;
-
-        self.emit_zones(&times, mask, used);
+        self.emit_zones(&times, mask, disjoint.Frequency);
     }
 
     /// Turn a frame's resolved timestamps into Tracy GPU zones.
-    fn emit_zones(&mut self, times: &[u64], mask: u16, used: usize) {
+    fn emit_zones(&mut self, times: &[u64; SLOTS], mask: u16, frequency: u64) {
         if self.ctx.is_none() {
-            // Use the first timestamp as the context's calibration baseline so the
-            // GPU timeline lines up with the CPU one.
             let Some(client) = Client::running() else {
                 return;
             };
+            // ns per tick = 1e9 / frequency; baseline = first recorded tick so the GPU
+            // timeline lines up with the CPU one.
+            let period = 1.0e9 / frequency as f32;
             let baseline = times.first().copied().unwrap_or(0) as i64;
             self.ctx = client
                 .new_gpu_context(
-                    Some("GPU (wgpu scene)"),
-                    backend_context_type(),
+                    Some("GPU (D3D11 scene)"),
+                    GpuContextType::Direct3D11,
                     baseline,
-                    self.period,
+                    period,
                 )
                 .ok();
         }
@@ -345,14 +297,9 @@ impl GpuProfiler {
             if mask & zone.bit() == 0 {
                 continue;
             }
-            let begin_idx = zone.base() as usize;
-            let end_idx = begin_idx + 1;
-            if end_idx >= used {
-                continue;
-            }
-            let (begin, end) = (times[begin_idx], times[end_idx]);
-            // Skip unwritten/garbage pairs (a pass that early-returned, or a counter
-            // that hasn't advanced).
+            let (begin, end) = (times[zone.base()], times[zone.base() + 1]);
+            // Skip unwritten/garbage pairs (a pass that didn't run, or a counter that
+            // hasn't advanced).
             if begin == 0 || end <= begin {
                 continue;
             }
@@ -363,4 +310,16 @@ impl GpuProfiler {
             }
         }
     }
+}
+
+/// Create an `ID3D11Query` of `query_type`.
+fn create_query(device: &ID3D11Device, query_type: D3D11_QUERY) -> Result<ID3D11Query> {
+    let desc = D3D11_QUERY_DESC {
+        Query: query_type,
+        MiscFlags: 0,
+    };
+    let mut query = None;
+    // SAFETY: `desc` is a well-formed query description; the out-param is populated.
+    unsafe { device.CreateQuery(&desc, Some(&mut query))? };
+    Ok(query.unwrap())
 }

@@ -13,14 +13,12 @@ egui-winit.workspace = true
 glam.workspace = true
 image.workspace = true
 notify.workspace = true
-pollster.workspace = true
 review-import = { path = "../import" }
 review-model = { path = "../model" }
 review-render = { path = "../render" }
 review-ui = { path = "../ui" }
 rfd.workspace = true
 tracy-client.workspace = true
-wgpu.workspace = true
 winit.workspace = true
 # Direct3D 11 / DXGI for the device + swapchain bootstrap and first-frame present
 # (the startup black-fill, replacing the old GDI hack). Scoped to the window/

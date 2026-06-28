@@ -79,7 +79,7 @@ pub fn draw_overlay(
         // status bar bottom) and the open side panels (left/right). Floating
         // chrome — the dimension labels and the option windows — is kept inside
         // this rect so it never overlaps the toolbar icons or a side panel.
-        let screen = ctx.screen_rect();
+        let screen = ctx.content_rect();
         let viewport = egui::Rect::from_min_max(
             egui::pos2(
                 screen.left() + side.left_inset,

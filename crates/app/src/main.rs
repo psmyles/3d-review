@@ -16,7 +16,6 @@ static GLOBAL: review_import::TracyAllocator<std::alloc::System> =
 
 use std::{
     collections::{HashMap, HashSet},
-    num::NonZeroU32,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -224,9 +223,9 @@ struct App {
     /// the egui frame and triggers the notifications (texture decode start/finish);
     /// the UI crate only provides the themed type. Shown once per frame in `render`.
     notifications: Notifications,
-    /// Whether `--tracy` was passed: gates the (otherwise-identical) device feature
-    /// request for `TIMESTAMP_QUERY` and the GPU-profiler arming. Read in
-    /// `wgpu_configuration`.
+    /// Whether `--tracy` was passed: arms the hand-rolled D3D11 GPU timestamp
+    /// profiler (via `review_render::enable_tracy_gpu`) in `resumed`. The scene
+    /// renderer then builds the profiler lazily once a Tracy client connects.
     tracy_enabled: bool,
     /// The live Tracy client handle, held for the whole process so the profiler
     /// session stays up (dropping the last handle disconnects). `None` on a normal
@@ -470,6 +469,13 @@ impl ApplicationHandler<UserEvent> for App {
             .filter(|level| supported_counts.contains(&level.sample_count()))
             .collect();
 
+        // Under `--tracy`, arm the hand-rolled D3D11 GPU timestamp profiler. The scene
+        // renderer builds it lazily on the first frame once a Tracy client connects; a
+        // normal launch never calls this, so the scene passes record no timestamps.
+        if self.tracy_enabled {
+            review_render::enable_tracy_gpu();
+        }
+
         let egui_state = egui_winit::State::new(
             egui_ctx.clone(),
             egui::ViewportId::ROOT,
@@ -570,15 +576,15 @@ impl ApplicationHandler<UserEvent> for App {
                 self.refresh_interval = monitor_refresh_interval(&window);
                 self.record_windowed_bounds();
 
-                if let Some(renderer) = self.renderer.as_mut() {
-                    if size.height > 0 {
-                        let aspect = size.width as f32 / size.height as f32;
-                        renderer.set_camera_aspect_ratio(aspect);
-                        renderer.set_uv_aspect_ratio(aspect);
-                        let (safe_w, safe_h) =
-                            framing_safe_area(size.height, window.scale_factor() as f32);
-                        renderer.set_framing_safe_area(safe_w, safe_h);
-                    }
+                if let Some(renderer) = self.renderer.as_mut()
+                    && size.height > 0
+                {
+                    let aspect = size.width as f32 / size.height as f32;
+                    renderer.set_camera_aspect_ratio(aspect);
+                    renderer.set_uv_aspect_ratio(aspect);
+                    let (safe_w, safe_h) =
+                        framing_safe_area(size.height, window.scale_factor() as f32);
+                    renderer.set_framing_safe_area(safe_w, safe_h);
                 }
 
                 if let Some(gpu) = self.gpu.as_mut() {
@@ -688,19 +694,19 @@ impl ApplicationHandler<UserEvent> for App {
                 self.last_pointer_position = None;
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                if !egui_response.is_some_and(|response| response.consumed) {
-                    if let Some(renderer) = self.renderer.as_mut() {
-                        let amount = match delta {
-                            MouseScrollDelta::LineDelta(_, y) => y * 0.5,
-                            MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 120.0,
-                        };
-                        if self.ui.mode == WorkspaceMode::Uv {
-                            renderer.zoom_uv_camera(amount);
-                        } else {
-                            renderer.zoom_camera(amount);
-                        }
-                        self.redraw_requested = true;
+                if !egui_response.is_some_and(|response| response.consumed)
+                    && let Some(renderer) = self.renderer.as_mut()
+                {
+                    let amount = match delta {
+                        MouseScrollDelta::LineDelta(_, y) => y * 0.5,
+                        MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 120.0,
+                    };
+                    if self.ui.mode == WorkspaceMode::Uv {
+                        renderer.zoom_uv_camera(amount);
+                    } else {
+                        renderer.zoom_camera(amount);
                     }
+                    self.redraw_requested = true;
                 }
             }
             WindowEvent::ModifiersChanged(modifiers) => {
@@ -906,12 +912,7 @@ impl App {
             .then(|| self.build_texture_draw(full_output.pixels_per_point));
         let model = self.scene_model.clone();
         let model_revision = self.scene_revision;
-        let clear_rgba = [
-            clear.r as f32,
-            clear.g as f32,
-            clear.b as f32,
-            clear.a as f32,
-        ];
+        let clear_rgba = clear;
 
         let Some(renderer) = self.renderer.as_mut() else {
             return;

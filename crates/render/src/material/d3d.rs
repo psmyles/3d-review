@@ -1,11 +1,9 @@
-//! The Direct3D 11 material table — the live replacement for the dormant wgpu
-//! [`MaterialTable`](super::table::MaterialTable). Per material it holds the
-//! resolved seven texture-slot SRVs (`t5..t11`, drawn from a path-keyed upload
-//! cache so a packed map is uploaded once) and the `#[repr(C)]` [`MaterialUniform`]
-//! the shader reads from cbuffer `b1`. Unlike the wgpu path's strided uniform
-//! buffer + per-material bind groups, the uniform is rewritten per draw range into
-//! one `USAGE_DYNAMIC` cbuffer via `Map(WRITE_DISCARD)`; the SRVs are bound per
-//! range with one `PSSetShaderResources`.
+//! The Direct3D 11 material table. Per material it holds the resolved seven
+//! texture-slot SRVs (`t5..t11`, drawn from a path-keyed upload cache so a packed
+//! map is uploaded once) and the `#[repr(C)]` [`MaterialUniform`] the shader reads
+//! from cbuffer `b1`. The uniform is rewritten per draw range into one
+//! `USAGE_DYNAMIC` cbuffer via `Map(WRITE_DISCARD)`; the SRVs are bound per range
+//! with one `PSSetShaderResources`.
 //!
 //! No `unsafe` lives here: it drives the GPU through the safe `rhi` wrappers
 //! (`Texture`, `DynamicConstantBuffer`, `Sampler`) — the unsafe/COM is confined to
@@ -199,8 +197,8 @@ fn upload_binding(
 }
 
 /// Create the per-slot neutral 1×1 fallback textures (white base/AO/opacity,
-/// `[128,128,255]` normal, mid-grey roughness/metallic, black emissive) — the same
-/// neutral values as the wgpu `create_fallback_views`.
+/// `[128,128,255]` normal, mid-grey roughness/metallic, black emissive) used for
+/// any unassigned slot.
 fn create_fallback_textures(
     device: &ID3D11Device,
 ) -> windows::core::Result<[Arc<Texture>; TEXTURE_SLOT_COUNT]> {
@@ -213,7 +211,7 @@ fn create_fallback_textures(
     Ok(textures.try_into().unwrap_or_else(|_| unreachable!()))
 }
 
-/// The neutral fallback RGBA for an unassigned slot (mirrors `upload::fallback_pixel`).
+/// The neutral fallback RGBA for an unassigned slot.
 fn fallback_pixel(slot: TextureSlot) -> [u8; 4] {
     match slot {
         TextureSlot::BaseColor | TextureSlot::Ao | TextureSlot::Opacity => [255, 255, 255, 255],

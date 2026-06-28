@@ -2434,7 +2434,6 @@ dependencies = [
  "glam",
  "image",
  "notify",
- "pollster",
  "review-import",
  "review-model",
  "review-render",
@@ -2442,7 +2441,6 @@ dependencies = [
  "rfd",
  "serde_json",
  "tracy-client",
- "wgpu",
  "windows 0.62.2",
  "winit",
  "winresource",
@@ -2472,7 +2470,6 @@ name = "review-render"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "egui",
  "glam",
  "half",
  "image",

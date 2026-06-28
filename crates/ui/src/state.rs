@@ -590,26 +590,29 @@ pub struct UiState {
     /// Scene antialiasing (MSAA level). Read straight by the viewport callback —
     /// not a debug option — and edited by the Anti Aliasing panel.
     pub anti_aliasing: AntiAliasing,
-    /// MSAA levels the active adapter actually supports, set by `app` from
-    /// [`review_render::supported_msaa_levels`]. The Anti Aliasing menu disables
-    /// any level not in this list (invariant 4). Empty until the adapter is known
-    /// (the panel then falls back to offering only the current level).
+    /// MSAA levels the active adapter actually supports, set by `app` from the
+    /// device's `supported_msaa_counts()` (D3D11 `CheckMultisampleQualityLevels`).
+    /// The Anti Aliasing menu disables any level not in this list (invariant 4).
+    /// Empty until the adapter is known (the panel then falls back to offering only
+    /// the current level).
     pub supported_msaa: Vec<MsaaSamples>,
     /// Image-based lighting / environment selection. Read straight by the
     /// viewport callback (not a debug option) and edited by the Environment
     /// panel. Default is IBL on, HDR 01, no background (see [`EnvironmentSettings`]).
     pub environment: EnvironmentSettings,
-    /// Whether the active adapter can build the IBL maps, set by `app` from
-    /// [`review_render::ibl_supported`]. The Environment panel disables (and
-    /// forces off) the IBL toggle when false (invariant 4).
+    /// Whether the active adapter can build the IBL maps. Always true on the D3D11
+    /// target (the device hard-requires `TEXTURE_COMPRESSION_BC` for the BC6H IBL
+    /// cubes, and 11_0+ guarantees the float formats), so the Environment panel never
+    /// disables the IBL toggle in practice; kept as a field for the capability seam.
     pub ibl_supported: bool,
     /// Ambient occlusion (GTAO) settings. Read straight by the viewport
     /// callback and edited by the Ambient Occlusion panel; the AO status-bar
     /// button toggles `gtao.enabled`. Default is on (see [`GtaoSettings`]).
     pub gtao: GtaoSettings,
-    /// Whether the active adapter can run GTAO, set by `app` from
-    /// [`review_render::gtao_supported`]. The status-bar AO button is disabled
-    /// (and forced off) when false (invariant 4).
+    /// Whether the active adapter can run GTAO. Always true on the D3D11 target
+    /// (the G-buffer + horizon passes need only float render targets + samplers
+    /// guaranteed at feature level 11_0+), so the status-bar AO button is never
+    /// disabled in practice; kept as a field for the capability seam.
     pub gtao_supported: bool,
     /// Tone-mapping settings. Read straight by the viewport callback (not a debug
     /// option) and edited by the Tonemapper panel; the status-bar tonemapper button

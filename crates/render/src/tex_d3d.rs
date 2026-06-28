@@ -1,18 +1,15 @@
-//! The Tex viewport's Direct3D 11 render path — the live replacement for the
-//! dormant egui-wgpu [`TexCallback`] (migration Phase 4).
+//! The Tex viewport's Direct3D 11 render path.
 //!
-//! Like its wgpu counterpart this is deliberately minimal and separate from the
-//! scene path: a fullscreen-triangle pipeline ([`tex.hlsl`]) with a small path-keyed
-//! GPU texture cache, drawn straight to the backbuffer **before** the egui chrome
-//! (egui-directx11 has no paint callback). It owns no scene state. Channel isolation
-//! is a uniform the pixel shader swizzles on — switching RGB/R/G/B/A is a buffer
-//! write, not a re-upload — and the source texture is uploaded once (mipped, raw
-//! `Rgba8Unorm`) and reused, so only the first view of a texture costs work.
+//! Deliberately minimal and separate from the scene path: a fullscreen-triangle
+//! pipeline (`tex.hlsl`) with a small path-keyed GPU texture cache, drawn straight to
+//! the backbuffer **before** the egui chrome (egui-directx11 has no paint callback).
+//! It owns no scene state. Channel isolation is a uniform the pixel shader swizzles
+//! on — switching RGB/R/G/B/A is a buffer write, not a re-upload — and the source
+//! texture is uploaded once (mipped, raw `Rgba8Unorm`) and reused, so only the first
+//! view of a texture costs work.
 //!
 //! Ownership: the decoded pixels arrive by `Arc` from the app-owned texture pool
 //! (invariant 2); the UI emits only the selected image + channel + placement.
-//!
-//! [`TexCallback`]: crate::TexCallback
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

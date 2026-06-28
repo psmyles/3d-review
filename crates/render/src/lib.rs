@@ -6,36 +6,25 @@ use review_model::{Bounds, MaterialImportDefaults, ModelData};
 
 mod config;
 mod geometry;
-mod gtao;
 mod ibl;
 mod material;
-mod mipmap;
-mod post;
-mod prof;
 mod rhi;
 mod scene;
 mod selection;
-mod targets;
-mod tex;
 mod tex_d3d;
 mod texture;
 
 pub use config::*;
-pub use gtao::gtao_supported;
 #[cfg(feature = "bake")]
 pub use ibl::bake_ibl_assets;
-pub use ibl::ibl_supported;
 pub use material::{
     AlphaMode, MaterialChange, MaterialEdit, MaterialSnapshot, MaterialState, RoughnessWorkflow,
     TextureBinding,
 };
 pub use rhi::Gpu;
 use scene::SceneGpu;
-pub use scene::{
-    EGUI_DEPTH_FORMAT, EGUI_MSAA_SAMPLE_COUNT, SCENE_DEPTH_FORMAT, SceneCallback, enable_tracy_gpu,
-};
+pub use scene::enable_tracy_gpu;
 pub use selection::{Selection, SelectionView, selection_bounds};
-pub use tex::TexCallback;
 use tex_d3d::TexGpu;
 pub use tex_d3d::{TexBackground, TexImage};
 pub use texture::{
@@ -557,10 +546,12 @@ impl Renderer {
         }
     }
 
-    /// Render the scene through Direct3D 11: the skybox + per-material PBR/IBL mesh
-    /// + grid into offscreen linear-HDR targets, then a tone-mapped composite to the
-    /// swapchain backbuffer, behind the egui chrome `app` draws next. Builds the GPU
-    /// resources on the first call (the device only exists once the window is up).
+    /// Render the scene through Direct3D 11: the skybox, the per-material PBR/IBL
+    /// mesh, and the grid into offscreen linear-HDR targets, then a tone-mapped
+    /// composite to the swapchain backbuffer behind the egui chrome `app` draws next.
+    /// Builds the GPU resources on the first call (the device only exists once the
+    /// window is up).
+    #[allow(clippy::too_many_arguments)]
     pub fn render_scene(
         &mut self,
         gpu: &Gpu,
@@ -605,6 +596,7 @@ impl Renderer {
     /// 0..1 grid + the optional island fill + the model's UV edges, framed by the
     /// renderer's `uv_camera` and composited to the backbuffer. Builds the GPU
     /// resources on the first call, like [`Self::render_scene`].
+    #[allow(clippy::too_many_arguments)]
     pub fn render_uv_scene(
         &mut self,
         gpu: &Gpu,

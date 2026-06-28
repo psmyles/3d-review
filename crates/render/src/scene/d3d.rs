@@ -1,15 +1,14 @@
-//! The Direct3D 11 scene renderer — the live replacement for the dormant
-//! egui-wgpu [`SceneCallback`] path (migration). It owns the GPU-side scene
-//! resources (pipelines, buffers, offscreen targets, IBL maps, material table)
-//! built lazily on the first frame and drives the per-frame render: the scene draws
-//! into offscreen linear-HDR MRT targets, then a composite pass tone-maps + sRGB-
-//! encodes them to the swapchain backbuffer behind the egui chrome.
+//! The Direct3D 11 scene renderer. It owns the GPU-side scene resources (pipelines,
+//! buffers, offscreen targets, IBL maps, material table) built lazily on the first
+//! frame and drives the per-frame render: the scene draws into offscreen linear-HDR
+//! MRT targets, then a composite pass tone-maps + sRGB-encodes them to the swapchain
+//! backbuffer behind the egui chrome.
 //!
-//! Phase 2b covers the full shaded look: the skybox + the per-material PBR/IBL
-//! `fs_main` (material cbuffer `b1` + the seven texture slots `t5..t11` + the IBL
-//! maps `t1..t4` + the UV checker `t0`), drawn one indexed range per material.
-//! Phase 3 adds GTAO + the live tone-map operator switch; Phase 4 the UV / Tex
-//! viewports, the debug line views and the selection flash.
+//! The full shaded look is the skybox + the per-material PBR/IBL `fs_main` (material
+//! cbuffer `b1` + the seven texture slots `t5..t11` + the IBL maps `t1..t4` + the UV
+//! checker `t0`), drawn one indexed range per material, plus GTAO + the live tone-map
+//! operator switch, the UV / Tex viewports, the debug line views and the selection
+//! flash.
 
 use bytemuck::{Pod, Zeroable};
 use review_model::ModelData;
@@ -36,6 +35,7 @@ use crate::{
     TonemapSettings, UvCamera, UvShadingMode,
 };
 
+use super::gpu_profiler::{self, GpuProfiler, Zone};
 use super::gpu_types::{SceneUniforms, shading_mode_value, vertex_color_value};
 
 /// Compiled DXBC — see `build.rs`.
@@ -231,6 +231,10 @@ pub(crate) struct SceneGpu {
     /// per `(model_revision, channel, shading_mode)`.
     uv_fill_buf: Option<VertexBuffer>,
     uv_fill_baked: Option<(u64, u32, UvShadingMode)>,
+    /// Hand-rolled D3D11 timestamp-query → Tracy GPU profiler. `None` unless `--tracy`
+    /// armed it and a Tracy client is running; built lazily on the first profiled
+    /// frame and never touched otherwise (every scene pass records no timestamps).
+    gpu_profiler: Option<GpuProfiler>,
 }
 
 impl std::fmt::Debug for SceneGpu {
@@ -401,6 +405,7 @@ impl SceneGpu {
             uv_wireframe_baked: None,
             uv_fill_buf: None,
             uv_fill_baked: None,
+            gpu_profiler: None,
         })
     }
 
@@ -538,8 +543,25 @@ impl SceneGpu {
         let uniforms = scene_uniforms(camera, projection, environment, selection, debug);
         self.uniforms.update(ctx, &uniforms)?;
 
+        // GTAO runs only when enabled and a mesh is present; computed up front so it
+        // also drives the GPU profiler's per-frame zone mask.
+        let gtao_active = gtao.enabled && self.mesh.is_some();
+
+        // Arm the GPU profiler (lazily, only under `--tracy` with a running client),
+        // then open this frame's timing window. Absent on a normal launch, so the
+        // passes below record no timestamps.
+        if self.gpu_profiler.is_none() && gpu_profiler::should_enable() {
+            self.gpu_profiler = GpuProfiler::new(device).ok();
+        }
+        if let Some(profiler) = self.gpu_profiler.as_mut() {
+            profiler.begin_frame(ctx, gpu_profiler::frame_mask(gtao_active));
+        }
+
         // --- Offscreen scene pass (2 MRT + depth). ---
         gpu.begin_scene_pass(&[&self.color, &self.ambient], &self.depth, clear);
+        if let Some(profiler) = self.gpu_profiler.as_ref() {
+            profiler.zone_begin(ctx, Zone::Scene);
+        }
         // Shared bindings: `b0` (VS + PS), the checker (`t0`/`s0`), the IBL maps
         // (`t1..t4`) + their sampler (`s1`), and the material cbuffer + sampler
         // (`b1`/`s2`). The mesh loop rebinds `b1` + `t5..t11` per range.
@@ -639,6 +661,9 @@ impl SceneGpu {
             index.bind(ctx);
             gpu.draw_indexed_range(index.count(), 0);
         }
+        if let Some(profiler) = self.gpu_profiler.as_ref() {
+            profiler.zone_end(ctx, Zone::Scene);
+        }
 
         // --- GTAO (ambient occlusion), only when enabled and a mesh is present. ---
         // A single-sample mesh-only G-buffer (view normal + Z), then the horizon
@@ -646,13 +671,15 @@ impl SceneGpu {
         // composite darkens the ambient radiance by. The G-buffer has its own depth
         // (nearest-surface) and shares `b0` (the scene uniforms carry `view`); the
         // fullscreen passes read `b0` as the GTAO uniform + `s0` as the point sampler.
-        let gtao_active = gtao.enabled && self.mesh.is_some();
         if gtao_active {
             let gtao_uniforms = build_gtao_uniforms(camera, projection, gtao);
             self.gtao_uniforms.update(ctx, &gtao_uniforms)?;
 
             // G-buffer: redraw the whole mesh (material irrelevant) into the
             // single-sample normal/Z target, clearing the target + its depth.
+            if let Some(profiler) = self.gpu_profiler.as_ref() {
+                profiler.zone_begin(ctx, Zone::GtaoGbuffer);
+            }
             gpu.begin_scene_pass(&[&self.gtao_gbuffer], &self.gtao_depth, [0.0; 4]);
             self.uniforms.bind_vs(ctx, 0);
             self.uniforms.bind_ps(ctx, 0);
@@ -673,23 +700,38 @@ impl SceneGpu {
                     gpu.draw_indexed_range(index.count(), 0);
                 }
             }
+            if let Some(profiler) = self.gpu_profiler.as_ref() {
+                profiler.zone_end(ctx, Zone::GtaoGbuffer);
+            }
 
             // Occlusion: a fullscreen pass reading the G-buffer (`t0`) → raw AO.
+            if let Some(profiler) = self.gpu_profiler.as_ref() {
+                profiler.zone_begin(ctx, Zone::Gtao);
+            }
             gpu.begin_color_pass(&self.gtao_raw);
             self.gtao_pipeline.bind(ctx);
             self.gtao_uniforms.bind_ps(ctx, 0);
             self.gtao_sampler.bind_ps(ctx, 0);
             self.gtao_gbuffer.bind_ps_srv(ctx, 0);
             gpu.draw(3);
+            if let Some(profiler) = self.gpu_profiler.as_ref() {
+                profiler.zone_end(ctx, Zone::Gtao);
+            }
 
             // Bilateral blur: reads the G-buffer (`t0`) + raw AO (`t1`) → blurred AO.
             // `begin_color_pass` rebinds the RTV to `gtao_blur`, releasing `gtao_raw`
             // as a render target before it's bound below as an SRV.
+            if let Some(profiler) = self.gpu_profiler.as_ref() {
+                profiler.zone_begin(ctx, Zone::GtaoBlur);
+            }
             gpu.begin_color_pass(&self.gtao_blur);
             self.gtao_blur_pipeline.bind(ctx);
             self.gtao_gbuffer.bind_ps_srv(ctx, 0);
             self.gtao_raw.bind_ps_srv(ctx, 1);
             gpu.draw(3);
+            if let Some(profiler) = self.gpu_profiler.as_ref() {
+                profiler.zone_end(ctx, Zone::GtaoBlur);
+            }
             // Drop the G-buffer / raw SRVs before the composite binds the scene
             // targets (and before next frame rebinds them as render targets).
             gpu.unbind_ps_srvs(2);
@@ -702,6 +744,9 @@ impl SceneGpu {
             tonemap_op: tonemap.operator.shader_index(),
         };
         self.post_uniforms.update(ctx, &post)?;
+        if let Some(profiler) = self.gpu_profiler.as_ref() {
+            profiler.zone_begin(ctx, Zone::Composite);
+        }
         gpu.begin_backbuffer_blit();
         // Resolve the MSAA scene MRT into the single-sample textures the composite
         // samples (a no-op at 1×). The scene RTVs are unbound now (the backbuffer is
@@ -722,8 +767,17 @@ impl SceneGpu {
         self.ambient.bind_ps_srv(ctx, 2);
         self.sampler.bind_ps(ctx, 0);
         gpu.draw(3);
+        if let Some(profiler) = self.gpu_profiler.as_ref() {
+            profiler.zone_end(ctx, Zone::Composite);
+        }
         // Release the offscreen SRVs so next frame can bind them as render targets.
         gpu.unbind_ps_srvs(3);
+
+        // Close the GPU profiler's timing window for this frame (resolves + reads back
+        // a few frames later in `begin_frame`).
+        if let Some(profiler) = self.gpu_profiler.as_mut() {
+            profiler.end_frame(ctx);
+        }
 
         Ok(())
     }
