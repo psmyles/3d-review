@@ -122,6 +122,18 @@ float3 srgb_to_linear(float3 c)
     return lerp(hi, lo, cutoff);
 }
 
+// Encode a linear color to sRGB for display. The post composite normally owns the
+// sRGB encode, but the buffer-inspection view (below) emits final display-ready
+// pixels itself (post passes them straight through), so its "color" buffers (base
+// color / emission) sRGB-encode here. Mirrors `post.hlsl`'s `linear_to_srgb`.
+float3 linear_to_srgb(float3 c)
+{
+    float3 lo = c * 12.92;
+    float3 hi = 1.055 * pow(max(c, 0.0), 1.0 / 2.4) - 0.055;
+    float3 cutoff = step(c, 0.0031308);
+    return lerp(hi, lo, cutoff);
+}
+
 // Select one channel of a sampled texel by index (0 R, 1 G, 2 B, 3 A), so a packed
 // map can route any channel into a scalar property.
 float select_channel(float4 texel, float index)
@@ -284,6 +296,122 @@ FragOutput fs_main(VsOutput input)
     {
         out_alpha = out_alpha * select_channel(tex_opacity, mat_channels1.z);
     }
+
+    // --- Buffer-inspection view (ActiveMaterial::Buffers): show one shading input
+    // flat for data inspection. `projection_params.z` is the BufferView index (-1
+    // when off). Bypasses lighting + tone mapping — post passes this straight to the
+    // backbuffer — so the shown pixel *is* the value (color buffers sRGB-encoded for
+    // display, data buffers written raw). Ambient is zeroed (opaque) so GTAO never
+    // darkens it. Every texture is sampled at the top (uniform control flow); this
+    // block only reads those texels + the uniform, so no Sample sits in a branch.
+    float buffer_view = projection_params.z;
+    if (buffer_view >= 0.0)
+    {
+        out_frag.ambient = float4(0.0, 0.0, 0.0, 1.0);
+        float3 result = (float3)0.0;
+        if (buffer_view < 0.5)
+        {
+            // Base Color: final albedo, sRGB-encoded for display.
+            result = linear_to_srgb(base_color);
+        }
+        else if (buffer_view < 1.5)
+        {
+            // Normal (World): final shading normal with the normal map applied.
+            float3 wn = normalize(input.normal);
+            if (has_normal)
+            {
+                wn = apply_normal_map(input.normal, input.tangent, tex_normal.rgb);
+            }
+            result = wn * 0.5 + 0.5;
+        }
+        else if (buffer_view < 2.5)
+        {
+            // Normal Map (Tangent): the raw authored texels (linear data, direct).
+            result = tex_normal.rgb;
+        }
+        else if (buffer_view < 3.5)
+        {
+            // Geometric Normal: the interpolated vertex normal, no map.
+            result = normalize(input.normal) * 0.5 + 0.5;
+        }
+        else if (buffer_view < 4.5)
+        {
+            // Tangent: the vertex tangent remapped, dimmed where handedness is -1 so
+            // a flipped (mirrored-UV) basis reads darker.
+            float handed = input.tangent.w < 0.0 ? 0.5 : 1.0;
+            result = (normalize(input.tangent.xyz) * 0.5 + 0.5) * handed;
+        }
+        else if (buffer_view < 5.5)
+        {
+            // Roughness: final scalar (factor combined with the channel-routed map).
+            float r = mat_params.y;
+            if (has_roughness)
+            {
+                float sample_r = select_channel(tex_roughness, mat_channels0.z);
+                if (mat_flags.x > 0.5)
+                {
+                    r = 1.0 - (1.0 - r) * sample_r;
+                }
+                else
+                {
+                    r = r * sample_r;
+                }
+            }
+            result = (float3)saturate(r);
+        }
+        else if (buffer_view < 6.5)
+        {
+            // Metallic: final scalar.
+            float m = mat_params.x;
+            if (has_metallic)
+            {
+                m = m * select_channel(tex_metallic, mat_channels0.w);
+            }
+            result = (float3)saturate(m);
+        }
+        else if (buffer_view < 7.5)
+        {
+            // Ambient Occlusion: the channel-routed AO map (1 when unbound).
+            float ao = 1.0;
+            if (has_ao)
+            {
+                ao = select_channel(tex_ao, mat_channels1.x);
+            }
+            result = (float3)saturate(ao);
+        }
+        else if (buffer_view < 8.5)
+        {
+            // Emission: final emissive radiance, sRGB-encoded for display.
+            float3 em = mat_emissive.rgb;
+            if (has_emissive)
+            {
+                float3 factor = mat_emissive.rgb;
+                if (all(factor <= 0.0)) { factor = (float3)1.0; }
+                if (mat_channels1.y > 3.5)
+                {
+                    em = tex_emissive.rgb * factor;
+                }
+                else
+                {
+                    em = (float3)select_channel(tex_emissive, mat_channels1.y) * factor;
+                }
+            }
+            result = linear_to_srgb(em);
+        }
+        else if (buffer_view < 9.5)
+        {
+            // Opacity: final alpha (base-color alpha × opacity map).
+            result = (float3)saturate(out_alpha);
+        }
+        else
+        {
+            // UV: UV0 as R = U, G = V.
+            result = float3(input.uv.x, input.uv.y, 0.0);
+        }
+        out_frag.color = float4(result, 1.0);
+        return out_frag;
+    }
+
     if (uv_checker_enabled)
     {
         base_color = checker.rgb;

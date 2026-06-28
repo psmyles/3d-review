@@ -46,6 +46,12 @@ pub(crate) const ICON_UV: AppIcon = AppIcon {
     id: "icon_uv",
     png_bytes: include_bytes!("../../../assets/icons/icon_uv.png"),
 };
+/// "Buffers" — the material/geometry buffer-inspection view (base color, normal,
+/// roughness, …). Click to cycle buffers; right-click for the buffer dropdown.
+pub(crate) const ICON_BUFFERS: AppIcon = AppIcon {
+    id: "icon_buffers",
+    png_bytes: include_bytes!("../../../assets/icons/icon_buffers.png"),
+};
 /// "UV Wire" — the wire-only UV shading mode.
 pub(crate) const ICON_UV_WIRE: AppIcon = AppIcon {
     id: "icon_uv_wire",

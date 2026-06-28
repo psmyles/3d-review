@@ -448,6 +448,7 @@ pub enum OutlinerTab {
 pub enum OptionPanel {
     Wireframe,
     MaterialMode,
+    BufferView,
     BoundingBox,
     UvChecker,
     FaceNormals,
@@ -462,9 +463,10 @@ pub enum OptionPanel {
 impl OptionPanel {
     /// Every panel, in toolbar order. Iterated each frame to draw the open ones
     /// (and to give each a stable cascade slot), so the order is deterministic.
-    pub(crate) const ALL: [OptionPanel; 11] = [
+    pub(crate) const ALL: [OptionPanel; 12] = [
         OptionPanel::Wireframe,
         OptionPanel::MaterialMode,
+        OptionPanel::BufferView,
         OptionPanel::BoundingBox,
         OptionPanel::UvChecker,
         OptionPanel::FaceNormals,
@@ -481,6 +483,7 @@ impl OptionPanel {
         match self {
             OptionPanel::Wireframe => "Wireframe",
             OptionPanel::MaterialMode => "Material Mode",
+            OptionPanel::BufferView => "Buffers",
             OptionPanel::BoundingBox => "Bounding Box",
             OptionPanel::UvChecker => "UV Checker",
             OptionPanel::FaceNormals => "Face Normals",
@@ -499,6 +502,7 @@ impl OptionPanel {
         match self {
             OptionPanel::Wireframe => "panel_wireframe",
             OptionPanel::MaterialMode => "panel_material_mode",
+            OptionPanel::BufferView => "panel_buffer_view",
             OptionPanel::BoundingBox => "panel_bounding_box",
             OptionPanel::UvChecker => "panel_uv_checker",
             OptionPanel::FaceNormals => "panel_face_normals",

@@ -23,7 +23,8 @@ pub(crate) struct SceneUniforms {
     /// show background skybox (>0.5), `w` = prefiltered-cube max mip LOD.
     pub(crate) env_params: [f32; 4],
     /// Projection metadata: `x` = orthographic projection (>0.5), `y` =
-    /// environment yaw in radians (IBL / skybox sample rotation), z/w unused.
+    /// environment yaw in radians (IBL / skybox sample rotation), `z` = active
+    /// buffer-inspection view index (-1 when the Buffers view is off), `w` unused.
     pub(crate) projection_params: [f32; 4],
     /// View matrix (world → view), for writing the view-space normal + depth into
     /// the GTAO G-buffer.
@@ -71,4 +72,15 @@ pub(super) fn vertex_color_value(debug_options: SceneDebugOptions) -> f32 {
         VertexColorMode::Alpha => 1.0,
         VertexColorMode::RgbAlpha => 2.0,
     }
+}
+
+/// Encode the active buffer view into `projection_params.z` for the shader: `-1`
+/// when the [`ActiveMaterial::Buffers`] view isn't active, otherwise the
+/// [`crate::BufferView::shader_index`]. Carried in a previously-unused
+/// `projection_params` slot, so the uniform layout is unchanged.
+pub(super) fn buffer_view_value(debug_options: SceneDebugOptions) -> f32 {
+    if debug_options.active_material != ActiveMaterial::Buffers {
+        return -1.0;
+    }
+    debug_options.buffer_view.shader_index()
 }

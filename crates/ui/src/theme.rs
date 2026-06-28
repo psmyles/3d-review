@@ -238,14 +238,15 @@ pub mod size {
     /// Two-icon window-toggle group (Outliner / Inspector) in the toolbar right
     /// cluster.
     pub const TOOLBAR_TOOLS_GROUP_WIDTH: f32 = 93.0;
-    /// Left toolbar cluster: shading (5) + material (3) + normals (2) groups,
-    /// with two group spacings between them (228 + 14 + 138 + 14 + 93).
-    pub const TOOLBAR_LEFT_WIDTH: f32 = 487.0;
+    /// Left toolbar cluster: shading (5) + material (4) + normals (2) groups,
+    /// with two group spacings between them (228 + 14 + 183 + 14 + 93).
+    pub const TOOLBAR_LEFT_WIDTH: f32 = 532.0;
     /// Five-icon shading group: show-wireframe, wireframe-only, unlit, shaded,
     /// backface-rendering.
     pub const TOOLBAR_SHADING_GROUP_WIDTH: f32 = 228.0;
-    /// Three-icon active-material group: source material, UV checker, vertex colors.
-    pub const TOOLBAR_MATERIAL_GROUP_WIDTH: f32 = 138.0;
+    /// Four-icon active-material group: source material, UV checker, vertex colors,
+    /// buffers (6 padding + 4×42 icons + 3×3 gaps).
+    pub const TOOLBAR_MATERIAL_GROUP_WIDTH: f32 = 183.0;
     /// Two-icon normal-debug group: face normals, vertex normals.
     pub const TOOLBAR_NORMALS_GROUP_WIDTH: f32 = 93.0;
     pub const TOOLBAR_SINGLE_ICON_GROUP_WIDTH: f32 = 48.0;
