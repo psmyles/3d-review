@@ -2,7 +2,7 @@
 //! import defaults, edited via [`MaterialEdit`] intents), its alpha / workflow
 //! modes and texture bindings, the app→UI [`MaterialSnapshot`], the per-material
 //! [`MaterialDrawRange`], and the `#[repr(C)]` [`MaterialUniform`] that must match
-//! the WGSL `MaterialUniform` exactly (invariant 11).
+//! the HLSL per-material cbuffer (`b1`) in `scene.hlsl` exactly (invariant 11).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -170,8 +170,8 @@ pub struct MaterialEdit {
     pub change: MaterialChange,
 }
 
-/// GPU-side per-material uniform (bind group 3, binding 0). `#[repr(C)]` + `Pod`
-/// to match the WGSL `MaterialUniform` exactly (invariant 11).
+/// GPU-side per-material uniform (cbuffer `b1` in `scene.hlsl`). `#[repr(C)]` +
+/// `Pod` to match that HLSL cbuffer layout exactly (invariant 11).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct MaterialUniform {

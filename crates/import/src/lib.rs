@@ -198,6 +198,11 @@ mod ffi {
             // The ufbx C parse + the bridge's two-pass extraction (the bulk of a
             // load), measured as one GPU-free CPU zone.
             let _z = crate::prof::zone!("ufbx Parse");
+            // SAFETY: `c_path` is a valid NUL-terminated C string that outlives the
+            // call; `bridge_options`/`error` are live stack values; `scene` is a
+            // zeroed, correctly-sized `ReviewImportScene` the bridge fully writes on
+            // success (return != 0) or leaves zeroed on failure. All four pointers
+            // are non-null and valid for the duration of the call.
             unsafe {
                 review_import_load_fbx(
                     c_path.as_ptr(),
@@ -212,12 +217,18 @@ mod ffi {
             return Err(ImportError::LoadFailed(read_error_message(&error)));
         }
 
+        // SAFETY: `loaded != 0` means the bridge fully initialized `scene`, so the
+        // `MaybeUninit` now holds a valid `ReviewImportScene`.
         let mut scene = unsafe { scene.assume_init() };
         let model = {
             // Walk the flat bridge arrays into our `ModelData` (slices, bounds, BVH).
             let _z = crate::prof::zone!("Build ModelData");
             model_from_bridge_scene(path, &scene)
         };
+        // SAFETY: `scene` is the bridge-allocated scene we own; this frees its C-side
+        // buffers exactly once, on both the success and error paths of the extraction
+        // above (we still return `model` afterwards). The bridge tolerates the zeroed
+        // fields a partial parse may leave. No further access to `scene` follows.
         unsafe {
             review_import_free_scene(&mut scene);
         }
@@ -375,6 +386,9 @@ mod ffi {
     }
 
     fn read_error_message(error: &ReviewImportError) -> String {
+        // SAFETY: `error.message` is a fixed 256-byte array the bridge always writes
+        // as a NUL-terminated string (it is zero-initialized at `[0; 256]` before the
+        // call), so `from_ptr` reads a valid C string bounded by the array.
         unsafe {
             CStr::from_ptr(error.message.as_ptr())
                 .to_str()
@@ -390,6 +404,8 @@ mod ffi {
             return None;
         }
 
+        // SAFETY: `value` is non-null (checked above) and points at a bridge-owned,
+        // NUL-terminated C string that lives until `review_import_free_scene`.
         unsafe { CStr::from_ptr(value).to_str().ok().map(str::to_owned) }
     }
 
@@ -408,7 +424,71 @@ mod ffi {
             )));
         };
 
+        // SAFETY: `ptr` is non-null (just checked) and the bridge guarantees it
+        // points at `len` contiguous, properly aligned `T` values that stay valid
+        // for the borrow `'a` (the caller holds `&ReviewImportScene` for the whole
+        // walk). `len > 0` here, so the slice is non-empty and within one allocation.
         Ok(unsafe { slice::from_raw_parts(ptr.as_ptr(), len) })
+    }
+
+    #[cfg(test)]
+    mod ffi_tests {
+        use super::*;
+
+        #[test]
+        fn checked_slice_returns_empty_for_zero_len() {
+            // Len 0 is the empty case regardless of the pointer (even null).
+            assert!(
+                checked_slice::<u32>(std::ptr::null(), 0, "verts")
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+
+        #[test]
+        fn checked_slice_reads_a_valid_pointer() {
+            let data = [1u32, 2, 3, 4];
+            let slice = checked_slice(data.as_ptr(), data.len(), "verts").unwrap();
+            assert_eq!(slice, &data[..]);
+        }
+
+        #[test]
+        fn checked_slice_rejects_null_for_nonempty() {
+            let err = checked_slice::<u32>(std::ptr::null(), 3, "indices").unwrap_err();
+            assert!(
+                matches!(err, ImportError::LoadFailed(message) if message.contains("indices")),
+                "a null pointer for non-empty data must be a LoadFailed naming the field"
+            );
+        }
+
+        #[test]
+        fn read_optional_c_string_is_none_for_null() {
+            assert_eq!(read_optional_c_string(std::ptr::null()), None);
+        }
+
+        #[test]
+        fn read_optional_c_string_reads_a_c_string() {
+            let text = CString::new("mesh_01").unwrap();
+            assert_eq!(
+                read_optional_c_string(text.as_ptr()),
+                Some("mesh_01".to_owned())
+            );
+        }
+
+        #[test]
+        fn read_error_message_falls_back_when_empty() {
+            let error = ReviewImportError { message: [0; 256] };
+            assert_eq!(read_error_message(&error), "unknown FBX import error");
+        }
+
+        #[test]
+        fn read_error_message_reads_the_bridge_text() {
+            let mut error = ReviewImportError { message: [0; 256] };
+            for (slot, &byte) in error.message.iter_mut().zip(b"bad fbx") {
+                *slot = byte as c_char;
+            }
+            assert_eq!(read_error_message(&error), "bad fbx");
+        }
     }
 }
 

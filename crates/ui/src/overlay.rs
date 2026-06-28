@@ -5,15 +5,15 @@
 use std::sync::Arc;
 
 use review_model::{ModelData, SceneBvh};
-use review_render::{MaterialState, OrbitCamera, SceneCallback, SelectionView, UvCamera};
+use review_render::{OrbitCamera, UvCamera};
 
 use crate::state::{OptionPanel, UiOutput, UiState, WorkspaceMode, sync_debug_state};
 use crate::theme::{self, color, size};
 use crate::{dimensions, gizmo, help, panels, stats, status_bar, texture_view, toolbar};
 
 /// Paint the viewport scene behind the egui chrome: the 3D scene in 3D mode, the
-/// 2D UV viewport in UV mode. Texture mode paints no wgpu scene — its 2D image
-/// viewer is drawn in egui by [`draw_overlay`] (see [`texture_view`]).
+/// 2D UV viewport in UV mode. Texture mode renders no 3D scene — its 2D image
+/// viewer is drawn by `app`'s `TexGpu` pass (see [`texture_view`]).
 pub fn draw_viewport_scene(
     ctx: &egui::Context,
     state: &UiState,
@@ -21,67 +21,16 @@ pub fn draw_viewport_scene(
     uv_camera: UvCamera,
     model: Arc<ModelData>,
     model_revision: u64,
-    output_format: egui_wgpu::wgpu::TextureFormat,
 ) {
-    let _z = crate::prof::zone!("Draw Viewport Scene");
-    let callback = match state.mode {
-        WorkspaceMode::ThreeD => {
-            // The editable material values ride in from the app→UI snapshot; the
-            // scene callback uploads them into the renderer's material table. The
-            // states carry `Arc`-shared decoded textures, so cloning is a refcount
-            // bump, not a pixel copy.
-            let materials: Vec<MaterialState> = state
-                .materials_snapshot
-                .iter()
-                .map(|snapshot| snapshot.state.clone())
-                .collect();
-            // The Outliner selection + solo flag + highlight color + flash fade ride
-            // in so the scene pass can flash / isolate the selection (Phase 2). The
-            // fade is driven by `app` (invariant 6) and runs 1→0 over the flash.
-            let selection = SelectionView {
-                selection: state.selection,
-                solo: state.solo,
-                highlight_color: theme::color32_to_rgba(color::SELECTION_OUTLINE),
-                fade: state.selection_fade,
-            };
-            // The Outliner's hidden mesh nodes ride in so the scene pass can filter
-            // them out of the viewport draw + GTAO (Phase 2).
-            let hidden_meshes: Vec<u32> = state
-                .hidden_meshes
-                .iter()
-                .map(|&index| index as u32)
-                .collect();
-            SceneCallback::new(
-                camera,
-                state.projection_mode.into(),
-                output_format,
-                model,
-                model_revision,
-                state.debug,
-                state.anti_aliasing,
-                state.environment,
-                state.gtao,
-                state.tonemap,
-                &materials,
-                state.material_revision,
-                selection,
-                &hidden_meshes,
-            )
-        }
-        WorkspaceMode::Uv => SceneCallback::new_uv(
-            output_format,
-            model,
-            model_revision,
-            uv_camera,
-            state.uv_view_channel,
-            state.uv_shading_mode,
-        ),
-        WorkspaceMode::Texture => return,
-    };
-
-    let rect = ctx.input(|input| input.screen_rect());
-    let painter = ctx.layer_painter(egui::LayerId::background());
-    painter.add(egui_wgpu::Callback::new_paint_callback(rect, callback));
+    // DORMANT (D3D11 migration): the 3D / UV scene is rendered by `app` directly
+    // through the D3D11 RHI (migration Phase 1+), drawn to the backbuffer *before*
+    // the egui chrome — egui-directx11 has no paint-callback mechanism, and doesn't
+    // need one. This stub is the seam where the UI will emit a per-frame "scene
+    // request" (mode + camera + viewport rect) for `app` to consume once the D3D11
+    // scene path lands; until then the viewport shows the clear color behind the
+    // chrome (a blank scene). Inputs are accepted now so the call site in `app`'s
+    // egui run is already shaped for that wiring.
+    let _ = (ctx, state, camera, uv_camera, model, model_revision);
 }
 
 /// Draw the full egui overlay and return the intents emitted this frame. `model`
@@ -95,7 +44,6 @@ pub fn draw_overlay(
     camera: OrbitCamera,
     model: &ModelData,
     bvh: Option<&SceneBvh>,
-    output_format: egui_wgpu::wgpu::TextureFormat,
 ) -> UiOutput {
     let _z = crate::prof::zone!("Draw Overlay");
     // Visuals + fonts are installed once at startup (`theme::init_style`); the
@@ -131,7 +79,7 @@ pub fn draw_overlay(
         // status bar bottom) and the open side panels (left/right). Floating
         // chrome — the dimension labels and the option windows — is kept inside
         // this rect so it never overlaps the toolbar icons or a side panel.
-        let screen = ctx.screen_rect();
+        let screen = ctx.content_rect();
         let viewport = egui::Rect::from_min_max(
             egui::pos2(
                 screen.left() + side.left_inset,
@@ -171,9 +119,9 @@ pub fn draw_overlay(
     } else if state.mode == WorkspaceMode::Texture {
         // The Tex workspace paints a 2D image viewer (channel-isolated, pan/zoom)
         // over a chosen background fill, plus its own floating stats panel. The
-        // image itself is drawn by a wgpu paint callback, which needs egui's
-        // framebuffer format to build its pipeline.
-        texture_view::draw(ctx, state, output_format);
+        // image itself is drawn by `app` through the D3D11 RHI (migration Phase 4);
+        // this lays out the canvas + interaction + background fill only.
+        texture_view::draw(ctx, state);
     }
 
     // The startup cheat-sheet sits on top of all the chrome (drawn last). It

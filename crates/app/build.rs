@@ -40,13 +40,13 @@ fn main() {
 
             // The crate version (from Cargo.toml) and product.json must agree;
             // warn loudly if they drift so the exe and installer never disagree.
-            if let Ok(crate_version) = std::env::var("CARGO_PKG_VERSION") {
-                if crate_version != version {
-                    println!(
-                        "cargo:warning=version mismatch: product.json is {version} but \
-                         crates/app/Cargo.toml is {crate_version} — keep them in sync"
-                    );
-                }
+            if let Ok(crate_version) = std::env::var("CARGO_PKG_VERSION")
+                && crate_version != version
+            {
+                println!(
+                    "cargo:warning=version mismatch: product.json is {version} but \
+                     crates/app/Cargo.toml is {crate_version} — keep them in sync"
+                );
             }
 
             // Task Manager's "Name" column and the Details tab both surface

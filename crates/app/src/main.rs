@@ -2,8 +2,9 @@
 // open as a window, not alongside a terminal.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod frame;
+mod input;
 mod prof;
-mod startup_paint;
 mod texture_manager;
 mod undo;
 mod window_state;
@@ -17,7 +18,6 @@ static GLOBAL: review_import::TracyAllocator<std::alloc::System> =
 
 use std::{
     collections::{HashMap, HashSet},
-    num::NonZeroU32,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -29,16 +29,17 @@ use notify::RecommendedWatcher;
 use review_import::{LoadOptions, load_model};
 use review_model::{ModelData, SceneBvh};
 use review_render::{
-    DecodedImage, EGUI_DEPTH_FORMAT, EGUI_MSAA_SAMPLE_COUNT, Renderer, RendererConfig, ShadingMode,
-    TextureSlot, gtao_supported, ibl_supported, selection_bounds, supported_msaa_levels,
+    DecodedImage, Gpu, Renderer, RendererConfig, ShadingMode, TextureSlot, selection_bounds,
 };
 use review_ui::{
-    AxisGizmoAction, Notifications, Selection, TexViewRequest, TextureIntent, UiOutput, UiState,
-    WorkspaceMode, draw_overlay, draw_viewport_scene, init_style,
+    AxisGizmoAction, MsaaSamples, Notifications, Selection, TexViewRequest, TextureIntent,
+    UiOutput, UiState, WorkspaceMode, init_style,
 };
+use windows::Win32::Foundation::HWND;
+use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::{
     application::ApplicationHandler,
-    event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
+    event::{ElementState, KeyEvent, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     keyboard::{Key, ModifiersState, NamedKey},
     window::{Window, WindowAttributes, WindowId},
@@ -113,7 +114,11 @@ struct App {
     renderer: Option<Renderer>,
     egui_ctx: Option<egui::Context>,
     egui_state: Option<egui_winit::State>,
-    egui_painter: Option<egui_wgpu::winit::Painter>,
+    /// The Direct3D 11 device + immediate context + window swapchain.
+    gpu: Option<Gpu>,
+    /// egui's Direct3D 11 renderer (replaces egui-wgpu). Draws the chrome on top of
+    /// the scene each frame.
+    egui_renderer: Option<egui_directx11::Renderer>,
     drag_mode: Option<DragMode>,
     last_pointer_position: Option<Vec2>,
     last_primary_click: Option<(Instant, Vec2)>,
@@ -219,9 +224,9 @@ struct App {
     /// the egui frame and triggers the notifications (texture decode start/finish);
     /// the UI crate only provides the themed type. Shown once per frame in `render`.
     notifications: Notifications,
-    /// Whether `--tracy` was passed: gates the (otherwise-identical) device feature
-    /// request for `TIMESTAMP_QUERY` and the GPU-profiler arming. Read in
-    /// `wgpu_configuration`.
+    /// Whether `--tracy` was passed: arms the hand-rolled D3D11 GPU timestamp
+    /// profiler (via `review_render::enable_tracy_gpu`) in `resumed`. The scene
+    /// renderer then builds the profiler lazily once a Tracy client connects.
     tracy_enabled: bool,
     /// The live Tracy client handle, held for the whole process so the profiler
     /// session stays up (dropping the last handle disconnects). `None` on a normal
@@ -254,6 +259,35 @@ const MAX_FLASH_STEP: Duration = Duration::from_millis(33);
 /// this is a fixed count rather than a completion signal.
 const STARTUP_WARMUP_FRAMES: u32 = 6;
 
+/// Redraw cadence used until the real monitor refresh rate is known (and as the
+/// fallback when it can't be queried) — a conventional 60 Hz.
+const FALLBACK_REFRESH_HZ: f64 = 60.0;
+
+/// Minimum window inner size (logical points), so the chrome never collapses.
+const MIN_WINDOW_WIDTH: f64 = 960.0;
+const MIN_WINDOW_HEIGHT: f64 = 640.0;
+
+/// Camera zoom per pixel of a right-button zoom-drag (pointer-down zooms in).
+const DRAG_ZOOM_SENSITIVITY: f32 = 0.01;
+
+/// Camera zoom per wheel notch for line-based scroll deltas (mice).
+const WHEEL_LINE_ZOOM_STEP: f32 = 0.5;
+
+/// Pixel-precise scroll (trackpads) divided by this to match one wheel notch.
+const WHEEL_PIXELS_PER_ZOOM_STEP: f32 = 120.0;
+
+/// A second primary click counts as a double-click only within this interval…
+const DOUBLE_CLICK_MAX_INTERVAL: Duration = Duration::from_millis(450);
+/// …and only if the pointer stayed within this many physical pixels of the first.
+const DOUBLE_CLICK_MAX_DISTANCE_PX: f32 = 6.0;
+
+/// Hermite smoothstep `3t² − 2t³` on a clamped `t ∈ [0, 1]` — an ease with zero
+/// slope at both ends.
+fn smoothstep(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 impl Default for App {
     fn default() -> Self {
         let scene_model = Arc::new(ModelData::default());
@@ -268,7 +302,8 @@ impl Default for App {
             renderer: None,
             egui_ctx: None,
             egui_state: None,
-            egui_painter: None,
+            gpu: None,
+            egui_renderer: None,
             drag_mode: None,
             last_pointer_position: None,
             last_primary_click: None,
@@ -277,7 +312,7 @@ impl Default for App {
             repaint_at: None,
             redraw_requested: false,
             warmup_frames: 0,
-            refresh_interval: Duration::from_secs_f64(1.0 / 60.0),
+            refresh_interval: Duration::from_secs_f64(1.0 / FALLBACK_REFRESH_HZ),
             scene_model,
             scene_revision: 0,
             occlusion_bvh: None,
@@ -388,7 +423,10 @@ impl ApplicationHandler<UserEvent> for App {
         let mut attributes = WindowAttributes::default()
             .with_title("3D Review")
             .with_window_icon(load_window_icon())
-            .with_min_inner_size(winit::dpi::LogicalSize::new(960.0, 640.0))
+            .with_min_inner_size(winit::dpi::LogicalSize::new(
+                MIN_WINDOW_WIDTH,
+                MIN_WINDOW_HEIGHT,
+            ))
             .with_maximized(maximized);
         if let Some(placement) = saved {
             // Position/size are the restored (non-maximized) bounds; setting them
@@ -410,11 +448,6 @@ impl ApplicationHandler<UserEvent> for App {
             .expect("failed to create application window");
         let window = Arc::new(window);
 
-        // Paint the client area black immediately, before the (non-instant) wgpu
-        // surface setup below, so the window never flashes its default white while
-        // the renderer comes up. See `startup_paint` (the one sanctioned exception
-        // to invariant 9).
-        startup_paint::paint_window_black(&window);
         drop(phase.take());
         phase = prof::zone!("Renderer Init");
 
@@ -436,60 +469,44 @@ impl ApplicationHandler<UserEvent> for App {
         // central theme tokens (no per-frame state), so it never needs re-syncing.
         init_style(&egui_ctx);
         drop(phase.take());
-        phase = prof::zone!("Set Window (adapter/device/surface)");
+        phase = prof::zone!("D3D11 Device + Swapchain");
 
-        let mut egui_painter = pollster::block_on(egui_wgpu::winit::Painter::new(
-            egui_ctx.clone(),
-            wgpu_configuration(renderer_config, self.tracy_enabled),
-            EGUI_MSAA_SAMPLE_COUNT,
-            Some(EGUI_DEPTH_FORMAT),
-            false,
-            true,
-        ));
-        // This first `set_window` is the largest remaining startup chunk (~265ms on
-        // the RTX 4080 / DX12 dev box) and is INTRINSIC, not our overhead — do not
-        // re-investigate without new evidence. `Painter::new` above only built the
-        // wgpu *instance*; egui-wgpu defers all real GPU init to the first
-        // `set_window`, which runs `RenderState::create`: adapter enumerate +
-        // `request_device` + egui's `Renderer::new` + the first swapchain configure.
-        // Measured split (via the `--tracy` GPU/CPU zones, which surface egui-wgpu's
-        // + wgpu's `profiling::scope!`s as Tracy zones): ~197ms `enumerate_adapters`
-        // + ~47ms `request_device` + ~13ms egui `Renderer::new` + ~4ms swapchain.
-        // The ~197ms is DX12 creating an `ID3D12Device` per adapter to probe its
-        // features (4 adapters on this box: the 4080 cold-loads the NVIDIA driver
-        // DLL, then 3 more probes). Phase D ruled out every angle: a background
-        // driver *pre-warm* can't help (the cold driver-DLL load ~130ms dwarfs the
-        // ~31ms head-start the main thread has before reaching here); *bypassing*
-        // egui to call `request_adapter` ourselves pays the SAME per-adapter probing
-        // cold (~200ms, measured), so it saves only noise; and it is unfixed upstream
-        // through wgpu 29 / egui-wgpu 0.34 + wgpu-hal trunk (wgpu #3332, closed
-        // "external: driver-bug"). Only a wgpu-hal fork skipping the 3 junk adapters
-        // could trim it (~61ms), not worth the maintenance. Do NOT trade away
-        // steady-state `AutoVsync` to chase it.
-        pollster::block_on(egui_painter.set_window(egui::ViewportId::ROOT, Some(window.clone())))
-            .expect("failed to initialize wgpu surface");
+        // Create the Direct3D 11 device + immediate context + a flip-model swapchain
+        // on the window. A single `D3D11CreateDevice` on the default adapter — no
+        // DX12 multi-adapter probing, no naga — so this is far cheaper than the old
+        // egui-wgpu `set_window` (~265ms, of which ~197ms was DX12 enumerating every
+        // adapter by creating an `ID3D12Device` per adapter to probe features).
+        let gpu = Gpu::new(win32_hwnd(&window), size.width, size.height)
+            .expect("failed to create the Direct3D 11 device + swapchain");
+        // Kill the white startup flash: clear the backbuffer black and present once,
+        // before any scene exists. This replaces the old GDI startup paint (the
+        // removed first exception to invariant 9) using the swapchain we just made.
+        gpu.clear_backbuffer([0.0, 0.0, 0.0, 1.0]);
+        gpu.present(false);
+        // egui renders through egui-directx11 on the same device/context.
+        let egui_renderer = egui_directx11::Renderer::new(gpu.device())
+            .expect("failed to create the egui Direct3D 11 renderer");
         drop(phase.take());
         phase = prof::zone!("Shell Init");
 
-        // Report which backend/adapter wgpu actually selected (see
-        // RendererConfig::preferred_backends — DX12 on Windows). Surfaced as a Tracy
-        // message on a `--tracy` run.
-        if let Some(render_state) = egui_painter.render_state() {
-            let adapter_info = render_state.adapter.get_info();
-            prof::msg(&format!(
-                "selected wgpu adapter: {:?} / {} / {:?}",
-                adapter_info.backend, adapter_info.name, adapter_info.device_type
-            ));
-            // Surface the chosen backend in the startup help overlay.
-            self.ui.gpu_backend = friendly_backend_name(adapter_info.backend);
-            // Gate the Anti Aliasing menu to the MSAA levels this adapter can
-            // actually render the scene at (invariant 4).
-            self.ui.supported_msaa = supported_msaa_levels(&render_state.adapter);
-            // Gate the Environment IBL toggle on the adapter being able to build
-            // the HDR maps (invariant 4).
-            self.ui.ibl_supported = ibl_supported(&render_state.adapter);
-            // Gate the AO toggle on the adapter being able to run GTAO (invariant 4).
-            self.ui.gtao_supported = gtao_supported(&render_state.adapter);
+        // The viewer talks to the GPU through Direct3D 11.
+        self.ui.gpu_backend = "DX11".to_string();
+        // Gate the Anti-Aliasing menu on the adapter's real MSAA support (D3D11
+        // `CheckMultisampleQualityLevels` for the scene HDR + depth formats). IBL + AO
+        // stay enabled — the device requires `TEXTURE_COMPRESSION_BC` and feature
+        // level 11_0+ guarantees the `Rgba16Float`/`Rg16Float` + compute they need, so
+        // both are universal on the desktop DX11 targets.
+        let supported_counts = gpu.supported_msaa_counts();
+        self.ui.supported_msaa = MsaaSamples::ALL
+            .into_iter()
+            .filter(|level| supported_counts.contains(&level.sample_count()))
+            .collect();
+
+        // Under `--tracy`, arm the hand-rolled D3D11 GPU timestamp profiler. The scene
+        // renderer builds it lazily on the first frame once a Tracy client connects; a
+        // normal launch never calls this, so the scene passes record no timestamps.
+        if self.tracy_enabled {
+            review_render::enable_tracy_gpu();
         }
 
         let egui_state = egui_winit::State::new(
@@ -498,13 +515,15 @@ impl ApplicationHandler<UserEvent> for App {
             event_loop,
             Some(window.scale_factor() as f32),
             window.theme(),
-            egui_painter.max_texture_side(),
+            // D3D11 feature level 11_0+ guarantees 16384 max 2D texture dimension.
+            Some(16384),
         );
 
         self.renderer = Some(renderer);
         self.egui_ctx = Some(egui_ctx);
         self.egui_state = Some(egui_state);
-        self.egui_painter = Some(egui_painter);
+        self.gpu = Some(gpu);
+        self.egui_renderer = Some(egui_renderer);
         self.ui.stats = self.scene_model.stats;
         self.ui.bounds = self.scene_model.bounds;
         self.ui.uv_sets = self.scene_model.uv_set_labels();
@@ -584,147 +603,18 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::Moved(_) => {
                 self.record_windowed_bounds();
             }
-            WindowEvent::Resized(size) => {
-                // A resize often accompanies a move to another monitor, which may
-                // have a different refresh rate; re-derive the frame cap.
-                self.refresh_interval = monitor_refresh_interval(&window);
-                self.record_windowed_bounds();
-
-                if let Some(renderer) = self.renderer.as_mut() {
-                    if size.height > 0 {
-                        let aspect = size.width as f32 / size.height as f32;
-                        renderer.set_camera_aspect_ratio(aspect);
-                        renderer.set_uv_aspect_ratio(aspect);
-                        let (safe_w, safe_h) =
-                            framing_safe_area(size.height, window.scale_factor() as f32);
-                        renderer.set_framing_safe_area(safe_w, safe_h);
-                    }
-                }
-
-                if let (Some(width), Some(height), Some(painter)) = (
-                    NonZeroU32::new(size.width),
-                    NonZeroU32::new(size.height),
-                    self.egui_painter.as_mut(),
-                ) {
-                    painter.on_window_resized(egui::ViewportId::ROOT, width, height);
-                }
-
-                window.request_redraw();
-            }
+            WindowEvent::Resized(size) => self.handle_resized(size, &window),
             WindowEvent::MouseInput { state, button, .. } => {
-                if state == ElementState::Released {
-                    self.drag_mode = None;
-                } else if button == MouseButton::Left && self.ui.show_help_overlay {
-                    // The startup help overlay is up: it swallows the click in
-                    // egui (so the chrome beneath stays inert), but we still drive
-                    // dismissal here. A plain click hides it; a double-click also
-                    // opens the file picker — the same gesture as on the empty
-                    // viewport, so it reuses the same double-click detection. The
-                    // first click seeds `last_primary_click`; the second arrives
-                    // after the overlay is gone and opens the dialog via the
-                    // branch below.
-                    if self.should_open_on_double_click() {
-                        self.open_model_from_dialog();
-                    } else if let Some(position) = self.last_pointer_position {
-                        self.last_primary_click = Some((Instant::now(), position));
-                    }
-                    self.ui.show_help_overlay = false;
-                    self.redraw_requested = true;
-                } else if !egui_response.is_some_and(|response| response.consumed) {
-                    // The UV viewport is a 2D pan/zoom workspace: LMB pans, RMB
-                    // zooms (down = in). The 3D scene keeps LMB orbit / RMB
-                    // pan-or-zoom.
-                    let uv_mode = self.ui.mode == WorkspaceMode::Uv;
-                    match button {
-                        MouseButton::Left => {
-                            if self.should_open_on_double_click() {
-                                self.open_model_from_dialog();
-                                self.drag_mode = None;
-                            } else {
-                                self.drag_mode = Some(if uv_mode {
-                                    DragMode::Pan
-                                } else {
-                                    DragMode::Orbit
-                                });
-                                if let Some(position) = self.last_pointer_position {
-                                    self.last_primary_click = Some((Instant::now(), position));
-                                }
-                            }
-                        }
-                        MouseButton::Right => {
-                            // UV mode: RMB zoom-drags. 3D: Alt+RMB zoom-drags
-                            // (down = in, up = out), plain RMB pans.
-                            self.drag_mode = Some(if uv_mode || self.modifiers.alt_key() {
-                                DragMode::Zoom
-                            } else {
-                                DragMode::Pan
-                            });
-                        }
-                        MouseButton::Middle => {
-                            self.drag_mode = Some(DragMode::Pan);
-                        }
-                        _ => {}
-                    }
-                }
+                self.handle_mouse_input(state, button, egui_consumed);
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let current = Vec2::new(position.x as f32, position.y as f32);
-
-                if let (Some(renderer), Some(last), Some(mode)) = (
-                    self.renderer.as_mut(),
-                    self.last_pointer_position,
-                    self.drag_mode,
-                ) {
-                    let delta = current - last;
-                    let uv_mode = self.ui.mode == WorkspaceMode::Uv;
-                    let size = window.inner_size();
-                    let viewport = Vec2::new(size.width as f32, size.height as f32);
-                    match mode {
-                        DragMode::Orbit => renderer.orbit_camera(delta),
-                        // Pan drives the 2D UV camera in UV mode, the 3D camera
-                        // otherwise.
-                        DragMode::Pan => {
-                            if uv_mode {
-                                renderer.pan_uv_camera(delta, viewport);
-                            } else {
-                                renderer.pan_camera(delta, viewport);
-                            }
-                        }
-                        // Pointer down (positive screen delta) zooms in, up
-                        // zooms out — matching the wheel's positive-is-in sign.
-                        DragMode::Zoom => {
-                            if uv_mode {
-                                renderer.zoom_uv_camera(delta.y * 0.01);
-                            } else {
-                                renderer.zoom_camera(delta.y * 0.01);
-                            }
-                        }
-                    }
-                    self.redraw_requested = true;
-                }
-
-                self.last_pointer_position = Some(current);
+                self.handle_cursor_moved(position, &window)
             }
             WindowEvent::CursorLeft { .. } => {
                 self.drag_mode = None;
                 self.last_pointer_position = None;
             }
-            WindowEvent::MouseWheel { delta, .. } => {
-                if !egui_response.is_some_and(|response| response.consumed) {
-                    if let Some(renderer) = self.renderer.as_mut() {
-                        let amount = match delta {
-                            MouseScrollDelta::LineDelta(_, y) => y * 0.5,
-                            MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 120.0,
-                        };
-                        if self.ui.mode == WorkspaceMode::Uv {
-                            renderer.zoom_uv_camera(amount);
-                        } else {
-                            renderer.zoom_camera(amount);
-                        }
-                        self.redraw_requested = true;
-                    }
-                }
-            }
+            WindowEvent::MouseWheel { delta, .. } => self.handle_mouse_wheel(delta, egui_consumed),
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers.state();
             }
@@ -784,178 +674,6 @@ impl ApplicationHandler<UserEvent> for App {
 }
 
 impl App {
-    fn render(&mut self) {
-        let _frame = prof::zone!("Frame");
-        let Some(window) = self.window.as_ref().cloned() else {
-            return;
-        };
-        let Some(egui_ctx) = self.egui_ctx.as_ref().cloned() else {
-            return;
-        };
-
-        window.set_title("3D Review");
-        {
-            let _z = prof::zone!("Camera Animation");
-            self.update_camera_animation();
-        }
-        // Advance the selection-highlight flash and feed this frame's fade into the
-        // UI snapshot the scene callback reads. Done before the egui run below so the
-        // viewport reflects the current fade; a change of selection (set by the
-        // Outliner last frame) restarts it here.
-        self.update_selection_flash();
-        // Record any edit the UI committed last frame (selection / hide / material /
-        // texture) into the undo history before this frame's egui pass.
-        self.observe_edit_state();
-
-        let output_format = {
-            let Some(egui_painter) = self.egui_painter.as_ref() else {
-                return;
-            };
-
-            let Some(output_format) = egui_painter
-                .render_state()
-                .map(|render_state| render_state.target_format)
-            else {
-                return;
-            };
-
-            output_format
-        };
-
-        // The bounding-box dimension labels occlude against the mesh through a
-        // triangle BVH. Build it lazily the first frame the labels are shown for a
-        // given model (and rebuild after a new model loads); reused across frames,
-        // so orbiting pays no per-frame triangle cost.
-        if self.ui.debug.show_bounding_box && self.occlusion_bvh_revision != self.scene_revision {
-            self.occlusion_bvh = Some(SceneBvh::build(&self.scene_model));
-            self.occlusion_bvh_revision = self.scene_revision;
-        }
-
-        let (full_output, clear, ui_output) = {
-            let Some(egui_state) = self.egui_state.as_mut() else {
-                return;
-            };
-            let Some(renderer) = self.renderer.as_ref() else {
-                return;
-            };
-
-            let raw_input = egui_state.take_egui_input(&window);
-            let camera = renderer.camera;
-            let uv_camera = renderer.uv_camera;
-            let clear = renderer.config.clear_color;
-            let scene_model = self.scene_model.clone();
-            let scene_revision = self.scene_revision;
-            let occlusion_bvh = self.occlusion_bvh.as_ref();
-            // Borrowed as a disjoint field so the egui closure can show the toasts
-            // alongside its `&mut self.ui` borrow (the toast system lives in `app`).
-            let notifications = &mut self.notifications;
-            let mut ui_output = UiOutput::default();
-            // The material mode before the egui pass; the toolbar / Material Mode
-            // panel mutate it during the pass, so a post-pass mismatch means the
-            // user switched modes this frame — surface its name as a toast (app
-            // owns the toast facility; the UI only holds the plain value).
-            let prev_material_mode = self.ui.debug.material_mode;
-            let _z = prof::zone!("egui Run");
-            let full_output = egui_ctx.run(raw_input, |ctx| {
-                draw_viewport_scene(
-                    ctx,
-                    &self.ui,
-                    camera,
-                    uv_camera,
-                    scene_model.clone(),
-                    scene_revision,
-                    output_format,
-                );
-                ui_output = draw_overlay(
-                    ctx,
-                    &mut self.ui,
-                    camera,
-                    &scene_model,
-                    occlusion_bvh,
-                    output_format,
-                );
-                if self.ui.debug.material_mode != prev_material_mode {
-                    notifications.mode(self.ui.debug.material_mode.label());
-                }
-                // Toasts paint on the egui Foreground layer, above the chrome.
-                notifications.show(ctx);
-            });
-
-            egui_state.handle_platform_output(&window, full_output.platform_output.clone());
-            (full_output, clear, ui_output)
-        };
-
-        {
-            let _z = prof::zone!("Apply UI Output");
-            self.apply_ui_output(ui_output);
-        }
-
-        // Decide when the next frame should be drawn. Continuous motion — a live
-        // camera transition, or egui asking to "repaint immediately" (zero delay)
-        // — is paced to the monitor's refresh interval so the viewer never renders
-        // faster than the display can show it. (We can't rely on the swapchain to
-        // pace us: on the Vulkan path `present` does not block on vblank.) A finite
-        // egui delay (e.g. a tooltip timer) schedules a single future wake-up, and
-        // an infinite delay means everything is idle, so we wait for the next event.
-        let repaint_delay = full_output
-            .viewport_output
-            .get(&egui::ViewportId::ROOT)
-            .map_or(Duration::MAX, |output| output.repaint_delay);
-        let camera_animating = self
-            .renderer
-            .as_ref()
-            .is_some_and(Renderer::is_camera_animating);
-        // The selection flash animates over ~0.5s; keep pacing frames until it
-        // finishes so the highlight fades smoothly rather than freezing partway.
-        let flash_active = self.selection_flash.is_some();
-        // Pump startup warmup frames (Phase B) until the deferred GPU-resource
-        // build drains, so the scene pipelines + GTAO pass compile behind
-        // the already-shown grid. Paced like the other continuous-redraw sources.
-        let warming_up = self.warmup_frames > 0;
-        self.warmup_frames = self.warmup_frames.saturating_sub(1);
-        self.repaint_at =
-            if repaint_delay.is_zero() || camera_animating || flash_active || warming_up {
-                let frame_start = self.last_render_instant.unwrap_or_else(Instant::now);
-                Some(frame_start + self.refresh_interval)
-            } else if repaint_delay == Duration::MAX {
-                None
-            } else {
-                Instant::now().checked_add(repaint_delay)
-            };
-
-        let pixels_per_point = full_output.pixels_per_point;
-        let clipped_primitives = {
-            let _z = prof::zone!("Tessellate");
-            egui_ctx.tessellate(full_output.shapes, pixels_per_point)
-        };
-
-        let Some(egui_painter) = self.egui_painter.as_mut() else {
-            return;
-        };
-
-        {
-            // The scene's `prepare` (offscreen render + GPU-profiler drain/resolve)
-            // and egui's `submit` + present both happen inside this call.
-            let _z = prof::zone!("Paint + Present");
-            egui_painter.paint_and_update_textures(
-                egui::ViewportId::ROOT,
-                pixels_per_point,
-                [
-                    clear.r as f32,
-                    clear.g as f32,
-                    clear.b as f32,
-                    clear.a as f32,
-                ],
-                &clipped_primitives,
-                &full_output.textures_delta,
-                Vec::new(),
-            );
-        }
-
-        // Delimit the frame for Tracy's frame view (no-op unless `--tracy`).
-        prof::frame_mark();
-    }
-
     fn open_model_from_dialog(&mut self) {
         let file = rfd::FileDialog::new()
             .add_filter("FBX", &["fbx"])
@@ -1196,8 +914,8 @@ impl App {
             return false;
         };
 
-        last_click_time.elapsed() <= Duration::from_millis(450)
-            && current_position.distance(last_click_position) <= 6.0
+        last_click_time.elapsed() <= DOUBLE_CLICK_MAX_INTERVAL
+            && current_position.distance(last_click_position) <= DOUBLE_CLICK_MAX_DISTANCE_PX
     }
 
     fn apply_ui_output(&mut self, output: UiOutput) {
@@ -1215,7 +933,9 @@ impl App {
         // Camera + scalar material edits need the renderer borrow; scope it so the
         // texture intents below can call `&mut self` helpers.
         {
-            let renderer = self.renderer.as_mut().unwrap();
+            let Some(renderer) = self.renderer.as_mut() else {
+                return;
+            };
             if let Some(action) = output.axis_gizmo_action {
                 match action {
                     AxisGizmoAction::Orbit(delta) => renderer.orbit_camera(delta),
@@ -1360,9 +1080,8 @@ impl App {
                     // Ease-out (smoothstep complement): full at the start of the
                     // flash, easing smoothly to 0 — a blink that settles rather than
                     // a linear cut.
-                    let t = (flash.elapsed.as_secs_f32() / SELECTION_FLASH.as_secs_f32())
-                        .clamp(0.0, 1.0);
-                    1.0 - t * t * (3.0 - 2.0 * t)
+                    let t = flash.elapsed.as_secs_f32() / SELECTION_FLASH.as_secs_f32();
+                    1.0 - smoothstep(t)
                 }
             }
             None => 0.0,
@@ -1506,88 +1225,11 @@ fn frame_camera_to_model(renderer: &mut Renderer, model: &ModelData) {
     }
 }
 
-/// Map the wgpu backend wgpu actually selected to a short label for the help
-/// overlay title (e.g. `Backend::Dx12` → "DX12"). Falls back to the enum's debug
-/// name for any backend without a custom label.
-fn friendly_backend_name(backend: wgpu::Backend) -> String {
-    match backend {
-        wgpu::Backend::Dx12 => "DX12".to_string(),
-        wgpu::Backend::Vulkan => "Vulkan".to_string(),
-        wgpu::Backend::Metal => "Metal".to_string(),
-        wgpu::Backend::Gl => "OpenGL".to_string(),
-        wgpu::Backend::BrowserWebGpu => "WebGPU".to_string(),
-        other => format!("{other:?}"),
-    }
-}
-
-fn wgpu_configuration(
-    renderer_config: RendererConfig,
-    tracy_enabled: bool,
-) -> egui_wgpu::WgpuConfiguration {
-    let mut setup = egui_wgpu::WgpuSetupCreateNew::default();
-    setup.instance_descriptor.backends = renderer_config.preferred_backends;
-
-    // Mirror egui_wgpu's default device descriptor, but additionally request
-    // `TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES` when the adapter offers it. The
-    // WebGPU spec only guarantees sample counts [1, 4] for our HDR/depth render
-    // formats; the intermediate/high counts the adapter reports (2× / 8× here)
-    // are only usable on the device once that feature is enabled. Without it,
-    // building a scene pipeline at e.g. 2× MSAA fails validation. The feature is
-    // masked against the adapter's own features so we never request something it
-    // lacks (invariant 4); `supported_msaa_levels` mirrors this gating so the UI
-    // only offers what the device will actually accept.
-    setup.device_descriptor = std::sync::Arc::new(move |adapter: &wgpu::Adapter| {
-        let base_limits = if adapter.get_info().backend == wgpu::Backend::Gl {
-            wgpu::Limits::downlevel_webgl2_defaults()
-        } else {
-            wgpu::Limits::default()
-        };
-        // On a `--tracy` launch, additionally request `TIMESTAMP_QUERY` for the
-        // hand-rolled GPU profiler — but masked against the adapter, so a device
-        // that lacks it is created exactly as before (and a normal launch requests
-        // nothing extra, so its device is byte-for-byte the current one). Arm the
-        // GPU profiler only if the device will actually carry the feature.
-        let timestamp = if tracy_enabled {
-            adapter.features() & wgpu::Features::TIMESTAMP_QUERY
-        } else {
-            wgpu::Features::empty()
-        };
-        if timestamp.contains(wgpu::Features::TIMESTAMP_QUERY) {
-            review_render::enable_tracy_gpu(adapter.get_info().backend);
-        }
-        wgpu::DeviceDescriptor {
-            label: Some("egui wgpu device"),
-            // BC is OR'd in unmasked (not `& adapter.features()`): the baked IBL
-            // cubes ship as BC6H, so the renderer hard-requires `TEXTURE_COMPRESSION_BC`.
-            // It's universal on the desktop DX12/Vulkan/Metal targets; if some
-            // adapter lacked it, device creation fails loudly here rather than
-            // later at the IBL upload.
-            required_features: (adapter.features()
-                & wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES)
-                | wgpu::Features::TEXTURE_COMPRESSION_BC
-                | timestamp,
-            required_limits: wgpu::Limits {
-                // Match egui's default: large enough for 4k+ surfaces with a depth
-                // buffer.
-                max_texture_dimension_2d: 8192,
-                ..base_limits
-            },
-            // Ask wgpu's DX12 suballocator to reserve in smaller blocks rather than
-            // the default large-block strategy. Measured (experiments/stack-bench)
-            // this cuts dedicated VRAM ~868 -> ~608 MB (-30%) and resident RAM
-            // ~236 -> ~197 MB at idle, with no startup or quality cost — the bulk of
-            // our VRAM was allocator heap reservation, not live texels. The trade is
-            // a touch more allocation-time work, which is invisible here: geometry
-            // and textures upload once at model load, not per frame.
-            memory_hints: wgpu::MemoryHints::MemoryUsage,
-        }
-    });
-
-    egui_wgpu::WgpuConfiguration {
-        wgpu_setup: egui_wgpu::WgpuSetup::CreateNew(setup),
-        // Vsync: present in FIFO so the swapchain paces frames to the monitor's
-        // refresh and the viewer never renders faster than the display.
-        present_mode: wgpu::PresentMode::AutoVsync,
-        ..Default::default()
+/// Extract the Win32 `HWND` from a winit window, for DXGI swapchain creation. The
+/// viewer is Windows-only, so a non-Win32 handle is an unrecoverable error.
+fn win32_hwnd(window: &Window) -> HWND {
+    match window.window_handle().map(|handle| handle.as_raw()) {
+        Ok(RawWindowHandle::Win32(handle)) => HWND(handle.hwnd.get() as *mut core::ffi::c_void),
+        other => panic!("expected a Win32 window handle, got {other:?}"),
     }
 }

@@ -67,7 +67,7 @@ pub(crate) fn draw_dimension_labels(
     ];
 
     let view_projection = camera.view_projection(state.projection_mode.into());
-    let screen = ctx.screen_rect();
+    let screen = ctx.content_rect();
     // Painted on the background order, after the viewport scene callback (added
     // earlier in the frame) but beneath the egui chrome areas, so the labels sit
     // over the model and the box but under the toolbar / panels / gizmo.

@@ -177,6 +177,18 @@ impl TextureChannelView {
             TextureChannelView::A => Some(3),
         }
     }
+
+    /// The channel index the Tex viewport shader reads (`0` RGB, `1..4` R/G/B/A).
+    /// Must match `tex.hlsl`'s `channel` switch.
+    pub fn shader_index(self) -> u32 {
+        match self {
+            TextureChannelView::Rgb => 0,
+            TextureChannelView::R => 1,
+            TextureChannelView::G => 2,
+            TextureChannelView::B => 3,
+            TextureChannelView::A => 4,
+        }
+    }
 }
 
 /// The background fill drawn behind the viewed texture in the Tex viewport, so an
@@ -565,6 +577,11 @@ pub struct UiState {
     /// background / pan-zoom view. Read by the texture-view chrome (toolbar channel
     /// group, status-bar background group) and the central image painter.
     pub texture_view: TextureViewState,
+    /// The Tex viewport's central canvas rect (egui points), written by
+    /// [`crate::texture_view`] each Tex frame and read by `app` to place the image in
+    /// the D3D11 Tex draw (migration Phase 4). `None` until the Tex viewport has been
+    /// laid out at least once.
+    pub texture_canvas: Option<egui::Rect>,
     pub wireframe: WireframePanelState,
     pub bounding_box: BoundingBoxPanelState,
     pub face_normals: NormalPanelState,
@@ -573,26 +590,29 @@ pub struct UiState {
     /// Scene antialiasing (MSAA level). Read straight by the viewport callback —
     /// not a debug option — and edited by the Anti Aliasing panel.
     pub anti_aliasing: AntiAliasing,
-    /// MSAA levels the active adapter actually supports, set by `app` from
-    /// [`review_render::supported_msaa_levels`]. The Anti Aliasing menu disables
-    /// any level not in this list (invariant 4). Empty until the adapter is known
-    /// (the panel then falls back to offering only the current level).
+    /// MSAA levels the active adapter actually supports, set by `app` from the
+    /// device's `supported_msaa_counts()` (D3D11 `CheckMultisampleQualityLevels`).
+    /// The Anti Aliasing menu disables any level not in this list (invariant 4).
+    /// Empty until the adapter is known (the panel then falls back to offering only
+    /// the current level).
     pub supported_msaa: Vec<MsaaSamples>,
     /// Image-based lighting / environment selection. Read straight by the
     /// viewport callback (not a debug option) and edited by the Environment
     /// panel. Default is IBL on, HDR 01, no background (see [`EnvironmentSettings`]).
     pub environment: EnvironmentSettings,
-    /// Whether the active adapter can build the IBL maps, set by `app` from
-    /// [`review_render::ibl_supported`]. The Environment panel disables (and
-    /// forces off) the IBL toggle when false (invariant 4).
+    /// Whether the active adapter can build the IBL maps. Always true on the D3D11
+    /// target (the device hard-requires `TEXTURE_COMPRESSION_BC` for the BC6H IBL
+    /// cubes, and 11_0+ guarantees the float formats), so the Environment panel never
+    /// disables the IBL toggle in practice; kept as a field for the capability seam.
     pub ibl_supported: bool,
     /// Ambient occlusion (GTAO) settings. Read straight by the viewport
     /// callback and edited by the Ambient Occlusion panel; the AO status-bar
     /// button toggles `gtao.enabled`. Default is on (see [`GtaoSettings`]).
     pub gtao: GtaoSettings,
-    /// Whether the active adapter can run GTAO, set by `app` from
-    /// [`review_render::gtao_supported`]. The status-bar AO button is disabled
-    /// (and forced off) when false (invariant 4).
+    /// Whether the active adapter can run GTAO. Always true on the D3D11 target
+    /// (the G-buffer + horizon passes need only float render targets + samplers
+    /// guaranteed at feature level 11_0+), so the status-bar AO button is never
+    /// disabled in practice; kept as a field for the capability seam.
     pub gtao_supported: bool,
     /// Tone-mapping settings. Read straight by the viewport callback (not a debug
     /// option) and edited by the Tonemapper panel; the status-bar tonemapper button
@@ -672,8 +692,8 @@ pub struct UiState {
     /// Application version shown in the help overlay title (e.g. "0.1.0"), set by
     /// `app` from its `CARGO_PKG_VERSION`.
     pub app_version: String,
-    /// Friendly name of the wgpu backend wgpu actually selected (e.g. "DX12"),
-    /// shown in the help overlay title; set by `app` once the adapter is known.
+    /// Friendly name of the graphics backend (e.g. "DX11"), shown in the help
+    /// overlay title; set by `app` (the renderer is always Direct3D 11).
     pub gpu_backend: String,
 }
 
@@ -693,6 +713,7 @@ impl Default for UiState {
             uv_view_channel: 0,
             uv_shading_mode: UvShadingMode::default(),
             texture_view: TextureViewState::default(),
+            texture_canvas: None,
             wireframe: WireframePanelState::default(),
             bounding_box: BoundingBoxPanelState::default(),
             face_normals: NormalPanelState {
@@ -776,6 +797,30 @@ impl UiState {
             }
         }
     }
+
+    /// The selection view the renderer reads each frame (invariant 2: a plain
+    /// value): what is selected, whether it is isolated (solo), the gamma-space
+    /// highlight color sourced from the theme, and the live flash fade.
+    pub fn selection_view(&self) -> review_render::SelectionView {
+        review_render::SelectionView {
+            selection: self.selection,
+            solo: self.solo,
+            highlight_color: theme::color32_to_rgba(theme::color::SELECTION_OUTLINE),
+            fade: self.selection_fade,
+        }
+    }
+
+    /// The Outliner-hidden mesh nodes as a sorted `u32` list (the renderer's
+    /// per-mesh visibility + the line-overlay hidden filter read this).
+    pub fn hidden_mesh_nodes(&self) -> Vec<u32> {
+        let mut hidden: Vec<u32> = self
+            .hidden_meshes
+            .iter()
+            .map(|&index| index as u32)
+            .collect();
+        hidden.sort_unstable();
+        hidden
+    }
 }
 
 /// Copy the committed panel values into the [`SceneDebugOptions`] the renderer
@@ -799,4 +844,60 @@ pub(crate) fn sync_debug_state(state: &mut UiState) {
         BoundsScope::VisibleOnly => BoundingBoxScope::VisibleOnly,
     };
     state.debug.bounding_box_selection = state.selection;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_view_shader_index_and_offset_agree() {
+        // RGB is the combined view: shader index 0, no single-channel byte offset.
+        assert_eq!(TextureChannelView::Rgb.shader_index(), 0);
+        assert_eq!(TextureChannelView::Rgb.channel_offset(), None);
+        // Each single channel's byte offset is one less than its shader index.
+        for channel in [
+            TextureChannelView::R,
+            TextureChannelView::G,
+            TextureChannelView::B,
+            TextureChannelView::A,
+        ] {
+            let offset = channel
+                .channel_offset()
+                .expect("a single channel has a byte offset");
+            assert_eq!(channel.shader_index() as usize, offset + 1);
+        }
+    }
+
+    #[test]
+    fn channel_view_all_is_distinct_and_display_ordered() {
+        let labels: Vec<&str> = TextureChannelView::ALL
+            .into_iter()
+            .map(|channel| channel.label())
+            .collect();
+        assert_eq!(labels, ["RGB", "R", "G", "B", "A"]);
+    }
+
+    #[test]
+    fn panels_open_toggle_flips_state() {
+        let mut panels = PanelsOpen::default();
+        assert!(!panels.is_open(OptionPanel::Wireframe));
+        panels.toggle(OptionPanel::Wireframe);
+        assert!(panels.is_open(OptionPanel::Wireframe));
+        panels.toggle(OptionPanel::Wireframe);
+        assert!(!panels.is_open(OptionPanel::Wireframe));
+    }
+
+    #[test]
+    fn panels_open_set_is_idempotent_and_independent() {
+        let mut panels = PanelsOpen::default();
+        panels.set(OptionPanel::Gtao, true);
+        panels.set(OptionPanel::Gtao, true);
+        assert!(panels.is_open(OptionPanel::Gtao));
+        // Toggling a different panel doesn't disturb this one.
+        panels.toggle(OptionPanel::Tonemap);
+        assert!(panels.is_open(OptionPanel::Gtao));
+        panels.set(OptionPanel::Gtao, false);
+        assert!(!panels.is_open(OptionPanel::Gtao));
+    }
 }

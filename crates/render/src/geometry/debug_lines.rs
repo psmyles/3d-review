@@ -39,13 +39,12 @@ pub(crate) fn wireframe_lines(
     let hidden: HashSet<u32> = hidden_nodes.iter().copied().collect();
 
     for (face_index, face) in model.faces.iter().enumerate() {
-        if let Some(map) = face_node.as_ref() {
-            if map
+        if let Some(map) = face_node.as_ref()
+            && map
                 .get(face_index)
                 .is_some_and(|node| hidden.contains(node))
-            {
-                continue;
-            }
+        {
+            continue;
         }
         let count = face.index_count as usize;
         if count < 2 {
@@ -288,10 +287,10 @@ pub(crate) fn vertex_normal_lines(
     let visible = visible_vertex_mask(model, hidden_nodes);
 
     for (index, vertex) in model.vertices.iter().enumerate() {
-        if let Some(mask) = visible.as_ref() {
-            if !mask.get(index).copied().unwrap_or(false) {
-                continue;
-            }
+        if let Some(mask) = visible.as_ref()
+            && !mask.get(index).copied().unwrap_or(false)
+        {
+            continue;
         }
         if vertex.normal.length_squared() <= f32::EPSILON {
             continue;

@@ -40,7 +40,7 @@ pub(crate) fn draw_help_overlay(ctx: &egui::Context, state: &UiState) {
         return;
     }
 
-    let screen = ctx.screen_rect();
+    let screen = ctx.content_rect();
 
     egui::Area::new(egui::Id::new("help_backdrop"))
         .order(egui::Order::Foreground)
