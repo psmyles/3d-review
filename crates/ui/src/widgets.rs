@@ -377,6 +377,7 @@ pub(crate) fn labeled_combo(
     egui::ComboBox::from_id_salt(id_salt)
         .selected_text(selected_text)
         .width(ui.available_width())
+        .height(size::LABELED_COMBO_POPUP_MAX_H)
         .show_ui(ui, contents);
     ui.end_row();
 }
