@@ -278,6 +278,88 @@ impl ModelData {
         self.bounds = (!bounds.is_empty()).then_some(bounds);
     }
 
+    /// True when the mesh carries no usable per-vertex tangent basis — every
+    /// vertex tangent is degenerate (zero length). The importer leaves a zero
+    /// tangent when the source FBX has UVs but no tangent layer (common for Maya
+    /// exports), which is the signal to synthesize one before normal mapping.
+    pub fn has_degenerate_tangents(&self) -> bool {
+        !self.vertices.is_empty()
+            && self
+                .vertices
+                .iter()
+                .all(|vertex| vertex.tangent.truncate().length_squared() < 1e-12)
+    }
+
+    /// Synthesize a per-vertex tangent basis from positions, UVs and normals
+    /// (Lengyel's method): accumulate each triangle's UV-gradient tangent onto its
+    /// corners, then Gram-Schmidt-orthonormalize against the vertex normal and
+    /// store the bitangent handedness sign in `tangent.w`. Needed for correct
+    /// normal mapping when the FBX omits a tangent layer — a constant placeholder
+    /// tangent produces a garbage TBN and smeared shading. No-op for an empty or
+    /// index-less mesh. Uses the primary UV set ([`Vertex::uv`]); a vertex whose
+    /// accumulated tangent is degenerate (no UV area) falls back to an arbitrary
+    /// orthonormal vector so the basis is never zero.
+    pub fn generate_tangents(&mut self) {
+        let vertex_count = self.vertices.len();
+        if vertex_count == 0 || self.indices.len() < 3 {
+            return;
+        }
+
+        let mut tangents = vec![Vec3::ZERO; vertex_count];
+        let mut bitangents = vec![Vec3::ZERO; vertex_count];
+        for triangle in self.indices.chunks_exact(3) {
+            let [i0, i1, i2] = [
+                triangle[0] as usize,
+                triangle[1] as usize,
+                triangle[2] as usize,
+            ];
+            let (Some(v0), Some(v1), Some(v2)) = (
+                self.vertices.get(i0),
+                self.vertices.get(i1),
+                self.vertices.get(i2),
+            ) else {
+                continue;
+            };
+            let edge1 = v1.position - v0.position;
+            let edge2 = v2.position - v0.position;
+            let delta_uv1 = v1.uv - v0.uv;
+            let delta_uv2 = v2.uv - v0.uv;
+            // 1 / determinant of the UV-gradient matrix; skip a triangle with no UV
+            // area (collinear UVs) — it contributes no direction.
+            let determinant = delta_uv1.x * delta_uv2.y - delta_uv2.x * delta_uv1.y;
+            if determinant.abs() < 1e-12 {
+                continue;
+            }
+            let inverse = 1.0 / determinant;
+            let tangent = (edge1 * delta_uv2.y - edge2 * delta_uv1.y) * inverse;
+            let bitangent = (edge2 * delta_uv1.x - edge1 * delta_uv2.x) * inverse;
+            for &index in &[i0, i1, i2] {
+                tangents[index] += tangent;
+                bitangents[index] += bitangent;
+            }
+        }
+
+        for (index, vertex) in self.vertices.iter_mut().enumerate() {
+            let normal = vertex.normal;
+            // Gram-Schmidt: project the accumulated tangent off the normal so the
+            // stored tangent is exactly perpendicular to it.
+            let projected = tangents[index] - normal * normal.dot(tangents[index]);
+            let tangent = if projected.length_squared() > 1e-12 {
+                projected.normalize()
+            } else {
+                normal.any_orthonormal_vector()
+            };
+            // Handedness: which way the bitangent runs relative to N×T (negative for
+            // mirrored UVs). The shader reconstructs bitangent = w * cross(N, T).
+            let handedness = if normal.cross(tangent).dot(bitangents[index]) < 0.0 {
+                -1.0
+            } else {
+                1.0
+            };
+            vertex.tangent = tangent.extend(handedness);
+        }
+    }
+
     /// Bounds over only the geometry whose owning node is *not* in `hidden_nodes`
     /// — the box for the Outliner's currently-visible meshes. Falls back to the
     /// full [`ModelData::bounds`] when nothing is hidden or the model carries no
@@ -501,6 +583,81 @@ mod tests {
         // No triangles -> no draws.
         model.indices.clear();
         assert_eq!(model.material_draw_count(), 0);
+    }
+
+    #[test]
+    fn generate_tangents_builds_orthonormal_basis_from_uvs() {
+        // A single triangle in the XY plane (normal +Z) with UVs aligned to X/Y:
+        // the U direction (tangent) must come out ~ +X, unit length, perpendicular
+        // to the normal, with a right-handed (+1) sign.
+        let vertex = |pos: Vec3, uv: Vec2| Vertex {
+            position: pos,
+            normal: Vec3::Z,
+            uv,
+            tangent: Vec4::ZERO, // degenerate -> the regenerate signal
+            vertex_color: Vec4::ONE,
+        };
+        let mut model = ModelData {
+            name: "tri".to_owned(),
+            vertices: vec![
+                vertex(Vec3::new(0.0, 0.0, 0.0), Vec2::new(0.0, 0.0)),
+                vertex(Vec3::new(1.0, 0.0, 0.0), Vec2::new(1.0, 0.0)),
+                vertex(Vec3::new(0.0, 1.0, 0.0), Vec2::new(0.0, 1.0)),
+            ],
+            indices: vec![0, 1, 2],
+            faces: vec![TopologyFace {
+                first_index: 0,
+                index_count: 3,
+            }],
+            triangles: TriangleData {
+                to_face: vec![0],
+                material: Vec::new(),
+                node: Vec::new(),
+            },
+            nodes: Vec::new(),
+            uv_channels: Vec::new(),
+            uv_set_names: Vec::new(),
+            bounds: None,
+            stats: ModelStats {
+                polygon_count: 1,
+                triangle_count: 1,
+                vertex_count: 3,
+                uv_set_count: 1,
+                material_count: 0,
+                draw_count: 0,
+                source_unit_meters: 1.0,
+            },
+            materials: Vec::new(),
+            warnings: Vec::new(),
+        };
+
+        assert!(model.has_degenerate_tangents(), "seeded with zero tangents");
+        model.generate_tangents();
+        assert!(
+            !model.has_degenerate_tangents(),
+            "tangents are non-degenerate after generation"
+        );
+
+        for vertex in &model.vertices {
+            let tangent = vertex.tangent.truncate();
+            assert!(
+                (tangent.length() - 1.0).abs() < 1e-4,
+                "tangent is unit length, got {tangent:?}"
+            );
+            assert!(
+                tangent.dot(Vec3::Z).abs() < 1e-4,
+                "tangent perpendicular to the normal, got {tangent:?}"
+            );
+            assert!(
+                (tangent - Vec3::X).length() < 1e-3,
+                "tangent points along +U (+X) for this layout, got {tangent:?}"
+            );
+            assert!(
+                (vertex.tangent.w - 1.0).abs() < 1e-4,
+                "right-handed UV layout yields +1 handedness, got {}",
+                vertex.tangent.w
+            );
+        }
     }
 
     #[test]

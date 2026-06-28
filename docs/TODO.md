@@ -5,6 +5,7 @@
 - overdraw
 - texture name auto matching
 - camera FOV controls
+- show pivot point
 
 UV view
 - wireframe color
@@ -12,6 +13,7 @@ UV view
 
 Texture
 - flipbook player
+- read files directly vs magick
 
 Tracy profiler integration
 

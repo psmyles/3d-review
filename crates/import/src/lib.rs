@@ -331,6 +331,13 @@ mod ffi {
             warnings,
         };
         model.recompute_bounds();
+        // The FBX may carry UVs but no tangent layer (common for Maya exports); the
+        // bridge then leaves a zero tangent per vertex. Synthesize a real tangent
+        // basis from the UVs + normals so normal maps shade correctly — done once
+        // here at the single import funnel (invariant 7).
+        if model.has_degenerate_tangents() {
+            model.generate_tangents();
+        }
         // The renderer groups triangles into one draw per distinct material slot;
         // report that count rather than the C bridge's per-node tally so Draws is
         // the real draw-call count.
