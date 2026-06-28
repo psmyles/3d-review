@@ -118,6 +118,12 @@ pub(crate) const ICON_ANTI_ALIASING: AppIcon = AppIcon {
     id: "icon_anti_aliasing",
     png_bytes: include_bytes!("../../../assets/icons/icon_anti_aliasing.png"),
 };
+/// "Background" — cycles the viewport background preset; right-click opens the
+/// Background options panel (status bar, right, left of Image-based lighting).
+pub(crate) const ICON_BACKGROUND: AppIcon = AppIcon {
+    id: "icon_background",
+    png_bytes: include_bytes!("../../../assets/icons/icon_background.png"),
+};
 /// "Image-based lighting" — toggles IBL; right-click opens the Environment
 /// options panel (status bar, right, next to Anti aliasing).
 pub(crate) const ICON_IBL: AppIcon = AppIcon {

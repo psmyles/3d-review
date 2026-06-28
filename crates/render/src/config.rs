@@ -638,11 +638,91 @@ impl Default for SceneDebugOptions {
     }
 }
 
+/// The viewport background fill drawn behind the 3D / UV scene. A preset that the
+/// composite pass paints (in display space, after tone mapping) wherever no
+/// geometry covers the pixel — so the chosen value is the exact displayed color,
+/// undistorted by the tone curve. The skybox (Environment → "show background")
+/// covers the whole viewport when on, so the IBL environment overrides this.
+///
+/// Flat presets paint one solid color; [`Gradient`] paints a vertical interpolation
+/// (top → bottom). The values are sRGB display levels (0..1), matching their
+/// labels (e.g. 50% grey reads as a mid-grey on screen).
+///
+/// [`Gradient`]: ViewportBackground::Gradient
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ViewportBackground {
+    /// Solid black — the default neutral backdrop.
+    #[default]
+    Black,
+    /// Solid 25% grey.
+    Grey25,
+    /// Solid 50% grey.
+    Grey50,
+    /// Solid 75% grey.
+    Grey75,
+    /// Solid white.
+    White,
+    /// Vertical gradient: 80% grey at the top fading to black at the bottom.
+    Gradient,
+}
+
+impl ViewportBackground {
+    /// Every preset in display / cycle order — Black (the default) first, then the
+    /// greys ascending to White, then the gradient. Drives both the status-bar
+    /// cycle button and the options-panel swatch row (left to right).
+    pub const ALL: [ViewportBackground; 6] = [
+        ViewportBackground::Black,
+        ViewportBackground::Grey25,
+        ViewportBackground::Grey50,
+        ViewportBackground::Grey75,
+        ViewportBackground::White,
+        ViewportBackground::Gradient,
+    ];
+
+    /// Human-readable label (tooltips / notifications).
+    pub fn label(self) -> &'static str {
+        match self {
+            ViewportBackground::Black => "Black",
+            ViewportBackground::Grey25 => "25% Grey",
+            ViewportBackground::Grey50 => "50% Grey",
+            ViewportBackground::Grey75 => "75% Grey",
+            ViewportBackground::White => "White",
+            ViewportBackground::Gradient => "Gradient",
+        }
+    }
+
+    /// The next preset in [`ViewportBackground::ALL`] order, wrapping after the
+    /// last — for cycling by left-clicking the status-bar background button.
+    pub fn next(self) -> ViewportBackground {
+        let all = ViewportBackground::ALL;
+        let index = all.iter().position(|&v| v == self).unwrap_or(0);
+        all[(index + 1) % all.len()]
+    }
+
+    /// The preset's top and bottom fill colors in **display (sRGB) space**, 0..1.
+    /// The composite interpolates vertically between them (top at the viewport's
+    /// top edge); a flat preset returns the same color for both. Handed to the post
+    /// pass directly so the painted background matches the label exactly, untouched
+    /// by tone mapping.
+    pub fn gradient_srgb(self) -> ([f32; 3], [f32; 3]) {
+        let grey = |v: f32| [v, v, v];
+        match self {
+            ViewportBackground::Black => (grey(0.0), grey(0.0)),
+            ViewportBackground::Grey25 => (grey(0.25), grey(0.25)),
+            ViewportBackground::Grey50 => (grey(0.5), grey(0.5)),
+            ViewportBackground::Grey75 => (grey(0.75), grey(0.75)),
+            ViewportBackground::White => (grey(1.0), grey(1.0)),
+            ViewportBackground::Gradient => (grey(0.8), grey(0.0)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct RendererConfig {
-    /// Background the scene viewport is cleared to (linear RGBA, 0..1). The GPU is
-    /// reached directly through Direct3D 11, so there is no backend selection to
-    /// configure here anymore.
+    /// Retained renderer-config seam (linear RGBA, 0..1). The scene pass now clears
+    /// its offscreen targets to zero and the *visible* viewport backdrop is the
+    /// composited [`ViewportBackground`] (display-space, after tone mapping), so this
+    /// no longer drives the on-screen background; kept for the config seam.
     pub clear_color: [f32; 4],
 }
 
@@ -672,6 +752,36 @@ mod tests {
         }
         // A full lap returns to the start.
         assert_eq!(view, BufferView::ALL[0]);
+    }
+
+    #[test]
+    fn viewport_background_next_cycles_through_all_in_order() {
+        // `next` walks `ALL` in order and wraps after the last back to the first.
+        let mut background = ViewportBackground::ALL[0];
+        for expected in ViewportBackground::ALL
+            .iter()
+            .skip(1)
+            .chain(std::iter::once(&ViewportBackground::ALL[0]))
+        {
+            background = background.next();
+            assert_eq!(background, *expected);
+        }
+        assert_eq!(background, ViewportBackground::ALL[0]);
+    }
+
+    #[test]
+    fn viewport_background_gradient_is_flat_except_gradient_preset() {
+        // Every flat preset returns equal top/bottom; only the gradient differs, and
+        // its top (80% grey) is brighter than its bottom (black).
+        for background in ViewportBackground::ALL {
+            let (top, bottom) = background.gradient_srgb();
+            if background == ViewportBackground::Gradient {
+                assert!(top[0] > bottom[0], "gradient top should be brighter");
+                assert_eq!(bottom, [0.0; 3]);
+            } else {
+                assert_eq!(top, bottom, "{background:?} should be a flat fill");
+            }
+        }
     }
 
     #[test]

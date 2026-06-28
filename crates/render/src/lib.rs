@@ -590,7 +590,7 @@ impl Renderer {
         anti_aliasing: AntiAliasing,
         selection: SelectionView,
         hidden_meshes: &[u32],
-        clear: [f32; 4],
+        background: ViewportBackground,
     ) -> windows::core::Result<()> {
         // Build the scene GPU resources on first use, then borrow them — `insert`
         // returns the `&mut` so there's no separate unwrap. Disjoint field borrows:
@@ -617,7 +617,7 @@ impl Renderer {
             selection,
             debug,
             hidden_meshes,
-            clear,
+            background,
         )
     }
 
@@ -634,7 +634,7 @@ impl Renderer {
         channel: u32,
         shading_mode: UvShadingMode,
         anti_aliasing: AntiAliasing,
-        clear: [f32; 4],
+        background: ViewportBackground,
     ) -> windows::core::Result<()> {
         let scene = match self.scene_gpu {
             Some(ref mut scene) => scene,
@@ -650,7 +650,7 @@ impl Renderer {
             channel,
             shading_mode,
             anti_aliasing,
-            clear,
+            background,
         )
     }
 

@@ -4,6 +4,7 @@
 - overdraw
 - texture name auto matching
 - camera FOV controls
+- screenshot
 
 UV view
 - wireframe color

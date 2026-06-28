@@ -55,7 +55,7 @@ impl App {
             self.occlusion_bvh_revision = self.scene_revision;
         }
 
-        let (full_output, clear, ui_output) = {
+        let (full_output, ui_output) = {
             let Some(egui_state) = self.egui_state.as_mut() else {
                 return;
             };
@@ -66,7 +66,6 @@ impl App {
             let raw_input = egui_state.take_egui_input(&window);
             let camera = renderer.camera;
             let uv_camera = renderer.uv_camera;
-            let clear = renderer.config.clear_color;
             let scene_model = self.scene_model.clone();
             let scene_revision = self.scene_revision;
             let occlusion_bvh = self.occlusion_bvh.as_ref();
@@ -113,7 +112,7 @@ impl App {
             });
 
             egui_state.handle_platform_output(&window, full_output.platform_output.clone());
-            (full_output, clear, ui_output)
+            (full_output, ui_output)
         };
 
         {
@@ -163,6 +162,7 @@ impl App {
         let environment = self.ui.environment;
         let gtao = self.ui.gtao;
         let tonemap = self.ui.tonemap;
+        let background = self.ui.viewport_background;
         let anti_aliasing = self.ui.anti_aliasing;
         let selection = self.ui.selection_view();
         let hidden_meshes = self.ui.hidden_mesh_nodes();
@@ -177,7 +177,6 @@ impl App {
             .then(|| self.build_texture_draw(full_output.pixels_per_point));
         let model = self.scene_model.clone();
         let model_revision = self.scene_revision;
-        let clear_rgba = clear;
 
         let Some(renderer) = self.renderer.as_mut() else {
             return;
@@ -204,7 +203,7 @@ impl App {
                     uv_channel,
                     uv_shading,
                     anti_aliasing,
-                    clear_rgba,
+                    background,
                 ),
                 WorkspaceMode::Texture => {
                     let (image, background) = texture_draw.unwrap_or((None, TexBackground::Black));
@@ -222,7 +221,7 @@ impl App {
                     anti_aliasing,
                     selection,
                     &hidden_meshes,
-                    clear_rgba,
+                    background,
                 ),
             };
             if let Err(err) = render_result {

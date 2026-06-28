@@ -20,6 +20,13 @@ cbuffer PostUniforms : register(b0)
     // backbuffer — no GTAO, tone map or sRGB encode. Set for the buffer-inspection
     // view, whose scene shader emits faithful final pixels itself.
     uint passthrough;
+    // Viewport background fill, in display (sRGB) space (`xyz`; `w` unused). The
+    // composite paints `lerp(bg_top, bg_bottom, v)` wherever the scene's coverage
+    // (the resolved scene-color alpha) is below 1, so the chosen color is the exact
+    // displayed value (after, not before, tone mapping). A flat preset sets both
+    // equal; the gradient sets distinct top/bottom.
+    float4 bg_top;
+    float4 bg_bottom;
 };
 
 struct VsOutput
@@ -185,18 +192,32 @@ float3 apply_tonemap(float3 color)
 
 float4 fs_post(VsOutput input) : SV_Target
 {
-    float3 lit = scene_color.Sample(scene_sampler, input.uv).rgb;
+    float4 scene = scene_color.Sample(scene_sampler, input.uv);
+    float3 lit = scene.rgb;
+    // Coverage = the resolved scene alpha (1 where opaque geometry / the skybox
+    // wrote, 0 over the cleared background, fractional at MSAA silhouette edges and
+    // through transparent surfaces). The MSAA resolve premultiplies the color by
+    // coverage, so divide it back out to recover the surface color before tone
+    // mapping, then composite over the background by coverage — giving clean
+    // anti-aliased edges against any background.
+    float coverage = scene.a;
+    float3 surface = lit / max(coverage, 1e-4);
+    // Vertical background gradient in display space (uv.y = 0 at the top).
+    float3 bg = lerp(bg_top.rgb, bg_bottom.rgb, saturate(input.uv.y));
     // Buffer-inspection view: the scene shader already wrote final display pixels,
-    // so pass them through unchanged (faithful — the shown value is the data).
+    // so pass them through unchanged (faithful — the shown value is the data),
+    // composited over the chosen background where no geometry covers the pixel.
     if (passthrough != 0u)
     {
-        return float4(lit, 1.0);
+        return float4(lerp(bg, surface, coverage), 1.0);
     }
     if (gtao_enabled != 0u)
     {
         float ao = gtao_texture.Sample(scene_sampler, input.uv).r;
         float3 ambient = ambient_texture.Sample(scene_sampler, input.uv).rgb;
         lit = max(lit - ambient * (1.0 - ao), 0.0);
+        surface = lit / max(coverage, 1e-4);
     }
-    return float4(linear_to_srgb(apply_tonemap(lit)), 1.0);
+    float3 scene_srgb = linear_to_srgb(apply_tonemap(surface));
+    return float4(lerp(bg, scene_srgb, coverage), 1.0);
 }
