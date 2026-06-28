@@ -1,7 +1,7 @@
-// Scene shader (HLSL / Shader Model 5.0) — the Direct3D 11 port of `scene.wgsl`.
-// Migration note: the WGSL file remains in-tree as the golden reference while the
-// scene path is ported pass by pass; this HLSL is compiled offline to DXBC by
-// `fxc` (see `build.rs`) and shipped as bytecode (no runtime shader compilation).
+// Scene shader (HLSL / Shader Model 5.0). This is the sole scene shader (the
+// wgpu→D3D11 migration is complete; no WGSL remains in-tree). It is compiled
+// offline to DXBC by `fxc` (see `build.rs`) and shipped as bytecode (no runtime
+// shader compilation).
 //
 // Entry points: `vs_main` (shared mesh/line vertex shader), `fs_main` (the full
 // per-material PBR / IBL / checker / vertex-color / unlit / alpha path), `fs_line`

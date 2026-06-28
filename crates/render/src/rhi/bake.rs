@@ -239,9 +239,17 @@ impl CubeTarget {
         })
     }
 
-    /// The render-target view for `face` (0..6) at `mip`.
+    /// The render-target view for `face` (0..6) at `mip`. The cube has 6 faces per
+    /// mip stored mip-major (see the build loop), so the view index is `mip*6 + face`.
     pub(crate) fn rtv(&self, face: u32, mip: u32) -> &ID3D11RenderTargetView {
-        &self.rtvs[(mip * 6 + face) as usize]
+        debug_assert!(face < 6, "cube face {face} out of range (0..6)");
+        let index = (mip * 6 + face) as usize;
+        debug_assert!(
+            index < self.rtvs.len(),
+            "cube rtv (mip {mip}, face {face}) out of range ({index} >= {})",
+            self.rtvs.len()
+        );
+        &self.rtvs[index]
     }
 
     /// Bind the whole cube as a sampled shader resource at pixel-shader slot `slot`.

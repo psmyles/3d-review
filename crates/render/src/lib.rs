@@ -1,3 +1,19 @@
+//! `review-render` — the viewer's camera math + Direct3D 11 GPU layer.
+//!
+//! The crate owns three things: the **cameras** ([`OrbitCamera`] for the 3D
+//! viewport, [`UvCamera`] for the 2D UV viewport, and the 0.3s [`CameraTransition`]
+//! easing between framings, all Reversed-Z), the per-view **config** types
+//! (re-exported from [`config`]: shading / material / environment / GTAO / tonemap /
+//! AA options), and the [`Renderer`] — the host-facing handle that holds the live
+//! camera + editable material table and, on first use, lazily builds the Direct3D 11
+//! scene/Tex GPU resources and draws each frame into the swapchain backbuffer.
+//!
+//! All D3D11/DXGI COM is confined to the [`rhi`] module + the scene/tex GPU
+//! submodules (invariant 9); the camera and material math above stays host-agnostic
+//! and safe, so `app` drives the renderer purely through [`Renderer`]'s public API
+//! and never touches GPU state directly (invariant 2). HLSL shaders live in
+//! `src/hlsl/` and are compiled offline to committed DXBC by `build.rs`.
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -500,6 +516,11 @@ mod tests {
     }
 }
 
+/// The host-facing renderer: the live 3D/UV cameras, the editable per-material
+/// table, and (built lazily on first draw) the Direct3D 11 scene + Tex GPU
+/// resources. `app` owns one of these and drives every frame through its public
+/// API — applying [`MaterialEdit`]/camera intents in, reading stats out (invariant
+/// 2). It carries no window or swapchain; those are passed per-call as a [`Gpu`].
 #[derive(Debug)]
 pub struct Renderer {
     pub config: RendererConfig,
@@ -531,6 +552,10 @@ pub struct Renderer {
 }
 
 impl Renderer {
+    /// Create a renderer from its config with default cameras and an empty material
+    /// table. No GPU resources are built here — the Direct3D 11 device doesn't exist
+    /// until the window is up, so the scene/Tex resources are created lazily on the
+    /// first [`Self::render_scene`] / [`Self::render_texture`].
     pub fn new(config: RendererConfig) -> Self {
         Self {
             config,
@@ -567,12 +592,16 @@ impl Renderer {
         hidden_meshes: &[u32],
         clear: [f32; 4],
     ) -> windows::core::Result<()> {
-        if self.scene_gpu.is_none() {
-            self.scene_gpu = Some(SceneGpu::new(gpu, anti_aliasing.effective_sample_count())?);
-        }
-        // Disjoint field borrows: `scene` borrows `self.scene_gpu` mutably while the
-        // material table + camera are borrowed from their own fields.
-        let scene = self.scene_gpu.as_mut().unwrap();
+        // Build the scene GPU resources on first use, then borrow them — `insert`
+        // returns the `&mut` so there's no separate unwrap. Disjoint field borrows:
+        // `scene` borrows `self.scene_gpu` mutably while the material table + camera
+        // are borrowed from their own fields.
+        let scene = match self.scene_gpu {
+            Some(ref mut scene) => scene,
+            None => self
+                .scene_gpu
+                .insert(SceneGpu::new(gpu, anti_aliasing.effective_sample_count())?),
+        };
         scene.render(
             gpu,
             model,
@@ -607,10 +636,12 @@ impl Renderer {
         anti_aliasing: AntiAliasing,
         clear: [f32; 4],
     ) -> windows::core::Result<()> {
-        if self.scene_gpu.is_none() {
-            self.scene_gpu = Some(SceneGpu::new(gpu, anti_aliasing.effective_sample_count())?);
-        }
-        let scene = self.scene_gpu.as_mut().unwrap();
+        let scene = match self.scene_gpu {
+            Some(ref mut scene) => scene,
+            None => self
+                .scene_gpu
+                .insert(SceneGpu::new(gpu, anti_aliasing.effective_sample_count())?),
+        };
         scene.render_uv(
             gpu,
             model,
@@ -633,10 +664,10 @@ impl Renderer {
         image: Option<TexImage>,
         background: TexBackground,
     ) -> windows::core::Result<()> {
-        if self.tex_gpu.is_none() {
-            self.tex_gpu = Some(TexGpu::new(gpu)?);
-        }
-        let tex = self.tex_gpu.as_mut().unwrap();
+        let tex = match self.tex_gpu {
+            Some(ref mut tex) => tex,
+            None => self.tex_gpu.insert(TexGpu::new(gpu)?),
+        };
         tex.render(gpu, image, background)
     }
 

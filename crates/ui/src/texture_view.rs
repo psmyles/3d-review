@@ -1,11 +1,11 @@
 //! The Tex viewport: a 2D image viewer for the scene texture pool.
 //!
-//! The viewed texture is painted by a wgpu paint callback ([`review_render::
-//! TexCallback`]) — the same egui-paint-callback funnel the 3D / UV viewports use,
-//! not a hand-rolled image blit. This module owns only the *interaction*: it lays
-//! out the canvas, handles pan/zoom/fit, paints the background fill, and then adds
-//! the callback that draws the image with the chosen channel isolated. Channel
-//! isolation is a uniform the shader swizzles on, so switching RGB/R/G/B/A is free
+//! The viewed texture is drawn by `review_render`'s `TexGpu` (a Direct3D 11 draw
+//! issued by `app`, behind the egui chrome), not a hand-rolled image blit. This
+//! module owns only the *interaction*: it lays out the canvas, handles pan/zoom/fit,
+//! paints the background fill, and emits the placement + channel selection that
+//! `app` feeds to `TexGpu`. Channel isolation is a uniform the shader swizzles on,
+//! so switching RGB/R/G/B/A is free
 //! (no CPU rebuild, no re-upload); the GPU texture is uploaded once per image and
 //! reused (invariant 2: the pixels live in the app-owned [`TexturePoolEntry`]; the
 //! UI emits only plain placement + channel values).

@@ -4,13 +4,32 @@
 
 use bytemuck::Pod;
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_BIND_CONSTANT_BUFFER, D3D11_BIND_INDEX_BUFFER, D3D11_BIND_VERTEX_BUFFER,
-    D3D11_BUFFER_DESC, D3D11_CPU_ACCESS_WRITE, D3D11_MAP_WRITE_DISCARD, D3D11_MAPPED_SUBRESOURCE,
-    D3D11_SUBRESOURCE_DATA, D3D11_USAGE_DYNAMIC, D3D11_USAGE_IMMUTABLE, ID3D11Buffer, ID3D11Device,
-    ID3D11DeviceContext,
+    D3D11_BIND_CONSTANT_BUFFER, D3D11_BIND_FLAG, D3D11_BIND_INDEX_BUFFER, D3D11_BIND_VERTEX_BUFFER,
+    D3D11_BUFFER_DESC, D3D11_CPU_ACCESS_FLAG, D3D11_CPU_ACCESS_WRITE, D3D11_MAP_WRITE_DISCARD,
+    D3D11_MAPPED_SUBRESOURCE, D3D11_SUBRESOURCE_DATA, D3D11_USAGE, D3D11_USAGE_DYNAMIC,
+    D3D11_USAGE_IMMUTABLE, ID3D11Buffer, ID3D11Device, ID3D11DeviceContext,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32_UINT;
 use windows::core::Result;
+
+/// Build a `D3D11_BUFFER_DESC` with this module's common defaults (no misc flags,
+/// no structured stride). The four arguments are the only fields that vary across
+/// the vertex / index / constant buffers below.
+fn buffer_desc(
+    size: u32,
+    usage: D3D11_USAGE,
+    bind: D3D11_BIND_FLAG,
+    cpu_access: D3D11_CPU_ACCESS_FLAG,
+) -> D3D11_BUFFER_DESC {
+    D3D11_BUFFER_DESC {
+        ByteWidth: size,
+        Usage: usage,
+        BindFlags: bind.0 as u32,
+        CPUAccessFlags: cpu_access.0 as u32,
+        MiscFlags: 0,
+        StructureByteStride: 0,
+    }
+}
 
 /// An immutable vertex buffer + its stride and vertex count. Geometry is rebuilt
 /// wholesale on change (the wgpu path did the same), so immutable storage with
@@ -28,14 +47,12 @@ impl VertexBuffer {
     pub(crate) fn new<T: Pod>(device: &ID3D11Device, data: &[T]) -> Result<Self> {
         debug_assert!(!data.is_empty(), "vertex buffer must be non-empty");
         let bytes: &[u8] = bytemuck::cast_slice(data);
-        let desc = D3D11_BUFFER_DESC {
-            ByteWidth: std::mem::size_of_val(bytes) as u32,
-            Usage: D3D11_USAGE_IMMUTABLE,
-            BindFlags: D3D11_BIND_VERTEX_BUFFER.0 as u32,
-            CPUAccessFlags: 0,
-            MiscFlags: 0,
-            StructureByteStride: 0,
-        };
+        let desc = buffer_desc(
+            std::mem::size_of_val(bytes) as u32,
+            D3D11_USAGE_IMMUTABLE,
+            D3D11_BIND_VERTEX_BUFFER,
+            D3D11_CPU_ACCESS_FLAG(0),
+        );
         let init = D3D11_SUBRESOURCE_DATA {
             pSysMem: bytes.as_ptr() as *const _,
             SysMemPitch: 0,
@@ -83,14 +100,12 @@ impl IndexBuffer {
     pub(crate) fn new(device: &ID3D11Device, indices: &[u32]) -> Result<Self> {
         debug_assert!(!indices.is_empty(), "index buffer must be non-empty");
         let bytes: &[u8] = bytemuck::cast_slice(indices);
-        let desc = D3D11_BUFFER_DESC {
-            ByteWidth: std::mem::size_of_val(bytes) as u32,
-            Usage: D3D11_USAGE_IMMUTABLE,
-            BindFlags: D3D11_BIND_INDEX_BUFFER.0 as u32,
-            CPUAccessFlags: 0,
-            MiscFlags: 0,
-            StructureByteStride: 0,
-        };
+        let desc = buffer_desc(
+            std::mem::size_of_val(bytes) as u32,
+            D3D11_USAGE_IMMUTABLE,
+            D3D11_BIND_INDEX_BUFFER,
+            D3D11_CPU_ACCESS_FLAG(0),
+        );
         let init = D3D11_SUBRESOURCE_DATA {
             pSysMem: bytes.as_ptr() as *const _,
             SysMemPitch: 0,
@@ -129,14 +144,12 @@ impl DynamicConstantBuffer {
     /// Create a dynamic constant buffer sized for `T` (rounded up to 16 bytes).
     pub(crate) fn new<T>(device: &ID3D11Device) -> Result<Self> {
         let size = std::mem::size_of::<T>().next_multiple_of(16) as u32;
-        let desc = D3D11_BUFFER_DESC {
-            ByteWidth: size,
-            Usage: D3D11_USAGE_DYNAMIC,
-            BindFlags: D3D11_BIND_CONSTANT_BUFFER.0 as u32,
-            CPUAccessFlags: D3D11_CPU_ACCESS_WRITE.0 as u32,
-            MiscFlags: 0,
-            StructureByteStride: 0,
-        };
+        let desc = buffer_desc(
+            size,
+            D3D11_USAGE_DYNAMIC,
+            D3D11_BIND_CONSTANT_BUFFER,
+            D3D11_CPU_ACCESS_WRITE,
+        );
         let mut buffer = None;
         // SAFETY: a dynamic cbuffer with no initial data; the out-param is set.
         unsafe { device.CreateBuffer(&desc, None, Some(&mut buffer))? };

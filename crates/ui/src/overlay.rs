@@ -12,8 +12,8 @@ use crate::theme::{self, color, size};
 use crate::{dimensions, gizmo, help, panels, stats, status_bar, texture_view, toolbar};
 
 /// Paint the viewport scene behind the egui chrome: the 3D scene in 3D mode, the
-/// 2D UV viewport in UV mode. Texture mode paints no wgpu scene — its 2D image
-/// viewer is drawn in egui by [`draw_overlay`] (see [`texture_view`]).
+/// 2D UV viewport in UV mode. Texture mode renders no 3D scene — its 2D image
+/// viewer is drawn by `app`'s `TexGpu` pass (see [`texture_view`]).
 pub fn draw_viewport_scene(
     ctx: &egui::Context,
     state: &UiState,

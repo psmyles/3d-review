@@ -692,8 +692,8 @@ pub struct UiState {
     /// Application version shown in the help overlay title (e.g. "0.1.0"), set by
     /// `app` from its `CARGO_PKG_VERSION`.
     pub app_version: String,
-    /// Friendly name of the wgpu backend wgpu actually selected (e.g. "DX12"),
-    /// shown in the help overlay title; set by `app` once the adapter is known.
+    /// Friendly name of the graphics backend (e.g. "DX11"), shown in the help
+    /// overlay title; set by `app` (the renderer is always Direct3D 11).
     pub gpu_backend: String,
 }
 
@@ -844,4 +844,60 @@ pub(crate) fn sync_debug_state(state: &mut UiState) {
         BoundsScope::VisibleOnly => BoundingBoxScope::VisibleOnly,
     };
     state.debug.bounding_box_selection = state.selection;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_view_shader_index_and_offset_agree() {
+        // RGB is the combined view: shader index 0, no single-channel byte offset.
+        assert_eq!(TextureChannelView::Rgb.shader_index(), 0);
+        assert_eq!(TextureChannelView::Rgb.channel_offset(), None);
+        // Each single channel's byte offset is one less than its shader index.
+        for channel in [
+            TextureChannelView::R,
+            TextureChannelView::G,
+            TextureChannelView::B,
+            TextureChannelView::A,
+        ] {
+            let offset = channel
+                .channel_offset()
+                .expect("a single channel has a byte offset");
+            assert_eq!(channel.shader_index() as usize, offset + 1);
+        }
+    }
+
+    #[test]
+    fn channel_view_all_is_distinct_and_display_ordered() {
+        let labels: Vec<&str> = TextureChannelView::ALL
+            .into_iter()
+            .map(|channel| channel.label())
+            .collect();
+        assert_eq!(labels, ["RGB", "R", "G", "B", "A"]);
+    }
+
+    #[test]
+    fn panels_open_toggle_flips_state() {
+        let mut panels = PanelsOpen::default();
+        assert!(!panels.is_open(OptionPanel::Wireframe));
+        panels.toggle(OptionPanel::Wireframe);
+        assert!(panels.is_open(OptionPanel::Wireframe));
+        panels.toggle(OptionPanel::Wireframe);
+        assert!(!panels.is_open(OptionPanel::Wireframe));
+    }
+
+    #[test]
+    fn panels_open_set_is_idempotent_and_independent() {
+        let mut panels = PanelsOpen::default();
+        panels.set(OptionPanel::Gtao, true);
+        panels.set(OptionPanel::Gtao, true);
+        assert!(panels.is_open(OptionPanel::Gtao));
+        // Toggling a different panel doesn't disturb this one.
+        panels.toggle(OptionPanel::Tonemap);
+        assert!(panels.is_open(OptionPanel::Gtao));
+        panels.set(OptionPanel::Gtao, false);
+        assert!(!panels.is_open(OptionPanel::Gtao));
+    }
 }

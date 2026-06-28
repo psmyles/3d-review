@@ -92,23 +92,42 @@ struct GtaoUniforms {
     config: [f32; 4],
 }
 
-/// Baked parameters for the bounding-box view: `(color, scope, hidden_nodes,
-/// selection)`. Only the inputs the chosen scope depends on are populated (the
-/// hidden set for `VisibleOnly`, the selection for `OnlySelection`), so an
-/// unrelated change can't rebuild the box. Mirrors the wgpu `BoundingBoxParams`.
-type BoundingBoxParams = ([f32; 4], BoundingBoxScope, Vec<u32>, Selection);
+/// Baked parameters for the bounding-box view. Only the inputs the chosen scope
+/// depends on are populated (the hidden set for `VisibleOnly`, the selection for
+/// `OnlySelection`), so an unrelated change can't rebuild the box.
+#[derive(PartialEq)]
+struct BoundingBoxParams {
+    color: [f32; 4],
+    scope: BoundingBoxScope,
+    hidden: Vec<u32>,
+    selection: Selection,
+}
 
-/// Baked parameters for a normal-line view: `(length_scale, color, hidden_nodes)`.
-type NormalParams = (f32, [f32; 4], Vec<u32>);
+/// Baked parameters for a normal-line view (face or vertex normals).
+#[derive(PartialEq)]
+struct NormalParams {
+    length: f32,
+    color: [f32; 4],
+    hidden: Vec<u32>,
+}
 
-/// Bake key for the selection draw list: `(model_revision, selection, hidden_nodes,
-/// material mode)` — the hidden set because hiding a selected mesh drops it, the
-/// mode because Unique re-groups the solo list by part.
-type SelectionBaked = (u64, Selection, Vec<u32>, MaterialMode);
+/// Bake key for the selection draw list — the hidden set because hiding a selected
+/// mesh drops it, the mode because Unique re-groups the solo list by part.
+#[derive(PartialEq)]
+struct SelectionBaked {
+    model_revision: u64,
+    selection: Selection,
+    hidden: Vec<u32>,
+    mode: MaterialMode,
+}
 
-/// Bake key for the per-mesh visibility draw list: `(model_revision, hidden_nodes,
-/// material mode)`.
-type VisibilityBaked = (u64, Vec<u32>, MaterialMode);
+/// Bake key for the per-mesh visibility draw list.
+#[derive(PartialEq)]
+struct VisibilityBaked {
+    model_revision: u64,
+    hidden: Vec<u32>,
+    mode: MaterialMode,
+}
 
 /// The mesh's GPU buffers + per-material draw ranges, rebuilt when the model (or UV
 /// channel / material mode) changes. `None` for an empty model (the grid still draws).
@@ -1007,11 +1026,21 @@ impl SceneGpu {
                 BoundingBoxScope::OnlySelection => debug.bounding_box_selection,
                 _ => Selection::None,
             };
-            (debug.bounding_box_color, scope, hidden, selection)
+            BoundingBoxParams {
+                color: debug.bounding_box_color,
+                scope,
+                hidden,
+                selection,
+            }
         });
         if self.bounding_box_baked != want_bounding_box {
             self.bounding_box_buf = match &want_bounding_box {
-                Some((color, scope, hidden, selection)) => {
+                Some(BoundingBoxParams {
+                    color,
+                    scope,
+                    hidden,
+                    selection,
+                }) => {
                     let bounds = match scope {
                         BoundingBoxScope::AllMeshes => model.bounds,
                         BoundingBoxScope::OnlySelection => selection_bounds(model, *selection),
@@ -1029,16 +1058,18 @@ impl SceneGpu {
             self.bounding_box_baked = want_bounding_box;
         }
 
-        let want_face = debug.face_normals.then(|| {
-            (
-                debug.face_normal_length,
-                debug.face_normal_color,
-                hidden_meshes.to_vec(),
-            )
+        let want_face = debug.face_normals.then(|| NormalParams {
+            length: debug.face_normal_length,
+            color: debug.face_normal_color,
+            hidden: hidden_meshes.to_vec(),
         });
         if self.face_baked != want_face {
             self.face_normal_buf = match &want_face {
-                Some((length, color, hidden)) => optional_vertex_buffer(
+                Some(NormalParams {
+                    length,
+                    color,
+                    hidden,
+                }) => optional_vertex_buffer(
                     device,
                     &face_normal_lines(model, *length, *color, hidden),
                 )?,
@@ -1047,16 +1078,18 @@ impl SceneGpu {
             self.face_baked = want_face;
         }
 
-        let want_vertex = debug.vertex_normals.then(|| {
-            (
-                debug.vertex_normal_length,
-                debug.vertex_normal_color,
-                hidden_meshes.to_vec(),
-            )
+        let want_vertex = debug.vertex_normals.then(|| NormalParams {
+            length: debug.vertex_normal_length,
+            color: debug.vertex_normal_color,
+            hidden: hidden_meshes.to_vec(),
         });
         if self.vertex_baked != want_vertex {
             self.vertex_normal_buf = match &want_vertex {
-                Some((length, color, hidden)) => optional_vertex_buffer(
+                Some(NormalParams {
+                    length,
+                    color,
+                    hidden,
+                }) => optional_vertex_buffer(
                     device,
                     &vertex_normal_lines(model, *length, *color, hidden),
                 )?,
@@ -1092,10 +1125,12 @@ impl SceneGpu {
         hidden: &[u32],
         mode: MaterialMode,
     ) -> windows::core::Result<()> {
-        let want = view
-            .selection
-            .is_active()
-            .then(|| (model_revision, view.selection, hidden.to_vec(), mode));
+        let want = view.selection.is_active().then(|| SelectionBaked {
+            model_revision,
+            selection: view.selection,
+            hidden: hidden.to_vec(),
+            mode,
+        });
         if self.selection_baked == want {
             return Ok(());
         }
@@ -1103,7 +1138,9 @@ impl SceneGpu {
         // mesh so each range binds the right effective material. `None` (no usable
         // geometry) or an empty list both clear to a no-draw selection.
         let geometry = match &want {
-            Some((_, selection, hidden, _)) => {
+            Some(SelectionBaked {
+                selection, hidden, ..
+            }) => {
                 let key = self.grouping_key(mode);
                 selection_geometry(model, *selection, hidden, key)
             }
@@ -1136,12 +1173,16 @@ impl SceneGpu {
         hidden: &[u32],
         mode: MaterialMode,
     ) -> windows::core::Result<()> {
-        let want = (!hidden.is_empty()).then(|| (model_revision, hidden.to_vec(), mode));
+        let want = (!hidden.is_empty()).then(|| VisibilityBaked {
+            model_revision,
+            hidden: hidden.to_vec(),
+            mode,
+        });
         if self.visibility_baked == want {
             return Ok(());
         }
         let geometry = match &want {
-            Some((_, hidden, _)) => {
+            Some(VisibilityBaked { hidden, .. }) => {
                 let key = self.grouping_key(mode);
                 visible_geometry(model, hidden, key)
             }

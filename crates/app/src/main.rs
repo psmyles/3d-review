@@ -2,6 +2,8 @@
 // open as a window, not alongside a terminal.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod frame;
+mod input;
 mod prof;
 mod texture_manager;
 mod undo;
@@ -27,18 +29,17 @@ use notify::RecommendedWatcher;
 use review_import::{LoadOptions, load_model};
 use review_model::{ModelData, SceneBvh};
 use review_render::{
-    CameraProjection, DecodedImage, Gpu, Renderer, RendererConfig, ShadingMode, TexBackground,
-    TexImage, TextureSlot, selection_bounds,
+    DecodedImage, Gpu, Renderer, RendererConfig, ShadingMode, TextureSlot, selection_bounds,
 };
 use review_ui::{
-    AxisGizmoAction, MsaaSamples, Notifications, Selection, TexViewRequest, TextureBackground,
-    TextureIntent, UiOutput, UiState, WorkspaceMode, draw_overlay, draw_viewport_scene, init_style,
+    AxisGizmoAction, MsaaSamples, Notifications, Selection, TexViewRequest, TextureIntent,
+    UiOutput, UiState, WorkspaceMode, init_style,
 };
 use windows::Win32::Foundation::HWND;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::{
     application::ApplicationHandler,
-    event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
+    event::{ElementState, KeyEvent, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     keyboard::{Key, ModifiersState, NamedKey},
     window::{Window, WindowAttributes, WindowId},
@@ -258,6 +259,35 @@ const MAX_FLASH_STEP: Duration = Duration::from_millis(33);
 /// this is a fixed count rather than a completion signal.
 const STARTUP_WARMUP_FRAMES: u32 = 6;
 
+/// Redraw cadence used until the real monitor refresh rate is known (and as the
+/// fallback when it can't be queried) — a conventional 60 Hz.
+const FALLBACK_REFRESH_HZ: f64 = 60.0;
+
+/// Minimum window inner size (logical points), so the chrome never collapses.
+const MIN_WINDOW_WIDTH: f64 = 960.0;
+const MIN_WINDOW_HEIGHT: f64 = 640.0;
+
+/// Camera zoom per pixel of a right-button zoom-drag (pointer-down zooms in).
+const DRAG_ZOOM_SENSITIVITY: f32 = 0.01;
+
+/// Camera zoom per wheel notch for line-based scroll deltas (mice).
+const WHEEL_LINE_ZOOM_STEP: f32 = 0.5;
+
+/// Pixel-precise scroll (trackpads) divided by this to match one wheel notch.
+const WHEEL_PIXELS_PER_ZOOM_STEP: f32 = 120.0;
+
+/// A second primary click counts as a double-click only within this interval…
+const DOUBLE_CLICK_MAX_INTERVAL: Duration = Duration::from_millis(450);
+/// …and only if the pointer stayed within this many physical pixels of the first.
+const DOUBLE_CLICK_MAX_DISTANCE_PX: f32 = 6.0;
+
+/// Hermite smoothstep `3t² − 2t³` on a clamped `t ∈ [0, 1]` — an ease with zero
+/// slope at both ends.
+fn smoothstep(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 impl Default for App {
     fn default() -> Self {
         let scene_model = Arc::new(ModelData::default());
@@ -282,7 +312,7 @@ impl Default for App {
             repaint_at: None,
             redraw_requested: false,
             warmup_frames: 0,
-            refresh_interval: Duration::from_secs_f64(1.0 / 60.0),
+            refresh_interval: Duration::from_secs_f64(1.0 / FALLBACK_REFRESH_HZ),
             scene_model,
             scene_revision: 0,
             occlusion_bvh: None,
@@ -393,7 +423,10 @@ impl ApplicationHandler<UserEvent> for App {
         let mut attributes = WindowAttributes::default()
             .with_title("3D Review")
             .with_window_icon(load_window_icon())
-            .with_min_inner_size(winit::dpi::LogicalSize::new(960.0, 640.0))
+            .with_min_inner_size(winit::dpi::LogicalSize::new(
+                MIN_WINDOW_WIDTH,
+                MIN_WINDOW_HEIGHT,
+            ))
             .with_maximized(maximized);
         if let Some(placement) = saved {
             // Position/size are the restored (non-maximized) bounds; setting them
@@ -570,145 +603,18 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::Moved(_) => {
                 self.record_windowed_bounds();
             }
-            WindowEvent::Resized(size) => {
-                // A resize often accompanies a move to another monitor, which may
-                // have a different refresh rate; re-derive the frame cap.
-                self.refresh_interval = monitor_refresh_interval(&window);
-                self.record_windowed_bounds();
-
-                if let Some(renderer) = self.renderer.as_mut()
-                    && size.height > 0
-                {
-                    let aspect = size.width as f32 / size.height as f32;
-                    renderer.set_camera_aspect_ratio(aspect);
-                    renderer.set_uv_aspect_ratio(aspect);
-                    let (safe_w, safe_h) =
-                        framing_safe_area(size.height, window.scale_factor() as f32);
-                    renderer.set_framing_safe_area(safe_w, safe_h);
-                }
-
-                if let Some(gpu) = self.gpu.as_mut() {
-                    // Resize the swapchain to the new backbuffer size. A failed resize
-                    // is non-fatal — the old buffers stay valid for this frame.
-                    let _ = gpu.resize(size.width, size.height);
-                }
-
-                window.request_redraw();
-            }
+            WindowEvent::Resized(size) => self.handle_resized(size, &window),
             WindowEvent::MouseInput { state, button, .. } => {
-                if state == ElementState::Released {
-                    self.drag_mode = None;
-                } else if button == MouseButton::Left && self.ui.show_help_overlay {
-                    // The startup help overlay is up: it swallows the click in
-                    // egui (so the chrome beneath stays inert), but we still drive
-                    // dismissal here. A plain click hides it; a double-click also
-                    // opens the file picker — the same gesture as on the empty
-                    // viewport, so it reuses the same double-click detection. The
-                    // first click seeds `last_primary_click`; the second arrives
-                    // after the overlay is gone and opens the dialog via the
-                    // branch below.
-                    if self.should_open_on_double_click() {
-                        self.open_model_from_dialog();
-                    } else if let Some(position) = self.last_pointer_position {
-                        self.last_primary_click = Some((Instant::now(), position));
-                    }
-                    self.ui.show_help_overlay = false;
-                    self.redraw_requested = true;
-                } else if !egui_response.is_some_and(|response| response.consumed) {
-                    // The UV viewport is a 2D pan/zoom workspace: LMB pans, RMB
-                    // zooms (down = in). The 3D scene keeps LMB orbit / RMB
-                    // pan-or-zoom.
-                    let uv_mode = self.ui.mode == WorkspaceMode::Uv;
-                    match button {
-                        MouseButton::Left => {
-                            if self.should_open_on_double_click() {
-                                self.open_model_from_dialog();
-                                self.drag_mode = None;
-                            } else {
-                                self.drag_mode = Some(if uv_mode {
-                                    DragMode::Pan
-                                } else {
-                                    DragMode::Orbit
-                                });
-                                if let Some(position) = self.last_pointer_position {
-                                    self.last_primary_click = Some((Instant::now(), position));
-                                }
-                            }
-                        }
-                        MouseButton::Right => {
-                            // UV mode: RMB zoom-drags. 3D: Alt+RMB zoom-drags
-                            // (down = in, up = out), plain RMB pans.
-                            self.drag_mode = Some(if uv_mode || self.modifiers.alt_key() {
-                                DragMode::Zoom
-                            } else {
-                                DragMode::Pan
-                            });
-                        }
-                        MouseButton::Middle => {
-                            self.drag_mode = Some(DragMode::Pan);
-                        }
-                        _ => {}
-                    }
-                }
+                self.handle_mouse_input(state, button, egui_consumed);
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let current = Vec2::new(position.x as f32, position.y as f32);
-
-                if let (Some(renderer), Some(last), Some(mode)) = (
-                    self.renderer.as_mut(),
-                    self.last_pointer_position,
-                    self.drag_mode,
-                ) {
-                    let delta = current - last;
-                    let uv_mode = self.ui.mode == WorkspaceMode::Uv;
-                    let size = window.inner_size();
-                    let viewport = Vec2::new(size.width as f32, size.height as f32);
-                    match mode {
-                        DragMode::Orbit => renderer.orbit_camera(delta),
-                        // Pan drives the 2D UV camera in UV mode, the 3D camera
-                        // otherwise.
-                        DragMode::Pan => {
-                            if uv_mode {
-                                renderer.pan_uv_camera(delta, viewport);
-                            } else {
-                                renderer.pan_camera(delta, viewport);
-                            }
-                        }
-                        // Pointer down (positive screen delta) zooms in, up
-                        // zooms out — matching the wheel's positive-is-in sign.
-                        DragMode::Zoom => {
-                            if uv_mode {
-                                renderer.zoom_uv_camera(delta.y * 0.01);
-                            } else {
-                                renderer.zoom_camera(delta.y * 0.01);
-                            }
-                        }
-                    }
-                    self.redraw_requested = true;
-                }
-
-                self.last_pointer_position = Some(current);
+                self.handle_cursor_moved(position, &window)
             }
             WindowEvent::CursorLeft { .. } => {
                 self.drag_mode = None;
                 self.last_pointer_position = None;
             }
-            WindowEvent::MouseWheel { delta, .. } => {
-                if !egui_response.is_some_and(|response| response.consumed)
-                    && let Some(renderer) = self.renderer.as_mut()
-                {
-                    let amount = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => y * 0.5,
-                        MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 120.0,
-                    };
-                    if self.ui.mode == WorkspaceMode::Uv {
-                        renderer.zoom_uv_camera(amount);
-                    } else {
-                        renderer.zoom_camera(amount);
-                    }
-                    self.redraw_requested = true;
-                }
-            }
+            WindowEvent::MouseWheel { delta, .. } => self.handle_mouse_wheel(delta, egui_consumed),
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers.state();
             }
@@ -768,261 +674,6 @@ impl ApplicationHandler<UserEvent> for App {
 }
 
 impl App {
-    fn render(&mut self) {
-        let _frame = prof::zone!("Frame");
-        let Some(window) = self.window.as_ref().cloned() else {
-            return;
-        };
-        let Some(egui_ctx) = self.egui_ctx.as_ref().cloned() else {
-            return;
-        };
-
-        window.set_title("3D Review");
-        {
-            let _z = prof::zone!("Camera Animation");
-            self.update_camera_animation();
-        }
-        // Advance the selection-highlight flash and feed this frame's fade into the
-        // UI snapshot the scene callback reads. Done before the egui run below so the
-        // viewport reflects the current fade; a change of selection (set by the
-        // Outliner last frame) restarts it here.
-        self.update_selection_flash();
-        // Record any edit the UI committed last frame (selection / hide / material /
-        // texture) into the undo history before this frame's egui pass.
-        self.observe_edit_state();
-
-        // Bail until the D3D11 device + egui renderer exist (built in `resumed`).
-        if self.gpu.is_none() || self.egui_renderer.is_none() {
-            return;
-        }
-
-        // The bounding-box dimension labels occlude against the mesh through a
-        // triangle BVH. Build it lazily the first frame the labels are shown for a
-        // given model (and rebuild after a new model loads); reused across frames,
-        // so orbiting pays no per-frame triangle cost.
-        if self.ui.debug.show_bounding_box && self.occlusion_bvh_revision != self.scene_revision {
-            self.occlusion_bvh = Some(SceneBvh::build(&self.scene_model));
-            self.occlusion_bvh_revision = self.scene_revision;
-        }
-
-        let (full_output, clear, ui_output) = {
-            let Some(egui_state) = self.egui_state.as_mut() else {
-                return;
-            };
-            let Some(renderer) = self.renderer.as_ref() else {
-                return;
-            };
-
-            let raw_input = egui_state.take_egui_input(&window);
-            let camera = renderer.camera;
-            let uv_camera = renderer.uv_camera;
-            let clear = renderer.config.clear_color;
-            let scene_model = self.scene_model.clone();
-            let scene_revision = self.scene_revision;
-            let occlusion_bvh = self.occlusion_bvh.as_ref();
-            // Borrowed as a disjoint field so the egui closure can show the toasts
-            // alongside its `&mut self.ui` borrow (the toast system lives in `app`).
-            let notifications = &mut self.notifications;
-            let mut ui_output = UiOutput::default();
-            // The material mode before the egui pass; the toolbar / Material Mode
-            // panel mutate it during the pass, so a post-pass mismatch means the
-            // user switched modes this frame — surface its name as a toast (app
-            // owns the toast facility; the UI only holds the plain value).
-            let prev_material_mode = self.ui.debug.material_mode;
-            let _z = prof::zone!("egui Run");
-            let full_output = egui_ctx.run(raw_input, |ctx| {
-                draw_viewport_scene(
-                    ctx,
-                    &self.ui,
-                    camera,
-                    uv_camera,
-                    scene_model.clone(),
-                    scene_revision,
-                );
-                ui_output = draw_overlay(ctx, &mut self.ui, camera, &scene_model, occlusion_bvh);
-                if self.ui.debug.material_mode != prev_material_mode {
-                    notifications.mode(self.ui.debug.material_mode.label());
-                }
-                // Toasts paint on the egui Foreground layer, above the chrome.
-                notifications.show(ctx);
-            });
-
-            egui_state.handle_platform_output(&window, full_output.platform_output.clone());
-            (full_output, clear, ui_output)
-        };
-
-        {
-            let _z = prof::zone!("Apply UI Output");
-            self.apply_ui_output(ui_output);
-        }
-
-        // Decide when the next frame should be drawn. Continuous motion — a live
-        // camera transition, or egui asking to "repaint immediately" (zero delay)
-        // — is paced to the monitor's refresh interval so the viewer never renders
-        // faster than the display can show it. (We can't rely on the swapchain to
-        // pace us: on the Vulkan path `present` does not block on vblank.) A finite
-        // egui delay (e.g. a tooltip timer) schedules a single future wake-up, and
-        // an infinite delay means everything is idle, so we wait for the next event.
-        let repaint_delay = full_output
-            .viewport_output
-            .get(&egui::ViewportId::ROOT)
-            .map_or(Duration::MAX, |output| output.repaint_delay);
-        let camera_animating = self
-            .renderer
-            .as_ref()
-            .is_some_and(Renderer::is_camera_animating);
-        // The selection flash animates over ~0.5s; keep pacing frames until it
-        // finishes so the highlight fades smoothly rather than freezing partway.
-        let flash_active = self.selection_flash.is_some();
-        // Pump startup warmup frames (Phase B) until the deferred GPU-resource
-        // build drains, so the scene pipelines + GTAO pass compile behind
-        // the already-shown grid. Paced like the other continuous-redraw sources.
-        let warming_up = self.warmup_frames > 0;
-        self.warmup_frames = self.warmup_frames.saturating_sub(1);
-        self.repaint_at =
-            if repaint_delay.is_zero() || camera_animating || flash_active || warming_up {
-                let frame_start = self.last_render_instant.unwrap_or_else(Instant::now);
-                Some(frame_start + self.refresh_interval)
-            } else if repaint_delay == Duration::MAX {
-                None
-            } else {
-                Instant::now().checked_add(repaint_delay)
-            };
-
-        // The synced scene inputs the renderer draws this frame (read before the
-        // disjoint renderer/gpu borrows below). `debug` carries show_grid / shading
-        // / overlay flags (synced during the egui pass); `projection` the
-        // perspective/orthographic toggle; the model + revision drive the mesh.
-        let debug = self.ui.debug;
-        let projection: CameraProjection = self.ui.projection_mode.into();
-        let environment = self.ui.environment;
-        let gtao = self.ui.gtao;
-        let tonemap = self.ui.tonemap;
-        let anti_aliasing = self.ui.anti_aliasing;
-        let selection = self.ui.selection_view();
-        let hidden_meshes = self.ui.hidden_mesh_nodes();
-        let workspace = self.ui.mode;
-        let uv_channel = self.ui.uv_view_channel;
-        let uv_shading = self.ui.uv_shading_mode;
-        // The Tex viewport's draw inputs (background + placed image), resolved from
-        // the live UI state only in Texture mode. Built before the renderer borrow
-        // below; `pixels_per_point` converts the canvas/placement from egui points to
-        // physical pixels for the D3D11 image draw.
-        let texture_draw = (workspace == WorkspaceMode::Texture)
-            .then(|| self.build_texture_draw(full_output.pixels_per_point));
-        let model = self.scene_model.clone();
-        let model_revision = self.scene_revision;
-        let clear_rgba = clear;
-
-        let Some(renderer) = self.renderer.as_mut() else {
-            return;
-        };
-        let Some(gpu) = self.gpu.as_ref() else {
-            return;
-        };
-        let Some(egui_renderer) = self.egui_renderer.as_mut() else {
-            return;
-        };
-
-        {
-            let _z = prof::zone!("Paint + Present");
-            // Render the 3D scene through Direct3D 11 straight to the backbuffer
-            // (the call clears it), then draw the egui chrome on top — the central
-            // viewport area of the chrome is transparent, so the scene shows
-            // through. egui-directx11 tessellates the shapes internally and manages
-            // its own font/texture atlas.
-            let render_result = match workspace {
-                WorkspaceMode::Uv => renderer.render_uv_scene(
-                    gpu,
-                    &model,
-                    model_revision,
-                    uv_channel,
-                    uv_shading,
-                    anti_aliasing,
-                    clear_rgba,
-                ),
-                WorkspaceMode::Texture => {
-                    let (image, background) = texture_draw.unwrap_or((None, TexBackground::Black));
-                    renderer.render_texture(gpu, image, background)
-                }
-                WorkspaceMode::ThreeD => renderer.render_scene(
-                    gpu,
-                    &model,
-                    model_revision,
-                    debug,
-                    projection,
-                    environment,
-                    gtao,
-                    tonemap,
-                    anti_aliasing,
-                    selection,
-                    &hidden_meshes,
-                    clear_rgba,
-                ),
-            };
-            if let Err(err) = render_result {
-                prof::msg(&format!("scene D3D11 render failed: {err}"));
-            }
-            let egui_output = egui_directx11::RendererOutput {
-                textures_delta: full_output.textures_delta,
-                shapes: full_output.shapes,
-                pixels_per_point: full_output.pixels_per_point,
-            };
-            if let Err(err) =
-                egui_renderer.render(gpu.context(), gpu.backbuffer_rtv(), &egui_ctx, egui_output)
-            {
-                prof::msg(&format!("egui D3D11 render failed: {err}"));
-            }
-            gpu.present(true);
-        }
-
-        // Delimit the frame for Tracy's frame view (no-op unless `--tracy`).
-        prof::frame_mark();
-    }
-
-    /// Resolve the Tex viewport's D3D11 draw inputs from the live UI state: the
-    /// background fill, plus — when a texture is selected and the canvas has been laid
-    /// out — the image placed by the canvas center + pan/zoom (egui points → physical
-    /// pixels via `ppp`). The UI emits only plain values (invariant 2); `app` owns the
-    /// pool and resolves placement here. Mirrors the old wgpu `TexCallback` setup.
-    fn build_texture_draw(&self, ppp: f32) -> (Option<TexImage>, TexBackground) {
-        // Matches the UI theme's 12-point checker cell, scaled to physical pixels.
-        const CHECKER_CELL_POINTS: f32 = 12.0;
-        let background = match self.ui.texture_view.background {
-            TextureBackground::Black => TexBackground::Black,
-            TextureBackground::White => TexBackground::White,
-            TextureBackground::Grey => TexBackground::Grey,
-            TextureBackground::Checker => TexBackground::Checker {
-                cell_px: CHECKER_CELL_POINTS * ppp,
-            },
-        };
-
-        let view = &self.ui.texture_view;
-        let (Some(canvas), Some(entry)) = (
-            self.ui.texture_canvas,
-            self.ui.texture_pool.get(view.selected),
-        ) else {
-            return (None, background);
-        };
-
-        // The image is centered at the canvas center + pan, sized by the zoom (image
-        // texels → points). The shader discards fragments outside this rect, so the
-        // background shows around it.
-        let image = &entry.image;
-        let img_px = egui::vec2(image.width.max(1) as f32, image.height.max(1) as f32);
-        let size_pts = img_px * view.zoom;
-        let center = canvas.center() + view.pan;
-        let min_pts = center - size_pts * 0.5;
-        let tex_image = TexImage {
-            path: entry.path.clone(),
-            image: Arc::clone(&entry.image),
-            channel: view.channel.shader_index(),
-            min_px: [min_pts.x * ppp, min_pts.y * ppp],
-            size_px: [size_pts.x * ppp, size_pts.y * ppp],
-        };
-        (Some(tex_image), background)
-    }
-
     fn open_model_from_dialog(&mut self) {
         let file = rfd::FileDialog::new()
             .add_filter("FBX", &["fbx"])
@@ -1263,8 +914,8 @@ impl App {
             return false;
         };
 
-        last_click_time.elapsed() <= Duration::from_millis(450)
-            && current_position.distance(last_click_position) <= 6.0
+        last_click_time.elapsed() <= DOUBLE_CLICK_MAX_INTERVAL
+            && current_position.distance(last_click_position) <= DOUBLE_CLICK_MAX_DISTANCE_PX
     }
 
     fn apply_ui_output(&mut self, output: UiOutput) {
@@ -1282,7 +933,9 @@ impl App {
         // Camera + scalar material edits need the renderer borrow; scope it so the
         // texture intents below can call `&mut self` helpers.
         {
-            let renderer = self.renderer.as_mut().unwrap();
+            let Some(renderer) = self.renderer.as_mut() else {
+                return;
+            };
             if let Some(action) = output.axis_gizmo_action {
                 match action {
                     AxisGizmoAction::Orbit(delta) => renderer.orbit_camera(delta),
@@ -1427,9 +1080,8 @@ impl App {
                     // Ease-out (smoothstep complement): full at the start of the
                     // flash, easing smoothly to 0 — a blink that settles rather than
                     // a linear cut.
-                    let t = (flash.elapsed.as_secs_f32() / SELECTION_FLASH.as_secs_f32())
-                        .clamp(0.0, 1.0);
-                    1.0 - t * t * (3.0 - 2.0 * t)
+                    let t = flash.elapsed.as_secs_f32() / SELECTION_FLASH.as_secs_f32();
+                    1.0 - smoothstep(t)
                 }
             }
             None => 0.0,

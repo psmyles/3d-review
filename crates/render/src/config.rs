@@ -284,7 +284,7 @@ impl TonemapOperator {
     }
 
     /// The index the post shader's `apply_tonemap` switch reads. Must match the
-    /// `case` arms in `post.wgsl` (invariant 11).
+    /// `case` arms in `post.hlsl` (invariant 11).
     pub fn shader_index(self) -> u32 {
         match self {
             TonemapOperator::PbrNeutral => 0,
