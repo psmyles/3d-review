@@ -343,7 +343,10 @@ FragOutput fs_main(VsOutput input)
         }
         else if (buffer_view < 5.5)
         {
-            // Roughness: final scalar (factor combined with the channel-routed map).
+            // Roughness / Smoothness: final scalar (factor combined with the
+            // channel-routed map). Under the Smoothness workflow (mat_flags.x) the
+            // surface's authored quantity is smoothness, so show 1 - roughness; the
+            // Buffers panel relabels this buffer "Smoothness" to match.
             float r = mat_params.y;
             if (has_roughness)
             {
@@ -356,6 +359,10 @@ FragOutput fs_main(VsOutput input)
                 {
                     r = r * sample_r;
                 }
+            }
+            if (mat_flags.x > 0.5)
+            {
+                r = 1.0 - r;
             }
             result = (float3)saturate(r);
         }

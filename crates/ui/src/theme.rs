@@ -400,6 +400,12 @@ pub mod size {
     pub const PANEL_COMBO_OPTION_H: f32 = 20.0;
     pub const PANEL_COMBO_OPTION_GAP: f32 = 2.0;
     pub const PANEL_COMBO_OPTION_PAD_Y: f32 = 2.0;
+    /// Max popup height for the default-styled `labeled_combo` dropdowns. Raised
+    /// above egui's stock 200pt cap so the longest panel list (the Buffers panel's
+    /// 11 options) shows every entry at once without a scrollbar. It's only a *max*
+    /// — egui shrinks the popup to its content, so short combos (Workflow,
+    /// Transparency) are unaffected.
+    pub const LABELED_COMBO_POPUP_MAX_H: f32 = 360.0;
     /// On-screen size of an HDR environment preview thumbnail shown beside each
     /// option in the Environment dropdown. The source PNGs are 2:1
     /// equirectangular previews, so the height is half the width.
