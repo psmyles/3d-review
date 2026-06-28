@@ -15,7 +15,7 @@ use review_render::{
     AntiAliasing, BoundingBoxScope, CameraProjection, CheckerTexture, DecodedImage,
     EnvironmentSettings, GtaoSettings, MaterialEdit, MaterialSnapshot, MsaaSamples,
     SceneDebugOptions, Selection, ShadingMode, TonemapSettings, UvShadingMode, VertexColorMode,
-    selection_bounds,
+    ViewportBackground, selection_bounds,
 };
 
 use crate::theme;
@@ -455,6 +455,7 @@ pub enum OptionPanel {
     VertexNormals,
     VertexColors,
     AntiAliasing,
+    Background,
     Environment,
     Gtao,
     Tonemap,
@@ -463,7 +464,7 @@ pub enum OptionPanel {
 impl OptionPanel {
     /// Every panel, in toolbar order. Iterated each frame to draw the open ones
     /// (and to give each a stable cascade slot), so the order is deterministic.
-    pub(crate) const ALL: [OptionPanel; 12] = [
+    pub(crate) const ALL: [OptionPanel; 13] = [
         OptionPanel::Wireframe,
         OptionPanel::MaterialMode,
         OptionPanel::BufferView,
@@ -473,6 +474,7 @@ impl OptionPanel {
         OptionPanel::VertexNormals,
         OptionPanel::VertexColors,
         OptionPanel::AntiAliasing,
+        OptionPanel::Background,
         OptionPanel::Environment,
         OptionPanel::Gtao,
         OptionPanel::Tonemap,
@@ -490,6 +492,7 @@ impl OptionPanel {
             OptionPanel::VertexNormals => "Vertex Normals",
             OptionPanel::VertexColors => "Vertex Colors",
             OptionPanel::AntiAliasing => "Anti Aliasing",
+            OptionPanel::Background => "Background",
             OptionPanel::Environment => "Environment",
             OptionPanel::Gtao => "Ambient Occlusion",
             OptionPanel::Tonemap => "Tonemapper",
@@ -509,6 +512,7 @@ impl OptionPanel {
             OptionPanel::VertexNormals => "panel_vertex_normals",
             OptionPanel::VertexColors => "panel_vertex_colors",
             OptionPanel::AntiAliasing => "panel_anti_aliasing",
+            OptionPanel::Background => "panel_background",
             OptionPanel::Environment => "panel_environment",
             OptionPanel::Gtao => "panel_gtao",
             OptionPanel::Tonemap => "panel_tonemap",
@@ -623,6 +627,11 @@ pub struct UiState {
     /// toggles `tonemap.enabled`. Default is on with Khronos PBR Neutral (see
     /// [`TonemapSettings`]).
     pub tonemap: TonemapSettings,
+    /// Viewport background fill preset, read straight by the viewport callback. The
+    /// status-bar Background button left-clicks to cycle the presets and right-clicks
+    /// to open the Background options panel. Default is black; the IBL skybox
+    /// (Environment → show background) overrides it when shown.
+    pub viewport_background: ViewportBackground,
     pub stats: ModelStats,
     /// Name+value snapshot of the loaded model's editable materials, set by `app`
     /// from the renderer (invariant 2: a plain value, refreshed on load/edit).
@@ -738,6 +747,7 @@ impl Default for UiState {
             gtao: GtaoSettings::default(),
             gtao_supported: true,
             tonemap: TonemapSettings::default(),
+            viewport_background: ViewportBackground::default(),
             stats: ModelStats::default(),
             materials_snapshot: Vec::new(),
             texture_pool: Vec::new(),

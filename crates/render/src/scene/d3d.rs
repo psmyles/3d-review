@@ -32,7 +32,7 @@ use crate::selection::{Selection, SelectionView, selection_bounds};
 use crate::{
     ActiveMaterial, AntiAliasing, BoundingBoxScope, CameraProjection, CheckerTexture,
     EnvironmentSettings, GtaoSettings, MaterialMode, OrbitCamera, SceneDebugOptions, ShadingMode,
-    TonemapSettings, UvCamera, UvShadingMode,
+    TonemapSettings, UvCamera, UvShadingMode, ViewportBackground,
 };
 
 use super::gpu_profiler::{self, GpuProfiler, Zone};
@@ -82,6 +82,22 @@ struct PostUniforms {
     /// [`ActiveMaterial::Buffers`] data-inspection view, whose scene shader emits
     /// final display pixels itself so the shown value is faithful.
     passthrough: u32,
+    /// Viewport background fill in display (sRGB) space (`xyz`; `w` padding for the
+    /// 16-byte cbuffer slot). The composite paints `lerp(bg_top, bg_bottom, v)`
+    /// where the scene coverage is below 1; a flat preset sets both equal, the
+    /// gradient distinct. Built from [`ViewportBackground::gradient_srgb`].
+    bg_top: [f32; 4],
+    bg_bottom: [f32; 4],
+}
+
+/// Expand a [`ViewportBackground`]'s display-space top/bottom colors into the
+/// `bg_top` / `bg_bottom` cbuffer fields (`xyz` color, `w` unused).
+fn background_uniforms(background: ViewportBackground) -> ([f32; 4], [f32; 4]) {
+    let (top, bottom) = background.gradient_srgb();
+    (
+        [top[0], top[1], top[2], 0.0],
+        [bottom[0], bottom[1], bottom[2], 0.0],
+    )
 }
 
 /// GTAO-pass uniform (cbuffer `b0` in `gtao.hlsl`). `#[repr(C)]` + `Pod` to match
@@ -529,7 +545,7 @@ impl SceneGpu {
         selection: SelectionView,
         debug: SceneDebugOptions,
         hidden_meshes: &[u32],
-        clear: [f32; 4],
+        background: ViewportBackground,
     ) -> windows::core::Result<()> {
         let device = gpu.device();
         let ctx = gpu.context();
@@ -611,7 +627,11 @@ impl SceneGpu {
         }
 
         // --- Offscreen scene pass (2 MRT + depth). ---
-        gpu.begin_scene_pass(&[&self.color, &self.ambient], &self.depth, clear);
+        // Clear the scene color + ambient to zero radiance *and* zero alpha: the
+        // alpha is the composite's coverage mask, so the cleared background reads as
+        // "no geometry" and the post pass paints the chosen viewport background
+        // there (in display space, after tone mapping).
+        gpu.begin_scene_pass(&[&self.color, &self.ambient], &self.depth, [0.0; 4]);
         if let Some(profiler) = self.gpu_profiler.as_ref() {
             profiler.zone_begin(ctx, Zone::Scene);
         }
@@ -799,12 +819,16 @@ impl SceneGpu {
             gpu.unbind_ps_srvs(2);
         }
 
-        // --- Composite to the backbuffer (ambient-only AO + tone map + sRGB). ---
+        // --- Composite to the backbuffer (ambient-only AO + tone map + sRGB,
+        // composited over the viewport background). ---
+        let (bg_top, bg_bottom) = background_uniforms(background);
         let post = PostUniforms {
             gtao_enabled: u32::from(gtao_active),
             tonemap_enabled: u32::from(tonemap.enabled),
             tonemap_op: tonemap.operator.shader_index(),
             passthrough: u32::from(buffer_view_active),
+            bg_top,
+            bg_bottom,
         };
         self.post_uniforms.update(ctx, &post)?;
         if let Some(profiler) = self.gpu_profiler.as_ref() {
@@ -861,7 +885,7 @@ impl SceneGpu {
         channel: u32,
         shading_mode: UvShadingMode,
         anti_aliasing: AntiAliasing,
-        clear: [f32; 4],
+        background: ViewportBackground,
     ) -> windows::core::Result<()> {
         let device = gpu.device();
         let ctx = gpu.context();
@@ -874,7 +898,9 @@ impl SceneGpu {
         let uniforms = uv_scene_uniforms(uv_camera);
         self.uniforms.update(ctx, &uniforms)?;
 
-        gpu.begin_scene_pass(&[&self.color, &self.ambient], &self.depth, clear);
+        // Clear to zero (radiance + coverage); the background is painted in the
+        // composite, matching the 3D path.
+        gpu.begin_scene_pass(&[&self.color, &self.ambient], &self.depth, [0.0; 4]);
         self.uniforms.bind_vs(ctx, 0);
         self.uniforms.bind_ps(ctx, 0);
         // `fs_main` (the UV fill) samples the checker + every material slot at the top
@@ -908,13 +934,16 @@ impl SceneGpu {
 
         // Composite to the backbuffer: tone-mapped (the default operator, so shaded
         // fills read like the 3D scene), no GTAO (the flat UV viewport has no depth
-        // to occlude). `t1` binds the ambient as a harmless placeholder (the shader
-        // ignores it when GTAO is off).
+        // to occlude), over the chosen viewport background. `t1` binds the ambient as
+        // a harmless placeholder (the shader ignores it when GTAO is off).
+        let (bg_top, bg_bottom) = background_uniforms(background);
         let post = PostUniforms {
             gtao_enabled: 0,
             tonemap_enabled: 1,
             tonemap_op: 0,
             passthrough: 0,
+            bg_top,
+            bg_bottom,
         };
         self.post_uniforms.update(ctx, &post)?;
         gpu.begin_backbuffer_blit();
