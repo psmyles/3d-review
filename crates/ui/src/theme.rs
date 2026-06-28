@@ -230,11 +230,11 @@ pub mod size {
     pub const TOOLBAR_ICON_GAP: f32 = 3.0;
     pub const TOOLBAR_ICON_PADDING: f32 = 8.0;
     pub const TOOLBAR_CENTER_WIDTH: f32 = 180.0;
-    /// Right toolbar cluster (3D mode): view (138) + projection (48) + the
-    /// Outliner/Inspector window-toggle group (93), with two group spacings
-    /// (138 + 14 + 48 + 14 + 93 = 307), plus a little slack. It grows leftward from
+    /// Right toolbar cluster (3D mode): view (183, four icons) + projection (48) +
+    /// the Outliner/Inspector window-toggle group (93), with two group spacings
+    /// (183 + 14 + 48 + 14 + 93 = 352), plus a little slack. It grows leftward from
     /// the right edge, away from the centered mode segments.
-    pub const TOOLBAR_RIGHT_WIDTH: f32 = 320.0;
+    pub const TOOLBAR_RIGHT_WIDTH: f32 = 365.0;
     /// Two-icon window-toggle group (Outliner / Inspector) in the toolbar right
     /// cluster.
     pub const TOOLBAR_TOOLS_GROUP_WIDTH: f32 = 93.0;
@@ -250,9 +250,11 @@ pub mod size {
     /// Two-icon normal-debug group: face normals, vertex normals.
     pub const TOOLBAR_NORMALS_GROUP_WIDTH: f32 = 93.0;
     pub const TOOLBAR_SINGLE_ICON_GROUP_WIDTH: f32 = 48.0;
-    /// Width of a three-icon toolbar group (e.g. bounding box / gizmo / grid).
+    /// Width of a three-icon toolbar group (e.g. the UV-shading wire / shaded /
+    /// islands group).
     pub const TOOLBAR_TRIPLE_ICON_GROUP_WIDTH: f32 = 138.0;
-    /// Width of a four-icon toolbar group (the status bar's IBL / AO / Tonemapper /
+    /// Width of a four-icon toolbar group (the toolbar's bounding box / pivot /
+    /// gizmo / grid view group and the status bar's IBL / AO / Tonemapper /
     /// Anti-aliasing rendering-quality cluster): 6 padding + 4×42 icons + 3×3 gaps.
     pub const TOOLBAR_QUAD_ICON_GROUP_WIDTH: f32 = 183.0;
     pub const TOOLBAR_MODE_GROUP_WIDTH: f32 = 180.0;

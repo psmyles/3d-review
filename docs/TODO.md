@@ -1,11 +1,9 @@
 3D view
 - viewport background controls
-- buffer views
 - UV stretching
 - overdraw
 - texture name auto matching
 - camera FOV controls
-- show pivot point
 
 UV view
 - wireframe color
@@ -13,7 +11,7 @@ UV view
 
 Texture
 - flipbook player
-- read files directly vs magick
+- read files directly vs imagemagick
 
 Tracy profiler integration
 
@@ -23,4 +21,4 @@ The scene pass is single forward + alpha-blended MRT, so translucent materials c
 Split the per-material loop into opaque first (depth write on) then translucent back-to-front by per-range centroid (depth test on, write off); cutout stays opaque. One extra write-off pipeline; centroids computed once on load.
 Risk: not true OIT — interpenetrating translucency is wrong; acceptable for an auditor, flagged in code + UI. Done last so everything else ships without it.
 
-User-verifiable checkpoint (final acceptance): the user loads a model with overlapping translucent materials and confirms they blend in a sensible back-to-front order (no obvious pop-through for non-interpenetrating geometry), with cutout materials still crisp. cargo clippy clean. This closes the Materials & Textures milestone.
+User-verifiable checkpoint (final acceptance): the user loads a model with overlapping translucent materials and confirms they blend in a sensible back-to-front order (no obvious pop-through for non-interpenetrating geometry), with cutout materials still crisp.

@@ -103,6 +103,12 @@ pub(crate) const ICON_BBOX: AppIcon = AppIcon {
     id: "icon_bbox",
     png_bytes: include_bytes!("../../../assets/icons/icon_bbox.png"),
 };
+/// "Pivot" — toggles the object pivot marker (a 3-axis cross at the model's
+/// origin) in the 3D scene. A plain on/off toggle (no options).
+pub(crate) const ICON_PIVOT: AppIcon = AppIcon {
+    id: "icon_pivot",
+    png_bytes: include_bytes!("../../../assets/icons/icon_pivot.png"),
+};
 pub(crate) const ICON_INFO: AppIcon = AppIcon {
     id: "icon_info",
     png_bytes: include_bytes!("../../../assets/icons/icon_info.png"),

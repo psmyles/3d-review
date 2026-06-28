@@ -15,9 +15,9 @@ use review_model::ModelData;
 use windows::Win32::Graphics::Direct3D11::ID3D11Device;
 
 use crate::geometry::{
-    bounding_box_lines, face_normal_lines, model_mesh, scene_lines, selection_geometry,
-    uv_fill_triangles, uv_grid_lines, uv_wireframe_lines, vertex_normal_lines, visible_geometry,
-    wireframe_lines,
+    bounding_box_lines, face_normal_lines, model_mesh, model_pivot, pivot_half_extent, pivot_lines,
+    scene_lines, selection_geometry, uv_fill_triangles, uv_grid_lines, uv_wireframe_lines,
+    vertex_normal_lines, visible_geometry, wireframe_lines,
 };
 use crate::ibl::{IblD3d, PREFILTER_MAX_LOD};
 use crate::material::{
@@ -117,6 +117,15 @@ struct NormalParams {
     hidden: Vec<u32>,
 }
 
+/// Baked parameters for the pivot marker: the pivot position + half-length, both
+/// derived from the model, so a model swap (new pivot / size) rebuilds it while an
+/// unrelated change does not.
+#[derive(PartialEq)]
+struct PivotParams {
+    pivot: [f32; 3],
+    half: f32,
+}
+
 /// Bake key for the selection draw list — the hidden set because hiding a selected
 /// mesh drops it, the mode because Unique re-groups the solo list by part.
 #[derive(PartialEq)]
@@ -154,6 +163,9 @@ pub(crate) struct SceneGpu {
     /// GTAO-pass uniform (cbuffer `b0` in the gtao shader).
     gtao_uniforms: DynamicConstantBuffer,
     line_pipeline: Pipeline,
+    /// Always-on-top line variant (depth compare `Always`, no write): used by the
+    /// pivot marker so it shows through the mesh rather than being occluded.
+    line_overlay_pipeline: Pipeline,
     mesh_pipeline: Pipeline,
     mesh_double_sided_pipeline: Pipeline,
     skybox_pipeline: Pipeline,
@@ -206,7 +218,8 @@ pub(crate) struct SceneGpu {
     unique_baked: Option<u64>,
     // Derived 3D debug line views: each buffer exists only while its toggle is on
     // and is rebuilt live when its baked params drift (invariant 3, mirroring the
-    // wgpu `sync_line_views`). All draw with the shared `line_pipeline`.
+    // wgpu `sync_line_views`). All draw with the shared `line_pipeline`, except the
+    // pivot marker, which uses `line_overlay_pipeline` so it shows through the mesh.
     /// Model wireframe (original-polygon edges); `None` while off. The bake key is
     /// `(color, hidden_nodes)`.
     wireframe_buf: Option<VertexBuffer>,
@@ -221,6 +234,11 @@ pub(crate) struct SceneGpu {
     /// One line per vertex along its normal; `None` while off.
     vertex_normal_buf: Option<VertexBuffer>,
     vertex_baked: Option<NormalParams>,
+    /// 3-axis pivot marker at the model's origin; `None` while off. Drawn always-on-
+    /// top via `line_overlay_pipeline`. The bake key is the pivot position +
+    /// half-length (both model-derived).
+    pivot_buf: Option<VertexBuffer>,
+    pivot_baked: Option<PivotParams>,
     /// Selection-flash fill pipeline (`fs_selection`): flat highlight color × fade,
     /// depth-tested (Reversed-Z `GreaterEqual`) but no depth write, alpha-blended.
     selection_pipeline: Pipeline,
@@ -376,6 +394,7 @@ impl SceneGpu {
             post_uniforms,
             gtao_uniforms,
             line_pipeline: scene.line,
+            line_overlay_pipeline: scene.line_overlay,
             mesh_pipeline: scene.mesh,
             mesh_double_sided_pipeline: scene.mesh_double_sided,
             skybox_pipeline: scene.skybox,
@@ -416,6 +435,8 @@ impl SceneGpu {
             face_baked: None,
             vertex_normal_buf: None,
             vertex_baked: None,
+            pivot_buf: None,
+            pivot_baked: None,
             selection_pipeline: scene.selection,
             selection_index: None,
             selection_ranges: Vec::new(),
@@ -475,6 +496,7 @@ impl SceneGpu {
     ) -> windows::core::Result<()> {
         let scene = build_scene_pipelines(device, sample_count)?;
         self.line_pipeline = scene.line;
+        self.line_overlay_pipeline = scene.line_overlay;
         self.mesh_pipeline = scene.mesh;
         self.mesh_double_sided_pipeline = scene.mesh_double_sided;
         self.skybox_pipeline = scene.skybox;
@@ -677,6 +699,15 @@ impl SceneGpu {
                 buffer.bind(ctx);
                 gpu.draw(buffer.count());
             }
+        }
+
+        // Pivot marker: drawn last among the line overlays with the always-on-top
+        // line pipeline (depth compare `Always`), so the 3-axis cross reads through
+        // the mesh instead of being occluded inside it.
+        if let Some(pivot) = &self.pivot_buf {
+            self.line_overlay_pipeline.bind(ctx);
+            pivot.bind(ctx);
+            gpu.draw(pivot.count());
         }
 
         // Selection highlight flash: a flat bright-color fill redrawing the selected
@@ -1112,6 +1143,23 @@ impl SceneGpu {
             self.vertex_baked = want_vertex;
         }
 
+        // Pivot marker: a 3-axis cross at the model's origin. Its bytes depend only
+        // on the model (pivot position + size), so the bake key rebuilds it on a
+        // model swap and the buffer is freed while the toggle is off.
+        let want_pivot = debug.show_pivot.then(|| PivotParams {
+            pivot: model_pivot(model),
+            half: pivot_half_extent(model),
+        });
+        if self.pivot_baked != want_pivot {
+            self.pivot_buf = match &want_pivot {
+                Some(PivotParams { pivot, half }) => {
+                    optional_vertex_buffer(device, &pivot_lines(*pivot, *half))?
+                }
+                None => None,
+            };
+            self.pivot_baked = want_pivot;
+        }
+
         Ok(())
     }
 
@@ -1234,6 +1282,7 @@ impl SceneGpu {
 /// build them together via this helper so they stay in lockstep with the targets.
 struct ScenePipelineSet {
     line: Pipeline,
+    line_overlay: Pipeline,
     mesh: Pipeline,
     mesh_double_sided: Pipeline,
     skybox: Pipeline,
@@ -1259,6 +1308,28 @@ fn build_scene_pipelines(
                 test: true,
                 write: false,
                 compare: DepthCompare::GreaterEqual,
+            },
+            blend: BlendMode::AlphaBlend,
+            depth_bias: DepthBias::default(),
+            sample_count,
+        },
+    )?;
+
+    // Always-on-top line variant (depth compare `Always`, no write): the pivot
+    // marker uses this so the model never occludes it — it reads through solid
+    // geometry, unlike the depth-tested overlays above.
+    let line_overlay = Pipeline::new(
+        device,
+        &PipelineDesc {
+            vs: SCENE_VS,
+            ps: SCENE_LINE_PS,
+            input: &SCENE_VERTEX_LAYOUT,
+            topology: Topology::LineList,
+            cull: Cull::None,
+            depth: DepthState {
+                test: true,
+                write: false,
+                compare: DepthCompare::Always,
             },
             blend: BlendMode::AlphaBlend,
             depth_bias: DepthBias::default(),
@@ -1356,6 +1427,7 @@ fn build_scene_pipelines(
 
     Ok(ScenePipelineSet {
         line,
+        line_overlay,
         mesh,
         mesh_double_sided,
         skybox,

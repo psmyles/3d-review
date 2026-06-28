@@ -6,7 +6,7 @@ use review_render::{ActiveMaterial, ShadingMode, UvShadingMode};
 
 use crate::assets::{
     ICON_AXIS_GIZMO, ICON_BACKFACE, ICON_BBOX, ICON_BUFFERS, ICON_GRID, ICON_INSPECTOR,
-    ICON_NORMALS_FACE, ICON_NORMALS_VERTEX, ICON_OUTLINER, ICON_SHADING_SHADED,
+    ICON_NORMALS_FACE, ICON_NORMALS_VERTEX, ICON_OUTLINER, ICON_PIVOT, ICON_SHADING_SHADED,
     ICON_SHADING_TEXTURE, ICON_SHADING_UNLIT, ICON_SHADING_WIRE, ICON_SHADING_WIRE_ONLY, ICON_UV,
     ICON_UV_ISLANDS, ICON_UV_SHADED, ICON_UV_WIRE, ICON_VERTEX_COLORS, ICON_VIEW_ORTHO,
     ICON_VIEW_PERSPECTIVE,
@@ -43,6 +43,7 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
     let normals_group_width = theme::px(ctx, size::TOOLBAR_NORMALS_GROUP_WIDTH);
     let single_icon_group_width = theme::px(ctx, size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH);
     let triple_icon_group_width = theme::px(ctx, size::TOOLBAR_TRIPLE_ICON_GROUP_WIDTH);
+    let quad_icon_group_width = theme::px(ctx, size::TOOLBAR_QUAD_ICON_GROUP_WIDTH);
     let tools_group_width = theme::px(ctx, size::TOOLBAR_TOOLS_GROUP_WIDTH);
     let mode_group_width = theme::px(ctx, size::TOOLBAR_MODE_GROUP_WIDTH);
 
@@ -148,7 +149,7 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                     ui.spacing_mut().item_spacing.x = group_spacing;
                     match state.mode {
                         WorkspaceMode::ThreeD => {
-                            draw_view_group(ui, ctx, state, triple_icon_group_width);
+                            draw_view_group(ui, ctx, state, quad_icon_group_width);
                             draw_projection_group(ui, ctx, state, single_icon_group_width);
                             draw_windows_group(ui, ctx, state, tools_group_width);
                         }
@@ -358,6 +359,9 @@ fn draw_normals_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiStat
     });
 }
 
+/// View group: the bounding box (with its options panel), the object pivot marker,
+/// the axis gizmo, and the floor grid. The bounding box and pivot draw in the 3D
+/// scene; the gizmo and grid are independent display toggles.
 fn draw_view_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState, width: f32) {
     toolbar_group_shell(ui, ctx, width, |ui| {
         let bbox = icon_toggle_button_with_options(
@@ -373,6 +377,12 @@ fn draw_view_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState, 
         if bbox.secondary_clicked() {
             state.panels_open.toggle(OptionPanel::BoundingBox);
         }
+
+        // Pivot marker — a plain on/off toggle (no options), sitting between the
+        // bounding box and the axis gizmo.
+        icon_toggle_button(ui, ctx, &ICON_PIVOT, state.debug.show_pivot, "Pivot")
+            .clicked()
+            .then(|| state.debug.show_pivot = !state.debug.show_pivot);
 
         icon_toggle_button(
             ui,
