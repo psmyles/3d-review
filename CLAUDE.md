@@ -2,8 +2,9 @@
 
 A Windows-first **native** 3D model-audit viewer (think F3D / Autodesk FBX
 Review). Drag-drop an **FBX**, inspect game assets, switch through debug views.
-Built on `winit` (window/event loop) + `wgpu` (GPU) + `egui` (overlay UI) +
-vendored `ufbx` (FBX parsing via a C bridge). Pure-Rust, no web/Electron layer.
+Built on `winit` (window/event loop) + **Direct3D 11** (GPU, native via the
+`windows` crate) + `egui` (overlay UI, via `egui-directx11`) + vendored `ufbx`
+(FBX parsing via a C bridge). Pure-Rust, no web/Electron layer.
 **Target priority: Windows.**
 
 Deeper docs: the crate map + data flow live in §2 below; `PROJECT_STATE.md`
@@ -15,8 +16,9 @@ roadmap), and `TODO.md` (running notes).
 
 > **Lean on the existing system; don't hand-roll your own.** Before building any
 > mechanism, reach for what's already there — first the platform/framework
-> primitive (e.g. egui's native `Window`/`SidePanel`/`Grid`/`Slider`, winit/wgpu
-> facilities), then an existing helper in this codebase (a `theme` token, a
+> primitive (e.g. egui's native `Window`/`SidePanel`/`Grid`/`Slider`, winit
+> facilities, an `rhi` wrapper), then an existing helper in this codebase (a
+> `theme` token, a
 > `widgets` primitive, an `import`/`render` funnel). The UI chrome was *migrated
 > away* from a hand-rolled `egui::Area` + pixel-rect layout system precisely
 > because re-implementing window management by hand made every new panel come out
@@ -38,13 +40,14 @@ roadmap), and `TODO.md` (running notes).
    (wireframe edges, face-normal lines, vertex-normal lines, future overdraw /
    barycentric buffers) is built when that view turns on and dropped when it
    turns off. The steady-state shaded view holds **zero** derived buffers.
-   Implemented for the line views by `SceneResources::sync_line_views` in
-   `render/src/scene/resources.rs` (build-on-demand, free-on-off, live param
-   rebuild).
+   Implemented for the line views by `SceneGpu::sync_line_views` in
+   `render/src/scene/d3d.rs` (build-on-demand, free-on-off, live param rebuild).
 4. **Heavy derived views are GPU compute and capability-gated.** Compute-based
    views (normals/tangents/overdraw, post-MVP) read buffers already on the GPU
-   and write transient storage buffers. Gate them on `wgpu` adapter features and
-   disable them in the UI when the active adapter can't run them — never crash.
+   and write transient storage buffers. Gate them on Direct3D 11 feature/format
+   support (`CheckFeatureSupport` / `CheckFormatSupport` /
+   `CheckMultisampleQualityLevels`) and disable them in the UI when the active
+   device can't run them — never crash.
 5. **Faithful stats.** The Model Stats panel reads source DCC counts carried
    through import in `ModelStats` (original polygon/vertex counts), **never**
    post-triangulation render counts. Every stat shown must be a real measured
@@ -70,23 +73,27 @@ roadmap), and `TODO.md` (running notes).
 
 ### Rust-specific invariants
 
-9. **All `unsafe` and all C/FFI lives in `crates/import`.** No `unsafe` leaks
-   into `model` / `render` / `ui` / `app`. Before `slice::from_raw_parts`,
+9. **All `unsafe` and all C/FFI lives in `crates/import`** — *plus* the scoped
+   Direct3D 11 sites below. No `unsafe` leaks into `model` / `ui`, nor into
+   `render`'s geometry / material / camera modules. Before `slice::from_raw_parts`,
    null-check the pointer and treat len 0 as empty (`checked_slice`). Free the
    C scene on **both** success and error paths (no leak).
-   **One sanctioned exception:** `crates/app/src/startup_paint.rs` holds a small
-   Windows-only `unsafe` GDI block (`GetDC`/`FillRect`/`ReleaseDC`) that fills
-   the new window black before the first wgpu present, killing the white startup
-   flash. It has to run on the live winit `Window` the instant it's created in
-   `resumed` (before surface setup), touches no model/render state, and releases
-   its DC in the same call — so the boundary this invariant protects still holds.
-   Do not grow this exception: any *other* new `unsafe`/FFI still belongs in
-   `import`.
-10. **`crates/model` is host-agnostic.** It depends only on `glam` — no `wgpu`,
-    `egui`, `winit`, or importer types. This is what lets the renderer be
-    swapped later; don't add rendering/UI deps to `model`.
-11. **GPU structs are `#[repr(C)]` + `bytemuck` `Pod`/`Zeroable`.** Match the
-    WGSL layout exactly; don't reorder fields without updating the shader.
+   **Sanctioned exception — Direct3D 11 / DXGI COM** (via the `windows` crate) is
+   `unsafe` and pervasive in the renderer. It is confined to two places:
+   `crates/render/src/rhi/` (the GPU-plumbing module — device, swapchain,
+   pipelines, buffers, offscreen targets, textures, samplers, the GPU profiler, and
+   the bake-only `rhi::bake`; shared by the runtime and the `bake_ibl` binary) and
+   `crates/app`'s window/swapchain bootstrap (device + swapchain creation +
+   first-frame clear/present). Every `unsafe` carries a `// SAFETY:` rationale and
+   touches only GPU plumbing — never model geometry, camera math, or material
+   logic, which stay safe. (The old GDI `startup_paint` exception is gone — the
+   white-flash fix is now a D3D11 clear+present on the freshly created swapchain.)
+10. **`crates/model` is host-agnostic.** It depends only on `glam` — no `windows`/
+    D3D, `egui`, `winit`, or importer types. This is what kept the renderer
+    swappable (wgpu → D3D11); don't add rendering/UI deps to `model`.
+11. **GPU structs are `#[repr(C)]` + `bytemuck` `Pod`/`Zeroable`.** Match the HLSL
+    `cbuffer` / vertex-input layout exactly (16-byte cbuffer packing) — don't
+    reorder fields without updating the shader.
 
 ## 2. Where things live
 
@@ -94,12 +101,16 @@ roadmap), and `TODO.md` (running notes).
 crates/
   app/      review-app: winit ApplicationHandler, event loop, input routing
             (LMB orbit / RMB pan / wheel zoom / F frame / drag-drop /
-            double-click-open), egui_winit + egui_wgpu wiring, redraw timing,
-            applies UiOutput back to Renderer. -> src/main.rs;
+            double-click-open), egui_winit + egui-directx11 wiring, the D3D11
+            device/swapchain bootstrap (in `resumed` — the second sanctioned
+            invariant-9 `unsafe` site, incl. the first-frame black clear+present
+            that replaced the GDI startup hack) + per-frame draw order (scene →
+            composite → egui chrome on top → Present), redraw timing, applies
+            UiOutput back to Renderer. -> src/main.rs;
             scene texture pool + off-thread decode + disk-auto-reload
             (an `impl App` block) -> src/texture_manager.rs;
             window position/size restore via %APPDATA% -> src/window_state.rs;
-            startup black-fill (invariant 9 exception) -> src/startup_paint.rs
+            unified undo/redo snapshot stack -> src/undo.rs
   model/    review-model: host-agnostic data only (glam dep only).
             Vertex, Bounds, MaterialImportDefaults, TopologyFace, ModelStats,
             TriangleData (grouped per-triangle face/material/node arrays +
@@ -112,66 +123,82 @@ crates/
             -> src/lib.rs, src/ufbx_bridge.c/.h, build.rs
   render/   review-render: per-view config/option types (ShadingMode,
             VertexColorMode, ActiveMaterial, CameraProjection, AntiAliasing,
-            EnvironmentSettings, Bloom/Ssao/Tonemap settings, SceneDebugOptions,
+            EnvironmentSettings, GtaoSettings, TonemapSettings, SceneDebugOptions,
             RendererConfig) -> src/config.rs; OrbitCamera (framing/orbit/pan/zoom/
             ortho+persp, Reversed-Z infinite perspective), UvCamera (2D UV
             viewport), CameraTransition (0.3s ease-in-out cubic), Renderer ->
-            src/lib.rs. SceneCallback (+ new_uv) + the GPU resource cache split
-            into src/scene/: callback.rs (inputs + prepare/paint + the draw list),
-            resources.rs (SceneResources + sync/update/encode incl.
-            sync_line_views), pipelines.rs (pipeline builders + the 3-MRT
-            `scene_color_targets` factory), buffers.rs (buffer/texture/bind-group
-            builders), gpu_types.rs (the #[repr(C)] SceneUniforms/SceneVertex +
-            the scene.wgsl include + naga validation test). CPU vertex generation
-            -> src/geometry/ (vertex/grid/mesh/select/debug_lines/uv); editable
-            material table (group 3) + path-keyed texture cache -> src/material/
-            (state/table/upload); texture decode + filename channel auto-detect ->
-            src/texture.rs; scene shader -> src/scene.wgsl.
-            SCENE_DEPTH_FORMAT (Depth32Float,
-            Reversed-Z) is separate from EGUI_DEPTH_FORMAT (Depth24Plus).
-            Offscreen linear-HDR targets (linear scene radiance + linear-HDR bloom
-            MRT + AO-eligible diffuse-ambient MRT, all
-            Rgba16Float; separate single-sample GTAO normal/view-Z G-buffer) +
-            composite/tone-map/FXAA seam -> src/targets.rs, src/post.rs(+post.wgsl).
-            HDR image-based lighting: at runtime the env cube + irradiance +
-            prefilter + shared BRDF LUT are **loaded** from offline-baked assets
-            (`assets/ibl_baked/`) via `IblResources::from_baked` — a pure upload,
-            no startup precompute — for the PBR shaded path + skybox. The three HDR
-            cubes ship **BC6H** block-compressed (`Bc6hRgbUfloat`, ~8× smaller than
-            `Rgba16Float`, GPU-native so no decode); the shared BRDF LUT stays
-            `Rg16Float`. The precompute that bakes + BC6H-encodes them (+
-            `ibl.wgsl`) compiles only into the offline `bake_ibl` tool (render's
-            `bake` feature, src/bin/bake_ibl.rs) -> src/ibl.rs, src/ibl.wgsl. Bloom
-            (bright-pass + separable blur, half-res) -> src/bloom.rs, src/bloom.wgsl.
-            GTAO (horizon-based occlusion with a structured 4x4 spatial dither + 5x5
-            bilateral blur over the single-sample G-buffer; post darkens the diffuse
-            ambient by a scalar AO factor) -> src/gtao.rs, src/gtao.wgsl. The model wireframe is a plain
-            LineList drawn in the scene pass via `line_pipeline` (depth-tested
-            against the mesh so hidden-face edges are occluded; no thickness
-            control) -> src/scene/ + src/geometry/ (`wireframe_lines`). The Tex
-            viewport's image draw is its own standalone egui paint callback
-            (`TexCallback`) — a minimal fullscreen-triangle pipeline with a path-keyed
-            mipped-texture cache + a channel-select/placement uniform, deliberately
-            outside the scene MRT/tonemap path so the displayed texel equals the
-            stored texel -> src/tex.rs, src/tex.wgsl
+            src/lib.rs.
+            The Direct3D 11 GPU layer:
+              * src/rhi/ — the SOLE home for D3D11/DXGI COM (`windows` crate,
+                invariant 9): mod.rs (`Gpu` = device + immediate context + swapchain
+                + backbuffer + the scene/color/backbuffer pass helpers + MSAA
+                capability query), pipeline.rs (`Pipeline` = VS+PS+input-layout +
+                raster/depth/blend state bundled from DXBC), buffer.rs (immutable
+                vertex/index + dynamic `Map(WRITE_DISCARD)` cbuffer), target.rs
+                (offscreen MSAA color + depth + `ResolveSubresource`), texture.rs
+                (BC6H cube / immutable 2D / mipped RGBA8), sampler.rs, and bake.rs
+                (offline-only headless device + cube/2D render targets + readback,
+                `bake` feature).
+              * src/scene/ — d3d.rs (`SceneGpu`: the whole scene renderer — builds
+                the pipelines/targets/IBL/material table, draws the 2-MRT offscreen
+                scene pass + GTAO + composite-to-backbuffer, plus the UV viewport,
+                derived line views and selection flash, with all the `sync_*`
+                build-on-demand caches incl. `sync_line_views`), gpu_types.rs (the
+                #[repr(C)] SceneUniforms/SceneVertex), gpu_profiler.rs (D3D11
+                timestamp/disjoint `ID3D11Query` → Tracy GPU context, `--tracy`-gated).
+            CPU vertex generation -> src/geometry/ (vertex/grid/mesh/select/
+            debug_lines/uv); editable per-material table (cbuffer `b1` + `t5..t11` +
+            aniso sampler) + path-keyed texture cache -> src/material/ (state / mode /
+            d3d); texture decode + filename channel auto-detect -> src/texture.rs;
+            the Tex viewport's own minimal image draw (`TexGpu` — a fullscreen-
+            triangle pipeline + path-keyed mipped cache + channel-select/placement
+            uniform, deliberately outside the scene MRT/tonemap path so the displayed
+            texel equals the stored texel) -> src/tex_d3d.rs.
+            Shaders are hand-written HLSL in src/hlsl/*.hlsl, compiled offline to
+            committed DXBC blobs by build.rs (`fxc`, freshness-gated, `/WX`); the
+            runtime `include_bytes!`s the DXBC (no runtime shader compilation):
+            scene.hlsl (mesh / line / skybox / selection / uv-fill / gtao-gbuffer),
+            post.hlsl (composite: AO-darkened ambient + tone map + sRGB), gtao.hlsl
+            (horizon occlusion + bilateral blur), tex.hlsl (Tex viewport image /
+            checker), ibl.hlsl (the bake-only IBL precompute).
+            Scene depth is `Depth32Float`, Reversed-Z. The offscreen scene pass is
+            **2-MRT** linear-HDR (`R16G16B16A16_FLOAT`): location 0 = linear scene
+            radiance, location 1 = AO-eligible diffuse-ambient radiance; GTAO has a
+            *separate single-sample* view-normal/Z G-buffer (its own mesh-only pass) +
+            raw/blurred `R8` occlusion, and the composite darkens the ambient by the
+            scalar AO factor. HDR image-based lighting: at runtime the env cube +
+            irradiance + prefilter + shared BRDF LUT are **loaded**
+            (`IblD3d::from_baked`, a pure D3D11 upload — no startup precompute) from
+            offline-baked assets (`assets/ibl_baked/`) for the PBR shaded path +
+            skybox. The three HDR cubes ship **BC6H** block-compressed
+            (`Bc6hRgbUfloat`, ~8× smaller than `Rgba16Float`, GPU-native so no
+            decode); the shared BRDF LUT stays `Rg16Float`. The precompute that bakes
+            + BC6H-encodes them (the `ibl.hlsl` passes run on a headless D3D11 device
+            via `rhi::bake`, then `intel_tex_2` encodes BC6H) compiles only into the
+            offline `bake_ibl` tool (render's `bake` feature, src/bin/bake_ibl.rs) ->
+            src/ibl.rs. The model wireframe is a plain LineList drawn in the scene
+            pass via the line pipeline (depth-tested against the mesh so hidden-face
+            edges are occluded; fixed 1px hardware width) -> src/scene/d3d.rs +
+            src/geometry/ (`wireframe_lines`).
   ui/       review-ui: egui chrome built on egui's **native windowing**, not a
             hand-rolled layout system. Option tools are native `egui::Window`s
             (collapsible/closable, non-resizable, multi-open via
             `UiState::panels_open`); the Outliner (left) + Inspector (right) are
             dockable, resizable `egui::SidePanel`s; the toolbar + status bar are
             `egui::TopBottomPanel` bands (interiors still hand-laid via
-            `scope_builder` — the one remaining rework step). The 3D/UV scene
-            paints on the background layer behind the chrome; the Tex viewport
+            `scope_builder` — the one remaining rework step). The 3D/UV scene + the
+            composite are drawn by `app` (Direct3D 11) *before* egui, which paints
+            its chrome on top with a transparent central viewport; the Tex viewport
             (`texture_view.rs`) handles only interaction (pan/zoom/fit, background
-            fill, channel pick) and hands the image to `review_render`'s
-            `TexCallback` to draw — it owns no GPU state. Plus axis gizmo,
-            stats overlay, bounding-box dimension labels, startup help overlay;
-            emits UiOutput intents. Thin root re-exports; modules: theme/state/
-            assets/widgets/overlay/toolbar/status_bar/stats/texture_view/gizmo/
+            fill, channel pick) and hands the image to `review_render`'s `TexGpu`
+            (a D3D11 draw, also issued by `app`) — `ui` owns no GPU state. Plus axis
+            gizmo, stats overlay, bounding-box dimension labels, startup help
+            overlay; emits UiOutput intents. Thin root re-exports; modules: theme/
+            state/assets/widgets/overlay/toolbar/status_bar/stats/texture_view/gizmo/
             dimensions/help
             + panels/ (mod.rs = width-pinning dispatch; one file per tool:
-            anti_aliasing, bloom, bounding_box, environment, normals, gtao,
-            tonemap, uv_checker, vertex_colors, wireframe; plus inspector +
+            anti_aliasing, bounding_box, environment, normals, gtao, tonemap,
+            uv_checker, vertex_colors, wireframe, material_mode; plus inspector +
             outliner for the side panels). -> src/lib.rs + src/*.rs
 third_party/ufbx/   vendored ufbx.c / ufbx.h (compiled only if present)
 assets/icons/       PNG toolbar/gizmo icons (include_bytes!)
@@ -179,8 +206,9 @@ assets/test_models/ local FBX fixtures for manual checks
 ```
 
 Data flow: input/file-drop → `app` → `import` (FBX→`ModelData`) → `model`
-(shared) → `render` (camera + GPU buffers) → `ui` (overlays + scene callback) →
-`app` (applies UI intents, requests redraw). See §2 above + `PROJECT_STATE.md`.
+(shared) → `render` (camera + D3D11 GPU resources) → `app` draws the scene +
+composite, then `ui` paints the egui chrome on top → `app` (applies UI intents,
+requests redraw). See §2 above + `PROJECT_STATE.md`.
 
 ## 3. Build & run
 
@@ -192,22 +220,28 @@ PATH so `cc` can compile `ufbx.c`).
 - `cargo clippy --workspace --all-targets -- -D warnings` — lint; **run before
   claiming done.**
 - `cargo fmt --all` — format.
-- `cargo test --workspace` — unit tests (model / import / render, incl. the
-  `scene_shader_validates` naga shader-validation test); add alongside changes.
+- `cargo test --workspace` — unit tests (model / import / render); add alongside
+  changes. (HLSL is validated by `fxc /WX` in render's `build.rs`, not a test.)
 - `cargo build --release` — release binary.
+- `cargo run -p review-render --features bake --bin bake_ibl` — re-bake the IBL
+  maps (needs a real GPU; outputs committed under `assets/ibl_baked/`).
 
-Pinned (workspace deps): `winit 0.30`, `wgpu 24`, `egui`/`egui-winit`/
-`egui-wgpu 0.31`, `glam 0.30`, `bytemuck 1`, `thiserror 2`, `rfd 0.15`,
-`image 0.25` (png + hdr), `half 2`, `pollster 0.4`, `cc 1` (build dep). Edition 2024.
+Pinned (workspace deps): `winit 0.30`, `windows 0.62` (Direct3D 11/DXGI), `egui`/
+`egui-winit 0.33`, `egui-directx11 0.12`, `glam 0.30`, `bytemuck 1`,
+`thiserror 2`, `rfd 0.15`, `image 0.25` (png + hdr + tga/tiff/jpeg/pnm), `half 2`,
+`cc 1` (build dep), `tracy-client 0.18`. `intel_tex_2` is a `bake`-only dep (CPU
+BC6H encoder). Edition 2024.
 
-> **MSRV:** `rust-version = "1.85"` — the floor required by Edition 2024.
+> **MSRV:** `rust-version = "1.88"` — the floor required by `egui 0.33`.
 > The FFI's `unsafe extern "C" { … }` blocks are the idiomatic (and, under
 > Edition 2024, required) form. Bump the floor only when adopting a feature
 > that needs a higher version.
 
-`build.rs` compiles `ufbx.c` + the bridge with `cc` **only when**
+`build.rs` (import) compiles `ufbx.c` + the bridge with `cc` **only when**
 `third_party/ufbx/ufbx.{c,h}` exist, and sets `cfg(has_ufbx)`; without them the
-workspace still builds and FBX import returns a clear error.
+workspace still builds and FBX import returns a clear error. `build.rs` (render)
+compiles the HLSL in `src/hlsl/*.hlsl` to committed DXBC with `fxc`, but only when
+a blob is stale and `fxc` is present (a no-fxc CI box uses the committed blobs).
 
 ## 4. Locked decisions — DO NOT RE-LITIGATE
 
@@ -220,9 +254,14 @@ workspace still builds and FBX import returns a clear error.
   slowest, **highest-quality** profile (`very_slow_settings`) because that work
   happens once on a dev machine and only sharpens what runs. When a choice trades
   dev-time effort for a better runtime, take it.
-- Native stack: direct `winit` + `wgpu` (not `eframe`); `egui` is an overlay
-  drawn via an `egui_wgpu` paint callback. Prefer DX12 on Windows
-  (DX12|Vulkan|Metal requested).
+- Native stack: direct `winit` + **native Direct3D 11** (via the `windows` crate),
+  not `eframe`/wgpu. `egui` is an overlay rendered by `egui-directx11` on the same
+  D3D11 device. The renderer was migrated off `wgpu` to shrink the shipped binary,
+  startup time, and baseline RAM (one `D3D11CreateDevice` instead of probing every
+  DX12 adapter); the workspace carries **zero** wgpu/naga/pollster/egui-wgpu, in
+  the runtime *and* the offline bake tool. This supersedes the original
+  "direct wgpu" decision — **do not reintroduce wgpu.** All D3D11 COM lives in
+  `render/src/rhi/` + `app`'s swapchain bootstrap (invariant 9).
 - UI chrome uses egui's **native windowing** (`Window` / `SidePanel` /
   `TopBottomPanel`) and stock widgets (`Grid` / `Slider` / `DragValue` /
   `ComboBox`), styled from egui's default `Visuals::dark()` plus a few theme-token
@@ -234,26 +273,28 @@ workspace still builds and FBX import returns a clear error.
   original face topology + source stats). FBX is the only MVP import format,
   parsed by vendored `ufbx` through a single C bridge — don't round-trip through
   glTF (drops quad topology, changes vertex counts).
-- Shading is one inline WGSL scene shader covering shaded / unlit / wireframe /
-  uv-checker / vertex-color paths; tone mapping + sRGB encoding live in the post
-  shader, and the model wireframe is a depth-tested line-list draw in the scene
-  pass. `3D`, `UV` and `Tex` viewports are all implemented; the `Tex` image is
-  drawn by its own standalone egui paint callback (`TexCallback`, a minimal
-  fullscreen-triangle pipeline outside the scene MRT/tonemap path) so channel
-  isolation is a uniform swizzle and the displayed texel equals the stored texel.
+- Shading is one HLSL scene shader (`hlsl/scene.hlsl`) covering shaded / unlit /
+  wireframe / uv-checker / vertex-color paths; tone mapping + sRGB encoding live in
+  the post shader (`hlsl/post.hlsl`), and the model wireframe is a depth-tested
+  line-list draw in the scene pass. HLSL is compiled offline to committed DXBC by
+  `build.rs` (`fxc`); the runtime does no shader compilation. `3D`, `UV` and `Tex`
+  viewports are all implemented; the `Tex` image is drawn by its own minimal
+  fullscreen-triangle pipeline (`TexGpu`, outside the scene MRT/tonemap path) so
+  channel isolation is a uniform swizzle and the displayed texel equals the stored
+  texel.
 - Crate boundaries are load-bearing (invariants 2, 9, 10) — keep them.
 
 ## 5. Current state
 
-MVP: native window + wgpu viewport + egui chrome; FBX import via ufbx (drag-drop,
+MVP: native window + Direct3D 11 viewport + egui chrome; FBX import via ufbx (drag-drop,
 `Ctrl+O`, double-click empty viewport, command-line/file-association path);
 orbit/pan/zoom + frame-on-`F` + home reset + 45° WASD orbit steps; grid with
 axes; shaded / unlit / wireframe / shaded+wireframe, source-color / UV-checker /
 vertex-color materials, plus bounding-box, face- and vertex-normal debug
 overlays; orthographic/perspective toggle; animated axis gizmo (orbit +
 snap-to-axis); a 2D UV viewport (independent pan/zoom, UV channel picker, wire
-layout, shaded fill, per-island coloring); a 2D Tex viewport (a wgpu image draw
-via `TexCallback` over the scene texture pool: texture picker, RGB/R/G/B/A channel
+layout, shaded fill, per-island coloring); a 2D Tex viewport (a Direct3D 11 image
+draw via `TexGpu` over the scene texture pool: texture picker, RGB/R/G/B/A channel
 isolation — a shader uniform swizzle, so switching is instant; the `A` segment
 auto-hides for opaque images — mipmapped, pan (LMB-drag) / zoom (wheel or
 RMB-drag) / `F`-to-fit, black/white/grey/checker
@@ -280,41 +321,38 @@ Still pending: the toolbar/status-bar *interiors* are the last hand-laid
 
 Rendering pipeline (see `PROJECT_STATE.md` + `RENDERING_PIPELINE.md`): the scene
 renders into **offscreen linear-HDR MRT targets** composited by a fullscreen post
-pass; **anti-aliasing** has dynamic scene MSAA (Off/2×/4×/8×/16×, gated on
-`Depth32Float` support) + FXAA, on the status-bar AA button; **HDR image-based
-lighting + PBR** is the default Shaded look — six baked HDR environments (each
-with a preview thumbnail shown in the Environment dropdown), precomputed
-irradiance/prefilter/BRDF-LUT maps in `ibl.rs`, an optional skybox, and a live
-0–360° environment yaw rotation (applied at sample time in `scene.wgsl` via
-`projection_params.y`, so it never rebuilds the IBL maps);
-**bloom** (HDR glow) is off by default — a bright-pass + separable blur over the
-linear-HDR bloom MRT so only bright highlights glow and overlays never do;
-**Ambient Occlusion** (GTAO internally) is on by default — horizon-based
-occlusion (a structured 4×4 spatial dither decorrelates slices) + 5×5 bilateral
-blur over a *separate single-sample* view-normal/view-Z G-buffer (its own
-mesh-only pass, not an MSAA MRT). Composed in post as an additive correction over
-the full radiance: post darkens the AO-eligible diffuse ambient (location 2) by a
-scalar AO factor and leaves location 0 otherwise intact, so direct + emissive
-light are never darkened. UI knobs are Radius / Intensity / Thickness / Quality;
-user-facing strings stay "Ambient Occlusion". **Tone mapping** is on by default — the
-composite applies a selectable operator (Khronos PBR Neutral / Linear / Reinhard /
-ACES / AgX) to the linear-HDR radiance before sRGB encoding; toggling it off is a
-linear pass-through. The status bar's right group holds the IBL / Bloom / Ambient
-Occlusion / Tonemapper / Anti-aliasing toggles (left-click toggles, right-click opens each
-tool's options panel — Environment / Bloom / Ambient Occlusion / Tonemapper / Anti
-Aliasing).
+pass; **anti-aliasing** is dynamic scene MSAA (Off/2×/4×/8×/16×, gated on
+`CheckMultisampleQualityLevels` for the scene color + depth formats), on the
+status-bar AA button; **HDR image-based lighting + PBR** is the default Shaded
+look — six baked HDR environments (each with a preview thumbnail shown in the
+Environment dropdown), baked irradiance/prefilter/BRDF-LUT maps loaded by `ibl.rs`,
+an optional skybox, and a live 0–360° environment yaw rotation (applied at sample
+time in `scene.hlsl` via `projection_params.y`, so it never rebuilds the IBL maps);
+**Ambient Occlusion** (GTAO internally) is on by default — horizon-based occlusion
+(a structured 4×4 spatial dither decorrelates slices) + 5×5 bilateral blur over a
+*separate single-sample* view-normal/view-Z G-buffer (its own mesh-only pass, not
+an MSAA MRT). Composed in post as an additive correction over the full radiance:
+post darkens the AO-eligible diffuse ambient (location 1) by a scalar AO factor and
+leaves location 0 otherwise intact, so direct + emissive light are never darkened.
+UI knobs are Radius / Intensity / Thickness / Quality; user-facing strings stay
+"Ambient Occlusion". **Tone mapping** is on by default — the composite applies a
+selectable operator (Khronos PBR Neutral / Linear / Reinhard / ACES / AgX) to the
+linear-HDR radiance before sRGB encoding; toggling it off is a linear pass-through.
+The status bar's right group holds the IBL / Ambient Occlusion / Tonemapper /
+Anti-aliasing toggles (left-click toggles, right-click opens each tool's options
+panel — Environment / Ambient Occlusion / Tonemapper / Anti Aliasing).
 
-The renderer is now **fully linear-HDR with Reversed-Z scene depth**: scene MRT
-location 0 carries linear radiance (PBR-Neutral tone mapping + `linear_to_srgb`
-moved into `post.wgsl`); location 1 is the linear-HDR bloom source; location 2 is
-the AO-eligible diffuse ambient radiance (IBL diffuse + analytic fill only), which
-post darkens by the scalar GTAO factor. Scene depth
-is `Depth32Float` cleared to 0 with `GreaterEqual` and infinite reversed
-perspective (`perspective_infinite_reverse_rh`); egui's framebuffer keeps its own
-`EGUI_DEPTH_FORMAT`. The model wireframe is a plain `LineList` drawn inside the
-scene pass via `line_pipeline`, so it depth-tests against the mesh (Reversed-Z
-`GreaterEqual`, no depth write) and edges on hidden faces are occluded, while the
-scene MSAA antialiases it (the trade-off is fixed 1px hardware line width).
+The renderer is **fully linear-HDR with Reversed-Z scene depth**, on a **2-MRT**
+scene pass: location 0 carries linear radiance (tone mapping + `linear_to_srgb`
+happen in `post.hlsl`); location 1 is the AO-eligible diffuse ambient radiance (IBL
+diffuse + analytic fill only), which post darkens by the scalar GTAO factor. Scene
+depth is `Depth32Float` cleared to 0 with `GreaterEqual` and infinite reversed
+perspective (`perspective_infinite_reverse_rh`); egui-directx11 then draws the
+chrome on top of the backbuffer with no depth. The model wireframe is a plain
+`LineList` drawn inside the scene pass via the line pipeline, so it depth-tests
+against the mesh (Reversed-Z `GreaterEqual`, no depth write) and edges on hidden
+faces are occluded, while the scene MSAA antialiases it (the trade-off is fixed 1px
+hardware line width).
 
 Known gaps: in-app load-error/warning display, GPU-buffer visualization, and
 additional import formats (glTF/OBJ) are post-MVP (`TODO.md`). Importing
@@ -323,55 +361,54 @@ artists test *source* assets (PNG/TGA/…); KTX2/DDS are produced inside an
 engine's content pipeline and never hand-authored or carried, so the viewer is
 never handed one. (We do use GPU block compression internally — the baked IBL
 cubes are BC6H — but that's our own offline bake, not an import path.) Tests
-exist (model / import / render unit tests + the `scene_shader_validates` naga
-check, run headless in CI); GPU render checks stay manual.
+exist (model / import / render unit tests, run headless in CI; the HLSL is
+`fxc`-validated at build time); GPU render checks stay manual.
 
 ## 6. Gotchas
 
 - Real GPU required for render checks; reserve CI for `check` / `clippy` /
   import unit tests.
-- GPU struct field order must match the WGSL `Uniforms`/vertex layouts
-  (invariant 11) — the shader lives in `crates/render/src/scene.wgsl` (loaded via
-  `include_str!` in `scene/gpu_types.rs`); update it in lockstep with the
-  `#[repr(C)]` `SceneUniforms`/`SceneVertex` structs there (the
-  `scene_shader_validates` naga test lives beside them) if you change them.
-- The scene geometry pass is **MRT** with **three** color targets: `scene.wgsl`'s
-  `FragOutput` writes location 0 (linear scene radiance), location 1 (linear-HDR
-  bloom source) and location 2 (AO-eligible diffuse ambient radiance), so every
-  scene pipeline (mesh/line/uv-fill/skybox) must declare *three* color targets —
-  built via the shared `scene_color_targets` factory in `scene/pipelines.rs` — and
-  the offscreen pass *three* attachments + resolves — keep them in lockstep with
-  `FragOutput`. All three locations alpha-blend now. Overlays (zero-normal verts)
-  write 0 to locations 1 and 2 so they neither bloom nor get AO-darkened. GTAO does
-  not read location 2's normal: it has its own single-sample mesh-only pass
-  (`fs_gtao_gbuffer`, one `@location(0)` output of view normal `xyz` + view Z `w`)
-  into a separate G-buffer target, avoiding MSAA edge averaging. GTAO is
-  horizon-based (`gtao.wgsl`, a structured 4×4 spatial dither decorrelates slices)
-  and outputs a single scalar occlusion (`R8Unorm`); `post.wgsl` darkens the
-  diffuse ambient (location 2) by that scalar factor — an additive correction over
-  location 0 so bloom/MSAA stay correct and direct/emissive light are never
-  darkened. Tone mapping +
-  sRGB encoding happen once in `post.wgsl`, not in the scene shader. naga's WGSL
-  rejects `_` digit separators in numeric literals (e.g. `0.227_027`) — write
-  float constants without them, and use `textureSampleLevel` (not `textureSample`)
-  anywhere a texture is read inside a loop/branch (non-uniform control flow).
+- GPU struct field order must match the HLSL `cbuffer`/vertex-input layouts
+  (invariant 11) — the shaders live in `crates/render/src/hlsl/*.hlsl` (compiled to
+  DXBC by `build.rs`, `include_bytes!`'d at runtime); update `scene.hlsl` in
+  lockstep with the `#[repr(C)]` `SceneUniforms`/`SceneVertex` structs in
+  `scene/gpu_types.rs` (mind HLSL's 16-byte cbuffer packing). `fxc /WX` in
+  `build.rs` catches a broken shader at build time.
+- The scene geometry pass is **MRT** with **two** color targets: `scene.hlsl`'s
+  `FragOutput` writes `SV_Target0` (linear scene radiance) and `SV_Target1`
+  (AO-eligible diffuse ambient radiance), so every scene pipeline
+  (mesh/line/uv-fill/skybox) renders into *two* RTVs and the offscreen pass binds
+  *two* attachments (+ MSAA resolves) — keep them in lockstep with `FragOutput`.
+  Both locations alpha-blend. Overlays (zero-normal verts) write 0 to location 1 so
+  they aren't AO-darkened. GTAO does not read location 1: it has its own
+  single-sample mesh-only pass (`fs_gtao_gbuffer`, one `SV_Target0` output of view
+  normal `xyz` + view Z `w`) into a separate G-buffer target, avoiding MSAA edge
+  averaging. GTAO is horizon-based (`gtao.hlsl`, a structured 4×4 spatial dither
+  decorrelates slices) and outputs a single scalar occlusion (`R8Unorm`);
+  `post.hlsl` darkens the diffuse ambient (location 1) by that scalar factor — an
+  additive correction over location 0 so MSAA stays correct and direct/emissive
+  light is never darkened. Tone mapping + sRGB encoding happen once in `post.hlsl`,
+  not in the scene shader. fxc notes: use `SampleLevel` (not `Sample`) for any
+  texture read inside a loop/branch (non-uniform control flow), and guard a
+  possibly-negative `pow` base with `max(x, 0.0)` so `/WX` doesn't reject it.
 - CPU-side vertex generation (grid, wireframe, face/vertex normal lines) lives in
-  `crates/render/src/geometry/` (one file per category); `scene/callback.rs` owns
-  the callback + draw list, `scene/resources.rs` the GPU resource cache + buffer
-  upload. Derived line views are built-on-demand and freed-on-off by
-  `SceneResources::sync_line_views` (invariant 3) — a view's buffer exists only
-  while its toggle is on and is rebuilt live when its baked length/color drifts.
-  Add new debug views by following that ensure/free pattern.
+  `crates/render/src/geometry/` (one file per category); `scene/d3d.rs`
+  (`SceneGpu`) owns the draw list + the GPU resource cache + buffer upload. Derived
+  line views are built-on-demand and freed-on-off by `SceneGpu::sync_line_views`
+  (invariant 3) — a view's buffer exists only while its toggle is on and is rebuilt
+  live when its baked length/color drifts. Add new debug views by following that
+  ensure/free pattern.
 - Keep `model` + camera/debug math host-agnostic so a future renderer swap only
   touches `render`.
 - **IBL HDRs must stay finite.** Bright suns in an HDR exceed `f16`'s max
-  (65504), so `ibl.rs` `decode_hdr` clamps every channel to `F16_MAX` before the
-  `Rgba16Float` upload — otherwise they become `inf`, the (unbounded) irradiance
-  integral turns to `NaN`, and the model shows black speckles + a dead spot at
-  the sun. `ibl.wgsl` additionally clamps each *sampled* radiance to
-  `IBL_RADIANCE_CLAMP` in both convolutions (irradiance + prefilter) to kill
-  fireflies, and `scene.wgsl`'s skybox clamps `env * intensity` to f16 max so the
-  intensity multiply can't re-overflow the HDR target. Don't drop these clamps.
+  (65504), so the bake's `ibl.rs` `load_equirect_from_file` clamps every channel to
+  `F16_MAX` before the `Rgba16Float` upload — otherwise they become `inf`, the
+  (unbounded) irradiance integral turns to `NaN`, and the model shows black
+  speckles + a dead spot at the sun. `ibl.hlsl` additionally clamps each *sampled*
+  radiance to `IBL_RADIANCE_CLAMP` in both convolutions (irradiance + prefilter) to
+  kill fireflies, and `scene.hlsl`'s skybox clamps `env * intensity` to f16 max so
+  the intensity multiply can't re-overflow the HDR target. (These clamps run at
+  bake time now; the shipped maps are already finite.) Don't drop them.
 - Environment-dropdown HDR thumbnails (`assets/thumbnails/T_HDR_*.png`) are
   `include_bytes!`-embedded by `crates/ui`, so they must exist before `cargo
   build`. They're committed, and `packaging/generate-hdr-thumbnails.ps1`
@@ -382,21 +419,21 @@ check, run headless in CI); GPU render checks stay manual.
   `crates/render`, so they must exist before `cargo build`. The three HDR cubes
   (env / irradiance / prefilter) are **BC6H** block-compressed (`Bc6hRgbUfloat`, 16
   bytes per 4×4 block — the bake tool encodes them with `intel_tex_2`, a bake-only
-  dep); the shared BRDF LUT stays raw little-endian f16 (`Rg16Float`). Because the
-  runtime creates BC6H textures, the device hard-requests `TEXTURE_COMPRESSION_BC`
-  (`crates/app/src/main.rs`) — universal on the desktop DX12/Vulkan/Metal targets.
+  CPU encoder); the shared BRDF LUT stays raw little-endian f16 (`Rg16Float`). The
+  runtime creates BC6H textures, which are core in Direct3D 11 feature level 11_0
+  (the renderer's floor), so no explicit feature request is needed.
   They're committed; `packaging/generate-ibl-bake.ps1` regenerates them by running
   the `bake_ibl` tool (`cargo run -p review-render --features bake --bin bake_ibl`,
-  needs a real GPU). The installer build (`build-windows-installer.ps1`) invokes
-  it, but it is **freshness-gated**: the script only runs the GPU bake when a
-  baked `.bin` is missing or older than an input that determines its bytes (a
-  source HDR, or `ibl.rs` / `ibl.wgsl` / `bake_ibl.rs` — i.e. an IBL precompute
-  constant like sizes/mips/format, or the encode path); otherwise it's a fast
-  no-op, so a normal build touches no GPU. Pass `-Force` to re-bake regardless,
-  or run it manually after adding/replacing an HDR or changing a precompute
-  constant. The
-  shipping binary carries the baked maps, not the raw HDRs — `T_HDR_*.hdr` are
-  bake-tool inputs only. The `.bin` byte layout is mip-major with the six cube
-  faces contiguous per mip (each face a row-major grid of BC6H blocks);
-  `compress_bc6h_face`/readback and the runtime `upload_cube` must stay in lockstep
-  on it.
+  needs a real GPU; the bake runs its `ibl.hlsl` passes on a headless D3D11 device).
+  The installer build (`build-windows-installer.ps1`) invokes it, but it is
+  **freshness-gated**: the script only runs the GPU bake when a baked `.bin` is
+  missing or older than an input that determines its bytes (a source HDR, or
+  `ibl.rs` / `ibl.hlsl` / `bake_ibl.rs` — i.e. an IBL precompute constant like
+  sizes/mips/format, or the encode path); otherwise it's a fast no-op, so a normal
+  build touches no GPU. Pass `-Force` to re-bake regardless, or run it manually
+  after adding/replacing an HDR or changing a precompute constant. The shipping
+  binary carries the baked maps, not the raw HDRs — `T_HDR_*.hdr` are bake-tool
+  inputs only. The `.bin` byte layout is mip-major with the six cube faces
+  contiguous per mip (each face a row-major grid of BC6H blocks); the bake's
+  `write_cube`/`compress_bc6h_face` and the runtime `Texture::cube_block_compressed`
+  must stay in lockstep on it.

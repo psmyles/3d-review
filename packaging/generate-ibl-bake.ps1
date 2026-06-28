@@ -21,12 +21,13 @@
     Because the bake needs a real GPU and a slow compile, it is *freshness-gated*:
     the bake only runs when a baked `.bin` output is missing or older than an
     input that determines its bytes (a source HDR, or the IBL precompute / encode
-    code — `ibl.rs`, `ibl.wgsl`, `bake_ibl.rs`). Otherwise the script is a fast
+    code — `ibl.rs`, `ibl.hlsl`, `bake_ibl.rs`, the `rhi/bake.rs` plumbing).
+    Otherwise the script is a fast
     no-op (no GPU touched), which is what lets the installer build call it
     unconditionally. Pass `-Force` to re-bake regardless. The mtime idiom mirrors
     `generate-hdr-thumbnails.ps1`.
 
-    Requires a real GPU (the bake creates a wgpu device) and the MSVC toolchain on
+    Requires a real GPU (the bake creates a Direct3D 11 device) and the MSVC toolchain on
     PATH (the workspace compiles the vendored `ufbx.c`), i.e. run it from the
     "x64 Native Tools Command Prompt for VS 2022" like any other build here.
 
@@ -62,7 +63,7 @@ function Test-IblBakeStale {
 
     $inputs = @()
     $inputs += Get-ChildItem -Path (Join-Path $repoRoot 'assets\textures\T_HDR_*.hdr') -ErrorAction SilentlyContinue
-    foreach ($rel in @('crates\render\src\ibl.rs', 'crates\render\src\ibl.wgsl', 'crates\render\src\bin\bake_ibl.rs')) {
+    foreach ($rel in @('crates\render\src\ibl.rs', 'crates\render\src\hlsl\ibl.hlsl', 'crates\render\src\bin\bake_ibl.rs', 'crates\render\src\rhi\bake.rs')) {
         $inputs += Get-Item -Path (Join-Path $repoRoot $rel) -ErrorAction SilentlyContinue
     }
     if ($inputs.Count -eq 0) { return $false }   # no inputs resolved -> treat as fresh

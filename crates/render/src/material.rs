@@ -11,18 +11,19 @@
 //! groups, never the geometry. The UI edits parameters via [`MaterialEdit`] intents
 //! and assigns textures via app-side decode (invariant 2).
 //!
-//! Organized into [`state`] (CPU/GPU data types), [`table`] (the GPU table +
-//! group-3 layout) and [`upload`] (generic texture/bind-group plumbing).
+//! Organized into [`state`] (CPU/GPU data types incl. the `#[repr(C)]`
+//! `MaterialUniform`), [`mode`] (the effective-table / Unique-part grouping) and
+//! [`d3d`] (the Direct3D 11 material table: cbuffer `b1` + the seven texture slots
+//! `t5..t11` + a path-keyed upload cache).
 
+mod d3d;
 mod mode;
 mod state;
-mod table;
-mod upload;
 
+pub(crate) use d3d::MaterialTableD3d;
 pub(crate) use mode::{build_part_key, effective_materials};
 pub(crate) use state::MaterialDrawRange;
 pub use state::{
     AlphaMode, MaterialChange, MaterialEdit, MaterialSnapshot, MaterialState, RoughnessWorkflow,
     TextureBinding,
 };
-pub(crate) use table::{MaterialTable, material_layout};

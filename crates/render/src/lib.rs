@@ -1,37 +1,48 @@
+//! `review-render` — the viewer's camera math + Direct3D 11 GPU layer.
+//!
+//! The crate owns three things: the **cameras** ([`OrbitCamera`] for the 3D
+//! viewport, [`UvCamera`] for the 2D UV viewport, and the 0.3s [`CameraTransition`]
+//! easing between framings, all Reversed-Z), the per-view **config** types
+//! (re-exported from [`config`]: shading / material / environment / GTAO / tonemap /
+//! AA options), and the [`Renderer`] — the host-facing handle that holds the live
+//! camera + editable material table and, on first use, lazily builds the Direct3D 11
+//! scene/Tex GPU resources and draws each frame into the swapchain backbuffer.
+//!
+//! All D3D11/DXGI COM is confined to the [`rhi`] module + the scene/tex GPU
+//! submodules (invariant 9); the camera and material math above stays host-agnostic
+//! and safe, so `app` drives the renderer purely through [`Renderer`]'s public API
+//! and never touches GPU state directly (invariant 2). HLSL shaders live in
+//! `src/hlsl/` and are compiled offline to committed DXBC by `build.rs`.
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use glam::{Mat4, Vec2, Vec3};
-use review_model::{Bounds, MaterialImportDefaults};
+use review_model::{Bounds, MaterialImportDefaults, ModelData};
 
 mod config;
 mod geometry;
-mod gtao;
 mod ibl;
 mod material;
-mod mipmap;
-mod post;
-mod prof;
+mod rhi;
 mod scene;
 mod selection;
-mod targets;
-mod tex;
+mod tex_d3d;
 mod texture;
 
 pub use config::*;
-pub use gtao::gtao_supported;
 #[cfg(feature = "bake")]
 pub use ibl::bake_ibl_assets;
-pub use ibl::ibl_supported;
 pub use material::{
     AlphaMode, MaterialChange, MaterialEdit, MaterialSnapshot, MaterialState, RoughnessWorkflow,
     TextureBinding,
 };
-pub use scene::{
-    EGUI_DEPTH_FORMAT, EGUI_MSAA_SAMPLE_COUNT, SCENE_DEPTH_FORMAT, SceneCallback, enable_tracy_gpu,
-};
+pub use rhi::Gpu;
+use scene::SceneGpu;
+pub use scene::enable_tracy_gpu;
 pub use selection::{Selection, SelectionView, selection_bounds};
-pub use tex::TexCallback;
+use tex_d3d::TexGpu;
+pub use tex_d3d::{TexBackground, TexImage};
 pub use texture::{
     ChannelSelect, DecodedImage, TEXTURE_SLOT_COUNT, TextureSlot, decode_image, suggested_channel,
 };
@@ -505,6 +516,11 @@ mod tests {
     }
 }
 
+/// The host-facing renderer: the live 3D/UV cameras, the editable per-material
+/// table, and (built lazily on first draw) the Direct3D 11 scene + Tex GPU
+/// resources. `app` owns one of these and drives every frame through its public
+/// API — applying [`MaterialEdit`]/camera intents in, reading stats out (invariant
+/// 2). It carries no window or swapchain; those are passed per-call as a [`Gpu`].
 #[derive(Debug)]
 pub struct Renderer {
     pub config: RendererConfig,
@@ -526,9 +542,20 @@ pub struct Renderer {
     /// Bumped on every material edit (and on model load) so the GPU table is
     /// re-uploaded without a full mesh rebuild.
     material_revision: u64,
+    /// The Direct3D 11 scene GPU resources (pipelines / buffers / depth). Built
+    /// lazily on the first [`Self::render_scene`] (the D3D11 device doesn't exist
+    /// when [`Self::new`] runs); `None` until then.
+    scene_gpu: Option<SceneGpu>,
+    /// The Tex viewport GPU resources (image pipeline + texture cache). Built lazily
+    /// on the first [`Self::render_texture`]; `None` until then.
+    tex_gpu: Option<TexGpu>,
 }
 
 impl Renderer {
+    /// Create a renderer from its config with default cameras and an empty material
+    /// table. No GPU resources are built here — the Direct3D 11 device doesn't exist
+    /// until the window is up, so the scene/Tex resources are created lazily on the
+    /// first [`Self::render_scene`] / [`Self::render_texture`].
     pub fn new(config: RendererConfig) -> Self {
         Self {
             config,
@@ -539,7 +566,109 @@ impl Renderer {
             material_states: Vec::new(),
             material_names: Vec::new(),
             material_revision: 0,
+            scene_gpu: None,
+            tex_gpu: None,
         }
+    }
+
+    /// Render the scene through Direct3D 11: the skybox, the per-material PBR/IBL
+    /// mesh, and the grid into offscreen linear-HDR targets, then a tone-mapped
+    /// composite to the swapchain backbuffer behind the egui chrome `app` draws next.
+    /// Builds the GPU resources on the first call (the device only exists once the
+    /// window is up).
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_scene(
+        &mut self,
+        gpu: &Gpu,
+        model: &ModelData,
+        model_revision: u64,
+        debug: SceneDebugOptions,
+        projection: CameraProjection,
+        environment: EnvironmentSettings,
+        gtao: GtaoSettings,
+        tonemap: TonemapSettings,
+        anti_aliasing: AntiAliasing,
+        selection: SelectionView,
+        hidden_meshes: &[u32],
+        clear: [f32; 4],
+    ) -> windows::core::Result<()> {
+        // Build the scene GPU resources on first use, then borrow them — `insert`
+        // returns the `&mut` so there's no separate unwrap. Disjoint field borrows:
+        // `scene` borrows `self.scene_gpu` mutably while the material table + camera
+        // are borrowed from their own fields.
+        let scene = match self.scene_gpu {
+            Some(ref mut scene) => scene,
+            None => self
+                .scene_gpu
+                .insert(SceneGpu::new(gpu, anti_aliasing.effective_sample_count())?),
+        };
+        scene.render(
+            gpu,
+            model,
+            model_revision,
+            &self.material_states,
+            self.material_revision,
+            self.camera,
+            projection,
+            environment,
+            gtao,
+            tonemap,
+            anti_aliasing,
+            selection,
+            debug,
+            hidden_meshes,
+            clear,
+        )
+    }
+
+    /// Render the 2D UV viewport through Direct3D 11 (instead of the 3D scene): the
+    /// 0..1 grid + the optional island fill + the model's UV edges, framed by the
+    /// renderer's `uv_camera` and composited to the backbuffer. Builds the GPU
+    /// resources on the first call, like [`Self::render_scene`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_uv_scene(
+        &mut self,
+        gpu: &Gpu,
+        model: &ModelData,
+        model_revision: u64,
+        channel: u32,
+        shading_mode: UvShadingMode,
+        anti_aliasing: AntiAliasing,
+        clear: [f32; 4],
+    ) -> windows::core::Result<()> {
+        let scene = match self.scene_gpu {
+            Some(ref mut scene) => scene,
+            None => self
+                .scene_gpu
+                .insert(SceneGpu::new(gpu, anti_aliasing.effective_sample_count())?),
+        };
+        scene.render_uv(
+            gpu,
+            model,
+            model_revision,
+            self.uv_camera,
+            channel,
+            shading_mode,
+            anti_aliasing,
+            clear,
+        )
+    }
+
+    /// Render the 2D Tex viewport through Direct3D 11 (instead of the 3D scene): the
+    /// chosen background fill, then the selected image (channel-isolated, placed by
+    /// `image`'s pixel rectangle) when one is present. Builds the GPU resources on the
+    /// first call. The egui chrome is drawn on top afterwards by `app`.
+    pub fn render_texture(
+        &mut self,
+        gpu: &Gpu,
+        image: Option<TexImage>,
+        background: TexBackground,
+    ) -> windows::core::Result<()> {
+        let tex = match self.tex_gpu {
+            Some(ref mut tex) => tex,
+            None => self.tex_gpu.insert(TexGpu::new(gpu)?),
+        };
+        tex.render(gpu, image, background)
     }
 
     /// Seed the editable material table from a freshly loaded model's import

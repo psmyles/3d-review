@@ -399,10 +399,9 @@ fn texture_thumbnail(
     let identity = Arc::as_ptr(&entry.image) as usize;
     if let Some((cached, handle)) =
         ui.data(|data| data.get_temp::<(usize, egui::TextureHandle)>(id))
+        && cached == identity
     {
-        if cached == identity {
-            return Some(egui::load::SizedTexture::from_handle(&handle));
-        }
+        return Some(egui::load::SizedTexture::from_handle(&handle));
     }
 
     let color_image = thumbnail_color_image(&entry.image)?;

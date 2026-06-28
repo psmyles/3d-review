@@ -1,12 +1,10 @@
-//! Selection state carried from the UI into the scene pass (Phase 2).
+//! Selection state carried from the UI into the scene pass.
 //!
 //! The UI owns the selection (set by clicking an Outliner row) and passes it,
-//! plus the solo flag, a highlight color, and the flash fade, into the
-//! [`SceneCallback`] each frame (invariant 2). The renderer builds the selected-
-//! triangle index buffer (an isolate/solo draw list, reused as the highlight
-//! flash's fill source) on demand and frees it on deselect (invariant 3).
-//!
-//! [`SceneCallback`]: crate::SceneCallback
+//! plus the solo flag, a highlight color, and the flash fade, into the scene
+//! renderer each frame (invariant 2). The renderer builds the selected-triangle
+//! index buffer (an isolate/solo draw list, reused as the highlight flash's fill
+//! source) on demand and frees it on deselect (invariant 3).
 
 use review_model::{Bounds, ModelData};
 

@@ -8,30 +8,34 @@
 //!   * a **prefiltered specular** cubemap whose mips hold increasing roughness,
 //!   * a **BRDF integration LUT** (the split-sum scale/bias).
 //!
-//! These are exposed through a single bind group ([`IblResources::bind_group`])
-//! the scene pipelines reference as group 2. At runtime the maps are **loaded**
-//! (not computed) from the offline-baked assets in `assets/ibl_baked/` by
-//! [`IblResources::from_baked`] — a pure upload, so the first frame and every
-//! environment switch are near-instant, and never touched per frame otherwise.
-//! The precompute that produced those assets (and the `ibl.wgsl` shaders) is
-//! compiled only into the offline `bake_ibl` tool (the `bake` feature) via
-//! `bake_ibl_assets`.
+//! At runtime these are **loaded** (not computed) from the offline-baked assets in
+//! `assets/ibl_baked/` by [`IblD3d::from_baked`] — a pure Direct3D 11 upload, so the
+//! first frame and every environment switch are near-instant, and never touched per
+//! frame otherwise. The Direct3D 11 maps are bound to the scene's fixed pixel-shader
+//! slots `t1..t4`. The precompute that produced those assets (and the `ibl.hlsl`
+//! shaders) is compiled only into the offline `bake_ibl` tool (the `bake` feature)
+//! via `bake_ibl_assets`, which runs the passes on a headless Direct3D 11 device.
 //!
-//! Per invariant 4 the maps use only formats the adapter renders/filters
-//! (`Rgba16Float` / `Rg16Float`); [`ibl_supported`] gates the UI toggle.
+//! The three HDR cubes ship as GPU-native BC6H (`Bc6hRgbUfloat`); the shared BRDF
+//! LUT stays `Rg16Float`. The device hard-requires `TEXTURE_COMPRESSION_BC` (set at
+//! device creation), so IBL is always available on the desktop D3D11 11_0+ target.
 
 #[cfg(feature = "bake")]
 use bytemuck::{Pod, Zeroable};
+use windows::Win32::Graphics::Direct3D11::ID3D11DeviceContext;
 #[cfg(feature = "bake")]
-use wgpu::util::DeviceExt;
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_R16G16B16A16_FLOAT};
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_BC6H_UF16, DXGI_FORMAT_R16G16_FLOAT};
 
 use crate::EnvironmentMap;
-
-/// The IBL precompute WGSL. Only compiled into the bake path (and the WGSL
-/// validation test); the runtime samples the baked maps and never builds these
-/// pipelines.
-#[cfg(any(feature = "bake", test))]
-const IBL_SHADER: &str = include_str!("ibl.wgsl");
+#[cfg(feature = "bake")]
+use crate::rhi::bake::{Baker, CubeTarget, Target2D};
+#[cfg(feature = "bake")]
+use crate::rhi::{
+    BlendMode, Cull, DepthBias, DepthCompare, DepthState, DynamicConstantBuffer, Pipeline,
+    PipelineDesc, Sampler, Topology,
+};
+use crate::rhi::{Gpu, Texture};
 
 /// Env cubemap face resolution. The sources are 1024×512 equirect, so 256² faces
 /// resolve the environment without upsampling blur.
@@ -44,18 +48,15 @@ const PREFILTER_MIPS: u32 = 5;
 /// BRDF integration LUT resolution.
 const BRDF_SIZE: u32 = 512;
 
-/// The HDR color format the precompute *renders* into and reads back (bake only).
-/// The baked cube payloads are then BC6H-compressed offline, so the runtime cube
-/// textures use [`ENV_RUNTIME_FORMAT`] instead.
+/// The HDR color format the precompute *renders* into and reads back (bake only):
+/// `Rgba16Float`. The baked cube payloads are then BC6H-compressed offline; the
+/// runtime cube textures are `Bc6hRgbUfloat`, created by [`IblD3d::from_baked`].
 #[cfg(feature = "bake")]
-const ENV_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
-/// Runtime cube format for the env / irradiance / prefilter maps: BC6H unsigned
-/// (`Bc6hRgbUfloat`), the GPU-native HDR block format. The maps carry no alpha
-/// (the scene shader samples only `.rgb`), so dropping it is free; BC6H is 1
-/// byte/texel vs 8 for `Rgba16Float` (~8× smaller, less sample bandwidth) and the
-/// hardware decodes it natively, so the load stays a plain `write_texture`.
-const ENV_RUNTIME_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bc6hRgbUfloat;
-const BRDF_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
+const ENV_FORMAT: DXGI_FORMAT = DXGI_FORMAT_R16G16B16A16_FLOAT;
+/// The BRDF integration LUT format (`Rg16Float`): the precompute render target +
+/// readback format (bake only); the runtime uploads the same f16 bytes raw.
+#[cfg(feature = "bake")]
+const BRDF_FORMAT: DXGI_FORMAT = DXGI_FORMAT_R16G16_FLOAT;
 
 /// Bytes of one BC6H 4×4 block (128-bit). The runtime cube upload strides the
 /// baked payload by whole rows of blocks.
@@ -72,32 +73,7 @@ const RG16F_BPP: u32 = 4;
 /// shader so it can map roughness → mip LOD. Kept here so the two stay in step.
 pub(crate) const PREFILTER_MAX_LOD: f32 = (PREFILTER_MIPS - 1) as f32;
 
-/// Whether the adapter can load the baked IBL maps. The env / irradiance /
-/// prefilter cubes ship as BC6H ([`ENV_RUNTIME_FORMAT`]), so the device must
-/// expose `TEXTURE_COMPRESSION_BC` — universal on the desktop DX12/Vulkan/Metal
-/// target, but per invariant 4 gated rather than assumed so the UI disables IBL
-/// instead of crashing on an adapter that lacks it. The shared BRDF LUT stays
-/// `Rg16Float` (core, always filterable).
-pub fn ibl_supported(adapter: &wgpu::Adapter) -> bool {
-    adapter
-        .features()
-        .contains(wgpu::Features::TEXTURE_COMPRESSION_BC)
-}
-
-/// The precomputed IBL maps + the scene-facing bind group (group 2).
-pub(crate) struct IblResources {
-    /// Which environment these maps were built from (so the scene only rebuilds
-    /// on an actual change).
-    pub(crate) environment: EnvironmentMap,
-    pub(crate) bind_group: wgpu::BindGroup,
-    // Views are kept alive for the bind group's lifetime.
-    _irradiance_view: wgpu::TextureView,
-    _prefilter_view: wgpu::TextureView,
-    _brdf_view: wgpu::TextureView,
-    _env_cube_view: wgpu::TextureView,
-}
-
-/// Per-face / per-pass uniform fed to the precompute shaders (matches the WGSL
+/// Per-face / per-pass uniform fed to the precompute shaders (matches the HLSL
 /// `FaceUniform`, invariant 11). `forward/right/up` are the cube face basis;
 /// `params.x` is the prefilter roughness.
 #[cfg(feature = "bake")]
@@ -113,7 +89,7 @@ struct FaceUniform {
 /// World-space basis (forward, right, up) for each cubemap face, in layer order
 /// `+X, -X, +Y, -Y, +Z, -Z`. A fullscreen-triangle clip position `(x, y)` maps to
 /// the direction `forward + x*right + y*up`, matching `vs_fullscreen` in the
-/// shader and the cube sampling in `scene.wgsl`.
+/// shader and the cube sampling in `scene.hlsl`.
 #[cfg(feature = "bake")]
 const FACE_BASES: [([f32; 3], [f32; 3], [f32; 3]); 6] = [
     ([1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]), // +X
@@ -124,487 +100,80 @@ const FACE_BASES: [([f32; 3], [f32; 3], [f32; 3]); 6] = [
     ([0.0, 0.0, -1.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]), // -Z
 ];
 
-impl IblResources {
-    /// The bind-group layout the scene pipelines reference as group 2. Created
-    /// once (it must be stable across environment switches, since the scene
-    /// pipeline layout embeds it) and shared into every [`IblResources::from_baked`].
-    ///
-    /// Bindings: 0 irradiance cube, 1 prefiltered cube, 2 BRDF LUT (2D),
-    /// 3 environment cube (skybox), 4 sampler.
-    pub(crate) fn scene_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-        let cube = wgpu::BindingType::Texture {
-            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-            view_dimension: wgpu::TextureViewDimension::Cube,
-            multisampled: false,
-        };
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("review_ibl_scene_layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: cube,
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: cube,
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: cube,
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 4,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
+/// The Direct3D 11 image-based-lighting maps: the baked BC6H cubes (irradiance /
+/// prefilter / env) + the raw `Rg16Float` BRDF LUT, each as a sampled [`Texture`].
+/// Bound for every scene draw at the fixed PS slots `t1..t4`; only the shaded path +
+/// the skybox sample them. Reloaded (a pure upload) when the chosen environment
+/// changes.
+pub(crate) struct IblD3d {
+    /// Which environment these maps were loaded from (so the scene only reloads on
+    /// an actual change).
+    pub(crate) environment: EnvironmentMap,
+    irradiance: Texture,
+    prefilter: Texture,
+    brdf: Texture,
+    env_cube: Texture,
+}
+
+impl IblD3d {
+    /// Load the baked maps for `environment` as D3D11 textures — the three HDR cubes
+    /// from their mip-major BC6H `.bin` payloads, the shared BRDF LUT from raw f16.
+    /// A pure upload (no precompute), so the first frame and every environment switch
+    /// are near-instant.
+    pub(crate) fn from_baked(
+        gpu: &Gpu,
+        environment: EnvironmentMap,
+    ) -> windows::core::Result<Self> {
+        let device = gpu.device();
+        let irradiance = Texture::cube_block_compressed(
+            device,
+            IRRADIANCE_SIZE,
+            1,
+            DXGI_FORMAT_BC6H_UF16,
+            BC6H_BLOCK_BYTES,
+            baked_irradiance_bytes(environment),
+        )?;
+        let prefilter = Texture::cube_block_compressed(
+            device,
+            PREFILTER_SIZE,
+            PREFILTER_MIPS,
+            DXGI_FORMAT_BC6H_UF16,
+            BC6H_BLOCK_BYTES,
+            baked_prefilter_bytes(environment),
+        )?;
+        let env_cube = Texture::cube_block_compressed(
+            device,
+            ENV_CUBE_SIZE,
+            1,
+            DXGI_FORMAT_BC6H_UF16,
+            BC6H_BLOCK_BYTES,
+            baked_env_bytes(environment),
+        )?;
+        let brdf = Texture::immutable_2d(
+            device,
+            BRDF_SIZE,
+            BRDF_SIZE,
+            DXGI_FORMAT_R16G16_FLOAT,
+            BRDF_SIZE * RG16F_BPP,
+            BAKED_BRDF_BYTES,
+        )?;
+        Ok(Self {
+            environment,
+            irradiance,
+            prefilter,
+            brdf,
+            env_cube,
         })
     }
 
-    /// Load the precomputed (baked) IBL maps for `environment` and assemble the
-    /// scene bind group (group 2). Pure upload — no GPU precompute — so the first
-    /// frame and every environment switch are near-instant. The maps are baked
-    /// offline by the `bake_ibl` tool into `assets/ibl_baked/` and embedded via
-    /// `include_bytes!`; re-run that tool whenever a source HDR changes.
-    pub(crate) fn from_baked(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        scene_layout: &wgpu::BindGroupLayout,
-        environment: EnvironmentMap,
-    ) -> Self {
-        let usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
-        let env_cube = create_cube_texture(
-            device,
-            "review_ibl_env_cube",
-            ENV_CUBE_SIZE,
-            1,
-            ENV_RUNTIME_FORMAT,
-            usage,
-        );
-        let irradiance = create_cube_texture(
-            device,
-            "review_ibl_irradiance",
-            IRRADIANCE_SIZE,
-            1,
-            ENV_RUNTIME_FORMAT,
-            usage,
-        );
-        let prefilter = create_cube_texture(
-            device,
-            "review_ibl_prefilter",
-            PREFILTER_SIZE,
-            PREFILTER_MIPS,
-            ENV_RUNTIME_FORMAT,
-            usage,
-        );
-        let brdf = create_brdf_texture(device, usage);
-
-        upload_cube(
-            queue,
-            &env_cube,
-            baked_env_bytes(environment),
-            ENV_CUBE_SIZE,
-            1,
-        );
-        upload_cube(
-            queue,
-            &irradiance,
-            baked_irradiance_bytes(environment),
-            IRRADIANCE_SIZE,
-            1,
-        );
-        upload_cube(
-            queue,
-            &prefilter,
-            baked_prefilter_bytes(environment),
-            PREFILTER_SIZE,
-            PREFILTER_MIPS,
-        );
-        upload_2d(queue, &brdf, BAKED_BRDF_BYTES, BRDF_SIZE, RG16F_BPP);
-
-        assemble(
-            device,
-            scene_layout,
-            environment,
-            &env_cube,
-            &irradiance,
-            &prefilter,
-            &brdf,
-        )
+    /// Bind the IBL maps to the scene pixel-shader slots `irradiance t1`,
+    /// `prefilter t2`, `brdf t3`, `env t4` (see the register plan in `scene.hlsl`).
+    pub(crate) fn bind_ps(&self, ctx: &ID3D11DeviceContext) {
+        self.irradiance.bind_ps(ctx, 1);
+        self.prefilter.bind_ps(ctx, 2);
+        self.brdf.bind_ps(ctx, 3);
+        self.env_cube.bind_ps(ctx, 4);
     }
-}
-
-/// The four GPU textures the IBL precompute produces, before the bake tool reads
-/// them back to disk ([`bake_ibl_assets`]).
-#[cfg(feature = "bake")]
-struct PrecomputedMaps {
-    env_cube: wgpu::Texture,
-    irradiance: wgpu::Texture,
-    prefilter: wgpu::Texture,
-    brdf: wgpu::Texture,
-}
-
-/// Run the IBL precompute passes from a decoded equirect environment and return
-/// the four resulting textures. The textures carry `COPY_SRC` so the bake tool
-/// can copy them out. Only the offline bake path runs this; the runtime loads the
-/// baked results via [`IblResources::from_baked`].
-#[cfg(feature = "bake")]
-fn precompute_maps(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    equirect_view: &wgpu::TextureView,
-) -> PrecomputedMaps {
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("review_ibl_shader"),
-        source: wgpu::ShaderSource::Wgsl(IBL_SHADER.into()),
-    });
-
-    let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("review_ibl_face_uniform"),
-        size: std::mem::size_of::<FaceUniform>() as u64,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-
-    let sampler = ibl_sampler(device);
-
-    // The precompute targets are rendered into, then read back by the bake tool.
-    let usage = wgpu::TextureUsages::RENDER_ATTACHMENT
-        | wgpu::TextureUsages::TEXTURE_BINDING
-        | wgpu::TextureUsages::COPY_SRC;
-    let env_cube = create_cube_texture(
-        device,
-        "review_ibl_env_cube",
-        ENV_CUBE_SIZE,
-        1,
-        ENV_FORMAT,
-        usage,
-    );
-    let irradiance = create_cube_texture(
-        device,
-        "review_ibl_irradiance",
-        IRRADIANCE_SIZE,
-        1,
-        ENV_FORMAT,
-        usage,
-    );
-    let prefilter = create_cube_texture(
-        device,
-        "review_ibl_prefilter",
-        PREFILTER_SIZE,
-        PREFILTER_MIPS,
-        ENV_FORMAT,
-        usage,
-    );
-
-    // --- Pass layouts + pipelines (precompute-only; dropped after this fn). ---
-    let equirect_layout = pass_layout(device, "review_ibl_equirect_layout", PassSource::Tex2d);
-    let cube_layout = pass_layout(device, "review_ibl_cube_layout", PassSource::Cube);
-    let brdf_layout = pass_layout(device, "review_ibl_brdf_layout", PassSource::None);
-
-    let equirect_pipeline = make_pipeline(
-        device,
-        &shader,
-        &equirect_layout,
-        "fs_equirect_to_cube",
-        ENV_FORMAT,
-        "review_ibl_equirect_pipeline",
-    );
-    let irradiance_pipeline = make_pipeline(
-        device,
-        &shader,
-        &cube_layout,
-        "fs_irradiance",
-        ENV_FORMAT,
-        "review_ibl_irradiance_pipeline",
-    );
-    let prefilter_pipeline = make_pipeline(
-        device,
-        &shader,
-        &cube_layout,
-        "fs_prefilter",
-        ENV_FORMAT,
-        "review_ibl_prefilter_pipeline",
-    );
-    let brdf_pipeline = make_pipeline(
-        device,
-        &shader,
-        &brdf_layout,
-        "fs_brdf",
-        BRDF_FORMAT,
-        "review_ibl_brdf_pipeline",
-    );
-
-    // --- Pass bind groups (the uniform contents change per face/mip, but the
-    //     bindings don't, so each is built once). ---
-    let equirect_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("review_ibl_equirect_bind"),
-        layout: &equirect_layout,
-        entries: &[
-            uniform_entry(0, &uniform_buffer),
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(equirect_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::Sampler(&sampler),
-            },
-        ],
-    });
-    let env_cube_sample_view = env_cube.create_view(&wgpu::TextureViewDescriptor {
-        dimension: Some(wgpu::TextureViewDimension::Cube),
-        ..Default::default()
-    });
-    let cube_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("review_ibl_cube_bind"),
-        layout: &cube_layout,
-        entries: &[
-            uniform_entry(0, &uniform_buffer),
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::Sampler(&sampler),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: wgpu::BindingResource::TextureView(&env_cube_sample_view),
-            },
-        ],
-    });
-    let brdf_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("review_ibl_brdf_bind"),
-        layout: &brdf_layout,
-        entries: &[uniform_entry(0, &uniform_buffer)],
-    });
-
-    // --- Equirect -> env cube (6 faces). ---
-    for (face, basis) in FACE_BASES.iter().enumerate() {
-        write_face_uniform(queue, &uniform_buffer, *basis, 0.0);
-        let view = cube_face_view(&env_cube, face as u32, 0);
-        run_pass(device, queue, &equirect_pipeline, &equirect_bind, &view);
-    }
-
-    // --- Env cube -> diffuse irradiance (6 faces). ---
-    for (face, basis) in FACE_BASES.iter().enumerate() {
-        write_face_uniform(queue, &uniform_buffer, *basis, 0.0);
-        let view = cube_face_view(&irradiance, face as u32, 0);
-        run_pass(device, queue, &irradiance_pipeline, &cube_bind, &view);
-    }
-
-    // --- Env cube -> prefiltered specular (mip = roughness, 6 faces each). ---
-    for mip in 0..PREFILTER_MIPS {
-        let roughness = if PREFILTER_MIPS > 1 {
-            mip as f32 / PREFILTER_MAX_LOD
-        } else {
-            0.0
-        };
-        for (face, basis) in FACE_BASES.iter().enumerate() {
-            write_face_uniform(queue, &uniform_buffer, *basis, roughness);
-            let view = cube_face_view(&prefilter, face as u32, mip);
-            run_pass(device, queue, &prefilter_pipeline, &cube_bind, &view);
-        }
-    }
-
-    // --- BRDF integration LUT (single 2D pass). ---
-    let brdf = create_brdf_texture(device, usage);
-    let brdf_target = brdf.create_view(&wgpu::TextureViewDescriptor::default());
-    write_face_uniform(queue, &uniform_buffer, FACE_BASES[0], 0.0);
-    run_pass(device, queue, &brdf_pipeline, &brdf_bind, &brdf_target);
-
-    PrecomputedMaps {
-        env_cube,
-        irradiance,
-        prefilter,
-        brdf,
-    }
-}
-
-/// Assemble the scene-facing IBL bind group (group 2) from the four
-/// baked-and-uploaded maps. Used by [`IblResources::from_baked`]; the bake tool
-/// reads its precompute textures back to disk instead of assembling them.
-fn assemble(
-    device: &wgpu::Device,
-    scene_layout: &wgpu::BindGroupLayout,
-    environment: EnvironmentMap,
-    env_cube: &wgpu::Texture,
-    irradiance: &wgpu::Texture,
-    prefilter: &wgpu::Texture,
-    brdf: &wgpu::Texture,
-) -> IblResources {
-    let sampler = ibl_sampler(device);
-    let irradiance_view = cube_view(irradiance);
-    let prefilter_view = cube_view(prefilter);
-    let env_cube_view = cube_view(env_cube);
-    let brdf_view = brdf.create_view(&wgpu::TextureViewDescriptor::default());
-
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("review_ibl_scene_bind"),
-        layout: scene_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&irradiance_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(&prefilter_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::TextureView(&brdf_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: wgpu::BindingResource::TextureView(&env_cube_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 4,
-                resource: wgpu::BindingResource::Sampler(&sampler),
-            },
-        ],
-    });
-
-    IblResources {
-        environment,
-        bind_group,
-        _irradiance_view: irradiance_view,
-        _prefilter_view: prefilter_view,
-        _brdf_view: brdf_view,
-        _env_cube_view: env_cube_view,
-    }
-}
-
-/// The linear, clamped, trilinear sampler shared by the precompute passes
-/// (sampling the equirect / env cube) and the scene (sampling the irradiance /
-/// prefiltered / BRDF maps).
-fn ibl_sampler(device: &wgpu::Device) -> wgpu::Sampler {
-    device.create_sampler(&wgpu::SamplerDescriptor {
-        label: Some("review_ibl_sampler"),
-        address_mode_u: wgpu::AddressMode::ClampToEdge,
-        address_mode_v: wgpu::AddressMode::ClampToEdge,
-        address_mode_w: wgpu::AddressMode::ClampToEdge,
-        mag_filter: wgpu::FilterMode::Linear,
-        min_filter: wgpu::FilterMode::Linear,
-        mipmap_filter: wgpu::FilterMode::Linear,
-        ..Default::default()
-    })
-}
-
-/// A full-cube (`Cube` view dimension) view of a six-layer cube texture, as the
-/// scene bind group samples it.
-fn cube_view(texture: &wgpu::Texture) -> wgpu::TextureView {
-    texture.create_view(&wgpu::TextureViewDescriptor {
-        dimension: Some(wgpu::TextureViewDimension::Cube),
-        ..Default::default()
-    })
-}
-
-/// Create the single-mip 2D BRDF integration LUT texture (`usage` distinguishes
-/// the bake target, which adds `COPY_SRC`, from the runtime upload, which adds
-/// `COPY_DST`).
-fn create_brdf_texture(device: &wgpu::Device, usage: wgpu::TextureUsages) -> wgpu::Texture {
-    device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("review_ibl_brdf_lut"),
-        size: wgpu::Extent3d {
-            width: BRDF_SIZE,
-            height: BRDF_SIZE,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: BRDF_FORMAT,
-        usage,
-        view_formats: &[],
-    })
-}
-
-/// Upload a baked cube map into `texture`. `data` is mip-major with the six faces
-/// contiguous within each mip — exactly how the bake tool wrote it — and each face
-/// is BC6H block data (16 bytes per 4×4 texel block). All cube maps are
-/// [`ENV_RUNTIME_FORMAT`] (`Bc6hRgbUfloat`).
-fn upload_cube(
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
-    data: &[u8],
-    base_size: u32,
-    mips: u32,
-) {
-    let mut offset = 0usize;
-    for mip in 0..mips {
-        let size = base_size >> mip;
-        // BC6H stores one 16-byte block per 4×4 texels. Every IBL face size is a
-        // multiple of 4, so the block grid divides evenly (no partial blocks).
-        let blocks = size.div_ceil(4);
-        let bytes_per_row = blocks * BC6H_BLOCK_BYTES;
-        let len = (bytes_per_row * blocks) as usize;
-        for face in 0..6 {
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture,
-                    mip_level: mip,
-                    origin: wgpu::Origin3d {
-                        x: 0,
-                        y: 0,
-                        z: face,
-                    },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &data[offset..offset + len],
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(bytes_per_row),
-                    rows_per_image: Some(blocks),
-                },
-                wgpu::Extent3d {
-                    width: size,
-                    height: size,
-                    depth_or_array_layers: 1,
-                },
-            );
-            offset += len;
-        }
-    }
-}
-
-/// Upload a baked single-mip 2D map (the BRDF integration LUT) into `texture`.
-fn upload_2d(queue: &wgpu::Queue, texture: &wgpu::Texture, data: &[u8], size: u32, bpp: u32) {
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        data,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(size * bpp),
-            rows_per_image: Some(size),
-        },
-        wgpu::Extent3d {
-            width: size,
-            height: size,
-            depth_or_array_layers: 1,
-        },
-    );
 }
 
 /// Baked environment cube bytes (`assets/ibl_baked/T_IBL_NN_env.bin`).
@@ -658,216 +227,26 @@ fn baked_prefilter_bytes(environment: EnvironmentMap) -> &'static [u8] {
 /// Baked BRDF integration LUT bytes (environment-independent — one shared file).
 const BAKED_BRDF_BYTES: &[u8] = include_bytes!("../../../assets/ibl_baked/T_IBL_BRDF.bin");
 
-/// Which source texture a precompute pass binds, so [`pass_layout`] lists the
-/// matching bindings.
-#[cfg(feature = "bake")]
-enum PassSource {
-    /// 2D equirect source (equirect→cube).
-    Tex2d,
-    /// Cube source (irradiance / prefilter).
-    Cube,
-    /// No source texture (BRDF LUT — only the vertex uniform).
-    None,
-}
+// --- Offline IBL bake (only compiled with the `bake` feature) -------------------
+//
+// Precomputes every environment's IBL maps on a headless Direct3D 11 device and
+// writes them to `assets/ibl_baked/` (BC6H cubes + raw-f16 BRDF LUT), so the
+// shipping binary loads them by upload (`IblD3d::from_baked`) instead of running
+// the precompute at startup. Run via the `bake_ibl` binary; outputs are committed.
+// All D3D11 plumbing lives in `rhi::bake`; the code below only drives the passes.
 
+/// Compiled IBL precompute DXBC (see `build.rs`). Bake-only: the runtime samples
+/// the baked maps and never creates these pipelines.
 #[cfg(feature = "bake")]
-fn pass_layout(device: &wgpu::Device, label: &str, source: PassSource) -> wgpu::BindGroupLayout {
-    // Binding 0 (uniform) is read by the vertex stage (face basis → direction)
-    // and the fragment stage (prefilter roughness), so it is visible to both.
-    let mut entries = vec![wgpu::BindGroupLayoutEntry {
-        binding: 0,
-        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    }];
-    match source {
-        PassSource::Tex2d => {
-            entries.push(wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            });
-            entries.push(sampler_entry(2));
-        }
-        PassSource::Cube => {
-            entries.push(sampler_entry(2));
-            entries.push(wgpu::BindGroupLayoutEntry {
-                binding: 3,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::Cube,
-                    multisampled: false,
-                },
-                count: None,
-            });
-        }
-        PassSource::None => {}
-    }
-    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some(label),
-        entries: &entries,
-    })
-}
-
+const IBL_VS: &[u8] = include_bytes!("hlsl/ibl.vs.dxbc");
 #[cfg(feature = "bake")]
-fn sampler_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::FRAGMENT,
-        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-        count: None,
-    }
-}
-
+const IBL_EQUIRECT_PS: &[u8] = include_bytes!("hlsl/ibl.equirect.ps.dxbc");
 #[cfg(feature = "bake")]
-fn uniform_entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
-    wgpu::BindGroupEntry {
-        binding,
-        resource: buffer.as_entire_binding(),
-    }
-}
-
+const IBL_IRRADIANCE_PS: &[u8] = include_bytes!("hlsl/ibl.irradiance.ps.dxbc");
 #[cfg(feature = "bake")]
-fn make_pipeline(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    bind_layout: &wgpu::BindGroupLayout,
-    fragment_entry: &str,
-    target_format: wgpu::TextureFormat,
-    label: &str,
-) -> wgpu::RenderPipeline {
-    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some(label),
-        bind_group_layouts: &[bind_layout],
-        push_constant_ranges: &[],
-    });
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some(label),
-        layout: Some(&layout),
-        vertex: wgpu::VertexState {
-            module: shader,
-            entry_point: Some("vs_fullscreen"),
-            buffers: &[],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        },
-        primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
-        fragment: Some(wgpu::FragmentState {
-            module: shader,
-            entry_point: Some(fragment_entry),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: target_format,
-                blend: None,
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        }),
-        multiview: None,
-        cache: None,
-    })
-}
-
-/// Render a fullscreen triangle through `pipeline`/`bind_group` into `target`,
-/// submitting immediately. Each precompute draw runs in its own submission so the
-/// `queue.write_buffer` that set the per-face uniform is ordered before it.
+const IBL_PREFILTER_PS: &[u8] = include_bytes!("hlsl/ibl.prefilter.ps.dxbc");
 #[cfg(feature = "bake")]
-fn run_pass(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    pipeline: &wgpu::RenderPipeline,
-    bind_group: &wgpu::BindGroup,
-    target: &wgpu::TextureView,
-) {
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("review_ibl_precompute"),
-    });
-    {
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("review_ibl_precompute_pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
-        pass.set_pipeline(pipeline);
-        pass.set_bind_group(0, bind_group, &[]);
-        pass.draw(0..3, 0..1);
-    }
-    queue.submit(std::iter::once(encoder.finish()));
-}
-
-#[cfg(feature = "bake")]
-fn write_face_uniform(
-    queue: &wgpu::Queue,
-    buffer: &wgpu::Buffer,
-    basis: ([f32; 3], [f32; 3], [f32; 3]),
-    roughness: f32,
-) {
-    let (forward, right, up) = basis;
-    let uniform = FaceUniform {
-        forward: [forward[0], forward[1], forward[2], 0.0],
-        right: [right[0], right[1], right[2], 0.0],
-        up: [up[0], up[1], up[2], 0.0],
-        params: [roughness, 0.0, 0.0, 0.0],
-    };
-    queue.write_buffer(buffer, 0, bytemuck::bytes_of(&uniform));
-}
-
-fn create_cube_texture(
-    device: &wgpu::Device,
-    label: &str,
-    size: u32,
-    mips: u32,
-    format: wgpu::TextureFormat,
-    usage: wgpu::TextureUsages,
-) -> wgpu::Texture {
-    device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(label),
-        size: wgpu::Extent3d {
-            width: size,
-            height: size,
-            depth_or_array_layers: 6,
-        },
-        mip_level_count: mips,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format,
-        usage,
-        view_formats: &[],
-    })
-}
-
-/// A single-face, single-mip 2D view of a cube texture, used as a render target.
-#[cfg(feature = "bake")]
-fn cube_face_view(texture: &wgpu::Texture, face: u32, mip: u32) -> wgpu::TextureView {
-    texture.create_view(&wgpu::TextureViewDescriptor {
-        label: Some("review_ibl_face_target"),
-        dimension: Some(wgpu::TextureViewDimension::D2),
-        base_mip_level: mip,
-        mip_level_count: Some(1),
-        base_array_layer: face,
-        array_layer_count: Some(1),
-        ..Default::default()
-    })
-}
+const IBL_BRDF_PS: &[u8] = include_bytes!("hlsl/ibl.brdf.ps.dxbc");
 
 /// Largest value representable as a finite `f16`. HDR suns routinely exceed this;
 /// left unclamped, `f16::from_f32` rounds them to `inf`, which then propagates as
@@ -876,16 +255,9 @@ fn cube_face_view(texture: &wgpu::Texture, face: u32, mip: u32) -> wgpu::Texture
 /// model and a dead spot at the sun. Clamp every channel to this ceiling so the
 /// uploaded environment stays finite. (`f32::min(NaN, x)` returns `x`, so this
 /// also sanitizes a stray non-finite source texel.) Bake-time only now — the
-/// runtime clamps live in `ibl.wgsl` and the maps are already finite once baked.
+/// runtime clamps live in `ibl.hlsl` and the maps are already finite once baked.
 #[cfg(feature = "bake")]
 const F16_MAX: f32 = 65504.0;
-
-// --- Offline bake tool (only compiled with the `bake` feature) -----------------
-//
-// Precomputes every environment's IBL maps on a headless device and writes them
-// to `assets/ibl_baked/` as raw little-endian `f16`, so the shipping binary loads
-// them by upload (`IblResources::from_baked`) instead of running the 43-pass
-// precompute at startup. Run via the `bake_ibl` binary; outputs are committed.
 
 /// HDR source filename for an environment, read from disk by the bake tool. (The
 /// runtime no longer embeds the raw HDRs — only the baked maps.)
@@ -901,15 +273,28 @@ fn hdr_filename(environment: EnvironmentMap) -> &'static str {
     }
 }
 
+/// Build the per-face/pass [`FaceUniform`] from a cube-face basis + prefilter
+/// roughness (0 for the non-prefilter passes).
+#[cfg(feature = "bake")]
+fn face_uniform(basis: ([f32; 3], [f32; 3], [f32; 3]), roughness: f32) -> FaceUniform {
+    let (forward, right, up) = basis;
+    FaceUniform {
+        forward: [forward[0], forward[1], forward[2], 0.0],
+        right: [right[0], right[1], right[2], 0.0],
+        up: [up[0], up[1], up[2], 0.0],
+        params: [roughness, 0.0, 0.0, 0.0],
+    }
+}
+
 /// Decode `environment`'s HDR from `assets/textures` on disk and upload it as an
-/// `Rgba16Float` equirect texture — the bake tool's input. Paths resolve relative
-/// to the render crate's manifest so the tool runs from any working directory.
+/// `Rgba16Float` equirect [`Texture`] — the bake tool's input. Paths resolve
+/// relative to the render crate's manifest so the tool runs from any working
+/// directory.
 #[cfg(feature = "bake")]
 fn load_equirect_from_file(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    baker: &Baker,
     environment: EnvironmentMap,
-) -> Result<wgpu::TextureView, Box<dyn std::error::Error>> {
+) -> Result<Texture, Box<dyn std::error::Error>> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../assets/textures")
         .join(hdr_filename(environment));
@@ -921,144 +306,15 @@ fn load_equirect_from_file(
         .iter()
         .map(|&c| half::f16::from_f32(c.min(F16_MAX)).to_bits())
         .collect();
-    let texture = device.create_texture_with_data(
-        queue,
-        &wgpu::TextureDescriptor {
-            label: Some("review_ibl_equirect"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: ENV_FORMAT,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        },
-        wgpu::util::TextureDataOrder::LayerMajor,
+    let texture = Texture::immutable_2d(
+        baker.device(),
+        width,
+        height,
+        ENV_FORMAT,
+        width * RGBA16F_BPP,
         bytemuck::cast_slice(&halfs),
-    );
-    Ok(texture.create_view(&wgpu::TextureViewDescriptor::default()))
-}
-
-/// Copy one texture subresource (mip + array layer) back to the CPU as tight
-/// (row-padding-stripped) bytes. `copy_texture_to_buffer` requires a 256-byte row
-/// stride, so the staging buffer is padded and the padding is removed here.
-#[cfg(feature = "bake")]
-fn readback_subresource(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
-    mip: u32,
-    layer: u32,
-    size: u32,
-    bpp: u32,
-) -> Vec<u8> {
-    let tight_row = size * bpp;
-    let padded_row = tight_row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("review_ibl_readback"),
-        size: (padded_row * size) as u64,
-        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("review_ibl_readback_encoder"),
-    });
-    encoder.copy_texture_to_buffer(
-        wgpu::TexelCopyTextureInfo {
-            texture,
-            mip_level: mip,
-            origin: wgpu::Origin3d {
-                x: 0,
-                y: 0,
-                z: layer,
-            },
-            aspect: wgpu::TextureAspect::All,
-        },
-        wgpu::TexelCopyBufferInfo {
-            buffer: &buffer,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(padded_row),
-                rows_per_image: Some(size),
-            },
-        },
-        wgpu::Extent3d {
-            width: size,
-            height: size,
-            depth_or_array_layers: 1,
-        },
-    );
-    queue.submit(std::iter::once(encoder.finish()));
-
-    let slice = buffer.slice(..);
-    let (sender, receiver) = std::sync::mpsc::channel();
-    slice.map_async(wgpu::MapMode::Read, move |result| {
-        let _ = sender.send(result);
-    });
-    device.poll(wgpu::Maintain::Wait);
-    receiver
-        .recv()
-        .expect("map_async callback dropped")
-        .expect("IBL readback buffer mapping failed");
-
-    let tight_row = tight_row as usize;
-    let padded_row = padded_row as usize;
-    let mapped = slice.get_mapped_range();
-    let mut out = Vec::with_capacity(tight_row * size as usize);
-    for row in 0..size as usize {
-        let start = row * padded_row;
-        out.extend_from_slice(&mapped[start..start + tight_row]);
-    }
-    drop(mapped);
-    buffer.unmap();
-    out
-}
-
-/// Shape of a baked map: base face resolution, mip count, array layers (6 for a
-/// cube, 1 for the 2D BRDF LUT) and bytes per texel. The same four numbers drive
-/// the runtime upload, so the `.bin` byte layout stays in lockstep.
-#[cfg(feature = "bake")]
-#[derive(Clone, Copy)]
-struct BakedMapLayout {
-    base_size: u32,
-    mips: u32,
-    layers: u32,
-    bpp: u32,
-    /// BC6H-compress each subresource before writing (the HDR cubes). The BRDF LUT
-    /// stays uncompressed (`false`), so the runtime uploads it raw.
-    bc6h: bool,
-}
-
-/// Read a whole texture (all mips × layers) back to `path` in mip-major,
-/// faces-contiguous order — the exact byte layout the runtime upload re-reads. The
-/// HDR cubes (`layout.bc6h`) are BC6H-compressed per subresource on the way out;
-/// the BRDF LUT is written as raw f16.
-#[cfg(feature = "bake")]
-fn readback_to_file(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
-    layout: BakedMapLayout,
-    path: &std::path::Path,
-) -> std::io::Result<()> {
-    let mut data = Vec::new();
-    for mip in 0..layout.mips {
-        let size = layout.base_size >> mip;
-        for layer in 0..layout.layers {
-            let raw = readback_subresource(device, queue, texture, mip, layer, size, layout.bpp);
-            if layout.bc6h {
-                data.extend_from_slice(&compress_bc6h_face(size, &raw));
-            } else {
-                data.extend_from_slice(&raw);
-            }
-        }
-    }
-    std::fs::write(path, &data)
+    )?;
+    Ok(texture)
 }
 
 /// BC6H-compress one `size`×`size` face of `Rgba16Float` (FP16) texels into the
@@ -1082,80 +338,176 @@ fn compress_bc6h_face(size: u32, rgba_f16: &[u8]) -> Vec<u8> {
     intel_tex_2::bc6h::compress_blocks(&intel_tex_2::bc6h::very_slow_settings(), &surface)
 }
 
-/// Offline IBL bake entry point: precompute every environment's maps on a
-/// headless device and write them to `assets/ibl_baked/`. Re-exported as
+/// Read a whole rendered cube (all mips × 6 faces) back, BC6H-compress each
+/// subresource, and write it to `path` in mip-major, faces-contiguous order — the
+/// exact byte layout `Texture::cube_block_compressed` re-reads at runtime.
+#[cfg(feature = "bake")]
+fn write_cube(
+    baker: &Baker,
+    cube: &CubeTarget,
+    base_size: u32,
+    mips: u32,
+    path: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut data = Vec::new();
+    for mip in 0..mips {
+        let size = (base_size >> mip).max(1);
+        for face in 0..6 {
+            // D3D11 cube subresource index: mip + face * mip_count.
+            let subresource = mip + face * mips;
+            let raw = baker.readback_subresource(
+                cube.texture(),
+                subresource,
+                size,
+                size,
+                ENV_FORMAT,
+                RGBA16F_BPP,
+            )?;
+            data.extend_from_slice(&compress_bc6h_face(size, &raw));
+        }
+    }
+    std::fs::write(path, &data)?;
+    Ok(())
+}
+
+/// Offline IBL bake entry point: precompute every environment's maps on a headless
+/// Direct3D 11 device and write them to `assets/ibl_baked/`. Re-exported as
 /// `review_render::bake_ibl_assets` for the `bake_ibl` binary. Needs a real GPU.
 #[cfg(feature = "bake")]
 pub fn bake_ibl_assets() -> Result<(), Box<dyn std::error::Error>> {
     let out_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/ibl_baked");
     std::fs::create_dir_all(&out_dir)?;
 
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        compatible_surface: None,
-        force_fallback_adapter: false,
-    }))
-    .ok_or("no GPU adapter available for the IBL bake")?;
-    let (device, queue) = pollster::block_on(adapter.request_device(
-        &wgpu::DeviceDescriptor {
-            label: Some("review_ibl_bake_device"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
-            memory_hints: wgpu::MemoryHints::default(),
-        },
-        None,
-    ))?;
+    let baker = Baker::new()?;
+    let device = baker.device();
+    let ctx = baker.context();
+
+    // Shared bake resources: the per-face/pass uniform (`b0`), the linear-clamp
+    // sampler (`s0`), and the four fullscreen pipelines (all share `IBL_VS`,
+    // depth-less opaque overwrite — they cover the whole target).
+    let cbuffer = DynamicConstantBuffer::new::<FaceUniform>(device)?;
+    let sampler = Sampler::linear_clamp(device)?;
+    let fullscreen = |ps: &[u8]| -> windows::core::Result<Pipeline> {
+        Pipeline::new(
+            device,
+            &PipelineDesc {
+                vs: IBL_VS,
+                ps,
+                input: &[],
+                topology: Topology::TriangleList,
+                cull: Cull::None,
+                depth: DepthState {
+                    test: false,
+                    write: false,
+                    compare: DepthCompare::Always,
+                },
+                blend: BlendMode::Opaque,
+                depth_bias: DepthBias::default(),
+                sample_count: 1,
+            },
+        )
+    };
+    let equirect_pipeline = fullscreen(IBL_EQUIRECT_PS)?;
+    let irradiance_pipeline = fullscreen(IBL_IRRADIANCE_PS)?;
+    let prefilter_pipeline = fullscreen(IBL_PREFILTER_PS)?;
+    let brdf_pipeline = fullscreen(IBL_BRDF_PS)?;
+
+    // Render targets, reused across environments (each is re-rendered per env). The
+    // env cube is both a render target (equirect pass) and a sampled source (the
+    // irradiance / prefilter convolutions).
+    let env_cube = CubeTarget::new(device, ENV_CUBE_SIZE, 1, ENV_FORMAT)?;
+    let irradiance = CubeTarget::new(device, IRRADIANCE_SIZE, 1, ENV_FORMAT)?;
+    let prefilter = CubeTarget::new(device, PREFILTER_SIZE, PREFILTER_MIPS, ENV_FORMAT)?;
+    let brdf = Target2D::new(device, BRDF_SIZE, BRDF_SIZE, BRDF_FORMAT)?;
+
+    // The uniform + sampler stay bound throughout (only the source texture + RTV
+    // change per pass); `cbuffer.update` re-fills `b0` per face/mip.
+    cbuffer.bind_vs(ctx, 0);
+    cbuffer.bind_ps(ctx, 0);
+    sampler.bind_ps(ctx, 0);
+
+    // The BRDF integration LUT is environment-independent — bake it once.
+    brdf_pipeline.bind(ctx);
+    cbuffer.update(ctx, &face_uniform(FACE_BASES[0], 0.0))?;
+    baker.begin_target(brdf.rtv(), BRDF_SIZE);
+    baker.draw_fullscreen();
+    baker.unbind_targets();
+    let brdf_bytes = baker.readback_subresource(
+        brdf.texture(),
+        0,
+        BRDF_SIZE,
+        BRDF_SIZE,
+        BRDF_FORMAT,
+        RG16F_BPP,
+    )?;
+    std::fs::write(out_dir.join("T_IBL_BRDF.bin"), &brdf_bytes)?;
 
     for (index, environment) in EnvironmentMap::ALL.iter().enumerate() {
         let nn = format!("{:02}", index + 1);
-        let equirect_view = load_equirect_from_file(&device, &queue, *environment)?;
-        let maps = precompute_maps(&device, &queue, &equirect_view);
+        let equirect = load_equirect_from_file(&baker, *environment)?;
 
-        let cube = |base_size, mips| BakedMapLayout {
-            base_size,
-            mips,
-            layers: 6,
-            bpp: RGBA16F_BPP,
-            bc6h: true,
-        };
-        readback_to_file(
-            &device,
-            &queue,
-            &maps.env_cube,
-            cube(ENV_CUBE_SIZE, 1),
+        // Equirect -> env cube (6 faces).
+        equirect_pipeline.bind(ctx);
+        equirect.bind_ps(ctx, 0);
+        for (face, basis) in FACE_BASES.iter().enumerate() {
+            cbuffer.update(ctx, &face_uniform(*basis, 0.0))?;
+            baker.begin_target(env_cube.rtv(face as u32, 0), ENV_CUBE_SIZE);
+            baker.draw_fullscreen();
+        }
+
+        // Env cube -> diffuse irradiance (6 faces). Binding the irradiance face RTV
+        // first releases the env cube as a render target, so it's free to sample.
+        irradiance_pipeline.bind(ctx);
+        env_cube.bind_ps_srv(ctx, 1);
+        for (face, basis) in FACE_BASES.iter().enumerate() {
+            cbuffer.update(ctx, &face_uniform(*basis, 0.0))?;
+            baker.begin_target(irradiance.rtv(face as u32, 0), IRRADIANCE_SIZE);
+            baker.draw_fullscreen();
+        }
+
+        // Env cube -> prefiltered specular (mip = roughness, 6 faces each).
+        prefilter_pipeline.bind(ctx);
+        env_cube.bind_ps_srv(ctx, 1);
+        for mip in 0..PREFILTER_MIPS {
+            let roughness = if PREFILTER_MIPS > 1 {
+                mip as f32 / PREFILTER_MAX_LOD
+            } else {
+                0.0
+            };
+            let size = (PREFILTER_SIZE >> mip).max(1);
+            for (face, basis) in FACE_BASES.iter().enumerate() {
+                cbuffer.update(ctx, &face_uniform(*basis, roughness))?;
+                baker.begin_target(prefilter.rtv(face as u32, mip), size);
+                baker.draw_fullscreen();
+            }
+        }
+
+        // Release the env-cube SRV + render targets before reading back (and before
+        // the next environment re-renders the env cube into it).
+        baker.unbind_srvs();
+        baker.unbind_targets();
+
+        write_cube(
+            &baker,
+            &env_cube,
+            ENV_CUBE_SIZE,
+            1,
             &out_dir.join(format!("T_IBL_{nn}_env.bin")),
         )?;
-        readback_to_file(
-            &device,
-            &queue,
-            &maps.irradiance,
-            cube(IRRADIANCE_SIZE, 1),
+        write_cube(
+            &baker,
+            &irradiance,
+            IRRADIANCE_SIZE,
+            1,
             &out_dir.join(format!("T_IBL_{nn}_irradiance.bin")),
         )?;
-        readback_to_file(
-            &device,
-            &queue,
-            &maps.prefilter,
-            cube(PREFILTER_SIZE, PREFILTER_MIPS),
+        write_cube(
+            &baker,
+            &prefilter,
+            PREFILTER_SIZE,
+            PREFILTER_MIPS,
             &out_dir.join(format!("T_IBL_{nn}_prefilter.bin")),
         )?;
-        // The BRDF integration LUT is environment-independent — bake it once.
-        if index == 0 {
-            readback_to_file(
-                &device,
-                &queue,
-                &maps.brdf,
-                BakedMapLayout {
-                    base_size: BRDF_SIZE,
-                    mips: 1,
-                    layers: 1,
-                    bpp: RG16F_BPP,
-                    bc6h: false,
-                },
-                &out_dir.join("T_IBL_BRDF.bin"),
-            )?;
-        }
         println!(
             "baked {} -> assets/ibl_baked/T_IBL_{nn}_*.bin",
             environment.label()
@@ -1167,24 +519,4 @@ pub fn bake_ibl_assets() -> Result<(), Box<dyn std::error::Error>> {
         out_dir.display()
     );
     Ok(())
-}
-
-#[cfg(test)]
-mod shader_tests {
-    /// The IBL precompute shader must parse + validate. Like the scene-shader
-    /// test (see `scene::gpu_types`), this catches type / control-flow / binding
-    /// mistakes without a GPU; the real check is pipeline creation in
-    /// `precompute_maps` (behind the `bake` feature).
-    #[test]
-    fn ibl_shader_validates() {
-        let module =
-            naga::front::wgsl::parse_str(super::IBL_SHADER).expect("ibl.wgsl should parse");
-        let mut validator = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::all(),
-        );
-        validator
-            .validate(&module)
-            .expect("ibl.wgsl should validate");
-    }
 }
