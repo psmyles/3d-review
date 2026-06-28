@@ -534,8 +534,20 @@ int review_import_load_fbx(
                 dst->tangent[0] = (float)tangent.x;
                 dst->tangent[1] = (float)tangent.y;
                 dst->tangent[2] = (float)tangent.z;
-                review_import_normalize3(dst->tangent, fallback_tangent);
-                dst->tangent[3] = 1.0f;
+                if (mesh->vertex_tangent.exists) {
+                    review_import_normalize3(dst->tangent, fallback_tangent);
+                    dst->tangent[3] = 1.0f;
+                } else {
+                    /* No tangent layer in the file: leave a zero tangent (skip the
+                       constant fallback) so the Rust importer detects it and
+                       synthesizes a real per-vertex tangent basis from the UVs +
+                       normals. A constant placeholder tangent yields a garbage TBN
+                       and smeared normal-mapped shading. */
+                    dst->tangent[0] = 0.0f;
+                    dst->tangent[1] = 0.0f;
+                    dst->tangent[2] = 0.0f;
+                    dst->tangent[3] = 0.0f;
+                }
 
                 dst->vertex_color[0] = (float)vertex_color.x;
                 dst->vertex_color[1] = (float)vertex_color.y;
