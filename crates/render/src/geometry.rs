@@ -21,7 +21,8 @@ mod uv;
 mod vertex;
 
 pub(crate) use debug_lines::{
-    bounding_box_lines, face_normal_lines, vertex_normal_lines, wireframe_lines,
+    bounding_box_lines, face_normal_lines, model_pivot, pivot_half_extent, pivot_lines,
+    vertex_normal_lines, wireframe_lines,
 };
 pub(crate) use grid::{scene_lines, uv_grid_lines};
 pub(crate) use mesh::model_mesh;

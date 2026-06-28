@@ -576,6 +576,10 @@ pub struct SceneDebugOptions {
     pub show_grid: bool,
     /// Whether the model's axis-aligned bounding box is drawn as a wireframe box.
     pub show_bounding_box: bool,
+    /// Whether the object pivot marker — a 3-axis cross at the model's origin (the
+    /// root node's world-space pivot) — is drawn. A plain on/off overlay (no
+    /// options), independent of the bounding box.
+    pub show_pivot: bool,
     pub face_normals: bool,
     pub vertex_normals: bool,
     pub face_normal_length: f32,
@@ -618,6 +622,7 @@ impl Default for SceneDebugOptions {
             uv_channel: 0,
             show_grid: true,
             show_bounding_box: false,
+            show_pivot: false,
             face_normals: false,
             vertex_normals: false,
             face_normal_length: 0.03,
