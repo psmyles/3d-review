@@ -22,12 +22,14 @@ use crate::{
 
 impl App {
     /// A window resize: re-derive the monitor frame cap (a resize may follow a move
-    /// to another monitor), persist the windowed bounds, update the camera aspect
-    /// ratios + framing safe-area, and resize the swapchain (a failed resize is
-    /// non-fatal — the old buffers stay valid for this frame).
+    /// to another monitor), flag the windowed bounds for a deferred resample, update
+    /// the camera aspect ratios + framing safe-area, and resize the swapchain (a
+    /// failed resize is non-fatal — the old buffers stay valid for this frame).
     pub(crate) fn handle_resized(&mut self, size: PhysicalSize<u32>, window: &Window) {
         self.refresh_interval = monitor_refresh_interval(window);
-        self.record_windowed_bounds();
+        // Defer recording to `about_to_wait`: a maximize resize lands before winit's
+        // maximized flag is set, so sampling here would store maximized geometry.
+        self.windowed_bounds_dirty = true;
 
         if let Some(renderer) = self.renderer.as_mut()
             && size.height > 0

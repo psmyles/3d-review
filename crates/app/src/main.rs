@@ -172,6 +172,14 @@ struct App {
     /// on exit. Recorded only while the window isn't maximized, so un-maximizing
     /// a restored session returns to a real window rather than a fullscreen rect.
     last_windowed_bounds: Option<((i32, i32), (u32, u32))>,
+    /// Set when a `Moved`/`Resized` event arrives; the windowed bounds are then
+    /// sampled once in `about_to_wait`, after the event burst has settled. This
+    /// deferral matters for maximize: winit dispatches `Moved` (from
+    /// `WM_WINDOWPOSCHANGED`) *before* the `WM_SIZE` that sets its maximized flag,
+    /// so sampling eagerly in the `Moved` handler would record the maximized
+    /// geometry as if it were windowed. By `about_to_wait` the flag is set, so
+    /// `record_windowed_bounds`'s `is_maximized()` guard sees the real state.
+    windowed_bounds_dirty: bool,
     /// Live selection-highlight flash, or `None` when none is playing. Started when
     /// [`Self::flashed_selection`] no longer matches the UI's current selection, and
     /// advanced each frame by [`Self::update_selection_flash`], which writes the
@@ -323,6 +331,7 @@ impl Default for App {
             initial_model: None,
             start_maximized: false,
             last_windowed_bounds: None,
+            windowed_bounds_dirty: false,
             selection_flash: None,
             flashed_selection: Selection::None,
             undo: UndoStack::new(),
@@ -420,6 +429,20 @@ impl ApplicationHandler<UserEvent> for App {
             window_state::load().filter(|placement| placement_is_visible(event_loop, placement));
         let maximized = self.start_maximized || saved.is_some_and(|placement| placement.maximized);
 
+        // The position/size in a maximized placement are meant to be the *restored*
+        // (pre-maximize) bounds, used as the un-maximize target. Pre-fix builds could
+        // instead record the maximized geometry itself; applying that as the restore
+        // target leaves un-maximize landing on a full-screen rect. When the saved
+        // bounds fill a monitor, substitute a sane centered window so un-maximize and
+        // the re-saved placement describe a real window (not the full screen).
+        let restore_bounds = saved.map(|placement| {
+            if placement.maximized && placement_fills_monitor(event_loop, &placement) {
+                default_windowed_placement(event_loop, &placement)
+            } else {
+                placement
+            }
+        });
+
         let mut attributes = WindowAttributes::default()
             .with_title("3D Review")
             .with_window_icon(load_window_icon())
@@ -428,7 +451,7 @@ impl ApplicationHandler<UserEvent> for App {
                 MIN_WINDOW_HEIGHT,
             ))
             .with_maximized(maximized);
-        if let Some(placement) = saved {
+        if let Some(placement) = restore_bounds {
             // Position/size are the restored (non-maximized) bounds; setting them
             // even when maximized gives un-maximize a sensible target.
             attributes = attributes
@@ -601,7 +624,9 @@ impl ApplicationHandler<UserEvent> for App {
                 self.render();
             }
             WindowEvent::Moved(_) => {
-                self.record_windowed_bounds();
+                // Defer recording: a maximize delivers `Moved` before the window's
+                // maximized flag is set, so sample in `about_to_wait` instead.
+                self.windowed_bounds_dirty = true;
             }
             WindowEvent::Resized(size) => self.handle_resized(size, &window),
             WindowEvent::MouseInput { state, button, .. } => {
@@ -643,6 +668,15 @@ impl ApplicationHandler<UserEvent> for App {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
+
+        // Sample windowed bounds once the event burst has settled, so a maximize
+        // (whose `Moved` arrives before the maximized flag is set) doesn't poison
+        // the saved placement with fullscreen geometry. `record_windowed_bounds`
+        // skips while maximized, so the pre-maximize bounds survive.
+        if self.windowed_bounds_dirty {
+            self.windowed_bounds_dirty = false;
+            self.record_windowed_bounds();
+        }
 
         // Fold a pending interactive redraw (drag, hover, wheel, key) into the
         // paced schedule. The earliest we'll draw is one refresh interval after
@@ -1190,6 +1224,65 @@ fn placement_is_visible(event_loop: &ActiveEventLoop, placement: &WindowPlacemen
 
     // No monitors enumerated (rare/headless): don't throw the placement away.
     !any_monitor
+}
+
+/// Whether a placement's rect covers essentially a whole monitor — the signature
+/// of *maximized* geometry rather than real restored bounds. A maximized window's
+/// outer position sits at (or a few px past) the monitor's top-left and its client
+/// spans the work area, so the saved rect starts at/left-of the monitor origin and
+/// is nearly as large as the monitor. Used to reject restore bounds that are really
+/// maximized geometry recorded by a pre-fix build, so un-maximize doesn't land on a
+/// full-screen rect. The fraction thresholds (not pixel counts) absorb the taskbar
+/// and DPI-dependent frame overhang without misflagging a normal or snapped window.
+fn placement_fills_monitor(event_loop: &ActiveEventLoop, placement: &WindowPlacement) -> bool {
+    // Maximized client width tracks the work area exactly (≈100% with a bottom
+    // taskbar, a bit less with a side taskbar); height loses the taskbar band.
+    const MIN_WIDTH_FRACTION: f32 = 0.9;
+    const MIN_HEIGHT_FRACTION: f32 = 0.85;
+
+    for monitor in event_loop.available_monitors() {
+        let pos = monitor.position();
+        let size = monitor.size();
+        let at_origin = placement.x <= pos.x && placement.y <= pos.y;
+        let fills = placement.width as f32 >= size.width as f32 * MIN_WIDTH_FRACTION
+            && placement.height as f32 >= size.height as f32 * MIN_HEIGHT_FRACTION;
+        if at_origin && fills {
+            return true;
+        }
+    }
+    false
+}
+
+/// A comfortable centered restored window, used as the un-maximize target when the
+/// saved bounds are unusable (they described maximized geometry — see
+/// [`placement_fills_monitor`]). Sized to a fraction of the primary monitor and
+/// centered on it, keeping `maximized` so the window still opens maximized. Falls
+/// back to the original placement if no monitor can be enumerated.
+fn default_windowed_placement(
+    event_loop: &ActiveEventLoop,
+    fallback: &WindowPlacement,
+) -> WindowPlacement {
+    /// Fraction of the monitor a default restored window occupies.
+    const SIZE_FRACTION: f32 = 0.7;
+
+    let Some(monitor) = event_loop
+        .primary_monitor()
+        .or_else(|| event_loop.available_monitors().next())
+    else {
+        return *fallback;
+    };
+
+    let pos = monitor.position();
+    let size = monitor.size();
+    let width = (size.width as f32 * SIZE_FRACTION) as u32;
+    let height = (size.height as f32 * SIZE_FRACTION) as u32;
+    WindowPlacement {
+        x: pos.x + (size.width.saturating_sub(width) / 2) as i32,
+        y: pos.y + (size.height.saturating_sub(height) / 2) as i32,
+        width,
+        height,
+        maximized: fallback.maximized,
+    }
 }
 
 /// The active monitor's refresh interval, used to cap continuous redraw. Falls
