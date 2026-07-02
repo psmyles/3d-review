@@ -726,13 +726,19 @@ impl App {
         // startup help overlay if it's still up.
         self.ui.show_help_overlay = false;
 
+        // Loading into the empty viewport (first load, or after Ctrl+N) shows
+        // the model already framed — a fly-in from the home view would only
+        // delay it. Replacing an already-loaded model keeps the animated
+        // re-frame so the view change reads as a transition.
+        let animate_framing = !self.scene_model.vertices.is_empty();
+
         match load_model(path, LoadOptions { triangulate: true }) {
             Ok(model) => {
                 let model = Arc::new(model);
 
                 let (materials_snapshot, material_revision) =
                     if let Some(renderer) = self.renderer.as_mut() {
-                        frame_camera_to_model(renderer, &model);
+                        frame_camera_to_model(renderer, &model, animate_framing);
                         renderer.reset_uv_camera();
                         // Seed the editable material table from the import defaults.
                         renderer.set_model_materials(&model.materials);
@@ -1312,9 +1318,13 @@ fn framing_safe_area(height_px: u32, scale_factor: f32) -> (f32, f32) {
     (1.0, height_fraction.clamp(0.4, 1.0))
 }
 
-fn frame_camera_to_model(renderer: &mut Renderer, model: &ModelData) {
+fn frame_camera_to_model(renderer: &mut Renderer, model: &ModelData, animate: bool) {
     if let Some(bounds) = model.bounds {
-        renderer.animate_camera_to_bounds(bounds);
+        if animate {
+            renderer.animate_camera_to_bounds(bounds);
+        } else {
+            renderer.snap_camera_to_bounds(bounds);
+        }
     }
 }
 

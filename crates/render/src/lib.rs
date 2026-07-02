@@ -878,6 +878,14 @@ impl Renderer {
         self.animate_camera_to(self.camera.framed_to_bounds(bounds, self.framing_safe_area));
     }
 
+    /// Snap (no animation) to a framing of `bounds`. Used when a model is
+    /// loaded into the empty viewport, where a fly-in from the home view would
+    /// only delay showing the model already framed.
+    pub fn snap_camera_to_bounds(&mut self, bounds: Bounds) {
+        self.camera_transition = None;
+        self.camera = self.camera.framed_to_bounds(bounds, self.framing_safe_area);
+    }
+
     pub fn animate_camera_to_offset_direction(&mut self, direction: Vec3) {
         self.animate_camera_to(self.camera.with_offset_direction(direction));
     }
