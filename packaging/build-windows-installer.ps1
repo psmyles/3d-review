@@ -8,15 +8,18 @@
       1. Verifies the MSVC toolchain is on PATH (cc needs `cl`/`rc` to compile
          the vendored ufbx.c). Run from the "x64 Native Tools Command Prompt for
          VS 2022", or from a PowerShell launched within it.
-      2. Regenerates the Environment-dropdown HDR thumbnails (they are baked into
+      2. Regenerates the .ico application icon from the source PNG logo *only if*
+         it is outdated (the exe resource icon and the installer icon both read
+         it from disk at build time, so it must be current before the build).
+      3. Regenerates the Environment-dropdown HDR thumbnails (they are baked into
          the exe via include_bytes!, so they must be current before the build).
-      3. Re-bakes the BC6H IBL maps *only if* they are outdated (the .bin outputs
+      4. Re-bakes the BC6H IBL maps *only if* they are outdated (the .bin outputs
          are also include_bytes!'d, so they must be current before the build).
          The freshness gate keeps this a fast no-op unless a source HDR or the IBL
          precompute code changed; an actual re-bake needs a GPU.
-      4. cargo build --release -p review-app
-      5. Reads product.json (the canonical source of product identity).
-      6. Locates ISCC.exe (Inno Setup 6) and compiles packaging\3d-review.iss,
+      5. cargo build --release -p review-app
+      6. Reads product.json (the canonical source of product identity).
+      7. Locates ISCC.exe (Inno Setup 6) and compiles packaging\3d-review.iss,
          passing product metadata as /D defines.
 
     Output: dist\3D-Review-Setup-<version>.exe
@@ -43,7 +46,15 @@ if (-not $SkipBuild) {
     }
 }
 
-# --- 2. Regenerate HDR thumbnails ----------------------------------------------
+# --- 2. Regenerate the app icon -------------------------------------------------
+# The .ico is read from disk by both crates/app/build.rs (exe resource icon) and
+# 3d-review.iss (installer icon), so it must be current before either runs.
+if (-not $SkipBuild) {
+    Write-Host '==> Checking app icon freshness...' -ForegroundColor Cyan
+    & (Join-Path $PSScriptRoot 'generate-app-icons.ps1')
+}
+
+# --- 3. Regenerate HDR thumbnails ----------------------------------------------
 # The Environment-dropdown previews are include_bytes!-embedded, so they must be
 # refreshed from the source HDRs before the build bakes them in.
 if (-not $SkipBuild) {
@@ -51,7 +62,7 @@ if (-not $SkipBuild) {
     & (Join-Path $PSScriptRoot 'generate-hdr-thumbnails.ps1')
 }
 
-# --- 3. Re-bake IBL maps if outdated -------------------------------------------
+# --- 4. Re-bake IBL maps if outdated -------------------------------------------
 # The baked IBL maps (BC6H env/irradiance/prefilter cubes + the BRDF LUT) are
 # include_bytes!-embedded too, so they must be current before the build. Unlike
 # the thumbnails, baking is a GPU + slow-compile step — so the script only runs
@@ -62,7 +73,7 @@ if (-not $SkipBuild) {
     & (Join-Path $PSScriptRoot 'generate-ibl-bake.ps1')
 }
 
-# --- 4. Build the release exe --------------------------------------------------
+# --- 5. Build the release exe --------------------------------------------------
 if (-not $SkipBuild) {
     Write-Host '==> Building release exe (cargo build --release -p review-app)...' -ForegroundColor Cyan
     Push-Location $repoRoot
@@ -75,7 +86,7 @@ if (-not $SkipBuild) {
     }
 }
 
-# --- 5. Read product metadata --------------------------------------------------
+# --- 6. Read product metadata --------------------------------------------------
 if (-not (Test-Path $productJson)) { throw "product.json not found at $productJson." }
 $meta = Get-Content $productJson -Raw | ConvertFrom-Json
 
@@ -92,7 +103,7 @@ if (-not (Test-Path $exePath)) {
     throw "Release exe not found at $exePath. Run without -SkipBuild, or build first."
 }
 
-# --- 6. Locate ISCC and compile the installer ----------------------------------
+# --- 7. Locate ISCC and compile the installer ----------------------------------
 $iscc = (Get-Command 'ISCC.exe' -ErrorAction SilentlyContinue)?.Source
 if (-not $iscc) {
     $candidates = @(
