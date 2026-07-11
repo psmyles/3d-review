@@ -3,6 +3,7 @@ members = [
     "crates/app",
     "crates/import",
     "crates/model",
+    "crates/psd",
     "crates/render",
     "crates/ui",
 ]
@@ -36,9 +37,20 @@ image = { version = "0.25", default-features = false, features = [
     "pnm",
 ] }
 notify = "8"
+# Internal prebuilt-FFI crate: decodes layered PSD source art via psd_sdk (the
+# only FFI site besides `crates/import` + the sanctioned D3D11 sites — invariant 9).
+review-psd = { path = "crates/psd" }
 rfd = "0.15"
 serde_json = "1"
 thiserror = "2"
+# zune is the fast decode path for JPEG textures (platform intrinsics + unsafe
+# fast paths via `DecoderOptions::new_fast`). The `image` crate stays primary for
+# PNG/TGA/TIFF/HDR (measured faster/correct there); PSD goes through `review-psd`.
+zune-core = "0.5"
+# Only the JPEG codec (+ SIMD fast paths) — default features pull in the whole zune
+# codec tree (PNG/JXL/…) plus jxl-oxide, which we don't use (the `image` crate owns
+# those formats here).
+zune-image = { version = "0.5", default-features = false, features = ["jpeg", "simd"] }
 # Tracy profiler client. Always compiled into the binary (incl. release) but
 # runtime-gated: `manual-lifetime` means the client never auto-starts — `main`
 # calls `Client::start()` only when `--tracy` is passed; `ondemand` means a

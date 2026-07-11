@@ -1,18 +1,24 @@
 //! Source-image decoding for the material texture slots (Phase 3).
 //!
-//! Decoding uses prebuilt systems only (CLAUDE.md / the materials plan): the Rust
-//! `image` crate for the formats it covers (PNG/JPG/TGA/TIFF/BMP/GIF), and a
-//! **bundled ImageMagick `magick.exe` CLI** for the rest (PSD, multi-layer TIFF,
-//! …) by streaming uncompressed PAM to stdout (`magick <in> pam:-`) — which the
-//! `pnm` feature of `image` then decodes. No custom decoder, no `unsafe`, no FFI.
+//! Decoding uses prebuilt decoders only (CLAUDE.md): the Rust `image` crate for the
+//! formats it covers (PNG/TGA/TIFF/HDR/BMP/GIF/PNM), **zune** for the JPEG fast path
+//! (platform intrinsics + unsafe fast paths, measured faster than `image`'s decoder),
+//! and the prebuilt psd_sdk FFI crate ([`review_psd`]) for layered **PSD** source art
+//! (its merged composite). This replaces the old bundled-ImageMagick `magick.exe`
+//! shell-out — no external binary is shipped anymore.
+//!
+//! Dispatch is by magic bytes first (robust to mislabeled extensions — common in
+//! game-asset exports), with the file extension as a fallback for formats that carry
+//! no signature (e.g. TGA). Only the `review_psd` path is `unsafe`/FFI, and it is
+//! confined to that crate (invariant 9); the decode code here stays safe.
 //!
 //! [`decode_image`] runs on the app thread when the user assigns a slot — never in
 //! the render `prepare` callback. The decoded RGBA8 pixels live behind an `Arc`
 //! ([`DecodedImage`]) so the per-frame scene render shares them by refcount, and
 //! the GPU upload is deduplicated by path (the material table's path-keyed cache).
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::io::Cursor;
+use std::path::Path;
 
 /// The seven PBR texture slots a material carries, in the order the GPU bind group
 /// and the shader expect them. The numeric index is the binding offset within
@@ -169,26 +175,42 @@ pub struct DecodedImage {
     pub source_bit_depth: u8,
 }
 
-/// Decode `path` into RGBA8 pixels. Dispatches on the file extension: formats the
-/// `image` crate covers go straight through; the rest (PSD, …) shell out to the
-/// bundled `magick.exe`, which streams uncompressed PAM the `pnm` feature decodes.
-/// Returns a human-readable error string on failure (the caller warns + falls back
-/// to the slot's neutral 1×1 texture).
+/// Decode `path` into RGBA8 pixels. Reads the file once, then dispatches by magic
+/// bytes (with the extension as a fallback for signature-less formats like TGA):
+/// PSD → the psd_sdk FFI crate ([`review_psd`]); JPEG → zune's fast path; everything
+/// else → the `image` crate. Returns a human-readable error string on failure (the
+/// caller warns + falls back to the slot's neutral 1×1 texture).
 pub fn decode_image(path: &Path) -> Result<DecodedImage, String> {
+    let bytes =
+        std::fs::read(path).map_err(|error| format!("read {}: {error}", path.display()))?;
     let extension = path
         .extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.to_ascii_lowercase())
         .unwrap_or_default();
 
-    let image = if image_crate_handles(&extension) {
-        decode_via_image_crate(path)?
-    } else {
-        decode_via_magick(path)?
-    };
+    // PSD: layered source art. psd_sdk reads the merged/composited image (present
+    // when saved with "Maximize Compatibility"), the thing the viewer displays.
+    if bytes.starts_with(b"8BPS") || extension == "psd" {
+        return decode_psd(&bytes, path);
+    }
 
-    // Capture the source color type *before* the RGBA8 flatten, so the Tex
-    // viewport can report the file's real channel count + bit depth.
+    // JPEG: the fast path. If zune rejects it (e.g. a truncated/odd variant), fall
+    // through to the `image` crate rather than failing outright.
+    if (bytes.starts_with(&[0xFF, 0xD8, 0xFF]) || matches!(extension.as_str(), "jpg" | "jpeg"))
+        && let Ok(image) = decode_jpeg_zune(&bytes)
+    {
+        return Ok(image);
+    }
+
+    // Everything else (PNG/TGA/TIFF/HDR/BMP/GIF/PNM): the `image` crate.
+    dynamic_to_decoded(decode_via_image_crate(&bytes, &extension, path)?)
+}
+
+/// Flatten a decoded [`image::DynamicImage`] into a [`DecodedImage`], capturing the
+/// source color type *before* the RGBA8 conversion so the Tex viewport can report
+/// the file's real channel count + bit depth (invariant 5).
+fn dynamic_to_decoded(image: image::DynamicImage) -> Result<DecodedImage, String> {
     let color = image.color();
     let source_channels = color.channel_count().max(1);
     let source_bit_depth = (color.bits_per_pixel() / source_channels as u16) as u8;
@@ -204,78 +226,79 @@ pub fn decode_image(path: &Path) -> Result<DecodedImage, String> {
     })
 }
 
-/// Decode `path` with the `image` crate, guessing the format from the file's
-/// magic bytes rather than its extension. `image::open` trusts the extension
-/// alone, so a mislabeled file (e.g. a PNG saved as `.jpg` — common in game-asset
-/// exports) would be fed to the wrong decoder and fail; `with_guessed_format`
-/// sniffs the content and only falls back to the extension when it can't.
-fn decode_via_image_crate(path: &Path) -> Result<image::DynamicImage, String> {
-    image::ImageReader::open(path)
-        .map_err(|error| format!("open {}: {error}", path.display()))?
+/// Decode with the `image` crate, guessing the format from the content's magic
+/// bytes rather than the extension — so a mislabeled file (a PNG saved as `.jpg`,
+/// common in game-asset exports) reaches the right decoder. Signature-less formats
+/// (TGA) that content-sniffing misses fall back to the `extension` hint.
+fn decode_via_image_crate(
+    bytes: &[u8],
+    extension: &str,
+    path: &Path,
+) -> Result<image::DynamicImage, String> {
+    let mut reader = image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
-        .map_err(|error| format!("read {}: {error}", path.display()))?
+        .map_err(|error| format!("read {}: {error}", path.display()))?;
+    if reader.format().is_none()
+        && let Some(format) = image::ImageFormat::from_extension(extension)
+    {
+        reader.set_format(format);
+    }
+    reader
         .decode()
         .map_err(|error| format!("decode {}: {error}", path.display()))
 }
 
-/// Whether the `image` crate (with this workspace's enabled features) decodes a
-/// given extension directly. Everything else routes through `magick`.
-fn image_crate_handles(extension: &str) -> bool {
-    matches!(
-        extension,
-        "png" | "jpg" | "jpeg" | "tga" | "tif" | "tiff" | "bmp" | "gif" | "pnm" | "pam" | "ppm"
-    )
+/// Decode JPEG bytes with zune's speed-first options, normalized to RGBA8. JPEG is
+/// always 8-bit; the source channel count (1 grey / 3 RGB) is captured before the
+/// RGBA conversion for the stats panel.
+fn decode_jpeg_zune(bytes: &[u8]) -> Result<DecodedImage, String> {
+    use zune_core::bytestream::ZCursor;
+    use zune_core::colorspace::ColorSpace;
+    use zune_core::options::DecoderOptions;
+    use zune_image::image::Image;
+
+    // Speed is a project goal: enable platform intrinsics + unsafe fast paths.
+    let options = DecoderOptions::new_fast();
+    let mut image = Image::read(ZCursor::new(bytes), options)
+        .map_err(|error| format!("zune decode jpeg: {error}"))?;
+
+    // Source channel count for the stats panel, before we normalize to RGBA.
+    let source_channels = image.colorspace().num_components().clamp(1, 255) as u8;
+
+    image
+        .convert_color(ColorSpace::RGBA)
+        .map_err(|error| format!("zune convert jpeg to rgba: {error}"))?;
+
+    let (width, height) = image.dimensions();
+    let frame = image
+        .frames_ref()
+        .first()
+        .ok_or_else(|| "zune jpeg has no frames".to_string())?;
+    let rgba = frame.flatten::<u8>();
+
+    Ok(DecodedImage {
+        width: width as u32,
+        height: height as u32,
+        rgba,
+        source_channels,
+        source_bit_depth: 8,
+    })
 }
 
-/// Shell out to the bundled `magick.exe`, converting `path` to uncompressed PAM on
-/// stdout, and decode that with the `image` crate's `pnm` reader. PAM is chosen
-/// over PNG/MIFF deliberately (the materials plan): uncompressed + lossless so the
-/// write is near-instant even for 4K images, yet still read by a prebuilt crate.
-fn decode_via_magick(path: &Path) -> Result<image::DynamicImage, String> {
-    let magick = locate_magick()
-        .ok_or_else(|| "ImageMagick `magick` not found (bundle it beside the exe)".to_string())?;
-
-    // `magick <in> pam:-` writes a PAM stream to stdout. `[0]` would pick the first
-    // layer of a multi-layer file, but the bare path lets ImageMagick flatten — the
-    // common case for a single-image PSD/TIFF.
-    let output = Command::new(&magick)
-        .arg(path)
-        .arg("pam:-")
-        .output()
-        .map_err(|error| format!("run magick: {error}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "magick failed for {}: {}",
-            path.display(),
-            stderr.trim()
-        ));
-    }
-
-    image::load_from_memory_with_format(&output.stdout, image::ImageFormat::Pnm)
-        .map_err(|error| format!("decode magick PAM for {}: {error}", path.display()))
-}
-
-/// Locate the bundled `magick.exe`: first next to the running executable (where
-/// the installer ships it), then fall back to `magick` on `PATH`. `None` only when
-/// neither resolves (the caller then warns + falls back to the slot's neutral
-/// texture).
-fn locate_magick() -> Option<PathBuf> {
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        let candidate = dir.join(if cfg!(windows) {
-            "magick.exe"
-        } else {
-            "magick"
-        });
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    // Defer to PATH resolution by the OS when launching the bare command name.
-    Some(PathBuf::from("magick"))
+/// Decode a PSD's merged/composited image via the prebuilt psd_sdk FFI crate. The
+/// `unsafe`/FFI is fully contained in [`review_psd`] (invariant 9); this only maps
+/// its result into a [`DecodedImage`], reporting the source channel count + bit
+/// depth from the PSD header.
+fn decode_psd(bytes: &[u8], path: &Path) -> Result<DecodedImage, String> {
+    let psd = review_psd::decode_psd(bytes)
+        .map_err(|error| format!("decode {}: {error}", path.display()))?;
+    Ok(DecodedImage {
+        width: psd.width,
+        height: psd.height,
+        rgba: psd.rgba8,
+        source_channels: psd.channels.clamp(1, 255) as u8,
+        source_bit_depth: psd.bits_per_channel.clamp(1, 255) as u8,
+    })
 }
 
 /// Best-effort channel routing for a freshly-assigned slot, guessed from the
@@ -373,5 +396,51 @@ mod tests {
             suggested_channel(Path::new("wood_basecolor.png"), TextureSlot::BaseColor),
             ChannelSelect::Rgb
         );
+    }
+
+    /// A JPEG routes through the zune fast path: exercise `decode_image` end-to-end
+    /// on an encoded JPEG and confirm it comes back as a full RGBA8 buffer with the
+    /// source channel count reported (3 for RGB). JPEG is lossy, so this asserts
+    /// structure (dimensions / buffer size / channels), not exact pixel values.
+    #[test]
+    fn jpeg_decodes_via_zune_path() {
+        let mut src = image::RgbImage::new(4, 2);
+        for (x, y, pixel) in src.enumerate_pixels_mut() {
+            *pixel = image::Rgb([(x * 40) as u8, (y * 80) as u8, 60]);
+        }
+        let mut buf = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(src)
+            .write_to(&mut buf, image::ImageFormat::Jpeg)
+            .expect("encode jpeg fixture");
+
+        let path = std::env::temp_dir().join(format!("review_zune_{}.jpg", std::process::id()));
+        std::fs::write(&path, buf.into_inner()).expect("write temp jpeg");
+        let decoded = decode_image(&path);
+        let _ = std::fs::remove_file(&path);
+
+        let decoded = decoded.expect("zune should decode the jpeg");
+        assert_eq!((decoded.width, decoded.height), (4, 2));
+        assert_eq!(decoded.rgba.len(), 4 * 2 * 4);
+        assert_eq!(decoded.source_channels, 3);
+        assert_eq!(decoded.source_bit_depth, 8);
+    }
+
+    /// The prebuilt psd_sdk FFI decodes a real layered PSD's merged composite into a
+    /// tightly-packed RGBA8 buffer. Uses the committed fixture; skips gracefully if
+    /// it's absent so the suite still passes in a trimmed checkout.
+    #[test]
+    fn psd_fixture_decodes_to_rgba8() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/test_textures/T_Sides_D.psd");
+        if !path.exists() {
+            return;
+        }
+        let decoded = decode_image(&path).expect("psd_sdk should decode the merged composite");
+        assert!(decoded.width > 0 && decoded.height > 0);
+        assert_eq!(
+            decoded.rgba.len() as u32,
+            decoded.width * decoded.height * 4
+        );
+        assert!(decoded.source_bit_depth >= 8);
     }
 }

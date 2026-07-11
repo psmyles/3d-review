@@ -177,8 +177,8 @@ impl App {
     }
 
     /// Spawn a background thread that decodes `request`'s source image and posts the
-    /// result back to the event loop. Decoding (especially the `magick`-shelled PSD
-    /// path) can take seconds, so it must never run on the main thread.
+    /// result back to the event loop. Decoding (especially a large PSD composite or
+    /// a 4K image) can take a while, so it must never run on the main thread.
     fn spawn_decode(&self, request: TextureDecodeRequest) {
         let Some(proxy) = self.texture_proxy.clone() else {
             prof::msg("no event-loop proxy; cannot decode texture off-thread");

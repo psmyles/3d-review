@@ -67,13 +67,9 @@ Name: "desktopicon"; GroupDescription: "Additional icons:"; \
 ; The exe is self-contained — toolbar/window icons are include_bytes!-embedded,
 ; so there is no separate asset payload to ship.
 Source: "..\target\release\{#MyAppExe}"; DestDir: "{app}"; Flags: ignoreversion
-; Bundle the ImageMagick CLI for decoding source texture formats the Rust `image`
-; crate can't (PSD, multi-layer TIFF). Stage magick.exe (and any DLLs it needs)
-; in packaging\magick\ before building; the app locates it next to its own exe.
-; skipifsourcedoesntexist lets a build without it still produce a working
-; installer — those formats then warn + fall back to the slot's neutral texture.
-Source: "magick\*"; DestDir: "{app}"; \
-  Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
+; No external tools to ship: PSD is decoded in-process by the prebuilt psd_sdk FFI
+; crate (review-psd), JPEG by zune, and the rest by the Rust `image` crate — the
+; old bundled ImageMagick CLI is gone.
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"
