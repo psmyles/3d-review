@@ -1,0 +1,16 @@
+[package]
+name = "review-psd"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# This crate links a PREBUILT static library (`vendor/fire_psd.lib`) and includes
+# committed bindgen output (`src/bindings.rs`); it does NOT compile the vendored
+# psd_sdk C++ or run bindgen here. So it needs neither a C++ toolchain, libclang,
+# nor `cc`/`bindgen` build-deps — just the MSVC linker the workspace already uses.
+# See `vendor/NOTICE.txt` for how the `.lib` + bindings were produced and how to
+# regenerate them.
+build = "build.rs"
+
+[dependencies]

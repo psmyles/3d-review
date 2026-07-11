@@ -73,11 +73,19 @@ roadmap), and `TODO.md` (running notes).
 
 ### Rust-specific invariants
 
-9. **All `unsafe` and all C/FFI lives in `crates/import`** — *plus* the scoped
-   Direct3D 11 sites below. No `unsafe` leaks into `model` / `ui`, nor into
-   `render`'s geometry / material / camera modules. Before `slice::from_raw_parts`,
-   null-check the pointer and treat len 0 as empty (`checked_slice`). Free the
-   C scene on **both** success and error paths (no leak).
+9. **All `unsafe` and all C/FFI lives in `crates/import` and `crates/psd`** —
+   *plus* the scoped Direct3D 11 sites below. No `unsafe` leaks into `model` / `ui`,
+   nor into `render`'s geometry / material / camera modules. Before
+   `slice::from_raw_parts`, null-check the pointer and treat len 0 as empty
+   (`checked_slice`). Free the C scene on **both** success and error paths (no leak).
+   **Sanctioned exception — psd_sdk FFI** (`crates/psd`, `review-psd`): the C-ABI
+   bridge to the vendored psd_sdk C++ that decodes a PSD's merged composite (source
+   art), so the viewer reads layered PSDs without a bundled ImageMagick. It links a
+   **prebuilt** static lib + committed bindgen output (no `cc`/`bindgen`/libclang at
+   build time — see that crate's `vendor/NOTICE.txt`); the `unsafe` is confined to
+   its `decode_psd`, which validates header dimensions with checked arithmetic before
+   sizing the output buffer. `render`'s `texture.rs` calls it through the safe API
+   only — no `unsafe` there.
    **Sanctioned exception — Direct3D 11 / DXGI COM** (via the `windows` crate) is
    `unsafe` and pervasive in the renderer. It is confined to two places:
    `crates/render/src/rhi/` (the GPU-plumbing module — device, swapchain,
@@ -121,6 +129,11 @@ crates/
             (repr(C) mirror structs, checked_slice, model_from_bridge_scene),
             the vendored ufbx C + bridge, build.rs (cc, cfg(has_ufbx)).
             -> src/lib.rs, src/ufbx_bridge.c/.h, build.rs
+  psd/      review-psd: safe `decode_psd` over a C-ABI bridge to psd_sdk (C++),
+            returning a PSD's merged composite as RGBA8 (invariant 9's third FFI
+            site). Links a PREBUILT MSVC static lib (`vendor/fire_psd.lib`) +
+            committed bindgen output (`src/bindings.rs`); the link-only build.rs runs
+            no cc/bindgen. -> src/lib.rs, src/bindings.rs, build.rs, vendor/
   render/   review-render: per-view config/option types (ShadingMode,
             VertexColorMode, ActiveMaterial, CameraProjection, AntiAliasing,
             EnvironmentSettings, GtaoSettings, TonemapSettings, SceneDebugOptions,
@@ -149,7 +162,9 @@ crates/
             CPU vertex generation -> src/geometry/ (vertex/grid/mesh/select/
             debug_lines/uv); editable per-material table (cbuffer `b1` + `t5..t11` +
             aniso sampler) + path-keyed texture cache -> src/material/ (state / mode /
-            d3d); texture decode + filename channel auto-detect -> src/texture.rs;
+            d3d); source-texture decode (magic-byte dispatch: PSD via `review-psd`,
+            JPEG via zune's fast path, PNG/TGA/TIFF/HDR/BMP/GIF/PNM via the `image`
+            crate — no ImageMagick) + filename channel auto-detect -> src/texture.rs;
             the Tex viewport's own minimal image draw (`TexGpu` — a fullscreen-
             triangle pipeline + path-keyed mipped cache + channel-select/placement
             uniform, deliberately outside the scene MRT/tonemap path so the displayed
@@ -229,7 +244,8 @@ PATH so `cc` can compile `ufbx.c`).
 Pinned (workspace deps): `winit 0.30`, `windows 0.62` (Direct3D 11/DXGI), `egui`/
 `egui-winit 0.33`, `egui-directx11 0.12`, `glam 0.30`, `bytemuck 1`,
 `thiserror 2`, `rfd 0.15`, `image 0.25` (png + hdr + tga/tiff/jpeg/pnm), `half 2`,
-`cc 1` (build dep), `tracy-client 0.18`. `intel_tex_2` is a `bake`-only dep (CPU
+`zune-image`/`zune-core 0.5` (JPEG-only + simd; the texture fast path), `cc 1`
+(build dep), `tracy-client 0.18`. `intel_tex_2` is a `bake`-only dep (CPU
 BC6H encoder). Edition 2024.
 
 > **MSRV:** `rust-version = "1.88"` — the floor required by `egui 0.33`.

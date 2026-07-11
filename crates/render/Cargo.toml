@@ -20,6 +20,13 @@ windows = { workspace = true, features = [
 ] }
 half.workspace = true
 image.workspace = true
+# PSD source art is decoded through the prebuilt psd_sdk FFI crate (invariant 9's
+# third sanctioned FFI site) — replaces the old bundled-ImageMagick shell-out.
+review-psd.workspace = true
+# zune is the fast JPEG decode path (see `texture.rs`); `image` stays primary for
+# the other source formats.
+zune-core.workspace = true
+zune-image.workspace = true
 # Used only by the offline `bake_ibl` tool (the `bake` feature), never linked into
 # the shipping viewer: `intel_tex_2` BC6H-compresses the baked IBL cubes (it ships
 # prebuilt ISPC kernels, so no ISPC/libclang toolchain is needed — just the MSVC

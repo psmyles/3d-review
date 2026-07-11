@@ -16,8 +16,9 @@
     fine for a thumbnail. Output is a fixed THUMB_W x THUMB_H (2:1) PNG, matching
     the dropdown's 2:1 thumbnail slot.
 
-    Requires the ImageMagick CLI (`magick`). It is searched for on PATH first,
-    then in packaging\magick\ (the copy the installer bundles).
+    Requires the ImageMagick CLI (`magick`) on the BUILD machine only (this is a
+    dev-time asset-gen step; the app no longer bundles or ships ImageMagick). It is
+    searched for on PATH first, then in packaging\magick\.
 
 .EXAMPLE
     pwsh packaging\generate-hdr-thumbnails.ps1
