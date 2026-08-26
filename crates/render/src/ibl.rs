@@ -334,6 +334,47 @@ fn compress_bc6h_face(size: u32, rgba_f16: &[u8]) -> Vec<u8> {
     intel_tex_2::bc6h::compress_blocks(&intel_tex_2::bc6h::very_slow_settings(), &surface)
 }
 
+/// Reject a baked buffer that is a single value repeated — the signature of a pass
+/// that rendered nothing (a null SRV, an unbound target, a cleared-but-never-drawn
+/// surface).
+///
+/// This exists because the bake **overwrites committed assets in place**: a silent
+/// failure here doesn't just produce a bad build, it destroys known-good maps that
+/// took a GPU run to make. That is exactly what a D3D11 RTV/SRV hazard did to the
+/// irradiance cubes once — every pass reported success and wrote a flat black cube.
+/// Failing loudly costs nothing and makes that class of bug impossible to miss.
+///
+/// `chunk` is the unit a single value occupies: 16 bytes for a BC6H block, 4 for an
+/// `Rg16Float` texel. A buffer of one chunk or less can't be judged and passes.
+///
+/// Note the deliberate limit: this catches *dead* output, not merely wrong output.
+/// A pass that samples the wrong source still produces varied bytes and gets through.
+#[cfg(feature = "bake")]
+fn reject_degenerate(
+    label: &str,
+    bytes: &[u8],
+    chunk: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut chunks = bytes.chunks_exact(chunk);
+    let Some(first) = chunks.next() else {
+        return Err(format!("{label}: bake produced no data").into());
+    };
+    if chunks.len() > 0 && chunks.all(|other| other == first) {
+        return Err(format!(
+            concat!(
+                "{}: every {}-byte unit of the {} byte output is identical - the pass ",
+                "rendered nothing. Check for an RTV/SRV conflict (a source still bound as ",
+                "a render target binds as a null SRV) before trusting this bake."
+            ),
+            label,
+            chunk,
+            bytes.len()
+        )
+        .into());
+    }
+    Ok(())
+}
+
 /// Read a whole rendered cube (all mips × 6 faces) back, BC6H-compress each
 /// subresource, and write it to `path` in mip-major, faces-contiguous order — the
 /// exact byte layout `Texture::cube_block_compressed` re-reads at runtime.
@@ -362,6 +403,12 @@ fn write_cube(
             data.extend_from_slice(&compress_bc6h_face(size, &raw));
         }
     }
+    // Validate before the write, so a bad bake leaves the previous good asset intact.
+    reject_degenerate(
+        &path.file_name().unwrap_or_default().to_string_lossy(),
+        &data,
+        BC6H_BLOCK_BYTES as usize,
+    )?;
     std::fs::write(path, &data)?;
     Ok(())
 }
@@ -422,6 +469,7 @@ pub fn bake_ibl_assets() -> Result<(), Box<dyn std::error::Error>> {
         BRDF_FORMAT,
         RG16F_BPP,
     )?;
+    reject_degenerate("T_IBL_BRDF.bin", &brdf_bytes, RG16F_BPP as usize)?;
     std::fs::write(out_dir.join("T_IBL_BRDF.bin"), &brdf_bytes)?;
 
     for (index, environment) in EnvironmentMap::ALL.iter().enumerate() {
@@ -437,8 +485,15 @@ pub fn bake_ibl_assets() -> Result<(), Box<dyn std::error::Error>> {
             baker.draw_fullscreen();
         }
 
-        // Env cube -> diffuse irradiance (6 faces). Binding the irradiance face RTV
-        // first releases the env cube as a render target, so it's free to sample.
+        // Env cube -> diffuse irradiance (6 faces).
+        //
+        // The env cube's last face is still bound as a *render target* from the loop
+        // above, and D3D11 refuses to bind a resource as an SRV while it is writable:
+        // it resolves the hazard by silently nulling the SRV, so the convolution would
+        // sample nothing and bake a flat black cube. Release the render target first.
+        // (The prefilter pass below is safe only by accident — by then the irradiance
+        // target has displaced the env cube from the RTV slot.)
+        baker.unbind_targets();
         irradiance_pipeline.bind(ctx);
         env_cube.bind_ps_srv(ctx, 1);
         for (face, basis) in FACE_BASES.iter().enumerate() {
