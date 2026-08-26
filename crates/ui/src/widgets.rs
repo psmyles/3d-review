@@ -169,6 +169,97 @@ pub(crate) fn segment_button(
     response
 }
 
+/// A full-width tab strip: one equal-width cell per label, all sharing a single
+/// baseline hairline, with the active tab marked by an accent underline and a
+/// brightened label. Hovering an inactive tab lifts it with the standard hover
+/// fill and a pointing-hand cursor.
+///
+/// The label is drawn in the ambient `TextStyle::Button` font — the same one the
+/// stock `selectable_label` rows beneath the strip resolve — so the tabs and the
+/// list they head always read at one size. For the same reason every measurement
+/// here is in egui **points**, not DPI-scaled logical pixels: the strip has to
+/// track the surrounding stock widgets, not a fixed physical size.
+///
+/// This is the `egui_tabs` look, painted here rather than pulled in: that crate
+/// pins `egui 0.29`/`0.30`, and this workspace is on 0.33 (the ceiling set by
+/// `egui-directx11`), so linking it would fork a second `egui` into the graph.
+/// It also parks the selection in `ctx` temp data, which would duplicate the
+/// `UiState` field that already owns it (invariant 2).
+///
+/// Returns the index of the tab clicked this frame, if any; the caller owns the
+/// selection.
+pub(crate) fn tab_bar(ui: &mut egui::Ui, labels: &[&str], selected: usize) -> Option<usize> {
+    if labels.is_empty() {
+        return None;
+    }
+
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    // Tall enough to clear the label with the standard tab padding above and
+    // below it, and never shorter than the strip's floor.
+    let height = (ui.text_style_height(&egui::TextStyle::Button) + 2.0 * size::OUTLINER_TAB_PAD_Y)
+        .max(size::OUTLINER_TAB_HEIGHT);
+    let underline = size::OUTLINER_TAB_UNDERLINE;
+    let (strip, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::hover(),
+    );
+    let cell_width = strip.width() / labels.len() as f32;
+    // The underline is centred on the rail, so both share this baseline.
+    let baseline = strip.bottom() - underline * 0.5;
+    let painter = ui.painter().clone();
+    let mut clicked = None;
+
+    // One continuous rail under the whole strip, so the active underline reads as
+    // a lit segment of it rather than a floating bar.
+    painter.hline(
+        strip.x_range(),
+        baseline,
+        egui::Stroke::new(size::HAIRLINE, color::DIVIDER),
+    );
+
+    for (index, label) in labels.iter().enumerate() {
+        let cell = egui::Rect::from_min_size(
+            egui::pos2(strip.left() + cell_width * index as f32, strip.top()),
+            egui::vec2(cell_width, height),
+        );
+        let response = ui.interact(cell, ui.id().with(("tab", index)), egui::Sense::click());
+        let active = index == selected;
+
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            if !active {
+                painter.rect_filled(cell, size::TILE_CORNER_RADIUS, color::HOVER_BG);
+            }
+        }
+        if response.clicked() {
+            clicked = Some(index);
+        }
+
+        // Centre the label in the space above the rail, not in the whole cell.
+        painter.text(
+            egui::pos2(cell.center().x, (cell.top() + baseline) * 0.5),
+            egui::Align2::CENTER_CENTER,
+            label,
+            font.clone(),
+            if active {
+                color::TEXT_PRIMARY
+            } else {
+                color::TEXT_SEGMENT_IDLE
+            },
+        );
+
+        if active {
+            painter.hline(
+                cell.x_range(),
+                baseline,
+                egui::Stroke::new(underline, color::ACCENT),
+            );
+        }
+    }
+
+    clicked
+}
+
 /// A recessed group shell that hosts a row of toolbar tiles, laid out
 /// left-to-right with the standard inter-icon gap.
 pub(crate) fn toolbar_group_shell(

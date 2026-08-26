@@ -212,9 +212,15 @@ pub mod size {
     pub const TOOL_WINDOW_WIDTH: f32 = 300.0;
     /// Max height of the Outliner's scrolling list before it scrolls internally.
     pub const TOOL_WINDOW_LIST_MAX_H: f32 = 300.0;
-    /// Height of an Outliner tab (Geometry / Materials), painted as text with an
-    /// active-underline rather than a button.
-    pub const OUTLINER_TAB_HEIGHT: f32 = 28.0;
+    /// Minimum height of an Outliner tab (Geometry / Materials), painted as text
+    /// with an active-underline rather than a button. In egui **points**, not
+    /// logical px: the strip sizes off the ambient button font (see
+    /// [`OUTLINER_TAB_PAD_Y`]) so it tracks the stock rows below it, and this is
+    /// only the floor that padding is measured against.
+    pub const OUTLINER_TAB_HEIGHT: f32 = 34.0;
+    /// Breathing room above and below an Outliner tab's label, in points. The
+    /// strip's height is the label's row height plus twice this.
+    pub const OUTLINER_TAB_PAD_Y: f32 = 9.0;
     /// Thickness of the active Outliner tab's underline accent.
     pub const OUTLINER_TAB_UNDERLINE: f32 = 2.0;
     /// Width of the visibility-checkbox column in an Outliner geometry row (the

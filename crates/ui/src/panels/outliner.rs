@@ -15,19 +15,25 @@ use review_model::{ModelData, SceneNode};
 use review_render::Selection;
 
 use crate::state::{OutlinerTab, UiState};
+use crate::theme::size;
+use crate::widgets;
+
+/// The Outliner's tabs, in strip order. The index into this array is what
+/// [`widgets::tab_bar`] hands back on a click.
+const TABS: [OutlinerTab; 2] = [OutlinerTab::Geometry, OutlinerTab::Materials];
 
 pub(crate) fn body(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData) {
-    // ── Tabs: Geometry / Materials, as stock selectable labels ──────────────
-    ui.horizontal(|ui| {
-        ui.selectable_value(&mut state.outliner_tab, OutlinerTab::Geometry, "Geometry");
-        let materials_label = format!("Materials ({})", state.materials_snapshot.len());
-        ui.selectable_value(
-            &mut state.outliner_tab,
-            OutlinerTab::Materials,
-            materials_label,
-        );
-    });
-    ui.separator();
+    // ── Tabs: Geometry / Materials, as a full-width underlined tab strip ─────
+    let materials_label = format!("Materials ({})", state.materials_snapshot.len());
+    let labels = ["Geometry", materials_label.as_str()];
+    let active = TABS
+        .iter()
+        .position(|tab| *tab == state.outliner_tab)
+        .unwrap_or(0);
+    if let Some(index) = widgets::tab_bar(ui, &labels, active) {
+        state.outliner_tab = TABS[index];
+    }
+    ui.add_space(size::PANEL_ROW_GAP);
 
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])

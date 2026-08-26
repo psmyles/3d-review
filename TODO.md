@@ -1,0 +1,2 @@
+- Texture view in UV mode
+- have outliner buttons take full width
