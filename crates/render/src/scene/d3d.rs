@@ -15,8 +15,9 @@ use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11DeviceContext};
 
 use crate::geometry::{
     bounding_box_lines, face_normal_lines, model_mesh, model_pivot, pivot_half_extent, pivot_lines,
-    scene_lines, selection_geometry, uv_fill_triangles, uv_grid_lines, uv_wireframe_lines,
-    vertex_normal_lines, visible_geometry, wireframe_lines,
+    scene_lines, selection_geometry, skeleton_fill_triangles, skeleton_lines, skin_weight_vertices,
+    uv_fill_triangles, uv_grid_lines, uv_wireframe_lines, vertex_normal_lines, visible_geometry,
+    wireframe_lines,
 };
 use crate::ibl::{IblD3d, PREFILTER_MAX_LOD};
 use crate::material::{
@@ -36,7 +37,7 @@ use crate::{
 
 use super::gpu_types::{
     GtaoUniforms, PostUniforms, SceneUniforms, buffer_view_value, shading_mode_value,
-    vertex_color_value,
+    skin_weight_value, vertex_color_value,
 };
 use crate::rhi::gpu_profiler::{self, GpuProfiler, Zone};
 
@@ -126,6 +127,34 @@ struct PivotParams {
     half: f32,
 }
 
+/// Opacity of the skeleton's solid octahedron fills, as a multiplier on the bone
+/// color's own alpha. Low enough that the character reads through the rig, high
+/// enough that a bone's volume and orientation are legible.
+const SKELETON_FILL_ALPHA: f32 = 0.35;
+
+/// Baked parameters for the skeleton overlay. The selected set is part of the key
+/// because the highlight color is baked per bone into the vertex buffer (unlike
+/// the mesh selection flash, whose color rides in a uniform) — a skeleton is a few
+/// thousand vertices, so rebuilding it on an Outliner click is far cheaper than
+/// carrying a per-bone lookup into the shader.
+#[derive(PartialEq)]
+struct SkeletonParams {
+    model_revision: u64,
+    selected: Vec<u32>,
+    scale: f32,
+    color: [f32; 4],
+    selected_color: [f32; 4],
+}
+
+/// Bake key for the skin-weight heat map. Only the model and the selected bone
+/// set change its bytes — the ramp is fixed, and the neutral base it blends from
+/// is a shader constant.
+#[derive(PartialEq)]
+struct SkinWeightParams {
+    model_revision: u64,
+    selected: Vec<u32>,
+}
+
 /// Bake key for the selection draw list — the hidden set because hiding a selected
 /// mesh drops it, the mode because Unique re-groups the solo list by part.
 #[derive(PartialEq)]
@@ -176,6 +205,16 @@ struct DerivedViews {
     /// is the pivot position + half-length (both model-derived).
     pivot_buf: Option<VertexBuffer>,
     pivot_baked: Option<PivotParams>,
+    /// Vertex buffer parallel to the mesh's own, colored by the selected bones'
+    /// influence, drawn *in place of* the mesh while the Skin Weights material is
+    /// active. `None` in every other mode (invariant 3).
+    weights_buf: Option<VertexBuffer>,
+    weights_baked: Option<SkinWeightParams>,
+    /// The skeleton overlay's solid octahedron fills and their outlines; both
+    /// `None` while the toggle is off. Drawn always-on-top (X-ray).
+    skeleton_fill_buf: Option<VertexBuffer>,
+    skeleton_line_buf: Option<VertexBuffer>,
+    skeleton_baked: Option<SkeletonParams>,
     /// The model's UV edges for the active channel; built per
     /// `(model_revision, channel)`.
     uv_wireframe_buf: Option<VertexBuffer>,
@@ -200,6 +239,8 @@ pub(crate) struct SceneGpu {
     /// Always-on-top line variant (depth compare `Always`, no write): used by the
     /// pivot marker so it shows through the mesh rather than being occluded.
     line_overlay_pipeline: Pipeline,
+    /// Always-on-top triangle fill, for the skeleton overlay's octahedra.
+    fill_overlay_pipeline: Pipeline,
     mesh_pipeline: Pipeline,
     mesh_double_sided_pipeline: Pipeline,
     skybox_pipeline: Pipeline,
@@ -387,6 +428,7 @@ impl SceneGpu {
             gtao_uniforms,
             line_pipeline: scene.line,
             line_overlay_pipeline: scene.line_overlay,
+            fill_overlay_pipeline: scene.fill_overlay,
             mesh_pipeline: scene.mesh,
             mesh_double_sided_pipeline: scene.mesh_double_sided,
             skybox_pipeline: scene.skybox,
@@ -501,6 +543,7 @@ impl SceneGpu {
         let scene = build_scene_pipelines(device, sample_count)?;
         self.line_pipeline = scene.line;
         self.line_overlay_pipeline = scene.line_overlay;
+        self.fill_overlay_pipeline = scene.fill_overlay;
         self.mesh_pipeline = scene.mesh;
         self.mesh_double_sided_pipeline = scene.mesh_double_sided;
         self.skybox_pipeline = scene.skybox;
@@ -536,15 +579,20 @@ impl SceneGpu {
         );
         self.uniforms.update(ctx, &uniforms)?;
 
-        // The buffer-inspection view bypasses lighting + the composite's tone
-        // map/GTAO entirely (the scene shader emits final display pixels), so the
-        // composite blits straight through and the GTAO passes are skipped.
-        let buffer_view_active = frame.debug.active_material == ActiveMaterial::Buffers;
+        // The data-inspection views bypass lighting + the composite's tone map and
+        // GTAO entirely (the scene shader emits final display pixels), so the
+        // composite blits straight through and the GTAO passes are skipped. Both
+        // the buffer views and the skin-weight heat map want that: a value shown
+        // through a tone curve is no longer the value.
+        let flat_display_active = matches!(
+            frame.debug.active_material,
+            ActiveMaterial::Buffers | ActiveMaterial::SkinWeights
+        );
 
-        // GTAO runs only when enabled, a mesh is present, and we're not in the
-        // flat buffer-inspection view; computed up front so it also drives the GPU
+        // GTAO runs only when enabled, a mesh is present, and we're not in a flat
+        // data-inspection view; computed up front so it also drives the GPU
         // profiler's per-frame zone mask.
-        let gtao_active = frame.gtao.enabled && self.mesh.is_some() && !buffer_view_active;
+        let gtao_active = frame.gtao.enabled && self.mesh.is_some() && !flat_display_active;
 
         // Arm the GPU profiler (lazily, only under `--tracy` with a running client),
         // then open this frame's timing window. Absent on a normal launch, so the
@@ -577,7 +625,7 @@ impl SceneGpu {
             frame.background,
             gtao_active,
             frame.tonemap,
-            buffer_view_active,
+            flat_display_active,
         );
         self.zone_begin(ctx, Zone::Composite);
         self.record_composite(gpu, &post, gtao_active.then_some(&self.gtao_blur))?;
@@ -635,6 +683,20 @@ impl SceneGpu {
         // 3): each view's buffer exists only while its toggle is on, rebuilt live
         // when its baked params (color / length / hidden set / scope) drift.
         self.sync_line_views(device, frame.model, frame.debug, frame.hidden_meshes)?;
+        self.sync_skeleton(
+            device,
+            frame.model,
+            frame.model_revision,
+            frame.debug,
+            frame.selected_bones,
+        )?;
+        self.sync_skin_weights(
+            device,
+            frame.model,
+            frame.model_revision,
+            frame.debug,
+            frame.selected_bones,
+        )?;
 
         // Build (or free) the selected-triangle draw list (the solo isolate list +
         // the highlight-flash fill source) and the per-mesh visibility filter, when
@@ -721,7 +783,14 @@ impl SceneGpu {
                 &self.mesh_pipeline
             };
             pipeline.bind(ctx);
-            mesh.vertices.bind(ctx);
+            // The skin-weight heat map is a drop-in replacement for the mesh's
+            // vertex buffer: same length, same order, so the index buffer, the
+            // per-material ranges and the solo / visibility lists below all stay
+            // valid. It keeps the real normals (the shader Lambert-shades it) and
+            // is selected by `projection_params.w`, so the material bound per range
+            // is simply ignored.
+            let vertex_source = self.views.weights_buf.as_ref().unwrap_or(&mesh.vertices);
+            vertex_source.bind(ctx);
             // Solo draws only the selection (empty → nothing); visible draws the
             // filtered list (None while active means every mesh is hidden → nothing);
             // otherwise the whole mesh.
@@ -777,6 +846,21 @@ impl SceneGpu {
             self.line_overlay_pipeline.bind(ctx);
             pivot.bind(ctx);
             gpu.draw(pivot.count());
+        }
+
+        // Skeleton overlay: translucent octahedron fills first, then their opaque
+        // outlines on top, both always-on-top so the rig reads through the
+        // character it deforms. The per-bone selection tint is already baked into
+        // these buffers (see `sync_skeleton`).
+        if let Some(fill) = &self.views.skeleton_fill_buf {
+            self.fill_overlay_pipeline.bind(ctx);
+            fill.bind(ctx);
+            gpu.draw(fill.count());
+        }
+        if let Some(lines) = &self.views.skeleton_line_buf {
+            self.line_overlay_pipeline.bind(ctx);
+            lines.bind(ctx);
+            gpu.draw(lines.count());
         }
 
         // Selection highlight flash: a flat bright-color fill redrawing the selected
@@ -1186,6 +1270,105 @@ impl SceneGpu {
         Ok(())
     }
 
+    /// Build (or free) the skin-weight heat map's vertex buffer.
+    ///
+    /// Active only while the Skin Weights material is chosen *and* the model
+    /// actually carries skin — a model without it falls back to the ordinary mesh
+    /// rather than showing a blank one. Freed the moment the mode changes
+    /// (invariant 3), so the steady-state shaded view holds nothing.
+    ///
+    /// Rebuilt on every change of the selected bone set, which is what makes the
+    /// heat map follow the Outliner. That is a full vertex re-upload (~48 bytes
+    /// per render vertex); the alternative — a per-vertex weight lookup in the
+    /// shader — would need a structured buffer and a capability gate (invariant 4)
+    /// to save a cost only paid on an explicit click.
+    fn sync_skin_weights(
+        &mut self,
+        device: &ID3D11Device,
+        model: &ModelData,
+        model_revision: u64,
+        debug: SceneDebugOptions,
+        selected_bones: &[u32],
+    ) -> windows::core::Result<()> {
+        let active = debug.active_material == ActiveMaterial::SkinWeights && model.skin.is_some();
+        let want = active.then(|| SkinWeightParams {
+            model_revision,
+            selected: selected_bones.to_vec(),
+        });
+        if self.views.weights_baked == want {
+            return Ok(());
+        }
+        self.views.weights_buf = match &want {
+            Some(params) => {
+                optional_vertex_buffer(device, &skin_weight_vertices(model, &params.selected))?
+            }
+            None => None,
+        };
+        self.views.weights_baked = want;
+        Ok(())
+    }
+
+    /// Build (or free) the skeleton overlay's two buffers — the octahedron fills
+    /// and their outlines — following the same build-on-demand / free-on-off
+    /// discipline as the line views (invariant 3): while the toggle is off both are
+    /// `None` and the overlay costs nothing.
+    ///
+    /// The bake key carries the *selected* bone set alongside the colors, because
+    /// the highlight is baked per bone into the vertex color rather than applied
+    /// from a uniform. That means an Outliner click rebuilds these buffers — the
+    /// same trade `sync_selection` makes, and cheap here: a 72-bone rig is a few
+    /// thousand vertices.
+    fn sync_skeleton(
+        &mut self,
+        device: &ID3D11Device,
+        model: &ModelData,
+        model_revision: u64,
+        debug: SceneDebugOptions,
+        selected_bones: &[u32],
+    ) -> windows::core::Result<()> {
+        let want = debug.show_skeleton.then(|| SkeletonParams {
+            model_revision,
+            selected: selected_bones.to_vec(),
+            scale: debug.skeleton_joint_scale,
+            color: debug.skeleton_color,
+            selected_color: debug.skeleton_selected_color,
+        });
+        if self.views.skeleton_baked == want {
+            return Ok(());
+        }
+        match &want {
+            Some(params) => {
+                self.views.skeleton_fill_buf = optional_vertex_buffer(
+                    device,
+                    &skeleton_fill_triangles(
+                        model,
+                        &params.selected,
+                        params.scale,
+                        params.color,
+                        params.selected_color,
+                        SKELETON_FILL_ALPHA,
+                    ),
+                )?;
+                self.views.skeleton_line_buf = optional_vertex_buffer(
+                    device,
+                    &skeleton_lines(
+                        model,
+                        &params.selected,
+                        params.scale,
+                        params.color,
+                        params.selected_color,
+                    ),
+                )?;
+            }
+            None => {
+                self.views.skeleton_fill_buf = None;
+                self.views.skeleton_line_buf = None;
+            }
+        }
+        self.views.skeleton_baked = want;
+        Ok(())
+    }
+
     /// The per-triangle grouping key for `mode`: the cached mesh-part key in Unique
     /// mode (when the model carries per-triangle node info), else `None` to group by
     /// material slot. Call after `sync_unique_parts`.
@@ -1322,6 +1505,7 @@ impl SceneGpu {
 struct ScenePipelineSet {
     line: Pipeline,
     line_overlay: Pipeline,
+    fill_overlay: Pipeline,
     mesh: Pipeline,
     mesh_double_sided: Pipeline,
     skybox: Pipeline,
@@ -1442,6 +1626,31 @@ fn build_scene_pipelines(
         },
     )?;
 
+    // Skeleton octahedron fills: the same flat overlay path the lines use (zero
+    // normals -> `fs_main`'s overlay branch), but as triangles and with
+    // `DepthCompare::Always` so the bones read *through* the character. A skeleton
+    // lives inside its mesh, so depth-testing it would hide the entire thing —
+    // the same reasoning as the pivot marker's `line_overlay` above. Double-sided,
+    // since an octahedron is viewed from every angle as the camera orbits.
+    let fill_overlay = Pipeline::new(
+        device,
+        &PipelineDesc {
+            vs: SCENE_VS,
+            ps: SCENE_MESH_PS,
+            input: &SCENE_VERTEX_LAYOUT,
+            topology: Topology::TriangleList,
+            cull: Cull::None,
+            depth: DepthState {
+                test: true,
+                write: false,
+                compare: DepthCompare::Always,
+            },
+            blend: BlendMode::AlphaBlend,
+            depth_bias: DepthBias::default(),
+            sample_count,
+        },
+    )?;
+
     // Selection flash: `fs_selection` flat fill, depth-tested (Reversed-Z) but no
     // depth write, so it's occluded by geometry in front yet wins over the coplanar
     // surface it tints.
@@ -1467,6 +1676,7 @@ fn build_scene_pipelines(
     Ok(ScenePipelineSet {
         line,
         line_overlay,
+        fill_overlay,
         mesh,
         mesh_double_sided,
         skybox,
@@ -1599,7 +1809,8 @@ fn scene_uniforms(
             environment.rotation_degrees.to_radians(),
             // `z` carries the active buffer-inspection view index (-1 when off).
             buffer_view_value(debug),
-            0.0,
+            // `w` flags the skin-weight heat map.
+            skin_weight_value(debug),
         ],
         view: camera.view_matrix().to_cols_array_2d(),
         selection_color,

@@ -155,7 +155,8 @@ pub(crate) const ICON_INSPECTOR: AppIcon = AppIcon {
 
 /// Per-[`review_model::NodeKind`] row glyphs for the Outliner's scene tree, and
 /// for the type-filter toggle row above it. Resolved by
-/// [`crate::panels::outliner::kind_icon`].
+/// [`crate::panels::outliner::kind_icon`]. [`ICON_NODE_BONE`] doubles as the
+/// toolbar's skeleton-overlay glyph, so a bone reads identically everywhere.
 pub(crate) const ICON_NODE_MESH: AppIcon = AppIcon {
     id: "icon_node_mesh",
     png_bytes: include_bytes!("../../../assets/icons/icon_node_mesh.png"),
@@ -188,19 +189,8 @@ pub(crate) const ICON_TREE_VIEW: AppIcon = AppIcon {
     png_bytes: include_bytes!("../../../assets/icons/icon_tree_view.png"),
 };
 
-/// "Skeleton" — the viewport bone overlay toggle. Only shown for a model that
-/// actually carries bones.
-// Wired up by the skeleton overlay's toolbar button.
-#[allow(dead_code)]
-pub(crate) const ICON_SKELETON: AppIcon = AppIcon {
-    id: "icon_skeleton",
-    png_bytes: include_bytes!("../../../assets/icons/icon_skeleton.png"),
-};
-
 /// "Skin Weights" — the influence heat-map material mode. Only shown for a
 /// skinned model.
-// Wired up by the skin-weight material mode's toolbar radio.
-#[allow(dead_code)]
 pub(crate) const ICON_SKIN_WEIGHTS: AppIcon = AppIcon {
     id: "icon_skin_weights",
     png_bytes: include_bytes!("../../../assets/icons/icon_skin_weights.png"),

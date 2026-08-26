@@ -564,6 +564,10 @@ pub struct SceneFrame<'a> {
     pub anti_aliasing: AntiAliasing,
     pub selection: SelectionView,
     pub hidden_meshes: &'a [u32],
+    /// Bone nodes selected in the Outliner (sorted, deduplicated node indices).
+    /// Drives the skeleton overlay's persistent highlight and the skin-weight heat
+    /// map; empty when no bone is selected.
+    pub selected_bones: &'a [u32],
     pub background: ViewportBackground,
 }
 

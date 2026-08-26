@@ -108,6 +108,21 @@ pub mod color {
     /// shaded model and the grid).
     pub const BOUNDING_BOX_DEFAULT: Color32 = Color32::from_rgb(255, 205, 64);
 
+    /// Default skeleton-overlay bone color: a bright cyan-blue that separates
+    /// from both skin tones and the orange selection highlight.
+    pub const SKELETON_DEFAULT: Color32 = Color32::from_rgb(89, 184, 255);
+
+    /// Swatch palette offered for the skeleton bone color row: the default,
+    /// white, black, amber, magenta, green.
+    pub const SKELETON_SWATCHES: [Color32; 6] = [
+        SKELETON_DEFAULT,
+        Color32::WHITE,
+        Color32::BLACK,
+        Color32::from_rgb(255, 205, 64),
+        Color32::from_rgb(255, 96, 216),
+        Color32::from_rgb(29, 255, 27),
+    ];
+
     /// Swatch palette offered for the normal-line color rows. Includes both
     /// normal-view defaults so either can be restored by reset.
     pub const NORMAL_SWATCHES: [Color32; 5] = [

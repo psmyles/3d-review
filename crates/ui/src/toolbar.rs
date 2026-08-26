@@ -6,10 +6,10 @@ use review_render::{ActiveMaterial, ShadingMode, UvShadingMode};
 
 use crate::assets::{
     ICON_AXIS_GIZMO, ICON_BACKFACE, ICON_BBOX, ICON_BUFFERS, ICON_GRID, ICON_INSPECTOR,
-    ICON_NORMALS_FACE, ICON_NORMALS_VERTEX, ICON_OUTLINER, ICON_PIVOT, ICON_SHADING_SHADED,
-    ICON_SHADING_TEXTURE, ICON_SHADING_UNLIT, ICON_SHADING_WIRE, ICON_SHADING_WIRE_ONLY, ICON_UV,
-    ICON_UV_ISLANDS, ICON_UV_SHADED, ICON_UV_WIRE, ICON_VERTEX_COLORS, ICON_VIEW_ORTHO,
-    ICON_VIEW_PERSPECTIVE,
+    ICON_NODE_BONE, ICON_NORMALS_FACE, ICON_NORMALS_VERTEX, ICON_OUTLINER, ICON_PIVOT,
+    ICON_SHADING_SHADED, ICON_SHADING_TEXTURE, ICON_SHADING_UNLIT, ICON_SHADING_WIRE,
+    ICON_SHADING_WIRE_ONLY, ICON_SKIN_WEIGHTS, ICON_UV, ICON_UV_ISLANDS, ICON_UV_SHADED,
+    ICON_UV_WIRE, ICON_VERTEX_COLORS, ICON_VIEW_ORTHO, ICON_VIEW_PERSPECTIVE,
 };
 use crate::state::{
     OptionPanel, TextureChannelView, TexturePoolEntry, UiState, ViewProjectionMode, WorkspaceMode,
@@ -44,6 +44,7 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
     let single_icon_group_width = theme::px(ctx, size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH);
     let triple_icon_group_width = theme::px(ctx, size::TOOLBAR_TRIPLE_ICON_GROUP_WIDTH);
     let quad_icon_group_width = theme::px(ctx, size::TOOLBAR_QUAD_ICON_GROUP_WIDTH);
+    let quint_icon_group_width = theme::px(ctx, size::TOOLBAR_QUINT_ICON_GROUP_WIDTH);
     let tools_group_width = theme::px(ctx, size::TOOLBAR_TOOLS_GROUP_WIDTH);
     let mode_group_width = theme::px(ctx, size::TOOLBAR_MODE_GROUP_WIDTH);
 
@@ -98,7 +99,14 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                         ui.set_height(group_height);
                         ui.spacing_mut().item_spacing.x = group_spacing;
                         draw_shading_group(ui, ctx, state, shading_group_width);
-                        draw_material_group(ui, ctx, state, material_group_width);
+                        // One tile wider when the model carries skin weights, so
+                        // the extra radio has room.
+                        let material_width = if state.has_skin {
+                            quint_icon_group_width
+                        } else {
+                            material_group_width
+                        };
+                        draw_material_group(ui, ctx, state, material_width);
                         draw_normals_group(ui, ctx, state, normals_group_width);
                     },
                 );
@@ -149,7 +157,14 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                     ui.spacing_mut().item_spacing.x = group_spacing;
                     match state.mode {
                         WorkspaceMode::ThreeD => {
-                            draw_view_group(ui, ctx, state, quad_icon_group_width);
+                            // The skeleton toggle only exists for a rigged model, so
+                            // the group is one tile narrower without it.
+                            let view_group_width = if state.has_bones {
+                                quint_icon_group_width
+                            } else {
+                                quad_icon_group_width
+                            };
+                            draw_view_group(ui, ctx, state, view_group_width);
                             draw_projection_group(ui, ctx, state, single_icon_group_width);
                             draw_windows_group(ui, ctx, state, tools_group_width);
                         }
@@ -241,9 +256,9 @@ fn draw_uv_shading_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiS
 }
 
 /// Active-material group: a radio selection of which material the filled faces
-/// show — source material, UV checker, vertex colors, or a buffer-inspection view.
-/// The UV-checker, vertex-color and buffers buttons each retain their right-click
-/// options panel.
+/// show — source material, UV checker, vertex colors, a buffer-inspection view,
+/// or (for a skinned model only) the skin-weight heat map. The UV-checker,
+/// vertex-color and buffers buttons each retain their right-click options panel.
 fn draw_material_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState, width: f32) {
     toolbar_group_shell(ui, ctx, width, |ui| {
         let source = state.debug.active_material == ActiveMaterial::Source;
@@ -318,6 +333,24 @@ fn draw_material_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiSta
         if buffers.secondary_clicked() {
             state.panels_open.toggle(OptionPanel::BufferView);
         }
+
+        // Skin weights — offered only for a model that actually carries them, the
+        // same rule as the skeleton toggle. No options panel: the ramp is fixed
+        // and what it paints is chosen in the Outliner.
+        if state.has_skin {
+            let weights_active = state.debug.active_material == ActiveMaterial::SkinWeights;
+            if icon_toggle_button(
+                ui,
+                ctx,
+                &ICON_SKIN_WEIGHTS,
+                weights_active,
+                "Skin Weights (select bones in the Outliner)",
+            )
+            .clicked()
+            {
+                state.debug.active_material = ActiveMaterial::SkinWeights;
+            }
+        }
     });
 }
 
@@ -360,6 +393,20 @@ fn draw_view_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState, 
             OptionPanel::BoundingBox,
             "Bounding Box (right-click for options)",
         );
+
+        // Skeleton overlay — hidden entirely for a model with no bones, rather
+        // than shown disabled: an unrigged mesh has nothing to say about it.
+        if state.has_bones {
+            option_toggle(
+                ui,
+                ctx,
+                &ICON_NODE_BONE,
+                &mut state.debug.show_skeleton,
+                &mut state.panels_open,
+                OptionPanel::Skeleton,
+                "Skeleton (right-click for options)",
+            );
+        }
 
         // Pivot marker — a plain on/off toggle (no options), sitting between the
         // bounding box and the axis gizmo.

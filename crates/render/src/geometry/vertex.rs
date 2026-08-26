@@ -38,6 +38,25 @@ pub(super) fn push_fill_vertex(
     });
 }
 
+/// Push one *shaded* vertex: keeps the source normal (so the fragment is lit
+/// rather than taking the shader's zero-normal overlay path) while carrying a
+/// caller-chosen color in the `vertex_color` channel. Used by the skin-weight heat
+/// map, which needs Lambert shading *and* a per-vertex data color.
+pub(super) fn push_shaded_vertex(
+    vertices: &mut Vec<SceneVertex>,
+    position: [f32; 3],
+    normal: [f32; 3],
+    color: [f32; 4],
+) {
+    vertices.push(SceneVertex {
+        position,
+        normal,
+        uv: [0.0, 0.0],
+        tangent: [1.0, 0.0, 0.0, 1.0],
+        vertex_color: color,
+    });
+}
+
 pub(super) fn push_line(
     vertices: &mut Vec<SceneVertex>,
     start: [f32; 3],
