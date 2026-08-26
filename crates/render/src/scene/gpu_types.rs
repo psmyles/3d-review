@@ -1,12 +1,56 @@
-//! GPU-facing scene data that must stay in lockstep with `scene.hlsl`
-//! (invariant 11): the per-vertex [`SceneVertex`] layout, the [`SceneUniforms`]
-//! block, and the small render-option encoders. The `#[repr(C)]` structs below
-//! match the HLSL `cbuffer`/`VsInput` byte-for-byte; the matching input-element
-//! list lives beside the pipeline builders in [`super::d3d`].
+//! GPU-facing scene data that must stay in lockstep with the HLSL (invariant
+//! 11): the per-vertex [`SceneVertex`] layout + [`SceneUniforms`] (`scene.hlsl`),
+//! the composite [`PostUniforms`] (`post.hlsl`), the [`GtaoUniforms`]
+//! (`gtao.hlsl`), and the small render-option encoders. The `#[repr(C)]` structs
+//! below match their HLSL `cbuffer`/`VsInput` byte-for-byte; the matching
+//! input-element list lives beside the pipeline builders in [`super::d3d`].
+//!
+//! Audit index — the remaining invariant-11 structs live with their subsystems:
+//! `MaterialUniform` (`material/state.rs` ↔ `scene.hlsl` `b1`), `TexUniforms`
+//! (`tex_d3d.rs` ↔ `tex.hlsl`), and the bake-only `FaceUniform` (`ibl.rs` ↔
+//! `ibl.hlsl`).
 
 use bytemuck::{Pod, Zeroable};
 
 use crate::{ActiveMaterial, SceneDebugOptions, ShadingMode, VertexColorMode};
+
+/// Composite-pass uniform (cbuffer `b0` in `post.hlsl`): the GTAO enable flag, the
+/// tone-map enable + operator, and a raw-passthrough flag, all driven from the
+/// live settings each frame.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub(crate) struct PostUniforms {
+    // The four scalars below fill exactly one 16-byte cbuffer register — HLSL
+    // packs them implicitly, so adding/removing any one silently shifts `bg_top`
+    // unless `post.hlsl` moves in lockstep. Keep the count a multiple of four.
+    pub(crate) gtao_enabled: u32,
+    pub(crate) tonemap_enabled: u32,
+    pub(crate) tonemap_op: u32,
+    /// When non-zero the composite blits the (already display-ready) scene color
+    /// straight to the backbuffer — no GTAO, tone map or sRGB encode. Set for the
+    /// [`ActiveMaterial::Buffers`] data-inspection view, whose scene shader emits
+    /// final display pixels itself so the shown value is faithful.
+    pub(crate) passthrough: u32,
+    /// Viewport background fill in display (sRGB) space (`xyz`; `w` padding for the
+    /// 16-byte cbuffer slot). The composite paints `lerp(bg_top, bg_bottom, v)`
+    /// where the scene coverage is below 1; a flat preset sets both equal, the
+    /// gradient distinct. Built from `ViewportBackground::gradient_srgb`.
+    pub(crate) bg_top: [f32; 4],
+    pub(crate) bg_bottom: [f32; 4],
+}
+
+/// GTAO-pass uniform (cbuffer `b0` in `gtao.hlsl`): a `float4x4` + two `float4`s,
+/// all 16-byte aligned. Uploaded each frame so the panel sliders stay live.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub(crate) struct GtaoUniforms {
+    /// View → clip projection (column-major), for reconstruction + sample projection.
+    pub(crate) proj: [[f32; 4]; 4],
+    /// x = radius (view units), y = intensity, z = thickness, w unused.
+    pub(crate) params: [f32; 4],
+    /// x = is_ortho (1.0 / 0.0), y = slice count, z = steps per slice, w unused.
+    pub(crate) config: [f32; 4],
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]

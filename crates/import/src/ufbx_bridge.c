@@ -21,9 +21,25 @@ static void review_import_set_error(review_import_error *out_error, const char *
     out_error->message[sizeof(out_error->message) - 1] = '\0';
 }
 
+/* `a * b` with explicit overflow rejection, for the allocation-size and buffer
+   arithmetic below (a plain multiply before malloc defeats calloc's own
+   overflow check). Returns 1 and leaves `*out` untouched on overflow. */
+static int review_import_mul_overflows(size_t a, size_t b, size_t *out)
+{
+    if (a != 0 && b > SIZE_MAX / a) {
+        return 1;
+    }
+    *out = a * b;
+    return 0;
+}
+
 static char *review_import_dup_string_len(const char *data, size_t length)
 {
-    char *result = (char*)malloc(length + 1);
+    char *result;
+    if (length == SIZE_MAX) {
+        return NULL;
+    }
+    result = (char*)malloc(length + 1);
     if (!result) {
         return NULL;
     }
@@ -46,19 +62,13 @@ static char *review_import_dup_ufbx_string(ufbx_string str)
 static void review_import_free_materials(review_import_material *materials, size_t material_count)
 {
     size_t index;
+    if (!materials) {
+        return;
+    }
     for (index = 0; index < material_count; index++) {
         free(materials[index].name);
     }
     free(materials);
-}
-
-static void review_import_free_warnings(review_import_warning *warnings, size_t warning_count)
-{
-    size_t index;
-    for (index = 0; index < warning_count; index++) {
-        free(warnings[index].message);
-    }
-    free(warnings);
 }
 
 static void review_import_free_uv_set_names(char **names, size_t name_count)
@@ -127,14 +137,12 @@ void review_import_free_scene(review_import_scene *scene)
         return;
     }
 
-    free(scene->name);
     free(scene->vertices);
     free(scene->indices);
     free(scene->faces);
     free(scene->tri_to_face);
     free(scene->uvs);
     review_import_free_materials(scene->materials, scene->material_count);
-    review_import_free_warnings(scene->warnings, scene->warning_count);
     review_import_free_uv_set_names(scene->uv_set_names, scene->uv_set_name_count);
     review_import_free_nodes(scene->nodes, scene->node_count);
     free(scene->tri_material);
@@ -160,6 +168,53 @@ static void review_import_normalize3(float value[3], const float fallback[3])
     value[0] /= length;
     value[1] /= length;
     value[2] /= length;
+}
+
+/* Bounds-checked ufbx vertex-attribute reads. The plain `ufbx_get_vertex_*`
+   inline accessors guard with `ufbx_assert`, which compiles out under NDEBUG
+   (i.e. in every release build) — a malformed face indexing past an attribute
+   array would then read out of bounds. The `ufbx_catch_*` variants report the
+   violation instead; a tripped read clears `*ok` and returns zero. */
+static ufbx_vec2 review_import_get_vec2(const ufbx_vertex_vec2 *attr, size_t index, int *ok)
+{
+    ufbx_panic panic;
+    panic.did_panic = false;
+    {
+        ufbx_vec2 value = ufbx_catch_get_vertex_vec2(&panic, attr, index);
+        if (panic.did_panic) {
+            *ok = 0;
+            memset(&value, 0, sizeof(value));
+        }
+        return value;
+    }
+}
+
+static ufbx_vec3 review_import_get_vec3(const ufbx_vertex_vec3 *attr, size_t index, int *ok)
+{
+    ufbx_panic panic;
+    panic.did_panic = false;
+    {
+        ufbx_vec3 value = ufbx_catch_get_vertex_vec3(&panic, attr, index);
+        if (panic.did_panic) {
+            *ok = 0;
+            memset(&value, 0, sizeof(value));
+        }
+        return value;
+    }
+}
+
+static ufbx_vec4 review_import_get_vec4(const ufbx_vertex_vec4 *attr, size_t index, int *ok)
+{
+    ufbx_panic panic;
+    panic.did_panic = false;
+    {
+        ufbx_vec4 value = ufbx_catch_get_vertex_vec4(&panic, attr, index);
+        if (panic.did_panic) {
+            *ok = 0;
+            memset(&value, 0, sizeof(value));
+        }
+        return value;
+    }
 }
 
 /* Game-asset DCC color comes from the material's base/diffuse color, not a
@@ -281,17 +336,26 @@ static uint32_t review_import_add_material(review_import_scene *scene, const ufb
         }
     }
 
+    /* New slots must stay addressable by a uint32_t tri_material entry below the
+       UINT32_MAX no-material sentinel. */
+    if (scene->material_count >= UINT32_MAX - 1) {
+        return UINT32_MAX;
+    }
+
     owned_name = review_import_dup_string_len(name_data, name_length);
     if (!owned_name) {
         return UINT32_MAX;
     }
 
     {
-        review_import_material *new_materials = (review_import_material*)realloc(
-            scene->materials,
-            (scene->material_count + 1) * sizeof(review_import_material)
-        );
+        size_t new_bytes;
+        review_import_material *new_materials;
         review_import_material *slot;
+        if (review_import_mul_overflows(scene->material_count + 1, sizeof(review_import_material), &new_bytes)) {
+            free(owned_name);
+            return UINT32_MAX;
+        }
+        new_materials = (review_import_material*)realloc(scene->materials, new_bytes);
         if (!new_materials) {
             free(owned_name);
             return UINT32_MAX;
@@ -300,7 +364,6 @@ static uint32_t review_import_add_material(review_import_scene *scene, const ufb
         scene->materials = new_materials;
         slot = &scene->materials[scene->material_count];
         slot->name = owned_name;
-        slot->draw_count = 0;
         /* Seed the editable material table's import defaults (Phase 1). */
         review_import_material_base_color_linear(material, slot->base_color);
         slot->smoothness = review_import_material_smoothness(material);
@@ -312,68 +375,30 @@ static uint32_t review_import_add_material(review_import_scene *scene, const ufb
     return (uint32_t)(scene->material_count - 1);
 }
 
-static int review_import_material_used(uint32_t *used_slots, size_t used_count, uint32_t slot)
-{
-    size_t index;
-    for (index = 0; index < used_count; index++) {
-        if (used_slots[index] == slot) {
-            return 1;
-        }
-    }
-    return 0;
-}
+/* The count pass's totals, reconciled against the fill pass's actual offsets
+   before the counts are published (a drifted fill would otherwise leave
+   calloc-zeroed phantom triangles at the tail of every per-triangle array). */
+typedef struct review_import_totals {
+    /* Per-corner expanded vertex count (one entry per face corner). */
+    size_t corners;
+    size_t faces;
+    size_t triangles;
+    /* Source DCC logical vertex count (sum of each mesh's num_vertices). */
+    size_t source_vertices;
+} review_import_totals;
 
-int review_import_load_fbx(
-    const char *path,
-    const review_import_options *options,
+/* Count pass: walk every mesh-bearing node, total the corners / faces /
+   triangles the fill pass will produce, resolve the UV-set count (+ names), and
+   record the source-DCC vertex stat. Returns 1 on success, 0 with `out_error`
+   set. */
+static int review_import_count_pass(
+    const ufbx_scene *scene,
     review_import_scene *out_scene,
+    review_import_totals *totals,
     review_import_error *out_error
 )
 {
-    ufbx_load_opts load_opts = { 0 };
-    ufbx_error error;
-    ufbx_scene *scene = NULL;
-    size_t total_vertices = 0;
-    size_t total_faces = 0;
-    size_t total_triangles = 0;
     size_t node_index;
-    size_t vertex_offset = 0;
-    size_t face_offset = 0;
-    size_t index_offset = 0;
-    size_t tri_offset = 0;
-    int success = 0;
-
-    memset(&error, 0, sizeof(error));
-    if (out_scene) {
-        memset(out_scene, 0, sizeof(*out_scene));
-    }
-    review_import_set_error(out_error, NULL);
-    (void)options;
-
-    if (!path || !out_scene) {
-        review_import_set_error(out_error, "invalid import arguments");
-        return 0;
-    }
-
-    load_opts.generate_missing_normals = true;
-    /* Normalize every file to meters so 1 world unit == 1 m regardless of the
-       DCC's authoring units (Maya exports centimeters, so a 1 m cube is 100
-       units otherwise). With the default space conversion (TRANSFORM_ROOT) the
-       unit scale folds into the root transform and so into `geometry_to_world`,
-       which we already apply to every vertex below. */
-    load_opts.target_unit_meters = 1.0;
-    scene = ufbx_load_file(path, &load_opts, &error);
-    if (!scene) {
-        char buffer[256];
-        ufbx_format_error(buffer, sizeof(buffer), &error);
-        review_import_set_error(out_error, buffer);
-        return 0;
-    }
-
-    /* Record what the file claimed its unit was, before our target_unit_meters
-       normalization rescaled everything to meters. Surfaced in the stats panel
-       so a mis-authored export is visible rather than silently trusted. */
-    out_scene->source_unit_meters = (float)scene->settings.original_unit_meters;
 
     for (node_index = 0; node_index < scene->nodes.count; node_index++) {
         ufbx_node *node = scene->nodes.data[node_index];
@@ -390,57 +415,216 @@ int review_import_load_fbx(
                the dropdown lists every set in source-file order. */
             if (!review_import_capture_uv_set_names(out_scene, mesh)) {
                 review_import_set_error(out_error, "out of memory while recording UV set names");
-                goto cleanup;
+                return 0;
             }
         } else if (mesh->vertex_uv.exists && out_scene->uv_set_count == 0) {
             out_scene->uv_set_count = 1;
         }
 
+        /* The faithful Verts stat (invariant 5): the mesh's logical vertex
+           count as authored, not the per-corner expansion below. An instanced
+           mesh counts once per node, matching the geometry fill. */
+        totals->source_vertices += mesh->num_vertices;
+
         for (face_index = 0; face_index < mesh->faces.count; face_index++) {
             ufbx_face face = mesh->faces.data[face_index];
-            total_vertices += face.num_indices;
-            total_faces += 1;
+            totals->corners += face.num_indices;
+            totals->faces += 1;
             if (face.num_indices >= 3) {
-                total_triangles += face.num_indices - 2;
+                totals->triangles += face.num_indices - 2;
+            }
+            /* Corner indices are stored as uint32_t (`indices`,
+               `faces[].first_index`), and face indices as uint32_t
+               (`tri_to_face`) — reject a scene that exceeds them rather than
+               silently truncating. Checked inside the loop so the running sums
+               can never wrap. */
+            if (totals->corners > UINT32_MAX || totals->faces > UINT32_MAX) {
+                review_import_set_error(out_error, "FBX mesh exceeds the 32-bit vertex index limit");
+                return 0;
             }
         }
     }
 
-    if (total_vertices == 0 || total_triangles == 0) {
-        review_import_set_error(out_error, "no triangulatable mesh data found in FBX");
-        goto cleanup;
+    return 1;
+}
+
+/* Allocate every output array from the count-pass totals, with explicit
+   overflow-checked size arithmetic, and publish the counts. Returns 1 on
+   success, 0 with `out_error` set (partial allocations are freed by the
+   caller's `review_import_free_scene`). */
+static int review_import_alloc_geometry(
+    review_import_scene *out_scene,
+    const review_import_totals *totals,
+    review_import_error *out_error
+)
+{
+    size_t index_count;
+
+    if (review_import_mul_overflows(totals->triangles, 3, &index_count)) {
+        review_import_set_error(out_error, "FBX mesh is too large to import");
+        return 0;
     }
 
-    out_scene->vertices = (review_import_vertex*)calloc(total_vertices, sizeof(review_import_vertex));
-    out_scene->indices = (uint32_t*)calloc(total_triangles * 3, sizeof(uint32_t));
-    out_scene->faces = (review_import_face*)calloc(total_faces, sizeof(review_import_face));
-    out_scene->tri_to_face = (uint32_t*)calloc(total_triangles, sizeof(uint32_t));
-    out_scene->tri_material = (uint32_t*)calloc(total_triangles, sizeof(uint32_t));
-    out_scene->tri_node = (uint32_t*)calloc(total_triangles, sizeof(uint32_t));
+    out_scene->vertices = (review_import_vertex*)calloc(totals->corners, sizeof(review_import_vertex));
+    out_scene->indices = (uint32_t*)calloc(index_count, sizeof(uint32_t));
+    out_scene->faces = (review_import_face*)calloc(totals->faces, sizeof(review_import_face));
+    out_scene->tri_to_face = (uint32_t*)calloc(totals->triangles, sizeof(uint32_t));
+    out_scene->tri_material = (uint32_t*)calloc(totals->triangles, sizeof(uint32_t));
+    out_scene->tri_node = (uint32_t*)calloc(totals->triangles, sizeof(uint32_t));
     if (!out_scene->vertices || !out_scene->indices || !out_scene->faces ||
         !out_scene->tri_to_face || !out_scene->tri_material || !out_scene->tri_node) {
         review_import_set_error(out_error, "out of memory while allocating imported mesh");
-        goto cleanup;
+        return 0;
     }
 
-    out_scene->vertex_count = total_vertices;
-    out_scene->index_count = total_triangles * 3;
-    out_scene->face_count = total_faces;
-    out_scene->tri_to_face_count = total_triangles;
-    out_scene->tri_material_count = total_triangles;
-    out_scene->tri_node_count = total_triangles;
+    out_scene->vertex_count = totals->corners;
+    out_scene->index_count = index_count;
+    out_scene->face_count = totals->faces;
+    out_scene->tri_to_face_count = totals->triangles;
+    out_scene->tri_material_count = totals->triangles;
+    out_scene->tri_node_count = totals->triangles;
+    out_scene->source_vertex_count = totals->source_vertices;
 
     /* Only multi-set models need separate per-channel UV storage; single-set
        models keep using review_import_vertex::uv (channel 0). */
     if (out_scene->uv_set_count > 1) {
-        size_t uv_value_count = total_vertices * (size_t)out_scene->uv_set_count * 2;
+        size_t uv_value_count;
+        if (review_import_mul_overflows(totals->corners, (size_t)out_scene->uv_set_count, &uv_value_count) ||
+            review_import_mul_overflows(uv_value_count, 2, &uv_value_count)) {
+            review_import_set_error(out_error, "FBX UV channels are too large to import");
+            return 0;
+        }
         out_scene->uvs = (float*)calloc(uv_value_count, sizeof(float));
         if (!out_scene->uvs) {
             review_import_set_error(out_error, "out of memory while allocating UV channels");
-            goto cleanup;
+            return 0;
         }
         out_scene->uv_value_count = uv_value_count;
     }
+
+    return 1;
+}
+
+/* Fill one expanded corner vertex (position / normal / uv / tangent /
+   vertex-color, plus the multi-set UV channels) from mesh attribute index
+   `mesh_index`. Returns 1 on success, 0 when the face references out-of-range
+   attribute data (a malformed file). */
+static int review_import_fill_vertex(
+    review_import_scene *out_scene,
+    const ufbx_mesh *mesh,
+    const ufbx_matrix *geometry_to_world,
+    const ufbx_matrix *normal_matrix,
+    size_t mesh_index,
+    size_t vertex_offset
+)
+{
+    int ok = 1;
+    review_import_vertex *dst = &out_scene->vertices[vertex_offset];
+    ufbx_vec3 position = ufbx_transform_position(
+        geometry_to_world,
+        review_import_get_vec3(&mesh->vertex_position, mesh_index, &ok)
+    );
+    ufbx_vec3 normal = mesh->vertex_normal.exists
+        ? ufbx_transform_direction(normal_matrix, review_import_get_vec3(&mesh->vertex_normal, mesh_index, &ok))
+        : ufbx_zero_vec3;
+    ufbx_vec2 uv = mesh->vertex_uv.exists
+        ? review_import_get_vec2(&mesh->vertex_uv, mesh_index, &ok)
+        : ufbx_zero_vec2;
+    ufbx_vec3 tangent = mesh->vertex_tangent.exists
+        ? ufbx_transform_direction(normal_matrix, review_import_get_vec3(&mesh->vertex_tangent, mesh_index, &ok))
+        : ufbx_zero_vec3;
+    ufbx_vec4 vertex_color;
+    const float fallback_normal[3] = { 0.0f, 1.0f, 0.0f };
+    const float fallback_tangent[3] = { 1.0f, 0.0f, 0.0f };
+
+    /* Mesh vertex-color attribute (the DCC color set), kept separate
+       from the baked material base color above. Stored as authored
+       (no sRGB re-encode): the renderer treats RGB as gamma-space and
+       round-trips it, so the displayed color matches the file. */
+    if (mesh->vertex_color.exists) {
+        vertex_color = review_import_get_vec4(&mesh->vertex_color, mesh_index, &ok);
+    } else {
+        vertex_color.x = 1.0;
+        vertex_color.y = 1.0;
+        vertex_color.z = 1.0;
+        vertex_color.w = 1.0;
+    }
+
+    dst->position[0] = (float)position.x;
+    dst->position[1] = (float)position.y;
+    dst->position[2] = (float)position.z;
+
+    dst->normal[0] = (float)normal.x;
+    dst->normal[1] = (float)normal.y;
+    dst->normal[2] = (float)normal.z;
+    review_import_normalize3(dst->normal, fallback_normal);
+
+    dst->uv[0] = (float)uv.x;
+    dst->uv[1] = (float)uv.y;
+
+    dst->tangent[0] = (float)tangent.x;
+    dst->tangent[1] = (float)tangent.y;
+    dst->tangent[2] = (float)tangent.z;
+    if (mesh->vertex_tangent.exists) {
+        review_import_normalize3(dst->tangent, fallback_tangent);
+        dst->tangent[3] = 1.0f;
+    } else {
+        /* No tangent layer in the file: leave a zero tangent (skip the
+           constant fallback) so the Rust importer detects it and
+           synthesizes a real per-vertex tangent basis from the UVs +
+           normals. A constant placeholder tangent yields a garbage TBN
+           and smeared normal-mapped shading. */
+        dst->tangent[0] = 0.0f;
+        dst->tangent[1] = 0.0f;
+        dst->tangent[2] = 0.0f;
+        dst->tangent[3] = 0.0f;
+    }
+
+    dst->vertex_color[0] = (float)vertex_color.x;
+    dst->vertex_color[1] = (float)vertex_color.y;
+    dst->vertex_color[2] = (float)vertex_color.z;
+    dst->vertex_color[3] = (float)vertex_color.w;
+
+    if (out_scene->uvs) {
+        uint32_t channel;
+        for (channel = 0; channel < out_scene->uv_set_count; channel++) {
+            float channel_u = 0.0f;
+            float channel_v = 0.0f;
+            size_t base = ((size_t)channel * out_scene->vertex_count + vertex_offset) * 2;
+
+            if (channel < mesh->uv_sets.count) {
+                ufbx_uv_set uv_set = mesh->uv_sets.data[channel];
+                if (uv_set.vertex_uv.exists) {
+                    ufbx_vec2 set_uv = review_import_get_vec2(&uv_set.vertex_uv, mesh_index, &ok);
+                    channel_u = (float)set_uv.x;
+                    channel_v = (float)set_uv.y;
+                }
+            }
+
+            out_scene->uvs[base + 0] = channel_u;
+            out_scene->uvs[base + 1] = channel_v;
+        }
+    }
+
+    return ok;
+}
+
+/* Fill pass: expand every mesh-bearing node's faces into the flat output
+   arrays sized by the count pass, then reconcile the actual offsets against
+   the counted totals so a drifted triangulation can never publish phantom
+   zeroed triangles. Returns 1 on success, 0 with `out_error` set. */
+static int review_import_fill_pass(
+    const ufbx_scene *scene,
+    review_import_scene *out_scene,
+    const review_import_totals *totals,
+    review_import_error *out_error
+)
+{
+    size_t node_index;
+    size_t vertex_offset = 0;
+    size_t face_offset = 0;
+    size_t index_offset = 0;
+    size_t tri_offset = 0;
 
     for (node_index = 0; node_index < scene->nodes.count; node_index++) {
         ufbx_node *node = scene->nodes.data[node_index];
@@ -448,11 +632,7 @@ int review_import_load_fbx(
         ufbx_matrix normal_matrix;
         uint32_t *triangle_buffer = NULL;
         size_t triangle_buffer_size = 0;
-        uint32_t *used_material_slots = NULL;
-        size_t used_material_count = 0;
-        size_t used_material_capacity = 0;
-        int node_contributed_draw = 0;
-        int node_has_triangles = 0;
+        size_t triangle_buffer_bytes = 0;
         size_t face_index;
 
         if (!mesh || !mesh->vertex_position.exists) {
@@ -460,12 +640,15 @@ int review_import_load_fbx(
         }
 
         normal_matrix = ufbx_matrix_for_normals(&node->geometry_to_world);
-        triangle_buffer_size = mesh->max_face_triangles > 0 ? mesh->max_face_triangles * 3 : 3;
-        triangle_buffer = (uint32_t*)malloc(triangle_buffer_size * sizeof(uint32_t));
+        if (review_import_mul_overflows(mesh->max_face_triangles > 0 ? mesh->max_face_triangles : 1, 3, &triangle_buffer_size) ||
+            review_import_mul_overflows(triangle_buffer_size, sizeof(uint32_t), &triangle_buffer_bytes)) {
+            review_import_set_error(out_error, "FBX face is too large to triangulate");
+            return 0;
+        }
+        triangle_buffer = (uint32_t*)malloc(triangle_buffer_bytes);
         if (!triangle_buffer) {
             review_import_set_error(out_error, "out of memory while triangulating imported mesh");
-            free(used_material_slots);
-            goto cleanup;
+            return 0;
         }
 
         for (face_index = 0; face_index < mesh->faces.count; face_index++) {
@@ -481,6 +664,8 @@ int review_import_load_fbx(
                 } else if (face_material < mesh->materials.count) {
                     face_material_ptr = mesh->materials.data[face_material];
                 }
+                /* A slot matching neither list stays NULL and imports as the
+                   UINT32_MAX no-material sentinel. */
             }
 
             out_scene->faces[face_offset].first_index = (uint32_t)local_face_first_vertex;
@@ -488,93 +673,13 @@ int review_import_load_fbx(
 
             for (corner_index = 0; corner_index < face.num_indices; corner_index++) {
                 size_t mesh_index = (size_t)face.index_begin + corner_index;
-                review_import_vertex *dst = &out_scene->vertices[vertex_offset];
-                ufbx_vec3 position = ufbx_transform_position(
-                    &node->geometry_to_world,
-                    ufbx_get_vertex_vec3(&mesh->vertex_position, mesh_index)
-                );
-                ufbx_vec3 normal = mesh->vertex_normal.exists
-                    ? ufbx_transform_direction(&normal_matrix, ufbx_get_vertex_vec3(&mesh->vertex_normal, mesh_index))
-                    : ufbx_zero_vec3;
-                ufbx_vec2 uv = mesh->vertex_uv.exists
-                    ? ufbx_get_vertex_vec2(&mesh->vertex_uv, mesh_index)
-                    : ufbx_zero_vec2;
-                ufbx_vec3 tangent = mesh->vertex_tangent.exists
-                    ? ufbx_transform_direction(&normal_matrix, ufbx_get_vertex_vec3(&mesh->vertex_tangent, mesh_index))
-                    : ufbx_zero_vec3;
-                ufbx_vec4 vertex_color;
-                const float fallback_normal[3] = { 0.0f, 1.0f, 0.0f };
-                const float fallback_tangent[3] = { 1.0f, 0.0f, 0.0f };
-
-                /* Mesh vertex-color attribute (the DCC color set), kept separate
-                   from the baked material base color above. Stored as authored
-                   (no sRGB re-encode): the renderer treats RGB as gamma-space and
-                   round-trips it, so the displayed color matches the file. */
-                if (mesh->vertex_color.exists) {
-                    vertex_color = ufbx_get_vertex_vec4(&mesh->vertex_color, mesh_index);
-                } else {
-                    vertex_color.x = 1.0;
-                    vertex_color.y = 1.0;
-                    vertex_color.z = 1.0;
-                    vertex_color.w = 1.0;
+                if (!review_import_fill_vertex(
+                        out_scene, mesh, &node->geometry_to_world, &normal_matrix,
+                        mesh_index, vertex_offset)) {
+                    review_import_set_error(out_error, "malformed FBX: face references out-of-range vertex data");
+                    free(triangle_buffer);
+                    return 0;
                 }
-
-                dst->position[0] = (float)position.x;
-                dst->position[1] = (float)position.y;
-                dst->position[2] = (float)position.z;
-
-                dst->normal[0] = (float)normal.x;
-                dst->normal[1] = (float)normal.y;
-                dst->normal[2] = (float)normal.z;
-                review_import_normalize3(dst->normal, fallback_normal);
-
-                dst->uv[0] = (float)uv.x;
-                dst->uv[1] = (float)uv.y;
-
-                dst->tangent[0] = (float)tangent.x;
-                dst->tangent[1] = (float)tangent.y;
-                dst->tangent[2] = (float)tangent.z;
-                if (mesh->vertex_tangent.exists) {
-                    review_import_normalize3(dst->tangent, fallback_tangent);
-                    dst->tangent[3] = 1.0f;
-                } else {
-                    /* No tangent layer in the file: leave a zero tangent (skip the
-                       constant fallback) so the Rust importer detects it and
-                       synthesizes a real per-vertex tangent basis from the UVs +
-                       normals. A constant placeholder tangent yields a garbage TBN
-                       and smeared normal-mapped shading. */
-                    dst->tangent[0] = 0.0f;
-                    dst->tangent[1] = 0.0f;
-                    dst->tangent[2] = 0.0f;
-                    dst->tangent[3] = 0.0f;
-                }
-
-                dst->vertex_color[0] = (float)vertex_color.x;
-                dst->vertex_color[1] = (float)vertex_color.y;
-                dst->vertex_color[2] = (float)vertex_color.z;
-                dst->vertex_color[3] = (float)vertex_color.w;
-
-                if (out_scene->uvs) {
-                    uint32_t channel;
-                    for (channel = 0; channel < out_scene->uv_set_count; channel++) {
-                        float channel_u = 0.0f;
-                        float channel_v = 0.0f;
-                        size_t base = ((size_t)channel * total_vertices + vertex_offset) * 2;
-
-                        if (channel < mesh->uv_sets.count) {
-                            ufbx_uv_set uv_set = mesh->uv_sets.data[channel];
-                            if (uv_set.vertex_uv.exists) {
-                                ufbx_vec2 set_uv = ufbx_get_vertex_vec2(&uv_set.vertex_uv, mesh_index);
-                                channel_u = (float)set_uv.x;
-                                channel_v = (float)set_uv.y;
-                            }
-                        }
-
-                        out_scene->uvs[base + 0] = channel_u;
-                        out_scene->uvs[base + 1] = channel_v;
-                    }
-                }
-
                 vertex_offset += 1;
             }
 
@@ -588,6 +693,16 @@ int review_import_load_fbx(
                 uint32_t triangle_index;
                 uint32_t material_slot = UINT32_MAX;
 
+                /* The count pass budgeted exactly `num_indices - 2` triangles
+                   for this face; a short return (ufbx refuses a face whose
+                   index range is out of the mesh's bounds) must fail the import
+                   here, not leave zeroed phantom triangles in the tail. */
+                if (triangle_count != face.num_indices - 2) {
+                    review_import_set_error(out_error, "malformed FBX: face triangulation drifted from the counted total");
+                    free(triangle_buffer);
+                    return 0;
+                }
+
                 /* Resolve the material slot first so each triangle can record it
                    into the parallel `tri_material` array below. */
                 if (face_material_ptr) {
@@ -595,8 +710,7 @@ int review_import_load_fbx(
                     if (material_slot == UINT32_MAX) {
                         review_import_set_error(out_error, "out of memory while recording FBX materials");
                         free(triangle_buffer);
-                        free(used_material_slots);
-                        goto cleanup;
+                        return 0;
                     }
                 }
 
@@ -614,90 +728,147 @@ int review_import_load_fbx(
                     out_scene->tri_node[tri_offset] = (uint32_t)node_index;
                     tri_offset++;
                 }
-
-                node_has_triangles = 1;
-
-                if (material_slot != UINT32_MAX) {
-                    if (!review_import_material_used(used_material_slots, used_material_count, material_slot)) {
-                        if (used_material_count == used_material_capacity) {
-                            size_t new_capacity = used_material_capacity > 0 ? used_material_capacity * 2 : 4;
-                            uint32_t *new_used_slots = (uint32_t*)realloc(
-                                used_material_slots,
-                                new_capacity * sizeof(uint32_t)
-                            );
-                            if (!new_used_slots) {
-                                review_import_set_error(out_error, "out of memory while recording FBX draw calls");
-                                free(triangle_buffer);
-                                free(used_material_slots);
-                                goto cleanup;
-                            }
-
-                            used_material_slots = new_used_slots;
-                            used_material_capacity = new_capacity;
-                        }
-
-                        used_material_slots[used_material_count++] = material_slot;
-                        out_scene->materials[material_slot].draw_count += 1;
-                        out_scene->draw_count += 1;
-                    }
-                    node_contributed_draw = 1;
-                }
             }
 
             face_offset += 1;
         }
 
-        if (!node_contributed_draw && node_has_triangles) {
-            out_scene->draw_count += 1;
-        }
-
         free(triangle_buffer);
-        free(used_material_slots);
     }
 
-    /* Capture the full scene-graph hierarchy (every node, mesh-bearing or not)
-       for the Outliner. Walks `scene->nodes` in the same order as the geometry
-       fill so `mesh_part_index` lines up with that traversal. Display metadata
-       only — geometry is already world-baked above. */
-    if (scene->nodes.count > 0) {
-        size_t mesh_part_counter = 0;
+    /* Reconcile the fill against the count pass (belt-and-braces over the
+       per-face check above): the published counts are the counted totals, so
+       any drift here would mean silently wrong geometry. */
+    if (vertex_offset != totals->corners || face_offset != totals->faces ||
+        tri_offset != totals->triangles || index_offset != totals->triangles * 3) {
+        review_import_set_error(out_error, "malformed FBX: mesh data drifted between the count and fill passes");
+        return 0;
+    }
 
-        out_scene->nodes = (review_import_node*)calloc(scene->nodes.count, sizeof(review_import_node));
-        if (!out_scene->nodes) {
-            review_import_set_error(out_error, "out of memory while recording scene nodes");
-            goto cleanup;
+    return 1;
+}
+
+/* Capture the full scene-graph hierarchy (every node, mesh-bearing or not) for
+   the Outliner. Walks `scene->nodes` in the same order as the geometry fill so
+   `mesh_part_index` lines up with that traversal. Display metadata only —
+   geometry is already world-baked by the fill pass. Returns 1 on success, 0
+   with `out_error` set. */
+static int review_import_capture_nodes(
+    const ufbx_scene *scene,
+    review_import_scene *out_scene,
+    review_import_error *out_error
+)
+{
+    size_t mesh_part_counter = 0;
+    size_t node_index;
+
+    if (scene->nodes.count == 0) {
+        return 1;
+    }
+
+    /* `parent` / `mesh_part_index` are int32_t and `tri_node` entries uint32_t;
+       reject a node table that can't be indexed by them. */
+    if (scene->nodes.count > INT32_MAX) {
+        review_import_set_error(out_error, "FBX scene graph exceeds the 32-bit node limit");
+        return 0;
+    }
+
+    out_scene->nodes = (review_import_node*)calloc(scene->nodes.count, sizeof(review_import_node));
+    if (!out_scene->nodes) {
+        review_import_set_error(out_error, "out of memory while recording scene nodes");
+        return 0;
+    }
+    out_scene->node_count = scene->nodes.count;
+
+    for (node_index = 0; node_index < scene->nodes.count; node_index++) {
+        ufbx_node *node = scene->nodes.data[node_index];
+        review_import_node *dst = &out_scene->nodes[node_index];
+        ufbx_matrix transform = node->node_to_world;
+        size_t col;
+
+        dst->name = review_import_dup_ufbx_string(node->name);
+        if (!dst->name) {
+            review_import_set_error(out_error, "out of memory while recording scene node names");
+            return 0;
         }
-        out_scene->node_count = scene->nodes.count;
 
-        for (node_index = 0; node_index < scene->nodes.count; node_index++) {
-            ufbx_node *node = scene->nodes.data[node_index];
-            review_import_node *dst = &out_scene->nodes[node_index];
-            ufbx_matrix transform = node->node_to_world;
-            size_t col;
+        dst->parent = node->parent ? (int32_t)node->parent->typed_id : -1;
 
-            dst->name = review_import_dup_ufbx_string(node->name);
-            if (!dst->name) {
-                review_import_set_error(out_error, "out of memory while recording scene node names");
-                goto cleanup;
-            }
-
-            dst->parent = node->parent ? (int32_t)node->parent->typed_id : -1;
-
-            if (node->mesh && node->mesh->vertex_position.exists) {
-                dst->mesh_part_index = (int32_t)mesh_part_counter++;
-            } else {
-                dst->mesh_part_index = -1;
-            }
-
-            /* node_to_world is a column-major affine (4 columns of 3); expand to a
-               full column-major 4x4 with the implicit [0,0,0,1] bottom row. */
-            for (col = 0; col < 4; col++) {
-                dst->transform[col * 4 + 0] = (float)transform.cols[col].x;
-                dst->transform[col * 4 + 1] = (float)transform.cols[col].y;
-                dst->transform[col * 4 + 2] = (float)transform.cols[col].z;
-                dst->transform[col * 4 + 3] = (col == 3) ? 1.0f : 0.0f;
-            }
+        if (node->mesh && node->mesh->vertex_position.exists) {
+            dst->mesh_part_index = (int32_t)mesh_part_counter++;
+        } else {
+            dst->mesh_part_index = -1;
         }
+
+        /* node_to_world is a column-major affine (4 columns of 3); expand to a
+           full column-major 4x4 with the implicit [0,0,0,1] bottom row. */
+        for (col = 0; col < 4; col++) {
+            dst->transform[col * 4 + 0] = (float)transform.cols[col].x;
+            dst->transform[col * 4 + 1] = (float)transform.cols[col].y;
+            dst->transform[col * 4 + 2] = (float)transform.cols[col].z;
+            dst->transform[col * 4 + 3] = (col == 3) ? 1.0f : 0.0f;
+        }
+    }
+
+    return 1;
+}
+
+int review_import_load_fbx(
+    const char *path,
+    review_import_scene *out_scene,
+    review_import_error *out_error
+)
+{
+    ufbx_load_opts load_opts = { 0 };
+    ufbx_error error;
+    ufbx_scene *scene = NULL;
+    review_import_totals totals = { 0 };
+    int success = 0;
+
+    memset(&error, 0, sizeof(error));
+    if (out_scene) {
+        memset(out_scene, 0, sizeof(*out_scene));
+    }
+    review_import_set_error(out_error, NULL);
+
+    if (!path || !out_scene) {
+        review_import_set_error(out_error, "invalid import arguments");
+        return 0;
+    }
+
+    load_opts.generate_missing_normals = true;
+    /* Normalize every file to meters so 1 world unit == 1 m regardless of the
+       DCC's authoring units (Maya exports centimeters, so a 1 m cube is 100
+       units otherwise). With the default space conversion (TRANSFORM_ROOT) the
+       unit scale folds into the root transform and so into `geometry_to_world`,
+       which we already apply to every vertex in the fill pass. */
+    load_opts.target_unit_meters = 1.0;
+    scene = ufbx_load_file(path, &load_opts, &error);
+    if (!scene) {
+        char buffer[256];
+        ufbx_format_error(buffer, sizeof(buffer), &error);
+        review_import_set_error(out_error, buffer);
+        return 0;
+    }
+
+    /* Record what the file claimed its unit was, before our target_unit_meters
+       normalization rescaled everything to meters. Surfaced in the stats panel
+       so a mis-authored export is visible rather than silently trusted. */
+    out_scene->source_unit_meters = (float)scene->settings.original_unit_meters;
+
+    if (!review_import_count_pass(scene, out_scene, &totals, out_error)) {
+        goto cleanup;
+    }
+
+    if (totals.corners == 0 || totals.triangles == 0) {
+        review_import_set_error(out_error, "no triangulatable mesh data found in FBX");
+        goto cleanup;
+    }
+
+    if (!review_import_alloc_geometry(out_scene, &totals, out_error) ||
+        !review_import_fill_pass(scene, out_scene, &totals, out_error) ||
+        !review_import_capture_nodes(scene, out_scene, out_error)) {
+        goto cleanup;
     }
 
     success = 1;

@@ -18,11 +18,6 @@ pub enum ImportError {
     LoadFailed(String),
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct LoadOptions {
-    pub triangulate: bool,
-}
-
 /// Whether the process was asked to start maximized — e.g. launched from a
 /// shortcut whose **Run** field is set to *Maximized*. Windows passes that hint
 /// through `STARTUPINFO.wShowWindow`, but winit creates its window without
@@ -54,19 +49,19 @@ pub fn startup_show_maximized() -> bool {
     false
 }
 
-pub fn load_model(path: impl AsRef<Path>, options: LoadOptions) -> Result<ModelData, ImportError> {
+pub fn load_model(path: impl AsRef<Path>) -> Result<ModelData, ImportError> {
     let path = path.as_ref();
     match path.extension().and_then(|extension| extension.to_str()) {
-        Some(extension) if extension.eq_ignore_ascii_case("fbx") => load_fbx(path, options),
+        Some(extension) if extension.eq_ignore_ascii_case("fbx") => load_fbx(path),
         Some(extension) => Err(ImportError::UnsupportedExtension(extension.to_owned())),
         None => Err(ImportError::UnsupportedExtension("<none>".to_owned())),
     }
 }
 
-pub fn load_fbx(_path: &Path, _options: LoadOptions) -> Result<ModelData, ImportError> {
+pub fn load_fbx(_path: &Path) -> Result<ModelData, ImportError> {
     #[cfg(has_ufbx)]
     {
-        ffi::load_fbx(_path, _options)
+        ffi::load_fbx(_path)
     }
 
     #[cfg(not(has_ufbx))]
@@ -88,11 +83,11 @@ mod ffi {
 
     use glam::{Mat4, Vec2, Vec3, Vec4};
     use review_model::{
-        MaterialImportDefaults, ModelData, ModelStats, ModelWarning, SceneNode, TopologyFace,
-        TriangleData, Vertex,
+        MaterialImportDefaults, ModelData, ModelStats, SceneNode, TopologyFace, TriangleData,
+        Vertex,
     };
 
-    use crate::{ImportError, LoadOptions};
+    use crate::ImportError;
 
     #[repr(C)]
     struct ReviewImportVertex {
@@ -112,16 +107,10 @@ mod ffi {
     #[repr(C)]
     struct ReviewImportMaterial {
         name: *mut c_char,
-        draw_count: u32,
         base_color: [f32; 3],
         smoothness: f32,
         metallic: f32,
         emissive: [f32; 3],
-    }
-
-    #[repr(C)]
-    struct ReviewImportWarning {
-        message: *mut c_char,
     }
 
     #[repr(C)]
@@ -134,7 +123,6 @@ mod ffi {
 
     #[repr(C)]
     struct ReviewImportScene {
-        name: *mut c_char,
         vertices: *mut ReviewImportVertex,
         vertex_count: usize,
         indices: *mut u32,
@@ -145,12 +133,12 @@ mod ffi {
         tri_to_face_count: usize,
         materials: *mut ReviewImportMaterial,
         material_count: usize,
-        warnings: *mut ReviewImportWarning,
-        warning_count: usize,
         uv_set_count: u32,
-        draw_count: u32,
         uvs: *mut f32,
         uv_value_count: usize,
+        /// Source DCC logical vertex count (invariant 5's Verts stat);
+        /// `vertex_count` above is the per-corner expanded array length.
+        source_vertex_count: usize,
         source_unit_meters: f32,
         uv_set_names: *mut *mut c_char,
         uv_set_name_count: usize,
@@ -163,11 +151,6 @@ mod ffi {
     }
 
     #[repr(C)]
-    struct ReviewImportOptions {
-        triangulate: bool,
-    }
-
-    #[repr(C)]
     struct ReviewImportError {
         message: [c_char; 256],
     }
@@ -175,7 +158,6 @@ mod ffi {
     unsafe extern "C" {
         fn review_import_load_fbx(
             path: *const c_char,
-            options: *const ReviewImportOptions,
             out_scene: *mut ReviewImportScene,
             out_error: *mut ReviewImportError,
         ) -> c_int;
@@ -183,14 +165,11 @@ mod ffi {
         fn review_import_free_scene(scene: *mut ReviewImportScene);
     }
 
-    pub(super) fn load_fbx(path: &Path, options: LoadOptions) -> Result<ModelData, ImportError> {
+    pub(super) fn load_fbx(path: &Path) -> Result<ModelData, ImportError> {
         let _z = crate::prof::zone!("Load FBX");
         let path_string = path.to_string_lossy();
         let c_path = CString::new(path_string.as_bytes())
             .map_err(|_| ImportError::LoadFailed("path contains embedded NUL byte".to_owned()))?;
-        let bridge_options = ReviewImportOptions {
-            triangulate: options.triangulate,
-        };
         let mut scene = MaybeUninit::<ReviewImportScene>::zeroed();
         let mut error = ReviewImportError { message: [0; 256] };
 
@@ -199,18 +178,13 @@ mod ffi {
             // load), measured as one GPU-free CPU zone.
             let _z = crate::prof::zone!("ufbx Parse");
             // SAFETY: `c_path` is a valid NUL-terminated C string that outlives the
-            // call; `bridge_options`/`error` are live stack values; `scene` is a
-            // zeroed, correctly-sized `ReviewImportScene` the bridge fully writes on
-            // success (return != 0) or leaves zeroed on failure. All four pointers
-            // are non-null and valid for the duration of the call.
-            unsafe {
-                review_import_load_fbx(
-                    c_path.as_ptr(),
-                    &bridge_options,
-                    scene.as_mut_ptr(),
-                    &mut error,
-                )
-            }
+            // call; `error` is a live stack value; `scene` is a zeroed,
+            // correctly-sized `ReviewImportScene` the bridge fully writes on
+            // success (return != 0) or frees + re-zeroes itself on failure (its
+            // `cleanup:` path calls `review_import_free_scene`, so no C buffers
+            // leak and no free is needed here on the error return below). All
+            // three pointers are non-null and valid for the duration of the call.
+            unsafe { review_import_load_fbx(c_path.as_ptr(), scene.as_mut_ptr(), &mut error) }
         };
 
         if loaded == 0 {
@@ -235,10 +209,17 @@ mod ffi {
         model
     }
 
-    fn model_from_bridge_scene(
-        path: &Path,
-        scene: &ReviewImportScene,
-    ) -> Result<ModelData, ImportError> {
+    /// The bridge's flat geometry arrays, marshaled into owned Rust buffers.
+    struct MarshaledGeometry {
+        vertices: Vec<Vertex>,
+        indices: Vec<u32>,
+        faces: Vec<TopologyFace>,
+        triangles: TriangleData,
+    }
+
+    /// Marshal the bridge's flat geometry arrays (vertices / indices / original
+    /// faces / per-triangle metadata) into owned Rust buffers.
+    fn marshal_geometry(scene: &ReviewImportScene) -> Result<MarshaledGeometry, ImportError> {
         let vertices = checked_slice(scene.vertices, scene.vertex_count, "vertices")?
             .iter()
             .map(|vertex| Vertex {
@@ -257,12 +238,24 @@ mod ffi {
                 index_count: face.index_count,
             })
             .collect::<Vec<_>>();
-        let tri_to_face =
-            checked_slice(scene.tri_to_face, scene.tri_to_face_count, "tri_to_face")?.to_vec();
-        let tri_material =
-            checked_slice(scene.tri_material, scene.tri_material_count, "tri_material")?.to_vec();
-        let tri_node = checked_slice(scene.tri_node, scene.tri_node_count, "tri_node")?.to_vec();
-        let nodes = checked_slice(scene.nodes, scene.node_count, "nodes")?
+        let triangles = TriangleData {
+            to_face: checked_slice(scene.tri_to_face, scene.tri_to_face_count, "tri_to_face")?
+                .to_vec(),
+            material: checked_slice(scene.tri_material, scene.tri_material_count, "tri_material")?
+                .to_vec(),
+            node: checked_slice(scene.tri_node, scene.tri_node_count, "tri_node")?.to_vec(),
+        };
+        Ok(MarshaledGeometry {
+            vertices,
+            indices,
+            faces,
+            triangles,
+        })
+    }
+
+    /// Marshal the bridge's scene-graph node table for the Outliner.
+    fn marshal_nodes(scene: &ReviewImportScene) -> Result<Vec<SceneNode>, ImportError> {
+        Ok(checked_slice(scene.nodes, scene.node_count, "nodes")?
             .iter()
             .map(|node| SceneNode {
                 name: read_optional_c_string(node.name).unwrap_or_default(),
@@ -270,48 +263,60 @@ mod ffi {
                 mesh_part: (node.mesh_part_index >= 0).then_some(node.mesh_part_index as usize),
                 transform: Mat4::from_cols_array(&node.transform),
             })
-            .collect::<Vec<_>>();
+            .collect())
+    }
+
+    /// Marshal the bridge's material table into the editable table's import
+    /// defaults.
+    fn marshal_materials(
+        scene: &ReviewImportScene,
+    ) -> Result<Vec<MaterialImportDefaults>, ImportError> {
+        Ok(
+            checked_slice(scene.materials, scene.material_count, "materials")?
+                .iter()
+                .map(|material| MaterialImportDefaults {
+                    name: read_optional_c_string(material.name)
+                        .unwrap_or_else(|| "Default".to_owned()),
+                    base_color: Vec3::from_array(material.base_color),
+                    smoothness: material.smoothness,
+                    metallic: material.metallic,
+                    emissive: Vec3::from_array(material.emissive),
+                })
+                .collect(),
+        )
+    }
+
+    fn model_from_bridge_scene(
+        path: &Path,
+        scene: &ReviewImportScene,
+    ) -> Result<ModelData, ImportError> {
+        let MarshaledGeometry {
+            vertices,
+            indices,
+            faces,
+            triangles,
+        } = marshal_geometry(scene)?;
+        let nodes = marshal_nodes(scene)?;
         let uv_channels = build_uv_channels(scene)?;
         let uv_set_names =
             checked_slice(scene.uv_set_names, scene.uv_set_name_count, "uv_set_names")?
                 .iter()
                 .map(|&name| read_optional_c_string(name).unwrap_or_default())
                 .collect::<Vec<_>>();
-        let materials = checked_slice(scene.materials, scene.material_count, "materials")?
-            .iter()
-            .map(|material| MaterialImportDefaults {
-                name: read_optional_c_string(material.name).unwrap_or_else(|| "Default".to_owned()),
-                draw_count: material.draw_count as usize,
-                base_color: Vec3::from_array(material.base_color),
-                smoothness: material.smoothness,
-                metallic: material.metallic,
-                emissive: Vec3::from_array(material.emissive),
-            })
-            .collect::<Vec<_>>();
-        let warnings = checked_slice(scene.warnings, scene.warning_count, "warnings")?
-            .iter()
-            .filter_map(|warning| {
-                read_optional_c_string(warning.message).map(|message| ModelWarning { message })
-            })
-            .collect::<Vec<_>>();
+        let materials = marshal_materials(scene)?;
 
-        let name = read_optional_c_string(scene.name).unwrap_or_else(|| {
-            path.file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or("Imported Model")
-                .to_owned()
-        });
+        let name = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("Imported Model")
+            .to_owned();
 
         let mut model = ModelData {
             name,
             vertices,
             indices,
             faces,
-            triangles: TriangleData {
-                to_face: tri_to_face,
-                material: tri_material,
-                node: tri_node,
-            },
+            triangles,
             nodes,
             uv_channels,
             uv_set_names,
@@ -319,7 +324,9 @@ mod ffi {
             stats: ModelStats {
                 polygon_count: scene.face_count,
                 triangle_count: scene.index_count / 3,
-                vertex_count: scene.vertex_count,
+                // The source DCC's logical vertex count, not the per-corner
+                // expanded render count (invariant 5: faithful stats).
+                vertex_count: scene.source_vertex_count,
                 uv_set_count: scene.uv_set_count as usize,
                 material_count: scene.material_count,
                 // Overwritten below from `material_draw_count` so the Draws stat
@@ -328,8 +335,23 @@ mod ffi {
                 source_unit_meters: scene.source_unit_meters,
             },
             materials,
-            warnings,
         };
+
+        // Lockstep + range guard at the one import funnel (invariant 7), *before*
+        // anything consumes the per-triangle arrays: each array must be empty or
+        // exactly `triangle_count` long, and every entry must index a real
+        // face / material / node. Catches a bridge marshaling drift here, once,
+        // rather than in every renderer-side reader.
+        model
+            .triangles
+            .validate(
+                model.stats.triangle_count,
+                model.faces.len(),
+                model.materials.len(),
+                model.nodes.len(),
+            )
+            .map_err(ImportError::LoadFailed)?;
+
         model.recompute_bounds();
         // The FBX may carry UVs but no tangent layer (common for Maya exports); the
         // bridge then leaves a zero tangent per vertex. Synthesize a real tangent
@@ -339,22 +361,8 @@ mod ffi {
             model.generate_tangents();
         }
         // The renderer groups triangles into one draw per distinct material slot;
-        // report that count rather than the C bridge's per-node tally so Draws is
-        // the real draw-call count.
+        // report that count so Draws is the real draw-call count.
         model.stats.draw_count = model.material_draw_count();
-
-        // Lockstep guard at the one import funnel (invariant 7): each per-triangle
-        // array must be empty or exactly `triangle_count` long. Catches a bridge
-        // marshaling drift here, once, rather than in every renderer-side reader.
-        if let Err(error) = model.triangles.validate(model.stats.triangle_count) {
-            return Err(ImportError::LoadFailed(error));
-        }
-
-        if model.vertices.is_empty() || model.indices.is_empty() {
-            return Err(ImportError::LoadFailed(
-                "loaded FBX did not contain triangulated mesh data".to_owned(),
-            ));
-        }
 
         Ok(model)
     }
@@ -368,8 +376,17 @@ mod ffi {
             return Ok(Vec::new());
         }
 
+        // Checked: both counts are C-provided, so a wrapped multiply here would
+        // defeat the length guard below and turn the indexing loop into a panic.
         let vertex_count = scene.vertex_count;
-        let expected = channel_count * vertex_count * 2;
+        let expected = channel_count
+            .checked_mul(vertex_count)
+            .and_then(|count| count.checked_mul(2))
+            .ok_or_else(|| {
+                ImportError::LoadFailed(format!(
+                    "FBX bridge UV table overflows: {channel_count} channels x {vertex_count} vertices"
+                ))
+            })?;
         if scene.uv_value_count < expected {
             return Err(ImportError::LoadFailed(format!(
                 "FBX bridge returned {} UV values, expected {expected}",
@@ -382,6 +399,8 @@ mod ffi {
             .map(|channel| {
                 (0..vertex_count)
                     .map(|vertex| {
+                        // In bounds: `base + 1 <= expected - 1 < values.len()`,
+                        // with `expected` overflow-checked above.
                         let base = (channel * vertex_count + vertex) * 2;
                         Vec2::new(values[base], values[base + 1])
                     })
@@ -496,6 +515,53 @@ mod ffi {
             }
             assert_eq!(read_error_message(&error), "bad fbx");
         }
+
+        /// A zeroed bridge scene (every pointer null, every count 0) with just the
+        /// UV fields set — the shape `build_uv_channels` consumes.
+        // SAFETY (of the test helper): `ReviewImportScene` is a plain `#[repr(C)]`
+        // struct of pointers + integers, for which all-zero bytes is a valid value.
+        fn uv_scene(uv_set_count: u32, vertex_count: usize, uvs: &[f32]) -> ReviewImportScene {
+            let mut scene: ReviewImportScene = unsafe { std::mem::zeroed() };
+            scene.uv_set_count = uv_set_count;
+            scene.vertex_count = vertex_count;
+            scene.uvs = uvs.as_ptr() as *mut f32;
+            scene.uv_value_count = uvs.len();
+            scene
+        }
+
+        #[test]
+        fn build_uv_channels_reads_channel_major_values() {
+            // 2 channels × 2 vertices × (u, v): channel-major layout.
+            let uvs = [0.0, 0.1, 0.2, 0.3, 1.0, 1.1, 1.2, 1.3];
+            let scene = uv_scene(2, 2, &uvs);
+            let channels = build_uv_channels(&scene).expect("valid UV table");
+            assert_eq!(channels.len(), 2);
+            assert_eq!(channels[0], vec![Vec2::new(0.0, 0.1), Vec2::new(0.2, 0.3)]);
+            assert_eq!(channels[1], vec![Vec2::new(1.0, 1.1), Vec2::new(1.2, 1.3)]);
+        }
+
+        #[test]
+        fn build_uv_channels_rejects_a_short_buffer() {
+            // 2 channels × 2 vertices needs 8 values; give 6.
+            let uvs = [0.0; 6];
+            let scene = uv_scene(2, 2, &uvs);
+            assert!(matches!(
+                build_uv_channels(&scene),
+                Err(ImportError::LoadFailed(_))
+            ));
+        }
+
+        #[test]
+        fn build_uv_channels_rejects_overflowing_counts() {
+            // Malicious/corrupt counts whose product wraps `usize` must be a clean
+            // error, not a wrapped guard followed by an index panic.
+            let uvs = [0.0; 4];
+            let scene = uv_scene(2, usize::MAX / 2 + 1, &uvs);
+            assert!(matches!(
+                build_uv_channels(&scene),
+                Err(ImportError::LoadFailed(_))
+            ));
+        }
     }
 }
 
@@ -503,7 +569,7 @@ mod ffi {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{LoadOptions, load_model};
+    use super::{ImportError, load_model};
 
     fn fixture(name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -511,12 +577,50 @@ mod tests {
             .join(name)
     }
 
+    /// Write `bytes` to a temp file with an `.fbx` extension and return its path.
+    fn temp_fbx(name: &str, bytes: &[u8]) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("review-import-test-{name}.fbx"));
+        std::fs::write(&path, bytes).expect("write temp fixture");
+        path
+    }
+
+    /// Malformed input must come back as a clean [`ImportError::LoadFailed`] —
+    /// never a crash — through the whole FFI funnel.
+    #[test]
+    fn malformed_fbx_is_a_clean_error() {
+        let garbage = temp_fbx(
+            "garbage",
+            b"this is definitely not an FBX file \xff\xfe\x00",
+        );
+        let result = load_model(&garbage);
+        let _ = std::fs::remove_file(&garbage);
+        assert!(matches!(result, Err(ImportError::LoadFailed(_))));
+    }
+
+    /// An empty file is the degenerate malformed case.
+    #[test]
+    fn empty_fbx_is_a_clean_error() {
+        let empty = temp_fbx("empty", b"");
+        let result = load_model(&empty);
+        let _ = std::fs::remove_file(&empty);
+        assert!(matches!(result, Err(ImportError::LoadFailed(_))));
+    }
+
+    /// A truncated-but-real header: the FBX binary magic followed by nothing.
+    /// ufbx must reject it without the bridge publishing partial geometry.
+    #[test]
+    fn truncated_fbx_is_a_clean_error() {
+        let truncated = temp_fbx("truncated", b"Kaydara FBX Binary  \x00\x1a\x00");
+        let result = load_model(&truncated);
+        let _ = std::fs::remove_file(&truncated);
+        assert!(matches!(result, Err(ImportError::LoadFailed(_))));
+    }
+
     /// Phase 0 plumbing: a loaded FBX must carry the scene-graph hierarchy and a
     /// per-triangle material slot parallel to the triangle list.
     #[test]
     fn import_carries_nodes_and_per_triangle_material() {
-        let model = load_model(fixture("meter_cube.fbx"), LoadOptions::default())
-            .expect("meter_cube.fbx should import");
+        let model = load_model(fixture("meter_cube.fbx")).expect("meter_cube.fbx should import");
 
         assert!(
             !model.nodes.is_empty(),
@@ -559,7 +663,15 @@ mod tests {
         // Round-trip marshaling: the loaded model is internally consistent.
         let triangle_count = model.stats.triangle_count;
         assert!(
-            model.triangles.validate(triangle_count).is_ok(),
+            model
+                .triangles
+                .validate(
+                    triangle_count,
+                    model.faces.len(),
+                    model.materials.len(),
+                    model.nodes.len(),
+                )
+                .is_ok(),
             "per-triangle arrays must stay in lockstep"
         );
         assert_eq!(

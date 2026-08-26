@@ -4,7 +4,107 @@
 use review_render::ViewportBackground;
 
 use crate::assets::{self, AppIcon};
+use crate::state::{OptionPanel, PanelsOpen};
 use crate::theme::{self, color, font, size};
+
+/// The standard "toggle with an options panel" tile: left-click flips `flag`,
+/// right-click toggles `panel` open. The triad (button + toggle + panel) repeats
+/// across the toolbar and status bar; written once here.
+pub(crate) fn option_toggle(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    icon: &AppIcon,
+    flag: &mut bool,
+    panels_open: &mut PanelsOpen,
+    panel: OptionPanel,
+    tooltip: &str,
+) -> egui::Response {
+    let response = icon_toggle_button_with_options(ui, ctx, icon, *flag, tooltip);
+    if response.clicked() {
+        *flag = !*flag;
+    }
+    if response.secondary_clicked() {
+        panels_open.toggle(panel);
+    }
+    response
+}
+
+/// A chrome-bar group rect of `width`×`height`, vertically centered in
+/// `bar_rect` and anchored `inset` in from the left (or, `from_right`, the
+/// right) edge — the recessed toolbar/status-bar group placement.
+pub(crate) fn bar_group_rect(
+    bar_rect: egui::Rect,
+    from_right: bool,
+    inset: f32,
+    width: f32,
+    height: f32,
+) -> egui::Rect {
+    let x = if from_right {
+        bar_rect.right() - inset - width
+    } else {
+        bar_rect.left() + inset
+    };
+    egui::Rect::from_min_size(
+        egui::pos2(x, bar_rect.center().y - height * 0.5),
+        egui::vec2(width, height),
+    )
+}
+
+/// Lay `add_contents` out left-to-right inside `rect` at the standard group
+/// height — the scope every chrome-bar group opens.
+pub(crate) fn bar_group_scope(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    group_height: f32,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        |ui| {
+            ui.set_height(group_height);
+            add_contents(ui);
+        },
+    );
+}
+
+/// A floating stats-style overlay card anchored bottom-left above the status
+/// bar: the shared `Area` + framed card (translucent fill, hairline border,
+/// fixed width) used by the model-stats and texture-stats panels so their look
+/// can't drift apart.
+pub(crate) fn stats_overlay_card(
+    ctx: &egui::Context,
+    id: &str,
+    left_inset: f32,
+    bottom_inset: f32,
+    width: f32,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    egui::Area::new(egui::Id::new(id))
+        .fade_in(false)
+        .anchor(
+            egui::Align2::LEFT_BOTTOM,
+            egui::vec2(
+                left_inset + theme::px(ctx, size::STATS_OVERLAY_MARGIN),
+                -(bottom_inset + theme::px(ctx, size::STATS_OVERLAY_MARGIN)),
+            ),
+        )
+        .show(ctx, |ui| {
+            egui::Frame::NONE
+                .fill(color::STATS_OVERLAY_BG)
+                .stroke(egui::Stroke::new(size::HAIRLINE, color::STATS_BORDER))
+                .corner_radius(size::STATS_CORNER_RADIUS)
+                .inner_margin(egui::Margin::symmetric(
+                    size::STATS_PANEL_PAD_X,
+                    size::STATS_PANEL_PAD_Y,
+                ))
+                .show(ui, |ui| {
+                    ui.set_width(width);
+                    add_contents(ui);
+                });
+        });
+}
 
 /// A square icon toggle sized to the standard toolbar tile.
 pub(crate) fn icon_toggle_button(

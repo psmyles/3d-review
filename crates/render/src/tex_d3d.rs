@@ -18,10 +18,7 @@ use std::sync::Arc;
 use bytemuck::{Pod, Zeroable};
 use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11DeviceContext};
 
-use crate::rhi::{
-    BlendMode, Cull, DepthBias, DepthCompare, DepthState, DynamicConstantBuffer, Gpu, Pipeline,
-    PipelineDesc, Sampler, Texture, Topology,
-};
+use crate::rhi::{BlendMode, DynamicConstantBuffer, Gpu, Pipeline, PipelineDesc, Sampler, Texture};
 use crate::texture::DecodedImage;
 
 /// Compiled DXBC — see `build.rs`.
@@ -30,8 +27,8 @@ const TEX_IMAGE_PS: &[u8] = include_bytes!("hlsl/tex.image.ps.dxbc");
 const TEX_CHECKER_PS: &[u8] = include_bytes!("hlsl/tex.checker.ps.dxbc");
 
 /// Most distinct textures kept resident on the GPU at once — an LRU bound so a long
-/// session inspecting many textures can't grow VRAM without limit (matches the wgpu
-/// `TEX_CACHE_CAP`). Opening a 17th texture frees the least-recently-viewed one.
+/// session inspecting many textures can't grow VRAM without limit. Opening a 17th
+/// texture frees the least-recently-viewed one.
 const TEX_CACHE_CAP: usize = 16;
 
 /// The grey solid background fill (gamma-space, written verbatim to the UNORM
@@ -120,28 +117,16 @@ impl TexGpu {
     /// Build the Tex viewport GPU resources. Called once on the first Tex frame.
     pub(crate) fn new(gpu: &Gpu) -> windows::core::Result<Self> {
         let device = gpu.device();
-        // Both passes are a fullscreen triangle (no vertex buffer / input layout)
-        // with depth disabled; the image alpha-blends over the background, the
-        // checker overwrites opaquely.
-        let fullscreen = |ps: &'static [u8], blend| PipelineDesc {
-            vs: TEX_VS,
-            ps,
-            input: &[],
-            topology: Topology::TriangleList,
-            cull: Cull::None,
-            depth: DepthState {
-                test: false,
-                write: false,
-                compare: DepthCompare::Always,
-            },
-            blend,
-            depth_bias: DepthBias::default(),
-            sample_count: 1,
-        };
-        let image_pipeline =
-            Pipeline::new(device, &fullscreen(TEX_IMAGE_PS, BlendMode::AlphaBlend))?;
-        let checker_pipeline =
-            Pipeline::new(device, &fullscreen(TEX_CHECKER_PS, BlendMode::Opaque))?;
+        // Both passes are a fullscreen triangle; the image alpha-blends over the
+        // background, the checker overwrites opaquely.
+        let image_pipeline = Pipeline::new(
+            device,
+            &PipelineDesc::fullscreen(TEX_VS, TEX_IMAGE_PS, BlendMode::AlphaBlend),
+        )?;
+        let checker_pipeline = Pipeline::new(
+            device,
+            &PipelineDesc::fullscreen(TEX_VS, TEX_CHECKER_PS, BlendMode::Opaque),
+        )?;
         let uniforms = DynamicConstantBuffer::new::<TexUniforms>(device)?;
         let sampler = Sampler::tex_view(device)?;
         Ok(Self {
@@ -220,7 +205,7 @@ impl TexGpu {
     /// already cached for this exact decoded image, marking `path` most-recently-used.
     /// A disk reload swaps the `Arc`, so the identity check rebuilds it; an unchanged
     /// image is a touch-only no-op. A genuine insert past [`TEX_CACHE_CAP`] evicts the
-    /// least-recently-used entry. Mirrors the wgpu `ensure_texture`.
+    /// least-recently-used entry.
     fn ensure_texture(
         &mut self,
         device: &ID3D11Device,
@@ -236,7 +221,16 @@ impl TexGpu {
             cached.last_used = now;
             return Ok(());
         }
-        let texture = upload_texture(device, ctx, image)?;
+        // Raw upload (`Rgba8Unorm`, no sRGB decode) so the displayed texel equals
+        // the stored texel; a degenerate buffer falls back to a white texel.
+        let texture = Texture::rgba8_mipped_or_white(
+            device,
+            ctx,
+            image.width,
+            image.height,
+            &image.rgba,
+            false,
+        )?;
         // Cap only on genuine inserts: replacing a path's stale upload (disk reload)
         // doesn't grow the set, so it must not evict another entry.
         if !self.cache.contains_key(path)
@@ -258,22 +252,5 @@ impl TexGpu {
             },
         );
         Ok(())
-    }
-}
-
-/// Upload a decoded image into a mip-mapped raw (`Rgba8Unorm`, no sRGB decode)
-/// texture. A degenerate / mismatched buffer falls back to a single white texel so a
-/// decode hiccup never panics the render path. Mirrors the wgpu `upload_mipped`.
-fn upload_texture(
-    device: &ID3D11Device,
-    ctx: &ID3D11DeviceContext,
-    image: &DecodedImage,
-) -> windows::core::Result<Texture> {
-    let width = image.width.max(1);
-    let height = image.height.max(1);
-    if image.rgba.len() < (width as usize * height as usize * 4) {
-        Texture::rgba8_mipped(device, ctx, 1, 1, &[255, 255, 255, 255], false)
-    } else {
-        Texture::rgba8_mipped(device, ctx, width, height, &image.rgba, false)
     }
 }

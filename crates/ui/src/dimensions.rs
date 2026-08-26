@@ -16,17 +16,7 @@ use review_render::OrbitCamera;
 
 use crate::state::{UiState, ViewProjectionMode};
 use crate::theme::{self, color, font, size};
-
-/// Known DCC world units (meters per unit) and their short labels. A dimension
-/// is shown in the file's authored unit when it matches one of these.
-const KNOWN_UNITS: [(f32, &str); 6] = [
-    (1.0, "m"),
-    (0.01, "cm"),
-    (0.001, "mm"),
-    (0.0254, "in"),
-    (0.3048, "ft"),
-    (0.9144, "yd"),
-];
+use crate::units::match_known_unit;
 
 /// Draw the axis-length label at the centre of each of the 12 bounding-box
 /// edges. No-op unless the bounding-box view is active and the model has bounds.
@@ -207,14 +197,10 @@ fn clamp_to(rect: egui::Rect, bounds: egui::Rect) -> egui::Rect {
 /// unit when it matches a known DCC unit (e.g. a centimeter file reads `122 cm`);
 /// falls back to meters when the file declared no / an unrecognised unit.
 fn format_dimension(length_meters: f32, source_unit_meters: f32) -> String {
-    if source_unit_meters.is_finite() && source_unit_meters > 0.0 {
-        for (factor, label) in KNOWN_UNITS {
-            if (source_unit_meters - factor).abs() <= factor * 0.001 {
-                return format!("{} {label}", round_dimension(length_meters / factor));
-            }
-        }
+    match match_known_unit(source_unit_meters) {
+        Some((factor, label)) => format!("{} {label}", round_dimension(length_meters / factor)),
+        None => format!("{} m", round_dimension(length_meters)),
     }
-    format!("{} m", round_dimension(length_meters))
 }
 
 /// Round a dimension value to a compact, readable precision: large values read

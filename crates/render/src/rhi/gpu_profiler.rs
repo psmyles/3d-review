@@ -38,6 +38,8 @@ use windows::Win32::Graphics::Direct3D11::{
 };
 use windows::core::Result;
 
+use super::out_param;
+
 /// Set by `app` on a `--tracy` launch. Read by the scene renderer (which has no
 /// channel from `app`) to decide whether to build the profiler. The D3D11 backend is
 /// fixed, so unlike the old wgpu profiler this carries no backend value.
@@ -60,6 +62,14 @@ fn tracy_gpu_enabled() -> bool {
 /// connected server still pays nothing for query objects it would never read).
 pub(crate) fn should_enable() -> bool {
     tracy_gpu_enabled() && Client::running().is_some()
+}
+
+/// Send a plain message to the running Tracy client (a no-op without one) — the
+/// only diagnostics channel a `--tracy` session watches.
+pub(crate) fn note(text: &str) {
+    if let Some(client) = Client::running() {
+        client.message(text, 0);
+    }
 }
 
 /// One profiled scene pass. Each owns a fixed pair of timestamp slots (begin, end)
@@ -321,5 +331,5 @@ fn create_query(device: &ID3D11Device, query_type: D3D11_QUERY) -> Result<ID3D11
     let mut query = None;
     // SAFETY: `desc` is a well-formed query description; the out-param is populated.
     unsafe { device.CreateQuery(&desc, Some(&mut query))? };
-    Ok(query.unwrap())
+    Ok(out_param(query))
 }

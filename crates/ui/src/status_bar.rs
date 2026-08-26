@@ -8,7 +8,8 @@ use crate::assets::{
 use crate::state::{OptionPanel, TexViewRequest, TextureBackground, UiState, WorkspaceMode};
 use crate::theme::{self, color, font, size};
 use crate::widgets::{
-    icon_toggle_button, icon_toggle_button_with_options, segment_button, toolbar_group_shell,
+    bar_group_rect, bar_group_scope, icon_toggle_button, icon_toggle_button_with_options,
+    option_toggle, segment_button, toolbar_group_shell,
 };
 use review_render::ViewportBackground;
 
@@ -51,141 +52,110 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
             let edge_inset = (status_bar_height - group_height) * 0.5;
 
             // Model Stats toggle — single-icon group inset equally on the left.
-            let left_rect = egui::Rect::from_min_size(
-                egui::pos2(
-                    bar_rect.left() + edge_inset,
-                    bar_rect.center().y - group_height * 0.5,
-                ),
-                egui::vec2(single_icon_group_width, group_height),
+            let left_rect = bar_group_rect(
+                bar_rect,
+                false,
+                edge_inset,
+                single_icon_group_width,
+                group_height,
             );
-            ui.scope_builder(
-                egui::UiBuilder::new()
-                    .max_rect(left_rect)
-                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                |ui| {
-                    ui.set_height(group_height);
-                    toolbar_group_shell(ui, ctx, single_icon_group_width, |ui| {
-                        if icon_toggle_button(ui, ctx, &ICON_INFO, state.show_stats, "Model Stats")
-                            .clicked()
-                        {
-                            state.show_stats = !state.show_stats;
-                        }
-                    });
-                },
-            );
+            bar_group_scope(ui, left_rect, group_height, |ui| {
+                toolbar_group_shell(ui, ctx, single_icon_group_width, |ui| {
+                    if icon_toggle_button(ui, ctx, &ICON_INFO, state.show_stats, "Model Stats")
+                        .clicked()
+                    {
+                        state.show_stats = !state.show_stats;
+                    }
+                });
+            });
 
             // Rendering-quality group — Background / IBL / AO / Tonemapper / Anti
             // aliasing in one recessed group mirrored to the right edge. Each tile
             // left-clicks (cycle / toggle, highlighted while non-default / on) and
             // right-clicks to open its options panel, matching the top-toolbar
             // buttons.
-            let right_rect = egui::Rect::from_min_size(
-                egui::pos2(
-                    bar_rect.right() - edge_inset - quint_icon_group_width,
-                    bar_rect.center().y - group_height * 0.5,
-                ),
-                egui::vec2(quint_icon_group_width, group_height),
+            let right_rect = bar_group_rect(
+                bar_rect,
+                true,
+                edge_inset,
+                quint_icon_group_width,
+                group_height,
             );
-            ui.scope_builder(
-                egui::UiBuilder::new()
-                    .max_rect(right_rect)
-                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                |ui| {
-                    ui.set_height(group_height);
-                    toolbar_group_shell(ui, ctx, quint_icon_group_width, |ui| {
-                        // Viewport background. Left-click cycles the presets, right-
-                        // click opens the Background options panel; highlighted while
-                        // a non-default (non-black) background is active.
-                        let background = icon_toggle_button_with_options(
+            bar_group_scope(ui, right_rect, group_height, |ui| {
+                toolbar_group_shell(ui, ctx, quint_icon_group_width, |ui| {
+                    // Viewport background. Left-click cycles the presets (not a
+                    // plain toggle, so it stays hand-wired), right-click opens the
+                    // Background options panel; highlighted while a non-default
+                    // (non-black) background is active.
+                    let background = icon_toggle_button_with_options(
+                        ui,
+                        ctx,
+                        &ICON_BACKGROUND,
+                        state.viewport_background != ViewportBackground::Black,
+                        "Viewport background (right-click for options)",
+                    );
+                    if background.clicked() {
+                        state.viewport_background = state.viewport_background.next();
+                    }
+                    if background.secondary_clicked() {
+                        state.panels_open.toggle(OptionPanel::Background);
+                    }
+
+                    // Image-based lighting. Disabled + forced off when the
+                    // adapter can't build the IBL maps (invariant 4).
+                    if !state.ibl_supported {
+                        state.environment.ibl_enabled = false;
+                    }
+                    ui.add_enabled_ui(state.ibl_supported, |ui| {
+                        option_toggle(
                             ui,
                             ctx,
-                            &ICON_BACKGROUND,
-                            state.viewport_background != ViewportBackground::Black,
-                            "Viewport background (right-click for options)",
+                            &ICON_IBL,
+                            &mut state.environment.ibl_enabled,
+                            &mut state.panels_open,
+                            OptionPanel::Environment,
+                            "Image-based lighting (right-click for options)",
                         );
-                        if background.clicked() {
-                            state.viewport_background = state.viewport_background.next();
-                        }
-                        if background.secondary_clicked() {
-                            state.panels_open.toggle(OptionPanel::Background);
-                        }
-
-                        // Image-based lighting. Disabled + forced off when the
-                        // adapter can't build the IBL maps (invariant 4).
-                        if !state.ibl_supported {
-                            state.environment.ibl_enabled = false;
-                        }
-                        ui.add_enabled_ui(state.ibl_supported, |ui| {
-                            let ibl = icon_toggle_button_with_options(
-                                ui,
-                                ctx,
-                                &ICON_IBL,
-                                state.environment.ibl_enabled,
-                                "Image-based lighting (right-click for options)",
-                            );
-                            if ibl.clicked() {
-                                state.environment.ibl_enabled = !state.environment.ibl_enabled;
-                            }
-                            if ibl.secondary_clicked() {
-                                state.panels_open.toggle(OptionPanel::Environment);
-                            }
-                        });
-
-                        // Ambient occlusion (GTAO). Disabled + forced off when the
-                        // adapter can't run it (invariant 4).
-                        if !state.gtao_supported {
-                            state.gtao.enabled = false;
-                        }
-                        ui.add_enabled_ui(state.gtao_supported, |ui| {
-                            let gtao = icon_toggle_button_with_options(
-                                ui,
-                                ctx,
-                                &ICON_AO,
-                                state.gtao.enabled,
-                                "Ambient occlusion (right-click for options)",
-                            );
-                            if gtao.clicked() {
-                                state.gtao.enabled = !state.gtao.enabled;
-                            }
-                            if gtao.secondary_clicked() {
-                                state.panels_open.toggle(OptionPanel::Gtao);
-                            }
-                        });
-
-                        // Tone mapping. Left-click toggles the tone curve on/off
-                        // (off = linear → sRGB); right-click opens the operator
-                        // picker.
-                        let tonemap = icon_toggle_button_with_options(
-                            ui,
-                            ctx,
-                            &ICON_TONEMAPPER,
-                            state.tonemap.enabled,
-                            "Tone mapping (right-click for options)",
-                        );
-                        if tonemap.clicked() {
-                            state.tonemap.enabled = !state.tonemap.enabled;
-                        }
-                        if tonemap.secondary_clicked() {
-                            state.panels_open.toggle(OptionPanel::Tonemap);
-                        }
-
-                        // Anti aliasing.
-                        let aa = icon_toggle_button_with_options(
-                            ui,
-                            ctx,
-                            &ICON_ANTI_ALIASING,
-                            state.anti_aliasing.enabled,
-                            "Anti aliasing (right-click for options)",
-                        );
-                        if aa.clicked() {
-                            state.anti_aliasing.enabled = !state.anti_aliasing.enabled;
-                        }
-                        if aa.secondary_clicked() {
-                            state.panels_open.toggle(OptionPanel::AntiAliasing);
-                        }
                     });
-                },
-            );
+
+                    // Ambient occlusion (GTAO). Disabled + forced off when the
+                    // adapter can't run it (invariant 4).
+                    if !state.gtao_supported {
+                        state.gtao.enabled = false;
+                    }
+                    ui.add_enabled_ui(state.gtao_supported, |ui| {
+                        option_toggle(
+                            ui,
+                            ctx,
+                            &ICON_AO,
+                            &mut state.gtao.enabled,
+                            &mut state.panels_open,
+                            OptionPanel::Gtao,
+                            "Ambient occlusion (right-click for options)",
+                        );
+                    });
+
+                    // Tone mapping (off = linear → sRGB), then anti-aliasing.
+                    option_toggle(
+                        ui,
+                        ctx,
+                        &ICON_TONEMAPPER,
+                        &mut state.tonemap.enabled,
+                        &mut state.panels_open,
+                        OptionPanel::Tonemap,
+                        "Tone mapping (right-click for options)",
+                    );
+                    option_toggle(
+                        ui,
+                        ctx,
+                        &ICON_ANTI_ALIASING,
+                        &mut state.anti_aliasing.enabled,
+                        &mut state.panels_open,
+                        OptionPanel::AntiAliasing,
+                        "Anti aliasing (right-click for options)",
+                    );
+                });
+            });
         });
 }
 
@@ -207,34 +177,28 @@ fn draw_texture_status_bar(
     let edge_inset = (bar_rect.height() - group_height) * 0.5;
 
     // Texture-stats toggle — single-icon group inset equally on the left.
-    let left_rect = egui::Rect::from_min_size(
-        egui::pos2(
-            bar_rect.left() + edge_inset,
-            bar_rect.center().y - group_height * 0.5,
-        ),
-        egui::vec2(single_icon_group_width, group_height),
+    let left_rect = bar_group_rect(
+        bar_rect,
+        false,
+        edge_inset,
+        single_icon_group_width,
+        group_height,
     );
-    ui.scope_builder(
-        egui::UiBuilder::new()
-            .max_rect(left_rect)
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-        |ui| {
-            ui.set_height(group_height);
-            toolbar_group_shell(ui, ctx, single_icon_group_width, |ui| {
-                if icon_toggle_button(
-                    ui,
-                    ctx,
-                    &ICON_INFO,
-                    state.texture_view.show_stats,
-                    "Texture Info",
-                )
-                .clicked()
-                {
-                    state.texture_view.show_stats = !state.texture_view.show_stats;
-                }
-            });
-        },
-    );
+    bar_group_scope(ui, left_rect, group_height, |ui| {
+        toolbar_group_shell(ui, ctx, single_icon_group_width, |ui| {
+            if icon_toggle_button(
+                ui,
+                ctx,
+                &ICON_INFO,
+                state.texture_view.show_stats,
+                "Texture Info",
+            )
+            .clicked()
+            {
+                state.texture_view.show_stats = !state.texture_view.show_stats;
+            }
+        });
+    });
 
     // Zoom-level readout next to the texture-info button: the current zoom as an
     // integer percentage, clickable to reset to 100%.
@@ -246,52 +210,34 @@ fn draw_texture_status_bar(
         ),
         egui::vec2(zoom_label_width, group_height),
     );
-    ui.scope_builder(
-        egui::UiBuilder::new()
-            .max_rect(zoom_rect)
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-        |ui| {
-            ui.set_height(group_height);
-            if zoom_reset_label(ui, ctx, state.texture_view.zoom).clicked() {
-                // Toggle on the readout the user sees: at 100% → fit, at any other
-                // zoom → 100%. Both are emitted as a request `texture_view` eases
-                // to over `TEXTURE_ZOOM_ANIM_SECS` on its next paint.
-                state.texture_view.request =
-                    Some(if (state.texture_view.zoom * 100.0).round() as i32 == 100 {
-                        TexViewRequest::Fit
-                    } else {
-                        TexViewRequest::Zoom(1.0)
-                    });
-            }
-        },
-    );
+    bar_group_scope(ui, zoom_rect, group_height, |ui| {
+        if zoom_reset_label(ui, ctx, state.texture_view.zoom).clicked() {
+            // Toggle on the readout the user sees: at 100% → fit, at any other
+            // zoom → 100%. Both are emitted as a request `texture_view` eases
+            // to over `TEXTURE_ZOOM_ANIM_SECS` on its next paint.
+            state.texture_view.request =
+                Some(if (state.texture_view.zoom * 100.0).round() as i32 == 100 {
+                    TexViewRequest::Fit
+                } else {
+                    TexViewRequest::Zoom(1.0)
+                });
+        }
+    });
 
     // Background-fill radio group — mirrored to the right edge.
-    let right_rect = egui::Rect::from_min_size(
-        egui::pos2(
-            bar_rect.right() - edge_inset - bg_group_width,
-            bar_rect.center().y - group_height * 0.5,
-        ),
-        egui::vec2(bg_group_width, group_height),
-    );
-    ui.scope_builder(
-        egui::UiBuilder::new()
-            .max_rect(right_rect)
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-        |ui| {
-            ui.set_height(group_height);
-            toolbar_group_shell(ui, ctx, bg_group_width, |ui| {
-                for background in TextureBackground::ALL {
-                    let selected = state.texture_view.background == background;
-                    let response = segment_button(ui, ctx, background.label(), selected, segment_w)
-                        .on_hover_text(background_tooltip(background));
-                    if response.clicked() {
-                        state.texture_view.background = background;
-                    }
+    let right_rect = bar_group_rect(bar_rect, true, edge_inset, bg_group_width, group_height);
+    bar_group_scope(ui, right_rect, group_height, |ui| {
+        toolbar_group_shell(ui, ctx, bg_group_width, |ui| {
+            for background in TextureBackground::ALL {
+                let selected = state.texture_view.background == background;
+                let response = segment_button(ui, ctx, background.label(), selected, segment_w)
+                    .on_hover_text(background_tooltip(background));
+                if response.clicked() {
+                    state.texture_view.background = background;
                 }
-            });
-        },
-    );
+            }
+        });
+    });
 }
 
 /// A clickable zoom-percentage readout for the Tex status bar: shows the current

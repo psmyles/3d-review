@@ -20,16 +20,10 @@ review-ui = { path = "../ui" }
 rfd.workspace = true
 tracy-client.workspace = true
 winit.workspace = true
-# Direct3D 11 / DXGI for the device + swapchain bootstrap and first-frame present
-# (the startup black-fill, replacing the old GDI hack). Scoped to the window/
-# swapchain setup; the renderer's D3D11 lives in `review-render`'s `rhi` module.
-windows = { workspace = true, features = [
-    "Win32_Foundation",
-    "Win32_Graphics_Direct3D",
-    "Win32_Graphics_Direct3D11",
-    "Win32_Graphics_Dxgi",
-    "Win32_Graphics_Dxgi_Common",
-] }
+# Only `HWND` (handed to `review-render`'s safe `Gpu::new`) — all D3D11/DXGI COM
+# lives in `review-render`'s `rhi` module now (invariant 9); `app` itself has
+# zero `unsafe`.
+windows = { workspace = true, features = ["Win32_Foundation"] }
 
 [target.'cfg(windows)'.build-dependencies]
 serde_json.workspace = true

@@ -15,6 +15,8 @@ use windows::Win32::Graphics::Dxgi::Common::{
 };
 use windows::core::Result;
 
+use super::out_param;
+
 /// An offscreen color target: a texture with a render-target view (a pass draws into
 /// it) and a shader-resource view (a later pass samples it). At `sample_count == 1`
 /// these are the same single-sample texture; at `sample_count > 1` the render texture
@@ -119,7 +121,7 @@ impl ColorTarget {
 
         Ok(Self {
             render,
-            rtv: rtv.unwrap(),
+            rtv: out_param(rtv),
             srv,
             resolve,
             format,
@@ -150,10 +152,7 @@ impl ColorTarget {
     /// Bind the sampled view to pixel-shader slot `slot` (the resolve when MSAA, the
     /// render texture otherwise).
     pub(crate) fn bind_ps_srv(&self, ctx: &ID3D11DeviceContext, slot: u32) {
-        // SAFETY: the SRV is live; the one-element array outlives the call.
-        unsafe {
-            ctx.PSSetShaderResources(slot, Some(&[Some(self.srv.clone())]));
-        }
+        super::bind_ps_srv(ctx, slot, &self.srv);
     }
 }
 
@@ -190,7 +189,7 @@ impl DepthTarget {
         // matches its typed `D32_FLOAT` format + (MS or 2D) dimension. Out-param set.
         unsafe { device.CreateDepthStencilView(&texture, None, Some(&mut view))? };
         Ok(Self {
-            view: view.unwrap(),
+            view: out_param(view),
         })
     }
 
@@ -227,7 +226,7 @@ fn create_texture(
     let mut texture = None;
     // SAFETY: `desc` is a well-formed render texture; no initial data; out-param set.
     unsafe { device.CreateTexture2D(&desc, None, Some(&mut texture))? };
-    Ok(texture.unwrap())
+    Ok(out_param(texture))
 }
 
 /// Create a default (full-mip, matching-format) shader-resource view over `texture`.
@@ -239,5 +238,5 @@ fn create_srv(
     // SAFETY: `texture` is shader-resource-bindable; a default view desc matches its
     // typed format. Out-param set.
     unsafe { device.CreateShaderResourceView(texture, None, Some(&mut srv))? };
-    Ok(srv.unwrap())
+    Ok(out_param(srv))
 }

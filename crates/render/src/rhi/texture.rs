@@ -22,6 +22,8 @@ use windows::Win32::Graphics::Dxgi::Common::{
 };
 use windows::core::Result;
 
+use super::{invalid_arg, out_param};
+
 /// A sampled GPU texture: a 2D or cube texture plus the shader-resource view a
 /// pixel shader reads it through. The underlying texture is kept alive by the SRV's
 /// internal reference, so only the view is stored.
@@ -32,7 +34,7 @@ pub(crate) struct Texture {
 impl Texture {
     /// Create an immutable block-compressed **cube** texture (the baked BC6H IBL
     /// cubes) from mip-major, faces-contiguous block bytes — exactly the layout the
-    /// bake tool wrote and the wgpu `upload_cube` re-read. `size` is the base face
+    /// bake tool wrote. `size` is the base face
     /// resolution; `block_bytes` is one block's size (16 for BC6H). The D3D11
     /// subresource order is `face * mips + mip`, so the mip-major source is
     /// re-indexed accordingly.
@@ -44,6 +46,21 @@ impl Texture {
         block_bytes: u32,
         data: &[u8],
     ) -> Result<Self> {
+        // Validate the payload against the computed subresource layout *before*
+        // handing pointers to the driver: a truncated baked asset would otherwise
+        // make D3D11 read past the end of `data` (out of bounds, not an error).
+        let total_len: usize = (0..mips)
+            .map(|mip| {
+                let blocks = (size >> mip).max(1).div_ceil(4) as usize;
+                blocks * blocks * block_bytes as usize * 6
+            })
+            .sum();
+        if data.len() < total_len {
+            return Err(invalid_arg(
+                "block-compressed cube payload is shorter than its subresource layout",
+            ));
+        }
+
         let mut subdata = vec![D3D11_SUBRESOURCE_DATA::default(); (6 * mips) as usize];
         let mut offset = 0usize;
         for mip in 0..mips {
@@ -82,7 +99,7 @@ impl Texture {
         // SAFETY: `desc` describes an immutable cube; `subdata` (alive for the call)
         // holds the 6×mips initial-data entries pointing into `data` (also alive).
         unsafe { device.CreateTexture2D(&desc, Some(subdata.as_ptr()), Some(&mut texture))? };
-        let texture = texture.unwrap();
+        let texture = out_param(texture);
 
         let srv_desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
             Format: format,
@@ -98,7 +115,9 @@ impl Texture {
         // SAFETY: `texture` is shader-resource-bindable; `srv_desc` matches its cube
         // format + mip count. Out-param set.
         unsafe { device.CreateShaderResourceView(&texture, Some(&srv_desc), Some(&mut srv))? };
-        Ok(Self { srv: srv.unwrap() })
+        Ok(Self {
+            srv: out_param(srv),
+        })
     }
 
     /// Create an immutable single-mip 2D texture from tightly-packed `data`
@@ -111,6 +130,13 @@ impl Texture {
         row_pitch: u32,
         data: &[u8],
     ) -> Result<Self> {
+        // The driver reads `row_pitch` bytes per row for `height` rows; a short
+        // payload would be an out-of-bounds read, so reject it here.
+        if data.len() < row_pitch as usize * height as usize {
+            return Err(invalid_arg(
+                "2D texture payload is shorter than pitch × height",
+            ));
+        }
         let init = D3D11_SUBRESOURCE_DATA {
             pSysMem: data.as_ptr() as *const c_void,
             SysMemPitch: row_pitch,
@@ -134,16 +160,17 @@ impl Texture {
         let mut texture = None;
         // SAFETY: immutable 2D texture with full initial data alive for the call.
         unsafe { device.CreateTexture2D(&desc, Some(&init), Some(&mut texture))? };
-        let texture = texture.unwrap();
+        let texture = out_param(texture);
         let mut srv = None;
         // SAFETY: `texture` is shader-resource-bindable; a default view desc matches.
         unsafe { device.CreateShaderResourceView(&texture, None, Some(&mut srv))? };
-        Ok(Self { srv: srv.unwrap() })
+        Ok(Self {
+            srv: out_param(srv),
+        })
     }
 
     /// Create an immutable single-mip RGBA8 2D texture (sRGB or linear) — the
-    /// per-slot 1×1 material fallbacks and the UV-checker textures, which the wgpu
-    /// path also stored without mips.
+    /// per-slot 1×1 material fallbacks and the UV-checker textures (no mips needed).
     pub(crate) fn rgba8_single(
         device: &ID3D11Device,
         width: u32,
@@ -157,8 +184,8 @@ impl Texture {
 
     /// Create an RGBA8 2D texture (sRGB or linear) with a full, runtime-generated
     /// mip chain — the material texture slots. Mip 0 is uploaded via
-    /// `UpdateSubresource`, then `GenerateMips` fills the rest (replacing the wgpu
-    /// render-pass downsample), so anisotropic minification has levels to filter.
+    /// `UpdateSubresource`, then `GenerateMips` fills the rest, so anisotropic
+    /// minification has levels to filter.
     pub(crate) fn rgba8_mipped(
         device: &ID3D11Device,
         ctx: &ID3D11DeviceContext,
@@ -167,6 +194,13 @@ impl Texture {
         rgba: &[u8],
         srgb: bool,
     ) -> Result<Self> {
+        // Enforced here (not just documented at the call sites): the mip-0 upload
+        // below reads `width*height*4` bytes.
+        if rgba.len() < width as usize * height as usize * 4 {
+            return Err(invalid_arg(
+                "RGBA8 payload is shorter than width × height × 4",
+            ));
+        }
         let format = rgba8_format(srgb);
         let mips = mip_level_count(width, height);
         let desc = D3D11_TEXTURE2D_DESC {
@@ -189,10 +223,10 @@ impl Texture {
         // SAFETY: a default-usage mip-mapped 2D texture; mip0 is filled below and the
         // rest generated, so no initial data is supplied.
         unsafe { device.CreateTexture2D(&desc, None, Some(&mut texture))? };
-        let texture = texture.unwrap();
+        let texture = out_param(texture);
 
         // SAFETY: writing mip 0 of `texture`; `rgba` (>= width*height*4 bytes,
-        // checked by the caller) is alive for the call, `width*4` is its row pitch.
+        // checked above) is alive for the call, `width*4` is its row pitch.
         unsafe {
             ctx.UpdateSubresource(
                 &texture,
@@ -206,27 +240,49 @@ impl Texture {
         let mut srv = None;
         // SAFETY: `texture` is shader-resource-bindable across all mips; default desc.
         unsafe { device.CreateShaderResourceView(&texture, None, Some(&mut srv))? };
-        let srv = srv.unwrap();
+        let srv = out_param(srv);
         // SAFETY: the SRV covers the full mip chain of a render-target-capable
         // texture, so GenerateMips can downsample mip0 into the rest.
         unsafe { ctx.GenerateMips(&srv) };
         Ok(Self { srv })
     }
 
+    /// Upload a decoded RGBA8 image as a mip-mapped texture, falling back to a
+    /// 1×1 white texel when the pixel buffer is degenerate / mismatched — a
+    /// decode hiccup must never fail the render path. Shared by the material
+    /// slots (sRGB per slot) and the Tex viewport (raw).
+    pub(crate) fn rgba8_mipped_or_white(
+        device: &ID3D11Device,
+        ctx: &ID3D11DeviceContext,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+        srgb: bool,
+    ) -> Result<Self> {
+        let width = width.max(1);
+        let height = height.max(1);
+        if rgba.len() < (width as usize * height as usize * 4) {
+            return Self::rgba8_single(device, 1, 1, &[255, 255, 255, 255], srgb);
+        }
+        Self::rgba8_mipped(device, ctx, width, height, rgba, srgb)
+    }
+
     /// Bind this texture's SRV to pixel-shader slot `slot`.
     pub(crate) fn bind_ps(&self, ctx: &ID3D11DeviceContext, slot: u32) {
-        // SAFETY: the SRV is live; the one-element array outlives the call.
-        unsafe {
-            ctx.PSSetShaderResources(slot, Some(&[Some(self.srv.clone())]));
-        }
+        super::bind_ps_srv(ctx, slot, &self.srv);
     }
 }
 
 /// Bind `textures` to consecutive pixel-shader SRV slots starting at `slot` in one
-/// call (the seven material slots → `t5..t11`).
-pub(crate) fn bind_ps_textures(ctx: &ID3D11DeviceContext, slot: u32, textures: &[&Texture]) {
-    let srvs: Vec<Option<ID3D11ShaderResourceView>> =
-        textures.iter().map(|t| Some(t.srv.clone())).collect();
+/// call (the seven material slots → `t5..t11`). Fixed-size so the per-draw-range
+/// rebind allocates nothing.
+pub(crate) fn bind_ps_textures<const N: usize>(
+    ctx: &ID3D11DeviceContext,
+    slot: u32,
+    textures: &[&Texture; N],
+) {
+    let srvs: [Option<ID3D11ShaderResourceView>; N] =
+        std::array::from_fn(|index| Some(textures[index].srv.clone()));
     // SAFETY: every SRV is live; the local array outlives the call.
     unsafe {
         ctx.PSSetShaderResources(slot, Some(&srvs));

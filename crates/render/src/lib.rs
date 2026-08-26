@@ -37,15 +37,13 @@ pub use material::{
     AlphaMode, MaterialChange, MaterialEdit, MaterialSnapshot, MaterialState, RoughnessWorkflow,
     TextureBinding,
 };
-pub use rhi::Gpu;
+pub use rhi::gpu_profiler::enable_tracy_gpu;
+pub use rhi::{Gpu, PresentStatus};
 use scene::SceneGpu;
-pub use scene::enable_tracy_gpu;
 pub use selection::{Selection, SelectionView, selection_bounds};
 use tex_d3d::TexGpu;
 pub use tex_d3d::{TexBackground, TexImage};
-pub use texture::{
-    ChannelSelect, DecodedImage, TEXTURE_SLOT_COUNT, TextureSlot, decode_image, suggested_channel,
-};
+pub use texture::{ChannelSelect, DecodedImage, TextureSlot, decode_image, suggested_channel};
 
 const CAMERA_TRANSITION_SECONDS: f32 = 0.3;
 /// Shorter transition used for the WASD 45° orbit steps, which fire repeatedly
@@ -551,6 +549,24 @@ pub struct Renderer {
     tex_gpu: Option<TexGpu>,
 }
 
+/// Per-frame inputs for the 3D scene render — everything `app` resolves from the
+/// live UI state each frame, bundled in one struct so the render entry points
+/// stay self-documenting and immune to argument-order mistakes among their many
+/// same-typed inputs.
+pub struct SceneFrame<'a> {
+    pub model: &'a ModelData,
+    pub model_revision: u64,
+    pub debug: SceneDebugOptions,
+    pub projection: CameraProjection,
+    pub environment: EnvironmentSettings,
+    pub gtao: GtaoSettings,
+    pub tonemap: TonemapSettings,
+    pub anti_aliasing: AntiAliasing,
+    pub selection: SelectionView,
+    pub hidden_meshes: &'a [u32],
+    pub background: ViewportBackground,
+}
+
 impl Renderer {
     /// Create a renderer from its config with default cameras and an empty material
     /// table. No GPU resources are built here — the Direct3D 11 device doesn't exist
@@ -576,48 +592,24 @@ impl Renderer {
     /// composite to the swapchain backbuffer behind the egui chrome `app` draws next.
     /// Builds the GPU resources on the first call (the device only exists once the
     /// window is up).
-    #[allow(clippy::too_many_arguments)]
-    pub fn render_scene(
-        &mut self,
-        gpu: &Gpu,
-        model: &ModelData,
-        model_revision: u64,
-        debug: SceneDebugOptions,
-        projection: CameraProjection,
-        environment: EnvironmentSettings,
-        gtao: GtaoSettings,
-        tonemap: TonemapSettings,
-        anti_aliasing: AntiAliasing,
-        selection: SelectionView,
-        hidden_meshes: &[u32],
-        background: ViewportBackground,
-    ) -> windows::core::Result<()> {
+    pub fn render_scene(&mut self, gpu: &Gpu, frame: &SceneFrame<'_>) -> windows::core::Result<()> {
         // Build the scene GPU resources on first use, then borrow them — `insert`
         // returns the `&mut` so there's no separate unwrap. Disjoint field borrows:
         // `scene` borrows `self.scene_gpu` mutably while the material table + camera
         // are borrowed from their own fields.
         let scene = match self.scene_gpu {
             Some(ref mut scene) => scene,
-            None => self
-                .scene_gpu
-                .insert(SceneGpu::new(gpu, anti_aliasing.effective_sample_count())?),
+            None => self.scene_gpu.insert(SceneGpu::new(
+                gpu,
+                frame.anti_aliasing.effective_sample_count(),
+            )?),
         };
         scene.render(
             gpu,
-            model,
-            model_revision,
+            frame,
             &self.material_states,
             self.material_revision,
             self.camera,
-            projection,
-            environment,
-            gtao,
-            tonemap,
-            anti_aliasing,
-            selection,
-            debug,
-            hidden_meshes,
-            background,
         )
     }
 

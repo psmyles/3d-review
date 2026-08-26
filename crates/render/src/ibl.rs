@@ -31,10 +31,7 @@ use crate::EnvironmentMap;
 #[cfg(feature = "bake")]
 use crate::rhi::bake::{Baker, CubeTarget, Target2D};
 #[cfg(feature = "bake")]
-use crate::rhi::{
-    BlendMode, Cull, DepthBias, DepthCompare, DepthState, DynamicConstantBuffer, Pipeline,
-    PipelineDesc, Sampler, Topology,
-};
+use crate::rhi::{BlendMode, DynamicConstantBuffer, Pipeline, PipelineDesc, Sampler};
 use crate::rhi::{Gpu, Texture};
 
 /// Env cubemap face resolution. The sources are 1024×512 equirect, so 256² faces
@@ -176,53 +173,52 @@ impl IblD3d {
     }
 }
 
-/// Baked environment cube bytes (`assets/ibl_baked/T_IBL_NN_env.bin`).
-fn baked_env_bytes(environment: EnvironmentMap) -> &'static [u8] {
-    match environment {
-        EnvironmentMap::Hdr01 => include_bytes!("../../../assets/ibl_baked/T_IBL_01_env.bin"),
-        EnvironmentMap::Hdr02 => include_bytes!("../../../assets/ibl_baked/T_IBL_02_env.bin"),
-        EnvironmentMap::Hdr03 => include_bytes!("../../../assets/ibl_baked/T_IBL_03_env.bin"),
-        EnvironmentMap::Hdr04 => include_bytes!("../../../assets/ibl_baked/T_IBL_04_env.bin"),
-        EnvironmentMap::Hdr05 => include_bytes!("../../../assets/ibl_baked/T_IBL_05_env.bin"),
-        EnvironmentMap::Hdr06 => include_bytes!("../../../assets/ibl_baked/T_IBL_06_env.bin"),
-    }
+/// Expand one `fn baked_*_bytes(EnvironmentMap) -> &'static [u8]` accessor per
+/// baked-map kind: a six-arm `include_bytes!` match over
+/// `assets/ibl_baked/T_IBL_NN_<kind>.bin`, written once instead of three times.
+macro_rules! baked_bytes_fn {
+    ($(#[$doc:meta])* $name:ident, $kind:literal) => {
+        $(#[$doc])*
+        fn $name(environment: EnvironmentMap) -> &'static [u8] {
+            match environment {
+                EnvironmentMap::Hdr01 => {
+                    include_bytes!(concat!("../../../assets/ibl_baked/T_IBL_01_", $kind, ".bin"))
+                }
+                EnvironmentMap::Hdr02 => {
+                    include_bytes!(concat!("../../../assets/ibl_baked/T_IBL_02_", $kind, ".bin"))
+                }
+                EnvironmentMap::Hdr03 => {
+                    include_bytes!(concat!("../../../assets/ibl_baked/T_IBL_03_", $kind, ".bin"))
+                }
+                EnvironmentMap::Hdr04 => {
+                    include_bytes!(concat!("../../../assets/ibl_baked/T_IBL_04_", $kind, ".bin"))
+                }
+                EnvironmentMap::Hdr05 => {
+                    include_bytes!(concat!("../../../assets/ibl_baked/T_IBL_05_", $kind, ".bin"))
+                }
+                EnvironmentMap::Hdr06 => {
+                    include_bytes!(concat!("../../../assets/ibl_baked/T_IBL_06_", $kind, ".bin"))
+                }
+            }
+        }
+    };
 }
 
-/// Baked diffuse irradiance cube bytes (`assets/ibl_baked/T_IBL_NN_irradiance.bin`).
-fn baked_irradiance_bytes(environment: EnvironmentMap) -> &'static [u8] {
-    match environment {
-        EnvironmentMap::Hdr01 => {
-            include_bytes!("../../../assets/ibl_baked/T_IBL_01_irradiance.bin")
-        }
-        EnvironmentMap::Hdr02 => {
-            include_bytes!("../../../assets/ibl_baked/T_IBL_02_irradiance.bin")
-        }
-        EnvironmentMap::Hdr03 => {
-            include_bytes!("../../../assets/ibl_baked/T_IBL_03_irradiance.bin")
-        }
-        EnvironmentMap::Hdr04 => {
-            include_bytes!("../../../assets/ibl_baked/T_IBL_04_irradiance.bin")
-        }
-        EnvironmentMap::Hdr05 => {
-            include_bytes!("../../../assets/ibl_baked/T_IBL_05_irradiance.bin")
-        }
-        EnvironmentMap::Hdr06 => {
-            include_bytes!("../../../assets/ibl_baked/T_IBL_06_irradiance.bin")
-        }
-    }
-}
-
-/// Baked prefiltered specular cube bytes (`assets/ibl_baked/T_IBL_NN_prefilter.bin`).
-fn baked_prefilter_bytes(environment: EnvironmentMap) -> &'static [u8] {
-    match environment {
-        EnvironmentMap::Hdr01 => include_bytes!("../../../assets/ibl_baked/T_IBL_01_prefilter.bin"),
-        EnvironmentMap::Hdr02 => include_bytes!("../../../assets/ibl_baked/T_IBL_02_prefilter.bin"),
-        EnvironmentMap::Hdr03 => include_bytes!("../../../assets/ibl_baked/T_IBL_03_prefilter.bin"),
-        EnvironmentMap::Hdr04 => include_bytes!("../../../assets/ibl_baked/T_IBL_04_prefilter.bin"),
-        EnvironmentMap::Hdr05 => include_bytes!("../../../assets/ibl_baked/T_IBL_05_prefilter.bin"),
-        EnvironmentMap::Hdr06 => include_bytes!("../../../assets/ibl_baked/T_IBL_06_prefilter.bin"),
-    }
-}
+baked_bytes_fn!(
+    /// Baked environment cube bytes (`assets/ibl_baked/T_IBL_NN_env.bin`).
+    baked_env_bytes,
+    "env"
+);
+baked_bytes_fn!(
+    /// Baked diffuse irradiance cube bytes (`assets/ibl_baked/T_IBL_NN_irradiance.bin`).
+    baked_irradiance_bytes,
+    "irradiance"
+);
+baked_bytes_fn!(
+    /// Baked prefiltered specular cube bytes (`assets/ibl_baked/T_IBL_NN_prefilter.bin`).
+    baked_prefilter_bytes,
+    "prefilter"
+);
 
 /// Baked BRDF integration LUT bytes (environment-independent — one shared file).
 const BAKED_BRDF_BYTES: &[u8] = include_bytes!("../../../assets/ibl_baked/T_IBL_BRDF.bin");
@@ -390,21 +386,7 @@ pub fn bake_ibl_assets() -> Result<(), Box<dyn std::error::Error>> {
     let fullscreen = |ps: &[u8]| -> windows::core::Result<Pipeline> {
         Pipeline::new(
             device,
-            &PipelineDesc {
-                vs: IBL_VS,
-                ps,
-                input: &[],
-                topology: Topology::TriangleList,
-                cull: Cull::None,
-                depth: DepthState {
-                    test: false,
-                    write: false,
-                    compare: DepthCompare::Always,
-                },
-                blend: BlendMode::Opaque,
-                depth_bias: DepthBias::default(),
-                sample_count: 1,
-            },
+            &PipelineDesc::fullscreen(IBL_VS, ps, BlendMode::Opaque),
         )
     };
     let equirect_pipeline = fullscreen(IBL_EQUIRECT_PS)?;

@@ -2183,6 +2183,9 @@ dependencies = [
 [[package]]
 name = "review-psd"
 version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "review-render"

@@ -87,15 +87,16 @@ roadmap), and `TODO.md` (running notes).
    sizing the output buffer. `render`'s `texture.rs` calls it through the safe API
    only — no `unsafe` there.
    **Sanctioned exception — Direct3D 11 / DXGI COM** (via the `windows` crate) is
-   `unsafe` and pervasive in the renderer. It is confined to two places:
+   `unsafe` and pervasive in the renderer. It is confined to **one** place:
    `crates/render/src/rhi/` (the GPU-plumbing module — device, swapchain,
    pipelines, buffers, offscreen targets, textures, samplers, the GPU profiler, and
-   the bake-only `rhi::bake`; shared by the runtime and the `bake_ibl` binary) and
-   `crates/app`'s window/swapchain bootstrap (device + swapchain creation +
-   first-frame clear/present). Every `unsafe` carries a `// SAFETY:` rationale and
+   the bake-only `rhi::bake`; shared by the runtime and the `bake_ibl` binary).
+   `crates/app` is **fully safe** (`#![forbid(unsafe_code)]` — as are `model` and
+   `ui`): its device/swapchain bootstrap goes through the safe `Gpu::new` wrapper,
+   including the first-frame black clear+present that replaced the old GDI
+   `startup_paint` hack. Every `unsafe` carries a `// SAFETY:` rationale and
    touches only GPU plumbing — never model geometry, camera math, or material
-   logic, which stay safe. (The old GDI `startup_paint` exception is gone — the
-   white-flash fix is now a D3D11 clear+present on the freshly created swapchain.)
+   logic, which stay safe.
 10. **`crates/model` is host-agnostic.** It depends only on `glam` — no `windows`/
     D3D, `egui`, `winit`, or importer types. This is what kept the renderer
     swappable (wgpu → D3D11); don't add rendering/UI deps to `model`.
@@ -110,8 +111,8 @@ crates/
   app/      review-app: winit ApplicationHandler, event loop, input routing
             (LMB orbit / RMB pan / wheel zoom / F frame / drag-drop /
             double-click-open), egui_winit + egui-directx11 wiring, the D3D11
-            device/swapchain bootstrap (in `resumed` — the second sanctioned
-            invariant-9 `unsafe` site, incl. the first-frame black clear+present
+            device/swapchain bootstrap (in `resumed`, via the safe `Gpu::new` —
+            `app` has zero `unsafe`; incl. the first-frame black clear+present
             that replaced the GDI startup hack) + per-frame draw order (scene →
             composite → egui chrome on top → Present), redraw timing, applies
             UiOutput back to Renderer. -> src/main.rs;
@@ -156,9 +157,10 @@ crates/
                 the pipelines/targets/IBL/material table, draws the 2-MRT offscreen
                 scene pass + GTAO + composite-to-backbuffer, plus the UV viewport,
                 derived line views and selection flash, with all the `sync_*`
-                build-on-demand caches incl. `sync_line_views`), gpu_types.rs (the
-                #[repr(C)] SceneUniforms/SceneVertex), gpu_profiler.rs (D3D11
-                timestamp/disjoint `ID3D11Query` → Tracy GPU context, `--tracy`-gated).
+                build-on-demand caches incl. `sync_line_views`) and gpu_types.rs (the
+                #[repr(C)] scene/post/GTAO uniforms + SceneVertex, kept in HLSL
+                lockstep). The `--tracy`-gated GPU timestamp profiler
+                (`ID3D11Query` → Tracy GPU context) lives in rhi/gpu_profiler.rs.
             CPU vertex generation -> src/geometry/ (vertex/grid/mesh/select/
             debug_lines/uv); editable per-material table (cbuffer `b1` + `t5..t11` +
             aniso sampler) + path-keyed texture cache -> src/material/ (state / mode /

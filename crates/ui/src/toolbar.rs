@@ -16,8 +16,8 @@ use crate::state::{
 };
 use crate::theme::{self, color, size};
 use crate::widgets::{
-    compact_combo, icon_toggle_button, icon_toggle_button_with_options, segment_button,
-    toolbar_group_shell,
+    compact_combo, icon_toggle_button, icon_toggle_button_with_options, option_toggle,
+    segment_button, toolbar_group_shell,
 };
 
 /// Background frame shared by the toolbar (and matched by the status bar). Zero
@@ -54,8 +54,8 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
             let bar_rect = ui.max_rect();
             ui.painter().line_segment(
                 [
-                    egui::pos2(bar_rect.left(), bar_rect.bottom() - 0.5),
-                    egui::pos2(bar_rect.right(), bar_rect.bottom() - 0.5),
+                    egui::pos2(bar_rect.left(), bar_rect.bottom() - size::HAIRLINE_NUDGE),
+                    egui::pos2(bar_rect.right(), bar_rect.bottom() - size::HAIRLINE_NUDGE),
                 ],
                 egui::Stroke::new(size::HAIRLINE, color::DIVIDER),
             );
@@ -168,19 +168,15 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
 fn draw_shading_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState, width: f32) {
     toolbar_group_shell(ui, ctx, width, |ui| {
         // 1. Show Wireframe — independent overlay toggle; retains its options panel.
-        let wire_overlay = icon_toggle_button_with_options(
+        option_toggle(
             ui,
             ctx,
             &ICON_SHADING_WIRE,
-            state.debug.wireframe_overlay,
+            &mut state.debug.wireframe_overlay,
+            &mut state.panels_open,
+            OptionPanel::Wireframe,
             "Show Wireframe (right-click for options)",
         );
-        if wire_overlay.clicked() {
-            state.debug.wireframe_overlay = !state.debug.wireframe_overlay;
-        }
-        if wire_overlay.secondary_clicked() {
-            state.panels_open.toggle(OptionPanel::Wireframe);
-        }
 
         // 2-4. Shading mode — radio selection; exactly one is active.
         let wire_only = matches!(state.shading_mode, ShadingMode::Wireframe);
@@ -329,33 +325,24 @@ fn draw_material_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiSta
 /// toggles — any combination can be active. Each retains its options panel.
 fn draw_normals_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState, width: f32) {
     toolbar_group_shell(ui, ctx, width, |ui| {
-        let face = icon_toggle_button_with_options(
+        option_toggle(
             ui,
             ctx,
             &ICON_NORMALS_FACE,
-            state.debug.face_normals,
+            &mut state.debug.face_normals,
+            &mut state.panels_open,
+            OptionPanel::FaceNormals,
             "Face Normal (right-click for options)",
         );
-        if face.clicked() {
-            state.debug.face_normals = !state.debug.face_normals;
-        }
-        if face.secondary_clicked() {
-            state.panels_open.toggle(OptionPanel::FaceNormals);
-        }
-
-        let vertex = icon_toggle_button_with_options(
+        option_toggle(
             ui,
             ctx,
             &ICON_NORMALS_VERTEX,
-            state.debug.vertex_normals,
+            &mut state.debug.vertex_normals,
+            &mut state.panels_open,
+            OptionPanel::VertexNormals,
             "Vertex Normal (right-click for options)",
         );
-        if vertex.clicked() {
-            state.debug.vertex_normals = !state.debug.vertex_normals;
-        }
-        if vertex.secondary_clicked() {
-            state.panels_open.toggle(OptionPanel::VertexNormals);
-        }
     });
 }
 
@@ -364,19 +351,15 @@ fn draw_normals_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiStat
 /// scene; the gizmo and grid are independent display toggles.
 fn draw_view_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState, width: f32) {
     toolbar_group_shell(ui, ctx, width, |ui| {
-        let bbox = icon_toggle_button_with_options(
+        option_toggle(
             ui,
             ctx,
             &ICON_BBOX,
-            state.debug.show_bounding_box,
+            &mut state.debug.show_bounding_box,
+            &mut state.panels_open,
+            OptionPanel::BoundingBox,
             "Bounding Box (right-click for options)",
         );
-        if bbox.clicked() {
-            state.debug.show_bounding_box = !state.debug.show_bounding_box;
-        }
-        if bbox.secondary_clicked() {
-            state.panels_open.toggle(OptionPanel::BoundingBox);
-        }
 
         // Pivot marker — a plain on/off toggle (no options), sitting between the
         // bounding box and the axis gizmo.

@@ -14,6 +14,10 @@
 //! - `notifications` — the egui-notify toast system (`app`-owned, themed here).
 //! - `toolbar` / `status_bar` / `stats` / `gizmo` / `panels` — the chrome.
 
+// The UI is plain values + intents (invariant 2) and fully safe (invariant 9):
+// no `unsafe` may ever land in this crate.
+#![forbid(unsafe_code)]
+
 mod assets;
 mod dimensions;
 mod gizmo;
@@ -28,19 +32,16 @@ mod status_bar;
 mod texture_view;
 pub mod theme;
 mod toolbar;
+mod units;
 mod widgets;
 
-pub use assets::install_fonts;
+// Root re-exports carry exactly what `app` (the sole consumer) uses; everything
+// else stays reachable under its own module path.
 pub use notifications::Notifications;
-pub use overlay::{draw_overlay, draw_viewport_scene};
-pub use review_render::{
-    AntiAliasing, ChannelSelect, EnvironmentMap, EnvironmentSettings, GtaoQuality, GtaoSettings,
-    MsaaSamples, Selection, SelectionView, TextureSlot, ViewportBackground,
-};
+pub use overlay::draw_overlay;
+pub use review_render::{MsaaSamples, Selection};
 pub use state::{
-    AxisGizmoAction, BoundingBoxPanelState, NormalPanelState, OptionPanel, OutlinerTab, PanelsOpen,
-    TexViewRequest, TextureAssign, TextureBackground, TextureChannelView, TextureIntent,
-    TexturePoolEntry, TextureSlotRef, TextureViewState, UiOutput, UiState, UvCheckerPanelState,
-    VertexColorPanelState, ViewAxis, ViewProjectionMode, WireframePanelState, WorkspaceMode,
+    AxisGizmoAction, TexViewRequest, TextureBackground, TextureIntent, TexturePoolEntry,
+    TextureSlotRef, UiOutput, UiState, WorkspaceMode,
 };
 pub use theme::init_style;

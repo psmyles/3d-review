@@ -27,9 +27,7 @@ struct ShaderJob {
     output: &'static str,
 }
 
-/// Every HLSL entry point the renderer compiles. Grows as scene passes are ported
-/// off wgpu (migration Phases 1–6); Phase 1 ships only the grid/line vertex +
-/// fragment shaders.
+/// Every HLSL entry point the renderer compiles.
 const SHADERS: &[ShaderJob] = &[
     ShaderJob {
         source: "scene.hlsl",
