@@ -67,6 +67,10 @@ pub(crate) fn stats_grid(ui: &mut egui::Ui, state: &UiState) {
     stat_row(ui, "Tris", &stats.triangle_count.to_string());
     stat_row(ui, "Verts", &stats.vertex_count.to_string());
     stat_row(ui, "UV Sets", &stats.uv_set_count.to_string());
+    // Skeletal models only: an unrigged mesh shouldn't carry a permanent "0".
+    if stats.bone_count > 0 {
+        stat_row(ui, "Bones", &stats.bone_count.to_string());
+    }
     stat_row(ui, "Unit", &source_unit_label(stats.source_unit_meters));
     stat_row(ui, "FPS", &format!("{:.0}", state.fps));
 }

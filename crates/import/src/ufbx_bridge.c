@@ -147,6 +147,10 @@ void review_import_free_scene(review_import_scene *scene)
     review_import_free_nodes(scene->nodes, scene->node_count);
     free(scene->tri_material);
     free(scene->tri_node);
+    free(scene->corner_source_vertex);
+    free(scene->skin_offsets);
+    free(scene->skin_bones);
+    free(scene->skin_weights);
     memset(scene, 0, sizeof(*scene));
 }
 
@@ -375,6 +379,90 @@ static uint32_t review_import_add_material(review_import_scene *scene, const ufb
     return (uint32_t)(scene->material_count - 1);
 }
 
+/* The skin deformer this bridge reads for `mesh`, or NULL when the mesh isn't
+   skinned. A mesh may carry several deformers (layered skins); we read the
+   first, which is what every DCC writes for a normal single-skin character and
+   what the viewer's bind-pose display needs. */
+static const ufbx_skin_deformer *review_import_mesh_skin(const ufbx_mesh *mesh)
+{
+    if (!mesh || mesh->skin_deformers.count == 0) {
+        return NULL;
+    }
+    return mesh->skin_deformers.data[0];
+}
+
+/* Count — and, when `out_bones` is non-NULL, emit — the valid skin influences of
+   logical vertex `vertex`.
+
+   This is the *single* definition of "valid influence" that the count and fill
+   passes share (invariant 7's two-pass discipline): if they could disagree, the
+   fill would either overrun its budget or leave calloc-zeroed phantom influences
+   at the tail. An influence counts when its weight row is in range, its cluster
+   index resolves, the cluster names a real bone node, and the weight itself is
+   positive and finite. Anything else is skipped rather than failing the import —
+   a single broken cluster shouldn't cost the artist the whole mesh.
+
+   In emit mode `capacity` caps the writes, so even if the two passes somehow
+   diverged the result is a reconcile error, never a heap overrun. Returns the
+   number of influences counted (or emitted). */
+static size_t review_import_skin_influences(
+    const ufbx_skin_deformer *deformer,
+    size_t vertex,
+    uint32_t *out_bones,
+    float *out_weights,
+    size_t capacity
+)
+{
+    ufbx_skin_vertex skin_vertex;
+    size_t emitted = 0;
+    size_t weight_index;
+
+    if (!deformer || vertex >= deformer->vertices.count) {
+        return 0;
+    }
+
+    skin_vertex = deformer->vertices.data[vertex];
+    for (weight_index = 0; weight_index < skin_vertex.num_weights; weight_index++) {
+        size_t global = (size_t)skin_vertex.weight_begin + weight_index;
+        ufbx_skin_weight weight;
+        const ufbx_skin_cluster *cluster;
+
+        /* `ufbx_skin_deformer.vertices` is always in bounds, but the weight range
+           it points at is only as trustworthy as the file. */
+        if (global >= deformer->weights.count) {
+            break;
+        }
+        weight = deformer->weights.data[global];
+        if (weight.cluster_index >= deformer->clusters.count) {
+            continue;
+        }
+        cluster = deformer->clusters.data[weight.cluster_index];
+        if (!cluster || !cluster->bone_node) {
+            continue;
+        }
+        /* `clean_skin_weights` drops negative / zero / NaN weights, but not an
+           infinity. `> 0.0` is false for NaN, and the upper test rejects +inf,
+           so what survives is always a finite positive weight — which is what
+           `review_model::SkinData::validate` demands. */
+        if (!(weight.weight > 0.0) || !(weight.weight < 1e30)) {
+            continue;
+        }
+        if (out_bones) {
+            if (emitted >= capacity) {
+                break;
+            }
+            /* ufbx guarantees a node's typed_id is its index in `scene->nodes`,
+               which is also its index in our own node table — so a skin influence
+               and an Outliner row name the same bone with the same number. */
+            out_bones[emitted] = cluster->bone_node->typed_id;
+            out_weights[emitted] = (float)weight.weight;
+        }
+        emitted++;
+    }
+
+    return emitted;
+}
+
 /* The count pass's totals, reconciled against the fill pass's actual offsets
    before the counts are published (a drifted fill would otherwise leave
    calloc-zeroed phantom triangles at the tail of every per-triangle array). */
@@ -385,6 +473,8 @@ typedef struct review_import_totals {
     size_t triangles;
     /* Source DCC logical vertex count (sum of each mesh's num_vertices). */
     size_t source_vertices;
+    /* Total valid (bone, weight) skin influences across every logical vertex. */
+    size_t skin_influences;
 } review_import_totals;
 
 /* Count pass: walk every mesh-bearing node, total the corners / faces /
@@ -403,7 +493,9 @@ static int review_import_count_pass(
     for (node_index = 0; node_index < scene->nodes.count; node_index++) {
         ufbx_node *node = scene->nodes.data[node_index];
         ufbx_mesh *mesh = node ? node->mesh : NULL;
+        const ufbx_skin_deformer *deformer;
         size_t face_index;
+        size_t vertex_index;
 
         if (!mesh || !mesh->vertex_position.exists) {
             continue;
@@ -425,6 +517,27 @@ static int review_import_count_pass(
            count as authored, not the per-corner expansion below. An instanced
            mesh counts once per node, matching the geometry fill. */
         totals->source_vertices += mesh->num_vertices;
+        /* `corner_source_vertex` entries are uint32_t and index this numbering,
+           so bound it the same way the corner/face counts are bounded below. */
+        if (totals->source_vertices > UINT32_MAX) {
+            review_import_set_error(out_error, "FBX mesh exceeds the 32-bit vertex index limit");
+            return 0;
+        }
+
+        /* Skin influences, counted through the same predicate the fill pass
+           emits with, so the two can never disagree. */
+        deformer = review_import_mesh_skin(mesh);
+        if (deformer) {
+            for (vertex_index = 0; vertex_index < mesh->num_vertices; vertex_index++) {
+                totals->skin_influences +=
+                    review_import_skin_influences(deformer, vertex_index, NULL, NULL, 0);
+            }
+            /* CSR row starts are uint32_t offsets into this array. */
+            if (totals->skin_influences > UINT32_MAX) {
+                review_import_set_error(out_error, "FBX skin exceeds the 32-bit influence limit");
+                return 0;
+            }
+        }
 
         for (face_index = 0; face_index < mesh->faces.count; face_index++) {
             ufbx_face face = mesh->faces.data[face_index];
@@ -484,6 +597,30 @@ static int review_import_alloc_geometry(
     out_scene->tri_material_count = totals->triangles;
     out_scene->tri_node_count = totals->triangles;
     out_scene->source_vertex_count = totals->source_vertices;
+
+    /* The corner -> logical-vertex map is allocated for every model, skinned or
+       not: it is 4 bytes per render vertex, and having it unconditionally keeps
+       the fill pass free of a "is this scene skinned" branch. */
+    out_scene->corner_source_vertex = (uint32_t*)calloc(totals->corners, sizeof(uint32_t));
+    if (!out_scene->corner_source_vertex) {
+        review_import_set_error(out_error, "out of memory while allocating imported mesh");
+        return 0;
+    }
+    out_scene->corner_source_vertex_count = totals->corners;
+
+    /* Skin weights, in CSR form over the logical vertices. Unskinned scenes
+       allocate nothing and marshal to `skin: None`. */
+    if (totals->skin_influences > 0) {
+        out_scene->skin_offsets = (uint32_t*)calloc(totals->source_vertices + 1, sizeof(uint32_t));
+        out_scene->skin_bones = (uint32_t*)calloc(totals->skin_influences, sizeof(uint32_t));
+        out_scene->skin_weights = (float*)calloc(totals->skin_influences, sizeof(float));
+        if (!out_scene->skin_offsets || !out_scene->skin_bones || !out_scene->skin_weights) {
+            review_import_set_error(out_error, "out of memory while allocating skin weights");
+            return 0;
+        }
+        out_scene->skin_offset_count = totals->source_vertices + 1;
+        out_scene->skin_influence_count = totals->skin_influences;
+    }
 
     /* Only multi-set models need separate per-channel UV storage; single-set
        models keep using review_import_vertex::uv (channel 0). */
@@ -625,6 +762,11 @@ static int review_import_fill_pass(
     size_t face_offset = 0;
     size_t index_offset = 0;
     size_t tri_offset = 0;
+    /* Start of this node's block in the global logical-vertex numbering, grown
+       by `mesh->num_vertices` per mesh-bearing node in exactly the order the
+       count pass accumulated `source_vertices`. An instanced mesh therefore gets
+       one distinct block per instancing node, matching the geometry. */
+    size_t logical_base = 0;
 
     for (node_index = 0; node_index < scene->nodes.count; node_index++) {
         ufbx_node *node = scene->nodes.data[node_index];
@@ -673,6 +815,7 @@ static int review_import_fill_pass(
 
             for (corner_index = 0; corner_index < face.num_indices; corner_index++) {
                 size_t mesh_index = (size_t)face.index_begin + corner_index;
+                uint32_t logical_vertex;
                 if (!review_import_fill_vertex(
                         out_scene, mesh, &node->geometry_to_world, &normal_matrix,
                         mesh_index, vertex_offset)) {
@@ -680,6 +823,21 @@ static int review_import_fill_pass(
                     free(triangle_buffer);
                     return 0;
                 }
+                /* Project this expanded corner back onto the logical vertex it
+                   came from — the index skin weights are stored against. */
+                if (mesh_index >= mesh->vertex_indices.count) {
+                    review_import_set_error(out_error, "malformed FBX: face references out-of-range vertex data");
+                    free(triangle_buffer);
+                    return 0;
+                }
+                logical_vertex = mesh->vertex_indices.data[mesh_index];
+                if (logical_vertex >= mesh->num_vertices) {
+                    review_import_set_error(out_error, "malformed FBX: face references out-of-range vertex data");
+                    free(triangle_buffer);
+                    return 0;
+                }
+                out_scene->corner_source_vertex[vertex_offset] =
+                    (uint32_t)(logical_base + logical_vertex);
                 vertex_offset += 1;
             }
 
@@ -734,14 +892,74 @@ static int review_import_fill_pass(
         }
 
         free(triangle_buffer);
+        logical_base += mesh->num_vertices;
     }
 
     /* Reconcile the fill against the count pass (belt-and-braces over the
        per-face check above): the published counts are the counted totals, so
        any drift here would mean silently wrong geometry. */
     if (vertex_offset != totals->corners || face_offset != totals->faces ||
-        tri_offset != totals->triangles || index_offset != totals->triangles * 3) {
+        tri_offset != totals->triangles || index_offset != totals->triangles * 3 ||
+        logical_base != totals->source_vertices) {
         review_import_set_error(out_error, "malformed FBX: mesh data drifted between the count and fill passes");
+        return 0;
+    }
+
+    return 1;
+}
+
+/* Skin fill: walk the mesh-bearing nodes in the same order as the geometry fill
+   and lay every logical vertex's influences down as one CSR row. Unskinned
+   meshes (and vertices with no valid influence) still get a row — an empty one —
+   so `skin_offsets` stays monotonic and indexable for every logical vertex in the
+   scene, not just the skinned ones. Returns 1 on success, 0 with `out_error`
+   set. */
+static int review_import_fill_skin(
+    const ufbx_scene *scene,
+    review_import_scene *out_scene,
+    const review_import_totals *totals,
+    review_import_error *out_error
+)
+{
+    size_t node_index;
+    size_t logical_base = 0;
+    size_t emitted = 0;
+
+    /* Unskinned scene: `review_import_alloc_geometry` allocated nothing, and the
+       Rust side marshals this to `skin: None`. */
+    if (totals->skin_influences == 0) {
+        return 1;
+    }
+
+    for (node_index = 0; node_index < scene->nodes.count; node_index++) {
+        ufbx_node *node = scene->nodes.data[node_index];
+        ufbx_mesh *mesh = node ? node->mesh : NULL;
+        const ufbx_skin_deformer *deformer;
+        size_t vertex_index;
+
+        if (!mesh || !mesh->vertex_position.exists) {
+            continue;
+        }
+
+        deformer = review_import_mesh_skin(mesh);
+        for (vertex_index = 0; vertex_index < mesh->num_vertices; vertex_index++) {
+            out_scene->skin_offsets[logical_base + vertex_index] = (uint32_t)emitted;
+            emitted += review_import_skin_influences(
+                deformer,
+                vertex_index,
+                out_scene->skin_bones + emitted,
+                out_scene->skin_weights + emitted,
+                totals->skin_influences - emitted
+            );
+        }
+        logical_base += mesh->num_vertices;
+    }
+
+    /* The CSR terminator: row `source_vertices` is one past the last vertex. */
+    out_scene->skin_offsets[totals->source_vertices] = (uint32_t)emitted;
+
+    if (logical_base != totals->source_vertices || emitted != totals->skin_influences) {
+        review_import_set_error(out_error, "malformed FBX: skin weights drifted between the count and fill passes");
         return 0;
     }
 
@@ -800,6 +1018,28 @@ static int review_import_capture_nodes(
             dst->mesh_part_index = -1;
         }
 
+        /* Classify from the node's attribute. A node with no attribute at all is
+           a transform-only null, which every DCC calls an empty / group. */
+        if (!node->attrib) {
+            dst->kind = REVIEW_IMPORT_NODE_EMPTY;
+        } else {
+            switch (node->attrib_type) {
+            case UFBX_ELEMENT_MESH:   dst->kind = REVIEW_IMPORT_NODE_MESH; break;
+            case UFBX_ELEMENT_BONE:   dst->kind = REVIEW_IMPORT_NODE_BONE; break;
+            case UFBX_ELEMENT_LIGHT:  dst->kind = REVIEW_IMPORT_NODE_LIGHT; break;
+            case UFBX_ELEMENT_CAMERA: dst->kind = REVIEW_IMPORT_NODE_CAMERA; break;
+            case UFBX_ELEMENT_EMPTY:  dst->kind = REVIEW_IMPORT_NODE_EMPTY; break;
+            default:                  dst->kind = REVIEW_IMPORT_NODE_OTHER; break;
+            }
+        }
+        /* `node->bone` is set whenever the node carries a Skeleton attribute,
+           including the exotic multi-attribute case `attrib_type` would miss. */
+        if (node->bone) {
+            dst->kind = REVIEW_IMPORT_NODE_BONE;
+            dst->bone_radius = (float)node->bone->radius;
+            dst->bone_relative_length = (float)node->bone->relative_length;
+        }
+
         /* node_to_world is a column-major affine (4 columns of 3); expand to a
            full column-major 4x4 with the implicit [0,0,0,1] bottom row. */
         for (col = 0; col < 4; col++) {
@@ -837,6 +1077,9 @@ int review_import_load_fbx(
     }
 
     load_opts.generate_missing_normals = true;
+    /* Drop negative / zero / NaN skin weights at parse time so the bridge never
+       has to publish an influence the model layer's validate would reject. */
+    load_opts.clean_skin_weights = true;
     /* Normalize every file to meters so 1 world unit == 1 m regardless of the
        DCC's authoring units (Maya exports centimeters, so a 1 m cube is 100
        units otherwise). With the default space conversion (TRANSFORM_ROOT) the
@@ -867,6 +1110,7 @@ int review_import_load_fbx(
 
     if (!review_import_alloc_geometry(out_scene, &totals, out_error) ||
         !review_import_fill_pass(scene, out_scene, &totals, out_error) ||
+        !review_import_fill_skin(scene, out_scene, &totals, out_error) ||
         !review_import_capture_nodes(scene, out_scene, out_error)) {
         goto cleanup;
     }

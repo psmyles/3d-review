@@ -176,6 +176,10 @@ fn draw_side_panels(
     state: &mut UiState,
     model: &ModelData,
 ) -> SidePanelLayout {
+    // Measure the selection's influence once per frame, before either panel reads
+    // it (the Inspector shows it; the scan is far too heavy to repeat per repaint).
+    state.sync_bone_influence(model);
+
     let mut left_inset = 0.0;
     if state.outliner_open {
         let response = egui::SidePanel::left("outliner_panel")

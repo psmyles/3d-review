@@ -88,6 +88,66 @@ pub struct MaterialImportDefaults {
     pub emissive: Vec3,
 }
 
+/// What a scene-graph node *is*, as classified by the importer from the source
+/// file's node attribute. Drives the Outliner's per-type icons / filter and the
+/// skeleton overlay's "which nodes are joints" question. [`Other`] covers both
+/// attribute types we don't surface individually and anything a future importer
+/// hands us that this enum predates, so an unknown code is never an error.
+///
+/// [`Other`]: NodeKind::Other
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum NodeKind {
+    /// Carries renderable geometry (`mesh_part` is `Some`).
+    Mesh,
+    /// A skeleton joint — the unit the skeleton overlay draws and skin weights
+    /// reference.
+    Bone,
+    Light,
+    Camera,
+    /// A transform-only null / group node (the DCC's "empty").
+    Empty,
+    #[default]
+    Other,
+}
+
+impl NodeKind {
+    /// Every kind, in Outliner filter-row order. Iterated to build the type
+    /// filter, so the order is deterministic.
+    pub const ALL: [NodeKind; 6] = [
+        NodeKind::Mesh,
+        NodeKind::Bone,
+        NodeKind::Light,
+        NodeKind::Camera,
+        NodeKind::Empty,
+        NodeKind::Other,
+    ];
+
+    /// Display label for the Outliner filter tooltip and the Inspector's Type row.
+    pub fn label(self) -> &'static str {
+        match self {
+            NodeKind::Mesh => "Mesh",
+            NodeKind::Bone => "Bone",
+            NodeKind::Light => "Light",
+            NodeKind::Camera => "Camera",
+            NodeKind::Empty => "Empty",
+            NodeKind::Other => "Other",
+        }
+    }
+}
+
+/// A bone node's display parameters, as authored in the source file. Used to
+/// size the skeleton overlay's leaf/root joint markers; `0.0` in either field
+/// means the file declared nothing useful and the overlay falls back to a
+/// model-extent fraction.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct BoneInfo {
+    /// The bone's authored radius, in the same (post-import, meters) world units
+    /// as the geometry.
+    pub radius: f32,
+    /// The bone's length as a fraction of its parent's, as authored.
+    pub relative_length: f32,
+}
+
 /// One node in the imported scene-graph hierarchy (every FBX node, mesh-bearing
 /// or not), carried through for the Outliner. The transform is display metadata
 /// only — geometry is world-baked at import (invariant 1).
@@ -102,6 +162,11 @@ pub struct SceneNode {
     pub mesh_part: Option<usize>,
     /// `node_to_world` transform. Display metadata only.
     pub transform: Mat4,
+    /// What this node is, from the source file's node attribute.
+    pub kind: NodeKind,
+    /// Authored bone display parameters, `Some` only when `kind` is
+    /// [`NodeKind::Bone`].
+    pub bone: Option<BoneInfo>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,6 +183,9 @@ pub struct ModelStats {
     pub uv_set_count: usize,
     pub material_count: usize,
     pub draw_count: usize,
+    /// Number of [`NodeKind::Bone`] nodes in the scene graph — a measured count
+    /// (invariant 5), shown in the stats panel only when non-zero.
+    pub bone_count: usize,
     /// The model's authored world unit, in meters per source unit, as recorded
     /// in the file (e.g. `0.01` for a centimeter file like a Maya export). This
     /// is the *original* unit before import normalizes everything to meters, so
@@ -205,6 +273,186 @@ impl TriangleData {
     }
 }
 
+/// Skin (skeletal binding) data: which bones move each vertex, and how strongly.
+///
+/// Stored **per logical source vertex** — the DCC's own vertex count, before the
+/// importer expands each face corner into its own render vertex — in a compressed
+/// sparse-row layout: vertex `v`'s influences are `bones[offsets[v]..offsets[v+1]]`
+/// paired with `weights[..]` over the same range. Per-corner storage would multiply
+/// every influence by the 3–6× corner expansion, so instead a single
+/// [`corner_to_logical`] map (4 bytes per render vertex) projects the render mesh
+/// back onto the logical vertices.
+///
+/// [`bones`] entries index [`ModelData::nodes`] directly (**not** a separate bone
+/// table), so a skin influence and an Outliner row name the same thing with the
+/// same number.
+///
+/// [`corner_to_logical`]: SkinData::corner_to_logical
+/// [`bones`]: SkinData::bones
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SkinData {
+    /// Per render vertex (parallel to [`ModelData::vertices`]), the logical
+    /// source vertex it was expanded from — the index into [`SkinData::offsets`].
+    pub corner_to_logical: Vec<u32>,
+    /// CSR row starts, `logical_vertex_count + 1` long: vertex `v`'s influences
+    /// occupy `offsets[v]..offsets[v + 1]`. Monotonic non-decreasing, and the
+    /// last entry equals the influence count (a vertex with no influences is a
+    /// legal empty row).
+    pub offsets: Vec<u32>,
+    /// Flat influence bones, indexing [`ModelData::nodes`]. Same length as
+    /// [`SkinData::weights`].
+    pub bones: Vec<u32>,
+    /// Flat influence weights, parallel to [`SkinData::bones`]. Non-negative and
+    /// finite, but **not** guaranteed to sum to 1 per vertex — FBX does not
+    /// require normalized weights and the importer stores what was authored. Use
+    /// [`SkinData::influence_fraction`] for display, which normalizes against the
+    /// vertex's own total.
+    pub weights: Vec<f32>,
+}
+
+impl SkinData {
+    /// Number of logical source vertices this skin covers.
+    pub fn logical_vertex_count(&self) -> usize {
+        self.offsets.len().saturating_sub(1)
+    }
+
+    /// Total number of (bone, weight) influences across every vertex.
+    pub fn influence_count(&self) -> usize {
+        self.bones.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.bones.is_empty()
+    }
+
+    /// The slice range into [`SkinData::bones`] / [`SkinData::weights`] holding
+    /// `logical`'s influences. Empty for an out-of-range vertex, so callers can
+    /// index without a bounds check of their own.
+    pub fn influence_range(&self, logical: usize) -> std::ops::Range<usize> {
+        match (self.offsets.get(logical), self.offsets.get(logical + 1)) {
+            (Some(&start), Some(&end)) if end >= start => start as usize..end as usize,
+            _ => 0..0,
+        }
+    }
+
+    /// The raw summed weight `logical` receives from `bones`. `bones` must be
+    /// **sorted ascending** (it's binary-searched once per influence); callers get
+    /// that from the UI's sorted/deduped selection set. Returns 0.0 for a vertex
+    /// with no influence from any of them.
+    pub fn summed_weight(&self, logical: usize, bones: &[u32]) -> f32 {
+        if bones.is_empty() {
+            return 0.0;
+        }
+        let range = self.influence_range(logical);
+        self.bones[range.clone()]
+            .iter()
+            .zip(&self.weights[range])
+            .filter(|(bone, _)| bones.binary_search(bone).is_ok())
+            .map(|(_, weight)| *weight)
+            .sum()
+    }
+
+    /// The share of `logical`'s total influence that `bones` account for, in
+    /// `0..=1` — the value the skin-weight heat map paints.
+    ///
+    /// Normalizing against the vertex's *own* total (rather than assuming 1.0) is
+    /// what makes the display honest on rigs whose weights weren't normalized at
+    /// export: "this bone owns 40% of this vertex" stays true either way, whereas a
+    /// raw sum would read as full influence on a rig whose weights sum to 0.5. For
+    /// the normalized common case the two are identical. Returns 0.0 for a vertex
+    /// with no influences at all.
+    pub fn influence_fraction(&self, logical: usize, bones: &[u32]) -> f32 {
+        if bones.is_empty() {
+            return 0.0;
+        }
+        let range = self.influence_range(logical);
+        let mut selected = 0.0_f32;
+        let mut total = 0.0_f32;
+        for (bone, weight) in self.bones[range.clone()].iter().zip(&self.weights[range]) {
+            total += *weight;
+            if bones.binary_search(bone).is_ok() {
+                selected += *weight;
+            }
+        }
+        if total <= 0.0 {
+            return 0.0;
+        }
+        (selected / total).clamp(0.0, 1.0)
+    }
+
+    /// The lockstep guard, mirroring [`TriangleData::validate`]: called once at the
+    /// import funnel (invariant 7) so a drifted CSR is caught there rather than by
+    /// every reader's ad-hoc bounds check. Verifies the corner map covers exactly
+    /// the render mesh and stays in range, the row offsets are the right length,
+    /// monotonic, and terminate at the influence count, that bones/weights are the
+    /// same length, and that every bone indexes a real node with a finite,
+    /// non-negative weight. There is deliberately **no** upper bound on a weight:
+    /// FBX does not require normalized weights, so rejecting `> 1.0` would refuse
+    /// files that every other tool loads.
+    pub fn validate(
+        &self,
+        corner_count: usize,
+        logical_count: usize,
+        node_count: usize,
+    ) -> Result<(), String> {
+        if self.corner_to_logical.len() != corner_count {
+            return Err(format!(
+                "skin corner_to_logical has {} entries, expected {corner_count}",
+                self.corner_to_logical.len()
+            ));
+        }
+        if let Some(&logical) = self
+            .corner_to_logical
+            .iter()
+            .find(|&&logical| logical as usize >= logical_count)
+        {
+            return Err(format!(
+                "skin corner_to_logical references source vertex {logical} of {logical_count}"
+            ));
+        }
+        if self.offsets.len() != logical_count + 1 {
+            return Err(format!(
+                "skin offsets has {} entries, expected {} (logical vertices + 1)",
+                self.offsets.len(),
+                logical_count + 1
+            ));
+        }
+        if self.bones.len() != self.weights.len() {
+            return Err(format!(
+                "skin bones has {} entries but weights has {}",
+                self.bones.len(),
+                self.weights.len()
+            ));
+        }
+        if let Some(window) = self.offsets.windows(2).find(|window| window[0] > window[1]) {
+            return Err(format!(
+                "skin offsets are not monotonic: {} then {}",
+                window[0], window[1]
+            ));
+        }
+        // `offsets` is non-empty here (length is `logical_count + 1`), so the last
+        // entry exists and — given monotonicity — is the largest.
+        let tail = self.offsets.last().copied().unwrap_or(0) as usize;
+        if tail != self.bones.len() {
+            return Err(format!(
+                "skin offsets end at {tail} but there are {} influences",
+                self.bones.len()
+            ));
+        }
+        if let Some(&bone) = self.bones.iter().find(|&&bone| bone as usize >= node_count) {
+            return Err(format!("skin bone references node {bone} of {node_count}"));
+        }
+        if let Some(&weight) = self
+            .weights
+            .iter()
+            .find(|&&weight| !weight.is_finite() || weight < 0.0)
+        {
+            return Err(format!("skin weight {weight} is negative or not finite"));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ModelData {
     pub name: String,
@@ -232,6 +480,9 @@ pub struct ModelData {
     pub bounds: Option<Bounds>,
     pub stats: ModelStats,
     pub materials: Vec<MaterialImportDefaults>,
+    /// Skeletal binding data, `Some` only when the source carried a skin
+    /// deformer whose clusters resolved to real bone nodes. See [`SkinData`].
+    pub skin: Option<SkinData>,
 }
 
 impl ModelData {
@@ -430,6 +681,8 @@ pub fn demo_cube_model() -> ModelData {
             parent: None,
             mesh_part: Some(0),
             transform: Mat4::IDENTITY,
+            kind: NodeKind::Mesh,
+            bone: None,
         }],
         uv_set_names: vec!["UVMap".to_owned()],
         stats: ModelStats {
@@ -439,6 +692,7 @@ pub fn demo_cube_model() -> ModelData {
             uv_set_count: 1,
             material_count: 1,
             draw_count: 1,
+            bone_count: 0,
             source_unit_meters: 1.0,
         },
         materials: vec![MaterialImportDefaults {
@@ -679,9 +933,11 @@ mod tests {
                 uv_set_count: 1,
                 material_count: 0,
                 draw_count: 0,
+                bone_count: 0,
                 source_unit_meters: 1.0,
             },
             materials: Vec::new(),
+            skin: None,
         };
 
         assert!(model.has_degenerate_tangents(), "seeded with zero tangents");
@@ -755,5 +1011,165 @@ mod tests {
 
         // Hide every node -> no visible geometry, no box.
         assert!(model.visible_bounds(&[0, 1]).is_none());
+    }
+
+    // ── SkinData ────────────────────────────────────────────────────────────
+    //
+    // A 2-logical-vertex skin over a 6-corner (2-triangle) mesh, bound to nodes
+    // 1 and 2: vertex 0 is split 0.75/0.25 between them, vertex 1 rides node 2
+    // alone.
+    fn sample_skin() -> SkinData {
+        SkinData {
+            corner_to_logical: vec![0, 0, 1, 1, 0, 1],
+            offsets: vec![0, 2, 3],
+            bones: vec![1, 2, 2],
+            weights: vec![0.75, 0.25, 1.0],
+        }
+    }
+
+    #[test]
+    fn skin_validate_accepts_a_consistent_skin() {
+        assert_eq!(sample_skin().validate(6, 2, 3), Ok(()));
+    }
+
+    #[test]
+    fn skin_influence_range_slices_each_vertex() {
+        let skin = sample_skin();
+        assert_eq!(skin.influence_range(0), 0..2);
+        assert_eq!(skin.influence_range(1), 2..3);
+        // Out of range reads as "no influences" rather than panicking.
+        assert_eq!(skin.influence_range(7), 0..0);
+        assert_eq!(skin.logical_vertex_count(), 2);
+        assert_eq!(skin.influence_count(), 3);
+    }
+
+    #[test]
+    fn skin_summed_weight_adds_only_the_selected_bones() {
+        let skin = sample_skin();
+        // `bones` must be sorted — that is what the UI hands us.
+        assert_eq!(skin.summed_weight(0, &[1]), 0.75);
+        assert_eq!(skin.summed_weight(0, &[2]), 0.25);
+        // Both selected -> the influences sum (the multi-select heat map's core).
+        assert_eq!(skin.summed_weight(0, &[1, 2]), 1.0);
+        assert_eq!(skin.summed_weight(1, &[1]), 0.0);
+        assert_eq!(skin.summed_weight(1, &[1, 2]), 1.0);
+        // Nothing selected -> no weight anywhere.
+        assert_eq!(skin.summed_weight(0, &[]), 0.0);
+    }
+
+    #[test]
+    fn skin_validate_catches_a_drifted_corner_map() {
+        let mut skin = sample_skin();
+        skin.corner_to_logical.pop();
+        let error = skin.validate(6, 2, 3).unwrap_err();
+        assert!(error.contains("corner_to_logical has 5"), "{error}");
+    }
+
+    #[test]
+    fn skin_validate_catches_an_out_of_range_corner_map() {
+        let mut skin = sample_skin();
+        skin.corner_to_logical[3] = 9;
+        let error = skin.validate(6, 2, 3).unwrap_err();
+        assert!(error.contains("source vertex 9 of 2"), "{error}");
+    }
+
+    #[test]
+    fn skin_validate_catches_a_drifted_offsets_length() {
+        let mut skin = sample_skin();
+        skin.offsets.push(3);
+        let error = skin.validate(6, 2, 3).unwrap_err();
+        assert!(error.contains("offsets has 4"), "{error}");
+    }
+
+    #[test]
+    fn skin_validate_catches_non_monotonic_offsets() {
+        let mut skin = sample_skin();
+        skin.offsets = vec![0, 3, 2];
+        let error = skin.validate(6, 2, 3).unwrap_err();
+        assert!(error.contains("not monotonic"), "{error}");
+    }
+
+    #[test]
+    fn skin_validate_catches_offsets_that_miss_the_influences() {
+        let mut skin = sample_skin();
+        skin.offsets = vec![0, 2, 2];
+        let error = skin.validate(6, 2, 3).unwrap_err();
+        assert!(error.contains("end at 2 but there are 3"), "{error}");
+    }
+
+    #[test]
+    fn skin_validate_catches_mismatched_bones_and_weights() {
+        let mut skin = sample_skin();
+        skin.weights.pop();
+        let error = skin.validate(6, 2, 3).unwrap_err();
+        assert!(
+            error.contains("bones has 3 entries but weights has 2"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn skin_validate_catches_an_out_of_range_bone() {
+        let mut skin = sample_skin();
+        skin.bones[1] = 7;
+        let error = skin.validate(6, 2, 3).unwrap_err();
+        assert!(error.contains("bone references node 7 of 3"), "{error}");
+    }
+
+    #[test]
+    fn skin_validate_catches_a_negative_or_non_finite_weight() {
+        for bad in [-0.25_f32, f32::NAN, f32::INFINITY] {
+            let mut skin = sample_skin();
+            skin.weights[0] = bad;
+            let error = skin.validate(6, 2, 3).unwrap_err();
+            assert!(error.contains("negative or not finite"), "{bad}: {error}");
+        }
+    }
+
+    #[test]
+    fn skin_validate_accepts_unnormalized_weights() {
+        // FBX does not require normalized weights; a weight above 1.0 is sloppy
+        // but loadable, and refusing it would reject files other tools open.
+        let mut skin = sample_skin();
+        skin.weights[0] = 1.75;
+        assert_eq!(skin.validate(6, 2, 3), Ok(()));
+    }
+
+    #[test]
+    fn skin_influence_fraction_normalizes_against_the_vertex_total() {
+        let skin = sample_skin();
+        // Already normalized (0.75 + 0.25) -> the fraction equals the raw sum.
+        assert_eq!(skin.influence_fraction(0, &[1]), 0.75);
+        assert_eq!(skin.influence_fraction(0, &[1, 2]), 1.0);
+
+        // An un-normalized vertex: raw weights 1.5 / 0.5 sum to 2.0, so bone 1
+        // owns 75% of the vertex even though its raw weight exceeds 1.0.
+        let unnormalized = SkinData {
+            corner_to_logical: vec![0, 0, 0],
+            offsets: vec![0, 2],
+            bones: vec![1, 2],
+            weights: vec![1.5, 0.5],
+        };
+        assert_eq!(unnormalized.summed_weight(0, &[1]), 1.5);
+        assert_eq!(unnormalized.influence_fraction(0, &[1]), 0.75);
+        assert_eq!(unnormalized.influence_fraction(0, &[1, 2]), 1.0);
+
+        // A vertex with no influences at all reads as zero, not NaN.
+        let empty = SkinData {
+            corner_to_logical: vec![0],
+            offsets: vec![0, 0],
+            bones: Vec::new(),
+            weights: Vec::new(),
+        };
+        assert_eq!(empty.influence_fraction(0, &[1]), 0.0);
+    }
+
+    #[test]
+    fn demo_cube_node_is_typed_as_a_mesh() {
+        let model = demo_cube_model();
+        assert_eq!(model.nodes[0].kind, NodeKind::Mesh);
+        assert!(model.nodes[0].bone.is_none());
+        assert!(model.skin.is_none());
+        assert_eq!(model.stats.bone_count, 0);
     }
 }

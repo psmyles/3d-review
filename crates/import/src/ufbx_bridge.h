@@ -36,6 +36,19 @@ typedef struct review_import_material {
 /* One scene-graph node. Carries the full hierarchy (every ufbx node, mesh-bearing
    or not) for the Outliner. `transform` is the node_to_world matrix as a
    column-major 4x4 (display metadata only; geometry stays world-baked). */
+/* What a node *is*, from its ufbx node attribute. Mirrored by
+   `review_model::NodeKind` (and `node_kind_from_code` on the Rust side); an
+   unrecognized code marshals to `Other` rather than failing, so adding an
+   attribute type here is backward compatible. */
+typedef enum review_import_node_kind {
+    REVIEW_IMPORT_NODE_OTHER = 0,
+    REVIEW_IMPORT_NODE_MESH = 1,
+    REVIEW_IMPORT_NODE_BONE = 2,
+    REVIEW_IMPORT_NODE_LIGHT = 3,
+    REVIEW_IMPORT_NODE_CAMERA = 4,
+    REVIEW_IMPORT_NODE_EMPTY = 5
+} review_import_node_kind;
+
 typedef struct review_import_node {
     char *name;
     /* Index into the scene's `nodes` array of this node's parent, or -1 for the
@@ -47,6 +60,13 @@ typedef struct review_import_node {
     /* node_to_world as a column-major 4x4 (16 floats), last row implicitly
        [0,0,0,1]. */
     float transform[16];
+    /* One of `review_import_node_kind`, from the node's ufbx attribute type. */
+    uint32_t kind;
+    /* `ufbx_bone.radius` / `ufbx_bone.relative_length`, both 0 for a non-bone
+       node (and for a bone whose file declared neither). Sizes the skeleton
+       overlay's leaf/root joint markers. */
+    float bone_radius;
+    float bone_relative_length;
 } review_import_node;
 
 typedef struct review_import_scene {
@@ -97,6 +117,24 @@ typedef struct review_import_scene {
        (Phase 2). NULL when there are no triangles. */
     uint32_t *tri_node;
     size_t tri_node_count;
+    /* Per expanded corner (parallel to `vertices`, same length), the *logical*
+       source vertex it came from, in a global numbering that concatenates each
+       mesh-bearing node's `num_vertices` in the fill pass's traversal order —
+       so `source_vertex_count` bounds it. Skin weights are indexed by logical
+       vertex, so this is what projects them onto the render mesh. Always
+       allocated (skinned or not); NULL only when there is no geometry. */
+    uint32_t *corner_source_vertex;
+    size_t corner_source_vertex_count;
+    /* Skin weights in compressed sparse-row form over the logical vertices:
+       vertex v's influences are skin_bones/skin_weights[skin_offsets[v] ..
+       skin_offsets[v + 1]]. `skin_offsets` is `source_vertex_count + 1` long.
+       All three are NULL (and `skin_influence_count` 0) for an unskinned scene.
+       `skin_bones` entries index `nodes`, not a cluster table. */
+    uint32_t *skin_offsets;
+    size_t skin_offset_count;
+    uint32_t *skin_bones;
+    float *skin_weights;
+    size_t skin_influence_count;
 } review_import_scene;
 
 typedef struct review_import_error {
