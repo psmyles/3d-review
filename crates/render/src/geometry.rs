@@ -9,7 +9,8 @@
 //! Organized by purpose: [`vertex`] holds the shared emit helpers; [`grid`] the
 //! static reference grids; [`mesh`] the shaded mesh + per-material reorder;
 //! [`select`] the selection/visibility draw lists; [`debug_lines`] the 3D debug
-//! line views; [`uv`] the UV viewport geometry.
+//! line views; [`skeleton`] the bone overlay; [`skin`] the weight heat map;
+//! [`uv`] the UV viewport geometry.
 //!
 //! [`ModelData`]: review_model::ModelData
 
@@ -17,6 +18,8 @@ mod debug_lines;
 mod grid;
 mod mesh;
 mod select;
+mod skeleton;
+mod skin;
 mod uv;
 mod vertex;
 
@@ -27,4 +30,6 @@ pub(crate) use debug_lines::{
 pub(crate) use grid::{scene_lines, uv_grid_lines};
 pub(crate) use mesh::model_mesh;
 pub(crate) use select::{selected_triangle_mask, selection_geometry, visible_geometry};
+pub(crate) use skeleton::{skeleton_fill_triangles, skeleton_lines};
+pub(crate) use skin::skin_weight_vertices;
 pub(crate) use uv::{uv_fill_triangles, uv_wireframe_lines};

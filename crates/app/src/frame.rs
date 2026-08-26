@@ -158,6 +158,7 @@ impl App {
         let anti_aliasing = self.ui.anti_aliasing;
         let selection = self.ui.selection_view();
         let hidden_meshes = self.ui.hidden_mesh_nodes();
+        let selected_bones = self.ui.selected_bone_nodes();
         let workspace = self.ui.mode;
         let uv_channel = self.ui.uv_view_channel;
         let uv_shading = self.ui.uv_shading_mode;
@@ -214,6 +215,7 @@ impl App {
                         anti_aliasing,
                         selection,
                         hidden_meshes: &hidden_meshes,
+                        selected_bones: &selected_bones,
                         background,
                     },
                 ),

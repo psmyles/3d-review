@@ -12,7 +12,7 @@ use std::sync::Arc;
 use glam::{Vec2, Vec3};
 use review_model::{Bounds, ModelData, ModelStats, NodeKind};
 use review_render::{
-    AntiAliasing, BoundingBoxScope, CameraProjection, CheckerTexture, DecodedImage,
+    ActiveMaterial, AntiAliasing, BoundingBoxScope, CameraProjection, CheckerTexture, DecodedImage,
     EnvironmentSettings, GtaoSettings, MaterialEdit, MaterialSnapshot, MsaaSamples,
     SceneDebugOptions, Selection, ShadingMode, TonemapSettings, UvShadingMode, VertexColorMode,
     ViewportBackground, selection_bounds,
@@ -29,6 +29,13 @@ pub(crate) const CHECKER_TILING_MAX: u32 = 16;
 /// model's largest bounding extent (see `debug_normal_length` in `review-render`).
 pub(crate) const DEFAULT_NORMAL_LENGTH: f32 = 0.03;
 /// Inclusive normal-length range: 0.1%–10% of the model's largest bounding extent.
+/// Inclusive range for the skeleton overlay's size multiplier, and its default.
+/// A wide band because rig density varies enormously — a hand rig needs thinner
+/// bones than a vehicle's.
+pub(crate) const SKELETON_SCALE_MIN: f32 = 0.2;
+pub(crate) const SKELETON_SCALE_MAX: f32 = 4.0;
+pub(crate) const DEFAULT_SKELETON_SCALE: f32 = 1.0;
+
 pub(crate) const NORMAL_LENGTH_MIN: f32 = 0.001;
 pub(crate) const NORMAL_LENGTH_MAX: f32 = 0.10;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -340,6 +347,24 @@ pub struct NormalPanelState {
     pub color: egui::Color32,
 }
 
+/// Editable state backing the Skeleton options panel. The renderer bakes both
+/// values into the skeleton overlay's vertex buffers via [`SceneDebugOptions`].
+#[derive(Debug, Clone)]
+pub struct SkeletonPanelState {
+    /// Multiplier on the computed bone thickness / joint-marker size.
+    pub scale: f32,
+    pub color: egui::Color32,
+}
+
+impl Default for SkeletonPanelState {
+    fn default() -> Self {
+        Self {
+            scale: DEFAULT_SKELETON_SCALE,
+            color: theme::color::SKELETON_DEFAULT,
+        }
+    }
+}
+
 /// Editable state backing the Wireframe options panel. The renderer bakes the
 /// chosen color into the final wireframe overlay line buffer via
 /// [`SceneDebugOptions`].
@@ -466,6 +491,7 @@ pub enum OptionPanel {
     UvChecker,
     FaceNormals,
     VertexNormals,
+    Skeleton,
     VertexColors,
     AntiAliasing,
     Background,
@@ -477,7 +503,7 @@ pub enum OptionPanel {
 impl OptionPanel {
     /// Every panel, in toolbar order. Iterated each frame to draw the open ones
     /// (and to give each a stable cascade slot), so the order is deterministic.
-    pub(crate) const ALL: [OptionPanel; 13] = [
+    pub(crate) const ALL: [OptionPanel; 14] = [
         OptionPanel::Wireframe,
         OptionPanel::MaterialMode,
         OptionPanel::BufferView,
@@ -485,6 +511,7 @@ impl OptionPanel {
         OptionPanel::UvChecker,
         OptionPanel::FaceNormals,
         OptionPanel::VertexNormals,
+        OptionPanel::Skeleton,
         OptionPanel::VertexColors,
         OptionPanel::AntiAliasing,
         OptionPanel::Background,
@@ -503,6 +530,7 @@ impl OptionPanel {
             OptionPanel::UvChecker => "UV Checker",
             OptionPanel::FaceNormals => "Face Normals",
             OptionPanel::VertexNormals => "Vertex Normals",
+            OptionPanel::Skeleton => "Skeleton",
             OptionPanel::VertexColors => "Vertex Colors",
             OptionPanel::AntiAliasing => "Anti Aliasing",
             OptionPanel::Background => "Background",
@@ -523,6 +551,7 @@ impl OptionPanel {
             OptionPanel::UvChecker => "panel_uv_checker",
             OptionPanel::FaceNormals => "panel_face_normals",
             OptionPanel::VertexNormals => "panel_vertex_normals",
+            OptionPanel::Skeleton => "panel_skeleton",
             OptionPanel::VertexColors => "panel_vertex_colors",
             OptionPanel::AntiAliasing => "panel_anti_aliasing",
             OptionPanel::Background => "panel_background",
@@ -607,6 +636,7 @@ pub struct UiState {
     pub bounding_box: BoundingBoxPanelState,
     pub face_normals: NormalPanelState,
     pub vertex_normals: NormalPanelState,
+    pub skeleton: SkeletonPanelState,
     pub vertex_colors: VertexColorPanelState,
     /// Scene antialiasing (MSAA level). Read straight by the viewport callback —
     /// not a debug option — and edited by the Anti Aliasing panel.
@@ -792,6 +822,7 @@ impl Default for UiState {
                 length: DEFAULT_NORMAL_LENGTH,
                 color: theme::color::VERTEX_NORMAL_DEFAULT,
             },
+            skeleton: SkeletonPanelState::default(),
             vertex_colors: VertexColorPanelState::default(),
             anti_aliasing: AntiAliasing::default(),
             supported_msaa: Vec::new(),
@@ -930,6 +961,16 @@ impl UiState {
         self.has_skin = model.skin.is_some();
         self.bone_influence_count = 0;
         self.bone_influence_key.clear();
+
+        // Loading an unrigged mesh over a rigged one must not leave the viewer in
+        // a mode whose toolbar button no longer exists.
+        if !self.has_bones {
+            self.debug.show_skeleton = false;
+            self.panels_open.set(OptionPanel::Skeleton, false);
+        }
+        if !self.has_skin && self.debug.active_material == ActiveMaterial::SkinWeights {
+            self.debug.active_material = ActiveMaterial::Source;
+        }
     }
 
     /// Refresh [`UiState::bone_influence_count`] if the bone selection changed
@@ -1009,6 +1050,11 @@ pub(crate) fn sync_debug_state(state: &mut UiState) {
         BoundsScope::VisibleOnly => BoundingBoxScope::VisibleOnly,
     };
     state.debug.bounding_box_selection = state.selection;
+    state.debug.skeleton_joint_scale = state.skeleton.scale;
+    state.debug.skeleton_color = theme::color32_to_rgba(state.skeleton.color);
+    // The selected-bone tint reuses the viewport's selection color, so a bone
+    // highlights the same hue as a selected mesh part.
+    state.debug.skeleton_selected_color = theme::color32_to_rgba(theme::color::SELECTION_OUTLINE);
 }
 
 #[cfg(test)]

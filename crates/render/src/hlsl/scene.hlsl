@@ -85,6 +85,13 @@ struct VsInput
     float4 color    : COLOR0;
 };
 
+// Skin-weight heat map: the unlit-region base color (linear, ~sRGB 0.24 — dark
+// enough to stay out of the ramp's way, light enough to read against black) and
+// the ambient floor under its headlight, so a face turned away from the camera is
+// still visibly *there*.
+static const float3 SKIN_WEIGHT_BASE = float3(0.047, 0.047, 0.052);
+static const float SKIN_WEIGHT_AMBIENT = 0.28;
+
 struct VsOutput
 {
     float4 clip_position  : SV_Position;
@@ -264,6 +271,31 @@ FragOutput fs_main(VsOutput input)
     {
         out_frag.color = float4(srgb_to_linear(input.color.rgb), input.color.a);
         out_frag.ambient = float4(0.0, 0.0, 0.0, input.color.a);
+        return out_frag;
+    }
+
+    // --- Skin-weight heat map (ActiveMaterial::SkinWeights) ------------------
+    // A dark matte Lambert base with the influence ramp tinted over it. Painting
+    // the ramp flat (the way the buffer views do) would be unreadable here: an
+    // uninfluenced region is near-black, so on a dark background the silhouette
+    // disappears entirely. Shading a neutral base keeps the form legible while the
+    // hue still means the weight.
+    //
+    // `input.color.rgb` is the ramp color, `.a` the influence fraction, both baked
+    // per vertex by `geometry::skin`. Like the buffer views this path runs with the
+    // composite in passthrough, so it emits display-space (sRGB) pixels itself.
+    if (projection_params.w > 0.5)
+    {
+        float weight = saturate(input.color.a);
+        float3 albedo = lerp(SKIN_WEIGHT_BASE, srgb_to_linear(input.color.rgb), weight);
+        // A camera headlight rather than a scene light: the model reads from every
+        // orbit angle, and the ambient floor keeps grazing faces off pure black.
+        float3 shading_normal = normalize(input.normal);
+        float3 to_eye = normalize(camera_position.xyz - input.world_position);
+        float lambert = saturate(dot(shading_normal, to_eye));
+        float shade = SKIN_WEIGHT_AMBIENT + (1.0 - SKIN_WEIGHT_AMBIENT) * lambert;
+        out_frag.color = float4(linear_to_srgb(albedo * shade), 1.0);
+        out_frag.ambient = float4(0.0, 0.0, 0.0, 1.0);
         return out_frag;
     }
 

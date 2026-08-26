@@ -367,6 +367,11 @@ pub enum ActiveMaterial {
     UvChecker,
     /// The mesh's per-vertex color attribute.
     VertexColors,
+    /// A heat map of how strongly the Outliner's selected bones influence each
+    /// vertex — blue (none) through green to red (full). Flat and unlit, and it
+    /// bypasses tone mapping, so the displayed color *is* the weight. Only
+    /// offered for a model that carries skin weights.
+    SkinWeights,
     /// A single material/geometry buffer shown flat for data inspection — base
     /// color, the world/geometric normal, roughness, metallic, AO, emission, … —
     /// selected by [`SceneDebugOptions::buffer_view`]. Bypasses lighting + tone
@@ -580,6 +585,21 @@ pub struct SceneDebugOptions {
     /// root node's world-space pivot) — is drawn. A plain on/off overlay (no
     /// options), independent of the bounding box.
     pub show_pivot: bool,
+    /// Whether the skeleton overlay is drawn: one octahedral bone per parent ->
+    /// child joint pair, plus a marker at each leaf / root joint. Always drawn
+    /// on top of the mesh (X-ray) — a skeleton lives *inside* its character, so
+    /// depth-testing it would hide the whole thing.
+    pub show_skeleton: bool,
+    /// Multiplier on the skeleton overlay's computed bone thickness / marker size,
+    /// so a dense rig can be thinned out and a sparse one fattened up.
+    pub skeleton_joint_scale: f32,
+    /// Skeleton bone color (gamma space, alpha applies to the solid octahedron
+    /// fill; the outlines draw opaque).
+    pub skeleton_color: [f32; 4],
+    /// Color for the bones in [`SceneFrame::selected_bones`], so an Outliner
+    /// selection reads in the viewport. Unlike the selection *flash* this is
+    /// persistent — it lasts as long as the selection does.
+    pub skeleton_selected_color: [f32; 4],
     pub face_normals: bool,
     pub vertex_normals: bool,
     pub face_normal_length: f32,
@@ -623,6 +643,10 @@ impl Default for SceneDebugOptions {
             show_grid: true,
             show_bounding_box: false,
             show_pivot: false,
+            show_skeleton: false,
+            skeleton_joint_scale: 1.0,
+            skeleton_color: [0.35, 0.72, 1.0, 1.0],
+            skeleton_selected_color: [1.0, 0.55, 0.14, 1.0],
             face_normals: false,
             vertex_normals: false,
             face_normal_length: 0.03,
