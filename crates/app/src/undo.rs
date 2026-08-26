@@ -54,6 +54,11 @@ pub(crate) struct TexturePool {
 #[derive(Debug, Clone)]
 pub(crate) struct EditSnapshot {
     selection: Selection,
+    /// The Outliner's bone multi-selection, in click order. Part of the document
+    /// state because it drives what the skeleton overlay highlights and what the
+    /// skin-weight heat map paints — undoing a selection should restore all of it,
+    /// not just the primary node.
+    selected_bones: Vec<usize>,
     solo: bool,
     hidden_meshes: HashSet<usize>,
     /// The renderer's editable material table (scalar params + texture slot
@@ -71,6 +76,7 @@ impl EditSnapshot {
     fn empty() -> Self {
         Self {
             selection: Selection::None,
+            selected_bones: Vec::new(),
             solo: false,
             hidden_meshes: HashSet::new(),
             materials: Arc::new(Vec::new()),
@@ -86,6 +92,7 @@ impl EditSnapshot {
     /// the texture cache.
     fn differs(&self, other: &EditSnapshot) -> bool {
         self.selection != other.selection
+            || self.selected_bones != other.selected_bones
             || self.solo != other.solo
             || self.hidden_meshes != other.hidden_meshes
             || self.material_revision != other.material_revision
@@ -229,6 +236,7 @@ impl App {
 
         EditSnapshot {
             selection: self.ui.selection,
+            selected_bones: self.ui.selected_bones.clone(),
             solo: self.ui.solo,
             hidden_meshes: self.ui.hidden_meshes.clone(),
             materials,
@@ -246,6 +254,10 @@ impl App {
     /// removed from the pool since is rebound correctly.
     fn restore_edit_state(&mut self, snapshot: &EditSnapshot) {
         self.ui.selection = snapshot.selection;
+        self.ui.selected_bones = snapshot.selected_bones.clone();
+        // The anchor is interaction state, not document state: a restored set has
+        // no meaningful "last clicked row", so the next Shift-click starts fresh.
+        self.ui.bone_anchor = None;
         self.ui.solo = snapshot.solo;
         self.ui.hidden_meshes = snapshot.hidden_meshes.clone();
         // Any restored selection should frame the part first on the next `F`.
@@ -345,6 +357,7 @@ mod tests {
     fn snap(selection: Selection, material_revision: u64, texture_revision: u64) -> EditSnapshot {
         EditSnapshot {
             selection,
+            selected_bones: Vec::new(),
             solo: false,
             hidden_meshes: HashSet::new(),
             materials: Arc::new(Vec::new()),

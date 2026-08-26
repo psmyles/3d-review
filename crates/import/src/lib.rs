@@ -83,8 +83,8 @@ mod ffi {
 
     use glam::{Mat4, Vec2, Vec3, Vec4};
     use review_model::{
-        MaterialImportDefaults, ModelData, ModelStats, SceneNode, TopologyFace, TriangleData,
-        Vertex,
+        BoneInfo, MaterialImportDefaults, ModelData, ModelStats, NodeKind, SceneNode, SkinData,
+        TopologyFace, TriangleData, Vertex,
     };
 
     use crate::ImportError;
@@ -119,6 +119,10 @@ mod ffi {
         parent: i32,
         mesh_part_index: i32,
         transform: [f32; 16],
+        /// A `review_import_node_kind` code; see [`node_kind_from_code`].
+        kind: u32,
+        bone_radius: f32,
+        bone_relative_length: f32,
     }
 
     #[repr(C)]
@@ -148,6 +152,17 @@ mod ffi {
         tri_material_count: usize,
         tri_node: *mut u32,
         tri_node_count: usize,
+        /// Per expanded corner, the logical source vertex it came from — the
+        /// index the CSR skin rows below are keyed by.
+        corner_source_vertex: *mut u32,
+        corner_source_vertex_count: usize,
+        /// CSR skin weights over the logical vertices; all null / zero for an
+        /// unskinned scene.
+        skin_offsets: *mut u32,
+        skin_offset_count: usize,
+        skin_bones: *mut u32,
+        skin_weights: *mut f32,
+        skin_influence_count: usize,
     }
 
     #[repr(C)]
@@ -253,17 +268,66 @@ mod ffi {
         })
     }
 
+    /// The bridge's `review_import_node_kind` codes. An unrecognized code is
+    /// [`NodeKind::Other`] rather than an error, so the C side can grow a new
+    /// attribute type without breaking an older Rust build.
+    fn node_kind_from_code(code: u32) -> NodeKind {
+        match code {
+            1 => NodeKind::Mesh,
+            2 => NodeKind::Bone,
+            3 => NodeKind::Light,
+            4 => NodeKind::Camera,
+            5 => NodeKind::Empty,
+            _ => NodeKind::Other,
+        }
+    }
+
     /// Marshal the bridge's scene-graph node table for the Outliner.
     fn marshal_nodes(scene: &ReviewImportScene) -> Result<Vec<SceneNode>, ImportError> {
         Ok(checked_slice(scene.nodes, scene.node_count, "nodes")?
             .iter()
-            .map(|node| SceneNode {
-                name: read_optional_c_string(node.name).unwrap_or_default(),
-                parent: (node.parent >= 0).then_some(node.parent as usize),
-                mesh_part: (node.mesh_part_index >= 0).then_some(node.mesh_part_index as usize),
-                transform: Mat4::from_cols_array(&node.transform),
+            .map(|node| {
+                let kind = node_kind_from_code(node.kind);
+                SceneNode {
+                    name: read_optional_c_string(node.name).unwrap_or_default(),
+                    parent: (node.parent >= 0).then_some(node.parent as usize),
+                    mesh_part: (node.mesh_part_index >= 0).then_some(node.mesh_part_index as usize),
+                    transform: Mat4::from_cols_array(&node.transform),
+                    kind,
+                    bone: (kind == NodeKind::Bone).then_some(BoneInfo {
+                        radius: node.bone_radius,
+                        relative_length: node.bone_relative_length,
+                    }),
+                }
             })
             .collect())
+    }
+
+    /// Marshal the bridge's CSR skin table. Returns `None` for an unskinned
+    /// scene (the bridge allocates nothing and reports zero influences), so the
+    /// common non-skeletal model carries no skin payload at all.
+    fn marshal_skin(scene: &ReviewImportScene) -> Result<Option<SkinData>, ImportError> {
+        if scene.skin_influence_count == 0 {
+            return Ok(None);
+        }
+        Ok(Some(SkinData {
+            corner_to_logical: checked_slice(
+                scene.corner_source_vertex,
+                scene.corner_source_vertex_count,
+                "corner_source_vertex",
+            )?
+            .to_vec(),
+            offsets: checked_slice(scene.skin_offsets, scene.skin_offset_count, "skin_offsets")?
+                .to_vec(),
+            bones: checked_slice(scene.skin_bones, scene.skin_influence_count, "skin_bones")?
+                .to_vec(),
+            weights: checked_slice(
+                scene.skin_weights,
+                scene.skin_influence_count,
+                "skin_weights",
+            )?
+            .to_vec(),
+        }))
     }
 
     /// Marshal the bridge's material table into the editable table's import
@@ -297,6 +361,11 @@ mod ffi {
             triangles,
         } = marshal_geometry(scene)?;
         let nodes = marshal_nodes(scene)?;
+        let skin = marshal_skin(scene)?;
+        let bone_count = nodes
+            .iter()
+            .filter(|node| node.kind == NodeKind::Bone)
+            .count();
         let uv_channels = build_uv_channels(scene)?;
         let uv_set_names =
             checked_slice(scene.uv_set_names, scene.uv_set_name_count, "uv_set_names")?
@@ -332,9 +401,11 @@ mod ffi {
                 // Overwritten below from `material_draw_count` so the Draws stat
                 // matches the renderer's per-material grouping (invariant 5).
                 draw_count: 0,
+                bone_count,
                 source_unit_meters: scene.source_unit_meters,
             },
             materials,
+            skin,
         };
 
         // Lockstep + range guard at the one import funnel (invariant 7), *before*
@@ -351,6 +422,19 @@ mod ffi {
                 model.nodes.len(),
             )
             .map_err(ImportError::LoadFailed)?;
+
+        // Same funnel guard for the skin CSR: the corner map must cover exactly
+        // the render mesh, the rows must be monotonic and terminate at the
+        // influence count, and every influence must name a real node with a
+        // finite non-negative weight. A drifted bridge fill is caught here, once.
+        if let Some(skin) = &model.skin {
+            skin.validate(
+                model.vertices.len(),
+                model.stats.vertex_count,
+                model.nodes.len(),
+            )
+            .map_err(ImportError::LoadFailed)?;
+        }
 
         model.recompute_bounds();
         // The FBX may carry UVs but no tangent layer (common for Maya exports); the
@@ -551,6 +635,78 @@ mod ffi {
             ));
         }
 
+        /// A zeroed scene whose CSR skin arrays point at Rust-owned data — the
+        /// same trick `uv_scene` uses, so `marshal_skin` can be exercised without
+        /// an FBX file.
+        fn skin_scene(
+            corner_to_logical: &[u32],
+            offsets: &[u32],
+            bones: &[u32],
+            weights: &[f32],
+        ) -> ReviewImportScene {
+            let mut scene: ReviewImportScene = unsafe { std::mem::zeroed() };
+            scene.vertex_count = corner_to_logical.len();
+            scene.corner_source_vertex = corner_to_logical.as_ptr() as *mut u32;
+            scene.corner_source_vertex_count = corner_to_logical.len();
+            scene.skin_offsets = offsets.as_ptr() as *mut u32;
+            scene.skin_offset_count = offsets.len();
+            scene.skin_bones = bones.as_ptr() as *mut u32;
+            scene.skin_weights = weights.as_ptr() as *mut f32;
+            scene.skin_influence_count = bones.len();
+            scene
+        }
+
+        #[test]
+        fn marshal_skin_is_none_for_an_unskinned_scene() {
+            let scene: ReviewImportScene = unsafe { std::mem::zeroed() };
+            assert!(
+                marshal_skin(&scene)
+                    .expect("no skin is not an error")
+                    .is_none()
+            );
+        }
+
+        #[test]
+        fn marshal_skin_copies_the_csr_table() {
+            let skin = marshal_skin(&skin_scene(
+                &[0, 0, 1],
+                &[0, 2, 3],
+                &[1, 2, 2],
+                &[0.75, 0.25, 1.0],
+            ))
+            .expect("valid skin")
+            .expect("a skinned scene marshals to Some");
+            assert_eq!(skin.corner_to_logical, vec![0, 0, 1]);
+            assert_eq!(skin.offsets, vec![0, 2, 3]);
+            assert_eq!(skin.bones, vec![1, 2, 2]);
+            assert_eq!(skin.weights, vec![0.75, 0.25, 1.0]);
+            assert_eq!(skin.influence_range(0), 0..2);
+        }
+
+        #[test]
+        fn marshal_skin_rejects_a_null_array_with_a_nonzero_count() {
+            // A count without its pointer must be a clean error naming the field,
+            // not a `from_raw_parts` on null.
+            let mut scene = skin_scene(&[0], &[0, 1], &[1], &[1.0]);
+            scene.skin_bones = std::ptr::null_mut();
+            assert!(matches!(
+                marshal_skin(&scene),
+                Err(ImportError::LoadFailed(message)) if message.contains("skin_bones")
+            ));
+        }
+
+        #[test]
+        fn node_kind_maps_every_bridge_code_and_falls_back() {
+            assert_eq!(node_kind_from_code(1), NodeKind::Mesh);
+            assert_eq!(node_kind_from_code(2), NodeKind::Bone);
+            assert_eq!(node_kind_from_code(3), NodeKind::Light);
+            assert_eq!(node_kind_from_code(4), NodeKind::Camera);
+            assert_eq!(node_kind_from_code(5), NodeKind::Empty);
+            assert_eq!(node_kind_from_code(0), NodeKind::Other);
+            // An unknown code from a newer bridge must degrade, not panic.
+            assert_eq!(node_kind_from_code(999), NodeKind::Other);
+        }
+
         #[test]
         fn build_uv_channels_rejects_overflowing_counts() {
             // Malicious/corrupt counts whose product wraps `usize` must be a clean
@@ -709,5 +865,196 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The skeletal fixture must come through with a classified node table and a
+    /// consistent skin CSR. This is the end-to-end guard on the corner -> logical
+    /// mapping: if it drifted, the per-vertex influence sums below would be wrong
+    /// (or `SkinData::validate` at the funnel would already have failed the load).
+    #[test]
+    fn import_carries_skeleton_and_skin() {
+        let path = fixture("SK_Player_01.fbx");
+        if !path.exists() {
+            eprintln!("skipping: {} is not present", path.display());
+            return;
+        }
+        let model = load_model(&path).expect("the skeletal fixture must import");
+
+        // ── Bones ───────────────────────────────────────────────────────────
+        let bones: Vec<usize> = model
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| node.kind == review_model::NodeKind::Bone)
+            .map(|(index, _)| index)
+            .collect();
+        assert!(
+            !bones.is_empty(),
+            "a skeletal mesh must import at least one bone node"
+        );
+        assert_eq!(
+            model.stats.bone_count,
+            bones.len(),
+            "the Bones stat must be the measured bone-node count"
+        );
+        for &bone in &bones {
+            assert!(
+                model.nodes[bone].bone.is_some(),
+                "a bone node must carry its display params"
+            );
+        }
+        {
+            // The overlay sizes its leaf/root joint markers from these, so it
+            // matters whether the file actually declared them.
+            let params: Vec<(f32, f32)> = bones
+                .iter()
+                .filter_map(|&bone| model.nodes[bone].bone)
+                .map(|bone| (bone.radius, bone.relative_length))
+                .collect();
+            let with_radius = params.iter().filter(|(radius, _)| *radius > 0.0).count();
+            let with_length = params.iter().filter(|(_, length)| *length > 0.0).count();
+            println!(
+                "bone display params: {with_radius}/{} carry a radius,                  {with_length}/{} a relative length; first = {:?}",
+                params.len(),
+                params.len(),
+                params.first()
+            );
+        }
+        assert!(
+            model
+                .nodes
+                .iter()
+                .any(|node| node.kind == review_model::NodeKind::Mesh),
+            "the skeletal fixture also carries geometry"
+        );
+
+        // ── Skin ────────────────────────────────────────────────────────────
+        let skin = model
+            .skin
+            .as_ref()
+            .expect("a skinned mesh must import skin data");
+        // The funnel already ran `validate`; re-assert the shape here so a failure
+        // reports as this test rather than as a generic load error.
+        assert_eq!(
+            skin.validate(
+                model.vertices.len(),
+                model.stats.vertex_count,
+                model.nodes.len()
+            ),
+            Ok(())
+        );
+        assert_eq!(skin.corner_to_logical.len(), model.vertices.len());
+        assert_eq!(skin.offsets.len(), model.stats.vertex_count + 1);
+
+        // Every influence must name a node the Outliner can actually show.
+        for &bone in &skin.bones {
+            assert!(
+                (bone as usize) < model.nodes.len(),
+                "skin influence references node {bone} of {}",
+                model.nodes.len()
+            );
+        }
+
+        // Per-vertex weight sums: a sane rig normalizes to ~1.0. This is the
+        // assertion that would catch a broken corner -> logical mapping, since a
+        // mis-mapped vertex reads another vertex's (or no) influences.
+        let mut skinned_vertices = 0usize;
+        let mut sum_of_sums = 0.0_f64;
+        let mut worst = 0.0_f32;
+        for logical in 0..skin.logical_vertex_count() {
+            let range = skin.influence_range(logical);
+            if range.is_empty() {
+                continue;
+            }
+            let total: f32 = skin.weights[range].iter().sum();
+            skinned_vertices += 1;
+            sum_of_sums += f64::from(total);
+            worst = worst.max((total - 1.0).abs());
+        }
+        assert!(skinned_vertices > 0, "no vertex carried any influence");
+
+        let mean_influences = skin.influence_count() as f64 / skinned_vertices as f64;
+        let mean_sum = sum_of_sums / skinned_vertices as f64;
+        println!(
+            "SK_Player_01: {} bones, {} nodes, {} logical verts ({} skinned),              {} influences, {mean_influences:.2} influences/vertex,              mean weight sum {mean_sum:.4} (worst deviation {worst:.4})",
+            model.stats.bone_count,
+            model.nodes.len(),
+            skin.logical_vertex_count(),
+            skinned_vertices,
+            skin.influence_count(),
+        );
+
+        assert!(
+            (0.99..=1.01).contains(&mean_sum),
+            "mean per-vertex weight sum {mean_sum} is not ~1.0 — the corner -> logical              mapping or the cluster walk is likely wrong"
+        );
+        assert!(
+            mean_influences > 1.0,
+            "a real rig blends more than one bone per vertex on average, got {mean_influences}"
+        );
+
+        // Per-bone influence counts must *vary* — a finger should move far fewer
+        // vertices than a spine. A flat count across bones would mean the lookup
+        // is ignoring which bone was asked about.
+        {
+            let count_for = |name: &str| -> Option<(String, usize)> {
+                let node = model.nodes.iter().position(|n| {
+                    n.name.contains(name) && n.kind == review_model::NodeKind::Bone
+                })?;
+                let key = [node as u32];
+                let count = (0..skin.logical_vertex_count())
+                    .filter(|&logical| {
+                        skin.bones[skin.influence_range(logical)]
+                            .iter()
+                            .any(|bone| key.binary_search(bone).is_ok())
+                    })
+                    .count();
+                Some((model.nodes[node].name.clone(), count))
+            };
+            let samples: Vec<(String, usize)> = ["Spine1", "Head", "Pinky3_L", "Hand_L"]
+                .iter()
+                .filter_map(|name| count_for(name))
+                .collect();
+            println!("per-bone influenced vertices: {samples:?}");
+            let counts: Vec<usize> = samples.iter().map(|(_, count)| *count).collect();
+            assert!(
+                counts.iter().any(|&count| count > 0),
+                "no sampled bone influenced anything"
+            );
+            assert!(
+                counts.iter().min() != counts.iter().max(),
+                "every sampled bone influenced the same number of vertices - the                  per-bone lookup is not actually discriminating: {samples:?}"
+            );
+        }
+
+        // The corner map must land inside the logical range for every render vertex.
+        for &logical in &skin.corner_to_logical {
+            assert!(
+                (logical as usize) < skin.logical_vertex_count(),
+                "corner maps to logical vertex {logical} of {}",
+                skin.logical_vertex_count()
+            );
+        }
+    }
+
+    /// The negative control: a plain mesh must import with no bones and no skin
+    /// payload at all, so the skeletal UI stays hidden for ordinary models.
+    #[test]
+    fn unskinned_import_carries_no_skeleton() {
+        let path = fixture("meter_cube.fbx");
+        if !path.exists() {
+            eprintln!("skipping: {} is not present", path.display());
+            return;
+        }
+        let model = load_model(&path).expect("the cube fixture must import");
+        assert_eq!(model.stats.bone_count, 0);
+        assert!(model.skin.is_none(), "an unskinned mesh must carry no skin");
+        assert!(
+            model
+                .nodes
+                .iter()
+                .all(|node| node.kind != review_model::NodeKind::Bone),
+            "an unskinned mesh must classify no node as a bone"
+        );
     }
 }

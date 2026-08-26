@@ -831,6 +831,7 @@ impl App {
                 self.ui.selection = Selection::None;
                 self.ui.solo = false;
                 self.ui.hidden_meshes.clear();
+                self.ui.reset_skeletal_state(&model);
                 // The previous model's texture watches / decode cache no longer
                 // apply (the fresh materials carry no slots).
                 self.reset_texture_state();
@@ -1017,6 +1018,7 @@ impl App {
         self.ui.selection = Selection::None;
         self.ui.solo = false;
         self.ui.hidden_meshes.clear();
+        self.ui.reset_skeletal_state(&self.scene_model);
         self.reset_texture_state();
         // Drop the undo history (it references the previous model) and rebaseline
         // to the empty start state.

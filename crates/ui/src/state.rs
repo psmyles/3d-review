@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use glam::{Vec2, Vec3};
-use review_model::{Bounds, ModelData, ModelStats};
+use review_model::{Bounds, ModelData, ModelStats, NodeKind};
 use review_render::{
     AntiAliasing, BoundingBoxScope, CameraProjection, CheckerTexture, DecodedImage,
     EnvironmentSettings, GtaoSettings, MaterialEdit, MaterialSnapshot, MsaaSamples,
@@ -441,6 +441,19 @@ pub enum OutlinerTab {
     Materials,
 }
 
+/// How the Outliner's Geometry tab presents the scene: the original flat list of
+/// mesh-bearing nodes, or the full node hierarchy as a collapsible tree (bones,
+/// lights, cameras and groups included). Toggled by the header button; the
+/// Materials tab is unaffected.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OutlinerViewMode {
+    /// The mesh-only flat list.
+    #[default]
+    FlatGeometry,
+    /// The full scene graph, indented and collapsible.
+    SceneTree,
+}
+
 /// A tool's options panel. Each is shown as its own native `egui::Window`, so
 /// several can be open at once (see [`PanelsOpen`]); a panel is toggled by
 /// right-clicking its toolbar / status-bar button.
@@ -661,8 +674,50 @@ pub struct UiState {
     pub selection_fade: f32,
     /// Which Outliner tab is shown (mesh list vs material list).
     pub outliner_tab: OutlinerTab,
-    /// Case-insensitive substring filter applied to the Outliner rows.
-    pub outliner_filter: String,
+    /// Whether the Geometry tab shows the flat mesh list or the full scene tree.
+    pub outliner_view: OutlinerViewMode,
+    /// Scene-tree nodes the user has *collapsed*. Stored inverted (rather than as
+    /// an expanded set) so the default — an empty set — is a fully expanded tree,
+    /// with no per-model initialization pass. Cleared by `app` on model load.
+    pub outliner_collapsed: HashSet<usize>,
+    /// Node kinds the scene tree's type filter is currently *hiding*. Empty (the
+    /// default) shows everything. A hidden kind's rows still render — greyed and
+    /// unselectable — when a visible node lives beneath them, so the hierarchy
+    /// never breaks into disconnected fragments.
+    pub hidden_kinds: HashSet<NodeKind>,
+    /// Bone nodes selected in the Outliner, in click order (the last entry is the
+    /// primary, mirrored into [`UiState::selection`]). Drives the skeleton
+    /// overlay's highlight and the skin-weight heat map. Ctrl-click toggles a
+    /// member, Shift-click takes a range; clicking any non-bone row clears it.
+    ///
+    /// Kept beside [`UiState::selection`] rather than inside it because
+    /// [`Selection`] is `Copy` and threaded through renderer bake keys and undo
+    /// snapshots, where a growable set would be the wrong shape.
+    pub selected_bones: Vec<usize>,
+    /// Anchor row for Shift-click range selection: the last plainly-clicked or
+    /// Ctrl-clicked bone. `None` until a bone is clicked.
+    pub bone_anchor: Option<usize>,
+    /// Whether the loaded model carries any bone node. Gates the skeleton toolbar
+    /// button (hidden entirely for an unrigged model). Set by `app` on load.
+    pub has_bones: bool,
+    /// Whether the loaded model carries skin weights. Gates the Skin Weights
+    /// material-mode button. Set by `app` on load.
+    pub has_skin: bool,
+    /// Child adjacency for the scene tree (`outliner_children[parent]` lists the
+    /// child node indices, in model order), built once per model rather than per
+    /// frame. Empty means "not built yet"; `app` invalidates it on model load.
+    pub outliner_children: Vec<Vec<usize>>,
+    /// Root node indices for the scene tree — nodes with no parent, in model
+    /// order. Built alongside [`UiState::outliner_children`].
+    pub outliner_roots: Vec<usize>,
+    /// How many logical source vertices the current bone selection influences,
+    /// shown by the Inspector. The scan is O(influences) — 168k on a game
+    /// character — so it must not run per frame; it is recomputed only when
+    /// [`UiState::bone_influence_key`] no longer matches the live selection.
+    pub bone_influence_count: usize,
+    /// The sorted bone set [`UiState::bone_influence_count`] was measured for; a
+    /// mismatch with the live selection invalidates it.
+    pub bone_influence_key: Vec<u32>,
     /// Mesh nodes the user has hidden via the Outliner's per-row visibility
     /// checkbox (node indices into [`review_model::ModelData::nodes`]). The scene
     /// callback filters these meshes' triangles out of the viewport draw + GTAO
@@ -756,7 +811,17 @@ impl Default for UiState {
             solo: false,
             selection_fade: 0.0,
             outliner_tab: OutlinerTab::default(),
-            outliner_filter: String::new(),
+            outliner_view: OutlinerViewMode::default(),
+            outliner_collapsed: HashSet::new(),
+            hidden_kinds: HashSet::new(),
+            selected_bones: Vec::new(),
+            bone_anchor: None,
+            has_bones: false,
+            has_skin: false,
+            outliner_children: Vec::new(),
+            outliner_roots: Vec::new(),
+            bone_influence_count: 0,
+            bone_influence_key: Vec::new(),
             hidden_meshes: HashSet::new(),
             outliner_open: false,
             inspector_open: false,
@@ -834,6 +899,92 @@ impl UiState {
             .collect();
         hidden.sort_unstable();
         hidden
+    }
+
+    /// The selected bone nodes as a sorted, deduplicated `u32` set — the shape the
+    /// renderer wants (its bake keys compare it, and the skin lookup binary-searches
+    /// it). Mirrors [`UiState::hidden_mesh_nodes`].
+    pub fn selected_bone_nodes(&self) -> Vec<u32> {
+        let mut bones: Vec<u32> = self
+            .selected_bones
+            .iter()
+            .map(|&index| index as u32)
+            .collect();
+        bones.sort_unstable();
+        bones.dedup();
+        bones
+    }
+
+    /// Re-point every piece of skeleton/skin UI state at a freshly loaded `model`:
+    /// drop selections and caches keyed by the old model's node indices, and
+    /// re-derive the capability flags that gate the skeleton toolbar button and the
+    /// Skin Weights material mode.
+    pub fn reset_skeletal_state(&mut self, model: &ModelData) {
+        self.selected_bones.clear();
+        self.bone_anchor = None;
+        self.outliner_collapsed.clear();
+        self.hidden_kinds.clear();
+        self.invalidate_outliner_tree();
+
+        self.has_bones = model.stats.bone_count > 0;
+        self.has_skin = model.skin.is_some();
+        self.bone_influence_count = 0;
+        self.bone_influence_key.clear();
+    }
+
+    /// Refresh [`UiState::bone_influence_count`] if the bone selection changed
+    /// since it was last measured. Called once per frame before the panels draw,
+    /// so the Inspector can read a real measured number (invariant 5) without
+    /// re-scanning the skin table on every repaint.
+    ///
+    /// Counts the *union* of the selected bones' influenced vertices, so
+    /// overlapping regions aren't double-counted — the honest answer to "how much
+    /// of the mesh does this selection move".
+    pub(crate) fn sync_bone_influence(&mut self, model: &ModelData) {
+        let key = self.selected_bone_nodes();
+        if key == self.bone_influence_key {
+            return;
+        }
+        self.bone_influence_count = match model.skin.as_ref() {
+            Some(skin) if !key.is_empty() => (0..skin.logical_vertex_count())
+                .filter(|&logical| {
+                    skin.bones[skin.influence_range(logical)]
+                        .iter()
+                        .any(|bone| key.binary_search(bone).is_ok())
+                })
+                .count(),
+            _ => 0,
+        };
+        self.bone_influence_key = key;
+    }
+
+    /// Drop the cached scene-tree adjacency so the next Outliner frame rebuilds it.
+    /// Called by `app` on model load, where the node indices stop meaning anything.
+    pub fn invalidate_outliner_tree(&mut self) {
+        self.outliner_children.clear();
+        self.outliner_roots.clear();
+    }
+
+    /// Build the scene-tree adjacency if it isn't current for `model`. The scan is
+    /// O(nodes) and rigs run to hundreds of nodes, so it must not happen per frame
+    /// — the cache is rebuilt only after [`UiState::invalidate_outliner_tree`].
+    ///
+    /// A node whose `parent` doesn't resolve (out of range, or itself) is treated as
+    /// a root rather than dropped, so a malformed hierarchy still lists every node.
+    pub(crate) fn ensure_outliner_tree(&mut self, model: &ModelData) {
+        if self.outliner_children.len() == model.nodes.len() && !model.nodes.is_empty() {
+            return;
+        }
+        self.outliner_children = vec![Vec::new(); model.nodes.len()];
+        self.outliner_roots.clear();
+        for (index, node) in model.nodes.iter().enumerate() {
+            match node.parent {
+                Some(parent) if parent < model.nodes.len() && parent != index => {
+                    self.outliner_children[parent].push(index);
+                }
+                _ => self.outliner_roots.push(index),
+            }
+        }
     }
 }
 

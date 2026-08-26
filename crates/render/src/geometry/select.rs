@@ -253,12 +253,16 @@ mod tests {
                 parent: None,
                 mesh_part: Some(0),
                 transform: glam::Mat4::IDENTITY,
+                kind: review_model::NodeKind::Mesh,
+                bone: None,
             },
             SceneNode {
                 name: "child".into(),
                 parent: Some(0),
                 mesh_part: Some(1),
                 transform: glam::Mat4::IDENTITY,
+                kind: review_model::NodeKind::Mesh,
+                bone: None,
             },
         ];
         let model = ModelData {

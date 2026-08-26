@@ -65,6 +65,9 @@ pub mod color {
     pub const ICON_IDLE: Color32 = Color32::from_gray(230);
     /// Stats label column / muted row labels.
     pub const TEXT_MUTED: Color32 = Color32::from_gray(178);
+    /// A scene-tree row the type filter is hiding, kept visible only because a
+    /// shown node lives beneath it. Dim enough to read as structure, not content.
+    pub const OUTLINER_FILTERED: Color32 = Color32::from_gray(104);
     /// Selected option text in a compact combo (stands out by brightness).
     pub const TEXT_COMBO_SELECTED: Color32 = Color32::from_gray(238);
     /// Dimmed unselected option text in a compact combo.
@@ -176,6 +179,19 @@ pub mod size {
     /// Upper bound the user can drag the Outliner / Inspector side panels out to
     /// (the `width_range` ceiling); they start at [`SIDE_PANEL_DEFAULT_WIDTH`].
     pub const OUTLINER_MAX_WIDTH: f32 = 560.0;
+    /// Horizontal indent per scene-tree depth level.
+    pub const OUTLINER_INDENT: f32 = 14.0;
+    /// Edge length of a scene-tree row's node-kind glyph, and of the type-filter
+    /// row's toggle glyphs.
+    pub const OUTLINER_TYPE_ICON: f32 = 14.0;
+    /// Width reserved for a scene-tree row's expand/collapse arrow, so rows with
+    /// and without children align.
+    pub const OUTLINER_ARROW_WIDTH: f32 = 14.0;
+    /// Padding around an Outliner header toggle's glyph, giving it a hit target
+    /// and hover fill larger than the glyph itself.
+    pub const OUTLINER_ICON_PAD: f32 = 8.0;
+    /// Corner rounding on an Outliner header toggle's hover / active fill.
+    pub const OUTLINER_ICON_ROUNDING: f32 = 3.0;
 
     // ── Toolbar groups ────────────────────────────────────────────────────
     pub const TOOLBAR_GROUP_SPACING: f32 = 14.0;

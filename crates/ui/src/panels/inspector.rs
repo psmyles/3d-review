@@ -50,7 +50,13 @@ pub(crate) fn body(ui: &mut egui::Ui, state: &UiState, model: &ModelData) -> Ins
                 .inner
         }
         Selection::Node(index) => {
-            node_inspector(ui, model, index);
+            // A multi-bone selection is a set, not a node, so it gets its own
+            // summary rather than an arbitrary member's detail view.
+            if state.selected_bones.len() > 1 {
+                bone_selection_inspector(ui, state, model);
+            } else {
+                node_inspector(ui, state, model, index);
+            }
             InspectorOutput::default()
         }
     }
@@ -439,7 +445,7 @@ fn thumbnail_color_image(image: &DecodedImage) -> Option<egui::ColorImage> {
 
 /// Read-only stats for a selected node: name, type, child count, triangle count,
 /// and world position (display metadata only — invariant 1).
-fn node_inspector(ui: &mut egui::Ui, model: &ModelData, index: usize) {
+fn node_inspector(ui: &mut egui::Ui, state: &UiState, model: &ModelData, index: usize) {
     let Some(node) = model.nodes.get(index) else {
         ui.weak("Node no longer exists.");
         return;
@@ -452,10 +458,12 @@ fn node_inspector(ui: &mut egui::Ui, model: &ModelData, index: usize) {
     };
     ui.heading(format!("Node — {name}"));
 
+    // "Mesh part" is more informative than the bare kind for a node that actually
+    // carries geometry; every other node reports what the importer classified it as.
     let kind = if node.mesh_part.is_some() {
         "Mesh part"
     } else {
-        "Group"
+        node.kind.label()
     };
     let child_count = model
         .nodes
@@ -481,5 +489,67 @@ fn node_inspector(ui: &mut egui::Ui, model: &ModelData, index: usize) {
             "Position",
             &format!("{:.3}, {:.3}, {:.3}", position.x, position.y, position.z),
         );
+
+        // Bone-only rows: what the rig authored, and how much of the mesh this
+        // bone actually moves.
+        if let Some(bone) = node.bone {
+            // A file that declared neither would only add two zero rows of noise.
+            if bone.radius > 0.0 {
+                crate::widgets::value_row(ui, "Radius", &format!("{:.3}", bone.radius));
+            }
+            if bone.relative_length > 0.0 {
+                crate::widgets::value_row(
+                    ui,
+                    "Relative length",
+                    &format!("{:.3}", bone.relative_length),
+                );
+            }
+            if model.skin.is_some() {
+                // Measured once per selection change by `sync_bone_influence`.
+                crate::widgets::value_row(
+                    ui,
+                    "Influenced verts",
+                    &state.bone_influence_count.to_string(),
+                );
+                if model.stats.vertex_count > 0 {
+                    let share =
+                        state.bone_influence_count as f32 / model.stats.vertex_count as f32 * 100.0;
+                    crate::widgets::value_row(ui, "Share of mesh", &format!("{share:.1}%"));
+                }
+            }
+        }
+    });
+}
+
+/// The summary shown when several bones are selected at once: what is selected,
+/// how much of the mesh it moves, and which bones they are.
+fn bone_selection_inspector(ui: &mut egui::Ui, state: &UiState, model: &ModelData) {
+    let count = state.selected_bones.len();
+    ui.heading(format!("{count} bones selected"));
+
+    // The union count, measured once per selection change by `sync_bone_influence`.
+    let influenced = state.bone_influence_count;
+    panel_grid(ui, "inspector_bone_selection", |ui| {
+        crate::widgets::value_row(ui, "Bones", &count.to_string());
+        if model.skin.is_some() {
+            crate::widgets::value_row(ui, "Influenced verts", &influenced.to_string());
+            if model.stats.vertex_count > 0 {
+                let share = influenced as f32 / model.stats.vertex_count as f32 * 100.0;
+                crate::widgets::value_row(ui, "Share of mesh", &format!("{share:.1}%"));
+            }
+        }
+    });
+
+    ui.add_space(size::PANEL_ROW_GAP);
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        // Click order, not sorted order: the list should read the way the user
+        // built it, with the primary (last-clicked) selection at the bottom.
+        for &node in &state.selected_bones {
+            let label = match model.nodes.get(node) {
+                Some(bone) if !bone.name.is_empty() => bone.name.clone(),
+                _ => format!("Node {node}"),
+            };
+            ui.label(label);
+        }
     });
 }
