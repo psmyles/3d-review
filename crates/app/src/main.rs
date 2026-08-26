@@ -1,6 +1,9 @@
 // Suppress the console window in release builds — a shipped GUI viewer should
 // open as a window, not alongside a terminal.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// Fully safe (invariant 9): the D3D11 bootstrap moved behind `review-render`'s
+// safe `Gpu` wrapper, so no `unsafe` may land in this crate again.
+#![forbid(unsafe_code)]
 
 mod frame;
 mod input;
@@ -26,7 +29,7 @@ use std::{
 use anyhow::Context;
 use glam::Vec2;
 use notify::RecommendedWatcher;
-use review_import::{LoadOptions, load_model};
+use review_import::load_model;
 use review_model::{ModelData, SceneBvh};
 use review_render::{
     DecodedImage, Gpu, Renderer, RendererConfig, ShadingMode, TextureSlot, selection_bounds,
@@ -99,7 +102,10 @@ fn main() -> anyhow::Result<()> {
 
     let mut app = App {
         initial_model,
-        texture_proxy: Some(texture_proxy),
+        textures: TextureSubsystem {
+            proxy: Some(texture_proxy),
+            ..TextureSubsystem::default()
+        },
         tracy_enabled,
         _tracy: tracy,
         ..App::default()
@@ -126,29 +132,9 @@ struct App {
     /// per-key events (which don't carry modifiers in winit) can test for
     /// chords like Ctrl+N.
     modifiers: ModifiersState,
-    last_render_instant: Option<Instant>,
-    /// When egui has asked to be repainted at a future time (e.g. a UI fade
-    /// animation). Drives `ControlFlow::WaitUntil` so the loop sleeps until then
-    /// instead of spinning. `None` = wait for the next input/redraw event.
-    repaint_at: Option<Instant>,
-    /// An interactive event (drag, hover, wheel, key) has requested a redraw.
-    /// Folded into the paced `repaint_at` schedule in `about_to_wait` rather than
-    /// triggering an immediate `request_redraw`, so a high-polling-rate mouse or
-    /// key auto-repeat can't drive rendering faster than the monitor refresh.
-    redraw_requested: bool,
-    /// Remaining startup "warmup" frames to pump (Phase B). The first frame builds
-    /// only the cheap core scene resources; the deferred scene pipelines + GTAO
-    /// pass then compile one stage per subsequent frame (in the scene callback's
-    /// `prepare`). While this is non-zero, `render` keeps scheduling the
-    /// next frame so the build drains behind the already-shown grid, then stops.
-    /// Seeded once in `resumed`; `app` can't see the render-side build state
-    /// (invariant 2), so it pumps a fixed, generous count rather than polling.
-    warmup_frames: u32,
-    /// Minimum spacing between continuously-rendered frames, derived from the
-    /// active monitor's refresh rate. Caps redraw to the display so animation
-    /// doesn't render faster than it can be shown (the swapchain doesn't pace us
-    /// on the Vulkan path). Defaults to 60 Hz until a monitor is known.
-    refresh_interval: Duration,
+    /// The on-demand redraw scheduler (invariant 6): pacing state that decides
+    /// when the next frame draws.
+    redraw: RedrawScheduler,
     scene_model: Arc<ModelData>,
     scene_revision: u64,
     /// Per-mesh-part triangle BVH over [`Self::scene_model`], used to occlude the
@@ -163,23 +149,9 @@ struct App {
     /// Model to load once the window/renderer exist, taken from the command line
     /// (file association / `3d-review.exe <path>`). Consumed in `resumed`.
     initial_model: Option<PathBuf>,
-    /// The process was launched with a request to start maximized (e.g. a
-    /// shortcut set to **Run: Maximized**). Set in `resumed` and applied at
-    /// window creation, since winit doesn't honor the OS hint on its own.
-    start_maximized: bool,
-    /// The most recent *non-maximized* window placement (outer position + inner
-    /// size), tracked from `Moved`/`Resized` events so it's available to persist
-    /// on exit. Recorded only while the window isn't maximized, so un-maximizing
-    /// a restored session returns to a real window rather than a fullscreen rect.
-    last_windowed_bounds: Option<((i32, i32), (u32, u32))>,
-    /// Set when a `Moved`/`Resized` event arrives; the windowed bounds are then
-    /// sampled once in `about_to_wait`, after the event burst has settled. This
-    /// deferral matters for maximize: winit dispatches `Moved` (from
-    /// `WM_WINDOWPOSCHANGED`) *before* the `WM_SIZE` that sets its maximized flag,
-    /// so sampling eagerly in the `Moved` handler would record the maximized
-    /// geometry as if it were windowed. By `about_to_wait` the flag is set, so
-    /// `record_windowed_bounds`'s `is_maximized()` guard sees the real state.
-    windowed_bounds_dirty: bool,
+    /// The window-placement tracker: startup maximize + the windowed bounds
+    /// persisted on exit.
+    placement: PlacementTracker,
     /// Live selection-highlight flash, or `None` when none is playing. Started when
     /// [`Self::flashed_selection`] no longer matches the UI's current selection, and
     /// advanced each frame by [`Self::update_selection_flash`], which writes the
@@ -200,34 +172,14 @@ struct App {
     /// (mirrored from [`UiOutput::material_edit_active`] after the egui pass), so
     /// the undo observer coalesces a continuous drag into a single step.
     drag_in_progress: bool,
-    /// Monotonic change tag for the scene texture pool + decode cache, bumped on
-    /// every pool/cache mutation. Lets [`Self::capture_edit_state`] detect pool
-    /// changes (and share the pool snapshot `Arc` when unchanged) as cheaply as the
-    /// renderer's `material_revision` does for the material table.
-    texture_revision: u64,
     /// Whether the camera is currently framed on the selection rather than the
     /// whole model, so `F` alternates between the two while a mesh part is
     /// selected. Reset whenever the selection changes (the next `F` frames the
     /// part first).
     frame_showing_selection: bool,
-    /// Proxy used by the texture file-watcher thread to post reload events to the
-    /// event loop (set in `main` before the loop runs).
-    texture_proxy: Option<EventLoopProxy<UserEvent>>,
-    /// The disk-auto-reload watcher, created lazily on the first texture
-    /// assignment. Dropping it stops watching (done on model load / reset).
-    texture_watcher: Option<RecommendedWatcher>,
-    /// Directories the watcher is registered on (the parents of assigned textures),
-    /// so each directory is watched at most once.
-    watched_dirs: HashSet<PathBuf>,
-    /// Decoded-image cache keyed by source path, so a packed map assigned to
-    /// several slots / materials decodes once. Cleared on model load / reset.
-    texture_cache: HashMap<PathBuf, Arc<DecodedImage>>,
-    /// The scene-wide texture pool: imported source paths in insertion order. The
-    /// decoded pixels live in [`Self::texture_cache`]; this is just the ordered set
-    /// the Inspector's Texture files list + property dropdowns draw from (mirrored
-    /// into [`UiState::texture_pool`] by [`Self::refresh_texture_pool`]). Cleared on
-    /// model load / reset.
-    texture_pool: Vec<PathBuf>,
+    /// The scene texture pool + decode cache + disk-auto-reload subsystem; its
+    /// logic lives in `texture_manager.rs`.
+    textures: TextureSubsystem,
     /// The toast notification system (egui-notify). `app` owns it because it owns
     /// the egui frame and triggers the notifications (texture decode start/finish);
     /// the UI crate only provides the themed type. Shown once per frame in `render`.
@@ -236,10 +188,105 @@ struct App {
     /// profiler (via `review_render::enable_tracy_gpu`) in `resumed`. The scene
     /// renderer then builds the profiler lazily once a Tracy client connects.
     tracy_enabled: bool,
+    /// A GPU fault (scene/egui render failure, device lost) has already been
+    /// surfaced as a toast this session. Faults repeat every frame once the
+    /// device is wedged, so the toast fires once instead of stacking forever.
+    gpu_fault_notified: bool,
     /// The live Tracy client handle, held for the whole process so the profiler
     /// session stays up (dropping the last handle disconnects). `None` on a normal
     /// launch — the client is never started, so all instrumentation no-ops.
     _tracy: Option<tracy_client::Client>,
+}
+
+/// The on-demand redraw scheduler (invariant 6): everything that decides *when*
+/// the next frame is drawn, grouped out of [`App`].
+struct RedrawScheduler {
+    last_render_instant: Option<Instant>,
+    /// When egui has asked to be repainted at a future time (e.g. a UI fade
+    /// animation). Drives `ControlFlow::WaitUntil` so the loop sleeps until then
+    /// instead of spinning. `None` = wait for the next input/redraw event.
+    repaint_at: Option<Instant>,
+    /// An interactive event (drag, hover, wheel, key) has requested a redraw.
+    /// Folded into the paced `repaint_at` schedule in `about_to_wait` rather than
+    /// triggering an immediate `request_redraw`, so a high-polling-rate mouse or
+    /// key auto-repeat can't drive rendering faster than the monitor refresh.
+    requested: bool,
+    /// Remaining startup "warmup" frames to pump (Phase B). The first frame builds
+    /// only the cheap core scene resources; the deferred scene pipelines + GTAO
+    /// pass then compile one stage per subsequent frame. While this is non-zero,
+    /// `render` keeps scheduling the next frame so the build drains behind the
+    /// already-shown grid, then stops. Seeded once in `resumed`; `app` can't see
+    /// the render-side build state (invariant 2), so it pumps a fixed count.
+    warmup_frames: u32,
+    /// Minimum spacing between continuously-rendered frames, derived from the
+    /// active monitor's refresh rate. Caps redraw to the display so animation
+    /// doesn't render faster than it can be shown. Defaults to 60 Hz until a
+    /// monitor is known.
+    refresh_interval: Duration,
+}
+
+impl Default for RedrawScheduler {
+    fn default() -> Self {
+        Self {
+            last_render_instant: None,
+            repaint_at: None,
+            requested: false,
+            warmup_frames: 0,
+            refresh_interval: Duration::from_secs_f64(1.0 / FALLBACK_REFRESH_HZ),
+        }
+    }
+}
+
+/// The window-placement tracker: the startup maximize hint plus the windowed
+/// bounds sampled for session persistence, grouped out of [`App`].
+#[derive(Default)]
+struct PlacementTracker {
+    /// The process was launched with a request to start maximized (e.g. a
+    /// shortcut set to **Run: Maximized**). Set in `resumed` and applied at
+    /// window creation, since winit doesn't honor the OS hint on its own.
+    start_maximized: bool,
+    /// The most recent *non-maximized* window placement (outer position + inner
+    /// size), tracked from `Moved`/`Resized` events so it's available to persist
+    /// on exit. Recorded only while the window isn't maximized, so un-maximizing
+    /// a restored session returns to a real window rather than a fullscreen rect.
+    last_windowed_bounds: Option<((i32, i32), (u32, u32))>,
+    /// Set when a `Moved`/`Resized` event arrives; the windowed bounds are then
+    /// sampled once in `about_to_wait`, after the event burst has settled. This
+    /// deferral matters for maximize: winit dispatches `Moved` (from
+    /// `WM_WINDOWPOSCHANGED`) *before* the `WM_SIZE` that sets its maximized flag,
+    /// so sampling eagerly in the `Moved` handler would record the maximized
+    /// geometry as if it were windowed. By `about_to_wait` the flag is set, so
+    /// `record_windowed_bounds`'s `is_maximized()` guard sees the real state.
+    bounds_dirty: bool,
+}
+
+/// The scene texture pool + decode cache + disk-auto-reload subsystem's state,
+/// grouped out of [`App`]; the logic lives in `texture_manager.rs`.
+#[derive(Default)]
+struct TextureSubsystem {
+    /// Proxy used by the texture file-watcher thread to post reload events to the
+    /// event loop (set in `main` before the loop runs).
+    proxy: Option<EventLoopProxy<UserEvent>>,
+    /// The disk-auto-reload watcher, created lazily on the first texture
+    /// assignment. Dropping it stops watching (done on model load / reset).
+    watcher: Option<RecommendedWatcher>,
+    /// Directories the watcher is registered on (the parents of assigned textures),
+    /// so each directory is watched at most once.
+    watched_dirs: HashSet<PathBuf>,
+    /// Decoded-image cache keyed by source path, so a packed map assigned to
+    /// several slots / materials decodes once. Cleared on model load / reset.
+    cache: HashMap<PathBuf, Arc<DecodedImage>>,
+    /// The scene-wide texture pool: imported source paths in insertion order. The
+    /// decoded pixels live in [`Self::cache`]; this is just the ordered set the
+    /// Inspector's Texture files list + property dropdowns draw from (mirrored
+    /// into `UiState::texture_pool` by `App::refresh_texture_pool`). Cleared on
+    /// model load / reset.
+    pool: Vec<PathBuf>,
+    /// Monotonic change tag for the pool + cache, bumped on every mutation. Lets
+    /// `App::capture_edit_state` detect pool changes (and share the pool snapshot
+    /// `Arc` when unchanged) as cheaply as the renderer's `material_revision`
+    /// does for the material table.
+    revision: u64,
 }
 
 /// State of the selection-highlight flash: a brief bright fill over a newly
@@ -316,11 +363,7 @@ impl Default for App {
             last_pointer_position: None,
             last_primary_click: None,
             modifiers: ModifiersState::empty(),
-            last_render_instant: None,
-            repaint_at: None,
-            redraw_requested: false,
-            warmup_frames: 0,
-            refresh_interval: Duration::from_secs_f64(1.0 / FALLBACK_REFRESH_HZ),
+            redraw: RedrawScheduler::default(),
             scene_model,
             scene_revision: 0,
             occlusion_bvh: None,
@@ -329,22 +372,16 @@ impl Default for App {
             occlusion_bvh_revision: u64::MAX,
             ui,
             initial_model: None,
-            start_maximized: false,
-            last_windowed_bounds: None,
-            windowed_bounds_dirty: false,
+            placement: PlacementTracker::default(),
             selection_flash: None,
             flashed_selection: Selection::None,
             undo: UndoStack::new(),
             drag_in_progress: false,
-            texture_revision: 0,
             frame_showing_selection: false,
-            texture_proxy: None,
-            texture_watcher: None,
-            watched_dirs: HashSet::new(),
-            texture_cache: HashMap::new(),
-            texture_pool: Vec::new(),
+            textures: TextureSubsystem::default(),
             notifications: Notifications::new(),
             tracy_enabled: false,
+            gpu_fault_notified: false,
             _tracy: None,
         }
     }
@@ -396,38 +433,20 @@ fn load_window_icon() -> Option<winit::window::Icon> {
     winit::window::Icon::from_rgba(image.into_raw(), width, height).ok()
 }
 
-impl ApplicationHandler<UserEvent> for App {
-    /// Handle a custom event from the texture file-watcher: re-decode + re-upload
-    /// the changed texture (the disk-auto-reload path; redraw stays here).
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
-        match event {
-            UserEvent::TextureChanged(path) => self.reload_texture_file(&path),
-            UserEvent::TextureDecoded(decode) => self.handle_texture_decoded(decode),
-        }
-    }
-
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
-            return;
-        };
-
-        // Startup phase timing, as a sequence of Tracy zones (replacing the old
-        // `StartupTimer` laps): `phase` holds the current zone and is ended by
-        // dropping its guard before the next begins, so they read as adjacent spans
-        // under the "main" thread. All no-op unless `--tracy` started the client.
-        let mut phase = prof::zone!("Window Create");
-
+impl App {
+    /// Startup phase 1: create the application window, honoring the OS maximize
+    /// hint and restoring the persisted placement (dropped when it lands on a
+    /// disconnected monitor, so the window can't open off-screen).
+    fn create_startup_window(&mut self, event_loop: &ActiveEventLoop) -> Arc<Window> {
         // Honor the OS launch hint (e.g. a shortcut set to "Run: Maximized").
         // winit never consults `STARTUPINFO.wShowWindow`, so we query it and set
         // the initial state ourselves.
-        self.start_maximized = review_import::startup_show_maximized();
+        self.placement.start_maximized = review_import::startup_show_maximized();
 
-        // Restore the window to where it was last closed. A placement on a
-        // monitor that's no longer connected is dropped so the window can't open
-        // off-screen. The OS launch hint still forces maximized regardless.
         let saved =
             window_state::load().filter(|placement| placement_is_visible(event_loop, placement));
-        let maximized = self.start_maximized || saved.is_some_and(|placement| placement.maximized);
+        let maximized =
+            self.placement.start_maximized || saved.is_some_and(|placement| placement.maximized);
 
         // The position/size in a maximized placement are meant to be the *restored*
         // (pre-maximize) bounds, used as the un-maximize target. Pre-fix builds could
@@ -460,58 +479,30 @@ impl ApplicationHandler<UserEvent> for App {
                     placement.width,
                     placement.height,
                 ));
-            self.last_windowed_bounds = Some((
+            self.placement.last_windowed_bounds = Some((
                 (placement.x, placement.y),
                 (placement.width, placement.height),
             ));
         }
 
-        let window = event_loop
-            .create_window(attributes)
-            .expect("failed to create application window");
-        let window = Arc::new(window);
+        Arc::new(
+            event_loop
+                .create_window(attributes)
+                .expect("failed to create application window"),
+        )
+    }
 
-        drop(phase.take());
-        phase = prof::zone!("Renderer Init");
-
-        let renderer_config = RendererConfig::default();
-        let mut renderer = Renderer::new(renderer_config);
-        let size = window.inner_size();
-        if size.height > 0 {
-            renderer.set_camera_aspect_ratio(size.width as f32 / size.height as f32);
-            renderer.set_uv_aspect_ratio(size.width as f32 / size.height as f32);
-            let (safe_w, safe_h) = framing_safe_area(size.height, window.scale_factor() as f32);
-            renderer.set_framing_safe_area(safe_w, safe_h);
-            // Re-frame the home view for the real window size / safe area so the
-            // startup view matches what reset (`animate_camera_to_home`)
-            // produces, instead of the full-window `OrbitCamera::default`.
-            renderer.reset_camera_to_home();
-        }
-        let egui_ctx = egui::Context::default();
-        // Install fonts + visuals once: the style is derived purely from the
-        // central theme tokens (no per-frame state), so it never needs re-syncing.
-        init_style(&egui_ctx);
-        drop(phase.take());
-        phase = prof::zone!("D3D11 Device + Swapchain");
-
-        // Create the Direct3D 11 device + immediate context + a flip-model swapchain
-        // on the window. A single `D3D11CreateDevice` on the default adapter — no
-        // DX12 multi-adapter probing, no naga — so this is far cheaper than the old
-        // egui-wgpu `set_window` (~265ms, of which ~197ms was DX12 enumerating every
-        // adapter by creating an `ID3D12Device` per adapter to probe features).
-        let gpu = Gpu::new(win32_hwnd(&window), size.width, size.height)
-            .expect("failed to create the Direct3D 11 device + swapchain");
-        // Kill the white startup flash: clear the backbuffer black and present once,
-        // before any scene exists. This replaces the old GDI startup paint (the
-        // removed first exception to invariant 9) using the swapchain we just made.
-        gpu.clear_backbuffer([0.0, 0.0, 0.0, 1.0]);
-        gpu.present(false);
-        // egui renders through egui-directx11 on the same device/context.
-        let egui_renderer = egui_directx11::Renderer::new(gpu.device())
-            .expect("failed to create the egui Direct3D 11 renderer");
-        drop(phase.take());
-        phase = prof::zone!("Shell Init");
-
+    /// Startup phase 4: wire the built pieces onto `self`, seed the UI's initial
+    /// stats + capability gates, and arm the optional GPU profiler.
+    fn init_shell(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window: Arc<Window>,
+        renderer: Renderer,
+        egui_ctx: egui::Context,
+        gpu: Gpu,
+        egui_renderer: egui_directx11::Renderer,
+    ) {
         // The viewer talks to the GPU through Direct3D 11.
         self.ui.gpu_backend = "DX11".to_string();
         // Gate the Anti-Aliasing menu on the adapter's real MSAA support (D3D11
@@ -550,12 +541,93 @@ impl ApplicationHandler<UserEvent> for App {
         self.ui.stats = self.scene_model.stats;
         self.ui.bounds = self.scene_model.bounds;
         self.ui.uv_sets = self.scene_model.uv_set_labels();
-        self.refresh_interval = monitor_refresh_interval(&window);
-        self.window = Some(window.clone());
+        self.redraw.refresh_interval = monitor_refresh_interval(&window);
+        self.window = Some(window);
+    }
+}
+
+/// Startup phase 2: the renderer with its cameras seeded for the real window
+/// size / safe area, so the startup view matches what reset
+/// (`animate_camera_to_home`) produces instead of the full-window default.
+fn build_startup_renderer(window: &Window) -> Renderer {
+    let mut renderer = Renderer::new(RendererConfig::default());
+    let size = window.inner_size();
+    if size.height > 0 {
+        renderer.set_camera_aspect_ratio(size.width as f32 / size.height as f32);
+        renderer.set_uv_aspect_ratio(size.width as f32 / size.height as f32);
+        let (safe_w, safe_h) = framing_safe_area(size.height, window.scale_factor() as f32);
+        renderer.set_framing_safe_area(safe_w, safe_h);
+        renderer.reset_camera_to_home();
+    }
+    renderer
+}
+
+/// Startup phase 3: the Direct3D 11 device + swapchain and egui's D3D11
+/// renderer. A single `D3D11CreateDevice` on the default adapter — no DX12
+/// multi-adapter probing, no naga — so this is far cheaper than the old
+/// egui-wgpu `set_window` path. Also kills the white startup flash by clearing
+/// and presenting the fresh backbuffer black before any scene exists (this
+/// replaced the old GDI startup paint).
+fn create_startup_gpu(window: &Window) -> (Gpu, egui_directx11::Renderer) {
+    let size = window.inner_size();
+    let gpu = Gpu::new(win32_hwnd(window), size.width, size.height)
+        .expect("failed to create the Direct3D 11 device + swapchain");
+    gpu.clear_backbuffer([0.0, 0.0, 0.0, 1.0]);
+    // A device lost at the very first present is unrecoverable startup
+    // failure territory; note it and let the frame loop surface the toast.
+    if let review_render::PresentStatus::DeviceLost { reason } = gpu.present(false) {
+        prof::msg(&format!(
+            "startup present failed: device lost ({reason:#x})"
+        ));
+    }
+    // egui renders through egui-directx11 on the same device/context.
+    let egui_renderer = egui_directx11::Renderer::new(gpu.device())
+        .expect("failed to create the egui Direct3D 11 renderer");
+    (gpu, egui_renderer)
+}
+
+impl ApplicationHandler<UserEvent> for App {
+    /// Handle a custom event from the texture file-watcher: re-decode + re-upload
+    /// the changed texture (the disk-auto-reload path; redraw stays here).
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
+        match event {
+            UserEvent::TextureChanged(path) => self.reload_texture_file(&path),
+            UserEvent::TextureDecoded(decode) => self.handle_texture_decoded(decode),
+        }
+    }
+
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return;
+        };
+
+        // Startup phase timing, as a sequence of Tracy zones (replacing the old
+        // `StartupTimer` laps): `phase` holds the current zone and is ended by
+        // dropping its guard before the next begins, so they read as adjacent spans
+        // under the "main" thread. All no-op unless `--tracy` started the client.
+        // Each phase's work lives in its own helper below.
+        let mut phase = prof::zone!("Window Create");
+        let window = self.create_startup_window(event_loop);
+
+        drop(phase.take());
+        phase = prof::zone!("Renderer Init");
+        let renderer = build_startup_renderer(&window);
+        let egui_ctx = egui::Context::default();
+        // Install fonts + visuals once: the style is derived purely from the
+        // central theme tokens (no per-frame state), so it never needs re-syncing.
+        init_style(&egui_ctx);
+
+        drop(phase.take());
+        phase = prof::zone!("D3D11 Device + Swapchain");
+        let (gpu, egui_renderer) = create_startup_gpu(&window);
+
+        drop(phase.take());
+        phase = prof::zone!("Shell Init");
+        self.init_shell(event_loop, window, renderer, egui_ctx, gpu, egui_renderer);
         prof::msg("application shell started");
+
         drop(phase.take());
         phase = prof::zone!("Initial Model Load");
-
         // Load a file passed on the command line (file association / CLI arg)
         // now that the renderer exists. Reuses the same path as drag-drop, so
         // framing/stats/redraw behave identically.
@@ -566,10 +638,10 @@ impl ApplicationHandler<UserEvent> for App {
         // Paint the first frame directly rather than waiting on the first
         // `RedrawRequested`, so the window shows the rendered (grid-only) scene as
         // soon as it appears instead of an unpainted surface. Only the cheap core
-        // resources build here (see `SceneResources::new_core`); the deferred scene
-        // pipelines + GTAO pass compile over the next few frames, which the
-        // startup warmup keeps pumping until the build drains.
-        self.warmup_frames = STARTUP_WARMUP_FRAMES;
+        // resources build here; the deferred scene pipelines + GTAO pass compile
+        // over the next few frames, which the startup warmup keeps pumping until
+        // the build drains.
+        self.redraw.warmup_frames = STARTUP_WARMUP_FRAMES;
         drop(phase.take());
         phase = prof::zone!("First Frame");
         self.render();
@@ -608,7 +680,7 @@ impl ApplicationHandler<UserEvent> for App {
             .is_some_and(|response| response.repaint)
             && !matches!(event, WindowEvent::RedrawRequested)
         {
-            self.redraw_requested = true;
+            self.redraw.requested = true;
         }
 
         // egui claims keyboard events while a widget has focus (e.g. typing in a
@@ -626,7 +698,7 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::Moved(_) => {
                 // Defer recording: a maximize delivers `Moved` before the window's
                 // maximized flag is set, so sample in `about_to_wait` instead.
-                self.windowed_bounds_dirty = true;
+                self.placement.bounds_dirty = true;
             }
             WindowEvent::Resized(size) => self.handle_resized(size, &window),
             WindowEvent::MouseInput { state, button, .. } => {
@@ -649,7 +721,7 @@ impl ApplicationHandler<UserEvent> for App {
                 // keys that aren't bound to a shortcut.
                 if event.state == ElementState::Pressed && self.ui.show_help_overlay {
                     self.ui.show_help_overlay = false;
-                    self.redraw_requested = true;
+                    self.redraw.requested = true;
                 }
                 self.handle_keyboard_shortcut(&event);
             }
@@ -673,8 +745,8 @@ impl ApplicationHandler<UserEvent> for App {
         // (whose `Moved` arrives before the maximized flag is set) doesn't poison
         // the saved placement with fullscreen geometry. `record_windowed_bounds`
         // skips while maximized, so the pre-maximize bounds survive.
-        if self.windowed_bounds_dirty {
-            self.windowed_bounds_dirty = false;
+        if self.placement.bounds_dirty {
+            self.placement.bounds_dirty = false;
             self.record_windowed_bounds();
         }
 
@@ -682,20 +754,25 @@ impl ApplicationHandler<UserEvent> for App {
         // paced schedule. The earliest we'll draw is one refresh interval after
         // the last frame, so a burst of high-frequency input events coalesces
         // into a single redraw capped at the monitor refresh rate.
-        if self.redraw_requested {
-            self.redraw_requested = false;
+        if self.redraw.requested {
+            self.redraw.requested = false;
             let earliest = self
+                .redraw
                 .last_render_instant
-                .map_or(now, |last| last + self.refresh_interval);
-            self.repaint_at = Some(self.repaint_at.map_or(earliest, |at| at.min(earliest)));
+                .map_or(now, |last| last + self.redraw.refresh_interval);
+            self.redraw.repaint_at = Some(
+                self.redraw
+                    .repaint_at
+                    .map_or(earliest, |at| at.min(earliest)),
+            );
         }
 
         // Sleep until the next scheduled repaint (if any), otherwise block until
         // the next input event. When the scheduled time arrives, fire one redraw
         // and fall back to waiting.
-        match self.repaint_at {
+        match self.redraw.repaint_at {
             Some(wake) if now >= wake => {
-                self.repaint_at = None;
+                self.redraw.repaint_at = None;
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
                 }
@@ -732,7 +809,7 @@ impl App {
         // re-frame so the view change reads as a transition.
         let animate_framing = !self.scene_model.vertices.is_empty();
 
-        match load_model(path, LoadOptions { triangulate: true }) {
+        match load_model(path) {
             Ok(model) => {
                 let model = Arc::new(model);
 
@@ -778,8 +855,10 @@ impl App {
                 prof::msg(&format!("model loaded: {}", path.display()));
             }
             Err(error) => {
+                // Surface the cause, not just the file name — without `--tracy`
+                // the prof channel below is the user's only *hidden* diagnostic.
                 self.notifications
-                    .error(format!("Couldn't load {}", file_label(path)));
+                    .error(format!("Couldn't load {}: {error}", file_label(path)));
                 prof::msg(&format!("model load failed: {} ({error})", path.display()));
             }
         }
@@ -793,6 +872,11 @@ impl App {
     /// file commands; the bare keys are view / camera shortcuts and only fire
     /// when no modifier is held (so Shift/Alt/Ctrl combinations stay free).
     /// Keyboard events egui has already consumed are filtered out by the caller.
+    ///
+    /// Adding/changing a binding here? Update the startup help card's tables in
+    /// `crates/ui/src/help.rs` (`LEFT_SHORTCUTS` / `RIGHT_SHORTCUTS` /
+    /// `CHORD_SHORTCUTS`) in the same change — they are the user-facing mirror
+    /// of this dispatch.
     fn handle_keyboard_shortcut(&mut self, event: &KeyEvent) {
         // Escape clears any Outliner selection (mesh part or material). It's a Named
         // key, so handle it before the Character extraction below.
@@ -801,7 +885,7 @@ impl App {
         {
             if self.ui.selection.is_active() {
                 self.ui.selection = Selection::None;
-                self.redraw_requested = true;
+                self.redraw.requested = true;
             }
             return;
         }
@@ -843,7 +927,7 @@ impl App {
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.reset_uv_camera();
                 }
-                self.redraw_requested = true;
+                self.redraw.requested = true;
             }
             return;
         }
@@ -854,7 +938,7 @@ impl App {
         if self.ui.mode == WorkspaceMode::Texture {
             if event.state == ElementState::Pressed && matches!(character.as_str(), "f" | "r") {
                 self.ui.texture_view.request = Some(TexViewRequest::Fit);
-                self.redraw_requested = true;
+                self.redraw.requested = true;
             }
             return;
         }
@@ -874,7 +958,7 @@ impl App {
                 "s" => self.orbit_camera_step(0.0, ORBIT_STEP),
                 _ => return,
             }
-            self.redraw_requested = true;
+            self.redraw.requested = true;
             return;
         }
 
@@ -895,7 +979,7 @@ impl App {
             _ => return,
         }
 
-        self.redraw_requested = true;
+        self.redraw.requested = true;
     }
 
     /// Animate a relative 45° camera orbit (radians) for the WASD shortcuts.
@@ -939,7 +1023,7 @@ impl App {
         self.reset_undo_history();
 
         prof::msg("reset to start state");
-        self.redraw_requested = true;
+        self.redraw.requested = true;
     }
 
     fn should_open_on_double_click(&self) -> bool {
@@ -1028,7 +1112,7 @@ impl App {
         }
 
         if redraw {
-            self.redraw_requested = true;
+            self.redraw.requested = true;
         }
     }
 
@@ -1059,7 +1143,8 @@ impl App {
         if size.width == 0 || size.height == 0 {
             return;
         }
-        self.last_windowed_bounds = Some(((position.x, position.y), (size.width, size.height)));
+        self.placement.last_windowed_bounds =
+            Some(((position.x, position.y), (size.width, size.height)));
     }
 
     /// Persist the current window placement to `%APPDATA%` on exit. Uses the last
@@ -1073,7 +1158,7 @@ impl App {
         let Some(window) = self.window.as_ref() else {
             return;
         };
-        let Some(((x, y), (width, height))) = self.last_windowed_bounds else {
+        let Some(((x, y), (width, height))) = self.placement.last_windowed_bounds else {
             return;
         };
 
@@ -1158,9 +1243,10 @@ impl App {
     fn update_camera_animation(&mut self) {
         let now = Instant::now();
         let delta_seconds = self
+            .redraw
             .last_render_instant
             .map_or(0.0, |last| now.duration_since(last).as_secs_f32());
-        self.last_render_instant = Some(now);
+        self.redraw.last_render_instant = Some(now);
 
         // The viewer redraws on demand, so FPS is only meaningful across
         // consecutive frames (camera animation / interaction). Ignore the long
@@ -1299,7 +1385,7 @@ fn monitor_refresh_interval(window: &Window) -> Duration {
         .and_then(|monitor| monitor.refresh_rate_millihertz())
         .filter(|millihertz| *millihertz > 0)
         .map(|millihertz| Duration::from_secs_f64(1000.0 / f64::from(millihertz)))
-        .unwrap_or_else(|| Duration::from_secs_f64(1.0 / 60.0))
+        .unwrap_or_else(|| Duration::from_secs_f64(1.0 / FALLBACK_REFRESH_HZ))
 }
 
 /// Fraction of the window framing should fill, leaving room for the chrome that

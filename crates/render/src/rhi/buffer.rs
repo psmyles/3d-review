@@ -1,6 +1,5 @@
-//! GPU buffer plumbing: an immutable vertex buffer (rebuilt wholesale on change,
-//! mirroring the wgpu path) and a dynamic constant buffer updated each frame via
-//! `Map(WRITE_DISCARD)` (the equivalent of wgpu's `queue.write_buffer`).
+//! GPU buffer plumbing: an immutable vertex buffer (rebuilt wholesale on change)
+//! and a dynamic constant buffer updated each frame via `Map(WRITE_DISCARD)`.
 
 use bytemuck::Pod;
 use windows::Win32::Graphics::Direct3D11::{
@@ -11,6 +10,8 @@ use windows::Win32::Graphics::Direct3D11::{
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32_UINT;
 use windows::core::Result;
+
+use super::out_param;
 
 /// Build a `D3D11_BUFFER_DESC` with this module's common defaults (no misc flags,
 /// no structured stride). The four arguments are the only fields that vary across
@@ -32,7 +33,7 @@ fn buffer_desc(
 }
 
 /// An immutable vertex buffer + its stride and vertex count. Geometry is rebuilt
-/// wholesale on change (the wgpu path did the same), so immutable storage with
+/// wholesale on change, so immutable storage with
 /// initial data is the natural fit.
 pub(crate) struct VertexBuffer {
     buffer: ID3D11Buffer,
@@ -45,7 +46,11 @@ impl VertexBuffer {
     /// (D3D11 rejects a zero-byte buffer); callers that may have no geometry skip
     /// the draw rather than building an empty buffer.
     pub(crate) fn new<T: Pod>(device: &ID3D11Device, data: &[T]) -> Result<Self> {
-        debug_assert!(!data.is_empty(), "vertex buffer must be non-empty");
+        // A real error, not a debug_assert: in release an empty slice would reach
+        // `CreateBuffer` with `ByteWidth: 0` and fail as an opaque E_INVALIDARG.
+        if data.is_empty() {
+            return Err(super::invalid_arg("vertex buffer must be non-empty"));
+        }
         let bytes: &[u8] = bytemuck::cast_slice(data);
         let desc = buffer_desc(
             std::mem::size_of_val(bytes) as u32,
@@ -63,7 +68,7 @@ impl VertexBuffer {
         // `init.pSysMem` points at `bytes`, alive for the call. The out-param is set.
         unsafe { device.CreateBuffer(&desc, Some(&init), Some(&mut buffer))? };
         Ok(Self {
-            buffer: buffer.unwrap(),
+            buffer: out_param(buffer),
             stride: std::mem::size_of::<T>() as u32,
             count: data.len() as u32,
         })
@@ -98,7 +103,10 @@ pub(crate) struct IndexBuffer {
 impl IndexBuffer {
     /// Create an immutable index buffer from `indices` (must be non-empty).
     pub(crate) fn new(device: &ID3D11Device, indices: &[u32]) -> Result<Self> {
-        debug_assert!(!indices.is_empty(), "index buffer must be non-empty");
+        // See `VertexBuffer::new` — checked in release too.
+        if indices.is_empty() {
+            return Err(super::invalid_arg("index buffer must be non-empty"));
+        }
         let bytes: &[u8] = bytemuck::cast_slice(indices);
         let desc = buffer_desc(
             std::mem::size_of_val(bytes) as u32,
@@ -116,7 +124,7 @@ impl IndexBuffer {
         // `bytes`, alive for the call. The out-param is set.
         unsafe { device.CreateBuffer(&desc, Some(&init), Some(&mut buffer))? };
         Ok(Self {
-            buffer: buffer.unwrap(),
+            buffer: out_param(buffer),
             count: indices.len() as u32,
         })
     }
@@ -138,6 +146,10 @@ impl IndexBuffer {
 /// The byte size is rounded up to a 16-byte multiple (the cbuffer requirement).
 pub(crate) struct DynamicConstantBuffer {
     buffer: ID3D11Buffer,
+    /// The rounded-up byte size the buffer was created with; [`Self::update`]
+    /// bounds its copy against it so a mismatched `T` can never scribble past the
+    /// mapped region.
+    size: u32,
 }
 
 impl DynamicConstantBuffer {
@@ -154,18 +166,24 @@ impl DynamicConstantBuffer {
         // SAFETY: a dynamic cbuffer with no initial data; the out-param is set.
         unsafe { device.CreateBuffer(&desc, None, Some(&mut buffer))? };
         Ok(Self {
-            buffer: buffer.unwrap(),
+            buffer: out_param(buffer),
+            size,
         })
     }
 
-    /// Upload `value` into the buffer (discard-and-rewrite). `T` must be no larger
-    /// than the buffer's rounded-up size, which holds when the same `T` was used in
-    /// [`Self::new`].
+    /// Upload `value` into the buffer (discard-and-rewrite). `T` must fit the
+    /// buffer's rounded-up size — i.e. be the `T` passed to [`Self::new`] — and a
+    /// mismatch is a checked error, never an out-of-bounds GPU write.
     pub(crate) fn update<T: Pod>(&self, ctx: &ID3D11DeviceContext, value: &T) -> Result<()> {
         let bytes = bytemuck::bytes_of(value);
+        if bytes.len() > self.size as usize {
+            return Err(super::invalid_arg(
+                "constant-buffer update is larger than the buffer it was created for",
+            ));
+        }
         // SAFETY: WRITE_DISCARD maps the whole dynamic buffer for CPU writes; the
-        // mapped region is at least `size_of::<T>()` bytes (the buffer was sized for
-        // `T`), so the copy stays in bounds. `Unmap` is paired with the `Map`.
+        // mapped region is `self.size` bytes and `bytes.len() <= self.size` was
+        // just checked, so the copy stays in bounds. `Unmap` pairs with the `Map`.
         unsafe {
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
             ctx.Map(

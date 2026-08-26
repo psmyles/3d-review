@@ -10,9 +10,8 @@
 //! operator switch, the UV / Tex viewports, the debug line views and the selection
 //! flash.
 
-use bytemuck::{Pod, Zeroable};
 use review_model::ModelData;
-use windows::Win32::Graphics::Direct3D11::ID3D11Device;
+use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11DeviceContext};
 
 use crate::geometry::{
     bounding_box_lines, face_normal_lines, model_mesh, model_pivot, pivot_half_extent, pivot_lines,
@@ -31,12 +30,15 @@ use crate::rhi::{
 use crate::selection::{Selection, SelectionView, selection_bounds};
 use crate::{
     ActiveMaterial, AntiAliasing, BoundingBoxScope, CameraProjection, CheckerTexture,
-    EnvironmentSettings, GtaoSettings, MaterialMode, OrbitCamera, SceneDebugOptions, ShadingMode,
-    TonemapSettings, UvCamera, UvShadingMode, ViewportBackground,
+    EnvironmentSettings, GtaoSettings, MaterialMode, OrbitCamera, SceneDebugOptions, SceneFrame,
+    ShadingMode, TonemapSettings, UvCamera, UvShadingMode, ViewportBackground,
 };
 
-use super::gpu_profiler::{self, GpuProfiler, Zone};
-use super::gpu_types::{SceneUniforms, buffer_view_value, shading_mode_value, vertex_color_value};
+use super::gpu_types::{
+    GtaoUniforms, PostUniforms, SceneUniforms, buffer_view_value, shading_mode_value,
+    vertex_color_value,
+};
+use crate::rhi::gpu_profiler::{self, GpuProfiler, Zone};
 
 /// Compiled DXBC — see `build.rs`.
 const SCENE_VS: &[u8] = include_bytes!("../hlsl/scene.vs.dxbc");
@@ -68,28 +70,6 @@ const SCENE_VERTEX_LAYOUT: [InputElement; 5] = [
     InputElement::new("COLOR", 0, VertexFormat::Float4),
 ];
 
-/// Composite-pass uniform (cbuffer `b0` in `post.hlsl`): the GTAO enable flag, the
-/// tone-map enable + operator, and a raw-passthrough flag, all driven from the
-/// live settings each frame.
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct PostUniforms {
-    gtao_enabled: u32,
-    tonemap_enabled: u32,
-    tonemap_op: u32,
-    /// When non-zero the composite blits the (already display-ready) scene color
-    /// straight to the backbuffer — no GTAO, tone map or sRGB encode. Set for the
-    /// [`ActiveMaterial::Buffers`] data-inspection view, whose scene shader emits
-    /// final display pixels itself so the shown value is faithful.
-    passthrough: u32,
-    /// Viewport background fill in display (sRGB) space (`xyz`; `w` padding for the
-    /// 16-byte cbuffer slot). The composite paints `lerp(bg_top, bg_bottom, v)`
-    /// where the scene coverage is below 1; a flat preset sets both equal, the
-    /// gradient distinct. Built from [`ViewportBackground::gradient_srgb`].
-    bg_top: [f32; 4],
-    bg_bottom: [f32; 4],
-}
-
 /// Expand a [`ViewportBackground`]'s display-space top/bottom colors into the
 /// `bg_top` / `bg_bottom` cbuffer fields (`xyz` color, `w` unused).
 fn background_uniforms(background: ViewportBackground) -> ([f32; 4], [f32; 4]) {
@@ -100,18 +80,22 @@ fn background_uniforms(background: ViewportBackground) -> ([f32; 4], [f32; 4]) {
     )
 }
 
-/// GTAO-pass uniform (cbuffer `b0` in `gtao.hlsl`). `#[repr(C)]` + `Pod` to match
-/// the HLSL `GtaoUniforms` layout (invariant 11): a `float4x4` + two `float4`s, all
-/// 16-byte aligned. Uploaded each frame so the panel sliders stay live.
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct GtaoUniforms {
-    /// View → clip projection (column-major), for reconstruction + sample projection.
-    proj: [[f32; 4]; 4],
-    /// x = radius (view units), y = intensity, z = thickness, w unused.
-    params: [f32; 4],
-    /// x = is_ortho (1.0 / 0.0), y = slice count, z = steps per slice, w unused.
-    config: [f32; 4],
+/// Build the composite pass's [`PostUniforms`] from the live settings.
+fn post_uniforms(
+    background: ViewportBackground,
+    gtao_active: bool,
+    tonemap: TonemapSettings,
+    passthrough: bool,
+) -> PostUniforms {
+    let (bg_top, bg_bottom) = background_uniforms(background);
+    PostUniforms {
+        gtao_enabled: u32::from(gtao_active),
+        tonemap_enabled: u32::from(tonemap.enabled),
+        tonemap_op: tonemap.operator.shader_index(),
+        passthrough: u32::from(passthrough),
+        bg_top,
+        bg_bottom,
+    }
 }
 
 /// Baked parameters for the bounding-box view. Only the inputs the chosen scope
@@ -168,6 +152,40 @@ struct MeshBuffers {
     ranges: Vec<MaterialDrawRange>,
 }
 
+/// The build-on-demand derived views (invariant 3): each buffer exists only while
+/// its toggle is on, paired with the bake key it was last built for. The 3D line
+/// views draw with the shared `line_pipeline` (the pivot marker with the
+/// always-on-top `line_overlay_pipeline`); the UV pair belongs to the 2D UV
+/// viewport.
+#[derive(Default)]
+struct DerivedViews {
+    /// Model wireframe (original-polygon edges); the key is `(color, hidden)`.
+    wireframe_buf: Option<VertexBuffer>,
+    wireframe_baked: Option<([f32; 4], Vec<u32>)>,
+    /// Axis-aligned bounding box; `None` while off or when the scope wraps no
+    /// geometry.
+    bounding_box_buf: Option<VertexBuffer>,
+    bounding_box_baked: Option<BoundingBoxParams>,
+    /// One line per face along its normal; `None` while off.
+    face_normal_buf: Option<VertexBuffer>,
+    face_baked: Option<NormalParams>,
+    /// One line per vertex along its normal; `None` while off.
+    vertex_normal_buf: Option<VertexBuffer>,
+    vertex_baked: Option<NormalParams>,
+    /// 3-axis pivot marker at the model's origin; `None` while off. The bake key
+    /// is the pivot position + half-length (both model-derived).
+    pivot_buf: Option<VertexBuffer>,
+    pivot_baked: Option<PivotParams>,
+    /// The model's UV edges for the active channel; built per
+    /// `(model_revision, channel)`.
+    uv_wireframe_buf: Option<VertexBuffer>,
+    uv_wireframe_baked: Option<(u64, u32)>,
+    /// The UV island fill (Shaded / Islands modes only); `None` in Wire mode.
+    /// Built per `(model_revision, channel, shading_mode)`.
+    uv_fill_buf: Option<VertexBuffer>,
+    uv_fill_baked: Option<(u64, u32, UvShadingMode)>,
+}
+
 /// The Direct3D 11 scene GPU resources, built once (lazily) on the first `render`.
 /// The offscreen targets + depth are recreated on resize; the mesh buffers when the
 /// model changes; the IBL maps when the environment changes.
@@ -195,6 +213,10 @@ pub(crate) struct SceneGpu {
     /// Scene MSAA sample count the MSAA-dependent pipelines + targets are built for
     /// (1 = no multisampling). Rebuilt when the live AA level changes.
     scene_sample_count: u32,
+    /// The last *requested* AA level, before capability clamping — cached so the
+    /// (cheap but per-frame) `CheckMultisampleQualityLevels` re-clamp only runs
+    /// when the request actually changes.
+    requested_sample_count: u32,
     /// Linear clamp sampler — the composite's input sampler (`s0` of the post pass)
     /// and the IBL sampler (`s1` of the scene pass).
     sampler: Sampler,
@@ -232,29 +254,10 @@ pub(crate) struct SceneGpu {
     unique_part_key: Vec<u32>,
     unique_part_count: usize,
     unique_baked: Option<u64>,
-    // Derived 3D debug line views: each buffer exists only while its toggle is on
-    // and is rebuilt live when its baked params drift (invariant 3, mirroring the
-    // wgpu `sync_line_views`). All draw with the shared `line_pipeline`, except the
-    // pivot marker, which uses `line_overlay_pipeline` so it shows through the mesh.
-    /// Model wireframe (original-polygon edges); `None` while off. The bake key is
-    /// `(color, hidden_nodes)`.
-    wireframe_buf: Option<VertexBuffer>,
-    wireframe_baked: Option<([f32; 4], Vec<u32>)>,
-    /// Axis-aligned bounding box; `None` while off or when the scope wraps no
-    /// geometry.
-    bounding_box_buf: Option<VertexBuffer>,
-    bounding_box_baked: Option<BoundingBoxParams>,
-    /// One line per face along its normal; `None` while off.
-    face_normal_buf: Option<VertexBuffer>,
-    face_baked: Option<NormalParams>,
-    /// One line per vertex along its normal; `None` while off.
-    vertex_normal_buf: Option<VertexBuffer>,
-    vertex_baked: Option<NormalParams>,
-    /// 3-axis pivot marker at the model's origin; `None` while off. Drawn always-on-
-    /// top via `line_overlay_pipeline`. The bake key is the pivot position +
-    /// half-length (both model-derived).
-    pivot_buf: Option<VertexBuffer>,
-    pivot_baked: Option<PivotParams>,
+    /// The build-on-demand derived line/fill views (invariant 3), grouped in one
+    /// sub-struct — each buffer exists only while its toggle is on, paired with
+    /// the bake key it was last built for.
+    views: DerivedViews,
     /// Selection-flash fill pipeline (`fs_selection`): flat highlight color × fade,
     /// depth-tested (Reversed-Z `GreaterEqual`) but no depth write, alpha-blended.
     selection_pipeline: Pipeline,
@@ -282,18 +285,13 @@ pub(crate) struct SceneGpu {
     /// Flat-color triangle fill for the UV islands (`fs_main`'s zero-normal overlay
     /// branch — same as the line views but filled). No depth write; alpha-blended.
     uv_fill_pipeline: Pipeline,
-    /// The model's UV edges for the active channel; `None` until built / for an empty
-    /// model. Built on demand per `(model_revision, channel)`.
-    uv_wireframe_buf: Option<VertexBuffer>,
-    uv_wireframe_baked: Option<(u64, u32)>,
-    /// The UV island fill (Shaded / Islands modes only); `None` in Wire mode. Built
-    /// per `(model_revision, channel, shading_mode)`.
-    uv_fill_buf: Option<VertexBuffer>,
-    uv_fill_baked: Option<(u64, u32, UvShadingMode)>,
     /// Hand-rolled D3D11 timestamp-query → Tracy GPU profiler. `None` unless `--tracy`
     /// armed it and a Tracy client is running; built lazily on the first profiled
     /// frame and never touched otherwise (every scene pass records no timestamps).
     gpu_profiler: Option<GpuProfiler>,
+    /// Building the profiler failed once — don't re-attempt its `RING × (SLOTS+1)`
+    /// `CreateQuery` calls every frame on a device that keeps refusing them.
+    gpu_profiler_failed: bool,
 }
 
 impl std::fmt::Debug for SceneGpu {
@@ -309,7 +307,10 @@ impl SceneGpu {
     pub(crate) fn new(gpu: &Gpu, sample_count: u32) -> windows::core::Result<Self> {
         let device = gpu.device();
         let (width, height) = gpu.size();
-        let sample_count = sample_count.max(1);
+        // Capability-gate the initial level too (invariant 4): a persisted AA
+        // setting restored on a weaker adapter degrades instead of failing.
+        let requested_sample_count = sample_count.max(1);
+        let sample_count = gpu.clamp_msaa(requested_sample_count);
 
         let uniforms = DynamicConstantBuffer::new::<SceneUniforms>(device)?;
         let post_uniforms = DynamicConstantBuffer::new::<PostUniforms>(device)?;
@@ -321,30 +322,15 @@ impl SceneGpu {
         // ([`Self::rebuild_scene_pipelines`]).
         let scene = build_scene_pipelines(device, sample_count)?;
 
-        // The composite: a fullscreen triangle (no vertex buffer / input layout),
-        // depth disabled, opaque overwrite of the backbuffer. Always single-sample —
-        // it draws to the backbuffer, not the MSAA MRT.
+        // The composite: a fullscreen triangle, opaque overwrite of the backbuffer.
+        // Always single-sample — it draws to the backbuffer, not the MSAA MRT.
         let composite_pipeline = Pipeline::new(
             device,
-            &PipelineDesc {
-                vs: POST_VS,
-                ps: POST_PS,
-                input: &[],
-                topology: Topology::TriangleList,
-                cull: Cull::None,
-                depth: DepthState {
-                    test: false,
-                    write: false,
-                    compare: DepthCompare::Always,
-                },
-                blend: BlendMode::Opaque,
-                depth_bias: DepthBias::default(),
-                sample_count: 1,
-            },
+            &PipelineDesc::fullscreen(POST_VS, POST_PS, BlendMode::Opaque),
         )?;
 
         // GTAO G-buffer: a mesh-only pass writing the single-sample view normal/Z.
-        // No culling (matches the wgpu G-buffer), writes + tests depth (Reversed-Z
+        // No culling (backfaces still occlude), writes + tests depth (Reversed-Z
         // `GreaterEqual`), no bias, opaque single target.
         let gtao_gbuffer_pipeline = Pipeline::new(
             device,
@@ -365,26 +351,16 @@ impl SceneGpu {
             },
         )?;
 
-        // The two GTAO fullscreen passes (occlusion + bilateral blur): a fullscreen
-        // triangle (no vertex buffer / input layout), depth disabled, opaque write
-        // into the `R8` AO targets. Shared `PipelineDesc` differing only in the PS.
-        let gtao_fullscreen_desc = |ps| PipelineDesc {
-            vs: GTAO_VS,
-            ps,
-            input: &[],
-            topology: Topology::TriangleList,
-            cull: Cull::None,
-            depth: DepthState {
-                test: false,
-                write: false,
-                compare: DepthCompare::Always,
-            },
-            blend: BlendMode::Opaque,
-            depth_bias: DepthBias::default(),
-            sample_count: 1,
-        };
-        let gtao_pipeline = Pipeline::new(device, &gtao_fullscreen_desc(GTAO_PS))?;
-        let gtao_blur_pipeline = Pipeline::new(device, &gtao_fullscreen_desc(GTAO_BLUR_PS))?;
+        // The two GTAO fullscreen passes (occlusion + bilateral blur): opaque
+        // writes into the `R8` AO targets, differing only in the PS.
+        let gtao_pipeline = Pipeline::new(
+            device,
+            &PipelineDesc::fullscreen(GTAO_VS, GTAO_PS, BlendMode::Opaque),
+        )?;
+        let gtao_blur_pipeline = Pipeline::new(
+            device,
+            &PipelineDesc::fullscreen(GTAO_VS, GTAO_BLUR_PS, BlendMode::Opaque),
+        )?;
 
         let sampler = Sampler::linear_clamp(device)?;
         let checker_sampler = Sampler::linear_repeat(device)?;
@@ -419,6 +395,7 @@ impl SceneGpu {
             gtao_pipeline,
             gtao_blur_pipeline,
             scene_sample_count: sample_count,
+            requested_sample_count,
             sampler,
             checker_sampler,
             gtao_sampler,
@@ -443,16 +420,7 @@ impl SceneGpu {
             unique_part_key: Vec::new(),
             unique_part_count: 0,
             unique_baked: None,
-            wireframe_buf: None,
-            wireframe_baked: None,
-            bounding_box_buf: None,
-            bounding_box_baked: None,
-            face_normal_buf: None,
-            face_baked: None,
-            vertex_normal_buf: None,
-            vertex_baked: None,
-            pivot_buf: None,
-            pivot_baked: None,
+            views: DerivedViews::default(),
             selection_pipeline: scene.selection,
             selection_index: None,
             selection_ranges: Vec::new(),
@@ -463,12 +431,23 @@ impl SceneGpu {
             visibility_baked: None,
             uv_grid,
             uv_fill_pipeline: scene.uv_fill,
-            uv_wireframe_buf: None,
-            uv_wireframe_baked: None,
-            uv_fill_buf: None,
-            uv_fill_baked: None,
             gpu_profiler: None,
+            gpu_profiler_failed: false,
         })
+    }
+
+    /// Record a profiled zone's begin timestamp (a no-op without `--tracy`).
+    fn zone_begin(&self, ctx: &ID3D11DeviceContext, zone: Zone) {
+        if let Some(profiler) = self.gpu_profiler.as_ref() {
+            profiler.zone_begin(ctx, zone);
+        }
+    }
+
+    /// Record a profiled zone's end timestamp (a no-op without `--tracy`).
+    fn zone_end(&self, ctx: &ID3D11DeviceContext, zone: Zone) {
+        if let Some(profiler) = self.gpu_profiler.as_ref() {
+            profiler.zone_end(ctx, zone);
+        }
     }
 
     /// Reconcile the offscreen targets + scene pipelines with the backbuffer size +
@@ -480,7 +459,16 @@ impl SceneGpu {
     fn sync_targets(&mut self, gpu: &Gpu, sample_count: u32) -> windows::core::Result<()> {
         let device = gpu.device();
         let (width, height) = gpu.size();
-        let sample_count = sample_count.max(1);
+        // Capability-clamp a *changed* request (invariant 4: an unsupported level
+        // — e.g. restored settings on a weaker adapter — degrades to the nearest
+        // supported one rather than failing target creation every frame).
+        let requested = sample_count.max(1);
+        let sample_count = if requested == self.requested_sample_count {
+            self.scene_sample_count
+        } else {
+            self.requested_sample_count = requested;
+            gpu.clamp_msaa(requested)
+        };
         let size_changed = self.color.size() != (width, height);
         let samples_changed = self.scene_sample_count != sample_count;
 
@@ -526,133 +514,194 @@ impl SceneGpu {
     /// horizon occlusion + bilateral blur, and finally a composite (ambient-only AO
     /// darkening + tone map + sRGB) to the backbuffer. The egui chrome is drawn on
     /// top afterwards by `app`.
-    // Independent per-frame inputs (gpu + model + revisions + materials + camera +
-    // projection + environment + gtao + tonemap + debug + clear); none is redundant.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn render(
         &mut self,
         gpu: &Gpu,
-        model: &ModelData,
-        model_revision: u64,
+        frame: &SceneFrame<'_>,
         material_states: &[MaterialState],
         material_revision: u64,
         camera: OrbitCamera,
-        projection: CameraProjection,
-        environment: EnvironmentSettings,
-        gtao: GtaoSettings,
-        tonemap: TonemapSettings,
-        anti_aliasing: AntiAliasing,
-        selection: SelectionView,
-        debug: SceneDebugOptions,
-        hidden_meshes: &[u32],
-        background: ViewportBackground,
     ) -> windows::core::Result<()> {
         let device = gpu.device();
         let ctx = gpu.context();
 
-        // Reconcile the offscreen targets + scene pipelines with the backbuffer size +
-        // the scene MSAA level.
-        self.sync_targets(gpu, anti_aliasing.effective_sample_count())?;
+        self.sync_frame(gpu, frame, material_states, material_revision)?;
 
-        // Reconcile the Unique-mode part key, then the mesh + the effective material
-        // table (both depend on the active material mode's grouping).
-        self.sync_unique_parts(model, model_revision, debug.material_mode);
+        let uniforms = scene_uniforms(
+            camera,
+            frame.projection,
+            frame.environment,
+            frame.selection,
+            frame.debug,
+        );
+        self.uniforms.update(ctx, &uniforms)?;
+
+        // The buffer-inspection view bypasses lighting + the composite's tone
+        // map/GTAO entirely (the scene shader emits final display pixels), so the
+        // composite blits straight through and the GTAO passes are skipped.
+        let buffer_view_active = frame.debug.active_material == ActiveMaterial::Buffers;
+
+        // GTAO runs only when enabled, a mesh is present, and we're not in the
+        // flat buffer-inspection view; computed up front so it also drives the GPU
+        // profiler's per-frame zone mask.
+        let gtao_active = frame.gtao.enabled && self.mesh.is_some() && !buffer_view_active;
+
+        // Arm the GPU profiler (lazily, only under `--tracy` with a running client),
+        // then open this frame's timing window. Absent on a normal launch, so the
+        // passes below record no timestamps. A failed build is reported once and
+        // never retried (44 `CreateQuery` calls per frame otherwise).
+        if self.gpu_profiler.is_none() && !self.gpu_profiler_failed && gpu_profiler::should_enable()
+        {
+            match GpuProfiler::new(device) {
+                Ok(profiler) => self.gpu_profiler = Some(profiler),
+                Err(error) => {
+                    self.gpu_profiler_failed = true;
+                    gpu_profiler::note(&format!("GPU profiler unavailable: {error}"));
+                }
+            }
+        }
+        if let Some(profiler) = self.gpu_profiler.as_mut() {
+            profiler.begin_frame(ctx, gpu_profiler::frame_mask(gtao_active));
+        }
+
+        self.record_scene_pass(gpu, frame)?;
+
+        if gtao_active {
+            self.record_gtao(gpu, camera, frame.projection, frame.gtao)?;
+        }
+
+        // Composite to the backbuffer (ambient-only AO + tone map + sRGB, over the
+        // viewport background). `t1` is the blurred GTAO when active; otherwise a
+        // harmless placeholder (the shader ignores it when `gtao_enabled` is 0).
+        let post = post_uniforms(
+            frame.background,
+            gtao_active,
+            frame.tonemap,
+            buffer_view_active,
+        );
+        self.zone_begin(ctx, Zone::Composite);
+        self.record_composite(gpu, &post, gtao_active.then_some(&self.gtao_blur))?;
+        self.zone_end(ctx, Zone::Composite);
+
+        // Close the GPU profiler's timing window for this frame (resolves + reads back
+        // a few frames later in `begin_frame`).
+        if let Some(profiler) = self.gpu_profiler.as_mut() {
+            profiler.end_frame(ctx);
+        }
+
+        Ok(())
+    }
+
+    /// Reconcile every GPU resource with this frame's inputs: the offscreen
+    /// targets + scene pipelines (size / AA level), the Unique-mode part key, the
+    /// mesh buffers + effective material table, the derived line views, the
+    /// selection / visibility draw lists, and the IBL maps.
+    fn sync_frame(
+        &mut self,
+        gpu: &Gpu,
+        frame: &SceneFrame<'_>,
+        material_states: &[MaterialState],
+        material_revision: u64,
+    ) -> windows::core::Result<()> {
+        let device = gpu.device();
+        let ctx = gpu.context();
+
+        self.sync_targets(gpu, frame.anti_aliasing.effective_sample_count())?;
+
+        // The Unique-mode part key, then the mesh + the effective material table
+        // (both depend on the active material mode's grouping).
+        self.sync_unique_parts(frame.model, frame.model_revision, frame.debug.material_mode);
         self.sync_mesh(
             device,
-            model,
-            model_revision,
-            debug.uv_channel,
-            debug.material_mode,
+            frame.model,
+            frame.model_revision,
+            frame.debug.uv_channel,
+            frame.debug.material_mode,
         )?;
-        let effective =
-            effective_materials(debug.material_mode, material_states, self.unique_part_count);
+        let effective = effective_materials(
+            frame.debug.material_mode,
+            material_states,
+            self.unique_part_count,
+        );
         self.materials.sync(
             device,
             ctx,
             &effective,
             material_revision,
-            debug.material_mode,
+            frame.debug.material_mode,
         )?;
 
         // Build-on-demand / free-on-off for the derived 3D line overlays (invariant
         // 3): each view's buffer exists only while its toggle is on, rebuilt live
         // when its baked params (color / length / hidden set / scope) drift.
-        self.sync_line_views(device, model, debug, hidden_meshes)?;
+        self.sync_line_views(device, frame.model, frame.debug, frame.hidden_meshes)?;
 
         // Build (or free) the selected-triangle draw list (the solo isolate list +
         // the highlight-flash fill source) and the per-mesh visibility filter, when
         // the selection / hidden set / model / mode drifts (invariant 3).
         self.sync_selection(
             device,
-            model,
-            model_revision,
-            selection,
-            hidden_meshes,
-            debug.material_mode,
+            frame.model,
+            frame.model_revision,
+            frame.selection,
+            frame.hidden_meshes,
+            frame.debug.material_mode,
         )?;
         self.sync_visibility(
             device,
-            model,
-            model_revision,
-            hidden_meshes,
-            debug.material_mode,
+            frame.model,
+            frame.model_revision,
+            frame.hidden_meshes,
+            frame.debug.material_mode,
         )?;
 
         // Reload the IBL maps when the chosen environment changes (a pure upload).
-        if self.ibl.environment != environment.map {
-            self.ibl = IblD3d::from_baked(gpu, environment.map)?;
+        if self.ibl.environment != frame.environment.map {
+            self.ibl = IblD3d::from_baked(gpu, frame.environment.map)?;
         }
+        Ok(())
+    }
 
-        let uniforms = scene_uniforms(camera, projection, environment, selection, debug);
-        self.uniforms.update(ctx, &uniforms)?;
-
-        // The buffer-inspection view bypasses lighting + the composite's tone
-        // map/GTAO entirely (the scene shader emits final display pixels), so the
-        // composite blits straight through and the GTAO passes are skipped.
-        let buffer_view_active = debug.active_material == ActiveMaterial::Buffers;
-
-        // GTAO runs only when enabled, a mesh is present, and we're not in the
-        // flat buffer-inspection view; computed up front so it also drives the GPU
-        // profiler's per-frame zone mask.
-        let gtao_active = gtao.enabled && self.mesh.is_some() && !buffer_view_active;
-
-        // Arm the GPU profiler (lazily, only under `--tracy` with a running client),
-        // then open this frame's timing window. Absent on a normal launch, so the
-        // passes below record no timestamps.
-        if self.gpu_profiler.is_none() && gpu_profiler::should_enable() {
-            self.gpu_profiler = GpuProfiler::new(device).ok();
-        }
-        if let Some(profiler) = self.gpu_profiler.as_mut() {
-            profiler.begin_frame(ctx, gpu_profiler::frame_mask(gtao_active));
-        }
-
-        // --- Offscreen scene pass (2 MRT + depth). ---
-        // Clear the scene color + ambient to zero radiance *and* zero alpha: the
-        // alpha is the composite's coverage mask, so the cleared background reads as
-        // "no geometry" and the post pass paints the chosen viewport background
-        // there (in display space, after tone mapping).
-        gpu.begin_scene_pass(&[&self.color, &self.ambient], &self.depth, [0.0; 4]);
-        if let Some(profiler) = self.gpu_profiler.as_ref() {
-            profiler.zone_begin(ctx, Zone::Scene);
-        }
-        // Shared bindings: `b0` (VS + PS), the checker (`t0`/`s0`), the IBL maps
-        // (`t1..t4`) + their sampler (`s1`), and the material cbuffer + sampler
-        // (`b1`/`s2`). The mesh loop rebinds `b1` + `t5..t11` per range.
+    /// Shared per-pass bindings for the scene shader: `b0` (VS + PS), the checker
+    /// (`t0`/`s0`), the IBL maps (`t1..t4`) + their sampler (`s1`), and the
+    /// material cbuffer + sampler (`b1`/`s2`). The mesh loop rebinds `b1` +
+    /// `t5..t11` per range.
+    fn bind_scene_shared(
+        &self,
+        ctx: &ID3D11DeviceContext,
+        checker: &Texture,
+    ) -> windows::core::Result<()> {
         self.uniforms.bind_vs(ctx, 0);
         self.uniforms.bind_ps(ctx, 0);
-        let checker = match debug.uv_checker_texture {
-            CheckerTexture::Greyscale => &self.checker_greyscale,
-            CheckerTexture::Color => &self.checker_color,
-        };
         checker.bind_ps(ctx, 0);
         self.checker_sampler.bind_ps(ctx, 0);
         self.ibl.bind_ps(ctx);
         self.sampler.bind_ps(ctx, 1);
         self.materials.bind_shared(ctx);
-        self.materials.bind_fallback(ctx)?;
+        self.materials.bind_fallback(ctx)
+    }
+
+    /// The offscreen 2-MRT scene pass: skybox, the mesh draw list, the grid, the
+    /// derived line overlays, the pivot marker and the selection flash.
+    fn record_scene_pass(&self, gpu: &Gpu, frame: &SceneFrame<'_>) -> windows::core::Result<()> {
+        let ctx = gpu.context();
+        let debug = frame.debug;
+        let selection = frame.selection;
+
+        // Clear the scene color + ambient to zero radiance *and* zero alpha: the
+        // alpha is the composite's coverage mask, so the cleared background reads as
+        // "no geometry" and the post pass paints the chosen viewport background
+        // there (in display space, after tone mapping).
+        gpu.begin_scene_pass(&[&self.color, &self.ambient], &self.depth, [0.0; 4]);
+        self.zone_begin(ctx, Zone::Scene);
+        let checker = match debug.uv_checker_texture {
+            CheckerTexture::Greyscale => &self.checker_greyscale,
+            CheckerTexture::Color => &self.checker_color,
+        };
+        self.bind_scene_shared(ctx, checker)?;
 
         // Skybox background first, behind all geometry, when shown.
-        if environment.show_background {
+        if frame.environment.show_background {
             self.skybox_pipeline.bind(ctx);
             gpu.draw(3);
         }
@@ -708,10 +757,10 @@ impl SceneGpu {
         // mesh pushed its surface back so coplanar edges win) + the scene uniforms
         // (`b0`, still bound). Each buffer is `None` while its view is off.
         let line_views = [
-            &self.wireframe_buf,
-            &self.bounding_box_buf,
-            &self.face_normal_buf,
-            &self.vertex_normal_buf,
+            &self.views.wireframe_buf,
+            &self.views.bounding_box_buf,
+            &self.views.face_normal_buf,
+            &self.views.vertex_normal_buf,
         ];
         if line_views.iter().any(|view| view.is_some()) {
             self.line_pipeline.bind(ctx);
@@ -724,7 +773,7 @@ impl SceneGpu {
         // Pivot marker: drawn last among the line overlays with the always-on-top
         // line pipeline (depth compare `Always`), so the 3-axis cross reads through
         // the mesh instead of being occluded inside it.
-        if let Some(pivot) = &self.pivot_buf {
+        if let Some(pivot) = &self.views.pivot_buf {
             self.line_overlay_pipeline.bind(ctx);
             pivot.bind(ctx);
             gpu.draw(pivot.count());
@@ -743,136 +792,112 @@ impl SceneGpu {
             index.bind(ctx);
             gpu.draw_indexed_range(index.count(), 0);
         }
-        if let Some(profiler) = self.gpu_profiler.as_ref() {
-            profiler.zone_end(ctx, Zone::Scene);
+        self.zone_end(ctx, Zone::Scene);
+        Ok(())
+    }
+
+    /// The GTAO passes: a single-sample mesh-only G-buffer (view normal + Z), then
+    /// the horizon occlusion pass (→ raw `R8`) and the bilateral blur (→ blurred
+    /// `R8`) the composite darkens the ambient radiance by. The G-buffer has its
+    /// own depth (nearest-surface) and shares `b0` (the scene uniforms carry
+    /// `view`); the fullscreen passes read `b0` as the GTAO uniform + `s0` as the
+    /// point sampler.
+    fn record_gtao(
+        &self,
+        gpu: &Gpu,
+        camera: OrbitCamera,
+        projection: CameraProjection,
+        gtao: GtaoSettings,
+    ) -> windows::core::Result<()> {
+        let ctx = gpu.context();
+        let gtao_uniforms = build_gtao_uniforms(camera, projection, gtao);
+        self.gtao_uniforms.update(ctx, &gtao_uniforms)?;
+
+        // G-buffer: redraw the whole mesh (material irrelevant) into the
+        // single-sample normal/Z target, clearing the target + its depth.
+        self.zone_begin(ctx, Zone::GtaoGbuffer);
+        gpu.begin_scene_pass(&[&self.gtao_gbuffer], &self.gtao_depth, [0.0; 4]);
+        self.uniforms.bind_vs(ctx, 0);
+        self.uniforms.bind_ps(ctx, 0);
+        self.gtao_gbuffer_pipeline.bind(ctx);
+        if let Some(mesh) = &self.mesh {
+            mesh.vertices.bind(ctx);
+            // Match the shaded mesh's visibility so a hidden mesh casts no AO; solo
+            // is deliberately left out, so only the per-mesh hide filters the AO.
+            // `None` while active means every mesh is hidden → nothing to occlude.
+            let index = if self.visible_active {
+                self.visible_index.as_ref()
+            } else {
+                Some(&mesh.indices)
+            };
+            if let Some(index) = index {
+                index.bind(ctx);
+                gpu.draw_indexed_range(index.count(), 0);
+            }
         }
+        self.zone_end(ctx, Zone::GtaoGbuffer);
 
-        // --- GTAO (ambient occlusion), only when enabled and a mesh is present. ---
-        // A single-sample mesh-only G-buffer (view normal + Z), then the horizon
-        // occlusion pass (→ raw `R8`) and the bilateral blur (→ blurred `R8`) the
-        // composite darkens the ambient radiance by. The G-buffer has its own depth
-        // (nearest-surface) and shares `b0` (the scene uniforms carry `view`); the
-        // fullscreen passes read `b0` as the GTAO uniform + `s0` as the point sampler.
-        if gtao_active {
-            let gtao_uniforms = build_gtao_uniforms(camera, projection, gtao);
-            self.gtao_uniforms.update(ctx, &gtao_uniforms)?;
+        // Occlusion: a fullscreen pass reading the G-buffer (`t0`) → raw AO.
+        self.zone_begin(ctx, Zone::Gtao);
+        gpu.begin_color_pass(&self.gtao_raw);
+        self.gtao_pipeline.bind(ctx);
+        self.gtao_uniforms.bind_ps(ctx, 0);
+        self.gtao_sampler.bind_ps(ctx, 0);
+        self.gtao_gbuffer.bind_ps_srv(ctx, 0);
+        gpu.draw(3);
+        self.zone_end(ctx, Zone::Gtao);
 
-            // G-buffer: redraw the whole mesh (material irrelevant) into the
-            // single-sample normal/Z target, clearing the target + its depth.
-            if let Some(profiler) = self.gpu_profiler.as_ref() {
-                profiler.zone_begin(ctx, Zone::GtaoGbuffer);
-            }
-            gpu.begin_scene_pass(&[&self.gtao_gbuffer], &self.gtao_depth, [0.0; 4]);
-            self.uniforms.bind_vs(ctx, 0);
-            self.uniforms.bind_ps(ctx, 0);
-            self.gtao_gbuffer_pipeline.bind(ctx);
-            if let Some(mesh) = &self.mesh {
-                mesh.vertices.bind(ctx);
-                // Match the shaded mesh's visibility so a hidden mesh casts no AO;
-                // solo is deliberately left out (as in the wgpu G-buffer), so only
-                // the per-mesh hide filters the AO. `None` while active means every
-                // mesh is hidden → nothing to occlude.
-                let index = if self.visible_active {
-                    self.visible_index.as_ref()
-                } else {
-                    Some(&mesh.indices)
-                };
-                if let Some(index) = index {
-                    index.bind(ctx);
-                    gpu.draw_indexed_range(index.count(), 0);
-                }
-            }
-            if let Some(profiler) = self.gpu_profiler.as_ref() {
-                profiler.zone_end(ctx, Zone::GtaoGbuffer);
-            }
+        // Bilateral blur: reads the G-buffer (`t0`) + raw AO (`t1`) → blurred AO.
+        // `begin_color_pass` rebinds the RTV to `gtao_blur`, releasing `gtao_raw`
+        // as a render target before it's bound below as an SRV.
+        self.zone_begin(ctx, Zone::GtaoBlur);
+        gpu.begin_color_pass(&self.gtao_blur);
+        self.gtao_blur_pipeline.bind(ctx);
+        self.gtao_gbuffer.bind_ps_srv(ctx, 0);
+        self.gtao_raw.bind_ps_srv(ctx, 1);
+        gpu.draw(3);
+        self.zone_end(ctx, Zone::GtaoBlur);
+        // Drop the G-buffer / raw SRVs before the composite binds the scene
+        // targets (and before next frame rebinds them as render targets).
+        gpu.unbind_ps_srvs(2);
+        Ok(())
+    }
 
-            // Occlusion: a fullscreen pass reading the G-buffer (`t0`) → raw AO.
-            if let Some(profiler) = self.gpu_profiler.as_ref() {
-                profiler.zone_begin(ctx, Zone::Gtao);
-            }
-            gpu.begin_color_pass(&self.gtao_raw);
-            self.gtao_pipeline.bind(ctx);
-            self.gtao_uniforms.bind_ps(ctx, 0);
-            self.gtao_sampler.bind_ps(ctx, 0);
-            self.gtao_gbuffer.bind_ps_srv(ctx, 0);
-            gpu.draw(3);
-            if let Some(profiler) = self.gpu_profiler.as_ref() {
-                profiler.zone_end(ctx, Zone::Gtao);
-            }
-
-            // Bilateral blur: reads the G-buffer (`t0`) + raw AO (`t1`) → blurred AO.
-            // `begin_color_pass` rebinds the RTV to `gtao_blur`, releasing `gtao_raw`
-            // as a render target before it's bound below as an SRV.
-            if let Some(profiler) = self.gpu_profiler.as_ref() {
-                profiler.zone_begin(ctx, Zone::GtaoBlur);
-            }
-            gpu.begin_color_pass(&self.gtao_blur);
-            self.gtao_blur_pipeline.bind(ctx);
-            self.gtao_gbuffer.bind_ps_srv(ctx, 0);
-            self.gtao_raw.bind_ps_srv(ctx, 1);
-            gpu.draw(3);
-            if let Some(profiler) = self.gpu_profiler.as_ref() {
-                profiler.zone_end(ctx, Zone::GtaoBlur);
-            }
-            // Drop the G-buffer / raw SRVs before the composite binds the scene
-            // targets (and before next frame rebinds them as render targets).
-            gpu.unbind_ps_srvs(2);
-        }
-
-        // --- Composite to the backbuffer (ambient-only AO + tone map + sRGB,
-        // composited over the viewport background). ---
-        let (bg_top, bg_bottom) = background_uniforms(background);
-        let post = PostUniforms {
-            gtao_enabled: u32::from(gtao_active),
-            tonemap_enabled: u32::from(tonemap.enabled),
-            tonemap_op: tonemap.operator.shader_index(),
-            passthrough: u32::from(buffer_view_active),
-            bg_top,
-            bg_bottom,
-        };
-        self.post_uniforms.update(ctx, &post)?;
-        if let Some(profiler) = self.gpu_profiler.as_ref() {
-            profiler.zone_begin(ctx, Zone::Composite);
-        }
+    /// Composite the offscreen HDR scene into the backbuffer: resolve the MSAA MRT
+    /// into the single-sample textures the post pass samples (a no-op at 1×), then
+    /// the fullscreen post pass (AO-darkened ambient + tone map + sRGB) over the
+    /// viewport background. `ao` is the blurred GTAO target, or `None` to bind the
+    /// ambient as a harmless placeholder (the shader ignores `t1` when
+    /// `gtao_enabled` is 0). `self.sampler` (linear clamp) is bound at `s0`.
+    fn record_composite(
+        &self,
+        gpu: &Gpu,
+        post: &PostUniforms,
+        ao: Option<&ColorTarget>,
+    ) -> windows::core::Result<()> {
+        let ctx = gpu.context();
+        self.post_uniforms.update(ctx, post)?;
         gpu.begin_backbuffer_blit();
-        // Resolve the MSAA scene MRT into the single-sample textures the composite
-        // samples (a no-op at 1×). The scene RTVs are unbound now (the backbuffer is
-        // the only bound target), so the multisample resolve source is free.
+        // The scene RTVs are unbound now (the backbuffer is the only bound
+        // target), so the multisample resolve source is free.
         self.color.resolve(ctx);
         self.ambient.resolve(ctx);
         self.composite_pipeline.bind(ctx);
         self.post_uniforms.bind_ps(ctx, 0);
         self.color.bind_ps_srv(ctx, 0);
-        // t1 = the blurred GTAO when active; otherwise a harmless placeholder (the
-        // shader ignores it when `gtao_enabled` is 0). t2 is the ambient radiance.
-        // `self.sampler` (linear clamp) replaces the GTAO point sampler at `s0`.
-        if gtao_active {
-            self.gtao_blur.bind_ps_srv(ctx, 1);
-        } else {
-            self.ambient.bind_ps_srv(ctx, 1);
-        }
+        ao.unwrap_or(&self.ambient).bind_ps_srv(ctx, 1);
         self.ambient.bind_ps_srv(ctx, 2);
         self.sampler.bind_ps(ctx, 0);
         gpu.draw(3);
-        if let Some(profiler) = self.gpu_profiler.as_ref() {
-            profiler.zone_end(ctx, Zone::Composite);
-        }
         // Release the offscreen SRVs so next frame can bind them as render targets.
         gpu.unbind_ps_srvs(3);
-
-        // Close the GPU profiler's timing window for this frame (resolves + reads back
-        // a few frames later in `begin_frame`).
-        if let Some(profiler) = self.gpu_profiler.as_mut() {
-            profiler.end_frame(ctx);
-        }
-
         Ok(())
     }
 
     /// Render the 2D UV viewport (instead of the 3D scene): the 0..1 grid, the
     /// optional island fill (Shaded / Islands modes), then the model's UV edges on
     /// top — all framed by the 2D `uv_camera` and composited like the 3D scene
-    /// (tone-mapped, no GTAO). Faithful port of the wgpu `record_scene` UV path.
+    /// (tone-mapped, no GTAO).
     // Independent per-frame inputs (gpu + model + revision + camera + channel +
     // shading mode + clear); none is redundant.
     #[allow(clippy::too_many_arguments)]
@@ -901,17 +926,10 @@ impl SceneGpu {
         // Clear to zero (radiance + coverage); the background is painted in the
         // composite, matching the 3D path.
         gpu.begin_scene_pass(&[&self.color, &self.ambient], &self.depth, [0.0; 4]);
-        self.uniforms.bind_vs(ctx, 0);
-        self.uniforms.bind_ps(ctx, 0);
         // `fs_main` (the UV fill) samples the checker + every material slot at the top
         // (uniform control flow) before its zero-normal early-out, so all of group
         // 1/2/3 must be bound even though the UV draws never use the sampled values.
-        self.checker_greyscale.bind_ps(ctx, 0);
-        self.checker_sampler.bind_ps(ctx, 0);
-        self.ibl.bind_ps(ctx);
-        self.sampler.bind_ps(ctx, 1);
-        self.materials.bind_shared(ctx);
-        self.materials.bind_fallback(ctx)?;
+        self.bind_scene_shared(ctx, &self.checker_greyscale)?;
 
         // Reference grid first.
         self.line_pipeline.bind(ctx);
@@ -919,14 +937,14 @@ impl SceneGpu {
         gpu.draw(self.uv_grid.count());
 
         // Island fill (Shaded / Islands), under the wireframe.
-        if let Some(fill) = &self.uv_fill_buf {
+        if let Some(fill) = &self.views.uv_fill_buf {
             self.uv_fill_pipeline.bind(ctx);
             fill.bind(ctx);
             gpu.draw(fill.count());
         }
 
         // The model's UV edges on top.
-        if let Some(wireframe) = &self.uv_wireframe_buf {
+        if let Some(wireframe) = &self.views.uv_wireframe_buf {
             self.line_pipeline.bind(ctx);
             wireframe.bind(ctx);
             gpu.draw(wireframe.count());
@@ -934,30 +952,9 @@ impl SceneGpu {
 
         // Composite to the backbuffer: tone-mapped (the default operator, so shaded
         // fills read like the 3D scene), no GTAO (the flat UV viewport has no depth
-        // to occlude), over the chosen viewport background. `t1` binds the ambient as
-        // a harmless placeholder (the shader ignores it when GTAO is off).
-        let (bg_top, bg_bottom) = background_uniforms(background);
-        let post = PostUniforms {
-            gtao_enabled: 0,
-            tonemap_enabled: 1,
-            tonemap_op: 0,
-            passthrough: 0,
-            bg_top,
-            bg_bottom,
-        };
-        self.post_uniforms.update(ctx, &post)?;
-        gpu.begin_backbuffer_blit();
-        // Resolve the MSAA scene MRT (no-op at 1×) before the composite samples it.
-        self.color.resolve(ctx);
-        self.ambient.resolve(ctx);
-        self.composite_pipeline.bind(ctx);
-        self.post_uniforms.bind_ps(ctx, 0);
-        self.color.bind_ps_srv(ctx, 0);
-        self.ambient.bind_ps_srv(ctx, 1);
-        self.ambient.bind_ps_srv(ctx, 2);
-        self.sampler.bind_ps(ctx, 0);
-        gpu.draw(3);
-        gpu.unbind_ps_srvs(3);
+        // to occlude), over the chosen viewport background.
+        let post = post_uniforms(background, false, TonemapSettings::default(), false);
+        self.record_composite(gpu, &post, None)?;
 
         Ok(())
     }
@@ -965,7 +962,7 @@ impl SceneGpu {
     /// Build-on-demand for the UV viewport's derived buffers (invariant 3): the
     /// wireframe is rebuilt only when the model / channel changes; the island fill
     /// when the model / channel / shading mode changes, and freed in Wire mode — so
-    /// panning/zooming rebuilds nothing. Port of the wgpu `sync_uv_view`.
+    /// panning/zooming rebuilds nothing.
     fn sync_uv_view(
         &mut self,
         device: &ID3D11Device,
@@ -975,10 +972,10 @@ impl SceneGpu {
         shading_mode: UvShadingMode,
     ) -> windows::core::Result<()> {
         let want_wireframe = Some((model_revision, channel));
-        if self.uv_wireframe_baked != want_wireframe {
-            self.uv_wireframe_buf =
+        if self.views.uv_wireframe_baked != want_wireframe {
+            self.views.uv_wireframe_buf =
                 optional_vertex_buffer(device, &uv_wireframe_lines(model, channel))?;
-            self.uv_wireframe_baked = want_wireframe;
+            self.views.uv_wireframe_baked = want_wireframe;
         }
 
         let want_fill = match shading_mode {
@@ -987,22 +984,21 @@ impl SceneGpu {
                 Some((model_revision, channel, shading_mode))
             }
         };
-        if self.uv_fill_baked != want_fill {
+        if self.views.uv_fill_baked != want_fill {
             let fill = match shading_mode {
                 UvShadingMode::Wire => Vec::new(),
                 UvShadingMode::Shaded => uv_fill_triangles(model, channel, false),
                 UvShadingMode::Islands => uv_fill_triangles(model, channel, true),
             };
-            self.uv_fill_buf = optional_vertex_buffer(device, &fill)?;
-            self.uv_fill_baked = want_fill;
+            self.views.uv_fill_buf = optional_vertex_buffer(device, &fill)?;
+            self.views.uv_fill_baked = want_fill;
         }
 
         Ok(())
     }
 
     /// Reconcile the Unique-mode per-triangle mesh-part key: baked by `model_revision`
-    /// while Unique is active, freed back to empty otherwise (invariant 3). Mirrors
-    /// the wgpu `sync_unique_parts`.
+    /// while Unique is active, freed back to empty otherwise (invariant 3).
     fn sync_unique_parts(&mut self, model: &ModelData, model_revision: u64, mode: MaterialMode) {
         let want = matches!(mode, MaterialMode::Unique).then_some(model_revision);
         if self.unique_baked == want {
@@ -1061,10 +1057,11 @@ impl SceneGpu {
         Ok(())
     }
 
-    /// Build-on-demand / free-on-off for the three derived line views (invariant 3).
-    /// A view's buffer is (re)built when its toggle is on and its baked params drift
-    /// from the current options, and dropped to `None` when off. Unchanged views are
-    /// left untouched. Faithful port of the wgpu `SceneResources::sync_line_views`.
+    /// Build-on-demand / free-on-off for the derived line views (invariant 3).
+    /// A view's buffer is (re)built when its toggle is on and its baked params
+    /// drift from the current options, and dropped to `None` when off. Unchanged
+    /// views are left untouched, and the drift checks compare against the
+    /// *borrowed* frame inputs, so a steady-state frame allocates nothing.
     fn sync_line_views(
         &mut self,
         device: &ID3D11Device,
@@ -1077,100 +1074,97 @@ impl SceneGpu {
         // overlay and the wireframe-only shading mode.
         let wireframe_on =
             debug.wireframe_overlay || matches!(debug.shading_mode, ShadingMode::Wireframe);
-        let want_wireframe = wireframe_on.then(|| (debug.wireframe_color, hidden_meshes.to_vec()));
-        if self.wireframe_baked != want_wireframe {
-            self.wireframe_buf = match &want_wireframe {
-                Some((color, hidden)) => {
-                    optional_vertex_buffer(device, &wireframe_lines(model, *color, hidden))?
-                }
-                None => None,
+        let wireframe_unchanged = match (&self.views.wireframe_baked, wireframe_on) {
+            (None, false) => true,
+            (Some((color, hidden)), true) => {
+                *color == debug.wireframe_color && hidden == hidden_meshes
+            }
+            _ => false,
+        };
+        if !wireframe_unchanged {
+            self.views.wireframe_buf = if wireframe_on {
+                optional_vertex_buffer(
+                    device,
+                    &wireframe_lines(model, debug.wireframe_color, hidden_meshes),
+                )?
+            } else {
+                None
             };
-            self.wireframe_baked = want_wireframe;
+            self.views.wireframe_baked =
+                wireframe_on.then(|| (debug.wireframe_color, hidden_meshes.to_vec()));
         }
 
         // Bounding box: only the inputs the chosen scope depends on go in the bake
         // key, so an unrelated change can't rebuild the box.
-        let want_bounding_box = debug.show_bounding_box.then(|| {
-            let scope = debug.bounding_box_scope;
-            let hidden = match scope {
-                BoundingBoxScope::VisibleOnly => hidden_meshes.to_vec(),
-                _ => Vec::new(),
+        let scope = debug.bounding_box_scope;
+        let scope_hidden: &[u32] = match scope {
+            BoundingBoxScope::VisibleOnly => hidden_meshes,
+            _ => &[],
+        };
+        let scope_selection = match scope {
+            BoundingBoxScope::OnlySelection => debug.bounding_box_selection,
+            _ => Selection::None,
+        };
+        let bounding_box_unchanged = match (&self.views.bounding_box_baked, debug.show_bounding_box)
+        {
+            (None, false) => true,
+            (Some(params), true) => {
+                params.color == debug.bounding_box_color
+                    && params.scope == scope
+                    && params.hidden == scope_hidden
+                    && params.selection == scope_selection
+            }
+            _ => false,
+        };
+        if !bounding_box_unchanged {
+            self.views.bounding_box_buf = if debug.show_bounding_box {
+                let bounds = match scope {
+                    BoundingBoxScope::AllMeshes => model.bounds,
+                    BoundingBoxScope::OnlySelection => selection_bounds(model, scope_selection),
+                    BoundingBoxScope::VisibleOnly => model.visible_bounds(scope_hidden),
+                };
+                match bounds {
+                    Some(bounds) => optional_vertex_buffer(
+                        device,
+                        &bounding_box_lines(bounds, debug.bounding_box_color),
+                    )?,
+                    None => None,
+                }
+            } else {
+                None
             };
-            let selection = match scope {
-                BoundingBoxScope::OnlySelection => debug.bounding_box_selection,
-                _ => Selection::None,
-            };
-            BoundingBoxParams {
+            self.views.bounding_box_baked = debug.show_bounding_box.then(|| BoundingBoxParams {
                 color: debug.bounding_box_color,
                 scope,
-                hidden,
-                selection,
-            }
-        });
-        if self.bounding_box_baked != want_bounding_box {
-            self.bounding_box_buf = match &want_bounding_box {
-                Some(BoundingBoxParams {
-                    color,
-                    scope,
-                    hidden,
-                    selection,
-                }) => {
-                    let bounds = match scope {
-                        BoundingBoxScope::AllMeshes => model.bounds,
-                        BoundingBoxScope::OnlySelection => selection_bounds(model, *selection),
-                        BoundingBoxScope::VisibleOnly => model.visible_bounds(hidden),
-                    };
-                    match bounds {
-                        Some(bounds) => {
-                            optional_vertex_buffer(device, &bounding_box_lines(bounds, *color))?
-                        }
-                        None => None,
-                    }
-                }
-                None => None,
-            };
-            self.bounding_box_baked = want_bounding_box;
+                hidden: scope_hidden.to_vec(),
+                selection: scope_selection,
+            });
         }
 
-        let want_face = debug.face_normals.then(|| NormalParams {
-            length: debug.face_normal_length,
-            color: debug.face_normal_color,
-            hidden: hidden_meshes.to_vec(),
-        });
-        if self.face_baked != want_face {
-            self.face_normal_buf = match &want_face {
-                Some(NormalParams {
-                    length,
-                    color,
-                    hidden,
-                }) => optional_vertex_buffer(
-                    device,
-                    &face_normal_lines(model, *length, *color, hidden),
-                )?,
-                None => None,
-            };
-            self.face_baked = want_face;
-        }
-
-        let want_vertex = debug.vertex_normals.then(|| NormalParams {
-            length: debug.vertex_normal_length,
-            color: debug.vertex_normal_color,
-            hidden: hidden_meshes.to_vec(),
-        });
-        if self.vertex_baked != want_vertex {
-            self.vertex_normal_buf = match &want_vertex {
-                Some(NormalParams {
-                    length,
-                    color,
-                    hidden,
-                }) => optional_vertex_buffer(
-                    device,
-                    &vertex_normal_lines(model, *length, *color, hidden),
-                )?,
-                None => None,
-            };
-            self.vertex_baked = want_vertex;
-        }
+        // The two normal-line views share one shape (length + color + hidden set),
+        // differing only in the toggle and line builder.
+        sync_normal_view(
+            device,
+            model,
+            &mut self.views.face_normal_buf,
+            &mut self.views.face_baked,
+            debug.face_normals,
+            debug.face_normal_length,
+            debug.face_normal_color,
+            hidden_meshes,
+            face_normal_lines,
+        )?;
+        sync_normal_view(
+            device,
+            model,
+            &mut self.views.vertex_normal_buf,
+            &mut self.views.vertex_baked,
+            debug.vertex_normals,
+            debug.vertex_normal_length,
+            debug.vertex_normal_color,
+            hidden_meshes,
+            vertex_normal_lines,
+        )?;
 
         // Pivot marker: a 3-axis cross at the model's origin. Its bytes depend only
         // on the model (pivot position + size), so the bake key rebuilds it on a
@@ -1179,14 +1173,14 @@ impl SceneGpu {
             pivot: model_pivot(model),
             half: pivot_half_extent(model),
         });
-        if self.pivot_baked != want_pivot {
-            self.pivot_buf = match &want_pivot {
+        if self.views.pivot_baked != want_pivot {
+            self.views.pivot_buf = match &want_pivot {
                 Some(PivotParams { pivot, half }) => {
                     optional_vertex_buffer(device, &pivot_lines(*pivot, *half))?
                 }
                 None => None,
             };
-            self.pivot_baked = want_pivot;
+            self.views.pivot_baked = want_pivot;
         }
 
         Ok(())
@@ -1194,7 +1188,7 @@ impl SceneGpu {
 
     /// The per-triangle grouping key for `mode`: the cached mesh-part key in Unique
     /// mode (when the model carries per-triangle node info), else `None` to group by
-    /// material slot. Mirrors the wgpu `grouping_key`; call after `sync_unique_parts`.
+    /// material slot. Call after `sync_unique_parts`.
     fn grouping_key(&self, mode: MaterialMode) -> Option<&[u32]> {
         match mode {
             MaterialMode::Unique if !self.unique_part_key.is_empty() => Some(&self.unique_part_key),
@@ -1205,8 +1199,7 @@ impl SceneGpu {
     /// Build (or free) the selected-triangle draw list (the solo isolate list + the
     /// flash fill source) when the selection / model / hidden set / mode drifts
     /// (invariant 3). The highlight color + flash fade ride in the uniform, so they
-    /// never trigger a rebuild — only a change of *what* is selected does. Faithful
-    /// port of the wgpu `sync_selection`.
+    /// never trigger a rebuild — only a change of *what* is selected does.
     fn sync_selection(
         &mut self,
         device: &ID3D11Device,
@@ -1216,26 +1209,29 @@ impl SceneGpu {
         hidden: &[u32],
         mode: MaterialMode,
     ) -> windows::core::Result<()> {
-        let want = view.selection.is_active().then(|| SelectionBaked {
-            model_revision,
-            selection: view.selection,
-            hidden: hidden.to_vec(),
-            mode,
-        });
-        if self.selection_baked == want {
+        // Drift check against the borrowed inputs — no per-frame key allocation.
+        let active = view.selection.is_active();
+        let unchanged = match (&self.selection_baked, active) {
+            (None, false) => true,
+            (Some(baked), true) => {
+                baked.model_revision == model_revision
+                    && baked.selection == view.selection
+                    && baked.hidden == hidden
+                    && baked.mode == mode
+            }
+            _ => false,
+        };
+        if unchanged {
             return Ok(());
         }
         // Resolve the visible selected triangles, grouped by the same key as the main
         // mesh so each range binds the right effective material. `None` (no usable
         // geometry) or an empty list both clear to a no-draw selection.
-        let geometry = match &want {
-            Some(SelectionBaked {
-                selection, hidden, ..
-            }) => {
-                let key = self.grouping_key(mode);
-                selection_geometry(model, *selection, hidden, key)
-            }
-            None => None,
+        let geometry = if active {
+            let key = self.grouping_key(mode);
+            selection_geometry(model, view.selection, hidden, key)
+        } else {
+            None
         };
         match geometry {
             Some((indices, ranges)) if !indices.is_empty() => {
@@ -1247,7 +1243,12 @@ impl SceneGpu {
                 self.selection_ranges = Vec::new();
             }
         }
-        self.selection_baked = want;
+        self.selection_baked = active.then(|| SelectionBaked {
+            model_revision,
+            selection: view.selection,
+            hidden: hidden.to_vec(),
+            mode,
+        });
         Ok(())
     }
 
@@ -1255,7 +1256,7 @@ impl SceneGpu {
     /// mode drifts (invariant 3). `hidden` empty means nothing is hidden (full mesh,
     /// no filter). When every mesh is hidden the filter is active but the list empty
     /// (draw nothing); when the model carries no per-triangle node info the filter is
-    /// off (full mesh). Faithful port of the wgpu `sync_visibility`.
+    /// off (full mesh).
     fn sync_visibility(
         &mut self,
         device: &ID3D11Device,
@@ -1264,20 +1265,25 @@ impl SceneGpu {
         hidden: &[u32],
         mode: MaterialMode,
     ) -> windows::core::Result<()> {
-        let want = (!hidden.is_empty()).then(|| VisibilityBaked {
-            model_revision,
-            hidden: hidden.to_vec(),
-            mode,
-        });
-        if self.visibility_baked == want {
+        // Drift check against the borrowed inputs — no per-frame key allocation.
+        let active = !hidden.is_empty();
+        let unchanged = match (&self.visibility_baked, active) {
+            (None, false) => true,
+            (Some(baked), true) => {
+                baked.model_revision == model_revision
+                    && baked.hidden == hidden
+                    && baked.mode == mode
+            }
+            _ => false,
+        };
+        if unchanged {
             return Ok(());
         }
-        let geometry = match &want {
-            Some(VisibilityBaked { hidden, .. }) => {
-                let key = self.grouping_key(mode);
-                visible_geometry(model, hidden, key)
-            }
-            None => None,
+        let geometry = if active {
+            let key = self.grouping_key(mode);
+            visible_geometry(model, hidden, key)
+        } else {
+            None
         };
         match geometry {
             // Some unhidden geometry: draw the filtered list.
@@ -1300,7 +1306,11 @@ impl SceneGpu {
                 self.visible_active = false;
             }
         }
-        self.visibility_baked = want;
+        self.visibility_baked = active.then(|| VisibilityBaked {
+            model_revision,
+            hidden: hidden.to_vec(),
+            mode,
+        });
         Ok(())
     }
 }
@@ -1480,9 +1490,48 @@ fn optional_vertex_buffer(
     }
 }
 
+/// Reconcile one normal-line view (face or vertex normals — the same shape,
+/// differing only in the toggle and `lines` builder): rebuild when on + drifted
+/// (compared against the borrowed inputs, so a steady-state frame allocates
+/// nothing), free when off.
+#[allow(clippy::too_many_arguments)] // Disjoint &mut field pairs + the view's plain inputs.
+fn sync_normal_view(
+    device: &ID3D11Device,
+    model: &ModelData,
+    buf: &mut Option<VertexBuffer>,
+    baked: &mut Option<NormalParams>,
+    on: bool,
+    length: f32,
+    color: [f32; 4],
+    hidden: &[u32],
+    lines: fn(&ModelData, f32, [f32; 4], &[u32]) -> Vec<crate::scene::SceneVertex>,
+) -> windows::core::Result<()> {
+    let unchanged = match (&baked, on) {
+        (None, false) => true,
+        (Some(params), true) => {
+            params.length == length && params.color == color && params.hidden == hidden
+        }
+        _ => false,
+    };
+    if unchanged {
+        return Ok(());
+    }
+    *buf = if on {
+        optional_vertex_buffer(device, &lines(model, length, color, hidden))?
+    } else {
+        None
+    };
+    *baked = on.then(|| NormalParams {
+        length,
+        color,
+        hidden: hidden.to_vec(),
+    });
+    Ok(())
+}
+
 /// Decode a baked UV-checker PNG into an sRGB GPU texture. A decode failure is a
 /// packaging bug — fall back to a 1×1 white texel rather than failing the build of
-/// the scene resources (mirrors the wgpu `create_checker_bind_group`).
+/// the scene resources.
 fn decode_checker(device: &ID3D11Device, png_bytes: &[u8]) -> windows::core::Result<Texture> {
     match image::load_from_memory(png_bytes) {
         Ok(image) => {
@@ -1490,12 +1539,17 @@ fn decode_checker(device: &ID3D11Device, png_bytes: &[u8]) -> windows::core::Res
             let (width, height) = rgba.dimensions();
             Texture::rgba8_single(device, width, height, &rgba, true)
         }
-        Err(_) => Texture::rgba8_single(device, 1, 1, &[255, 255, 255, 255], true),
+        Err(error) => {
+            // Degrading to flat white is deliberate, but not silently: a corrupt
+            // baked checker is a packaging bug worth seeing under `--tracy`.
+            gpu_profiler::note(&format!("baked UV-checker PNG failed to decode: {error}"));
+            Texture::rgba8_single(device, 1, 1, &[255, 255, 255, 255], true)
+        }
     }
 }
 
 /// Build the per-frame [`SceneUniforms`] from the camera, projection, environment,
-/// selection and debug options. Mirrors the wgpu `update_camera`: the selection
+/// selection and debug options. The selection
 /// flash rides in `selection_color` (gamma-space rgb + the flash fade in alpha,
 /// zero while nothing is selected/flashing), read only by `fs_selection`.
 fn scene_uniforms(
@@ -1554,8 +1608,8 @@ fn scene_uniforms(
 
 /// Build the [`SceneUniforms`] for the 2D UV viewport: only the UV camera's
 /// orthographic view-projection matters (the grid / wireframe / fill return their
-/// own vertex color, never reaching the IBL / shading / selection code). Mirrors the
-/// wgpu `update_camera_uv`. `projection_params.x = 1.0` marks orthographic.
+/// own vertex color, never reaching the IBL / shading / selection code).
+/// `projection_params.x = 1.0` marks orthographic.
 fn uv_scene_uniforms(uv_camera: UvCamera) -> SceneUniforms {
     SceneUniforms {
         view_projection: uv_camera.view_projection().to_cols_array_2d(),
@@ -1570,7 +1624,7 @@ fn uv_scene_uniforms(uv_camera: UvCamera) -> SceneUniforms {
 }
 
 /// Build the per-frame [`GtaoUniforms`] from the camera, projection and GTAO
-/// settings. Mirrors the wgpu `GtaoPass::update`: the settings' `radius` is a
+/// settings. The settings' `radius` is a
 /// fraction of the framed model's bounding-sphere radius, so it's scaled into view
 /// units by the live `scene_radius` here, keeping the AO look scale-invariant.
 fn build_gtao_uniforms(
@@ -1598,5 +1652,26 @@ fn build_gtao_uniforms(
             steps.max(1) as f32,
             0.0,
         ],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Invariant 11: the hand-maintained input-element list must cover exactly
+    /// the `#[repr(C)] SceneVertex` — a drifted field order/size would misfeed
+    /// the vertex shader with no runtime error.
+    #[test]
+    fn scene_vertex_layout_matches_struct_stride() {
+        let layout_stride: usize = SCENE_VERTEX_LAYOUT
+            .iter()
+            .map(|element| element.format.byte_size())
+            .sum();
+        assert_eq!(
+            layout_stride,
+            std::mem::size_of::<crate::scene::SceneVertex>(),
+            "SCENE_VERTEX_LAYOUT must match SceneVertex field-for-field"
+        );
     }
 }

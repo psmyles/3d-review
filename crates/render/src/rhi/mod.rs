@@ -2,16 +2,16 @@
 //! window swapchain.
 //!
 //! This module is the **sole** home for Direct3D 11 / DXGI COM (`unsafe`) in the
-//! renderer — the second sanctioned exception to invariant 9 (the first being
-//! `app`'s window/swapchain bootstrap). Everything here is GPU plumbing only; no
-//! model geometry, camera math, or material logic lives in `unsafe`. As the scene
-//! passes are ported off wgpu (migration Phases 1–5) the pipeline/buffer/pass/
-//! upload wrappers join this module; it now also carries the [`Pipeline`],
-//! vertex/constant buffers, and the depth target the scene path draws with.
+//! renderer — the sanctioned exception to invariant 9. Everything here is GPU
+//! plumbing only; no model geometry, camera math, or material logic lives in
+//! `unsafe`: the device/swapchain ([`Gpu`]), the [`Pipeline`] + vertex/constant
+//! buffers + targets/textures/samplers the scene path draws with, the `--tracy`
+//! GPU timestamp profiler, and the offline bake device.
 
 #[cfg(feature = "bake")]
 pub(crate) mod bake;
 mod buffer;
+pub(crate) mod gpu_profiler;
 mod pipeline;
 mod sampler;
 mod target;
@@ -40,9 +40,9 @@ use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
-    DXGI_PRESENT, DXGI_SCALING_NONE, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG,
-    DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter, IDXGIDevice,
-    IDXGIFactory2, IDXGISwapChain1,
+    DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET, DXGI_PRESENT, DXGI_SCALING_NONE,
+    DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_DISCARD,
+    DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter, IDXGIDevice, IDXGIFactory2, IDXGISwapChain1,
 };
 use windows::core::{BOOL, Interface, Result};
 
@@ -106,11 +106,12 @@ impl Gpu {
         &self.context
     }
 
-    /// The current backbuffer render-target view (the present surface).
-    pub fn backbuffer_rtv(&self) -> &ID3D11RenderTargetView {
-        self.backbuffer_rtv
-            .as_ref()
-            .expect("backbuffer_rtv is only None transiently during resize")
+    /// The current backbuffer render-target view (the present surface). `None`
+    /// only when a failed [`Gpu::resize`] could not rebuild the view (the next
+    /// successful resize restores it) — callers skip backbuffer work that frame
+    /// instead of panicking.
+    pub fn backbuffer_rtv(&self) -> Option<&ID3D11RenderTargetView> {
+        self.backbuffer_rtv.as_ref()
     }
 
     /// The current backbuffer size in physical pixels.
@@ -130,6 +131,19 @@ impl Gpu {
             .collect()
     }
 
+    /// Clamp a requested scene MSAA count to the highest level the adapter
+    /// actually supports (≤ the request). Invariant 4: the renderer degrades an
+    /// unsupported level (e.g. a persisted AA setting restored on a weaker
+    /// adapter) instead of failing target creation for the whole frame.
+    pub(crate) fn clamp_msaa(&self, requested: u32) -> u32 {
+        let requested = requested.max(1);
+        [16u32, 8, 4, 2]
+            .into_iter()
+            .filter(|&count| count <= requested)
+            .find(|&count| self.supports_sample_count(count))
+            .unwrap_or(1)
+    }
+
     /// Whether the adapter supports `count`× MSAA for both the scene color + depth
     /// formats (`CheckMultisampleQualityLevels > 0` for each).
     fn supports_sample_count(&self, count: u32) -> bool {
@@ -146,11 +160,13 @@ impl Gpu {
     /// black fill (replacing the old GDI hack) and the per-frame scene clear behind
     /// the egui chrome.
     pub fn clear_backbuffer(&self, rgba: [f32; 4]) {
-        // SAFETY: `backbuffer_rtv` is a live RTV for the current backbuffer; the
-        // immediate context owns it for the duration of the call.
+        let Some(rtv) = self.backbuffer_rtv() else {
+            return;
+        };
+        // SAFETY: `rtv` is a live RTV for the current backbuffer; the immediate
+        // context owns it for the duration of the call.
         unsafe {
-            self.context
-                .ClearRenderTargetView(self.backbuffer_rtv(), &rgba);
+            self.context.ClearRenderTargetView(rtv, &rgba);
         }
     }
 
@@ -165,16 +181,24 @@ impl Gpu {
         self.backbuffer_rtv = None;
         // SAFETY: no outstanding references to the swapchain buffers remain (the
         // RTV was just dropped); 0/UNKNOWN keep the existing buffer count + format.
-        unsafe {
+        let resized = unsafe {
             self.swap_chain.ResizeBuffers(
                 0,
                 width,
                 height,
                 DXGI_FORMAT_UNKNOWN,
                 DXGI_SWAP_CHAIN_FLAG(0),
-            )?;
+            )
+        };
+        // Rebuild the view over whichever buffers the swapchain now holds — on a
+        // failed resize the old buffers remain, so this restores the previous
+        // (stale-sized) view rather than leaving the field `None` and skipping
+        // every subsequent backbuffer draw until a resize succeeds.
+        self.backbuffer_rtv = create_backbuffer_rtv(&self.device, &self.swap_chain).ok();
+        resized?;
+        if self.backbuffer_rtv.is_none() {
+            self.backbuffer_rtv = Some(create_backbuffer_rtv(&self.device, &self.swap_chain)?);
         }
-        self.backbuffer_rtv = Some(create_backbuffer_rtv(&self.device, &self.swap_chain)?);
         self.size = (width, height);
         Ok(())
     }
@@ -211,13 +235,22 @@ impl Gpu {
         depth: &DepthTarget,
         clear: [f32; 4],
     ) {
-        let rtvs: Vec<Option<ID3D11RenderTargetView>> =
-            colors.iter().map(|c| Some(c.rtv().clone())).collect();
+        // Fixed-size scratch (the scene MRT is at most 2 targets) so the per-frame
+        // pass setup allocates nothing.
+        debug_assert!(
+            colors.len() <= 2,
+            "begin_scene_pass supports at most 2 MRTs"
+        );
+        let mut rtvs: [Option<ID3D11RenderTargetView>; 2] = [const { None }; 2];
+        for (rtv, color) in rtvs.iter_mut().zip(colors) {
+            *rtv = Some(color.rtv().clone());
+        }
+        let rtvs = &rtvs[..colors.len().min(2)];
         let (width, height) = colors.first().map_or(self.size, |c| c.size());
         // SAFETY: every RTV + the DSV are live; the local arrays/viewport outlive
         // the calls. The immediate context owns the bound targets.
         unsafe {
-            self.context.OMSetRenderTargets(Some(&rtvs), depth.view());
+            self.context.OMSetRenderTargets(Some(rtvs), depth.view());
             for (index, color) in colors.iter().enumerate() {
                 let value = if index == 0 { clear } else { [0.0; 4] };
                 self.context.ClearRenderTargetView(color.rtv(), &value);
@@ -247,13 +280,17 @@ impl Gpu {
 
     /// Begin the backbuffer composite pass: bind the backbuffer RTV (no depth) and
     /// set the full-backbuffer viewport. The composite overwrites every pixel, so
-    /// no clear is issued.
+    /// no clear is issued. A no-op while the backbuffer view is unavailable (a
+    /// failed resize).
     pub(crate) fn begin_backbuffer_blit(&self) {
+        let Some(rtv) = self.backbuffer_rtv() else {
+            return;
+        };
         let (width, height) = self.size;
         // SAFETY: the backbuffer RTV is live; the viewport array outlives the call.
         unsafe {
             self.context
-                .OMSetRenderTargets(Some(&[Some(self.backbuffer_rtv().clone())]), None);
+                .OMSetRenderTargets(Some(&[Some(rtv.clone())]), None);
             self.context
                 .RSSetViewports(Some(&[viewport(width, height)]));
         }
@@ -264,23 +301,75 @@ impl Gpu {
     /// SRVs when the next frame binds them as render targets (which the D3D11 debug
     /// layer would otherwise flag).
     pub(crate) fn unbind_ps_srvs(&self, count: usize) {
-        let nulls: Vec<Option<ID3D11ShaderResourceView>> = vec![None; count];
-        // SAFETY: clearing SRV slots with null views; the local array outlives call.
+        // A fixed null table (the render path unbinds at most 3 slots) so the
+        // per-frame cleanup allocates nothing.
+        const NULLS: [Option<ID3D11ShaderResourceView>; 8] = [const { None }; 8];
+        debug_assert!(
+            count <= NULLS.len(),
+            "unbind_ps_srvs supports at most 8 slots"
+        );
+        // SAFETY: clearing SRV slots with null views; the static array outlives call.
         unsafe {
-            self.context.PSSetShaderResources(0, Some(&nulls));
+            self.context
+                .PSSetShaderResources(0, Some(&NULLS[..count.min(NULLS.len())]));
         }
     }
 
     /// Present the backbuffer. `vsync` selects a sync interval of 1 (wait for
     /// vblank) vs 0 (immediate) — mirrors the old `AutoVsync` present mode.
-    pub fn present(&self, vsync: bool) {
+    ///
+    /// Status codes (e.g. `DXGI_STATUS_OCCLUDED` while the window is hidden) are
+    /// not actionable and report [`PresentStatus::Presented`]; a device
+    /// removed/reset HRESULT reports [`PresentStatus::DeviceLost`] so the caller
+    /// can surface it — after it, every subsequent frame silently fails.
+    pub fn present(&self, vsync: bool) -> PresentStatus {
         // SAFETY: presenting the live swapchain; no resources are mapped.
-        unsafe {
-            // Present returns an HRESULT (e.g. DXGI_STATUS_OCCLUDED when the window
-            // is hidden); none is actionable here, so it's deliberately ignored.
-            let _ = self.swap_chain.Present(u32::from(vsync), DXGI_PRESENT(0));
+        let hr = unsafe { self.swap_chain.Present(u32::from(vsync), DXGI_PRESENT(0)) };
+        if hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET {
+            // SAFETY: pure query on the live device; returns the driver's root
+            // cause for the removal (hung, reset, driver error, ...).
+            let reason = unsafe { self.device.GetDeviceRemovedReason() }
+                .err()
+                .map(|error| error.code().0)
+                .unwrap_or(hr.0);
+            return PresentStatus::DeviceLost { reason };
         }
+        PresentStatus::Presented
     }
+}
+
+/// Outcome of a [`Gpu::present`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresentStatus {
+    /// The frame presented (including benign status codes like occluded).
+    Presented,
+    /// The D3D11 device was removed or reset (driver crash/TDR, adapter change).
+    /// The swapchain is dead; `reason` is the driver's removal HRESULT.
+    DeviceLost { reason: i32 },
+}
+
+/// Bind a single SRV to pixel-shader slot `slot` — the one-off form of
+/// `bind_ps_textures`, shared by the texture / target / bake wrappers so the
+/// one-element bind is written once.
+pub(crate) fn bind_ps_srv(ctx: &ID3D11DeviceContext, slot: u32, srv: &ID3D11ShaderResourceView) {
+    // SAFETY: the SRV is live; the one-element array outlives the call.
+    unsafe {
+        ctx.PSSetShaderResources(slot, Some(&[Some(srv.clone())]));
+    }
+}
+
+/// Unwrap a COM out-param that the preceding successful HRESULT guarantees was
+/// written (the `windows` crate models out-params as `Option`s). Practically
+/// unreachable; one named helper instead of a bare `unwrap` at every call site.
+pub(crate) fn out_param<T>(value: Option<T>) -> T {
+    value.expect("COM call succeeded but left its out-param empty")
+}
+
+/// An `E_INVALIDARG` [`windows::core::Error`] with a descriptive message — for
+/// rhi-side validation failures (bad payload sizes, mismatched layouts) that
+/// should surface as render errors rather than fed to the driver.
+pub(crate) fn invalid_arg(message: &str) -> windows::core::Error {
+    windows::core::Error::new(windows::Win32::Foundation::E_INVALIDARG, message)
 }
 
 /// A full-target viewport (top-left origin, depth 0..1) at `width`×`height`.
@@ -326,7 +415,7 @@ fn create_device(flags: D3D11_CREATE_DEVICE_FLAG) -> Result<(ID3D11Device, ID3D1
             Some(&mut context),
         )?;
     }
-    Ok((device.unwrap(), context.unwrap()))
+    Ok((out_param(device), out_param(context)))
 }
 
 /// Create a flip-model swapchain on `hwnd` from `device`'s DXGI factory.
@@ -338,8 +427,9 @@ fn create_swap_chain(
 ) -> Result<IDXGISwapChain1> {
     // Walk device -> DXGI device -> adapter -> factory.
     let dxgi_device: IDXGIDevice = device.cast()?;
-    // SAFETY: a live DXGI device always has an adapter, and the adapter a factory.
+    // SAFETY: a live DXGI device always has an adapter.
     let adapter: IDXGIAdapter = unsafe { dxgi_device.GetAdapter()? };
+    // SAFETY: a live adapter's parent is always the DXGI factory that made it.
     let factory: IDXGIFactory2 = unsafe { adapter.GetParent()? };
 
     let desc = DXGI_SWAP_CHAIN_DESC1 {
@@ -376,5 +466,5 @@ fn create_backbuffer_rtv(
     unsafe {
         device.CreateRenderTargetView(&backbuffer, None, Some(&mut rtv))?;
     }
-    Ok(rtv.unwrap())
+    Ok(out_param(rtv))
 }

@@ -10,8 +10,10 @@ use windows::Win32::Graphics::Direct3D11::{
 };
 use windows::core::Result;
 
+use super::out_param;
+
 /// Anisotropic-filter sample count for the material sampler — 16× is the common
-/// hardware ceiling (mirrors the wgpu material table's `MATERIAL_ANISOTROPY`).
+/// hardware ceiling.
 const MATERIAL_ANISOTROPY: u32 = 16;
 
 /// A texture sampler state.
@@ -40,7 +42,7 @@ impl Sampler {
         // SAFETY: `desc` is a well-formed sampler description; the out-param is set.
         unsafe { device.CreateSamplerState(&desc, Some(&mut state))? };
         Ok(Self {
-            state: state.unwrap(),
+            state: out_param(state),
         })
     }
 
@@ -63,7 +65,7 @@ impl Sampler {
         // SAFETY: `desc` is a well-formed sampler description; the out-param is set.
         unsafe { device.CreateSamplerState(&desc, Some(&mut state))? };
         Ok(Self {
-            state: state.unwrap(),
+            state: out_param(state),
         })
     }
 
@@ -88,14 +90,14 @@ impl Sampler {
         // SAFETY: `desc` is a well-formed sampler description; the out-param is set.
         unsafe { device.CreateSamplerState(&desc, Some(&mut state))? };
         Ok(Self {
-            state: state.unwrap(),
+            state: out_param(state),
         })
     }
 
     /// A linear-minify / point-magnify, clamp-addressed sampler — the Tex viewport
     /// sampler. Crisp texels when zoomed in (nearest magnify), smooth when zoomed out
     /// (linear minify over the mip chain); clamp keeps the border from wrapping.
-    /// Mirrors the wgpu Tex sampler.
+    /// The Tex-viewport sampler.
     pub(crate) fn tex_view(device: &ID3D11Device) -> Result<Self> {
         let desc = D3D11_SAMPLER_DESC {
             Filter: D3D11_FILTER_MIN_LINEAR_MAG_POINT_MIP_LINEAR,
@@ -113,7 +115,7 @@ impl Sampler {
         // SAFETY: `desc` is a well-formed sampler description; the out-param is set.
         unsafe { device.CreateSamplerState(&desc, Some(&mut state))? };
         Ok(Self {
-            state: state.unwrap(),
+            state: out_param(state),
         })
     }
 
@@ -136,7 +138,7 @@ impl Sampler {
         // SAFETY: `desc` is a well-formed sampler description; the out-param is set.
         unsafe { device.CreateSamplerState(&desc, Some(&mut state))? };
         Ok(Self {
-            state: state.unwrap(),
+            state: out_param(state),
         })
     }
 

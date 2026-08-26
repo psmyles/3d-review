@@ -11,8 +11,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use review_model::SceneBvh;
-use review_render::{ActiveMaterial, CameraProjection, Renderer, TexBackground, TexImage};
-use review_ui::{TextureBackground, UiOutput, WorkspaceMode, draw_overlay, draw_viewport_scene};
+use review_render::{
+    ActiveMaterial, CameraProjection, Renderer, SceneFrame, TexBackground, TexImage,
+};
+use review_ui::{TextureBackground, UiOutput, WorkspaceMode, draw_overlay, theme};
 
 use crate::App;
 use crate::prof;
@@ -65,9 +67,7 @@ impl App {
 
             let raw_input = egui_state.take_egui_input(&window);
             let camera = renderer.camera;
-            let uv_camera = renderer.uv_camera;
             let scene_model = self.scene_model.clone();
-            let scene_revision = self.scene_revision;
             let occlusion_bvh = self.occlusion_bvh.as_ref();
             // Borrowed as a disjoint field so the egui closure can show the toasts
             // alongside its `&mut self.ui` borrow (the toast system lives in `app`).
@@ -85,14 +85,6 @@ impl App {
             let prev_buffer_view = self.ui.debug.buffer_view;
             let _z = prof::zone!("egui Run");
             let full_output = egui_ctx.run(raw_input, |ctx| {
-                draw_viewport_scene(
-                    ctx,
-                    &self.ui,
-                    camera,
-                    uv_camera,
-                    scene_model.clone(),
-                    scene_revision,
-                );
                 ui_output = draw_overlay(ctx, &mut self.ui, camera, &scene_model, occlusion_bvh);
                 if self.ui.debug.material_mode != prev_material_mode {
                     notifications.mode(self.ui.debug.material_mode.label());
@@ -141,12 +133,12 @@ impl App {
         // Pump startup warmup frames (Phase B) until the deferred GPU-resource
         // build drains, so the scene pipelines + GTAO pass compile behind
         // the already-shown grid. Paced like the other continuous-redraw sources.
-        let warming_up = self.warmup_frames > 0;
-        self.warmup_frames = self.warmup_frames.saturating_sub(1);
-        self.repaint_at =
+        let warming_up = self.redraw.warmup_frames > 0;
+        self.redraw.warmup_frames = self.redraw.warmup_frames.saturating_sub(1);
+        self.redraw.repaint_at =
             if repaint_delay.is_zero() || camera_animating || flash_active || warming_up {
-                let frame_start = self.last_render_instant.unwrap_or_else(Instant::now);
-                Some(frame_start + self.refresh_interval)
+                let frame_start = self.redraw.last_render_instant.unwrap_or_else(Instant::now);
+                Some(frame_start + self.redraw.refresh_interval)
             } else if repaint_delay == Duration::MAX {
                 None
             } else {
@@ -211,33 +203,56 @@ impl App {
                 }
                 WorkspaceMode::ThreeD => renderer.render_scene(
                     gpu,
-                    &model,
-                    model_revision,
-                    debug,
-                    projection,
-                    environment,
-                    gtao,
-                    tonemap,
-                    anti_aliasing,
-                    selection,
-                    &hidden_meshes,
-                    background,
+                    &SceneFrame {
+                        model: &model,
+                        model_revision,
+                        debug,
+                        projection,
+                        environment,
+                        gtao,
+                        tonemap,
+                        anti_aliasing,
+                        selection,
+                        hidden_meshes: &hidden_meshes,
+                        background,
+                    },
                 ),
             };
+            // GPU failures are surfaced as a toast (once per fault, not per
+            // frame) — without `--tracy` the prof channel is invisible, and a
+            // windowed release build has no console at all.
             if let Err(err) = render_result {
                 prof::msg(&format!("scene D3D11 render failed: {err}"));
+                if !self.gpu_fault_notified {
+                    self.gpu_fault_notified = true;
+                    self.notifications
+                        .error(format!("Scene render failed: {err}"));
+                }
             }
             let egui_output = egui_directx11::RendererOutput {
                 textures_delta: full_output.textures_delta,
                 shapes: full_output.shapes,
                 pixels_per_point: full_output.pixels_per_point,
             };
-            if let Err(err) =
-                egui_renderer.render(gpu.context(), gpu.backbuffer_rtv(), &egui_ctx, egui_output)
+            if let Some(backbuffer_rtv) = gpu.backbuffer_rtv()
+                && let Err(err) =
+                    egui_renderer.render(gpu.context(), backbuffer_rtv, &egui_ctx, egui_output)
             {
                 prof::msg(&format!("egui D3D11 render failed: {err}"));
+                if !self.gpu_fault_notified {
+                    self.gpu_fault_notified = true;
+                    self.notifications.error(format!("UI render failed: {err}"));
+                }
             }
-            gpu.present(true);
+            if let review_render::PresentStatus::DeviceLost { reason } = gpu.present(true) {
+                prof::msg(&format!("present failed: device lost ({reason:#x})"));
+                if !self.gpu_fault_notified {
+                    self.gpu_fault_notified = true;
+                    self.notifications.error(format!(
+                        "Graphics device lost ({reason:#x}) — restart the viewer"
+                    ));
+                }
+            }
         }
 
         // Delimit the frame for Tracy's frame view (no-op unless `--tracy`).
@@ -248,16 +263,15 @@ impl App {
     /// background fill, plus — when a texture is selected and the canvas has been laid
     /// out — the image placed by the canvas center + pan/zoom (egui points → physical
     /// pixels via `ppp`). The UI emits only plain values (invariant 2); `app` owns the
-    /// pool and resolves placement here. Mirrors the old wgpu `TexCallback` setup.
+    /// pool and resolves placement here.
     fn build_texture_draw(&self, ppp: f32) -> (Option<TexImage>, TexBackground) {
-        // Matches the UI theme's 12-point checker cell, scaled to physical pixels.
-        const CHECKER_CELL_POINTS: f32 = 12.0;
         let background = match self.ui.texture_view.background {
             TextureBackground::Black => TexBackground::Black,
             TextureBackground::White => TexBackground::White,
             TextureBackground::Grey => TexBackground::Grey,
             TextureBackground::Checker => TexBackground::Checker {
-                cell_px: CHECKER_CELL_POINTS * ppp,
+                // The UI theme's checker cell (points), scaled to physical pixels.
+                cell_px: theme::size::TEXTURE_CHECKER_CELL * ppp,
             },
         };
 

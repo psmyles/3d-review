@@ -14,18 +14,20 @@ use windows::Win32::Graphics::Direct3D::{
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_APPEND_ALIGNED_ELEMENT, D3D11_BLEND_DESC, D3D11_BLEND_INV_SRC_ALPHA, D3D11_BLEND_ONE,
     D3D11_BLEND_OP_ADD, D3D11_BLEND_SRC_ALPHA, D3D11_BLEND_ZERO, D3D11_COLOR_WRITE_ENABLE_ALL,
-    D3D11_COMPARISON_ALWAYS, D3D11_COMPARISON_GREATER_EQUAL, D3D11_CULL_BACK, D3D11_CULL_FRONT,
-    D3D11_CULL_NONE, D3D11_DEPTH_STENCIL_DESC, D3D11_DEPTH_WRITE_MASK_ALL,
-    D3D11_DEPTH_WRITE_MASK_ZERO, D3D11_FILL_SOLID, D3D11_INPUT_ELEMENT_DESC,
-    D3D11_INPUT_PER_VERTEX_DATA, D3D11_RASTERIZER_DESC, D3D11_RENDER_TARGET_BLEND_DESC,
-    ID3D11BlendState, ID3D11DepthStencilState, ID3D11Device, ID3D11DeviceContext,
-    ID3D11InputLayout, ID3D11PixelShader, ID3D11RasterizerState, ID3D11VertexShader,
+    D3D11_COMPARISON_ALWAYS, D3D11_COMPARISON_GREATER_EQUAL, D3D11_CULL_BACK, D3D11_CULL_NONE,
+    D3D11_DEPTH_STENCIL_DESC, D3D11_DEPTH_WRITE_MASK_ALL, D3D11_DEPTH_WRITE_MASK_ZERO,
+    D3D11_FILL_SOLID, D3D11_INPUT_ELEMENT_DESC, D3D11_INPUT_PER_VERTEX_DATA, D3D11_RASTERIZER_DESC,
+    D3D11_RENDER_TARGET_BLEND_DESC, ID3D11BlendState, ID3D11DepthStencilState, ID3D11Device,
+    ID3D11DeviceContext, ID3D11InputLayout, ID3D11PixelShader, ID3D11RasterizerState,
+    ID3D11VertexShader,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT, DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_R32G32B32_FLOAT,
     DXGI_FORMAT_R32G32B32A32_FLOAT,
 };
 use windows::core::{BOOL, PCSTR, Result};
+
+use super::out_param;
 
 /// Vertex-attribute element formats the scene buffers use, mapped to DXGI.
 #[derive(Clone, Copy)]
@@ -41,6 +43,18 @@ impl VertexFormat {
             VertexFormat::Float2 => DXGI_FORMAT_R32G32_FLOAT,
             VertexFormat::Float3 => DXGI_FORMAT_R32G32B32_FLOAT,
             VertexFormat::Float4 => DXGI_FORMAT_R32G32B32A32_FLOAT,
+        }
+    }
+
+    /// The element's byte size — used by the invariant-11 stride test to audit
+    /// that a hand-maintained input layout covers exactly its `#[repr(C)]`
+    /// vertex struct.
+    #[cfg_attr(not(test), allow(dead_code))] // Test-only consumer.
+    pub(crate) const fn byte_size(self) -> usize {
+        match self {
+            VertexFormat::Float2 => 8,
+            VertexFormat::Float3 => 12,
+            VertexFormat::Float4 => 16,
         }
     }
 }
@@ -70,8 +84,6 @@ impl InputElement {
 }
 
 /// Primitive topology for a pipeline.
-// `TriangleList` is the mesh/skybox/UV-fill topology, wired in Phase 2.
-#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub(crate) enum Topology {
     TriangleList,
@@ -87,22 +99,17 @@ impl Topology {
     }
 }
 
-/// Face culling mode. Front faces are counter-clockwise (matching the wgpu
-/// `FrontFace::Ccw` + glam's `_rh` projection), so the rasterizer sets
+/// Face culling mode. Front faces are counter-clockwise (glam's `_rh`
+/// projection + the framebuffer winding), so the rasterizer sets
 /// `FrontCounterClockwise = TRUE`.
-// `Back`/`Front` culling is used by the mesh pipeline (Phase 2); Phase 1 lines
-// don't cull.
-#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub(crate) enum Cull {
     None,
     Back,
-    Front,
 }
 
-/// Depth comparison: Reversed-Z geometry uses `GreaterEqual`; the skybox draws
-/// with `Always` (Phase 2).
-#[allow(dead_code)] // `Always` is the skybox depth func (Phase 2).
+/// Depth comparison: Reversed-Z geometry uses `GreaterEqual`; the skybox and
+/// always-on-top overlays draw with `Always`.
 #[derive(Clone, Copy)]
 pub(crate) enum DepthCompare {
     GreaterEqual,
@@ -119,8 +126,6 @@ pub(crate) struct DepthState {
 }
 
 /// Color blend mode for the (single) render target.
-// `Opaque` is the skybox/G-buffer blend (Phase 2); Phase 1 lines alpha-blend.
-#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub(crate) enum BlendMode {
     /// No blending (opaque overwrite).
@@ -131,8 +136,7 @@ pub(crate) enum BlendMode {
 }
 
 /// Slope-scaled depth bias (real depth-buffer units). The mesh pushes its surface
-/// back so coplanar line overlays win the Reversed-Z test (Phase 2); lines use
-/// zero bias.
+/// back so coplanar line overlays win the Reversed-Z test; lines use zero bias.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct DepthBias {
     pub(crate) constant: i32,
@@ -154,6 +158,29 @@ pub(crate) struct PipelineDesc<'a> {
     /// MSAA sample count the pipeline renders at (1 = single-sample). Drives the
     /// rasterizer's `MultisampleEnable`.
     pub(crate) sample_count: u32,
+}
+
+impl<'a> PipelineDesc<'a> {
+    /// A fullscreen-triangle pass (composite / GTAO / Tex-viewport / bake): no
+    /// vertex input (the VS builds its triangle from `SV_VertexID`), no culling,
+    /// depth fully off, no bias, single-sample.
+    pub(crate) fn fullscreen(vs: &'a [u8], ps: &'a [u8], blend: BlendMode) -> Self {
+        Self {
+            vs,
+            ps,
+            input: &[],
+            topology: Topology::TriangleList,
+            cull: Cull::None,
+            depth: DepthState {
+                test: false,
+                write: false,
+                compare: DepthCompare::Always,
+            },
+            blend,
+            depth_bias: DepthBias::default(),
+            sample_count: 1,
+        }
+    }
 }
 
 /// A bundled graphics pipeline: the VS + PS, the input layout, and the three
@@ -219,14 +246,14 @@ fn create_vertex_shader(device: &ID3D11Device, dxbc: &[u8]) -> Result<ID3D11Vert
     // SAFETY: `dxbc` is a valid compiled-shader blob; the out-param is populated by
     // the call.
     unsafe { device.CreateVertexShader(dxbc, None, Some(&mut shader))? };
-    Ok(shader.unwrap())
+    Ok(out_param(shader))
 }
 
 fn create_pixel_shader(device: &ID3D11Device, dxbc: &[u8]) -> Result<ID3D11PixelShader> {
     let mut shader = None;
     // SAFETY: `dxbc` is a valid compiled-shader blob; the out-param is populated.
     unsafe { device.CreatePixelShader(dxbc, None, Some(&mut shader))? };
-    Ok(shader.unwrap())
+    Ok(out_param(shader))
 }
 
 /// Build the input layout from rhi [`InputElement`]s, validated against the vertex
@@ -262,7 +289,7 @@ fn create_input_layout(
     // SAFETY: `descs` (and the `names` they point into) outlive the call; `vs_dxbc`
     // is the matching compiled vertex shader.
     unsafe { device.CreateInputLayout(&descs, vs_dxbc, Some(&mut layout))? };
-    Ok(layout.unwrap())
+    Ok(out_param(layout))
 }
 
 fn create_rasterizer(
@@ -274,7 +301,6 @@ fn create_rasterizer(
     let cull_mode = match cull {
         Cull::None => D3D11_CULL_NONE,
         Cull::Back => D3D11_CULL_BACK,
-        Cull::Front => D3D11_CULL_FRONT,
     };
     let desc = D3D11_RASTERIZER_DESC {
         FillMode: D3D11_FILL_SOLID,
@@ -292,7 +318,7 @@ fn create_rasterizer(
     let mut state = None;
     // SAFETY: `desc` is a well-formed rasterizer description; the out-param is set.
     unsafe { device.CreateRasterizerState(&desc, Some(&mut state))? };
-    Ok(state.unwrap())
+    Ok(out_param(state))
 }
 
 fn create_depth_stencil(
@@ -317,7 +343,7 @@ fn create_depth_stencil(
     let mut state = None;
     // SAFETY: `desc` is a well-formed depth-stencil description; out-param set.
     unsafe { device.CreateDepthStencilState(&desc, Some(&mut state))? };
-    Ok(state.unwrap())
+    Ok(out_param(state))
 }
 
 fn create_blend(device: &ID3D11Device, mode: BlendMode) -> Result<ID3D11BlendState> {
@@ -348,5 +374,5 @@ fn create_blend(device: &ID3D11Device, mode: BlendMode) -> Result<ID3D11BlendSta
     let mut state = None;
     // SAFETY: `desc` is a well-formed blend description; out-param set.
     unsafe { device.CreateBlendState(&desc, Some(&mut state))? };
-    Ok(state.unwrap())
+    Ok(out_param(state))
 }

@@ -1,3 +1,7 @@
+// Host-agnostic data only (invariant 10) — and fully safe (invariant 9): all
+// `unsafe`/FFI lives in `import`/`psd` and the sanctioned D3D11 sites.
+#![forbid(unsafe_code)]
+
 use glam::{Mat4, Vec2, Vec3, Vec4};
 
 mod bvh;
@@ -70,11 +74,6 @@ impl Bounds {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MaterialImportDefaults {
     pub name: String,
-    // TODO: `draw_count` is a renderer-computed stat, not an import default — the
-    // bridge fills a per-node tally that import then overwrites at the model level
-    // (`ModelStats::draw_count`). Nothing reads this per-material copy; drop it
-    // from here + the C FFI struct in a future FFI-touching phase.
-    pub draw_count: usize,
     /// Import default base color (linear RGB), seeding the editable material
     /// table. White when the source material declared none.
     pub base_color: Vec3,
@@ -103,11 +102,6 @@ pub struct SceneNode {
     pub mesh_part: Option<usize>,
     /// `node_to_world` transform. Display metadata only.
     pub transform: Mat4,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModelWarning {
-    pub message: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,10 +156,18 @@ impl TriangleData {
         self.to_face.is_empty()
     }
 
-    /// Each present (non-empty) array must be exactly `triangle_count` long; an
+    /// Each present (non-empty) array must be exactly `triangle_count` long — an
     /// empty array means "this model carries no such per-triangle info" and is
-    /// allowed. Returns `Err` describing the first array that drifted.
-    pub fn validate(&self, triangle_count: usize) -> Result<(), String> {
+    /// allowed — and every entry must index a real face / material / node
+    /// (`u32::MAX` is the no-material sentinel). Returns `Err` describing the
+    /// first array that drifted or the first out-of-range entry.
+    pub fn validate(
+        &self,
+        triangle_count: usize,
+        face_count: usize,
+        material_count: usize,
+        node_count: usize,
+    ) -> Result<(), String> {
         for (name, array) in [
             ("to_face", &self.to_face),
             ("material", &self.material),
@@ -177,6 +179,27 @@ impl TriangleData {
                     array.len()
                 ));
             }
+        }
+        if let Some(&face) = self
+            .to_face
+            .iter()
+            .find(|&&face| face as usize >= face_count)
+        {
+            return Err(format!(
+                "tri_to_face references face {face} of {face_count}"
+            ));
+        }
+        if let Some(&slot) = self
+            .material
+            .iter()
+            .find(|&&slot| slot != u32::MAX && slot as usize >= material_count)
+        {
+            return Err(format!(
+                "tri_material references material {slot} of {material_count}"
+            ));
+        }
+        if let Some(&node) = self.node.iter().find(|&&node| node as usize >= node_count) {
+            return Err(format!("tri_node references node {node} of {node_count}"));
         }
         Ok(())
     }
@@ -209,7 +232,6 @@ pub struct ModelData {
     pub bounds: Option<Bounds>,
     pub stats: ModelStats,
     pub materials: Vec<MaterialImportDefaults>,
-    pub warnings: Vec<ModelWarning>,
 }
 
 impl ModelData {
@@ -421,13 +443,11 @@ pub fn demo_cube_model() -> ModelData {
         },
         materials: vec![MaterialImportDefaults {
             name: "Default".to_owned(),
-            draw_count: 1,
             base_color: Vec3::ONE,
             smoothness: 0.6,
             metallic: 0.0,
             emissive: Vec3::ZERO,
         }],
-        warnings: Vec::new(),
         ..Default::default()
     };
     model.recompute_bounds();
@@ -521,33 +541,26 @@ mod tests {
 
         // The parallel per-triangle arrays stay mutually in lockstep, and every
         // index they carry points at a real face / material / node.
-        assert!(tris.validate(model.stats.triangle_count).is_ok());
-        for &face in &tris.to_face {
-            assert!(
-                (face as usize) < model.faces.len(),
-                "tri_to_face out of range"
-            );
-        }
-        for &slot in &tris.material {
-            assert!(
-                (slot as usize) < model.materials.len(),
-                "tri_material out of range"
-            );
-        }
-        for &node in &tris.node {
-            assert!((node as usize) < model.nodes.len(), "tri_node out of range");
-        }
+        assert!(
+            tris.validate(
+                model.stats.triangle_count,
+                model.faces.len(),
+                model.materials.len(),
+                model.nodes.len(),
+            )
+            .is_ok()
+        );
     }
 
     #[test]
     fn triangle_data_validate_catches_drift() {
-        // Equal-length arrays pass.
+        // Equal-length arrays with in-range entries pass.
         let ok = TriangleData {
             to_face: vec![0, 0, 1],
             material: vec![0, 0, 0],
             node: vec![0, 0, 0],
         };
-        assert!(ok.validate(3).is_ok());
+        assert!(ok.validate(3, 2, 1, 1).is_ok());
 
         // An empty array means "no such info" and is allowed.
         let no_nodes = TriangleData {
@@ -555,7 +568,7 @@ mod tests {
             material: vec![0, 0, 0],
             node: Vec::new(),
         };
-        assert!(no_nodes.validate(3).is_ok());
+        assert!(no_nodes.validate(3, 2, 1, 0).is_ok());
 
         // A present-but-short array is a drift and is rejected with a clear message.
         let drifted = TriangleData {
@@ -563,11 +576,52 @@ mod tests {
             material: vec![0, 0],
             node: vec![0, 0, 0],
         };
-        let err = drifted.validate(3).unwrap_err();
+        let err = drifted.validate(3, 2, 1, 1).unwrap_err();
         assert!(err.contains("material"), "message names the drifted array");
 
         // All-empty (a model with no per-triangle info) passes for any count.
-        assert!(TriangleData::default().validate(0).is_ok());
+        assert!(TriangleData::default().validate(0, 0, 0, 0).is_ok());
+    }
+
+    #[test]
+    fn triangle_data_validate_catches_out_of_range_indices() {
+        let base = TriangleData {
+            to_face: vec![0, 1, 1],
+            material: vec![0, u32::MAX, 0],
+            node: vec![0, 0, 0],
+        };
+        assert!(base.validate(3, 2, 1, 1).is_ok());
+
+        // A face index past the face table is rejected.
+        let bad_face = TriangleData {
+            to_face: vec![0, 2, 1],
+            ..base.clone()
+        };
+        let err = bad_face.validate(3, 2, 1, 1).unwrap_err();
+        assert!(
+            err.contains("to_face"),
+            "message names the bad array: {err}"
+        );
+
+        // A material slot past the material table is rejected, but the
+        // `u32::MAX` no-material sentinel stays allowed.
+        let bad_material = TriangleData {
+            material: vec![0, 1, 0],
+            ..base.clone()
+        };
+        let err = bad_material.validate(3, 2, 1, 1).unwrap_err();
+        assert!(
+            err.contains("material"),
+            "message names the bad array: {err}"
+        );
+
+        // A node index past the node table is rejected.
+        let bad_node = TriangleData {
+            node: vec![0, 0, 1],
+            ..base
+        };
+        let err = bad_node.validate(3, 2, 1, 1).unwrap_err();
+        assert!(err.contains("node"), "message names the bad array: {err}");
     }
 
     #[test]
@@ -628,7 +682,6 @@ mod tests {
                 source_unit_meters: 1.0,
             },
             materials: Vec::new(),
-            warnings: Vec::new(),
         };
 
         assert!(model.has_degenerate_tangents(), "seeded with zero tangents");

@@ -137,10 +137,9 @@ fn draw_canvas(
     // settles (the on-demand redraw loop honours egui's repaint request).
     advance_transition(view, ctx);
 
-    // DORMANT (D3D11 migration): the image itself is drawn by `app` through the
-    // D3D11 RHI (migration Phase 4); channel isolation is a shader-uniform swizzle
-    // there. This module owns only placement + interaction (pan/zoom/fit) and the
-    // background fill, so for now the viewport shows the chosen background only.
+    // The image itself is drawn by `app` through `review_render`'s `TexGpu`
+    // (channel isolation is a shader-uniform swizzle there); this module owns
+    // only placement + interaction (pan/zoom/fit) and the background fill.
 }
 
 /// Apply an exponential zoom step (`exponent` measured in zoom e-folds) about a
@@ -246,27 +245,12 @@ fn draw_empty_hint(ui: &mut egui::Ui, ctx: &egui::Context, rect: egui::Rect) {
 /// the Tex viewport's analogue of the model-stats overlay (matching frame + inset).
 fn draw_texture_stats_overlay(ctx: &egui::Context, entry: &TexturePoolEntry) {
     let status_bar_height = theme::px(ctx, size::STATUS_BAR_HEIGHT);
-    egui::Area::new(egui::Id::new("texture_stats_overlay"))
-        .fade_in(false)
-        .anchor(
-            egui::Align2::LEFT_BOTTOM,
-            egui::vec2(
-                theme::px(ctx, size::STATS_OVERLAY_MARGIN),
-                -(status_bar_height + theme::px(ctx, size::STATS_OVERLAY_MARGIN)),
-            ),
-        )
-        .show(ctx, |ui| {
-            egui::Frame::NONE
-                .fill(color::STATS_OVERLAY_BG)
-                .stroke(egui::Stroke::new(size::HAIRLINE, color::STATS_BORDER))
-                .corner_radius(size::STATS_CORNER_RADIUS)
-                .inner_margin(egui::Margin::symmetric(
-                    size::STATS_PANEL_PAD_X,
-                    size::STATS_PANEL_PAD_Y,
-                ))
-                .show(ui, |ui| {
-                    ui.set_width(size::TEXTURE_STATS_PANEL_WIDTH);
-                    stats::texture_stats_grid(ui, entry);
-                });
-        });
+    crate::widgets::stats_overlay_card(
+        ctx,
+        "texture_stats_overlay",
+        0.0,
+        status_bar_height,
+        size::TEXTURE_STATS_PANEL_WIDTH,
+        |ui| stats::texture_stats_grid(ui, entry),
+    );
 }

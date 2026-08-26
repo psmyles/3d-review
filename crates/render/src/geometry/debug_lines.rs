@@ -235,14 +235,15 @@ pub(crate) fn face_normal_lines(
         return Vec::new();
     }
 
-    let face_count = model
-        .triangles
-        .to_face
-        .iter()
-        .copied()
-        .max()
-        .map(|max_face| max_face as usize + 1)
-        .unwrap_or(triangle_count);
+    // Sized by the model's own face table — never by the largest `to_face`
+    // entry, which a corrupt import could inflate into a multi-gigabyte
+    // allocation. A model with no face info gets one slot per triangle (the
+    // per-triangle fallback the accumulation below uses).
+    let face_count = if model.triangles.to_face.is_empty() {
+        triangle_count
+    } else {
+        model.faces.len()
+    };
     let mut accum_centers = vec![Vec3::ZERO; face_count];
     let mut accum_normals = vec![Vec3::ZERO; face_count];
     let mut counts = vec![0_u32; face_count];

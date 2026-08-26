@@ -218,12 +218,12 @@ impl App {
             Arc::new(states)
         };
 
-        let textures = if prev.texture_revision == self.texture_revision {
+        let textures = if prev.texture_revision == self.textures.revision {
             Arc::clone(&prev.textures)
         } else {
             Arc::new(TexturePool {
-                pool: self.texture_pool.clone(),
-                cache: self.texture_cache.clone(),
+                pool: self.textures.pool.clone(),
+                cache: self.textures.cache.clone(),
             })
         };
 
@@ -234,7 +234,7 @@ impl App {
             materials,
             material_revision,
             textures,
-            texture_revision: self.texture_revision,
+            texture_revision: self.textures.revision,
         }
     }
 
@@ -255,22 +255,22 @@ impl App {
             renderer.restore_materials((*snapshot.materials).clone());
         }
 
-        self.texture_pool = snapshot.textures.pool.clone();
-        self.texture_cache = snapshot.textures.cache.clone();
+        self.textures.pool = snapshot.textures.pool.clone();
+        self.textures.cache = snapshot.textures.cache.clone();
         // The pool/cache changed wholesale; bump so the next capture rebuilds the
         // textures `Arc` for the baseline rather than reusing a stale one.
-        self.texture_revision = self.texture_revision.wrapping_add(1);
+        self.textures.revision = self.textures.revision.wrapping_add(1);
         // Re-watch each restored path's directory (idempotent per directory; stale
         // extra watches on no-longer-pooled dirs are harmless — a reload event for
         // an unbound path is a no-op).
-        let pooled: Vec<PathBuf> = self.texture_pool.clone();
+        let pooled: Vec<PathBuf> = self.textures.pool.clone();
         for path in &pooled {
             self.watch_texture(path);
         }
 
         self.refresh_materials();
         self.refresh_texture_pool();
-        self.redraw_requested = true;
+        self.redraw.requested = true;
     }
 
     /// Drop all undo/redo history and rebaseline to the current state. Called after

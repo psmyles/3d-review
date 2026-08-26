@@ -251,7 +251,7 @@ fn texture_mapping_row(
 
         let gap = ui.spacing().item_spacing.x;
         let channel_w = size::TEXTURE_CHANNEL_COMBO_W;
-        let texture_w = (ui.available_width() - channel_w - gap).max(60.0);
+        let texture_w = (ui.available_width() - channel_w - gap).max(size::TEXTURE_COMBO_MIN_W);
 
         let selected_text = binding
             .map(|binding| pool_name(&binding.path))

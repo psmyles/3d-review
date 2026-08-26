@@ -75,27 +75,13 @@ pub(crate) fn stats_grid(ui: &mut egui::Ui, state: &UiState) {
 /// label. Snaps the common DCC units to their names and falls back to the raw
 /// factor for anything else; `0.0`/non-finite means the file declared no unit.
 fn source_unit_label(meters_per_unit: f32) -> String {
-    if !meters_per_unit.is_finite() || meters_per_unit <= 0.0 {
-        return "—".to_owned();
-    }
-
-    // (meters-per-unit, label) for the units a DCC commonly writes. Matched with
-    // a relative tolerance so float drift in the file's factor still resolves.
-    const KNOWN: [(f32, &str); 6] = [
-        (1.0, "m"),
-        (0.01, "cm"),
-        (0.001, "mm"),
-        (0.0254, "in"),
-        (0.3048, "ft"),
-        (0.9144, "yd"),
-    ];
-    for (factor, label) in KNOWN {
-        if (meters_per_unit - factor).abs() <= factor * 0.001 {
-            return label.to_owned();
+    match crate::units::match_known_unit(meters_per_unit) {
+        Some((_, label)) => label.to_owned(),
+        None if meters_per_unit.is_finite() && meters_per_unit > 0.0 => {
+            format!("{meters_per_unit:.4} m")
         }
+        None => "—".to_owned(),
     }
-
-    format!("{meters_per_unit:.4} m")
 }
 
 /// One stats row: label hugs the left edge, value right-aligns against the

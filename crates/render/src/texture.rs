@@ -181,8 +181,7 @@ pub struct DecodedImage {
 /// else → the `image` crate. Returns a human-readable error string on failure (the
 /// caller warns + falls back to the slot's neutral 1×1 texture).
 pub fn decode_image(path: &Path) -> Result<DecodedImage, String> {
-    let bytes =
-        std::fs::read(path).map_err(|error| format!("read {}: {error}", path.display()))?;
+    let bytes = std::fs::read(path).map_err(|error| format!("read {}: {error}", path.display()))?;
     let extension = path
         .extension()
         .and_then(|ext| ext.to_str())
@@ -243,6 +242,13 @@ fn decode_via_image_crate(
     {
         reader.set_format(format);
     }
+    // Bound the decode: a malformed header claiming absurd dimensions must fail
+    // cleanly here, not balloon RAM (the default limits cap allocation but not
+    // dimensions). 30000 px matches the PSD path's ceiling.
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(30_000);
+    limits.max_image_height = Some(30_000);
+    reader.limits(limits);
     reader
         .decode()
         .map_err(|error| format!("decode {}: {error}", path.display()))
@@ -430,8 +436,8 @@ mod tests {
     /// it's absent so the suite still passes in a trimmed checkout.
     #[test]
     fn psd_fixture_decodes_to_rgba8() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../assets/test_textures/T_Sides_D.psd");
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/test_textures/T_Sides_D.psd");
         if !path.exists() {
             return;
         }

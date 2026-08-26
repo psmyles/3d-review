@@ -43,7 +43,11 @@ pub(crate) fn draw_axis_gizmo(
     points.sort_by(|a, b| a.depth.total_cmp(&b.depth));
 
     for point in points.iter().filter(|point| point.positive) {
-        let alpha = ((0.4 + 0.6 * ((point.depth + 1.0) * 0.5)).clamp(0.0, 1.0) * 255.0) as u8;
+        // Depth fade: the ramp endpoints are theme tokens; only the per-axis
+        // depth factor is runtime state.
+        let fade = size::GIZMO_DEPTH_FADE_FLOOR
+            + size::GIZMO_DEPTH_FADE_RANGE * ((point.depth + 1.0) * 0.5);
+        let alpha = (fade.clamp(0.0, 1.0) * 255.0) as u8;
         painter.line_segment(
             [center, point.position],
             egui::Stroke::new(

@@ -25,6 +25,8 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_SAMPLE_DESC};
 use windows::core::Result;
 
+use super::out_param;
+
 /// A headless Direct3D 11 device + immediate context (no swapchain) for the offline
 /// IBL bake, with safe wrappers for the fullscreen passes + subresource readback.
 pub(crate) struct Baker {
@@ -124,7 +126,7 @@ impl Baker {
             self.device
                 .CreateTexture2D(&desc, None, Some(&mut staging))?
         };
-        let staging = staging.unwrap();
+        let staging = out_param(staging);
 
         // SAFETY: `source` is not currently bound as a render target (callers unbind
         // first); the single source subresource matches the staging texture's only
@@ -191,7 +193,7 @@ impl CubeTarget {
         // SAFETY: a render-target-capable cube texture with no initial data (filled by
         // drawing); the out-param is set.
         unsafe { device.CreateTexture2D(&desc, None, Some(&mut texture))? };
-        let texture = texture.unwrap();
+        let texture = out_param(texture);
 
         let mut rtvs = Vec::with_capacity((mips * 6) as usize);
         for mip in 0..mips {
@@ -213,7 +215,7 @@ impl CubeTarget {
                 unsafe {
                     device.CreateRenderTargetView(&texture, Some(&rtv_desc), Some(&mut rtv))?
                 };
-                rtvs.push(rtv.unwrap());
+                rtvs.push(out_param(rtv));
             }
         }
 
@@ -235,7 +237,7 @@ impl CubeTarget {
         Ok(Self {
             texture,
             rtvs,
-            srv: srv.unwrap(),
+            srv: out_param(srv),
         })
     }
 
@@ -254,8 +256,7 @@ impl CubeTarget {
 
     /// Bind the whole cube as a sampled shader resource at pixel-shader slot `slot`.
     pub(crate) fn bind_ps_srv(&self, ctx: &ID3D11DeviceContext, slot: u32) {
-        // SAFETY: the SRV is live; the one-element array outlives the call.
-        unsafe { ctx.PSSetShaderResources(slot, Some(&[Some(self.srv.clone())])) };
+        super::bind_ps_srv(ctx, slot, &self.srv);
     }
 
     /// The underlying texture, for [`Baker::readback_subresource`].
@@ -296,14 +297,14 @@ impl Target2D {
         let mut texture = None;
         // SAFETY: a render-target-capable 2D texture with no initial data; out-param set.
         unsafe { device.CreateTexture2D(&desc, None, Some(&mut texture))? };
-        let texture = texture.unwrap();
+        let texture = out_param(texture);
         let mut rtv = None;
         // SAFETY: `texture` is render-target-bindable; a default RTV desc matches its
         // typed format. Out-param set.
         unsafe { device.CreateRenderTargetView(&texture, None, Some(&mut rtv))? };
         Ok(Self {
             texture,
-            rtv: rtv.unwrap(),
+            rtv: out_param(rtv),
         })
     }
 

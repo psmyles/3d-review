@@ -60,10 +60,11 @@ fn same_path(a: &Path, b: &Path) -> bool {
 impl App {
     pub(crate) fn refresh_texture_pool(&mut self) {
         self.ui.texture_pool = self
-            .texture_pool
+            .textures
+            .pool
             .iter()
             .filter_map(|path| {
-                self.texture_cache.get(path).map(|image| TexturePoolEntry {
+                self.textures.cache.get(path).map(|image| TexturePoolEntry {
                     path: path.clone(),
                     image: Arc::clone(image),
                     // On-disk size for the Tex viewport's stats panel; 0 (shown as
@@ -94,21 +95,21 @@ impl App {
     /// the event loop) and a "Decoding…" toast shows until it lands back via
     /// [`UserEvent::TextureDecoded`].
     pub(crate) fn import_texture_path(&mut self, path: PathBuf) {
-        if self.texture_pool.contains(&path) {
+        if self.textures.pool.contains(&path) {
             return;
         }
         // Already decoded (a prior import that was removed, say): pool on the spot.
-        if self.texture_cache.contains_key(&path) {
-            self.texture_pool.push(path.clone());
-            self.texture_revision = self.texture_revision.wrapping_add(1);
+        if self.textures.cache.contains_key(&path) {
+            self.textures.pool.push(path.clone());
+            self.textures.revision = self.textures.revision.wrapping_add(1);
             self.watch_texture(&path);
             self.refresh_texture_pool();
-            self.redraw_requested = true;
+            self.redraw.requested = true;
             return;
         }
         self.notifications
             .begin_activity(format!("Decoding {}…", file_label(&path)));
-        self.redraw_requested = true;
+        self.redraw.requested = true;
         self.spawn_decode(TextureDecodeRequest::Import { path });
     }
 
@@ -119,7 +120,7 @@ impl App {
         let Some(slot) = TextureSlot::from_index(slot_ref.slot) else {
             return;
         };
-        let Some(image) = self.texture_cache.get(&path).cloned() else {
+        let Some(image) = self.textures.cache.get(&path).cloned() else {
             prof::msg(&format!(
                 "assign of a texture not in the pool: {}",
                 path.display()
@@ -148,9 +149,9 @@ impl App {
                 }
             }
         }
-        self.texture_pool.retain(|pooled| pooled != path);
-        self.texture_cache.remove(path);
-        self.texture_revision = self.texture_revision.wrapping_add(1);
+        self.textures.pool.retain(|pooled| pooled != path);
+        self.textures.cache.remove(path);
+        self.textures.revision = self.textures.revision.wrapping_add(1);
         self.refresh_materials();
         self.refresh_texture_pool();
     }
@@ -173,15 +174,21 @@ impl App {
         }
         self.watch_texture(path);
         self.refresh_materials();
-        self.redraw_requested = true;
+        self.redraw.requested = true;
     }
 
     /// Spawn a background thread that decodes `request`'s source image and posts the
     /// result back to the event loop. Decoding (especially a large PSD composite or
     /// a 4K image) can take a while, so it must never run on the main thread.
-    fn spawn_decode(&self, request: TextureDecodeRequest) {
-        let Some(proxy) = self.texture_proxy.clone() else {
+    fn spawn_decode(&mut self, request: TextureDecodeRequest) {
+        let Some(proxy) = self.textures.proxy.clone() else {
+            // Without a proxy the decode can never land back: end the paired
+            // "Decoding…" / "Reloading…" activity toast (it would otherwise hang
+            // forever) and surface the failure instead of silently dropping it.
             prof::msg("no event-loop proxy; cannot decode texture off-thread");
+            self.notifications.end_activity();
+            self.notifications
+                .error(format!("Couldn't load {}", file_label(request.path())));
             return;
         };
         std::thread::spawn(move || {
@@ -208,18 +215,18 @@ impl App {
         match result {
             Ok(image) => {
                 let image = Arc::new(image);
-                self.texture_cache.insert(path.clone(), Arc::clone(&image));
+                self.textures.cache.insert(path.clone(), Arc::clone(&image));
                 // The pool/cache changed (an import landed, or a watched file
                 // re-decoded), so bump the undo system's texture change tag.
-                self.texture_revision = self.texture_revision.wrapping_add(1);
+                self.textures.revision = self.textures.revision.wrapping_add(1);
                 match request {
                     TextureDecodeRequest::Import { .. } => {
-                        if !self.texture_pool.contains(&path) {
-                            self.texture_pool.push(path.clone());
+                        if !self.textures.pool.contains(&path) {
+                            self.textures.pool.push(path.clone());
                         }
                         self.watch_texture(&path);
                         self.refresh_texture_pool();
-                        self.redraw_requested = true;
+                        self.redraw.requested = true;
                         self.notifications.success(format!("Loaded {name}"));
                     }
                     TextureDecodeRequest::Reload { .. } => {
@@ -232,7 +239,7 @@ impl App {
                         self.refresh_texture_pool();
                         if updated {
                             self.refresh_materials();
-                            self.redraw_requested = true;
+                            self.redraw.requested = true;
                             self.notifications.info(format!("Reloaded {name}"));
                         }
                     }
@@ -258,41 +265,53 @@ impl App {
         let Some(dir) = path.parent().map(Path::to_path_buf) else {
             return;
         };
-        if self.watched_dirs.contains(&dir) {
+        if self.textures.watched_dirs.contains(&dir) {
             return;
         }
-        if self.texture_watcher.is_none() {
-            let Some(proxy) = self.texture_proxy.clone() else {
+        if self.textures.watcher.is_none() {
+            let Some(proxy) = self.textures.proxy.clone() else {
                 return;
             };
             let handler = move |result: notify::Result<Event>| {
-                if let Ok(event) = result {
-                    // Only content writes / creates matter (a save is one or both).
-                    if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
-                        for changed in event.paths {
-                            let _ = proxy.send_event(UserEvent::TextureChanged(changed));
+                match result {
+                    Ok(event) => {
+                        // Only content writes / creates matter (a save is one or both).
+                        if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
+                            for changed in event.paths {
+                                let _ = proxy.send_event(UserEvent::TextureChanged(changed));
+                            }
                         }
                     }
+                    // A backend error stops reload events for its watch; leave a
+                    // trace instead of dropping it without a word.
+                    Err(error) => prof::msg(&format!("texture watcher error: {error}")),
                 }
             };
             match RecommendedWatcher::new(handler, notify::Config::default()) {
-                Ok(watcher) => self.texture_watcher = Some(watcher),
+                Ok(watcher) => self.textures.watcher = Some(watcher),
                 Err(error) => {
                     prof::msg(&format!("failed to create texture watcher: {error}"));
+                    self.notifications
+                        .info("Texture auto-reload unavailable (file watcher failed)");
                     return;
                 }
             }
         }
-        if let Some(watcher) = self.texture_watcher.as_mut() {
+        if let Some(watcher) = self.textures.watcher.as_mut() {
             match watcher.watch(&dir, RecursiveMode::NonRecursive) {
                 Ok(()) => {
-                    self.watched_dirs.insert(dir);
+                    self.textures.watched_dirs.insert(dir);
                 }
                 Err(error) => {
                     prof::msg(&format!(
                         "failed to watch texture directory {}: {error}",
                         dir.display()
                     ));
+                    self.notifications
+                        .info(format!("Auto-reload unavailable for {}", file_label(&dir)));
+                    // Record the attempt so a failing directory isn't retried
+                    // (and re-toasted) on every texture it contains.
+                    self.textures.watched_dirs.insert(dir);
                 }
             }
         }
@@ -323,12 +342,12 @@ impl App {
     /// model's materials carry no textures, so old watches / cached images no
     /// longer apply.
     pub(crate) fn reset_texture_state(&mut self) {
-        self.texture_cache.clear();
-        self.texture_pool.clear();
-        self.texture_revision = self.texture_revision.wrapping_add(1);
+        self.textures.cache.clear();
+        self.textures.pool.clear();
+        self.textures.revision = self.textures.revision.wrapping_add(1);
         self.ui.texture_pool = Vec::new();
-        self.watched_dirs.clear();
+        self.textures.watched_dirs.clear();
         // Dropping the watcher unregisters every directory.
-        self.texture_watcher = None;
+        self.textures.watcher = None;
     }
 }

@@ -26,10 +26,10 @@ impl App {
     /// the camera aspect ratios + framing safe-area, and resize the swapchain (a
     /// failed resize is non-fatal — the old buffers stay valid for this frame).
     pub(crate) fn handle_resized(&mut self, size: PhysicalSize<u32>, window: &Window) {
-        self.refresh_interval = monitor_refresh_interval(window);
+        self.redraw.refresh_interval = monitor_refresh_interval(window);
         // Defer recording to `about_to_wait`: a maximize resize lands before winit's
         // maximized flag is set, so sampling here would store maximized geometry.
-        self.windowed_bounds_dirty = true;
+        self.placement.bounds_dirty = true;
 
         if let Some(renderer) = self.renderer.as_mut()
             && size.height > 0
@@ -41,8 +41,12 @@ impl App {
             renderer.set_framing_safe_area(safe_w, safe_h);
         }
 
-        if let Some(gpu) = self.gpu.as_mut() {
-            let _ = gpu.resize(size.width, size.height);
+        if let Some(gpu) = self.gpu.as_mut()
+            && let Err(error) = gpu.resize(size.width, size.height)
+        {
+            // Non-fatal (the old buffers stay valid, and the next successful
+            // resize recovers) — but not silent, unlike every other error here.
+            crate::prof::msg(&format!("swapchain resize failed: {error}"));
         }
 
         window.request_redraw();
@@ -75,7 +79,7 @@ impl App {
                 self.last_primary_click = Some((Instant::now(), position));
             }
             self.ui.show_help_overlay = false;
-            self.redraw_requested = true;
+            self.redraw.requested = true;
             return;
         }
 
@@ -84,8 +88,14 @@ impl App {
         }
 
         // The UV viewport is a 2D pan/zoom workspace: LMB pans, RMB zooms (down =
-        // in). The 3D scene keeps LMB orbit / RMB pan-or-zoom.
-        let uv_mode = self.ui.mode == WorkspaceMode::Uv;
+        // in). The 3D scene keeps LMB orbit / RMB pan-or-zoom. The Tex viewport
+        // handles its own pan/zoom inside egui (its canvas senses the drag), so
+        // an unclaimed press there must not start a 3D-camera drag.
+        let uv_mode = match self.ui.mode {
+            WorkspaceMode::Uv => true,
+            WorkspaceMode::ThreeD => false,
+            WorkspaceMode::Texture => return,
+        };
         match button {
             MouseButton::Left => {
                 if self.should_open_on_double_click() {
@@ -152,7 +162,7 @@ impl App {
                     }
                 }
             }
-            self.redraw_requested = true;
+            self.redraw.requested = true;
         }
 
         self.last_pointer_position = Some(current);
@@ -172,11 +182,13 @@ impl App {
             MouseScrollDelta::LineDelta(_, y) => y * WHEEL_LINE_ZOOM_STEP,
             MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / WHEEL_PIXELS_PER_ZOOM_STEP,
         };
-        if self.ui.mode == WorkspaceMode::Uv {
-            renderer.zoom_uv_camera(amount);
-        } else {
-            renderer.zoom_camera(amount);
+        match self.ui.mode {
+            WorkspaceMode::Uv => renderer.zoom_uv_camera(amount),
+            WorkspaceMode::ThreeD => renderer.zoom_camera(amount),
+            // The Tex viewport zooms inside egui (its canvas claims the wheel);
+            // an unclaimed wheel there must not zoom the hidden 3D camera.
+            WorkspaceMode::Texture => return,
         }
-        self.redraw_requested = true;
+        self.redraw.requested = true;
     }
 }

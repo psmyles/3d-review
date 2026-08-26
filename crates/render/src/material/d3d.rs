@@ -120,7 +120,14 @@ impl MaterialTableD3d {
                         .get(&key)
                         .is_none_or(|cached| cached.identity != identity);
                     if stale {
-                        let texture = upload_binding(device, ctx, &binding.image, srgb)?;
+                        let texture = Texture::rgba8_mipped_or_white(
+                            device,
+                            ctx,
+                            binding.image.width,
+                            binding.image.height,
+                            &binding.image.rgba,
+                            srgb,
+                        )?;
                         self.cache.insert(
                             key.clone(),
                             CachedTexture {
@@ -179,36 +186,34 @@ impl MaterialTableD3d {
     }
 }
 
-/// Upload one decoded image into a mip-mapped material texture. Mirrors the wgpu
-/// `upload_texture` guard: a genuinely empty / mismatched buffer falls back to a 1×1
-/// white texel so a decode hiccup never fails the render path.
-fn upload_binding(
-    device: &ID3D11Device,
-    ctx: &ID3D11DeviceContext,
-    image: &crate::texture::DecodedImage,
-    srgb: bool,
-) -> windows::core::Result<Texture> {
-    let width = image.width.max(1);
-    let height = image.height.max(1);
-    if image.rgba.len() < (width as usize * height as usize * 4) {
-        return Texture::rgba8_single(device, 1, 1, &[255, 255, 255, 255], srgb);
-    }
-    Texture::rgba8_mipped(device, ctx, width, height, &image.rgba, srgb)
-}
-
 /// Create the per-slot neutral 1×1 fallback textures (white base/AO/opacity,
 /// `[128,128,255]` normal, mid-grey roughness/metallic, black emissive) used for
 /// any unassigned slot.
 fn create_fallback_textures(
     device: &ID3D11Device,
 ) -> windows::core::Result<[Arc<Texture>; TEXTURE_SLOT_COUNT]> {
-    let mut textures: Vec<Arc<Texture>> = Vec::with_capacity(TEXTURE_SLOT_COUNT);
-    for slot in TextureSlot::ALL {
+    let make = |slot: TextureSlot| -> windows::core::Result<Arc<Texture>> {
         let pixel = fallback_pixel(slot);
-        let texture = Texture::rgba8_single(device, 1, 1, &pixel, slot.is_srgb())?;
-        textures.push(Arc::new(texture));
-    }
-    Ok(textures.try_into().unwrap_or_else(|_| unreachable!()))
+        Ok(Arc::new(Texture::rgba8_single(
+            device,
+            1,
+            1,
+            &pixel,
+            slot.is_srgb(),
+        )?))
+    };
+    // Destructured so the compiler proves one texture per slot (no fallible
+    // `try_into` + dead panic arm).
+    let [a, b, c, d, e, f, g] = TextureSlot::ALL;
+    Ok([
+        make(a)?,
+        make(b)?,
+        make(c)?,
+        make(d)?,
+        make(e)?,
+        make(f)?,
+        make(g)?,
+    ])
 }
 
 /// The neutral fallback RGBA for an unassigned slot.

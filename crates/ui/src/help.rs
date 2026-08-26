@@ -8,8 +8,13 @@
 use crate::state::UiState;
 use crate::theme::{color, font, size};
 
-/// Left-column shortcut rows: (key-cap glyph, description). Mirrors the bare-key
-/// shortcuts handled in `app`'s `handle_keyboard_shortcut`.
+// The shortcut cheat-sheet. All rows come from these tables — none are written
+// inline in the draw code — so this block is the one place to keep in lockstep
+// with the actual bindings in `app`'s `handle_keyboard_shortcut`
+// (crates/app/src/main.rs), which carries the mirror-image pointer comment.
+
+/// Left-column shortcut rows: (key-cap glyph, description) for the bare-key
+/// display toggles.
 const LEFT_SHORTCUTS: [(&str, &str); 6] = [
     ("`", "Toggle wireframe overlay"),
     ("1", "Wireframe only"),
@@ -27,6 +32,16 @@ const RIGHT_SHORTCUTS: [(&str, &str); 6] = [
     ("A", "Orbit camera left"),
     ("S", "Orbit camera down"),
     ("D", "Orbit camera right"),
+];
+
+/// Bottom-section rows: (key-cap chord, description) for the file / edit
+/// commands.
+const CHORD_SHORTCUTS: [(&[&str], &str); 5] = [
+    (&["Ctrl", "N"], "Reset 3D Review to start state"),
+    (&["Ctrl", "O"], "Open model from file dialog"),
+    (&["Ctrl", "Z"], "Undo"),
+    (&["Ctrl", "Y"], "Redo"),
+    (&["Esc"], "Clear selection"),
 ];
 
 /// Draw the startup help overlay when active. A full-screen invisible catcher
@@ -114,15 +129,12 @@ fn draw_card_contents(ui: &mut egui::Ui, state: &UiState) {
     });
 
     section_divider(ui);
-    shortcut_row(ui, &["Ctrl", "N"], "Reset 3D Review to start state");
-    ui.add_space(size::HELP_ROW_GAP);
-    shortcut_row(ui, &["Ctrl", "O"], "Open model from file dialog");
-    ui.add_space(size::HELP_ROW_GAP);
-    shortcut_row(ui, &["Ctrl", "Z"], "Undo");
-    ui.add_space(size::HELP_ROW_GAP);
-    shortcut_row(ui, &["Ctrl", "Y"], "Redo");
-    ui.add_space(size::HELP_ROW_GAP);
-    shortcut_row(ui, &["Esc"], "Clear selection");
+    for (i, (keys, desc)) in CHORD_SHORTCUTS.iter().enumerate() {
+        if i > 0 {
+            ui.add_space(size::HELP_ROW_GAP);
+        }
+        shortcut_row(ui, keys, desc);
+    }
 
     section_divider(ui);
     centered_text(

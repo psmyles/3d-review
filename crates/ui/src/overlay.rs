@@ -2,36 +2,12 @@
 //! the egui chrome (toolbar, option panel, gizmo, stats, status bar) each frame,
 //! and returns the [`UiOutput`] intents for `app` to apply.
 
-use std::sync::Arc;
-
 use review_model::{ModelData, SceneBvh};
-use review_render::{OrbitCamera, UvCamera};
+use review_render::OrbitCamera;
 
 use crate::state::{OptionPanel, UiOutput, UiState, WorkspaceMode, sync_debug_state};
-use crate::theme::{self, color, size};
+use crate::theme::{self, size};
 use crate::{dimensions, gizmo, help, panels, stats, status_bar, texture_view, toolbar};
-
-/// Paint the viewport scene behind the egui chrome: the 3D scene in 3D mode, the
-/// 2D UV viewport in UV mode. Texture mode renders no 3D scene — its 2D image
-/// viewer is drawn by `app`'s `TexGpu` pass (see [`texture_view`]).
-pub fn draw_viewport_scene(
-    ctx: &egui::Context,
-    state: &UiState,
-    camera: OrbitCamera,
-    uv_camera: UvCamera,
-    model: Arc<ModelData>,
-    model_revision: u64,
-) {
-    // DORMANT (D3D11 migration): the 3D / UV scene is rendered by `app` directly
-    // through the D3D11 RHI (migration Phase 1+), drawn to the backbuffer *before*
-    // the egui chrome — egui-directx11 has no paint-callback mechanism, and doesn't
-    // need one. This stub is the seam where the UI will emit a per-frame "scene
-    // request" (mode + camera + viewport rect) for `app` to consume once the D3D11
-    // scene path lands; until then the viewport shows the clear color behind the
-    // chrome (a blank scene). Inputs are accepted now so the call site in `app`'s
-    // egui run is already shaped for that wiring.
-    let _ = (ctx, state, camera, uv_camera, model, model_revision);
-}
 
 /// Draw the full egui overlay and return the intents emitted this frame. `model`
 /// is the shared scene geometry and `bvh` an acceleration structure over it, both
@@ -238,27 +214,12 @@ fn draw_stats_overlay(
     if !state.show_stats {
         return;
     }
-    egui::Area::new(egui::Id::new("stats_overlay"))
-        .fade_in(false)
-        .anchor(
-            egui::Align2::LEFT_BOTTOM,
-            egui::vec2(
-                left_inset + theme::px(ctx, size::STATS_OVERLAY_MARGIN),
-                -(status_bar_height + theme::px(ctx, size::STATS_OVERLAY_MARGIN)),
-            ),
-        )
-        .show(ctx, |ui| {
-            egui::Frame::NONE
-                .fill(color::STATS_OVERLAY_BG)
-                .stroke(egui::Stroke::new(size::HAIRLINE, color::STATS_BORDER))
-                .corner_radius(size::STATS_CORNER_RADIUS)
-                .inner_margin(egui::Margin::symmetric(
-                    size::STATS_PANEL_PAD_X,
-                    size::STATS_PANEL_PAD_Y,
-                ))
-                .show(ui, |ui| {
-                    ui.set_width(size::STATS_PANEL_WIDTH);
-                    stats::stats_grid(ui, state);
-                });
-        });
+    crate::widgets::stats_overlay_card(
+        ctx,
+        "stats_overlay",
+        left_inset,
+        status_bar_height,
+        size::STATS_PANEL_WIDTH,
+        |ui| stats::stats_grid(ui, state),
+    );
 }

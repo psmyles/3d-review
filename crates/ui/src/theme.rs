@@ -18,20 +18,10 @@ pub mod color {
     use egui::Color32;
 
     // ── Surfaces ────────────────────────────────────────────────────────────
-    /// Window / top-level panel background.
-    pub const WINDOW_BG: Color32 = Color32::from_rgb(33, 33, 33);
     /// Toolbar and status-bar background.
     pub const CHROME_BG: Color32 = Color32::from_rgb(40, 39, 38);
     /// Recessed background for toolbar button groups and idle icon tiles.
     pub const GROUP_BG: Color32 = Color32::from_rgb(18, 19, 22);
-    /// egui "extreme" background (text-edit / slider rails).
-    pub const EXTREME_BG: Color32 = Color32::from_rgb(16, 17, 19);
-    /// Non-interactive widget background.
-    pub const WIDGET_NONINTERACTIVE_BG: Color32 = Color32::from_rgb(36, 36, 36);
-    /// Open-combo widget background.
-    pub const WIDGET_OPEN_BG: Color32 = Color32::from_rgb(41, 43, 48);
-    /// Option-panel card background (header + body).
-    pub const PANEL_CARD_BG: Color32 = Color32::from_rgb(39, 39, 39);
     /// Translucent fill behind the stats overlay.
     pub const STATS_OVERLAY_BG: Color32 = Color32::from_rgba_premultiplied(20, 22, 25, 130);
     /// Translucent fill behind the axis gizmo while hovered / dragged.
@@ -48,12 +38,6 @@ pub mod color {
     // ── Accent / selection ──────────────────────────────────────────────────
     /// Selected / active control fill (toolbar toggles, mode segments).
     pub const ACCENT: Color32 = Color32::from_rgb(66, 103, 163);
-    /// egui selection fill.
-    pub const SELECTION: Color32 = Color32::from_rgb(68, 107, 177);
-    /// egui pressed/active widget fill.
-    pub const ACTIVE: Color32 = Color32::from_rgb(64, 105, 171);
-    /// egui hovered widget fill (used by egui-native widgets like sliders).
-    pub const WIDGET_HOVERED_BG: Color32 = Color32::from_rgb(47, 79, 131);
     /// Outline on a selected swatch / selection stroke.
     pub const SELECTION_STROKE: Color32 = Color32::from_rgb(88, 135, 217);
     /// Viewport selection highlight: the outline drawn around the Outliner-selected
@@ -67,19 +51,12 @@ pub mod color {
     /// button has more behind it. Opaque at the center, faded to transparent at
     /// both ends.
     pub const OPTIONS_HINT: Color32 = Color32::from_rgb(120, 226, 96);
-    /// Reset-button fills (idle / hovered).
-    pub const BUTTON_BG: Color32 = Color32::from_rgb(20, 23, 26);
-    pub const BUTTON_HOVER_BG: Color32 = Color32::from_rgb(28, 32, 37);
 
     // ── Text ────────────────────────────────────────────────────────────────
     /// Brightest text (active labels, hovered glyphs).
     pub const TEXT_PRIMARY: Color32 = Color32::WHITE;
     /// Default body text.
     pub const TEXT_BODY: Color32 = Color32::from_rgb(216, 219, 224);
-    /// Panel title text.
-    pub const TEXT_TITLE: Color32 = Color32::from_gray(224);
-    /// Reset-button label.
-    pub const TEXT_BUTTON: Color32 = Color32::from_gray(214);
     /// Stats value column.
     pub const TEXT_VALUE: Color32 = Color32::from_gray(232);
     /// Unselected mode-segment label.
@@ -88,29 +65,18 @@ pub mod color {
     pub const ICON_IDLE: Color32 = Color32::from_gray(230);
     /// Stats label column / muted row labels.
     pub const TEXT_MUTED: Color32 = Color32::from_gray(178);
-    /// Control-row label text in option panels.
-    pub const TEXT_LABEL: Color32 = Color32::from_gray(180);
     /// Selected option text in a compact combo (stands out by brightness).
     pub const TEXT_COMBO_SELECTED: Color32 = Color32::from_gray(238);
     /// Dimmed unselected option text in a compact combo.
     pub const TEXT_COMBO_DIM: Color32 = Color32::from_gray(150);
-    /// Close-glyph tint (idle / hovered).
-    pub const ICON_CLOSE_IDLE: Color32 = Color32::from_gray(176);
-    pub const ICON_CLOSE_HOVERED: Color32 = Color32::from_gray(235);
 
     // ── Strokes / dividers ──────────────────────────────────────────────────
     /// Toolbar bottom divider and window stroke.
     pub const DIVIDER: Color32 = Color32::from_gray(58);
-    /// Option-panel border.
-    pub const PANEL_BORDER: Color32 = Color32::from_gray(66);
     /// Status-bar top border.
     pub const STATUS_BORDER: Color32 = Color32::from_gray(72);
     /// Stats-overlay border.
     pub const STATS_BORDER: Color32 = Color32::from_gray(52);
-    /// Reset-button border.
-    pub const BUTTON_BORDER: Color32 = Color32::from_gray(62);
-    /// Hover backplate behind the panel close glyph.
-    pub const CLOSE_HOVER_BG: Color32 = Color32::from_gray(58);
     /// Idle (unselected) swatch outline.
     pub const SWATCH_BORDER: Color32 = Color32::from_gray(28);
 
@@ -172,20 +138,6 @@ pub mod color {
         Color32::from_rgb(29, 255, 27),
     ];
 
-    // ── Texture viewport ────────────────────────────────────────────────────
-    /// Solid mid-grey background fill option behind the viewed texture.
-    pub const TEXTURE_BG_GREY: Color32 = Color32::from_gray(128);
-    /// Checkerboard background fill (the default): two greys, drawn as a tiled 2×2
-    /// texture so an image's transparency reads against it.
-    pub const TEXTURE_CHECKER_LIGHT: Color32 = Color32::from_gray(170);
-    pub const TEXTURE_CHECKER_DARK: Color32 = Color32::from_gray(110);
-
-    // ── Native window / panel chrome ────────────────────────────────────────
-    /// Drop-shadow color cast under native `egui::Window`s. Mirrors egui's
-    /// default `window_shadow.color` (`from_black_alpha(96)`); retuned here so the
-    /// shadow strength lives under a semantic token (invariant 8).
-    pub const WINDOW_SHADOW: Color32 = Color32::from_black_alpha(96);
-
     // ── Startup help overlay ────────────────────────────────────────────────
     /// Help-card surface (translucent, like the stats overlay — the viewport
     /// shows through faintly so the modal doesn't black out the scene) and border.
@@ -210,8 +162,6 @@ pub mod size {
     /// also reused for [`SIDE_PANEL_DEFAULT_WIDTH`]). A touch narrower than the
     /// option windows, since their content is lists / a compact property column.
     pub const TOOL_WINDOW_WIDTH: f32 = 300.0;
-    /// Max height of the Outliner's scrolling list before it scrolls internally.
-    pub const TOOL_WINDOW_LIST_MAX_H: f32 = 300.0;
     /// Minimum height of an Outliner tab (Geometry / Materials), painted as text
     /// with an active-underline rather than a button. In egui **points**, not
     /// logical px: the strip sizes off the ambient button font (see
@@ -223,9 +173,6 @@ pub mod size {
     pub const OUTLINER_TAB_PAD_Y: f32 = 9.0;
     /// Thickness of the active Outliner tab's underline accent.
     pub const OUTLINER_TAB_UNDERLINE: f32 = 2.0;
-    /// Width of the visibility-checkbox column in an Outliner geometry row (the
-    /// name column fills the rest). Sized so the box centers under the tab text.
-    pub const OUTLINER_CHECK_COL_W: f32 = 26.0;
     /// Upper bound the user can drag the Outliner / Inspector side panels out to
     /// (the `width_range` ceiling); they start at [`SIDE_PANEL_DEFAULT_WIDTH`].
     pub const OUTLINER_MAX_WIDTH: f32 = 560.0;
@@ -305,6 +252,9 @@ pub mod size {
     pub const TEXTURE_THUMB_SIZE: f32 = 40.0;
     /// Width of the remove (✕) button column in a Texture files row.
     pub const TEXTURE_REMOVE_BTN_W: f32 = 24.0;
+    /// Minimum width of the texture dropdown in a Texture-mapping row when the
+    /// Inspector is dragged narrow (the row's elastic control).
+    pub const TEXTURE_COMBO_MIN_W: f32 = 60.0;
 
     // ── Texture viewport ──────────────────────────────────────────────────
     /// One segment width of the channel radio group (RGB / R / G / B / A),
@@ -366,6 +316,10 @@ pub mod size {
     /// View-space depth above which an axis is treated as pointing at the viewer.
     pub const GIZMO_AXIS_ALIGNED_DEPTH: f32 = 0.99;
     pub const GIZMO_NEG_OPACITY: f32 = 0.05;
+    /// Depth-fade ramp for the gizmo axis lines: the floor opacity of a
+    /// pointing-away axis and the range up to fully-front (floor + range = 1).
+    pub const GIZMO_DEPTH_FADE_FLOOR: f32 = 0.4;
+    pub const GIZMO_DEPTH_FADE_RANGE: f32 = 0.6;
     /// Reset-view button: icon size and inset of its center from the gizmo's
     /// bottom-left corner.
     pub const GIZMO_RESET_ICON_SIZE: f32 = 20.0;
@@ -381,11 +335,9 @@ pub mod size {
     /// shrunk to this so combo rows stay dense — combos keep their own styling).
     pub const PANEL_ROW_H: f32 = 22.0;
     pub const PANEL_ROW_GAP: f32 = 6.0;
-    pub const PANEL_ACTION_GAP: f32 = 10.0;
-    /// Striped panel-grid spacing — the demo widget-gallery layout: a tight
-    /// vertical row gap and a modest gap between the label and control columns.
+    /// Gap between the label and control columns of the striped panel grid (the
+    /// demo widget-gallery layout).
     pub const PANEL_GRID_COL_GAP: f32 = 12.0;
-    pub const PANEL_GRID_ROW_GAP: f32 = 4.0;
     /// Option-panel grid column widths (raw points). The label column is pinned
     /// (long labels truncate rather than widen it); the control column is
     /// *elastic* — controls fill all remaining row width so their right edge
@@ -417,19 +369,16 @@ pub mod size {
     /// — egui shrinks the popup to its content, so short combos (Workflow,
     /// Transparency) are unaffected.
     pub const LABELED_COMBO_POPUP_MAX_H: f32 = 360.0;
+    /// Hairline alignment nudge: painted 1px strokes land crisp when centered on
+    /// a half-pixel boundary (the toolbar's bottom divider).
+    pub const HAIRLINE_NUDGE: f32 = 0.5;
     /// On-screen size of an HDR environment preview thumbnail shown beside each
     /// option in the Environment dropdown. The source PNGs are 2:1
     /// equirectangular previews, so the height is half the width.
     pub const ENV_THUMB_WIDTH: f32 = 56.0;
     pub const ENV_THUMB_HEIGHT: f32 = 28.0;
-    pub const PANEL_CLOSE_ICON_SIZE: f32 = 20.0;
-    /// Corner radius of a color swatch and the close-glyph hover backplate.
+    /// Corner radius of a color swatch.
     pub const SWATCH_CORNER_RADIUS: f32 = 5.0;
-    pub const CLOSE_HOVER_RADIUS: f32 = 5.0;
-    /// Corner radius of the full-width reset button.
-    pub const BUTTON_CORNER_RADIUS: f32 = 6.0;
-    /// Inset of the close-glyph hover backplate inside its hit area.
-    pub const CLOSE_HOVER_INSET: f32 = 4.0;
 
     // ── Stroke widths ─────────────────────────────────────────────────────
     /// Default hairline stroke (dividers, tile outlines, swatch outlines).
@@ -447,25 +396,10 @@ pub mod size {
     pub const GIZMO_BALL_HOVER_SCALE: f32 = 1.18;
     pub const GIZMO_BALL_HIT_EXPAND: f32 = 4.0;
 
-    // ── egui base spacing ─────────────────────────────────────────────────
-    pub const ITEM_SPACING: f32 = 8.0;
-    pub const BUTTON_PADDING_X: f32 = 10.0;
-    pub const BUTTON_PADDING_Y: f32 = 8.0;
-
     // ── Native window / panel chrome ──────────────────────────────────────
     // Values handed to native `egui::Window` / `egui::SidePanel` builders. These
     // are egui *points* (the builder sizes are scaled by DPI inside egui), so —
     // unlike the hand-painted overlays — they are NOT routed through `px()`.
-    /// Corner radius of native window frames. Mirrors egui's default
-    /// `window_corner_radius` (6).
-    pub const WINDOW_CORNER_RADIUS: u8 = 6;
-    /// Native window drop-shadow geometry. Mirrors egui's default `window_shadow`
-    /// (`offset [10, 20]`, `blur 15`, `spread 0`).
-    pub const WINDOW_SHADOW_OFFSET: [i8; 2] = [10, 20];
-    pub const WINDOW_SHADOW_BLUR: u8 = 15;
-    pub const WINDOW_SHADOW_SPREAD: u8 = 0;
-    /// Default width a tool window opens at (option panels). Raw points.
-    pub const TOOL_WINDOW_DEFAULT_WIDTH: f32 = 300.0;
     /// Default / minimum width of the dockable Outliner / Inspector side panels;
     /// the upper bound reuses [`OUTLINER_MAX_WIDTH`]. Raw points.
     pub const SIDE_PANEL_DEFAULT_WIDTH: f32 = TOOL_WINDOW_WIDTH;
@@ -513,10 +447,8 @@ pub mod font {
     pub const GIZMO_LABEL: f32 = 16.0;
     pub const GIZMO_LABEL_NEG: f32 = 15.0;
     pub const MODE_SEGMENT: f32 = 18.0;
-    pub const PANEL_TITLE: f32 = 14.5;
     /// Section-heading font in the Inspector side panel.
     pub const PANEL_LABEL: f32 = 14.0;
-    pub const PANEL_BUTTON: f32 = 14.0;
     /// egui `TextStyle::Heading` size — used by native window title bars and the
     /// Inspector's `ui.heading` section headings. Trimmed from egui's stock 18 so
     /// the option-window title bars are a touch shorter.
@@ -586,8 +518,10 @@ pub fn px(ctx: &egui::Context, value: f32) -> f32 {
     value / ctx.pixels_per_point()
 }
 
-/// Linear `[r, g, b, a]` in 0..1 from an egui `Color32` (sRGB bytes). Used to
-/// hand UI-chosen colors to the renderer's debug options.
+/// `[r, g, b, a]` in 0..1 from an egui `Color32` — a plain `/255` scale of the
+/// sRGB-encoded bytes, with **no** sRGB→linear decode. Used to hand UI-chosen
+/// colors to the renderer's debug options, whose overlay shader path consumes
+/// them as-is.
 pub fn color32_to_rgba(color: Color32) -> [f32; 4] {
     [
         color.r() as f32 / 255.0,

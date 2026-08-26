@@ -1,6 +1,7 @@
 //! The shaded mesh build: per-channel scene vertices plus the per-material index
 //! reorder (one [`MaterialDrawRange`] per material, vertices left untouched).
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use review_model::ModelData;
@@ -17,11 +18,11 @@ use crate::scene::SceneVertex;
 /// `tri_key` overrides the per-triangle grouping: `None` groups by material slot
 /// (the default), `Some(parts)` groups by an alternate per-triangle key (the
 /// Unique material-mode mesh-part index) so each part draws with its own material.
-pub(crate) fn model_mesh(
-    model: &ModelData,
+pub(crate) fn model_mesh<'model>(
+    model: &'model ModelData,
     uv_channel: u32,
     tri_key: Option<&[u32]>,
-) -> (Vec<SceneVertex>, Vec<u32>, Vec<MaterialDrawRange>) {
+) -> (Vec<SceneVertex>, Cow<'model, [u32]>, Vec<MaterialDrawRange>) {
     let channel = uv_channel as usize;
     let vertices = model
         .vertices
@@ -41,18 +42,20 @@ pub(crate) fn model_mesh(
 
 /// Reorder the mesh index buffer so each group's triangles are contiguous, and
 /// return the per-group draw ranges. Vertices are left untouched — only index
-/// order changes (invariant 1: [`ModelData`]'s buffers stay authoritative). Groups
-/// by `tri_key` when given (the Unique mesh-part index), else by material slot, in
-/// first-seen order; falls back to a single range over the original index order
-/// when no usable per-triangle grouping info is present. With the default
-/// (material) grouping the range count matches [`ModelData::material_draw_count`].
-fn material_draw_ranges(
-    model: &ModelData,
+/// order changes (invariant 1: [`ModelData`]'s buffers stay authoritative), and
+/// the no-grouping paths *borrow* the model's index buffer (`Cow::Borrowed`)
+/// rather than re-`Vec`-ing it. Groups by `tri_key` when given (the Unique
+/// mesh-part index), else by material slot, in first-seen order; falls back to a
+/// single range over the original index order when no usable per-triangle
+/// grouping info is present. With the default (material) grouping the range
+/// count matches [`ModelData::material_draw_count`].
+fn material_draw_ranges<'model>(
+    model: &'model ModelData,
     tri_key: Option<&[u32]>,
-) -> (Vec<u32>, Vec<MaterialDrawRange>) {
+) -> (Cow<'model, [u32]>, Vec<MaterialDrawRange>) {
     let triangle_count = model.indices.len() / 3;
     if triangle_count == 0 {
-        return (model.indices.clone(), Vec::new());
+        return (Cow::Borrowed(model.indices.as_slice()), Vec::new());
     }
     // Prefer the explicit grouping key; fall back to the per-triangle material
     // slot; fall back again to a single range when neither is the right length.
@@ -68,7 +71,7 @@ fn material_draw_ranges(
             first_index: 0,
             index_count: model.indices.len() as u32,
         }];
-        return (model.indices.clone(), ranges);
+        return (Cow::Borrowed(model.indices.as_slice()), ranges);
     };
 
     let mut order: Vec<u32> = Vec::new();
@@ -98,7 +101,7 @@ fn material_draw_ranges(
             index_count: (triangles.len() * 3) as u32,
         });
     }
-    (indices, ranges)
+    (Cow::Owned(indices), ranges)
 }
 
 #[cfg(test)]
