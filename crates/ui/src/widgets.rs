@@ -149,6 +149,16 @@ pub(crate) fn stats_overlay_card_at(
         });
 }
 
+/// A button that fills the width it is given, with its label centred.
+///
+/// egui left-aligns a button's label as soon as `min_size` widens the button past
+/// the text ("if there are no growable atoms then everything will be left-aligned")
+/// — growable spacers either side are what re-centre it.
+pub(crate) fn wide_button(label: &str, width: f32) -> egui::Button<'_> {
+    egui::Button::new((egui::Atom::grow(), label, egui::Atom::grow()))
+        .min_size(egui::vec2(width, 0.0))
+}
+
 /// A square icon toggle sized to the standard toolbar tile.
 pub(crate) fn icon_toggle_button(
     ui: &mut egui::Ui,

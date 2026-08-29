@@ -175,8 +175,13 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
 ///
 /// Centred rather than mirrored to an edge like the bar's other groups — these
 /// describe what the viewport above is showing, and the split's divider is the
-/// centre, so that is where they belong. Each control is disabled while it has
-/// nothing to act on rather than hidden, so the group never changes width.
+/// centre, so that is where they belong.
+///
+/// Three tiles: the two layouts, then whichever of camera-sync / A-B-swap the
+/// active layout can act on. Those two are mutually exclusive — only the split
+/// has two cameras to link, only the overlay draws one mesh over another — so
+/// showing both would always leave one inert. The group's width is the same
+/// either way, so swapping the third tile shifts nothing.
 fn draw_opt_group(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
@@ -187,7 +192,7 @@ fn draw_opt_group(
     let has_result = state.opt.has_result();
     let level_count = state.opt.level_count();
     let picker_width = theme::px(ctx, size::TOOLBAR_OPT_LOD_DROPDOWN_WIDTH);
-    let icons_width = theme::px(ctx, size::TOOLBAR_QUAD_ICON_GROUP_WIDTH);
+    let icons_width = theme::px(ctx, size::TOOLBAR_TRIPLE_ICON_GROUP_WIDTH);
     let spacing = theme::px(ctx, size::TOOLBAR_GROUP_SPACING);
 
     // The picker appears only once the chain actually has levels to choose
@@ -218,9 +223,6 @@ fn draw_opt_group(
             }
         }
 
-        // All four tiles are always present, the inapplicable ones disabled rather
-        // than hidden: a group that changed width as the layout changed would shove
-        // the neighbouring groups sideways on every click.
         let split = state.opt.layout == OptLayout::Split;
         toolbar_group_shell(ui, ctx, icons_width, |ui| {
             if icon_toggle_button(
@@ -246,51 +248,45 @@ fn draw_opt_group(
                 state.opt.layout = OptLayout::Overlay;
             }
 
-            // Camera sync is a property of the split; the overlay has one camera
-            // to begin with, so there is nothing there to link.
-            let sync = state.opt.camera_sync;
-            let response = ui
-                .add_enabled_ui(split, |ui| {
-                    icon_toggle_button(
-                        ui,
-                        ctx,
-                        &ICON_OPT_SYNC,
-                        split && sync,
-                        "Move both views' cameras together",
-                    )
-                })
-                .inner;
-            if response.clicked() {
-                state.opt.camera_sync = !sync;
-            }
-            response.on_disabled_hover_text("The overlay draws both meshes through one camera");
-
-            // The A/B swap: which mesh reads as solid. Only the overlay draws one
-            // over the other, and only once there is something to swap to — so
-            // the button never lies about what the viewport is showing.
-            let can_swap = has_result && !split;
-            let response = ui
-                .add_enabled_ui(can_swap, |ui| {
-                    icon_toggle_button(
-                        ui,
-                        ctx,
-                        &ICON_OPT_SWAP,
-                        false,
-                        &format!(
-                            "Showing {} solid — click to swap (X)",
-                            state.opt.side.label()
-                        ),
-                    )
-                })
-                .inner;
-            if response.clicked() {
-                state.opt.side = state.opt.side.swapped();
-            }
-            response.on_disabled_hover_text(if has_result {
-                "The split view shows both meshes already"
+            if split {
+                // Camera sync: only the split has a second camera to link.
+                let sync = state.opt.camera_sync;
+                if icon_toggle_button(
+                    ui,
+                    ctx,
+                    &ICON_OPT_SYNC,
+                    sync,
+                    "Move both views' cameras together",
+                )
+                .clicked()
+                {
+                    state.opt.camera_sync = !sync;
+                }
             } else {
-                "Nothing processed yet — add an operation to the stack"
-            });
+                // The A/B swap: which mesh reads as solid. Disabled until there
+                // is something to swap to, so the button never lies about what
+                // the viewport is showing.
+                let response = ui
+                    .add_enabled_ui(has_result, |ui| {
+                        icon_toggle_button(
+                            ui,
+                            ctx,
+                            &ICON_OPT_SWAP,
+                            false,
+                            &format!(
+                                "Showing {} solid — click to swap (X)",
+                                state.opt.side.label()
+                            ),
+                        )
+                    })
+                    .inner;
+                if response.clicked() {
+                    state.opt.side = state.opt.side.swapped();
+                }
+                response.on_disabled_hover_text(
+                    "Nothing processed yet — add an operation to the stack",
+                );
+            }
         });
     });
 }

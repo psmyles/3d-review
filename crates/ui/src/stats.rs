@@ -74,16 +74,12 @@ pub(crate) fn stats_grid(ui: &mut egui::Ui, state: &UiState) {
     // the kind of figure an audit tool exists to flag — a healthy game asset
     // reads a few percent, a scan with per-face normals reads +500%.
     if stats.gpu_vertex_count > 0 {
-        stat_row(ui, "GPU Verts", &stats.gpu_vertex_count.to_string()).on_hover_text(
-            "Unique vertices an engine's importer would upload              (splits kept only at hard edges and UV seams)",
-        );
+        stat_row(ui, "GPU Verts", &stats.gpu_vertex_count.to_string());
         if stats.vertex_count > 0 {
             let overhead = (stats.gpu_vertex_count as f32 - stats.vertex_count as f32)
                 / stats.vertex_count as f32
                 * 100.0;
-            stat_row(ui, "Vtx Splits", &format!("{overhead:+.0}%")).on_hover_text(
-                "GPU vertices vs authored vertices: the cost of this asset's                  hard edges and UV seams. A few percent is healthy; hundreds                  means per-face normals or heavily split UVs.",
-            );
+            stat_row(ui, "Vtx Splits", &format!("{overhead:+.0}%"));
         }
     }
     stat_row(ui, "UV Sets", &stats.uv_set_count.to_string());
@@ -230,17 +226,112 @@ fn change(value: f32, source: Option<f32>) -> Option<(String, egui::Color32)> {
     Some((format!("{percent:+.0}%"), tint))
 }
 
+/// What each stats row means, in the artist's terms rather than the renderer's.
+///
+/// Keyed by the row's own label so the source and processed cards cannot end up
+/// describing the same figure differently — every row whose label appears here
+/// gets its tooltip automatically, on either card.
+fn stat_tooltip(label: &str) -> Option<&'static str> {
+    Some(match label {
+        "Draws" => {
+            "Draw calls this mesh costs — one per distinct material. Each is a \
+             separate command to the GPU, so fewer is cheaper; merging materials \
+             is what brings it down."
+        }
+        "Polys" => {
+            "Polygons as authored in the source file: quads and n-gons counted \
+             once each, before triangulation."
+        }
+        "Tris" => {
+            "Triangles after triangulation — what the GPU actually rasterizes, \
+             and what an engine's triangle budget counts."
+        }
+        "Verts" => {
+            "Vertices as the source file counts them (control points) — the \
+             number your DCC's stats show. It ignores the extra vertices that \
+             hard edges and UV seams force the GPU to store."
+        }
+        "GPU Verts" => {
+            "Vertices an engine would actually upload: one per unique combination \
+             of position, normal, UVs and colour, per material. A vertex on a hard \
+             edge or a UV seam is stored once per side."
+        }
+        "Vtx Splits" => {
+            "How much larger the GPU vertex count is than the authored one — the \
+             price of this asset's hard edges and UV seams. A few percent is \
+             normal; hundreds of percent means per-face normals or heavily \
+             fragmented UVs."
+        }
+        "UV Sets" => {
+            "UV channels the mesh carries. A second set is usually a lightmap or \
+             a detail-texture layout."
+        }
+        "Bones" => "Joints in the skeleton this mesh is bound to. Rigged meshes only.",
+        "Unit" => {
+            "The world unit the source file declared (centimetres, inches…). \
+             Import normalises every model to metres; this is what the file itself \
+             claimed, which is where scale mismatches come from."
+        }
+        "FPS" => {
+            "Frames per second this preview is drawing at — a property of the \
+             viewer and your GPU, not of the asset."
+        }
+        "ACMR" => {
+            "Average Cache Miss Ratio: vertex-shader runs per triangle, simulated \
+             against a 16-entry GPU vertex cache. 3.0 means no vertex is ever \
+             reused; about 0.5 is the best a closed mesh can reach. Lower is \
+             cheaper — Optimize Vertex Cache is the operation that moves it."
+        }
+        "ATVR" => {
+            "Average Transformed Vertex Ratio: how many times the average vertex \
+             gets shaded. 1.0 means each is shaded exactly once; 2.0 means the \
+             mesh is transformed twice over. Unlike ACMR it does not shift with \
+             the triangle count, so it is the fairer figure for judging one \
+             mesh's ordering against itself."
+        }
+        "Overdraw" => {
+            "Pixels shaded divided by pixels covered, measured from viewpoints \
+             around the mesh. 1.0 means nothing is drawn over anything; higher \
+             means the GPU shades pixels a later triangle then hides. Optimize \
+             Overdraw trades cache behaviour for this."
+        }
+        "Overfetch" => {
+            "Vertex-buffer bytes read divided by the buffer's size. 1.0 means each \
+             byte is fetched once; higher means the index order jumps around and \
+             the GPU re-reads the same memory. Optimize Vertex Fetch reorders the \
+             buffer to bring it down."
+        }
+        "Error" => {
+            "How far this LOD deviates from the mesh it was simplified from, as \
+             the simplifier measured it — a fraction of the model's overall size \
+             (or world units, under the absolute-error flag)."
+        }
+        _ => return None,
+    })
+}
+
+/// Attach a row's explanation, if it has one.
+fn with_tooltip(response: egui::Response, label: &str) -> egui::Response {
+    match stat_tooltip(label) {
+        Some(text) => response.on_hover_text(text),
+        None => response,
+    }
+}
+
 /// One stats row with an optional tinted change column to the right of the value.
 fn value_row(ui: &mut egui::Ui, label: &str, value: &str, delta: Option<(String, egui::Color32)>) {
-    ui.horizontal(|ui| {
-        ui.label(mono_label(label, font::STATS, color::TEXT_MUTED));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if let Some((text, tint)) = delta {
-                ui.label(mono_label(&text, font::STATS, tint));
-            }
-            ui.label(mono_label(value, font::STATS, color::TEXT_VALUE));
-        });
-    });
+    let response = ui
+        .horizontal(|ui| {
+            ui.label(mono_label(label, font::STATS, color::TEXT_MUTED));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if let Some((text, tint)) = delta {
+                    ui.label(mono_label(&text, font::STATS, tint));
+                }
+                ui.label(mono_label(value, font::STATS, color::TEXT_VALUE));
+            });
+        })
+        .response;
+    with_tooltip(response, label);
 }
 
 /// Render the file's authored world unit (meters per source unit) as a short
@@ -258,12 +349,6 @@ fn source_unit_label(meters_per_unit: f32) -> String {
 
 /// One stats row: label hugs the left edge, value right-aligns against the
 /// panel's right edge so the numeric column reads as a tidy block.
-fn stat_row(ui: &mut egui::Ui, label: &str, value: &str) -> egui::Response {
-    ui.horizontal(|ui| {
-        ui.label(mono_label(label, font::STATS, color::TEXT_MUTED));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(mono_label(value, font::STATS, color::TEXT_VALUE));
-        });
-    })
-    .response
+fn stat_row(ui: &mut egui::Ui, label: &str, value: &str) {
+    value_row(ui, label, value, None);
 }

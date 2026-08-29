@@ -1,11 +1,15 @@
 //! The operation-stack pane, docked below the Outliner tree in the Opt
 //! workspace.
 //!
-//! Layout, top to bottom: the preset row, the "Add operation" menu, the ordered
-//! operation rows, and — once the stack has at least one operation — a pinned
-//! "Export settings" row. Selecting any row (an operation or the export row)
-//! puts its settings in the Inspector, so this pane stays a list and never grows
-//! inline editors.
+//! Layout, top to bottom: the preset row, a divider, the "Add operation" menu,
+//! the ordered operation rows, and — once the stack has at least one operation —
+//! a pinned "Export settings" row. Selecting any row (an operation or the export
+//! row) puts its settings in the Inspector, so this pane stays a list and never
+//! grows inline editors.
+//!
+//! The rows are laid out like the Outliner's, by rect math rather than nested
+//! layouts: the whole strip is the click target and the selection band spans it
+//! edge to edge, which is what makes a list of rows read as one list.
 //!
 //! Every mutation goes through [`UiState::opt`]'s `edit_stack`, which bumps the
 //! revision `app` watches to schedule a reprocess.
@@ -15,7 +19,7 @@ use review_optimize::OpKind;
 use crate::opt_state::{OptIntent, StackItem};
 use crate::state::UiState;
 use crate::theme::{color, size};
-use crate::widgets;
+use crate::widgets::{self, wide_button};
 
 /// Draw the pane. Returns the preset/export intent raised this frame, if any.
 pub(crate) fn body(ui: &mut egui::Ui, state: &mut UiState) -> Option<OptIntent> {
@@ -23,15 +27,19 @@ pub(crate) fn body(ui: &mut egui::Ui, state: &mut UiState) -> Option<OptIntent> 
 
     ui.add_space(size::PANEL_ROW_GAP);
     ui.horizontal(|ui| {
+        // Two buttons splitting the pane's full width, so the pair reads as one
+        // banded control rather than two tabs floating at the left edge.
+        let gap = ui.spacing().item_spacing.x;
+        let width = ((ui.available_width() - gap) * 0.5).max(0.0);
         if ui
-            .button("Save preset")
+            .add(wide_button("Save preset", width))
             .on_hover_text("Write this operation stack to a JSON file")
             .clicked()
         {
             intent = Some(OptIntent::SavePreset);
         }
         if ui
-            .button("Load preset")
+            .add(wide_button("Load preset", width))
             .on_hover_text("Replace this stack with one loaded from a JSON file")
             .clicked()
         {
@@ -40,6 +48,7 @@ pub(crate) fn body(ui: &mut egui::Ui, state: &mut UiState) -> Option<OptIntent> 
     });
 
     ui.add_space(size::PANEL_ROW_GAP);
+    ui.separator();
     add_menu(ui, state);
     ui.add_space(size::PANEL_ROW_GAP);
 
@@ -70,7 +79,10 @@ pub(crate) fn body(ui: &mut egui::Ui, state: &mut UiState) -> Option<OptIntent> 
 /// chain, which has no meaning.
 fn add_menu(ui: &mut egui::Ui, state: &mut UiState) {
     let has_lod = state.opt.stack.has_lod();
-    ui.menu_button("+ Add operation", |ui| {
+    let button = wide_button("+ Add operation", ui.available_width());
+    // The full path: egui also carries a legacy top-level `menu` module, and it
+    // is the one `egui::menu` resolves to.
+    egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
         widgets::style_combo_popup(ui);
         for make in OpKind::ALL {
             let kind = make();
@@ -91,8 +103,49 @@ fn add_menu(ui: &mut egui::Ui, state: &mut UiState) {
     });
 }
 
+/// One row of the stack list: a full-width band that selects on click, painted
+/// like an Outliner row. `content` fills the area left of the trailing controls.
+///
+/// Returns the row's own response (the click that selects it) and the rect the
+/// caller may place trailing controls in.
+fn stack_row(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    selected: bool,
+    trailing: f32,
+) -> (egui::Response, egui::Rect, egui::Rect) {
+    let (slot, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), size::OPT_STACK_ROW_HEIGHT),
+        egui::Sense::hover(),
+    );
+    // Span the pane's full width, not just the space this layout was given, so
+    // the band and the click target reach both edges.
+    let row_rect = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), slot.y_range());
+    let response = ui.interact(row_rect, id, egui::Sense::click());
+
+    if selected {
+        ui.painter().rect_filled(
+            row_rect,
+            size::OUTLINER_ROW_ROUNDING,
+            color::OUTLINER_ROW_SELECTED_BG,
+        );
+    } else if response.hovered() {
+        ui.painter()
+            .rect_filled(row_rect, size::OUTLINER_ROW_ROUNDING, color::HOVER_BG);
+    }
+
+    let mut content = row_rect.shrink2(egui::vec2(size::OUTLINER_ROW_PAD_X, 0.0));
+    let controls = egui::Rect::from_min_max(
+        egui::pos2(content.right() - trailing, content.top()),
+        content.max,
+    );
+    content.set_right(controls.left());
+    (response, content, controls)
+}
+
 /// The ordered operation rows. Each carries an enable checkbox, the operation's
-/// name (click to select), reorder arrows and a remove button.
+/// name (click anywhere on the row to select it), reorder arrows and a remove
+/// button.
 fn operation_rows(ui: &mut egui::Ui, state: &mut UiState) {
     // Mutations are recorded and applied after the loop: the row widgets borrow
     // the stack to read it, and reordering mid-iteration would shift the indices
@@ -104,73 +157,89 @@ fn operation_rows(ui: &mut egui::Ui, state: &mut UiState) {
 
     let count = state.opt.stack.ops.len();
     let button = size::OPT_STACK_ROW_BUTTON;
+    let gap = ui.spacing().item_spacing.x;
+    // Three trailing tiles (up / down / remove) and the gaps between them.
+    let trailing = button * 3.0 + gap * 2.0;
+    ui.spacing_mut().item_spacing.y = 0.0;
 
     for (index, op) in state.opt.stack.ops.iter().enumerate() {
         let is_selected = state.opt.selected == Some(StackItem::Op(op.id));
-        ui.horizontal(|ui| {
-            ui.set_height(size::OPT_STACK_ROW_HEIGHT);
+        let row_id = ui.id().with(("opt_stack_row", op.id));
+        let (response, content, controls) = stack_row(ui, row_id, is_selected, trailing);
+        if response.clicked() {
+            selected = Some(op.id);
+        }
+        response.on_hover_text(op.kind.description());
 
-            let mut enabled = op.enabled;
-            if ui
-                .checkbox(&mut enabled, "")
-                .on_hover_text("Include this operation when processing")
-                .changed()
-            {
-                toggled = Some(op.id);
-            }
+        // Enable checkbox, then the name filling whatever is left.
+        let mut enabled = op.enabled;
+        let check_rect =
+            egui::Rect::from_min_size(content.left_top(), egui::vec2(button, content.height()));
+        if ui
+            .put(check_rect, egui::Checkbox::without_text(&mut enabled))
+            .on_hover_text("Include this operation when processing")
+            .changed()
+        {
+            toggled = Some(op.id);
+        }
 
-            // The reorder / remove buttons are laid out from the right edge so
-            // the name gets whatever width is left and long labels truncate
-            // rather than pushing the controls off the panel.
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add_sized([button, button], egui::Button::new("X"))
-                    .on_hover_text("Remove this operation")
-                    .clicked()
-                {
-                    removed = Some(op.id);
-                }
-                if ui
-                    .add_enabled_ui(index + 1 < count, |ui| {
-                        ui.add_sized([button, button], egui::Button::new("▼"))
-                    })
-                    .inner
-                    .on_hover_text("Move down (applied later)")
-                    .clicked()
-                {
-                    moved = Some((index, 1));
-                }
-                if ui
-                    .add_enabled_ui(index > 0, |ui| {
-                        ui.add_sized([button, button], egui::Button::new("▲"))
-                    })
-                    .inner
-                    .on_hover_text("Move up (applied earlier)")
-                    .clicked()
-                {
-                    moved = Some((index, -1));
-                }
-
-                // A disabled operation is dimmed so a stack that is half switched
-                // off reads at a glance.
-                let text = egui::RichText::new(op.kind.label()).color(if !op.enabled {
-                    color::TEXT_MUTED
-                } else if is_selected {
-                    color::TEXT_PRIMARY
-                } else {
-                    color::TEXT_BODY
-                });
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    if ui
-                        .selectable_label(is_selected, text)
-                        .on_hover_text(op.kind.description())
-                        .clicked()
-                    {
-                        selected = Some(op.id);
-                    }
-                });
-            });
+        // A disabled operation is dimmed so a stack that is half switched off
+        // reads at a glance.
+        let text = egui::RichText::new(op.kind.label()).color(if !op.enabled {
+            color::TEXT_MUTED
+        } else if is_selected {
+            color::TEXT_PRIMARY
+        } else {
+            color::TEXT_BODY
         });
+        let label_rect = egui::Rect::from_min_max(
+            egui::pos2(check_rect.right() + gap, content.top()),
+            content.max,
+        );
+        ui.put(
+            label_rect,
+            egui::Label::new(text)
+                .truncate()
+                .selectable(false)
+                // Non-interactive, so the click lands on the row beneath it.
+                .sense(egui::Sense::hover()),
+        );
+
+        // Reorder / remove, laid out from the row's right edge.
+        let tile = |slot: usize| {
+            egui::Rect::from_min_size(
+                egui::pos2(
+                    controls.left() + slot as f32 * (button + gap),
+                    controls.center().y - button * 0.5,
+                ),
+                egui::Vec2::splat(button),
+            )
+        };
+        if ui
+            .add_enabled_ui(index > 0, |ui| ui.put(tile(0), egui::Button::new("▲")))
+            .inner
+            .on_hover_text("Move up (applied earlier)")
+            .clicked()
+        {
+            moved = Some((index, -1));
+        }
+        if ui
+            .add_enabled_ui(index + 1 < count, |ui| {
+                ui.put(tile(1), egui::Button::new("▼"))
+            })
+            .inner
+            .on_hover_text("Move down (applied later)")
+            .clicked()
+        {
+            moved = Some((index, 1));
+        }
+        if ui
+            .put(tile(2), egui::Button::new("X"))
+            .on_hover_text("Remove this operation")
+            .clicked()
+        {
+            removed = Some(op.id);
+        }
     }
 
     if let Some(id) = toggled {
@@ -201,19 +270,22 @@ fn operation_rows(ui: &mut egui::Ui, state: &mut UiState) {
 /// choices and the Export button in the Inspector.
 fn export_row(ui: &mut egui::Ui, state: &mut UiState) {
     let is_selected = state.opt.selected == Some(StackItem::ExportSettings);
-    ui.horizontal(|ui| {
-        ui.set_height(size::OPT_STACK_ROW_HEIGHT);
-        let text = egui::RichText::new("Export settings").color(if is_selected {
-            color::TEXT_PRIMARY
-        } else {
-            color::TEXT_BODY
-        });
-        if ui
-            .selectable_label(is_selected, text)
-            .on_hover_text("Where and how the processed LOD chain is written")
-            .clicked()
-        {
-            state.opt.selected = Some(StackItem::ExportSettings);
-        }
+    let (response, content, _) = stack_row(ui, ui.id().with("opt_export_row"), is_selected, 0.0);
+    if response.clicked() {
+        state.opt.selected = Some(StackItem::ExportSettings);
+    }
+    response.on_hover_text("Where and how the processed LOD chain is written");
+
+    let text = egui::RichText::new("Export settings").color(if is_selected {
+        color::TEXT_PRIMARY
+    } else {
+        color::TEXT_BODY
     });
+    ui.put(
+        content,
+        egui::Label::new(text)
+            .truncate()
+            .selectable(false)
+            .sense(egui::Sense::hover()),
+    );
 }
