@@ -456,7 +456,7 @@ fn node_inspector(ui: &mut egui::Ui, state: &UiState, model: &ModelData, index: 
     } else {
         node.name.clone()
     };
-    ui.heading(format!("Node — {name}"));
+    ui.heading(format!("Node - {name}"));
 
     // "Mesh part" is more informative than the bare kind for a node that actually
     // carries geometry; every other node reports what the importer classified it as.

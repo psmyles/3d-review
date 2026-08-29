@@ -309,7 +309,7 @@ impl App {
     fn export_opt_result(&mut self) {
         let Some(result) = self.opt.as_ref().and_then(|opt| opt.processed.clone()) else {
             self.notifications
-                .error("Nothing to export yet — add an operation to the stack.".to_owned());
+                .error("Nothing to export yet - add an operation to the stack.".to_owned());
             return;
         };
 

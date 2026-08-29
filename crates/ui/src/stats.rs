@@ -35,15 +35,15 @@ fn channel_label(channels: u8) -> &'static str {
         2 => "Grey+A",
         3 => "RGB",
         4 => "RGBA",
-        _ => "—",
+        _ => "-",
     }
 }
 
 /// Format a byte count as a compact human-readable size (B / KB / MB / GB), the
-/// binary (1024) step the file managers use. `0` reads as "—" (size unknown).
+/// binary (1024) step the file managers use. `0` reads as "-" (size unknown).
 fn human_size(bytes: u64) -> String {
     if bytes == 0 {
-        return "—".to_owned();
+        return "-".to_owned();
     }
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;
@@ -234,7 +234,7 @@ fn change(value: f32, source: Option<f32>) -> Option<(String, egui::Color32)> {
 fn stat_tooltip(label: &str) -> Option<&'static str> {
     Some(match label {
         "Draws" => {
-            "Draw calls this mesh costs — one per distinct material. Each is a \
+            "Draw calls this mesh costs - one per distinct material. Each is a \
              separate command to the GPU, so fewer is cheaper; merging materials \
              is what brings it down."
         }
@@ -243,11 +243,11 @@ fn stat_tooltip(label: &str) -> Option<&'static str> {
              once each, before triangulation."
         }
         "Tris" => {
-            "Triangles after triangulation — what the GPU actually rasterizes, \
+            "Triangles after triangulation - what the GPU actually rasterizes, \
              and what an engine's triangle budget counts."
         }
         "Verts" => {
-            "Vertices as the source file counts them (control points) — the \
+            "Vertices as the source file counts them (control points) - the \
              number your DCC's stats show. It ignores the extra vertices that \
              hard edges and UV seams force the GPU to store."
         }
@@ -257,7 +257,7 @@ fn stat_tooltip(label: &str) -> Option<&'static str> {
              edge or a UV seam is stored once per side."
         }
         "Vtx Splits" => {
-            "How much larger the GPU vertex count is than the authored one — the \
+            "How much larger the GPU vertex count is than the authored one - the \
              price of this asset's hard edges and UV seams. A few percent is \
              normal; hundreds of percent means per-face normals or heavily \
              fragmented UVs."
@@ -273,14 +273,14 @@ fn stat_tooltip(label: &str) -> Option<&'static str> {
              claimed, which is where scale mismatches come from."
         }
         "FPS" => {
-            "Frames per second this preview is drawing at — a property of the \
+            "Frames per second this preview is drawing at - a property of the \
              viewer and your GPU, not of the asset."
         }
         "ACMR" => {
             "Average Cache Miss Ratio: vertex-shader runs per triangle, simulated \
              against a 16-entry GPU vertex cache. 3.0 means no vertex is ever \
              reused; about 0.5 is the best a closed mesh can reach. Lower is \
-             cheaper — Optimize Vertex Cache is the operation that moves it."
+             cheaper - Optimize Vertex Cache is the operation that moves it."
         }
         "ATVR" => {
             "Average Transformed Vertex Ratio: how many times the average vertex \
@@ -303,7 +303,7 @@ fn stat_tooltip(label: &str) -> Option<&'static str> {
         }
         "Error" => {
             "How far this LOD deviates from the mesh it was simplified from, as \
-             the simplifier measured it — a fraction of the model's overall size \
+             the simplifier measured it - a fraction of the model's overall size \
              (or world units, under the absolute-error flag)."
         }
         _ => return None,
@@ -386,7 +386,7 @@ fn source_unit_label(meters_per_unit: f32) -> String {
         None if meters_per_unit.is_finite() && meters_per_unit > 0.0 => {
             format!("{meters_per_unit:.4} m")
         }
-        None => "—".to_owned(),
+        None => "-".to_owned(),
     }
 }
 

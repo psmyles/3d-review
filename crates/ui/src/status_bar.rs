@@ -230,7 +230,7 @@ fn draw_opt_group(
                 ctx,
                 &ICON_OPT_SPLIT,
                 split,
-                "Split view — source and processed side by side",
+                "Split view - source and processed side by side",
             )
             .clicked()
             {
@@ -241,7 +241,7 @@ fn draw_opt_group(
                 ctx,
                 &ICON_OPT_OVERLAY,
                 !split,
-                "Overlay view — both in one view, one drawn as a ghost",
+                "Overlay view - both in one view, one drawn as a ghost",
             )
             .clicked()
             {
@@ -274,7 +274,7 @@ fn draw_opt_group(
                             &ICON_OPT_SWAP,
                             false,
                             &format!(
-                                "Showing {} solid — click to swap (X)",
+                                "Showing {} solid - click to swap (X)",
                                 state.opt.side.label()
                             ),
                         )
@@ -284,7 +284,7 @@ fn draw_opt_group(
                     state.opt.side = state.opt.side.swapped();
                 }
                 response.on_disabled_hover_text(
-                    "Nothing processed yet — add an operation to the stack",
+                    "Nothing processed yet - add an operation to the stack",
                 );
             }
         });

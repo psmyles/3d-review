@@ -113,7 +113,7 @@ fn weld_params(ui: &mut egui::Ui, params: WeldParams) -> Option<WeldParams> {
     ui.label(
         egui::RichText::new(
             "Positions must always match exactly; the tolerance applies to the \
-             compared attributes. Unchecking one merges across that kind of seam — \
+             compared attributes. Unchecking one merges across that kind of seam - \
              unchecking normals, for instance, welds a flat-shaded mesh's hard edges \
              and flattens their shading.",
         )
@@ -294,7 +294,7 @@ fn export_body(ui: &mut egui::Ui, state: &mut UiState) -> Option<OptIntent> {
     ui.label(
         egui::RichText::new(
             "Where and how the processed LOD chain is written. Output is always \
-             triangulated, and carries the materials as imported — material edits \
+             triangulated, and carries the materials as imported - material edits \
              made in the viewer stay previews.",
         )
         .color(color::TEXT_MUTED),
@@ -357,7 +357,7 @@ fn export_body(ui: &mut egui::Ui, state: &mut UiState) -> Option<OptIntent> {
     let response = if state.opt.processing {
         response.on_disabled_hover_text("Waiting for the current run to finish")
     } else if !state.opt.has_result() {
-        response.on_disabled_hover_text("Nothing processed yet — add an operation first")
+        response.on_disabled_hover_text("Nothing processed yet - add an operation first")
     } else {
         response
     };

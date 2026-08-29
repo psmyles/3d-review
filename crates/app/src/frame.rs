@@ -332,7 +332,7 @@ impl App {
                 if !self.gpu_fault_notified {
                     self.gpu_fault_notified = true;
                     self.notifications.error(format!(
-                        "Graphics device lost ({reason:#x}) — restart the viewer"
+                        "Graphics device lost ({reason:#x}) - restart the viewer"
                     ));
                 }
             }

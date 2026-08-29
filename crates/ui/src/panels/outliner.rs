@@ -146,9 +146,9 @@ fn header_controls(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData) {
         let tree_mode = state.outliner_view == OutlinerViewMode::SceneTree;
         ui.horizontal(|ui| {
             let tooltip = if tree_mode {
-                "Showing the scene hierarchy — click for a flat list"
+                "Showing the scene hierarchy - click for a flat list"
             } else {
-                "Showing a flat node list — click for the scene hierarchy"
+                "Showing a flat node list - click for the scene hierarchy"
             };
             if icon_toggle(ui, &assets::ICON_TREE_VIEW, tree_mode, true, tooltip).clicked() {
                 state.outliner_view = if tree_mode {

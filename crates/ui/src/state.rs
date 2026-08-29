@@ -149,7 +149,7 @@ impl TexturePoolEntry {
             .extension()
             .and_then(|ext| ext.to_str())
             .map(|ext| ext.to_ascii_uppercase())
-            .unwrap_or_else(|| "—".to_owned())
+            .unwrap_or_else(|| "-".to_owned())
     }
 }
 
