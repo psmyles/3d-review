@@ -60,8 +60,13 @@ pub(crate) struct OptSubsystem {
     /// Which level `processed_revision` was issued for, so switching levels
     /// re-issues one (the renderer caches its mesh buffers by revision).
     revision_level: usize,
-    /// The stack revision the current `processed` was produced from.
-    processed_for: u64,
+    /// The stack revision the newest run *covers* — set when that run is
+    /// started, not when it lands. It has to be the request that marks a
+    /// revision as handled: were it only set on completion, the retry below
+    /// would fire again on every frame a run was in flight, and each retry bumps
+    /// the generation, so the run would be stale by the time it landed and the
+    /// workspace would reprocess forever without ever showing a result.
+    covers_revision: u64,
     /// The stack revision most recently seen from the UI.
     seen_revision: u64,
     /// Monotonic run counter; the newest generation is the only one accepted.
@@ -81,7 +86,7 @@ impl Default for OptSubsystem {
             processed: None,
             processed_revision: 0,
             revision_level: usize::MAX,
-            processed_for: u64::MAX,
+            covers_revision: u64::MAX,
             seen_revision: u64::MAX,
             generation: 0,
             in_flight: None,
@@ -104,6 +109,14 @@ impl OptSubsystem {
     pub(crate) fn is_running(&self) -> bool {
         self.in_flight.is_some()
     }
+
+    /// Whether a run should be queued for `stack_revision` this frame: either the
+    /// UI just edited the stack, or there is no result and nothing has been asked
+    /// to produce one (a run that errored leaves the revision covered, so a
+    /// failure is reported once rather than retried forever).
+    fn needs_run(&self, stack_revision: u64, changed: bool) -> bool {
+        changed || (self.processed.is_none() && self.covers_revision != stack_revision)
+    }
 }
 
 impl App {
@@ -123,7 +136,7 @@ impl App {
         let changed = opt.seen_revision != stack_revision;
         opt.seen_revision = stack_revision;
 
-        if changed || (opt.processed.is_none() && opt.processed_for != stack_revision) {
+        if opt.needs_run(stack_revision, changed) {
             self.schedule_reprocess();
         }
 
@@ -185,7 +198,7 @@ impl App {
             };
             opt.dirty = false;
             opt.processed = None;
-            opt.processed_for = stack_revision;
+            opt.covers_revision = stack_revision;
             self.ui.opt.result = None;
             self.ui.opt.active_lod = 0;
             // Free the processed mesh's GPU buffers rather than leave them
@@ -201,6 +214,13 @@ impl App {
             prof::msg("no event-loop proxy; cannot optimize off-thread");
             self.notifications
                 .error("Couldn't start mesh optimization".to_owned());
+            // Mark the revision covered even though nothing ran: the failure has
+            // been reported once, and leaving it uncovered would re-report it on
+            // every frame.
+            if let Some(opt) = self.opt.as_mut() {
+                opt.dirty = false;
+                opt.covers_revision = stack_revision;
+            }
             return;
         };
 
@@ -210,6 +230,7 @@ impl App {
         let generation = opt.generation;
         opt.in_flight = Some(generation);
         opt.dirty = false;
+        opt.covers_revision = stack_revision;
         opt.started_at = Some(Instant::now());
 
         // The renderer's own vertex size, so the reported overfetch describes the
@@ -388,7 +409,7 @@ impl App {
             opt.processed = Some(Arc::new(result));
             opt.processed_revision = revision;
             opt.revision_level = level;
-            opt.processed_for = stack_revision;
+            opt.covers_revision = stack_revision;
         }
 
         // Warnings describe the run as a whole (skinning dropped, a level that
@@ -542,7 +563,7 @@ impl App {
             // the previous model.
             opt.generation = opt.generation.saturating_add(1);
             opt.processed = None;
-            opt.processed_for = u64::MAX;
+            opt.covers_revision = u64::MAX;
             opt.revision_level = usize::MAX;
             opt.dirty = false;
         }
@@ -552,5 +573,40 @@ impl App {
         if self.ui.mode == review_ui::WorkspaceMode::Opt {
             self.schedule_reprocess();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OptSubsystem;
+
+    /// A run that is merely *in flight* must leave the revision covered.
+    ///
+    /// Every `needs_run` that answers yes bumps the generation, and a result is
+    /// only accepted while its generation is still current — so a rule that kept
+    /// answering yes while the worker was busy would invalidate the very run it
+    /// was waiting for, every frame, forever. That shipped once: the workspace
+    /// pegged a core reprocessing and never drew a processed mesh.
+    #[test]
+    fn a_run_in_flight_is_not_rescheduled_every_frame() {
+        let mut opt = OptSubsystem::default();
+        // First frame in the workspace: the stack revision is new.
+        assert!(opt.needs_run(7, true));
+        // `spawn_process` marks the revision as covered as it starts the worker.
+        opt.covers_revision = 7;
+        assert!(!opt.needs_run(7, false), "the queued run already covers it");
+    }
+
+    /// A failed run leaves no result, but the revision stays covered: the error
+    /// was reported, and retrying it every frame would only repeat the toast.
+    #[test]
+    fn a_failed_run_is_not_retried_forever() {
+        let opt = OptSubsystem {
+            covers_revision: 3,
+            ..Default::default()
+        };
+        assert!(!opt.needs_run(3, false));
+        // A fresh edit is a different matter — that always runs.
+        assert!(opt.needs_run(4, true));
     }
 }

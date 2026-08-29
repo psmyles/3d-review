@@ -70,7 +70,7 @@ pub(crate) fn body(ui: &mut egui::Ui, state: &mut UiState) -> Option<OptIntent> 
 /// chain, which has no meaning.
 fn add_menu(ui: &mut egui::Ui, state: &mut UiState) {
     let has_lod = state.opt.stack.has_lod();
-    ui.menu_button("＋ Add operation", |ui| {
+    ui.menu_button("+ Add operation", |ui| {
         widgets::style_combo_popup(ui);
         for make in OpKind::ALL {
             let kind = make();
@@ -124,7 +124,7 @@ fn operation_rows(ui: &mut egui::Ui, state: &mut UiState) {
             // rather than pushing the controls off the panel.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .add_sized([button, button], egui::Button::new("✕"))
+                    .add_sized([button, button], egui::Button::new("X"))
                     .on_hover_text("Remove this operation")
                     .clicked()
                 {

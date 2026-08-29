@@ -1003,8 +1003,14 @@ impl App {
             "g" => self.ui.show_grid = !self.ui.show_grid,
             // Opt's A/B swap. Flipping which mesh is solid in place is the most
             // reliable way to spot where a simplification moved the silhouette.
+            // Only the overlay has a solid mesh to flip: the split draws both,
+            // and its stats cards name which side is which, so swapping the
+            // halves there would leave them describing the wrong view.
             "x" => {
-                if self.ui.mode != WorkspaceMode::Opt || !self.ui.opt.has_result() {
+                if self.ui.mode != WorkspaceMode::Opt
+                    || !self.ui.opt.has_result()
+                    || self.ui.opt.layout != review_ui::OptLayout::Overlay
+                {
                     return;
                 }
                 self.ui.opt.side = self.ui.opt.side.swapped();

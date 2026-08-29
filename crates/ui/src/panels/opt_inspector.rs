@@ -235,10 +235,7 @@ fn lod_params(ui: &mut egui::Ui, params: LodParams) -> Option<LodParams> {
         ui.label("Levels");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
-                .add_enabled(
-                    edited.levels.len() < MAX_LOD_LEVELS,
-                    egui::Button::new("＋"),
-                )
+                .add_enabled(edited.levels.len() < MAX_LOD_LEVELS, egui::Button::new("+"))
                 .on_hover_text("Add a level")
                 .clicked()
             {
@@ -260,7 +257,7 @@ fn lod_params(ui: &mut egui::Ui, params: LodParams) -> Option<LodParams> {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(format!("LOD {}", index + 1)).color(color::TEXT_MUTED));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("✕").on_hover_text("Remove this level").clicked() {
+                if ui.button("X").on_hover_text("Remove this level").clicked() {
                     remove = Some(index);
                 }
             });

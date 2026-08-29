@@ -289,6 +289,13 @@ pub mod size {
     pub const TOOLBAR_MODE_GROUP_WIDTH: f32 = 239.0;
     /// Width of the UV-set dropdown shown on the right of the toolbar in UV mode.
     pub const TOOLBAR_UV_DROPDOWN_WIDTH: f32 = 200.0;
+    /// Width of the LOD-level dropdown shown on the right of the toolbar in Opt
+    /// mode. Narrower than the UV one: its entries are "LOD 0 (full)" at longest.
+    pub const TOOLBAR_OPT_LOD_DROPDOWN_WIDTH: f32 = 120.0;
+    /// Right toolbar cluster in Opt mode: the 3D cluster plus the comparison
+    /// group (183, four icons) and the LOD dropdown, with a group spacing before
+    /// each (320 + 14 + 183 + 14 + 120).
+    pub const TOOLBAR_OPT_RIGHT_WIDTH: f32 = 651.0;
     pub const TOOLBAR_GROUP_HEIGHT: f32 = 48.0;
     pub const TOOLBAR_GROUP_PADDING: f32 = 3.0;
     /// Corner radius shared by toolbar groups, icon tiles and mode segments.

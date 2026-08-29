@@ -22,7 +22,7 @@ const LEFT_SHORTCUTS: [(&str, &str); 7] = [
     ("3", "Lit shading mode"),
     ("I", "Toggle stats display"),
     ("G", "Toggle grid display"),
-    ("X", "Swap source / processed (Opt)"),
+    ("X", "Swap source / processed (Opt overlay)"),
 ];
 
 /// Right-column shortcut rows (camera framing + WASD orbit steps).
