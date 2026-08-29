@@ -282,6 +282,15 @@ struct ModelSlot {
     /// exists only while its toggle is on, paired with the bake key it was last
     /// built for.
     views: DerivedViews,
+    /// The model revision `views` were derived from.
+    ///
+    /// Their own bake keys describe only the *parameters* they were built with —
+    /// a color, a hidden set, a normal length — and say nothing about which mesh
+    /// the geometry came from. So the revision is tracked here and the whole set
+    /// dropped when it moves: otherwise a mesh replaced underneath them (a newly
+    /// loaded file, or the Opt workspace reprocessing) keeps the previous mesh's
+    /// wireframe and normal lines drawn over the new one.
+    views_revision: u64,
     /// The selected triangles reordered per-material over a fresh index buffer that
     /// shares the mesh vertex buffer (the solo isolate list + the flash fill source).
     /// `None` while nothing is selected or the selection resolves to no geometry
@@ -316,6 +325,7 @@ impl ModelSlot {
             // A sentinel distinct from any real revision, so the first sync builds
             // the mesh (or leaves it `None` for an empty model).
             mesh_revision: u64::MAX,
+            views_revision: u64::MAX,
             ..Self::default()
         }
     }
@@ -1130,7 +1140,13 @@ impl SceneGpu {
         // Build-on-demand / free-on-off for the derived 3D line overlays (invariant
         // 3): each view's buffer exists only while its toggle is on, rebuilt live
         // when its baked params (color / length / hidden set / scope) drift.
-        self.sync_line_views(device, frame.model, frame.debug, frame.hidden_meshes)?;
+        self.sync_line_views(
+            device,
+            frame.model,
+            frame.model_revision,
+            frame.debug,
+            frame.hidden_meshes,
+        )?;
         self.sync_skeleton(
             device,
             frame.model,
@@ -1611,9 +1627,19 @@ impl SceneGpu {
         &mut self,
         device: &ID3D11Device,
         model: &ModelData,
+        model_revision: u64,
         debug: SceneDebugOptions,
         hidden_meshes: &[u32],
     ) -> windows::core::Result<()> {
+        // A different mesh invalidates every view derived from it, whatever the
+        // view's own parameters are doing (see `ModelSlot::views_revision`).
+        // Dropping them here is what lets each bake key below stay purely about
+        // its own settings; the ones still switched on rebuild in this same call.
+        if self.active.views_revision != model_revision {
+            self.active.views = DerivedViews::default();
+            self.active.views_revision = model_revision;
+        }
+
         // Wireframe rebuilds when its color *or* the Outliner's hidden set drifts
         // (edges of a hidden mesh disappear with the mesh). On in both the wireframe
         // overlay and the wireframe-only shading mode.
