@@ -11,6 +11,7 @@ use crate::assets::{
     ICON_SKIN_WEIGHTS, ICON_UV, ICON_UV_ISLANDS, ICON_UV_SHADED, ICON_UV_WIRE, ICON_VERTEX_COLORS,
     ICON_VIEW_ORTHO, ICON_VIEW_PERSPECTIVE,
 };
+use crate::opt_state::OptLayout;
 use crate::state::{
     OptionPanel, TextureChannelView, TexturePoolEntry, UiState, ViewProjectionMode, WorkspaceMode,
 };
@@ -166,6 +167,11 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                             draw_view_group(ui, ctx, state, view_group_width);
                             draw_projection_group(ui, ctx, state, single_icon_group_width);
                             draw_windows_group(ui, ctx, state, single_icon_group_width);
+                            // Opt's own comparison controls sit inboard of the
+                            // shared groups (this row lays out right-to-left).
+                            if state.mode == WorkspaceMode::Opt {
+                                draw_opt_group(ui, ctx, state);
+                            }
                         }
                         WorkspaceMode::Uv => draw_uv_set_picker(ui, ctx, state),
                         WorkspaceMode::Texture => draw_texture_picker(ui, ctx, state),
@@ -495,6 +501,84 @@ fn draw_uv_set_picker(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiStat
             ui.selectable_value(&mut state.uv_view_channel, channel as u32, label);
         }
     });
+}
+
+/// The Opt comparison controls, shown on the right of the toolbar in Opt mode
+/// ahead of the shared view / projection / windows groups: which LOD level is
+/// displayed, which mesh reads as solid, and — for the split layout — whether the
+/// two views share a camera.
+///
+/// Everything here is disabled until a run has produced something to compare
+/// against, since until then the workspace is showing the source mesh alone.
+fn draw_opt_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState) {
+    let has_result = state.opt.has_result();
+    let level_count = state.opt.level_count();
+
+    // LOD picker, only once the chain actually has levels to choose between.
+    if has_result && level_count > 1 {
+        let width = theme::px(ctx, size::TOOLBAR_UV_DROPDOWN_WIDTH);
+        state.opt.active_lod = state.opt.active_lod.min(level_count - 1);
+        let selected = lod_label(state.opt.active_lod);
+        compact_combo(ui, "opt_lod_picker", width, selected, |ui| {
+            for level in 0..level_count {
+                ui.selectable_value(&mut state.opt.active_lod, level, lod_label(level));
+            }
+        });
+    }
+
+    let segment = theme::px(ctx, size::MODE_SEGMENT_WIDTH);
+
+    if state.opt.layout == OptLayout::Split {
+        let mut sync = state.opt.camera_sync;
+        if segment_button(ui, ctx, "Sync", sync, segment)
+            .on_hover_text("Move both views' cameras together")
+            .clicked()
+        {
+            sync = !sync;
+            state.opt.camera_sync = sync;
+        }
+    }
+
+    for layout in [OptLayout::Split, OptLayout::Overlay] {
+        if segment_button(ui, ctx, layout.label(), state.opt.layout == layout, segment)
+            .on_hover_text(match layout {
+                OptLayout::Split => "Source and processed side by side",
+                OptLayout::Overlay => "Both in one view, source drawn as a ghost",
+            })
+            .clicked()
+        {
+            state.opt.layout = layout;
+        }
+    }
+
+    // The A/B swap: which mesh is shown solid. Disabled with nothing to swap to,
+    // so the button never lies about what the viewport is showing.
+    let side = state.opt.side;
+    let response = ui.add_enabled_ui(has_result, |ui| {
+        segment_button(ui, ctx, side.label(), true, segment)
+    });
+    let response = if has_result {
+        response
+            .inner
+            .on_hover_text("Click to swap source / processed (X)")
+    } else {
+        response
+            .inner
+            .on_disabled_hover_text("Nothing processed yet — add an operation to the stack")
+    };
+    if response.clicked() {
+        state.opt.side = side.swapped();
+    }
+}
+
+/// `"Source"` for level 0, `"LOD 1"` and up for the rest — matching the names the
+/// processed meshes and the export carry.
+fn lod_label(level: usize) -> String {
+    if level == 0 {
+        "LOD 0 (full)".to_owned()
+    } else {
+        format!("LOD {level}")
+    }
 }
 
 fn segmented_mode_control(ui: &mut egui::Ui, ctx: &egui::Context, mode: &mut WorkspaceMode) {

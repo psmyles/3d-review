@@ -75,6 +75,81 @@ pub(crate) fn stats_grid(ui: &mut egui::Ui, state: &UiState) {
     stat_row(ui, "FPS", &format!("{:.0}", state.fps));
 }
 
+/// The Opt workspace's second stats card: the *processed* mesh's own measured
+/// counts, each with its change against the source, plus the GPU-behaviour
+/// figures meshoptimizer measured for it.
+///
+/// Every number here is measured off the processed mesh in hand — the counts by
+/// walking its buffers, the ratios by meshoptimizer's own analyzers (invariant 5).
+/// The deltas are computed from the two measured counts, not estimated.
+pub(crate) fn processed_stats_grid(ui: &mut egui::Ui, state: &UiState) {
+    let Some(level) = state.opt.active_level() else {
+        return;
+    };
+    let source = &state.stats;
+    let stats = &level.stats;
+    let metrics = &level.metrics;
+
+    ui.spacing_mut().item_spacing.y = size::STATS_ROW_SPACING;
+
+    let heading = if state.opt.active_lod == 0 {
+        "Processed".to_owned()
+    } else {
+        format!("Processed · LOD {}", state.opt.active_lod)
+    };
+    ui.label(mono_label(&heading, font::STATS, color::TEXT_PRIMARY));
+    ui.add_space(size::STATS_ROW_SPACING);
+
+    delta_row(ui, "Tris", stats.triangle_count, source.triangle_count);
+    delta_row(ui, "Verts", stats.vertex_count, source.vertex_count);
+    stat_row(ui, "Draws", &stats.draw_count.to_string());
+
+    ui.add_space(size::STATS_ROW_SPACING);
+    // ACMR/ATVR describe vertex-cache behaviour, overdraw the pixel cost, and
+    // overfetch the vertex-buffer read pattern. They are what makes the reorder
+    // operations — which change nothing visible — measurable.
+    stat_row(ui, "ACMR", &format!("{:.2}", metrics.acmr));
+    stat_row(ui, "ATVR", &format!("{:.2}", metrics.atvr));
+    stat_row(ui, "Overdraw", &format!("{:.2}", metrics.overdraw));
+    stat_row(ui, "Overfetch", &format!("{:.2}", metrics.overfetch));
+
+    // The simplifier's achieved error, shown only for a level that ran one — it
+    // is meaningless (and always zero) for the unsimplified level 0.
+    if state.opt.active_lod > 0 {
+        stat_row(ui, "Error", &format!("{:.4}", metrics.simplify_error));
+    }
+}
+
+/// A count row carrying its percentage change against the source. A reduction
+/// reads as a negative percentage, which is the direction that matters here.
+fn delta_row(ui: &mut egui::Ui, label: &str, value: usize, source: usize) {
+    let delta = if source == 0 {
+        String::new()
+    } else {
+        let change = (value as f32 - source as f32) / source as f32 * 100.0;
+        // Below a tenth of a percent, the rounded figure would read "-0.0%",
+        // which looks like a bug rather than "essentially unchanged".
+        if change.abs() < 0.05 {
+            "  0%".to_owned()
+        } else {
+            format!("{change:+.0}%")
+        }
+    };
+    ui.horizontal(|ui| {
+        ui.label(mono_label(label, font::STATS, color::TEXT_MUTED));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if !delta.is_empty() {
+                ui.label(mono_label(&delta, font::STATS, color::TEXT_MUTED));
+            }
+            ui.label(mono_label(
+                &value.to_string(),
+                font::STATS,
+                color::TEXT_VALUE,
+            ));
+        });
+    });
+}
+
 /// Render the file's authored world unit (meters per source unit) as a short
 /// label. Snaps the common DCC units to their names and falls back to the raw
 /// factor for anything else; `0.0`/non-finite means the file declared no unit.

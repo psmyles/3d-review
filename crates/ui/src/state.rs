@@ -18,6 +18,7 @@ use review_render::{
     ViewportBackground, selection_bounds,
 };
 
+use crate::opt_state::{OptIntent, OptUiState};
 use crate::theme;
 
 /// Default checker repeats across the 0..1 UV range for a fresh / reset panel.
@@ -352,6 +353,14 @@ pub struct UiOutput {
     /// slider handle or a color-picker). `app` uses it to coalesce a continuous
     /// drag into a single undo step instead of one per intermediate value.
     pub material_edit_active: bool,
+    /// An Opt action `app` must carry out this frame (export / preset IO). The
+    /// stack itself is edited in place on [`UiState::opt`]; only the actions that
+    /// reach outside the app travel as an intent.
+    pub opt: Option<OptIntent>,
+    /// Whether an Opt parameter widget is being actively dragged — the same
+    /// drag-coalescing hint as [`UiOutput::material_edit_active`], so scrubbing a
+    /// LOD ratio produces one undo step rather than one per frame.
+    pub opt_edit_active: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -623,6 +632,10 @@ pub struct UiState {
     /// field is public for struct construction; its mutators are crate-private so
     /// only the UI toggles panels.
     pub panels_open: PanelsOpen,
+    /// The Opt workspace's operation stack and comparison-view settings. Present
+    /// regardless of the active mode (it is document state, not view state), but
+    /// only edited and read while Opt is active.
+    pub opt: OptUiState,
     pub uv_checker: UvCheckerPanelState,
     /// Display labels of the loaded model's UV sets, in source-file order, shown
     /// in the UV-view toolbar dropdown. Empty when no model / no UV sets. Set by
@@ -832,6 +845,7 @@ impl Default for UiState {
             show_axis_gizmo: true,
             show_stats: true,
             panels_open: PanelsOpen::default(),
+            opt: OptUiState::default(),
             uv_checker: UvCheckerPanelState::default(),
             uv_sets: Vec::new(),
             uv_view_channel: 0,

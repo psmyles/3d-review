@@ -15,13 +15,14 @@ use crate::theme::{color, font, size};
 
 /// Left-column shortcut rows: (key-cap glyph, description) for the bare-key
 /// display toggles.
-const LEFT_SHORTCUTS: [(&str, &str); 6] = [
+const LEFT_SHORTCUTS: [(&str, &str); 7] = [
     ("`", "Toggle wireframe overlay"),
     ("1", "Wireframe only"),
     ("2", "Unlit shading mode"),
     ("3", "Lit shading mode"),
     ("I", "Toggle stats display"),
     ("G", "Toggle grid display"),
+    ("X", "Swap source / processed (Opt)"),
 ];
 
 /// Right-column shortcut rows (camera framing + WASD orbit steps).

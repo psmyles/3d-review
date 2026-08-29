@@ -2151,6 +2151,7 @@ dependencies = [
  "notify",
  "review-import",
  "review-model",
+ "review-optimize",
  "review-render",
  "review-ui",
  "rfd",
@@ -2226,6 +2227,7 @@ dependencies = [
  "glam",
  "image",
  "review-model",
+ "review-optimize",
  "review-render",
  "tracy-client",
 ]

@@ -31,6 +31,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use review_optimize::OptStack;
 use review_render::{DecodedImage, MaterialState, Selection};
 
 use crate::App;
@@ -69,6 +70,13 @@ pub(crate) struct EditSnapshot {
     /// The scene texture pool + decode cache, tagged by `texture_revision`.
     textures: Arc<TexturePool>,
     texture_revision: u64,
+    /// The Opt workspace's operation stack, tagged by `opt_revision`. Document
+    /// state like the rest: the operations, their parameters, the per-object
+    /// overrides and the export settings all undo together. The *results* of
+    /// running it are not captured — they are derived, and restoring the stack
+    /// reprocesses them.
+    opt_stack: Arc<OptStack>,
+    opt_revision: u64,
 }
 
 impl EditSnapshot {
@@ -83,6 +91,8 @@ impl EditSnapshot {
             material_revision: 0,
             textures: Arc::new(TexturePool::default()),
             texture_revision: 0,
+            opt_stack: Arc::new(OptStack::default()),
+            opt_revision: 0,
         }
     }
 
@@ -97,6 +107,7 @@ impl EditSnapshot {
             || self.hidden_meshes != other.hidden_meshes
             || self.material_revision != other.material_revision
             || self.texture_revision != other.texture_revision
+            || self.opt_revision != other.opt_revision
     }
 }
 
@@ -243,6 +254,10 @@ impl App {
             material_revision,
             textures,
             texture_revision: self.textures.revision,
+            // The stack already lives behind an `Arc` in the UI, so capturing it
+            // is a refcount bump; the revision tag is what `differs` compares.
+            opt_stack: Arc::clone(&self.ui.opt.stack),
+            opt_revision: self.ui.opt.stack_revision,
         }
     }
 
@@ -278,6 +293,15 @@ impl App {
         let pooled: Vec<PathBuf> = self.textures.pool.clone();
         for path in &pooled {
             self.watch_texture(path);
+        }
+
+        // Restoring the stack bumps its revision, which `sync_opt` sees on the
+        // next frame and turns into a reprocess — so undoing an operation puts
+        // the matching mesh back in the viewport without a separate mechanism.
+        // Skipped when nothing about the stack changed, so an unrelated undo
+        // (a material tweak, say) doesn't reprocess the mesh for no reason.
+        if !Arc::ptr_eq(&self.ui.opt.stack, &snapshot.opt_stack) {
+            self.ui.opt.set_stack(Arc::clone(&snapshot.opt_stack));
         }
 
         self.refresh_materials();
@@ -364,7 +388,26 @@ mod tests {
             material_revision,
             textures: Arc::new(TexturePool::default()),
             texture_revision,
+            opt_stack: Arc::new(OptStack::default()),
+            opt_revision: 0,
         }
+    }
+
+    /// A snapshot differing from [`snap`]'s baseline only in its Opt stack tag.
+    fn opt_snap(opt_revision: u64) -> EditSnapshot {
+        EditSnapshot {
+            opt_revision,
+            ..snap(Selection::None, 0, 0)
+        }
+    }
+
+    #[test]
+    fn an_opt_stack_edit_is_a_recordable_change() {
+        assert!(
+            opt_snap(1).differs(&opt_snap(0)),
+            "a stack edit must be undoable"
+        );
+        assert!(!opt_snap(3).differs(&opt_snap(3)));
     }
 
     #[test]

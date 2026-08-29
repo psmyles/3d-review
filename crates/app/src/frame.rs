@@ -10,11 +10,11 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use review_model::SceneBvh;
+use review_model::{ModelData, SceneBvh};
 use review_render::{
     ActiveMaterial, CameraProjection, Renderer, SceneFrame, TexBackground, TexImage,
 };
-use review_ui::{TextureBackground, UiOutput, WorkspaceMode, draw_overlay, theme};
+use review_ui::{ComparisonSide, TextureBackground, UiOutput, WorkspaceMode, draw_overlay, theme};
 
 use crate::App;
 use crate::prof;
@@ -112,6 +112,15 @@ impl App {
             self.apply_ui_output(ui_output);
         }
 
+        // Reconcile the Opt workspace with the stack the egui pass just edited:
+        // create its subsystem on first entry, schedule a run for any change, and
+        // manage the "still working" notice. Only while the workspace is active —
+        // a session that never opens it never builds any of this.
+        if self.ui.mode == WorkspaceMode::Opt {
+            let _z = prof::zone!("Sync Opt");
+            self.sync_opt();
+        }
+
         // Decide when the next frame should be drawn. Continuous motion — a live
         // camera transition, or egui asking to "repaint immediately" (zero delay)
         // — is paced to the monitor's refresh interval so the viewer never renders
@@ -168,8 +177,33 @@ impl App {
         // physical pixels for the D3D11 image draw.
         let texture_draw = (workspace == WorkspaceMode::Texture)
             .then(|| self.build_texture_draw(full_output.pixels_per_point));
-        let model = self.scene_model.clone();
-        let model_revision = self.scene_revision;
+
+        // The Opt workspace draws the processed mesh in place of the source one,
+        // so the whole existing scene path — shading, wireframe, normals,
+        // selection, AA, AO, tone mapping — applies to it unchanged. Which mesh
+        // is "solid" is the A/B swap; before the first run completes, and while
+        // the swap shows the source, this resolves to the source mesh.
+        let opt_processed = (workspace == WorkspaceMode::Opt
+            && self.ui.opt.side == ComparisonSide::Processed)
+            .then(|| self.opt_processed_revision())
+            .flatten();
+        // The `Arc` is cloned so the borrow below outlives the `self` reborrow the
+        // renderer takes, exactly as the source model's is.
+        let opt_result = opt_processed
+            .and(self.opt.as_ref())
+            .and_then(|opt| opt.processed.clone());
+        let active_lod = self.ui.opt.active_lod;
+
+        let source_model = self.scene_model.clone();
+        let processed_model = opt_result
+            .as_ref()
+            .and_then(|result| result.lod(active_lod))
+            .map(|lod| &lod.model);
+        let model: &ModelData = processed_model.unwrap_or(&source_model);
+        let model_revision = match (processed_model, opt_processed) {
+            (Some(_), Some(revision)) => revision,
+            _ => self.scene_revision,
+        };
 
         let Some(renderer) = self.renderer.as_mut() else {
             return;
@@ -191,7 +225,7 @@ impl App {
             let render_result = match workspace {
                 WorkspaceMode::Uv => renderer.render_uv_scene(
                     gpu,
-                    &model,
+                    model,
                     model_revision,
                     uv_channel,
                     uv_shading,
@@ -202,12 +236,12 @@ impl App {
                     let (image, background) = texture_draw.unwrap_or((None, TexBackground::Black));
                     renderer.render_texture(gpu, image, background)
                 }
-                // Opt renders the same scene as 3D for now; the split
-                // source-vs-processed viewport lands with the processing loop.
+                // Opt draws the same scene as 3D — over whichever mesh `model`
+                // resolved to above (source or processed).
                 WorkspaceMode::ThreeD | WorkspaceMode::Opt => renderer.render_scene(
                     gpu,
                     &SceneFrame {
-                        model: &model,
+                        model,
                         model_revision,
                         debug,
                         projection,

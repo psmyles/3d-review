@@ -45,6 +45,17 @@ use tex_d3d::TexGpu;
 pub use tex_d3d::{TexBackground, TexImage};
 pub use texture::{ChannelSelect, DecodedImage, TextureSlot, decode_image, suggested_channel};
 
+/// Size in bytes of one vertex as uploaded to the GPU.
+///
+/// Exposed for the Opt workspace's vertex-fetch analysis: meshoptimizer's
+/// overfetch figure is "bytes fetched / vertex buffer size", so it only describes
+/// the real draw if it is given the size the renderer actually uploads. The
+/// layout itself stays private — this is a measurement input, not an invitation
+/// to build vertices elsewhere (invariant 1).
+pub const fn scene_vertex_size() -> usize {
+    size_of::<scene::SceneVertex>()
+}
+
 const CAMERA_TRANSITION_SECONDS: f32 = 0.3;
 /// Shorter transition used for the WASD 45° orbit steps, which fire repeatedly
 /// and want a snappier response than the default framing/snap animation.

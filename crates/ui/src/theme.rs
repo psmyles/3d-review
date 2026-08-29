@@ -481,6 +481,23 @@ pub mod size {
     /// so several opened at once don't stack exactly atop each other.
     pub const PANEL_CASCADE_STEP: f32 = 26.0;
 
+    // ── Opt workspace ─────────────────────────────────────────────────────
+    /// Starting height of the operation-stack pane docked under the Outliner
+    /// tree. Deep enough for the preset row, the add button and a handful of
+    /// operations before it needs scrolling. Raw points (a native panel size).
+    pub const OPT_STACK_DEFAULT_HEIGHT: f32 = 240.0;
+    /// How far the stack pane can be dragged, so neither it nor the tree above
+    /// can be collapsed to nothing.
+    pub const OPT_STACK_MIN_HEIGHT: f32 = 96.0;
+    pub const OPT_STACK_MAX_HEIGHT: f32 = 620.0;
+    /// Height of one operation row in the stack pane.
+    pub const OPT_STACK_ROW_HEIGHT: f32 = 24.0;
+    /// Width of the square reorder / remove buttons on an operation row.
+    pub const OPT_STACK_ROW_BUTTON: f32 = 20.0;
+    /// Width of the processed-mesh stats card. Wider than the source card: its
+    /// rows carry a measured value *and* the delta against the source.
+    pub const OPT_STATS_PANEL_WIDTH: f32 = 186.0;
+
     // ── Startup help overlay (treated as egui points, like the option panels) ─
     /// Width of each of the two shortcut columns and the gap between them; the
     /// card content width is derived as `2 * COLUMN_WIDTH + COLUMN_GAP`.

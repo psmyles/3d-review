@@ -7,6 +7,7 @@
 
 mod frame;
 mod input;
+mod opt;
 mod prof;
 mod texture_manager;
 mod undo;
@@ -51,7 +52,10 @@ use winit::{
 /// Custom event posted from a background thread to the winit event loop, so work
 /// done off the main thread is applied back on it (the redraw loop + all renderer
 /// state stay in `app` — invariant 6).
-#[derive(Debug, Clone)]
+///
+/// Deliberately not `Clone`: a variant carries a whole LOD chain of meshes, and
+/// an accidental clone would deep-copy every one of them (invariant 1).
+#[derive(Debug)]
 enum UserEvent {
     /// A watched directory reported a change to this path; if it's a bound texture,
     /// re-decode + re-upload it (posted by the file-watcher thread).
@@ -59,6 +63,10 @@ enum UserEvent {
     /// A background texture decode finished (posted by the decode thread). The
     /// result is uploaded + the slot/binding updated here on the main thread.
     TextureDecoded(TextureDecode),
+    /// A background Opt processing run finished (posted by the optimize thread).
+    /// Boxed because a `ProcessedResult` carries a mesh per LOD level, which
+    /// would otherwise make every variant of this enum that large.
+    OptProcessed(Box<opt::OptProcessed>),
 }
 
 use texture_manager::TextureDecode;
@@ -137,6 +145,14 @@ struct App {
     redraw: RedrawScheduler,
     scene_model: Arc<ModelData>,
     scene_revision: u64,
+    /// Source of every model revision handed to the renderer, for the source mesh
+    /// and each processed Opt level alike. One shared counter because the
+    /// renderer caches mesh buffers by revision alone: two different meshes that
+    /// ever drew the same number would leave one of them stale on screen.
+    model_revision_counter: u64,
+    /// The Opt workspace's processing state. `None` until the user first opens
+    /// the workspace — a session that never does pays nothing for it.
+    opt: Option<opt::OptSubsystem>,
     /// Per-mesh-part triangle BVH over [`Self::scene_model`], used to occlude the
     /// bounding-box dimension labels against the *visible* mesh. Built lazily the
     /// first frame the labels need it (the bounding-box view is on) and reused
@@ -366,6 +382,8 @@ impl Default for App {
             redraw: RedrawScheduler::default(),
             scene_model,
             scene_revision: 0,
+            model_revision_counter: 0,
+            opt: None,
             occlusion_bvh: None,
             // A sentinel distinct from the initial `scene_revision` (0) so the BVH
             // is treated as stale until first built.
@@ -593,6 +611,7 @@ impl ApplicationHandler<UserEvent> for App {
         match event {
             UserEvent::TextureChanged(path) => self.reload_texture_file(&path),
             UserEvent::TextureDecoded(decode) => self.handle_texture_decoded(decode),
+            UserEvent::OptProcessed(message) => self.handle_opt_processed(*message),
         }
     }
 
@@ -850,7 +869,10 @@ impl App {
                 self.ui.uv_sets = model.uv_set_labels();
                 self.ui.uv_view_channel = 0;
                 self.scene_model = model;
-                self.scene_revision = self.scene_revision.saturating_add(1);
+                self.scene_revision = self.next_model_revision();
+                // Any Opt result (and any node override) describes the previous
+                // model, so drop both before the new one is drawn.
+                self.reset_opt_for_new_model();
                 self.notifications
                     .success(format!("Loaded {}", file_label(path)));
                 prof::msg(&format!("model loaded: {}", path.display()));
@@ -971,6 +993,14 @@ impl App {
             "3" => self.ui.shading_mode = ShadingMode::Shaded,
             "i" => self.ui.show_stats = !self.ui.show_stats,
             "g" => self.ui.show_grid = !self.ui.show_grid,
+            // Opt's A/B swap. Flipping which mesh is solid in place is the most
+            // reliable way to spot where a simplification moved the silhouette.
+            "x" => {
+                if self.ui.mode != WorkspaceMode::Opt || !self.ui.opt.has_result() {
+                    return;
+                }
+                self.ui.opt.side = self.ui.opt.side.swapped();
+            }
             "f" => self.frame_camera_on_key(),
             "r" => {
                 if let Some(renderer) = self.renderer.as_mut() {
@@ -981,6 +1011,15 @@ impl App {
         }
 
         self.redraw.requested = true;
+    }
+
+    /// The next model revision, from the counter shared by the source mesh and
+    /// every processed Opt level. The renderer keys its mesh-buffer cache on this
+    /// number alone, so revisions must be unique across *all* models it is ever
+    /// handed — not merely increasing within one of them.
+    fn next_model_revision(&mut self) -> u64 {
+        self.model_revision_counter = self.model_revision_counter.saturating_add(1);
+        self.model_revision_counter
     }
 
     /// Animate a relative 45° camera orbit (radians) for the WASD shortcuts.
@@ -1002,7 +1041,8 @@ impl App {
         self.ui.uv_sets = empty.uv_set_labels();
         self.ui.uv_view_channel = 0;
         self.scene_model = empty;
-        self.scene_revision = self.scene_revision.saturating_add(1);
+        self.scene_revision = self.next_model_revision();
+        self.reset_opt_for_new_model();
 
         let material_revision = if let Some(renderer) = self.renderer.as_mut() {
             renderer.animate_camera_to_home();
@@ -1045,10 +1085,17 @@ impl App {
     }
 
     fn apply_ui_output(&mut self, output: UiOutput) {
-        // Mirror this frame's material-drag state for the undo observer (read at the
-        // top of the next frame), so a continuous slider / color drag coalesces into
-        // a single undo step. Tracked even when the renderer isn't ready yet.
-        self.drag_in_progress = output.material_edit_active;
+        // Mirror this frame's drag state for the undo observer (read at the top of
+        // the next frame), so a continuous slider / color drag — a material
+        // parameter or an Opt one — coalesces into a single undo step. Tracked
+        // even when the renderer isn't ready yet.
+        self.drag_in_progress = output.material_edit_active || output.opt_edit_active;
+
+        // Opt's file-dialog actions don't need the renderer, and must run even
+        // before it exists.
+        if let Some(intent) = output.opt {
+            self.apply_opt_intent(intent);
+        }
 
         if self.renderer.is_none() {
             return;

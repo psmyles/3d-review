@@ -81,15 +81,46 @@ pub(crate) fn stats_overlay_card(
     width: f32,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) {
+    stats_overlay_card_at(
+        ctx,
+        id,
+        StatsCardSide::Left,
+        left_inset,
+        bottom_inset,
+        width,
+        add_contents,
+    );
+}
+
+/// Which viewport edge a stats card hugs. Opt shows two at once — the source
+/// mesh's on the left as always, and the processed mesh's on the right — so they
+/// read as the two halves of a comparison rather than a stack of cards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StatsCardSide {
+    Left,
+    Right,
+}
+
+/// [`stats_overlay_card`] with a choice of edge. `side_inset` is measured from
+/// that edge (the width of the side panel docked there), so a card never lands
+/// on top of a panel.
+pub(crate) fn stats_overlay_card_at(
+    ctx: &egui::Context,
+    id: &str,
+    side: StatsCardSide,
+    side_inset: f32,
+    bottom_inset: f32,
+    width: f32,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    let margin = theme::px(ctx, size::STATS_OVERLAY_MARGIN);
+    let (align, offset_x) = match side {
+        StatsCardSide::Left => (egui::Align2::LEFT_BOTTOM, side_inset + margin),
+        StatsCardSide::Right => (egui::Align2::RIGHT_BOTTOM, -(side_inset + margin)),
+    };
     egui::Area::new(egui::Id::new(id))
         .fade_in(false)
-        .anchor(
-            egui::Align2::LEFT_BOTTOM,
-            egui::vec2(
-                left_inset + theme::px(ctx, size::STATS_OVERLAY_MARGIN),
-                -(bottom_inset + theme::px(ctx, size::STATS_OVERLAY_MARGIN)),
-            ),
-        )
+        .anchor(align, egui::vec2(offset_x, -(bottom_inset + margin)))
         .show(ctx, |ui| {
             egui::Frame::NONE
                 .fill(color::STATS_OVERLAY_BG)

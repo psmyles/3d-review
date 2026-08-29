@@ -13,6 +13,8 @@ mod gtao;
 pub(crate) mod inspector;
 mod material_mode;
 mod normals;
+pub(crate) mod opt_inspector;
+pub(crate) mod opt_stack;
 pub(crate) mod outliner;
 mod skeleton;
 mod tonemap;
