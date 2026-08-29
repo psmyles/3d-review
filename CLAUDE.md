@@ -171,8 +171,11 @@ crates/
             material) pieces — the unit that can survive a simplify, since
             meshoptimizer returns a new index buffer with no triangle
             correspondence) -> src/ops.rs (one function per operation) ->
-            src/process.rs (walks the stack, fans out the LOD chain, reassembles a
-            `ModelData` per level + measures it). src/stack.rs is the serializable
+            src/process.rs (indexes the mesh losslessly — see §6, this is what
+            makes any meshoptimizer call do anything at all — then walks the stack,
+            fans out the LOD chain, reassembles a `ModelData` per level + measures
+            it, alongside the source's own buffer counts so the overlay's deltas
+            subtract like from like). src/stack.rs is the serializable
             operation stack the UI edits; src/preset.rs is its versioned JSON
             envelope. Processed meshes are pure triangles and carry **no** face
             topology (`faces` / `triangles.to_face` left empty — the corner-run
@@ -513,6 +516,17 @@ when its fixture or a vendored tree is absent.
   unit rather than fixing one, conventionally centimeters, while import normalizes
   every file to meters — so the writer sets `UnitScaleFactor = 100`. Without it the
   geometry reads back exactly 100× too small, which no error reports.
+- **Every Opt run begins with a lossless index pass, and must.** Import splits
+  each face corner into its own vertex, so a mesh reaches `optimize` with *no*
+  shared vertices at all (a real 10006-triangle asset arrives as 30018 vertices).
+  Every meshoptimizer operation works through the index buffer, so on that mesh
+  they are all no-ops — nothing for the vertex cache to reuse, no edge a collapse
+  may cross, a LOD chain that removes nothing. `process::index_mesh` therefore
+  merges vertices identical in *every* attribute before any stack operation runs:
+  byte-for-byte survivors, so nothing visible changes (30018 → 5284 on that asset,
+  after which a 50% LOD target is hit exactly). It is deliberately not a stack
+  operation — skipping it is never useful. The `Weld` operation is for the *lossy*
+  merges (dropping normals/UVs from the comparison, or a tolerance).
 - **A simplify that barely removes anything is usually attribute seams, not a
   bug.** Import splits every face corner into its own vertex, so a mesh whose
   normals or UVs differ at every corner — a scan with generated per-face normals —

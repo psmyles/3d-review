@@ -3,7 +3,7 @@
 //! Every value shown is a real measured number carried through import in
 //! [`review_model::ModelStats`] (invariant 5) — never a placeholder.
 
-use crate::state::{TexturePoolEntry, UiState};
+use crate::state::{TexturePoolEntry, UiState, WorkspaceMode};
 use crate::theme::{color, font, size};
 use crate::widgets::mono_label;
 
@@ -66,6 +66,15 @@ pub(crate) fn stats_grid(ui: &mut egui::Ui, state: &UiState) {
     stat_row(ui, "Polys", &stats.polygon_count.to_string());
     stat_row(ui, "Tris", &stats.triangle_count.to_string());
     stat_row(ui, "Verts", &stats.vertex_count.to_string());
+    // `Verts` above is the file's own count (invariant 5), which is not what the
+    // GPU uploads: import splits every face corner, so the buffer is far larger.
+    // The Opt workspace optimizes *that* mesh and its processed card counts it,
+    // so in Opt the baseline is shown here rather than left to be inferred.
+    if state.mode == WorkspaceMode::Opt
+        && let Some(result) = state.opt.result.as_ref()
+    {
+        stat_row(ui, "Mesh Verts", &result.source.vertices.to_string());
+    }
     stat_row(ui, "UV Sets", &stats.uv_set_count.to_string());
     // Skeletal models only: an unrigged mesh shouldn't carry a permanent "0".
     if stats.bone_count > 0 {
@@ -83,10 +92,14 @@ pub(crate) fn stats_grid(ui: &mut egui::Ui, state: &UiState) {
 /// walking its buffers, the ratios by meshoptimizer's own analyzers (invariant 5).
 /// The deltas are computed from the two measured counts, not estimated.
 pub(crate) fn processed_stats_grid(ui: &mut egui::Ui, state: &UiState) {
-    let Some(level) = state.opt.active_level() else {
+    let (Some(level), Some(result)) = (state.opt.active_level(), state.opt.result.as_ref()) else {
         return;
     };
-    let source = &state.stats;
+    // Measured off the source mesh by the same run — not the Model Stats panel's
+    // figures, which are the file's own DCC counts. Import splits every face
+    // corner, so the two never described the same mesh: subtracting them made a
+    // weld that removed five vertices in six read as "+501%".
+    let source = result.source;
     let stats = &level.stats;
     let metrics = &level.metrics;
 
@@ -100,8 +113,8 @@ pub(crate) fn processed_stats_grid(ui: &mut egui::Ui, state: &UiState) {
     ui.label(mono_label(&heading, font::STATS, color::TEXT_PRIMARY));
     ui.add_space(size::STATS_ROW_SPACING);
 
-    delta_row(ui, "Tris", stats.triangle_count, source.triangle_count);
-    delta_row(ui, "Verts", stats.vertex_count, source.vertex_count);
+    delta_row(ui, "Tris", stats.triangle_count, source.triangles);
+    delta_row(ui, "Verts", stats.vertex_count, source.vertices);
     stat_row(ui, "Draws", &stats.draw_count.to_string());
 
     ui.add_space(size::STATS_ROW_SPACING);

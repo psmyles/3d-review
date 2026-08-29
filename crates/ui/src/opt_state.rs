@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use review_model::ModelStats;
-use review_optimize::{AnalysisMetrics, OptStack};
+use review_optimize::{AnalysisMetrics, MeshCounts, OptStack};
 
 /// How the Opt viewport compares the two meshes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -110,6 +110,12 @@ pub struct OptLevelView {
 pub struct OptResultView {
     /// One entry per output level, level 0 first.
     pub levels: Vec<OptLevelView>,
+    /// The source mesh's own buffer counts, measured by the same run. The
+    /// processed card's deltas are against these rather than against the Model
+    /// Stats panel's figures, which are the file's DCC counts — import splits
+    /// every face corner, so those two never described the same mesh and their
+    /// difference read as the optimizer inventing vertices.
+    pub source: MeshCounts,
     /// Wall-clock milliseconds the run took.
     pub elapsed_ms: f32,
     /// Non-fatal problems the run reported, already de-duplicated.

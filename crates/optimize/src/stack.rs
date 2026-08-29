@@ -239,8 +239,10 @@ impl OpKind {
     pub fn description(&self) -> &'static str {
         match self {
             OpKind::Weld(_) => {
-                "Merge vertices that share a position. FBX import splits every face \
-                 corner into its own vertex, so this usually removes a lot."
+                "Merge vertices across a seam. Every run already merges vertices \
+                 that match in every attribute; this widens what counts as a match \
+                 — dropping normals or UVs from the comparison, or allowing a \
+                 tolerance — which does change the mesh."
             }
             OpKind::FilterTriangles => {
                 "Remove degenerate triangles (two corners at one position) and exact \

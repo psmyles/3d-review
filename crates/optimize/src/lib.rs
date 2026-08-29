@@ -46,7 +46,9 @@ pub mod stack;
 pub mod submesh;
 
 pub use export::{ExportReport, export_fbx};
-pub use process::{AnalysisMetrics, ProcessInput, ProcessedLod, ProcessedResult, process};
+pub use process::{
+    AnalysisMetrics, MeshCounts, ProcessInput, ProcessedLod, ProcessedResult, process,
+};
 pub use stack::{
     AttributeWeights, ExportOptions, FbxFormat, HierarchyMode, LodLevel, LodPackaging, LodParams,
     NodeOverride, OpInstance, OpKind, OptStack, SimplifyAlgorithm, SimplifyFlags, WeldParams,

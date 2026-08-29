@@ -73,12 +73,37 @@ pub struct AnalysisMetrics {
     pub simplify_error: f32,
 }
 
+/// The size of a mesh as the GPU sees it: what is actually in the buffers.
+///
+/// Not the same thing as [`ModelStats::vertex_count`] for the *source*, which
+/// carries the file's own DCC count (invariant 5) — a number import never
+/// materialises, since it splits every face corner. The processed mesh can only
+/// be compared against what the source really uploads, so a run measures that
+/// too, the same way, and the overlay's deltas subtract like from like.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MeshCounts {
+    pub triangles: usize,
+    pub vertices: usize,
+}
+
+impl MeshCounts {
+    fn of(model: &ModelData) -> Self {
+        Self {
+            triangles: model.indices.len() / 3,
+            vertices: model.vertices.len(),
+        }
+    }
+}
+
 /// The full result of a run.
 #[derive(Debug, Clone)]
 pub struct ProcessedResult {
     /// Level 0 first, then each configured LOD level in order. Never empty on
     /// success.
     pub lods: Vec<ProcessedLod>,
+    /// The input mesh's own buffer counts, the baseline every level's change is
+    /// measured against.
+    pub source: MeshCounts,
     /// Non-fatal problems worth telling the user about, already de-duplicated.
     pub warnings: Vec<String>,
     /// Wall-clock time the run took, for the "this is taking a while" notice and
@@ -118,6 +143,8 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
     if submeshes.is_empty() {
         return Err(OptError::EmptyMesh);
     }
+
+    index_mesh(&mut submeshes, input.stack, &mut warnings);
 
     // Operations split around the LOD operation: those above it shape the mesh
     // every level starts from, those below it tidy up each generated level.
@@ -217,9 +244,45 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
 
     Ok(ProcessedResult {
         lods,
+        source: MeshCounts::of(input.model),
         warnings: warnings.into_vec(),
         elapsed: started.elapsed(),
     })
+}
+
+/// Merge vertices that are identical in *every* attribute, before any of the
+/// user's operations run.
+///
+/// FBX import splits each face corner into its own vertex, so the mesh arrives
+/// with no shared vertices at all — a real asset measured here imports as 10006
+/// triangles over 30018 vertices, one per corner, which makes every single edge
+/// an attribute discontinuity. Every meshoptimizer operation works through the
+/// index buffer, so on a mesh like that they are all no-ops: there is nothing for
+/// the vertex cache to reuse, and no edge a topology-preserving collapse is
+/// allowed to cross. Simplification in particular removes *nothing*, which reads
+/// as the tool being broken.
+///
+/// Merging only vertices that match in position, normal, UV and color is
+/// lossless — each survivor is byte-for-byte what it replaced, so the mesh looks
+/// and shades exactly as it did — and it is the precondition meshoptimizer's own
+/// pipeline assumes ("generate a vertex remap first"). On that same asset it
+/// yields 30018 → 5284 vertices, after which a 50% LOD target is hit exactly.
+///
+/// It is deliberately not a stack operation: it changes nothing the user can see
+/// and there is no case where skipping it is useful. The Weld operation remains
+/// for the *lossy* merges — dropping normals or UVs from the comparison, or
+/// merging within a tolerance — which do change the mesh.
+fn index_mesh(submeshes: &mut [Submesh], stack: &OptStack, warnings: &mut Warnings) {
+    let _z = crate::prof::zone!("Index Mesh");
+    for piece in submeshes.iter_mut() {
+        // An excluded object is left exactly as it was, down to its vertex order.
+        if is_excluded(stack, piece.node) {
+            continue;
+        }
+        if let Err(error) = ops::weld(piece, &crate::stack::WeldParams::default()) {
+            warnings.push(&format!("Couldn't index the mesh for processing: {error}"));
+        }
+    }
 }
 
 /// One level under construction.

@@ -78,6 +78,9 @@ pub(crate) struct OptSubsystem {
     started_at: Option<Instant>,
     /// Whether the "still working" toast is currently up.
     activity_shown: bool,
+    /// The warnings the last accepted run reported, so a condition that persists
+    /// across runs is announced once rather than once per run.
+    announced_warnings: Vec<String>,
 }
 
 impl Default for OptSubsystem {
@@ -93,6 +96,7 @@ impl Default for OptSubsystem {
             dirty: false,
             started_at: None,
             activity_shown: false,
+            announced_warnings: Vec::new(),
         }
     }
 }
@@ -383,6 +387,7 @@ impl App {
 
     /// Store a successful run and mirror its measured figures into the UI.
     fn accept_opt_result(&mut self, result: ProcessedResult) {
+        let warnings = result.warnings.clone();
         let levels: Vec<OptLevelView> = result
             .lods
             .iter()
@@ -394,6 +399,7 @@ impl App {
         let view = OptResultView {
             elapsed_ms: result.elapsed.as_secs_f32() * 1000.0,
             warnings: result.warnings.clone(),
+            source: result.source,
             levels,
         };
 
@@ -412,16 +418,26 @@ impl App {
             opt.covers_revision = stack_revision;
         }
 
-        // Warnings describe the run as a whole (skinning dropped, a level that
-        // simplified away), so they surface once per run rather than per frame.
-        let warnings = self
-            .ui
+        // Warnings describe a *condition* of the mesh and the stack (skinning
+        // dropped, a level that simplified away, a simplifier that can't collapse
+        // this mesh), so they persist across runs while it holds — and dragging a
+        // slider is a run per frame. Only what is newly true is announced;
+        // otherwise one stuck condition buries the viewport in identical toasts.
+        let fresh: Vec<String> = self
             .opt
-            .result
             .as_ref()
-            .map(|view| view.warnings.clone())
+            .map(|opt| {
+                warnings
+                    .iter()
+                    .filter(|warning| !opt.announced_warnings.contains(*warning))
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default();
-        for warning in warnings {
+        if let Some(opt) = self.opt.as_mut() {
+            opt.announced_warnings = warnings;
+        }
+        for warning in fresh {
             self.notifications.info(warning);
         }
 
@@ -566,6 +582,7 @@ impl App {
             opt.covers_revision = u64::MAX;
             opt.revision_level = usize::MAX;
             opt.dirty = false;
+            opt.announced_warnings.clear();
         }
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.release_processed_mesh();

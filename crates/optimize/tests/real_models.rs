@@ -477,3 +477,94 @@ fn the_fixture_directory_exists() {
         dir.display()
     );
 }
+
+/// A LOD operation on its own has to work.
+///
+/// It did not: import splits every face corner, so the mesh reaches the
+/// simplifier with no shared vertices and every edge reading as an attribute
+/// seam, and a topology-preserving collapse removed *nothing* — the user added a
+/// LOD operation, moved its sliders, and watched the triangle count sit still.
+/// A run now indexes the mesh losslessly first, which is the precondition every
+/// meshoptimizer operation assumes.
+#[test]
+fn a_lod_operation_alone_simplifies_a_corner_split_import() {
+    let Some(model) = fixture("SM_column04.fbx") else {
+        return;
+    };
+    let source_triangles = model.indices.len() / 3;
+
+    let mut stack = OptStack::default();
+    stack.push_op(OpKind::SimplifyLod(LodParams {
+        algorithm: SimplifyAlgorithm::Standard,
+        levels: vec![LodLevel {
+            target_ratio: 0.5,
+            target_error: 0.01,
+        }],
+        ..LodParams::default()
+    }));
+    let result = run(&model, &stack);
+
+    let base = &result.lods[0].model;
+    assert_eq!(
+        base.indices.len() / 3,
+        source_triangles,
+        "level 0 keeps every triangle"
+    );
+    assert!(
+        base.vertices.len() < model.vertices.len() / 2,
+        "the lossless index pass shares vertices: {} -> {}",
+        model.vertices.len(),
+        base.vertices.len()
+    );
+
+    let simplified = result.lods[1].model.indices.len() / 3;
+    assert!(
+        simplified <= source_triangles * 55 / 100,
+        "a 50% target should be reached: {source_triangles} -> {simplified}"
+    );
+    assert_consistent(&result.lods[1].model, "column LOD1");
+}
+
+/// Indexing changes what the mesh *is* made of, never what it looks like: the
+/// merged vertices were identical, so every triangle still spans the same three
+/// positions it did before.
+#[test]
+fn indexing_preserves_every_triangle_of_the_source() {
+    let Some(model) = fixture("SM_column04.fbx") else {
+        return;
+    };
+
+    let mut stack = OptStack::default();
+    stack.push_op(OpKind::VertexCache);
+    let processed = &run(&model, &stack).lods[0].model;
+
+    assert_eq!(
+        processed.indices.len(),
+        model.indices.len(),
+        "no triangle is added or lost"
+    );
+    let corners = |mesh: &ModelData| {
+        let mut all: Vec<[[u32; 3]; 3]> = mesh
+            .indices
+            .chunks_exact(3)
+            .map(|triangle| {
+                let mut corner = [[0u32; 3]; 3];
+                for (slot, &index) in corner.iter_mut().zip(triangle) {
+                    *slot = mesh.vertices[index as usize]
+                        .position
+                        .to_array()
+                        .map(f32::to_bits);
+                }
+                corner.sort_unstable();
+                corner
+            })
+            .collect();
+        all.sort_unstable();
+        all
+    };
+    assert_eq!(
+        corners(processed),
+        corners(&model),
+        "the same triangles, over the same positions"
+    );
+}
