@@ -142,15 +142,23 @@ pub(crate) const ICON_TONEMAPPER: AppIcon = AppIcon {
     id: "icon_tonemapper",
     png_bytes: include_bytes!("../../../assets/icons/icon_tonemapper.png"),
 };
-/// "Outliner" — toggles the scene-graph / materials Outliner window (Phase 2).
+/// "Outliner" — the single side-panels toggle: the Outliner (left) and the
+/// Inspector (right) open and close together, so one button drives both.
 pub(crate) const ICON_OUTLINER: AppIcon = AppIcon {
     id: "icon_outliner",
     png_bytes: include_bytes!("../../../assets/icons/icon_outliner.png"),
 };
-/// "Inspector" — toggles the material / node Inspector window (Phase 2).
-pub(crate) const ICON_INSPECTOR: AppIcon = AppIcon {
-    id: "icon_inspector",
-    png_bytes: include_bytes!("../../../assets/icons/icon_inspector.png"),
+
+/// The Outliner's per-row visibility eye, toggling a mesh node's membership in
+/// [`crate::state::UiState::hidden_meshes`]. Drawn open on a visible row and
+/// closed (and dimmer) on a hidden one.
+pub(crate) const ICON_EYE_OPEN: AppIcon = AppIcon {
+    id: "icon_eye_open",
+    png_bytes: include_bytes!("../../../assets/icons/icon_eye_open.png"),
+};
+pub(crate) const ICON_EYE_CLOSED: AppIcon = AppIcon {
+    id: "icon_eye_closed",
+    png_bytes: include_bytes!("../../../assets/icons/icon_eye_closed.png"),
 };
 
 /// Per-[`review_model::NodeKind`] row glyphs for the Outliner's scene tree, and
