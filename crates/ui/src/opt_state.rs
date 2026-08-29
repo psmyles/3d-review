@@ -54,6 +54,15 @@ impl GhostStyle {
     }
 }
 
+impl From<GhostStyle> for review_render::GhostStyle {
+    fn from(value: GhostStyle) -> Self {
+        match value {
+            GhostStyle::Xray => review_render::GhostStyle::Xray,
+            GhostStyle::Wireframe => review_render::GhostStyle::Wireframe,
+        }
+    }
+}
+
 /// Which mesh the single-view comparison currently shows solid.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ComparisonSide {

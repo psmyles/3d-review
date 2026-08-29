@@ -12,9 +12,12 @@ use std::time::{Duration, Instant};
 
 use review_model::{ModelData, SceneBvh};
 use review_render::{
-    ActiveMaterial, CameraProjection, Renderer, SceneFrame, TexBackground, TexImage,
+    ActiveMaterial, CameraProjection, OptSceneFrame, OptView, ProcessedModelRef, Renderer,
+    SceneFrame, TexBackground, TexImage,
 };
-use review_ui::{ComparisonSide, TextureBackground, UiOutput, WorkspaceMode, draw_overlay, theme};
+use review_ui::{
+    ComparisonSide, OptLayout, TextureBackground, UiOutput, WorkspaceMode, draw_overlay, theme,
+};
 
 use crate::App;
 use crate::prof;
@@ -178,32 +181,27 @@ impl App {
         let texture_draw = (workspace == WorkspaceMode::Texture)
             .then(|| self.build_texture_draw(full_output.pixels_per_point));
 
-        // The Opt workspace draws the processed mesh in place of the source one,
-        // so the whole existing scene path — shading, wireframe, normals,
-        // selection, AA, AO, tone mapping — applies to it unchanged. Which mesh
-        // is "solid" is the A/B swap; before the first run completes, and while
-        // the swap shows the source, this resolves to the source mesh.
-        let opt_processed = (workspace == WorkspaceMode::Opt
-            && self.ui.opt.side == ComparisonSide::Processed)
+        // The Opt workspace hands the renderer both meshes and lets it lay them
+        // out; every other workspace draws the source alone. The processed mesh
+        // goes through the same `SceneFrame` settings as the source, so shading,
+        // wireframe, normals, selection, AA, AO and tone mapping all apply to it
+        // unchanged.
+        let opt_revision = (workspace == WorkspaceMode::Opt)
             .then(|| self.opt_processed_revision())
             .flatten();
         // The `Arc` is cloned so the borrow below outlives the `self` reborrow the
         // renderer takes, exactly as the source model's is.
-        let opt_result = opt_processed
+        let opt_result = opt_revision
             .and(self.opt.as_ref())
             .and_then(|opt| opt.processed.clone());
         let active_lod = self.ui.opt.active_lod;
+        let opt_layout = self.ui.opt.layout;
+        let opt_ghost = self.ui.opt.ghost_style;
+        let opt_swap = self.ui.opt.side == ComparisonSide::Source;
 
         let source_model = self.scene_model.clone();
-        let processed_model = opt_result
-            .as_ref()
-            .and_then(|result| result.lod(active_lod))
-            .map(|lod| &lod.model);
-        let model: &ModelData = processed_model.unwrap_or(&source_model);
-        let model_revision = match (processed_model, opt_processed) {
-            (Some(_), Some(revision)) => revision,
-            _ => self.scene_revision,
-        };
+        let model: &ModelData = &source_model;
+        let model_revision = self.scene_revision;
 
         let Some(renderer) = self.renderer.as_mut() else {
             return;
@@ -236,11 +234,8 @@ impl App {
                     let (image, background) = texture_draw.unwrap_or((None, TexBackground::Black));
                     renderer.render_texture(gpu, image, background)
                 }
-                // Opt draws the same scene as 3D — over whichever mesh `model`
-                // resolved to above (source or processed).
-                WorkspaceMode::ThreeD | WorkspaceMode::Opt => renderer.render_scene(
-                    gpu,
-                    &SceneFrame {
+                WorkspaceMode::ThreeD | WorkspaceMode::Opt => {
+                    let scene_frame = SceneFrame {
                         model,
                         model_revision,
                         debug,
@@ -253,8 +248,40 @@ impl App {
                         hidden_meshes: &hidden_meshes,
                         selected_bones: &selected_bones,
                         background,
-                    },
-                ),
+                    };
+                    if workspace == WorkspaceMode::Opt {
+                        // Read the cameras out before the call: the arguments are
+                        // evaluated after the `&mut renderer` receiver is borrowed.
+                        let source_camera = renderer.camera;
+                        let processed_camera = renderer.opt_camera;
+                        let processed = opt_result
+                            .as_ref()
+                            .and_then(|result| result.lod(active_lod))
+                            .zip(opt_revision)
+                            .map(|(lod, revision)| ProcessedModelRef {
+                                model: &lod.model,
+                                revision,
+                            });
+                        renderer.render_opt_scene(
+                            gpu,
+                            &OptSceneFrame {
+                                base: scene_frame,
+                                processed,
+                                view: match opt_layout {
+                                    OptLayout::Split => OptView::Split,
+                                    OptLayout::Overlay => OptView::Overlay {
+                                        ghost: opt_ghost.into(),
+                                        swap: opt_swap,
+                                    },
+                                },
+                                source_camera,
+                                processed_camera,
+                            },
+                        )
+                    } else {
+                        renderer.render_scene(gpu, &scene_frame)
+                    }
+                }
             };
             // GPU failures are surfaced as a toast (once per fault, not per
             // frame) — without `--tracy` the prof channel is invisible, and a

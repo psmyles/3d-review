@@ -144,6 +144,16 @@ impl App {
             self.ui.opt.processing = running;
             self.redraw.requested = true;
         }
+
+        // Turning sync back on should snap the second view to the first, not wait
+        // for the next drag. Doing it while synced also keeps the two cameras
+        // equal through the animated moves (framing, home, the WASD steps, the
+        // gizmo), which only ever drive the main one.
+        if self.opt_cameras_synced()
+            && let Some(renderer) = self.renderer.as_mut()
+        {
+            renderer.sync_opt_camera();
+        }
     }
 
     /// Queue a run for the current stack, or mark one owed if the worker is busy.
@@ -178,6 +188,11 @@ impl App {
             opt.processed_for = stack_revision;
             self.ui.opt.result = None;
             self.ui.opt.active_lod = 0;
+            // Free the processed mesh's GPU buffers rather than leave them
+            // resident for a mesh nothing will draw (invariant 3).
+            if let Some(renderer) = self.renderer.as_mut() {
+                renderer.release_processed_mesh();
+            }
             self.redraw.requested = true;
             return;
         }
@@ -530,6 +545,9 @@ impl App {
             opt.processed_for = u64::MAX;
             opt.revision_level = usize::MAX;
             opt.dirty = false;
+        }
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.release_processed_mesh();
         }
         if self.ui.mode == review_ui::WorkspaceMode::Opt {
             self.schedule_reprocess();

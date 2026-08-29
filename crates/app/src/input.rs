@@ -13,7 +13,7 @@ use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 use winit::window::Window;
 
-use review_ui::WorkspaceMode;
+use review_ui::{OptLayout, WorkspaceMode};
 
 use crate::{
     App, DRAG_ZOOM_SENSITIVITY, DragMode, WHEEL_LINE_ZOOM_STEP, WHEEL_PIXELS_PER_ZOOM_STEP,
@@ -96,6 +96,11 @@ impl App {
             WorkspaceMode::ThreeD | WorkspaceMode::Opt => false,
             WorkspaceMode::Texture => return,
         };
+        // Which Opt split view this drag belongs to, fixed at press time so the
+        // drag doesn't switch cameras if the pointer crosses the divider.
+        self.drag_in_opt_right_view = self
+            .last_pointer_position
+            .is_some_and(|position| self.in_opt_right_view(position));
         match button {
             MouseButton::Left => {
                 if self.should_open_on_double_click() {
@@ -133,6 +138,8 @@ impl App {
     pub(crate) fn handle_cursor_moved(&mut self, position: PhysicalPosition<f64>, window: &Window) {
         let current = Vec2::new(position.x as f32, position.y as f32);
 
+        // Read before the renderer borrow below.
+        let synced = self.opt_cameras_synced();
         if let (Some(renderer), Some(last), Some(mode)) = (
             self.renderer.as_mut(),
             self.last_pointer_position,
@@ -142,12 +149,27 @@ impl App {
             let uv_mode = self.ui.mode == WorkspaceMode::Uv;
             let size = window.inner_size();
             let viewport = Vec2::new(size.width as f32, size.height as f32);
+            // In the Opt split view with sync off, the drag belongs to whichever
+            // half it started in — decided at press time, so a drag that wanders
+            // across the divider keeps moving the camera it began with.
+            let opt_right = self.drag_in_opt_right_view;
             match mode {
-                DragMode::Orbit => renderer.orbit_camera(delta),
+                DragMode::Orbit => {
+                    if opt_right {
+                        renderer.orbit_opt_camera(delta);
+                    } else {
+                        renderer.orbit_camera(delta);
+                    }
+                }
                 // Pan drives the 2D UV camera in UV mode, the 3D camera otherwise.
                 DragMode::Pan => {
                     if uv_mode {
                         renderer.pan_uv_camera(delta, viewport);
+                    } else if opt_right {
+                        // Each split view is half as wide, so a pan across it
+                        // should cover the same world distance as one across a
+                        // half-width window.
+                        renderer.pan_opt_camera(delta, Vec2::new(viewport.x * 0.5, viewport.y));
                     } else {
                         renderer.pan_camera(delta, viewport);
                     }
@@ -157,15 +179,44 @@ impl App {
                 DragMode::Zoom => {
                     if uv_mode {
                         renderer.zoom_uv_camera(delta.y * DRAG_ZOOM_SENSITIVITY);
+                    } else if opt_right {
+                        renderer.zoom_opt_camera(delta.y * DRAG_ZOOM_SENSITIVITY);
                     } else {
                         renderer.zoom_camera(delta.y * DRAG_ZOOM_SENSITIVITY);
                     }
                 }
             }
+            // With the views synced, the right camera simply follows the left, so
+            // dragging either moves both.
+            if synced {
+                renderer.sync_opt_camera();
+            }
             self.redraw.requested = true;
         }
 
         self.last_pointer_position = Some(current);
+    }
+
+    /// Whether the Opt workspace is currently showing two views that share a
+    /// camera. False in every other workspace, and in the single-view overlay —
+    /// which has only one camera to begin with.
+    pub(crate) fn opt_cameras_synced(&self) -> bool {
+        self.ui.mode == WorkspaceMode::Opt
+            && (self.ui.opt.layout == OptLayout::Overlay || self.ui.opt.camera_sync)
+    }
+
+    /// Whether a pointer position falls in the *right* half of an unsynced Opt
+    /// split view — the half driven by the second camera.
+    fn in_opt_right_view(&self, position: Vec2) -> bool {
+        if self.ui.mode != WorkspaceMode::Opt
+            || self.ui.opt.layout != OptLayout::Split
+            || self.ui.opt.camera_sync
+        {
+            return false;
+        }
+        self.window
+            .as_ref()
+            .is_some_and(|window| position.x >= window.inner_size().width as f32 * 0.5)
     }
 
     /// A scroll-wheel event: zoom the active (2D UV or 3D) camera unless egui claimed
@@ -175,19 +226,35 @@ impl App {
         if egui_consumed {
             return;
         }
-        let Some(renderer) = self.renderer.as_mut() else {
-            return;
-        };
         let amount = match delta {
             MouseScrollDelta::LineDelta(_, y) => y * WHEEL_LINE_ZOOM_STEP,
             MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / WHEEL_PIXELS_PER_ZOOM_STEP,
         };
+        // The wheel acts on whichever Opt split view the pointer is over — unlike
+        // a drag there is no press to anchor it to, and hovering is the natural
+        // way to say which view you mean.
+        let opt_right = self
+            .last_pointer_position
+            .is_some_and(|position| self.in_opt_right_view(position));
+        let synced = self.opt_cameras_synced();
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
         match self.ui.mode {
             WorkspaceMode::Uv => renderer.zoom_uv_camera(amount),
-            WorkspaceMode::ThreeD | WorkspaceMode::Opt => renderer.zoom_camera(amount),
+            WorkspaceMode::ThreeD | WorkspaceMode::Opt => {
+                if opt_right {
+                    renderer.zoom_opt_camera(amount);
+                } else {
+                    renderer.zoom_camera(amount);
+                }
+            }
             // The Tex viewport zooms inside egui (its canvas claims the wheel);
             // an unclaimed wheel there must not zoom the hidden 3D camera.
             WorkspaceMode::Texture => return,
+        }
+        if synced {
+            renderer.sync_opt_camera();
         }
         self.redraw.requested = true;
     }

@@ -536,6 +536,12 @@ pub struct Renderer {
     pub camera: OrbitCamera,
     /// The 2D camera for the UV viewport, independent of the 3D orbit camera.
     pub uv_camera: UvCamera,
+    /// The Opt workspace's *right-hand* camera, used only by the split view with
+    /// camera sync off. With sync on it simply mirrors [`Self::camera`], which is
+    /// why it needs no transition of its own: the animated moves (framing, home,
+    /// the WASD steps, the gizmo) all drive the main camera, and the second view
+    /// follows it or is dragged by hand.
+    pub opt_camera: OrbitCamera,
     camera_transition: Option<CameraTransition>,
     /// Fraction of the viewport (x = width, y = height) framing should fill,
     /// leaving room for the chrome that overlays the full-window 3D scene. Set
@@ -582,6 +588,68 @@ pub struct SceneFrame<'a> {
     pub background: ViewportBackground,
 }
 
+impl<'a> SceneFrame<'a> {
+    /// The same frame pointed at a different mesh — how the Opt workspace renders
+    /// its processed model through every setting the source uses (shading,
+    /// wireframe, normals, AA, AO, tone mapping), rather than a parallel path that
+    /// would inevitably drift from it.
+    pub fn with_model(&self, model: &'a ModelData, model_revision: u64) -> SceneFrame<'a> {
+        SceneFrame {
+            model,
+            model_revision,
+            ..*self
+        }
+    }
+}
+
+/// The processed mesh the Opt workspace compares against, and the revision its
+/// GPU buffers are cached by.
+#[derive(Debug, Clone, Copy)]
+pub struct ProcessedModelRef<'a> {
+    pub model: &'a ModelData,
+    pub revision: u64,
+}
+
+/// How the Opt workspace lays its two meshes out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptView {
+    /// Side by side: source on the left, processed on the right.
+    Split,
+    /// One view, both meshes in it — one shaded, the other a ghost over it.
+    Overlay {
+        ghost: GhostStyle,
+        /// Show the *source* solid and the processed as the ghost (the A/B swap).
+        swap: bool,
+    },
+}
+
+/// How the ghosted mesh is drawn in [`OptView::Overlay`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GhostStyle {
+    /// A translucent tinted surface: reads the silhouette difference at a glance.
+    #[default]
+    Xray,
+    /// Only the ghost's edges, leaving the solid surface fully visible.
+    Wireframe,
+}
+
+/// Per-frame inputs for the Opt workspace's comparison render.
+pub struct OptSceneFrame<'a> {
+    /// The source mesh and every shared setting; [`SceneFrame::with_model`]
+    /// retargets it at the processed mesh.
+    pub base: SceneFrame<'a>,
+    /// `None` until a processing run has produced something, in which case the
+    /// workspace simply draws the source scene.
+    pub processed: Option<ProcessedModelRef<'a>>,
+    pub view: OptView,
+    /// Camera for the source view. Also the camera for both meshes in
+    /// [`OptView::Overlay`], where they share one space.
+    pub source_camera: OrbitCamera,
+    /// Camera for the processed view in [`OptView::Split`]. Equal to
+    /// `source_camera` while the views are synced.
+    pub processed_camera: OrbitCamera,
+}
+
 impl Renderer {
     /// Create a renderer from its config with default cameras and an empty material
     /// table. No GPU resources are built here — the Direct3D 11 device doesn't exist
@@ -592,6 +660,7 @@ impl Renderer {
             config,
             camera: OrbitCamera::default(),
             uv_camera: UvCamera::default(),
+            opt_camera: OrbitCamera::default(),
             camera_transition: None,
             framing_safe_area: Vec2::ONE,
             material_states: Vec::new(),
@@ -626,6 +695,34 @@ impl Renderer {
             self.material_revision,
             self.camera,
         )
+    }
+
+    /// Render the Opt workspace's comparison view: the source and processed
+    /// meshes side by side, or one ghosted over the other. Shares every setting
+    /// and every GPU resource with [`Self::render_scene`] — only the layout and
+    /// the second model differ.
+    pub fn render_opt_scene(
+        &mut self,
+        gpu: &Gpu,
+        frame: &OptSceneFrame<'_>,
+    ) -> windows::core::Result<()> {
+        let scene = match self.scene_gpu {
+            Some(ref mut scene) => scene,
+            None => self.scene_gpu.insert(SceneGpu::new(
+                gpu,
+                frame.base.anti_aliasing.effective_sample_count(),
+            )?),
+        };
+        scene.render_opt(gpu, frame, &self.material_states, self.material_revision)
+    }
+
+    /// Drop the processed mesh's GPU buffers (invariant 3). Called when the Opt
+    /// workspace has nothing processed to show, so the memory isn't held while
+    /// another workspace is up.
+    pub fn release_processed_mesh(&mut self) {
+        if let Some(scene) = self.scene_gpu.as_mut() {
+            scene.release_processed();
+        }
     }
 
     /// Render the 2D UV viewport through Direct3D 11 (instead of the 3D scene): the
@@ -861,10 +958,33 @@ impl Renderer {
 
     pub fn set_camera_aspect_ratio(&mut self, aspect_ratio: f32) {
         self.camera.aspect_ratio = aspect_ratio;
+        self.opt_camera.aspect_ratio = aspect_ratio;
         if let Some(transition) = self.camera_transition.as_mut() {
             transition.start.aspect_ratio = aspect_ratio;
             transition.end.aspect_ratio = aspect_ratio;
         }
+    }
+
+    /// Orbit / pan / zoom the Opt split view's right-hand camera. Used only while
+    /// camera sync is off; with it on, `app` drives the main camera and both views
+    /// follow it.
+    pub fn orbit_opt_camera(&mut self, delta: Vec2) {
+        self.opt_camera.orbit(delta);
+    }
+
+    pub fn pan_opt_camera(&mut self, delta_pixels: Vec2, viewport_size: Vec2) {
+        self.opt_camera
+            .pan_screen_delta(delta_pixels, viewport_size);
+    }
+
+    pub fn zoom_opt_camera(&mut self, amount: f32) {
+        self.opt_camera.zoom(amount);
+    }
+
+    /// Point the Opt split view's right-hand camera wherever the main one is
+    /// looking — what "sync views" does, and what re-enabling it snaps back to.
+    pub fn sync_opt_camera(&mut self) {
+        self.opt_camera = self.camera;
     }
 
     pub fn pan_camera(&mut self, delta_pixels: Vec2, viewport_size: Vec2) {

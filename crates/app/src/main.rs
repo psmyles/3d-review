@@ -136,6 +136,10 @@ struct App {
     /// the scene each frame.
     egui_renderer: Option<egui_directx11::Renderer>,
     drag_mode: Option<DragMode>,
+    /// Whether the in-progress drag started in the *right* half of the Opt
+    /// workspace's split view. Fixed at press time so a drag that wanders across
+    /// the divider keeps moving the camera it began with.
+    drag_in_opt_right_view: bool,
     last_pointer_position: Option<Vec2>,
     last_primary_click: Option<(Instant, Vec2)>,
     /// Latest keyboard modifier state, tracked from `ModifiersChanged` so
@@ -378,6 +382,7 @@ impl Default for App {
             gpu: None,
             egui_renderer: None,
             drag_mode: None,
+            drag_in_opt_right_view: false,
             last_pointer_position: None,
             last_primary_click: None,
             modifiers: ModifiersState::empty(),
