@@ -41,7 +41,11 @@ roadmap), and `TODO.md` (running notes).
    barycentric buffers) is built when that view turns on and dropped when it
    turns off. The steady-state shaded view holds **zero** derived buffers.
    Implemented for the line views by `SceneGpu::sync_line_views` in
-   `render/src/scene/d3d.rs` (build-on-demand, free-on-off, live param rebuild).
+   `render/src/scene/resources.rs` (build-on-demand, free-on-off, live param
+   rebuild) — which is where every other `sync_*`/`release_*` pair lives too.
+   A builder reached from only *one* viewport still needs its free arm on the
+   path that leaves that viewport: `sync_uv_view` is called from `render_uv`
+   alone, so `release_uv_views` runs from the 3D path's `sync_frame`.
 4. **Heavy derived views are GPU compute and capability-gated.** Compute-based
    views (normals/tangents/overdraw, post-MVP) read buffers already on the GPU
    and write transient storage buffers. Gate them on Direct3D 11 feature/format
@@ -66,13 +70,18 @@ roadmap), and `TODO.md` (running notes).
    `ModelData`. Keep the two-pass count→fill discipline and free every buffer on
    every error path.
 8. **No hardcoded visual values in UI components.** Every color / font size /
-   border width / radius / spacing / opacity in `crates/ui` must come from a
+   border width / radius / spacing / opacity / animation duration in `crates/ui`
+   must come from a
    central semantic theme (a `theme` module), not inline literals. The only
    exception is a value computed at runtime from state (e.g. a per-axis gizmo
    color). Token names are **semantic** (`panel_bg`, `selection`, `gizmo_ball`),
    not `dark_grey_6`. Tokens live in `crates/ui/src/theme.rs` (`color`, `size`,
-   `font` submodules + `apply_visuals`); add the token there first, then
-   reference it.
+   `font`, `motion` submodules + `apply_visuals`); add the token there first, then
+   reference it. **`size` tokens are design pixels, not egui points** — convert at
+   the use site with `theme::px(ctx, …)` (or `theme::chrome_height`, which `app`
+   uses to reserve the toolbar/status-bar band). Reading a `size` token raw
+   against a value already in points silently over-reserves on any HiDPI display;
+   the few tokens that genuinely *are* points say so in their doc comment.
 
 ### Rust-specific invariants
 
@@ -130,7 +139,17 @@ roadmap), and `TODO.md` (running notes).
     swappable (wgpu → D3D11); don't add rendering/UI deps to `model`.
 11. **GPU structs are `#[repr(C)]` + `bytemuck` `Pod`/`Zeroable`.** Match the HLSL
     `cbuffer` / vertex-input layout exactly (16-byte cbuffer packing) — don't
-    reorder fields without updating the shader.
+    reorder fields without updating the shader. Nothing about this is caught at
+    run time: a dynamic cbuffer is sized from the Rust struct and only rejects a
+    payload *larger* than itself, so a field added on one side alone uploads
+    happily and the shader reads every later field shifted. Every such struct
+    therefore carries a `const _: () = assert!(size_of::<T>() == N);` beside it,
+    and `SCENE_VERTEX_LAYOUT` is pinned per field with `offset_of!` (a
+    stride-only check passes when two same-size fields swap). Add the assertion
+    with the struct — it is the only thing that turns this invariant into a
+    build error. Each cbuffer also gets its **own** register across all shaders
+    (scene `b0`, material `b1`, GTAO `b2`, post `b3`), so a slot never means two
+    different structs.
 
 ## 2. Where things live
 
@@ -143,10 +162,21 @@ crates/
             `app` has zero `unsafe`; incl. the first-frame black clear+present
             that replaced the GDI startup hack) + per-frame draw order (scene →
             composite → egui chrome on top → Present), redraw timing, applies
-            UiOutput back to Renderer. -> src/main.rs;
+            UiOutput back to Renderer. One `impl App` block per concern, one
+            file each: `fn main`, the `ApplicationHandler` impl and the window +
+            `Gpu::new` startup path -> src/main.rs; the per-frame render loop ->
+            src/frame.rs; pointer/scroll/resize routing -> src/input.rs; the
+            keyboard dispatch (which `ui`'s help.rs tables must mirror) ->
+            src/shortcuts.rs; the model-load funnel — drag-drop, Ctrl+O,
+            double-click, CLI/file-association — plus the one
+            `reset_ui_for_new_model` both paths share -> src/loading.rs;
+            applying `UiOutput` intents to the Renderer (invariant 2's concrete
+            realization) -> src/ui_intents.rs; the selection-flash animation ->
+            src/selection_flash.rs;
             scene texture pool + off-thread decode + disk-auto-reload
             (an `impl App` block) -> src/texture_manager.rs;
-            window position/size restore via %APPDATA% -> src/window_state.rs;
+            window position/size restore via %APPDATA%, monitor-geometry
+            validation + the refresh-rate query -> src/window_state.rs;
             unified undo/redo snapshot stack -> src/undo.rs;
             the Opt workspace's processing loop -> src/opt.rs (an `impl App` block
             + `OptSubsystem`, created only on first entry into the workspace so a
@@ -192,6 +222,15 @@ crates/
             unit is centimeters. build.rs compiles third_party/meshoptimizer and
             third_party/ufbx-write with `cc` when present (`cfg(has_meshopt)` /
             `cfg(has_ufbxw)`).
+  prof/     review-prof: the guarded Tracy helpers (`zone!`, `plot!`,
+            `frame_mark`, `thread_name`, `msg`) every instrumented crate shares.
+            `tracy_client`'s own macros panic when no client is running, so each
+            wrapper checks `Client::running()` first. It re-exports `tracy_client`
+            and the macros reach it as `$crate::tracy_client`, so a crate that
+            only opens zones needs no tracy dependency of its own (`ui` and
+            `optimize` have none; `app` and `import` keep one for `Client::start`
+            and the allocation hooks). Each consumer's `src/prof.rs` is a
+            re-export of this crate, not a copy. -> src/lib.rs
   psd/      review-psd: safe `decode_psd` over a C-ABI bridge to psd_sdk (C++),
             returning a PSD's merged composite as RGBA8 (invariant 9's third FFI
             site). Links a PREBUILT MSVC static lib (`vendor/fire_psd.lib`) +
@@ -202,8 +241,9 @@ crates/
             EnvironmentSettings, GtaoSettings, TonemapSettings, SceneDebugOptions,
             RendererConfig) -> src/config.rs; OrbitCamera (framing/orbit/pan/zoom/
             ortho+persp, Reversed-Z infinite perspective), UvCamera (2D UV
-            viewport), CameraTransition (0.3s ease-in-out cubic), Renderer ->
-            src/lib.rs.
+            viewport), CameraTransition (0.3s ease-in-out cubic) and the shared
+            `ease_in_out_cubic` curve the chrome's own animations re-use ->
+            src/camera.rs; the `Renderer` façade -> src/lib.rs.
             The Direct3D 11 GPU layer:
               * src/rhi/ — the SOLE home for D3D11/DXGI COM (`windows` crate,
                 invariant 9): mod.rs (`Gpu` = device + immediate context + swapchain
@@ -215,12 +255,17 @@ crates/
                 (BC6H cube / immutable 2D / mipped RGBA8), sampler.rs, and bake.rs
                 (offline-only headless device + cube/2D render targets + readback,
                 `bake` feature).
-              * src/scene/ — d3d.rs (`SceneGpu`: the whole scene renderer — builds
-                the pipelines/targets/IBL/material table, draws the 2-MRT offscreen
-                scene pass + GTAO + composite-to-backbuffer, plus the UV viewport,
-                derived line views and selection flash, with all the `sync_*`
-                build-on-demand caches incl. `sync_line_views`) and gpu_types.rs (the
-                #[repr(C)] scene/post/GTAO uniforms + SceneVertex, kept in HLSL
+              * src/scene/ — d3d.rs (`SceneGpu` itself: target reconciliation, the
+                2-MRT offscreen scene pass + GTAO + composite-to-backbuffer pass
+                recorders, the `render`/`render_uv` entry points and the uniform
+                encoders); resources.rs (`ModelSlot`, `DerivedViews` and every
+                `sync_*`/`release_*` build-on-demand cache incl. `sync_line_views`
+                — invariant 3 lives here); pipelines.rs (`ScenePipelineSet` +
+                `build_scene_pipelines`, stored as ONE field so an AA rebuild
+                cannot strand a pipeline at the old sample count); opt.rs (the Opt
+                workspace's split + ghost-overlay comparison rendering); and
+                gpu_types.rs (the #[repr(C)] scene/post/GTAO uniforms + SceneVertex,
+                each with a `const` size assertion, kept in HLSL
                 lockstep). The `--tracy`-gated GPU timestamp profiler
                 (`ID3D11Query` → Tracy GPU context) lives in rhi/gpu_profiler.rs.
             CPU vertex generation -> src/geometry/ (vertex/grid/mesh/select/
@@ -291,7 +336,10 @@ crates/
             anti_aliasing, bounding_box, environment, normals, gtao, tonemap,
             uv_checker, vertex_colors, wireframe, material_mode; plus inspector +
             outliner for the side panels, and opt_stack + opt_inspector for the Opt
-            workspace). -> src/lib.rs + src/*.rs
+            workspace). The Outliner is itself a directory — panels/outliner/
+            {mod.rs = entry point + tab dispatch, tree.rs = tree-model
+            construction, rows.rs = row painting, nav.rs = keyboard nav + click
+            semantics, materials.rs = the materials tab}. -> src/lib.rs + src/*.rs
             The Opt workspace's own state (the `OptStack` the chrome edits, the
             comparison-view settings, and the last run's measured figures) ->
             src/opt_state.rs. Ownership follows the convention already used for
@@ -551,6 +599,21 @@ when its fixture or a vendored tree is absent.
   permissive flag unblocks it. `process` detects the stall and says so; the default
   weld comparing normals is *correct* for the tool's stated target of static game
   meshes, so don't "fix" it by loosening the defaults.
+- **Recovering from a malformed index drops the whole triangle, never one
+  corner.** An index buffer is a flat corner stream, so `continue`-ing past a
+  single bad corner leaves a length that is no longer a multiple of three and
+  shifts every later triangle by one — plausible-looking garbage rather than a
+  visible failure, and trimming the tail afterwards doesn't undo it. Both
+  `submesh::partition` and `export::build_mesh` check all three corners first and
+  skip the triangle as a unit; `export` additionally consults the same check from
+  its per-face material loop, since skipping in one loop and not the other
+  mis-assigns every subsequent material.
+- **Re-keying operation ids is a two-pass job.** `OptStack::reassign_ids` builds
+  the whole old→new map before rewriting a single per-node override. Rewriting
+  them as the walk consumes the id space lets an already-rewritten override
+  collide with a later operation's *old* id and be rewritten twice, silently
+  reattaching the user's per-object settings to the wrong operation — reachable
+  with one reorder plus a preset round-trip.
 - GPU struct field order must match the HLSL `cbuffer`/vertex-input layouts
   (invariant 11) — the shaders live in `crates/render/src/hlsl/*.hlsl` (compiled to
   DXBC by `build.rs`, `include_bytes!`'d at runtime); update `scene.hlsl` in
@@ -575,12 +638,18 @@ when its fixture or a vendored tree is absent.
   texture read inside a loop/branch (non-uniform control flow), and guard a
   possibly-negative `pow` base with `max(x, 0.0)` so `/WX` doesn't reject it.
 - CPU-side vertex generation (grid, wireframe, face/vertex normal lines) lives in
-  `crates/render/src/geometry/` (one file per category); `scene/d3d.rs`
-  (`SceneGpu`) owns the draw list + the GPU resource cache + buffer upload. Derived
+  `crates/render/src/geometry/` (one file per category); `scene/resources.rs`
+  (`ModelSlot` / `DerivedViews`) owns the draw list + the GPU resource cache +
+  buffer upload. Derived
   line views are built-on-demand and freed-on-off by `SceneGpu::sync_line_views`
   (invariant 3) — a view's buffer exists only while its toggle is on and is rebuilt
   live when its baked length/color drifts. Add new debug views by following that
-  ensure/free pattern.
+  ensure/free pattern. A `sync_*` must compare against the **borrowed** frame
+  inputs and only `to_vec()` its bake key on the rebuild path, so a steady-state
+  frame allocates nothing. Geometry builders that filter hidden nodes go through
+  `geometry::HiddenFilter` rather than rebuilding the set-plus-length-guard by
+  hand — the guard is what keeps an out-of-range index out of
+  `model.triangles.node`.
 - Keep `model` + camera/debug math host-agnostic so a future renderer swap only
   touches `render`.
 - **IBL HDRs must stay finite.** Bright suns in an HDR exceed `f16`'s max

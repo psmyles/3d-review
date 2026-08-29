@@ -82,6 +82,13 @@ struct TexUniforms {
     bg_dark: [f32; 4],
 }
 
+// Byte-size lock against `tex.hlsl`'s `b0` (invariant 11). The cbuffer is sized
+// from `size_of::<T>()` and an upload is rejected only when it is *larger* than
+// the buffer, so a field added on one side alone grows both and uploads happily
+// while the shader keeps reading the old offsets — wrong pixels, not an error.
+// The two `float2`s and the four scalars each pack into one 16-byte register.
+const _: () = assert!(std::mem::size_of::<TexUniforms>() == 64);
+
 /// An uploaded Tex texture: the mip-mapped GPU texture, the decoded image it was
 /// built from (an identity check — a disk reload swaps the `Arc`, forcing a
 /// re-upload), and a recency stamp for LRU eviction.
@@ -199,6 +206,14 @@ impl TexGpu {
         }
 
         Ok(())
+    }
+
+    /// Drop every uploaded texture (invariant 3). The pipelines, sampler and uniform
+    /// buffer stay — they are a few hundred bytes and rebuilding them would cost a
+    /// shader-object creation on re-entry, while the cache is the VRAM: up to
+    /// [`TEX_CACHE_CAP`] mipped uploads, ~22 MB apiece at 4K.
+    pub(crate) fn release_cache(&mut self) {
+        self.cache.clear();
     }
 
     /// Upload `image` into a mip-mapped GPU texture (keyed by `path`) if it isn't

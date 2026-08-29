@@ -15,7 +15,14 @@ use review_optimize::{
 use review_render::Selection;
 
 use crate::opt_state::{OptIntent, StackItem};
-use crate::state::UiState;
+use crate::state::{
+    UiState,
+    range::{
+        ATTRIBUTE_WEIGHT_MAX, ATTRIBUTE_WEIGHT_MIN, LOD_ERROR_MAX, LOD_ERROR_MIN, LOD_RATIO_MAX,
+        LOD_RATIO_MIN, OVERDRAW_THRESHOLD_MAX, OVERDRAW_THRESHOLD_MIN, PRUNE_THRESHOLD_MAX,
+        PRUNE_THRESHOLD_MIN, WELD_TOLERANCE_MAX, WELD_TOLERANCE_MIN,
+    },
+};
 use crate::theme::{color, size};
 use crate::widgets::{
     labeled_checkbox, labeled_combo, labeled_slider_with_value, panel_grid, wide_button,
@@ -101,7 +108,7 @@ fn weld_params(ui: &mut egui::Ui, params: WeldParams) -> Option<WeldParams> {
             ui,
             "Tolerance",
             &mut edited.attribute_tolerance,
-            0.0..=0.1,
+            WELD_TOLERANCE_MIN..=WELD_TOLERANCE_MAX,
             4,
         );
         labeled_checkbox(ui, "Compare normals", &mut edited.compare_normals);
@@ -126,7 +133,13 @@ fn weld_params(ui: &mut egui::Ui, params: WeldParams) -> Option<WeldParams> {
 fn prune_params(ui: &mut egui::Ui, error: f32) -> Option<OpKind> {
     let mut edited = error;
     panel_grid(ui, "opt_prune", |ui| {
-        labeled_slider_with_value(ui, "Size threshold", &mut edited, 0.0..=0.5, 3);
+        labeled_slider_with_value(
+            ui,
+            "Size threshold",
+            &mut edited,
+            PRUNE_THRESHOLD_MIN..=PRUNE_THRESHOLD_MAX,
+            3,
+        );
     });
     ui.add_space(size::PANEL_ROW_GAP);
     ui.label(
@@ -143,7 +156,13 @@ fn prune_params(ui: &mut egui::Ui, error: f32) -> Option<OpKind> {
 fn overdraw_params(ui: &mut egui::Ui, threshold: f32) -> Option<OpKind> {
     let mut edited = threshold;
     panel_grid(ui, "opt_overdraw", |ui| {
-        labeled_slider_with_value(ui, "Cache tolerance", &mut edited, 1.0..=3.0, 2);
+        labeled_slider_with_value(
+            ui,
+            "Cache tolerance",
+            &mut edited,
+            OVERDRAW_THRESHOLD_MIN..=OVERDRAW_THRESHOLD_MAX,
+            2,
+        );
     });
     ui.add_space(size::PANEL_ROW_GAP);
     ui.label(
@@ -188,9 +207,27 @@ fn lod_params(ui: &mut egui::Ui, params: LodParams) -> Option<LodParams> {
                 uv,
                 color: vertex_color,
             } = &mut edited.attribute_weights;
-            labeled_slider_with_value(ui, "Normals", normal, 0.0..=4.0, 2);
-            labeled_slider_with_value(ui, "UVs", uv, 0.0..=4.0, 2);
-            labeled_slider_with_value(ui, "Colors", vertex_color, 0.0..=4.0, 2);
+            labeled_slider_with_value(
+                ui,
+                "Normals",
+                normal,
+                ATTRIBUTE_WEIGHT_MIN..=ATTRIBUTE_WEIGHT_MAX,
+                2,
+            );
+            labeled_slider_with_value(
+                ui,
+                "UVs",
+                uv,
+                ATTRIBUTE_WEIGHT_MIN..=ATTRIBUTE_WEIGHT_MAX,
+                2,
+            );
+            labeled_slider_with_value(
+                ui,
+                "Colors",
+                vertex_color,
+                ATTRIBUTE_WEIGHT_MIN..=ATTRIBUTE_WEIGHT_MAX,
+                2,
+            );
         });
         ui.label(
             egui::RichText::new(
@@ -265,8 +302,20 @@ fn lod_params(ui: &mut egui::Ui, params: LodParams) -> Option<LodParams> {
             });
         });
         panel_grid(ui, &format!("opt_lod_level_{index}"), |ui| {
-            labeled_slider_with_value(ui, "Triangles", &mut level.target_ratio, 0.01..=1.0, 3);
-            labeled_slider_with_value(ui, "Error limit", &mut level.target_error, 0.0..=1.0, 4);
+            labeled_slider_with_value(
+                ui,
+                "Triangles",
+                &mut level.target_ratio,
+                LOD_RATIO_MIN..=LOD_RATIO_MAX,
+                3,
+            );
+            labeled_slider_with_value(
+                ui,
+                "Error limit",
+                &mut level.target_error,
+                LOD_ERROR_MIN..=LOD_ERROR_MAX,
+                4,
+            );
         });
     }
     if let Some(index) = remove {

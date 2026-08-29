@@ -168,7 +168,8 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
     // submeshes in place below). See the field docs on [`ProcessedResult`] for
     // why the raw corner-split buffer would be the wrong thing to quote against.
     let source = MeshCounts::of_submeshes(&submeshes);
-    let source_metrics = measure_submeshes(&submeshes, input.render_vertex_size, 0.0);
+    let source_metrics =
+        measure_submeshes(&submeshes, input.render_vertex_size, 0.0, &mut warnings);
 
     // Nothing enabled: no mesh is produced, but the baseline above still comes
     // back — a user reads the mesh's overdraw and cache behaviour *before*
@@ -271,7 +272,12 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
                  lower its error limit so the simplifier stops sooner."
             ));
         }
-        let metrics = measure(&model, input.render_vertex_size, level.simplify_error);
+        let metrics = measure(
+            &model,
+            input.render_vertex_size,
+            level.simplify_error,
+            &mut warnings,
+        );
         lods.push(ProcessedLod {
             level: index,
             model,
@@ -576,17 +582,27 @@ fn measured_stats(model: &ModelData, source: &ModelData) -> ModelStats {
 /// counters summed before the ratios are re-derived — averaging per-submesh
 /// ratios would let a ten-triangle part outweigh a hundred-thousand-triangle one
 /// and report a number the mesh never exhibits.
-fn measure(model: &ModelData, render_vertex_size: usize, simplify_error: f32) -> AnalysisMetrics {
+fn measure(
+    model: &ModelData,
+    render_vertex_size: usize,
+    simplify_error: f32,
+    warnings: &mut Warnings,
+) -> AnalysisMetrics {
     let (submeshes, _) = submesh::partition(model);
-    measure_submeshes(&submeshes, render_vertex_size, simplify_error)
+    measure_submeshes(&submeshes, render_vertex_size, simplify_error, warnings)
 }
 
 /// [`measure`] over submeshes already in hand — the shape the pipeline holds
 /// mid-run, so the baseline can be measured without assembling a `ModelData`.
+///
+/// A submesh that cannot be analyzed is left out of the totals and reported: the
+/// figures would otherwise describe part of the mesh while being presented as
+/// the whole of it (invariant 5).
 fn measure_submeshes(
     submeshes: &[Submesh],
     render_vertex_size: usize,
     simplify_error: f32,
+    warnings: &mut Warnings,
 ) -> AnalysisMetrics {
     let _z = crate::prof::zone!("Measure Level");
 
@@ -597,13 +613,17 @@ fn measure_submeshes(
             continue;
         }
         let positions = piece.positions();
-        if let Ok(measured) = meshopt::analyze(
+        match meshopt::analyze(
             &piece.indices,
             &positions,
             piece.vertices.len(),
             render_vertex_size,
         ) {
-            counters.accumulate(measured);
+            Ok(measured) => counters.accumulate(measured),
+            Err(error) => warnings.push(&format!(
+                "Couldn't measure part of the mesh: {error}. The cache, overdraw \
+                 and fetch figures cover only the parts that measured."
+            )),
         }
     }
 

@@ -14,7 +14,7 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::{ActiveMaterial, SceneDebugOptions, ShadingMode, VertexColorMode};
 
-/// Composite-pass uniform (cbuffer `b0` in `post.hlsl`): the GTAO enable flag, the
+/// Composite-pass uniform (cbuffer `b3` in `post.hlsl`): the GTAO enable flag, the
 /// tone-map enable + operator, and a raw-passthrough flag, all driven from the
 /// live settings each frame.
 #[repr(C)]
@@ -39,7 +39,14 @@ pub(crate) struct PostUniforms {
     pub(crate) bg_bottom: [f32; 4],
 }
 
-/// GTAO-pass uniform (cbuffer `b0` in `gtao.hlsl`): a `float4x4` + two `float4`s,
+// Byte-size lock against `post.hlsl`'s `b3`. The cbuffer is sized from
+// `size_of::<T>()` and an upload is rejected only when it is *larger* than the
+// buffer, so a field added on one side alone grows both and uploads happily while
+// the shader keeps reading the old offsets — wrong pixels, not an error. Changing
+// this number means the HLSL moved with it.
+const _: () = assert!(std::mem::size_of::<PostUniforms>() == 48);
+
+/// GTAO-pass uniform (cbuffer `b2` in `gtao.hlsl`): a `float4x4` + two `float4`s,
 /// all 16-byte aligned. Uploaded each frame so the panel sliders stay live.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -51,6 +58,10 @@ pub(crate) struct GtaoUniforms {
     /// x = is_ortho (1.0 / 0.0), y = slice count, z = steps per slice, w unused.
     pub(crate) config: [f32; 4],
 }
+
+// Byte-size lock against `gtao.hlsl`'s cbuffer — see [`PostUniforms`] above for
+// why a silent size drift is invisible at runtime.
+const _: () = assert!(std::mem::size_of::<GtaoUniforms>() == 96);
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -79,6 +90,9 @@ pub(crate) struct SceneUniforms {
     /// while nothing is flashing.
     pub(crate) selection_color: [f32; 4],
 }
+
+// Byte-size lock against `scene.hlsl`'s `b0` — see [`PostUniforms`] above.
+const _: () = assert!(std::mem::size_of::<SceneUniforms>() == 272);
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]

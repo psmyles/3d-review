@@ -1,6 +1,6 @@
 [package]
 name = "review-app"
-version = "0.1.2"
+version = "0.2.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -17,6 +17,8 @@ review-import = { path = "../import" }
 review-model = { path = "../model" }
 # The Opt workspace's mesh processing (vendored meshoptimizer behind a safe API).
 review-optimize = { path = "../optimize" }
+# The shared guarded Tracy helpers (zones, plots, frame marks, messages).
+review-prof.workspace = true
 review-render = { path = "../render" }
 review-ui = { path = "../ui" }
 rfd.workspace = true
@@ -34,3 +36,6 @@ winresource.workspace = true
 [[bin]]
 name = "3d-review"
 path = "src/main.rs"
+
+[lints]
+workspace = true

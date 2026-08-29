@@ -4,11 +4,19 @@ members = [
     "crates/import",
     "crates/model",
     "crates/optimize",
+    "crates/prof",
     "crates/psd",
     "crates/render",
     "crates/ui",
 ]
 resolver = "2"
+
+# §3's review gate, in the manifest rather than only in a command line someone has
+# to remember: `cargo clippy --workspace` now fails on a lint whether or not
+# `-D warnings` was passed. Only clippy evaluates these, so a plain `cargo build`
+# is unaffected. `priority = -1` lets an individual lint below override the group.
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
 
 [workspace.package]
 edition = "2024"
@@ -38,6 +46,10 @@ image = { version = "0.25", default-features = false, features = [
     "pnm",
 ] }
 notify = "8"
+# The guarded Tracy zone/plot/message helpers, in one place: `tracy_client`'s own
+# macros panic when no client is running, so every crate that instruments itself
+# needs the same `Client::running()` guard around them.
+review-prof = { path = "crates/prof" }
 # Internal prebuilt-FFI crate: decodes layered PSD source art via psd_sdk (the
 # only FFI site besides `crates/import` + the sanctioned D3D11 sites — invariant 9).
 review-psd = { path = "crates/psd" }

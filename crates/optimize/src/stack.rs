@@ -151,20 +151,26 @@ impl OptStack {
     /// Re-key every operation id from a fresh sequence. Applied after loading a
     /// preset so ids can never collide with those of the stack being replaced.
     pub fn reassign_ids(&mut self) {
-        let mut next = 1u64;
-        for op in &mut self.ops {
-            let old = op.id;
-            op.id = next;
-            for entry in &mut self.overrides {
-                for override_op in &mut entry.ops {
-                    if override_op.id == old {
-                        override_op.id = next;
-                    }
+        // The whole old→new mapping is built before a single override is
+        // touched. Rewriting them as the walk goes lets an id that has already
+        // been rewritten collide with a later operation's *old* id and be
+        // rewritten a second time, silently reattaching the override to the
+        // wrong operation — which is reachable whenever a reorder has left the
+        // ids out of ascending order.
+        let mut remap: Vec<(u64, u64)> = Vec::with_capacity(self.ops.len());
+        for (position, op) in self.ops.iter_mut().enumerate() {
+            let new = position as u64 + 1;
+            remap.push((op.id, new));
+            op.id = new;
+        }
+        for entry in &mut self.overrides {
+            for override_op in &mut entry.ops {
+                if let Some(&(_, new)) = remap.iter().find(|(old, _)| *old == override_op.id) {
+                    override_op.id = new;
                 }
             }
-            next += 1;
         }
-        self.next_id = next;
+        self.next_id = self.ops.len() as u64 + 1;
     }
 
     fn allocate_id(&mut self) -> u64 {
@@ -624,6 +630,42 @@ mod tests {
             stack.output_level_count(),
             1,
             "a disabled LOD op generates nothing"
+        );
+    }
+
+    #[test]
+    fn reassigning_ids_keeps_every_override_on_its_own_operation() {
+        let mut stack = OptStack::default();
+        let weld = stack.push_op(OpKind::Weld(WeldParams::default()));
+        stack.push_op(OpKind::FilterTriangles);
+        stack.push_op(OpKind::VertexCache);
+        // Move the last operation to the front: the ids are now [3, 1, 2], so a
+        // rewrite that consumed the id space as it walked would hand the weld's
+        // override an id it has yet to visit.
+        assert!(stack.reorder(2, -2));
+        stack.node_override_mut(0).ops.push(OpInstance {
+            id: weld,
+            enabled: true,
+            kind: OpKind::Weld(WeldParams {
+                compare_normals: false,
+                ..WeldParams::default()
+            }),
+        });
+
+        stack.reassign_ids();
+
+        let weld = stack
+            .ops
+            .iter()
+            .find(|op| matches!(op.kind, OpKind::Weld(_)))
+            .expect("the weld is still in the stack");
+        assert_eq!(
+            stack.overrides[0].ops[0].id, weld.id,
+            "the override still addresses the operation it was attached to"
+        );
+        assert!(
+            stack.ops.iter().all(|op| op.id < stack.next_id),
+            "the id source stays ahead of every re-keyed operation"
         );
     }
 

@@ -11,17 +11,14 @@
 
 use review_render::{GtaoQuality, GtaoSettings};
 
-use crate::state::UiState;
+use crate::state::{
+    UiState,
+    range::{
+        AO_INTENSITY_MAX, AO_INTENSITY_MIN, AO_RADIUS_MAX, AO_RADIUS_MIN, AO_THICKNESS_MAX,
+        AO_THICKNESS_MIN,
+    },
+};
 use crate::widgets::{labeled_combo, labeled_slider_with_value, panel_grid, reset_button};
-
-/// Inclusive slider ranges. Radius is a scene-radius fraction; intensity is the
-/// power on the GTAO visibility; thickness is the 0..1 see-through heuristic.
-const RADIUS_MIN: f32 = 0.02;
-const RADIUS_MAX: f32 = 1.0;
-const INTENSITY_MIN: f32 = 0.0;
-const INTENSITY_MAX: f32 = 2.0;
-const THICKNESS_MIN: f32 = 0.0;
-const THICKNESS_MAX: f32 = 1.0;
 
 pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
     panel_grid(ui, "gtao", |ui| {
@@ -29,21 +26,21 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
             ui,
             "Radius",
             &mut state.gtao.radius,
-            RADIUS_MIN..=RADIUS_MAX,
+            AO_RADIUS_MIN..=AO_RADIUS_MAX,
             2,
         );
         labeled_slider_with_value(
             ui,
             "Intensity",
             &mut state.gtao.intensity,
-            INTENSITY_MIN..=INTENSITY_MAX,
+            AO_INTENSITY_MIN..=AO_INTENSITY_MAX,
             2,
         );
         labeled_slider_with_value(
             ui,
             "Thickness",
             &mut state.gtao.thickness,
-            THICKNESS_MIN..=THICKNESS_MAX,
+            AO_THICKNESS_MIN..=AO_THICKNESS_MAX,
             2,
         );
         labeled_combo(

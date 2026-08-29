@@ -67,11 +67,23 @@ fn build_ufbx_write() {
         return;
     }
 
+    // Two builds, not one: the bridge is this project's own C and compiles with
+    // warnings **on**, which they cannot be while the vendored writer shares the
+    // invocation. The bridge is emitted first so a linker that resolves in
+    // command-line order sees it before the library it calls into.
     cc::Build::new()
-        .file(&source)
         .file(bridge_c)
         .include(dir)
         .include("src")
+        .warnings(true)
+        // The vendored header the bridge includes declares nameless unions,
+        // which MSVC's /W4 flags and we do not patch vendored source over. It is
+        // suppressed by number so every *other* warning still reaches the log.
+        .flag_if_supported("/wd4201")
+        .compile("export_bridge");
+    cc::Build::new()
+        .file(&source)
+        .include(dir)
         .warnings(false)
         .compile("ufbxwrite");
 

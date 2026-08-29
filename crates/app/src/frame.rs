@@ -32,7 +32,6 @@ impl App {
             return;
         };
 
-        window.set_title("3D Review");
         {
             let _z = prof::zone!("Camera Animation");
             self.update_camera_animation();
@@ -229,6 +228,11 @@ impl App {
             return;
         };
 
+        // GPU faults hit while painting. Collected rather than reported inline:
+        // `gpu` and `egui_renderer` are borrowed out of `self` for the whole block,
+        // so the reporter — which needs all of `self` — runs once it closes. An
+        // empty `Vec` allocates nothing, so a clean frame pays for none of this.
+        let mut faults: Vec<(&str, String)> = Vec::new();
         {
             let _z = prof::zone!("Paint + Present");
             // Render the 3D scene through Direct3D 11 straight to the backbuffer
@@ -301,16 +305,8 @@ impl App {
                     }
                 }
             };
-            // GPU failures are surfaced as a toast (once per fault, not per
-            // frame) — without `--tracy` the prof channel is invisible, and a
-            // windowed release build has no console at all.
             if let Err(err) = render_result {
-                prof::msg(&format!("scene D3D11 render failed: {err}"));
-                if !self.gpu_fault_notified {
-                    self.gpu_fault_notified = true;
-                    self.notifications
-                        .error(format!("Scene render failed: {err}"));
-                }
+                faults.push(("Scene render failed", err.to_string()));
             }
             let egui_output = egui_directx11::RendererOutput {
                 textures_delta: full_output.textures_delta,
@@ -321,25 +317,35 @@ impl App {
                 && let Err(err) =
                     egui_renderer.render(gpu.context(), backbuffer_rtv, &egui_ctx, egui_output)
             {
-                prof::msg(&format!("egui D3D11 render failed: {err}"));
-                if !self.gpu_fault_notified {
-                    self.gpu_fault_notified = true;
-                    self.notifications.error(format!("UI render failed: {err}"));
-                }
+                faults.push(("UI render failed", err.to_string()));
             }
             if let review_render::PresentStatus::DeviceLost { reason } = gpu.present(true) {
-                prof::msg(&format!("present failed: device lost ({reason:#x})"));
-                if !self.gpu_fault_notified {
-                    self.gpu_fault_notified = true;
-                    self.notifications.error(format!(
-                        "Graphics device lost ({reason:#x}) - restart the viewer"
-                    ));
-                }
+                faults.push((
+                    "Graphics device lost",
+                    format!("{reason:#x} - restart the viewer"),
+                ));
             }
+        }
+        for (context, detail) in faults {
+            self.report_gpu_fault(context, detail);
         }
 
         // Delimit the frame for Tracy's frame view (no-op unless `--tracy`).
         prof::frame_mark();
+    }
+
+    /// Report a GPU fault: always down the prof channel, and as a toast the first
+    /// time one happens this session. A wedged device fails again on every frame,
+    /// so the `gpu_fault_notified` latch shows one toast instead of stacking them
+    /// forever — and that toast is the user's only sign, since the prof channel is
+    /// invisible without `--tracy` and a windowed release build has no console.
+    pub(crate) fn report_gpu_fault(&mut self, context: &str, err: impl std::fmt::Display) {
+        let message = format!("{context}: {err}");
+        prof::msg(&message);
+        if !self.gpu_fault_notified {
+            self.gpu_fault_notified = true;
+            self.notifications.error(message);
+        }
     }
 
     /// Resolve the Tex viewport's D3D11 draw inputs from the live UI state: the

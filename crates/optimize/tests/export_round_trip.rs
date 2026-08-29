@@ -32,9 +32,20 @@ fn fixture(name: &str) -> Option<ModelData> {
         .join("../../assets/test_models")
         .join(name);
     if !path.exists() {
+        eprintln!("skipping {name}: the fixture is not present");
         return None;
     }
-    review_import::load_model(&path).ok()
+    match review_import::load_model(&path) {
+        Ok(model) => Some(model),
+        // No vendored ufbx means nothing can be imported at all — the same "this
+        // checkout can't run these" situation as a missing fixture. Anything else
+        // is a file that is present and did not load, which must be reported.
+        Err(review_import::ImportError::UfbxUnavailable) => {
+            eprintln!("skipping {name}: FBX import is unavailable in this build");
+            None
+        }
+        Err(error) => panic!("{name} is present but failed to load: {error}"),
+    }
 }
 
 fn run(model: &ModelData, stack: &OptStack) -> ProcessedResult {

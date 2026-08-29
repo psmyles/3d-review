@@ -108,10 +108,10 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
 
                     // Image-based lighting. Disabled + forced off when the
                     // adapter can't build the IBL maps (invariant 4).
-                    if !state.ibl_supported {
+                    if !state.capabilities.ibl {
                         state.environment.ibl_enabled = false;
                     }
-                    ui.add_enabled_ui(state.ibl_supported, |ui| {
+                    ui.add_enabled_ui(state.capabilities.ibl, |ui| {
                         option_toggle(
                             ui,
                             ctx,
@@ -125,10 +125,10 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
 
                     // Ambient occlusion (GTAO). Disabled + forced off when the
                     // adapter can't run it (invariant 4).
-                    if !state.gtao_supported {
+                    if !state.capabilities.gtao {
                         state.gtao.enabled = false;
                     }
-                    ui.add_enabled_ui(state.gtao_supported, |ui| {
+                    ui.add_enabled_ui(state.capabilities.gtao, |ui| {
                         option_toggle(
                             ui,
                             ctx,

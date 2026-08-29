@@ -69,7 +69,7 @@ pub enum OptError {
     #[error("index buffer has {0} indices, which is not a whole number of triangles")]
     IndexCount(usize),
 
-    #[error("index {index} addresses vertex {index} of only {vertex_count}")]
+    #[error("index {index} addresses no vertex in a buffer of {vertex_count}")]
     IndexRange { index: u32, vertex_count: usize },
 
     #[error("vertex stream has {len} values, expected {expected}")]

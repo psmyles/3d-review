@@ -19,6 +19,18 @@
  * importer reads, and the version ufbx_write's own example uses. */
 #define RVO_FBX_VERSION 7500
 
+/* `a * b` with explicit overflow rejection, mirroring `ufbx_bridge.c`'s helper of
+   the same shape: a plain multiply before an allocation defeats the allocator's
+   own overflow check. Returns 1 and leaves `*out` untouched on overflow. */
+static int rvo_mul_overflows(size_t a, size_t b, size_t *out)
+{
+    if (a != 0 && b > SIZE_MAX / a) {
+        return 1;
+    }
+    *out = a * b;
+    return 0;
+}
+
 static void rvo_set_error(char *error, size_t error_length, const char *message)
 {
     if (!error || error_length == 0) {
@@ -108,6 +120,21 @@ static int rvo_validate(const rvo_export_scene *scene, char *error, size_t error
          * hostile count can't wrap into a small allocation. */
         if (mesh->triangle_count > SIZE_MAX / 3) {
             rvo_set_error(error, error_length, "a mesh has an implausible triangle count");
+            return -1;
+        }
+        /* The face-offset table holds `3 * face_index` as an int32_t, up to and
+         * including the terminator at `triangle_count`. FBX indices are 32-bit
+         * signed, so a mesh that overflows it cannot be written at all — reject
+         * it here rather than truncate the offsets into a scrambled mesh. */
+        if (mesh->triangle_count * 3 > (size_t)INT32_MAX) {
+            rvo_set_error(error, error_length, "a mesh has more triangles than FBX can index");
+            return -1;
+        }
+        /* Attribute streams are read past the count handed over: `3 *
+         * vertex_count` doubles for positions and normals, `4 *` for colors,
+         * `2 *` for each UV set. The widest of those is what has to fit. */
+        if (mesh->vertex_count > SIZE_MAX / 4) {
+            rvo_set_error(error, error_length, "a mesh has an implausible vertex count");
             return -1;
         }
         for (size_t c = 0; c < mesh->triangle_count * 3; c++) {
@@ -267,7 +294,13 @@ int review_export_fbx(const rvo_export_scene *scene, const char *path, int ascii
          * reused across meshes, which is only safe because it is copied in. */
         size_t offsets_needed = source->triangle_count + 1;
         if (offsets_needed > face_offsets_capacity) {
-            int32_t *grown = (int32_t *)realloc(face_offsets, offsets_needed * sizeof(int32_t));
+            size_t offsets_bytes;
+            int32_t *grown;
+            if (rvo_mul_overflows(offsets_needed, sizeof(int32_t), &offsets_bytes)) {
+                rvo_set_error(error, error_length, "a mesh has an implausible triangle count");
+                goto cleanup;
+            }
+            grown = (int32_t *)realloc(face_offsets, offsets_bytes);
             if (!grown) {
                 rvo_set_error(error, error_length, "out of memory allocating face offsets");
                 goto cleanup;
@@ -275,6 +308,8 @@ int review_export_fbx(const rvo_export_scene *scene, const char *path, int ascii
             face_offsets = grown;
             face_offsets_capacity = offsets_needed;
         }
+        /* `f * 3` fits an int32_t for every face: validation rejected any mesh
+         * whose last offset would not. */
         for (size_t f = 0; f < offsets_needed; f++) {
             face_offsets[f] = (int32_t)(f * 3);
         }

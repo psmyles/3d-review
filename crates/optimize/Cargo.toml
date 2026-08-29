@@ -9,15 +9,16 @@ build = "build.rs"
 [dependencies]
 glam.workspace = true
 review-model = { path = "../model" }
+# The shared guarded Tracy helpers. Instruments the per-operation CPU zones so a
+# slow stack shows up per op; carries `tracy-client` itself, so this crate needs
+# no direct dependency on it.
+review-prof.workspace = true
 # Presets are persisted as JSON, so the stack types derive Serialize/Deserialize
 # here. `review-model` stays glam-only (invariant 10) — nothing in this crate
 # adds a derive to a `review-model` type.
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
-# Tracy profiler client — always compiled in, inert until started (`--tracy`).
-# Instruments the per-operation CPU zones so a slow stack shows up per op.
-tracy-client.workspace = true
 
 [dev-dependencies]
 # Integration tests run the stack over real FBX fixtures rather than only the
@@ -27,3 +28,6 @@ review-import = { path = "../import" }
 
 [build-dependencies]
 cc.workspace = true
+
+[lints]
+workspace = true

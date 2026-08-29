@@ -20,23 +20,13 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
 /// "Color Mode" row: a dropdown choosing which vertex-color channels the view
 /// shows.
 fn color_mode_row(ui: &mut egui::Ui, mode: &mut VertexColorMode) {
-    labeled_combo(
-        ui,
-        "Color Mode",
-        "vertex_color_mode",
-        color_mode_label(*mode),
-        |ui| {
-            ui.selectable_value(mode, VertexColorMode::Rgb, "RGB channel");
-            ui.selectable_value(mode, VertexColorMode::Alpha, "Alpha channel");
-            ui.selectable_value(mode, VertexColorMode::RgbAlpha, "RGB+A channel");
-        },
-    );
-}
-
-fn color_mode_label(mode: VertexColorMode) -> &'static str {
-    match mode {
-        VertexColorMode::Rgb => "RGB channel",
-        VertexColorMode::Alpha => "Alpha channel",
-        VertexColorMode::RgbAlpha => "RGB+A channel",
-    }
+    labeled_combo(ui, "Color Mode", "vertex_color_mode", mode.label(), |ui| {
+        for choice in [
+            VertexColorMode::Rgb,
+            VertexColorMode::Alpha,
+            VertexColorMode::RgbAlpha,
+        ] {
+            ui.selectable_value(mode, choice, choice.label());
+        }
+    });
 }

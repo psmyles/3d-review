@@ -202,14 +202,21 @@ pub fn partition(model: &ModelData) -> (Vec<Submesh>, TagPresence) {
         let mut indices = Vec::with_capacity(source_triangles.len() * 3);
 
         for &triangle in source_triangles {
-            for corner in 0..3 {
-                let global = model.indices[triangle * 3 + corner];
-                let entry = match local_of_global.get_mut(global as usize) {
-                    Some(entry) => entry,
-                    // An out-of-range index means a malformed model; skipping the
-                    // corner keeps the rest of the mesh usable.
-                    None => continue,
-                };
+            let corners = &model.indices[triangle * 3..triangle * 3 + 3];
+            // An out-of-range index means a malformed model. The whole triangle
+            // goes: dropping only the offending corner would leave an index
+            // buffer that is no longer a multiple of three, shifting every later
+            // triangle by one corner into plausible-looking garbage.
+            if corners
+                .iter()
+                .any(|&global| global as usize >= model.vertices.len())
+            {
+                continue;
+            }
+            for &global in corners {
+                // In range, so both lookups hit: `local_of_global` is sized to
+                // the model's vertex array.
+                let entry = &mut local_of_global[global as usize];
                 if *entry == u32::MAX {
                     *entry = vertices.len() as u32;
                     touched.push(global);
@@ -232,10 +239,6 @@ pub fn partition(model: &ModelData) -> (Vec<Submesh>, TagPresence) {
         for global in touched.drain(..) {
             local_of_global[global as usize] = u32::MAX;
         }
-
-        // A triangle whose corners were all out of range leaves a short index
-        // buffer; trim to whole triangles so downstream checks hold.
-        indices.truncate(indices.len() - indices.len() % 3);
 
         submeshes.push(Submesh {
             node,

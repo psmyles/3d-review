@@ -37,11 +37,12 @@ const RIGHT_SHORTCUTS: [(&str, &str); 6] = [
 
 /// Bottom-section rows: (key-cap chord, description) for the file / edit
 /// commands.
-const CHORD_SHORTCUTS: [(&[&str], &str); 5] = [
+const CHORD_SHORTCUTS: [(&[&str], &str); 6] = [
     (&["Ctrl", "N"], "Reset 3D Review to start state"),
     (&["Ctrl", "O"], "Open model from file dialog"),
     (&["Ctrl", "Z"], "Undo"),
     (&["Ctrl", "Y"], "Redo"),
+    (&["Ctrl", "Shift", "Z"], "Redo (alternate chord)"),
     (&["Esc"], "Clear selection"),
 ];
 
@@ -95,15 +96,15 @@ fn draw_card_contents(ui: &mut egui::Ui, state: &UiState) {
     let content_width = size::HELP_COLUMN_WIDTH * 2.0 + size::HELP_COLUMN_GAP;
     ui.set_width(content_width);
 
-    let version = if state.app_version.is_empty() {
+    let version = if state.capabilities.app_version.is_empty() {
         "?"
     } else {
-        state.app_version.as_str()
+        state.capabilities.app_version.as_str()
     };
-    let backend = if state.gpu_backend.is_empty() {
+    let backend = if state.capabilities.gpu_backend.is_empty() {
         "?"
     } else {
-        state.gpu_backend.as_str()
+        state.capabilities.gpu_backend.as_str()
     };
 
     centered_text(ui, "3D Review", font::HELP_TITLE, color::TEXT_PRIMARY);

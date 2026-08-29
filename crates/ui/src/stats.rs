@@ -4,7 +4,7 @@
 //! [`review_model::ModelStats`] (invariant 5) — never a placeholder.
 
 use crate::state::{TexturePoolEntry, UiState};
-use crate::theme::{color, font, size};
+use crate::theme::{color, font, motion, size};
 use crate::widgets::mono_label;
 
 /// The Tex viewport's stats panel: the viewed texture's source format, pixel
@@ -319,10 +319,6 @@ fn with_tooltip(response: egui::Response, label: &str) {
     };
 }
 
-/// How long a row acknowledges a copy, in seconds. Long enough to read, short
-/// enough that the explanation is back by the time the pointer returns.
-const COPIED_FEEDBACK_SECS: f64 = 1.2;
-
 /// One stats row with an optional tinted change column to the right of the value.
 ///
 /// The whole strip is one click target that copies the row to the clipboard, and
@@ -368,9 +364,9 @@ fn value_row(ui: &mut egui::Ui, label: &str, value: &str, delta: Option<(String,
     // produces no further events (invariant 6).
     let copied_at: Option<f64> = ui.ctx().data(|data| data.get_temp(id));
     match copied_at.map(|at| now - at) {
-        Some(elapsed) if elapsed < COPIED_FEEDBACK_SECS => {
+        Some(elapsed) if elapsed < motion::STATS_COPIED_FEEDBACK_SECS => {
             ui.ctx()
-                .request_repaint_after_secs((COPIED_FEEDBACK_SECS - elapsed) as f32);
+                .request_repaint_after_secs((motion::STATS_COPIED_FEEDBACK_SECS - elapsed) as f32);
             response.on_hover_text("Copied to clipboard");
         }
         _ => with_tooltip(response, label),

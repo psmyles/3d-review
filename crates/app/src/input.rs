@@ -15,9 +15,10 @@ use winit::window::Window;
 
 use review_ui::{OptLayout, WorkspaceMode};
 
+use crate::window_state::monitor_refresh_interval;
 use crate::{
     App, DRAG_ZOOM_SENSITIVITY, DragMode, WHEEL_LINE_ZOOM_STEP, WHEEL_PIXELS_PER_ZOOM_STEP,
-    framing_safe_area, monitor_refresh_interval,
+    framing_safe_area,
 };
 
 impl App {
@@ -41,12 +42,17 @@ impl App {
             renderer.set_framing_safe_area(safe_w, safe_h);
         }
 
-        if let Some(gpu) = self.gpu.as_mut()
-            && let Err(error) = gpu.resize(size.width, size.height)
-        {
-            // Non-fatal (the old buffers stay valid, and the next successful
-            // resize recovers) — but not silent, unlike every other error here.
-            crate::prof::msg(&format!("swapchain resize failed: {error}"));
+        // Non-fatal on its own (the old buffers stay valid, and the next successful
+        // resize recovers), but a resize that keeps failing means a wedged device —
+        // so it goes through the same once-per-session fault report as the frame
+        // loop's, which is also what keeps a dragged window edge from stacking a
+        // toast per event.
+        let resize_error = self
+            .gpu
+            .as_mut()
+            .and_then(|gpu| gpu.resize(size.width, size.height).err());
+        if let Some(error) = resize_error {
+            self.report_gpu_fault("Swapchain resize failed", error);
         }
 
         window.request_redraw();

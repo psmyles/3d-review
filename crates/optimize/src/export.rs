@@ -428,16 +428,27 @@ fn build_mesh(
     let mut uv_sets: Vec<Vec<f64>> = vec![Vec::new(); channel_count.max(usize::from(has_uv))];
     let mut indices: Vec<i32> = Vec::with_capacity(group.triangles.len() * 3);
 
+    // An out-of-range index means a malformed mesh, and the whole triangle has
+    // to go: emitting the corners that are in range would leave an index buffer
+    // that is no longer a multiple of three and shift every later triangle by
+    // one. Both loops below walk `group.triangles`, so both consult this.
+    let whole_triangle = |triangle: usize| {
+        model.indices[triangle * 3..triangle * 3 + 3]
+            .iter()
+            .all(|&index| (index as usize) < model.vertices.len())
+    };
+
     for &triangle in &group.triangles {
+        if !whole_triangle(triangle) {
+            continue;
+        }
         for corner in 0..3 {
             let global = model.indices[triangle * 3 + corner] as usize;
-            let Some(slot) = local_of_global.get_mut(global) else {
-                continue;
-            };
+            // In range, so both lookups hit: `local_of_global` is sized to the
+            // model's vertex array.
+            let slot = &mut local_of_global[global];
             if *slot < 0 {
-                let Some(vertex) = model.vertices.get(global) else {
-                    continue;
-                };
+                let vertex = model.vertices[global];
                 *slot = (positions.len() / 3) as i32;
 
                 let position = match to_local {
@@ -499,6 +510,9 @@ fn build_mesh(
     let triangle_count = model.indices.len() / 3;
     if model.triangles.material.len() == triangle_count {
         for &triangle in &group.triangles {
+            if !whole_triangle(triangle) {
+                continue;
+            }
             let global = model.triangles.material[triangle];
             // The no-material sentinel maps to slot 0 of an empty list, which the
             // bridge writes as "no material".
@@ -675,7 +689,9 @@ fn write_scene(scene: &SceneData, path: &Path, format: FbxFormat) -> Result<(), 
         mesh_count: meshes.len(),
     };
 
-    let mut error = [0i8; crate::export_ffi::ERROR_LENGTH];
+    // Element type inferred as `c_char` from the call below, whose signedness is
+    // the platform's rather than a fixed `i8`.
+    let mut error = [0; crate::export_ffi::ERROR_LENGTH];
     // SAFETY: `payload` and every array it points at are live for this call and
     // sized exactly by the counts beside them; `c_path` is a valid NUL-terminated
     // string; `error` is a live buffer of exactly `ERROR_LENGTH` bytes, which is
@@ -715,7 +731,7 @@ fn optional(values: &[f64]) -> *const f64 {
 
 /// Read the bridge's NUL-terminated message out of its fixed buffer.
 #[cfg(has_ufbxw)]
-fn error_message(buffer: &[i8]) -> String {
+fn error_message(buffer: &[c_char]) -> String {
     let bytes: Vec<u8> = buffer
         .iter()
         .take_while(|&&byte| byte != 0)
@@ -726,5 +742,98 @@ fn error_message(buffer: &[i8]) -> String {
         "the FBX writer failed without reporting a reason".to_owned()
     } else {
         message
+    }
+}
+
+/// Unit coverage for the pure helpers. The FFI write path is covered end to end
+/// by `tests/export_round_trip.rs`, which reads every written file back.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn level_path_suffixes_the_stem_and_keeps_the_extension() {
+        assert_eq!(
+            level_path(Path::new("out/asset.fbx"), 2),
+            PathBuf::from("out/asset_LOD2.fbx")
+        );
+    }
+
+    #[test]
+    fn level_path_supplies_a_name_and_an_extension_when_the_path_has_neither() {
+        assert_eq!(
+            level_path(Path::new("asset"), 1),
+            PathBuf::from("asset_LOD1.fbx")
+        );
+        assert_eq!(level_path(Path::new(""), 0), PathBuf::from("mesh_LOD0.fbx"));
+    }
+
+    #[test]
+    fn c_string_falls_back_for_empty_text() {
+        assert_eq!(c_string("", "Mesh").to_bytes(), b"Mesh");
+    }
+
+    #[test]
+    fn c_string_keeps_a_name_carrying_an_interior_nul() {
+        assert_eq!(c_string("Bo\0dy", "Mesh").to_bytes(), b"Body");
+    }
+
+    #[cfg(has_ufbxw)]
+    #[test]
+    fn error_message_reads_the_bridge_text_and_explains_its_absence() {
+        let mut buffer = [0; crate::export_ffi::ERROR_LENGTH];
+        for (slot, &byte) in buffer.iter_mut().zip(b"could not write the file") {
+            *slot = byte as c_char;
+        }
+        assert_eq!(error_message(&buffer), "could not write the file");
+        assert_eq!(
+            error_message(&[0; 8]),
+            "the FBX writer failed without reporting a reason"
+        );
+    }
+
+    /// Two nodes each claiming the other as parent — what the ancestor walk has
+    /// to survive, since it follows `parent` links to the root.
+    fn cyclic_model() -> ModelData {
+        let node = |name: &str, parent: usize| review_model::SceneNode {
+            name: name.to_owned(),
+            parent: Some(parent),
+            mesh_part: Some(0),
+            transform: Mat4::IDENTITY,
+            kind: review_model::NodeKind::Mesh,
+            bone: None,
+        };
+        ModelData {
+            name: "Looped".to_owned(),
+            nodes: vec![node("A", 1), node("B", 0)],
+            ..ModelData::default()
+        }
+    }
+
+    #[test]
+    fn place_node_cuts_a_parent_cycle_and_says_so() {
+        let source = cyclic_model();
+        let mut scene = SceneData {
+            nodes: Vec::new(),
+            materials: Vec::new(),
+            meshes: Vec::new(),
+        };
+        let group = NodeGroup {
+            source_node: Some(0),
+            triangles: Vec::new(),
+        };
+
+        let (node, notes) = place_node(&mut scene, &source, &group, HierarchyMode::Rebuild, 0);
+
+        assert_eq!(node, 0, "the mesh still attaches to a real node");
+        assert_eq!(
+            scene.nodes.len(),
+            1,
+            "the loop emits one node, not an endless chain"
+        );
+        assert!(
+            notes.iter().any(|note| note.contains("looped")),
+            "the user is told the branch was flattened: {notes:?}"
+        );
     }
 }

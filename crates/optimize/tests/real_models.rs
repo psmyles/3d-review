@@ -12,7 +12,7 @@
 
 #![cfg(has_meshopt)]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use review_model::ModelData;
 use review_optimize::{
@@ -24,21 +24,40 @@ use review_optimize::{
 /// color). Only the overfetch figure depends on it.
 const VERTEX_SIZE: usize = 64;
 
-fn fixture(name: &str) -> Option<ModelData> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+/// Every fixture the tests below load. Asserted to exist by
+/// [`every_fixture_the_suite_loads_exists`], so a rename cannot quietly turn the
+/// whole suite green.
+const FIXTURES: [&str; 5] = [
+    "SK_Player_01.fbx",
+    "SM_column04.fbx",
+    "lucy.fbx",
+    "monkey.fbx",
+    "xyzrgb_dragon.fbx",
+];
+
+fn fixture_path(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../assets/test_models")
-        .join(name);
+        .join(name)
+}
+
+fn fixture(name: &str) -> Option<ModelData> {
+    let path = fixture_path(name);
     if !path.exists() {
+        eprintln!("skipping {name}: the fixture is not present");
         return None;
     }
     match review_import::load_model(&path) {
         Ok(model) => Some(model),
-        // A checkout without the vendored ufbx sources can't import anything;
-        // that is a missing-fixture situation, not a failure of this crate.
-        Err(error) => {
-            eprintln!("skipping {name}: {error}");
+        // A checkout without the vendored ufbx sources can't import *anything*;
+        // that is the same "this checkout can't run these" situation as a missing
+        // fixture. Any other error means the file is there and did not load,
+        // which the suite must report rather than skip past.
+        Err(review_import::ImportError::UfbxUnavailable) => {
+            eprintln!("skipping {name}: FBX import is unavailable in this build");
             None
         }
+        Err(error) => panic!("{name} is present but failed to load: {error}"),
     }
 }
 
@@ -466,16 +485,19 @@ fn most_common_node(model: &ModelData) -> Option<u32> {
         .map(|(node, _)| node)
 }
 
-/// Sanity: the fixture directory is where the tests expect it, so a rename turns
-/// into a visible failure rather than silently skipping every test above.
+/// Sanity: every file the tests above load is where they expect it. Checking the
+/// directory alone was not enough — renaming one fixture turned four tests into
+/// silent green passes.
 #[test]
-fn the_fixture_directory_exists() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/test_models");
-    assert!(
-        dir.is_dir(),
-        "fixture directory moved; the tests above would silently skip: {}",
-        dir.display()
-    );
+fn every_fixture_the_suite_loads_exists() {
+    for name in FIXTURES {
+        let path = fixture_path(name);
+        assert!(
+            path.is_file(),
+            "fixture missing or renamed; the tests that load it would silently skip: {}",
+            path.display()
+        );
+    }
 }
 
 /// A LOD operation on its own has to work.
