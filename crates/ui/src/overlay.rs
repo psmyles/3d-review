@@ -39,8 +39,8 @@ pub fn draw_overlay(
 
     // The side panels, option panels, axis gizmo and stats overlay are all 3D-scene
     // chrome; the UV / Texture workspaces keep a clean viewport (just the UV dropdown
-    // in the toolbar), so they only draw in 3D mode.
-    if state.mode == WorkspaceMode::ThreeD {
+    // in the toolbar), so they draw only in the scene workspaces (3D and Opt).
+    if state.mode.is_scene() {
         // Outliner (left) + Inspector (right) dockable side panels. They paint over
         // the full-window background scene (exactly as the toolbar / status bar
         // already do); their live widths inset the floating viewport chrome below so

@@ -202,7 +202,9 @@ impl App {
                     let (image, background) = texture_draw.unwrap_or((None, TexBackground::Black));
                     renderer.render_texture(gpu, image, background)
                 }
-                WorkspaceMode::ThreeD => renderer.render_scene(
+                // Opt renders the same scene as 3D for now; the split
+                // source-vs-processed viewport lands with the processing loop.
+                WorkspaceMode::ThreeD | WorkspaceMode::Opt => renderer.render_scene(
                     gpu,
                     &SceneFrame {
                         model: &model,

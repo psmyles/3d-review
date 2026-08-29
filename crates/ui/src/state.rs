@@ -44,6 +44,19 @@ pub enum WorkspaceMode {
     ThreeD,
     Uv,
     Texture,
+    /// Mesh optimization: the same 3D scene chrome, plus the operation stack and
+    /// a source-vs-processed comparison viewport.
+    Opt,
+}
+
+impl WorkspaceMode {
+    /// True for the workspaces that draw the 3D scene and therefore share its
+    /// chrome — side panels, option windows, the axis gizmo, the stats overlay,
+    /// and every shading / diagnostic control. Opt is a 3D workspace with extra
+    /// tooling, not a separate kind of viewport.
+    pub fn is_scene(self) -> bool {
+        matches!(self, WorkspaceMode::ThreeD | WorkspaceMode::Opt)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

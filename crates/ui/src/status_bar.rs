@@ -38,7 +38,9 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
             // toggle + the background-fill group.
             match state.mode {
                 WorkspaceMode::Uv => return,
-                WorkspaceMode::ThreeD => {}
+                // Opt draws the same 3D scene through the same shading and
+                // rendering-quality controls, so it shares this bar unchanged.
+                WorkspaceMode::ThreeD | WorkspaceMode::Opt => {}
                 WorkspaceMode::Texture => {
                     draw_texture_status_bar(ui, ctx, state, group_height);
                     return;

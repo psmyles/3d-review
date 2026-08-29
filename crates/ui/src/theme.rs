@@ -284,7 +284,9 @@ pub mod size {
     /// Tonemapper / Anti-aliasing rendering-quality cluster): 6 padding + 5×42 icons
     /// + 4×3 gaps.
     pub const TOOLBAR_QUINT_ICON_GROUP_WIDTH: f32 = 228.0;
-    pub const TOOLBAR_MODE_GROUP_WIDTH: f32 = 180.0;
+    /// Width of the centered workspace-mode group: 6 padding + 4×56 segments
+    /// (3D / UV / Tex / Opt) + 3×3 gaps.
+    pub const TOOLBAR_MODE_GROUP_WIDTH: f32 = 239.0;
     /// Width of the UV-set dropdown shown on the right of the toolbar in UV mode.
     pub const TOOLBAR_UV_DROPDOWN_WIDTH: f32 = 200.0;
     pub const TOOLBAR_GROUP_HEIGHT: f32 = 48.0;

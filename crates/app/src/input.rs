@@ -93,7 +93,7 @@ impl App {
         // an unclaimed press there must not start a 3D-camera drag.
         let uv_mode = match self.ui.mode {
             WorkspaceMode::Uv => true,
-            WorkspaceMode::ThreeD => false,
+            WorkspaceMode::ThreeD | WorkspaceMode::Opt => false,
             WorkspaceMode::Texture => return,
         };
         match button {
@@ -184,7 +184,7 @@ impl App {
         };
         match self.ui.mode {
             WorkspaceMode::Uv => renderer.zoom_uv_camera(amount),
-            WorkspaceMode::ThreeD => renderer.zoom_camera(amount),
+            WorkspaceMode::ThreeD | WorkspaceMode::Opt => renderer.zoom_camera(amount),
             // The Tex viewport zooms inside egui (its canvas claims the wheel);
             // an unclaimed wheel there must not zoom the hidden 3D camera.
             WorkspaceMode::Texture => return,
