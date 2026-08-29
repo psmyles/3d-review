@@ -310,13 +310,11 @@ fn stat_tooltip(label: &str) -> Option<&'static str> {
     })
 }
 
-/// Attach a row's explanation, plus the note that the row copies itself.
+/// Attach a row's explanation, when it has one.
 fn with_tooltip(response: egui::Response, label: &str) {
-    const HINT: &str = "Click to copy this row.";
-    match stat_tooltip(label) {
-        Some(text) => response.on_hover_text(format!("{text}\n\n{HINT}")),
-        None => response.on_hover_text(HINT),
-    };
+    if let Some(text) = stat_tooltip(label) {
+        response.on_hover_text(text);
+    }
 }
 
 /// One stats row with an optional tinted change column to the right of the value.
