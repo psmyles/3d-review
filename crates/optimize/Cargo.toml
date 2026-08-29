@@ -1,0 +1,23 @@
+[package]
+name = "review-optimize"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[dependencies]
+glam.workspace = true
+review-model = { path = "../model" }
+# Presets are persisted as JSON, so the stack types derive Serialize/Deserialize
+# here. `review-model` stays glam-only (invariant 10) — nothing in this crate
+# adds a derive to a `review-model` type.
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+# Tracy profiler client — always compiled in, inert until started (`--tracy`).
+# Instruments the per-operation CPU zones so a slow stack shows up per op.
+tracy-client.workspace = true
+
+[build-dependencies]
+cc.workspace = true

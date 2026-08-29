@@ -73,7 +73,8 @@ roadmap), and `TODO.md` (running notes).
 
 ### Rust-specific invariants
 
-9. **All `unsafe` and all C/FFI lives in `crates/import` and `crates/psd`** —
+9. **All `unsafe` and all C/FFI lives in `crates/import`, `crates/psd` and
+   `crates/optimize`** —
    *plus* the scoped Direct3D 11 sites below. No `unsafe` leaks into `model` / `ui`,
    nor into `render`'s geometry / material / camera modules. Before
    `slice::from_raw_parts`, null-check the pointer and treat len 0 as empty
@@ -86,6 +87,21 @@ roadmap), and `TODO.md` (running notes).
    its `decode_psd`, which validates header dimensions with checked arithmetic before
    sizing the output buffer. `render`'s `texture.rs` calls it through the safe API
    only — no `unsafe` there.
+   **Sanctioned exception — meshoptimizer FFI** (`crates/optimize`,
+   `review-optimize`): the mesh-optimization core behind the Opt workspace. Unlike
+   psd it vendors **source** (`third_party/meshoptimizer`, an unmodified upstream
+   `src/` snapshot — C++ with no STL/exceptions behind a pure-C API) compiled by
+   `cc` (`.cpp(true)`) in its `build.rs`, existence-gated on `cfg(has_meshopt)`
+   exactly as `import` gates ufbx — delete the tree and the workspace still builds,
+   with every operation returning `OptError::Unavailable`. Because the C API is
+   already flat over raw pointers there is **no C bridge**: `src/ffi.rs` declares
+   the entry points directly and `src/meshopt.rs` holds every call, each wrapper
+   validating the mesh preconditions before it (whole-triangle index buffers,
+   in-range indices, exact stream lengths, `checked_mul` destination sizes) and
+   re-validating the returned element count after. Those two modules are the whole
+   `unsafe` surface: `ops`/`process`/`stack`/`preset`/`submesh` above them are
+   ordinary safe Rust, and the crate `forbid`s `unsafe_code` outright when the
+   vendored tree is absent. `app` calls it through the safe API only.
    **Sanctioned exception — Direct3D 11 / DXGI COM** (via the `windows` crate) is
    `unsafe` and pervasive in the renderer. It is confined to **one** place:
    `crates/render/src/rhi/` (the GPU-plumbing module — device, swapchain,
@@ -130,6 +146,24 @@ crates/
             (repr(C) mirror structs, checked_slice, model_from_bridge_scene),
             the vendored ufbx C + bridge, build.rs (cc, cfg(has_ufbx)).
             -> src/lib.rs, src/ufbx_bridge.c/.h, build.rs
+  optimize/ review-optimize: mesh optimization for the Opt workspace, over
+            vendored meshoptimizer v1.2 (invariant 9's third FFI site). Depends on
+            `review-model` only — hands back plain `ModelData`, never touches GPU
+            or UI types. Layers, bottom up: src/ffi.rs (raw `extern "C"` decls) +
+            src/meshopt.rs (the checked safe wrappers; together the entire `unsafe`
+            surface) -> src/submesh.rs (splits a `ModelData` into per-(node,
+            material) pieces — the unit that can survive a simplify, since
+            meshoptimizer returns a new index buffer with no triangle
+            correspondence) -> src/ops.rs (one function per operation) ->
+            src/process.rs (walks the stack, fans out the LOD chain, reassembles a
+            `ModelData` per level + measures it). src/stack.rs is the serializable
+            operation stack the UI edits; src/preset.rs is its versioned JSON
+            envelope. Processed meshes are pure triangles and carry **no** face
+            topology (`faces` / `triangles.to_face` left empty — the corner-run
+            layout a `TopologyFace` describes cannot survive welding; every
+            `render` consumer already falls back to per-triangle behaviour).
+            build.rs compiles third_party/meshoptimizer with `cc` when present
+            (`cfg(has_meshopt)`).
   psd/      review-psd: safe `decode_psd` over a C-ABI bridge to psd_sdk (C++),
             returning a PSD's merged composite as RGBA8 (invariant 9's third FFI
             site). Links a PREBUILT MSVC static lib (`vendor/fire_psd.lib`) +
@@ -218,6 +252,8 @@ crates/
             uv_checker, vertex_colors, wireframe, material_mode; plus inspector +
             outliner for the side panels). -> src/lib.rs + src/*.rs
 third_party/ufbx/   vendored ufbx.c / ufbx.h (compiled only if present)
+third_party/meshoptimizer/  vendored meshoptimizer v1.2 src/ (compiled only if
+                    present; see its NOTICE.txt for the pinned commit)
 assets/icons/       PNG toolbar/gizmo icons (include_bytes!)
 assets/test_models/ local FBX fixtures for manual checks
 ```

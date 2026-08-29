@@ -3,6 +3,7 @@ members = [
     "crates/app",
     "crates/import",
     "crates/model",
+    "crates/optimize",
     "crates/psd",
     "crates/render",
     "crates/ui",
@@ -41,6 +42,10 @@ notify = "8"
 # only FFI site besides `crates/import` + the sanctioned D3D11 sites — invariant 9).
 review-psd = { path = "crates/psd" }
 rfd = "0.15"
+# Derived on `review-optimize`'s operation-stack types only, so a stack can be
+# saved/loaded as a JSON preset. Deliberately not a `review-model` dependency —
+# that crate stays glam-only (invariant 10).
+serde = "1"
 serde_json = "1"
 thiserror = "2"
 # zune is the fast decode path for JPEG textures (platform intrinsics + unsafe

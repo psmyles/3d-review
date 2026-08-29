@@ -2181,6 +2181,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "review-optimize"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "glam",
+ "review-model",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracy-client",
+]
+
+[[package]]
 name = "review-psd"
 version = "0.1.0"
 dependencies = [
