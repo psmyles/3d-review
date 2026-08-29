@@ -143,6 +143,28 @@ fn stack_row(
     (response, content, controls)
 }
 
+/// A row's name, pinned to the left edge of `rect`.
+///
+/// `Ui::put` centres what it places (it lays the widget out
+/// `centered_and_justified`), which reads as a list of headings rather than a
+/// list of entries — so the name gets its own left-to-right scope instead. The
+/// label is non-interactive so the click lands on the row band beneath it.
+fn row_label(ui: &mut egui::Ui, rect: egui::Rect, text: egui::RichText) {
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        |ui| {
+            ui.add(
+                egui::Label::new(text)
+                    .truncate()
+                    .selectable(false)
+                    .sense(egui::Sense::hover()),
+            );
+        },
+    );
+}
+
 /// The ordered operation rows. Each carries an enable checkbox, the operation's
 /// name (click anywhere on the row to select it), reorder arrows and a remove
 /// button.
@@ -196,14 +218,7 @@ fn operation_rows(ui: &mut egui::Ui, state: &mut UiState) {
             egui::pos2(check_rect.right() + gap, content.top()),
             content.max,
         );
-        ui.put(
-            label_rect,
-            egui::Label::new(text)
-                .truncate()
-                .selectable(false)
-                // Non-interactive, so the click lands on the row beneath it.
-                .sense(egui::Sense::hover()),
-        );
+        row_label(ui, label_rect, text);
 
         // Reorder / remove, laid out from the row's right edge.
         let tile = |slot: usize| {
@@ -281,11 +296,5 @@ fn export_row(ui: &mut egui::Ui, state: &mut UiState) {
     } else {
         color::TEXT_BODY
     });
-    ui.put(
-        content,
-        egui::Label::new(text)
-            .truncate()
-            .selectable(false)
-            .sense(egui::Sense::hover()),
-    );
+    row_label(ui, content, text);
 }

@@ -17,7 +17,9 @@ use review_render::Selection;
 use crate::opt_state::{OptIntent, StackItem};
 use crate::state::UiState;
 use crate::theme::{color, size};
-use crate::widgets::{labeled_checkbox, labeled_combo, labeled_slider_with_value, panel_grid};
+use crate::widgets::{
+    labeled_checkbox, labeled_combo, labeled_slider_with_value, panel_grid, wide_button,
+};
 
 /// The most levels a LOD chain may hold. Past this the chain stops being a
 /// pipeline decision and starts being an experiment; the cost is one full
@@ -351,10 +353,7 @@ fn export_body(ui: &mut egui::Ui, state: &mut UiState) -> Option<OptIntent> {
     ui.add_space(size::PANEL_ROW_GAP);
 
     let ready = state.opt.has_result() && !state.opt.processing;
-    let response = ui.add_enabled(
-        ready,
-        egui::Button::new("Export…").min_size(egui::vec2(ui.available_width(), 0.0)),
-    );
+    let response = ui.add_enabled(ready, wide_button("Export…", ui.available_width()));
     let response = if state.opt.processing {
         response.on_disabled_hover_text("Waiting for the current run to finish")
     } else if !state.opt.has_result() {

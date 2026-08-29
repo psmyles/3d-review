@@ -310,18 +310,37 @@ fn stat_tooltip(label: &str) -> Option<&'static str> {
     })
 }
 
-/// Attach a row's explanation, if it has one.
-fn with_tooltip(response: egui::Response, label: &str) -> egui::Response {
+/// Attach a row's explanation, plus the note that the row copies itself.
+fn with_tooltip(response: egui::Response, label: &str) {
+    const HINT: &str = "Click to copy this row.";
     match stat_tooltip(label) {
-        Some(text) => response.on_hover_text(text),
-        None => response,
-    }
+        Some(text) => response.on_hover_text(format!("{text}\n\n{HINT}")),
+        None => response.on_hover_text(HINT),
+    };
 }
 
+/// How long a row acknowledges a copy, in seconds. Long enough to read, short
+/// enough that the explanation is back by the time the pointer returns.
+const COPIED_FEEDBACK_SECS: f64 = 1.2;
+
 /// One stats row with an optional tinted change column to the right of the value.
+///
+/// The whole strip is one click target that copies the row to the clipboard, and
+/// the widget that carries the row's explanation.
 fn value_row(ui: &mut egui::Ui, label: &str, value: &str, delta: Option<(String, egui::Color32)>) {
-    let response = ui
+    let copy_text = match &delta {
+        Some((change, _)) => format!("{label}: {value} ({})", change.trim()),
+        None => format!("{label}: {value}"),
+    };
+
+    let rect = ui
         .horizontal(|ui| {
+            // The stats are display-only. egui's labels are selectable by
+            // default, which puts a text cursor over the row and — because a
+            // selectable label senses drags — makes it an interactive widget
+            // that swallows the row's own hover, so the explanations below never
+            // reached the screen.
+            ui.style_mut().interaction.selectable_labels = false;
             ui.label(mono_label(label, font::STATS, color::TEXT_MUTED));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if let Some((text, tint)) = delta {
@@ -330,8 +349,32 @@ fn value_row(ui: &mut egui::Ui, label: &str, value: &str, delta: Option<(String,
                 ui.label(mono_label(value, font::STATS, color::TEXT_VALUE));
             });
         })
-        .response;
-    with_tooltip(response, label);
+        .response
+        .rect;
+
+    // Claimed *after* the labels so it sits above them in hit order — the row,
+    // not a word in it, is what the pointer finds.
+    let id = ui.id().with(("stat_row", label));
+    let response = ui.interact(rect, id, egui::Sense::click());
+    let now = ui.input(|input| input.time);
+    if response.clicked() {
+        ui.ctx().copy_text(copy_text);
+        ui.ctx().data_mut(|data| data.insert_temp(id, now));
+    }
+
+    // A copy leaves nothing on screen to show it happened, so the row says so
+    // in place of its explanation for a moment. The pending repaint is what
+    // clears it: the redraw loop is on-demand, and a pointer resting on the row
+    // produces no further events (invariant 6).
+    let copied_at: Option<f64> = ui.ctx().data(|data| data.get_temp(id));
+    match copied_at.map(|at| now - at) {
+        Some(elapsed) if elapsed < COPIED_FEEDBACK_SECS => {
+            ui.ctx()
+                .request_repaint_after_secs((COPIED_FEEDBACK_SECS - elapsed) as f32);
+            response.on_hover_text("Copied to clipboard");
+        }
+        _ => with_tooltip(response, label),
+    }
 }
 
 /// Render the file's authored world unit (meters per source unit) as a short
