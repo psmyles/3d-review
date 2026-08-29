@@ -406,6 +406,13 @@ impl App {
         // A shorter chain than last time would leave the selection past the end.
         let level_count = view.levels.len();
         self.ui.opt.active_lod = self.ui.opt.active_lod.min(level_count.saturating_sub(1));
+        // Until the user picks a level themselves, show the first *simplified*
+        // one. Level 0 is the mesh the LOD operation simplifies from, so leaving
+        // the viewport there shows something identical to the source and reads as
+        // the operation having done nothing.
+        if !self.ui.opt.lod_pinned {
+            self.ui.opt.active_lod = usize::from(level_count > 1);
+        }
         self.ui.opt.result = Some(view);
 
         let revision = self.next_model_revision();
@@ -572,6 +579,9 @@ impl App {
             .edit_stack(|stack| stack.clamp_to_model(node_count));
         self.ui.opt.result = None;
         self.ui.opt.active_lod = 0;
+        // A new model is a fresh comparison: the level the user pinned was a
+        // choice about the old one's chain, which may not even have this length.
+        self.ui.opt.lod_pinned = false;
         self.ui.opt.processing = false;
 
         if let Some(opt) = self.opt.as_mut() {

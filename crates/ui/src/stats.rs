@@ -105,16 +105,23 @@ pub(crate) fn processed_stats_grid(ui: &mut egui::Ui, state: &UiState) {
 
     ui.spacing_mut().item_spacing.y = size::STATS_ROW_SPACING;
 
-    let heading = if state.opt.active_lod == 0 {
-        "Processed".to_owned()
-    } else {
+    // Name the level whenever there is more than one to be on: "Processed"
+    // alone leaves the reader to guess whether they are looking at the
+    // simplified mesh or the level it was simplified from.
+    let heading = if result.levels.len() > 1 {
         format!("Processed · LOD {}", state.opt.active_lod)
+    } else {
+        "Processed".to_owned()
     };
     ui.label(mono_label(&heading, font::STATS, color::TEXT_PRIMARY));
     ui.add_space(size::STATS_ROW_SPACING);
 
     delta_row(ui, "Tris", stats.triangle_count, source.triangles);
-    delta_row(ui, "Verts", stats.vertex_count, source.vertices);
+    // "Mesh Verts", matching the source card's row of that name: both count the
+    // vertex buffer. Calling this one "Verts" put the same word on two different
+    // measurements — the file's DCC count on one card and the buffer length on
+    // the other — and the two cards read as contradicting each other.
+    delta_row(ui, "Mesh Verts", stats.vertex_count, source.vertices);
     stat_row(ui, "Draws", &stats.draw_count.to_string());
 
     ui.add_space(size::STATS_ROW_SPACING);

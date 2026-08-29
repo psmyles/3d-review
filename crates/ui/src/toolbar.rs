@@ -529,12 +529,18 @@ fn draw_opt_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState) {
     if has_result && level_count > 1 {
         let width = theme::px(ctx, size::TOOLBAR_OPT_LOD_DROPDOWN_WIDTH);
         state.opt.active_lod = state.opt.active_lod.min(level_count - 1);
+        let before = state.opt.active_lod;
         let selected = lod_label(state.opt.active_lod);
         compact_combo(ui, "opt_lod_picker", width, selected, |ui| {
             for level in 0..level_count {
                 ui.selectable_value(&mut state.opt.active_lod, level, lod_label(level));
             }
         });
+        // Once the user has said which level they want, later runs keep showing
+        // it instead of jumping back to the one the workspace chose for them.
+        if state.opt.active_lod != before {
+            state.opt.lod_pinned = true;
+        }
     }
 
     // All four tiles are always present, the inapplicable ones disabled rather

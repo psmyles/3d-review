@@ -136,6 +136,13 @@ pub struct OptUiState {
     /// Which LOD level the viewport shows. Clamped by `app` against the actual
     /// result, so a stale selection from a longer chain can't point past the end.
     pub active_lod: usize,
+    /// Whether the user has picked a level themselves.
+    ///
+    /// Until they do, a run that produces a chain shows its *first simplified*
+    /// level. Level 0 is never simplified, so leaving the viewport there after
+    /// adding a LOD operation shows a mesh identical to the source and reads as
+    /// the operation having done nothing at all.
+    pub lod_pinned: bool,
     pub layout: OptLayout,
     /// Whether the two views in [`OptLayout::Split`] share one camera.
     pub camera_sync: bool,
@@ -156,6 +163,7 @@ impl Default for OptUiState {
             stack_revision: 0,
             selected: None,
             active_lod: 0,
+            lod_pinned: false,
             layout: OptLayout::default(),
             camera_sync: true,
             ghost_style: GhostStyle::default(),
