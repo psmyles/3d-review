@@ -457,25 +457,25 @@ pub struct VertexColorPanelState {
     pub mode: VertexColorMode,
 }
 
-/// Which tab the Outliner shows: the flat list of mesh objects or the flat
-/// deduplicated material list. A cheap click switches between them.
+/// Which tab the Outliner shows: the scene's nodes or the flat deduplicated
+/// material list. A cheap click switches between them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum OutlinerTab {
     #[default]
-    Geometry,
+    Scene,
     Materials,
 }
 
-/// How the Outliner's Geometry tab presents the scene: the original flat list of
-/// mesh-bearing nodes, or the full node hierarchy as a collapsible tree (bones,
-/// lights, cameras and groups included). Toggled by the header button; the
-/// Materials tab is unaffected.
+/// How the Outliner's Scene tab presents the model: every node in one flat list,
+/// or the full node hierarchy as a collapsible tree. Both honor the type filter;
+/// the tree additionally indents and draws parent guides. Toggled by the header
+/// button, and overridden while a search is active (matches always list flat).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum OutlinerViewMode {
-    /// The mesh-only flat list.
-    #[default]
-    FlatGeometry,
+    /// Every node, in model order, with no hierarchy.
+    Flat,
     /// The full scene graph, indented and collapsible.
+    #[default]
     SceneTree,
 }
 
@@ -702,10 +702,14 @@ pub struct UiState {
     /// after a selection change, modulating the viewport highlight fill's alpha so
     /// the flash blinks then fades. 0 when no flash is playing.
     pub selection_fade: f32,
-    /// Which Outliner tab is shown (mesh list vs material list).
+    /// Which Outliner tab is shown (scene nodes vs material list).
     pub outliner_tab: OutlinerTab,
-    /// Whether the Geometry tab shows the flat mesh list or the full scene tree.
+    /// Whether the Scene tab shows every node flat or the full scene tree.
     pub outliner_view: OutlinerViewMode,
+    /// The Outliner header's search box. While non-empty it overrides
+    /// [`UiState::outliner_view`]: both tabs collapse to a flat list of the rows
+    /// whose name matches, so a hit is never buried inside a collapsed branch.
+    pub outliner_search: String,
     /// Scene-tree nodes the user has *collapsed*. Stored inverted (rather than as
     /// an expanded set) so the default — an empty set — is a fully expanded tree,
     /// with no per-model initialization pass. Cleared by `app` on model load.
@@ -753,11 +757,20 @@ pub struct UiState {
     /// callback filters these meshes' triangles out of the viewport draw + GTAO
     /// (Phase 2). Cleared by `app` on model load (the indices no longer apply).
     pub hidden_meshes: HashSet<usize>,
-    /// Whether the dockable Outliner side panel (left) is open. egui owns its
-    /// resized width; the UI only tracks open/closed.
-    pub outliner_open: bool,
-    /// Whether the dockable Inspector side panel (right) is open.
-    pub inspector_open: bool,
+    /// Whether the dockable side panels — the Outliner (left) and the Inspector
+    /// (right) — are open. They share one flag because they are two halves of one
+    /// workflow: the Outliner picks a row, the Inspector describes it. egui owns
+    /// each panel's resized width; the UI only tracks open/closed.
+    pub side_panels_open: bool,
+    /// Whether the Outliner owns the arrow keys. Set by clicking a row or by a
+    /// handled arrow press, cleared by a pointer press outside the panel, so
+    /// navigation survives the pointer wandering back to the viewport without the
+    /// Outliner ever swallowing arrows meant for somewhere else. Owned by the
+    /// Outliner; nothing outside `ui` needs to touch it.
+    pub outliner_nav_focus: bool,
+    /// One-frame request from keyboard navigation: the next Outliner draw scrolls
+    /// the selected row into view. Cleared by the draw that honors it.
+    pub outliner_scroll_to_selection: bool,
     /// Axis-aligned bounds of the loaded model (world meters), set by `app`
     /// alongside [`UiState::stats`] (invariant 2: a plain value, not model
     /// ownership). `None` when no model is loaded. Read by the dimension-label
@@ -843,6 +856,7 @@ impl Default for UiState {
             selection_fade: 0.0,
             outliner_tab: OutlinerTab::default(),
             outliner_view: OutlinerViewMode::default(),
+            outliner_search: String::new(),
             outliner_collapsed: HashSet::new(),
             hidden_kinds: HashSet::new(),
             selected_bones: Vec::new(),
@@ -854,8 +868,9 @@ impl Default for UiState {
             bone_influence_count: 0,
             bone_influence_key: Vec::new(),
             hidden_meshes: HashSet::new(),
-            outliner_open: false,
-            inspector_open: false,
+            side_panels_open: false,
+            outliner_nav_focus: false,
+            outliner_scroll_to_selection: false,
             bounds: None,
             visible_bounds_cache: None,
             visible_bounds_key: Vec::new(),
@@ -955,6 +970,9 @@ impl UiState {
         self.bone_anchor = None;
         self.outliner_collapsed.clear();
         self.hidden_kinds.clear();
+        self.outliner_search.clear();
+        self.outliner_nav_focus = false;
+        self.outliner_scroll_to_selection = false;
         self.invalidate_outliner_tree();
 
         self.has_bones = model.stats.bone_count > 0;

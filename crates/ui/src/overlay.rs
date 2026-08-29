@@ -169,8 +169,10 @@ struct SidePanelLayout {
 /// Draw the dockable Outliner (left) and Inspector (right) side panels and return
 /// the Inspector's material edit plus the panels' live widths. Both are native
 /// `egui::SidePanel`s — resizable by dragging their inner edge, with egui owning
-/// the width across frames. The Outliner mutates [`UiState::selection`] directly;
-/// the Inspector returns an intent for `app` to apply (invariant 2).
+/// the width across frames — and both are gated on the one
+/// [`UiState::side_panels_open`] flag, so the pair opens and closes together. The
+/// Outliner mutates [`UiState::selection`] directly; the Inspector returns an
+/// intent for `app` to apply (invariant 2).
 fn draw_side_panels(
     ctx: &egui::Context,
     state: &mut UiState,
@@ -181,7 +183,7 @@ fn draw_side_panels(
     state.sync_bone_influence(model);
 
     let mut left_inset = 0.0;
-    if state.outliner_open {
+    if state.side_panels_open {
         let response = egui::SidePanel::left("outliner_panel")
             .resizable(true)
             .default_width(size::SIDE_PANEL_DEFAULT_WIDTH)
@@ -192,7 +194,7 @@ fn draw_side_panels(
 
     let mut right_inset = 0.0;
     let mut inspector = panels::inspector::InspectorOutput::default();
-    if state.inspector_open {
+    if state.side_panels_open {
         let response = egui::SidePanel::right("inspector_panel")
             .resizable(true)
             .default_width(size::SIDE_PANEL_DEFAULT_WIDTH)

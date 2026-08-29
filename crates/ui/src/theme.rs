@@ -73,6 +73,34 @@ pub mod color {
     /// Dimmed unselected option text in a compact combo.
     pub const TEXT_COMBO_DIM: Color32 = Color32::from_gray(150);
 
+    // ── Outliner rows ───────────────────────────────────────────────────────
+    /// Per-[`review_model::NodeKind`] row-glyph tints, so a node's type reads by
+    /// color before its name is parsed. Mesh blue, bone green, light yellow,
+    /// camera purple; the two type-less kinds stay neutral.
+    pub const NODE_MESH: Color32 = Color32::from_rgb(110, 178, 240);
+    pub const NODE_BONE: Color32 = Color32::from_rgb(140, 214, 130);
+    pub const NODE_LIGHT: Color32 = Color32::from_rgb(235, 205, 100);
+    pub const NODE_CAMERA: Color32 = Color32::from_rgb(188, 140, 235);
+    pub const NODE_EMPTY: Color32 = Color32::from_gray(225);
+    pub const NODE_OTHER: Color32 = Color32::from_gray(150);
+    /// Wash on every other Outliner row, so a long list reads as scannable bands.
+    /// Translucent: it tints whatever surface the panel sits on rather than
+    /// pinning the stripe to one background color. (White at alpha 6.)
+    pub const OUTLINER_ROW_ALT_BG: Color32 = Color32::from_rgba_premultiplied(6, 6, 6, 6);
+    /// Full-row selection fill: [`ACCENT`] at alpha 150, so the stripe and the
+    /// tree guide lines still read through a selected row.
+    pub const OUTLINER_ROW_SELECTED_BG: Color32 = Color32::from_rgba_premultiplied(39, 61, 96, 150);
+    /// Scene-tree indent guides — the verticals and elbows tying a child row back
+    /// to its parent. Dim enough to structure the list without competing with it.
+    pub const OUTLINER_GUIDE: Color32 = Color32::from_gray(72);
+    /// The stretch of guide running from the selected row up through its
+    /// ancestors, lit so the selection's place in a deep hierarchy is legible
+    /// without scrolling to find it.
+    pub const OUTLINER_GUIDE_SELECTED: Color32 = Color32::from_gray(160);
+    /// Closed-eye tint on a hidden mesh row: dimmer than the open eye, so a hidden
+    /// row reads as switched off at a glance.
+    pub const OUTLINER_EYE_HIDDEN: Color32 = Color32::from_gray(112);
+
     // ── Strokes / dividers ──────────────────────────────────────────────────
     /// Toolbar bottom divider and window stroke.
     pub const DIVIDER: Color32 = Color32::from_gray(58);
@@ -207,6 +235,21 @@ pub mod size {
     pub const OUTLINER_ICON_PAD: f32 = 8.0;
     /// Corner rounding on an Outliner header toggle's hover / active fill.
     pub const OUTLINER_ICON_ROUNDING: f32 = 3.0;
+    /// Height of one Outliner row. Rows butt against each other (no item spacing)
+    /// so the alternating stripes read as continuous bands.
+    pub const OUTLINER_ROW_HEIGHT: f32 = 21.0;
+    /// Inset from the row's left edge to its first content column, and from its
+    /// right edge to the visibility eye.
+    pub const OUTLINER_ROW_PAD_X: f32 = 6.0;
+    /// Gap between a row's kind glyph and its name, and between the name's
+    /// truncation point and the eye.
+    pub const OUTLINER_ROW_GAP: f32 = 5.0;
+    /// Corner rounding on a row's hover / selection fill.
+    pub const OUTLINER_ROW_ROUNDING: f32 = 3.0;
+    /// Edge length of a row's visibility eye glyph.
+    pub const OUTLINER_EYE_ICON: f32 = 14.0;
+    /// Inset of the visibility eye from the row's right edge.
+    pub const OUTLINER_EYE_PAD: f32 = 6.0;
 
     // ── Toolbar groups ────────────────────────────────────────────────────
     pub const TOOLBAR_GROUP_SPACING: f32 = 14.0;
@@ -215,13 +258,10 @@ pub mod size {
     pub const TOOLBAR_ICON_PADDING: f32 = 8.0;
     pub const TOOLBAR_CENTER_WIDTH: f32 = 180.0;
     /// Right toolbar cluster (3D mode): view (183, four icons) + projection (48) +
-    /// the Outliner/Inspector window-toggle group (93), with two group spacings
-    /// (183 + 14 + 48 + 14 + 93 = 352), plus a little slack. It grows leftward from
+    /// the side-panels toggle group (48), with two group spacings
+    /// (183 + 14 + 48 + 14 + 48 = 307), plus a little slack. It grows leftward from
     /// the right edge, away from the centered mode segments.
-    pub const TOOLBAR_RIGHT_WIDTH: f32 = 365.0;
-    /// Two-icon window-toggle group (Outliner / Inspector) in the toolbar right
-    /// cluster.
-    pub const TOOLBAR_TOOLS_GROUP_WIDTH: f32 = 93.0;
+    pub const TOOLBAR_RIGHT_WIDTH: f32 = 320.0;
     /// Left toolbar cluster: shading (5) + material (4) + normals (2) groups,
     /// with two group spacings between them (228 + 14 + 183 + 14 + 93).
     pub const TOOLBAR_LEFT_WIDTH: f32 = 532.0;
