@@ -144,7 +144,14 @@ crates/
             scene texture pool + off-thread decode + disk-auto-reload
             (an `impl App` block) -> src/texture_manager.rs;
             window position/size restore via %APPDATA% -> src/window_state.rs;
-            unified undo/redo snapshot stack -> src/undo.rs
+            unified undo/redo snapshot stack -> src/undo.rs;
+            the Opt workspace's processing loop -> src/opt.rs (an `impl App` block
+            + `OptSubsystem`, created only on first entry into the workspace so a
+            session that never opens it pays nothing). One run is ever in flight:
+            edits arriving mid-run mark it dirty and it respawns once with the
+            latest stack, so dragging a slider coalesces without a debounce timer,
+            and a result whose generation has been superseded is dropped rather
+            than shown. Export runs on its own worker the same way.
   model/    review-model: host-agnostic data only (glam dep only).
             Vertex, Bounds, MaterialImportDefaults, TopologyFace, ModelStats,
             TriangleData (grouped per-triangle face/material/node arrays +
@@ -227,6 +234,18 @@ crates/
             post.hlsl (composite: AO-darkened ambient + tone map + sRGB), gtao.hlsl
             (horizon occlusion + bilateral blur), tex.hlsl (Tex viewport image /
             checker), ibl.hlsl (the bake-only IBL precompute).
+            Per-model GPU state (mesh buffers, derived views, selection/visibility
+            draw lists, each with its bake key) lives in a `ModelSlot`; `SceneGpu`
+            holds an **active/idle pair** so the Opt workspace can keep the source
+            and processed meshes both resident and alternate between them within a
+            frame for one `mem::swap` — a single slot would rebuild both meshes on
+            every alternation. `render`/`render_uv` claim the source slot
+            explicitly. `render_opt` draws the split (each half through the *same*
+            targets sized to half the backbuffer, composited into its own half via
+            a viewport rect — D3D11 clips to the viewport and the composite's UVs
+            come from its vertex attribute, so no scissor and no shader change) or
+            the overlay (one mesh solid, the other a ghost: the x-ray reuses the
+            selection-flash fill, the wireframe ghost the line pipeline).
             Scene depth is `Depth32Float`, Reversed-Z. The offscreen scene pass is
             **2-MRT** linear-HDR (`R16G16B16A16_FLOAT`): location 0 = linear scene
             radiance, location 1 = AO-eligible diffuse-ambient radiance; GTAO has a
@@ -265,7 +284,19 @@ crates/
             + panels/ (mod.rs = width-pinning dispatch; one file per tool:
             anti_aliasing, bounding_box, environment, normals, gtao, tonemap,
             uv_checker, vertex_colors, wireframe, material_mode; plus inspector +
-            outliner for the side panels). -> src/lib.rs + src/*.rs
+            outliner for the side panels, and opt_stack + opt_inspector for the Opt
+            workspace). -> src/lib.rs + src/*.rs
+            The Opt workspace's own state (the `OptStack` the chrome edits, the
+            comparison-view settings, and the last run's measured figures) ->
+            src/opt_state.rs. Ownership follows the convention already used for
+            selection and the hidden-mesh set: `UiState` owns it, the chrome edits
+            it in place, and bumping `stack_revision` is what tells `app` to
+            reprocess and what undo compares; only the file-dialog actions (export,
+            preset load/save) travel as an `OptIntent`. In Opt the left side panel
+            splits horizontally — the scene tree on top, the operation stack in a
+            resizable `TopBottomPanel::show_inside` band below — and the Inspector
+            retargets at the selected operation's parameters, the export settings,
+            or the selected object's overrides.
 third_party/ufbx/   vendored ufbx.c / ufbx.h (compiled only if present)
 third_party/meshoptimizer/  vendored meshoptimizer v1.2 src/ (compiled only if
                     present; see its NOTICE.txt for the pinned commit)
@@ -280,7 +311,16 @@ assets/test_models/ local FBX fixtures for manual checks
 Data flow: input/file-drop → `app` → `import` (FBX→`ModelData`) → `model`
 (shared) → `render` (camera + D3D11 GPU resources) → `app` draws the scene +
 composite, then `ui` paints the egui chrome on top → `app` (applies UI intents,
-requests redraw). See §2 above + `PROJECT_STATE.md`.
+requests redraw). See §2 above + `PROJECT_STATE.md`. The Opt workspace branches
+off that at `model`: `optimize` turns a `ModelData` plus an operation stack into
+one `ModelData` per LOD level on a worker thread, and those go back through the
+same `render` path as the source.
+
+> **Model revisions must be unique across *every* mesh the renderer is handed**,
+> not merely increasing within one. `SceneGpu` keys its mesh-buffer cache on the
+> revision alone, so two different meshes sharing a number leaves one of them
+> stale on screen. `app` issues them all from one counter
+> (`App::next_model_revision`) — the source mesh and each processed Opt level.
 
 ## 3. Build & run
 
@@ -374,6 +414,23 @@ RMB-drag) / `F`-to-fit, black/white/grey/checker
 background fill, and a real-values stats panel). Windows packaging (exe icon/resource
 metadata + Inno Setup installer) is present.
 
+**Opt workspace** (mesh optimization, static meshes only): a fourth mode sharing
+every 3D control. The user builds a re-orderable stack of meshoptimizer
+operations — weld, filter degenerate/duplicate triangles, prune components,
+generate a LOD chain (standard / attribute-preserving / sloppy simplifiers with
+the option flags), and the vertex-cache / overdraw / vertex-fetch reorders — with
+per-object exclusions, and saves it as a JSON preset. Every edit reprocesses on a
+worker (latest-request-wins, a notice only if it runs long) and the result is in
+the viewport as soon as it lands, undoable through the same snapshot stack as
+everything else. Comparison is a vertical split (optionally camera-synced) or a
+single view with one mesh ghosted over the other and an `X` A/B swap; a second
+stats card carries the processed mesh's measured counts, their change against the
+source, and the ACMR / ATVR / overdraw / overfetch figures meshoptimizer measured
+— which is what makes the reorder operations, invisible in the viewport, worth
+having. An explicit export writes the chain to FBX via vendored ufbx_write.
+Startup is untouched: nothing Opt-specific is built until the workspace is first
+opened, and a stack with nothing enabled schedules no run.
+
 The `ui` crate was migrated off the old hand-rolled `egui::Area` + pixel-rect
 layout system onto egui's **native windowing**: option tools are native
 `egui::Window`s (collapsible/closable, non-resizable, multi-open via
@@ -434,13 +491,38 @@ artists test *source* assets (PNG/TGA/…); KTX2/DDS are produced inside an
 engine's content pipeline and never hand-authored or carried, so the viewer is
 never handed one. (We do use GPU block compression internally — the baked IBL
 cubes are BC6H — but that's our own offline bake, not an import path.) Tests
-exist (model / import / render unit tests, run headless in CI; the HLSL is
-`fxc`-validated at build time); GPU render checks stay manual.
+exist (model / import / render / optimize unit tests, run headless in CI; the HLSL
+is `fxc`-validated at build time); GPU render checks stay manual.
+
+`crates/optimize` additionally carries two integration suites over the real
+fixtures in `assets/test_models`, both of which have already caught bugs the
+synthetic demo cube could not: `tests/real_models.rs` (welds, LOD targets,
+per-triangle tag survival, exclusions) and `tests/export_round_trip.rs`, which
+checks every written FBX by **reading it back** through the vendored ufbx reader —
+the writer's own return value only proves it didn't error. Each test skips itself
+when its fixture or a vendored tree is absent.
 
 ## 6. Gotchas
 
 - Real GPU required for render checks; reserve CI for `check` / `clippy` /
   import unit tests.
+- **ufbx_write's `ufbxw_view_*` buffers are borrowed, not copied** — the pointer
+  must stay valid until the save completes. `export_bridge.c` uses `ufbxw_copy_*`
+  throughout so nothing is borrowed past the call; reusing one scratch buffer
+  across meshes with a `view` was an access violation. Related: FBX *declares* its
+  unit rather than fixing one, conventionally centimeters, while import normalizes
+  every file to meters — so the writer sets `UnitScaleFactor = 100`. Without it the
+  geometry reads back exactly 100× too small, which no error reports.
+- **A simplify that barely removes anything is usually attribute seams, not a
+  bug.** Import splits every face corner into its own vertex, so a mesh whose
+  normals or UVs differ at every corner — a scan with generated per-face normals —
+  presents *every* edge as a discontinuity, and a topology-preserving collapse
+  cannot cross one. Measured: a real game asset welds 369k → 108k vertices and hits
+  its LOD targets with the default settings, while such a scan stalls at
+  249882 → 249880 triangles until either a position weld (normals excluded) or the
+  permissive flag unblocks it. `process` detects the stall and says so; the default
+  weld comparing normals is *correct* for the tool's stated target of static game
+  meshes, so don't "fix" it by loosening the defaults.
 - GPU struct field order must match the HLSL `cbuffer`/vertex-input layouts
   (invariant 11) — the shaders live in `crates/render/src/hlsl/*.hlsl` (compiled to
   DXBC by `build.rs`, `include_bytes!`'d at runtime); update `scene.hlsl` in
