@@ -563,6 +563,56 @@ impl ModelData {
                 .all(|vertex| vertex.tangent.truncate().length_squared() < 1e-12)
     }
 
+    /// Recompute per-vertex normals as the area-weighted average of the faces
+    /// meeting at each vertex.
+    ///
+    /// Needed after any operation that *merges* vertices which carried different
+    /// normals — a position-only weld, say. Merging keeps one of the originals
+    /// arbitrarily, so the surviving normal describes one of the faces rather than
+    /// the surface, and the mesh shades as noise until this runs.
+    ///
+    /// Smoothing is per *vertex*, so it never crosses a split the mesh still has:
+    /// a hard edge whose two sides remain separate vertices keeps its two normals.
+    /// Using the uncross product rather than a normalized face normal weights each
+    /// face by twice its area, which is what keeps a fan of thin triangles from
+    /// outvoting the large face beside it.
+    ///
+    /// A vertex whose incident faces cancel out (or that no face references) keeps
+    /// the normal it had, so this can never introduce a zero-length one.
+    pub fn generate_normals(&mut self) {
+        if self.vertices.is_empty() || self.indices.len() < 3 {
+            return;
+        }
+
+        let mut accumulated = vec![Vec3::ZERO; self.vertices.len()];
+        for triangle in self.indices.chunks_exact(3) {
+            let [i0, i1, i2] = [
+                triangle[0] as usize,
+                triangle[1] as usize,
+                triangle[2] as usize,
+            ];
+            let (Some(v0), Some(v1), Some(v2)) = (
+                self.vertices.get(i0),
+                self.vertices.get(i1),
+                self.vertices.get(i2),
+            ) else {
+                continue;
+            };
+            // Unnormalized: its length is twice the triangle's area, which is the
+            // weighting we want.
+            let face = (v1.position - v0.position).cross(v2.position - v0.position);
+            for &index in &[i0, i1, i2] {
+                accumulated[index] += face;
+            }
+        }
+
+        for (vertex, normal) in self.vertices.iter_mut().zip(accumulated) {
+            if normal.length_squared() > 1e-20 {
+                vertex.normal = normal.normalize();
+            }
+        }
+    }
+
     /// Synthesize a per-vertex tangent basis from positions, UVs and normals
     /// (Lengyel's method): accumulate each triangle's UV-gradient tangent onto its
     /// corners, then Gram-Schmidt-orthonormalize against the vertex normal and
@@ -891,6 +941,119 @@ mod tests {
         // No triangles -> no draws.
         model.indices.clear();
         assert_eq!(model.material_draw_count(), 0);
+    }
+
+    /// A minimal model wrapping `vertices` + `indices`, for the normal/tangent
+    /// generation tests.
+    fn bare_model(vertices: Vec<Vertex>, indices: Vec<u32>) -> ModelData {
+        ModelData {
+            name: "bare".to_owned(),
+            vertices,
+            indices,
+            ..ModelData::default()
+        }
+    }
+
+    #[test]
+    fn generate_normals_averages_the_faces_meeting_at_a_vertex() {
+        // Two triangles forming a 90° fold along the shared edge (0,0,0)-(0,1,0):
+        // one in the XY plane (normal +Z), one in the ZY plane (normal +X). The
+        // two shared vertices should come out at the 45° bisector.
+        let vertex = |pos: Vec3| Vertex {
+            position: pos,
+            normal: Vec3::ZERO,
+            ..Vertex::default()
+        };
+        let mut model = bare_model(
+            vec![
+                vertex(Vec3::new(0.0, 0.0, 0.0)),
+                vertex(Vec3::new(0.0, 1.0, 0.0)),
+                vertex(Vec3::new(1.0, 0.0, 0.0)),
+                vertex(Vec3::new(0.0, 0.0, 1.0)),
+            ],
+            // Wound so the first faces +Z and the second faces +X.
+            vec![0, 2, 1, 0, 1, 3],
+        );
+        model.generate_normals();
+
+        let bisector = Vec3::new(1.0, 0.0, 1.0).normalize();
+        for shared in [0, 1] {
+            assert!(
+                model.vertices[shared].normal.distance(bisector) < 1.0e-5,
+                "shared vertex {shared} should bisect the fold, got {:?}",
+                model.vertices[shared].normal
+            );
+        }
+        // The corners belonging to only one face keep that face's own normal.
+        assert!(model.vertices[2].normal.distance(Vec3::Z) < 1.0e-5);
+        assert!(model.vertices[3].normal.distance(Vec3::X) < 1.0e-5);
+    }
+
+    #[test]
+    fn generate_normals_weights_faces_by_area() {
+        // Two coplanar triangles of very different size sharing vertex 0. Both
+        // face +Z, so area weighting can't change the direction — what this pins
+        // down is that the result stays unit length rather than summing to a
+        // long vector or cancelling.
+        let vertex = |x: f32, y: f32| Vertex {
+            position: Vec3::new(x, y, 0.0),
+            normal: Vec3::ZERO,
+            ..Vertex::default()
+        };
+        let mut model = bare_model(
+            vec![
+                vertex(0.0, 0.0),
+                vertex(0.01, 0.0),
+                vertex(0.0, 0.01),
+                vertex(10.0, 0.0),
+                vertex(0.0, 10.0),
+            ],
+            vec![0, 1, 2, 0, 3, 4],
+        );
+        model.generate_normals();
+
+        for (index, vertex) in model.vertices.iter().enumerate() {
+            assert!(
+                (vertex.normal.length() - 1.0).abs() < 1.0e-5,
+                "vertex {index} normal is not unit length: {:?}",
+                vertex.normal
+            );
+            assert!(vertex.normal.distance(Vec3::Z) < 1.0e-5);
+        }
+    }
+
+    #[test]
+    fn generate_normals_leaves_an_unreferenced_vertex_alone() {
+        // A vertex no triangle mentions accumulates nothing; it must keep the
+        // normal it had rather than become zero-length.
+        let mut model = bare_model(
+            vec![
+                Vertex {
+                    position: Vec3::ZERO,
+                    normal: Vec3::Y,
+                    ..Vertex::default()
+                };
+                4
+            ],
+            Vec::new(),
+        );
+        model.vertices[0].position = Vec3::new(1.0, 0.0, 0.0);
+        model.vertices[1].position = Vec3::new(0.0, 1.0, 0.0);
+        model.indices = vec![0, 1, 2];
+
+        model.generate_normals();
+        assert_eq!(
+            model.vertices[3].normal,
+            Vec3::Y,
+            "an unreferenced vertex keeps its normal"
+        );
+    }
+
+    #[test]
+    fn generate_normals_is_a_no_op_without_geometry() {
+        let mut model = ModelData::default();
+        model.generate_normals();
+        assert!(model.vertices.is_empty());
     }
 
     #[test]

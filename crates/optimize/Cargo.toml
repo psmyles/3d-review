@@ -19,5 +19,11 @@ thiserror.workspace = true
 # Instruments the per-operation CPU zones so a slow stack shows up per op.
 tracy-client.workspace = true
 
+[dev-dependencies]
+# Integration tests run the stack over real FBX fixtures rather than only the
+# synthetic demo cube. Test-only: the crate itself never depends on the importer,
+# so `optimize` stays reachable from anything holding a `ModelData`.
+review-import = { path = "../import" }
+
 [build-dependencies]
 cc.workspace = true

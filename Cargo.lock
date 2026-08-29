@@ -2187,6 +2187,7 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "glam",
+ "review-import",
  "review-model",
  "serde",
  "serde_json",

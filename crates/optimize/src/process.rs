@@ -28,7 +28,7 @@ use review_model::{ModelData, ModelStats, TriangleData, Vertex};
 
 use crate::meshopt::{self, AnalysisCounters};
 use crate::ops;
-use crate::stack::{LodParams, OpInstance, OpKind, OptStack};
+use crate::stack::{LodParams, OpInstance, OpKind, OptStack, SimplifyAlgorithm};
 use crate::submesh::{self, Submesh, TagPresence};
 use crate::{OptError, Warnings};
 
@@ -176,9 +176,27 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
         .iter()
         .any(|op| op.enabled && op.kind.alters_geometry());
 
+    // A weld that ignores normals merges vertices whose normals differ, and the
+    // survivor keeps one of them arbitrarily — it then describes one incident face
+    // rather than the surface, and the mesh shades as noise. Simplification needs
+    // no such fix-up: it only ever *removes* vertices, so the ones that survive
+    // still carry their authored normals.
+    let normals_invalidated = input.stack.ops.iter().any(|op| {
+        op.enabled && matches!(&op.kind, OpKind::Weld(params) if !params.compare_normals)
+    });
+
     let mut lods = Vec::with_capacity(levels.len());
     for (index, level) in levels.into_iter().enumerate() {
-        let model = assemble(&level.submeshes, input.model, tags, index, geometry_changed);
+        let model = assemble(
+            &level.submeshes,
+            input.model,
+            tags,
+            index,
+            Rebuild {
+                normals: normals_invalidated,
+                tangents: geometry_changed,
+            },
+        );
         // A level can legitimately collapse to nothing when the target ratio and
         // error budget are aggressive enough. That is a real result, not a bug —
         // but it renders as an empty viewport, so say why rather than let the
@@ -221,6 +239,9 @@ fn build_lod_level(
     let mut submeshes = base.to_vec();
     let mut worst_error = 0.0f32;
 
+    let mut requested = 0usize;
+    let mut produced = 0usize;
+
     for piece in &mut submeshes {
         if is_excluded(stack, piece.node) {
             continue;
@@ -231,11 +252,30 @@ fn build_lod_level(
         // one object vanishes.
         let ratio = level.target_ratio.clamp(0.0, 1.0);
         let target = ((piece.triangle_count() as f32) * ratio).round() as usize;
+        let before = piece.triangle_count();
 
         match ops::simplify_level(piece, params, target, level.target_error.max(0.0)) {
             Ok(error) => worst_error = worst_error.max(error),
             Err(error) => warnings.push(&format!("Generate LODs: {error}")),
         }
+        requested += before.saturating_sub(target);
+        produced += before.saturating_sub(piece.triangle_count());
+    }
+
+    // A topology-preserving collapse cannot cross an attribute discontinuity, and
+    // FBX import splits every face corner into its own vertex — so a mesh whose
+    // normals or UVs differ at every corner (a scan with generated per-face
+    // normals, say) presents *every* edge as a seam and the simplifier stalls.
+    // That looks identical to the tool being broken, so name the two ways out
+    // rather than let the user rediscover them.
+    let stalled = requested > 0 && produced * 10 < requested;
+    if stalled && params.algorithm != SimplifyAlgorithm::Sloppy && !params.flags.permissive {
+        warnings.push(
+            "The simplifier removed almost nothing: this mesh has an attribute seam \
+             at nearly every edge, which a topology-preserving collapse cannot cross. \
+             Add a Weld operation with 'Compare normals' off, or turn on 'Collapse \
+             across seams' in the LOD options.",
+        );
     }
 
     LevelState {
@@ -299,12 +339,21 @@ fn resolve_op<'a>(stack: &'a OptStack, op: &'a OpInstance, node: u32) -> &'a OpK
 /// the table is absent (the wireframe draws triangle edges, face normals get one
 /// slot per triangle, UV islands fall back to the solid fill). Synthesizing a
 /// plausible-looking table instead would draw a wireframe that is simply wrong.
+/// Which derived per-vertex bases the assembled mesh has to rebuild. Both are
+/// computed from the geometry, so recomputing one that is still valid would just
+/// overwrite the source file's authored values with synthesized ones.
+#[derive(Debug, Clone, Copy)]
+struct Rebuild {
+    normals: bool,
+    tangents: bool,
+}
+
 fn assemble(
     submeshes: &[Submesh],
     source: &ModelData,
     tags: TagPresence,
     level: usize,
-    geometry_changed: bool,
+    rebuild: Rebuild,
 ) -> ModelData {
     let _z = crate::prof::zone!("Assemble Model");
 
@@ -367,11 +416,16 @@ fn assemble(
         skin: None,
     };
 
+    // Normals first: tangents are orthonormalized against them, so rebuilding
+    // tangents from stale normals would bake the staleness into both.
+    if rebuild.normals {
+        model.generate_normals();
+    }
     // Tangents are derived from positions, UVs and normals, so any geometry
     // change invalidates them. Regenerating unconditionally would be wasted work
     // on a reorder-only stack, and would also overwrite the source file's
     // authored tangents with synthesized ones for no reason.
-    if geometry_changed {
+    if rebuild.tangents {
         model.generate_tangents();
     }
 
