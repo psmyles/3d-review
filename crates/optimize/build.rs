@@ -1,22 +1,31 @@
 use std::path::{Path, PathBuf};
 
-/// Compile the vendored meshoptimizer sources, mirroring how
-/// `crates/import/build.rs` gates vendored ufbx: the tree is *optional*, so its
-/// absence is not a build failure — it just leaves `cfg(has_meshopt)` unset and
-/// the crate's operations report `OptError::Unavailable`.
+/// Compile the two vendored C/C++ libraries, mirroring how
+/// `crates/import/build.rs` gates vendored ufbx: each tree is *optional*, so its
+/// absence is not a build failure — it just leaves the matching `cfg` unset and
+/// the dependent operations report `OptError::Unavailable`.
+///
+/// They are separate `cc::Build` invocations because meshoptimizer is C++ and
+/// ufbx_write is C; one build cannot compile both correctly.
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(has_meshopt)");
+    println!("cargo:rustc-check-cfg=cfg(has_ufbxw)");
 
-    let meshopt_dir = Path::new("../../third_party/meshoptimizer");
-    let header = meshopt_dir.join("meshoptimizer.h");
+    build_meshoptimizer();
+    build_ufbx_write();
+}
 
-    println!("cargo:rerun-if-changed={}", meshopt_dir.display());
+fn build_meshoptimizer() {
+    let dir = Path::new("../../third_party/meshoptimizer");
+    let header = dir.join("meshoptimizer.h");
+
+    println!("cargo:rerun-if-changed={}", dir.display());
 
     if !header.exists() {
         return;
     }
 
-    let Some(sources) = cpp_sources(meshopt_dir) else {
+    let Some(sources) = cpp_sources(dir) else {
         return;
     };
     if sources.is_empty() {
@@ -34,11 +43,39 @@ fn main() {
         // needs (global `operator new` / `operator delete`).
         .cpp(true)
         .files(&sources)
-        .include(meshopt_dir)
+        .include(dir)
         .warnings(false)
         .compile("meshoptimizer");
 
     println!("cargo:rustc-cfg=has_meshopt");
+}
+
+fn build_ufbx_write() {
+    let dir = Path::new("../../third_party/ufbx-write");
+    let source = dir.join("ufbx_write.c");
+    let header = dir.join("ufbx_write.h");
+    let bridge_c = Path::new("src/export_bridge.c");
+    let bridge_h = Path::new("src/export_bridge.h");
+
+    for path in [&source, &header] {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+    println!("cargo:rerun-if-changed={}", bridge_c.display());
+    println!("cargo:rerun-if-changed={}", bridge_h.display());
+
+    if !source.exists() || !header.exists() {
+        return;
+    }
+
+    cc::Build::new()
+        .file(&source)
+        .file(bridge_c)
+        .include(dir)
+        .include("src")
+        .warnings(false)
+        .compile("ufbxwrite");
+
+    println!("cargo:rustc-cfg=has_ufbxw");
 }
 
 /// Every `*.cpp` in the vendored directory, sorted so the compile order (and

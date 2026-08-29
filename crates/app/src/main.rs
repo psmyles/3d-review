@@ -67,6 +67,8 @@ enum UserEvent {
     /// Boxed because a `ProcessedResult` carries a mesh per LOD level, which
     /// would otherwise make every variant of this enum that large.
     OptProcessed(Box<opt::OptProcessed>),
+    /// A background FBX export finished (posted by the export thread).
+    OptExported(Box<Result<review_optimize::ExportReport, review_optimize::OptError>>),
 }
 
 use texture_manager::TextureDecode;
@@ -612,6 +614,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::TextureChanged(path) => self.reload_texture_file(&path),
             UserEvent::TextureDecoded(decode) => self.handle_texture_decoded(decode),
             UserEvent::OptProcessed(message) => self.handle_opt_processed(*message),
+            UserEvent::OptExported(outcome) => self.handle_opt_exported(*outcome),
         }
     }
 

@@ -87,21 +87,30 @@ roadmap), and `TODO.md` (running notes).
    its `decode_psd`, which validates header dimensions with checked arithmetic before
    sizing the output buffer. `render`'s `texture.rs` calls it through the safe API
    only — no `unsafe` there.
-   **Sanctioned exception — meshoptimizer FFI** (`crates/optimize`,
-   `review-optimize`): the mesh-optimization core behind the Opt workspace. Unlike
-   psd it vendors **source** (`third_party/meshoptimizer`, an unmodified upstream
-   `src/` snapshot — C++ with no STL/exceptions behind a pure-C API) compiled by
-   `cc` (`.cpp(true)`) in its `build.rs`, existence-gated on `cfg(has_meshopt)`
-   exactly as `import` gates ufbx — delete the tree and the workspace still builds,
-   with every operation returning `OptError::Unavailable`. Because the C API is
-   already flat over raw pointers there is **no C bridge**: `src/ffi.rs` declares
-   the entry points directly and `src/meshopt.rs` holds every call, each wrapper
-   validating the mesh preconditions before it (whole-triangle index buffers,
-   in-range indices, exact stream lengths, `checked_mul` destination sizes) and
-   re-validating the returned element count after. Those two modules are the whole
-   `unsafe` surface: `ops`/`process`/`stack`/`preset`/`submesh` above them are
-   ordinary safe Rust, and the crate `forbid`s `unsafe_code` outright when the
-   vendored tree is absent. `app` calls it through the safe API only.
+   **Sanctioned exception — meshoptimizer + ufbx_write FFI** (`crates/optimize`,
+   `review-optimize`): the mesh-optimization core and FBX writer behind the Opt
+   workspace. Unlike psd it vendors **source** — `third_party/meshoptimizer` (an
+   unmodified upstream `src/` snapshot; C++ with no STL/exceptions behind a pure-C
+   API) and `third_party/ufbx-write` (`ufbx_write.h/.c`, plain C) — each compiled
+   by `cc` in its `build.rs` and existence-gated on `cfg(has_meshopt)` /
+   `cfg(has_ufbxw)` exactly as `import` gates ufbx: delete either tree and the
+   workspace still builds, with the dependent operations returning
+   `OptError::Unavailable`. The two libraries are bound differently *because their
+   APIs differ*: meshoptimizer's is already flat over raw pointers, so `src/ffi.rs`
+   declares its entry points directly and `src/meshopt.rs` holds every call — each
+   wrapper validating the mesh preconditions before it (whole-triangle index
+   buffers, in-range indices, exact stream lengths, `checked_mul` destination
+   sizes) and re-validating the returned element count after. ufbx_write's is
+   handle-and-setter-based, so driving it from Rust would spread `unsafe` across a
+   hundred call sites and leak its scene lifetime into Rust; instead
+   `src/export_bridge.c` does the whole write in one call taking flat arrays
+   (`src/export_ffi.rs` declares it), validating the payload up front and freeing
+   the scene on every path. It hands every buffer over with `ufbxw_copy_*` rather
+   than the borrowing `ufbxw_view_*`, so nothing is borrowed past the call. Those
+   modules plus `src/export.rs`'s single call site are the whole `unsafe` surface:
+   `ops`/`process`/`stack`/`preset`/`submesh` are ordinary safe Rust, and the crate
+   `forbid`s `unsafe_code` outright when neither vendored tree is present. `app`
+   calls it through the safe API only.
    **Sanctioned exception — Direct3D 11 / DXGI COM** (via the `windows` crate) is
    `unsafe` and pervasive in the renderer. It is confined to **one** place:
    `crates/render/src/rhi/` (the GPU-plumbing module — device, swapchain,
@@ -162,8 +171,14 @@ crates/
             topology (`faces` / `triangles.to_face` left empty — the corner-run
             layout a `TopologyFace` describes cannot survive welding; every
             `render` consumer already falls back to per-triangle behaviour).
-            build.rs compiles third_party/meshoptimizer with `cc` when present
-            (`cfg(has_meshopt)`).
+            src/export.rs + src/export_bridge.c write a LOD chain out as FBX via
+            vendored ufbx_write (suffixed siblings in one file or one file per
+            level; rebuilt or flattened hierarchy; source materials, untextured).
+            Output is always triangulated and declares `UnitScaleFactor = 100`,
+            since import normalizes every file to meters while FBX's conventional
+            unit is centimeters. build.rs compiles third_party/meshoptimizer and
+            third_party/ufbx-write with `cc` when present (`cfg(has_meshopt)` /
+            `cfg(has_ufbxw)`).
   psd/      review-psd: safe `decode_psd` over a C-ABI bridge to psd_sdk (C++),
             returning a PSD's merged composite as RGBA8 (invariant 9's third FFI
             site). Links a PREBUILT MSVC static lib (`vendor/fire_psd.lib`) +
@@ -254,6 +269,10 @@ crates/
 third_party/ufbx/   vendored ufbx.c / ufbx.h (compiled only if present)
 third_party/meshoptimizer/  vendored meshoptimizer v1.2 src/ (compiled only if
                     present; see its NOTICE.txt for the pinned commit)
+third_party/ufbx-write/     vendored ufbx_write.c / .h — the FBX writer behind
+                    the Opt export (compiled only if present; upstream is
+                    work-in-progress, so the commit is pinned and the export
+                    round-trip test re-reads what it writes)
 assets/icons/       PNG toolbar/gizmo icons (include_bytes!)
 assets/test_models/ local FBX fixtures for manual checks
 ```

@@ -27,7 +27,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use review_model::ModelData;
-use review_optimize::{OptError, ProcessInput, ProcessedResult, preset, process};
+use review_optimize::{
+    ExportReport, OptError, ProcessInput, ProcessedResult, export_fbx, preset, process,
+};
 use review_ui::{OptIntent, OptLevelView, OptResultView};
 
 use crate::{App, UserEvent, prof};
@@ -258,11 +260,89 @@ impl App {
         }
     }
 
-    /// Write the current LOD chain to disk. Lands with the FBX writer; until then
-    /// the button says so rather than silently doing nothing.
+    /// Write the current LOD chain to disk.
+    ///
+    /// The write runs on a worker like processing does: a large chain in ASCII is
+    /// slow enough to drop frames, and freezing the window mid-export is exactly
+    /// the failure the workspace is built to avoid.
     fn export_opt_result(&mut self) {
-        self.notifications
-            .info("FBX export is not wired up yet.".to_owned());
+        let Some(result) = self.opt.as_ref().and_then(|opt| opt.processed.clone()) else {
+            self.notifications
+                .error("Nothing to export yet — add an operation to the stack.".to_owned());
+            return;
+        };
+
+        // A sensible default file name: the model's own, which is also the stem
+        // the per-LOD packaging appends its suffixes to.
+        let stem = if self.scene_model.name.is_empty() {
+            "optimized".to_owned()
+        } else {
+            self.scene_model.name.clone()
+        };
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Export optimized mesh")
+            .add_filter("FBX", &["fbx"])
+            .set_file_name(format!("{stem}.fbx"))
+            .save_file()
+        else {
+            return;
+        };
+
+        let Some(proxy) = self.textures.proxy.clone() else {
+            prof::msg("no event-loop proxy; cannot export off-thread");
+            self.notifications
+                .error("Couldn't start the export".to_owned());
+            return;
+        };
+
+        let source = Arc::clone(&self.scene_model);
+        let options = self.ui.opt.stack.export;
+        self.notifications.begin_activity("Exporting FBX…");
+
+        std::thread::spawn(move || {
+            prof::thread_name("mesh-export");
+            let outcome = {
+                let _z = prof::zone!("Export FBX");
+                export_fbx(&result.lods, &source, &path, &options)
+            };
+            let _ = proxy.send_event(UserEvent::OptExported(Box::new(outcome)));
+        });
+    }
+
+    /// Report a finished export on the main thread.
+    pub(crate) fn handle_opt_exported(&mut self, outcome: Result<ExportReport, OptError>) {
+        self.notifications.end_activity();
+        match outcome {
+            Ok(report) => {
+                let files = report.files.len();
+                let name = report
+                    .files
+                    .first()
+                    .map(|path| crate::file_label(path))
+                    .unwrap_or_else(|| "the mesh".to_owned());
+                self.notifications.success(if files > 1 {
+                    format!(
+                        "Exported {files} files ({} triangles)",
+                        report.triangle_count
+                    )
+                } else {
+                    format!("Exported {name} ({} triangles)", report.triangle_count)
+                });
+                // The notes describe what the format could not carry (untextured
+                // materials, dropped skinning), which the user should learn now
+                // rather than when the file reaches an engine.
+                for note in report.notes {
+                    self.notifications.info(note);
+                }
+            }
+            Err(error) => {
+                prof::msg(&format!("FBX export failed: {error}"));
+                self.notifications.error(format!("Export failed: {error}"));
+            }
+        }
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
     }
 
     /// Store a successful run and mirror its measured figures into the UI.

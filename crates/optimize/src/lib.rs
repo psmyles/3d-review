@@ -29,13 +29,15 @@
 //! without `third_party/meshoptimizer` the crate still compiles and every
 //! operation reports [`OptError::Unavailable`].
 
-// Everything outside the two FFI modules is ordinary safe Rust. The modules that
-// need `unsafe` opt in individually rather than the crate opting out globally.
-#![cfg_attr(not(has_meshopt), forbid(unsafe_code))]
+// Everything outside the FFI modules is ordinary safe Rust. Those modules opt in
+// individually rather than the crate opting out globally.
+#![cfg_attr(not(any(has_meshopt, has_ufbxw)), forbid(unsafe_code))]
 
+mod export_ffi;
 mod ffi;
 mod prof;
 
+pub mod export;
 pub mod meshopt;
 pub mod ops;
 pub mod preset;
@@ -43,6 +45,7 @@ pub mod process;
 pub mod stack;
 pub mod submesh;
 
+pub use export::{ExportReport, export_fbx};
 pub use process::{AnalysisMetrics, ProcessInput, ProcessedLod, ProcessedResult, process};
 pub use stack::{
     AttributeWeights, ExportOptions, FbxFormat, HierarchyMode, LodLevel, LodPackaging, LodParams,
@@ -84,6 +87,9 @@ pub enum OptError {
 
     #[error("preset was written by a newer build (version {found}, this build reads {supported})")]
     PresetVersion { found: u32, supported: u32 },
+
+    #[error("FBX export failed: {0}")]
+    Export(String),
 }
 
 /// A de-duplicating warning collector.
