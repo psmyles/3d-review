@@ -116,6 +116,11 @@ pub struct OptResultView {
     /// every face corner, so those two never described the same mesh and their
     /// difference read as the optimizer inventing vertices.
     pub source: MeshCounts,
+    /// The source mesh's own cache / overdraw / fetch figures. Shown on their own
+    /// before anything is enabled — a run with an empty stack measures the mesh
+    /// and produces no levels — and as the baseline each level's change is quoted
+    /// against once there are.
+    pub source_metrics: AnalysisMetrics,
     /// Wall-clock milliseconds the run took.
     pub elapsed_ms: f32,
     /// Non-fatal problems the run reported, already de-duplicated.

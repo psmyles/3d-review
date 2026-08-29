@@ -84,15 +84,20 @@ pub(crate) fn stats_grid(ui: &mut egui::Ui, state: &UiState) {
     stat_row(ui, "FPS", &format!("{:.0}", state.fps));
 }
 
-/// The Opt workspace's second stats card: the *processed* mesh's own measured
-/// counts, each with its change against the source, plus the GPU-behaviour
-/// figures meshoptimizer measured for it.
+/// The Opt workspace's second stats card: the measured counts and GPU-behaviour
+/// figures of whatever the right-hand view is showing, each with its change
+/// against the source.
 ///
-/// Every number here is measured off the processed mesh in hand — the counts by
-/// walking its buffers, the ratios by meshoptimizer's own analyzers (invariant 5).
-/// The deltas are computed from the two measured counts, not estimated.
+/// Every number here is measured off the mesh in hand — the counts by walking its
+/// buffers, the ratios by meshoptimizer's own analyzers (invariant 5). The
+/// changes are computed from two measured values, never estimated.
+///
+/// The card is up whenever the workspace has run at all, and a run with nothing
+/// enabled still measures the source: the point of the reorder operations is to
+/// move ACMR and overfetch, and choosing whether to add one means reading where
+/// they already stand.
 pub(crate) fn processed_stats_grid(ui: &mut egui::Ui, state: &UiState) {
-    let (Some(level), Some(result)) = (state.opt.active_level(), state.opt.result.as_ref()) else {
+    let Some(result) = state.opt.result.as_ref() else {
         return;
     };
     // Measured off the source mesh by the same run — not the Model Stats panel's
@@ -100,72 +105,129 @@ pub(crate) fn processed_stats_grid(ui: &mut egui::Ui, state: &UiState) {
     // corner, so the two never described the same mesh: subtracting them made a
     // weld that removed five vertices in six read as "+501%".
     let source = result.source;
-    let stats = &level.stats;
-    let metrics = &level.metrics;
+    let source_metrics = result.source_metrics;
+    let level = state.opt.active_level();
 
     ui.spacing_mut().item_spacing.y = size::STATS_ROW_SPACING;
 
-    // Name the level whenever there is more than one to be on: "Processed"
-    // alone leaves the reader to guess whether they are looking at the
-    // simplified mesh or the level it was simplified from.
-    let heading = if result.levels.len() > 1 {
-        format!("Processed · LOD {}", state.opt.active_lod)
-    } else {
-        "Processed".to_owned()
+    // With no level there is nothing processed to name, and the figures below are
+    // the source's own. Otherwise name the level whenever there is more than one
+    // to be on: "Processed" alone leaves the reader to guess whether they are
+    // looking at the simplified mesh or the level it was simplified from.
+    let heading = match (level, result.levels.len()) {
+        (None, _) => "Source (nothing applied)".to_owned(),
+        (Some(_), count) if count > 1 => format!("Processed · LOD {}", state.opt.active_lod),
+        (Some(_), _) => "Processed".to_owned(),
     };
     ui.label(mono_label(&heading, font::STATS, color::TEXT_PRIMARY));
     ui.add_space(size::STATS_ROW_SPACING);
 
-    delta_row(ui, "Tris", stats.triangle_count, source.triangles);
+    // Against itself, the source's every change is zero, so the baseline card
+    // shows plain values; a column of "0%" would be noise.
+    let baseline = level.map(|_| source);
+    let stats = level.map_or_else(
+        || (source.triangles, source.vertices, state.stats.draw_count),
+        |level| {
+            (
+                level.stats.triangle_count,
+                level.stats.vertex_count,
+                level.stats.draw_count,
+            )
+        },
+    );
+    let metrics = level.map_or(source_metrics, |level| level.metrics);
+
+    delta_row(ui, "Tris", stats.0, baseline.map(|source| source.triangles));
     // "Mesh Verts", matching the source card's row of that name: both count the
     // vertex buffer. Calling this one "Verts" put the same word on two different
     // measurements — the file's DCC count on one card and the buffer length on
     // the other — and the two cards read as contradicting each other.
-    delta_row(ui, "Mesh Verts", stats.vertex_count, source.vertices);
-    stat_row(ui, "Draws", &stats.draw_count.to_string());
+    delta_row(
+        ui,
+        "Mesh Verts",
+        stats.1,
+        baseline.map(|source| source.vertices),
+    );
+    stat_row(ui, "Draws", &stats.2.to_string());
 
     ui.add_space(size::STATS_ROW_SPACING);
     // ACMR/ATVR describe vertex-cache behaviour, overdraw the pixel cost, and
     // overfetch the vertex-buffer read pattern. They are what makes the reorder
-    // operations — which change nothing visible — measurable.
-    stat_row(ui, "ACMR", &format!("{:.2}", metrics.acmr));
-    stat_row(ui, "ATVR", &format!("{:.2}", metrics.atvr));
-    stat_row(ui, "Overdraw", &format!("{:.2}", metrics.overdraw));
-    stat_row(ui, "Overfetch", &format!("{:.2}", metrics.overfetch));
+    // operations — which change nothing visible — measurable, so they carry their
+    // change too: a reorder that moved nothing is a reorder worth removing.
+    let compare = level.map(|_| source_metrics);
+    metric_row(ui, "ACMR", metrics.acmr, compare.map(|m| m.acmr));
+    metric_row(ui, "ATVR", metrics.atvr, compare.map(|m| m.atvr));
+    metric_row(
+        ui,
+        "Overdraw",
+        metrics.overdraw,
+        compare.map(|m| m.overdraw),
+    );
+    metric_row(
+        ui,
+        "Overfetch",
+        metrics.overfetch,
+        compare.map(|m| m.overfetch),
+    );
 
     // The simplifier's achieved error, shown only for a level that ran one — it
-    // is meaningless (and always zero) for the unsimplified level 0.
-    if state.opt.active_lod > 0 {
+    // is meaningless (and always zero) for the unsimplified level 0. It has no
+    // source counterpart to change against.
+    if state.opt.active_lod > 0 && level.is_some() {
         stat_row(ui, "Error", &format!("{:.4}", metrics.simplify_error));
     }
 }
 
-/// A count row carrying its percentage change against the source. A reduction
-/// reads as a negative percentage, which is the direction that matters here.
-fn delta_row(ui: &mut egui::Ui, label: &str, value: usize, source: usize) {
-    let delta = if source == 0 {
-        String::new()
+/// A count row, with its change against the source when there is one to show.
+fn delta_row(ui: &mut egui::Ui, label: &str, value: usize, source: Option<usize>) {
+    value_row(
+        ui,
+        label,
+        &value.to_string(),
+        change(value as f32, source.map(|source| source as f32)),
+    );
+}
+
+/// A measured ratio (ACMR / ATVR / overdraw / overfetch) and its change.
+fn metric_row(ui: &mut egui::Ui, label: &str, value: f32, source: Option<f32>) {
+    value_row(ui, label, &format!("{value:.2}"), change(value, source));
+}
+
+/// The percentage change from `source` to `value`, with the colour that says
+/// whether it was an improvement.
+///
+/// Every figure on this card is one where **lower is better** — fewer triangles
+/// and vertices, fewer cache misses, less overdraw, fewer bytes fetched — so one
+/// rule covers them all: down is green, up is red.
+fn change(value: f32, source: Option<f32>) -> Option<(String, egui::Color32)> {
+    let source = source?;
+    if source == 0.0 || !source.is_finite() || !value.is_finite() {
+        return None;
+    }
+    let percent = (value - source) / source * 100.0;
+    // Below a twentieth of a percent the rounded figure would read "-0%", which
+    // looks like a bug rather than "unchanged".
+    if percent.abs() < 0.05 {
+        return Some(("  0%".to_owned(), color::TEXT_MUTED));
+    }
+    let tint = if percent < 0.0 {
+        color::STATS_DELTA_BETTER
     } else {
-        let change = (value as f32 - source as f32) / source as f32 * 100.0;
-        // Below a tenth of a percent, the rounded figure would read "-0.0%",
-        // which looks like a bug rather than "essentially unchanged".
-        if change.abs() < 0.05 {
-            "  0%".to_owned()
-        } else {
-            format!("{change:+.0}%")
-        }
+        color::STATS_DELTA_WORSE
     };
+    Some((format!("{percent:+.0}%"), tint))
+}
+
+/// One stats row with an optional tinted change column to the right of the value.
+fn value_row(ui: &mut egui::Ui, label: &str, value: &str, delta: Option<(String, egui::Color32)>) {
     ui.horizontal(|ui| {
         ui.label(mono_label(label, font::STATS, color::TEXT_MUTED));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if !delta.is_empty() {
-                ui.label(mono_label(&delta, font::STATS, color::TEXT_MUTED));
+            if let Some((text, tint)) = delta {
+                ui.label(mono_label(&text, font::STATS, tint));
             }
-            ui.label(mono_label(
-                &value.to_string(),
-                font::STATS,
-                color::TEXT_VALUE,
-            ));
+            ui.label(mono_label(value, font::STATS, color::TEXT_VALUE));
         });
     });
 }

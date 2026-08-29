@@ -106,6 +106,10 @@ pub(crate) fn stats_overlay_card(
 pub(crate) enum StatsCardSide {
     Left,
     Right,
+    /// Centred in the viewport, for a card that describes the view as a whole
+    /// rather than one mesh in it — the Opt overlay's legend. Its inset is the
+    /// signed horizontal offset that keeps it centred between the side panels.
+    Center,
 }
 
 /// [`stats_overlay_card`] with a choice of edge. `side_inset` is measured from
@@ -124,6 +128,7 @@ pub(crate) fn stats_overlay_card_at(
     let (align, offset_x) = match side {
         StatsCardSide::Left => (egui::Align2::LEFT_BOTTOM, side_inset + margin),
         StatsCardSide::Right => (egui::Align2::RIGHT_BOTTOM, -(side_inset + margin)),
+        StatsCardSide::Center => (egui::Align2::CENTER_BOTTOM, side_inset),
     };
     egui::Area::new(egui::Id::new(id))
         .fade_in(false)

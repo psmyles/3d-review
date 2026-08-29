@@ -20,8 +20,10 @@
 //! ## Laziness
 //!
 //! Startup speed is a product goal, so nothing here is built until the user
-//! actually enters the Opt workspace: `App::opt` is `None` until then, and no
-//! run is scheduled for a stack with nothing enabled in it.
+//! actually enters the Opt workspace: `App::opt` is `None` until then. Entering
+//! it does schedule one run even with an empty stack — that run produces no mesh,
+//! only the source's measured figures, which the workspace shows as the baseline
+//! every later change is quoted against.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -191,12 +193,11 @@ impl App {
         let model = Arc::clone(&self.scene_model);
         let stack_revision = self.ui.opt.stack_revision;
 
-        // Nothing to do: an empty (or entirely disabled) stack would process to a
-        // copy of the source, which is exactly what the workspace already shows.
-        // Clearing any previous result here is what makes disabling the last
-        // operation snap straight back to the source mesh.
-        let has_work = stack.ops.iter().any(|op| op.enabled);
-        if !has_work || model.indices.is_empty() {
+        // A stack with nothing enabled still runs: it produces no mesh, but it
+        // measures the source, which is what the workspace shows as the baseline
+        // before anything has been asked of it. An empty *model* has nothing to
+        // measure either way.
+        if model.indices.is_empty() {
             let Some(opt) = self.opt.as_mut() else {
                 return;
             };
@@ -400,6 +401,7 @@ impl App {
             elapsed_ms: result.elapsed.as_secs_f32() * 1000.0,
             warnings: result.warnings.clone(),
             source: result.source,
+            source_metrics: result.source_metrics,
             levels,
         };
 
@@ -414,6 +416,16 @@ impl App {
             self.ui.opt.active_lod = usize::from(level_count > 1);
         }
         self.ui.opt.result = Some(view);
+
+        // A run with nothing enabled produced figures but no mesh; the viewport
+        // is showing the source alone, so the processed slot's buffers go
+        // (invariant 3) — this is what makes disabling the last operation snap
+        // straight back to the source mesh.
+        if result.lods.is_empty()
+            && let Some(renderer) = self.renderer.as_mut()
+        {
+            renderer.release_processed_mesh();
+        }
 
         let revision = self.next_model_revision();
         let stack_revision = self.ui.opt.stack_revision;

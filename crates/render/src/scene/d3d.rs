@@ -316,7 +316,7 @@ struct ModelSlot {
     /// in opposite directions every frame. `None` whenever this model is not
     /// currently the ghost (invariant 3).
     ghost_wireframe_buf: Option<VertexBuffer>,
-    ghost_wireframe_baked: Option<(u64, Vec<u32>)>,
+    ghost_wireframe_baked: Option<(u64, Vec<u32>, [f32; 4])>,
 }
 
 impl ModelSlot {
@@ -690,7 +690,7 @@ impl SceneGpu {
         match frame.view {
             // The overlay needs two meshes to have anything to overlay; without a
             // processed one it is simply the 3D scene.
-            OptView::Overlay { ghost, swap } => match frame.processed {
+            OptView::Overlay { ghost, swap, tint } => match frame.processed {
                 Some(processed) => self.render_overlay(
                     gpu,
                     frame,
@@ -699,6 +699,7 @@ impl SceneGpu {
                     material_revision,
                     ghost,
                     swap,
+                    tint,
                     size,
                 ),
                 None => {
@@ -837,6 +838,7 @@ impl SceneGpu {
         material_revision: u64,
         ghost: GhostStyle,
         swap: bool,
+        tint: [f32; 3],
         size: (u32, u32),
     ) -> windows::core::Result<()> {
         let processed_frame = frame.base.with_model(processed.model, processed.revision);
@@ -863,7 +865,7 @@ impl SceneGpu {
         self.activate(ghost_slot);
         self.sync_frame(gpu, ghost_frame, material_states, material_revision, size)?;
         if ghost == GhostStyle::Wireframe {
-            self.sync_ghost_wireframe(gpu.device(), ghost_frame)?;
+            self.sync_ghost_wireframe(gpu.device(), ghost_frame, tint)?;
         } else {
             self.release_ghost_wireframes();
         }
@@ -879,7 +881,7 @@ impl SceneGpu {
             frame.source_camera,
             gtao_active,
             BackbufferRect::full(size),
-            Some(ghost),
+            Some((ghost, tint)),
         );
         self.end_gpu_frame(gpu);
         result
@@ -942,7 +944,7 @@ impl SceneGpu {
         camera: OrbitCamera,
         gtao_active: bool,
         dest: BackbufferRect,
-        ghost: Option<GhostStyle>,
+        ghost: Option<(GhostStyle, [f32; 3])>,
     ) -> windows::core::Result<()> {
         let ctx = gpu.context();
 
@@ -956,8 +958,8 @@ impl SceneGpu {
         self.uniforms.update(ctx, &uniforms)?;
 
         self.record_scene_pass(gpu, frame)?;
-        if let Some(style) = ghost {
-            self.record_ghost(gpu, camera, frame, style)?;
+        if let Some((style, tint)) = ghost {
+            self.record_ghost(gpu, camera, frame, style, tint)?;
         }
 
         if gtao_active {
@@ -1016,6 +1018,7 @@ impl SceneGpu {
         camera: OrbitCamera,
         frame: &SceneFrame<'_>,
         style: GhostStyle,
+        tint: [f32; 3],
     ) -> windows::core::Result<()> {
         let ctx = gpu.context();
 
@@ -1029,7 +1032,7 @@ impl SceneGpu {
             frame.selection,
             frame.debug,
         );
-        uniforms.selection_color = ghost_tint(style);
+        uniforms.selection_color = ghost_tint(style, tint);
         self.uniforms.update(ctx, &uniforms)?;
 
         match style {
@@ -1069,16 +1072,14 @@ impl SceneGpu {
         &mut self,
         device: &ID3D11Device,
         frame: &SceneFrame<'_>,
+        tint: [f32; 3],
     ) -> windows::core::Result<()> {
-        let want = Some((frame.model_revision, frame.hidden_meshes.to_vec()));
+        let colour = ghost_tint(GhostStyle::Wireframe, tint);
+        let want = Some((frame.model_revision, frame.hidden_meshes.to_vec(), colour));
         if self.active.ghost_wireframe_baked == want {
             return Ok(());
         }
-        let lines = wireframe_lines(
-            frame.model,
-            ghost_tint(GhostStyle::Wireframe),
-            frame.hidden_meshes,
-        );
+        let lines = wireframe_lines(frame.model, colour, frame.hidden_meshes);
         self.active.ghost_wireframe_buf = optional_vertex_buffer(device, &lines)?;
         self.active.ghost_wireframe_baked = want;
         Ok(())
@@ -2270,16 +2271,18 @@ fn flat_display(frame: &SceneFrame<'_>) -> bool {
 /// The ghost's colour, as the `selection_color` uniform's gamma-space RGB plus
 /// alpha.
 ///
-/// The x-ray is a cool translucent blue, distinct from the selection flash's warm
-/// orange so the two never read as the same thing. Its alpha is low enough that
-/// the solid mesh stays legible through it, but high enough that a silhouette
-/// spilling past the solid surface is obvious — that spill is the whole signal
-/// the overlay exists to show. The wireframe ghost is opaque: an alpha-faded line
-/// a pixel wide would simply disappear.
-fn ghost_tint(style: GhostStyle) -> [f32; 4] {
+/// The hue comes from the caller — the chrome shows the same colour in the
+/// overlay's legend, and a swatch that disagreed with the mesh would be worse
+/// than no legend. The alpha is decided here because it is a rendering matter:
+/// the x-ray's is low enough that the solid mesh stays legible through it but
+/// high enough that a silhouette spilling past that surface is obvious — the
+/// spill is the whole signal the overlay exists to show. The wireframe ghost is
+/// opaque: an alpha-faded line a pixel wide would simply disappear.
+fn ghost_tint(style: GhostStyle, tint: [f32; 3]) -> [f32; 4] {
+    let [r, g, b] = tint;
     match style {
-        GhostStyle::Xray => [0.35, 0.62, 1.0, 0.28],
-        GhostStyle::Wireframe => [0.35, 0.62, 1.0, 1.0],
+        GhostStyle::Xray => [r, g, b, 0.28],
+        GhostStyle::Wireframe => [r, g, b, 1.0],
     }
 }
 

@@ -104,6 +104,14 @@ pub struct ProcessedResult {
     /// The input mesh's own buffer counts, the baseline every level's change is
     /// measured against.
     pub source: MeshCounts,
+    /// The input mesh's own cache / overdraw / fetch figures, measured exactly as
+    /// each level's are so the overlay can show what an operation did to them.
+    ///
+    /// Measured on every run even though the source never changes between them:
+    /// caching it would mean carrying a keyed baseline across the thread boundary
+    /// for a figure that costs one more pass over a mesh the run has already
+    /// walked several times.
+    pub source_metrics: AnalysisMetrics,
     /// Non-fatal problems worth telling the user about, already de-duplicated.
     pub warnings: Vec<String>,
     /// Wall-clock time the run took, for the "this is taking a while" notice and
@@ -129,6 +137,20 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
     }
     if input.model.indices.is_empty() || input.model.vertices.is_empty() {
         return Err(OptError::EmptyMesh);
+    }
+
+    // Nothing enabled: no mesh is produced, but the source is still measured.
+    // The workspace shows those figures as the baseline — a user reads the
+    // mesh's overdraw and cache behaviour *before* deciding what to add, and
+    // every later run's change is quoted against them.
+    if !input.stack.ops.iter().any(|op| op.enabled) {
+        return Ok(ProcessedResult {
+            lods: Vec::new(),
+            source: MeshCounts::of(input.model),
+            source_metrics: measure(input.model, input.render_vertex_size, 0.0),
+            warnings: Vec::new(),
+            elapsed: started.elapsed(),
+        });
     }
 
     let mut warnings = Warnings::default();
@@ -245,6 +267,7 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
     Ok(ProcessedResult {
         lods,
         source: MeshCounts::of(input.model),
+        source_metrics: measure(input.model, input.render_vertex_size, 0.0),
         warnings: warnings.into_vec(),
         elapsed: started.elapsed(),
     })
@@ -586,14 +609,29 @@ mod tests {
         .expect("the demo cube always processes")
     }
 
+    /// Nothing enabled produces no mesh — but the source is still measured, so
+    /// the workspace can show what it costs before anything is asked of it.
     #[test]
-    fn an_empty_stack_passes_the_mesh_through() {
+    fn an_empty_stack_measures_the_source_and_produces_no_levels() {
         let result = run(&OptStack::default());
 
-        assert_eq!(result.lods.len(), 1);
-        let output = &result.lods[0].model;
+        assert!(result.lods.is_empty(), "nothing was asked for");
+        assert_eq!(result.source.triangles, 12);
+        assert_eq!(result.source.vertices, 24);
+        assert!(
+            result.source_metrics.acmr > 0.0,
+            "the source is measured anyway: {:?}",
+            result.source_metrics
+        );
+    }
+
+    #[test]
+    fn an_operation_produces_a_mesh_carrying_no_polygon_topology() {
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::FilterTriangles);
+
+        let output = &run(&stack).lods[0].model;
         assert_eq!(output.indices.len(), 36);
-        assert_eq!(output.vertices.len(), 24);
         assert!(
             output.faces.is_empty() && output.triangles.to_face.is_empty(),
             "processed meshes carry no polygon topology"
@@ -778,7 +816,10 @@ mod tests {
         }));
         stack.op_mut(id).expect("just pushed").enabled = false;
 
-        assert_eq!(run(&stack).lods[0].model.vertices.len(), 24);
+        assert!(
+            run(&stack).lods.is_empty(),
+            "a stack with nothing enabled is an empty stack"
+        );
     }
 
     #[test]
@@ -898,10 +939,12 @@ mod tests {
     fn a_skinned_source_is_reported_and_stripped() {
         let mut model = demo_cube_model();
         model.skin = Some(review_model::SkinData::default());
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::FilterTriangles);
 
         let result = process(ProcessInput {
             model: &model,
-            stack: &OptStack::default(),
+            stack: &stack,
             render_vertex_size: VERTEX_SIZE,
         })
         .expect("processing succeeds");
@@ -935,11 +978,13 @@ mod tests {
 
     #[test]
     fn vertex_cache_optimization_does_not_worsen_acmr() {
-        let plain = run(&OptStack::default()).lods[0].metrics.acmr;
-
+        // The source's own figure, which is what the overlay quotes the change
+        // against — measured by the same run that produces the optimized one.
         let mut stack = OptStack::default();
         stack.push_op(OpKind::VertexCache);
-        let optimized = run(&stack).lods[0].metrics.acmr;
+        let result = run(&stack);
+        let plain = result.source_metrics.acmr;
+        let optimized = result.lods[0].metrics.acmr;
 
         assert!(
             optimized <= plain + f32::EPSILON,

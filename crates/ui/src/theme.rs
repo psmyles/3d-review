@@ -65,6 +65,12 @@ pub mod color {
     pub const ICON_IDLE: Color32 = Color32::from_gray(230);
     /// Stats label column / muted row labels.
     pub const TEXT_MUTED: Color32 = Color32::from_gray(178);
+    /// The Opt stats card's change column. Every figure it annotates is one where
+    /// lower is better — fewer triangles and vertices, fewer cache misses, less
+    /// overdraw, fewer bytes fetched — so a fall reads green and a rise red.
+    /// Desaturated enough to sit beside the value column without shouting.
+    pub const STATS_DELTA_BETTER: Color32 = Color32::from_rgb(126, 202, 122);
+    pub const STATS_DELTA_WORSE: Color32 = Color32::from_rgb(226, 122, 118);
     /// A scene-tree row the type filter is hiding, kept visible only because a
     /// shown node lives beneath it. Dim enough to read as structure, not content.
     pub const OUTLINER_FILTERED: Color32 = Color32::from_gray(104);
@@ -110,6 +116,13 @@ pub mod color {
     pub const STATS_BORDER: Color32 = Color32::from_gray(52);
     /// Idle (unselected) swatch outline.
     pub const SWATCH_BORDER: Color32 = Color32::from_gray(28);
+
+    /// The Opt overlay's ghost mesh — a cool translucent blue, deliberately
+    /// unlike the selection flash's warm orange so the two never read as the same
+    /// thing. Owned here rather than in the renderer (invariant 8) and handed to
+    /// it with the frame, so the viewport's ghost and the legend's swatch cannot
+    /// drift apart. The renderer supplies the alpha, which differs by ghost style.
+    pub const GHOST_XRAY: Color32 = Color32::from_rgb(89, 158, 255);
 
     // ── Axis gizmo ──────────────────────────────────────────────────────────
     /// Gizmo axis ball colors.
@@ -500,6 +513,11 @@ pub mod size {
     /// Width of the processed-mesh stats card. Wider than the source card: its
     /// rows carry a measured value *and* the delta against the source.
     pub const OPT_STATS_PANEL_WIDTH: f32 = 186.0;
+    /// Width of the overlay-mode legend card, sized to "Processed — wireframe".
+    pub const OPT_LEGEND_WIDTH: f32 = 152.0;
+    /// Edge length of a legend row's colour swatch, and the gap after it.
+    pub const OPT_LEGEND_SWATCH: f32 = 9.0;
+    pub const OPT_LEGEND_SWATCH_GAP: f32 = 7.0;
 
     // ── Startup help overlay (treated as egui points, like the option panels) ─
     /// Width of each of the two shortcut columns and the gap between them; the

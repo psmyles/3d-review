@@ -429,10 +429,14 @@ everything else. Comparison is a vertical split (optionally camera-synced) or a
 single view with one mesh ghosted over the other and an `X` A/B swap — the LOD
 picker and the layout / camera-sync / swap icons sit centred in the status bar,
 over the split's divider, since they describe the viewport as a whole. A second
-stats card carries the processed mesh's measured counts, their change against the
-source, and the ACMR / ATVR / overdraw / overfetch figures meshoptimizer measured
+stats card carries the processed mesh's measured counts and the ACMR / ATVR /
+overdraw / overfetch figures meshoptimizer measured, each with its change against
+the source tinted green or red (every figure there is one where lower is better)
 — which is what makes the reorder operations, invisible in the viewport, worth
-having. An explicit export writes the chain to FBX via vendored ufbx_write.
+having. That card is up as soon as the workspace is opened: a run with nothing
+enabled produces no mesh but still measures the source, so the baseline is
+readable before anything is added. The overlay layout adds a legend naming which
+mesh is shaded and which is the ghost. An explicit export writes the chain to FBX via vendored ufbx_write.
 Startup is untouched: nothing Opt-specific is built until the workspace is first
 opened, and a stack with nothing enabled schedules no run.
 

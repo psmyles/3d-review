@@ -207,6 +207,12 @@ impl App {
         let active_lod = self.ui.opt.active_lod;
         let opt_layout = self.ui.opt.layout;
         let opt_ghost = self.ui.opt.ghost_style;
+        // The chrome owns the ghost's colour (invariant 8) and shows the same one
+        // in the overlay legend; the renderer decides its alpha.
+        let ghost_tint = {
+            let [r, g, b, _] = theme::color::GHOST_XRAY.to_normalized_gamma_f32();
+            [r, g, b]
+        };
         let opt_swap = self.ui.opt.side == ComparisonSide::Source;
 
         let source_model = self.scene_model.clone();
@@ -283,6 +289,7 @@ impl App {
                                     OptLayout::Overlay => OptView::Overlay {
                                         ghost: opt_ghost.into(),
                                         swap: opt_swap,
+                                        tint: ghost_tint,
                                     },
                                 },
                                 source_camera,

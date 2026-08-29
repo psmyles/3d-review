@@ -52,6 +52,15 @@ fn reimport(path: &Path) -> ModelData {
         .unwrap_or_else(|error| panic!("could not read back {}: {error}", path.display()))
 }
 
+/// The smallest stack that still produces a chain to export: a run with nothing
+/// enabled measures the source and produces no levels, so the export tests need
+/// *an* operation, and filtering leaves a clean mesh's triangles alone.
+fn passthrough() -> OptStack {
+    let mut stack = OptStack::default();
+    stack.push_op(OpKind::FilterTriangles);
+    stack
+}
+
 /// A stack that welds and then halves the triangle count.
 fn weld_and_halve() -> OptStack {
     let mut stack = OptStack::default();
@@ -72,7 +81,7 @@ fn a_written_file_reads_back_with_the_same_geometry() {
     let Some(model) = fixture("monkey.fbx") else {
         return;
     };
-    let result = run(&model, &OptStack::default());
+    let result = run(&model, &passthrough());
     let expected = &result.lods[0].model;
 
     let dir = temp_dir("round_trip_geometry");
@@ -186,7 +195,7 @@ fn rebuilt_and_flat_hierarchies_place_the_geometry_identically() {
     let Some(model) = fixture("SK_Player_01.fbx") else {
         return;
     };
-    let result = run(&model, &OptStack::default());
+    let result = run(&model, &passthrough());
     let dir = temp_dir("round_trip_hierarchy");
 
     let mut bounds = Vec::new();
@@ -225,7 +234,7 @@ fn a_multi_material_mesh_keeps_its_materials() {
         return;
     };
     assert!(model.materials.len() > 1);
-    let result = run(&model, &OptStack::default());
+    let result = run(&model, &passthrough());
 
     let dir = temp_dir("round_trip_materials");
     let path = dir.join("materials.fbx");
@@ -250,7 +259,7 @@ fn ascii_output_reads_back_too() {
     let Some(model) = fixture("meter_cube.fbx") else {
         return;
     };
-    let result = run(&model, &OptStack::default());
+    let result = run(&model, &passthrough());
 
     let dir = temp_dir("round_trip_ascii");
     let path = dir.join("cube.fbx");
@@ -283,7 +292,7 @@ fn uv_sets_survive_the_round_trip() {
     if source_sets == 0 {
         return;
     }
-    let result = run(&model, &OptStack::default());
+    let result = run(&model, &passthrough());
 
     let dir = temp_dir("round_trip_uvs");
     let path = dir.join("uvs.fbx");

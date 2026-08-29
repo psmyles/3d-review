@@ -5,7 +5,7 @@
 use review_model::{ModelData, SceneBvh};
 use review_render::{OrbitCamera, Selection};
 
-use crate::opt_state::{OptIntent, OptLayout};
+use crate::opt_state::{GhostStyle, OptIntent, OptLayout};
 use crate::state::{OptionPanel, UiOutput, UiState, WorkspaceMode, sync_debug_state};
 use crate::theme::{self, color, size};
 use crate::{dimensions, gizmo, help, panels, stats, status_bar, texture_view, toolbar};
@@ -100,6 +100,13 @@ pub fn draw_overlay(
         }
 
         draw_stats_overlay(
+            ctx,
+            state,
+            status_bar_height,
+            side.left_inset,
+            side.right_inset,
+        );
+        draw_overlay_legend(
             ctx,
             state,
             status_bar_height,
@@ -312,11 +319,11 @@ fn draw_stats_overlay(
         |ui| stats::stats_grid(ui, state),
     );
 
-    // Opt shows a second card for the processed mesh, on the opposite edge, so
-    // the two sets of counts read as a comparison. It appears only once a run has
-    // produced something to compare against — an empty card would imply the
-    // processing failed rather than that it hasn't been asked to do anything.
-    if state.mode == WorkspaceMode::Opt && state.opt.active_level().is_some() {
+    // Opt shows a second card on the opposite edge, so the two sets of counts
+    // read as a comparison. It is up as soon as the workspace has measured
+    // anything — before an operation is added it carries the source's own cache
+    // and overdraw figures, which is what a user reads to decide what to add.
+    if state.mode == WorkspaceMode::Opt && state.opt.result.is_some() {
         crate::widgets::stats_overlay_card_at(
             ctx,
             "opt_processed_stats_overlay",
@@ -327,4 +334,75 @@ fn draw_stats_overlay(
             |ui| stats::processed_stats_grid(ui, state),
         );
     }
+}
+
+/// The overlay layout's legend: which mesh is the shaded one and which is the
+/// ghost drawn over it.
+///
+/// Without it the view is two meshes in one space with nothing saying which is
+/// which — and the `X` swap silently exchanges them, so a reader who looked away
+/// has no way back to the answer. Centred between the two stats cards, and drawn
+/// only for the overlay, since the split labels its halves by their own cards.
+fn draw_overlay_legend(
+    ctx: &egui::Context,
+    state: &UiState,
+    status_bar_height: f32,
+    left_inset: f32,
+    right_inset: f32,
+) {
+    if state.mode != WorkspaceMode::Opt
+        || state.opt.layout != OptLayout::Overlay
+        || !state.opt.has_result()
+    {
+        return;
+    }
+
+    // The solid mesh is the one the A/B swap is *not* showing as the ghost.
+    let solid = state.opt.side;
+    let ghost = solid.swapped();
+    let ghost_style = match state.opt.ghost_style {
+        GhostStyle::Xray => "x-ray",
+        GhostStyle::Wireframe => "wireframe",
+    };
+
+    // The card is centred in the free viewport, so the panels' insets shift it by
+    // half their difference rather than by either one.
+    let offset = (left_inset - right_inset) * 0.5;
+    crate::widgets::stats_overlay_card_at(
+        ctx,
+        "opt_overlay_legend",
+        crate::widgets::StatsCardSide::Center,
+        offset,
+        status_bar_height,
+        size::OPT_LEGEND_WIDTH,
+        |ui| {
+            ui.spacing_mut().item_spacing.y = size::STATS_ROW_SPACING;
+            legend_row(
+                ui,
+                color::TEXT_VALUE,
+                &format!("{} · shaded", solid.label()),
+            );
+            legend_row(
+                ui,
+                color::GHOST_XRAY,
+                &format!("{} · {ghost_style}", ghost.label()),
+            );
+        },
+    );
+}
+
+/// One legend line: a colour swatch and what it labels.
+fn legend_row(ui: &mut egui::Ui, swatch: egui::Color32, text: &str) {
+    ui.horizontal(|ui| {
+        let size = egui::Vec2::splat(size::OPT_LEGEND_SWATCH);
+        let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+        ui.painter()
+            .rect_filled(rect, size::STATS_CORNER_RADIUS, swatch);
+        ui.add_space(size::OPT_LEGEND_SWATCH_GAP - ui.spacing().item_spacing.x);
+        ui.label(crate::widgets::mono_label(
+            text,
+            theme::font::STATS,
+            color::TEXT_BODY,
+        ));
+    });
 }

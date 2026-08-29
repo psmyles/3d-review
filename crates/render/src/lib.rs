@@ -611,7 +611,7 @@ pub struct ProcessedModelRef<'a> {
 }
 
 /// How the Opt workspace lays its two meshes out.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum OptView {
     /// Side by side: source on the left, processed on the right.
     Split,
@@ -620,6 +620,10 @@ pub enum OptView {
         ghost: GhostStyle,
         /// Show the *source* solid and the processed as the ghost (the A/B swap).
         swap: bool,
+        /// The ghost's colour, gamma-space RGB. Supplied by the caller because
+        /// the chrome shows the same colour in its legend and the two must
+        /// match; the alpha is the renderer's, since it depends on the style.
+        tint: [f32; 3],
     },
 }
 
