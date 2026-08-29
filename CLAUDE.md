@@ -426,7 +426,9 @@ per-object exclusions, and saves it as a JSON preset. Every edit reprocesses on 
 worker (latest-request-wins, a notice only if it runs long) and the result is in
 the viewport as soon as it lands, undoable through the same snapshot stack as
 everything else. Comparison is a vertical split (optionally camera-synced) or a
-single view with one mesh ghosted over the other and an `X` A/B swap; a second
+single view with one mesh ghosted over the other and an `X` A/B swap — the LOD
+picker and the layout / camera-sync / swap icons sit centred in the status bar,
+over the split's divider, since they describe the viewport as a whole. A second
 stats card carries the processed mesh's measured counts, their change against the
 source, and the ACMR / ATVR / overdraw / overfetch figures meshoptimizer measured
 — which is what makes the reorder operations, invisible in the viewport, worth

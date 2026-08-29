@@ -50,6 +50,13 @@ pub(crate) fn bar_group_rect(
     )
 }
 
+/// [`bar_group_rect`] for a group centred in the bar rather than mirrored to an
+/// edge — for controls that describe the viewport as a whole rather than sitting
+/// at one side of it.
+pub(crate) fn bar_group_rect_centered(bar_rect: egui::Rect, width: f32, height: f32) -> egui::Rect {
+    egui::Rect::from_center_size(bar_rect.center(), egui::vec2(width, height))
+}
+
 /// Lay `add_contents` out left-to-right inside `rect` at the standard group
 /// height — the scope every chrome-bar group opens.
 pub(crate) fn bar_group_scope(

@@ -6,13 +6,11 @@ use review_render::{ActiveMaterial, ShadingMode, UvShadingMode};
 
 use crate::assets::{
     ICON_AXIS_GIZMO, ICON_BACKFACE, ICON_BBOX, ICON_BUFFERS, ICON_GRID, ICON_NODE_BONE,
-    ICON_NORMALS_FACE, ICON_NORMALS_VERTEX, ICON_OPT_OVERLAY, ICON_OPT_SPLIT, ICON_OPT_SWAP,
-    ICON_OPT_SYNC, ICON_OUTLINER, ICON_PIVOT, ICON_SHADING_SHADED, ICON_SHADING_TEXTURE,
-    ICON_SHADING_UNLIT, ICON_SHADING_WIRE, ICON_SHADING_WIRE_ONLY, ICON_SKIN_WEIGHTS, ICON_UV,
-    ICON_UV_ISLANDS, ICON_UV_SHADED, ICON_UV_WIRE, ICON_VERTEX_COLORS, ICON_VIEW_ORTHO,
-    ICON_VIEW_PERSPECTIVE,
+    ICON_NORMALS_FACE, ICON_NORMALS_VERTEX, ICON_OUTLINER, ICON_PIVOT, ICON_SHADING_SHADED,
+    ICON_SHADING_TEXTURE, ICON_SHADING_UNLIT, ICON_SHADING_WIRE, ICON_SHADING_WIRE_ONLY,
+    ICON_SKIN_WEIGHTS, ICON_UV, ICON_UV_ISLANDS, ICON_UV_SHADED, ICON_UV_WIRE, ICON_VERTEX_COLORS,
+    ICON_VIEW_ORTHO, ICON_VIEW_PERSPECTIVE,
 };
-use crate::opt_state::OptLayout;
 use crate::state::{
     OptionPanel, TextureChannelView, TexturePoolEntry, UiState, ViewProjectionMode, WorkspaceMode,
 };
@@ -39,17 +37,7 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
     let group_height = theme::px(ctx, size::TOOLBAR_GROUP_HEIGHT);
     let left_width = theme::px(ctx, size::TOOLBAR_LEFT_WIDTH);
     let center_width = theme::px(ctx, size::TOOLBAR_CENTER_WIDTH);
-    // Opt adds the comparison group and the LOD dropdown to the right cluster,
-    // so its rect has to be wider — otherwise those controls are laid out past
-    // the rect's left edge and overlap the groups already there.
-    let right_width = theme::px(
-        ctx,
-        if state.mode == WorkspaceMode::Opt {
-            size::TOOLBAR_OPT_RIGHT_WIDTH
-        } else {
-            size::TOOLBAR_RIGHT_WIDTH
-        },
-    );
+    let right_width = theme::px(ctx, size::TOOLBAR_RIGHT_WIDTH);
     let shading_group_width = theme::px(ctx, size::TOOLBAR_SHADING_GROUP_WIDTH);
     let material_group_width = theme::px(ctx, size::TOOLBAR_MATERIAL_GROUP_WIDTH);
     let normals_group_width = theme::px(ctx, size::TOOLBAR_NORMALS_GROUP_WIDTH);
@@ -178,11 +166,6 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                             draw_view_group(ui, ctx, state, view_group_width);
                             draw_projection_group(ui, ctx, state, single_icon_group_width);
                             draw_windows_group(ui, ctx, state, single_icon_group_width);
-                            // Opt's own comparison controls sit inboard of the
-                            // shared groups (this row lays out right-to-left).
-                            if state.mode == WorkspaceMode::Opt {
-                                draw_opt_group(ui, ctx, state);
-                            }
                         }
                         WorkspaceMode::Uv => draw_uv_set_picker(ui, ctx, state),
                         WorkspaceMode::Texture => draw_texture_picker(ui, ctx, state),
@@ -512,126 +495,6 @@ fn draw_uv_set_picker(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiStat
             ui.selectable_value(&mut state.uv_view_channel, channel as u32, label);
         }
     });
-}
-
-/// The Opt comparison controls, shown on the right of the toolbar in Opt mode
-/// ahead of the shared view / projection / windows groups: which LOD level is
-/// displayed, which mesh reads as solid, and — for the split layout — whether the
-/// two views share a camera.
-///
-/// Everything here is disabled until a run has produced something to compare
-/// against, since until then the workspace is showing the source mesh alone.
-fn draw_opt_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState) {
-    let has_result = state.opt.has_result();
-    let level_count = state.opt.level_count();
-
-    // LOD picker, only once the chain actually has levels to choose between.
-    if has_result && level_count > 1 {
-        let width = theme::px(ctx, size::TOOLBAR_OPT_LOD_DROPDOWN_WIDTH);
-        state.opt.active_lod = state.opt.active_lod.min(level_count - 1);
-        let before = state.opt.active_lod;
-        let selected = lod_label(state.opt.active_lod);
-        compact_combo(ui, "opt_lod_picker", width, selected, |ui| {
-            for level in 0..level_count {
-                ui.selectable_value(&mut state.opt.active_lod, level, lod_label(level));
-            }
-        });
-        // Once the user has said which level they want, later runs keep showing
-        // it instead of jumping back to the one the workspace chose for them.
-        if state.opt.active_lod != before {
-            state.opt.lod_pinned = true;
-        }
-    }
-
-    // All four tiles are always present, the inapplicable ones disabled rather
-    // than hidden: a group that changed width as the layout changed would shove
-    // the neighbouring groups sideways on every click.
-    let split = state.opt.layout == OptLayout::Split;
-    toolbar_group_shell(
-        ui,
-        ctx,
-        theme::px(ctx, size::TOOLBAR_QUAD_ICON_GROUP_WIDTH),
-        |ui| {
-            if icon_toggle_button(
-                ui,
-                ctx,
-                &ICON_OPT_SPLIT,
-                split,
-                "Split view — source and processed side by side",
-            )
-            .clicked()
-            {
-                state.opt.layout = OptLayout::Split;
-            }
-            if icon_toggle_button(
-                ui,
-                ctx,
-                &ICON_OPT_OVERLAY,
-                !split,
-                "Overlay view — both in one view, one drawn as a ghost",
-            )
-            .clicked()
-            {
-                state.opt.layout = OptLayout::Overlay;
-            }
-
-            // Camera sync is a property of the split; the overlay has one camera
-            // to begin with, so there is nothing there to link.
-            let sync = state.opt.camera_sync;
-            let response = ui
-                .add_enabled_ui(split, |ui| {
-                    icon_toggle_button(
-                        ui,
-                        ctx,
-                        &ICON_OPT_SYNC,
-                        split && sync,
-                        "Move both views' cameras together",
-                    )
-                })
-                .inner;
-            if response.clicked() {
-                state.opt.camera_sync = !sync;
-            }
-            response.on_disabled_hover_text("The overlay draws both meshes through one camera");
-
-            // The A/B swap: which mesh reads as solid. Only the overlay draws one
-            // over the other, and only once there is something to swap to — so
-            // the button never lies about what the viewport is showing.
-            let can_swap = has_result && !split;
-            let response = ui
-                .add_enabled_ui(can_swap, |ui| {
-                    icon_toggle_button(
-                        ui,
-                        ctx,
-                        &ICON_OPT_SWAP,
-                        false,
-                        &format!(
-                            "Showing {} solid — click to swap (X)",
-                            state.opt.side.label()
-                        ),
-                    )
-                })
-                .inner;
-            if response.clicked() {
-                state.opt.side = state.opt.side.swapped();
-            }
-            response.on_disabled_hover_text(if has_result {
-                "The split view shows both meshes already"
-            } else {
-                "Nothing processed yet — add an operation to the stack"
-            });
-        },
-    );
-}
-
-/// `"Source"` for level 0, `"LOD 1"` and up for the rest — matching the names the
-/// processed meshes and the export carry.
-fn lod_label(level: usize) -> String {
-    if level == 0 {
-        "LOD 0 (full)".to_owned()
-    } else {
-        format!("LOD {level}")
-    }
 }
 
 fn segmented_mode_control(ui: &mut egui::Ui, ctx: &egui::Context, mode: &mut WorkspaceMode) {
