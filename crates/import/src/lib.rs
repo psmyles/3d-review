@@ -396,6 +396,8 @@ mod ffi {
                 // The source DCC's logical vertex count, not the per-corner
                 // expanded render count (invariant 5: faithful stats).
                 vertex_count: scene.source_vertex_count,
+                // Measured below once the whole model is assembled, like Draws.
+                gpu_vertex_count: 0,
                 uv_set_count: scene.uv_set_count as usize,
                 material_count: scene.material_count,
                 // Overwritten below from `material_draw_count` so the Draws stat
@@ -447,6 +449,10 @@ mod ffi {
         // The renderer groups triangles into one draw per distinct material slot;
         // report that count so Draws is the real draw-call count.
         model.stats.draw_count = model.material_draw_count();
+        // The asset's real GPU vertex cost (unique vertices per draw group) —
+        // the corner-expanded buffer built above is this viewer's internal
+        // layout and is deliberately not a reported stat.
+        model.stats.gpu_vertex_count = model.count_gpu_vertices();
 
         Ok(model)
     }

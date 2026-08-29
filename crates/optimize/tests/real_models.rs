@@ -568,3 +568,36 @@ fn indexing_preserves_every_triangle_of_the_source() {
         "the same triangles, over the same positions"
     );
 }
+
+/// The stats panel's "GPU Verts" (measured at import) and the Opt card's
+/// baseline (measured after the run's lossless index pass) are presented as the
+/// same figure, so they must *be* the same figure — a user who sees them
+/// disagree has no way to know which to trust.
+#[test]
+fn the_import_gpu_vertex_count_matches_the_opt_baseline() {
+    let Some(model) = fixture("SM_column04.fbx") else {
+        return;
+    };
+
+    assert!(
+        model.stats.gpu_vertex_count > 0 && model.stats.gpu_vertex_count < model.vertices.len(),
+        "the GPU cost is measured and is below the corner-split count: {} of {}",
+        model.stats.gpu_vertex_count,
+        model.vertices.len()
+    );
+
+    // An empty stack still measures: its baseline is the indexed mesh.
+    let result = run(&model, &OptStack::default());
+    assert!(result.lods.is_empty());
+    assert_eq!(
+        result.source.vertices, model.stats.gpu_vertex_count,
+        "the two GPU-vertex figures the UI shows must agree"
+    );
+    assert_eq!(result.source.triangles, model.indices.len() / 3);
+    assert!(
+        result.source_metrics.acmr < 3.0,
+        "the baseline ACMR describes the indexed asset, not the corner-split \
+         buffer (which is always exactly 3.0): {}",
+        result.source_metrics.acmr
+    );
+}

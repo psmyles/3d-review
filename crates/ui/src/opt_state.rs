@@ -115,6 +115,10 @@ pub struct OptResultView {
     /// Stats panel's figures, which are the file's DCC counts — import splits
     /// every face corner, so those two never described the same mesh and their
     /// difference read as the optimizer inventing vertices.
+    ///
+    /// Measured *after* the run's lossless index pass, so it equals the stats
+    /// panel's "GPU Verts" — the two figures the UI presents as the same thing
+    /// are computed to be the same thing.
     pub source: MeshCounts,
     /// The source mesh's own cache / overdraw / fetch figures. Shown on their own
     /// before anything is enabled — a run with an empty stack measures the mesh

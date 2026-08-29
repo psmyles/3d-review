@@ -179,7 +179,15 @@ pub struct TopologyFace {
 pub struct ModelStats {
     pub polygon_count: usize,
     pub triangle_count: usize,
+    /// The source file's own logical vertex count (control points), as the
+    /// artist's DCC reports it.
     pub vertex_count: usize,
+    /// What the mesh costs on the GPU: unique vertices per draw group, as
+    /// measured by [`ModelData::count_gpu_vertices`] — the buffer any engine
+    /// importer's lossless indexing would build. Neither the DCC count above nor
+    /// this viewer's internal corner-split buffer, which is an implementation
+    /// detail and reported nowhere.
+    pub gpu_vertex_count: usize,
     pub uv_set_count: usize,
     pub material_count: usize,
     pub draw_count: usize,
@@ -541,6 +549,98 @@ impl ModelData {
         seen.len()
     }
 
+    /// The number of vertices an engine's GPU vertex buffer would hold for this
+    /// mesh: unique attribute tuples per draw group, counted over the referenced
+    /// vertices.
+    ///
+    /// Import expands every face corner into its own vertex (FBX indexes
+    /// normals/UVs per corner, and the polygon-topology views need the corner-run
+    /// layout), so `vertices.len()` describes this viewer's internal buffer, not
+    /// the asset. What the asset actually *costs* is what any engine importer's
+    /// lossless indexing produces: one vertex per distinct
+    /// (position, normal, UVs, color) tuple, per (node, material) draw group —
+    /// duplicates across groups stay separate, exactly as separate draws keep
+    /// separate buffers. This is the figure the stats panel reports as the GPU
+    /// vertex count, and it matches the Opt workspace's post-index baseline.
+    ///
+    /// Equality is bit-exact after folding `-0.0` to `+0.0` and every NaN to one
+    /// pattern — the same canonical form the Opt weld uses, so the two counts
+    /// can never disagree. The tangent is deliberately excluded: it is derived
+    /// from position/normal/UV, so identical inputs carry identical tangents and
+    /// including it would only let floating-point noise split a vertex.
+    pub fn count_gpu_vertices(&self) -> usize {
+        use std::collections::HashSet;
+
+        let triangle_count = self.indices.len() / 3;
+        if triangle_count == 0 || self.vertices.is_empty() {
+            return 0;
+        }
+        let node_tags =
+            (self.triangles.node.len() == triangle_count).then_some(self.triangles.node.as_slice());
+        let material_tags = (self.triangles.material.len() == triangle_count)
+            .then_some(self.triangles.material.as_slice());
+
+        // Fold a component to the canonical bit pattern (`-0.0` → `+0.0`, any
+        // NaN → the one `f32::NAN`), so equality is by value, not encoding.
+        let canonical = |value: f32| -> [u8; 4] {
+            let folded = if value.is_nan() {
+                f32::NAN
+            } else if value == 0.0 {
+                0.0
+            } else {
+                value
+            };
+            folded.to_ne_bytes()
+        };
+
+        // A vertex index is keyed at most once per group; a group's set holds
+        // the distinct attribute tuples among them.
+        let mut seen: HashSet<(u32, u32, u32)> = HashSet::new();
+        let mut unique: HashSet<(u32, u32, Vec<u8>)> = HashSet::new();
+
+        for (triangle, corners) in self.indices.chunks_exact(3).enumerate() {
+            let node = node_tags.map_or(0, |tags| tags[triangle]);
+            let material = material_tags.map_or(0, |tags| tags[triangle]);
+            for &index in corners {
+                let Some(vertex) = self.vertices.get(index as usize) else {
+                    continue;
+                };
+                if !seen.insert((node, material, index)) {
+                    continue;
+                }
+                let mut key = Vec::with_capacity((12 + self.uv_channels.len() * 2) * 4);
+                for component in [vertex.position.x, vertex.position.y, vertex.position.z] {
+                    key.extend_from_slice(&canonical(component));
+                }
+                for component in [vertex.normal.x, vertex.normal.y, vertex.normal.z] {
+                    key.extend_from_slice(&canonical(component));
+                }
+                // Every UV set participates; a single-set model carries its UVs
+                // only on the vertex itself.
+                if self.uv_channels.is_empty() {
+                    key.extend_from_slice(&canonical(vertex.uv.x));
+                    key.extend_from_slice(&canonical(vertex.uv.y));
+                } else {
+                    for channel in &self.uv_channels {
+                        let uv = channel.get(index as usize).copied().unwrap_or_default();
+                        key.extend_from_slice(&canonical(uv.x));
+                        key.extend_from_slice(&canonical(uv.y));
+                    }
+                }
+                for component in [
+                    vertex.vertex_color.x,
+                    vertex.vertex_color.y,
+                    vertex.vertex_color.z,
+                    vertex.vertex_color.w,
+                ] {
+                    key.extend_from_slice(&canonical(component));
+                }
+                unique.insert((node, material, key));
+            }
+        }
+        unique.len()
+    }
+
     pub fn recompute_bounds(&mut self) {
         let mut bounds = Bounds::EMPTY;
 
@@ -739,6 +839,9 @@ pub fn demo_cube_model() -> ModelData {
             polygon_count: 6,
             triangle_count: 12,
             vertex_count: 24,
+            // Overwritten below by the measured count (each flat-shaded corner
+            // is genuinely unique, so it stays 24).
+            gpu_vertex_count: 0,
             uv_set_count: 1,
             material_count: 1,
             draw_count: 1,
@@ -755,6 +858,7 @@ pub fn demo_cube_model() -> ModelData {
         ..Default::default()
     };
     model.recompute_bounds();
+    model.stats.gpu_vertex_count = model.count_gpu_vertices();
     model
 }
 
@@ -1093,6 +1197,7 @@ mod tests {
                 polygon_count: 1,
                 triangle_count: 1,
                 vertex_count: 3,
+                gpu_vertex_count: 3,
                 uv_set_count: 1,
                 material_count: 0,
                 draw_count: 0,
@@ -1334,5 +1439,56 @@ mod tests {
         assert!(model.nodes[0].bone.is_none());
         assert!(model.skin.is_none());
         assert_eq!(model.stats.bone_count, 0);
+    }
+
+    /// Every corner of the flat-shaded demo cube is genuinely unique (shared
+    /// positions, but a different normal per face and different UVs per corner),
+    /// so its GPU cost equals its corner count.
+    #[test]
+    fn gpu_vertex_count_of_the_demo_cube_is_every_corner() {
+        let model = demo_cube_model();
+        assert_eq!(model.count_gpu_vertices(), 24);
+        assert_eq!(model.stats.gpu_vertex_count, 24);
+    }
+
+    /// Corner-split duplicates — identical in every attribute — collapse to one
+    /// GPU vertex, and `-0.0` counts as `0.0` (an indexer compares values, not
+    /// encodings).
+    #[test]
+    fn gpu_vertex_count_merges_bit_identical_corners() {
+        let mut model = demo_cube_model();
+        // Append exact copies of triangle 0's corners as three new vertices and
+        // a triangle over them: the mesh grows, its GPU cost must not.
+        let corners: Vec<Vertex> = model.indices[..3]
+            .iter()
+            .map(|&index| model.vertices[index as usize])
+            .collect();
+        let base = model.vertices.len() as u32;
+        model.vertices.extend(corners);
+        model.indices.extend_from_slice(&[base, base + 1, base + 2]);
+        model.triangles.to_face.push(0);
+        model.triangles.material.push(0);
+        model.triangles.node.push(0);
+
+        assert_eq!(model.count_gpu_vertices(), 24, "duplicates cost nothing");
+    }
+
+    /// A vertex shared by triangles of two materials is uploaded once per draw
+    /// group, exactly as the Opt pipeline's per-(node, material) partition keeps
+    /// it — the two counts must never disagree.
+    #[test]
+    fn gpu_vertex_count_keeps_material_boundaries_separate() {
+        let mut model = demo_cube_model();
+        assert_eq!(model.count_gpu_vertices(), 24);
+        // A quad face is two triangles sharing two corners. Splitting the pair
+        // across materials puts those shared corners on a draw-group boundary,
+        // and each group uploads its own copy — exactly as the Opt pipeline's
+        // per-(node, material) partition keeps them, so the counts can't drift.
+        model.triangles.material[1] = 1;
+        assert_eq!(
+            model.count_gpu_vertices(),
+            26,
+            "the two shared corners are uploaded once per group"
+        );
     }
 }

@@ -73,13 +73,14 @@ pub struct AnalysisMetrics {
     pub simplify_error: f32,
 }
 
-/// The size of a mesh as the GPU sees it: what is actually in the buffers.
+/// The size of a mesh as the GPU sees it: what an engine's vertex/index buffers
+/// would actually hold.
 ///
 /// Not the same thing as [`ModelStats::vertex_count`] for the *source*, which
-/// carries the file's own DCC count (invariant 5) — a number import never
-/// materialises, since it splits every face corner. The processed mesh can only
-/// be compared against what the source really uploads, so a run measures that
-/// too, the same way, and the overlay's deltas subtract like from like.
+/// carries the file's own DCC count (invariant 5), and not the corner-split
+/// buffer either — see the field docs on [`ProcessedResult::source`]. A run
+/// measures the source and each level the same way, so the overlay's deltas
+/// subtract like from like.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MeshCounts {
     pub triangles: usize,
@@ -87,10 +88,10 @@ pub struct MeshCounts {
 }
 
 impl MeshCounts {
-    fn of(model: &ModelData) -> Self {
+    fn of_submeshes(submeshes: &[Submesh]) -> Self {
         Self {
-            triangles: model.indices.len() / 3,
-            vertices: model.vertices.len(),
+            triangles: submeshes.iter().map(Submesh::triangle_count).sum(),
+            vertices: submeshes.iter().map(|piece| piece.vertices.len()).sum(),
         }
     }
 }
@@ -101,11 +102,19 @@ pub struct ProcessedResult {
     /// Level 0 first, then each configured LOD level in order. Never empty on
     /// success.
     pub lods: Vec<ProcessedLod>,
-    /// The input mesh's own buffer counts, the baseline every level's change is
-    /// measured against.
+    /// The input mesh's counts **after the lossless index pass** — the baseline
+    /// every level's change is measured against.
+    ///
+    /// Deliberately not the raw corner-split buffer import hands over: every
+    /// engine importer performs the same lossless indexing, so quoting changes
+    /// against the un-indexed mesh would credit the user's operations with an
+    /// "-82%" any cooker gets for free, and describe a cost the asset never has.
     pub source: MeshCounts,
-    /// The input mesh's own cache / overdraw / fetch figures, measured exactly as
-    /// each level's are so the overlay can show what an operation did to them.
+    /// The indexed input mesh's own cache / overdraw / fetch figures, measured
+    /// exactly as each level's are so the overlay can show what an operation did
+    /// to them. Same baseline rule as [`Self::source`]: the raw corner-split
+    /// buffer always measures ACMR 3.0 (no vertex is ever shared), which is a
+    /// property of the import path, not of the asset.
     ///
     /// Measured on every run even though the source never changes between them:
     /// caching it would mean carrying a keyed baseline across the thread boundary
@@ -139,20 +148,6 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
         return Err(OptError::EmptyMesh);
     }
 
-    // Nothing enabled: no mesh is produced, but the source is still measured.
-    // The workspace shows those figures as the baseline — a user reads the
-    // mesh's overdraw and cache behaviour *before* deciding what to add, and
-    // every later run's change is quoted against them.
-    if !input.stack.ops.iter().any(|op| op.enabled) {
-        return Ok(ProcessedResult {
-            lods: Vec::new(),
-            source: MeshCounts::of(input.model),
-            source_metrics: measure(input.model, input.render_vertex_size, 0.0),
-            warnings: Vec::new(),
-            elapsed: started.elapsed(),
-        });
-    }
-
     let mut warnings = Warnings::default();
     if input.model.skin.is_some() {
         warnings.push(
@@ -167,6 +162,26 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
     }
 
     index_mesh(&mut submeshes, input.stack, &mut warnings);
+
+    // The baseline is the mesh as it stands *now* — partitioned and losslessly
+    // indexed, before any of the user's operations touch it (they mutate the
+    // submeshes in place below). See the field docs on [`ProcessedResult`] for
+    // why the raw corner-split buffer would be the wrong thing to quote against.
+    let source = MeshCounts::of_submeshes(&submeshes);
+    let source_metrics = measure_submeshes(&submeshes, input.render_vertex_size, 0.0);
+
+    // Nothing enabled: no mesh is produced, but the baseline above still comes
+    // back — a user reads the mesh's overdraw and cache behaviour *before*
+    // deciding what to add, and every later run's change is quoted against it.
+    if !input.stack.ops.iter().any(|op| op.enabled) {
+        return Ok(ProcessedResult {
+            lods: Vec::new(),
+            source,
+            source_metrics,
+            warnings: warnings.into_vec(),
+            elapsed: started.elapsed(),
+        });
+    }
 
     // Operations split around the LOD operation: those above it shape the mesh
     // every level starts from, those below it tidy up each generated level.
@@ -266,8 +281,8 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
 
     Ok(ProcessedResult {
         lods,
-        source: MeshCounts::of(input.model),
-        source_metrics: measure(input.model, input.render_vertex_size, 0.0),
+        source,
+        source_metrics,
         warnings: warnings.into_vec(),
         elapsed: started.elapsed(),
     })
@@ -544,6 +559,7 @@ fn measured_stats(model: &ModelData, source: &ModelData) -> ModelStats {
         polygon_count: triangle_count,
         triangle_count,
         vertex_count: model.vertices.len(),
+        gpu_vertex_count: model.count_gpu_vertices(),
         uv_set_count: source.stats.uv_set_count,
         material_count: model.materials.len(),
         draw_count: model.material_draw_count(),
@@ -561,12 +577,22 @@ fn measured_stats(model: &ModelData, source: &ModelData) -> ModelStats {
 /// ratios would let a ten-triangle part outweigh a hundred-thousand-triangle one
 /// and report a number the mesh never exhibits.
 fn measure(model: &ModelData, render_vertex_size: usize, simplify_error: f32) -> AnalysisMetrics {
+    let (submeshes, _) = submesh::partition(model);
+    measure_submeshes(&submeshes, render_vertex_size, simplify_error)
+}
+
+/// [`measure`] over submeshes already in hand — the shape the pipeline holds
+/// mid-run, so the baseline can be measured without assembling a `ModelData`.
+fn measure_submeshes(
+    submeshes: &[Submesh],
+    render_vertex_size: usize,
+    simplify_error: f32,
+) -> AnalysisMetrics {
     let _z = crate::prof::zone!("Measure Level");
 
-    let (submeshes, _) = submesh::partition(model);
     let mut counters = AnalysisCounters::default();
 
-    for piece in &submeshes {
+    for piece in submeshes {
         if piece.is_empty() {
             continue;
         }

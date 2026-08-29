@@ -3,7 +3,7 @@
 //! Every value shown is a real measured number carried through import in
 //! [`review_model::ModelStats`] (invariant 5) — never a placeholder.
 
-use crate::state::{TexturePoolEntry, UiState, WorkspaceMode};
+use crate::state::{TexturePoolEntry, UiState};
 use crate::theme::{color, font, size};
 use crate::widgets::mono_label;
 
@@ -66,14 +66,25 @@ pub(crate) fn stats_grid(ui: &mut egui::Ui, state: &UiState) {
     stat_row(ui, "Polys", &stats.polygon_count.to_string());
     stat_row(ui, "Tris", &stats.triangle_count.to_string());
     stat_row(ui, "Verts", &stats.vertex_count.to_string());
-    // `Verts` above is the file's own count (invariant 5), which is not what the
-    // GPU uploads: import splits every face corner, so the buffer is far larger.
-    // The Opt workspace optimizes *that* mesh and its processed card counts it,
-    // so in Opt the baseline is shown here rather than left to be inferred.
-    if state.mode == WorkspaceMode::Opt
-        && let Some(result) = state.opt.result.as_ref()
-    {
-        stat_row(ui, "Mesh Verts", &result.source.vertices.to_string());
+    // `Verts` above is the count the artist's DCC reports; `GPU Verts` is what
+    // the asset costs an engine — unique vertices per draw group, measured at
+    // import. (This viewer's own corner-split upload is an internal layout and
+    // deliberately not a stat.) The gap between the two is the split overhead:
+    // extra vertices the asset's hard edges and UV seams cost, which is exactly
+    // the kind of figure an audit tool exists to flag — a healthy game asset
+    // reads a few percent, a scan with per-face normals reads +500%.
+    if stats.gpu_vertex_count > 0 {
+        stat_row(ui, "GPU Verts", &stats.gpu_vertex_count.to_string()).on_hover_text(
+            "Unique vertices an engine's importer would upload              (splits kept only at hard edges and UV seams)",
+        );
+        if stats.vertex_count > 0 {
+            let overhead = (stats.gpu_vertex_count as f32 - stats.vertex_count as f32)
+                / stats.vertex_count as f32
+                * 100.0;
+            stat_row(ui, "Vtx Splits", &format!("{overhead:+.0}%")).on_hover_text(
+                "GPU vertices vs authored vertices: the cost of this asset's                  hard edges and UV seams. A few percent is healthy; hundreds                  means per-face normals or heavily split UVs.",
+            );
+        }
     }
     stat_row(ui, "UV Sets", &stats.uv_set_count.to_string());
     // Skeletal models only: an unrigged mesh shouldn't carry a permanent "0".
@@ -100,10 +111,10 @@ pub(crate) fn processed_stats_grid(ui: &mut egui::Ui, state: &UiState) {
     let Some(result) = state.opt.result.as_ref() else {
         return;
     };
-    // Measured off the source mesh by the same run — not the Model Stats panel's
-    // figures, which are the file's own DCC counts. Import splits every face
-    // corner, so the two never described the same mesh: subtracting them made a
-    // weld that removed five vertices in six read as "+501%".
+    // Measured off the source mesh by the same run, *after* its lossless index
+    // pass — the buffer an engine importer would build. Quoting against the
+    // DCC count or the viewer's corner-split upload made honest operations read
+    // as inventing or deleting most of the mesh.
     let source = result.source;
     let source_metrics = result.source_metrics;
     let level = state.opt.active_level();
@@ -247,11 +258,12 @@ fn source_unit_label(meters_per_unit: f32) -> String {
 
 /// One stats row: label hugs the left edge, value right-aligns against the
 /// panel's right edge so the numeric column reads as a tidy block.
-fn stat_row(ui: &mut egui::Ui, label: &str, value: &str) {
+fn stat_row(ui: &mut egui::Ui, label: &str, value: &str) -> egui::Response {
     ui.horizontal(|ui| {
         ui.label(mono_label(label, font::STATS, color::TEXT_MUTED));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(mono_label(value, font::STATS, color::TEXT_VALUE));
         });
-    });
+    })
+    .response
 }

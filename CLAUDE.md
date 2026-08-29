@@ -51,9 +51,12 @@ roadmap), and `TODO.md` (running notes).
 5. **Faithful stats.** The Model Stats panel reads source DCC counts carried
    through import in `ModelStats` (original polygon/vertex counts), **never**
    post-triangulation render counts. Every stat shown must be a real measured
-   value. `stats_grid` shows only measured values (Draws/Polys/Tris/Verts/UV
-   Sets/FPS); `fps` is fed from the `app` render loop. Don't reintroduce
-   placeholder rows.
+   value. `stats_grid` shows only measured values (Draws/Polys/Tris/Verts/GPU
+   Verts/Vtx Splits/UV Sets/FPS); `fps` is fed from the `app` render loop. Don't
+   reintroduce placeholder rows. **The viewer's corner-split vertex buffer is an
+   internal layout, not a stat**: the panel reports the DCC count (`vertex_count`)
+   and the engine cost (`gpu_vertex_count`, unique vertices per draw group via
+   `ModelData::count_gpu_vertices`); the corner count is surfaced nowhere.
 6. **The redraw loop lives in `app`.** Redraw is driven by `winit` events and
    active camera animation (redraw-on-demand), never by UI state mutation.
    Continuous redraw only while a camera transition or interaction is live.
@@ -522,7 +525,12 @@ when its fixture or a vendored tree is absent.
   unit rather than fixing one, conventionally centimeters, while import normalizes
   every file to meters — so the writer sets `UnitScaleFactor = 100`. Without it the
   geometry reads back exactly 100× too small, which no error reports.
-- **Every Opt run begins with a lossless index pass, and must.** Import splits
+- **Every Opt run begins with a lossless index pass, and must — and the run's
+  baseline (`ProcessedResult::source`/`source_metrics`) is measured *after* it.**
+  Quoting changes against the corner-split buffer credited the user's operations
+  with an "-82%" any engine cooker gets for free, and made the baseline ACMR a
+  meaningless 3.0; the indexed baseline also equals the stats panel's `GPU Verts`
+  (a `real_models` test pins the two figures equal). Import splits
   each face corner into its own vertex, so a mesh reaches `optimize` with *no*
   shared vertices at all (a real 10006-triangle asset arrives as 30018 vertices).
   Every meshoptimizer operation works through the index buffer, so on that mesh

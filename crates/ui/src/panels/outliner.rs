@@ -1075,6 +1075,7 @@ mod tests {
                 node("lamp", Some(2), NodeKind::Light),
             ],
             stats: ModelStats {
+                gpu_vertex_count: 0,
                 bone_count: 2,
                 ..Default::default()
             },
