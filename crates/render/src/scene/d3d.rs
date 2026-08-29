@@ -675,75 +675,112 @@ impl SceneGpu {
         material_states: &[MaterialState],
         material_revision: u64,
     ) -> windows::core::Result<()> {
-        let (width, height) = gpu.size();
-
-        let Some(processed) = frame.processed else {
-            // Nothing processed yet: this is just the 3D scene.
-            self.activate(SlotId::Source);
-            self.release_ghost_wireframes();
-            return self.render(
-                gpu,
-                &frame.base,
-                material_states,
-                material_revision,
-                frame.source_camera,
-            );
-        };
+        let size = gpu.size();
 
         match frame.view {
-            OptView::Overlay { ghost, swap } => self.render_overlay(
-                gpu,
-                frame,
-                processed,
-                material_states,
-                material_revision,
-                ghost,
-                swap,
-                (width, height),
-            ),
-            OptView::Split => {
-                // No ghost is drawn in the split view, so its buffers go
-                // (invariant 3).
-                self.release_ghost_wireframes();
-                // Each half renders at half width. An odd backbuffer gives the
-                // right half the leftover column so no strip is left unpainted;
-                // the sub-pixel stretch that implies is invisible, whereas an
-                // unpainted column showing the previous frame is not.
-                let half = (width / 2).max(1);
-                let target = (half, height);
-                // Each view is half as wide as the window, so its camera's aspect
-                // has to say so — `app` set it from the whole window, which would
-                // stretch both halves horizontally. The renderer owns the split
-                // geometry, so it owns this correction.
-                let aspect = half as f32 / height.max(1) as f32;
-                let mut source_camera = frame.source_camera;
-                source_camera.aspect_ratio = aspect;
-                let mut processed_camera = frame.processed_camera;
-                processed_camera.aspect_ratio = aspect;
-
-                self.activate(SlotId::Source);
-                self.sync_frame(gpu, &frame.base, material_states, material_revision, target)?;
-                let source_gtao = self.gtao_active(&frame.base);
-                // One profiler frame spans both halves. Its per-zone timestamp
-                // slots are fixed, so the second half's overwrite the first's and
-                // the reported scene/composite times describe the right-hand view
-                // — accurate for what it measures, just not the whole frame.
-                self.begin_gpu_frame(gpu, source_gtao);
-                // Deliberately not `?`: an error here must still close the
-                // profiler frame below, or its ring slot stays pending forever.
-                let left = self.record_view(
+            // The overlay needs two meshes to have anything to overlay; without a
+            // processed one it is simply the 3D scene.
+            OptView::Overlay { ghost, swap } => match frame.processed {
+                Some(processed) => self.render_overlay(
                     gpu,
-                    &frame.base,
-                    source_camera,
-                    source_gtao,
-                    BackbufferRect {
-                        x: 0,
-                        y: 0,
-                        width: half,
-                        height,
-                    },
-                );
+                    frame,
+                    processed,
+                    material_states,
+                    material_revision,
+                    ghost,
+                    swap,
+                    size,
+                ),
+                None => {
+                    self.activate(SlotId::Source);
+                    self.release_ghost_wireframes();
+                    self.render(
+                        gpu,
+                        &frame.base,
+                        material_states,
+                        material_revision,
+                        frame.source_camera,
+                    )
+                }
+            },
+            // The split always draws two views. With nothing processed yet both
+            // show the source: the layout the user picked is the layout they get,
+            // and the right-hand view fills in as soon as a run lands.
+            OptView::Split => self.render_split(gpu, frame, material_states, material_revision),
+        }
+    }
 
+    /// The side-by-side comparison: two views of the same scene, laid out inside
+    /// the chrome-free viewport so the divider falls where the user sees it fall.
+    fn render_split(
+        &mut self,
+        gpu: &Gpu,
+        frame: &OptSceneFrame<'_>,
+        material_states: &[MaterialState],
+        material_revision: u64,
+    ) -> windows::core::Result<()> {
+        // No ghost is drawn in the split view, so its buffers go (invariant 3).
+        self.release_ghost_wireframes();
+
+        // The two composites below cover only the chrome-free rect, and a
+        // flip-model swapchain hands back a backbuffer whose contents are
+        // undefined — so define them. The chrome is drawn over this, and painting
+        // it black costs one clear rather than a third composite.
+        gpu.clear_backbuffer([0.0, 0.0, 0.0, 1.0]);
+
+        let view = frame.viewport;
+        let height = view.height.max(1);
+        // Each half renders at half the viewport's width. An odd width gives the
+        // right half the leftover column so no strip is left unpainted; the
+        // sub-pixel stretch that implies is invisible, whereas an unpainted
+        // column showing the previous frame is not.
+        let half = (view.width / 2).max(1);
+        let target = (half, height);
+        // Each view is half as wide as the area it is drawn into, so its camera's
+        // aspect has to say so — `app` set it from the whole window, which would
+        // stretch both halves horizontally. The renderer owns the split geometry,
+        // so it owns this correction.
+        let aspect = half as f32 / height as f32;
+        // Both views share one camera unless the user has unlinked them, and the
+        // aspect correction is the same for both: the two halves are the same
+        // size, so anything that differs between them is a difference in the
+        // mesh, which is the entire point of the comparison.
+        let mut source_camera = frame.source_camera;
+        source_camera.aspect_ratio = aspect;
+        let mut processed_camera = frame.processed_camera;
+        processed_camera.aspect_ratio = aspect;
+
+        self.activate(SlotId::Source);
+        self.sync_frame(gpu, &frame.base, material_states, material_revision, target)?;
+        let source_gtao = self.gtao_active(&frame.base);
+        // One profiler frame spans both halves. Its per-zone timestamp slots are
+        // fixed, so the second half's overwrite the first's and the reported
+        // scene/composite times describe the right-hand view — accurate for what
+        // it measures, just not the whole frame.
+        self.begin_gpu_frame(gpu, source_gtao);
+        // Deliberately not `?`: an error here must still close the profiler frame
+        // below, or its ring slot stays pending forever.
+        let left = self.record_view(
+            gpu,
+            &frame.base,
+            source_camera,
+            source_gtao,
+            BackbufferRect {
+                x: view.x,
+                y: view.y,
+                width: half,
+                height,
+            },
+        );
+
+        let right_rect = BackbufferRect {
+            x: view.x + half,
+            y: view.y,
+            width: view.width.saturating_sub(half).max(1),
+            height,
+        };
+        let right = match frame.processed {
+            Some(processed) => {
                 let processed_frame = frame.base.with_model(processed.model, processed.revision);
                 self.activate(SlotId::Processed);
                 let synced = self.sync_frame(
@@ -754,24 +791,22 @@ impl SceneGpu {
                     target,
                 );
                 let processed_gtao = self.gtao_active(&processed_frame);
-                let right = synced.and_then(|()| {
+                synced.and_then(|()| {
                     self.record_view(
                         gpu,
                         &processed_frame,
                         processed_camera,
                         processed_gtao,
-                        BackbufferRect {
-                            x: half,
-                            y: 0,
-                            width: width.saturating_sub(half).max(1),
-                            height,
-                        },
+                        right_rect,
                     )
-                });
-                self.end_gpu_frame(gpu);
-                left.and(right)
+                })
             }
-        }
+            // Nothing processed: the right half is the same scene again, drawn
+            // from the slot already active — no swap, no second upload.
+            None => self.record_view(gpu, &frame.base, processed_camera, source_gtao, right_rect),
+        };
+        self.end_gpu_frame(gpu);
+        left.and(right)
     }
 
     /// The single-view comparison: one mesh shaded, the other over it as a ghost.

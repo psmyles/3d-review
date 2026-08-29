@@ -658,6 +658,14 @@ pub struct UiState {
     /// the D3D11 Tex draw (migration Phase 4). `None` until the Tex viewport has been
     /// laid out at least once.
     pub texture_canvas: Option<egui::Rect>,
+    /// The chrome-free scene area (egui points): the window minus the toolbar,
+    /// the status bar and whichever side panels are open. Written by
+    /// [`crate::overlay`] each scene frame and read by `app`, which converts it
+    /// to physical pixels for the Opt split — the divider has to land in the
+    /// middle of what the user can see, not the middle of the window. `None`
+    /// until the chrome has been laid out once, which the renderer reads as
+    /// "the whole backbuffer".
+    pub scene_viewport: Option<egui::Rect>,
     pub wireframe: WireframePanelState,
     pub bounding_box: BoundingBoxPanelState,
     pub face_normals: NormalPanelState,
@@ -852,6 +860,7 @@ impl Default for UiState {
             uv_shading_mode: UvShadingMode::default(),
             texture_view: TextureViewState::default(),
             texture_canvas: None,
+            scene_viewport: None,
             wireframe: WireframePanelState::default(),
             bounding_box: BoundingBoxPanelState::default(),
             face_normals: NormalPanelState {

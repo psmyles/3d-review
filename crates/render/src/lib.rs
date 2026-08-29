@@ -633,14 +633,49 @@ pub enum GhostStyle {
     Wireframe,
 }
 
+/// The chrome-free area of the window, in physical pixels: the backbuffer minus
+/// the toolbar, the status bar and whichever side panels are open.
+///
+/// Every other workspace renders across the whole backbuffer and lets the opaque
+/// chrome cover what it must; the Opt split can't, because it has to *divide*
+/// what the user can see. Splitting the backbuffer instead puts the divider
+/// wherever the window's centre happens to fall — off-centre in the visible area
+/// the moment a side panel is open, and with each half's content sitting at a
+/// different offset from the divider, which reads as the two views disagreeing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SceneViewport {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl SceneViewport {
+    /// The whole backbuffer — the fallback when the chrome hasn't been laid out
+    /// yet (the first frame) or covers nothing.
+    pub fn full(size: (u32, u32)) -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            width: size.0,
+            height: size.1,
+        }
+    }
+}
+
 /// Per-frame inputs for the Opt workspace's comparison render.
 pub struct OptSceneFrame<'a> {
     /// The source mesh and every shared setting; [`SceneFrame::with_model`]
     /// retargets it at the processed mesh.
     pub base: SceneFrame<'a>,
-    /// `None` until a processing run has produced something, in which case the
-    /// workspace simply draws the source scene.
+    /// `None` until a processing run has produced something. The split still
+    /// draws two views — both of the source — so the layout the user chose is
+    /// the layout they get, whether or not the stack has anything in it yet.
     pub processed: Option<ProcessedModelRef<'a>>,
+    /// Where the split lays its two views out. Ignored by
+    /// [`OptView::Overlay`], which draws one view across the whole backbuffer
+    /// exactly as the 3D workspace does.
+    pub viewport: SceneViewport,
     pub view: OptView,
     /// Camera for the source view. Also the camera for both meshes in
     /// [`OptView::Overlay`], where they share one space.

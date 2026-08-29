@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use review_model::{ModelData, SceneBvh};
 use review_render::{
     ActiveMaterial, CameraProjection, OptSceneFrame, OptView, ProcessedModelRef, Renderer,
-    SceneFrame, TexBackground, TexImage,
+    SceneFrame, SceneViewport, TexBackground, TexImage,
 };
 use review_ui::{
     ComparisonSide, OptLayout, TextureBackground, UiOutput, WorkspaceMode, draw_overlay, theme,
@@ -194,6 +194,16 @@ impl App {
         let opt_result = opt_revision
             .and(self.opt.as_ref())
             .and_then(|opt| opt.processed.clone());
+        // The chrome-free area the split lays its two views out in, in physical
+        // pixels. The UI measures it in points during the pass above; without it
+        // (the first frame, before the chrome has been laid out) the whole
+        // backbuffer stands in.
+        let gpu_size = self.gpu.as_ref().map_or((1, 1), review_render::Gpu::size);
+        let opt_viewport = self
+            .ui
+            .scene_viewport
+            .map(|rect| scene_viewport_px(rect, full_output.pixels_per_point, gpu_size))
+            .unwrap_or_else(|| SceneViewport::full(gpu_size));
         let active_lod = self.ui.opt.active_lod;
         let opt_layout = self.ui.opt.layout;
         let opt_ghost = self.ui.opt.ghost_style;
@@ -267,6 +277,7 @@ impl App {
                             &OptSceneFrame {
                                 base: scene_frame,
                                 processed,
+                                viewport: opt_viewport,
                                 view: match opt_layout {
                                     OptLayout::Split => OptView::Split,
                                     OptLayout::Overlay => OptView::Overlay {
@@ -364,5 +375,52 @@ impl App {
             size_px: [size_pts.x * ppp, size_pts.y * ppp],
         };
         (Some(tex_image), background)
+    }
+}
+
+/// Convert the UI's measured scene area (egui points) into the renderer's
+/// physical-pixel [`SceneViewport`], clamped to the backbuffer.
+///
+/// The clamp is not defensive tidiness: the rect is measured during the egui
+/// pass, so a resize landing between that and the draw would otherwise hand the
+/// rasterizer a viewport reaching past the backbuffer.
+fn scene_viewport_px(rect: egui::Rect, ppp: f32, size: (u32, u32)) -> SceneViewport {
+    let (width, height) = size;
+    let left = (rect.left() * ppp).round().max(0.0) as u32;
+    let top = (rect.top() * ppp).round().max(0.0) as u32;
+    let right = (rect.right() * ppp).round().max(0.0) as u32;
+    let bottom = (rect.bottom() * ppp).round().max(0.0) as u32;
+    let x = left.min(width.saturating_sub(1));
+    let y = top.min(height.saturating_sub(1));
+    SceneViewport {
+        x,
+        y,
+        width: right.clamp(x + 1, width) - x,
+        height: bottom.clamp(y + 1, height) - y,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scene_viewport_px;
+
+    /// The split's divider has to land in the middle of what the user can see,
+    /// so an open side panel must move the rect, not just narrow it.
+    #[test]
+    fn the_scene_rect_converts_to_pixels_at_scale() {
+        let rect = egui::Rect::from_min_max(egui::pos2(100.0, 20.0), egui::pos2(500.0, 300.0));
+        let view = scene_viewport_px(rect, 2.0, (1200, 800));
+        assert_eq!((view.x, view.y), (200, 40));
+        assert_eq!((view.width, view.height), (800, 560));
+    }
+
+    /// A rect measured before a shrinking resize must not reach past the
+    /// backbuffer it is about to be rasterized into.
+    #[test]
+    fn an_oversized_rect_is_clamped_to_the_backbuffer() {
+        let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(4000.0, 3000.0));
+        let view = scene_viewport_px(rect, 1.0, (1280, 720));
+        assert_eq!((view.x, view.y), (0, 0));
+        assert_eq!((view.width, view.height), (1280, 720));
     }
 }

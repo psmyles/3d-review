@@ -5,9 +5,9 @@
 use review_model::{ModelData, SceneBvh};
 use review_render::{OrbitCamera, Selection};
 
-use crate::opt_state::OptIntent;
+use crate::opt_state::{OptIntent, OptLayout};
 use crate::state::{OptionPanel, UiOutput, UiState, WorkspaceMode, sync_debug_state};
-use crate::theme::{self, size};
+use crate::theme::{self, color, size};
 use crate::{dimensions, gizmo, help, panels, stats, status_bar, texture_view, toolbar};
 
 /// Draw the full egui overlay and return the intents emitted this frame. `model`
@@ -70,6 +70,11 @@ pub fn draw_overlay(
             ),
         );
 
+        // `app` reads this back to lay the Opt split out inside the area the user
+        // can actually see (the renderer's `SceneViewport`).
+        state.scene_viewport = Some(viewport);
+        draw_split_divider(ctx, state, viewport);
+
         // Bounding-box dimension labels sit on the viewport (under the chrome).
         // The measured box is resolved here (cached for the "visible only" scan)
         // so the overlay never redoes the O(triangle) bounds walk per frame.
@@ -116,6 +121,26 @@ pub fn draw_overlay(
     help::draw_help_overlay(ctx, state);
 
     output
+}
+
+/// The line between the Opt split's two views. Drawn on egui's background layer
+/// (so the stats cards and option windows still float over it) in the same
+/// hairline the chrome panels are edged with, so the divider reads as part of
+/// the frame rather than as something in the scene.
+fn draw_split_divider(ctx: &egui::Context, state: &UiState, viewport: egui::Rect) {
+    if state.mode != WorkspaceMode::Opt || state.opt.layout != OptLayout::Split {
+        return;
+    }
+    // The renderer splits the same rect the same way (`SceneViewport`), so the
+    // line lands exactly on the seam between the two composites.
+    let x = viewport.center().x;
+    ctx.layer_painter(egui::LayerId::background()).line_segment(
+        [
+            egui::pos2(x, viewport.top()),
+            egui::pos2(x, viewport.bottom()),
+        ],
+        egui::Stroke::new(size::HAIRLINE, color::DIVIDER),
+    );
 }
 
 /// Draw every open tool option panel as its own native `egui::Window`
