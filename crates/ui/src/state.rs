@@ -18,32 +18,91 @@ use review_render::{
     ViewportBackground, selection_bounds,
 };
 
+use crate::opt_state::{OptIntent, OptUiState};
 use crate::theme;
 
 /// Default checker repeats across the 0..1 UV range for a fresh / reset panel.
 pub(crate) const DEFAULT_CHECKER_TILING: u32 = 4;
-/// Inclusive checker-tiling range enforced by the UV-checker panel.
-pub(crate) const CHECKER_TILING_MIN: u32 = 1;
-pub(crate) const CHECKER_TILING_MAX: u32 = 16;
 /// Default length for the face/vertex normal-line views, as a fraction of the
 /// model's largest bounding extent (see `debug_normal_length` in `review-render`).
 pub(crate) const DEFAULT_NORMAL_LENGTH: f32 = 0.03;
-/// Inclusive normal-length range: 0.1%–10% of the model's largest bounding extent.
-/// Inclusive range for the skeleton overlay's size multiplier, and its default.
-/// A wide band because rig density varies enormously — a hand rig needs thinner
-/// bones than a vehicle's.
-pub(crate) const SKELETON_SCALE_MIN: f32 = 0.2;
-pub(crate) const SKELETON_SCALE_MAX: f32 = 4.0;
+/// Default multiplier for the skeleton overlay's bone size.
 pub(crate) const DEFAULT_SKELETON_SCALE: f32 = 1.0;
 
-pub(crate) const NORMAL_LENGTH_MIN: f32 = 0.001;
-pub(crate) const NORMAL_LENGTH_MAX: f32 = 0.10;
+/// The inclusive ranges the panels' sliders enforce.
+///
+/// One home, one scheme: `<SUBJECT>_<PROPERTY>_{MIN,MAX}`, so a reader knows both
+/// where an existing range lives and where the next one goes — panel-private
+/// copies drifted apart and collided (two different `INTENSITY_MAX`es). A range
+/// stays inline at its slider only when it is a *definition* rather than a choice:
+/// a 0..1 unit factor like roughness or an alpha cutoff has no other range to
+/// pick.
+pub(crate) mod range {
+    /// Checker repeats across the 0..1 UV range.
+    pub const CHECKER_TILING_MIN: u32 = 1;
+    pub const CHECKER_TILING_MAX: u32 = 16;
+    /// Normal-line length: 0.1%–10% of the model's largest bounding extent.
+    pub const NORMAL_LENGTH_MIN: f32 = 0.001;
+    pub const NORMAL_LENGTH_MAX: f32 = 0.10;
+    /// The skeleton overlay's size multiplier. A wide band because rig density
+    /// varies enormously — a hand rig needs thinner bones than a vehicle's.
+    pub const SKELETON_SCALE_MIN: f32 = 0.2;
+    pub const SKELETON_SCALE_MAX: f32 = 4.0;
+
+    /// Ambient occlusion. Radius is a fraction of the framed model's bounding
+    /// sphere; intensity is the power on the GTAO visibility; thickness is the
+    /// see-through heuristic.
+    pub const AO_RADIUS_MIN: f32 = 0.02;
+    pub const AO_RADIUS_MAX: f32 = 1.0;
+    pub const AO_INTENSITY_MIN: f32 = 0.0;
+    pub const AO_INTENSITY_MAX: f32 = 2.0;
+    pub const AO_THICKNESS_MIN: f32 = 0.0;
+    pub const AO_THICKNESS_MAX: f32 = 1.0;
+
+    /// Image-based lighting: the environment's intensity multiplier and its yaw
+    /// (degrees; 0 = as-authored).
+    pub const ENV_INTENSITY_MIN: f32 = 0.0;
+    pub const ENV_INTENSITY_MAX: f32 = 3.0;
+    pub const ENV_ROTATION_MIN: f32 = 0.0;
+    pub const ENV_ROTATION_MAX: f32 = 360.0;
+
+    /// Opt operations. The weld tolerance and the prune size threshold are both
+    /// fractions of the mesh's overall size; the attribute weights scale a
+    /// simplifier's per-attribute error; the overdraw threshold is the vertex-cache
+    /// efficiency it may give up (1.0 = none); the LOD rows are the per-level
+    /// triangle target and error limit.
+    pub const WELD_TOLERANCE_MIN: f32 = 0.0;
+    pub const WELD_TOLERANCE_MAX: f32 = 0.1;
+    pub const PRUNE_THRESHOLD_MIN: f32 = 0.0;
+    pub const PRUNE_THRESHOLD_MAX: f32 = 0.5;
+    pub const ATTRIBUTE_WEIGHT_MIN: f32 = 0.0;
+    pub const ATTRIBUTE_WEIGHT_MAX: f32 = 4.0;
+    pub const OVERDRAW_THRESHOLD_MIN: f32 = 1.0;
+    pub const OVERDRAW_THRESHOLD_MAX: f32 = 3.0;
+    pub const LOD_RATIO_MIN: f32 = 0.01;
+    pub const LOD_RATIO_MAX: f32 = 1.0;
+    pub const LOD_ERROR_MIN: f32 = 0.0;
+    pub const LOD_ERROR_MAX: f32 = 1.0;
+}
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum WorkspaceMode {
     #[default]
     ThreeD,
     Uv,
     Texture,
+    /// Mesh optimization: the same 3D scene chrome, plus the operation stack and
+    /// a source-vs-processed comparison viewport.
+    Opt,
+}
+
+impl WorkspaceMode {
+    /// True for the workspaces that draw the 3D scene and therefore share its
+    /// chrome — side panels, option windows, the axis gizmo, the stats overlay,
+    /// and every shading / diagnostic control. Opt is a 3D workspace with extra
+    /// tooling, not a separate kind of viewport.
+    pub fn is_scene(self) -> bool {
+        matches!(self, WorkspaceMode::ThreeD | WorkspaceMode::Opt)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,7 +194,7 @@ impl TexturePoolEntry {
             .extension()
             .and_then(|ext| ext.to_str())
             .map(|ext| ext.to_ascii_uppercase())
-            .unwrap_or_else(|| "—".to_owned())
+            .unwrap_or_else(|| "-".to_owned())
     }
 }
 
@@ -271,7 +330,7 @@ pub enum TexViewRequest {
 }
 
 /// An in-flight ease of the Tex view's pan/zoom toward a target, run over
-/// [`crate::theme::size::TEXTURE_ZOOM_ANIM_SECS`]. `start_time` is egui's input
+/// [`crate::theme::motion::TEXTURE_ZOOM_ANIM_SECS`]. `start_time` is egui's input
 /// time (monotonic seconds) at the ease's start.
 #[derive(Debug, Clone, Copy)]
 pub struct TexViewTransition {
@@ -339,6 +398,14 @@ pub struct UiOutput {
     /// slider handle or a color-picker). `app` uses it to coalesce a continuous
     /// drag into a single undo step instead of one per intermediate value.
     pub material_edit_active: bool,
+    /// An Opt action `app` must carry out this frame (export / preset IO). The
+    /// stack itself is edited in place on [`UiState::opt`]; only the actions that
+    /// reach outside the app travel as an intent.
+    pub opt: Option<OptIntent>,
+    /// Whether an Opt parameter widget is being actively dragged — the same
+    /// drag-coalescing hint as [`UiOutput::material_edit_active`], so scrubbing a
+    /// LOD ratio produces one undo step rather than one per frame.
+    pub opt_edit_active: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -479,6 +546,83 @@ pub enum OutlinerViewMode {
     SceneTree,
 }
 
+/// Everything the Outliner side panel owns: which tab and view mode it shows,
+/// its search box and type filter, the per-model scene-tree cache it walks, and
+/// its keyboard-navigation bookkeeping.
+///
+/// These group by lifecycle, not by widget: every one of them is scoped to the
+/// panel's own session over the loaded model — most are keyed on that model's
+/// node indices, and [`UiState::reset_skeletal_state`] drops them together when
+/// a new model arrives. Nothing outside `ui` reads any of it, so the fields stay
+/// crate-private (`app` never touches the Outliner's view state).
+#[derive(Debug, Clone, Default)]
+pub struct OutlinerState {
+    /// Which Outliner tab is shown (scene nodes vs material list).
+    pub(crate) tab: OutlinerTab,
+    /// Whether the Scene tab shows every node flat or the full scene tree.
+    pub(crate) view: OutlinerViewMode,
+    /// The Outliner header's search box. While non-empty it overrides
+    /// [`OutlinerState::view`]: both tabs collapse to a flat list of the rows
+    /// whose name matches, so a hit is never buried inside a collapsed branch.
+    pub(crate) search: String,
+    /// Scene-tree nodes the user has *collapsed*. Stored inverted (rather than as
+    /// an expanded set) so the default — an empty set — is a fully expanded tree,
+    /// with no per-model initialization pass. Cleared on model load.
+    pub(crate) collapsed: HashSet<usize>,
+    /// Node kinds the scene tree's type filter is currently *hiding*. Empty (the
+    /// default) shows everything. A hidden kind's rows still render — greyed and
+    /// unselectable — when a visible node lives beneath them, so the hierarchy
+    /// never breaks into disconnected fragments.
+    pub(crate) hidden_kinds: HashSet<NodeKind>,
+    /// Child adjacency for the scene tree (`children[parent]` lists the child
+    /// node indices, in model order), built once per model rather than per frame.
+    /// Empty means "not built yet"; a model load invalidates it.
+    pub(crate) children: Vec<Vec<usize>>,
+    /// Root node indices for the scene tree — nodes with no parent, in model
+    /// order. Built alongside [`OutlinerState::children`].
+    pub(crate) roots: Vec<usize>,
+    /// Whether the Outliner owns the arrow keys. Set by clicking a row or by a
+    /// handled arrow press, cleared by a pointer press outside the panel, so
+    /// navigation survives the pointer wandering back to the viewport without the
+    /// Outliner ever swallowing arrows meant for somewhere else.
+    pub(crate) nav_focus: bool,
+    /// One-frame request from keyboard navigation: the next Outliner draw scrolls
+    /// the selected row into view. Cleared by the draw that honors it.
+    pub(crate) scroll_to_selection: bool,
+}
+
+impl OutlinerState {
+    /// Drop the cached scene-tree adjacency so the next Outliner frame rebuilds
+    /// it. Called from [`UiState::reset_skeletal_state`], which `app` runs on
+    /// model load — where the cached node indices stop meaning anything.
+    pub(crate) fn invalidate_tree(&mut self) {
+        self.children.clear();
+        self.roots.clear();
+    }
+
+    /// Build the scene-tree adjacency if it isn't current for `model`. The scan is
+    /// O(nodes) and rigs run to hundreds of nodes, so it must not happen per frame
+    /// — the cache is rebuilt only after [`OutlinerState::invalidate_tree`].
+    ///
+    /// A node whose `parent` doesn't resolve (out of range, or itself) is treated as
+    /// a root rather than dropped, so a malformed hierarchy still lists every node.
+    pub(crate) fn ensure_tree(&mut self, model: &ModelData) {
+        if self.children.len() == model.nodes.len() && !model.nodes.is_empty() {
+            return;
+        }
+        self.children = vec![Vec::new(); model.nodes.len()];
+        self.roots.clear();
+        for (index, node) in model.nodes.iter().enumerate() {
+            match node.parent {
+                Some(parent) if parent < model.nodes.len() && parent != index => {
+                    self.children[parent].push(index);
+                }
+                _ => self.roots.push(index),
+            }
+        }
+    }
+}
+
 /// A tool's options panel. Each is shown as its own native `egui::Window`, so
 /// several can be open at once (see [`PanelsOpen`]); a panel is toggled by
 /// right-clicking its toolbar / status-bar button.
@@ -593,6 +737,105 @@ impl PanelsOpen {
     }
 }
 
+/// The measurements the chrome derives from the loaded model that are too
+/// expensive to redo every frame, each stored beside the *input* it was computed
+/// for so a change to that input — and nothing else — rebuilds it.
+///
+/// What binds them is one lifecycle, not one panel: every entry is a fact about
+/// the currently-loaded [`ModelData`], keyed on node indices or a [`Selection`]
+/// that mean nothing once a different model is on screen. [`BoundsCaches::reset`]
+/// drops the whole set at once, so that invalidation is stated here instead of
+/// riding on `app` happening to clear the inputs each key is compared against.
+#[derive(Debug, Clone, Default)]
+pub struct BoundsCaches {
+    /// Cached `model.visible_bounds(hidden)` for the dimension-label overlay's
+    /// "visible only" box. That scan is O(triangles); it must not run per-frame,
+    /// so it's rebuilt only when [`BoundsCaches::visible_bounds_key`] (the hidden
+    /// set it was computed for) no longer matches the live hidden set. Unused —
+    /// the overlay falls back to [`UiState::bounds`] — when nothing is hidden or
+    /// the whole-model box is shown.
+    visible_bounds: Option<Bounds>,
+    /// The sorted hidden-node set [`BoundsCaches::visible_bounds`] was built for;
+    /// a mismatch with the live hidden set invalidates the cache.
+    visible_bounds_key: Vec<u32>,
+    /// Cached `selection_bounds(selection)` for the dimension-label overlay's
+    /// "only selection" box (same O(triangles) caching as the visible-only box,
+    /// keyed by the selection it was computed for).
+    selection_bounds: Option<Bounds>,
+    /// The selection [`BoundsCaches::selection_bounds`] was built for; a mismatch
+    /// with the live selection invalidates the cache.
+    selection_bounds_key: Selection,
+    /// How many logical source vertices the current bone selection influences,
+    /// shown by the Inspector. The scan is O(influences) — 168k on a game
+    /// character — so it must not run per frame; it is recomputed only when
+    /// [`BoundsCaches::bone_influence_key`] no longer matches the live selection.
+    pub(crate) bone_influence: usize,
+    /// The sorted bone set [`BoundsCaches::bone_influence`] was measured for; a
+    /// mismatch with the live selection invalidates it.
+    bone_influence_key: Vec<u32>,
+}
+
+impl BoundsCaches {
+    /// Drop every cached measurement, so the next frame that needs one rebuilds
+    /// it against the model now on screen.
+    ///
+    /// `app` calls this on model load. Each key is a node-index list or a
+    /// [`Selection`] naming the *outgoing* model, so an incoming model that
+    /// happens to reproduce one — the same node hidden again, the same node
+    /// selected again — would otherwise be served the previous model's box.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// What the running build and the active adapter can do — the facts `app`
+/// establishes once during startup and never revises.
+///
+/// The lifecycle is what groups them: each is written at most once (in `App`'s
+/// construction or its device bootstrap) and is read-only for the rest of the
+/// session, so nothing in `ui` ever needs a `&mut` to one. That is why the
+/// capability seams live here rather than beside the settings they gate — the
+/// settings change every frame, these never do.
+#[derive(Debug, Clone)]
+pub struct Capabilities {
+    /// MSAA levels the active adapter actually supports, set by `app` from the
+    /// device's `supported_msaa_counts()` (D3D11 `CheckMultisampleQualityLevels`).
+    /// The Anti Aliasing menu disables any level not in this list (invariant 4).
+    /// Empty until the adapter is known (the panel then falls back to offering only
+    /// the current level).
+    pub msaa_levels: Vec<MsaaSamples>,
+    /// Whether the active adapter can build the IBL maps. Always true on the D3D11
+    /// target (the device hard-requires `TEXTURE_COMPRESSION_BC` for the BC6H IBL
+    /// cubes, and 11_0+ guarantees the float formats), so the Environment panel never
+    /// disables the IBL toggle in practice; kept as a field for the capability seam.
+    pub(crate) ibl: bool,
+    /// Whether the active adapter can run GTAO. Always true on the D3D11 target
+    /// (the G-buffer + horizon passes need only float render targets + samplers
+    /// guaranteed at feature level 11_0+), so the status-bar AO button is never
+    /// disabled in practice; kept as a field for the capability seam.
+    pub(crate) gtao: bool,
+    /// Friendly name of the graphics backend (e.g. "DX11"), shown in the help
+    /// overlay title; set by `app` (the renderer is always Direct3D 11).
+    pub gpu_backend: String,
+    /// Application version shown in the help overlay title (e.g. "0.1.0"), set by
+    /// `app` from its `CARGO_PKG_VERSION`.
+    pub app_version: String,
+}
+
+impl Default for Capabilities {
+    fn default() -> Self {
+        Self {
+            msaa_levels: Vec::new(),
+            // Assume supported until the adapter is queried; `app` corrects these
+            // once the device is known.
+            ibl: true,
+            gtao: true,
+            gpu_backend: String::new(),
+            app_version: String::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct UiState {
     pub mode: WorkspaceMode,
@@ -610,6 +853,10 @@ pub struct UiState {
     /// field is public for struct construction; its mutators are crate-private so
     /// only the UI toggles panels.
     pub panels_open: PanelsOpen,
+    /// The Opt workspace's operation stack and comparison-view settings. Present
+    /// regardless of the active mode (it is document state, not view state), but
+    /// only edited and read while Opt is active.
+    pub opt: OptUiState,
     pub uv_checker: UvCheckerPanelState,
     /// Display labels of the loaded model's UV sets, in source-file order, shown
     /// in the UV-view toolbar dropdown. Empty when no model / no UV sets. Set by
@@ -632,6 +879,14 @@ pub struct UiState {
     /// the D3D11 Tex draw (migration Phase 4). `None` until the Tex viewport has been
     /// laid out at least once.
     pub texture_canvas: Option<egui::Rect>,
+    /// The chrome-free scene area (egui points): the window minus the toolbar,
+    /// the status bar and whichever side panels are open. Written by
+    /// [`crate::overlay`] each scene frame and read by `app`, which converts it
+    /// to physical pixels for the Opt split — the divider has to land in the
+    /// middle of what the user can see, not the middle of the window. `None`
+    /// until the chrome has been laid out once, which the renderer reads as
+    /// "the whole backbuffer".
+    pub scene_viewport: Option<egui::Rect>,
     pub wireframe: WireframePanelState,
     pub bounding_box: BoundingBoxPanelState,
     pub face_normals: NormalPanelState,
@@ -641,30 +896,17 @@ pub struct UiState {
     /// Scene antialiasing (MSAA level). Read straight by the viewport callback —
     /// not a debug option — and edited by the Anti Aliasing panel.
     pub anti_aliasing: AntiAliasing,
-    /// MSAA levels the active adapter actually supports, set by `app` from the
-    /// device's `supported_msaa_counts()` (D3D11 `CheckMultisampleQualityLevels`).
-    /// The Anti Aliasing menu disables any level not in this list (invariant 4).
-    /// Empty until the adapter is known (the panel then falls back to offering only
-    /// the current level).
-    pub supported_msaa: Vec<MsaaSamples>,
+    /// What this build and the active adapter can do — established once at
+    /// startup and read-only afterwards (see [`Capabilities`]).
+    pub capabilities: Capabilities,
     /// Image-based lighting / environment selection. Read straight by the
     /// viewport callback (not a debug option) and edited by the Environment
     /// panel. Default is IBL on, HDR 01, no background (see [`EnvironmentSettings`]).
     pub environment: EnvironmentSettings,
-    /// Whether the active adapter can build the IBL maps. Always true on the D3D11
-    /// target (the device hard-requires `TEXTURE_COMPRESSION_BC` for the BC6H IBL
-    /// cubes, and 11_0+ guarantees the float formats), so the Environment panel never
-    /// disables the IBL toggle in practice; kept as a field for the capability seam.
-    pub ibl_supported: bool,
     /// Ambient occlusion (GTAO) settings. Read straight by the viewport
     /// callback and edited by the Ambient Occlusion panel; the AO status-bar
     /// button toggles `gtao.enabled`. Default is on (see [`GtaoSettings`]).
     pub gtao: GtaoSettings,
-    /// Whether the active adapter can run GTAO. Always true on the D3D11 target
-    /// (the G-buffer + horizon passes need only float render targets + samplers
-    /// guaranteed at feature level 11_0+), so the status-bar AO button is never
-    /// disabled in practice; kept as a field for the capability seam.
-    pub gtao_supported: bool,
     /// Tone-mapping settings. Read straight by the viewport callback (not a debug
     /// option) and edited by the Tonemapper panel; the status-bar tonemapper button
     /// toggles `tonemap.enabled`. Default is on with Khronos PBR Neutral (see
@@ -702,23 +944,10 @@ pub struct UiState {
     /// after a selection change, modulating the viewport highlight fill's alpha so
     /// the flash blinks then fades. 0 when no flash is playing.
     pub selection_fade: f32,
-    /// Which Outliner tab is shown (scene nodes vs material list).
-    pub outliner_tab: OutlinerTab,
-    /// Whether the Scene tab shows every node flat or the full scene tree.
-    pub outliner_view: OutlinerViewMode,
-    /// The Outliner header's search box. While non-empty it overrides
-    /// [`UiState::outliner_view`]: both tabs collapse to a flat list of the rows
-    /// whose name matches, so a hit is never buried inside a collapsed branch.
-    pub outliner_search: String,
-    /// Scene-tree nodes the user has *collapsed*. Stored inverted (rather than as
-    /// an expanded set) so the default — an empty set — is a fully expanded tree,
-    /// with no per-model initialization pass. Cleared by `app` on model load.
-    pub outliner_collapsed: HashSet<usize>,
-    /// Node kinds the scene tree's type filter is currently *hiding*. Empty (the
-    /// default) shows everything. A hidden kind's rows still render — greyed and
-    /// unselectable — when a visible node lives beneath them, so the hierarchy
-    /// never breaks into disconnected fragments.
-    pub hidden_kinds: HashSet<NodeKind>,
+    /// The Outliner side panel's own state: tab, view mode, search, type filter,
+    /// scene-tree cache and keyboard-navigation flags. Grouped by lifecycle —
+    /// see [`OutlinerState`].
+    pub outliner: OutlinerState,
     /// Bone nodes selected in the Outliner, in click order (the last entry is the
     /// primary, mirrored into [`UiState::selection`]). Drives the skeleton
     /// overlay's highlight and the skin-weight heat map. Ctrl-click toggles a
@@ -737,21 +966,6 @@ pub struct UiState {
     /// Whether the loaded model carries skin weights. Gates the Skin Weights
     /// material-mode button. Set by `app` on load.
     pub has_skin: bool,
-    /// Child adjacency for the scene tree (`outliner_children[parent]` lists the
-    /// child node indices, in model order), built once per model rather than per
-    /// frame. Empty means "not built yet"; `app` invalidates it on model load.
-    pub outliner_children: Vec<Vec<usize>>,
-    /// Root node indices for the scene tree — nodes with no parent, in model
-    /// order. Built alongside [`UiState::outliner_children`].
-    pub outliner_roots: Vec<usize>,
-    /// How many logical source vertices the current bone selection influences,
-    /// shown by the Inspector. The scan is O(influences) — 168k on a game
-    /// character — so it must not run per frame; it is recomputed only when
-    /// [`UiState::bone_influence_key`] no longer matches the live selection.
-    pub bone_influence_count: usize,
-    /// The sorted bone set [`UiState::bone_influence_count`] was measured for; a
-    /// mismatch with the live selection invalidates it.
-    pub bone_influence_key: Vec<u32>,
     /// Mesh nodes the user has hidden via the Outliner's per-row visibility
     /// checkbox (node indices into [`review_model::ModelData::nodes`]). The scene
     /// callback filters these meshes' triangles out of the viewport draw + GTAO
@@ -761,38 +975,19 @@ pub struct UiState {
     /// (right) — are open. They share one flag because they are two halves of one
     /// workflow: the Outliner picks a row, the Inspector describes it. egui owns
     /// each panel's resized width; the UI only tracks open/closed.
+    ///
+    /// Starts `true`: inspecting a model is what the viewer is for, so the pair is
+    /// up on launch rather than behind a toolbar toggle the user has to find.
     pub side_panels_open: bool,
-    /// Whether the Outliner owns the arrow keys. Set by clicking a row or by a
-    /// handled arrow press, cleared by a pointer press outside the panel, so
-    /// navigation survives the pointer wandering back to the viewport without the
-    /// Outliner ever swallowing arrows meant for somewhere else. Owned by the
-    /// Outliner; nothing outside `ui` needs to touch it.
-    pub outliner_nav_focus: bool,
-    /// One-frame request from keyboard navigation: the next Outliner draw scrolls
-    /// the selected row into view. Cleared by the draw that honors it.
-    pub outliner_scroll_to_selection: bool,
     /// Axis-aligned bounds of the loaded model (world meters), set by `app`
     /// alongside [`UiState::stats`] (invariant 2: a plain value, not model
     /// ownership). `None` when no model is loaded. Read by the dimension-label
     /// overlay to place each box edge's axis-length readout.
     pub bounds: Option<Bounds>,
-    /// Cached `model.visible_bounds(hidden)` for the dimension-label overlay's
-    /// "visible only" box. That scan is O(triangles); it must not run per-frame,
-    /// so it's rebuilt only when [`UiState::visible_bounds_key`] (the hidden set
-    /// it was computed for) no longer matches the live hidden set. Unused — the
-    /// overlay falls back to [`UiState::bounds`] — when nothing is hidden or the
-    /// whole-model box is shown.
-    pub visible_bounds_cache: Option<Bounds>,
-    /// The sorted hidden-node set [`UiState::visible_bounds_cache`] was built for;
-    /// a mismatch with the live hidden set invalidates the cache.
-    pub visible_bounds_key: Vec<u32>,
-    /// Cached `selection_bounds(selection)` for the dimension-label overlay's
-    /// "only selection" box (same O(triangles) caching as the visible-only box,
-    /// keyed by the selection it was computed for).
-    pub selection_bounds_cache: Option<Bounds>,
-    /// The selection [`UiState::selection_bounds_cache`] was built for; a mismatch
-    /// with the live selection invalidates the cache.
-    pub selection_bounds_key: Selection,
+    /// The per-model derived measurements that are too costly to recompute every
+    /// frame (the visible-only and selection-only boxes, the bone-influence
+    /// count). `app` resets the whole set on model load — see [`BoundsCaches`].
+    pub caches: BoundsCaches,
     /// Most recent measured frames-per-second, fed by `app` from the render
     /// loop. Zero while idle (the viewer redraws on demand, not continuously).
     pub fps: f32,
@@ -800,12 +995,6 @@ pub struct UiState {
     /// Starts `true` so it greets the user on launch, and is cleared by a click
     /// anywhere (see `help::draw_help_overlay`).
     pub show_help_overlay: bool,
-    /// Application version shown in the help overlay title (e.g. "0.1.0"), set by
-    /// `app` from its `CARGO_PKG_VERSION`.
-    pub app_version: String,
-    /// Friendly name of the graphics backend (e.g. "DX11"), shown in the help
-    /// overlay title; set by `app` (the renderer is always Direct3D 11).
-    pub gpu_backend: String,
 }
 
 impl Default for UiState {
@@ -819,12 +1008,14 @@ impl Default for UiState {
             show_axis_gizmo: true,
             show_stats: true,
             panels_open: PanelsOpen::default(),
+            opt: OptUiState::default(),
             uv_checker: UvCheckerPanelState::default(),
             uv_sets: Vec::new(),
             uv_view_channel: 0,
             uv_shading_mode: UvShadingMode::default(),
             texture_view: TextureViewState::default(),
             texture_canvas: None,
+            scene_viewport: None,
             wireframe: WireframePanelState::default(),
             bounding_box: BoundingBoxPanelState::default(),
             face_normals: NormalPanelState {
@@ -838,13 +1029,9 @@ impl Default for UiState {
             skeleton: SkeletonPanelState::default(),
             vertex_colors: VertexColorPanelState::default(),
             anti_aliasing: AntiAliasing::default(),
-            supported_msaa: Vec::new(),
+            capabilities: Capabilities::default(),
             environment: EnvironmentSettings::default(),
-            // Assume supported until the adapter is queried; `app` corrects this
-            // once the device is known.
-            ibl_supported: true,
             gtao: GtaoSettings::default(),
-            gtao_supported: true,
             tonemap: TonemapSettings::default(),
             viewport_background: ViewportBackground::default(),
             stats: ModelStats::default(),
@@ -854,32 +1041,17 @@ impl Default for UiState {
             selection: Selection::None,
             solo: false,
             selection_fade: 0.0,
-            outliner_tab: OutlinerTab::default(),
-            outliner_view: OutlinerViewMode::default(),
-            outliner_search: String::new(),
-            outliner_collapsed: HashSet::new(),
-            hidden_kinds: HashSet::new(),
+            outliner: OutlinerState::default(),
             selected_bones: Vec::new(),
             bone_anchor: None,
             has_bones: false,
             has_skin: false,
-            outliner_children: Vec::new(),
-            outliner_roots: Vec::new(),
-            bone_influence_count: 0,
-            bone_influence_key: Vec::new(),
             hidden_meshes: HashSet::new(),
-            side_panels_open: false,
-            outliner_nav_focus: false,
-            outliner_scroll_to_selection: false,
+            side_panels_open: true,
             bounds: None,
-            visible_bounds_cache: None,
-            visible_bounds_key: Vec::new(),
-            selection_bounds_cache: None,
-            selection_bounds_key: Selection::None,
+            caches: BoundsCaches::default(),
             fps: 0.0,
             show_help_overlay: true,
-            app_version: String::new(),
-            gpu_backend: String::new(),
         }
     }
 }
@@ -897,28 +1069,29 @@ impl UiState {
             BoundsScope::OnlySelection => {
                 // The selection scan ([`selection_bounds`]) is O(triangles), so
                 // cache it and rebuild only when the selection changes — never
-                // per-frame. (Model loads clear the selection, so the cache is
-                // never served across a model swap.)
-                if self.selection_bounds_key != self.selection {
-                    self.selection_bounds_cache = selection_bounds(model, self.selection);
-                    self.selection_bounds_key = self.selection;
+                // per-frame. (Model loads reset the cache, so it is never served
+                // across a model swap — see [`BoundsCaches::reset`].)
+                if self.caches.selection_bounds_key != self.selection {
+                    self.caches.selection_bounds = selection_bounds(model, self.selection);
+                    self.caches.selection_bounds_key = self.selection;
                 }
-                self.selection_bounds_cache
+                self.caches.selection_bounds
             }
             BoundsScope::VisibleOnly => {
                 let mut hidden: Vec<u32> = self.hidden_meshes.iter().map(|&i| i as u32).collect();
                 hidden.sort_unstable();
                 // An empty hidden set makes `visible_bounds` the whole-model box, so
-                // skip both the scan and the cache. (Model loads clear the hidden
-                // set, so the cache below is never served across a model swap.)
+                // skip both the scan and the cache. (Model loads reset the cache
+                // below, so it is never served across a model swap — see
+                // [`BoundsCaches::reset`].)
                 if hidden.is_empty() {
                     return self.bounds;
                 }
-                if self.visible_bounds_key != hidden {
-                    self.visible_bounds_cache = model.visible_bounds(&hidden);
-                    self.visible_bounds_key = hidden;
+                if self.caches.visible_bounds_key != hidden {
+                    self.caches.visible_bounds = model.visible_bounds(&hidden);
+                    self.caches.visible_bounds_key = hidden;
                 }
-                self.visible_bounds_cache
+                self.caches.visible_bounds
             }
         }
     }
@@ -968,17 +1141,17 @@ impl UiState {
     pub fn reset_skeletal_state(&mut self, model: &ModelData) {
         self.selected_bones.clear();
         self.bone_anchor = None;
-        self.outliner_collapsed.clear();
-        self.hidden_kinds.clear();
-        self.outliner_search.clear();
-        self.outliner_nav_focus = false;
-        self.outliner_scroll_to_selection = false;
-        self.invalidate_outliner_tree();
+        self.outliner.collapsed.clear();
+        self.outliner.hidden_kinds.clear();
+        self.outliner.search.clear();
+        self.outliner.nav_focus = false;
+        self.outliner.scroll_to_selection = false;
+        self.outliner.invalidate_tree();
 
         self.has_bones = model.stats.bone_count > 0;
         self.has_skin = model.skin.is_some();
-        self.bone_influence_count = 0;
-        self.bone_influence_key.clear();
+        self.caches.bone_influence = 0;
+        self.caches.bone_influence_key.clear();
 
         // Loading an unrigged mesh over a rigged one must not leave the viewer in
         // a mode whose toolbar button no longer exists.
@@ -991,7 +1164,7 @@ impl UiState {
         }
     }
 
-    /// Refresh [`UiState::bone_influence_count`] if the bone selection changed
+    /// Refresh [`BoundsCaches::bone_influence`] if the bone selection changed
     /// since it was last measured. Called once per frame before the panels draw,
     /// so the Inspector can read a real measured number (invariant 5) without
     /// re-scanning the skin table on every repaint.
@@ -1001,10 +1174,10 @@ impl UiState {
     /// of the mesh does this selection move".
     pub(crate) fn sync_bone_influence(&mut self, model: &ModelData) {
         let key = self.selected_bone_nodes();
-        if key == self.bone_influence_key {
+        if key == self.caches.bone_influence_key {
             return;
         }
-        self.bone_influence_count = match model.skin.as_ref() {
+        self.caches.bone_influence = match model.skin.as_ref() {
             Some(skin) if !key.is_empty() => (0..skin.logical_vertex_count())
                 .filter(|&logical| {
                     skin.bones[skin.influence_range(logical)]
@@ -1014,36 +1187,7 @@ impl UiState {
                 .count(),
             _ => 0,
         };
-        self.bone_influence_key = key;
-    }
-
-    /// Drop the cached scene-tree adjacency so the next Outliner frame rebuilds it.
-    /// Called by `app` on model load, where the node indices stop meaning anything.
-    pub fn invalidate_outliner_tree(&mut self) {
-        self.outliner_children.clear();
-        self.outliner_roots.clear();
-    }
-
-    /// Build the scene-tree adjacency if it isn't current for `model`. The scan is
-    /// O(nodes) and rigs run to hundreds of nodes, so it must not happen per frame
-    /// — the cache is rebuilt only after [`UiState::invalidate_outliner_tree`].
-    ///
-    /// A node whose `parent` doesn't resolve (out of range, or itself) is treated as
-    /// a root rather than dropped, so a malformed hierarchy still lists every node.
-    pub(crate) fn ensure_outliner_tree(&mut self, model: &ModelData) {
-        if self.outliner_children.len() == model.nodes.len() && !model.nodes.is_empty() {
-            return;
-        }
-        self.outliner_children = vec![Vec::new(); model.nodes.len()];
-        self.outliner_roots.clear();
-        for (index, node) in model.nodes.iter().enumerate() {
-            match node.parent {
-                Some(parent) if parent < model.nodes.len() && parent != index => {
-                    self.outliner_children[parent].push(index);
-                }
-                _ => self.outliner_roots.push(index),
-            }
-        }
+        self.caches.bone_influence_key = key;
     }
 }
 

@@ -29,29 +29,19 @@ fn msaa_row(ui: &mut egui::Ui, state: &mut UiState) {
         ui,
         "MSAA",
         "anti_aliasing_msaa",
-        msaa_label(state.anti_aliasing.msaa),
+        state.anti_aliasing.msaa.label(),
         |ui| {
             for level in MsaaSamples::ALL {
                 // List the active level unconditionally (so the menu can't strand
                 // its own value); otherwise only list adapter-supported levels. An
                 // empty support list means "not yet known", so only the current
                 // selection shows until the adapter is queried.
-                let offered =
-                    level == state.anti_aliasing.msaa || state.supported_msaa.contains(&level);
+                let offered = level == state.anti_aliasing.msaa
+                    || state.capabilities.msaa_levels.contains(&level);
                 if offered {
-                    ui.selectable_value(&mut state.anti_aliasing.msaa, level, msaa_label(level));
+                    ui.selectable_value(&mut state.anti_aliasing.msaa, level, level.label());
                 }
             }
         },
     );
-}
-
-fn msaa_label(level: MsaaSamples) -> &'static str {
-    match level {
-        MsaaSamples::Off => "Off",
-        MsaaSamples::X2 => "2x",
-        MsaaSamples::X4 => "4x",
-        MsaaSamples::X8 => "8x",
-        MsaaSamples::X16 => "16x",
-    }
 }

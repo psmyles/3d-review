@@ -149,6 +149,25 @@ pub(crate) const ICON_OUTLINER: AppIcon = AppIcon {
     png_bytes: include_bytes!("../../../assets/icons/icon_outliner.png"),
 };
 
+/// The Opt workspace's comparison controls (toolbar, right): the two layouts,
+/// the camera link between the split views, and the A/B swap.
+pub(crate) const ICON_OPT_SPLIT: AppIcon = AppIcon {
+    id: "icon_opt_split",
+    png_bytes: include_bytes!("../../../assets/icons/icon_opt_split.png"),
+};
+pub(crate) const ICON_OPT_OVERLAY: AppIcon = AppIcon {
+    id: "icon_opt_overlay",
+    png_bytes: include_bytes!("../../../assets/icons/icon_opt_overlay.png"),
+};
+pub(crate) const ICON_OPT_SYNC: AppIcon = AppIcon {
+    id: "icon_opt_sync",
+    png_bytes: include_bytes!("../../../assets/icons/icon_opt_sync.png"),
+};
+pub(crate) const ICON_OPT_SWAP: AppIcon = AppIcon {
+    id: "icon_opt_swap",
+    png_bytes: include_bytes!("../../../assets/icons/icon_opt_swap.png"),
+};
+
 /// The Outliner's per-row visibility eye, toggling a mesh node's membership in
 /// [`crate::state::UiState::hidden_meshes`]. Drawn open on a visible row and
 /// closed (and dimmer) on a hidden one.

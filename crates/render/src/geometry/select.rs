@@ -10,6 +10,8 @@ use review_model::ModelData;
 use crate::material::MaterialDrawRange;
 use crate::selection::Selection;
 
+use super::hidden::HiddenFilter;
+
 /// The renderer-side geometry a selection needs: the selected triangles reordered
 /// into a per-material draw list over a fresh index buffer that shares the mesh
 /// vertex buffer. Used both by the solo (isolate) view to draw only the selection
@@ -28,12 +30,10 @@ pub(crate) fn selection_geometry(
     // A hidden mesh isn't drawn, so its triangles must drop out of both the solo
     // list and the highlight flash — otherwise the flash floats in empty space
     // where the mesh would be. Clear the selected triangles owned by a hidden node.
-    if !hidden_nodes.is_empty() && model.triangles.node.len() == mask.len() {
-        let hidden: HashSet<u32> = hidden_nodes.iter().copied().collect();
-        for (triangle, owner) in model.triangles.node.iter().enumerate() {
-            if hidden.contains(owner) {
-                mask[triangle] = false;
-            }
+    let hidden = HiddenFilter::new(model, hidden_nodes);
+    if hidden.is_active() {
+        for (triangle, selected) in mask.iter_mut().enumerate() {
+            *selected &= !hidden.is_hidden(triangle);
         }
     }
     Some(selection_mesh(model, &mask, tri_key))
@@ -52,19 +52,12 @@ pub(crate) fn visible_geometry(
     hidden_nodes: &[u32],
     tri_key: Option<&[u32]>,
 ) -> Option<(Vec<u32>, Vec<MaterialDrawRange>)> {
-    let triangle_count = model.indices.len() / 3;
-    if triangle_count == 0
-        || hidden_nodes.is_empty()
-        || model.triangles.node.len() != triangle_count
-    {
+    let hidden = HiddenFilter::new(model, hidden_nodes);
+    if !hidden.is_active() {
         return None;
     }
-    let hidden: HashSet<u32> = hidden_nodes.iter().copied().collect();
-    let mask: Vec<bool> = model
-        .triangles
-        .node
-        .iter()
-        .map(|node| !hidden.contains(node))
+    let mask: Vec<bool> = (0..model.indices.len() / 3)
+        .map(|triangle| !hidden.is_hidden(triangle))
         .collect();
     Some(selection_mesh(model, &mask, tri_key))
 }

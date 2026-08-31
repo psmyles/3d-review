@@ -4,14 +4,17 @@
 // swapchain backbuffer behind the egui chrome.
 //
 // Registers (see `rhi`/`scene::d3d` binding): scene color `t0`, blurred GTAO `t1`,
-// ambient radiance `t2`, shared sampler `s0`, `PostUniforms` cbuffer `b0`.
+// ambient radiance `t2`, shared sampler `s0`, `PostUniforms` cbuffer `b3`.
+// `b3` rather than `b0` because the scene and material cbuffers are still bound
+// from the pass before — one slot per struct across the whole scene/GTAO/post set,
+// so nothing can reinterpret another cbuffer's bytes. See `scene.hlsl`'s plan.
 
 Texture2D scene_color : register(t0);
 Texture2D gtao_texture : register(t1);   // blurred GTAO occlusion (R8); Phase 3
 Texture2D ambient_texture : register(t2); // linear-HDR ambient radiance; Phase 3
 SamplerState scene_sampler : register(s0);
 
-cbuffer PostUniforms : register(b0)
+cbuffer PostUniforms : register(b3)
 {
     uint gtao_enabled;
     uint tonemap_enabled;

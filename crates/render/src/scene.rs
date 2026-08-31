@@ -5,6 +5,9 @@
 
 mod d3d;
 mod gpu_types;
+mod opt;
+mod pipelines;
+mod resources;
 
 pub(crate) use d3d::SceneGpu;
 pub(crate) use gpu_types::SceneVertex;

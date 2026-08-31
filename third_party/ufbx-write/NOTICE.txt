@@ -1,0 +1,33 @@
+ufbx_write — vendored source
+=============================
+
+Upstream:  https://github.com/ufbx/ufbx-write
+Commit:    2b65caaaa7fada7db9a2d25cd924997838169056
+License:   MIT OR Unlicense — see LICENSE
+
+What is vendored
+----------------
+An unmodified copy of `ufbx_write.h` and `ufbx_write.c`. Refreshing this
+directory is a plain re-copy of a newer commit (update the hash above, then
+re-run the workspace tests — in particular `crates/optimize`'s export
+round-trip, which re-imports written files through the vendored ufbx reader).
+
+Stability
+---------
+Upstream states plainly that ufbx_write "is still a work-in-progress, and
+issues/breaking changes are to be expected". That is why the commit is pinned
+rather than tracking a branch, and why the export round-trip test exists: a
+breaking change upstream should fail a test here rather than silently produce
+files that no longer load.
+
+How it is built
+---------------
+`crates/optimize/build.rs` compiles this alongside `src/export_bridge.c` with
+`cc`, and sets `cfg(has_ufbxw)` only when this directory is present — the same
+optional-vendoring contract `crates/import` has for ufbx. Delete this directory
+and the workspace still builds; export then reports `OptError::Unavailable`.
+
+`ufbx_write.c` needs C99 or later. It has no OS-specific code and no threading
+unless explicitly opted in, so nothing extra is configured. Note the header
+defines `ufbxw_real` as `double`, so every coordinate crossing the bridge is
+`f64` — `crates/optimize/src/export.rs` converts on the way in.

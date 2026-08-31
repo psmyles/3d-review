@@ -1,0 +1,33 @@
+[package]
+name = "review-optimize"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[dependencies]
+glam.workspace = true
+review-model = { path = "../model" }
+# The shared guarded Tracy helpers. Instruments the per-operation CPU zones so a
+# slow stack shows up per op; carries `tracy-client` itself, so this crate needs
+# no direct dependency on it.
+review-prof.workspace = true
+# Presets are persisted as JSON, so the stack types derive Serialize/Deserialize
+# here. `review-model` stays glam-only (invariant 10) — nothing in this crate
+# adds a derive to a `review-model` type.
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# Integration tests run the stack over real FBX fixtures rather than only the
+# synthetic demo cube. Test-only: the crate itself never depends on the importer,
+# so `optimize` stays reachable from anything holding a `ModelData`.
+review-import = { path = "../import" }
+
+[build-dependencies]
+cc.workspace = true
+
+[lints]
+workspace = true

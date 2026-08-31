@@ -3,7 +3,8 @@
 //! defaults.
 
 use crate::state::{
-    DEFAULT_NORMAL_LENGTH, NORMAL_LENGTH_MAX, NORMAL_LENGTH_MIN, NormalPanelState, UiState,
+    DEFAULT_NORMAL_LENGTH, NormalPanelState, UiState,
+    range::{NORMAL_LENGTH_MAX, NORMAL_LENGTH_MIN},
 };
 use crate::theme::color;
 use crate::widgets::{color_swatch_row, labeled_slider_with_value, panel_grid, reset_button};

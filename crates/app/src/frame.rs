@@ -10,11 +10,14 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use review_model::SceneBvh;
+use review_model::{ModelData, SceneBvh};
 use review_render::{
-    ActiveMaterial, CameraProjection, Renderer, SceneFrame, TexBackground, TexImage,
+    ActiveMaterial, CameraProjection, OptSceneFrame, OptView, ProcessedModelRef, Renderer,
+    SceneFrame, SceneViewport, TexBackground, TexImage,
 };
-use review_ui::{TextureBackground, UiOutput, WorkspaceMode, draw_overlay, theme};
+use review_ui::{
+    ComparisonSide, OptLayout, TextureBackground, UiOutput, WorkspaceMode, draw_overlay, theme,
+};
 
 use crate::App;
 use crate::prof;
@@ -29,7 +32,6 @@ impl App {
             return;
         };
 
-        window.set_title("3D Review");
         {
             let _z = prof::zone!("Camera Animation");
             self.update_camera_animation();
@@ -112,6 +114,15 @@ impl App {
             self.apply_ui_output(ui_output);
         }
 
+        // Reconcile the Opt workspace with the stack the egui pass just edited:
+        // create its subsystem on first entry, schedule a run for any change, and
+        // manage the "still working" notice. Only while the workspace is active —
+        // a session that never opens it never builds any of this.
+        if self.ui.mode == WorkspaceMode::Opt {
+            let _z = prof::zone!("Sync Opt");
+            self.sync_opt();
+        }
+
         // Decide when the next frame should be drawn. Continuous motion — a live
         // camera transition, or egui asking to "repaint immediately" (zero delay)
         // — is paced to the monitor's refresh interval so the viewer never renders
@@ -168,7 +179,43 @@ impl App {
         // physical pixels for the D3D11 image draw.
         let texture_draw = (workspace == WorkspaceMode::Texture)
             .then(|| self.build_texture_draw(full_output.pixels_per_point));
-        let model = self.scene_model.clone();
+
+        // The Opt workspace hands the renderer both meshes and lets it lay them
+        // out; every other workspace draws the source alone. The processed mesh
+        // goes through the same `SceneFrame` settings as the source, so shading,
+        // wireframe, normals, selection, AA, AO and tone mapping all apply to it
+        // unchanged.
+        let opt_revision = (workspace == WorkspaceMode::Opt)
+            .then(|| self.opt_processed_revision())
+            .flatten();
+        // The `Arc` is cloned so the borrow below outlives the `self` reborrow the
+        // renderer takes, exactly as the source model's is.
+        let opt_result = opt_revision
+            .and(self.opt.as_ref())
+            .and_then(|opt| opt.processed.clone());
+        // The chrome-free area the split lays its two views out in, in physical
+        // pixels. The UI measures it in points during the pass above; without it
+        // (the first frame, before the chrome has been laid out) the whole
+        // backbuffer stands in.
+        let gpu_size = self.gpu.as_ref().map_or((1, 1), review_render::Gpu::size);
+        let opt_viewport = self
+            .ui
+            .scene_viewport
+            .map(|rect| scene_viewport_px(rect, full_output.pixels_per_point, gpu_size))
+            .unwrap_or_else(|| SceneViewport::full(gpu_size));
+        let active_lod = self.ui.opt.active_lod;
+        let opt_layout = self.ui.opt.layout;
+        let opt_ghost = self.ui.opt.ghost_style;
+        // The chrome owns the ghost's colour (invariant 8) and shows the same one
+        // in the overlay legend; the renderer decides its alpha.
+        let ghost_tint = {
+            let [r, g, b, _] = theme::color::GHOST_XRAY.to_normalized_gamma_f32();
+            [r, g, b]
+        };
+        let opt_swap = self.ui.opt.side == ComparisonSide::Source;
+
+        let source_model = self.scene_model.clone();
+        let model: &ModelData = &source_model;
         let model_revision = self.scene_revision;
 
         let Some(renderer) = self.renderer.as_mut() else {
@@ -181,6 +228,11 @@ impl App {
             return;
         };
 
+        // GPU faults hit while painting. Collected rather than reported inline:
+        // `gpu` and `egui_renderer` are borrowed out of `self` for the whole block,
+        // so the reporter — which needs all of `self` — runs once it closes. An
+        // empty `Vec` allocates nothing, so a clean frame pays for none of this.
+        let mut faults: Vec<(&str, String)> = Vec::new();
         {
             let _z = prof::zone!("Paint + Present");
             // Render the 3D scene through Direct3D 11 straight to the backbuffer
@@ -191,7 +243,7 @@ impl App {
             let render_result = match workspace {
                 WorkspaceMode::Uv => renderer.render_uv_scene(
                     gpu,
-                    &model,
+                    model,
                     model_revision,
                     uv_channel,
                     uv_shading,
@@ -202,10 +254,9 @@ impl App {
                     let (image, background) = texture_draw.unwrap_or((None, TexBackground::Black));
                     renderer.render_texture(gpu, image, background)
                 }
-                WorkspaceMode::ThreeD => renderer.render_scene(
-                    gpu,
-                    &SceneFrame {
-                        model: &model,
+                WorkspaceMode::ThreeD | WorkspaceMode::Opt => {
+                    let scene_frame = SceneFrame {
+                        model,
                         model_revision,
                         debug,
                         projection,
@@ -217,19 +268,45 @@ impl App {
                         hidden_meshes: &hidden_meshes,
                         selected_bones: &selected_bones,
                         background,
-                    },
-                ),
-            };
-            // GPU failures are surfaced as a toast (once per fault, not per
-            // frame) — without `--tracy` the prof channel is invisible, and a
-            // windowed release build has no console at all.
-            if let Err(err) = render_result {
-                prof::msg(&format!("scene D3D11 render failed: {err}"));
-                if !self.gpu_fault_notified {
-                    self.gpu_fault_notified = true;
-                    self.notifications
-                        .error(format!("Scene render failed: {err}"));
+                    };
+                    if workspace == WorkspaceMode::Opt {
+                        // Read the cameras out before the call: the arguments are
+                        // evaluated after the `&mut renderer` receiver is borrowed.
+                        let source_camera = renderer.camera;
+                        let processed_camera = renderer.opt_camera;
+                        let processed = opt_result
+                            .as_ref()
+                            .and_then(|result| result.lod(active_lod))
+                            .zip(opt_revision)
+                            .map(|(lod, revision)| ProcessedModelRef {
+                                model: &lod.model,
+                                revision,
+                            });
+                        renderer.render_opt_scene(
+                            gpu,
+                            &OptSceneFrame {
+                                base: scene_frame,
+                                processed,
+                                viewport: opt_viewport,
+                                view: match opt_layout {
+                                    OptLayout::Split => OptView::Split,
+                                    OptLayout::Overlay => OptView::Overlay {
+                                        ghost: opt_ghost.into(),
+                                        swap: opt_swap,
+                                        tint: ghost_tint,
+                                    },
+                                },
+                                source_camera,
+                                processed_camera,
+                            },
+                        )
+                    } else {
+                        renderer.render_scene(gpu, &scene_frame)
+                    }
                 }
+            };
+            if let Err(err) = render_result {
+                faults.push(("Scene render failed", err.to_string()));
             }
             let egui_output = egui_directx11::RendererOutput {
                 textures_delta: full_output.textures_delta,
@@ -240,25 +317,35 @@ impl App {
                 && let Err(err) =
                     egui_renderer.render(gpu.context(), backbuffer_rtv, &egui_ctx, egui_output)
             {
-                prof::msg(&format!("egui D3D11 render failed: {err}"));
-                if !self.gpu_fault_notified {
-                    self.gpu_fault_notified = true;
-                    self.notifications.error(format!("UI render failed: {err}"));
-                }
+                faults.push(("UI render failed", err.to_string()));
             }
             if let review_render::PresentStatus::DeviceLost { reason } = gpu.present(true) {
-                prof::msg(&format!("present failed: device lost ({reason:#x})"));
-                if !self.gpu_fault_notified {
-                    self.gpu_fault_notified = true;
-                    self.notifications.error(format!(
-                        "Graphics device lost ({reason:#x}) — restart the viewer"
-                    ));
-                }
+                faults.push((
+                    "Graphics device lost",
+                    format!("{reason:#x} - restart the viewer"),
+                ));
             }
+        }
+        for (context, detail) in faults {
+            self.report_gpu_fault(context, detail);
         }
 
         // Delimit the frame for Tracy's frame view (no-op unless `--tracy`).
         prof::frame_mark();
+    }
+
+    /// Report a GPU fault: always down the prof channel, and as a toast the first
+    /// time one happens this session. A wedged device fails again on every frame,
+    /// so the `gpu_fault_notified` latch shows one toast instead of stacking them
+    /// forever — and that toast is the user's only sign, since the prof channel is
+    /// invisible without `--tracy` and a windowed release build has no console.
+    pub(crate) fn report_gpu_fault(&mut self, context: &str, err: impl std::fmt::Display) {
+        let message = format!("{context}: {err}");
+        prof::msg(&message);
+        if !self.gpu_fault_notified {
+            self.gpu_fault_notified = true;
+            self.notifications.error(message);
+        }
     }
 
     /// Resolve the Tex viewport's D3D11 draw inputs from the live UI state: the
@@ -301,5 +388,52 @@ impl App {
             size_px: [size_pts.x * ppp, size_pts.y * ppp],
         };
         (Some(tex_image), background)
+    }
+}
+
+/// Convert the UI's measured scene area (egui points) into the renderer's
+/// physical-pixel [`SceneViewport`], clamped to the backbuffer.
+///
+/// The clamp is not defensive tidiness: the rect is measured during the egui
+/// pass, so a resize landing between that and the draw would otherwise hand the
+/// rasterizer a viewport reaching past the backbuffer.
+fn scene_viewport_px(rect: egui::Rect, ppp: f32, size: (u32, u32)) -> SceneViewport {
+    let (width, height) = size;
+    let left = (rect.left() * ppp).round().max(0.0) as u32;
+    let top = (rect.top() * ppp).round().max(0.0) as u32;
+    let right = (rect.right() * ppp).round().max(0.0) as u32;
+    let bottom = (rect.bottom() * ppp).round().max(0.0) as u32;
+    let x = left.min(width.saturating_sub(1));
+    let y = top.min(height.saturating_sub(1));
+    SceneViewport {
+        x,
+        y,
+        width: right.clamp(x + 1, width) - x,
+        height: bottom.clamp(y + 1, height) - y,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scene_viewport_px;
+
+    /// The split's divider has to land in the middle of what the user can see,
+    /// so an open side panel must move the rect, not just narrow it.
+    #[test]
+    fn the_scene_rect_converts_to_pixels_at_scale() {
+        let rect = egui::Rect::from_min_max(egui::pos2(100.0, 20.0), egui::pos2(500.0, 300.0));
+        let view = scene_viewport_px(rect, 2.0, (1200, 800));
+        assert_eq!((view.x, view.y), (200, 40));
+        assert_eq!((view.width, view.height), (800, 560));
+    }
+
+    /// A rect measured before a shrinking resize must not reach past the
+    /// backbuffer it is about to be rasterized into.
+    #[test]
+    fn an_oversized_rect_is_clamped_to_the_backbuffer() {
+        let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(4000.0, 3000.0));
+        let view = scene_viewport_px(rect, 1.0, (1280, 720));
+        assert_eq!((view.x, view.y), (0, 0));
+        assert_eq!((view.width, view.height), (1280, 720));
     }
 }

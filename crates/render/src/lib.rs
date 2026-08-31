@@ -17,9 +17,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use glam::{Mat4, Vec2, Vec3};
+use glam::{Vec2, Vec3};
 use review_model::{Bounds, MaterialImportDefaults, ModelData};
 
+mod camera;
 mod config;
 mod geometry;
 mod ibl;
@@ -30,6 +31,8 @@ mod selection;
 mod tex_d3d;
 mod texture;
 
+use camera::CameraTransition;
+pub use camera::{OrbitCamera, UvCamera, ease_in_out_cubic};
 pub use config::*;
 #[cfg(feature = "bake")]
 pub use ibl::bake_ibl_assets;
@@ -45,26 +48,26 @@ use tex_d3d::TexGpu;
 pub use tex_d3d::{TexBackground, TexImage};
 pub use texture::{ChannelSelect, DecodedImage, TextureSlot, decode_image, suggested_channel};
 
-const CAMERA_TRANSITION_SECONDS: f32 = 0.3;
+/// Size in bytes of one vertex as uploaded to the GPU.
+///
+/// Exposed for the Opt workspace's vertex-fetch analysis: meshoptimizer's
+/// overfetch figure is "bytes fetched / vertex buffer size", so it only describes
+/// the real draw if it is given the size the renderer actually uploads. The
+/// layout itself stays private — this is a measurement input, not an invitation
+/// to build vertices elsewhere (invariant 1).
+pub const fn scene_vertex_size() -> usize {
+    size_of::<scene::SceneVertex>()
+}
+
 /// Shorter transition used for the WASD 45° orbit steps, which fire repeatedly
 /// and want a snappier response than the default framing/snap animation.
 const ORBIT_TRANSITION_SECONDS: f32 = 0.1;
-/// Uniform breathing room left around a framed fit (4%), on top of any
-/// safe-area inset, so content never sits hard against the viewport edges.
-const FRAME_MARGIN: f32 = 1.04;
 /// Fraction of the safe area the empty "home" grid view fills. Below 1.0 so the
 /// reference grid sits comfortably back in the viewport with margin around it,
 /// rather than filling the window edge-to-edge. Only affects the home/reset
 /// view — loaded models still frame tight to the safe area.
 const HOME_FILL_FRACTION: f32 = 0.68;
 
-/// Largest far/near ratio we use when fitting the near plane. Perspective uses
-/// infinite Reversed-Z, so the far value no longer clips geometry there; the
-/// ratio still keeps the near plane from collapsing when framing tiny content and
-/// provides the finite far range used by orthographic projection.
-const MAX_DEPTH_RATIO: f32 = 5_000.0;
-/// Absolute floor for the near plane so it never collapses to zero.
-const MIN_Z_NEAR: f32 = 0.01;
 /// Half-extent of the static reference grid: a 2 m square floor (±1 m) ruled in
 /// 10 cm cells. Shared with `geometry::scene_lines` and the home-view framing so
 /// the grid's size is defined in exactly one place. World units are meters.
@@ -79,441 +82,6 @@ const GRID_BOUNDS: Bounds = Bounds {
 /// plane must reach it so the grid isn't clipped behind small models.
 const GRID_FAR_RADIUS: f32 = GRID_HALF_EXTENT * 2.0;
 
-/// Default half-height (in UV units) of the UV viewport, so the unit square is
-/// shown with comfortable margin around it. The visible vertical span is twice
-/// this; `> 0.5` leaves the 0..1 square framed back from the edges.
-const UV_DEFAULT_HALF_HEIGHT: f32 = 0.72;
-/// Clamp range for the UV camera's half-height so zoom can't invert or run away.
-const UV_MIN_HALF_HEIGHT: f32 = 0.02;
-const UV_MAX_HALF_HEIGHT: f32 = 50.0;
-
-/// A 2D pan/zoom camera for the UV viewport. Maps UV space (the 0..1 unit square
-/// the model's UVs live in) to the screen with an aspect-corrected orthographic
-/// projection, so the unit square always stays square regardless of window
-/// shape. `center` is the UV point shown at the viewport center; `half_height`
-/// is half the visible vertical span in UV units (smaller = zoomed in).
-#[derive(Debug, Clone, Copy)]
-pub struct UvCamera {
-    pub center: Vec2,
-    pub half_height: f32,
-    pub aspect_ratio: f32,
-}
-
-impl Default for UvCamera {
-    fn default() -> Self {
-        Self {
-            // Center on the middle of the 0..1 unit square.
-            center: Vec2::new(0.5, 0.5),
-            half_height: UV_DEFAULT_HALF_HEIGHT,
-            aspect_ratio: 16.0 / 9.0,
-        }
-    }
-}
-
-impl UvCamera {
-    /// Reset to the default framing, preserving the live aspect ratio.
-    pub fn reset(&mut self) {
-        let aspect_ratio = self.aspect_ratio;
-        *self = Self::default();
-        self.aspect_ratio = aspect_ratio;
-    }
-
-    fn half_width(self) -> f32 {
-        self.half_height * self.aspect_ratio.max(0.1)
-    }
-
-    /// Pan the view by a pointer drag (pixels), keeping the grabbed UV point
-    /// under the cursor: the content follows the drag direction.
-    pub fn pan_screen_delta(&mut self, delta_pixels: Vec2, viewport_size: Vec2) {
-        if viewport_size.x <= 0.0 || viewport_size.y <= 0.0 {
-            return;
-        }
-        let du = delta_pixels.x / viewport_size.x * (2.0 * self.half_width());
-        let dv = delta_pixels.y / viewport_size.y * (2.0 * self.half_height);
-        // Drag right (+x) shows lower-u content at center; drag down (+y, with v
-        // up) shows higher-v content at center.
-        self.center.x -= du;
-        self.center.y += dv;
-    }
-
-    /// Zoom about the view center. Positive `amount` zooms in (matches the orbit
-    /// camera's wheel/zoom-drag sign), shrinking the visible span.
-    pub fn zoom(&mut self, amount: f32) {
-        let scale = (1.0 - amount * 0.1).clamp(0.2, 5.0);
-        self.half_height = (self.half_height * scale).clamp(UV_MIN_HALF_HEIGHT, UV_MAX_HALF_HEIGHT);
-    }
-
-    /// Aspect-corrected orthographic view-projection mapping UV-plane points
-    /// `(u, v, 0)` to clip space, with v pointing up like a UV editor.
-    pub fn view_projection(self) -> Mat4 {
-        let half_w = self.half_width();
-        Mat4::orthographic_rh(
-            self.center.x - half_w,
-            self.center.x + half_w,
-            self.center.y - self.half_height,
-            self.center.y + self.half_height,
-            -1.0,
-            1.0,
-        )
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct OrbitCamera {
-    pub target: Vec3,
-    pub yaw: f32,
-    pub pitch: f32,
-    pub distance: f32,
-    pub aspect_ratio: f32,
-    pub fov_y_radians: f32,
-    /// Bounding-sphere radius of the framed content around `target`. The near /
-    /// far planes are fit to this each frame (see `near_far`) instead of being
-    /// stored, so depth precision stays optimal as `distance` changes on zoom.
-    pub scene_radius: f32,
-}
-
-impl Default for OrbitCamera {
-    fn default() -> Self {
-        // A neutral "review" home view: a front-right isometric angle, framed so
-        // the whole 2 m reference grid is visible when the scene is empty.
-        let base = Self {
-            target: Vec3::ZERO,
-            // +45° yaw parks the eye in the +X/+Y/+Z octant (front-right iso): +X
-            // reads lower-right, +Z lower-left, both facing the viewer. (-45° is
-            // the mirror image and shows the -X side instead.)
-            yaw: 45.0_f32.to_radians(),
-            pitch: -35.264_39_f32.to_radians(),
-            // `distance` / `scene_radius` are recomputed by `framed_to_bounds`.
-            distance: 7.5,
-            aspect_ratio: 16.0 / 9.0,
-            fov_y_radians: 50.0_f32.to_radians(),
-            scene_radius: 1.0,
-        };
-        base.framed_to_bounds(GRID_BOUNDS, Vec2::ONE)
-    }
-}
-
-impl OrbitCamera {
-    pub fn reset(&mut self) {
-        let aspect_ratio = self.aspect_ratio;
-        *self = Self::default();
-        self.aspect_ratio = aspect_ratio;
-    }
-
-    pub fn frame_bounds(&mut self, bounds: Bounds) {
-        *self = self.framed_to_bounds(bounds, Vec2::ONE);
-    }
-
-    /// Frame the camera so `bounds` fills the viewport, tight and centred.
-    ///
-    /// `safe_area` is the fraction of the viewport (x = width, y = height) that
-    /// framing should aim to fill — `Vec2::ONE` is the whole window. The 3D
-    /// scene is painted full-window with the toolbar / status-bar chrome drawn
-    /// *over* its top and bottom, so passing the visible fraction there keeps
-    /// the model out from under the chrome.
-    pub fn framed_to_bounds(mut self, bounds: Bounds, safe_area: Vec2) -> Self {
-        let center = bounds.center();
-        let half_size = bounds.size() * 0.5;
-        let rotation = self.rotation();
-        // Camera basis. `forward` points from the eye toward (and past) the
-        // target, so a corner's depth from the eye is `distance + forward·c`.
-        let right = rotation.transform_vector3(Vec3::X);
-        let up = rotation.transform_vector3(Vec3::Y);
-        let forward = self.forward_dir();
-        // Loosen the usable FOV by the safe-area fractions and the uniform
-        // margin, so the silhouette is fit *inside* the visible band rather than
-        // the full window.
-        let safe_h = (safe_area.x / FRAME_MARGIN).clamp(0.05, 1.0);
-        let safe_v = (safe_area.y / FRAME_MARGIN).clamp(0.05, 1.0);
-        let half_fov = (self.fov_y_radians * 0.5).clamp(0.01, 1.5).tan();
-        let tan_v = half_fov * safe_v;
-        let tan_h = half_fov * self.aspect_ratio.max(0.1) * safe_h;
-
-        // Per-corner offsets from the box centre projected onto the camera
-        // basis: `(u, v, w)` = (right·c, up·c, forward·c). `w` (depth along
-        // forward) is unaffected by a lateral re-centring pan, so it's computed
-        // once; `u`/`v` shift uniformly as the target pans.
-        let mut corners = [(0.0_f32, 0.0_f32, 0.0_f32); 8];
-        let mut i = 0;
-        for cx in [-1.0_f32, 1.0] {
-            for cy in [-1.0_f32, 1.0] {
-                for cz in [-1.0_f32, 1.0] {
-                    let c = Vec3::new(cx * half_size.x, cy * half_size.y, cz * half_size.z);
-                    corners[i] = (right.dot(c), up.dot(c), forward.dot(c));
-                    i += 1;
-                }
-            }
-        }
-
-        // Solve the fit distance *and* a lateral re-centring pan together. The
-        // per-corner screen-fill constraint is
-        //   |u| <= tan_h * (distance + w)   and   |v| <= tan_v * (distance + w)
-        // so distance >= |u|/tan_h - w (and likewise for v). A pure box-centre
-        // fit (pan = 0) makes the *nearest* extreme corner touch the edge while
-        // the far corner leaves a gap — perspective magnifies near geometry, so
-        // the silhouette is not actually centred. Each pass fits the smallest
-        // distance for the current pan, then shifts the pan so the projected
-        // silhouette straddles the centre. The depth term makes the re-centre
-        // non-linear, so iterate to a fixed point (cheap: 8 corners, 6 passes).
-        let mut pan_u = 0.0_f32;
-        let mut pan_v = 0.0_f32;
-        let mut distance = 0.05_f32;
-        for _ in 0..6 {
-            distance = 0.0;
-            for &(u, v, w) in &corners {
-                distance = distance
-                    .max((u + pan_u).abs() / tan_h - w)
-                    .max((v + pan_v).abs() / tan_v - w);
-            }
-            distance = distance.max(0.05);
-            pan_u +=
-                silhouette_recenter(corners.iter().map(|&(u, _, w)| (u + pan_u, distance + w)));
-            pan_v +=
-                silhouette_recenter(corners.iter().map(|&(_, v, w)| (v + pan_v, distance + w)));
-        }
-
-        // Pan the target laterally by the solved offset (eye follows, so depth
-        // along forward is unchanged) to centre the projected silhouette.
-        self.target = center - right * pan_u - up * pan_v;
-        self.distance = distance;
-        // Bounding-sphere radius around the box centre (corner distance). Drives
-        // the per-frame near/far fit in `near_far`.
-        self.scene_radius = half_size.length().max(0.001);
-        self
-    }
-
-    pub fn orbit(&mut self, delta: Vec2) {
-        self.yaw -= delta.x * 0.01;
-        self.pitch = (self.pitch - delta.y * 0.01).clamp(-1.5, 1.5);
-    }
-
-    pub fn set_offset_direction(&mut self, direction: Vec3) {
-        *self = self.with_offset_direction(direction);
-    }
-
-    pub fn with_offset_direction(mut self, direction: Vec3) -> Self {
-        let direction = direction.normalize_or_zero();
-        if direction.length_squared() <= f32::EPSILON {
-            return self;
-        }
-
-        self.pitch = (-direction.y).asin().clamp(-1.5, 1.5);
-        self.yaw = direction.x.atan2(direction.z);
-        self
-    }
-
-    pub fn zoom(&mut self, amount: f32) {
-        let scale = (1.0 - amount * 0.1).clamp(0.2, 5.0);
-        self.distance = (self.distance * scale).max(0.05);
-    }
-
-    pub fn pan_screen_delta(&mut self, delta_pixels: Vec2, viewport_size: Vec2) {
-        if viewport_size.x <= 0.0 || viewport_size.y <= 0.0 {
-            return;
-        }
-
-        let rotation = self.rotation();
-        let right = rotation.transform_vector3(Vec3::X);
-        let up = rotation.transform_vector3(Vec3::Y);
-        let view_height = 2.0 * self.distance * (self.fov_y_radians * 0.5).tan();
-        let view_width = view_height * self.aspect_ratio;
-        let delta_x = delta_pixels.x / viewport_size.x * view_width;
-        let delta_y = delta_pixels.y / viewport_size.y * view_height;
-
-        self.target += (-right * delta_x) + (up * delta_y);
-    }
-
-    pub fn eye_position(self) -> Vec3 {
-        self.target - self.forward_dir() * self.distance
-    }
-
-    pub fn forward_dir(self) -> Vec3 {
-        self.rotation().transform_vector3(Vec3::NEG_Z)
-    }
-
-    pub fn view_space_direction(self, direction: Vec3) -> Vec3 {
-        self.rotation().inverse().transform_vector3(direction)
-    }
-
-    pub fn view_matrix(self) -> Mat4 {
-        let world_from_camera = Mat4::from_translation(self.eye_position()) * self.rotation();
-        world_from_camera.inverse()
-    }
-
-    /// Near / far planes fit to the current view each frame. The far plane
-    /// reaches past the content (model *and* the reference grid); the near plane
-    /// is pushed as far forward as a bounded far/near ratio allows so the depth
-    /// buffer keeps its precision across the model regardless of zoom. This is
-    /// what prevents close / intersecting faces from flickering and swapping
-    /// draw order — a fixed tiny near plane with a huge far plane does not.
-    pub fn near_far(self) -> (f32, f32) {
-        // Far must clear the grid even when the model is tiny.
-        let content_radius = self.scene_radius.max(GRID_FAR_RADIUS);
-        let z_far = (self.distance + content_radius).max(MIN_Z_NEAR * 2.0);
-        let z_near = (z_far / MAX_DEPTH_RATIO).max(MIN_Z_NEAR);
-        (z_near, z_far)
-    }
-
-    pub fn view_projection(self, projection_mode: CameraProjection) -> Mat4 {
-        self.projection_matrix(projection_mode) * self.view_matrix()
-    }
-
-    /// The projection matrix alone (view → clip), fit to the current near/far.
-    /// Split out from [`view_projection`] so passes that work in view space (GTAO
-    /// reconstructs view-space position from this and projects sample points back
-    /// through it) can get the projection without the view baked in.
-    ///
-    /// [`view_projection`]: OrbitCamera::view_projection
-    pub fn projection_matrix(self, projection_mode: CameraProjection) -> Mat4 {
-        let (z_near, z_far) = self.near_far();
-        match projection_mode {
-            CameraProjection::Perspective => {
-                Mat4::perspective_infinite_reverse_rh(self.fov_y_radians, self.aspect_ratio, z_near)
-            }
-            CameraProjection::Orthographic => {
-                let half_height = self.orthographic_half_height();
-                let half_width = half_height * self.aspect_ratio.max(0.1);
-                Mat4::orthographic_rh(
-                    -half_width,
-                    half_width,
-                    -half_height,
-                    half_height,
-                    z_far,
-                    z_near,
-                )
-            }
-        }
-    }
-
-    fn orthographic_half_height(self) -> f32 {
-        (self.distance * (self.fov_y_radians * 0.5).tan()).max(0.001)
-    }
-
-    fn rotation(self) -> Mat4 {
-        Mat4::from_rotation_y(self.yaw) * Mat4::from_rotation_x(self.pitch)
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct CameraTransition {
-    start: OrbitCamera,
-    end: OrbitCamera,
-    elapsed_seconds: f32,
-    duration_seconds: f32,
-}
-
-impl CameraTransition {
-    fn new(start: OrbitCamera, end: OrbitCamera) -> Self {
-        Self::with_duration(start, end, CAMERA_TRANSITION_SECONDS)
-    }
-
-    fn with_duration(start: OrbitCamera, end: OrbitCamera, duration_seconds: f32) -> Self {
-        Self {
-            start,
-            end,
-            elapsed_seconds: 0.0,
-            duration_seconds,
-        }
-    }
-
-    fn step(&mut self, delta_seconds: f32) -> (OrbitCamera, bool) {
-        self.elapsed_seconds = (self.elapsed_seconds + delta_seconds).min(self.duration_seconds);
-        let t = if self.duration_seconds <= 0.0 {
-            1.0
-        } else {
-            self.elapsed_seconds / self.duration_seconds
-        };
-        let eased = ease_in_out_cubic(t);
-        let finished = self.elapsed_seconds >= self.duration_seconds;
-        (lerp_camera(self.start, self.end, eased), finished)
-    }
-}
-
-fn lerp_camera(start: OrbitCamera, end: OrbitCamera, t: f32) -> OrbitCamera {
-    OrbitCamera {
-        target: start.target.lerp(end.target, t),
-        yaw: lerp_angle(start.yaw, end.yaw, t),
-        pitch: start.pitch + (end.pitch - start.pitch) * t,
-        distance: start.distance + (end.distance - start.distance) * t,
-        aspect_ratio: end.aspect_ratio,
-        fov_y_radians: start.fov_y_radians + (end.fov_y_radians - start.fov_y_radians) * t,
-        scene_radius: start.scene_radius + (end.scene_radius - start.scene_radius) * t,
-    }
-}
-
-fn lerp_angle(start: f32, end: f32, t: f32) -> f32 {
-    let delta = (end - start + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
-        - std::f32::consts::PI;
-    start + delta * t
-}
-
-/// Additional lateral pan that makes the two screen-space extreme corners on one
-/// axis straddle the viewport centre symmetrically. Each item is `(lateral,
-/// depth)` for a corner — `lateral` already includes the running pan, `depth` is
-/// `distance + forward·offset`. Returns the extra pan to apply on that axis.
-fn silhouette_recenter(corners: impl Iterator<Item = (f32, f32)>) -> f32 {
-    let mut lo = f32::INFINITY;
-    let mut hi = f32::NEG_INFINITY;
-    let mut lo_corner = (0.0_f32, 1.0_f32);
-    let mut hi_corner = (0.0_f32, 1.0_f32);
-    for (lateral, depth) in corners {
-        let depth = depth.max(1e-3);
-        let screen = lateral / depth;
-        if screen < lo {
-            lo = screen;
-            lo_corner = (lateral, depth);
-        }
-        if screen > hi {
-            hi = screen;
-            hi_corner = (lateral, depth);
-        }
-    }
-    let (lat_lo, depth_lo) = lo_corner;
-    let (lat_hi, depth_hi) = hi_corner;
-    // Solve Δ so (lat_lo + Δ)/depth_lo = -(lat_hi + Δ)/depth_hi, i.e. the two
-    // extreme corners project to equal-and-opposite screen offsets.
-    -(lat_lo * depth_hi + lat_hi * depth_lo) / (depth_lo + depth_hi)
-}
-
-fn ease_in_out_cubic(t: f32) -> f32 {
-    if t < 0.5 {
-        4.0 * t * t * t
-    } else {
-        1.0 - (-2.0 * t + 2.0).powi(3) * 0.5
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn ndc_z(projection: Mat4, view_z: f32) -> f32 {
-        let clip = projection * Vec3::new(0.0, 0.0, view_z).extend(1.0);
-        clip.z / clip.w
-    }
-
-    #[test]
-    fn perspective_projection_uses_reversed_z() {
-        let camera = OrbitCamera::default();
-        let (near, _) = camera.near_far();
-        let projection = camera.projection_matrix(CameraProjection::Perspective);
-
-        assert!((ndc_z(projection, -near) - 1.0).abs() < 1e-5);
-        let distant = ndc_z(projection, -near * 1_000.0);
-        assert!(distant > 0.0 && distant < 0.01);
-    }
-
-    #[test]
-    fn orthographic_projection_uses_reversed_z() {
-        let camera = OrbitCamera::default();
-        let (near, far) = camera.near_far();
-        let projection = camera.projection_matrix(CameraProjection::Orthographic);
-
-        assert!((ndc_z(projection, -near) - 1.0).abs() < 1e-5);
-        assert!(ndc_z(projection, -far).abs() < 1e-5);
-    }
-}
-
 /// The host-facing renderer: the live 3D/UV cameras, the editable per-material
 /// table, and (built lazily on first draw) the Direct3D 11 scene + Tex GPU
 /// resources. `app` owns one of these and drives every frame through its public
@@ -525,6 +93,12 @@ pub struct Renderer {
     pub camera: OrbitCamera,
     /// The 2D camera for the UV viewport, independent of the 3D orbit camera.
     pub uv_camera: UvCamera,
+    /// The Opt workspace's *right-hand* camera, used only by the split view with
+    /// camera sync off. With sync on it simply mirrors [`Self::camera`], which is
+    /// why it needs no transition of its own: the animated moves (framing, home,
+    /// the WASD steps, the gizmo) all drive the main camera, and the second view
+    /// follows it or is dragged by hand.
+    pub opt_camera: OrbitCamera,
     camera_transition: Option<CameraTransition>,
     /// Fraction of the viewport (x = width, y = height) framing should fill,
     /// leaving room for the chrome that overlays the full-window 3D scene. Set
@@ -571,6 +145,107 @@ pub struct SceneFrame<'a> {
     pub background: ViewportBackground,
 }
 
+impl<'a> SceneFrame<'a> {
+    /// The same frame pointed at a different mesh — how the Opt workspace renders
+    /// its processed model through every setting the source uses (shading,
+    /// wireframe, normals, AA, AO, tone mapping), rather than a parallel path that
+    /// would inevitably drift from it.
+    pub fn with_model(&self, model: &'a ModelData, model_revision: u64) -> SceneFrame<'a> {
+        SceneFrame {
+            model,
+            model_revision,
+            ..*self
+        }
+    }
+}
+
+/// The processed mesh the Opt workspace compares against, and the revision its
+/// GPU buffers are cached by.
+#[derive(Debug, Clone, Copy)]
+pub struct ProcessedModelRef<'a> {
+    pub model: &'a ModelData,
+    pub revision: u64,
+}
+
+/// How the Opt workspace lays its two meshes out.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum OptView {
+    /// Side by side: source on the left, processed on the right.
+    Split,
+    /// One view, both meshes in it — one shaded, the other a ghost over it.
+    Overlay {
+        ghost: GhostStyle,
+        /// Show the *source* solid and the processed as the ghost (the A/B swap).
+        swap: bool,
+        /// The ghost's colour, gamma-space RGB. Supplied by the caller because
+        /// the chrome shows the same colour in its legend and the two must
+        /// match; the alpha is the renderer's, since it depends on the style.
+        tint: [f32; 3],
+    },
+}
+
+/// How the ghosted mesh is drawn in [`OptView::Overlay`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GhostStyle {
+    /// A translucent tinted surface: reads the silhouette difference at a glance.
+    #[default]
+    Xray,
+    /// Only the ghost's edges, leaving the solid surface fully visible.
+    Wireframe,
+}
+
+/// The chrome-free area of the window, in physical pixels: the backbuffer minus
+/// the toolbar, the status bar and whichever side panels are open.
+///
+/// Every other workspace renders across the whole backbuffer and lets the opaque
+/// chrome cover what it must; the Opt split can't, because it has to *divide*
+/// what the user can see. Splitting the backbuffer instead puts the divider
+/// wherever the window's centre happens to fall — off-centre in the visible area
+/// the moment a side panel is open, and with each half's content sitting at a
+/// different offset from the divider, which reads as the two views disagreeing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SceneViewport {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl SceneViewport {
+    /// The whole backbuffer — the fallback when the chrome hasn't been laid out
+    /// yet (the first frame) or covers nothing.
+    pub fn full(size: (u32, u32)) -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            width: size.0,
+            height: size.1,
+        }
+    }
+}
+
+/// Per-frame inputs for the Opt workspace's comparison render.
+pub struct OptSceneFrame<'a> {
+    /// The source mesh and every shared setting; [`SceneFrame::with_model`]
+    /// retargets it at the processed mesh.
+    pub base: SceneFrame<'a>,
+    /// `None` until a processing run has produced something. The split still
+    /// draws two views — both of the source — so the layout the user chose is
+    /// the layout they get, whether or not the stack has anything in it yet.
+    pub processed: Option<ProcessedModelRef<'a>>,
+    /// Where the split lays its two views out. Ignored by
+    /// [`OptView::Overlay`], which draws one view across the whole backbuffer
+    /// exactly as the 3D workspace does.
+    pub viewport: SceneViewport,
+    pub view: OptView,
+    /// Camera for the source view. Also the camera for both meshes in
+    /// [`OptView::Overlay`], where they share one space.
+    pub source_camera: OrbitCamera,
+    /// Camera for the processed view in [`OptView::Split`]. Equal to
+    /// `source_camera` while the views are synced.
+    pub processed_camera: OrbitCamera,
+}
+
 impl Renderer {
     /// Create a renderer from its config with default cameras and an empty material
     /// table. No GPU resources are built here — the Direct3D 11 device doesn't exist
@@ -581,6 +256,7 @@ impl Renderer {
             config,
             camera: OrbitCamera::default(),
             uv_camera: UvCamera::default(),
+            opt_camera: OrbitCamera::default(),
             camera_transition: None,
             framing_safe_area: Vec2::ONE,
             material_states: Vec::new(),
@@ -615,6 +291,45 @@ impl Renderer {
             self.material_revision,
             self.camera,
         )
+    }
+
+    /// Render the Opt workspace's comparison view: the source and processed
+    /// meshes side by side, or one ghosted over the other. Shares every setting
+    /// and every GPU resource with [`Self::render_scene`] — only the layout and
+    /// the second model differ.
+    pub fn render_opt_scene(
+        &mut self,
+        gpu: &Gpu,
+        frame: &OptSceneFrame<'_>,
+    ) -> windows::core::Result<()> {
+        let scene = match self.scene_gpu {
+            Some(ref mut scene) => scene,
+            None => self.scene_gpu.insert(SceneGpu::new(
+                gpu,
+                frame.base.anti_aliasing.effective_sample_count(),
+            )?),
+        };
+        scene.render_opt(gpu, frame, &self.material_states, self.material_revision)
+    }
+
+    /// Drop the processed mesh's GPU buffers (invariant 3). Called when the Opt
+    /// workspace has nothing processed to show, so the memory isn't held while
+    /// another workspace is up.
+    pub fn release_processed_mesh(&mut self) {
+        if let Some(scene) = self.scene_gpu.as_mut() {
+            scene.release_processed();
+        }
+    }
+
+    /// Drop the Tex viewport's uploaded textures (invariant 3). Called when the Tex
+    /// workspace is left, so a session that visited it once doesn't hold its mipped
+    /// uploads — a bounded cache, but a full one is hundreds of megabytes of VRAM —
+    /// for the rest of the process. The viewport's pipelines are kept, so re-entering
+    /// costs only the re-upload of whatever is looked at next.
+    pub fn release_tex_cache(&mut self) {
+        if let Some(tex) = self.tex_gpu.as_mut() {
+            tex.release_cache();
+        }
     }
 
     /// Render the 2D UV viewport through Direct3D 11 (instead of the 3D scene): the
@@ -850,10 +565,33 @@ impl Renderer {
 
     pub fn set_camera_aspect_ratio(&mut self, aspect_ratio: f32) {
         self.camera.aspect_ratio = aspect_ratio;
+        self.opt_camera.aspect_ratio = aspect_ratio;
         if let Some(transition) = self.camera_transition.as_mut() {
             transition.start.aspect_ratio = aspect_ratio;
             transition.end.aspect_ratio = aspect_ratio;
         }
+    }
+
+    /// Orbit / pan / zoom the Opt split view's right-hand camera. Used only while
+    /// camera sync is off; with it on, `app` drives the main camera and both views
+    /// follow it.
+    pub fn orbit_opt_camera(&mut self, delta: Vec2) {
+        self.opt_camera.orbit(delta);
+    }
+
+    pub fn pan_opt_camera(&mut self, delta_pixels: Vec2, viewport_size: Vec2) {
+        self.opt_camera
+            .pan_screen_delta(delta_pixels, viewport_size);
+    }
+
+    pub fn zoom_opt_camera(&mut self, amount: f32) {
+        self.opt_camera.zoom(amount);
+    }
+
+    /// Point the Opt split view's right-hand camera wherever the main one is
+    /// looking — what "sync views" does, and what re-enabling it snaps back to.
+    pub fn sync_opt_camera(&mut self) {
+        self.opt_camera = self.camera;
     }
 
     pub fn pan_camera(&mut self, delta_pixels: Vec2, viewport_size: Vec2) {

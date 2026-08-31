@@ -13,23 +13,18 @@
 //! (invariant 8); the toast surface/text colors are egui-notify's own, inherited
 //! from the app's egui visuals (so toasts match the rest of the chrome).
 //!
-//! **Placement.** Toasts anchor to the bottom-right corner. The bottom margins
-//! clear the status bar at every display scale (the bar is at most
-//! [`size::STATUS_BAR_HEIGHT`] points tall, and the margin is that plus slack),
-//! and the activity toast sits one row above the event stack so the two never
-//! overlap.
+//! **Placement.** Toasts anchor to the bottom-right corner, clear of the status
+//! bar: the bottom margin is the bar's own height plus a margin, scaled to points
+//! by [`theme::px`] exactly as the bar itself is, and the activity toast sits one
+//! toast row above the event stack so the two never overlap.
 //!
 //! [`theme`]: crate::theme
-
-use std::time::Duration;
+//! [`theme::px`]: crate::theme::px
 
 use egui::Context;
 use egui_notify::{Anchor, Toasts};
 
-use crate::theme::size;
-
-/// How long a transient result toast stays up before it dismisses itself.
-const EVENT_DURATION: Duration = Duration::from_secs(2);
+use crate::theme::{self, motion, size};
 
 /// The app-wide toast collector. Owned by `app`; shown once per frame.
 pub struct Notifications {
@@ -57,39 +52,22 @@ impl Default for Notifications {
 }
 
 impl Notifications {
-    /// Create the collector. Both stacks anchor `BottomRight`; the bottom margins
-    /// clear the status bar at every display scale (the bar is at most
-    /// [`size::STATUS_BAR_HEIGHT`] points tall, and the margin is that plus slack),
-    /// and the activity toast sits one row above the event stack so the two never
-    /// overlap.
+    /// Create the collector. All three stacks anchor `BottomRight`; their margins
+    /// are applied per-frame in [`Notifications::show`], which is where the
+    /// display scale the design-pixel insets need is known.
     pub fn new() -> Self {
-        let events = Toasts::new()
-            .with_anchor(Anchor::BottomRight)
-            .with_margin(egui::vec2(
-                size::NOTIFICATION_MARGIN_X,
-                size::NOTIFICATION_EVENT_MARGIN_Y,
-            ))
-            .with_spacing(size::NOTIFICATION_SPACING);
-        let activity = Toasts::new()
-            .with_anchor(Anchor::BottomRight)
-            .with_margin(egui::vec2(
-                size::NOTIFICATION_MARGIN_X,
-                size::NOTIFICATION_ACTIVITY_MARGIN_Y,
-            ))
-            .with_spacing(size::NOTIFICATION_SPACING);
-        // The mode toast shares the event row's anchor/margin: it is a transient
-        // event-class toast, just one kept to a single replaceable slot.
-        let mode = Toasts::new()
-            .with_anchor(Anchor::BottomRight)
-            .with_margin(egui::vec2(
-                size::NOTIFICATION_MARGIN_X,
-                size::NOTIFICATION_EVENT_MARGIN_Y,
-            ))
-            .with_spacing(size::NOTIFICATION_SPACING);
+        let stack = || {
+            Toasts::new()
+                .with_anchor(Anchor::BottomRight)
+                .with_spacing(size::NOTIFICATION_SPACING)
+        };
         Self {
-            events,
-            activity,
-            mode,
+            events: stack(),
+            // The mode toast shares the event row's anchor/margin: it is a
+            // transient event-class toast, just one kept to a single
+            // replaceable slot.
+            mode: stack(),
+            activity: stack(),
             active: 0,
         }
     }
@@ -98,21 +76,21 @@ impl Notifications {
     pub fn success(&mut self, message: impl Into<String>) {
         self.events
             .success(message.into())
-            .duration(Some(EVENT_DURATION));
+            .duration(Some(motion::NOTIFICATION_EVENT));
     }
 
     /// Push a transient error toast (e.g. a decode or load failed).
     pub fn error(&mut self, message: impl Into<String>) {
         self.events
             .error(message.into())
-            .duration(Some(EVENT_DURATION));
+            .duration(Some(motion::NOTIFICATION_EVENT));
     }
 
     /// Push a transient info toast.
     pub fn info(&mut self, message: impl Into<String>) {
         self.events
             .info(message.into())
-            .duration(Some(EVENT_DURATION));
+            .duration(Some(motion::NOTIFICATION_EVENT));
     }
 
     /// Show the current view mode (e.g. the material mode name) as a transient
@@ -124,7 +102,7 @@ impl Notifications {
         self.mode.dismiss_all_toasts();
         self.mode
             .info(message.into())
-            .duration(Some(EVENT_DURATION));
+            .duration(Some(motion::NOTIFICATION_EVENT));
     }
 
     /// Mark the start of a background job, raising the persistent activity toast on
@@ -155,8 +133,33 @@ impl Notifications {
     /// repaint, which the app's on-demand loop honors (invariant 6); a steady
     /// persistent activity toast requests none, so it never spins the loop.
     pub fn show(&mut self, ctx: &Context) {
+        self.sync_margins(ctx);
         self.activity.show(ctx);
         self.mode.show(ctx);
         self.events.show(ctx);
     }
+
+    /// Re-derive the stacks' margins for the current display scale. The insets are
+    /// design pixels (invariant 8), so what clears the status bar depends on the
+    /// scale — which is known here and not at construction.
+    fn sync_margins(&mut self, ctx: &Context) {
+        let x = theme::px(ctx, size::NOTIFICATION_MARGIN_X);
+        let event_y = theme::px(ctx, size::NOTIFICATION_EVENT_MARGIN_Y);
+        set_margin(&mut self.events, egui::vec2(x, event_y));
+        set_margin(&mut self.mode, egui::vec2(x, event_y));
+        // The activity toast rides one toast row higher, so the work indicator and
+        // the result toasts never land on each other.
+        set_margin(
+            &mut self.activity,
+            egui::vec2(x, event_y + size::NOTIFICATION_ROW),
+        );
+    }
+}
+
+/// Apply `margin` to an existing stack. egui-notify exposes the margin only
+/// through a consuming builder, so the collector is moved out, rebuilt and put
+/// back — the queued toasts ride along untouched.
+fn set_margin(toasts: &mut Toasts, margin: egui::Vec2) {
+    let updated = std::mem::replace(toasts, Toasts::new()).with_margin(margin);
+    *toasts = updated;
 }

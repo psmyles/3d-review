@@ -83,6 +83,14 @@ struct FaceUniform {
     params: [f32; 4],
 }
 
+// Byte-size lock against `ibl.hlsl`'s `b0`. The cbuffer is sized from
+// `size_of::<T>()` and an upload is rejected only when it is *larger* than the
+// buffer, so a field added on one side alone grows both and uploads happily while
+// the shader keeps reading the old offsets — here that silently corrupts the
+// committed maps rather than failing the bake.
+#[cfg(feature = "bake")]
+const _: () = assert!(std::mem::size_of::<FaceUniform>() == 64);
+
 /// World-space basis (forward, right, up) for each cubemap face, in layer order
 /// `+X, -X, +Y, -Y, +Z, -Z`. A fullscreen-triangle clip position `(x, y)` maps to
 /// the direction `forward + x*right + y*up`, matching `vs_fullscreen` in the

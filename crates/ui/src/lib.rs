@@ -23,6 +23,7 @@ mod dimensions;
 mod gizmo;
 mod help;
 mod notifications;
+mod opt_state;
 mod overlay;
 mod panels;
 mod prof;
@@ -38,6 +39,10 @@ mod widgets;
 // Root re-exports carry exactly what `app` (the sole consumer) uses; everything
 // else stays reachable under its own module path.
 pub use notifications::Notifications;
+pub use opt_state::{
+    ComparisonSide, GhostStyle, OptIntent, OptLayout, OptLevelView, OptResultView, OptUiState,
+    StackItem,
+};
 pub use overlay::draw_overlay;
 pub use review_render::{MsaaSamples, Selection};
 pub use state::{

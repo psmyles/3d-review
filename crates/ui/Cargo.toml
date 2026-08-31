@@ -11,7 +11,15 @@ egui-notify.workspace = true
 glam.workspace = true
 image.workspace = true
 review-model = { path = "../model" }
+# The Opt workspace edits an `OptStack` and displays its measured metrics, so the
+# chrome needs those types. Commands still flow ui -> app (invariant 2): this
+# crate reads and edits the stack value, never runs an operation.
+review-optimize = { path = "../optimize" }
+# The shared guarded Tracy helpers, for the per-frame UI CPU zones (Draw Viewport
+# Scene / Draw Overlay); carries `tracy-client` itself, so this crate needs no
+# direct dependency on it.
+review-prof.workspace = true
 review-render = { path = "../render" }
-# Tracy profiler client — always compiled in, inert until started (`--tracy`).
-# Used for the per-frame UI CPU zones (Draw Viewport Scene / Draw Overlay).
-tracy-client.workspace = true
+
+[lints]
+workspace = true

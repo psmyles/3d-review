@@ -189,6 +189,12 @@ pub(crate) struct MaterialUniform {
     pub flags: [f32; 4],
 }
 
+// Byte-size lock against `scene.hlsl`'s `b1` (invariant 11). The cbuffer is sized
+// from `size_of::<T>()` and an upload is rejected only when it is *larger* than
+// the buffer, so a field added on one side alone grows both and uploads happily
+// while the shader keeps reading the old offsets — wrong pixels, not an error.
+const _: () = assert!(std::mem::size_of::<MaterialUniform>() == 96);
+
 impl MaterialUniform {
     pub(super) fn from_state(state: &MaterialState) -> Self {
         let mut slot_flags = 0u32;

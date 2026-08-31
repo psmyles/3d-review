@@ -3,10 +3,11 @@
 //! and returns the [`UiOutput`] intents for `app` to apply.
 
 use review_model::{ModelData, SceneBvh};
-use review_render::OrbitCamera;
+use review_render::{OrbitCamera, Selection};
 
+use crate::opt_state::{GhostStyle, OptIntent, OptLayout};
 use crate::state::{OptionPanel, UiOutput, UiState, WorkspaceMode, sync_debug_state};
-use crate::theme::{self, size};
+use crate::theme::{self, color, size};
 use crate::{dimensions, gizmo, help, panels, stats, status_bar, texture_view, toolbar};
 
 /// Draw the full egui overlay and return the intents emitted this frame. `model`
@@ -39,8 +40,8 @@ pub fn draw_overlay(
 
     // The side panels, option panels, axis gizmo and stats overlay are all 3D-scene
     // chrome; the UV / Texture workspaces keep a clean viewport (just the UV dropdown
-    // in the toolbar), so they only draw in 3D mode.
-    if state.mode == WorkspaceMode::ThreeD {
+    // in the toolbar), so they draw only in the scene workspaces (3D and Opt).
+    if state.mode.is_scene() {
         // Outliner (left) + Inspector (right) dockable side panels. They paint over
         // the full-window background scene (exactly as the toolbar / status bar
         // already do); their live widths inset the floating viewport chrome below so
@@ -50,6 +51,8 @@ pub fn draw_overlay(
         output.material_edit = side.inspector.material_edit;
         output.texture = side.inspector.texture;
         output.material_edit_active = side.inspector.material_edit_active;
+        output.opt = side.opt.intent;
+        output.opt_edit_active = side.opt.edit_active;
 
         // The free viewport: the screen minus the chrome bands (toolbar top,
         // status bar bottom) and the open side panels (left/right). Floating
@@ -66,6 +69,11 @@ pub fn draw_overlay(
                 screen.bottom() - status_bar_height,
             ),
         );
+
+        // `app` reads this back to lay the Opt split out inside the area the user
+        // can actually see (the renderer's `SceneViewport`).
+        state.scene_viewport = Some(viewport);
+        draw_split_divider(ctx, state, viewport);
 
         // Bounding-box dimension labels sit on the viewport (under the chrome).
         // The measured box is resolved here (cached for the "visible only" scan)
@@ -91,7 +99,20 @@ pub fn draw_overlay(
             output.axis_gizmo_action = gizmo_response.inner;
         }
 
-        draw_stats_overlay(ctx, state, status_bar_height, side.left_inset);
+        draw_stats_overlay(
+            ctx,
+            state,
+            status_bar_height,
+            side.left_inset,
+            side.right_inset,
+        );
+        draw_overlay_legend(
+            ctx,
+            state,
+            status_bar_height,
+            side.left_inset,
+            side.right_inset,
+        );
     } else if state.mode == WorkspaceMode::Texture {
         // The Tex workspace paints a 2D image viewer (channel-isolated, pan/zoom)
         // over a chosen background fill, plus its own floating stats panel. The
@@ -107,6 +128,26 @@ pub fn draw_overlay(
     help::draw_help_overlay(ctx, state);
 
     output
+}
+
+/// The line between the Opt split's two views. Drawn on egui's background layer
+/// (so the stats cards and option windows still float over it) in the same
+/// hairline the chrome panels are edged with, so the divider reads as part of
+/// the frame rather than as something in the scene.
+fn draw_split_divider(ctx: &egui::Context, state: &UiState, viewport: egui::Rect) {
+    if state.mode != WorkspaceMode::Opt || state.opt.layout != OptLayout::Split {
+        return;
+    }
+    // The renderer splits the same rect the same way (`SceneViewport`), so the
+    // line lands exactly on the seam between the two composites.
+    let x = viewport.center().x;
+    ctx.layer_painter(egui::LayerId::background()).line_segment(
+        [
+            egui::pos2(x, viewport.top()),
+            egui::pos2(x, viewport.bottom()),
+        ],
+        egui::Stroke::new(size::HAIRLINE, color::DIVIDER),
+    );
 }
 
 /// Draw every open tool option panel as its own native `egui::Window`
@@ -162,8 +203,18 @@ fn draw_option_panels(ctx: &egui::Context, state: &mut UiState, viewport: egui::
 /// (gizmo / stats) so it doesn't land over a panel.
 struct SidePanelLayout {
     inspector: panels::inspector::InspectorOutput,
+    /// The Opt workspace's own emissions: the preset / export intents raised by
+    /// the stack pane or the Opt inspector, and its drag-coalescing hint.
+    opt: OptEmission,
     left_inset: f32,
     right_inset: f32,
+}
+
+/// What the Opt panels raised this frame.
+#[derive(Debug, Clone, Default)]
+struct OptEmission {
+    intent: Option<OptIntent>,
+    edit_active: bool,
 }
 
 /// Draw the dockable Outliner (left) and Inspector (right) side panels and return
@@ -182,13 +233,36 @@ fn draw_side_panels(
     // it (the Inspector shows it; the scan is far too heavy to repeat per repaint).
     state.sync_bone_influence(model);
 
+    let opt_mode = state.mode == WorkspaceMode::Opt;
+    let mut opt = OptEmission::default();
+
     let mut left_inset = 0.0;
     if state.side_panels_open {
         let response = egui::SidePanel::left("outliner_panel")
             .resizable(true)
             .default_width(size::SIDE_PANEL_DEFAULT_WIDTH)
             .width_range(size::SIDE_PANEL_MIN_WIDTH..=size::OUTLINER_MAX_WIDTH)
-            .show(ctx, |ui| panels::outliner::body(ui, state, model));
+            .show(ctx, |ui| {
+                // In Opt the left panel is split horizontally: the operation
+                // stack takes a resizable band at the bottom and the scene tree
+                // keeps the rest. `show_inside` is egui's own nested-panel
+                // primitive, so egui owns the divider drag and the split height
+                // across frames exactly as it owns the side panel's width.
+                if opt_mode {
+                    let stack = egui::TopBottomPanel::bottom("opt_stack_pane")
+                        .resizable(true)
+                        .default_height(size::OPT_STACK_DEFAULT_HEIGHT)
+                        .height_range(size::OPT_STACK_MIN_HEIGHT..=size::OPT_STACK_MAX_HEIGHT)
+                        .show_inside(ui, |ui| panels::opt_stack::body(ui, state));
+                    if stack.inner.is_some() {
+                        opt.intent = stack.inner;
+                    }
+                    egui::CentralPanel::default()
+                        .show_inside(ui, |ui| panels::outliner::body(ui, state, model));
+                } else {
+                    panels::outliner::body(ui, state, model);
+                }
+            });
         left_inset = response.response.rect.width();
     }
 
@@ -199,13 +273,28 @@ fn draw_side_panels(
             .resizable(true)
             .default_width(size::SIDE_PANEL_DEFAULT_WIDTH)
             .width_range(size::SIDE_PANEL_MIN_WIDTH..=size::OUTLINER_MAX_WIDTH)
-            .show(ctx, |ui| panels::inspector::body(ui, state, model));
+            .show(ctx, |ui| {
+                // Opt retargets the Inspector at whatever the stack pane has
+                // selected — an operation's parameters, the export settings, or
+                // the selected object's overrides. A material selection still
+                // reaches the material editor, since Opt keeps the full 3D
+                // chrome and materials remain inspectable.
+                if opt_mode && !matches!(state.selection, Selection::Material(_)) {
+                    let out = panels::opt_inspector::body(ui, state, model);
+                    opt.intent = opt.intent.take().or(out.intent);
+                    opt.edit_active |= out.edit_active;
+                    panels::inspector::InspectorOutput::default()
+                } else {
+                    panels::inspector::body(ui, state, model)
+                }
+            });
         right_inset = response.response.rect.width();
         inspector = response.inner;
     }
 
     SidePanelLayout {
         inspector,
+        opt,
         left_inset,
         right_inset,
     }
@@ -216,6 +305,7 @@ fn draw_stats_overlay(
     state: &UiState,
     status_bar_height: f32,
     left_inset: f32,
+    right_inset: f32,
 ) {
     if !state.show_stats {
         return;
@@ -228,4 +318,91 @@ fn draw_stats_overlay(
         size::STATS_PANEL_WIDTH,
         |ui| stats::stats_grid(ui, state),
     );
+
+    // Opt shows a second card on the opposite edge, so the two sets of counts
+    // read as a comparison. It is up as soon as the workspace has measured
+    // anything — before an operation is added it carries the source's own cache
+    // and overdraw figures, which is what a user reads to decide what to add.
+    if state.mode == WorkspaceMode::Opt && state.opt.result.is_some() {
+        crate::widgets::stats_overlay_card_at(
+            ctx,
+            "opt_processed_stats_overlay",
+            crate::widgets::StatsCardSide::Right,
+            right_inset,
+            status_bar_height,
+            size::OPT_STATS_PANEL_WIDTH,
+            |ui| stats::processed_stats_grid(ui, state),
+        );
+    }
+}
+
+/// The overlay layout's legend: which mesh is the shaded one and which is the
+/// ghost drawn over it.
+///
+/// Without it the view is two meshes in one space with nothing saying which is
+/// which — and the `X` swap silently exchanges them, so a reader who looked away
+/// has no way back to the answer. Centred between the two stats cards, and drawn
+/// only for the overlay, since the split labels its halves by their own cards.
+fn draw_overlay_legend(
+    ctx: &egui::Context,
+    state: &UiState,
+    status_bar_height: f32,
+    left_inset: f32,
+    right_inset: f32,
+) {
+    if state.mode != WorkspaceMode::Opt
+        || state.opt.layout != OptLayout::Overlay
+        || !state.opt.has_result()
+    {
+        return;
+    }
+
+    // The solid mesh is the one the A/B swap is *not* showing as the ghost.
+    let solid = state.opt.side;
+    let ghost = solid.swapped();
+    let ghost_style = match state.opt.ghost_style {
+        GhostStyle::Xray => "x-ray",
+        GhostStyle::Wireframe => "wireframe",
+    };
+
+    // The card is centred in the free viewport, so the panels' insets shift it by
+    // half their difference rather than by either one.
+    let offset = (left_inset - right_inset) * 0.5;
+    crate::widgets::stats_overlay_card_at(
+        ctx,
+        "opt_overlay_legend",
+        crate::widgets::StatsCardSide::Center,
+        offset,
+        status_bar_height,
+        size::OPT_LEGEND_WIDTH,
+        |ui| {
+            ui.spacing_mut().item_spacing.y = size::STATS_ROW_SPACING;
+            legend_row(
+                ui,
+                color::TEXT_VALUE,
+                &format!("{} · shaded", solid.label()),
+            );
+            legend_row(
+                ui,
+                color::GHOST_XRAY,
+                &format!("{} · {ghost_style}", ghost.label()),
+            );
+        },
+    );
+}
+
+/// One legend line: a colour swatch and what it labels.
+fn legend_row(ui: &mut egui::Ui, swatch: egui::Color32, text: &str) {
+    ui.horizontal(|ui| {
+        let size = egui::Vec2::splat(size::OPT_LEGEND_SWATCH);
+        let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+        ui.painter()
+            .rect_filled(rect, size::STATS_CORNER_RADIUS, swatch);
+        ui.add_space(size::OPT_LEGEND_SWATCH_GAP - ui.spacing().item_spacing.x);
+        ui.label(crate::widgets::mono_label(
+            text,
+            theme::font::STATS,
+            color::TEXT_BODY,
+        ));
+    });
 }

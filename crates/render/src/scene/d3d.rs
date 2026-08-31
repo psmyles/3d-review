@@ -13,41 +13,31 @@
 use review_model::ModelData;
 use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11DeviceContext};
 
-use crate::geometry::{
-    bounding_box_lines, face_normal_lines, model_mesh, model_pivot, pivot_half_extent, pivot_lines,
-    scene_lines, selection_geometry, skeleton_fill_triangles, skeleton_lines, skin_weight_vertices,
-    uv_fill_triangles, uv_grid_lines, uv_wireframe_lines, vertex_normal_lines, visible_geometry,
-    wireframe_lines,
-};
+use crate::geometry::{scene_lines, uv_grid_lines};
 use crate::ibl::{IblD3d, PREFILTER_MAX_LOD};
-use crate::material::{
-    MaterialDrawRange, MaterialState, MaterialTableD3d, build_part_key, effective_materials,
-};
+use crate::material::{MaterialDrawRange, MaterialState, MaterialTableD3d, effective_materials};
 use crate::rhi::{
     BlendMode, ColorTarget, Cull, DepthBias, DepthCompare, DepthState, DepthTarget,
-    DynamicConstantBuffer, Gpu, IndexBuffer, InputElement, Pipeline, PipelineDesc, Sampler,
-    Texture, Topology, VertexBuffer, VertexFormat,
+    DynamicConstantBuffer, Gpu, IndexBuffer, Pipeline, PipelineDesc, Sampler, Texture, Topology,
+    VertexBuffer,
 };
-use crate::selection::{Selection, SelectionView, selection_bounds};
+use crate::selection::SelectionView;
 use crate::{
-    ActiveMaterial, AntiAliasing, BoundingBoxScope, CameraProjection, CheckerTexture,
-    EnvironmentSettings, GtaoSettings, MaterialMode, OrbitCamera, SceneDebugOptions, SceneFrame,
-    ShadingMode, TonemapSettings, UvCamera, UvShadingMode, ViewportBackground,
+    ActiveMaterial, AntiAliasing, CameraProjection, CheckerTexture, EnvironmentSettings,
+    GhostStyle, GtaoSettings, OrbitCamera, SceneDebugOptions, SceneFrame, ShadingMode,
+    TonemapSettings, UvCamera, UvShadingMode, ViewportBackground,
 };
 
 use super::gpu_types::{
     GtaoUniforms, PostUniforms, SceneUniforms, buffer_view_value, shading_mode_value,
     skin_weight_value, vertex_color_value,
 };
+use super::pipelines::{SCENE_VERTEX_LAYOUT, SCENE_VS, ScenePipelineSet, build_scene_pipelines};
+use super::resources::{ModelSlot, SlotId};
 use crate::rhi::gpu_profiler::{self, GpuProfiler, Zone};
 
-/// Compiled DXBC — see `build.rs`.
-const SCENE_VS: &[u8] = include_bytes!("../hlsl/scene.vs.dxbc");
-const SCENE_LINE_PS: &[u8] = include_bytes!("../hlsl/scene.line.ps.dxbc");
-const SCENE_MESH_PS: &[u8] = include_bytes!("../hlsl/scene.mesh.ps.dxbc");
-const SCENE_SKYBOX_VS: &[u8] = include_bytes!("../hlsl/scene.skybox.vs.dxbc");
-const SCENE_SKYBOX_PS: &[u8] = include_bytes!("../hlsl/scene.skybox.ps.dxbc");
-const SCENE_SELECTION_PS: &[u8] = include_bytes!("../hlsl/scene.selection.ps.dxbc");
+/// Compiled DXBC — see `build.rs`. (The scene pipelines' own shaders live in
+/// [`super::pipelines`].)
 const SCENE_GTAO_GBUFFER_PS: &[u8] = include_bytes!("../hlsl/scene.gtao_gbuffer.ps.dxbc");
 const GTAO_VS: &[u8] = include_bytes!("../hlsl/gtao.vs.dxbc");
 const GTAO_PS: &[u8] = include_bytes!("../hlsl/gtao.ps.dxbc");
@@ -61,15 +51,15 @@ const CHECKER_GREYSCALE_PNG: &[u8] =
     include_bytes!("../../../../assets/textures/T_UV_Checker_BW.png");
 const CHECKER_COLOR_PNG: &[u8] = include_bytes!("../../../../assets/textures/T_UV_Checker_CLR.png");
 
-/// The `SceneVertex` input layout, in field order (offsets auto-computed). Must
-/// match `#[repr(C)] SceneVertex` (`gpu_types`) and `VsInput` in `scene.hlsl`.
-const SCENE_VERTEX_LAYOUT: [InputElement; 5] = [
-    InputElement::new("POSITION", 0, VertexFormat::Float3),
-    InputElement::new("NORMAL", 0, VertexFormat::Float3),
-    InputElement::new("TEXCOORD", 0, VertexFormat::Float2),
-    InputElement::new("TANGENT", 0, VertexFormat::Float4),
-    InputElement::new("COLOR", 0, VertexFormat::Float4),
-];
+/// Constant-buffer registers, one per struct across the whole scene/GTAO/post
+/// shader set (the register plan in `scene.hlsl`; the material's `b1` is named in
+/// `material/d3d.rs`). They are distinct because a pass leaves its cbuffers bound
+/// across pass boundaries — the GTAO fullscreen passes run with `SceneUniforms`
+/// still on the vertex stage from the G-buffer draw — so sharing a slot would have
+/// one stage read another struct's bytes the moment a shader started reading it.
+const SCENE_CBUFFER_SLOT: u32 = 0;
+const GTAO_CBUFFER_SLOT: u32 = 2;
+const POST_CBUFFER_SLOT: u32 = 3;
 
 /// Expand a [`ViewportBackground`]'s display-space top/bottom colors into the
 /// `bg_top` / `bg_bottom` cbuffer fields (`xyz` color, `w` unused).
@@ -99,130 +89,26 @@ fn post_uniforms(
     }
 }
 
-/// Baked parameters for the bounding-box view. Only the inputs the chosen scope
-/// depends on are populated (the hidden set for `VisibleOnly`, the selection for
-/// `OnlySelection`), so an unrelated change can't rebuild the box.
-#[derive(PartialEq)]
-struct BoundingBoxParams {
-    color: [f32; 4],
-    scope: BoundingBoxScope,
-    hidden: Vec<u32>,
-    selection: Selection,
+/// A rectangle of the backbuffer for the composite to write into. The whole
+/// backbuffer for a single view; one half of it for each side of the Opt
+/// workspace's split.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct BackbufferRect {
+    pub(super) x: u32,
+    pub(super) y: u32,
+    pub(super) width: u32,
+    pub(super) height: u32,
 }
 
-/// Baked parameters for a normal-line view (face or vertex normals).
-#[derive(PartialEq)]
-struct NormalParams {
-    length: f32,
-    color: [f32; 4],
-    hidden: Vec<u32>,
-}
-
-/// Baked parameters for the pivot marker: the pivot position + half-length, both
-/// derived from the model, so a model swap (new pivot / size) rebuilds it while an
-/// unrelated change does not.
-#[derive(PartialEq)]
-struct PivotParams {
-    pivot: [f32; 3],
-    half: f32,
-}
-
-/// Opacity of the skeleton's solid octahedron fills, as a multiplier on the bone
-/// color's own alpha. Low enough that the character reads through the rig, high
-/// enough that a bone's volume and orientation are legible.
-const SKELETON_FILL_ALPHA: f32 = 0.35;
-
-/// Baked parameters for the skeleton overlay. The selected set is part of the key
-/// because the highlight color is baked per bone into the vertex buffer (unlike
-/// the mesh selection flash, whose color rides in a uniform) — a skeleton is a few
-/// thousand vertices, so rebuilding it on an Outliner click is far cheaper than
-/// carrying a per-bone lookup into the shader.
-#[derive(PartialEq)]
-struct SkeletonParams {
-    model_revision: u64,
-    selected: Vec<u32>,
-    scale: f32,
-    color: [f32; 4],
-    selected_color: [f32; 4],
-}
-
-/// Bake key for the skin-weight heat map. Only the model and the selected bone
-/// set change its bytes — the ramp is fixed, and the neutral base it blends from
-/// is a shader constant.
-#[derive(PartialEq)]
-struct SkinWeightParams {
-    model_revision: u64,
-    selected: Vec<u32>,
-}
-
-/// Bake key for the selection draw list — the hidden set because hiding a selected
-/// mesh drops it, the mode because Unique re-groups the solo list by part.
-#[derive(PartialEq)]
-struct SelectionBaked {
-    model_revision: u64,
-    selection: Selection,
-    hidden: Vec<u32>,
-    mode: MaterialMode,
-}
-
-/// Bake key for the per-mesh visibility draw list.
-#[derive(PartialEq)]
-struct VisibilityBaked {
-    model_revision: u64,
-    hidden: Vec<u32>,
-    mode: MaterialMode,
-}
-
-/// The mesh's GPU buffers + per-material draw ranges, rebuilt when the model (or UV
-/// channel / material mode) changes. `None` for an empty model (the grid still draws).
-struct MeshBuffers {
-    vertices: VertexBuffer,
-    indices: IndexBuffer,
-    ranges: Vec<MaterialDrawRange>,
-}
-
-/// The build-on-demand derived views (invariant 3): each buffer exists only while
-/// its toggle is on, paired with the bake key it was last built for. The 3D line
-/// views draw with the shared `line_pipeline` (the pivot marker with the
-/// always-on-top `line_overlay_pipeline`); the UV pair belongs to the 2D UV
-/// viewport.
-#[derive(Default)]
-struct DerivedViews {
-    /// Model wireframe (original-polygon edges); the key is `(color, hidden)`.
-    wireframe_buf: Option<VertexBuffer>,
-    wireframe_baked: Option<([f32; 4], Vec<u32>)>,
-    /// Axis-aligned bounding box; `None` while off or when the scope wraps no
-    /// geometry.
-    bounding_box_buf: Option<VertexBuffer>,
-    bounding_box_baked: Option<BoundingBoxParams>,
-    /// One line per face along its normal; `None` while off.
-    face_normal_buf: Option<VertexBuffer>,
-    face_baked: Option<NormalParams>,
-    /// One line per vertex along its normal; `None` while off.
-    vertex_normal_buf: Option<VertexBuffer>,
-    vertex_baked: Option<NormalParams>,
-    /// 3-axis pivot marker at the model's origin; `None` while off. The bake key
-    /// is the pivot position + half-length (both model-derived).
-    pivot_buf: Option<VertexBuffer>,
-    pivot_baked: Option<PivotParams>,
-    /// Vertex buffer parallel to the mesh's own, colored by the selected bones'
-    /// influence, drawn *in place of* the mesh while the Skin Weights material is
-    /// active. `None` in every other mode (invariant 3).
-    weights_buf: Option<VertexBuffer>,
-    weights_baked: Option<SkinWeightParams>,
-    /// The skeleton overlay's solid octahedron fills and their outlines; both
-    /// `None` while the toggle is off. Drawn always-on-top (X-ray).
-    skeleton_fill_buf: Option<VertexBuffer>,
-    skeleton_line_buf: Option<VertexBuffer>,
-    skeleton_baked: Option<SkeletonParams>,
-    /// The model's UV edges for the active channel; built per
-    /// `(model_revision, channel)`.
-    uv_wireframe_buf: Option<VertexBuffer>,
-    uv_wireframe_baked: Option<(u64, u32)>,
-    /// The UV island fill (Shaded / Islands modes only); `None` in Wire mode.
-    /// Built per `(model_revision, channel, shading_mode)`.
-    uv_fill_buf: Option<VertexBuffer>,
-    uv_fill_baked: Option<(u64, u32, UvShadingMode)>,
+impl BackbufferRect {
+    pub(super) fn full(size: (u32, u32)) -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            width: size.0,
+            height: size.1,
+        }
+    }
 }
 
 /// The Direct3D 11 scene GPU resources, built once (lazily) on the first `render`.
@@ -230,20 +116,17 @@ struct DerivedViews {
 /// model changes; the IBL maps when the environment changes.
 pub(crate) struct SceneGpu {
     /// Shared per-frame scene uniforms (cbuffer `b0`).
-    uniforms: DynamicConstantBuffer,
-    /// Composite-pass uniform (cbuffer `b0` in the post shader).
+    pub(super) uniforms: DynamicConstantBuffer,
+    /// Composite-pass uniform (cbuffer `b3` in the post shader).
     post_uniforms: DynamicConstantBuffer,
-    /// GTAO-pass uniform (cbuffer `b0` in the gtao shader).
+    /// GTAO-pass uniform (cbuffer `b2` in the gtao shader).
     gtao_uniforms: DynamicConstantBuffer,
-    line_pipeline: Pipeline,
-    /// Always-on-top line variant (depth compare `Always`, no write): used by the
-    /// pivot marker so it shows through the mesh rather than being occluded.
-    line_overlay_pipeline: Pipeline,
-    /// Always-on-top triangle fill, for the skeleton overlay's octahedra.
-    fill_overlay_pipeline: Pipeline,
-    mesh_pipeline: Pipeline,
-    mesh_double_sided_pipeline: Pipeline,
-    skybox_pipeline: Pipeline,
+    /// Every MSAA-dependent scene pipeline, held as the one set
+    /// [`build_scene_pipelines`] returns rather than unpacked into fields: an AA
+    /// change replaces all of them at once, and a pipeline left behind by a missed
+    /// assignment would stay baked at the startup sample count — a debug-layer
+    /// error and undefined rendering, with nothing to catch it at compile time.
+    pub(super) scene: ScenePipelineSet,
     composite_pipeline: Pipeline,
     /// Mesh-only single-sample view-normal/Z G-buffer pipeline (`fs_gtao_gbuffer`).
     gtao_gbuffer_pipeline: Pipeline,
@@ -286,46 +169,16 @@ pub(crate) struct SceneGpu {
     gtao_depth: DepthTarget,
     gtao_raw: ColorTarget,
     gtao_blur: ColorTarget,
-    mesh: Option<MeshBuffers>,
-    mesh_revision: u64,
-    mesh_uv_channel: u32,
-    mesh_material_mode: MaterialMode,
-    /// Cached Unique-mode per-triangle mesh-part key + count, baked by model
-    /// revision while Unique is active (invariant 3: freed otherwise).
-    unique_part_key: Vec<u32>,
-    unique_part_count: usize,
-    unique_baked: Option<u64>,
-    /// The build-on-demand derived line/fill views (invariant 3), grouped in one
-    /// sub-struct — each buffer exists only while its toggle is on, paired with
-    /// the bake key it was last built for.
-    views: DerivedViews,
-    /// Selection-flash fill pipeline (`fs_selection`): flat highlight color × fade,
-    /// depth-tested (Reversed-Z `GreaterEqual`) but no depth write, alpha-blended.
-    selection_pipeline: Pipeline,
-    /// The selected triangles reordered per-material over a fresh index buffer that
-    /// shares the mesh vertex buffer (the solo isolate list + the flash fill source).
-    /// `None` while nothing is selected or the selection resolves to no geometry
-    /// (invariant 3). Built on demand by [`Self::sync_selection`].
-    selection_index: Option<IndexBuffer>,
-    selection_ranges: Vec<MaterialDrawRange>,
-    selection_baked: Option<SelectionBaked>,
-    /// The visible (non-hidden) triangles reordered per-material over a fresh index
-    /// buffer sharing the mesh vertex buffer; drawn instead of the full mesh while
-    /// `visible_active`. `None` when nothing is hidden (full mesh), or when every
-    /// mesh is hidden (active but empty → draw nothing).
-    visible_index: Option<IndexBuffer>,
-    visible_ranges: Vec<MaterialDrawRange>,
-    /// Whether the per-mesh visibility filter is in effect (some mesh hidden and the
-    /// model carries per-triangle node info): the mesh + GTAO passes then draw the
-    /// filtered list instead of the full mesh.
-    visible_active: bool,
-    visibility_baked: Option<VisibilityBaked>,
+    /// Everything cached for the model currently being drawn.
+    pub(super) active: ModelSlot,
+    /// The *other* model's cache, held so the Opt workspace can show two meshes
+    /// without rebuilding either one every frame. See [`SceneGpu::activate`].
+    pub(super) idle: ModelSlot,
+    /// Which model `active` currently holds.
+    active_slot: SlotId,
     // --- 2D UV viewport (drawn instead of the 3D scene in UV workspace mode). ---
     /// The static 0..1 reference grid (built once; model-independent).
     uv_grid: VertexBuffer,
-    /// Flat-color triangle fill for the UV islands (`fs_main`'s zero-normal overlay
-    /// branch — same as the line views but filled). No depth write; alpha-blended.
-    uv_fill_pipeline: Pipeline,
     /// Hand-rolled D3D11 timestamp-query → Tracy GPU profiler. `None` unless `--tracy`
     /// armed it and a Tracy client is running; built lazily on the first profiled
     /// frame and never touched otherwise (every scene pass records no timestamps).
@@ -426,12 +279,7 @@ impl SceneGpu {
             uniforms,
             post_uniforms,
             gtao_uniforms,
-            line_pipeline: scene.line,
-            line_overlay_pipeline: scene.line_overlay,
-            fill_overlay_pipeline: scene.fill_overlay,
-            mesh_pipeline: scene.mesh,
-            mesh_double_sided_pipeline: scene.mesh_double_sided,
-            skybox_pipeline: scene.skybox,
+            scene,
             composite_pipeline,
             gtao_gbuffer_pipeline,
             gtao_pipeline,
@@ -453,26 +301,10 @@ impl SceneGpu {
             gtao_depth,
             gtao_raw,
             gtao_blur,
-            mesh: None,
-            // Sentinel distinct from any real revision so the first frame builds the
-            // mesh (or leaves it None for an empty model).
-            mesh_revision: u64::MAX,
-            mesh_uv_channel: 0,
-            mesh_material_mode: MaterialMode::Source,
-            unique_part_key: Vec::new(),
-            unique_part_count: 0,
-            unique_baked: None,
-            views: DerivedViews::default(),
-            selection_pipeline: scene.selection,
-            selection_index: None,
-            selection_ranges: Vec::new(),
-            selection_baked: None,
-            visible_index: None,
-            visible_ranges: Vec::new(),
-            visible_active: false,
-            visibility_baked: None,
+            active: ModelSlot::new(),
+            idle: ModelSlot::new(),
+            active_slot: SlotId::Source,
             uv_grid,
-            uv_fill_pipeline: scene.uv_fill,
             gpu_profiler: None,
             gpu_profiler_failed: false,
         })
@@ -498,9 +330,18 @@ impl SceneGpu {
     /// only); the MSAA-dependent scene pipelines rebuild on a sample-count change
     /// (their sample count is baked at creation). Steady-state frames allocate
     /// nothing. Shared by the 3D scene + UV viewport paths.
-    fn sync_targets(&mut self, gpu: &Gpu, sample_count: u32) -> windows::core::Result<()> {
+    /// `size` is the offscreen resolution to render at, which is *not* always the
+    /// backbuffer's: the Opt workspace's split view renders each half at half
+    /// width so the composite maps its target onto its half of the backbuffer
+    /// one-to-one instead of squashing a full-width image into it.
+    fn sync_targets(
+        &mut self,
+        gpu: &Gpu,
+        sample_count: u32,
+        size: (u32, u32),
+    ) -> windows::core::Result<()> {
         let device = gpu.device();
-        let (width, height) = gpu.size();
+        let (width, height) = (size.0.max(1), size.1.max(1));
         // Capability-clamp a *changed* request (invariant 4: an unsupported level
         // — e.g. restored settings on a weaker adapter — degrades to the nearest
         // supported one rather than failing target creation every frame).
@@ -508,12 +349,19 @@ impl SceneGpu {
         let sample_count = if requested == self.requested_sample_count {
             self.scene_sample_count
         } else {
-            self.requested_sample_count = requested;
             gpu.clamp_msaa(requested)
         };
         let size_changed = self.color.size() != (width, height);
         let samples_changed = self.scene_sample_count != sample_count;
 
+        // Pipelines before targets. Their sample count is baked at creation but they
+        // own nothing the targets depend on, so a failure here leaves every resource
+        // and every field describing the level still in force, and the next frame
+        // simply tries again. Recreating the targets first would strand them at the
+        // new level with pipelines built for the old one.
+        if samples_changed {
+            self.rebuild_scene_pipelines(device, sample_count)?;
+        }
         if size_changed || samples_changed {
             self.color = ColorTarget::hdr_msaa(device, width, height, sample_count)?;
             self.ambient = ColorTarget::hdr_msaa(device, width, height, sample_count)?;
@@ -525,10 +373,13 @@ impl SceneGpu {
             self.gtao_raw = ColorTarget::r8(device, width, height)?;
             self.gtao_blur = ColorTarget::r8(device, width, height)?;
         }
-        if samples_changed {
-            self.rebuild_scene_pipelines(device, sample_count)?;
-            self.scene_sample_count = sample_count;
-        }
+        // Both fields are the record of what was actually built, so they are written
+        // only once everything above exists. `requested_sample_count` in particular
+        // is what suppresses the re-clamp next frame — caching it past a failure
+        // would report the level as satisfied and leave the request silently dropped
+        // until the user changed it again.
+        self.scene_sample_count = sample_count;
+        self.requested_sample_count = requested;
         Ok(())
     }
 
@@ -540,15 +391,7 @@ impl SceneGpu {
         device: &ID3D11Device,
         sample_count: u32,
     ) -> windows::core::Result<()> {
-        let scene = build_scene_pipelines(device, sample_count)?;
-        self.line_pipeline = scene.line;
-        self.line_overlay_pipeline = scene.line_overlay;
-        self.fill_overlay_pipeline = scene.fill_overlay;
-        self.mesh_pipeline = scene.mesh;
-        self.mesh_double_sided_pipeline = scene.mesh_double_sided;
-        self.skybox_pipeline = scene.skybox;
-        self.uv_fill_pipeline = scene.uv_fill;
-        self.selection_pipeline = scene.selection;
+        self.scene = build_scene_pipelines(device, sample_count)?;
         Ok(())
     }
 
@@ -565,10 +408,82 @@ impl SceneGpu {
         material_revision: u64,
         camera: OrbitCamera,
     ) -> windows::core::Result<()> {
-        let device = gpu.device();
-        let ctx = gpu.context();
+        // Every workspace but Opt draws the source model, and Opt may have left
+        // the processed slot active. Without this the source mesh would be synced
+        // *into* the processed slot — rebuilding both, and discarding the
+        // processed cache on every switch between workspaces.
+        self.activate(SlotId::Source);
 
-        self.sync_frame(gpu, frame, material_states, material_revision)?;
+        let size = gpu.size();
+        self.sync_frame(gpu, frame, material_states, material_revision, size)?;
+
+        let gtao_active = self.gtao_active(frame);
+        self.begin_gpu_frame(gpu, gtao_active);
+        let result = self.record_view(gpu, frame, camera, gtao_active, BackbufferRect::full(size));
+        self.end_gpu_frame(gpu);
+        result
+    }
+
+    /// Whether GTAO should run for this frame: enabled, a mesh is present, and the
+    /// view isn't one of the flat data-inspection ones.
+    pub(super) fn gtao_active(&self, frame: &SceneFrame<'_>) -> bool {
+        frame.gtao.enabled && self.active.has_mesh() && !flat_display(frame)
+    }
+
+    /// Arm the GPU profiler (lazily, only under `--tracy` with a running client)
+    /// and open this frame's timing window. Absent on a normal launch, so the
+    /// passes record no timestamps. A failed build is reported once and never
+    /// retried (44 `CreateQuery` calls per frame otherwise).
+    pub(super) fn begin_gpu_frame(&mut self, gpu: &Gpu, gtao_active: bool) {
+        if self.gpu_profiler.is_none() && !self.gpu_profiler_failed && gpu_profiler::should_enable()
+        {
+            match GpuProfiler::new(gpu.device()) {
+                Ok(profiler) => self.gpu_profiler = Some(profiler),
+                Err(error) => {
+                    self.gpu_profiler_failed = true;
+                    gpu_profiler::note(&format!("GPU profiler unavailable: {error}"));
+                }
+            }
+        }
+        if let Some(profiler) = self.gpu_profiler.as_mut() {
+            profiler.begin_frame(gpu.context(), gpu_profiler::frame_mask(gtao_active));
+        }
+    }
+
+    /// Close the GPU profiler's timing window (resolves + reads back a few frames
+    /// later in `begin_frame`).
+    pub(super) fn end_gpu_frame(&mut self, gpu: &Gpu) {
+        if let Some(profiler) = self.gpu_profiler.as_mut() {
+            profiler.end_frame(gpu.context());
+        }
+    }
+
+    /// Draw the active slot's model into `dest`: the scene pass, GTAO when active,
+    /// then the composite. Assumes [`Self::sync_frame`] has already run for this
+    /// model.
+    pub(super) fn record_view(
+        &mut self,
+        gpu: &Gpu,
+        frame: &SceneFrame<'_>,
+        camera: OrbitCamera,
+        gtao_active: bool,
+        dest: BackbufferRect,
+    ) -> windows::core::Result<()> {
+        self.record_view_with_ghost(gpu, frame, camera, gtao_active, dest, None)
+    }
+
+    /// [`Self::record_view`], optionally drawing the *idle* slot's mesh as a ghost
+    /// inside the same scene pass.
+    pub(super) fn record_view_with_ghost(
+        &mut self,
+        gpu: &Gpu,
+        frame: &SceneFrame<'_>,
+        camera: OrbitCamera,
+        gtao_active: bool,
+        dest: BackbufferRect,
+        ghost: Option<(GhostStyle, [f32; 3])>,
+    ) -> windows::core::Result<()> {
+        let ctx = gpu.context();
 
         let uniforms = scene_uniforms(
             camera,
@@ -579,40 +494,10 @@ impl SceneGpu {
         );
         self.uniforms.update(ctx, &uniforms)?;
 
-        // The data-inspection views bypass lighting + the composite's tone map and
-        // GTAO entirely (the scene shader emits final display pixels), so the
-        // composite blits straight through and the GTAO passes are skipped. Both
-        // the buffer views and the skin-weight heat map want that: a value shown
-        // through a tone curve is no longer the value.
-        let flat_display_active = matches!(
-            frame.debug.active_material,
-            ActiveMaterial::Buffers | ActiveMaterial::SkinWeights
-        );
-
-        // GTAO runs only when enabled, a mesh is present, and we're not in a flat
-        // data-inspection view; computed up front so it also drives the GPU
-        // profiler's per-frame zone mask.
-        let gtao_active = frame.gtao.enabled && self.mesh.is_some() && !flat_display_active;
-
-        // Arm the GPU profiler (lazily, only under `--tracy` with a running client),
-        // then open this frame's timing window. Absent on a normal launch, so the
-        // passes below record no timestamps. A failed build is reported once and
-        // never retried (44 `CreateQuery` calls per frame otherwise).
-        if self.gpu_profiler.is_none() && !self.gpu_profiler_failed && gpu_profiler::should_enable()
-        {
-            match GpuProfiler::new(device) {
-                Ok(profiler) => self.gpu_profiler = Some(profiler),
-                Err(error) => {
-                    self.gpu_profiler_failed = true;
-                    gpu_profiler::note(&format!("GPU profiler unavailable: {error}"));
-                }
-            }
-        }
-        if let Some(profiler) = self.gpu_profiler.as_mut() {
-            profiler.begin_frame(ctx, gpu_profiler::frame_mask(gtao_active));
-        }
-
         self.record_scene_pass(gpu, frame)?;
+        if let Some((style, tint)) = ghost {
+            self.record_ghost(gpu, camera, frame, style, tint)?;
+        }
 
         if gtao_active {
             self.record_gtao(gpu, camera, frame.projection, frame.gtao)?;
@@ -625,36 +510,60 @@ impl SceneGpu {
             frame.background,
             gtao_active,
             frame.tonemap,
-            flat_display_active,
+            flat_display(frame),
         );
         self.zone_begin(ctx, Zone::Composite);
-        self.record_composite(gpu, &post, gtao_active.then_some(&self.gtao_blur))?;
+        self.record_composite(gpu, &post, gtao_active.then_some(&self.gtao_blur), dest)?;
         self.zone_end(ctx, Zone::Composite);
-
-        // Close the GPU profiler's timing window for this frame (resolves + reads back
-        // a few frames later in `begin_frame`).
-        if let Some(profiler) = self.gpu_profiler.as_mut() {
-            profiler.end_frame(ctx);
-        }
-
         Ok(())
+    }
+
+    /// Make `slot` the active one. A no-op when it already is; otherwise a single
+    /// `mem::swap`, which is why alternating between two models within a frame
+    /// costs nothing.
+    pub(super) fn activate(&mut self, slot: SlotId) {
+        if self.active_slot == slot {
+            return;
+        }
+        std::mem::swap(&mut self.active, &mut self.idle);
+        self.active_slot = slot;
+    }
+
+    /// Drop the processed model's cached buffers (invariant 3), whichever slot
+    /// currently holds them. Called when the Opt workspace has no processed mesh
+    /// to show, so its GPU memory isn't held while another workspace is up.
+    pub(crate) fn release_processed(&mut self) {
+        if self.active_slot == SlotId::Processed {
+            self.active.release();
+        } else {
+            self.idle.release();
+        }
     }
 
     /// Reconcile every GPU resource with this frame's inputs: the offscreen
     /// targets + scene pipelines (size / AA level), the Unique-mode part key, the
     /// mesh buffers + effective material table, the derived line views, the
     /// selection / visibility draw lists, and the IBL maps.
-    fn sync_frame(
+    pub(super) fn sync_frame(
         &mut self,
         gpu: &Gpu,
         frame: &SceneFrame<'_>,
         material_states: &[MaterialState],
         material_revision: u64,
+        target_size: (u32, u32),
     ) -> windows::core::Result<()> {
         let device = gpu.device();
         let ctx = gpu.context();
 
-        self.sync_targets(gpu, frame.anti_aliasing.effective_sample_count())?;
+        self.sync_targets(
+            gpu,
+            frame.anti_aliasing.effective_sample_count(),
+            target_size,
+        )?;
+
+        // Every caller of this is a 3D frame, so the UV viewport's buffers are off
+        // (invariant 3); `render_uv` builds them instead and never comes through here.
+        self.release_uv_views();
 
         // The Unique-mode part key, then the mesh + the effective material table
         // (both depend on the active material mode's grouping).
@@ -669,7 +578,7 @@ impl SceneGpu {
         let effective = effective_materials(
             frame.debug.material_mode,
             material_states,
-            self.unique_part_count,
+            self.active.unique_part_count,
         );
         self.materials.sync(
             device,
@@ -682,7 +591,13 @@ impl SceneGpu {
         // Build-on-demand / free-on-off for the derived 3D line overlays (invariant
         // 3): each view's buffer exists only while its toggle is on, rebuilt live
         // when its baked params (color / length / hidden set / scope) drift.
-        self.sync_line_views(device, frame.model, frame.debug, frame.hidden_meshes)?;
+        self.sync_line_views(
+            device,
+            frame.model,
+            frame.model_revision,
+            frame.debug,
+            frame.hidden_meshes,
+        )?;
         self.sync_skeleton(
             device,
             frame.model,
@@ -733,8 +648,8 @@ impl SceneGpu {
         ctx: &ID3D11DeviceContext,
         checker: &Texture,
     ) -> windows::core::Result<()> {
-        self.uniforms.bind_vs(ctx, 0);
-        self.uniforms.bind_ps(ctx, 0);
+        self.uniforms.bind_vs(ctx, SCENE_CBUFFER_SLOT);
+        self.uniforms.bind_ps(ctx, SCENE_CBUFFER_SLOT);
         checker.bind_ps(ctx, 0);
         self.checker_sampler.bind_ps(ctx, 0);
         self.ibl.bind_ps(ctx);
@@ -764,7 +679,7 @@ impl SceneGpu {
 
         // Skybox background first, behind all geometry, when shown.
         if frame.environment.show_background {
-            self.skybox_pipeline.bind(ctx);
+            self.scene.skybox.bind(ctx);
             gpu.draw(3);
         }
 
@@ -774,13 +689,13 @@ impl SceneGpu {
         // buffer, so only the index source + ranges differ. Wireframe shading draws
         // no filled surface.
         let solo = selection.solo && selection.selection.is_active();
-        if let Some(mesh) = &self.mesh
+        if let Some(mesh) = &self.active.mesh
             && !matches!(debug.shading_mode, ShadingMode::Wireframe)
         {
             let pipeline = if debug.render_backfaces {
-                &self.mesh_double_sided_pipeline
+                &self.scene.mesh_double_sided
             } else {
-                &self.mesh_pipeline
+                &self.scene.mesh
             };
             pipeline.bind(ctx);
             // The skin-weight heat map is a drop-in replacement for the mesh's
@@ -789,19 +704,26 @@ impl SceneGpu {
             // valid. It keeps the real normals (the shader Lambert-shades it) and
             // is selected by `projection_params.w`, so the material bound per range
             // is simply ignored.
-            let vertex_source = self.views.weights_buf.as_ref().unwrap_or(&mesh.vertices);
+            let vertex_source = self
+                .active
+                .views
+                .weights_buf
+                .as_ref()
+                .unwrap_or(&mesh.vertices);
             vertex_source.bind(ctx);
             // Solo draws only the selection (empty → nothing); visible draws the
             // filtered list (None while active means every mesh is hidden → nothing);
             // otherwise the whole mesh.
             let draw_list: Option<(&IndexBuffer, &[MaterialDrawRange])> = if solo {
-                self.selection_index
+                self.active
+                    .selection_index
                     .as_ref()
-                    .map(|index| (index, self.selection_ranges.as_slice()))
-            } else if self.visible_active {
-                self.visible_index
+                    .map(|index| (index, self.active.selection_ranges.as_slice()))
+            } else if self.active.visible_active {
+                self.active
+                    .visible_index
                     .as_ref()
-                    .map(|index| (index, self.visible_ranges.as_slice()))
+                    .map(|index| (index, self.active.visible_ranges.as_slice()))
             } else {
                 Some((&mesh.indices, mesh.ranges.as_slice()))
             };
@@ -815,7 +737,7 @@ impl SceneGpu {
         }
 
         if debug.show_grid {
-            self.line_pipeline.bind(ctx);
+            self.scene.line.bind(ctx);
             self.grid.bind(ctx);
             gpu.draw(self.grid.count());
         }
@@ -826,13 +748,13 @@ impl SceneGpu {
         // mesh pushed its surface back so coplanar edges win) + the scene uniforms
         // (`b0`, still bound). Each buffer is `None` while its view is off.
         let line_views = [
-            &self.views.wireframe_buf,
-            &self.views.bounding_box_buf,
-            &self.views.face_normal_buf,
-            &self.views.vertex_normal_buf,
+            &self.active.views.wireframe_buf,
+            &self.active.views.bounding_box_buf,
+            &self.active.views.face_normal_buf,
+            &self.active.views.vertex_normal_buf,
         ];
         if line_views.iter().any(|view| view.is_some()) {
-            self.line_pipeline.bind(ctx);
+            self.scene.line.bind(ctx);
             for buffer in line_views.into_iter().flatten() {
                 buffer.bind(ctx);
                 gpu.draw(buffer.count());
@@ -842,8 +764,8 @@ impl SceneGpu {
         // Pivot marker: drawn last among the line overlays with the always-on-top
         // line pipeline (depth compare `Always`), so the 3-axis cross reads through
         // the mesh instead of being occluded inside it.
-        if let Some(pivot) = &self.views.pivot_buf {
-            self.line_overlay_pipeline.bind(ctx);
+        if let Some(pivot) = &self.active.views.pivot_buf {
+            self.scene.line_overlay.bind(ctx);
             pivot.bind(ctx);
             gpu.draw(pivot.count());
         }
@@ -852,13 +774,13 @@ impl SceneGpu {
         // outlines on top, both always-on-top so the rig reads through the
         // character it deforms. The per-bone selection tint is already baked into
         // these buffers (see `sync_skeleton`).
-        if let Some(fill) = &self.views.skeleton_fill_buf {
-            self.fill_overlay_pipeline.bind(ctx);
+        if let Some(fill) = &self.active.views.skeleton_fill_buf {
+            self.scene.fill_overlay.bind(ctx);
             fill.bind(ctx);
             gpu.draw(fill.count());
         }
-        if let Some(lines) = &self.views.skeleton_line_buf {
-            self.line_overlay_pipeline.bind(ctx);
+        if let Some(lines) = &self.active.views.skeleton_line_buf {
+            self.scene.line_overlay.bind(ctx);
             lines.bind(ctx);
             gpu.draw(lines.count());
         }
@@ -870,8 +792,10 @@ impl SceneGpu {
         // highlight color × the flash fade (`selection_color`, already in `b0`).
         // Skipped once the flash has faded, so the steady state pays nothing.
         let flash = selection.selection.is_active() && selection.fade > 0.0;
-        if flash && let (Some(mesh), Some(index)) = (&self.mesh, &self.selection_index) {
-            self.selection_pipeline.bind(ctx);
+        if flash
+            && let (Some(mesh), Some(index)) = (&self.active.mesh, &self.active.selection_index)
+        {
+            self.scene.selection.bind(ctx);
             mesh.vertices.bind(ctx);
             index.bind(ctx);
             gpu.draw_indexed_range(index.count(), 0);
@@ -884,7 +808,7 @@ impl SceneGpu {
     /// the horizon occlusion pass (→ raw `R8`) and the bilateral blur (→ blurred
     /// `R8`) the composite darkens the ambient radiance by. The G-buffer has its
     /// own depth (nearest-surface) and shares `b0` (the scene uniforms carry
-    /// `view`); the fullscreen passes read `b0` as the GTAO uniform + `s0` as the
+    /// `view`); the fullscreen passes read `b2` as the GTAO uniform + `s0` as the
     /// point sampler.
     fn record_gtao(
         &self,
@@ -901,16 +825,16 @@ impl SceneGpu {
         // single-sample normal/Z target, clearing the target + its depth.
         self.zone_begin(ctx, Zone::GtaoGbuffer);
         gpu.begin_scene_pass(&[&self.gtao_gbuffer], &self.gtao_depth, [0.0; 4]);
-        self.uniforms.bind_vs(ctx, 0);
-        self.uniforms.bind_ps(ctx, 0);
+        self.uniforms.bind_vs(ctx, SCENE_CBUFFER_SLOT);
+        self.uniforms.bind_ps(ctx, SCENE_CBUFFER_SLOT);
         self.gtao_gbuffer_pipeline.bind(ctx);
-        if let Some(mesh) = &self.mesh {
+        if let Some(mesh) = &self.active.mesh {
             mesh.vertices.bind(ctx);
             // Match the shaded mesh's visibility so a hidden mesh casts no AO; solo
             // is deliberately left out, so only the per-mesh hide filters the AO.
             // `None` while active means every mesh is hidden → nothing to occlude.
-            let index = if self.visible_active {
-                self.visible_index.as_ref()
+            let index = if self.active.visible_active {
+                self.active.visible_index.as_ref()
             } else {
                 Some(&mesh.indices)
             };
@@ -925,7 +849,7 @@ impl SceneGpu {
         self.zone_begin(ctx, Zone::Gtao);
         gpu.begin_color_pass(&self.gtao_raw);
         self.gtao_pipeline.bind(ctx);
-        self.gtao_uniforms.bind_ps(ctx, 0);
+        self.gtao_uniforms.bind_ps(ctx, GTAO_CBUFFER_SLOT);
         self.gtao_sampler.bind_ps(ctx, 0);
         self.gtao_gbuffer.bind_ps_srv(ctx, 0);
         gpu.draw(3);
@@ -958,16 +882,17 @@ impl SceneGpu {
         gpu: &Gpu,
         post: &PostUniforms,
         ao: Option<&ColorTarget>,
+        dest: BackbufferRect,
     ) -> windows::core::Result<()> {
         let ctx = gpu.context();
         self.post_uniforms.update(ctx, post)?;
-        gpu.begin_backbuffer_blit();
+        gpu.begin_backbuffer_blit_rect(dest.x, dest.y, dest.width, dest.height);
         // The scene RTVs are unbound now (the backbuffer is the only bound
         // target), so the multisample resolve source is free.
         self.color.resolve(ctx);
         self.ambient.resolve(ctx);
         self.composite_pipeline.bind(ctx);
-        self.post_uniforms.bind_ps(ctx, 0);
+        self.post_uniforms.bind_ps(ctx, POST_CBUFFER_SLOT);
         self.color.bind_ps_srv(ctx, 0);
         ao.unwrap_or(&self.ambient).bind_ps_srv(ctx, 1);
         self.ambient.bind_ps_srv(ctx, 2);
@@ -999,7 +924,10 @@ impl SceneGpu {
         let device = gpu.device();
         let ctx = gpu.context();
 
-        self.sync_targets(gpu, anti_aliasing.effective_sample_count())?;
+        // The UV viewport shows the source model, so its derived buffers belong in
+        // the source slot (see the note in `render`).
+        self.activate(SlotId::Source);
+        self.sync_targets(gpu, anti_aliasing.effective_sample_count(), gpu.size())?;
         self.sync_uv_view(device, model, model_revision, channel, shading_mode)?;
 
         // The UV camera's orthographic view-projection; the rest of the uniform is
@@ -1016,20 +944,20 @@ impl SceneGpu {
         self.bind_scene_shared(ctx, &self.checker_greyscale)?;
 
         // Reference grid first.
-        self.line_pipeline.bind(ctx);
+        self.scene.line.bind(ctx);
         self.uv_grid.bind(ctx);
         gpu.draw(self.uv_grid.count());
 
         // Island fill (Shaded / Islands), under the wireframe.
-        if let Some(fill) = &self.views.uv_fill_buf {
-            self.uv_fill_pipeline.bind(ctx);
+        if let Some(fill) = &self.active.views.uv_fill_buf {
+            self.scene.uv_fill.bind(ctx);
             fill.bind(ctx);
             gpu.draw(fill.count());
         }
 
         // The model's UV edges on top.
-        if let Some(wireframe) = &self.views.uv_wireframe_buf {
-            self.line_pipeline.bind(ctx);
+        if let Some(wireframe) = &self.active.views.uv_wireframe_buf {
+            self.scene.line.bind(ctx);
             wireframe.bind(ctx);
             gpu.draw(wireframe.count());
         }
@@ -1038,705 +966,10 @@ impl SceneGpu {
         // fills read like the 3D scene), no GTAO (the flat UV viewport has no depth
         // to occlude), over the chosen viewport background.
         let post = post_uniforms(background, false, TonemapSettings::default(), false);
-        self.record_composite(gpu, &post, None)?;
+        self.record_composite(gpu, &post, None, BackbufferRect::full(gpu.size()))?;
 
         Ok(())
     }
-
-    /// Build-on-demand for the UV viewport's derived buffers (invariant 3): the
-    /// wireframe is rebuilt only when the model / channel changes; the island fill
-    /// when the model / channel / shading mode changes, and freed in Wire mode — so
-    /// panning/zooming rebuilds nothing.
-    fn sync_uv_view(
-        &mut self,
-        device: &ID3D11Device,
-        model: &ModelData,
-        model_revision: u64,
-        channel: u32,
-        shading_mode: UvShadingMode,
-    ) -> windows::core::Result<()> {
-        let want_wireframe = Some((model_revision, channel));
-        if self.views.uv_wireframe_baked != want_wireframe {
-            self.views.uv_wireframe_buf =
-                optional_vertex_buffer(device, &uv_wireframe_lines(model, channel))?;
-            self.views.uv_wireframe_baked = want_wireframe;
-        }
-
-        let want_fill = match shading_mode {
-            UvShadingMode::Wire => None,
-            UvShadingMode::Shaded | UvShadingMode::Islands => {
-                Some((model_revision, channel, shading_mode))
-            }
-        };
-        if self.views.uv_fill_baked != want_fill {
-            let fill = match shading_mode {
-                UvShadingMode::Wire => Vec::new(),
-                UvShadingMode::Shaded => uv_fill_triangles(model, channel, false),
-                UvShadingMode::Islands => uv_fill_triangles(model, channel, true),
-            };
-            self.views.uv_fill_buf = optional_vertex_buffer(device, &fill)?;
-            self.views.uv_fill_baked = want_fill;
-        }
-
-        Ok(())
-    }
-
-    /// Reconcile the Unique-mode per-triangle mesh-part key: baked by `model_revision`
-    /// while Unique is active, freed back to empty otherwise (invariant 3).
-    fn sync_unique_parts(&mut self, model: &ModelData, model_revision: u64, mode: MaterialMode) {
-        let want = matches!(mode, MaterialMode::Unique).then_some(model_revision);
-        if self.unique_baked == want {
-            return;
-        }
-        match want {
-            Some(_) => {
-                let (key, count) = build_part_key(model);
-                self.unique_part_key = key;
-                self.unique_part_count = count;
-            }
-            None => {
-                self.unique_part_key = Vec::new();
-                self.unique_part_count = 0;
-            }
-        }
-        self.unique_baked = want;
-    }
-
-    /// Rebuild the mesh buffers + per-material draw ranges when the model, UV channel
-    /// or material mode changes (the index reorder groups by the active mode's key).
-    /// An empty model leaves `mesh` as `None`. Call after [`Self::sync_unique_parts`].
-    fn sync_mesh(
-        &mut self,
-        device: &ID3D11Device,
-        model: &ModelData,
-        model_revision: u64,
-        uv_channel: u32,
-        mode: MaterialMode,
-    ) -> windows::core::Result<()> {
-        if self.mesh_revision == model_revision
-            && self.mesh_uv_channel == uv_channel
-            && self.mesh_material_mode == mode
-        {
-            return Ok(());
-        }
-        let key = match mode {
-            MaterialMode::Unique if !self.unique_part_key.is_empty() => {
-                Some(self.unique_part_key.as_slice())
-            }
-            _ => None,
-        };
-        let (vertices, indices, ranges) = model_mesh(model, uv_channel, key);
-        self.mesh = if indices.is_empty() {
-            None
-        } else {
-            Some(MeshBuffers {
-                vertices: VertexBuffer::new(device, &vertices)?,
-                indices: IndexBuffer::new(device, &indices)?,
-                ranges,
-            })
-        };
-        self.mesh_revision = model_revision;
-        self.mesh_uv_channel = uv_channel;
-        self.mesh_material_mode = mode;
-        Ok(())
-    }
-
-    /// Build-on-demand / free-on-off for the derived line views (invariant 3).
-    /// A view's buffer is (re)built when its toggle is on and its baked params
-    /// drift from the current options, and dropped to `None` when off. Unchanged
-    /// views are left untouched, and the drift checks compare against the
-    /// *borrowed* frame inputs, so a steady-state frame allocates nothing.
-    fn sync_line_views(
-        &mut self,
-        device: &ID3D11Device,
-        model: &ModelData,
-        debug: SceneDebugOptions,
-        hidden_meshes: &[u32],
-    ) -> windows::core::Result<()> {
-        // Wireframe rebuilds when its color *or* the Outliner's hidden set drifts
-        // (edges of a hidden mesh disappear with the mesh). On in both the wireframe
-        // overlay and the wireframe-only shading mode.
-        let wireframe_on =
-            debug.wireframe_overlay || matches!(debug.shading_mode, ShadingMode::Wireframe);
-        let wireframe_unchanged = match (&self.views.wireframe_baked, wireframe_on) {
-            (None, false) => true,
-            (Some((color, hidden)), true) => {
-                *color == debug.wireframe_color && hidden == hidden_meshes
-            }
-            _ => false,
-        };
-        if !wireframe_unchanged {
-            self.views.wireframe_buf = if wireframe_on {
-                optional_vertex_buffer(
-                    device,
-                    &wireframe_lines(model, debug.wireframe_color, hidden_meshes),
-                )?
-            } else {
-                None
-            };
-            self.views.wireframe_baked =
-                wireframe_on.then(|| (debug.wireframe_color, hidden_meshes.to_vec()));
-        }
-
-        // Bounding box: only the inputs the chosen scope depends on go in the bake
-        // key, so an unrelated change can't rebuild the box.
-        let scope = debug.bounding_box_scope;
-        let scope_hidden: &[u32] = match scope {
-            BoundingBoxScope::VisibleOnly => hidden_meshes,
-            _ => &[],
-        };
-        let scope_selection = match scope {
-            BoundingBoxScope::OnlySelection => debug.bounding_box_selection,
-            _ => Selection::None,
-        };
-        let bounding_box_unchanged = match (&self.views.bounding_box_baked, debug.show_bounding_box)
-        {
-            (None, false) => true,
-            (Some(params), true) => {
-                params.color == debug.bounding_box_color
-                    && params.scope == scope
-                    && params.hidden == scope_hidden
-                    && params.selection == scope_selection
-            }
-            _ => false,
-        };
-        if !bounding_box_unchanged {
-            self.views.bounding_box_buf = if debug.show_bounding_box {
-                let bounds = match scope {
-                    BoundingBoxScope::AllMeshes => model.bounds,
-                    BoundingBoxScope::OnlySelection => selection_bounds(model, scope_selection),
-                    BoundingBoxScope::VisibleOnly => model.visible_bounds(scope_hidden),
-                };
-                match bounds {
-                    Some(bounds) => optional_vertex_buffer(
-                        device,
-                        &bounding_box_lines(bounds, debug.bounding_box_color),
-                    )?,
-                    None => None,
-                }
-            } else {
-                None
-            };
-            self.views.bounding_box_baked = debug.show_bounding_box.then(|| BoundingBoxParams {
-                color: debug.bounding_box_color,
-                scope,
-                hidden: scope_hidden.to_vec(),
-                selection: scope_selection,
-            });
-        }
-
-        // The two normal-line views share one shape (length + color + hidden set),
-        // differing only in the toggle and line builder.
-        sync_normal_view(
-            device,
-            model,
-            &mut self.views.face_normal_buf,
-            &mut self.views.face_baked,
-            debug.face_normals,
-            debug.face_normal_length,
-            debug.face_normal_color,
-            hidden_meshes,
-            face_normal_lines,
-        )?;
-        sync_normal_view(
-            device,
-            model,
-            &mut self.views.vertex_normal_buf,
-            &mut self.views.vertex_baked,
-            debug.vertex_normals,
-            debug.vertex_normal_length,
-            debug.vertex_normal_color,
-            hidden_meshes,
-            vertex_normal_lines,
-        )?;
-
-        // Pivot marker: a 3-axis cross at the model's origin. Its bytes depend only
-        // on the model (pivot position + size), so the bake key rebuilds it on a
-        // model swap and the buffer is freed while the toggle is off.
-        let want_pivot = debug.show_pivot.then(|| PivotParams {
-            pivot: model_pivot(model),
-            half: pivot_half_extent(model),
-        });
-        if self.views.pivot_baked != want_pivot {
-            self.views.pivot_buf = match &want_pivot {
-                Some(PivotParams { pivot, half }) => {
-                    optional_vertex_buffer(device, &pivot_lines(*pivot, *half))?
-                }
-                None => None,
-            };
-            self.views.pivot_baked = want_pivot;
-        }
-
-        Ok(())
-    }
-
-    /// Build (or free) the skin-weight heat map's vertex buffer.
-    ///
-    /// Active only while the Skin Weights material is chosen *and* the model
-    /// actually carries skin — a model without it falls back to the ordinary mesh
-    /// rather than showing a blank one. Freed the moment the mode changes
-    /// (invariant 3), so the steady-state shaded view holds nothing.
-    ///
-    /// Rebuilt on every change of the selected bone set, which is what makes the
-    /// heat map follow the Outliner. That is a full vertex re-upload (~48 bytes
-    /// per render vertex); the alternative — a per-vertex weight lookup in the
-    /// shader — would need a structured buffer and a capability gate (invariant 4)
-    /// to save a cost only paid on an explicit click.
-    fn sync_skin_weights(
-        &mut self,
-        device: &ID3D11Device,
-        model: &ModelData,
-        model_revision: u64,
-        debug: SceneDebugOptions,
-        selected_bones: &[u32],
-    ) -> windows::core::Result<()> {
-        let active = debug.active_material == ActiveMaterial::SkinWeights && model.skin.is_some();
-        let want = active.then(|| SkinWeightParams {
-            model_revision,
-            selected: selected_bones.to_vec(),
-        });
-        if self.views.weights_baked == want {
-            return Ok(());
-        }
-        self.views.weights_buf = match &want {
-            Some(params) => {
-                optional_vertex_buffer(device, &skin_weight_vertices(model, &params.selected))?
-            }
-            None => None,
-        };
-        self.views.weights_baked = want;
-        Ok(())
-    }
-
-    /// Build (or free) the skeleton overlay's two buffers — the octahedron fills
-    /// and their outlines — following the same build-on-demand / free-on-off
-    /// discipline as the line views (invariant 3): while the toggle is off both are
-    /// `None` and the overlay costs nothing.
-    ///
-    /// The bake key carries the *selected* bone set alongside the colors, because
-    /// the highlight is baked per bone into the vertex color rather than applied
-    /// from a uniform. That means an Outliner click rebuilds these buffers — the
-    /// same trade `sync_selection` makes, and cheap here: a 72-bone rig is a few
-    /// thousand vertices.
-    fn sync_skeleton(
-        &mut self,
-        device: &ID3D11Device,
-        model: &ModelData,
-        model_revision: u64,
-        debug: SceneDebugOptions,
-        selected_bones: &[u32],
-    ) -> windows::core::Result<()> {
-        let want = debug.show_skeleton.then(|| SkeletonParams {
-            model_revision,
-            selected: selected_bones.to_vec(),
-            scale: debug.skeleton_joint_scale,
-            color: debug.skeleton_color,
-            selected_color: debug.skeleton_selected_color,
-        });
-        if self.views.skeleton_baked == want {
-            return Ok(());
-        }
-        match &want {
-            Some(params) => {
-                self.views.skeleton_fill_buf = optional_vertex_buffer(
-                    device,
-                    &skeleton_fill_triangles(
-                        model,
-                        &params.selected,
-                        params.scale,
-                        params.color,
-                        params.selected_color,
-                        SKELETON_FILL_ALPHA,
-                    ),
-                )?;
-                self.views.skeleton_line_buf = optional_vertex_buffer(
-                    device,
-                    &skeleton_lines(
-                        model,
-                        &params.selected,
-                        params.scale,
-                        params.color,
-                        params.selected_color,
-                    ),
-                )?;
-            }
-            None => {
-                self.views.skeleton_fill_buf = None;
-                self.views.skeleton_line_buf = None;
-            }
-        }
-        self.views.skeleton_baked = want;
-        Ok(())
-    }
-
-    /// The per-triangle grouping key for `mode`: the cached mesh-part key in Unique
-    /// mode (when the model carries per-triangle node info), else `None` to group by
-    /// material slot. Call after `sync_unique_parts`.
-    fn grouping_key(&self, mode: MaterialMode) -> Option<&[u32]> {
-        match mode {
-            MaterialMode::Unique if !self.unique_part_key.is_empty() => Some(&self.unique_part_key),
-            _ => None,
-        }
-    }
-
-    /// Build (or free) the selected-triangle draw list (the solo isolate list + the
-    /// flash fill source) when the selection / model / hidden set / mode drifts
-    /// (invariant 3). The highlight color + flash fade ride in the uniform, so they
-    /// never trigger a rebuild — only a change of *what* is selected does.
-    fn sync_selection(
-        &mut self,
-        device: &ID3D11Device,
-        model: &ModelData,
-        model_revision: u64,
-        view: SelectionView,
-        hidden: &[u32],
-        mode: MaterialMode,
-    ) -> windows::core::Result<()> {
-        // Drift check against the borrowed inputs — no per-frame key allocation.
-        let active = view.selection.is_active();
-        let unchanged = match (&self.selection_baked, active) {
-            (None, false) => true,
-            (Some(baked), true) => {
-                baked.model_revision == model_revision
-                    && baked.selection == view.selection
-                    && baked.hidden == hidden
-                    && baked.mode == mode
-            }
-            _ => false,
-        };
-        if unchanged {
-            return Ok(());
-        }
-        // Resolve the visible selected triangles, grouped by the same key as the main
-        // mesh so each range binds the right effective material. `None` (no usable
-        // geometry) or an empty list both clear to a no-draw selection.
-        let geometry = if active {
-            let key = self.grouping_key(mode);
-            selection_geometry(model, view.selection, hidden, key)
-        } else {
-            None
-        };
-        match geometry {
-            Some((indices, ranges)) if !indices.is_empty() => {
-                self.selection_index = Some(IndexBuffer::new(device, &indices)?);
-                self.selection_ranges = ranges;
-            }
-            _ => {
-                self.selection_index = None;
-                self.selection_ranges = Vec::new();
-            }
-        }
-        self.selection_baked = active.then(|| SelectionBaked {
-            model_revision,
-            selection: view.selection,
-            hidden: hidden.to_vec(),
-            mode,
-        });
-        Ok(())
-    }
-
-    /// Build (or free) the per-mesh visibility draw list when the hidden set / model /
-    /// mode drifts (invariant 3). `hidden` empty means nothing is hidden (full mesh,
-    /// no filter). When every mesh is hidden the filter is active but the list empty
-    /// (draw nothing); when the model carries no per-triangle node info the filter is
-    /// off (full mesh).
-    fn sync_visibility(
-        &mut self,
-        device: &ID3D11Device,
-        model: &ModelData,
-        model_revision: u64,
-        hidden: &[u32],
-        mode: MaterialMode,
-    ) -> windows::core::Result<()> {
-        // Drift check against the borrowed inputs — no per-frame key allocation.
-        let active = !hidden.is_empty();
-        let unchanged = match (&self.visibility_baked, active) {
-            (None, false) => true,
-            (Some(baked), true) => {
-                baked.model_revision == model_revision
-                    && baked.hidden == hidden
-                    && baked.mode == mode
-            }
-            _ => false,
-        };
-        if unchanged {
-            return Ok(());
-        }
-        let geometry = if active {
-            let key = self.grouping_key(mode);
-            visible_geometry(model, hidden, key)
-        } else {
-            None
-        };
-        match geometry {
-            // Some unhidden geometry: draw the filtered list.
-            Some((indices, ranges)) if !indices.is_empty() => {
-                self.visible_index = Some(IndexBuffer::new(device, &indices)?);
-                self.visible_ranges = ranges;
-                self.visible_active = true;
-            }
-            // Every mesh hidden: the filter is active but draws nothing.
-            Some(_) => {
-                self.visible_index = None;
-                self.visible_ranges = Vec::new();
-                self.visible_active = true;
-            }
-            // Nothing hidden, or the model carries no per-triangle node info: draw the
-            // full mesh (no filter).
-            None => {
-                self.visible_index = None;
-                self.visible_ranges = Vec::new();
-                self.visible_active = false;
-            }
-        }
-        self.visibility_baked = active.then(|| VisibilityBaked {
-            model_revision,
-            hidden: hidden.to_vec(),
-            mode,
-        });
-        Ok(())
-    }
-}
-
-/// The six MSAA-dependent scene pipelines (line / mesh / double-sided mesh / skybox /
-/// UV fill / selection fill). They all draw into the MSAA scene MRT, so their sample
-/// count is baked at the live AA level; `SceneGpu::new` + `rebuild_scene_pipelines`
-/// build them together via this helper so they stay in lockstep with the targets.
-struct ScenePipelineSet {
-    line: Pipeline,
-    line_overlay: Pipeline,
-    fill_overlay: Pipeline,
-    mesh: Pipeline,
-    mesh_double_sided: Pipeline,
-    skybox: Pipeline,
-    uv_fill: Pipeline,
-    selection: Pipeline,
-}
-
-fn build_scene_pipelines(
-    device: &ID3D11Device,
-    sample_count: u32,
-) -> windows::core::Result<ScenePipelineSet> {
-    // Line overlays (grid / wireframe / bounding box / normals): depth-tested
-    // (Reversed-Z `GreaterEqual`) but neither writing nor biasing depth, alpha-blended.
-    let line = Pipeline::new(
-        device,
-        &PipelineDesc {
-            vs: SCENE_VS,
-            ps: SCENE_LINE_PS,
-            input: &SCENE_VERTEX_LAYOUT,
-            topology: Topology::LineList,
-            cull: Cull::None,
-            depth: DepthState {
-                test: true,
-                write: false,
-                compare: DepthCompare::GreaterEqual,
-            },
-            blend: BlendMode::AlphaBlend,
-            depth_bias: DepthBias::default(),
-            sample_count,
-        },
-    )?;
-
-    // Always-on-top line variant (depth compare `Always`, no write): the pivot
-    // marker uses this so the model never occludes it — it reads through solid
-    // geometry, unlike the depth-tested overlays above.
-    let line_overlay = Pipeline::new(
-        device,
-        &PipelineDesc {
-            vs: SCENE_VS,
-            ps: SCENE_LINE_PS,
-            input: &SCENE_VERTEX_LAYOUT,
-            topology: Topology::LineList,
-            cull: Cull::None,
-            depth: DepthState {
-                test: true,
-                write: false,
-                compare: DepthCompare::Always,
-            },
-            blend: BlendMode::AlphaBlend,
-            depth_bias: DepthBias::default(),
-            sample_count,
-        },
-    )?;
-
-    // Mesh: back-face culled, writes depth + pushes the surface back (slope-scaled
-    // bias) so coplanar line overlays win the test. The double-sided variant (Backface
-    // Rendering) is identical but unculled.
-    let mesh_desc = |cull| PipelineDesc {
-        vs: SCENE_VS,
-        ps: SCENE_MESH_PS,
-        input: &SCENE_VERTEX_LAYOUT,
-        topology: Topology::TriangleList,
-        cull,
-        depth: DepthState {
-            test: true,
-            write: true,
-            compare: DepthCompare::GreaterEqual,
-        },
-        blend: BlendMode::AlphaBlend,
-        depth_bias: DepthBias {
-            constant: -2,
-            slope_scaled: -2.0,
-        },
-        sample_count,
-    };
-    let mesh = Pipeline::new(device, &mesh_desc(Cull::Back))?;
-    let mesh_double_sided = Pipeline::new(device, &mesh_desc(Cull::None))?;
-
-    // Skybox: a fullscreen triangle drawn first behind geometry — depth-test always,
-    // no write, opaque overwrite.
-    let skybox = Pipeline::new(
-        device,
-        &PipelineDesc {
-            vs: SCENE_SKYBOX_VS,
-            ps: SCENE_SKYBOX_PS,
-            input: &[],
-            topology: Topology::TriangleList,
-            cull: Cull::None,
-            depth: DepthState {
-                test: true,
-                write: false,
-                compare: DepthCompare::Always,
-            },
-            blend: BlendMode::Opaque,
-            depth_bias: DepthBias::default(),
-            sample_count,
-        },
-    )?;
-
-    // UV island fill: `fs_main` (zero-normal fill verts take its overlay branch);
-    // never writes depth (everything at z=0) so grid + wireframe layer by draw order.
-    let uv_fill = Pipeline::new(
-        device,
-        &PipelineDesc {
-            vs: SCENE_VS,
-            ps: SCENE_MESH_PS,
-            input: &SCENE_VERTEX_LAYOUT,
-            topology: Topology::TriangleList,
-            cull: Cull::None,
-            depth: DepthState {
-                test: true,
-                write: false,
-                compare: DepthCompare::GreaterEqual,
-            },
-            blend: BlendMode::AlphaBlend,
-            depth_bias: DepthBias::default(),
-            sample_count,
-        },
-    )?;
-
-    // Skeleton octahedron fills: the same flat overlay path the lines use (zero
-    // normals -> `fs_main`'s overlay branch), but as triangles and with
-    // `DepthCompare::Always` so the bones read *through* the character. A skeleton
-    // lives inside its mesh, so depth-testing it would hide the entire thing —
-    // the same reasoning as the pivot marker's `line_overlay` above. Double-sided,
-    // since an octahedron is viewed from every angle as the camera orbits.
-    let fill_overlay = Pipeline::new(
-        device,
-        &PipelineDesc {
-            vs: SCENE_VS,
-            ps: SCENE_MESH_PS,
-            input: &SCENE_VERTEX_LAYOUT,
-            topology: Topology::TriangleList,
-            cull: Cull::None,
-            depth: DepthState {
-                test: true,
-                write: false,
-                compare: DepthCompare::Always,
-            },
-            blend: BlendMode::AlphaBlend,
-            depth_bias: DepthBias::default(),
-            sample_count,
-        },
-    )?;
-
-    // Selection flash: `fs_selection` flat fill, depth-tested (Reversed-Z) but no
-    // depth write, so it's occluded by geometry in front yet wins over the coplanar
-    // surface it tints.
-    let selection = Pipeline::new(
-        device,
-        &PipelineDesc {
-            vs: SCENE_VS,
-            ps: SCENE_SELECTION_PS,
-            input: &SCENE_VERTEX_LAYOUT,
-            topology: Topology::TriangleList,
-            cull: Cull::None,
-            depth: DepthState {
-                test: true,
-                write: false,
-                compare: DepthCompare::GreaterEqual,
-            },
-            blend: BlendMode::AlphaBlend,
-            depth_bias: DepthBias::default(),
-            sample_count,
-        },
-    )?;
-
-    Ok(ScenePipelineSet {
-        line,
-        line_overlay,
-        fill_overlay,
-        mesh,
-        mesh_double_sided,
-        skybox,
-        uv_fill,
-        selection,
-    })
-}
-
-/// Build an optional vertex buffer from `vertices`: `None` for an empty set (D3D11
-/// rejects a zero-byte buffer, and the draw is skipped anyway), else an immutable
-/// [`VertexBuffer`]. The build-on-demand line views + the UV wireframe/fill use this
-/// so an off / empty view holds no allocation.
-fn optional_vertex_buffer(
-    device: &ID3D11Device,
-    vertices: &[crate::scene::SceneVertex],
-) -> windows::core::Result<Option<VertexBuffer>> {
-    if vertices.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(VertexBuffer::new(device, vertices)?))
-    }
-}
-
-/// Reconcile one normal-line view (face or vertex normals — the same shape,
-/// differing only in the toggle and `lines` builder): rebuild when on + drifted
-/// (compared against the borrowed inputs, so a steady-state frame allocates
-/// nothing), free when off.
-#[allow(clippy::too_many_arguments)] // Disjoint &mut field pairs + the view's plain inputs.
-fn sync_normal_view(
-    device: &ID3D11Device,
-    model: &ModelData,
-    buf: &mut Option<VertexBuffer>,
-    baked: &mut Option<NormalParams>,
-    on: bool,
-    length: f32,
-    color: [f32; 4],
-    hidden: &[u32],
-    lines: fn(&ModelData, f32, [f32; 4], &[u32]) -> Vec<crate::scene::SceneVertex>,
-) -> windows::core::Result<()> {
-    let unchanged = match (&baked, on) {
-        (None, false) => true,
-        (Some(params), true) => {
-            params.length == length && params.color == color && params.hidden == hidden
-        }
-        _ => false,
-    };
-    if unchanged {
-        return Ok(());
-    }
-    *buf = if on {
-        optional_vertex_buffer(device, &lines(model, length, color, hidden))?
-    } else {
-        None
-    };
-    *baked = on.then(|| NormalParams {
-        length,
-        color,
-        hidden: hidden.to_vec(),
-    });
-    Ok(())
 }
 
 /// Decode a baked UV-checker PNG into an sRGB GPU texture. A decode failure is a
@@ -1762,7 +995,20 @@ fn decode_checker(device: &ID3D11Device, png_bytes: &[u8]) -> windows::core::Res
 /// selection and debug options. The selection
 /// flash rides in `selection_color` (gamma-space rgb + the flash fade in alpha,
 /// zero while nothing is selected/flashing), read only by `fs_selection`.
-fn scene_uniforms(
+/// Whether this frame is one of the flat data-inspection views, which emit final
+/// display pixels from the scene shader.
+///
+/// They bypass lighting, the composite's tone map and GTAO entirely — a value
+/// shown through a tone curve is no longer the value — so the composite blits
+/// straight through and the occlusion passes are skipped.
+fn flat_display(frame: &SceneFrame<'_>) -> bool {
+    matches!(
+        frame.debug.active_material,
+        ActiveMaterial::Buffers | ActiveMaterial::SkinWeights
+    )
+}
+
+pub(super) fn scene_uniforms(
     camera: OrbitCamera,
     projection: CameraProjection,
     environment: EnvironmentSettings,
@@ -1863,26 +1109,5 @@ fn build_gtao_uniforms(
             steps.max(1) as f32,
             0.0,
         ],
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Invariant 11: the hand-maintained input-element list must cover exactly
-    /// the `#[repr(C)] SceneVertex` — a drifted field order/size would misfeed
-    /// the vertex shader with no runtime error.
-    #[test]
-    fn scene_vertex_layout_matches_struct_stride() {
-        let layout_stride: usize = SCENE_VERTEX_LAYOUT
-            .iter()
-            .map(|element| element.format.byte_size())
-            .sum();
-        assert_eq!(
-            layout_stride,
-            std::mem::size_of::<crate::scene::SceneVertex>(),
-            "SCENE_VERTEX_LAYOUT must match SceneVertex field-for-field"
-        );
     }
 }

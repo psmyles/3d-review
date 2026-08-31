@@ -12,7 +12,11 @@
 // the cosine-weighted visible arc (the GTAO ground-truth integral), averaging over
 // slices.
 //
-// Registers: gbuffer `t0`, raw AO `t1`, GTAO sampler `s0`, `GtaoUniforms` `b0`.
+// Registers: gbuffer `t0`, raw AO `t1`, GTAO sampler `s0`, `GtaoUniforms` `b2`.
+// `b2` rather than `b0` because the G-buffer pass that fills `t0` leaves
+// `SceneUniforms` bound at `b0` (its vertex stage reads it) while these passes
+// run — one slot per struct across the whole scene/GTAO/post set, so nothing can
+// reinterpret another cbuffer's bytes. See the register plan in `scene.hlsl`.
 //
 // Matrix note: `proj` is uploaded column-major and read with HLSL's default
 // `column_major` packing, so `mul(proj, v)` is the standard projection and an
@@ -22,7 +26,7 @@
 static const float PI = 3.14159265359;
 static const float HALF_PI = 1.57079632679;
 
-cbuffer GtaoUniforms : register(b0)
+cbuffer GtaoUniforms : register(b2)
 {
     // Projection matrix (view -> clip): projects sample points to screen and its
     // terms reconstruct view-space position from depth.

@@ -16,7 +16,7 @@ use crate::state::{
     TexViewRequest, TexViewTransition, TexturePoolEntry, TextureViewState, UiState,
 };
 use crate::stats;
-use crate::theme::{self, color, font, size};
+use crate::theme::{self, color, font, motion, size};
 
 /// Draw the Tex viewport: the central image canvas behind the chrome, plus the
 /// floating texture-stats panel when toggled on. Called from the overlay only in
@@ -114,7 +114,7 @@ fn draw_canvas(
                 view,
                 rect.center(),
                 rect.center(),
-                dy * size::TEXTURE_DRAG_ZOOM_SPEED,
+                dy * motion::TEXTURE_DRAG_ZOOM_SPEED,
             );
         }
     }
@@ -128,7 +128,7 @@ fn draw_canvas(
                 view,
                 rect.center(),
                 pointer,
-                scroll * size::TEXTURE_ZOOM_SPEED,
+                scroll * motion::TEXTURE_ZOOM_SPEED,
             );
         }
     }
@@ -203,12 +203,12 @@ fn advance_transition(view: &mut TextureViewState, ctx: &egui::Context) {
     };
     let now = ctx.input(|input| input.time);
     let elapsed = (now - transition.start_time) as f32;
-    let t = if size::TEXTURE_ZOOM_ANIM_SECS > 0.0 {
-        (elapsed / size::TEXTURE_ZOOM_ANIM_SECS).clamp(0.0, 1.0)
+    let t = if motion::TEXTURE_ZOOM_ANIM_SECS > 0.0 {
+        (elapsed / motion::TEXTURE_ZOOM_ANIM_SECS).clamp(0.0, 1.0)
     } else {
         1.0
     };
-    let eased = ease_in_out_cubic(t);
+    let eased = review_render::ease_in_out_cubic(t);
     view.zoom = transition.from_zoom + (transition.to_zoom - transition.from_zoom) * eased;
     view.pan = transition.from_pan + (transition.to_pan - transition.from_pan) * eased;
     if t >= 1.0 {
@@ -217,16 +217,6 @@ fn advance_transition(view: &mut TextureViewState, ctx: &egui::Context) {
         view.transition = None;
     } else {
         ctx.request_repaint();
-    }
-}
-
-/// Ease-in-out cubic on `t ∈ [0, 1]` — the same shape the 3D camera transition
-/// uses, so the Tex view's snaps read like the rest of the app.
-fn ease_in_out_cubic(t: f32) -> f32 {
-    if t < 0.5 {
-        4.0 * t * t * t
-    } else {
-        1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
     }
 }
 

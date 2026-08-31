@@ -179,7 +179,15 @@ pub struct TopologyFace {
 pub struct ModelStats {
     pub polygon_count: usize,
     pub triangle_count: usize,
+    /// The source file's own logical vertex count (control points), as the
+    /// artist's DCC reports it.
     pub vertex_count: usize,
+    /// What the mesh costs on the GPU: unique vertices per draw group, as
+    /// measured by [`ModelData::count_gpu_vertices`] — the buffer any engine
+    /// importer's lossless indexing would build. Neither the DCC count above nor
+    /// this viewer's internal corner-split buffer, which is an implementation
+    /// detail and reported nowhere.
+    pub gpu_vertex_count: usize,
     pub uv_set_count: usize,
     pub material_count: usize,
     pub draw_count: usize,
@@ -541,6 +549,98 @@ impl ModelData {
         seen.len()
     }
 
+    /// The number of vertices an engine's GPU vertex buffer would hold for this
+    /// mesh: unique attribute tuples per draw group, counted over the referenced
+    /// vertices.
+    ///
+    /// Import expands every face corner into its own vertex (FBX indexes
+    /// normals/UVs per corner, and the polygon-topology views need the corner-run
+    /// layout), so `vertices.len()` describes this viewer's internal buffer, not
+    /// the asset. What the asset actually *costs* is what any engine importer's
+    /// lossless indexing produces: one vertex per distinct
+    /// (position, normal, UVs, color) tuple, per (node, material) draw group —
+    /// duplicates across groups stay separate, exactly as separate draws keep
+    /// separate buffers. This is the figure the stats panel reports as the GPU
+    /// vertex count, and it matches the Opt workspace's post-index baseline.
+    ///
+    /// Equality is bit-exact after folding `-0.0` to `+0.0` and every NaN to one
+    /// pattern — the same canonical form the Opt weld uses, so the two counts
+    /// can never disagree. The tangent is deliberately excluded: it is derived
+    /// from position/normal/UV, so identical inputs carry identical tangents and
+    /// including it would only let floating-point noise split a vertex.
+    pub fn count_gpu_vertices(&self) -> usize {
+        use std::collections::HashSet;
+
+        let triangle_count = self.indices.len() / 3;
+        if triangle_count == 0 || self.vertices.is_empty() {
+            return 0;
+        }
+        let node_tags =
+            (self.triangles.node.len() == triangle_count).then_some(self.triangles.node.as_slice());
+        let material_tags = (self.triangles.material.len() == triangle_count)
+            .then_some(self.triangles.material.as_slice());
+
+        // Fold a component to the canonical bit pattern (`-0.0` → `+0.0`, any
+        // NaN → the one `f32::NAN`), so equality is by value, not encoding.
+        let canonical = |value: f32| -> [u8; 4] {
+            let folded = if value.is_nan() {
+                f32::NAN
+            } else if value == 0.0 {
+                0.0
+            } else {
+                value
+            };
+            folded.to_ne_bytes()
+        };
+
+        // A vertex index is keyed at most once per group; a group's set holds
+        // the distinct attribute tuples among them.
+        let mut seen: HashSet<(u32, u32, u32)> = HashSet::new();
+        let mut unique: HashSet<(u32, u32, Vec<u8>)> = HashSet::new();
+
+        for (triangle, corners) in self.indices.chunks_exact(3).enumerate() {
+            let node = node_tags.map_or(0, |tags| tags[triangle]);
+            let material = material_tags.map_or(0, |tags| tags[triangle]);
+            for &index in corners {
+                let Some(vertex) = self.vertices.get(index as usize) else {
+                    continue;
+                };
+                if !seen.insert((node, material, index)) {
+                    continue;
+                }
+                let mut key = Vec::with_capacity((12 + self.uv_channels.len() * 2) * 4);
+                for component in [vertex.position.x, vertex.position.y, vertex.position.z] {
+                    key.extend_from_slice(&canonical(component));
+                }
+                for component in [vertex.normal.x, vertex.normal.y, vertex.normal.z] {
+                    key.extend_from_slice(&canonical(component));
+                }
+                // Every UV set participates; a single-set model carries its UVs
+                // only on the vertex itself.
+                if self.uv_channels.is_empty() {
+                    key.extend_from_slice(&canonical(vertex.uv.x));
+                    key.extend_from_slice(&canonical(vertex.uv.y));
+                } else {
+                    for channel in &self.uv_channels {
+                        let uv = channel.get(index as usize).copied().unwrap_or_default();
+                        key.extend_from_slice(&canonical(uv.x));
+                        key.extend_from_slice(&canonical(uv.y));
+                    }
+                }
+                for component in [
+                    vertex.vertex_color.x,
+                    vertex.vertex_color.y,
+                    vertex.vertex_color.z,
+                    vertex.vertex_color.w,
+                ] {
+                    key.extend_from_slice(&canonical(component));
+                }
+                unique.insert((node, material, key));
+            }
+        }
+        unique.len()
+    }
+
     pub fn recompute_bounds(&mut self) {
         let mut bounds = Bounds::EMPTY;
 
@@ -561,6 +661,56 @@ impl ModelData {
                 .vertices
                 .iter()
                 .all(|vertex| vertex.tangent.truncate().length_squared() < 1e-12)
+    }
+
+    /// Recompute per-vertex normals as the area-weighted average of the faces
+    /// meeting at each vertex.
+    ///
+    /// Needed after any operation that *merges* vertices which carried different
+    /// normals — a position-only weld, say. Merging keeps one of the originals
+    /// arbitrarily, so the surviving normal describes one of the faces rather than
+    /// the surface, and the mesh shades as noise until this runs.
+    ///
+    /// Smoothing is per *vertex*, so it never crosses a split the mesh still has:
+    /// a hard edge whose two sides remain separate vertices keeps its two normals.
+    /// Using the uncross product rather than a normalized face normal weights each
+    /// face by twice its area, which is what keeps a fan of thin triangles from
+    /// outvoting the large face beside it.
+    ///
+    /// A vertex whose incident faces cancel out (or that no face references) keeps
+    /// the normal it had, so this can never introduce a zero-length one.
+    pub fn generate_normals(&mut self) {
+        if self.vertices.is_empty() || self.indices.len() < 3 {
+            return;
+        }
+
+        let mut accumulated = vec![Vec3::ZERO; self.vertices.len()];
+        for triangle in self.indices.chunks_exact(3) {
+            let [i0, i1, i2] = [
+                triangle[0] as usize,
+                triangle[1] as usize,
+                triangle[2] as usize,
+            ];
+            let (Some(v0), Some(v1), Some(v2)) = (
+                self.vertices.get(i0),
+                self.vertices.get(i1),
+                self.vertices.get(i2),
+            ) else {
+                continue;
+            };
+            // Unnormalized: its length is twice the triangle's area, which is the
+            // weighting we want.
+            let face = (v1.position - v0.position).cross(v2.position - v0.position);
+            for &index in &[i0, i1, i2] {
+                accumulated[index] += face;
+            }
+        }
+
+        for (vertex, normal) in self.vertices.iter_mut().zip(accumulated) {
+            if normal.length_squared() > 1e-20 {
+                vertex.normal = normal.normalize();
+            }
+        }
     }
 
     /// Synthesize a per-vertex tangent basis from positions, UVs and normals
@@ -689,6 +839,9 @@ pub fn demo_cube_model() -> ModelData {
             polygon_count: 6,
             triangle_count: 12,
             vertex_count: 24,
+            // Overwritten below by the measured count (each flat-shaded corner
+            // is genuinely unique, so it stays 24).
+            gpu_vertex_count: 0,
             uv_set_count: 1,
             material_count: 1,
             draw_count: 1,
@@ -705,6 +858,7 @@ pub fn demo_cube_model() -> ModelData {
         ..Default::default()
     };
     model.recompute_bounds();
+    model.stats.gpu_vertex_count = model.count_gpu_vertices();
     model
 }
 
@@ -893,6 +1047,119 @@ mod tests {
         assert_eq!(model.material_draw_count(), 0);
     }
 
+    /// A minimal model wrapping `vertices` + `indices`, for the normal/tangent
+    /// generation tests.
+    fn bare_model(vertices: Vec<Vertex>, indices: Vec<u32>) -> ModelData {
+        ModelData {
+            name: "bare".to_owned(),
+            vertices,
+            indices,
+            ..ModelData::default()
+        }
+    }
+
+    #[test]
+    fn generate_normals_averages_the_faces_meeting_at_a_vertex() {
+        // Two triangles forming a 90° fold along the shared edge (0,0,0)-(0,1,0):
+        // one in the XY plane (normal +Z), one in the ZY plane (normal +X). The
+        // two shared vertices should come out at the 45° bisector.
+        let vertex = |pos: Vec3| Vertex {
+            position: pos,
+            normal: Vec3::ZERO,
+            ..Vertex::default()
+        };
+        let mut model = bare_model(
+            vec![
+                vertex(Vec3::new(0.0, 0.0, 0.0)),
+                vertex(Vec3::new(0.0, 1.0, 0.0)),
+                vertex(Vec3::new(1.0, 0.0, 0.0)),
+                vertex(Vec3::new(0.0, 0.0, 1.0)),
+            ],
+            // Wound so the first faces +Z and the second faces +X.
+            vec![0, 2, 1, 0, 1, 3],
+        );
+        model.generate_normals();
+
+        let bisector = Vec3::new(1.0, 0.0, 1.0).normalize();
+        for shared in [0, 1] {
+            assert!(
+                model.vertices[shared].normal.distance(bisector) < 1.0e-5,
+                "shared vertex {shared} should bisect the fold, got {:?}",
+                model.vertices[shared].normal
+            );
+        }
+        // The corners belonging to only one face keep that face's own normal.
+        assert!(model.vertices[2].normal.distance(Vec3::Z) < 1.0e-5);
+        assert!(model.vertices[3].normal.distance(Vec3::X) < 1.0e-5);
+    }
+
+    #[test]
+    fn generate_normals_weights_faces_by_area() {
+        // Two coplanar triangles of very different size sharing vertex 0. Both
+        // face +Z, so area weighting can't change the direction — what this pins
+        // down is that the result stays unit length rather than summing to a
+        // long vector or cancelling.
+        let vertex = |x: f32, y: f32| Vertex {
+            position: Vec3::new(x, y, 0.0),
+            normal: Vec3::ZERO,
+            ..Vertex::default()
+        };
+        let mut model = bare_model(
+            vec![
+                vertex(0.0, 0.0),
+                vertex(0.01, 0.0),
+                vertex(0.0, 0.01),
+                vertex(10.0, 0.0),
+                vertex(0.0, 10.0),
+            ],
+            vec![0, 1, 2, 0, 3, 4],
+        );
+        model.generate_normals();
+
+        for (index, vertex) in model.vertices.iter().enumerate() {
+            assert!(
+                (vertex.normal.length() - 1.0).abs() < 1.0e-5,
+                "vertex {index} normal is not unit length: {:?}",
+                vertex.normal
+            );
+            assert!(vertex.normal.distance(Vec3::Z) < 1.0e-5);
+        }
+    }
+
+    #[test]
+    fn generate_normals_leaves_an_unreferenced_vertex_alone() {
+        // A vertex no triangle mentions accumulates nothing; it must keep the
+        // normal it had rather than become zero-length.
+        let mut model = bare_model(
+            vec![
+                Vertex {
+                    position: Vec3::ZERO,
+                    normal: Vec3::Y,
+                    ..Vertex::default()
+                };
+                4
+            ],
+            Vec::new(),
+        );
+        model.vertices[0].position = Vec3::new(1.0, 0.0, 0.0);
+        model.vertices[1].position = Vec3::new(0.0, 1.0, 0.0);
+        model.indices = vec![0, 1, 2];
+
+        model.generate_normals();
+        assert_eq!(
+            model.vertices[3].normal,
+            Vec3::Y,
+            "an unreferenced vertex keeps its normal"
+        );
+    }
+
+    #[test]
+    fn generate_normals_is_a_no_op_without_geometry() {
+        let mut model = ModelData::default();
+        model.generate_normals();
+        assert!(model.vertices.is_empty());
+    }
+
     #[test]
     fn generate_tangents_builds_orthonormal_basis_from_uvs() {
         // A single triangle in the XY plane (normal +Z) with UVs aligned to X/Y:
@@ -930,6 +1197,7 @@ mod tests {
                 polygon_count: 1,
                 triangle_count: 1,
                 vertex_count: 3,
+                gpu_vertex_count: 3,
                 uv_set_count: 1,
                 material_count: 0,
                 draw_count: 0,
@@ -1171,5 +1439,56 @@ mod tests {
         assert!(model.nodes[0].bone.is_none());
         assert!(model.skin.is_none());
         assert_eq!(model.stats.bone_count, 0);
+    }
+
+    /// Every corner of the flat-shaded demo cube is genuinely unique (shared
+    /// positions, but a different normal per face and different UVs per corner),
+    /// so its GPU cost equals its corner count.
+    #[test]
+    fn gpu_vertex_count_of_the_demo_cube_is_every_corner() {
+        let model = demo_cube_model();
+        assert_eq!(model.count_gpu_vertices(), 24);
+        assert_eq!(model.stats.gpu_vertex_count, 24);
+    }
+
+    /// Corner-split duplicates — identical in every attribute — collapse to one
+    /// GPU vertex, and `-0.0` counts as `0.0` (an indexer compares values, not
+    /// encodings).
+    #[test]
+    fn gpu_vertex_count_merges_bit_identical_corners() {
+        let mut model = demo_cube_model();
+        // Append exact copies of triangle 0's corners as three new vertices and
+        // a triangle over them: the mesh grows, its GPU cost must not.
+        let corners: Vec<Vertex> = model.indices[..3]
+            .iter()
+            .map(|&index| model.vertices[index as usize])
+            .collect();
+        let base = model.vertices.len() as u32;
+        model.vertices.extend(corners);
+        model.indices.extend_from_slice(&[base, base + 1, base + 2]);
+        model.triangles.to_face.push(0);
+        model.triangles.material.push(0);
+        model.triangles.node.push(0);
+
+        assert_eq!(model.count_gpu_vertices(), 24, "duplicates cost nothing");
+    }
+
+    /// A vertex shared by triangles of two materials is uploaded once per draw
+    /// group, exactly as the Opt pipeline's per-(node, material) partition keeps
+    /// it — the two counts must never disagree.
+    #[test]
+    fn gpu_vertex_count_keeps_material_boundaries_separate() {
+        let mut model = demo_cube_model();
+        assert_eq!(model.count_gpu_vertices(), 24);
+        // A quad face is two triangles sharing two corners. Splitting the pair
+        // across materials puts those shared corners on a draw-group boundary,
+        // and each group uploads its own copy — exactly as the Opt pipeline's
+        // per-(node, material) partition keeps them, so the counts can't drift.
+        model.triangles.material[1] = 1;
+        assert_eq!(
+            model.count_gpu_vertices(),
+            26,
+            "the two shared corners are uploaded once per group"
+        );
     }
 }

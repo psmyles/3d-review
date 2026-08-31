@@ -2,13 +2,12 @@
 //! bounding box, and the face/vertex normal lines — each able to skip an
 //! Outliner-hidden mesh via the per-triangle node info.
 
-use std::collections::HashSet;
-
 use glam::Vec3;
 use review_model::{Bounds, ModelData};
 
 use crate::scene::SceneVertex;
 
+use super::hidden::HiddenFilter;
 use super::vertex::{debug_normal_length, push_line};
 
 /// Wireframe line segments tracing each *original* polygon's edges (quads stay
@@ -33,16 +32,14 @@ pub(crate) fn wireframe_lines(
     // Map each face to its owning scene-graph node so faces of an Outliner-hidden
     // mesh are skipped — `None` when the model carries no per-triangle node info,
     // in which case visibility can't be resolved and every face is drawn.
-    let face_node = (!hidden_nodes.is_empty())
-        .then(|| face_node_map(model))
-        .flatten();
-    let hidden: HashSet<u32> = hidden_nodes.iter().copied().collect();
+    let hidden = HiddenFilter::new(model, hidden_nodes);
+    let face_node = hidden.is_active().then(|| face_node_map(model)).flatten();
 
     for (face_index, face) in model.faces.iter().enumerate() {
         if let Some(map) = face_node.as_ref()
             && map
                 .get(face_index)
-                .is_some_and(|node| hidden.contains(node))
+                .is_some_and(|node| hidden.contains_node(*node))
         {
             continue;
         }
@@ -101,12 +98,10 @@ fn triangulated_wireframe_lines(
     hidden_nodes: &[u32],
 ) -> Vec<SceneVertex> {
     let mut vertices = Vec::with_capacity(model.indices.len() * 2);
-    let triangle_count = model.indices.len() / 3;
-    let hidden: HashSet<u32> = hidden_nodes.iter().copied().collect();
-    let resolve_nodes = !hidden.is_empty() && model.triangles.node.len() == triangle_count;
+    let hidden = HiddenFilter::new(model, hidden_nodes);
 
     for (triangle_index, triangle) in model.indices.chunks_exact(3).enumerate() {
-        if resolve_nodes && hidden.contains(&model.triangles.node[triangle_index]) {
+        if hidden.is_hidden(triangle_index) {
             continue;
         }
         let [a, b, c] = [
@@ -252,11 +247,10 @@ pub(crate) fn face_normal_lines(
     // Skip triangles owned by an Outliner-hidden node so a hidden mesh's faces
     // contribute no normal lines; with no hidden set (or no per-triangle node
     // info) every triangle counts.
-    let hidden: HashSet<u32> = hidden_nodes.iter().copied().collect();
-    let resolve_nodes = !hidden.is_empty() && model.triangles.node.len() == triangle_count;
+    let hidden = HiddenFilter::new(model, hidden_nodes);
 
     for (triangle_index, triangle) in model.indices.chunks_exact(3).enumerate() {
-        if resolve_nodes && hidden.contains(&model.triangles.node[triangle_index]) {
+        if hidden.is_hidden(triangle_index) {
             continue;
         }
         let face_index = model
@@ -362,17 +356,13 @@ pub(crate) fn vertex_normal_lines(
 /// carries no per-triangle node info (so visibility can't be resolved and every
 /// vertex is drawn).
 fn visible_vertex_mask(model: &ModelData, hidden_nodes: &[u32]) -> Option<Vec<bool>> {
-    let triangle_count = model.indices.len() / 3;
-    if triangle_count == 0
-        || hidden_nodes.is_empty()
-        || model.triangles.node.len() != triangle_count
-    {
+    let hidden = HiddenFilter::new(model, hidden_nodes);
+    if !hidden.is_active() {
         return None;
     }
-    let hidden: HashSet<u32> = hidden_nodes.iter().copied().collect();
     let mut mask = vec![false; model.vertices.len()];
     for (triangle_index, triangle) in model.indices.chunks_exact(3).enumerate() {
-        if hidden.contains(&model.triangles.node[triangle_index]) {
+        if hidden.is_hidden(triangle_index) {
             continue;
         }
         for &corner in triangle {

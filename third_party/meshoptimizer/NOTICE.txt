@@ -1,0 +1,36 @@
+meshoptimizer — vendored source
+================================
+
+Upstream:  https://github.com/zeux/meshoptimizer
+Version:   v1.2  (MESHOPTIMIZER_VERSION 1020)
+Commit:    9d9890c73011d75920af614485296d1e03e95448
+License:   MIT — see LICENSE.md
+
+What is vendored
+----------------
+An unmodified copy of upstream `src/`: `meshoptimizer.h` plus every `*.cpp`
+translation unit. Nothing is patched, so refreshing this directory is a plain
+re-copy of a newer tag (update the commit + version above, then re-run the
+workspace tests).
+
+The full `src/` set is copied rather than the handful of files
+`crates/optimize` actually calls, for two reasons: the tree stays a verbatim
+upstream snapshot (no per-file dependency list to re-derive on every update),
+and a static library only contributes the object files whose symbols are
+referenced, so the translation units we never call (mesh/vertex codecs,
+clusterizer, meshlet utilities, …) cost a few seconds of build time and
+nothing at all in the shipped binary.
+
+How it is built
+---------------
+`crates/optimize/build.rs` compiles these sources with `cc` in C++ mode into a
+static lib, and sets `cfg(has_meshopt)` only when this directory is present —
+mirroring how `crates/import/build.rs` gates the vendored ufbx behind
+`cfg(has_ufbx)`. Delete this directory and the workspace still builds; the
+optimization operations then report `OptError::Unavailable`.
+
+The library needs no configuration macros: `MESHOPTIMIZER_API` defaults to
+empty and the whole public surface is `extern "C"` with the platform default
+calling convention, which is what `crates/optimize/src/ffi.rs` declares
+against. The default allocator uses global `operator new` / `operator delete`,
+which is why the build links the C++ runtime (`cc::Build::cpp(true)`).

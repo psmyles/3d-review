@@ -8,6 +8,7 @@
 
 static void review_import_set_error(review_import_error *out_error, const char *message)
 {
+    size_t length;
     if (!out_error) {
         return;
     }
@@ -17,8 +18,14 @@ static void review_import_set_error(review_import_error *out_error, const char *
         return;
     }
 
-    strncpy(out_error->message, message, sizeof(out_error->message) - 1);
-    out_error->message[sizeof(out_error->message) - 1] = '\0';
+    /* Truncating memcpy rather than strncpy: the same bounded copy without the
+       deprecated call, and the same shape `export_bridge.c` uses. */
+    length = strlen(message);
+    if (length >= sizeof(out_error->message)) {
+        length = sizeof(out_error->message) - 1;
+    }
+    memcpy(out_error->message, message, length);
+    out_error->message[length] = '\0';
 }
 
 /* `a * b` with explicit overflow rejection, for the allocation-size and buffer
@@ -1001,9 +1008,24 @@ static int review_import_capture_nodes(
     for (node_index = 0; node_index < scene->nodes.count; node_index++) {
         ufbx_node *node = scene->nodes.data[node_index];
         review_import_node *dst = &out_scene->nodes[node_index];
-        ufbx_matrix transform = node->node_to_world;
+        ufbx_matrix transform;
         size_t col;
 
+        /* Both geometry passes tolerate a null entry in `scene->nodes`; this
+           walk must agree with them, or a scene they load leaves the Outliner
+           dereferencing nothing. The row stays as calloc left it — no name, no
+           parent, no mesh part, kind `OTHER` — apart from an identity transform,
+           since an all-zero matrix is not one anything can be placed by. */
+        if (!node) {
+            dst->parent = -1;
+            dst->mesh_part_index = -1;
+            for (col = 0; col < 4; col++) {
+                dst->transform[col * 4 + col] = 1.0f;
+            }
+            continue;
+        }
+
+        transform = node->node_to_world;
         dst->name = review_import_dup_ufbx_string(node->name);
         if (!dst->name) {
             review_import_set_error(out_error, "out of memory while recording scene node names");

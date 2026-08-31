@@ -5,7 +5,10 @@
 //! the viewport's selection color so a selected bone reads the same as a selected
 //! mesh part (see `sync_debug_state`).
 
-use crate::state::{DEFAULT_SKELETON_SCALE, SKELETON_SCALE_MAX, SKELETON_SCALE_MIN, UiState};
+use crate::state::{
+    DEFAULT_SKELETON_SCALE, UiState,
+    range::{SKELETON_SCALE_MAX, SKELETON_SCALE_MIN},
+};
 use crate::theme::color;
 use crate::widgets::{color_swatch_row, labeled_slider_with_value, panel_grid, reset_button};
 

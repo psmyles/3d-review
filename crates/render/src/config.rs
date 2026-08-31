@@ -49,6 +49,17 @@ impl MsaaSamples {
         MsaaSamples::X16,
     ];
 
+    /// Short menu label.
+    pub fn label(self) -> &'static str {
+        match self {
+            MsaaSamples::Off => "Off",
+            MsaaSamples::X2 => "2x",
+            MsaaSamples::X4 => "4x",
+            MsaaSamples::X8 => "8x",
+            MsaaSamples::X16 => "16x",
+        }
+    }
+
     /// The MSAA sample count this level maps to (`Off` = 1).
     pub fn sample_count(self) -> u32 {
         match self {
@@ -340,6 +351,16 @@ pub enum CheckerTexture {
     Color,
 }
 
+impl CheckerTexture {
+    /// Short menu label.
+    pub fn label(self) -> &'static str {
+        match self {
+            CheckerTexture::Greyscale => "Greyscale",
+            CheckerTexture::Color => "Color",
+        }
+    }
+}
+
 /// How the vertex-color view interprets the mesh's vertex-color attribute.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum VertexColorMode {
@@ -350,6 +371,17 @@ pub enum VertexColorMode {
     Alpha,
     /// Show RGB as color and alpha as surface opacity.
     RgbAlpha,
+}
+
+impl VertexColorMode {
+    /// Short menu label.
+    pub fn label(self) -> &'static str {
+        match self {
+            VertexColorMode::Rgb => "RGB channel",
+            VertexColorMode::Alpha => "Alpha channel",
+            VertexColorMode::RgbAlpha => "RGB+A channel",
+        }
+    }
 }
 
 /// Which material the filled faces display. The choices are mutually exclusive

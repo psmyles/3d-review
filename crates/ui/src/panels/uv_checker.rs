@@ -3,7 +3,10 @@
 
 use review_render::CheckerTexture;
 
-use crate::state::{CHECKER_TILING_MAX, CHECKER_TILING_MIN, UiState, UvCheckerPanelState};
+use crate::state::{
+    UiState, UvCheckerPanelState,
+    range::{CHECKER_TILING_MAX, CHECKER_TILING_MIN},
+};
 use crate::widgets::{labeled_combo, labeled_slider_with_value, panel_grid, reset_button};
 
 pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
@@ -37,10 +40,11 @@ fn checker_texture_row(ui: &mut egui::Ui, texture: &mut CheckerTexture) {
         ui,
         "Checker Texture",
         "uv_checker_texture",
-        checker_texture_label(*texture),
+        texture.label(),
         |ui| {
-            ui.selectable_value(texture, CheckerTexture::Greyscale, "Greyscale");
-            ui.selectable_value(texture, CheckerTexture::Color, "Color");
+            for choice in [CheckerTexture::Greyscale, CheckerTexture::Color] {
+                ui.selectable_value(texture, choice, choice.label());
+            }
         },
     );
 }
@@ -59,11 +63,4 @@ fn checker_channel_row(ui: &mut egui::Ui, uv_channel: &mut u32, uv_set_count: us
             }
         },
     );
-}
-
-fn checker_texture_label(texture: CheckerTexture) -> &'static str {
-    match texture {
-        CheckerTexture::Greyscale => "Greyscale",
-        CheckerTexture::Color => "Color",
-    }
 }

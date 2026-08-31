@@ -50,6 +50,13 @@ pub(crate) fn bar_group_rect(
     )
 }
 
+/// [`bar_group_rect`] for a group centred in the bar rather than mirrored to an
+/// edge — for controls that describe the viewport as a whole rather than sitting
+/// at one side of it.
+pub(crate) fn bar_group_rect_centered(bar_rect: egui::Rect, width: f32, height: f32) -> egui::Rect {
+    egui::Rect::from_center_size(bar_rect.center(), egui::vec2(width, height))
+}
+
 /// Lay `add_contents` out left-to-right inside `rect` at the standard group
 /// height — the scope every chrome-bar group opens.
 pub(crate) fn bar_group_scope(
@@ -81,15 +88,51 @@ pub(crate) fn stats_overlay_card(
     width: f32,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) {
+    stats_overlay_card_at(
+        ctx,
+        id,
+        StatsCardSide::Left,
+        left_inset,
+        bottom_inset,
+        width,
+        add_contents,
+    );
+}
+
+/// Which viewport edge a stats card hugs. Opt shows two at once — the source
+/// mesh's on the left as always, and the processed mesh's on the right — so they
+/// read as the two halves of a comparison rather than a stack of cards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StatsCardSide {
+    Left,
+    Right,
+    /// Centred in the viewport, for a card that describes the view as a whole
+    /// rather than one mesh in it — the Opt overlay's legend. Its inset is the
+    /// signed horizontal offset that keeps it centred between the side panels.
+    Center,
+}
+
+/// [`stats_overlay_card`] with a choice of edge. `side_inset` is measured from
+/// that edge (the width of the side panel docked there), so a card never lands
+/// on top of a panel.
+pub(crate) fn stats_overlay_card_at(
+    ctx: &egui::Context,
+    id: &str,
+    side: StatsCardSide,
+    side_inset: f32,
+    bottom_inset: f32,
+    width: f32,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    let margin = theme::px(ctx, size::STATS_OVERLAY_MARGIN);
+    let (align, offset_x) = match side {
+        StatsCardSide::Left => (egui::Align2::LEFT_BOTTOM, side_inset + margin),
+        StatsCardSide::Right => (egui::Align2::RIGHT_BOTTOM, -(side_inset + margin)),
+        StatsCardSide::Center => (egui::Align2::CENTER_BOTTOM, side_inset),
+    };
     egui::Area::new(egui::Id::new(id))
         .fade_in(false)
-        .anchor(
-            egui::Align2::LEFT_BOTTOM,
-            egui::vec2(
-                left_inset + theme::px(ctx, size::STATS_OVERLAY_MARGIN),
-                -(bottom_inset + theme::px(ctx, size::STATS_OVERLAY_MARGIN)),
-            ),
-        )
+        .anchor(align, egui::vec2(offset_x, -(bottom_inset + margin)))
         .show(ctx, |ui| {
             egui::Frame::NONE
                 .fill(color::STATS_OVERLAY_BG)
@@ -104,6 +147,16 @@ pub(crate) fn stats_overlay_card(
                     add_contents(ui);
                 });
         });
+}
+
+/// A button that fills the width it is given, with its label centred.
+///
+/// egui left-aligns a button's label as soon as `min_size` widens the button past
+/// the text ("if there are no growable atoms then everything will be left-aligned")
+/// — growable spacers either side are what re-centre it.
+pub(crate) fn wide_button(label: &str, width: f32) -> egui::Button<'_> {
+    egui::Button::new((egui::Atom::grow(), label, egui::Atom::grow()))
+        .min_size(egui::vec2(width, 0.0))
 }
 
 /// A square icon toggle sized to the standard toolbar tile.

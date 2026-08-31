@@ -6,16 +6,18 @@
 //! Each builder takes its visual parameters explicitly so the renderer can
 //! rebuild a single view live when its slider/color changes.
 //!
-//! Organized by purpose: [`vertex`] holds the shared emit helpers; [`grid`] the
-//! static reference grids; [`mesh`] the shaded mesh + per-material reorder;
-//! [`select`] the selection/visibility draw lists; [`debug_lines`] the 3D debug
-//! line views; [`skeleton`] the bone overlay; [`skin`] the weight heat map;
+//! Organized by purpose: [`vertex`] holds the shared emit helpers; [`hidden`] the
+//! Outliner hidden-mesh filter every visibility-aware builder resolves through;
+//! [`grid`] the static reference grids; [`mesh`] the shaded mesh + per-material
+//! reorder; [`select`] the selection/visibility draw lists; [`debug_lines`] the 3D
+//! debug line views; [`skeleton`] the bone overlay; [`skin`] the weight heat map;
 //! [`uv`] the UV viewport geometry.
 //!
 //! [`ModelData`]: review_model::ModelData
 
 mod debug_lines;
 mod grid;
+mod hidden;
 mod mesh;
 mod select;
 mod skeleton;

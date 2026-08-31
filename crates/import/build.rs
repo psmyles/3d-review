@@ -14,11 +14,20 @@ fn main() {
     println!("cargo:rerun-if-changed={}", bridge_h_path.display());
 
     if c_path.exists() && h_path.exists() {
+        // Two builds, not one: the bridge is this project's own C and compiles
+        // with warnings **on**, which they cannot be while the vendored
+        // amalgamation shares the invocation. The bridge is emitted first so a
+        // linker that resolves in command-line order sees it before the library
+        // it calls into.
         cc::Build::new()
-            .file(c_path)
             .file(bridge_c_path)
             .include("../../third_party/ufbx")
             .include("src")
+            .warnings(true)
+            .compile("ufbx_bridge");
+        cc::Build::new()
+            .file(c_path)
+            .include("../../third_party/ufbx")
             .warnings(false)
             .compile("ufbx");
         println!("cargo:rustc-cfg=has_ufbx");
