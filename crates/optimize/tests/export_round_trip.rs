@@ -154,6 +154,19 @@ fn a_lod_chain_writes_suffixed_sibling_nodes_into_one_file() {
         names.iter().any(|name| name.ends_with("_LOD1")),
         "the second level is suffixed: {names:?}"
     );
+    // "Sibling" is literal: the levels share one parent, not per-level copies
+    // of the ancestor chain.
+    let mesh_parents: std::collections::HashSet<Option<usize>> = loaded
+        .nodes
+        .iter()
+        .filter(|node| node.mesh_part.is_some())
+        .map(|node| node.parent)
+        .collect();
+    assert_eq!(
+        mesh_parents.len(),
+        1,
+        "both levels hang off the same parent node: {names:?}"
+    );
     assert_eq!(
         loaded.indices.len() / 3,
         result

@@ -21,6 +21,7 @@
 //!
 //! Skinning is dropped, as everywhere else in this crate.
 
+use std::collections::HashMap;
 use std::ffi::{CString, c_char, c_int};
 use std::path::{Path, PathBuf};
 
@@ -216,11 +217,21 @@ fn build_scene(
     // `_LOD<n>` suffix to stay distinguishable.
     let suffix_levels = lods.len() > 1;
 
+    // Source node index → scene node index for every node already emitted into
+    // this file, so meshes sharing ancestors share one chain (see `place_node`).
+    let mut placed = HashMap::new();
+
     for lod in lods {
         let groups = group_by_node(&lod.model);
         for group in groups {
-            let (node_index, notes) =
-                place_node(&mut scene, source, &group, options.hierarchy, lod.level);
+            let (node_index, notes) = place_node(
+                &mut scene,
+                &mut placed,
+                source,
+                &group,
+                options.hierarchy,
+                lod.level,
+            );
             report.notes.extend(notes);
 
             let mesh = build_mesh(
@@ -297,10 +308,21 @@ fn group_by_node(model: &ModelData) -> Vec<NodeGroup> {
 ///
 /// Under [`HierarchyMode::Rebuild`] the source node's ancestors are emitted too,
 /// each with the local transform implied by the world transforms import
-/// recorded. Under [`HierarchyMode::FlatBaked`] a single identity root node is
-/// created per mesh instead.
+/// recorded. `placed` remembers every node already emitted into this scene, so
+/// meshes with common ancestors — sibling LODs under one group node, or one
+/// node's levels in a suffixed chain — hang off a single shared chain rather
+/// than each duplicating it from the root. Only the mesh-bearing leaf carries
+/// the level suffix, which puts a chain's levels beside each other as siblings —
+/// the layout game FBX files use for their own LOD chains. The importer's
+/// synthetic file root (nameless, meshless, parentless) is not re-emitted at
+/// all: the written file has its own root, so an explicit copy would wrap every
+/// re-import in one extra level.
+///
+/// Under [`HierarchyMode::FlatBaked`] a single identity root node is created per
+/// mesh instead.
 fn place_node(
     scene: &mut SceneData,
+    placed: &mut HashMap<usize, i32>,
     source: &ModelData,
     group: &NodeGroup,
     hierarchy: HierarchyMode,
@@ -352,6 +374,22 @@ fn place_node(
         let Some(node) = source.nodes.get(index) else {
             continue;
         };
+        let leaf = index == source_index;
+        // The synthetic file root — skipped, per above. (Never the leaf, so the
+        // mesh always has a real node to attach to.) `parent_world` is left
+        // alone so its transform — import parks the unit normalization there —
+        // folds into its children's locals instead of vanishing.
+        if !leaf && node.parent.is_none() && node.name.is_empty() && node.mesh_part.is_none() {
+            continue;
+        }
+        // Reuse a node an earlier group already emitted. A suffixed leaf is a
+        // per-level variant of its source node, so it is never shared.
+        let suffix = leaf && level != 0;
+        if !suffix && let Some(&existing) = placed.get(&index) {
+            parent = existing;
+            parent_world = node.transform;
+            continue;
+        }
         // Local = inverse(parent world) * world. A non-invertible parent (a zero
         // scale axis) leaves the child at the parent's origin rather than
         // producing NaNs.
@@ -374,8 +412,13 @@ fn place_node(
         };
         let scale = if scale.is_finite() { scale } else { Vec3::ONE };
 
+        let name = if suffix {
+            suffixed(&node.name, level)
+        } else {
+            node.name.clone()
+        };
         scene.nodes.push(NodeData {
-            name: c_string(&suffixed(&node.name, level), "Node"),
+            name: c_string(&name, "Node"),
             parent,
             translation: [
                 f64::from(translation.x),
@@ -391,6 +434,9 @@ fn place_node(
             scaling: [f64::from(scale.x), f64::from(scale.y), f64::from(scale.z)],
         });
         parent = (scene.nodes.len() - 1) as i32;
+        if !suffix {
+            placed.insert(index, parent);
+        }
         parent_world = node.transform;
     }
 
@@ -833,7 +879,14 @@ mod tests {
             triangles: Vec::new(),
         };
 
-        let (node, notes) = place_node(&mut scene, &source, &group, HierarchyMode::Rebuild, 0);
+        let (node, notes) = place_node(
+            &mut scene,
+            &mut HashMap::new(),
+            &source,
+            &group,
+            HierarchyMode::Rebuild,
+            0,
+        );
 
         assert_eq!(node, 0, "the mesh still attaches to a real node");
         assert_eq!(
@@ -844,6 +897,121 @@ mod tests {
         assert!(
             notes.iter().any(|note| note.contains("looped")),
             "the user is told the branch was flattened: {notes:?}"
+        );
+    }
+
+    /// A source hierarchy shaped like a game FBX carrying its LOD chain: the
+    /// importer's synthetic file root, a group node, and two sibling mesh
+    /// leaves under it.
+    fn lod_sibling_model() -> ModelData {
+        let node =
+            |name: &str, parent: Option<usize>, mesh: Option<usize>| review_model::SceneNode {
+                name: name.to_owned(),
+                parent,
+                mesh_part: mesh,
+                transform: Mat4::IDENTITY,
+                kind: if mesh.is_some() {
+                    review_model::NodeKind::Mesh
+                } else {
+                    review_model::NodeKind::Empty
+                },
+                bone: None,
+            };
+        ModelData {
+            name: "Crate".to_owned(),
+            nodes: vec![
+                node("", None, None),
+                node("SM_Crate", Some(0), None),
+                node("SM_Crate_LOD0", Some(1), Some(0)),
+                node("SM_Crate_LOD1", Some(1), Some(1)),
+            ],
+            ..ModelData::default()
+        }
+    }
+
+    fn empty_scene() -> SceneData {
+        SceneData {
+            nodes: Vec::new(),
+            materials: Vec::new(),
+            meshes: Vec::new(),
+        }
+    }
+
+    fn placed_names(scene: &SceneData) -> Vec<&str> {
+        scene
+            .nodes
+            .iter()
+            .map(|node| node.name.to_str().expect("names are UTF-8"))
+            .collect()
+    }
+
+    /// Sibling meshes under one group come out under a single shared ancestor
+    /// chain — not one copy of it per mesh — and the importer's synthetic file
+    /// root is not re-emitted as a wrapper node.
+    #[test]
+    fn place_node_shares_ancestors_and_drops_the_synthetic_file_root() {
+        let source = lod_sibling_model();
+        let mut scene = empty_scene();
+        let mut placed = HashMap::new();
+
+        for leaf in [2, 3] {
+            let group = NodeGroup {
+                source_node: Some(leaf),
+                triangles: Vec::new(),
+            };
+            let (node, _) = place_node(
+                &mut scene,
+                &mut placed,
+                &source,
+                &group,
+                HierarchyMode::Rebuild,
+                0,
+            );
+            assert!(node >= 0, "the mesh attaches to a real node");
+        }
+
+        assert_eq!(
+            placed_names(&scene),
+            ["SM_Crate", "SM_Crate_LOD0", "SM_Crate_LOD1"],
+            "one shared chain, no file-root wrapper"
+        );
+        assert_eq!(scene.nodes[0].parent, NO_PARENT);
+        assert_eq!(scene.nodes[1].parent, 0, "first leaf under the group");
+        assert_eq!(scene.nodes[2].parent, 0, "second leaf beside the first");
+    }
+
+    /// A suffixed chain (several levels in one file) puts each level's leaf as
+    /// a sibling under the same unsuffixed ancestors, mirroring how game FBX
+    /// files lay out their own LOD chains.
+    #[test]
+    fn place_node_puts_suffixed_levels_as_siblings_under_one_chain() {
+        let source = lod_sibling_model();
+        let mut scene = empty_scene();
+        let mut placed = HashMap::new();
+        let group = NodeGroup {
+            source_node: Some(2),
+            triangles: Vec::new(),
+        };
+
+        for level in 0..2 {
+            place_node(
+                &mut scene,
+                &mut placed,
+                &source,
+                &group,
+                HierarchyMode::Rebuild,
+                level,
+            );
+        }
+
+        assert_eq!(
+            placed_names(&scene),
+            ["SM_Crate", "SM_Crate_LOD0", "SM_Crate_LOD0_LOD1"],
+            "only the leaf is suffixed; the ancestors are shared"
+        );
+        assert_eq!(
+            scene.nodes[2].parent, 0,
+            "the suffixed level sits beside level 0, not under a duplicate chain"
         );
     }
 }
