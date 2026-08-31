@@ -9,8 +9,9 @@
 
 use review_model::ModelData;
 use review_optimize::{
-    AttributeWeights, ExportOptions, FbxFormat, HierarchyMode, LodLevel, LodPackaging, LodParams,
-    OpKind, ReduceParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings, WeldParams,
+    AoQuality, AoTarget, AttributeWeights, BakeAoParams, ExportOptions, FbxFormat, HierarchyMode,
+    LodLevel, LodPackaging, LodParams, OpKind, ReduceParams, SimplifyAlgorithm, SimplifyFlags,
+    SimplifySettings, WeldParams,
 };
 use review_render::Selection;
 
@@ -18,6 +19,7 @@ use crate::opt_state::{OptIntent, StackItem};
 use crate::state::{
     UiState,
     range::{
+        AO_BAKE_DISTANCE_MAX, AO_BAKE_DISTANCE_MIN, AO_BAKE_INTENSITY_MAX, AO_BAKE_INTENSITY_MIN,
         ATTRIBUTE_WEIGHT_MAX, ATTRIBUTE_WEIGHT_MIN, LOD_ERROR_MAX, LOD_ERROR_MIN, LOD_RATIO_MAX,
         LOD_RATIO_MIN, OVERDRAW_THRESHOLD_MAX, OVERDRAW_THRESHOLD_MIN, PRUNE_THRESHOLD_MAX,
         PRUNE_THRESHOLD_MIN, WELD_TOLERANCE_MAX, WELD_TOLERANCE_MIN,
@@ -83,6 +85,7 @@ fn operation_body(ui: &mut egui::Ui, state: &mut UiState, id: u64) {
         OpKind::Overdraw { threshold } => overdraw_params(ui, threshold),
         OpKind::Reduce(params) => reduce_params(ui, params).map(OpKind::Reduce),
         OpKind::SimplifyLod(params) => lod_params(ui, params).map(OpKind::SimplifyLod),
+        OpKind::BakeAo(params) => bake_ao_params(ui, params).map(OpKind::BakeAo),
         // These three have nothing to configure — meshoptimizer exposes no knobs
         // for them, and inventing some would be worse than an honest note.
         OpKind::FilterTriangles | OpKind::VertexCache | OpKind::VertexFetch => {
@@ -178,6 +181,70 @@ fn overdraw_params(ui: &mut egui::Ui, threshold: f32) -> Option<OpKind> {
         .abs()
         .gt(&f32::EPSILON)
         .then_some(OpKind::Overdraw { threshold: edited })
+}
+
+/// The AO bake editor.
+fn bake_ao_params(ui: &mut egui::Ui, params: BakeAoParams) -> Option<BakeAoParams> {
+    let mut edited = params;
+    panel_grid(ui, "opt_bake_ao", |ui| {
+        labeled_combo(
+            ui,
+            "Quality",
+            "opt_bake_ao_quality",
+            edited.quality.label(),
+            |ui| {
+                for quality in AoQuality::ALL {
+                    ui.selectable_value(&mut edited.quality, quality, quality.label());
+                }
+            },
+        );
+        labeled_slider_with_value(
+            ui,
+            "Max distance",
+            &mut edited.max_distance,
+            AO_BAKE_DISTANCE_MIN..=AO_BAKE_DISTANCE_MAX,
+            2,
+        );
+        labeled_slider_with_value(
+            ui,
+            "Intensity",
+            &mut edited.intensity,
+            AO_BAKE_INTENSITY_MIN..=AO_BAKE_INTENSITY_MAX,
+            2,
+        );
+        labeled_combo(
+            ui,
+            "Write to",
+            "opt_bake_ao_target",
+            edited.target.label(),
+            |ui| {
+                for target in AoTarget::ALL {
+                    ui.selectable_value(&mut edited.target, target, target.label());
+                }
+            },
+        );
+        if edited.target.is_rgb() {
+            labeled_checkbox(ui, "sRGB encode", &mut edited.srgb);
+        }
+    });
+
+    ui.add_space(size::PANEL_ROW_GAP);
+    ui.label(
+        egui::RichText::new(
+            "Objects named *_LOD<n> bake only against their own LOD's geometry \
+             (plus objects with no LOD suffix), so a whole visible LOD chain bakes \
+             in one run. Hidden objects neither occlude nor bake - hide collision \
+             shells in the Outliner first. Max distance is how far a surface can \
+             be and still occlude, in world meters; 0 is unlimited. Intensity is a \
+             power on the visibility - above 1 darkens. The alpha channel is \
+             always written linear. Preview via the Vertex Colors material. If a \
+             Preserve Attributes simplify runs after this bake, raise its Colors \
+             weight above zero or it will ignore the AO.",
+        )
+        .color(color::TEXT_MUTED),
+    );
+
+    (edited != params).then_some(edited)
 }
 
 /// The simplifier configuration both simplifying operations share: algorithm,

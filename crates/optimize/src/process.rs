@@ -50,6 +50,14 @@ pub struct ProcessInput<'a> {
     /// makes that figure describe the actual draw rather than this crate's
     /// intermediate layout.
     pub render_vertex_size: usize,
+    /// Outliner-hidden mesh nodes (sorted node indices). Only the AO bake
+    /// consults these: a hidden object neither occludes nor receives the bake.
+    /// Game assets routinely carry their whole LOD chain and a collision shell
+    /// as co-located sibling nodes, and baking against those invisible,
+    /// near-coincident surfaces shreds the result — what you see occluding is
+    /// what occludes. Every other operation still processes hidden geometry
+    /// (it is exported either way).
+    pub hidden_nodes: &'a [u32],
 }
 
 /// One output level: the mesh, and what measuring it produced.
@@ -216,7 +224,14 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
     // it, which inherits the reduced mesh.
     let mut base_error = 0.0f32;
     for op in pre_ops {
-        base_error = base_error.max(apply_op(&mut submeshes, op, input.stack, &mut warnings));
+        base_error = base_error.max(apply_op(
+            &mut submeshes,
+            op,
+            input.stack,
+            input.model,
+            input.hidden_nodes,
+            &mut warnings,
+        ));
     }
 
     // Level 0 is the mesh as the pre-operations left it; every LOD level
@@ -236,7 +251,14 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
 
     for level in &mut levels {
         for op in post_ops {
-            let error = apply_op(&mut level.submeshes, op, input.stack, &mut warnings);
+            let error = apply_op(
+                &mut level.submeshes,
+                op,
+                input.stack,
+                input.model,
+                input.hidden_nodes,
+                &mut warnings,
+            );
             level.simplify_error = level.simplify_error.max(error);
         }
         for piece in &mut level.submeshes {
@@ -258,6 +280,27 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
     let normals_invalidated = input.stack.ops.iter().any(|op| {
         op.enabled && matches!(&op.kind, OpKind::Weld(params) if !params.compare_normals)
     });
+
+    // A bake above a simplifier isn't wrong — surviving vertices keep their
+    // colors — but the AO then describes the pre-simplified geometry, which is
+    // rarely what the user meant. Advise rather than reorder.
+    let first_bake = input
+        .stack
+        .ops
+        .iter()
+        .position(|op| op.enabled && matches!(op.kind, OpKind::BakeAo(_)));
+    let last_simplify = input.stack.ops.iter().rposition(|op| {
+        op.enabled && matches!(op.kind, OpKind::Reduce(_) | OpKind::SimplifyLod(_))
+    });
+    if let (Some(bake), Some(simplify)) = (first_bake, last_simplify)
+        && bake < simplify
+    {
+        warnings.push(
+            "Bake AO runs before a simplifier, so the baked occlusion describes \
+             the pre-simplified geometry. Move the bake below the simplifier — or \
+             below Generate LODs to bake every level.",
+        );
+    }
 
     let mut lods = Vec::with_capacity(levels.len());
     for (index, level) in levels.into_iter().enumerate() {
@@ -436,6 +479,8 @@ fn apply_op(
     submeshes: &mut [Submesh],
     op: &OpInstance,
     stack: &OptStack,
+    model: &ModelData,
+    hidden_nodes: &[u32],
     warnings: &mut Warnings,
 ) -> f32 {
     if !op.enabled {
@@ -461,6 +506,17 @@ fn apply_op(
         });
     }
 
+    // The AO bake needs the whole scene as occluders — excluded pieces still
+    // occlude, they just aren't written — so like Reduce it takes every submesh
+    // at once rather than the per-piece loop below. Outliner-hidden nodes are
+    // out of the scene entirely (see [`ProcessInput::hidden_nodes`]), and the
+    // scene partitions by `_LOD<n>` name suffix so co-located LOD copies never
+    // shadow each other; `model` supplies the node names for that.
+    if matches!(op.kind, OpKind::BakeAo(_)) {
+        crate::ao::bake_submeshes(submeshes, op, stack, model, hidden_nodes);
+        return 0.0;
+    }
+
     for piece in submeshes.iter_mut() {
         if is_excluded(stack, piece.node) {
             continue;
@@ -474,8 +530,9 @@ fn apply_op(
             OpKind::Overdraw { threshold } => ops::optimize_overdraw(piece, *threshold),
             OpKind::VertexFetch => ops::optimize_vertex_fetch(piece),
             // The LOD operation is the pipeline's fan-out point, handled by the
-            // caller, and Reduce is handled above. Neither reaches this path.
-            OpKind::Reduce(_) | OpKind::SimplifyLod(_) => Ok(()),
+            // caller; Reduce and the AO bake are handled above. None reaches
+            // this path.
+            OpKind::Reduce(_) | OpKind::SimplifyLod(_) | OpKind::BakeAo(_) => Ok(()),
         };
         if let Err(error) = outcome {
             warnings.push(&format!("{}: {error}", kind.label()));
@@ -485,7 +542,7 @@ fn apply_op(
 }
 
 /// Whether the user excluded `node` from processing entirely.
-fn is_excluded(stack: &OptStack, node: u32) -> bool {
+pub(crate) fn is_excluded(stack: &OptStack, node: u32) -> bool {
     stack
         .node_override(node as usize)
         .is_some_and(|entry| entry.exclude)
@@ -493,7 +550,7 @@ fn is_excluded(stack: &OptStack, node: u32) -> bool {
 
 /// The settings to use for `op` on `node`: the node's override when it has one
 /// for this operation, otherwise the global settings.
-fn resolve_op<'a>(stack: &'a OptStack, op: &'a OpInstance, node: u32) -> &'a OpKind {
+pub(crate) fn resolve_op<'a>(stack: &'a OptStack, op: &'a OpInstance, node: u32) -> &'a OpKind {
     stack
         .node_override(node as usize)
         .and_then(|entry| entry.ops.iter().find(|candidate| candidate.id == op.id))
@@ -704,10 +761,11 @@ fn measure_submeshes(
 mod tests {
     use super::*;
     use crate::stack::{
-        LodLevel, LodParams, OpInstance, OpKind, ReduceParams, SimplifyAlgorithm, SimplifySettings,
-        WeldParams,
+        AoTarget, BakeAoParams, LodLevel, LodParams, OpInstance, OpKind, ReduceParams,
+        SimplifyAlgorithm, SimplifySettings, WeldParams,
     };
-    use review_model::demo_cube_model;
+    use glam::{Vec3, Vec4};
+    use review_model::{TriangleData, Vertex, demo_cube_model};
 
     /// A stand-in for the renderer's `SceneVertex` size in tests.
     const VERTEX_SIZE: usize = 48;
@@ -718,6 +776,7 @@ mod tests {
             model: &model,
             stack,
             render_vertex_size: VERTEX_SIZE,
+            hidden_nodes: &[],
         })
         .expect("the demo cube always processes")
     }
@@ -817,12 +876,7 @@ mod tests {
 
         let mut stack = OptStack::default();
         stack.push_op(OpKind::FilterTriangles);
-        let result = process(ProcessInput {
-            model: &model,
-            stack: &stack,
-            render_vertex_size: VERTEX_SIZE,
-        })
-        .expect("processing succeeds");
+        let result = run_model(&model, &stack);
 
         assert_eq!(
             result.lods[0].model.indices.len(),
@@ -1069,6 +1123,449 @@ mod tests {
         );
     }
 
+    fn run_model(model: &ModelData, stack: &OptStack) -> ProcessedResult {
+        run_model_hiding(model, stack, &[])
+    }
+
+    fn run_model_hiding(model: &ModelData, stack: &OptStack, hidden: &[u32]) -> ProcessedResult {
+        process(ProcessInput {
+            model,
+            stack,
+            render_vertex_size: VERTEX_SIZE,
+            hidden_nodes: hidden,
+        })
+        .expect("processing succeeds")
+    }
+
+    /// A model of named, upward-facing horizontal quads for the AO tests — one
+    /// scene node per `(name, half-extent, height)` entry. Every vertex carries
+    /// a distinctive source color so the tests can tell "written as fully open"
+    /// apart from "never written".
+    fn named_quads_model(quads: &[(&str, f32, f32)]) -> ModelData {
+        use glam::Mat4;
+        use review_model::{NodeKind, SceneNode};
+
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+        let mut node_tags = Vec::new();
+        let mut nodes = Vec::new();
+        for (index, &(name, half, y)) in quads.iter().enumerate() {
+            let base = vertices.len() as u32;
+            for position in [
+                Vec3::new(-half, y, -half),
+                Vec3::new(half, y, -half),
+                Vec3::new(half, y, half),
+                Vec3::new(-half, y, half),
+            ] {
+                vertices.push(Vertex {
+                    position,
+                    normal: Vec3::Y,
+                    vertex_color: Vec4::new(0.2, 0.4, 0.6, 0.8),
+                    ..Vertex::default()
+                });
+            }
+            indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+            node_tags.extend_from_slice(&[index as u32, index as u32]);
+            nodes.push(SceneNode {
+                name: name.to_owned(),
+                parent: None,
+                mesh_part: Some(index),
+                transform: Mat4::IDENTITY,
+                kind: NodeKind::Mesh,
+                bone: None,
+            });
+        }
+        ModelData {
+            vertices,
+            indices,
+            triangles: TriangleData {
+                node: node_tags,
+                ..TriangleData::default()
+            },
+            nodes,
+            ..ModelData::default()
+        }
+    }
+
+    /// Two nodes with no LOD identity: node 0 is a 1×1 quad at y = 0 facing
+    /// +Y, node 1 a 2×2 cover hovering at y = 0.5 above it. The geometry is
+    /// sized so node 0's vertices end up *partially* occluded (strictly
+    /// between 0 and 1), which is what the target/encode/intensity comparisons
+    /// need.
+    fn covered_quad_model() -> ModelData {
+        named_quads_model(&[("lower", 0.5, 0.0), ("cover", 1.0, 0.5)])
+    }
+
+    /// The processed vertices of the lower (covered) quad / the upper cover,
+    /// identified by height rather than order so the tests survive reordering.
+    fn split_by_height(model: &ModelData) -> (Vec<Vertex>, Vec<Vertex>) {
+        model
+            .vertices
+            .iter()
+            .partition(|vertex| vertex.position.y < 0.25)
+    }
+
+    /// A convex mesh occludes none of its own hemispheres: every vertex must
+    /// come out fully open — any value below 1 would be a self-intersection
+    /// artifact the ray-origin bias exists to prevent.
+    #[test]
+    fn bake_ao_leaves_a_convex_mesh_fully_open() {
+        let mut baseline = OptStack::default();
+        baseline.push_op(OpKind::FilterTriangles);
+        let mut baked = OptStack::default();
+        baked.push_op(OpKind::FilterTriangles);
+        baked.push_op(OpKind::BakeAo(BakeAoParams::default()));
+
+        let baseline = run(&baseline);
+        let baked = run(&baked);
+        for (before, after) in baseline.lods[0]
+            .model
+            .vertices
+            .iter()
+            .zip(&baked.lods[0].model.vertices)
+        {
+            assert!(
+                after.vertex_color.w > 0.99,
+                "a convex surface is fully open, got {}",
+                after.vertex_color.w
+            );
+            assert_eq!(
+                after.vertex_color.truncate(),
+                before.vertex_color.truncate(),
+                "the alpha target leaves RGB untouched"
+            );
+        }
+    }
+
+    #[test]
+    fn bake_ao_darkens_a_covered_surface() {
+        let model = covered_quad_model();
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::BakeAo(BakeAoParams::default()));
+
+        let result = run_model(&model, &stack);
+        let (covered, cover) = split_by_height(&result.lods[0].model);
+        assert!(!covered.is_empty() && !cover.is_empty());
+        for vertex in &covered {
+            let ao = vertex.vertex_color.w;
+            assert!(
+                ao < 0.5 && ao > 0.0,
+                "a covered vertex is mostly but not fully occluded, got {ao}"
+            );
+        }
+        for vertex in &cover {
+            assert!(
+                vertex.vertex_color.w > 0.99,
+                "nothing hangs over the cover, got {}",
+                vertex.vertex_color.w
+            );
+        }
+    }
+
+    #[test]
+    fn bake_ao_max_distance_releases_distant_occluders() {
+        let model = covered_quad_model();
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::BakeAo(BakeAoParams {
+            // The cover hangs 0.5 above; a shorter reach never finds it.
+            max_distance: 0.4,
+            ..BakeAoParams::default()
+        }));
+
+        let (covered, _) = split_by_height(&run_model(&model, &stack).lods[0].model);
+        for vertex in &covered {
+            assert!(
+                vertex.vertex_color.w > 0.99,
+                "the cover is out of reach, got {}",
+                vertex.vertex_color.w
+            );
+        }
+    }
+
+    /// Exclusion means "don't touch this object's data" — not "pretend it
+    /// isn't there": an excluded object still occludes its neighbours.
+    #[test]
+    fn an_excluded_node_still_occludes_but_is_not_written() {
+        let model = covered_quad_model();
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::BakeAo(BakeAoParams {
+            target: AoTarget::Rgb,
+            ..BakeAoParams::default()
+        }));
+        stack.node_override_mut(1).exclude = true;
+
+        let (covered, cover) = split_by_height(&run_model(&model, &stack).lods[0].model);
+        for vertex in &covered {
+            assert!(
+                vertex.vertex_color.x < 0.5,
+                "the excluded cover still darkens the quad below, got {}",
+                vertex.vertex_color.x
+            );
+        }
+        for vertex in &cover {
+            assert_eq!(
+                vertex.vertex_color,
+                Vec4::new(0.2, 0.4, 0.6, 0.8),
+                "the excluded object's own colors are untouched"
+            );
+        }
+    }
+
+    /// A hidden object is out of the bake's scene entirely: it neither occludes
+    /// (unlike an *excluded* one, which does) nor receives colors. This is what
+    /// keeps assets carrying hidden co-located LOD copies and collision shells
+    /// bakeable at all — those invisible near-coincident surfaces would
+    /// otherwise shadow every vertex of the visible mesh.
+    #[test]
+    fn a_hidden_node_neither_occludes_nor_is_baked() {
+        let model = covered_quad_model();
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::BakeAo(BakeAoParams::default()));
+
+        // Hiding the cover releases the quad below it...
+        let (covered, cover) =
+            split_by_height(&run_model_hiding(&model, &stack, &[1]).lods[0].model);
+        for vertex in &covered {
+            assert!(
+                vertex.vertex_color.w > 0.99,
+                "a hidden cover casts no occlusion, got {}",
+                vertex.vertex_color.w
+            );
+        }
+        // ...and the hidden cover itself keeps its source colors.
+        for vertex in &cover {
+            assert_eq!(
+                vertex.vertex_color,
+                Vec4::new(0.2, 0.4, 0.6, 0.8),
+                "a hidden object is not baked"
+            );
+        }
+    }
+
+    /// Same geometry as [`covered_quad_model`], but the nodes carry LOD
+    /// suffixes — the co-located-LOD-chain layout every game FBX ships. Each
+    /// LOD bakes only against its own group, so the "cover" (a different LOD)
+    /// casts nothing on the quad below it and both come out fully open. This
+    /// is what lets an artist keep the whole chain visible and bake every LOD
+    /// in one run.
+    #[test]
+    fn co_located_lod_copies_do_not_shadow_each_other() {
+        let model = named_quads_model(&[("Thing_LOD0", 0.5, 0.0), ("Thing_lod1", 1.0, 0.5)]);
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::BakeAo(BakeAoParams::default()));
+
+        for vertex in &run_model(&model, &stack).lods[0].model.vertices {
+            assert!(
+                vertex.vertex_color.w > 0.99,
+                "a different LOD never occludes, got {}",
+                vertex.vertex_color.w
+            );
+        }
+    }
+
+    /// A suffix-less mesh has no LOD variants, so it exists at every level: it
+    /// occludes each LOD group, and the LOD quads still ignore each other.
+    #[test]
+    fn an_unsuffixed_object_occludes_every_lod() {
+        let model = named_quads_model(&[
+            ("Q_LOD0", 0.5, 0.0),
+            ("Q_LOD1", 0.5, 0.05),
+            ("Cover", 2.0, 0.5),
+        ]);
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::BakeAo(BakeAoParams::default()));
+
+        for vertex in &run_model(&model, &stack).lods[0].model.vertices {
+            let ao = vertex.vertex_color.w;
+            if vertex.position.y < 0.2 {
+                assert!(
+                    ao < 0.5,
+                    "the shared cover darkens both LOD quads, got {ao}"
+                );
+            } else {
+                assert!(ao > 0.99, "nothing hangs over the cover, got {ao}");
+            }
+        }
+    }
+
+    /// Suffix-less meshes bake against the lowest LOD present — the
+    /// ground-truth geometry — so a floor under a LOD'd canopy still darkens.
+    #[test]
+    fn an_unsuffixed_object_is_occluded_by_the_lowest_lod() {
+        let model = named_quads_model(&[
+            ("Floor", 0.5, 0.0),
+            ("Canopy_LOD0", 1.0, 0.5),
+            ("Canopy_LOD1", 1.5, 0.6),
+        ]);
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::BakeAo(BakeAoParams::default()));
+
+        let baked = run_model(&model, &stack);
+        for vertex in &baked.lods[0].model.vertices {
+            if vertex.position.y < 0.2 {
+                assert!(
+                    vertex.vertex_color.w < 0.5,
+                    "the LOD0 canopy darkens the suffix-less floor, got {}",
+                    vertex.vertex_color.w
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bake_ao_is_deterministic() {
+        let model = covered_quad_model();
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::BakeAo(BakeAoParams::default()));
+
+        let first = run_model(&model, &stack);
+        let second = run_model(&model, &stack);
+        for (a, b) in first.lods[0]
+            .model
+            .vertices
+            .iter()
+            .zip(&second.lods[0].model.vertices)
+        {
+            assert_eq!(
+                a.vertex_color.to_array(),
+                b.vertex_color.to_array(),
+                "two runs are bit-identical"
+            );
+        }
+    }
+
+    /// Every write target touches exactly its own channels, leaving the
+    /// authored color in the rest.
+    #[test]
+    fn each_bake_target_touches_only_its_channels() {
+        let model = covered_quad_model();
+        let bake = |target: AoTarget| {
+            let mut stack = OptStack::default();
+            stack.push_op(OpKind::BakeAo(BakeAoParams {
+                target,
+                ..BakeAoParams::default()
+            }));
+            let (covered, _) = split_by_height(&run_model(&model, &stack).lods[0].model);
+            covered[0].vertex_color
+        };
+        let source = Vec4::new(0.2, 0.4, 0.6, 0.8);
+
+        let alpha = bake(AoTarget::Alpha);
+        assert_eq!(alpha.truncate(), source.truncate());
+        assert!(alpha.w < 0.5, "alpha carries the occlusion");
+
+        let rgb = bake(AoTarget::Rgb);
+        assert!(rgb.x == rgb.y && rgb.y == rgb.z, "grayscale");
+        assert!(rgb.x < 0.5);
+        assert_eq!(rgb.w, source.w);
+
+        let multiplied = bake(AoTarget::MultiplyRgb);
+        assert!(multiplied.x < source.x && multiplied.y < source.y);
+        assert_eq!(multiplied.w, source.w);
+        let ratio_x = multiplied.x / source.x;
+        let ratio_y = multiplied.y / source.y;
+        assert!(
+            (ratio_x - ratio_y).abs() < 1.0e-6,
+            "one factor multiplies every channel: {ratio_x} vs {ratio_y}"
+        );
+
+        let red = bake(AoTarget::Red);
+        assert!(red.x < 0.5);
+        assert_eq!(red.y, source.y);
+        assert_eq!(red.z, source.z);
+        assert_eq!(red.w, source.w);
+
+        let green = bake(AoTarget::Green);
+        assert_eq!(green.x, source.x);
+        assert!(green.y < 0.5);
+        assert_eq!(green.w, source.w);
+
+        let blue = bake(AoTarget::Blue);
+        assert_eq!(blue.x, source.x);
+        assert!(blue.z < 0.5);
+        assert_eq!(blue.w, source.w);
+    }
+
+    /// The sRGB option encodes the RGB-family writes (brightening any value in
+    /// (0, 1)) and never applies to the alpha target.
+    #[test]
+    fn bake_ao_srgb_encodes_rgb_but_never_alpha() {
+        let model = covered_quad_model();
+        let bake = |target: AoTarget, srgb: bool| {
+            let mut stack = OptStack::default();
+            stack.push_op(OpKind::BakeAo(BakeAoParams {
+                target,
+                srgb,
+                ..BakeAoParams::default()
+            }));
+            let (covered, _) = split_by_height(&run_model(&model, &stack).lods[0].model);
+            covered[0].vertex_color
+        };
+
+        let linear = bake(AoTarget::Rgb, false);
+        let encoded = bake(AoTarget::Rgb, true);
+        assert!(
+            encoded.x > linear.x,
+            "sRGB encoding brightens a mid value: {} vs {}",
+            encoded.x,
+            linear.x
+        );
+
+        assert_eq!(
+            bake(AoTarget::Alpha, true).w,
+            bake(AoTarget::Alpha, false).w,
+            "alpha is always written linear"
+        );
+    }
+
+    #[test]
+    fn bake_ao_intensity_darkens() {
+        let model = covered_quad_model();
+        let bake = |intensity: f32| {
+            let mut stack = OptStack::default();
+            stack.push_op(OpKind::BakeAo(BakeAoParams {
+                intensity,
+                ..BakeAoParams::default()
+            }));
+            let (covered, _) = split_by_height(&run_model(&model, &stack).lods[0].model);
+            covered[0].vertex_color.w
+        };
+
+        assert!(bake(2.0) < bake(1.0), "a higher power darkens mid values");
+    }
+
+    #[test]
+    fn a_bake_above_a_simplifier_gets_an_advisory() {
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::BakeAo(BakeAoParams::default()));
+        stack.push_op(OpKind::Reduce(ReduceParams {
+            simplify: SimplifySettings {
+                algorithm: SimplifyAlgorithm::Sloppy,
+                ..SimplifySettings::default()
+            },
+            target: LodLevel {
+                target_ratio: 0.5,
+                target_error: 1.0,
+            },
+        }));
+        assert!(
+            run(&stack)
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("Bake AO runs before a simplifier")),
+            "the ordering advisory is raised"
+        );
+
+        stack.reorder(0, 1);
+        assert!(
+            !run(&stack)
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("Bake AO runs before a simplifier")),
+            "baking after the simplifier is the recommended order"
+        );
+    }
+
     #[test]
     fn processed_models_stay_internally_consistent() {
         let mut stack = OptStack::default();
@@ -1168,12 +1665,7 @@ mod tests {
             compare_colors: false,
         }));
 
-        let result = process(ProcessInput {
-            model: &model,
-            stack: &stack,
-            render_vertex_size: VERTEX_SIZE,
-        })
-        .expect("processing succeeds");
+        let result = run_model(&model, &stack);
 
         let output = &result.lods[0].model;
         assert_eq!(output.uv_channels.len(), 2);
@@ -1193,12 +1685,7 @@ mod tests {
         let mut stack = OptStack::default();
         stack.push_op(OpKind::FilterTriangles);
 
-        let result = process(ProcessInput {
-            model: &model,
-            stack: &stack,
-            render_vertex_size: VERTEX_SIZE,
-        })
-        .expect("processing succeeds");
+        let result = run_model(&model, &stack);
 
         assert!(result.lods[0].model.skin.is_none());
         assert!(

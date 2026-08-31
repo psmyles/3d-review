@@ -14,7 +14,8 @@
 //! Every mutation goes through [`UiState::opt`]'s `edit_stack`, which bumps the
 //! revision `app` watches to schedule a reprocess.
 
-use review_optimize::OpKind;
+use review_optimize::{AoTarget, OpKind};
+use review_render::{ActiveMaterial, VertexColorMode};
 
 use crate::opt_state::{OptIntent, StackItem};
 use crate::state::UiState;
@@ -95,6 +96,18 @@ fn add_menu(ui: &mut egui::Ui, state: &mut UiState) {
                 response.on_disabled_hover_text("A stack can hold only one LOD operation")
             };
             if response.clicked() {
+                // A bake nobody can see helps nobody: adding one switches the
+                // viewport to the Vertex Colors material, in the mode matching
+                // the bake's write target. On add only — switching again on
+                // select or edit would fight a user who deliberately went back
+                // to Shaded.
+                if let OpKind::BakeAo(params) = &kind {
+                    state.debug.active_material = ActiveMaterial::VertexColors;
+                    state.vertex_colors.mode = match params.target {
+                        AoTarget::Alpha => VertexColorMode::Alpha,
+                        _ => VertexColorMode::Rgb,
+                    };
+                }
                 let id = state.opt.edit_stack_with(|stack| stack.push_op(kind));
                 state.opt.selected = Some(StackItem::Op(id));
                 ui.close();

@@ -63,7 +63,10 @@ pub fn from_json(json: &str) -> Result<OptStack, OptError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stack::{LodParams, OpKind, ReduceParams, SimplifyAlgorithm, WeldParams};
+    use crate::stack::{
+        AoQuality, AoTarget, BakeAoParams, LodParams, OpKind, ReduceParams, SimplifyAlgorithm,
+        WeldParams,
+    };
 
     #[test]
     fn a_stack_round_trips() {
@@ -98,6 +101,28 @@ mod tests {
 
         let loaded = from_json(&to_json(&stack).expect("serializes")).expect("parses");
         assert_eq!(loaded.ops[0].kind, OpKind::Reduce(reduce));
+    }
+
+    #[test]
+    fn a_bake_ao_operation_round_trips() {
+        let mut stack = OptStack::default();
+        let params = BakeAoParams {
+            quality: AoQuality::Ultra,
+            max_distance: 2.5,
+            intensity: 1.5,
+            target: AoTarget::MultiplyRgb,
+            srgb: true,
+        };
+        stack.push_op(OpKind::BakeAo(params));
+
+        let json = to_json(&stack).expect("serializes");
+        assert!(
+            json.contains("\"BakeAo\""),
+            "the wire name is pinned — renaming the variant breaks saved presets: {json}"
+        );
+
+        let loaded = from_json(&json).expect("parses");
+        assert_eq!(loaded.ops[0].kind, OpKind::BakeAo(params));
     }
 
     /// The simplifier settings live in their own struct now but are flattened on

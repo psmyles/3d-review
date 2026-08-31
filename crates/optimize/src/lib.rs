@@ -37,6 +37,8 @@ mod export_ffi;
 mod ffi;
 mod prof;
 
+mod ao;
+
 pub mod export;
 pub mod meshopt;
 pub mod ops;
@@ -50,9 +52,9 @@ pub use process::{
     AnalysisMetrics, MeshCounts, ProcessInput, ProcessedLod, ProcessedResult, process,
 };
 pub use stack::{
-    AttributeWeights, ExportOptions, FbxFormat, HierarchyMode, LodLevel, LodPackaging, LodParams,
-    NodeOverride, OpInstance, OpKind, OptStack, ReduceParams, SimplifyAlgorithm, SimplifyFlags,
-    SimplifySettings, WeldParams,
+    AoQuality, AoTarget, AttributeWeights, BakeAoParams, ExportOptions, FbxFormat, HierarchyMode,
+    LodLevel, LodPackaging, LodParams, NodeOverride, OpInstance, OpKind, OptStack, ReduceParams,
+    SimplifyAlgorithm, SimplifyFlags, SimplifySettings, WeldParams,
 };
 
 /// Everything that can go wrong in this crate.

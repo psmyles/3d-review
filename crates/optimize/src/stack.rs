@@ -209,6 +209,8 @@ pub enum OpKind {
     Reduce(ReduceParams),
     /// Generate the LOD chain. At most one per stack.
     SimplifyLod(LodParams),
+    /// Bake raycast ambient occlusion into the vertex-color set.
+    BakeAo(BakeAoParams),
     /// Reorder triangles for the GPU's post-transform vertex cache.
     VertexCache,
     /// Reorder triangles front-to-back to reduce overdraw.
@@ -221,12 +223,13 @@ impl OpKind {
     /// Every operation the "Add" menu offers, in menu order — cleanup first
     /// (what you almost always want before anything else), then the LOD
     /// generator, then the GPU reorder passes that belong at the end.
-    pub const ALL: [fn() -> OpKind; 8] = [
+    pub const ALL: [fn() -> OpKind; 9] = [
         || OpKind::Weld(WeldParams::default()),
         || OpKind::FilterTriangles,
         || OpKind::PruneComponents { error: 0.01 },
         || OpKind::Reduce(ReduceParams::default()),
         || OpKind::SimplifyLod(LodParams::default()),
+        || OpKind::BakeAo(BakeAoParams::default()),
         || OpKind::VertexCache,
         || OpKind::Overdraw { threshold: 1.05 },
         || OpKind::VertexFetch,
@@ -240,6 +243,7 @@ impl OpKind {
             OpKind::PruneComponents { .. } => "Prune Components",
             OpKind::Reduce(_) => "Reduce",
             OpKind::SimplifyLod(_) => "Generate LODs",
+            OpKind::BakeAo(_) => "Bake AO to Vertex Colors",
             OpKind::VertexCache => "Optimize Vertex Cache",
             OpKind::Overdraw { .. } => "Optimize Overdraw",
             OpKind::VertexFetch => "Optimize Vertex Fetch",
@@ -271,6 +275,14 @@ impl OpKind {
                 "Generate the LOD chain. Each level is simplified independently from \
                  the mesh as it stands at this point in the stack."
             }
+            OpKind::BakeAo(_) => {
+                "Raycast ambient occlusion at each vertex and write it into the \
+                 vertex-color set. Objects named *_LOD<n> bake only against their \
+                 own LOD's geometry, so a whole visible LOD chain bakes correctly \
+                 in one run; hidden objects don't take part — hide collision \
+                 shells first. Bakes the mesh as it stands at this point in the \
+                 stack. Changes no geometry."
+            }
             OpKind::VertexCache => {
                 "Reorder triangles so the GPU's post-transform vertex cache hits more \
                  often. Changes no geometry; watch ACMR/ATVR in the stats."
@@ -296,7 +308,10 @@ impl OpKind {
             | OpKind::PruneComponents { .. }
             | OpKind::Reduce(_)
             | OpKind::SimplifyLod(_) => true,
-            OpKind::VertexCache | OpKind::Overdraw { .. } | OpKind::VertexFetch => false,
+            OpKind::BakeAo(_)
+            | OpKind::VertexCache
+            | OpKind::Overdraw { .. }
+            | OpKind::VertexFetch => false,
         }
     }
 }
@@ -473,6 +488,119 @@ pub struct ReduceParams {
     /// Ratio and error limit, read exactly as a LOD level's are.
     #[serde(flatten)]
     pub target: LodLevel,
+}
+
+/// Ray count for the AO bake, as named steps rather than a raw slider — the
+/// visual difference between adjacent counts is subtle, and named steps keep
+/// presets comparable.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AoQuality {
+    Low,
+    Medium,
+    #[default]
+    High,
+    Ultra,
+}
+
+impl AoQuality {
+    pub const ALL: [AoQuality; 4] = [
+        AoQuality::Low,
+        AoQuality::Medium,
+        AoQuality::High,
+        AoQuality::Ultra,
+    ];
+
+    /// Hemisphere rays cast per vertex.
+    pub fn rays(self) -> usize {
+        match self {
+            AoQuality::Low => 32,
+            AoQuality::Medium => 64,
+            AoQuality::High => 128,
+            AoQuality::Ultra => 512,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AoQuality::Low => "Low (32 rays)",
+            AoQuality::Medium => "Medium (64 rays)",
+            AoQuality::High => "High (128 rays)",
+            AoQuality::Ultra => "Ultra (512 rays)",
+        }
+    }
+}
+
+/// Which part of the RGBA vertex color the baked AO value is written to.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AoTarget {
+    /// `color.a = ao`; RGB untouched. Alpha is always written linear.
+    #[default]
+    Alpha,
+    /// `color.rgb = ao` (grayscale); alpha untouched.
+    Rgb,
+    /// `color.rgb *= ao`, darkening whatever colors are authored; alpha untouched.
+    MultiplyRgb,
+    /// That one channel `= ao`; everything else untouched.
+    Red,
+    Green,
+    Blue,
+}
+
+impl AoTarget {
+    pub const ALL: [AoTarget; 6] = [
+        AoTarget::Alpha,
+        AoTarget::Rgb,
+        AoTarget::MultiplyRgb,
+        AoTarget::Red,
+        AoTarget::Green,
+        AoTarget::Blue,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AoTarget::Alpha => "Alpha channel",
+            AoTarget::Rgb => "RGB (grayscale)",
+            AoTarget::MultiplyRgb => "Multiply into RGB",
+            AoTarget::Red => "Red channel",
+            AoTarget::Green => "Green channel",
+            AoTarget::Blue => "Blue channel",
+        }
+    }
+
+    /// Whether this target writes into the RGB components — the only ones the
+    /// sRGB-encode option applies to (alpha is always linear).
+    pub fn is_rgb(self) -> bool {
+        !matches!(self, AoTarget::Alpha)
+    }
+}
+
+/// Settings for the [`OpKind::BakeAo`] operation.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BakeAoParams {
+    pub quality: AoQuality,
+    /// Farthest a surface can be and still occlude, in world meters;
+    /// `0.0` = unlimited (classic whole-scene occlusion).
+    pub max_distance: f32,
+    /// Power applied to visibility (`1.0` = physical), matching the viewport
+    /// Ambient Occlusion panel's Intensity semantics.
+    pub intensity: f32,
+    pub target: AoTarget,
+    /// sRGB-encode the written value. RGB-family targets only; alpha is
+    /// always linear.
+    pub srgb: bool,
+}
+
+impl Default for BakeAoParams {
+    fn default() -> Self {
+        Self {
+            quality: AoQuality::default(),
+            max_distance: 0.0,
+            intensity: 1.0,
+            target: AoTarget::default(),
+            srgb: false,
+        }
+    }
 }
 
 /// The `meshopt_Simplify*` option flags, as individually-labelled toggles. Kept
@@ -707,6 +835,26 @@ mod tests {
         assert!(
             stack.ops.iter().all(|op| op.id < stack.next_id),
             "the id source stays ahead of every re-keyed operation"
+        );
+    }
+
+    #[test]
+    fn the_add_menu_offers_nine_distinct_operations() {
+        let labels: Vec<&str> = OpKind::ALL.iter().map(|build| build().label()).collect();
+        assert_eq!(labels.len(), 9);
+        for (index, label) in labels.iter().enumerate() {
+            assert!(
+                !labels[index + 1..].contains(label),
+                "duplicate menu label: {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_ao_bake_reports_attribute_only_changes() {
+        assert!(
+            !OpKind::BakeAo(BakeAoParams::default()).alters_geometry(),
+            "the bake writes colors, never shape — no tangent rebuild, no warning"
         );
     }
 

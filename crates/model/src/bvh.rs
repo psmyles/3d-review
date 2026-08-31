@@ -116,9 +116,23 @@ impl Bvh {
     /// triangle positions from `model` (must be the model this was built from).
     pub fn segment_occluded(&self, model: &ModelData, origin: Vec3, target: Vec3) -> bool {
         let dir = target - origin;
+        self.any_hit(model, origin, dir, SEGMENT_SLACK, 1.0 - SEGMENT_SLACK)
+    }
+
+    /// Whether any triangle blocks the ray `origin + t * dir` within
+    /// `t ∈ (0, t_max)`. `t_max` is in units of `dir`'s length — pass a unit
+    /// `dir` so it reads as a world distance, or `f32::INFINITY` for an
+    /// unbounded ray. Unlike [`Self::segment_occluded`] there is no start
+    /// slack: the caller offsets `origin` off the queried surface itself (a
+    /// ray has no natural length to take a fractional slack of).
+    pub fn ray_occluded(&self, model: &ModelData, origin: Vec3, dir: Vec3, t_max: f32) -> bool {
+        self.any_hit(model, origin, dir, 0.0, t_max)
+    }
+
+    /// Shared any-hit traversal behind both occlusion queries: whether any
+    /// triangle is crossed strictly within `t ∈ (t_min, t_max)` along `dir`.
+    fn any_hit(&self, model: &ModelData, origin: Vec3, dir: Vec3, t_min: f32, t_max: f32) -> bool {
         let inv_dir = dir.recip();
-        let t_min = SEGMENT_SLACK;
-        let t_max = 1.0 - SEGMENT_SLACK;
 
         let mut stack = [0u32; MAX_STACK];
         let mut sp = 1usize; // node 0 (root) seeded below
@@ -486,6 +500,95 @@ mod tests {
                             occluded_brute_force(&model, eye, target),
                             "mismatch for eye {eye:?} target {target:?}",
                         );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ray_toward_cube_is_occluded_and_away_is_not() {
+        let model = demo_cube_model();
+        let bvh = Bvh::build(&model);
+        let origin = Vec3::new(0.0, 0.5, 5.0);
+        // Toward the cube (its +z face sits at z = 0.5, i.e. 4.5 away).
+        assert!(bvh.ray_occluded(&model, origin, Vec3::NEG_Z, f32::INFINITY));
+        // Pointing away from it.
+        assert!(!bvh.ray_occluded(&model, origin, Vec3::Z, f32::INFINITY));
+    }
+
+    #[test]
+    fn ray_t_max_clips_the_hit() {
+        let model = demo_cube_model();
+        let bvh = Bvh::build(&model);
+        let origin = Vec3::new(0.0, 0.5, 5.0);
+        // The nearest face is 4.5 along -z: a shorter ray misses, a longer hits.
+        assert!(!bvh.ray_occluded(&model, origin, Vec3::NEG_Z, 4.0));
+        assert!(bvh.ray_occluded(&model, origin, Vec3::NEG_Z, 5.0));
+    }
+
+    #[test]
+    fn unbounded_ray_matches_a_long_segment() {
+        let model = demo_cube_model();
+        let bvh = Bvh::build(&model);
+        // Rays from an eye through a jittered grid must agree with a segment
+        // reaching past the model. The segment is 100 long, not enormous: its
+        // slack margins scale with its length, and margins wide enough to
+        // swallow the geometry would make the two queries legitimately differ.
+        // The grid is jittered off the cube's face planes — a ray exactly
+        // grazing a box edge is a measure-zero case where the AABB and
+        // triangle tests can disagree by an ulp.
+        let eye = Vec3::new(4.0, 4.0, 4.0);
+        for ix in -3..=3 {
+            for iy in -3..=3 {
+                let target = Vec3::new(ix as f32 * 0.26 + 0.005, 0.53 + iy as f32 * 0.26, 0.007);
+                let dir = (target - eye).normalize();
+                assert_eq!(
+                    bvh.ray_occluded(&model, eye, dir, f32::INFINITY),
+                    bvh.segment_occluded(&model, eye, eye + dir * 100.0),
+                    "mismatch for target {target:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ray_matches_brute_force_over_a_grid() {
+        let model = demo_cube_model();
+        let bvh = Bvh::build(&model);
+        // Brute-force reference for the ray query, mirroring the segment grid
+        // test: every triangle scanned linearly with the same (t_min, t_max).
+        let brute_force = |origin: Vec3, dir: Vec3, t_max: f32| {
+            (0..model.indices.len() / 3).any(|t| {
+                let [a, b, c] = triangle_positions(&model, t as u32);
+                ray_triangle_t(origin, dir, a, b, c).is_some_and(|t| t > 0.0 && t < t_max)
+            })
+        };
+        let eyes = [
+            Vec3::new(0.0, 0.5, 6.0),
+            Vec3::new(6.0, 0.5, 0.0),
+            Vec3::new(4.0, 4.0, 4.0),
+        ];
+        for eye in eyes {
+            for ix in -3..=3 {
+                for iy in -3..=3 {
+                    for iz in -3..=3 {
+                        // Jittered off the cube's face planes: an exact edge
+                        // graze is a measure-zero case where the AABB and
+                        // triangle tests may disagree by an ulp.
+                        let target = Vec3::new(
+                            ix as f32 * 0.26 + 0.005,
+                            0.53 + iy as f32 * 0.26,
+                            iz as f32 * 0.26 + 0.007,
+                        );
+                        let dir = (target - eye).normalize();
+                        for t_max in [2.0, 6.0, f32::INFINITY] {
+                            assert_eq!(
+                                bvh.ray_occluded(&model, eye, dir, t_max),
+                                brute_force(eye, dir, t_max),
+                                "mismatch for eye {eye:?} target {target:?} t_max {t_max}",
+                            );
+                        }
                     }
                 }
             }

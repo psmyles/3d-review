@@ -16,8 +16,9 @@ use std::path::PathBuf;
 
 use review_model::ModelData;
 use review_optimize::{
-    LodLevel, LodParams, OpKind, OptStack, ProcessInput, ProcessedResult, ReduceParams,
-    SimplifyAlgorithm, SimplifyFlags, SimplifySettings, WeldParams, process,
+    AoQuality, AoTarget, BakeAoParams, LodLevel, LodParams, OpKind, OptStack, ProcessInput,
+    ProcessedResult, ReduceParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings, WeldParams,
+    process,
 };
 
 /// Stand-in for the renderer's `SceneVertex` size (position, normal, uv, tangent,
@@ -66,6 +67,7 @@ fn run(model: &ModelData, stack: &OptStack) -> ProcessedResult {
         model,
         stack,
         render_vertex_size: VERTEX_SIZE,
+        hidden_nodes: &[],
     })
     .expect("a real fixture always processes")
 }
@@ -688,4 +690,54 @@ fn the_import_gpu_vertex_count_matches_the_opt_baseline() {
          buffer (which is always exactly 3.0): {}",
         result.source_metrics.acmr
     );
+}
+
+/// The AO bake over a real asset: every written value is a real color, the
+/// asset's own concavities produce actual variation, and two runs are
+/// bit-identical — which is what makes the bake safe to re-run on every stack
+/// edit and stable across a preset round-trip.
+#[test]
+fn bake_ao_writes_bounded_deterministic_colors() {
+    let Some(model) = fixture("SM_column04.fbx") else {
+        return;
+    };
+
+    let mut stack = OptStack::default();
+    stack.push_op(OpKind::BakeAo(BakeAoParams {
+        // Low quality keeps the suite quick; determinism and bounds don't
+        // depend on the ray count.
+        quality: AoQuality::Low,
+        target: AoTarget::Rgb,
+        ..BakeAoParams::default()
+    }));
+
+    let result = run(&model, &stack);
+    let baked = &result.lods[0].model;
+    assert_consistent(baked, "bake_ao");
+
+    let mut lowest = f32::INFINITY;
+    let mut highest = f32::NEG_INFINITY;
+    for vertex in &baked.vertices {
+        for component in vertex.vertex_color.to_array() {
+            assert!(
+                component.is_finite() && (0.0..=1.0).contains(&component),
+                "every baked component is a real color value, got {component}"
+            );
+        }
+        lowest = lowest.min(vertex.vertex_color.x);
+        highest = highest.max(vertex.vertex_color.x);
+    }
+    assert!(
+        highest - lowest > 0.1,
+        "a column's crevices and open faces bake differently: {lowest}..{highest}"
+    );
+
+    let again = run(&model, &stack);
+    for (a, b) in baked.vertices.iter().zip(&again.lods[0].model.vertices) {
+        assert_eq!(
+            a.vertex_color.to_array(),
+            b.vertex_color.to_array(),
+            "two runs are bit-identical"
+        );
+    }
 }
