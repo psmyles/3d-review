@@ -25,6 +25,24 @@
 //!   plain whole-scene bake. This is what lets an artist keep the whole chain
 //!   visible and bake every LOD in one run.
 //!
+//! ## Where rays start
+//!
+//! A vertex's rays are **not** cast from the vertex itself. A corner sample
+//! point sits exactly where surfaces meet, so a vertex tucked into a
+//! contact/overlap gap (a shell rim between two walls of the same mesh) reads
+//! fully occluded — and interpolation then drags whole faces black even though
+//! most of each face is open. Instead the ray budget is dealt round-robin
+//! across **surface-neighborhood origins**: two per incident triangle
+//! ([`CornerAdjacency`], position-bit keyed over the occluder scene), inset
+//! [`ORIGIN_INSETS`] of the way toward that triangle's centroid and lifted
+//! off the surface by the bias — the vertex-bake analog of a texture baker
+//! sampling texel centers strictly inside faces, never on edges. Incident
+//! triangles whose geometric normal is near-perpendicular to the vertex
+//! normal (|dot| ≤ [`NEIGHBOR_ALIGNMENT_MIN`]) are skipped — the far side of a
+//! hard edge, and zero-area slivers; a vertex with no surviving neighbor falls
+//! back to the bare corner origin. Genuine crevices still darken: insets near
+//! a real crevice are themselves occluded.
+//!
 //! Each occluder model is a transient concatenation of submesh geometry, not a
 //! copy of anything shared (invariant 1 in spirit — it is bake scratch, like
 //! the BVH builder's own centroid arrays). It is also what makes the parallel
@@ -32,12 +50,14 @@
 //! live submesh vertices while raycasting, so the read side has to be a
 //! separate immutable snapshot rather than a borrow of the same arrays.
 //!
-//! Everything here is a pure function of the vertex bits and the occluder set:
+//! Everything here is a pure function of the vertex bits and the occluder set
+//! (the adjacency included — every input to the origin set is bit-derived):
 //! two runs produce bit-identical colors, and vertices duplicated across
 //! submesh seams (byte-identical position + normal, copied from the same
-//! source corner) get identical AO, so seams never show.
+//! source corner) share their adjacency key and so get identical AO — seams
+//! never show.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use glam::{Vec3, Vec4};
 use review_model::{Bounds, Bvh, ModelData, Vertex};
@@ -51,12 +71,133 @@ use crate::submesh::Submesh;
 /// noise next to the raycasts.
 const CHUNK: usize = 1024;
 
-/// One bake group's raycast world: the occluder geometry, its hierarchy, and
-/// the self-intersection bias sized to it.
+/// The two rings of ray origins per incident triangle, as fractions of the
+/// way from the vertex toward the triangle's centroid. The near ring keeps
+/// the sample local to the corner, so genuine crevices still darken; the far
+/// ring sits in the face's interior and is the guarantee the whole scheme
+/// exists for — a face that is mostly visible can never bake near-black,
+/// however deeply its corner is buried, because half its rays start out in
+/// the open. Two rings also blunt triangulation sensitivity: with one ring a
+/// low-valence corner (one incident triangle) insets a shorter world distance
+/// than its two-triangle neighbors and can stay buried while they escape.
+const ORIGIN_INSETS: [f32; 2] = [0.25, 0.75];
+
+/// Minimum |dot(triangle geometric normal, vertex normal)| for a triangle to
+/// contribute a ray origin. Rejects the far side of a near-perpendicular hard
+/// edge (whose inset origin would hover off-surface with a half-buried
+/// hemisphere) and — via `normalize_or_zero` — zero-area slivers. The
+/// absolute value is load-bearing: winding orientation is arbitrary, so the
+/// geometric normal may legitimately oppose the shading normal. As a side
+/// effect the floor guarantees the vertex-normal lift clears every surviving
+/// triangle's plane by at least `0.1 × bias`.
+const NEIGHBOR_ALIGNMENT_MIN: f32 = 0.1;
+
+/// One bake group's raycast world: the occluder geometry, its hierarchy, the
+/// corner adjacency the ray origins come from, and the self-intersection bias
+/// sized to it.
 struct OccluderScene {
     occluders: ModelData,
     bvh: Bvh,
+    adjacency: CornerAdjacency,
     bias: f32,
+}
+
+/// Which triangles touch each distinct vertex position of an occluder model,
+/// keyed by the position's *bit pattern* (matching [`scramble_hash`]'s
+/// bit-stability discipline — ±0.0 differ by design; the seam guarantee is
+/// about byte-identical copies). Keying by position alone deliberately unions
+/// corner-split duplicates — the same physical corner split across
+/// submeshes/materials — so every duplicate sees the same neighborhood.
+///
+/// CSR layout, built with the two-pass count→fill discipline: three flat
+/// buffers rather than one `Vec` per corner. Deterministic without a
+/// `BTreeMap` — slots are assigned in triangle-scan order and the map is only
+/// ever *looked up*, never iterated.
+struct CornerAdjacency {
+    slots: HashMap<[u32; 3], u32>,
+    /// Per-slot run boundaries into `tris`; length = slot count + 1.
+    starts: Vec<u32>,
+    /// Flat triangle indices, each slot's run in ascending triangle order.
+    tris: Vec<u32>,
+}
+
+impl CornerAdjacency {
+    fn build(occluders: &ModelData) -> Self {
+        let triangle_count = occluders.indices.len() / 3;
+        let mut slots: HashMap<[u32; 3], u32> = HashMap::new();
+        let mut counts: Vec<u32> = Vec::new();
+        for tri in 0..triangle_count {
+            for position in triangle_positions(occluders, tri as u32) {
+                let next = counts.len() as u32;
+                let slot = *slots.entry(position_key(position)).or_insert(next);
+                if slot == next {
+                    counts.push(0);
+                }
+                counts[slot as usize] += 1;
+            }
+        }
+
+        let mut starts = Vec::with_capacity(counts.len() + 1);
+        let mut total = 0u32;
+        starts.push(0);
+        for &count in &counts {
+            total += count;
+            starts.push(total);
+        }
+
+        let mut cursor = starts.clone();
+        let mut tris = vec![0u32; total as usize];
+        for tri in 0..triangle_count {
+            for position in triangle_positions(occluders, tri as u32) {
+                let slot = slots[&position_key(position)] as usize;
+                tris[cursor[slot] as usize] = tri as u32;
+                cursor[slot] += 1;
+            }
+        }
+
+        Self {
+            slots,
+            starts,
+            tris,
+        }
+    }
+
+    /// The triangles touching `position` (bit-exact), in triangle order —
+    /// empty for a position no triangle references. A degenerate triangle
+    /// with two coincident corners lists twice; harmless, since the origin
+    /// filter rejects it anyway.
+    fn incident(&self, position: Vec3) -> &[u32] {
+        let Some(&slot) = self.slots.get(&position_key(position)) else {
+            return &[];
+        };
+        let from = self.starts[slot as usize] as usize;
+        let to = self.starts[slot as usize + 1] as usize;
+        &self.tris[from..to]
+    }
+}
+
+fn position_key(position: Vec3) -> [u32; 3] {
+    [
+        position.x.to_bits(),
+        position.y.to_bits(),
+        position.z.to_bits(),
+    ]
+}
+
+/// The three positions of triangle `tri` in the occluder model, falling back
+/// to the origin for any out-of-range index (mirroring the BVH's own
+/// defensive read — a malformed mesh degrades, never panics).
+fn triangle_positions(occluders: &ModelData, tri: u32) -> [Vec3; 3] {
+    let base = tri as usize * 3;
+    let position = |slot: usize| {
+        occluders
+            .indices
+            .get(base + slot)
+            .and_then(|&index| occluders.vertices.get(index as usize))
+            .map(|vertex| vertex.position)
+            .unwrap_or(Vec3::ZERO)
+    };
+    [position(0), position(1), position(2)]
 }
 
 /// Bake AO into every non-excluded, non-hidden submesh's vertex colors, each
@@ -242,6 +383,7 @@ fn occluder_scene(
         ..Default::default()
     };
     let bvh = Bvh::build(&occluders);
+    let adjacency = CornerAdjacency::build(&occluders);
     // Scale-aware self-intersection bias: models are normalized to meters but
     // spans still vary wildly, so tie it to the scene size, with a floor for a
     // degenerate (near-point) scene.
@@ -249,35 +391,59 @@ fn occluder_scene(
     OccluderScene {
         occluders,
         bvh,
+        adjacency,
         bias,
     }
 }
 
 fn bake_chunk(chunk: &mut [Vertex], params: &BakeAoParams, scene: &OccluderScene) {
+    // One origin buffer reused across the chunk keeps the per-vertex loop
+    // allocation-free.
+    let mut origins: Vec<Vec3> = Vec::new();
     for vertex in chunk {
-        let ao = vertex_ao(
-            vertex.position,
-            vertex.normal,
-            params,
-            &scene.bvh,
-            &scene.occluders,
-            scene.bias,
-        );
+        let ao = vertex_ao(vertex.position, vertex.normal, params, scene, &mut origins);
         write_target(&mut vertex.vertex_color, ao, params.target, params.srgb);
     }
 }
 
+/// Fill `origins` with the vertex's surface-neighborhood ray starts (see the
+/// module docs): two rings per incident triangle passing the alignment
+/// filter, inset toward its centroid and lifted off the surface along the
+/// vertex normal — sign-free (winding is arbitrary) and consistent with the
+/// hemisphere's own orientation, with clearance of every surviving plane
+/// guaranteed by the filter floor. Falls back to the bare corner origin when
+/// nothing survives (an orphan or fully-degenerate neighborhood).
+fn sample_origins(scene: &OccluderScene, position: Vec3, n: Vec3, origins: &mut Vec<Vec3>) {
+    origins.clear();
+    for &tri in scene.adjacency.incident(position) {
+        let [a, b, c] = triangle_positions(&scene.occluders, tri);
+        let geometric = (b - a).cross(c - a).normalize_or_zero();
+        if geometric.dot(n).abs() <= NEIGHBOR_ALIGNMENT_MIN {
+            continue;
+        }
+        let centroid = (a + b + c) / 3.0;
+        for inset in ORIGIN_INSETS {
+            origins.push(position.lerp(centroid, inset) + n * scene.bias);
+        }
+    }
+    if origins.is_empty() {
+        origins.push(position + n * scene.bias);
+    }
+}
+
 /// One vertex's ambient occlusion in `0.0..=1.0` (1 = fully open): a
-/// deterministic cosine-weighted hemisphere visibility estimate. With a cosine
+/// deterministic cosine-weighted hemisphere visibility estimate, its rays
+/// dealt round-robin across the vertex's neighborhood origins. With a cosine
 /// pdf every ray carries equal weight, so the estimate is simply the visible
-/// fraction, then shaped by the intensity power.
+/// fraction, then shaped by the intensity power. (At Low quality a vertex
+/// whose valence exceeds the ray count leaves some origins unsampled —
+/// deterministic, and the sampled subset is still an unbiased neighborhood.)
 fn vertex_ao(
     position: Vec3,
     normal: Vec3,
     params: &BakeAoParams,
-    bvh: &Bvh,
-    occluders: &ModelData,
-    bias: f32,
+    scene: &OccluderScene,
+    origins: &mut Vec<Vec3>,
 ) -> f32 {
     let length_squared = normal.length_squared();
     if length_squared < 1.0e-12 {
@@ -287,7 +453,9 @@ fn vertex_ao(
     }
     let n = normal / length_squared.sqrt();
     let (tangent, bitangent) = orthonormal_basis(n);
-    let origin = position + n * bias;
+    sample_origins(scene, position, n, origins);
+    // `max_distance` is measured from each origin; the inset moves an origin
+    // by a fraction of one edge length, immaterial at world scale.
     let t_max = if params.max_distance > 0.0 {
         params.max_distance
     } else {
@@ -301,6 +469,7 @@ fn vertex_ao(
     let rotation = scramble_hash(position, normal);
     let mut hits = 0usize;
     for ray in 0..rays {
+        let origin = origins[ray % origins.len()];
         let u1 = (ray as f32 + 0.5) / rays as f32;
         let mut u2 = radical_inverse_base2(ray as u32) + rotation;
         if u2 >= 1.0 {
@@ -313,7 +482,10 @@ fn vertex_ao(
         let direction = tangent * (disk_radius * phi.cos())
             + bitangent * (disk_radius * phi.sin())
             + n * (1.0 - u1).sqrt();
-        if bvh.ray_occluded(occluders, origin, direction, t_max) {
+        if scene
+            .bvh
+            .ray_occluded(&scene.occluders, origin, direction, t_max)
+        {
             hits += 1;
         }
     }
@@ -448,5 +620,82 @@ mod tests {
         assert_eq!(node_lod(&model, 2), Some(1), "the group names the LOD");
         assert_eq!(node_lod(&model, 0), None, "the root has no LOD identity");
         assert_eq!(node_lod(&model, 99), None, "an out-of-range node has none");
+    }
+
+    /// One corner position seen by four triangles: two corner-split floor
+    /// copies (as a material seam leaves behind), a perpendicular wall, and a
+    /// zero-area sliver. The adjacency must union them all; the origin filter
+    /// must then keep only the ones aligned with the querying vertex's normal.
+    #[test]
+    fn corner_adjacency_unions_duplicates_and_the_filter_drops_edges() {
+        let corner = Vec3::ZERO;
+        let positions = [
+            // tri 0: a +Y floor triangle.
+            corner,
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            // tri 1: a second floor triangle over a corner-split duplicate.
+            corner,
+            Vec3::new(-1.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, -1.0),
+            // tri 2: a vertical wall (geometric normal +X).
+            corner,
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            // tri 3: a zero-area sliver (two coincident corners).
+            corner,
+            corner,
+            Vec3::new(1.0, 0.0, 0.0),
+        ];
+        let occluders = ModelData {
+            vertices: positions
+                .iter()
+                .map(|&position| review_model::Vertex {
+                    position,
+                    ..review_model::Vertex::default()
+                })
+                .collect(),
+            indices: (0..positions.len() as u32).collect(),
+            ..ModelData::default()
+        };
+        let scene = OccluderScene {
+            bvh: Bvh::build(&occluders),
+            adjacency: CornerAdjacency::build(&occluders),
+            occluders,
+            bias: 1.0e-6,
+        };
+
+        // The union, in triangle order; the degenerate lists once per
+        // coincident corner.
+        assert_eq!(scene.adjacency.incident(corner), &[0, 1, 2, 3, 3]);
+        assert_eq!(
+            scene.adjacency.incident(Vec3::new(9.0, 9.0, 9.0)),
+            &[] as &[u32],
+            "an unseen position has no neighbors"
+        );
+
+        // A +Y vertex normal keeps only the two floor triangles (two ring
+        // origins each): the wall is near-perpendicular, the sliver's
+        // geometric normal is zero.
+        let mut origins = Vec::new();
+        sample_origins(&scene, corner, Vec3::Y, &mut origins);
+        assert_eq!(origins.len(), 4);
+        let expected_0 = corner.lerp(Vec3::new(1.0 / 3.0, 0.0, 1.0 / 3.0), ORIGIN_INSETS[0]);
+        assert!(
+            (origins[0].x - expected_0.x).abs() < 1.0e-6
+                && (origins[0].z - expected_0.z).abs() < 1.0e-6
+                && origins[0].y > 0.0,
+            "the origin is inset toward the centroid and lifted: {:?}",
+            origins[0]
+        );
+
+        // A +X vertex normal keeps only the wall.
+        sample_origins(&scene, corner, Vec3::X, &mut origins);
+        assert_eq!(origins.len(), 2);
+
+        // No incident triangles at all: the bare corner origin.
+        sample_origins(&scene, Vec3::new(9.0, 9.0, 9.0), Vec3::Y, &mut origins);
+        assert_eq!(origins.len(), 1);
+        assert_eq!(origins[0], Vec3::new(9.0, 9.0, 9.0) + Vec3::Y * scene.bias);
     }
 }

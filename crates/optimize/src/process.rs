@@ -1142,6 +1142,16 @@ mod tests {
     /// a distinctive source color so the tests can tell "written as fully open"
     /// apart from "never written".
     fn named_quads_model(quads: &[(&str, f32, f32)]) -> ModelData {
+        let placed: Vec<(&str, f32, Vec3)> = quads
+            .iter()
+            .map(|&(name, half, y)| (name, half, Vec3::new(0.0, y, 0.0)))
+            .collect();
+        placed_quads_model(&placed)
+    }
+
+    /// The general form of [`named_quads_model`]: each quad centered anywhere,
+    /// not only on the y-axis.
+    fn placed_quads_model(quads: &[(&str, f32, Vec3)]) -> ModelData {
         use glam::Mat4;
         use review_model::{NodeKind, SceneNode};
 
@@ -1149,13 +1159,13 @@ mod tests {
         let mut indices = Vec::new();
         let mut node_tags = Vec::new();
         let mut nodes = Vec::new();
-        for (index, &(name, half, y)) in quads.iter().enumerate() {
+        for (index, &(name, half, center)) in quads.iter().enumerate() {
             let base = vertices.len() as u32;
             for position in [
-                Vec3::new(-half, y, -half),
-                Vec3::new(half, y, -half),
-                Vec3::new(half, y, half),
-                Vec3::new(-half, y, half),
+                center + Vec3::new(-half, 0.0, -half),
+                center + Vec3::new(half, 0.0, -half),
+                center + Vec3::new(half, 0.0, half),
+                center + Vec3::new(-half, 0.0, half),
             ] {
                 vertices.push(Vertex {
                     position,
@@ -1339,6 +1349,42 @@ mod tests {
                 Vec4::new(0.2, 0.4, 0.6, 0.8),
                 "a hidden object is not baked"
             );
+        }
+    }
+
+    /// The classic per-vertex-AO failure this bake explicitly guards against:
+    /// a face whose corners sit in tight contact gaps used to bake black
+    /// across its whole area, because occlusion was sampled exactly at the
+    /// buried corner point (visibility ≈ 0.03 under a ±0.06 cap hovering
+    /// 0.005 above — measured 0.0156 before the fix). With neighborhood
+    /// sampling the ray origins are inset onto the incident faces — out from
+    /// under the caps — so the mostly-open floor stays open. The caps sit on
+    /// the floor's *diagonal* corners too, the ones with a single incident
+    /// triangle, so this also pins the low-valence case the two-ring inset
+    /// exists for.
+    #[test]
+    fn a_corner_buried_under_a_tight_cap_stays_open() {
+        let model = placed_quads_model(&[
+            ("floor", 0.5, Vec3::ZERO),
+            ("cap0", 0.06, Vec3::new(-0.5, 0.005, -0.5)),
+            ("cap1", 0.06, Vec3::new(0.5, 0.005, -0.5)),
+            ("cap2", 0.06, Vec3::new(0.5, 0.005, 0.5)),
+            ("cap3", 0.06, Vec3::new(-0.5, 0.005, 0.5)),
+        ]);
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::BakeAo(BakeAoParams::default()));
+
+        for vertex in &run_model(&model, &stack).lods[0].model.vertices {
+            let ao = vertex.vertex_color.w;
+            if vertex.position.y < 0.005 {
+                assert!(
+                    ao > 0.85,
+                    "a corner buried under a tight cap samples its open \
+                     neighborhood, got {ao}"
+                );
+            } else {
+                assert!(ao > 0.99, "nothing hangs over a cap, got {ao}");
+            }
         }
     }
 
