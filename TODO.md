@@ -1,5 +1,4 @@
 - Texture view in UV mode
-
-Outliner
-
+- UV seam mode
+- Poly reduction operation
 - quick open/hide outliner box on left edge of the viewport

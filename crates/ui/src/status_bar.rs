@@ -1,15 +1,18 @@
-//! The bottom status bar: the Model Stats toggle inset on the left, and a
+//! The bottom status bar: the Model Stats toggle inset on the left, a
 //! rendering-quality group (IBL / AO / Tonemapper / Anti aliasing) mirrored to the
-//! right.
+//! right, and — in the Opt workspace — its comparison controls centred between
+//! them, over the split's divider.
 
 use crate::assets::{
-    ICON_ANTI_ALIASING, ICON_AO, ICON_BACKGROUND, ICON_IBL, ICON_INFO, ICON_TONEMAPPER,
+    ICON_ANTI_ALIASING, ICON_AO, ICON_BACKGROUND, ICON_IBL, ICON_INFO, ICON_OPT_OVERLAY,
+    ICON_OPT_SPLIT, ICON_OPT_SWAP, ICON_OPT_SYNC, ICON_TONEMAPPER,
 };
+use crate::opt_state::OptLayout;
 use crate::state::{OptionPanel, TexViewRequest, TextureBackground, UiState, WorkspaceMode};
 use crate::theme::{self, color, font, size};
 use crate::widgets::{
-    bar_group_rect, bar_group_scope, icon_toggle_button, icon_toggle_button_with_options,
-    option_toggle, segment_button, toolbar_group_shell,
+    bar_group_rect, bar_group_rect_centered, bar_group_scope, compact_combo, icon_toggle_button,
+    icon_toggle_button_with_options, option_toggle, segment_button, toolbar_group_shell,
 };
 use review_render::ViewportBackground;
 
@@ -38,7 +41,9 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
             // toggle + the background-fill group.
             match state.mode {
                 WorkspaceMode::Uv => return,
-                WorkspaceMode::ThreeD => {}
+                // Opt draws the same 3D scene through the same shading and
+                // rendering-quality controls, so it shares this bar unchanged.
+                WorkspaceMode::ThreeD | WorkspaceMode::Opt => {}
                 WorkspaceMode::Texture => {
                     draw_texture_status_bar(ui, ctx, state, group_height);
                     return;
@@ -103,10 +108,10 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
 
                     // Image-based lighting. Disabled + forced off when the
                     // adapter can't build the IBL maps (invariant 4).
-                    if !state.ibl_supported {
+                    if !state.capabilities.ibl {
                         state.environment.ibl_enabled = false;
                     }
-                    ui.add_enabled_ui(state.ibl_supported, |ui| {
+                    ui.add_enabled_ui(state.capabilities.ibl, |ui| {
                         option_toggle(
                             ui,
                             ctx,
@@ -120,10 +125,10 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
 
                     // Ambient occlusion (GTAO). Disabled + forced off when the
                     // adapter can't run it (invariant 4).
-                    if !state.gtao_supported {
+                    if !state.capabilities.gtao {
                         state.gtao.enabled = false;
                     }
-                    ui.add_enabled_ui(state.gtao_supported, |ui| {
+                    ui.add_enabled_ui(state.capabilities.gtao, |ui| {
                         option_toggle(
                             ui,
                             ctx,
@@ -156,7 +161,144 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                     );
                 });
             });
+
+            // Opt's comparison controls, between the two mirrored groups.
+            if state.mode == WorkspaceMode::Opt {
+                draw_opt_group(ui, ctx, state, bar_rect, group_height);
+            }
         });
+}
+
+/// The Opt comparison controls, centred in the status bar: which LOD level is
+/// displayed, how the two meshes are laid out, whether the split's views share a
+/// camera, and which mesh reads as solid.
+///
+/// Centred rather than mirrored to an edge like the bar's other groups — these
+/// describe what the viewport above is showing, and the split's divider is the
+/// centre, so that is where they belong.
+///
+/// Three tiles: the two layouts, then whichever of camera-sync / A-B-swap the
+/// active layout can act on. Those two are mutually exclusive — only the split
+/// has two cameras to link, only the overlay draws one mesh over another — so
+/// showing both would always leave one inert. The group's width is the same
+/// either way, so swapping the third tile shifts nothing.
+fn draw_opt_group(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    state: &mut UiState,
+    bar_rect: egui::Rect,
+    group_height: f32,
+) {
+    let has_result = state.opt.has_result();
+    let level_count = state.opt.level_count();
+    let picker_width = theme::px(ctx, size::TOOLBAR_OPT_LOD_DROPDOWN_WIDTH);
+    let icons_width = theme::px(ctx, size::TOOLBAR_TRIPLE_ICON_GROUP_WIDTH);
+    let spacing = theme::px(ctx, size::TOOLBAR_GROUP_SPACING);
+
+    // The picker appears only once the chain actually has levels to choose
+    // between, so the centred width has to account for it either way.
+    let show_picker = has_result && level_count > 1;
+    let width = if show_picker {
+        picker_width + spacing + icons_width
+    } else {
+        icons_width
+    };
+    let rect = bar_group_rect_centered(bar_rect, width, group_height);
+    bar_group_scope(ui, rect, group_height, |ui| {
+        ui.spacing_mut().item_spacing.x = spacing;
+
+        if show_picker {
+            state.opt.active_lod = state.opt.active_lod.min(level_count - 1);
+            let before = state.opt.active_lod;
+            let selected = lod_label(state.opt.active_lod);
+            compact_combo(ui, "opt_lod_picker", picker_width, selected, |ui| {
+                for level in 0..level_count {
+                    ui.selectable_value(&mut state.opt.active_lod, level, lod_label(level));
+                }
+            });
+            // Once the user has said which level they want, later runs keep showing
+            // it instead of jumping back to the one the workspace chose for them.
+            if state.opt.active_lod != before {
+                state.opt.lod_pinned = true;
+            }
+        }
+
+        let split = state.opt.layout == OptLayout::Split;
+        toolbar_group_shell(ui, ctx, icons_width, |ui| {
+            if icon_toggle_button(
+                ui,
+                ctx,
+                &ICON_OPT_SPLIT,
+                split,
+                "Split view - source and processed side by side",
+            )
+            .clicked()
+            {
+                state.opt.layout = OptLayout::Split;
+            }
+            if icon_toggle_button(
+                ui,
+                ctx,
+                &ICON_OPT_OVERLAY,
+                !split,
+                "Overlay view - both in one view, one drawn as a ghost",
+            )
+            .clicked()
+            {
+                state.opt.layout = OptLayout::Overlay;
+            }
+
+            if split {
+                // Camera sync: only the split has a second camera to link.
+                let sync = state.opt.camera_sync;
+                if icon_toggle_button(
+                    ui,
+                    ctx,
+                    &ICON_OPT_SYNC,
+                    sync,
+                    "Move both views' cameras together",
+                )
+                .clicked()
+                {
+                    state.opt.camera_sync = !sync;
+                }
+            } else {
+                // The A/B swap: which mesh reads as solid. Disabled until there
+                // is something to swap to, so the button never lies about what
+                // the viewport is showing.
+                let response = ui
+                    .add_enabled_ui(has_result, |ui| {
+                        icon_toggle_button(
+                            ui,
+                            ctx,
+                            &ICON_OPT_SWAP,
+                            false,
+                            &format!(
+                                "Showing {} solid - click to swap (X)",
+                                state.opt.side.label()
+                            ),
+                        )
+                    })
+                    .inner;
+                if response.clicked() {
+                    state.opt.side = state.opt.side.swapped();
+                }
+                response.on_disabled_hover_text(
+                    "Nothing processed yet - add an operation to the stack",
+                );
+            }
+        });
+    });
+}
+
+/// `"Source"` for level 0, `"LOD 1"` and up for the rest — matching the names the
+/// processed meshes and the export carry.
+fn lod_label(level: usize) -> String {
+    if level == 0 {
+        "LOD 0 (full)".to_owned()
+    } else {
+        format!("LOD {level}")
+    }
 }
 
 /// The Texture-workspace status bar: the texture-stats toggle inset on the left

@@ -29,6 +29,18 @@ const MATERIAL_CBUFFER_SLOT: u32 = 1;
 /// The material sampler register (`s2`).
 const MATERIAL_SAMPLER_SLOT: u32 = 2;
 
+/// How many uploads the cache keeps beyond what the *current* material table
+/// references — the same LRU bound `TexGpu` puts on the Tex viewport's cache, for
+/// the same reason: a mipped 4K RGBA8 upload is ~22 MB, and without a bound a
+/// session that loads several models (or re-points one slot at a series of
+/// candidate files) grows VRAM for as long as it runs.
+///
+/// Entries the current sync touched are never evicted, so a table wider than this
+/// still gets every one of its textures; the cap governs only how much of the
+/// *previous* table is kept warm, which pays off across the models of one asset
+/// set, where the same maps recur.
+const MATERIAL_CACHE_CAP: usize = 16;
+
 /// One material's GPU-resolved data: its uniform + the seven slot SRVs (each a real
 /// upload or the per-slot fallback), shared by `Arc` so a packed map is one upload.
 struct MaterialEntry {
@@ -37,10 +49,12 @@ struct MaterialEntry {
 }
 
 /// One cached GPU upload + the source `Arc`'s pointer (the identity used to detect a
-/// disk reload, which swaps in a fresh `Arc` at the same path → a re-upload).
+/// disk reload, which swaps in a fresh `Arc` at the same path → a re-upload), and the
+/// sync that last referenced it (the LRU stamp).
 struct CachedTexture {
     identity: usize,
     texture: Arc<Texture>,
+    last_used: u64,
 }
 
 /// The editable material table (Direct3D 11). Synced from the effective material
@@ -53,8 +67,12 @@ pub(crate) struct MaterialTableD3d {
     /// Per-slot neutral 1×1 fallbacks, bound for unassigned slots (the shader gates
     /// them off via the slot-flags bitfield, but every slot must be bound).
     fallback_textures: [Arc<Texture>; TEXTURE_SLOT_COUNT],
-    /// Path+srgb-keyed GPU texture cache (uploaded once, shared across materials).
+    /// Path+srgb-keyed GPU texture cache (uploaded once, shared across materials),
+    /// bounded by [`MATERIAL_CACHE_CAP`] beyond the live table.
     cache: HashMap<(PathBuf, bool), CachedTexture>,
+    /// Monotonic sync counter stamped onto every entry a [`Self::sync`] references,
+    /// so one stamp marks a whole table as live and the smallest marks the LRU.
+    tick: u64,
     /// One entry per material, in table order.
     entries: Vec<MaterialEntry>,
     /// The all-fallback entry, bound for ranges whose material is out of range.
@@ -79,6 +97,7 @@ impl MaterialTableD3d {
             sampler,
             fallback_textures,
             cache: HashMap::new(),
+            tick: 0,
             entries: Vec::new(),
             fallback_entry,
             synced: None,
@@ -88,7 +107,8 @@ impl MaterialTableD3d {
     /// Bring the table in line with `materials` (the effective table for `mode`) when
     /// the revision or mode changes: upload any newly-referenced texture once
     /// (deduplicated by path, re-uploaded on a disk reload), then build one entry per
-    /// material. A no-op when nothing changed.
+    /// material and age out the uploads no longer referenced. A no-op when nothing
+    /// changed.
     pub(crate) fn sync(
         &mut self,
         device: &ID3D11Device,
@@ -100,11 +120,10 @@ impl MaterialTableD3d {
         if self.synced == Some((revision, mode)) {
             return Ok(());
         }
-        // A new model (different material count) retires the previous model's
-        // uploads; drop the cache so the new slots upload fresh on demand.
-        if self.entries.len() != materials.len() {
-            self.cache.clear();
-        }
+        // One stamp for the whole sync: every entry this table references shares it,
+        // which is what lets the eviction below tell "live" from "left over".
+        self.tick += 1;
+        let tick = self.tick;
 
         let mut entries = Vec::with_capacity(materials.len());
         for material in materials {
@@ -115,26 +134,26 @@ impl MaterialTableD3d {
                     let srgb = slot.is_srgb();
                     let key = (binding.path.clone(), srgb);
                     let identity = Arc::as_ptr(&binding.image) as usize;
-                    let stale = self
-                        .cache
-                        .get(&key)
-                        .is_none_or(|cached| cached.identity != identity);
-                    if stale {
-                        let texture = Texture::rgba8_mipped_or_white(
-                            device,
-                            ctx,
-                            binding.image.width,
-                            binding.image.height,
-                            &binding.image.rgba,
-                            srgb,
-                        )?;
-                        self.cache.insert(
-                            key.clone(),
-                            CachedTexture {
-                                identity,
-                                texture: Arc::new(texture),
-                            },
-                        );
+                    match self.cache.get_mut(&key) {
+                        Some(cached) if cached.identity == identity => cached.last_used = tick,
+                        _ => {
+                            let texture = Texture::rgba8_mipped_or_white(
+                                device,
+                                ctx,
+                                binding.image.width,
+                                binding.image.height,
+                                &binding.image.rgba,
+                                srgb,
+                            )?;
+                            self.cache.insert(
+                                key.clone(),
+                                CachedTexture {
+                                    identity,
+                                    texture: Arc::new(texture),
+                                    last_used: tick,
+                                },
+                            );
+                        }
                     }
                     textures[slot.index()] = Arc::clone(&self.cache[&key].texture);
                 }
@@ -146,7 +165,32 @@ impl MaterialTableD3d {
         }
         self.entries = entries;
         self.synced = Some((revision, mode));
+        self.evict_stale(tick);
         Ok(())
+    }
+
+    /// Drop least-recently-used uploads until at most [`MATERIAL_CACHE_CAP`] entries
+    /// remain that this sync (`tick`) did not reference.
+    ///
+    /// Skipping the live ones is what makes the cap safe: a material table wider than
+    /// the cap must still hold every texture it draws with, and one of them was just
+    /// handed out by `Arc` above. Evicting only the leftovers keeps the bound on what
+    /// no longer has a reader — a model swap, or a slot re-pointed at another file,
+    /// both of which previously kept their old ~22 MB uploads for the session.
+    fn evict_stale(&mut self, tick: u64) {
+        let mut stale: Vec<(u64, (PathBuf, bool))> = self
+            .cache
+            .iter()
+            .filter(|(_, cached)| cached.last_used != tick)
+            .map(|(key, cached)| (cached.last_used, key.clone()))
+            .collect();
+        if stale.len() <= MATERIAL_CACHE_CAP {
+            return;
+        }
+        stale.sort_unstable_by_key(|(last_used, _)| *last_used);
+        for (_, key) in stale.drain(..stale.len() - MATERIAL_CACHE_CAP) {
+            self.cache.remove(&key);
+        }
     }
 
     /// Bind the shared material state once per pass: the cbuffer (`b1`) + the sampler

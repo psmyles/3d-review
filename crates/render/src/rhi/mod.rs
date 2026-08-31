@@ -283,16 +283,28 @@ impl Gpu {
     /// no clear is issued. A no-op while the backbuffer view is unavailable (a
     /// failed resize).
     pub(crate) fn begin_backbuffer_blit(&self) {
+        let (width, height) = self.size;
+        self.begin_backbuffer_blit_rect(0, 0, width, height);
+    }
+
+    /// [`Self::begin_backbuffer_blit`] into a sub-rectangle of the backbuffer.
+    ///
+    /// The composite draws an oversized triangle covering the whole viewport, and
+    /// D3D11 rasterizes only within the bound viewport rect — so restricting the
+    /// viewport is all it takes to composite into part of the backbuffer, with no
+    /// scissor state and no change to the shader. Pixels outside the rect keep
+    /// whatever the previous pass left there, which is what lets the Opt
+    /// workspace's split view paint its two halves in two passes.
+    pub(crate) fn begin_backbuffer_blit_rect(&self, x: u32, y: u32, width: u32, height: u32) {
         let Some(rtv) = self.backbuffer_rtv() else {
             return;
         };
-        let (width, height) = self.size;
         // SAFETY: the backbuffer RTV is live; the viewport array outlives the call.
         unsafe {
             self.context
                 .OMSetRenderTargets(Some(&[Some(rtv.clone())]), None);
             self.context
-                .RSSetViewports(Some(&[viewport(width, height)]));
+                .RSSetViewports(Some(&[viewport_at(x, y, width, height)]));
         }
     }
 
@@ -374,9 +386,14 @@ pub(crate) fn invalid_arg(message: &str) -> windows::core::Error {
 
 /// A full-target viewport (top-left origin, depth 0..1) at `width`×`height`.
 fn viewport(width: u32, height: u32) -> D3D11_VIEWPORT {
+    viewport_at(0, 0, width, height)
+}
+
+/// A viewport covering `width`×`height` pixels at `(x, y)`, depth 0..1.
+fn viewport_at(x: u32, y: u32, width: u32, height: u32) -> D3D11_VIEWPORT {
     D3D11_VIEWPORT {
-        TopLeftX: 0.0,
-        TopLeftY: 0.0,
+        TopLeftX: x as f32,
+        TopLeftY: y as f32,
         Width: width as f32,
         Height: height as f32,
         MinDepth: 0.0,

@@ -2140,7 +2140,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "review-app"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "egui",
@@ -2151,6 +2151,8 @@ dependencies = [
  "notify",
  "review-import",
  "review-model",
+ "review-optimize",
+ "review-prof",
  "review-render",
  "review-ui",
  "rfd",
@@ -2168,6 +2170,7 @@ dependencies = [
  "cc",
  "glam",
  "review-model",
+ "review-prof",
  "thiserror 2.0.18",
  "tracy-client",
  "windows-sys 0.52.0",
@@ -2178,6 +2181,27 @@ name = "review-model"
 version = "0.1.0"
 dependencies = [
  "glam",
+]
+
+[[package]]
+name = "review-optimize"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "glam",
+ "review-import",
+ "review-model",
+ "review-prof",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "review-prof"
+version = "0.1.0"
+dependencies = [
+ "tracy-client",
 ]
 
 [[package]]
@@ -2213,8 +2237,9 @@ dependencies = [
  "glam",
  "image",
  "review-model",
+ "review-optimize",
+ "review-prof",
  "review-render",
- "tracy-client",
 ]
 
 [[package]]

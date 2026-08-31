@@ -11,19 +11,14 @@
 use review_render::{EnvironmentMap, EnvironmentSettings};
 
 use crate::assets::{self, AppIcon};
-use crate::state::UiState;
+use crate::state::{
+    UiState,
+    range::{ENV_INTENSITY_MAX, ENV_INTENSITY_MIN, ENV_ROTATION_MAX, ENV_ROTATION_MIN},
+};
 use crate::theme::size;
 use crate::widgets::{
     labeled_checkbox, labeled_combo, labeled_slider_with_value, panel_grid, reset_button,
 };
-
-/// Inclusive range for the IBL intensity slider.
-const INTENSITY_MIN: f32 = 0.0;
-const INTENSITY_MAX: f32 = 3.0;
-
-/// Inclusive range for the environment rotation slider (degrees; 0 = as-authored).
-const ROTATION_MIN: f32 = 0.0;
-const ROTATION_MAX: f32 = 360.0;
 
 pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
     panel_grid(ui, "environment", |ui| {
@@ -33,14 +28,14 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
             ui,
             "Intensity",
             &mut state.environment.intensity,
-            INTENSITY_MIN..=INTENSITY_MAX,
+            ENV_INTENSITY_MIN..=ENV_INTENSITY_MAX,
             2,
         );
         labeled_slider_with_value(
             ui,
             "Rotation",
             &mut state.environment.rotation_degrees,
-            ROTATION_MIN..=ROTATION_MAX,
+            ENV_ROTATION_MIN..=ENV_ROTATION_MAX,
             0,
         );
     });

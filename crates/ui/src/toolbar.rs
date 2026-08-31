@@ -89,7 +89,7 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
             // projection groups operate on the 3D scene, so they are shown only
             // in the 3D workspace. UV mode swaps in the UV-shading group + UV-set
             // picker; Texture mode swaps in the channel group + texture picker.
-            if state.mode == WorkspaceMode::ThreeD {
+            if state.mode.is_scene() {
                 ui.scope_builder(
                     egui::UiBuilder::new()
                         .max_rect(left_rect)
@@ -155,7 +155,7 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
                     ui.set_height(group_height);
                     ui.spacing_mut().item_spacing.x = group_spacing;
                     match state.mode {
-                        WorkspaceMode::ThreeD => {
+                        WorkspaceMode::ThreeD | WorkspaceMode::Opt => {
                             // The skeleton toggle only exists for a rigged model, so
                             // the group is one tile narrower without it.
                             let view_group_width = if state.has_bones {
@@ -501,6 +501,7 @@ fn segmented_mode_control(ui: &mut egui::Ui, ctx: &egui::Context, mode: &mut Wor
     mode_segment(ui, ctx, mode, WorkspaceMode::ThreeD, "3D");
     mode_segment(ui, ctx, mode, WorkspaceMode::Uv, "UV");
     mode_segment(ui, ctx, mode, WorkspaceMode::Texture, "Tex");
+    mode_segment(ui, ctx, mode, WorkspaceMode::Opt, "Opt");
 }
 
 fn mode_segment(

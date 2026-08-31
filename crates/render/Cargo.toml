@@ -55,3 +55,6 @@ bake = ["dep:intel_tex_2"]
 name = "bake_ibl"
 path = "src/bin/bake_ibl.rs"
 required-features = ["bake"]
+
+[lints]
+workspace = true

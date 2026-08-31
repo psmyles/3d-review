@@ -23,8 +23,13 @@
 //  * The `VsInput` semantics line up with the `ID3D11InputLayout` built in
 //    `rhi::pipeline` from the `#[repr(C)]` `SceneVertex`.
 //
-// Register plan (manual b#/t#/s# assignment, all space0 — see the migration plan):
+// Register plan (manual b#/t#/s# assignment, all space0 — see the migration plan).
+// The `b#` half spans every shader drawn into a frame, not just this one: passes
+// leave their cbuffers bound across pass boundaries (the GTAO fullscreen passes run
+// with `SceneUniforms` still on `b0` from the G-buffer draw), so each struct owns a
+// slot outright and no slot ever means two things at once.
 //   b0 SceneUniforms (VS+PS) · b1 MaterialUniform (PS)
+//   b2 GtaoUniforms (`gtao.hlsl`, PS) · b3 PostUniforms (`post.hlsl`, PS)
 //   t0 checker (s0) · t1 irradiance / t2 prefilter / t3 brdf / t4 env cube (s1 IBL)
 //   t5..t11 the seven material slots (s2 material aniso sampler)
 

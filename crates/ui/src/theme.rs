@@ -7,8 +7,9 @@
 //! its view-space depth).
 //!
 //! Tweak the app's look here: changing a token re-skins every place that reads
-//! it. Tokens are grouped into [`color`], [`size`], and [`font`] so a change of
-//! one kind doesn't have to scroll past the others.
+//! it. Tokens are grouped into [`color`], [`size`], [`font`] and [`motion`] (how
+//! long a transient state lasts, how fast a gesture drives its value) so a change
+//! of one kind doesn't have to scroll past the others.
 
 use egui::Color32;
 
@@ -65,6 +66,12 @@ pub mod color {
     pub const ICON_IDLE: Color32 = Color32::from_gray(230);
     /// Stats label column / muted row labels.
     pub const TEXT_MUTED: Color32 = Color32::from_gray(178);
+    /// The Opt stats card's change column. Every figure it annotates is one where
+    /// lower is better — fewer triangles and vertices, fewer cache misses, less
+    /// overdraw, fewer bytes fetched — so a fall reads green and a rise red.
+    /// Desaturated enough to sit beside the value column without shouting.
+    pub const STATS_DELTA_BETTER: Color32 = Color32::from_rgb(126, 202, 122);
+    pub const STATS_DELTA_WORSE: Color32 = Color32::from_rgb(226, 122, 118);
     /// A scene-tree row the type filter is hiding, kept visible only because a
     /// shown node lives beneath it. Dim enough to read as structure, not content.
     pub const OUTLINER_FILTERED: Color32 = Color32::from_gray(104);
@@ -110,6 +117,13 @@ pub mod color {
     pub const STATS_BORDER: Color32 = Color32::from_gray(52);
     /// Idle (unselected) swatch outline.
     pub const SWATCH_BORDER: Color32 = Color32::from_gray(28);
+
+    /// The Opt overlay's ghost mesh — a cool translucent blue, deliberately
+    /// unlike the selection flash's warm orange so the two never read as the same
+    /// thing. Owned here rather than in the renderer (invariant 8) and handed to
+    /// it with the frame, so the viewport's ghost and the legend's swatch cannot
+    /// drift apart. The renderer supplies the alpha, which differs by ghost style.
+    pub const GHOST_XRAY: Color32 = Color32::from_rgb(89, 158, 255);
 
     // ── Axis gizmo ──────────────────────────────────────────────────────────
     /// Gizmo axis ball colors.
@@ -196,9 +210,21 @@ pub mod color {
     pub const HELP_KEYCAP_BORDER: Color32 = Color32::from_gray(82);
 }
 
-/// Pixel sizes, spacings and radii. Raw logical pixels; most are DPI-scaled at
-/// use via [`px`]. The option-panel block is intentionally **not** DPI-scaled,
-/// matching the original panel chrome.
+/// Pixel sizes, spacings and radii.
+///
+/// **Every token here is a design pixel** — the size the value has on a
+/// 100%-scale display — and is turned into egui points at the use site by [`px`]
+/// (`value / pixels_per_point`), so the hand-painted chrome keeps one physical
+/// size across display scales. A value already in points must never be compared
+/// against a raw token: at 150% scaling that reserves the chrome half again over,
+/// at 200% twice. Anything needing the height of the toolbar + status-bar band
+/// asks [`chrome_height`] instead of adding [`TOOLBAR_HEIGHT`] and
+/// [`STATUS_BAR_HEIGHT`] up itself.
+///
+/// The exception is the blocks marked **egui points** below — the option panels,
+/// the help card, the native window / side-panel sizes, and egui-notify's own
+/// toast metrics. Those are handed straight to egui builders, which already work
+/// in points, so they are *not* routed through [`px`].
 pub mod size {
     // ── Overlay layout ────────────────────────────────────────────────────
     pub const TOOLBAR_HEIGHT: f32 = 73.0;
@@ -284,9 +310,14 @@ pub mod size {
     /// Tonemapper / Anti-aliasing rendering-quality cluster): 6 padding + 5×42 icons
     /// + 4×3 gaps.
     pub const TOOLBAR_QUINT_ICON_GROUP_WIDTH: f32 = 228.0;
-    pub const TOOLBAR_MODE_GROUP_WIDTH: f32 = 180.0;
+    /// Width of the centered workspace-mode group: 6 padding + 4×56 segments
+    /// (3D / UV / Tex / Opt) + 3×3 gaps.
+    pub const TOOLBAR_MODE_GROUP_WIDTH: f32 = 239.0;
     /// Width of the UV-set dropdown shown on the right of the toolbar in UV mode.
     pub const TOOLBAR_UV_DROPDOWN_WIDTH: f32 = 200.0;
+    /// Width of the LOD-level dropdown in the Opt workspace's status-bar group.
+    /// Narrower than the UV one: its entries are "LOD 0 (full)" at longest.
+    pub const TOOLBAR_OPT_LOD_DROPDOWN_WIDTH: f32 = 120.0;
     pub const TOOLBAR_GROUP_HEIGHT: f32 = 48.0;
     pub const TOOLBAR_GROUP_PADDING: f32 = 3.0;
     /// Corner radius shared by toolbar groups, icon tiles and mode segments.
@@ -298,18 +329,19 @@ pub mod size {
     // ── Notifications (egui-notify toasts) ────────────────────────────────
     /// Horizontal inset of the toast stacks from the right screen edge.
     pub const NOTIFICATION_MARGIN_X: f32 = OVERLAY_MARGIN;
-    /// Vertical gap between stacked toasts (and the basis for one toast "row").
-    pub const NOTIFICATION_SPACING: f32 = 8.0;
-    /// Approximate height of one toast row (egui-notify's toast height plus the
-    /// inter-toast spacing), used to stack the activity toast above the events.
-    pub const NOTIFICATION_ROW: f32 = 34.0 + NOTIFICATION_SPACING;
-    /// Bottom inset of the transient *event* toast stack. Clears the status bar at
-    /// every display scale: the bar is at most `STATUS_BAR_HEIGHT` points tall, and
-    /// this inset is that plus a margin, so the toasts always sit above it.
+    /// Bottom inset of the transient *event* toast stack: the status bar's own
+    /// height plus a margin, so the toasts sit clear of it. Design pixels like the
+    /// bar they clear — `Notifications` scales both through [`px`].
     pub const NOTIFICATION_EVENT_MARGIN_Y: f32 = STATUS_BAR_HEIGHT + OVERLAY_MARGIN;
-    /// Bottom inset of the persistent *activity* toast: one row above the event
-    /// stack so the work indicator and result toasts don't overlap.
-    pub const NOTIFICATION_ACTIVITY_MARGIN_Y: f32 = NOTIFICATION_EVENT_MARGIN_Y + NOTIFICATION_ROW;
+    /// Vertical gap between stacked toasts, and the height of one toast "row"
+    /// (egui-notify's toast box plus that gap) — the offset that lifts the
+    /// persistent activity toast above the event stack.
+    ///
+    /// **egui points**, not design pixels: a toast's box is sized from the text
+    /// egui lays out inside it, so its height is already in points and does not
+    /// track the display scale.
+    pub const NOTIFICATION_SPACING: f32 = 8.0;
+    pub const NOTIFICATION_ROW: f32 = 34.0 + NOTIFICATION_SPACING;
 
     // ── Material inspector: texture mapping + files ───────────────────────
     /// Fixed label-column width for a Texture-mapping row (property name), so the
@@ -350,17 +382,10 @@ pub mod size {
     /// Fraction of the viewport the image fills when first fit (a small margin so a
     /// fitted image isn't flush to the edges).
     pub const TEXTURE_FIT_MARGIN: f32 = 0.96;
-    /// Zoom clamp + sensitivities for the Tex viewport pan/zoom. `ZOOM_SPEED`
-    /// scales a scroll-delta, and `DRAG_ZOOM_SPEED` a right-drag vertical delta,
-    /// into the exponent of the multiplicative zoom step.
+    /// Zoom clamp for the Tex viewport; the sensitivities that drive it live in
+    /// [`super::motion`].
     pub const TEXTURE_ZOOM_MIN: f32 = 0.02;
     pub const TEXTURE_ZOOM_MAX: f32 = 64.0;
-    pub const TEXTURE_ZOOM_SPEED: f32 = 0.0015;
-    pub const TEXTURE_DRAG_ZOOM_SPEED: f32 = 0.01;
-    /// Duration (seconds) of the eased pan/zoom transition run when the view
-    /// snaps to a target — the zoom-readout toggle (100% ↔ fit) and the `F` / `R`
-    /// frame reset. Continuous wheel/drag zoom is not eased.
-    pub const TEXTURE_ZOOM_ANIM_SECS: f32 = 0.1;
 
     // ── Stats overlay ─────────────────────────────────────────────────────
     pub const STATS_ROW_SPACING: f32 = 3.0;
@@ -396,7 +421,7 @@ pub mod size {
     pub const GIZMO_RESET_ICON_SIZE: f32 = 20.0;
     pub const GIZMO_RESET_INSET: f32 = 17.0;
 
-    // ── Option panels (not DPI-scaled) ────────────────────────────────────
+    // ── Option panels (egui points, not DPI-scaled) ───────────────────────
     pub const PANEL_HEADER_HEIGHT: f32 = 34.0;
     pub const PANEL_HEADER_PAD_X: f32 = 16.0;
     pub const PANEL_CORNER_RADIUS: u8 = 6;
@@ -479,6 +504,28 @@ pub mod size {
     /// so several opened at once don't stack exactly atop each other.
     pub const PANEL_CASCADE_STEP: f32 = 26.0;
 
+    // ── Opt workspace ─────────────────────────────────────────────────────
+    /// Starting height of the operation-stack pane docked under the Outliner
+    /// tree. Deep enough for the preset row, the add button and a handful of
+    /// operations before it needs scrolling. Raw points (a native panel size).
+    pub const OPT_STACK_DEFAULT_HEIGHT: f32 = 240.0;
+    /// How far the stack pane can be dragged, so neither it nor the tree above
+    /// can be collapsed to nothing.
+    pub const OPT_STACK_MIN_HEIGHT: f32 = 96.0;
+    pub const OPT_STACK_MAX_HEIGHT: f32 = 620.0;
+    /// Height of one operation row in the stack pane.
+    pub const OPT_STACK_ROW_HEIGHT: f32 = 24.0;
+    /// Width of the square reorder / remove buttons on an operation row.
+    pub const OPT_STACK_ROW_BUTTON: f32 = 20.0;
+    /// Width of the processed-mesh stats card. Wider than the source card: its
+    /// rows carry a measured value *and* the delta against the source.
+    pub const OPT_STATS_PANEL_WIDTH: f32 = 186.0;
+    /// Width of the overlay-mode legend card, sized to "Processed — wireframe".
+    pub const OPT_LEGEND_WIDTH: f32 = 152.0;
+    /// Edge length of a legend row's colour swatch, and the gap after it.
+    pub const OPT_LEGEND_SWATCH: f32 = 9.0;
+    pub const OPT_LEGEND_SWATCH_GAP: f32 = 7.0;
+
     // ── Startup help overlay (treated as egui points, like the option panels) ─
     /// Width of each of the two shortcut columns and the gap between them; the
     /// card content width is derived as `2 * COLUMN_WIDTH + COLUMN_GAP`.
@@ -542,6 +589,32 @@ pub mod font {
     pub const HELP_FOOTER: f32 = 11.0;
 }
 
+/// How the chrome *moves*: how long a transient state stays up, and how fast a
+/// gesture drives the value it steers. Feel is as much a themed decision as color
+/// or size (invariant 8), so these live here rather than beside the widget that
+/// happens to consume them.
+pub mod motion {
+    use std::time::Duration;
+
+    /// How long a transient result toast stays up before it dismisses itself.
+    pub const NOTIFICATION_EVENT: Duration = Duration::from_secs(2);
+
+    /// How long (seconds) a stats row acknowledges a copy. Long enough to read,
+    /// short enough that the row's explanation is back by the time the pointer
+    /// returns to it.
+    pub const STATS_COPIED_FEEDBACK_SECS: f64 = 1.2;
+
+    /// Tex-viewport zoom sensitivities: `ZOOM_SPEED` scales a scroll delta, and
+    /// `DRAG_ZOOM_SPEED` a right-drag vertical delta, into the exponent of the
+    /// multiplicative zoom step.
+    pub const TEXTURE_ZOOM_SPEED: f32 = 0.0015;
+    pub const TEXTURE_DRAG_ZOOM_SPEED: f32 = 0.01;
+    /// Duration (seconds) of the eased pan/zoom transition run when the Tex view
+    /// snaps to a target — the zoom-readout toggle (100% ↔ fit) and the `F` / `R`
+    /// frame reset. Continuous wheel/drag zoom is not eased.
+    pub const TEXTURE_ZOOM_ANIM_SECS: f32 = 0.1;
+}
+
 /// Install the app's fonts and visuals onto `ctx`. Called **once** at startup
 /// (the visuals are derived only from these constant tokens, never per-frame
 /// state, so there's nothing to re-sync each frame — and a per-frame `set_style`
@@ -583,10 +656,35 @@ pub fn apply_visuals(ctx: &egui::Context) {
     ctx.set_style(style);
 }
 
-/// Convert a logical-pixel design value into egui points for the current DPI, so
-/// the overlay keeps the same physical size across display scales.
+/// Convert a design-pixel [`size`] / [`font`] token into egui points for the
+/// current DPI, so the overlay keeps the same physical size across display
+/// scales. This is the conversion the whole crate's chrome goes through.
 pub fn px(ctx: &egui::Context, value: f32) -> f32 {
-    value / ctx.pixels_per_point()
+    px_at(ctx.pixels_per_point(), value)
+}
+
+/// [`px`] for a caller that knows the display scale but holds no context.
+fn px_at(pixels_per_point: f32, value: f32) -> f32 {
+    // A zero (or absurd) scale would divide the design value to infinity.
+    value / pixels_per_point.max(MIN_PIXELS_PER_POINT)
+}
+
+/// Floor on the display scale used for the design-pixel conversion, so a window
+/// that reports a degenerate scale factor can't produce an infinite size.
+const MIN_PIXELS_PER_POINT: f32 = 0.1;
+
+/// Combined height of the toolbar and status-bar bands in egui points at
+/// `pixels_per_point` — the chrome that overlays the full-window 3D scene, and so
+/// the band `app` keeps a framed model clear of.
+///
+/// Takes the scale rather than an [`egui::Context`] because `app` frames the
+/// startup camera before egui has run a pass (a context reports 1.0 until then);
+/// the window's own scale factor is the truth at that point.
+pub fn chrome_height(pixels_per_point: f32) -> f32 {
+    px_at(
+        pixels_per_point,
+        size::TOOLBAR_HEIGHT + size::STATUS_BAR_HEIGHT,
+    )
 }
 
 /// `[r, g, b, a]` in 0..1 from an egui `Color32` — a plain `/255` scale of the

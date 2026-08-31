@@ -456,7 +456,7 @@ fn node_inspector(ui: &mut egui::Ui, state: &UiState, model: &ModelData, index: 
     } else {
         node.name.clone()
     };
-    ui.heading(format!("Node — {name}"));
+    ui.heading(format!("Node - {name}"));
 
     // "Mesh part" is more informative than the bare kind for a node that actually
     // carries geometry; every other node reports what the importer classified it as.
@@ -509,11 +509,12 @@ fn node_inspector(ui: &mut egui::Ui, state: &UiState, model: &ModelData, index: 
                 crate::widgets::value_row(
                     ui,
                     "Influenced verts",
-                    &state.bone_influence_count.to_string(),
+                    &state.caches.bone_influence.to_string(),
                 );
                 if model.stats.vertex_count > 0 {
-                    let share =
-                        state.bone_influence_count as f32 / model.stats.vertex_count as f32 * 100.0;
+                    let share = state.caches.bone_influence as f32
+                        / model.stats.vertex_count as f32
+                        * 100.0;
                     crate::widgets::value_row(ui, "Share of mesh", &format!("{share:.1}%"));
                 }
             }
@@ -528,7 +529,7 @@ fn bone_selection_inspector(ui: &mut egui::Ui, state: &UiState, model: &ModelDat
     ui.heading(format!("{count} bones selected"));
 
     // The union count, measured once per selection change by `sync_bone_influence`.
-    let influenced = state.bone_influence_count;
+    let influenced = state.caches.bone_influence;
     panel_grid(ui, "inspector_bone_selection", |ui| {
         crate::widgets::value_row(ui, "Bones", &count.to_string());
         if model.skin.is_some() {

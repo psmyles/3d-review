@@ -9,10 +9,13 @@ build = "build.rs"
 [dependencies]
 glam.workspace = true
 review-model = { path = "../model" }
+# The shared guarded Tracy helpers, for the FBX-import CPU zones (Load FBX /
+# Build ModelData); the C-side ufbx parse stays un-instrumented.
+review-prof.workspace = true
 thiserror.workspace = true
 # Tracy profiler client — always compiled in, inert until started (`--tracy`).
-# Used for the FBX-import CPU zones (Load FBX / Build ModelData); the C-side ufbx
-# parse stays un-instrumented.
+# Needed directly (beyond `review-prof`) for `tracy_alloc`'s allocation hooks,
+# which call into `tracy_client::sys` rather than through a zone macro.
 tracy-client.workspace = true
 
 [target.'cfg(windows)'.dependencies]
@@ -27,3 +30,6 @@ windows-sys = { workspace = true, features = [
 
 [build-dependencies]
 cc.workspace = true
+
+[lints]
+workspace = true

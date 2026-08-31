@@ -396,6 +396,8 @@ mod ffi {
                 // The source DCC's logical vertex count, not the per-corner
                 // expanded render count (invariant 5: faithful stats).
                 vertex_count: scene.source_vertex_count,
+                // Measured below once the whole model is assembled, like Draws.
+                gpu_vertex_count: 0,
                 uv_set_count: scene.uv_set_count as usize,
                 material_count: scene.material_count,
                 // Overwritten below from `material_draw_count` so the Draws stat
@@ -407,6 +409,22 @@ mod ffi {
             materials,
             skin,
         };
+
+        // Every index must address a real vertex. The bridge derives each one by
+        // subtracting a face's first index from a triangulation result, an
+        // unsigned subtraction that would wrap into a huge index rather than
+        // fail if either ever drifted — so it is checked here, at the funnel,
+        // before the renderer or the optimizer reads the buffer.
+        if let Some(&index) = model
+            .indices
+            .iter()
+            .find(|&&index| index as usize >= model.vertices.len())
+        {
+            return Err(ImportError::LoadFailed(format!(
+                "FBX bridge returned index {index} for a mesh of {} vertices",
+                model.vertices.len()
+            )));
+        }
 
         // Lockstep + range guard at the one import funnel (invariant 7), *before*
         // anything consumes the per-triangle arrays: each array must be empty or
@@ -447,6 +465,10 @@ mod ffi {
         // The renderer groups triangles into one draw per distinct material slot;
         // report that count so Draws is the real draw-call count.
         model.stats.draw_count = model.material_draw_count();
+        // The asset's real GPU vertex cost (unique vertices per draw group) —
+        // the corner-expanded buffer built above is this viewer's internal
+        // layout and is deliberately not a reported stat.
+        model.stats.gpu_vertex_count = model.count_gpu_vertices();
 
         Ok(model)
     }
@@ -516,7 +538,11 @@ mod ffi {
 
         // SAFETY: `value` is non-null (checked above) and points at a bridge-owned,
         // NUL-terminated C string that lives until `review_import_free_scene`.
-        unsafe { CStr::from_ptr(value).to_str().ok().map(str::to_owned) }
+        let text = unsafe { CStr::from_ptr(value) };
+        // Lossy: an FBX name in some other encoding still has to reach the
+        // Outliner as *something* — dropping it would leave a blank row with no
+        // way to tell it from an unnamed node.
+        Some(String::from_utf8_lossy(text.to_bytes()).into_owned())
     }
 
     fn checked_slice<'a, T>(
@@ -707,6 +733,52 @@ mod ffi {
             assert_eq!(node_kind_from_code(999), NodeKind::Other);
         }
 
+        /// A zeroed scene carrying only geometry — the shape
+        /// `model_from_bridge_scene`'s range guard reads.
+        fn geometry_scene(vertices: &[ReviewImportVertex], indices: &[u32]) -> ReviewImportScene {
+            let mut scene: ReviewImportScene = unsafe { std::mem::zeroed() };
+            scene.vertices = vertices.as_ptr() as *mut ReviewImportVertex;
+            scene.vertex_count = vertices.len();
+            scene.indices = indices.as_ptr() as *mut u32;
+            scene.index_count = indices.len();
+            scene.source_vertex_count = vertices.len();
+            scene.source_unit_meters = 1.0;
+            scene
+        }
+
+        fn blank_vertices(count: usize) -> Vec<ReviewImportVertex> {
+            (0..count)
+                .map(|_| ReviewImportVertex {
+                    position: [0.0; 3],
+                    normal: [0.0; 3],
+                    uv: [0.0; 2],
+                    tangent: [0.0; 4],
+                    vertex_color: [0.0; 4],
+                })
+                .collect()
+        }
+
+        #[test]
+        fn an_index_addressing_no_vertex_fails_the_load() {
+            let vertices = blank_vertices(3);
+            let scene = geometry_scene(&vertices, &[0, 1, 3]);
+            assert!(matches!(
+                model_from_bridge_scene(Path::new("mesh.fbx"), &scene),
+                Err(ImportError::LoadFailed(message))
+                    if message.contains("index 3") && message.contains("3 vertices")
+            ));
+        }
+
+        #[test]
+        fn indices_within_the_vertex_buffer_load() {
+            let vertices = blank_vertices(3);
+            let scene = geometry_scene(&vertices, &[0, 1, 2]);
+            let model =
+                model_from_bridge_scene(Path::new("mesh.fbx"), &scene).expect("a whole triangle");
+            assert_eq!(model.indices, vec![0, 1, 2]);
+            assert_eq!(model.name, "mesh");
+        }
+
         #[test]
         fn build_uv_channels_rejects_overflowing_counts() {
             // Malicious/corrupt counts whose product wraps `usize` must be a clean
@@ -734,8 +806,15 @@ mod tests {
     }
 
     /// Write `bytes` to a temp file with an `.fbx` extension and return its path.
+    ///
+    /// The directory is cargo's own, not the system temp dir: a fixed name under
+    /// `%TEMP%` is shared with every other checkout, so two concurrent runs
+    /// delete each other's fixture mid-test. `CARGO_TARGET_TMPDIR` covers only
+    /// integration tests; a unit test gets the build script's `OUT_DIR`, which is
+    /// just as private to this target directory.
     fn temp_fbx(name: &str, bytes: &[u8]) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("review-import-test-{name}.fbx"));
+        let directory = option_env!("CARGO_TARGET_TMPDIR").unwrap_or(env!("OUT_DIR"));
+        let path = PathBuf::from(directory).join(format!("review-import-test-{name}.fbx"));
         std::fs::write(&path, bytes).expect("write temp fixture");
         path
     }
