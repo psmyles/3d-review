@@ -9,22 +9,42 @@
 //! file was handed over. [`App::reset_to_start_state`] (Ctrl+N) is the same funnel
 //! run with an empty model. Data still flows one way: these mutate `App`'s own
 //! state and drive the renderer through its public API (invariant 2).
+//!
+//! The FBX parse itself runs on a worker thread and posts back through the
+//! event-loop proxy ([`UserEvent::ModelLoaded`]), exactly as texture decodes do
+//! ([`crate::texture_manager`]): a large file would otherwise hold the event loop
+//! for its whole parse — at startup that meant a blank window until the model was
+//! ready. The chrome comes up immediately over the empty viewport, a "Loading…"
+//! toast shows, and the model plus its dependent UI (stats, outliner, framing)
+//! appear together when the parse lands.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use review_import::load_model;
+use review_import::{ImportError, load_model};
 use review_model::ModelData;
 use review_render::Renderer;
 use review_ui::Selection;
 
-use crate::{App, TEXTURE_EXTENSIONS, file_label, prof};
+use crate::{App, TEXTURE_EXTENSIONS, UserEvent, file_label, prof};
 
 /// A second primary click counts as a double-click only within this interval…
 const DOUBLE_CLICK_MAX_INTERVAL: Duration = Duration::from_millis(450);
 /// …and only if the pointer stayed within this many physical pixels of the first.
 const DOUBLE_CLICK_MAX_DISTANCE_PX: f32 = 6.0;
+
+/// A finished background model import, posted from the worker thread back to
+/// the event loop.
+#[derive(Debug)]
+pub(crate) struct ModelLoaded {
+    /// The load generation this import was started for. A result whose
+    /// generation is no longer the current one — a newer open, or a Ctrl+N —
+    /// is stale and dropped rather than shown.
+    generation: u64,
+    path: PathBuf,
+    result: Result<ModelData, ImportError>,
+}
 
 /// Whether `path`'s extension is one the texture pool accepts (case-insensitive).
 fn is_image_path(path: &Path) -> bool {
@@ -64,13 +84,76 @@ impl App {
         // startup help overlay if it's still up.
         self.ui.show_help_overlay = false;
 
+        // Each request supersedes the last: only a result carrying the current
+        // generation is applied, so a slow parse can never overwrite a newer one.
+        self.model_load_generation = self.model_load_generation.saturating_add(1);
+        let generation = self.model_load_generation;
+
+        // Parse on a worker thread so a large FBX can't hold the event loop —
+        // at startup the window would otherwise stay blank until the model was
+        // ready. The chrome keeps running; the result lands back on the main
+        // thread via [`UserEvent::ModelLoaded`].
+        if let Some(proxy) = self.textures.proxy.clone() {
+            self.notifications
+                .begin_activity(format!("Loading {}…", file_label(path)));
+            self.redraw.requested = true;
+            let path = path.to_path_buf();
+            std::thread::spawn(move || {
+                prof::thread_name("model-import");
+                let result = {
+                    let _z = prof::zone!("Import Model");
+                    load_model(&path)
+                };
+                // A send failure only means the event loop has exited.
+                let _ = proxy.send_event(UserEvent::ModelLoaded(Box::new(ModelLoaded {
+                    generation,
+                    path,
+                    result,
+                })));
+            });
+        } else {
+            // No proxy to post back through (never the case once `main` has
+            // built the event loop) — load in place so the file still opens.
+            let result = load_model(path);
+            self.apply_loaded_model(path, result);
+        }
+
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
+    /// Apply a finished background import on the main thread: end the activity
+    /// toast its spawn began (the toast is refcounted, so every spawn balances),
+    /// and show the model unless a newer request has superseded this one.
+    pub(crate) fn handle_model_loaded(&mut self, message: ModelLoaded) {
+        self.notifications.end_activity();
+
+        if message.generation == self.model_load_generation {
+            self.apply_loaded_model(&message.path, message.result);
+        } else {
+            prof::msg(&format!(
+                "model load superseded, dropped: {}",
+                message.path.display()
+            ));
+        }
+
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
+    /// Show a completed import — the loaded model, or its error toast — and
+    /// re-point every piece of dependent state (framing, stats, materials, undo)
+    /// at it. The one place both the worker path and the no-proxy fallback land.
+    fn apply_loaded_model(&mut self, path: &Path, result: Result<ModelData, ImportError>) {
         // Loading into the empty viewport (first load, or after Ctrl+N) shows
         // the model already framed — a fly-in from the home view would only
         // delay it. Replacing an already-loaded model keeps the animated
         // re-frame so the view change reads as a transition.
         let animate_framing = !self.scene_model.vertices.is_empty();
 
-        match load_model(path) {
+        match result {
             Ok(model) => {
                 let model = Arc::new(model);
 
@@ -104,10 +187,7 @@ impl App {
                 prof::msg(&format!("model load failed: {} ({error})", path.display()));
             }
         }
-
-        if let Some(window) = self.window.as_ref() {
-            window.request_redraw();
-        }
+        self.redraw.requested = true;
     }
 
     /// Return the viewer to its launch state (Ctrl+N): drop the loaded model so
@@ -115,6 +195,11 @@ impl App {
     /// camera back to its home framing. Bumping the scene revision drops the
     /// previously-uploaded GPU geometry on the next paint.
     pub(crate) fn reset_to_start_state(&mut self) {
+        // A load still on the worker describes a model the user has just
+        // dismissed; bumping the generation drops its result when it lands
+        // (its "Loading…" toast ends there, where its refcount is balanced).
+        self.model_load_generation = self.model_load_generation.saturating_add(1);
+
         let empty = Arc::new(ModelData::default());
 
         let material_revision = if let Some(renderer) = self.renderer.as_mut() {

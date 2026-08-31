@@ -67,6 +67,9 @@ enum UserEvent {
     OptProcessed(Box<opt::OptProcessed>),
     /// A background FBX export finished (posted by the export thread).
     OptExported(Box<Result<review_optimize::ExportReport, review_optimize::OptError>>),
+    /// A background model import finished (posted by the import thread). Boxed
+    /// because it carries the whole parsed model.
+    ModelLoaded(Box<loading::ModelLoaded>),
 }
 
 use selection_flash::FlashProgress;
@@ -158,6 +161,11 @@ struct App {
     /// renderer caches mesh buffers by revision alone: two different meshes that
     /// ever drew the same number would leave one of them stale on screen.
     model_revision_counter: u64,
+    /// Generation of the newest model-load request (imports run on a worker
+    /// thread — see `loading.rs`). A finished import carrying an older
+    /// generation was superseded by a newer open or a Ctrl+N and is dropped,
+    /// so a slow parse can never overwrite what the user asked for since.
+    model_load_generation: u64,
     /// The Opt workspace's processing state. `None` until the user first opens
     /// the workspace — a session that never does pays nothing for it.
     opt: Option<opt::OptSubsystem>,
@@ -368,6 +376,7 @@ impl Default for App {
             scene_model,
             scene_revision: 0,
             model_revision_counter: 0,
+            model_load_generation: 0,
             opt: None,
             occlusion_bvh: None,
             // A sentinel distinct from the initial `scene_revision` (0) so the BVH
@@ -457,10 +466,11 @@ impl App {
         prof::msg("application shell started");
 
         drop(phase.take());
-        phase = prof::zone!("Initial Model Load");
-        // Load a file passed on the command line (file association / CLI arg)
-        // now that the renderer exists. Reuses the same path as drag-drop, so
-        // framing/stats/redraw behave identically.
+        phase = prof::zone!("Queue Initial Model Load");
+        // Queue a file passed on the command line (file association / CLI arg)
+        // now that the renderer exists. Reuses the same path as drag-drop —
+        // the parse runs on a worker thread and lands via `ModelLoaded`, so
+        // the first frame below paints the chrome without waiting on it.
         if let Some(path) = self.initial_model.take() {
             self.open_model_from_path(&path);
         }
@@ -705,6 +715,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::TextureDecoded(decode) => self.handle_texture_decoded(decode),
             UserEvent::OptProcessed(message) => self.handle_opt_processed(*message),
             UserEvent::OptExported(outcome) => self.handle_opt_exported(*outcome),
+            UserEvent::ModelLoaded(message) => self.handle_model_loaded(*message),
         }
     }
 
