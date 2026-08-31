@@ -477,8 +477,23 @@ operations — weld, filter degenerate/duplicate triangles, prune components,
 reduce the mesh in place or generate a LOD chain (both over the same standard /
 attribute-preserving / sloppy simplifiers with the option flags; `Reduce`
 rewrites the mesh every later step and the export carry, `Generate LODs` fans
-out into extra levels beside it), and the vertex-cache / overdraw / vertex-fetch
-reorders — with
+out into extra levels beside it), a `Bake AO to Vertex Colors` op (deterministic
+CPU cosine-hemisphere raycasts via `review-model`'s `Bvh::ray_occluded` against
+bake-scoped occluder concatenations of the *visible* submeshes — excluded
+objects still occlude, they just aren't written, while **Outliner-hidden nodes
+neither occlude nor bake** (`ProcessInput.hidden_nodes` carries the visibility
+snapshot; `sync_opt` reruns the stack on an eye toggle only while a bake is
+enabled) and **the occluders partition by the `_LOD<n>` name suffix** (own node
+or nearest named ancestor): game FBXs carry their whole LOD chain as co-located
+siblings, and raycasting one LOD against another's near-coincident surfaces
+shreds the result, so each LOD bakes only against its own group plus every
+suffix-less node, suffix-less nodes bake against the lowest LOD present, and an
+artist can bake an entire visible chain in one run; parallel over
+`std::thread::scope`; write
+target defaults to the alpha channel, sRGB encode optional for the RGB-family
+targets; adding it auto-switches the viewport to the matching Vertex Colors
+mode, and the exporter already writes vertex colors so it needs nothing), and
+the vertex-cache / overdraw / vertex-fetch reorders — with
 per-object exclusions, and saves it as a JSON preset. Every edit reprocesses on a
 worker (latest-request-wins, a notice only if it runs long) and the result is in
 the viewport as soon as it lands, undoable through the same snapshot stack as

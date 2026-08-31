@@ -83,6 +83,13 @@ pub(crate) mod range {
     pub const LOD_RATIO_MAX: f32 = 1.0;
     pub const LOD_ERROR_MIN: f32 = 0.0;
     pub const LOD_ERROR_MAX: f32 = 1.0;
+    /// Bake AO: the max ray distance in world meters (0 = unlimited) and the
+    /// power on visibility (matching the viewport AO panel's Intensity, whose
+    /// range is deliberately wider here — a bake is worth over-driving).
+    pub const AO_BAKE_DISTANCE_MIN: f32 = 0.0;
+    pub const AO_BAKE_DISTANCE_MAX: f32 = 10.0;
+    pub const AO_BAKE_INTENSITY_MIN: f32 = 0.1;
+    pub const AO_BAKE_INTENSITY_MAX: f32 = 4.0;
 }
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum WorkspaceMode {

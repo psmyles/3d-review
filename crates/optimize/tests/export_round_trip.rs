@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 
 use review_model::ModelData;
 use review_optimize::{
-    ExportOptions, FbxFormat, HierarchyMode, LodLevel, LodPackaging, LodParams, OpKind, OptStack,
-    ProcessInput, ProcessedResult, SimplifyAlgorithm, SimplifySettings, WeldParams, export_fbx,
-    process,
+    AoQuality, AoTarget, BakeAoParams, ExportOptions, FbxFormat, HierarchyMode, LodLevel,
+    LodPackaging, LodParams, OpKind, OptStack, ProcessInput, ProcessedResult, SimplifyAlgorithm,
+    SimplifySettings, WeldParams, export_fbx, process,
 };
 
 const VERTEX_SIZE: usize = 64;
@@ -54,6 +54,7 @@ fn run(model: &ModelData, stack: &OptStack) -> ProcessedResult {
         model,
         stack,
         render_vertex_size: VERTEX_SIZE,
+        hidden_nodes: &[],
     })
     .expect("processing succeeds")
 }
@@ -323,6 +324,44 @@ fn uv_sets_survive_the_round_trip() {
             .iter()
             .any(|vertex| vertex.uv.x != 0.0 || vertex.uv.y != 0.0),
         "the UVs carry real values, not zeros"
+    );
+}
+
+/// Baked AO must survive the file: the writer already emits the vertex-color
+/// set, so what this pins is that the *baked* values — not a default white
+/// layer — are what a real FBX reader recovers.
+#[test]
+fn baked_ao_survives_an_export_round_trip() {
+    let Some(model) = fixture("monkey.fbx") else {
+        return;
+    };
+    let mut stack = OptStack::default();
+    stack.push_op(OpKind::BakeAo(BakeAoParams {
+        quality: AoQuality::Low,
+        target: AoTarget::Rgb,
+        ..BakeAoParams::default()
+    }));
+    let result = run(&model, &stack);
+
+    let dir = temp_dir("round_trip_bake_ao");
+    let path = dir.join("baked.fbx");
+    export_fbx(&result.lods, &model, &path, &ExportOptions::default()).expect("export succeeds");
+
+    let loaded = reimport(&path);
+    let (mut lowest, mut highest) = (f32::INFINITY, f32::NEG_INFINITY);
+    for vertex in &loaded.vertices {
+        assert!(
+            (0.0..=1.0).contains(&vertex.vertex_color.x),
+            "read-back colors stay real values, got {}",
+            vertex.vertex_color.x
+        );
+        lowest = lowest.min(vertex.vertex_color.x);
+        highest = highest.max(vertex.vertex_color.x);
+    }
+    assert!(
+        highest - lowest > 0.1,
+        "the read-back color set carries the bake's variation, not a uniform \
+         layer: {lowest}..{highest}"
     );
 }
 

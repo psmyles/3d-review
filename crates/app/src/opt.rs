@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 
 use review_model::ModelData;
 use review_optimize::{
-    ExportReport, OptError, ProcessInput, ProcessedResult, export_fbx, preset, process,
+    ExportReport, OpKind, OptError, ProcessInput, ProcessedResult, export_fbx, preset, process,
 };
 use review_ui::{OptIntent, OptLevelView, OptResultView};
 
@@ -83,6 +83,10 @@ pub(crate) struct OptSubsystem {
     /// The warnings the last accepted run reported, so a condition that persists
     /// across runs is announced once rather than once per run.
     announced_warnings: Vec<String>,
+    /// The Outliner-hidden node set most recently seen (sorted). Visibility is
+    /// part of the AO bake's input — a hidden mesh neither occludes nor bakes —
+    /// so toggling an eye while a bake is enabled reruns the stack.
+    seen_hidden: Vec<u32>,
 }
 
 impl Default for OptSubsystem {
@@ -99,6 +103,7 @@ impl Default for OptSubsystem {
             started_at: None,
             activity_shown: false,
             announced_warnings: Vec::new(),
+            seen_hidden: Vec::new(),
         }
     }
 }
@@ -134,6 +139,18 @@ impl App {
     /// that never opens it.
     pub(crate) fn sync_opt(&mut self) {
         let stack_revision = self.ui.opt.stack_revision;
+        // Outliner visibility is part of the AO bake's input (a hidden mesh
+        // neither occludes nor bakes), so toggling an eye reruns the stack —
+        // but only when an enabled bake is actually reading it; no other
+        // operation consults visibility.
+        let hidden = self.ui.hidden_mesh_nodes();
+        let bake_enabled = self
+            .ui
+            .opt
+            .stack
+            .ops
+            .iter()
+            .any(|op| op.enabled && matches!(op.kind, OpKind::BakeAo(_)));
         let opt = self.opt.get_or_insert_with(OptSubsystem::default);
 
         // First visit: adopt the current stack revision without treating it as an
@@ -142,7 +159,12 @@ impl App {
         let changed = opt.seen_revision != stack_revision;
         opt.seen_revision = stack_revision;
 
-        if opt.needs_run(stack_revision, changed) {
+        let hidden_changed = opt.seen_hidden != hidden;
+        if hidden_changed {
+            opt.seen_hidden = hidden;
+        }
+
+        if opt.needs_run(stack_revision, changed || (hidden_changed && bake_enabled)) {
             self.schedule_reprocess();
         }
 
@@ -242,6 +264,8 @@ impl App {
         // buffer the GPU actually reads rather than the optimizer's intermediate
         // layout (invariant 5: a measured figure, of the real thing).
         let render_vertex_size = review_render::scene_vertex_size();
+        // Snapshot of the Outliner-hidden nodes, read only by the AO bake.
+        let hidden = self.ui.hidden_mesh_nodes();
 
         std::thread::spawn(move || {
             prof::thread_name("mesh-optimize");
@@ -251,6 +275,7 @@ impl App {
                     model: &model,
                     stack: &stack,
                     render_vertex_size,
+                    hidden_nodes: &hidden,
                 })
             };
             // A send failure only means the event loop has exited.
@@ -605,6 +630,10 @@ impl App {
             opt.revision_level = usize::MAX;
             opt.dirty = false;
             opt.announced_warnings.clear();
+            // The hidden set is cleared on model load (its node indices no
+            // longer apply), so forget the old one rather than read a change
+            // out of it.
+            opt.seen_hidden.clear();
         }
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.release_processed_mesh();
