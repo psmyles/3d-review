@@ -3,13 +3,15 @@
 //! Every function here takes a [`Submesh`] and rewrites it in place, so
 //! [`crate::process`] can walk the stack without knowing what any individual
 //! operation does. The LOD operation is the exception: it fans one submesh out
-//! into several and lives in [`crate::process`] with the rest of the chain logic.
+//! into several and lives in [`crate::process`] with the rest of the chain logic
+//! — though the simplify itself is [`simplify`] here, which the in-place Reduce
+//! operation calls the same way.
 
 use review_model::Vertex;
 
 use crate::OptError;
 use crate::meshopt::{self, SimplifyAttributes};
-use crate::stack::{LodParams, SimplifyAlgorithm, WeldParams};
+use crate::stack::{SimplifyAlgorithm, SimplifySettings, WeldParams};
 use crate::submesh::Submesh;
 
 /// Merge vertices per [`WeldParams`].
@@ -131,13 +133,13 @@ pub fn optimize_vertex_fetch(submesh: &mut Submesh) -> Result<(), OptError> {
 /// The submesh's vertex array is left alone — the reduced index buffer still
 /// points into it, and [`Submesh::compact_unreferenced`] tidies up at the end of
 /// the level.
-pub fn simplify_level(
+pub fn simplify(
     submesh: &mut Submesh,
-    params: &LodParams,
+    settings: &SimplifySettings,
     target_triangles: usize,
     target_error: f32,
 ) -> Result<f32, OptError> {
-    let _z = crate::prof::zone!("Simplify Level");
+    let _z = crate::prof::zone!("Simplify");
 
     if submesh.is_empty() {
         return Ok(0.0);
@@ -147,7 +149,7 @@ pub fn simplify_level(
     let vertex_count = submesh.vertices.len();
     let target_indices = target_triangles.saturating_mul(3);
 
-    let outcome = match params.algorithm {
+    let outcome = match settings.algorithm {
         SimplifyAlgorithm::Standard => meshopt::simplify(
             &submesh.indices,
             &positions,
@@ -155,10 +157,10 @@ pub fn simplify_level(
             &SimplifyAttributes::default(),
             target_indices,
             target_error,
-            params.flags.bits(),
+            settings.flags.bits(),
         )?,
         SimplifyAlgorithm::WithAttributes => {
-            let attributes = simplify_attribute_stream(submesh, params);
+            let attributes = simplify_attribute_stream(submesh, settings);
             meshopt::simplify(
                 &submesh.indices,
                 &positions,
@@ -166,7 +168,7 @@ pub fn simplify_level(
                 &attributes,
                 target_indices,
                 target_error,
-                params.flags.bits(),
+                settings.flags.bits(),
             )?
         }
         // The sloppy simplifier has no options parameter: it ignores topology by
@@ -188,8 +190,8 @@ pub fn simplify_level(
 /// [`SimplifyAlgorithm::WithAttributes`]. Components with a zero weight are left
 /// out entirely rather than passed with a zero weight — a shorter stream is less
 /// work for the simplifier's quadric to carry.
-fn simplify_attribute_stream(submesh: &Submesh, params: &LodParams) -> SimplifyAttributes {
-    let weights = params.attribute_weights;
+fn simplify_attribute_stream(submesh: &Submesh, settings: &SimplifySettings) -> SimplifyAttributes {
+    let weights = settings.attribute_weights;
     let use_normal = weights.normal > 0.0;
     let use_uv = weights.uv > 0.0;
     let use_color = weights.color > 0.0;

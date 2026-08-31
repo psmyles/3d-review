@@ -203,6 +203,10 @@ pub enum OpKind {
     FilterTriangles,
     /// Remove small disconnected components (stray shells, orphaned faces).
     PruneComponents { error: f32 },
+    /// Simplify the mesh in place, replacing it — the same simplifier
+    /// [`OpKind::SimplifyLod`] runs, applied as an ordinary stack step rather
+    /// than as a fan-out.
+    Reduce(ReduceParams),
     /// Generate the LOD chain. At most one per stack.
     SimplifyLod(LodParams),
     /// Reorder triangles for the GPU's post-transform vertex cache.
@@ -217,10 +221,11 @@ impl OpKind {
     /// Every operation the "Add" menu offers, in menu order — cleanup first
     /// (what you almost always want before anything else), then the LOD
     /// generator, then the GPU reorder passes that belong at the end.
-    pub const ALL: [fn() -> OpKind; 7] = [
+    pub const ALL: [fn() -> OpKind; 8] = [
         || OpKind::Weld(WeldParams::default()),
         || OpKind::FilterTriangles,
         || OpKind::PruneComponents { error: 0.01 },
+        || OpKind::Reduce(ReduceParams::default()),
         || OpKind::SimplifyLod(LodParams::default()),
         || OpKind::VertexCache,
         || OpKind::Overdraw { threshold: 1.05 },
@@ -233,6 +238,7 @@ impl OpKind {
             OpKind::Weld(_) => "Weld Vertices",
             OpKind::FilterTriangles => "Filter Triangles",
             OpKind::PruneComponents { .. } => "Prune Components",
+            OpKind::Reduce(_) => "Reduce",
             OpKind::SimplifyLod(_) => "Generate LODs",
             OpKind::VertexCache => "Optimize Vertex Cache",
             OpKind::Overdraw { .. } => "Optimize Overdraw",
@@ -257,6 +263,9 @@ impl OpKind {
             OpKind::PruneComponents { .. } => {
                 "Remove disconnected pieces smaller than the error threshold — stray \
                  shells and orphaned faces left behind by modelling."
+            }
+            OpKind::Reduce(_) => {
+                "Simplify the mesh in place. The same simplifier the LOD chain uses,                  but it replaces the mesh instead of generating extra ones - so the                  reduced geometry is what the rest of the stack works on and what the                  export writes in the source mesh's place."
             }
             OpKind::SimplifyLod(_) => {
                 "Generate the LOD chain. Each level is simplified independently from \
@@ -285,6 +294,7 @@ impl OpKind {
             OpKind::Weld(_)
             | OpKind::FilterTriangles
             | OpKind::PruneComponents { .. }
+            | OpKind::Reduce(_)
             | OpKind::SimplifyLod(_) => true,
             OpKind::VertexCache | OpKind::Overdraw { .. } | OpKind::VertexFetch => false,
         }
@@ -377,13 +387,27 @@ impl Default for AttributeWeights {
     }
 }
 
+/// How the simplifier is configured, shared by the two operations that run it:
+/// [`OpKind::SimplifyLod`], which fans the mesh out into a chain, and
+/// [`OpKind::Reduce`], which rewrites the mesh in place. One struct rather than
+/// two copies of the same three fields, so a setting added here reaches both.
+///
+/// Flattened into both parameter structs on the wire, so a preset's JSON keeps
+/// naming these settings at the operation's top level.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SimplifySettings {
+    pub algorithm: SimplifyAlgorithm,
+    pub attribute_weights: AttributeWeights,
+    pub flags: SimplifyFlags,
+}
+
 /// LOD chain settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LodParams {
-    pub algorithm: SimplifyAlgorithm,
-    pub attribute_weights: AttributeWeights,
-    pub flags: SimplifyFlags,
+    #[serde(flatten)]
+    pub simplify: SimplifySettings,
     /// One entry per generated level, in order. Level 0 is always the
     /// unsimplified mesh and is not listed here.
     pub levels: Vec<LodLevel>,
@@ -392,9 +416,7 @@ pub struct LodParams {
 impl Default for LodParams {
     fn default() -> Self {
         Self {
-            algorithm: SimplifyAlgorithm::default(),
-            attribute_weights: AttributeWeights::default(),
-            flags: SimplifyFlags::default(),
+            simplify: SimplifySettings::default(),
             levels: vec![
                 LodLevel {
                     target_ratio: 0.5,
@@ -413,7 +435,8 @@ impl Default for LodParams {
     }
 }
 
-/// One level of the LOD chain.
+/// How far one simplify run is asked to go: a LOD level's target, and equally
+/// [`ReduceParams`]'s single one.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LodLevel {
@@ -432,6 +455,24 @@ impl Default for LodLevel {
             target_error: 0.01,
         }
     }
+}
+
+/// Settings for the in-place [`OpKind::Reduce`] operation: the same simplifier
+/// configuration a LOD chain uses, against a single target.
+///
+/// The difference from [`LodParams`] is entirely in what [`crate::process`] does
+/// with the result. A LOD operation fans out, leaving the mesh it simplified
+/// from untouched as level 0; Reduce is an ordinary stack step, so its output
+/// *is* the mesh every later operation sees, every LOD level starts from, and
+/// the export writes in the source mesh's place.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReduceParams {
+    #[serde(flatten)]
+    pub simplify: SimplifySettings,
+    /// Ratio and error limit, read exactly as a LOD level's are.
+    #[serde(flatten)]
+    pub target: LodLevel,
 }
 
 /// The `meshopt_Simplify*` option flags, as individually-labelled toggles. Kept

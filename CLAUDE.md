@@ -210,7 +210,10 @@ crates/
             it, alongside the source's own buffer counts so the overlay's deltas
             subtract like from like). src/stack.rs is the serializable
             operation stack the UI edits; src/preset.rs is its versioned JSON
-            envelope. Processed meshes are pure triangles and carry **no** face
+            envelope. The two operations that simplify share one
+            `SimplifySettings` (flattened on the wire, so older presets still
+            load) and one `process::simplify_submeshes` — the LOD op fans its
+            output out into levels, `Reduce` writes its own back in place. Processed meshes are pure triangles and carry **no** face
             topology (`faces` / `triangles.to_face` left empty — the corner-run
             layout a `TopologyFace` describes cannot survive welding; every
             `render` consumer already falls back to per-triangle behaviour).
@@ -471,8 +474,11 @@ metadata + Inno Setup installer) is present.
 **Opt workspace** (mesh optimization, static meshes only): a fourth mode sharing
 every 3D control. The user builds a re-orderable stack of meshoptimizer
 operations — weld, filter degenerate/duplicate triangles, prune components,
-generate a LOD chain (standard / attribute-preserving / sloppy simplifiers with
-the option flags), and the vertex-cache / overdraw / vertex-fetch reorders — with
+reduce the mesh in place or generate a LOD chain (both over the same standard /
+attribute-preserving / sloppy simplifiers with the option flags; `Reduce`
+rewrites the mesh every later step and the export carry, `Generate LODs` fans
+out into extra levels beside it), and the vertex-cache / overdraw / vertex-fetch
+reorders — with
 per-object exclusions, and saves it as a JSON preset. Every edit reprocesses on a
 worker (latest-request-wins, a notice only if it runs long) and the result is in
 the viewport as soon as it lands, undoable through the same snapshot stack as

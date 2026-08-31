@@ -16,8 +16,8 @@ use std::path::PathBuf;
 
 use review_model::ModelData;
 use review_optimize::{
-    LodLevel, LodParams, OpKind, OptStack, ProcessInput, ProcessedResult, SimplifyAlgorithm,
-    SimplifyFlags, WeldParams, process,
+    LodLevel, LodParams, OpKind, OptStack, ProcessInput, ProcessedResult, ReduceParams,
+    SimplifyAlgorithm, SimplifyFlags, SimplifySettings, WeldParams, process,
 };
 
 /// Stand-in for the renderer's `SceneVertex` size (position, normal, uv, tangent,
@@ -195,6 +195,59 @@ fn position_welding_a_scan_collapses_it_and_rebuilds_usable_normals() {
     }
 }
 
+/// Reduce runs the same simplifier the LOD chain does, but against the mesh
+/// itself: the run produces exactly one output, at the target, and it is that
+/// mesh a later operation and the export see. On a real asset it has to hit the
+/// target as squarely as a LOD level does — the two share the code that aims it.
+#[test]
+fn a_reduce_over_a_game_asset_hits_its_target_in_place() {
+    let Some(model) = fixture("SK_Player_01.fbx") else {
+        return;
+    };
+    let source_triangles = model.indices.len() / 3;
+
+    let mut stack = OptStack::default();
+    stack.push_op(OpKind::Weld(WeldParams::default()));
+    stack.push_op(OpKind::Reduce(ReduceParams {
+        simplify: SimplifySettings {
+            algorithm: SimplifyAlgorithm::Standard,
+            ..SimplifySettings::default()
+        },
+        target: LodLevel {
+            target_ratio: 0.5,
+            target_error: 0.02,
+        },
+    }));
+
+    let result = run(&model, &stack);
+    assert_eq!(
+        result.lods.len(),
+        1,
+        "a reduce replaces the mesh rather than adding a level beside it"
+    );
+    let reduced = &result.lods[0].model;
+    assert_consistent(reduced, "reduced");
+    assert_eq!(
+        reduced.name, model.name,
+        "the mesh keeps the source name: nothing about it is a LOD"
+    );
+
+    let triangles = reduced.stats.triangle_count;
+    assert!(
+        triangles < source_triangles * 6 / 10 && triangles > source_triangles * 4 / 10,
+        "the reduce lands near its 50% target: {triangles} of {source_triangles}"
+    );
+    assert!(
+        result.lods[0].metrics.simplify_error > 0.0,
+        "level 0 now carries the error the reduce cost: {:?}",
+        result.lods[0].metrics
+    );
+    assert_eq!(
+        result.source.triangles, source_triangles,
+        "the baseline is still the unreduced mesh, so the overlay's delta is real"
+    );
+}
+
 /// The scans block the topology-preserving simplifier: with per-face normals
 /// every edge is an attribute seam, and collapsing across one is exactly what the
 /// default settings forbid. Both documented ways out must work — position welding
@@ -206,12 +259,14 @@ fn a_flat_shaded_scan_simplifies_once_its_attribute_seams_are_dealt_with() {
     };
     let source_triangles = model.indices.len() / 3;
     let half = LodParams {
-        algorithm: SimplifyAlgorithm::Standard,
+        simplify: SimplifySettings {
+            algorithm: SimplifyAlgorithm::Standard,
+            ..SimplifySettings::default()
+        },
         levels: vec![LodLevel {
             target_ratio: 0.5,
             target_error: 0.05,
         }],
-        ..LodParams::default()
     };
 
     let mut blocked = OptStack::default();
@@ -244,11 +299,14 @@ fn a_flat_shaded_scan_simplifies_once_its_attribute_seams_are_dealt_with() {
 
     let mut permissive = OptStack::default();
     permissive.push_op(OpKind::SimplifyLod(LodParams {
-        flags: SimplifyFlags {
-            permissive: true,
-            ..SimplifyFlags::default()
+        simplify: SimplifySettings {
+            flags: SimplifyFlags {
+                permissive: true,
+                ..SimplifyFlags::default()
+            },
+            ..half.simplify
         },
-        ..half
+        ..half.clone()
     }));
     let permissive_triangles = run(&model, &permissive).lods[1].model.stats.triangle_count;
     assert!(
@@ -270,7 +328,10 @@ fn a_lod_chain_over_a_game_asset_hits_its_targets() {
     let mut stack = OptStack::default();
     stack.push_op(OpKind::Weld(WeldParams::default()));
     stack.push_op(OpKind::SimplifyLod(LodParams {
-        algorithm: SimplifyAlgorithm::Standard,
+        simplify: SimplifySettings {
+            algorithm: SimplifyAlgorithm::Standard,
+            ..SimplifySettings::default()
+        },
         levels: vec![
             LodLevel {
                 target_ratio: 0.5,
@@ -285,7 +346,6 @@ fn a_lod_chain_over_a_game_asset_hits_its_targets() {
                 target_error: 0.1,
             },
         ],
-        ..LodParams::default()
     }));
 
     let result = run(&model, &stack);
@@ -371,12 +431,14 @@ fn a_multi_material_character_keeps_every_triangle_tagged() {
     let mut stack = OptStack::default();
     stack.push_op(OpKind::Weld(WeldParams::default()));
     stack.push_op(OpKind::SimplifyLod(LodParams {
-        algorithm: SimplifyAlgorithm::Standard,
+        simplify: SimplifySettings {
+            algorithm: SimplifyAlgorithm::Standard,
+            ..SimplifySettings::default()
+        },
         levels: vec![LodLevel {
             target_ratio: 0.5,
             target_error: 0.05,
         }],
-        ..LodParams::default()
     }));
 
     let result = run(&model, &stack);
@@ -444,12 +506,14 @@ fn excluding_a_node_leaves_its_geometry_untouched() {
 
     let mut stack = OptStack::default();
     stack.push_op(OpKind::SimplifyLod(LodParams {
-        algorithm: SimplifyAlgorithm::Standard,
+        simplify: SimplifySettings {
+            algorithm: SimplifyAlgorithm::Standard,
+            ..SimplifySettings::default()
+        },
         levels: vec![LodLevel {
             target_ratio: 0.25,
             target_error: 0.2,
         }],
-        ..LodParams::default()
     }));
     stack.node_override_mut(node as usize).exclude = true;
 
@@ -517,12 +581,14 @@ fn a_lod_operation_alone_simplifies_a_corner_split_import() {
 
     let mut stack = OptStack::default();
     stack.push_op(OpKind::SimplifyLod(LodParams {
-        algorithm: SimplifyAlgorithm::Standard,
+        simplify: SimplifySettings {
+            algorithm: SimplifyAlgorithm::Standard,
+            ..SimplifySettings::default()
+        },
         levels: vec![LodLevel {
             target_ratio: 0.5,
             target_error: 0.01,
         }],
-        ..LodParams::default()
     }));
     let result = run(&model, &stack);
 

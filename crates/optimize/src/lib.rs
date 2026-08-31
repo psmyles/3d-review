@@ -51,7 +51,8 @@ pub use process::{
 };
 pub use stack::{
     AttributeWeights, ExportOptions, FbxFormat, HierarchyMode, LodLevel, LodPackaging, LodParams,
-    NodeOverride, OpInstance, OpKind, OptStack, SimplifyAlgorithm, SimplifyFlags, WeldParams,
+    NodeOverride, OpInstance, OpKind, OptStack, ReduceParams, SimplifyAlgorithm, SimplifyFlags,
+    SimplifySettings, WeldParams,
 };
 
 /// Everything that can go wrong in this crate.

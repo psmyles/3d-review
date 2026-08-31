@@ -975,6 +975,9 @@ pub struct UiState {
     /// (right) — are open. They share one flag because they are two halves of one
     /// workflow: the Outliner picks a row, the Inspector describes it. egui owns
     /// each panel's resized width; the UI only tracks open/closed.
+    ///
+    /// Starts `true`: inspecting a model is what the viewer is for, so the pair is
+    /// up on launch rather than behind a toolbar toggle the user has to find.
     pub side_panels_open: bool,
     /// Axis-aligned bounds of the loaded model (world meters), set by `app`
     /// alongside [`UiState::stats`] (invariant 2: a plain value, not model
@@ -1044,7 +1047,7 @@ impl Default for UiState {
             has_bones: false,
             has_skin: false,
             hidden_meshes: HashSet::new(),
-            side_panels_open: false,
+            side_panels_open: true,
             bounds: None,
             caches: BoundsCaches::default(),
             fps: 0.0,

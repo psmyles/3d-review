@@ -10,7 +10,7 @@
 use review_model::ModelData;
 use review_optimize::{
     AttributeWeights, ExportOptions, FbxFormat, HierarchyMode, LodLevel, LodPackaging, LodParams,
-    OpKind, SimplifyAlgorithm, SimplifyFlags, WeldParams,
+    OpKind, ReduceParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings, WeldParams,
 };
 use review_render::Selection;
 
@@ -81,6 +81,7 @@ fn operation_body(ui: &mut egui::Ui, state: &mut UiState, id: u64) {
         OpKind::Weld(params) => weld_params(ui, params).map(OpKind::Weld),
         OpKind::PruneComponents { error } => prune_params(ui, error),
         OpKind::Overdraw { threshold } => overdraw_params(ui, threshold),
+        OpKind::Reduce(params) => reduce_params(ui, params).map(OpKind::Reduce),
         OpKind::SimplifyLod(params) => lod_params(ui, params).map(OpKind::SimplifyLod),
         // These three have nothing to configure — meshoptimizer exposes no knobs
         // for them, and inventing some would be worse than an honest note.
@@ -179,16 +180,18 @@ fn overdraw_params(ui: &mut egui::Ui, threshold: f32) -> Option<OpKind> {
         .then_some(OpKind::Overdraw { threshold: edited })
 }
 
-/// The LOD chain editor: algorithm, attribute weights, simplifier flags, and the
-/// per-level ratio / error rows.
-fn lod_params(ui: &mut egui::Ui, params: LodParams) -> Option<LodParams> {
-    let mut edited = params.clone();
-
-    panel_grid(ui, "opt_lod_algorithm", |ui| {
+/// The simplifier configuration both simplifying operations share: algorithm,
+/// attribute weights and the option flags. `id` prefixes the widget ids so the
+/// two operations' grids never collide.
+///
+/// One editor rather than two copies, matching the single [`SimplifySettings`]
+/// the two parameter structs embed — a setting added there shows up in both.
+fn simplify_settings(ui: &mut egui::Ui, id: &str, edited: &mut SimplifySettings) {
+    panel_grid(ui, &format!("{id}_algorithm"), |ui| {
         labeled_combo(
             ui,
             "Algorithm",
-            "opt_lod_algo",
+            &format!("{id}_algo"),
             edited.algorithm.label(),
             |ui| {
                 for algorithm in SimplifyAlgorithm::ALL {
@@ -201,7 +204,7 @@ fn lod_params(ui: &mut egui::Ui, params: LodParams) -> Option<LodParams> {
     if edited.algorithm == SimplifyAlgorithm::WithAttributes {
         ui.add_space(size::PANEL_ROW_GAP);
         ui.label("Attribute weights");
-        panel_grid(ui, "opt_lod_weights", |ui| {
+        panel_grid(ui, &format!("{id}_weights"), |ui| {
             let AttributeWeights {
                 normal,
                 uv,
@@ -267,6 +270,61 @@ fn lod_params(ui: &mut egui::Ui, params: LodParams) -> Option<LodParams> {
                 .on_hover_text("Allow collapses across UV and normal discontinuities");
         });
     }
+}
+
+/// The ratio / error-limit pair one simplify run is aimed at — a LOD level's
+/// target, and equally the Reduce operation's single one.
+fn simplify_target(ui: &mut egui::Ui, id: &str, target: &mut LodLevel) {
+    panel_grid(ui, id, |ui| {
+        labeled_slider_with_value(
+            ui,
+            "Triangles",
+            &mut target.target_ratio,
+            LOD_RATIO_MIN..=LOD_RATIO_MAX,
+            3,
+        );
+        labeled_slider_with_value(
+            ui,
+            "Error limit",
+            &mut target.target_error,
+            LOD_ERROR_MIN..=LOD_ERROR_MAX,
+            4,
+        );
+    });
+}
+
+/// The in-place Reduce editor: the shared simplifier settings against one target.
+fn reduce_params(ui: &mut egui::Ui, params: ReduceParams) -> Option<ReduceParams> {
+    let mut edited = params;
+
+    simplify_settings(ui, "opt_reduce", &mut edited.simplify);
+
+    ui.add_space(size::PANEL_ROW_GAP);
+    ui.separator();
+    ui.add_space(size::PANEL_ROW_GAP);
+    simplify_target(ui, "opt_reduce_target", &mut edited.target);
+
+    ui.add_space(size::PANEL_ROW_GAP);
+    ui.label(
+        egui::RichText::new(
+            "Triangles is a fraction of this object's count at this point in the \
+             stack; the simplifier stops short of it rather than exceed the error \
+             limit. Unlike Generate LODs this rewrites the mesh itself - every \
+             operation below it works on the reduced geometry, and an export with \
+             no LOD chain writes it in the source mesh's place.",
+        )
+        .color(color::TEXT_MUTED),
+    );
+
+    (edited != params).then_some(edited)
+}
+
+/// The LOD chain editor: the shared simplifier settings, plus the per-level
+/// ratio / error rows.
+fn lod_params(ui: &mut egui::Ui, params: LodParams) -> Option<LodParams> {
+    let mut edited = params.clone();
+
+    simplify_settings(ui, "opt_lod", &mut edited.simplify);
 
     ui.add_space(size::PANEL_ROW_GAP);
     ui.separator();
@@ -301,22 +359,7 @@ fn lod_params(ui: &mut egui::Ui, params: LodParams) -> Option<LodParams> {
                 }
             });
         });
-        panel_grid(ui, &format!("opt_lod_level_{index}"), |ui| {
-            labeled_slider_with_value(
-                ui,
-                "Triangles",
-                &mut level.target_ratio,
-                LOD_RATIO_MIN..=LOD_RATIO_MAX,
-                3,
-            );
-            labeled_slider_with_value(
-                ui,
-                "Error limit",
-                &mut level.target_error,
-                LOD_ERROR_MIN..=LOD_ERROR_MAX,
-                4,
-            );
-        });
+        simplify_target(ui, &format!("opt_lod_level_{index}"), level);
     }
     if let Some(index) = remove {
         edited.levels.remove(index);
@@ -342,9 +385,10 @@ fn export_body(ui: &mut egui::Ui, state: &mut UiState) -> Option<OptIntent> {
     ui.add_space(size::PANEL_ROW_GAP);
     ui.label(
         egui::RichText::new(
-            "Where and how the processed LOD chain is written. Output is always \
-             triangulated, and carries the materials as imported - material edits \
-             made in the viewer stay previews.",
+            "Where and how the processed mesh - and its LOD chain, if the stack \
+             generates one - is written. Output is always triangulated, and carries \
+             the materials as imported - material edits made in the viewer stay \
+             previews.",
         )
         .color(color::TEXT_MUTED),
     );
@@ -417,7 +461,11 @@ fn export_body(ui: &mut egui::Ui, state: &mut UiState) -> Option<OptIntent> {
 /// checkable before a file dialog opens rather than after.
 fn describe_export(ui: &mut egui::Ui, options: ExportOptions, levels: usize) {
     let levels = levels.max(1);
+    // With no LOD chain there is only the processed mesh, which stands in for the
+    // source asset — so neither packaging has anything to suffix, and naming a
+    // "_LOD0" would describe a file the export does not write.
     let packaging = match options.packaging {
+        _ if levels == 1 => "One file, with each mesh under its source name".to_owned(),
         LodPackaging::SingleFileSuffixed => {
             format!(
                 "One file, with each mesh repeated as MeshName_LOD0 … _LOD{}",

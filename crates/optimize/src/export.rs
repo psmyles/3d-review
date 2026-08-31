@@ -62,7 +62,8 @@ pub const fn available() -> bool {
 /// Write `lods` to `path` according to `options`.
 ///
 /// `path` is the file the user chose; under [`LodPackaging::FilePerLod`] it
-/// supplies the stem and each level gets a `_LOD<n>` suffix.
+/// supplies the stem and each level gets a `_LOD<n>` suffix — unless there is
+/// only one level, which is written to `path` itself.
 pub fn export_fbx(
     lods: &[ProcessedLod],
     source: &ModelData,
@@ -104,11 +105,20 @@ pub fn export_fbx(
             report.files.push(path.to_path_buf());
         }
         LodPackaging::FilePerLod => {
+            // A lone level is not a chain: there is nothing for a `_LOD0` suffix to
+            // distinguish it from, and a stack that only reduces the mesh in place
+            // is meant to stand in for the source asset — so it goes to the path
+            // the user actually chose.
+            let chain = lods.len() > 1;
             for lod in lods {
                 // Each file holds one level, so its meshes keep their plain names
                 // rather than a suffix the filename already carries.
                 let scene = build_scene(std::slice::from_ref(lod), source, options, &mut report)?;
-                let level_path = level_path(path, lod.level);
+                let level_path = if chain {
+                    level_path(path, lod.level)
+                } else {
+                    path.to_path_buf()
+                };
                 write_scene(&scene, &level_path, options.format)?;
                 report.files.push(level_path);
             }

@@ -9,6 +9,11 @@
 //! 4. Apply every enabled operation *below* the LOD operation to each level.
 //! 5. Compact, reassemble a [`ModelData`] per level, and measure it.
 //!
+//! Only [`OpKind::SimplifyLod`] fans out. [`OpKind::Reduce`] runs the same
+//! simplifier as an ordinary step of 2 or 4, so what it leaves behind *is* the
+//! mesh — the one every later operation works on, every level starts from, and
+//! the export writes in the source mesh's place.
+//!
 //! Step 3 is the quality-over-speed choice the project's locked decisions call
 //! for: simplifying each level from the full-detail mesh avoids compounding one
 //! level's error into the next, at the cost of doing more work per run. That
@@ -28,7 +33,9 @@ use review_model::{ModelData, ModelStats, TriangleData, Vertex};
 
 use crate::meshopt::{self, AnalysisCounters};
 use crate::ops;
-use crate::stack::{LodParams, OpInstance, OpKind, OptStack, SimplifyAlgorithm};
+use crate::stack::{
+    LodLevel, LodParams, OpInstance, OpKind, OptStack, SimplifyAlgorithm, SimplifySettings,
+};
 use crate::submesh::{self, Submesh, TagPresence};
 use crate::{OptError, Warnings};
 
@@ -68,8 +75,9 @@ pub struct AnalysisMetrics {
     /// Fetched bytes / vertex buffer size; 1.0 means each byte is read once.
     pub overfetch: f32,
     /// The largest simplification error any submesh in this level reported, in
-    /// the units the LOD settings asked for (a fraction of the mesh extent, or
-    /// world units under the absolute-error flag). `0.0` for level 0.
+    /// the units the simplifier was asked for (a fraction of the mesh extent, or
+    /// world units under the absolute-error flag). `0.0` for level 0 unless the
+    /// stack reduced the mesh in place, whose error every level inherits.
     pub simplify_error: f32,
 }
 
@@ -203,32 +211,33 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
         None => (&input.stack.ops[..], None, &input.stack.ops[0..0]),
     };
 
+    // A Reduce among the pre-operations simplifies the mesh every level then
+    // starts from, so its error is part of level 0's — and of every level below
+    // it, which inherits the reduced mesh.
+    let mut base_error = 0.0f32;
     for op in pre_ops {
-        apply_op(&mut submeshes, op, input.stack, &mut warnings);
+        base_error = base_error.max(apply_op(&mut submeshes, op, input.stack, &mut warnings));
     }
 
     // Level 0 is the mesh as the pre-operations left it; every LOD level
     // re-simplifies from this same snapshot.
     let mut levels: Vec<LevelState> = vec![LevelState {
         submeshes: submeshes.clone(),
-        simplify_error: 0.0,
+        simplify_error: base_error,
     }];
 
     if let Some(params) = lod_op {
         for level in &params.levels {
-            levels.push(build_lod_level(
-                &submeshes,
-                params,
-                level,
-                input.stack,
-                &mut warnings,
-            ));
+            let mut state = build_lod_level(&submeshes, params, level, input.stack, &mut warnings);
+            state.simplify_error = state.simplify_error.max(base_error);
+            levels.push(state);
         }
     }
 
     for level in &mut levels {
         for op in post_ops {
-            apply_op(&mut level.submeshes, op, input.stack, &mut warnings);
+            let error = apply_op(&mut level.submeshes, op, input.stack, &mut warnings);
+            level.simplify_error = level.simplify_error.max(error);
         }
         for piece in &mut level.submeshes {
             piece.compact_unreferenced();
@@ -344,28 +353,60 @@ fn build_lod_level(
     warnings: &mut Warnings,
 ) -> LevelState {
     let mut submeshes = base.to_vec();
-    let mut worst_error = 0.0f32;
+    let simplify_error =
+        simplify_submeshes(&mut submeshes, stack, "Generate LODs", warnings, |_| {
+            (params.simplify, *level)
+        });
 
+    LevelState {
+        submeshes,
+        simplify_error,
+    }
+}
+
+/// Simplify every non-excluded submesh toward the settings and target
+/// `settings_for` resolves for it, returning the worst error any of them
+/// reported.
+///
+/// Shared by the LOD fan-out and the in-place Reduce operation: the two differ
+/// only in what their caller does with the submeshes afterwards, so the ratio
+/// interpretation and the stall diagnosis below stay one implementation. The
+/// resolver is what lets Reduce honour per-node parameter overrides, which the
+/// LOD chain has no equivalent of.
+fn simplify_submeshes(
+    submeshes: &mut [Submesh],
+    stack: &OptStack,
+    label: &str,
+    warnings: &mut Warnings,
+    mut settings_for: impl FnMut(&Submesh) -> (SimplifySettings, LodLevel),
+) -> f32 {
+    let mut worst_error = 0.0f32;
     let mut requested = 0usize;
     let mut produced = 0usize;
+    // Whether any piece was simplified by a topology-preserving collapse, which
+    // is the only case the seam diagnosis below applies to.
+    let mut seam_bound = false;
 
-    for piece in &mut submeshes {
+    for piece in submeshes.iter_mut() {
         if is_excluded(stack, piece.node) {
             continue;
         }
+        let (settings, target) = settings_for(piece);
+        seam_bound |= settings.algorithm != SimplifyAlgorithm::Sloppy && !settings.flags.permissive;
+
         // The ratio is applied per submesh, which is the only interpretation
         // consistent with processing them independently: a 50% target means each
         // object keeps half its triangles, not that the scene total halves while
         // one object vanishes.
-        let ratio = level.target_ratio.clamp(0.0, 1.0);
-        let target = ((piece.triangle_count() as f32) * ratio).round() as usize;
+        let ratio = target.target_ratio.clamp(0.0, 1.0);
+        let triangles = ((piece.triangle_count() as f32) * ratio).round() as usize;
         let before = piece.triangle_count();
 
-        match ops::simplify_level(piece, params, target, level.target_error.max(0.0)) {
+        match ops::simplify(piece, &settings, triangles, target.target_error.max(0.0)) {
             Ok(error) => worst_error = worst_error.max(error),
-            Err(error) => warnings.push(&format!("Generate LODs: {error}")),
+            Err(error) => warnings.push(&format!("{label}: {error}")),
         }
-        requested += before.saturating_sub(target);
+        requested += before.saturating_sub(triangles);
         produced += before.saturating_sub(piece.triangle_count());
     }
 
@@ -376,26 +417,48 @@ fn build_lod_level(
     // That looks identical to the tool being broken, so name the two ways out
     // rather than let the user rediscover them.
     let stalled = requested > 0 && produced * 10 < requested;
-    if stalled && params.algorithm != SimplifyAlgorithm::Sloppy && !params.flags.permissive {
+    if stalled && seam_bound {
         warnings.push(
             "The simplifier removed almost nothing: this mesh has an attribute seam \
              at nearly every edge, which a topology-preserving collapse cannot cross. \
              Add a Weld operation with 'Compare normals' off, or turn on 'Collapse \
-             across seams' in the LOD options.",
+             across seams' in the simplifier options.",
         );
     }
 
-    LevelState {
-        submeshes,
-        simplify_error: worst_error,
-    }
+    worst_error
 }
 
 /// Apply one stack operation across every submesh, honouring per-node
-/// exclusions and parameter overrides.
-fn apply_op(submeshes: &mut [Submesh], op: &OpInstance, stack: &OptStack, warnings: &mut Warnings) {
+/// exclusions and parameter overrides. Returns the worst simplification error it
+/// caused, which is non-zero only for [`OpKind::Reduce`].
+fn apply_op(
+    submeshes: &mut [Submesh],
+    op: &OpInstance,
+    stack: &OptStack,
+    warnings: &mut Warnings,
+) -> f32 {
     if !op.enabled {
-        return;
+        return 0.0;
+    }
+
+    // Reduce runs the simplifier, whose stall diagnosis reads the whole mesh
+    // rather than one submesh at a time — so it goes through the same helper the
+    // LOD fan-out uses instead of the per-piece loop below. Unlike the fan-out it
+    // rewrites the submeshes in place, which is the whole difference between the
+    // two: what it leaves behind is what every later operation sees, what each LOD
+    // level starts from, and what the export writes in the source mesh's place.
+    if let OpKind::Reduce(params) = &op.kind {
+        return simplify_submeshes(submeshes, stack, op.kind.label(), warnings, |piece| {
+            let params = match resolve_op(stack, op, piece.node) {
+                OpKind::Reduce(resolved) => resolved,
+                // An override can only ever hold the same kind as the operation
+                // it overrides; fall back to the global settings if one somehow
+                // doesn't.
+                _ => params,
+            };
+            (params.simplify, params.target)
+        });
     }
 
     for piece in submeshes.iter_mut() {
@@ -411,13 +474,14 @@ fn apply_op(submeshes: &mut [Submesh], op: &OpInstance, stack: &OptStack, warnin
             OpKind::Overdraw { threshold } => ops::optimize_overdraw(piece, *threshold),
             OpKind::VertexFetch => ops::optimize_vertex_fetch(piece),
             // The LOD operation is the pipeline's fan-out point, handled by the
-            // caller; it never reaches the per-submesh path.
-            OpKind::SimplifyLod(_) => Ok(()),
+            // caller, and Reduce is handled above. Neither reaches this path.
+            OpKind::Reduce(_) | OpKind::SimplifyLod(_) => Ok(()),
         };
         if let Err(error) = outcome {
             warnings.push(&format!("{}: {error}", kind.label()));
         }
     }
+    0.0
 }
 
 /// Whether the user excluded `node` from processing entirely.
@@ -639,7 +703,10 @@ fn measure_submeshes(
 #[cfg(all(test, has_meshopt))]
 mod tests {
     use super::*;
-    use crate::stack::{LodLevel, LodParams, OpKind, SimplifyAlgorithm, WeldParams};
+    use crate::stack::{
+        LodLevel, LodParams, OpInstance, OpKind, ReduceParams, SimplifyAlgorithm, SimplifySettings,
+        WeldParams,
+    };
     use review_model::demo_cube_model;
 
     /// A stand-in for the renderer's `SceneVertex` size in tests.
@@ -787,7 +854,10 @@ mod tests {
             compare_colors: false,
         }));
         stack.push_op(OpKind::SimplifyLod(LodParams {
-            algorithm: SimplifyAlgorithm::Sloppy,
+            simplify: SimplifySettings {
+                algorithm: SimplifyAlgorithm::Sloppy,
+                ..SimplifySettings::default()
+            },
             levels: vec![
                 LodLevel {
                     target_ratio: 0.5,
@@ -798,7 +868,6 @@ mod tests {
                     target_error: 1.0,
                 },
             ],
-            ..LodParams::default()
         }));
 
         let result = run(&stack);
@@ -820,17 +889,149 @@ mod tests {
     fn every_level_is_named_for_its_lod() {
         let mut stack = OptStack::default();
         stack.push_op(OpKind::SimplifyLod(LodParams {
-            algorithm: SimplifyAlgorithm::Sloppy,
+            simplify: SimplifySettings {
+                algorithm: SimplifyAlgorithm::Sloppy,
+                ..SimplifySettings::default()
+            },
             levels: vec![LodLevel {
                 target_ratio: 0.5,
                 target_error: 1.0,
             }],
-            ..LodParams::default()
         }));
 
         let result = run(&stack);
         assert_eq!(result.lods[0].model.name, "Demo Cube");
         assert_eq!(result.lods[1].model.name, "Demo Cube_LOD1");
+    }
+
+    /// A Reduce with no LOD operation leaves exactly one mesh — the source one,
+    /// simplified. That single-mesh output is the whole point of the operation:
+    /// it stands in for the source asset rather than adding levels beside it.
+    #[test]
+    fn reduce_replaces_the_base_mesh_instead_of_adding_a_level() {
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::Weld(WeldParams {
+            attribute_tolerance: 0.0,
+            compare_normals: false,
+            compare_uvs: false,
+            compare_colors: false,
+        }));
+        stack.push_op(OpKind::Reduce(ReduceParams {
+            simplify: SimplifySettings {
+                algorithm: SimplifyAlgorithm::Sloppy,
+                ..SimplifySettings::default()
+            },
+            target: LodLevel {
+                target_ratio: 0.5,
+                target_error: 1.0,
+            },
+        }));
+
+        let result = run(&stack);
+        assert_eq!(result.lods.len(), 1, "no chain, just the reduced mesh");
+        assert_eq!(result.lods[0].level, 0);
+        assert_eq!(
+            result.lods[0].model.name, "Demo Cube",
+            "the reduced mesh keeps the source name, carrying no LOD suffix"
+        );
+        assert!(
+            result.lods[0].model.indices.len() / 3 < 12,
+            "the cube was actually simplified: {} triangles",
+            result.lods[0].model.indices.len() / 3
+        );
+        assert!(
+            result.lods[0].metrics.simplify_error > 0.0,
+            "level 0 reports the error the reduce cost: {:?}",
+            result.lods[0].metrics
+        );
+    }
+
+    /// A Reduce above the LOD operation reshapes the mesh the whole chain is
+    /// built from — level 0 included, which is what separates it from a level.
+    #[test]
+    fn reduce_above_the_lod_operation_feeds_every_level() {
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::Weld(WeldParams {
+            attribute_tolerance: 0.0,
+            compare_normals: false,
+            compare_uvs: false,
+            compare_colors: false,
+        }));
+        stack.push_op(OpKind::Reduce(ReduceParams {
+            simplify: SimplifySettings {
+                algorithm: SimplifyAlgorithm::Sloppy,
+                ..SimplifySettings::default()
+            },
+            target: LodLevel {
+                target_ratio: 0.5,
+                target_error: 1.0,
+            },
+        }));
+        stack.push_op(OpKind::SimplifyLod(LodParams {
+            levels: vec![LodLevel {
+                target_ratio: 0.5,
+                target_error: 0.01,
+            }],
+            ..LodParams::default()
+        }));
+
+        let result = run(&stack);
+        assert_eq!(result.lods.len(), 2, "base plus one level");
+        let base_triangles = result.lods[0].model.indices.len() / 3;
+        assert!(
+            base_triangles < 12,
+            "level 0 is the reduced mesh, not the source: {base_triangles} triangles"
+        );
+        assert!(
+            result.lods[1].model.indices.len() / 3 <= base_triangles,
+            "the level starts from the reduced mesh"
+        );
+    }
+
+    /// The per-object overrides that apply to every other operation apply to a
+    /// Reduce's target too, so one object can be reduced harder than the rest.
+    #[test]
+    fn a_node_override_retargets_a_reduce() {
+        let untouched = ReduceParams {
+            simplify: SimplifySettings {
+                algorithm: SimplifyAlgorithm::Sloppy,
+                ..SimplifySettings::default()
+            },
+            target: LodLevel {
+                target_ratio: 1.0,
+                target_error: 0.0,
+            },
+        };
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::Weld(WeldParams {
+            attribute_tolerance: 0.0,
+            compare_normals: false,
+            compare_uvs: false,
+            compare_colors: false,
+        }));
+        let id = stack.push_op(OpKind::Reduce(untouched));
+        assert_eq!(
+            run(&stack).lods[0].model.indices.len() / 3,
+            12,
+            "a full-ratio reduce is the control: it removes nothing"
+        );
+
+        stack.node_override_mut(0).ops.push(OpInstance {
+            id,
+            enabled: true,
+            kind: OpKind::Reduce(ReduceParams {
+                target: LodLevel {
+                    target_ratio: 0.5,
+                    target_error: 1.0,
+                },
+                ..untouched
+            }),
+        });
+
+        assert!(
+            run(&stack).lods[0].model.indices.len() / 3 < 12,
+            "the only node's override is what reduced it"
+        );
     }
 
     #[test]
@@ -876,12 +1077,14 @@ mod tests {
         // nothing it can collapse without visible deformation, so every level
         // keeps real geometry and the consistency checks have something to check.
         stack.push_op(OpKind::SimplifyLod(LodParams {
-            algorithm: SimplifyAlgorithm::Standard,
+            simplify: SimplifySettings {
+                algorithm: SimplifyAlgorithm::Standard,
+                ..SimplifySettings::default()
+            },
             levels: vec![LodLevel {
                 target_ratio: 0.5,
                 target_error: 0.01,
             }],
-            ..LodParams::default()
         }));
         stack.push_op(OpKind::VertexFetch);
 
@@ -915,12 +1118,14 @@ mod tests {
         // Sloppy simplification with a 100%-of-extent error budget and a hard
         // triangle target is free to collapse the cube to nothing.
         stack.push_op(OpKind::SimplifyLod(LodParams {
-            algorithm: SimplifyAlgorithm::Sloppy,
+            simplify: SimplifySettings {
+                algorithm: SimplifyAlgorithm::Sloppy,
+                ..SimplifySettings::default()
+            },
             levels: vec![LodLevel {
                 target_ratio: 0.05,
                 target_error: 1.0,
             }],
-            ..LodParams::default()
         }));
 
         let result = run(&stack);

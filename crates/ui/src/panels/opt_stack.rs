@@ -289,7 +289,7 @@ fn export_row(ui: &mut egui::Ui, state: &mut UiState) {
     if response.clicked() {
         state.opt.selected = Some(StackItem::ExportSettings);
     }
-    response.on_hover_text("Where and how the processed LOD chain is written");
+    response.on_hover_text("Where and how the processed mesh is written");
 
     let text = egui::RichText::new("Export settings").color(if is_selected {
         color::TEXT_PRIMARY

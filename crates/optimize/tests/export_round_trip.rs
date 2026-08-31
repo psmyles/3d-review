@@ -13,7 +13,8 @@ use std::path::{Path, PathBuf};
 use review_model::ModelData;
 use review_optimize::{
     ExportOptions, FbxFormat, HierarchyMode, LodLevel, LodPackaging, LodParams, OpKind, OptStack,
-    ProcessInput, ProcessedResult, SimplifyAlgorithm, WeldParams, export_fbx, process,
+    ProcessInput, ProcessedResult, SimplifyAlgorithm, SimplifySettings, WeldParams, export_fbx,
+    process,
 };
 
 const VERTEX_SIZE: usize = 64;
@@ -77,12 +78,14 @@ fn weld_and_halve() -> OptStack {
     let mut stack = OptStack::default();
     stack.push_op(OpKind::Weld(WeldParams::default()));
     stack.push_op(OpKind::SimplifyLod(LodParams {
-        algorithm: SimplifyAlgorithm::Standard,
+        simplify: SimplifySettings {
+            algorithm: SimplifyAlgorithm::Standard,
+            ..SimplifySettings::default()
+        },
         levels: vec![LodLevel {
             target_ratio: 0.5,
             target_error: 0.05,
         }],
-        ..LodParams::default()
     }));
     stack
 }

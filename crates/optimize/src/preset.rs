@@ -63,7 +63,7 @@ pub fn from_json(json: &str) -> Result<OptStack, OptError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stack::{LodParams, OpKind, WeldParams};
+    use crate::stack::{LodParams, OpKind, ReduceParams, SimplifyAlgorithm, WeldParams};
 
     #[test]
     fn a_stack_round_trips() {
@@ -86,6 +86,57 @@ mod tests {
         assert_eq!(loaded.ops[0].kind, stack.ops[0].kind);
         assert_eq!(loaded.export, stack.export);
         assert_eq!(loaded.overrides, stack.overrides);
+    }
+
+    #[test]
+    fn a_reduce_operation_round_trips() {
+        let mut stack = OptStack::default();
+        let mut reduce = ReduceParams::default();
+        reduce.simplify.algorithm = SimplifyAlgorithm::Sloppy;
+        reduce.target.target_ratio = 0.3;
+        stack.push_op(OpKind::Reduce(reduce));
+
+        let loaded = from_json(&to_json(&stack).expect("serializes")).expect("parses");
+        assert_eq!(loaded.ops[0].kind, OpKind::Reduce(reduce));
+    }
+
+    /// The simplifier settings live in their own struct now but are flattened on
+    /// the wire, so a preset written before that split still loads — and a new one
+    /// still names them at the operation's top level.
+    #[test]
+    fn simplifier_settings_stay_flat_on_disk() {
+        let json = r#"{
+            "version": 1,
+            "stack": {
+                "ops": [{
+                    "id": 7,
+                    "enabled": true,
+                    "kind": {
+                        "SimplifyLod": {
+                            "algorithm": "Sloppy",
+                            "levels": [{ "target_ratio": 0.25, "target_error": 0.5 }]
+                        }
+                    }
+                }]
+            }
+        }"#;
+
+        let loaded = from_json(json).expect("an older preset still parses");
+        let OpKind::SimplifyLod(params) = &loaded.ops[0].kind else {
+            panic!(
+                "the operation survives as a LOD op: {:?}",
+                loaded.ops[0].kind
+            );
+        };
+        assert_eq!(params.simplify.algorithm, SimplifyAlgorithm::Sloppy);
+        assert_eq!(params.levels.len(), 1);
+        assert_eq!(params.levels[0].target_ratio, 0.25);
+
+        let written = to_json(&loaded).expect("serializes");
+        assert!(
+            written.contains("\"algorithm\""),
+            "the settings are written at the operation's top level: {written}"
+        );
     }
 
     #[test]
