@@ -2,9 +2,11 @@
 // `unsafe`/FFI lives in `import`/`psd` and the sanctioned D3D11 sites.
 #![forbid(unsafe_code)]
 
-use glam::{Mat4, Vec2, Vec3, Vec4};
+use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 
+pub mod anim;
 mod bvh;
+pub use anim::{AnimContext, DeformPose, Pose};
 pub use bvh::{Bvh, SceneBvh};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -148,9 +150,40 @@ pub struct BoneInfo {
     pub relative_length: f32,
 }
 
+/// A node's transform relative to its parent, as translation / rotation / scale
+/// — the form animation keys replace channel by channel. The importer folds the
+/// FBX pivots and rotation order in, so `parent_world * to_mat4()` reproduces the
+/// node's `node_to_world` exactly (it loads with ufbx's helper-node inherit-mode
+/// handling, which makes every node a plain parent × local product).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LocalTransform {
+    pub translation: Vec3,
+    pub rotation: Quat,
+    pub scale: Vec3,
+}
+
+impl LocalTransform {
+    pub const IDENTITY: Self = Self {
+        translation: Vec3::ZERO,
+        rotation: Quat::IDENTITY,
+        scale: Vec3::ONE,
+    };
+
+    pub fn to_mat4(self) -> Mat4 {
+        Mat4::from_scale_rotation_translation(self.scale, self.rotation, self.translation)
+    }
+}
+
+impl Default for LocalTransform {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}
+
 /// One node in the imported scene-graph hierarchy (every FBX node, mesh-bearing
 /// or not), carried through for the Outliner. The transform is display metadata
-/// only — geometry is world-baked at import (invariant 1).
+/// only — geometry is world-baked at import (invariant 1); animation re-poses it
+/// through the GPU deform palette (see [`anim`]), never by rewriting vertices.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SceneNode {
     pub name: String,
@@ -167,13 +200,33 @@ pub struct SceneNode {
     /// demo cube, the Opt workspace's rebuilt meshes), in which case a scoped
     /// Verts stat reports nothing rather than a wrong number.
     pub source_vertex_count: usize,
-    /// `node_to_world` transform. Display metadata only.
+    /// `node_to_world` transform at the file's default pose. Display metadata
+    /// only — and the *rest* world every animated pose is a delta from.
     pub transform: Mat4,
+    /// The node's rest transform relative to its parent — what an animation
+    /// clip's keys override channel by channel. Identity for a procedurally-built
+    /// model.
+    pub rest_local: LocalTransform,
     /// What this node is, from the source file's node attribute.
     pub kind: NodeKind,
     /// Authored bone display parameters, `Some` only when `kind` is
     /// [`NodeKind::Bone`].
     pub bone: Option<BoneInfo>,
+}
+
+impl Default for SceneNode {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            parent: None,
+            mesh_part: None,
+            source_vertex_count: 0,
+            transform: Mat4::IDENTITY,
+            rest_local: LocalTransform::IDENTITY,
+            kind: NodeKind::Other,
+            bone: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -201,6 +254,9 @@ pub struct ModelStats {
     /// Number of [`NodeKind::Bone`] nodes in the scene graph — a measured count
     /// (invariant 5), shown in the stats panel only when non-zero.
     pub bone_count: usize,
+    /// Number of animation clips (FBX animation stacks) the file carries — a
+    /// measured count (invariant 5), shown in the stats panel only when non-zero.
+    pub clip_count: usize,
     /// The model's authored world unit, in meters per source unit, as recorded
     /// in the file (e.g. `0.01` for a centimeter file like a Maya export). This
     /// is the *original* unit before import normalizes everything to meters, so
@@ -351,21 +407,21 @@ impl TriangleData {
 /// importer expands each face corner into its own render vertex — in a compressed
 /// sparse-row layout: vertex `v`'s influences are `bones[offsets[v]..offsets[v+1]]`
 /// paired with `weights[..]` over the same range. Per-corner storage would multiply
-/// every influence by the 3–6× corner expansion, so instead a single
-/// [`corner_to_logical`] map (4 bytes per render vertex) projects the render mesh
-/// back onto the logical vertices.
+/// every influence by the 3–6× corner expansion, so instead the model-wide
+/// [`ModelData::corner_to_logical`] map (4 bytes per render vertex) projects the
+/// render mesh back onto the logical vertices.
 ///
 /// [`bones`] entries index [`ModelData::nodes`] directly (**not** a separate bone
 /// table), so a skin influence and an Outliner row name the same thing with the
-/// same number.
+/// same number. The parallel [`influence_cluster`] names the *cluster* — the
+/// (mesh node, bone) binding whose [`SkinCluster::world_to_bone_bind`] the GPU
+/// skinning palette multiplies by — since one bone can bind several meshes with
+/// different bind matrices.
 ///
-/// [`corner_to_logical`]: SkinData::corner_to_logical
 /// [`bones`]: SkinData::bones
+/// [`influence_cluster`]: SkinData::influence_cluster
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SkinData {
-    /// Per render vertex (parallel to [`ModelData::vertices`]), the logical
-    /// source vertex it was expanded from — the index into [`SkinData::offsets`].
-    pub corner_to_logical: Vec<u32>,
     /// CSR row starts, `logical_vertex_count + 1` long: vertex `v`'s influences
     /// occupy `offsets[v]..offsets[v + 1]`. Monotonic non-decreasing, and the
     /// last entry equals the influence count (a vertex with no influences is a
@@ -380,6 +436,67 @@ pub struct SkinData {
     /// [`SkinData::influence_fraction`] for display, which normalizes against the
     /// vertex's own total.
     pub weights: Vec<f32>,
+    /// Per influence (parallel to [`SkinData::bones`]), the index into
+    /// [`SkinData::clusters`] of the binding it belongs to. Always satisfies
+    /// `clusters[influence_cluster[i]].bone == bones[i]`.
+    pub influence_cluster: Vec<u32>,
+    /// Every (mesh node, bone) binding the skin deformers declare, with the bind
+    /// matrix the palette needs. One entry per cluster per mesh-bearing *node*
+    /// (an instanced mesh under two nodes gets two, since their
+    /// `geometry_to_world` differ).
+    pub clusters: Vec<SkinCluster>,
+    /// One entry per skinned mesh node: the skinning method the file declared
+    /// and its weight cap — display metadata for the Inspector.
+    pub deformers: Vec<SkinDeformerInfo>,
+}
+
+/// One skin cluster: the binding of a bone to a mesh node.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SkinCluster {
+    /// The bone, indexing [`ModelData::nodes`].
+    pub bone: u32,
+    /// The skinned mesh node this cluster deforms, indexing [`ModelData::nodes`].
+    pub mesh_node: u32,
+    /// Maps a *baked world-space* vertex of `mesh_node` into the bone's bind
+    /// space: `geometry_to_bone × inverse(mesh.geometry_to_world)`. The palette
+    /// entry for this cluster at any pose is `bone_world(pose) × this`, and the
+    /// skinned position is the weighted sum of those applied to the baked vertex
+    /// — exact for any pose, including the file's own default one.
+    pub world_to_bone_bind: Mat4,
+}
+
+/// The skinning method an FBX skin deformer declares. The viewer always
+/// evaluates linear blend skinning; the other variants are surfaced so the
+/// Inspector can say what the file asked for.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SkinningMethod {
+    #[default]
+    Linear,
+    Rigid,
+    DualQuaternion,
+    BlendedDqLinear,
+}
+
+impl SkinningMethod {
+    pub fn label(self) -> &'static str {
+        match self {
+            SkinningMethod::Linear => "Linear",
+            SkinningMethod::Rigid => "Rigid",
+            SkinningMethod::DualQuaternion => "Dual Quaternion (shown as linear)",
+            SkinningMethod::BlendedDqLinear => "Blended DQ / linear (shown as linear)",
+        }
+    }
+}
+
+/// What one skinned mesh node's deformer declared — Inspector metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkinDeformerInfo {
+    /// The skinned mesh node, indexing [`ModelData::nodes`].
+    pub mesh_node: u32,
+    pub method: SkinningMethod,
+    /// The largest number of influences any vertex of this mesh carries, as the
+    /// file reports it.
+    pub max_weights_per_vertex: u32,
 }
 
 impl SkinData {
@@ -454,34 +571,16 @@ impl SkinData {
 
     /// The lockstep guard, mirroring [`TriangleData::validate`]: called once at the
     /// import funnel (invariant 7) so a drifted CSR is caught there rather than by
-    /// every reader's ad-hoc bounds check. Verifies the corner map covers exactly
-    /// the render mesh and stays in range, the row offsets are the right length,
-    /// monotonic, and terminate at the influence count, that bones/weights are the
-    /// same length, and that every bone indexes a real node with a finite,
-    /// non-negative weight. There is deliberately **no** upper bound on a weight:
-    /// FBX does not require normalized weights, so rejecting `> 1.0` would refuse
-    /// files that every other tool loads.
-    pub fn validate(
-        &self,
-        corner_count: usize,
-        logical_count: usize,
-        node_count: usize,
-    ) -> Result<(), String> {
-        if self.corner_to_logical.len() != corner_count {
-            return Err(format!(
-                "skin corner_to_logical has {} entries, expected {corner_count}",
-                self.corner_to_logical.len()
-            ));
-        }
-        if let Some(&logical) = self
-            .corner_to_logical
-            .iter()
-            .find(|&&logical| logical as usize >= logical_count)
-        {
-            return Err(format!(
-                "skin corner_to_logical references source vertex {logical} of {logical_count}"
-            ));
-        }
+    /// every reader's ad-hoc bounds check. Verifies the row offsets are the right
+    /// length, monotonic, and terminate at the influence count, that
+    /// bones/weights/clusters are the same length, that every bone indexes a real
+    /// node with a finite, non-negative weight, and that every cluster reference
+    /// resolves to a cluster naming that same bone with a finite bind matrix.
+    /// There is deliberately **no** upper bound on a weight: FBX does not require
+    /// normalized weights, so rejecting `> 1.0` would refuse files that every other
+    /// tool loads. (The corner map is validated by [`ModelData::validate_deform`],
+    /// since blend shapes share it.)
+    pub fn validate(&self, logical_count: usize, node_count: usize) -> Result<(), String> {
         if self.offsets.len() != logical_count + 1 {
             return Err(format!(
                 "skin offsets has {} entries, expected {} (logical vertices + 1)",
@@ -521,7 +620,356 @@ impl SkinData {
         {
             return Err(format!("skin weight {weight} is negative or not finite"));
         }
+        if self.influence_cluster.len() != self.bones.len() {
+            return Err(format!(
+                "skin influence_cluster has {} entries but bones has {}",
+                self.influence_cluster.len(),
+                self.bones.len()
+            ));
+        }
+        for (index, (&cluster, &bone)) in self.influence_cluster.iter().zip(&self.bones).enumerate()
+        {
+            let Some(entry) = self.clusters.get(cluster as usize) else {
+                return Err(format!(
+                    "skin influence {index} references cluster {cluster} of {}",
+                    self.clusters.len()
+                ));
+            };
+            if entry.bone != bone {
+                return Err(format!(
+                    "skin influence {index} names bone {bone} but its cluster {cluster} binds bone {}",
+                    entry.bone
+                ));
+            }
+        }
+        for (index, cluster) in self.clusters.iter().enumerate() {
+            if cluster.bone as usize >= node_count || cluster.mesh_node as usize >= node_count {
+                return Err(format!(
+                    "skin cluster {index} references node {} / {} of {node_count}",
+                    cluster.bone, cluster.mesh_node
+                ));
+            }
+            if !cluster.world_to_bone_bind.is_finite() {
+                return Err(format!("skin cluster {index} has a non-finite bind matrix"));
+            }
+        }
+        for (index, deformer) in self.deformers.iter().enumerate() {
+            if deformer.mesh_node as usize >= node_count {
+                return Err(format!(
+                    "skin deformer {index} references node {} of {node_count}",
+                    deformer.mesh_node
+                ));
+            }
+        }
         Ok(())
+    }
+}
+
+/// Blend-shape (morph target) data, stored **per logical source vertex** as a
+/// compressed sparse-row table like [`SkinData`]: logical vertex `v`'s shape
+/// offsets are `shape[offsets[v]..offsets[v+1]]` paired with `position[..]` /
+/// `normal[..]`. Offsets are already rotated into the baked world orientation of
+/// their mesh node (the importer applies the mesh's `geometry_to_world` linear
+/// part), so adding `weight × offset` to a baked vertex *before* skinning is
+/// exact — skinning is linear.
+///
+/// A channel is the artist-facing slider; it blends between its keyframes'
+/// shapes by the ufbx in-between rule (see [`anim::channel_effective_weights`]).
+/// In the common case a channel has exactly one keyframe at target weight 1.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MorphData {
+    pub channels: Vec<MorphChannel>,
+    pub shapes: Vec<MorphShape>,
+    /// CSR row starts over the logical vertices, `logical_vertex_count + 1` long.
+    pub offsets: Vec<u32>,
+    /// Flat per-entry shape index (into [`MorphData::shapes`]), parallel to
+    /// [`MorphData::position`] / [`MorphData::normal`].
+    pub shape: Vec<u32>,
+    /// Flat per-entry position offsets, baked-world oriented.
+    pub position: Vec<Vec3>,
+    /// Flat per-entry normal offsets (zero when the file declared none).
+    pub normal: Vec<Vec3>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MorphChannel {
+    pub name: String,
+    /// The mesh node this channel deforms, indexing [`ModelData::nodes`].
+    pub mesh_node: u32,
+    /// The channel's weight at the file's default pose, in `0..=1`.
+    pub rest_weight: f32,
+    /// The channel's targets in ascending `target_weight` order.
+    pub keyframes: Vec<MorphKeyframe>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MorphKeyframe {
+    /// Index into [`MorphData::shapes`].
+    pub shape: u32,
+    /// The channel weight at which this shape applies at full strength.
+    pub target_weight: f32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MorphShape {
+    pub name: String,
+}
+
+impl MorphData {
+    pub fn logical_vertex_count(&self) -> usize {
+        self.offsets.len().saturating_sub(1)
+    }
+
+    /// The slice range into the flat entry arrays holding `logical`'s offsets.
+    /// Empty for an out-of-range vertex.
+    pub fn entry_range(&self, logical: usize) -> std::ops::Range<usize> {
+        match (self.offsets.get(logical), self.offsets.get(logical + 1)) {
+            (Some(&start), Some(&end)) if end >= start => start as usize..end as usize,
+            _ => 0..0,
+        }
+    }
+
+    /// The import-funnel guard, like [`SkinData::validate`].
+    pub fn validate(&self, logical_count: usize, node_count: usize) -> Result<(), String> {
+        if self.offsets.len() != logical_count + 1 {
+            return Err(format!(
+                "morph offsets has {} entries, expected {} (logical vertices + 1)",
+                self.offsets.len(),
+                logical_count + 1
+            ));
+        }
+        if let Some(window) = self.offsets.windows(2).find(|window| window[0] > window[1]) {
+            return Err(format!(
+                "morph offsets are not monotonic: {} then {}",
+                window[0], window[1]
+            ));
+        }
+        let tail = self.offsets.last().copied().unwrap_or(0) as usize;
+        if tail != self.shape.len() {
+            return Err(format!(
+                "morph offsets end at {tail} but there are {} entries",
+                self.shape.len()
+            ));
+        }
+        if self.position.len() != self.shape.len() || self.normal.len() != self.shape.len() {
+            return Err(format!(
+                "morph entry arrays disagree: {} shapes, {} positions, {} normals",
+                self.shape.len(),
+                self.position.len(),
+                self.normal.len()
+            ));
+        }
+        if let Some(&shape) = self
+            .shape
+            .iter()
+            .find(|&&shape| shape as usize >= self.shapes.len())
+        {
+            return Err(format!(
+                "morph entry references shape {shape} of {}",
+                self.shapes.len()
+            ));
+        }
+        if self
+            .position
+            .iter()
+            .chain(&self.normal)
+            .any(|offset| !offset.is_finite())
+        {
+            return Err("morph offset is not finite".to_owned());
+        }
+        for (index, channel) in self.channels.iter().enumerate() {
+            if channel.mesh_node as usize >= node_count {
+                return Err(format!(
+                    "morph channel {index} references node {} of {node_count}",
+                    channel.mesh_node
+                ));
+            }
+            if !channel.rest_weight.is_finite() {
+                return Err(format!(
+                    "morph channel {index} has a non-finite rest weight"
+                ));
+            }
+            for key in &channel.keyframes {
+                if key.shape as usize >= self.shapes.len() {
+                    return Err(format!(
+                        "morph channel {index} references shape {} of {}",
+                        key.shape,
+                        self.shapes.len()
+                    ));
+                }
+                if !key.target_weight.is_finite() {
+                    return Err(format!(
+                        "morph channel {index} has a non-finite target weight"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One keyframe of a baked animation channel: linearly (or, for rotations,
+/// spherically) interpolated to the next.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Key<T> {
+    /// Absolute time in seconds on the clip's own timeline.
+    pub time: f64,
+    pub value: T,
+}
+
+/// The baked transform animation of one node within a clip. A channel with no
+/// keys is not animated by the clip and keeps the node's [`SceneNode::rest_local`]
+/// value; a channel with keys holds its first/last value outside the key range.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct NodeTrack {
+    /// Indexes [`ModelData::nodes`].
+    pub node: u32,
+    pub translation: Vec<Key<Vec3>>,
+    pub rotation: Vec<Key<Quat>>,
+    pub scale: Vec<Key<Vec3>>,
+}
+
+/// The baked weight animation of one blend-shape channel within a clip.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MorphTrack {
+    /// Indexes [`MorphData::channels`].
+    pub channel: u32,
+    /// Channel weight in `0..=1` (the file's percent ÷ 100).
+    pub keys: Vec<Key<f32>>,
+}
+
+/// One animation clip — an FBX animation stack, baked to keyframes at import.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AnimationClip {
+    pub name: String,
+    /// The stack's playback range, in seconds. Frame numbering and the transport
+    /// derive from this range and the file's frame rate, never from key counts:
+    /// baked keys may extend past it (stepped keys, exporter padding) and are
+    /// simply held there.
+    pub time_begin: f64,
+    pub time_end: f64,
+    pub tracks: Vec<NodeTrack>,
+    pub morph_tracks: Vec<MorphTrack>,
+    /// The union of the posed mesh's bounds over every frame of the clip,
+    /// measured once at import — what framing and the bounding-box overlay use
+    /// while the clip is selected. `None` when the model has no geometry.
+    pub bounds: Option<Bounds>,
+}
+
+impl AnimationClip {
+    pub fn duration(&self) -> f64 {
+        (self.time_end - self.time_begin).max(0.0)
+    }
+
+    /// The number of frames the transport steps through at `fps`: the range
+    /// rounded to whole frames, plus the frame at `time_begin` itself.
+    pub fn frame_count(&self, fps: f64) -> usize {
+        let fps = frame_rate_or_default(fps);
+        (self.duration() * fps).round().max(0.0) as usize + 1
+    }
+
+    /// The time of frame `frame` (0-based) at `fps`, clamped into the clip.
+    pub fn frame_time(&self, frame: usize, fps: f64) -> f64 {
+        let fps = frame_rate_or_default(fps);
+        self.clamp_time(self.time_begin + frame as f64 / fps)
+    }
+
+    /// The frame `time` falls on at `fps` (nearest, 0-based, within the clip).
+    pub fn frame_at(&self, time: f64, fps: f64) -> usize {
+        let fps = frame_rate_or_default(fps);
+        let frame = ((time - self.time_begin) * fps).round().max(0.0) as usize;
+        frame.min(self.frame_count(fps) - 1)
+    }
+
+    /// The time `delta` whole frames from the frame `time` falls on, clamped
+    /// into the clip — one step of the transport's frame buttons / `,` `.` keys.
+    pub fn step_frame_time(&self, time: f64, delta: i64, fps: f64) -> f64 {
+        let frame = self.frame_at(time, fps) as i64 + delta;
+        let last = self.frame_count(fps) as i64 - 1;
+        self.frame_time(frame.clamp(0, last) as usize, fps)
+    }
+
+    /// `time` clamped into the clip's range.
+    pub fn clamp_time(&self, time: f64) -> f64 {
+        time.clamp(self.time_begin, self.time_end.max(self.time_begin))
+    }
+
+    /// `time` wrapped into the clip's range (looping playback). A zero-length
+    /// clip always reads as its start.
+    pub fn wrap_time(&self, time: f64) -> f64 {
+        let duration = self.duration();
+        if duration <= 0.0 {
+            return self.time_begin;
+        }
+        self.time_begin + (time - self.time_begin).rem_euclid(duration)
+    }
+
+    /// The import-funnel guard: every track names a real node / channel, and
+    /// every key is finite with non-decreasing times.
+    pub fn validate(&self, node_count: usize, channel_count: usize) -> Result<(), String> {
+        if !self.time_begin.is_finite()
+            || !self.time_end.is_finite()
+            || self.time_end < self.time_begin
+        {
+            return Err(format!(
+                "clip '{}' has an invalid time range {}..{}",
+                self.name, self.time_begin, self.time_end
+            ));
+        }
+        fn check_times<T>(keys: &[Key<T>], what: &str, clip: &str) -> Result<(), String> {
+            if keys.iter().any(|key| !key.time.is_finite()) {
+                return Err(format!("clip '{clip}' has a non-finite {what} key time"));
+            }
+            if keys.windows(2).any(|pair| pair[1].time < pair[0].time) {
+                return Err(format!("clip '{clip}' has {what} keys out of order"));
+            }
+            Ok(())
+        }
+        for track in &self.tracks {
+            if track.node as usize >= node_count {
+                return Err(format!(
+                    "clip '{}' animates node {} of {node_count}",
+                    self.name, track.node
+                ));
+            }
+            check_times(&track.translation, "translation", &self.name)?;
+            check_times(&track.rotation, "rotation", &self.name)?;
+            check_times(&track.scale, "scale", &self.name)?;
+            if track.translation.iter().any(|key| !key.value.is_finite())
+                || track.scale.iter().any(|key| !key.value.is_finite())
+                || track.rotation.iter().any(|key| !key.value.is_finite())
+            {
+                return Err(format!(
+                    "clip '{}' has a non-finite transform key",
+                    self.name
+                ));
+            }
+        }
+        for track in &self.morph_tracks {
+            if track.channel as usize >= channel_count {
+                return Err(format!(
+                    "clip '{}' animates morph channel {} of {channel_count}",
+                    self.name, track.channel
+                ));
+            }
+            check_times(&track.keys, "morph", &self.name)?;
+            if track.keys.iter().any(|key| !key.value.is_finite()) {
+                return Err(format!("clip '{}' has a non-finite morph key", self.name));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The frame rate assumed when a file declares none.
+pub const DEFAULT_FRAME_RATE: f64 = 30.0;
+
+/// `fps` when it is a usable rate, else [`DEFAULT_FRAME_RATE`].
+pub fn frame_rate_or_default(fps: f64) -> f64 {
+    if fps.is_finite() && fps > 0.0 {
+        fps
+    } else {
+        DEFAULT_FRAME_RATE
     }
 }
 
@@ -552,12 +1000,83 @@ pub struct ModelData {
     pub bounds: Option<Bounds>,
     pub stats: ModelStats,
     pub materials: Vec<MaterialImportDefaults>,
+    /// Per render vertex (parallel to [`ModelData::vertices`]), the logical
+    /// source vertex it was expanded from — what projects the per-logical-vertex
+    /// skin and blend-shape tables onto the render mesh. Always filled by import;
+    /// empty for a procedurally-built or optimizer-rebuilt mesh, which then
+    /// carries no skin or morph data either.
+    pub corner_to_logical: Vec<u32>,
     /// Skeletal binding data, `Some` only when the source carried a skin
     /// deformer whose clusters resolved to real bone nodes. See [`SkinData`].
     pub skin: Option<SkinData>,
+    /// Blend-shape data, `Some` only when a mesh carried a blend deformer with at
+    /// least one usable offset. See [`MorphData`].
+    pub morph: Option<MorphData>,
+    /// Every animation clip the file carries, in source order.
+    pub animations: Vec<AnimationClip>,
+    /// The file's declared frame rate; `0.0` when it declared none (see
+    /// [`ModelData::frame_rate_or_default`]).
+    pub frame_rate: f64,
 }
 
 impl ModelData {
+    /// The file's frame rate, or [`DEFAULT_FRAME_RATE`] when it declared none.
+    pub fn frame_rate_or_default(&self) -> f64 {
+        frame_rate_or_default(self.frame_rate)
+    }
+
+    /// True when drawing this model needs the GPU deform path at all: it carries
+    /// skin or blend-shape data (always deformed, even at rest, since the rest
+    /// pose is the file's default pose, not the bind pose) or any clip that
+    /// could move a node.
+    pub fn needs_deform(&self) -> bool {
+        self.skin.is_some() || self.morph.is_some() || !self.animations.is_empty()
+    }
+
+    /// The import-funnel lockstep guard for everything the deform path reads:
+    /// the corner→logical map, the skin, the blend shapes and every clip. Called
+    /// once at import (invariant 7) after [`TriangleData::validate`].
+    pub fn validate_deform(&self) -> Result<(), String> {
+        let logical_count = self.stats.vertex_count;
+        let node_count = self.nodes.len();
+        if !self.corner_to_logical.is_empty() {
+            if self.corner_to_logical.len() != self.vertices.len() {
+                return Err(format!(
+                    "corner_to_logical has {} entries, expected {}",
+                    self.corner_to_logical.len(),
+                    self.vertices.len()
+                ));
+            }
+            if let Some(&logical) = self
+                .corner_to_logical
+                .iter()
+                .find(|&&logical| logical as usize >= logical_count)
+            {
+                return Err(format!(
+                    "corner_to_logical references source vertex {logical} of {logical_count}"
+                ));
+            }
+        }
+        if (self.skin.is_some() || self.morph.is_some())
+            && self.corner_to_logical.len() != self.vertices.len()
+        {
+            return Err(
+                "a skinned or morphed model must carry its corner_to_logical map".to_owned(),
+            );
+        }
+        if let Some(skin) = &self.skin {
+            skin.validate(logical_count, node_count)?;
+        }
+        if let Some(morph) = &self.morph {
+            morph.validate(logical_count, node_count)?;
+        }
+        let channel_count = self.morph.as_ref().map_or(0, |morph| morph.channels.len());
+        for clip in &self.animations {
+            clip.validate(node_count, channel_count)?;
+        }
+        Ok(())
+    }
+
     /// UV coordinates for `vertex_index` in `channel`, falling back to the
     /// vertex's own [`Vertex::uv`] when the requested channel isn't stored
     /// (single-set models, or an out-of-range channel).
@@ -1031,6 +1550,7 @@ pub fn demo_cube_model() -> ModelData {
             // `vertex_count` below.
             source_vertex_count: 24,
             transform: Mat4::IDENTITY,
+            rest_local: LocalTransform::IDENTITY,
             kind: NodeKind::Mesh,
             bone: None,
         }],
@@ -1046,6 +1566,7 @@ pub fn demo_cube_model() -> ModelData {
             material_count: 1,
             draw_count: 1,
             bone_count: 0,
+            clip_count: 0,
             source_unit_meters: 1.0,
         },
         materials: vec![MaterialImportDefaults {
@@ -1245,6 +1766,7 @@ mod tests {
             mesh_part: Some(mesh_part),
             source_vertex_count,
             transform: Mat4::IDENTITY,
+            rest_local: LocalTransform::IDENTITY,
             kind: NodeKind::Mesh,
             bone: None,
         };
@@ -1369,6 +1891,7 @@ mod tests {
             mesh_part: None,
             source_vertex_count: 0,
             transform: Mat4::IDENTITY,
+            rest_local: LocalTransform::IDENTITY,
             kind: NodeKind::Empty,
             bone: None,
         };
@@ -1554,10 +2077,15 @@ mod tests {
                 material_count: 0,
                 draw_count: 0,
                 bone_count: 0,
+                clip_count: 0,
                 source_unit_meters: 1.0,
             },
             materials: Vec::new(),
+            corner_to_logical: Vec::new(),
             skin: None,
+            morph: None,
+            animations: Vec::new(),
+            frame_rate: 0.0,
         };
 
         assert!(model.has_degenerate_tangents(), "seeded with zero tangents");
@@ -1639,17 +2167,46 @@ mod tests {
     // 1 and 2: vertex 0 is split 0.75/0.25 between them, vertex 1 rides node 2
     // alone.
     fn sample_skin() -> SkinData {
+        let cluster = |bone: u32| SkinCluster {
+            bone,
+            mesh_node: 0,
+            world_to_bone_bind: Mat4::IDENTITY,
+        };
         SkinData {
-            corner_to_logical: vec![0, 0, 1, 1, 0, 1],
             offsets: vec![0, 2, 3],
             bones: vec![1, 2, 2],
             weights: vec![0.75, 0.25, 1.0],
+            influence_cluster: vec![0, 1, 1],
+            clusters: vec![cluster(1), cluster(2)],
+            deformers: Vec::new(),
+        }
+    }
+
+    /// The render mesh [`sample_skin`] projects onto: 6 corners over 2 logical
+    /// vertices.
+    fn sample_corner_map() -> Vec<u32> {
+        vec![0, 0, 1, 1, 0, 1]
+    }
+
+    /// A model wrapping [`sample_skin`] so [`ModelData::validate_deform`] can be
+    /// exercised end to end.
+    fn skinned_model() -> ModelData {
+        ModelData {
+            vertices: vec![Vertex::default(); 6],
+            nodes: (0..3).map(|_| SceneNode::default()).collect(),
+            stats: ModelStats {
+                vertex_count: 2,
+                ..ModelStats::default()
+            },
+            corner_to_logical: sample_corner_map(),
+            skin: Some(sample_skin()),
+            ..ModelData::default()
         }
     }
 
     #[test]
     fn skin_validate_accepts_a_consistent_skin() {
-        assert_eq!(sample_skin().validate(6, 2, 3), Ok(()));
+        assert_eq!(sample_skin().validate(2, 3), Ok(()));
     }
 
     #[test]
@@ -1678,26 +2235,62 @@ mod tests {
     }
 
     #[test]
-    fn skin_validate_catches_a_drifted_corner_map() {
-        let mut skin = sample_skin();
-        skin.corner_to_logical.pop();
-        let error = skin.validate(6, 2, 3).unwrap_err();
+    fn validate_deform_accepts_a_consistent_skinned_model() {
+        assert_eq!(skinned_model().validate_deform(), Ok(()));
+    }
+
+    #[test]
+    fn validate_deform_catches_a_drifted_corner_map() {
+        let mut model = skinned_model();
+        model.corner_to_logical.pop();
+        let error = model.validate_deform().unwrap_err();
         assert!(error.contains("corner_to_logical has 5"), "{error}");
     }
 
     #[test]
-    fn skin_validate_catches_an_out_of_range_corner_map() {
-        let mut skin = sample_skin();
-        skin.corner_to_logical[3] = 9;
-        let error = skin.validate(6, 2, 3).unwrap_err();
+    fn validate_deform_catches_an_out_of_range_corner_map() {
+        let mut model = skinned_model();
+        model.corner_to_logical[3] = 9;
+        let error = model.validate_deform().unwrap_err();
         assert!(error.contains("source vertex 9 of 2"), "{error}");
+    }
+
+    #[test]
+    fn validate_deform_requires_the_corner_map_for_a_skin() {
+        let mut model = skinned_model();
+        model.corner_to_logical.clear();
+        let error = model.validate_deform().unwrap_err();
+        assert!(error.contains("corner_to_logical map"), "{error}");
+    }
+
+    #[test]
+    fn skin_validate_catches_a_cluster_naming_another_bone() {
+        let mut skin = sample_skin();
+        skin.influence_cluster[0] = 1;
+        let error = skin.validate(2, 3).unwrap_err();
+        assert!(
+            error.contains("names bone 1 but its cluster 1 binds bone 2"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn skin_validate_catches_an_out_of_range_cluster() {
+        let mut skin = sample_skin();
+        skin.influence_cluster[2] = 5;
+        let error = skin.validate(2, 3).unwrap_err();
+        assert!(error.contains("references cluster 5 of 2"), "{error}");
+        let mut skin = sample_skin();
+        skin.clusters[0].mesh_node = 3;
+        let error = skin.validate(2, 3).unwrap_err();
+        assert!(error.contains("cluster 0 references node"), "{error}");
     }
 
     #[test]
     fn skin_validate_catches_a_drifted_offsets_length() {
         let mut skin = sample_skin();
         skin.offsets.push(3);
-        let error = skin.validate(6, 2, 3).unwrap_err();
+        let error = skin.validate(2, 3).unwrap_err();
         assert!(error.contains("offsets has 4"), "{error}");
     }
 
@@ -1705,7 +2298,7 @@ mod tests {
     fn skin_validate_catches_non_monotonic_offsets() {
         let mut skin = sample_skin();
         skin.offsets = vec![0, 3, 2];
-        let error = skin.validate(6, 2, 3).unwrap_err();
+        let error = skin.validate(2, 3).unwrap_err();
         assert!(error.contains("not monotonic"), "{error}");
     }
 
@@ -1713,7 +2306,7 @@ mod tests {
     fn skin_validate_catches_offsets_that_miss_the_influences() {
         let mut skin = sample_skin();
         skin.offsets = vec![0, 2, 2];
-        let error = skin.validate(6, 2, 3).unwrap_err();
+        let error = skin.validate(2, 3).unwrap_err();
         assert!(error.contains("end at 2 but there are 3"), "{error}");
     }
 
@@ -1721,7 +2314,7 @@ mod tests {
     fn skin_validate_catches_mismatched_bones_and_weights() {
         let mut skin = sample_skin();
         skin.weights.pop();
-        let error = skin.validate(6, 2, 3).unwrap_err();
+        let error = skin.validate(2, 3).unwrap_err();
         assert!(
             error.contains("bones has 3 entries but weights has 2"),
             "{error}"
@@ -1732,7 +2325,7 @@ mod tests {
     fn skin_validate_catches_an_out_of_range_bone() {
         let mut skin = sample_skin();
         skin.bones[1] = 7;
-        let error = skin.validate(6, 2, 3).unwrap_err();
+        let error = skin.validate(2, 3).unwrap_err();
         assert!(error.contains("bone references node 7 of 3"), "{error}");
     }
 
@@ -1741,7 +2334,7 @@ mod tests {
         for bad in [-0.25_f32, f32::NAN, f32::INFINITY] {
             let mut skin = sample_skin();
             skin.weights[0] = bad;
-            let error = skin.validate(6, 2, 3).unwrap_err();
+            let error = skin.validate(2, 3).unwrap_err();
             assert!(error.contains("negative or not finite"), "{bad}: {error}");
         }
     }
@@ -1752,7 +2345,7 @@ mod tests {
         // but loadable, and refusing it would reject files other tools open.
         let mut skin = sample_skin();
         skin.weights[0] = 1.75;
-        assert_eq!(skin.validate(6, 2, 3), Ok(()));
+        assert_eq!(skin.validate(2, 3), Ok(()));
     }
 
     #[test]
@@ -1765,10 +2358,10 @@ mod tests {
         // An un-normalized vertex: raw weights 1.5 / 0.5 sum to 2.0, so bone 1
         // owns 75% of the vertex even though its raw weight exceeds 1.0.
         let unnormalized = SkinData {
-            corner_to_logical: vec![0, 0, 0],
             offsets: vec![0, 2],
             bones: vec![1, 2],
             weights: vec![1.5, 0.5],
+            ..SkinData::default()
         };
         assert_eq!(unnormalized.summed_weight(0, &[1]), 1.5);
         assert_eq!(unnormalized.influence_fraction(0, &[1]), 0.75);
@@ -1776,10 +2369,8 @@ mod tests {
 
         // A vertex with no influences at all reads as zero, not NaN.
         let empty = SkinData {
-            corner_to_logical: vec![0],
             offsets: vec![0, 0],
-            bones: Vec::new(),
-            weights: Vec::new(),
+            ..SkinData::default()
         };
         assert_eq!(empty.influence_fraction(0, &[1]), 0.0);
     }

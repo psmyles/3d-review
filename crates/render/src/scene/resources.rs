@@ -8,22 +8,24 @@
 //! toggle goes off, so the steady-state shaded view holds no derived buffers. The
 //! passes that *draw* these buffers are in [`super::d3d`].
 
-use review_model::ModelData;
-use windows::Win32::Graphics::Direct3D11::ID3D11Device;
+use review_model::{Bounds, DeformPose, ModelData};
+use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11DeviceContext};
 
+use crate::geometry::deform::DeformLayout;
 use crate::geometry::{
     bounding_box_lines, face_normal_lines, model_mesh, model_pivot, pivot_half_extent, pivot_lines,
     selection_geometry, skeleton_fill_triangles, skeleton_lines, skin_weight_vertices,
     uv_fill_triangles, uv_wireframe_lines, vertex_normal_lines, visible_geometry, wireframe_lines,
 };
 use crate::material::{MaterialDrawRange, build_part_key};
-use crate::rhi::{IndexBuffer, VertexBuffer};
+use crate::rhi::{IndexBuffer, StructuredBuffer, VertexBuffer};
 use crate::selection::{Selection, SelectionView, selection_bounds};
 use crate::{
     ActiveMaterial, BoundingBoxScope, MaterialMode, SceneDebugOptions, ShadingMode, UvShadingMode,
 };
 
 use super::d3d::SceneGpu;
+use super::gpu_types::{InfluenceEntry, MorphEntry, PaletteEntry};
 
 /// Baked parameters for the bounding-box view. Only the inputs the chosen scope
 /// depends on are populated (the hidden set for `VisibleOnly`, the selection for
@@ -34,6 +36,9 @@ struct BoundingBoxParams {
     scope: BoundingBoxScope,
     hidden: Vec<u32>,
     selection: Selection,
+    /// The frame-supplied bounds the All Meshes scope draws (a clip's envelope
+    /// while one is selected), so selecting a clip rebuilds the box.
+    bounds: Option<Bounds>,
 }
 
 /// Baked parameters for a normal-line view (face or vertex normals).
@@ -105,7 +110,104 @@ pub(super) struct MeshBuffers {
     pub(super) vertices: VertexBuffer,
     pub(super) indices: IndexBuffer,
     pub(super) ranges: Vec<MaterialDrawRange>,
+    /// The GPU deform tables, `None` for a model that never deforms.
+    pub(super) deform: Option<DeformGpu>,
 }
+
+/// The vertex shader's deform inputs for one model (`t12..t15`): the immutable
+/// influence + blend-shape tables built with the mesh, and the dynamic palette +
+/// shape weights re-uploaded when the pose revision moves.
+pub(super) struct DeformGpu {
+    pub(super) influences: StructuredBuffer<InfluenceEntry>,
+    /// `None` when the model has no blend shapes; the shader never reads it then
+    /// (every morph lane is empty).
+    pub(super) morph: Option<StructuredBuffer<MorphEntry>>,
+    pub(super) palette: StructuredBuffer<PaletteEntry>,
+    pub(super) shape_weights: Option<StructuredBuffer<f32>>,
+    /// The `pose_revision` the palette currently holds; `None` until a pose has
+    /// been uploaded (the deform flag stays off until then).
+    pub(super) palette_revision: Option<u64>,
+    /// Scratch for the palette conversion, kept so a pose change allocates nothing.
+    palette_scratch: Vec<PaletteEntry>,
+}
+
+impl DeformGpu {
+    fn new(device: &ID3D11Device, layout: &DeformLayout) -> windows::core::Result<Option<Self>> {
+        if layout.influences.is_empty() || layout.palette_len == 0 {
+            return Ok(None);
+        }
+        let morph = if layout.morph.is_empty() {
+            None
+        } else {
+            Some(StructuredBuffer::immutable(device, &layout.morph)?)
+        };
+        let shape_weights = if layout.shape_count == 0 {
+            None
+        } else {
+            Some(StructuredBuffer::dynamic(device, layout.shape_count)?)
+        };
+        Ok(Some(Self {
+            influences: StructuredBuffer::immutable(device, &layout.influences)?,
+            morph,
+            palette: StructuredBuffer::dynamic(device, layout.palette_len)?,
+            shape_weights,
+            palette_revision: None,
+            palette_scratch: Vec::with_capacity(layout.palette_len),
+        }))
+    }
+
+    /// Whether `pose` fits these tables — a pose built for another model would
+    /// index past the palette, so it is refused rather than clamped.
+    fn accepts(&self, pose: &DeformPose) -> bool {
+        pose.palette.len() == self.palette.capacity()
+            && pose.shape_weights.len() == self.shape_weights.as_ref().map_or(0, |b| b.capacity())
+    }
+
+    /// Upload `pose` (palette rows + shape weights) when `revision` moved.
+    fn upload(
+        &mut self,
+        ctx: &ID3D11DeviceContext,
+        pose: &DeformPose,
+        revision: u64,
+    ) -> windows::core::Result<()> {
+        if self.palette_revision == Some(revision) {
+            return Ok(());
+        }
+        self.palette_scratch.clear();
+        self.palette_scratch.extend(
+            pose.palette
+                .iter()
+                .map(|matrix| PaletteEntry::from_mat4(*matrix)),
+        );
+        self.palette.update(ctx, &self.palette_scratch)?;
+        if let Some(weights) = &self.shape_weights {
+            weights.update(ctx, &pose.shape_weights)?;
+        }
+        self.palette_revision = Some(revision);
+        Ok(())
+    }
+
+    /// Bind the four tables to the vertex stage.
+    pub(super) fn bind_vs(&self, ctx: &ID3D11DeviceContext) {
+        self.influences.bind_vs(ctx, DEFORM_INFLUENCES_SLOT);
+        self.palette.bind_vs(ctx, DEFORM_PALETTE_SLOT);
+        if let Some(morph) = &self.morph {
+            morph.bind_vs(ctx, DEFORM_MORPH_SLOT);
+        }
+        if let Some(weights) = &self.shape_weights {
+            weights.bind_vs(ctx, DEFORM_WEIGHTS_SLOT);
+        }
+    }
+}
+
+/// The vertex-stage resource slots of the deform tables (`scene.hlsl`
+/// `t12..t15`).
+pub(super) const DEFORM_INFLUENCES_SLOT: u32 = 12;
+const DEFORM_PALETTE_SLOT: u32 = 13;
+const DEFORM_MORPH_SLOT: u32 = 14;
+const DEFORM_WEIGHTS_SLOT: u32 = 15;
+/// How many consecutive slots [`DeformGpu::bind_vs`] touches, for the unbind.
+pub(super) const DEFORM_SLOT_COUNT: usize = 4;
 
 /// The build-on-demand derived views (invariant 3): each buffer exists only while
 /// its toggle is on, paired with the bake key it was last built for. The 3D line
@@ -173,6 +275,10 @@ pub(crate) enum SlotId {
 pub(super) struct ModelSlot {
     /// `None` for an empty model (the grid still draws).
     pub(super) mesh: Option<MeshBuffers>,
+    /// The model's deform layout (built with the mesh, keyed by the same
+    /// revision) — the per-corner lanes every mesh-derived overlay copies.
+    /// `None` for a model that never deforms.
+    deform_layout: Option<DeformLayout>,
     mesh_revision: u64,
     mesh_uv_channel: u32,
     mesh_material_mode: MaterialMode,
@@ -244,6 +350,23 @@ impl ModelSlot {
     /// released by the drop, no explicit teardown needed (invariant 3).
     pub(super) fn release(&mut self) {
         *self = ModelSlot::new();
+    }
+
+    /// The per-corner deform lanes the mesh-derived builders copy (empty for a
+    /// model that never deforms).
+    fn lanes(&self) -> &[[u32; 4]] {
+        self.deform_layout
+            .as_ref()
+            .map_or(&[], |layout| layout.corner.as_slice())
+    }
+
+    /// Whether this frame's mesh draws through the deform path: the model has
+    /// deform tables and a matching pose has been uploaded.
+    pub(super) fn deform_enabled(&self) -> bool {
+        self.mesh
+            .as_ref()
+            .and_then(|mesh| mesh.deform.as_ref())
+            .is_some_and(|deform| deform.palette_revision.is_some())
     }
 }
 
@@ -363,14 +486,24 @@ impl SceneGpu {
             }
             _ => None,
         };
-        let (vertices, indices, ranges) = model_mesh(model, uv_channel, key);
+        // The deform layout is a property of the model alone; rebuild it only on
+        // a model change, not on a UV-channel / material-mode switch.
+        if self.active.mesh_revision != model_revision {
+            self.active.deform_layout = DeformLayout::build(model);
+        }
+        let (vertices, indices, ranges) = model_mesh(model, self.active.lanes(), uv_channel, key);
         self.active.mesh = if indices.is_empty() {
             None
         } else {
+            let deform = match &self.active.deform_layout {
+                Some(layout) => DeformGpu::new(device, layout)?,
+                None => None,
+            };
             Some(MeshBuffers {
                 vertices: VertexBuffer::new(device, &vertices)?,
                 indices: IndexBuffer::new(device, &indices)?,
                 ranges,
+                deform,
             })
         };
         self.active.mesh_revision = model_revision;
@@ -379,11 +512,39 @@ impl SceneGpu {
         Ok(())
     }
 
+    /// Upload the frame's pose into the active mesh's palette when its revision
+    /// moved. A pose that doesn't fit the model's tables (built for another
+    /// model, mid-swap) is ignored, which also leaves the deform flag off.
+    pub(super) fn sync_pose(
+        &mut self,
+        ctx: &ID3D11DeviceContext,
+        pose: Option<&DeformPose>,
+        pose_revision: u64,
+    ) -> windows::core::Result<()> {
+        let Some(deform) = self
+            .active
+            .mesh
+            .as_mut()
+            .and_then(|mesh| mesh.deform.as_mut())
+        else {
+            return Ok(());
+        };
+        match pose {
+            Some(pose) if deform.accepts(pose) => deform.upload(ctx, pose, pose_revision),
+            _ => {
+                deform.palette_revision = None;
+                Ok(())
+            }
+        }
+    }
+
     /// Build-on-demand / free-on-off for the derived line views (invariant 3).
     /// A view's buffer is (re)built when its toggle is on and its baked params
     /// drift from the current options, and dropped to `None` when off. Unchanged
     /// views are left untouched, and the drift checks compare against the
     /// *borrowed* frame inputs, so a steady-state frame allocates nothing.
+    /// `scene_bounds` is what the All Meshes bounding box draws when given (a
+    /// clip's envelope), else the model's own bounds.
     pub(super) fn sync_line_views(
         &mut self,
         device: &ID3D11Device,
@@ -391,6 +552,7 @@ impl SceneGpu {
         model_revision: u64,
         debug: SceneDebugOptions,
         hidden_meshes: &[u32],
+        scene_bounds: Option<Bounds>,
     ) -> windows::core::Result<()> {
         // A different mesh invalidates every view derived from it, whatever the
         // view's own parameters are doing (see `ModelSlot::views_revision`).
@@ -417,7 +579,12 @@ impl SceneGpu {
             self.active.views.wireframe_buf = if wireframe_on {
                 optional_vertex_buffer(
                     device,
-                    &wireframe_lines(model, debug.wireframe_color, hidden_meshes),
+                    &wireframe_lines(
+                        model,
+                        self.active.lanes(),
+                        debug.wireframe_color,
+                        hidden_meshes,
+                    ),
                 )?
             } else {
                 None
@@ -437,6 +604,10 @@ impl SceneGpu {
             BoundingBoxScope::OnlySelection => debug.bounding_box_selection,
             _ => Selection::None,
         };
+        let scope_bounds = match scope {
+            BoundingBoxScope::AllMeshes => scene_bounds,
+            _ => None,
+        };
         let bounding_box_unchanged = match (
             &self.active.views.bounding_box_baked,
             debug.show_bounding_box,
@@ -447,13 +618,14 @@ impl SceneGpu {
                     && params.scope == scope
                     && params.hidden == scope_hidden
                     && params.selection == scope_selection
+                    && params.bounds == scope_bounds
             }
             _ => false,
         };
         if !bounding_box_unchanged {
             self.active.views.bounding_box_buf = if debug.show_bounding_box {
                 let bounds = match scope {
-                    BoundingBoxScope::AllMeshes => model.bounds,
+                    BoundingBoxScope::AllMeshes => scope_bounds.or(model.bounds),
                     BoundingBoxScope::OnlySelection => selection_bounds(model, scope_selection),
                     BoundingBoxScope::VisibleOnly => model.visible_bounds(scope_hidden),
                 };
@@ -473,14 +645,21 @@ impl SceneGpu {
                     scope,
                     hidden: scope_hidden.to_vec(),
                     selection: scope_selection,
+                    bounds: scope_bounds,
                 });
         }
 
         // The two normal-line views share one shape (length + color + hidden set),
         // differing only in the toggle and line builder.
+        let lanes = self
+            .active
+            .deform_layout
+            .as_ref()
+            .map_or(&[][..], |layout| layout.corner.as_slice());
         sync_normal_view(
             device,
             model,
+            lanes,
             &mut self.active.views.face_normal_buf,
             &mut self.active.views.face_baked,
             debug.face_normals,
@@ -492,6 +671,7 @@ impl SceneGpu {
         sync_normal_view(
             device,
             model,
+            lanes,
             &mut self.active.views.vertex_normal_buf,
             &mut self.active.views.vertex_baked,
             debug.vertex_normals,
@@ -554,7 +734,10 @@ impl SceneGpu {
             return Ok(());
         }
         self.active.views.weights_buf = if active {
-            optional_vertex_buffer(device, &skin_weight_vertices(model, selected_bones))?
+            optional_vertex_buffer(
+                device,
+                &skin_weight_vertices(model, self.active.lanes(), selected_bones),
+            )?
         } else {
             None
         };
@@ -781,6 +964,11 @@ pub(super) fn optional_vertex_buffer(
     }
 }
 
+/// A normal-line builder: `(model, deform lanes, length scale, color, hidden
+/// nodes)` → line vertices. The face and vertex variants share the shape.
+type NormalLineBuilder =
+    fn(&ModelData, &[[u32; 4]], f32, [f32; 4], &[u32]) -> Vec<crate::scene::SceneVertex>;
+
 /// Reconcile one normal-line view (face or vertex normals — the same shape,
 /// differing only in the toggle and `lines` builder): rebuild when on + drifted
 /// (compared against the borrowed inputs, so a steady-state frame allocates
@@ -789,13 +977,14 @@ pub(super) fn optional_vertex_buffer(
 fn sync_normal_view(
     device: &ID3D11Device,
     model: &ModelData,
+    lanes: &[[u32; 4]],
     buf: &mut Option<VertexBuffer>,
     baked: &mut Option<NormalParams>,
     on: bool,
     length: f32,
     color: [f32; 4],
     hidden: &[u32],
-    lines: fn(&ModelData, f32, [f32; 4], &[u32]) -> Vec<crate::scene::SceneVertex>,
+    lines: NormalLineBuilder,
 ) -> windows::core::Result<()> {
     let unchanged = match (&baked, on) {
         (None, false) => true,
@@ -808,7 +997,7 @@ fn sync_normal_view(
         return Ok(());
     }
     *buf = if on {
-        optional_vertex_buffer(device, &lines(model, length, color, hidden))?
+        optional_vertex_buffer(device, &lines(model, lanes, length, color, hidden))?
     } else {
         None
     };

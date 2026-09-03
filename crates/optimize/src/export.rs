@@ -857,6 +857,7 @@ mod tests {
             mesh_part: Some(0),
             source_vertex_count: 0,
             transform: Mat4::IDENTITY,
+            rest_local: Default::default(),
             kind: review_model::NodeKind::Mesh,
             bone: None,
         };
@@ -912,6 +913,7 @@ mod tests {
                 mesh_part: mesh,
                 source_vertex_count: 0,
                 transform: Mat4::IDENTITY,
+                rest_local: Default::default(),
                 kind: if mesh.is_some() {
                     review_model::NodeKind::Mesh
                 } else {

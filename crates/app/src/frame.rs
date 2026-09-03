@@ -41,6 +41,9 @@ impl App {
         // viewport reflects the current fade; a change of selection (set by the
         // Outliner last frame) restarts it here.
         self.update_selection_flash();
+        // Advance the animation clock and re-evaluate the pose when the clip or
+        // time moved (the palette upload is keyed by its revision).
+        self.tick_animation();
         // Record any edit the UI committed last frame (selection / hide / material /
         // texture) into the undo history before this frame's egui pass.
         self.observe_edit_state();
@@ -141,20 +144,26 @@ impl App {
         // The selection flash animates over ~0.5s; keep pacing frames until it
         // finishes so the highlight fades smoothly rather than freezing partway.
         let flash_active = self.selection_flash.is_some();
+        // A playing clip keeps pacing frames until it pauses or stops.
+        let anim_playing = self.animation_playing();
         // Pump startup warmup frames (Phase B) until the deferred GPU-resource
         // build drains, so the scene pipelines + GTAO pass compile behind
         // the already-shown grid. Paced like the other continuous-redraw sources.
         let warming_up = self.redraw.warmup_frames > 0;
         self.redraw.warmup_frames = self.redraw.warmup_frames.saturating_sub(1);
-        self.redraw.repaint_at =
-            if repaint_delay.is_zero() || camera_animating || flash_active || warming_up {
-                let frame_start = self.redraw.last_render_instant.unwrap_or_else(Instant::now);
-                Some(frame_start + self.redraw.refresh_interval)
-            } else if repaint_delay == Duration::MAX {
-                None
-            } else {
-                Instant::now().checked_add(repaint_delay)
-            };
+        self.redraw.repaint_at = if repaint_delay.is_zero()
+            || camera_animating
+            || flash_active
+            || anim_playing
+            || warming_up
+        {
+            let frame_start = self.redraw.last_render_instant.unwrap_or_else(Instant::now);
+            Some(frame_start + self.redraw.refresh_interval)
+        } else if repaint_delay == Duration::MAX {
+            None
+        } else {
+            Instant::now().checked_add(repaint_delay)
+        };
 
         // The synced scene inputs the renderer draws this frame (read before the
         // disjoint renderer/gpu borrows below). `debug` carries show_grid / shading
@@ -217,6 +226,13 @@ impl App {
         let source_model = self.scene_model.clone();
         let model: &ModelData = &source_model;
         let model_revision = self.scene_revision;
+        // The evaluated pose, for the 3D workspace only: Opt compares static
+        // geometry and deliberately shows the bind pose. Borrowed as a disjoint
+        // field so it can outlive the renderer borrow below.
+        let pose = (workspace == WorkspaceMode::ThreeD && self.animation.active)
+            .then_some(&self.animation.deform);
+        let pose_revision = self.animation.pose_revision;
+        let scene_bounds = self.ui.bounds;
 
         let Some(renderer) = self.renderer.as_mut() else {
             return;
@@ -268,6 +284,9 @@ impl App {
                         hidden_meshes: &hidden_meshes,
                         selected_bones: &selected_bones,
                         background,
+                        pose,
+                        pose_revision,
+                        scene_bounds,
                     };
                     if workspace == WorkspaceMode::Opt {
                         // Read the cameras out before the call: the arguments are

@@ -113,6 +113,32 @@ The material model is currently simple: imported base color and smoothness are
 baked into vertices. Metallic is fixed at 0, and there are no texture maps,
 normal maps, alpha modes, or per-material draw groups.
 
+## Deform Stage (skinning, rigid animation, blend shapes)
+
+Every geometry pipeline shares `vs_main`, and `vs_main` owns the whole deform
+path — so the mesh, the GTAO G-buffer, the selection flash and every mesh-derived
+overlay (wireframe, normal lines, the skin-weight heat map) deform identically
+with no second code path. Geometry stays world-baked in the bind pose; the shader
+applies a delta:
+
+- `SceneVertex.deform : BLENDINDICES` (`uint4`) = influence run first/count +
+  blend-shape run first/count. Zero for static geometry; a rigid mesh vertex
+  references its node's single-entry run; a skinned one its logical vertex's
+  full influence run (no cap). Built per model by `geometry::deform`, and copied
+  from the source corner by every mesh-derived overlay builder (the skeleton
+  overlay attaches head + ring to the parent joint's entry and the tail to the
+  child's, so it follows the pose without a CPU rebuild).
+- VS structured buffers `t12..t15`: influences `{entry, weight}`, palette
+  `{r0, r1, r2}` (three `float4` rows of an affine 3×4 — spelled as rows so the
+  packing is unambiguous), morph deltas `{shape, position, normal}`, per-shape
+  weights. The first two tables are immutable per model; the palette and weights
+  are dynamic and re-uploaded only when `SceneFrame::pose_revision` moves.
+- `camera_position.w` in `b0` enables the path per frame; the UV viewport and the
+  Opt workspace pass it off (Opt compares static geometry in the bind pose).
+- Order: blend-shape deltas (pre-rotated into world orientation at import) are
+  added first, then `Σ w·(M·p) / Σ w` over the run — normalised exactly as ufbx's
+  `ufbx_get_skin_vertex_matrix`. A zero normal (the overlay sentinel) stays zero.
+
 ## Image-Based Lighting
 
 `ibl.rs` precomputes the maps used by shaded mode:
@@ -209,7 +235,10 @@ frames. The important sync points are:
 - Framebuffer size or scene MSAA change: recreate scene targets, bloom targets,
   SSAO targets, and post bind group; rebuild scene pipelines when sample count
   changes.
-- Model revision change: rebuild mesh buffers and clear derived debug buffers.
+- Model revision change: rebuild mesh buffers (+ the deform layout and its
+  immutable influence / morph tables) and clear derived debug buffers.
+- Pose revision change: re-upload the deform palette + shape weights (a paused
+  clip re-uploads nothing).
 - UV channel change in 3D checker mode: rebuild only the mesh vertex buffer UVs.
 - Debug toggles/color/length changes: rebuild or free only the relevant derived
   line buffer.

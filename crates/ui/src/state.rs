@@ -540,6 +540,82 @@ pub enum OutlinerTab {
     #[default]
     Scene,
     Materials,
+    /// The model's animation clips — offered only while the loaded file carries
+    /// any, and never in the Opt workspace (which shows the bind pose).
+    Animations,
+}
+
+/// The transport's playback-rate choices.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PlaybackSpeed {
+    Quarter,
+    Half,
+    #[default]
+    Normal,
+    Double,
+}
+
+impl PlaybackSpeed {
+    /// Every speed, in dropdown order.
+    pub const ALL: [PlaybackSpeed; 4] = [
+        PlaybackSpeed::Quarter,
+        PlaybackSpeed::Half,
+        PlaybackSpeed::Normal,
+        PlaybackSpeed::Double,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PlaybackSpeed::Quarter => "0.25x",
+            PlaybackSpeed::Half => "0.5x",
+            PlaybackSpeed::Normal => "1x",
+            PlaybackSpeed::Double => "2x",
+        }
+    }
+
+    /// The multiplier on wall-clock time.
+    pub fn factor(self) -> f64 {
+        match self {
+            PlaybackSpeed::Quarter => 0.25,
+            PlaybackSpeed::Half => 0.5,
+            PlaybackSpeed::Normal => 1.0,
+            PlaybackSpeed::Double => 2.0,
+        }
+    }
+}
+
+/// Animation playback state. Owned by [`UiState`] and edited in place by the
+/// Outliner's Animations tab and the transport (the convention selection and the
+/// Opt stack follow); `app` owns the clock and advances [`Self::time`] while
+/// [`Self::playing`], evaluates the pose, and paces the redraw loop (invariant
+/// 6). View state: deliberately outside the undo history.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnimationUiState {
+    /// The selected clip (index into `ModelData::animations`), or `None` for the
+    /// rest pose. Selecting a clip lands paused on its first frame.
+    pub selected_clip: Option<usize>,
+    pub playing: bool,
+    /// Loop at the end (default) or stop on the last frame.
+    pub looping: bool,
+    pub speed: PlaybackSpeed,
+    /// The current time on the clip's own timeline, in seconds.
+    pub time: f64,
+    /// Whether the loaded model carries any clip — gates the Animations tab. Set
+    /// on load by [`UiState::reset_animation_state`].
+    pub has_clips: bool,
+}
+
+impl Default for AnimationUiState {
+    fn default() -> Self {
+        Self {
+            selected_clip: None,
+            playing: false,
+            looping: true,
+            speed: PlaybackSpeed::default(),
+            time: 0.0,
+            has_clips: false,
+        }
+    }
 }
 
 /// How the Outliner's Scene tab presents the model: every node in one flat list,
@@ -986,6 +1062,8 @@ pub struct UiState {
     /// scene-tree cache and keyboard-navigation flags. Grouped by lifecycle —
     /// see [`OutlinerState`].
     pub outliner: OutlinerState,
+    /// Animation clip selection + playback — see [`AnimationUiState`].
+    pub animation: AnimationUiState,
     /// Bone nodes selected in the Outliner, in click order (the last entry is the
     /// primary, mirrored into [`UiState::selection`]). Drives the skeleton
     /// overlay's highlight and the skin-weight heat map. Ctrl-click toggles a
@@ -1080,6 +1158,7 @@ impl Default for UiState {
             solo: false,
             selection_fade: 0.0,
             outliner: OutlinerState::default(),
+            animation: AnimationUiState::default(),
             selected_bones: Vec::new(),
             bone_anchor: None,
             has_bones: false,
@@ -1200,6 +1279,30 @@ impl UiState {
         if !self.has_skin && self.debug.active_material == ActiveMaterial::SkinWeights {
             self.debug.active_material = ActiveMaterial::Source;
         }
+    }
+
+    /// Re-point the animation state at `model` (the one about to be shown):
+    /// drop the clip selection and playback (they index the old model's clips),
+    /// re-derive the capability flag that gates the Animations tab, and snap a
+    /// stale Animations tab back to the scene tree when the new model has no
+    /// clips to list.
+    pub fn reset_animation_state(&mut self, model: &ModelData) {
+        self.animation = AnimationUiState {
+            has_clips: !model.animations.is_empty(),
+            ..AnimationUiState::default()
+        };
+        if !self.animation.has_clips && self.outliner.tab == OutlinerTab::Animations {
+            self.outliner.tab = OutlinerTab::Scene;
+        }
+    }
+
+    /// Select clip `clip` (or none), landing paused on its first frame; the app's
+    /// clock picks the change up on the next frame.
+    pub fn select_clip(&mut self, model: &ModelData, clip: Option<usize>) {
+        let clip = clip.filter(|&index| index < model.animations.len());
+        self.animation.selected_clip = clip;
+        self.animation.playing = false;
+        self.animation.time = clip.map_or(0.0, |index| model.animations[index].time_begin);
     }
 
     /// The stats overlay's three scoped columns, re-summed only when the

@@ -293,6 +293,7 @@ mod tests {
             mesh_part: None,
             source_vertex_count: 0,
             transform: glam::Mat4::IDENTITY,
+            rest_local: Default::default(),
             kind: NodeKind::Empty,
             bone: None,
         });

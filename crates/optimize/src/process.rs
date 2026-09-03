@@ -639,9 +639,15 @@ fn assemble(
         bounds: None,
         stats: ModelStats::default(),
         materials: source.materials.clone(),
-        // Static-mesh tool: skinning is dropped, with a warning raised by the
-        // caller so the user knows rather than discovers it at export.
+        // Static-mesh tool: skinning, blend shapes and animation are dropped,
+        // with a warning raised by the caller so the user knows rather than
+        // discovers it at export. The corner map goes with them — a rebuilt
+        // vertex buffer has no logical vertices to map back to.
+        corner_to_logical: Vec::new(),
         skin: None,
+        morph: None,
+        animations: Vec::new(),
+        frame_rate: 0.0,
     };
 
     // Normals first: tangents are orthonormalized against them, so rebuilding
@@ -693,6 +699,9 @@ fn measured_stats(model: &ModelData, source: &ModelData) -> ModelStats {
         // The node graph is carried through unchanged, so its bone count still
         // describes this model — even though the skin binding itself is dropped.
         bone_count: source.stats.bone_count,
+        // No clips survive processing (the level has no animation), so none are
+        // reported.
+        clip_count: 0,
         source_unit_meters: source.stats.source_unit_meters,
     }
 }
@@ -1182,6 +1191,7 @@ mod tests {
                 mesh_part: Some(index),
                 source_vertex_count: 0,
                 transform: Mat4::IDENTITY,
+                rest_local: Default::default(),
                 kind: NodeKind::Mesh,
                 bone: None,
             });

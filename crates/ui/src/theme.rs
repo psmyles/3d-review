@@ -535,6 +535,25 @@ pub mod size {
     pub const OPT_LEGEND_SWATCH: f32 = 9.0;
     pub const OPT_LEGEND_SWATCH_GAP: f32 = 7.0;
 
+    // ── Animation ─────────────────────────────────────────────────────────
+    /// Height of one clip row in the Outliner's Animations tab (egui points,
+    /// like the Opt stack rows it shares its primitive with).
+    pub const ANIM_ROW_HEIGHT: f32 = 24.0;
+    /// Width reserved at a clip row's right edge for its frame-count / duration
+    /// readout (egui points).
+    pub const ANIM_ROW_TRAILING_WIDTH: f32 = 104.0;
+    /// Width of the transport card (egui points — the card sets its width raw,
+    /// like the legend card).
+    pub const ANIM_TRANSPORT_WIDTH: f32 = 610.0;
+    /// Edge of a transport tile button (design px).
+    pub const ANIM_TRANSPORT_BUTTON: f32 = 30.0;
+    /// Gap between transport controls (design px).
+    pub const ANIM_TRANSPORT_GAP: f32 = 6.0;
+    /// Rail width of the transport's scrub slider (design px).
+    pub const ANIM_SCRUB_WIDTH: f32 = 170.0;
+    /// Width of the playback-speed dropdown (design px).
+    pub const ANIM_SPEED_COMBO_WIDTH: f32 = 64.0;
+
     // ── Startup help overlay (treated as egui points, like the option panels) ─
     /// Width of each of the two shortcut columns and the gap between them; the
     /// card content width is derived as `2 * COLUMN_WIDTH + COLUMN_GAP`.

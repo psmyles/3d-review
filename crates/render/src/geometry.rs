@@ -16,6 +16,7 @@
 //! [`ModelData`]: review_model::ModelData
 
 mod debug_lines;
+pub(crate) mod deform;
 mod grid;
 mod hidden;
 mod mesh;

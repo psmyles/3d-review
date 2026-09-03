@@ -15,7 +15,7 @@ use crate::theme::{color, font, size};
 
 /// Left-column shortcut rows: (key-cap glyph, description) for the bare-key
 /// display toggles.
-const LEFT_SHORTCUTS: [(&str, &str); 7] = [
+const LEFT_SHORTCUTS: [(&str, &str); 8] = [
     ("`", "Toggle wireframe overlay"),
     ("1", "Wireframe only"),
     ("2", "Unlit shading mode"),
@@ -23,16 +23,19 @@ const LEFT_SHORTCUTS: [(&str, &str); 7] = [
     ("I", "Toggle stats display"),
     ("G", "Toggle grid display"),
     ("X", "Swap source / processed (Opt overlay)"),
+    ("Space", "Play / pause the selected clip"),
 ];
 
 /// Right-column shortcut rows (camera framing + WASD orbit steps).
-const RIGHT_SHORTCUTS: [(&str, &str); 6] = [
+const RIGHT_SHORTCUTS: [(&str, &str); 8] = [
     ("F", "Frame model / selection"),
     ("R", "Reset camera"),
     ("W", "Orbit camera up"),
     ("A", "Orbit camera left"),
     ("S", "Orbit camera down"),
     ("D", "Orbit camera right"),
+    (",", "Previous frame of the selected clip"),
+    (".", "Next frame of the selected clip"),
 ];
 
 /// Bottom-section rows: (key-cap chord, description) for the file / edit

@@ -116,68 +116,6 @@ fn add_menu(ui: &mut egui::Ui, state: &mut UiState) {
     });
 }
 
-/// One row of the stack list: a full-width band that selects on click, painted
-/// like an Outliner row. `content` fills the area left of the trailing controls.
-///
-/// Returns the row's own response (the click that selects it) and the rect the
-/// caller may place trailing controls in.
-fn stack_row(
-    ui: &mut egui::Ui,
-    id: egui::Id,
-    selected: bool,
-    trailing: f32,
-) -> (egui::Response, egui::Rect, egui::Rect) {
-    let (slot, _) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), size::OPT_STACK_ROW_HEIGHT),
-        egui::Sense::hover(),
-    );
-    // Span the pane's full width, not just the space this layout was given, so
-    // the band and the click target reach both edges.
-    let row_rect = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), slot.y_range());
-    let response = ui.interact(row_rect, id, egui::Sense::click());
-
-    if selected {
-        ui.painter().rect_filled(
-            row_rect,
-            size::OUTLINER_ROW_ROUNDING,
-            color::OUTLINER_ROW_SELECTED_BG,
-        );
-    } else if response.hovered() {
-        ui.painter()
-            .rect_filled(row_rect, size::OUTLINER_ROW_ROUNDING, color::HOVER_BG);
-    }
-
-    let mut content = row_rect.shrink2(egui::vec2(size::OUTLINER_ROW_PAD_X, 0.0));
-    let controls = egui::Rect::from_min_max(
-        egui::pos2(content.right() - trailing, content.top()),
-        content.max,
-    );
-    content.set_right(controls.left());
-    (response, content, controls)
-}
-
-/// A row's name, pinned to the left edge of `rect`.
-///
-/// `Ui::put` centres what it places (it lays the widget out
-/// `centered_and_justified`), which reads as a list of headings rather than a
-/// list of entries — so the name gets its own left-to-right scope instead. The
-/// label is non-interactive so the click lands on the row band beneath it.
-fn row_label(ui: &mut egui::Ui, rect: egui::Rect, text: egui::RichText) {
-    ui.scope_builder(
-        egui::UiBuilder::new()
-            .max_rect(rect)
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-        |ui| {
-            ui.add(
-                egui::Label::new(text)
-                    .truncate()
-                    .selectable(false)
-                    .sense(egui::Sense::hover()),
-            );
-        },
-    );
-}
-
 /// The ordered operation rows. Each carries an enable checkbox, the operation's
 /// name (click anywhere on the row to select it), reorder arrows and a remove
 /// button.
@@ -200,7 +138,13 @@ fn operation_rows(ui: &mut egui::Ui, state: &mut UiState) {
     for (index, op) in state.opt.stack.ops.iter().enumerate() {
         let is_selected = state.opt.selected == Some(StackItem::Op(op.id));
         let row_id = ui.id().with(("opt_stack_row", op.id));
-        let (response, content, controls) = stack_row(ui, row_id, is_selected, trailing);
+        let (response, content, controls) = widgets::list_row(
+            ui,
+            row_id,
+            is_selected,
+            trailing,
+            size::OPT_STACK_ROW_HEIGHT,
+        );
         if response.clicked() {
             selected = Some(op.id);
         }
@@ -231,7 +175,7 @@ fn operation_rows(ui: &mut egui::Ui, state: &mut UiState) {
             egui::pos2(check_rect.right() + gap, content.top()),
             content.max,
         );
-        row_label(ui, label_rect, text);
+        widgets::list_row_label(ui, label_rect, text);
 
         // Reorder / remove, laid out from the row's right edge.
         let tile = |slot: usize| {
@@ -298,7 +242,13 @@ fn operation_rows(ui: &mut egui::Ui, state: &mut UiState) {
 /// choices and the Export button in the Inspector.
 fn export_row(ui: &mut egui::Ui, state: &mut UiState) {
     let is_selected = state.opt.selected == Some(StackItem::ExportSettings);
-    let (response, content, _) = stack_row(ui, ui.id().with("opt_export_row"), is_selected, 0.0);
+    let (response, content, _) = widgets::list_row(
+        ui,
+        ui.id().with("opt_export_row"),
+        is_selected,
+        0.0,
+        size::OPT_STACK_ROW_HEIGHT,
+    );
     if response.clicked() {
         state.opt.selected = Some(StackItem::ExportSettings);
     }
@@ -309,5 +259,5 @@ fn export_row(ui: &mut egui::Ui, state: &mut UiState) {
     } else {
         color::TEXT_BODY
     });
-    row_label(ui, content, text);
+    widgets::list_row_label(ui, content, text);
 }

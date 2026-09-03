@@ -8,7 +8,7 @@ use review_render::{OrbitCamera, Selection};
 use crate::opt_state::{GhostStyle, OptIntent, OptLayout};
 use crate::state::{OptionPanel, ScopedStats, UiOutput, UiState, WorkspaceMode, sync_debug_state};
 use crate::theme::{self, color, size};
-use crate::{dimensions, gizmo, help, panels, stats, status_bar, texture_view, toolbar};
+use crate::{dimensions, gizmo, help, panels, stats, status_bar, texture_view, toolbar, transport};
 
 /// Draw the full egui overlay and return the intents emitted this frame. `model`
 /// is the shared scene geometry and `bvh` an acceleration structure over it, both
@@ -114,6 +114,14 @@ pub fn draw_overlay(
         draw_overlay_legend(
             ctx,
             state,
+            status_bar_height,
+            side.left_inset,
+            side.right_inset,
+        );
+        transport::draw_transport(
+            ctx,
+            state,
+            model,
             status_bar_height,
             side.left_inset,
             side.right_inset,

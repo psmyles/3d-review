@@ -5,6 +5,7 @@
 // safe `Gpu` wrapper, so no `unsafe` may land in this crate again.
 #![forbid(unsafe_code)]
 
+mod animation;
 mod frame;
 mod input;
 mod loading;
@@ -72,6 +73,7 @@ enum UserEvent {
     ModelLoaded(Box<loading::ModelLoaded>),
 }
 
+use animation::AnimationSubsystem;
 use selection_flash::FlashProgress;
 use texture_manager::TextureDecode;
 use undo::UndoStack;
@@ -177,6 +179,9 @@ struct App {
     /// which model it covers so it rebuilds when a new model loads.
     occlusion_bvh: Option<SceneBvh>,
     occlusion_bvh_revision: u64,
+    /// The animation clock + the pose it evaluates for the renderer; its logic
+    /// lives in `animation.rs`.
+    animation: AnimationSubsystem,
     ui: UiState,
     /// Model to load once the window/renderer exist, taken from the command line
     /// (file association / `3d-review.exe <path>`). Consumed in `resumed`.
@@ -379,6 +384,7 @@ impl Default for App {
             model_load_generation: 0,
             opt: None,
             occlusion_bvh: None,
+            animation: AnimationSubsystem::default(),
             // A sentinel distinct from the initial `scene_revision` (0) so the BVH
             // is treated as stale until first built.
             occlusion_bvh_revision: u64::MAX,

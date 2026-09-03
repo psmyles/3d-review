@@ -3,6 +3,7 @@
 
 use crate::scene::SceneVertex;
 
+use super::deform::NO_DEFORM;
 use super::vertex::push_line;
 
 /// The static reference grid + colored X/Z axis lines, in world space. A 2 m
@@ -29,12 +30,14 @@ pub(crate) fn scene_lines() -> Vec<SceneVertex> {
             [coord, 0.0, -extent],
             [coord, 0.0, extent],
             color,
+            NO_DEFORM,
         );
         push_line(
             &mut vertices,
             [-extent, 0.0, coord],
             [extent, 0.0, coord],
             color,
+            NO_DEFORM,
         );
     }
 
@@ -43,12 +46,14 @@ pub(crate) fn scene_lines() -> Vec<SceneVertex> {
         [-extent, 0.002, 0.0],
         [extent, 0.002, 0.0],
         [0.94, 0.23, 0.28, 1.0],
+        NO_DEFORM,
     );
     push_line(
         &mut vertices,
         [0.0, 0.004, -extent],
         [0.0, 0.004, extent],
         [0.18, 0.53, 1.0, 1.0],
+        NO_DEFORM,
     );
     vertices
 }
@@ -75,8 +80,20 @@ pub(crate) fn uv_grid_lines() -> Vec<SceneVertex> {
             UV_GRID_CELL_COLOR
         };
         // Vertical line (constant u) and horizontal line (constant v).
-        push_line(&mut vertices, [coord, 0.0, 0.0], [coord, 1.0, 0.0], color);
-        push_line(&mut vertices, [0.0, coord, 0.0], [1.0, coord, 0.0], color);
+        push_line(
+            &mut vertices,
+            [coord, 0.0, 0.0],
+            [coord, 1.0, 0.0],
+            color,
+            NO_DEFORM,
+        );
+        push_line(
+            &mut vertices,
+            [0.0, coord, 0.0],
+            [1.0, coord, 0.0],
+            color,
+            NO_DEFORM,
+        );
     }
 
     vertices

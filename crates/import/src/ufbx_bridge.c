@@ -158,7 +158,52 @@ void review_import_free_scene(review_import_scene *scene)
     free(scene->skin_offsets);
     free(scene->skin_bones);
     free(scene->skin_weights);
+    free(scene->skin_influence_cluster);
+    free(scene->skin_clusters);
+    free(scene->skin_deformers);
+    if (scene->morph_channels) {
+        size_t index;
+        for (index = 0; index < scene->morph_channel_count; index++) {
+            free(scene->morph_channels[index].name);
+        }
+    }
+    free(scene->morph_channels);
+    free(scene->morph_keyframes);
+    if (scene->morph_shapes) {
+        size_t index;
+        for (index = 0; index < scene->morph_shape_count; index++) {
+            free(scene->morph_shapes[index].name);
+        }
+    }
+    free(scene->morph_shapes);
+    free(scene->morph_entries);
+    if (scene->anim_stacks) {
+        size_t index;
+        for (index = 0; index < scene->anim_stack_count; index++) {
+            free(scene->anim_stacks[index].name);
+        }
+    }
+    free(scene->anim_stacks);
+    free(scene->anim_node_tracks);
+    free(scene->anim_vec3_keys);
+    free(scene->anim_quat_keys);
+    free(scene->anim_morph_tracks);
+    free(scene->anim_scalar_keys);
     memset(scene, 0, sizeof(*scene));
+}
+
+/* Expand a ufbx affine matrix (4 columns of 3) into a column-major 4x4 with the
+   implicit [0,0,0,1] bottom row — the layout `glam::Mat4::from_cols_array`
+   reads. */
+static void review_import_write_matrix(float out[16], const ufbx_matrix *matrix)
+{
+    size_t col;
+    for (col = 0; col < 4; col++) {
+        out[col * 4 + 0] = (float)matrix->cols[col].x;
+        out[col * 4 + 1] = (float)matrix->cols[col].y;
+        out[col * 4 + 2] = (float)matrix->cols[col].z;
+        out[col * 4 + 3] = (col == 3) ? 1.0f : 0.0f;
+    }
 }
 
 static float review_import_length3(const float value[3])
@@ -411,12 +456,19 @@ static const ufbx_skin_deformer *review_import_mesh_skin(const ufbx_mesh *mesh)
 
    In emit mode `capacity` caps the writes, so even if the two passes somehow
    diverged the result is a reconcile error, never a heap overrun. Returns the
-   number of influences counted (or emitted). */
+   number of influences counted (or emitted).
+
+   `cluster_map` (emit mode only) maps the deformer's local cluster index to
+   the global `skin_clusters` index the fill pass assigned this node's clusters
+   — `UINT32_MAX` for a cluster with no bone node, which the predicate below
+   skips anyway, so the two can never disagree about which influences exist. */
 static size_t review_import_skin_influences(
     const ufbx_skin_deformer *deformer,
     size_t vertex,
     uint32_t *out_bones,
     float *out_weights,
+    uint32_t *out_clusters,
+    const uint32_t *cluster_map,
     size_t capacity
 )
 {
@@ -463,11 +515,42 @@ static size_t review_import_skin_influences(
                and an Outliner row name the same bone with the same number. */
             out_bones[emitted] = cluster->bone_node->typed_id;
             out_weights[emitted] = (float)weight.weight;
+            out_clusters[emitted] = cluster_map ? cluster_map[weight.cluster_index] : UINT32_MAX;
         }
         emitted++;
     }
 
     return emitted;
+}
+
+/* The number of clusters of `deformer` that resolve to a bone node — the
+   clusters the fill pass publishes for one mesh node. */
+static size_t review_import_deformer_cluster_count(const ufbx_skin_deformer *deformer)
+{
+    size_t count = 0;
+    size_t index;
+    if (!deformer) {
+        return 0;
+    }
+    for (index = 0; index < deformer->clusters.count; index++) {
+        const ufbx_skin_cluster *cluster = deformer->clusters.data[index];
+        if (cluster && cluster->bone_node) {
+            count++;
+        }
+    }
+    return count;
+}
+
+/* The `review_import_skin_deformer::method` code for a ufbx skinning method. */
+static uint32_t review_import_skinning_method_code(ufbx_skinning_method method)
+{
+    switch (method) {
+    case UFBX_SKINNING_METHOD_LINEAR:            return 0;
+    case UFBX_SKINNING_METHOD_RIGID:             return 1;
+    case UFBX_SKINNING_METHOD_DUAL_QUATERNION:   return 2;
+    case UFBX_SKINNING_METHOD_BLENDED_DQ_LINEAR: return 3;
+    default:                                     return 0;
+    }
 }
 
 /* The count pass's totals, reconciled against the fill pass's actual offsets
@@ -482,6 +565,10 @@ typedef struct review_import_totals {
     size_t source_vertices;
     /* Total valid (bone, weight) skin influences across every logical vertex. */
     size_t skin_influences;
+    /* Total bone-resolving clusters over every skinned mesh node, and the
+       number of skinned mesh nodes. */
+    size_t skin_clusters;
+    size_t skin_deformers;
 } review_import_totals;
 
 /* Count pass: walk every mesh-bearing node, total the corners / faces /
@@ -537,10 +624,13 @@ static int review_import_count_pass(
         if (deformer) {
             for (vertex_index = 0; vertex_index < mesh->num_vertices; vertex_index++) {
                 totals->skin_influences +=
-                    review_import_skin_influences(deformer, vertex_index, NULL, NULL, 0);
+                    review_import_skin_influences(deformer, vertex_index, NULL, NULL, NULL, NULL, 0);
             }
-            /* CSR row starts are uint32_t offsets into this array. */
-            if (totals->skin_influences > UINT32_MAX) {
+            totals->skin_clusters += review_import_deformer_cluster_count(deformer);
+            totals->skin_deformers += 1;
+            /* CSR row starts are uint32_t offsets into this array, and each
+               influence's cluster reference is uint32_t too. */
+            if (totals->skin_influences > UINT32_MAX || totals->skin_clusters > UINT32_MAX) {
                 review_import_set_error(out_error, "FBX skin exceeds the 32-bit influence limit");
                 return 0;
             }
@@ -621,12 +711,23 @@ static int review_import_alloc_geometry(
         out_scene->skin_offsets = (uint32_t*)calloc(totals->source_vertices + 1, sizeof(uint32_t));
         out_scene->skin_bones = (uint32_t*)calloc(totals->skin_influences, sizeof(uint32_t));
         out_scene->skin_weights = (float*)calloc(totals->skin_influences, sizeof(float));
-        if (!out_scene->skin_offsets || !out_scene->skin_bones || !out_scene->skin_weights) {
+        out_scene->skin_influence_cluster = (uint32_t*)calloc(totals->skin_influences, sizeof(uint32_t));
+        /* Every influence names a cluster with a bone node, so a scene with
+           influences always has at least one cluster and one deformer. */
+        out_scene->skin_clusters = (review_import_skin_cluster*)calloc(
+            totals->skin_clusters > 0 ? totals->skin_clusters : 1, sizeof(review_import_skin_cluster));
+        out_scene->skin_deformers = (review_import_skin_deformer*)calloc(
+            totals->skin_deformers > 0 ? totals->skin_deformers : 1, sizeof(review_import_skin_deformer));
+        if (!out_scene->skin_offsets || !out_scene->skin_bones || !out_scene->skin_weights ||
+            !out_scene->skin_influence_cluster || !out_scene->skin_clusters ||
+            !out_scene->skin_deformers) {
             review_import_set_error(out_error, "out of memory while allocating skin weights");
             return 0;
         }
         out_scene->skin_offset_count = totals->source_vertices + 1;
         out_scene->skin_influence_count = totals->skin_influences;
+        out_scene->skin_cluster_count = totals->skin_clusters;
+        out_scene->skin_deformer_count = totals->skin_deformers;
     }
 
     /* Only multi-set models need separate per-channel UV storage; single-set
@@ -931,6 +1032,10 @@ static int review_import_fill_skin(
     size_t node_index;
     size_t logical_base = 0;
     size_t emitted = 0;
+    size_t clusters_emitted = 0;
+    size_t deformers_emitted = 0;
+    uint32_t *cluster_map = NULL;
+    size_t cluster_map_capacity = 0;
 
     /* Unskinned scene: `review_import_alloc_geometry` allocated nothing, and the
        Rust side marshals this to `skin: None`. */
@@ -943,12 +1048,78 @@ static int review_import_fill_skin(
         ufbx_mesh *mesh = node ? node->mesh : NULL;
         const ufbx_skin_deformer *deformer;
         size_t vertex_index;
+        size_t cluster_index;
 
         if (!mesh || !mesh->vertex_position.exists) {
             continue;
         }
 
         deformer = review_import_mesh_skin(mesh);
+        if (deformer) {
+            /* This node's clusters, in deformer order, each with the bind matrix
+               relative to *this node's* baked world space (an instanced mesh
+               under two nodes gets two cluster sets, since their
+               geometry_to_world differ). The local->global map is what the
+               influence emit below records. */
+            ufbx_matrix world_to_geometry;
+            review_import_skin_deformer *info;
+            int invertible;
+
+            if (deformer->clusters.count > cluster_map_capacity) {
+                uint32_t *grown = (uint32_t*)realloc(cluster_map, deformer->clusters.count * sizeof(uint32_t));
+                if (!grown) {
+                    free(cluster_map);
+                    review_import_set_error(out_error, "out of memory while recording skin clusters");
+                    return 0;
+                }
+                cluster_map = grown;
+                cluster_map_capacity = deformer->clusters.count;
+            }
+
+            /* A zero-scaled mesh node has no inverse; its clusters then get the
+               identity so the mesh at least stays where it was baked. */
+            invertible = fabs(ufbx_matrix_determinant(&node->geometry_to_world)) > 1e-30;
+            world_to_geometry = invertible
+                ? ufbx_matrix_invert(&node->geometry_to_world)
+                : ufbx_identity_matrix;
+
+            for (cluster_index = 0; cluster_index < deformer->clusters.count; cluster_index++) {
+                const ufbx_skin_cluster *cluster = deformer->clusters.data[cluster_index];
+                review_import_skin_cluster *dst;
+                ufbx_matrix bind;
+                if (!cluster || !cluster->bone_node) {
+                    cluster_map[cluster_index] = UINT32_MAX;
+                    continue;
+                }
+                if (clusters_emitted >= totals->skin_clusters) {
+                    free(cluster_map);
+                    review_import_set_error(out_error, "malformed FBX: skin clusters drifted between the count and fill passes");
+                    return 0;
+                }
+                dst = &out_scene->skin_clusters[clusters_emitted];
+                dst->bone = cluster->bone_node->typed_id;
+                dst->mesh_node = (uint32_t)node_index;
+                bind = invertible
+                    ? ufbx_matrix_mul(&cluster->geometry_to_bone, &world_to_geometry)
+                    : ufbx_identity_matrix;
+                review_import_write_matrix(dst->world_to_bone_bind, &bind);
+                cluster_map[cluster_index] = (uint32_t)clusters_emitted;
+                clusters_emitted++;
+            }
+
+            if (deformers_emitted >= totals->skin_deformers) {
+                free(cluster_map);
+                review_import_set_error(out_error, "malformed FBX: skin deformers drifted between the count and fill passes");
+                return 0;
+            }
+            info = &out_scene->skin_deformers[deformers_emitted++];
+            info->mesh_node = (uint32_t)node_index;
+            info->method = review_import_skinning_method_code(deformer->skinning_method);
+            info->max_weights_per_vertex = deformer->max_weights_per_vertex > UINT32_MAX
+                ? UINT32_MAX
+                : (uint32_t)deformer->max_weights_per_vertex;
+        }
+
         for (vertex_index = 0; vertex_index < mesh->num_vertices; vertex_index++) {
             out_scene->skin_offsets[logical_base + vertex_index] = (uint32_t)emitted;
             emitted += review_import_skin_influences(
@@ -956,21 +1127,479 @@ static int review_import_fill_skin(
                 vertex_index,
                 out_scene->skin_bones + emitted,
                 out_scene->skin_weights + emitted,
+                out_scene->skin_influence_cluster + emitted,
+                deformer ? cluster_map : NULL,
                 totals->skin_influences - emitted
             );
         }
         logical_base += mesh->num_vertices;
     }
+    free(cluster_map);
 
     /* The CSR terminator: row `source_vertices` is one past the last vertex. */
     out_scene->skin_offsets[totals->source_vertices] = (uint32_t)emitted;
 
-    if (logical_base != totals->source_vertices || emitted != totals->skin_influences) {
+    if (logical_base != totals->source_vertices || emitted != totals->skin_influences ||
+        clusters_emitted != totals->skin_clusters || deformers_emitted != totals->skin_deformers) {
         review_import_set_error(out_error, "malformed FBX: skin weights drifted between the count and fill passes");
         return 0;
     }
 
     return 1;
+}
+
+/* Blend shapes: one pass over the mesh-bearing nodes counting channels /
+   keyframes / shapes / sparse offsets, an allocation, then the fill — the same
+   count->fill discipline as the geometry. Shapes are published once per
+   (node, shape) pair: an instanced mesh under two nodes has two logical-vertex
+   blocks, so its offsets have to be emitted twice against different bases.
+   Position / normal offsets are rotated into the node's baked world orientation
+   here, so the GPU adds them to the baked vertex directly. `channel_of_element`
+   (sized `scene->elements.count`, UINT32_MAX = none) records which output
+   channel each ufbx blend channel became, for the animation pass; an instanced
+   channel maps to its first occurrence. Returns 1 on success, 0 with
+   `out_error` set. */
+static int review_import_capture_morphs(
+    const ufbx_scene *scene,
+    review_import_scene *out_scene,
+    uint32_t *channel_of_element,
+    review_import_error *out_error
+)
+{
+    size_t node_index;
+    size_t channels = 0, keyframes = 0, shapes = 0, entries = 0;
+    size_t channel_offset = 0, keyframe_offset = 0, shape_offset = 0, entry_offset = 0;
+    int pass;
+
+    for (pass = 0; pass < 2; pass++) {
+        /* Start of the current node's block in the global logical numbering —
+           the same running sum the geometry fill keeps. */
+        size_t logical_base = 0;
+        for (node_index = 0; node_index < scene->nodes.count; node_index++) {
+            ufbx_node *node = scene->nodes.data[node_index];
+            ufbx_mesh *mesh = node ? node->mesh : NULL;
+            ufbx_matrix normal_matrix;
+            size_t deformer_index;
+            size_t node_base;
+
+            if (!mesh || !mesh->vertex_position.exists) {
+                continue;
+            }
+            node_base = logical_base;
+            logical_base += mesh->num_vertices;
+            normal_matrix = ufbx_matrix_for_normals(&node->geometry_to_world);
+
+            for (deformer_index = 0; deformer_index < mesh->blend_deformers.count; deformer_index++) {
+                const ufbx_blend_deformer *deformer = mesh->blend_deformers.data[deformer_index];
+                size_t channel_index;
+                if (!deformer) {
+                    continue;
+                }
+                for (channel_index = 0; channel_index < deformer->channels.count; channel_index++) {
+                    const ufbx_blend_channel *channel = deformer->channels.data[channel_index];
+                    size_t key_index;
+                    size_t first_keyframe = keyframe_offset;
+                    if (!channel || channel->keyframes.count == 0) {
+                        continue;
+                    }
+                    for (key_index = 0; key_index < channel->keyframes.count; key_index++) {
+                        const ufbx_blend_keyframe *key = &channel->keyframes.data[key_index];
+                        const ufbx_blend_shape *shape = key->shape;
+                        size_t offset_index;
+                        if (!shape) {
+                            continue;
+                        }
+                        if (pass == 0) {
+                            keyframes++;
+                            shapes++;
+                            for (offset_index = 0; offset_index < shape->num_offsets; offset_index++) {
+                                if (offset_index < shape->offset_vertices.count &&
+                                    shape->offset_vertices.data[offset_index] < mesh->num_vertices &&
+                                    offset_index < shape->position_offsets.count) {
+                                    entries++;
+                                }
+                            }
+                            continue;
+                        }
+                        /* Fill. */
+                        if (keyframe_offset >= keyframes || shape_offset >= shapes) {
+                            review_import_set_error(out_error, "malformed FBX: blend shapes drifted between the count and fill passes");
+                            return 0;
+                        }
+                        out_scene->morph_shapes[shape_offset].name = review_import_dup_ufbx_string(shape->name);
+                        if (!out_scene->morph_shapes[shape_offset].name) {
+                            review_import_set_error(out_error, "out of memory while recording blend shapes");
+                            return 0;
+                        }
+                        out_scene->morph_keyframes[keyframe_offset].shape = (uint32_t)shape_offset;
+                        out_scene->morph_keyframes[keyframe_offset].target_weight = (float)key->target_weight;
+                        keyframe_offset++;
+                        for (offset_index = 0; offset_index < shape->num_offsets; offset_index++) {
+                            review_import_morph_entry *dst;
+                            ufbx_vec3 position, normal;
+                            double offset_weight = 1.0;
+                            if (!(offset_index < shape->offset_vertices.count &&
+                                  shape->offset_vertices.data[offset_index] < mesh->num_vertices &&
+                                  offset_index < shape->position_offsets.count)) {
+                                continue;
+                            }
+                            if (entry_offset >= entries) {
+                                review_import_set_error(out_error, "malformed FBX: blend shapes drifted between the count and fill passes");
+                                return 0;
+                            }
+                            /* Blender's per-offset weights scale the offset, as
+                               ufbx's own `ufbx_add_blend_shape_vertex_offsets` does. */
+                            if (offset_index < shape->offset_weights.count) {
+                                offset_weight = shape->offset_weights.data[offset_index];
+                            }
+                            position = shape->position_offsets.data[offset_index];
+                            position.x *= offset_weight;
+                            position.y *= offset_weight;
+                            position.z *= offset_weight;
+                            position = ufbx_transform_direction(&node->geometry_to_world, position);
+                            if (offset_index < shape->normal_offsets.count) {
+                                normal = shape->normal_offsets.data[offset_index];
+                                normal.x *= offset_weight;
+                                normal.y *= offset_weight;
+                                normal.z *= offset_weight;
+                                normal = ufbx_transform_direction(&normal_matrix, normal);
+                            } else {
+                                normal = ufbx_zero_vec3;
+                            }
+                            dst = &out_scene->morph_entries[entry_offset++];
+                            dst->logical_vertex = (uint32_t)(node_base + shape->offset_vertices.data[offset_index]);
+                            dst->shape = (uint32_t)shape_offset;
+                            dst->position[0] = (float)position.x;
+                            dst->position[1] = (float)position.y;
+                            dst->position[2] = (float)position.z;
+                            dst->normal[0] = (float)normal.x;
+                            dst->normal[1] = (float)normal.y;
+                            dst->normal[2] = (float)normal.z;
+                        }
+                        shape_offset++;
+                    }
+                    if (pass == 0) {
+                        channels++;
+                        continue;
+                    }
+                    if (channel_offset >= channels) {
+                        review_import_set_error(out_error, "malformed FBX: blend shapes drifted between the count and fill passes");
+                        return 0;
+                    }
+                    out_scene->morph_channels[channel_offset].name = review_import_dup_ufbx_string(channel->name);
+                    if (!out_scene->morph_channels[channel_offset].name) {
+                        review_import_set_error(out_error, "out of memory while recording blend shapes");
+                        return 0;
+                    }
+                    out_scene->morph_channels[channel_offset].mesh_node = (uint32_t)node_index;
+                    out_scene->morph_channels[channel_offset].rest_weight = (float)channel->weight;
+                    out_scene->morph_channels[channel_offset].keyframe_first = (uint32_t)first_keyframe;
+                    out_scene->morph_channels[channel_offset].keyframe_count = (uint32_t)(keyframe_offset - first_keyframe);
+                    if (channel->element_id < scene->elements.count &&
+                        channel_of_element[channel->element_id] == UINT32_MAX) {
+                        channel_of_element[channel->element_id] = (uint32_t)channel_offset;
+                    }
+                    channel_offset++;
+                }
+            }
+        }
+
+        if (pass == 0) {
+            if (channels == 0) {
+                return 1;
+            }
+            if (channels > UINT32_MAX || keyframes > UINT32_MAX || shapes > UINT32_MAX ||
+                entries > UINT32_MAX) {
+                review_import_set_error(out_error, "FBX blend shapes exceed the 32-bit limit");
+                return 0;
+            }
+            out_scene->morph_channels = (review_import_morph_channel*)calloc(channels, sizeof(review_import_morph_channel));
+            out_scene->morph_keyframes = (review_import_morph_keyframe*)calloc(keyframes > 0 ? keyframes : 1, sizeof(review_import_morph_keyframe));
+            out_scene->morph_shapes = (review_import_morph_shape*)calloc(shapes > 0 ? shapes : 1, sizeof(review_import_morph_shape));
+            out_scene->morph_entries = (review_import_morph_entry*)calloc(entries > 0 ? entries : 1, sizeof(review_import_morph_entry));
+            if (!out_scene->morph_channels || !out_scene->morph_keyframes ||
+                !out_scene->morph_shapes || !out_scene->morph_entries) {
+                review_import_set_error(out_error, "out of memory while allocating blend shapes");
+                return 0;
+            }
+            out_scene->morph_channel_count = channels;
+            out_scene->morph_keyframe_count = keyframes;
+            out_scene->morph_shape_count = shapes;
+            out_scene->morph_entry_count = entries;
+        }
+    }
+
+    if (channel_offset != channels || keyframe_offset != keyframes ||
+        shape_offset != shapes || entry_offset != entries) {
+        review_import_set_error(out_error, "malformed FBX: blend shapes drifted between the count and fill passes");
+        return 0;
+    }
+    return 1;
+}
+
+/* The baked animation of every stack, kept between the count and fill passes
+   so each stack is baked exactly once (the bake is the expensive part). A NULL
+   entry is a stack whose bake failed — it is skipped, not fatal. */
+typedef struct review_import_baked_stacks {
+    ufbx_baked_anim **baked;
+    size_t count;
+} review_import_baked_stacks;
+
+static void review_import_free_baked_stacks(review_import_baked_stacks *stacks)
+{
+    size_t index;
+    if (!stacks->baked) {
+        return;
+    }
+    for (index = 0; index < stacks->count; index++) {
+        if (stacks->baked[index]) {
+            ufbx_free_baked_anim(stacks->baked[index]);
+        }
+    }
+    free(stacks->baked);
+    stacks->baked = NULL;
+    stacks->count = 0;
+}
+
+/* The "DeformPercent" property of a baked element, if the animation touched it
+   — the blend channel's weight track (in percent). */
+static const ufbx_baked_prop *review_import_deform_percent(const ufbx_baked_element *element)
+{
+    size_t index;
+    for (index = 0; index < element->props.count; index++) {
+        const ufbx_baked_prop *prop = &element->props.data[index];
+        if (prop->name.length == 13 && memcmp(prop->name.data, "DeformPercent", 13) == 0) {
+            return prop;
+        }
+    }
+    return NULL;
+}
+
+/* Animation clips: bake every animation stack with ufbx (linear keys kept as
+   authored, cubic segments resampled at the file's frame rate, no key
+   reduction — the exact curve, not an approximation of it), then count the
+   tracks and keys, allocate, and fill. Node keys map straight onto our node
+   table (ufbx's `typed_id` is the node's index); blend-channel keys are
+   resolved through `channel_of_element`. Returns 1 on success, 0 with
+   `out_error` set. */
+static int review_import_capture_animation(
+    const ufbx_scene *scene,
+    review_import_scene *out_scene,
+    const uint32_t *channel_of_element,
+    review_import_error *out_error
+)
+{
+    review_import_baked_stacks stacks = { NULL, 0 };
+    ufbx_bake_opts bake_opts;
+    size_t stack_index;
+    size_t node_tracks = 0, vec3_keys = 0, quat_keys = 0, morph_tracks = 0, scalar_keys = 0;
+    size_t node_track_offset = 0, vec3_offset = 0, quat_offset = 0, morph_track_offset = 0, scalar_offset = 0;
+    int ok = 0;
+
+    if (scene->anim_stacks.count == 0) {
+        return 1;
+    }
+
+    stacks.baked = (ufbx_baked_anim**)calloc(scene->anim_stacks.count, sizeof(ufbx_baked_anim*));
+    if (!stacks.baked) {
+        review_import_set_error(out_error, "out of memory while baking animation");
+        return 0;
+    }
+    stacks.count = scene->anim_stacks.count;
+
+    memset(&bake_opts, 0, sizeof(bake_opts));
+    bake_opts.resample_rate = scene->settings.frames_per_second > 0.0
+        ? scene->settings.frames_per_second
+        : 30.0;
+    bake_opts.key_reduction_enabled = false;
+    bake_opts.trim_start_time = false;
+
+    /* Count pass. */
+    for (stack_index = 0; stack_index < scene->anim_stacks.count; stack_index++) {
+        const ufbx_anim_stack *stack = scene->anim_stacks.data[stack_index];
+        ufbx_error bake_error;
+        ufbx_baked_anim *baked;
+        size_t index;
+        if (!stack || !stack->anim) {
+            continue;
+        }
+        memset(&bake_error, 0, sizeof(bake_error));
+        baked = ufbx_bake_anim(scene, stack->anim, &bake_opts, &bake_error);
+        if (!baked) {
+            /* One unbakeable stack must not cost the artist the model — the
+               clip is simply absent. */
+            continue;
+        }
+        stacks.baked[stack_index] = baked;
+        for (index = 0; index < baked->nodes.count; index++) {
+            const ufbx_baked_node *node = &baked->nodes.data[index];
+            if (node->typed_id >= scene->nodes.count) {
+                continue;
+            }
+            node_tracks++;
+            vec3_keys += node->translation_keys.count + node->scale_keys.count;
+            quat_keys += node->rotation_keys.count;
+        }
+        for (index = 0; index < baked->elements.count; index++) {
+            const ufbx_baked_element *element = &baked->elements.data[index];
+            const ufbx_baked_prop *prop;
+            if (element->element_id >= scene->elements.count ||
+                channel_of_element[element->element_id] == UINT32_MAX) {
+                continue;
+            }
+            prop = review_import_deform_percent(element);
+            if (!prop) {
+                continue;
+            }
+            morph_tracks++;
+            scalar_keys += prop->keys.count;
+        }
+    }
+
+    if (node_tracks > UINT32_MAX || vec3_keys > UINT32_MAX || quat_keys > UINT32_MAX ||
+        morph_tracks > UINT32_MAX || scalar_keys > UINT32_MAX) {
+        review_import_set_error(out_error, "FBX animation exceeds the 32-bit key limit");
+        goto cleanup;
+    }
+
+    out_scene->anim_stacks = (review_import_anim_stack*)calloc(scene->anim_stacks.count, sizeof(review_import_anim_stack));
+    out_scene->anim_node_tracks = (review_import_node_track*)calloc(node_tracks > 0 ? node_tracks : 1, sizeof(review_import_node_track));
+    out_scene->anim_vec3_keys = (review_import_vec3_key*)calloc(vec3_keys > 0 ? vec3_keys : 1, sizeof(review_import_vec3_key));
+    out_scene->anim_quat_keys = (review_import_quat_key*)calloc(quat_keys > 0 ? quat_keys : 1, sizeof(review_import_quat_key));
+    out_scene->anim_morph_tracks = (review_import_morph_track*)calloc(morph_tracks > 0 ? morph_tracks : 1, sizeof(review_import_morph_track));
+    out_scene->anim_scalar_keys = (review_import_scalar_key*)calloc(scalar_keys > 0 ? scalar_keys : 1, sizeof(review_import_scalar_key));
+    if (!out_scene->anim_stacks || !out_scene->anim_node_tracks || !out_scene->anim_vec3_keys ||
+        !out_scene->anim_quat_keys || !out_scene->anim_morph_tracks || !out_scene->anim_scalar_keys) {
+        review_import_set_error(out_error, "out of memory while allocating animation");
+        goto cleanup;
+    }
+    /* Published counts grow as stacks are filled, so a failed fill frees
+       exactly what was recorded. */
+    out_scene->anim_node_track_count = node_tracks;
+    out_scene->anim_vec3_key_count = vec3_keys;
+    out_scene->anim_quat_key_count = quat_keys;
+    out_scene->anim_morph_track_count = morph_tracks;
+    out_scene->anim_scalar_key_count = scalar_keys;
+
+    /* Fill pass. */
+    for (stack_index = 0; stack_index < scene->anim_stacks.count; stack_index++) {
+        const ufbx_anim_stack *stack = scene->anim_stacks.data[stack_index];
+        const ufbx_baked_anim *baked = stacks.baked[stack_index];
+        review_import_anim_stack *dst;
+        size_t index;
+        if (!baked || !stack) {
+            continue;
+        }
+        dst = &out_scene->anim_stacks[out_scene->anim_stack_count];
+        dst->name = review_import_dup_ufbx_string(stack->name);
+        if (!dst->name) {
+            review_import_set_error(out_error, "out of memory while recording animation clips");
+            goto cleanup;
+        }
+        out_scene->anim_stack_count++;
+        dst->time_begin = stack->time_begin;
+        dst->time_end = stack->time_end;
+        /* A stack that declares no range still has keys somewhere; the baked
+           key range is the honest fallback, so the clip is playable at all. */
+        if (!(dst->time_end > dst->time_begin) && baked->key_time_max > baked->key_time_min) {
+            dst->time_begin = baked->key_time_min;
+            dst->time_end = baked->key_time_max;
+        }
+        dst->node_track_first = (uint32_t)node_track_offset;
+        dst->morph_track_first = (uint32_t)morph_track_offset;
+
+        for (index = 0; index < baked->nodes.count; index++) {
+            const ufbx_baked_node *node = &baked->nodes.data[index];
+            review_import_node_track *track;
+            size_t key;
+            if (node->typed_id >= scene->nodes.count) {
+                continue;
+            }
+            if (node_track_offset >= node_tracks ||
+                vec3_offset + node->translation_keys.count + node->scale_keys.count > vec3_keys ||
+                quat_offset + node->rotation_keys.count > quat_keys) {
+                review_import_set_error(out_error, "malformed FBX: animation drifted between the count and fill passes");
+                goto cleanup;
+            }
+            track = &out_scene->anim_node_tracks[node_track_offset++];
+            track->node = node->typed_id;
+            track->translation_first = (uint32_t)vec3_offset;
+            track->translation_count = (uint32_t)node->translation_keys.count;
+            for (key = 0; key < node->translation_keys.count; key++) {
+                const ufbx_baked_vec3 *src = &node->translation_keys.data[key];
+                review_import_vec3_key *out = &out_scene->anim_vec3_keys[vec3_offset++];
+                out->time = src->time;
+                out->value[0] = (float)src->value.x;
+                out->value[1] = (float)src->value.y;
+                out->value[2] = (float)src->value.z;
+            }
+            track->rotation_first = (uint32_t)quat_offset;
+            track->rotation_count = (uint32_t)node->rotation_keys.count;
+            for (key = 0; key < node->rotation_keys.count; key++) {
+                const ufbx_baked_quat *src = &node->rotation_keys.data[key];
+                review_import_quat_key *out = &out_scene->anim_quat_keys[quat_offset++];
+                out->time = src->time;
+                out->value[0] = (float)src->value.x;
+                out->value[1] = (float)src->value.y;
+                out->value[2] = (float)src->value.z;
+                out->value[3] = (float)src->value.w;
+            }
+            track->scale_first = (uint32_t)vec3_offset;
+            track->scale_count = (uint32_t)node->scale_keys.count;
+            for (key = 0; key < node->scale_keys.count; key++) {
+                const ufbx_baked_vec3 *src = &node->scale_keys.data[key];
+                review_import_vec3_key *out = &out_scene->anim_vec3_keys[vec3_offset++];
+                out->time = src->time;
+                out->value[0] = (float)src->value.x;
+                out->value[1] = (float)src->value.y;
+                out->value[2] = (float)src->value.z;
+            }
+        }
+        dst->node_track_count = (uint32_t)(node_track_offset - dst->node_track_first);
+
+        for (index = 0; index < baked->elements.count; index++) {
+            const ufbx_baked_element *element = &baked->elements.data[index];
+            const ufbx_baked_prop *prop;
+            review_import_morph_track *track;
+            size_t key;
+            if (element->element_id >= scene->elements.count ||
+                channel_of_element[element->element_id] == UINT32_MAX) {
+                continue;
+            }
+            prop = review_import_deform_percent(element);
+            if (!prop) {
+                continue;
+            }
+            if (morph_track_offset >= morph_tracks || scalar_offset + prop->keys.count > scalar_keys) {
+                review_import_set_error(out_error, "malformed FBX: animation drifted between the count and fill passes");
+                goto cleanup;
+            }
+            track = &out_scene->anim_morph_tracks[morph_track_offset++];
+            track->channel = channel_of_element[element->element_id];
+            track->first = (uint32_t)scalar_offset;
+            track->count = (uint32_t)prop->keys.count;
+            for (key = 0; key < prop->keys.count; key++) {
+                const ufbx_baked_vec3 *src = &prop->keys.data[key];
+                review_import_scalar_key *out = &out_scene->anim_scalar_keys[scalar_offset++];
+                out->time = src->time;
+                /* ufbx's DeformPercent is a percentage; the channel weight is
+                   its hundredth (`ufbx_evaluate_blend_weight` does the same). */
+                out->value = (float)(src->value.x * 0.01);
+            }
+        }
+        dst->morph_track_count = (uint32_t)(morph_track_offset - dst->morph_track_first);
+    }
+
+    if (node_track_offset != node_tracks || vec3_offset != vec3_keys || quat_offset != quat_keys ||
+        morph_track_offset != morph_tracks || scalar_offset != scalar_keys) {
+        review_import_set_error(out_error, "malformed FBX: animation drifted between the count and fill passes");
+        goto cleanup;
+    }
+    ok = 1;
+
+cleanup:
+    review_import_free_baked_stacks(&stacks);
+    return ok;
 }
 
 /* Capture the full scene-graph hierarchy (every node, mesh-bearing or not) for
@@ -1070,12 +1699,22 @@ static int review_import_capture_nodes(
 
         /* node_to_world is a column-major affine (4 columns of 3); expand to a
            full column-major 4x4 with the implicit [0,0,0,1] bottom row. */
-        for (col = 0; col < 4; col++) {
-            dst->transform[col * 4 + 0] = (float)transform.cols[col].x;
-            dst->transform[col * 4 + 1] = (float)transform.cols[col].y;
-            dst->transform[col * 4 + 2] = (float)transform.cols[col].z;
-            dst->transform[col * 4 + 3] = (col == 3) ? 1.0f : 0.0f;
-        }
+        review_import_write_matrix(dst->transform, &transform);
+        (void)col;
+
+        /* The rest local transform — what animation keys replace. With the
+           helper-node inherit handling every node is a plain parent × local
+           product, so these compose back to `transform`. */
+        dst->local_translation[0] = (float)node->local_transform.translation.x;
+        dst->local_translation[1] = (float)node->local_transform.translation.y;
+        dst->local_translation[2] = (float)node->local_transform.translation.z;
+        dst->local_rotation[0] = (float)node->local_transform.rotation.x;
+        dst->local_rotation[1] = (float)node->local_transform.rotation.y;
+        dst->local_rotation[2] = (float)node->local_transform.rotation.z;
+        dst->local_rotation[3] = (float)node->local_transform.rotation.w;
+        dst->local_scale[0] = (float)node->local_transform.scale.x;
+        dst->local_scale[1] = (float)node->local_transform.scale.y;
+        dst->local_scale[2] = (float)node->local_transform.scale.z;
     }
 
     return 1;
@@ -1114,6 +1753,12 @@ int review_import_load_fbx(
        unit scale folds into the root transform and so into `geometry_to_world`,
        which we already apply to every vertex in the fill pass. */
     load_opts.target_unit_meters = 1.0;
+    /* Make every node a plain `parent_world × local` product by letting ufbx
+       insert scale-helper nodes for the non-standard inherit modes (3ds Max's
+       segment-scale compensation). The rest local transforms captured below
+       then compose back to `node_to_world` exactly, which is what lets a pose
+       be recomposed from them at runtime. */
+    load_opts.inherit_mode_handling = UFBX_INHERIT_MODE_HANDLING_HELPER_NODES;
     scene = ufbx_load_file(path, &load_opts, &error);
     if (!scene) {
         char buffer[256];
@@ -1126,6 +1771,7 @@ int review_import_load_fbx(
        normalization rescaled everything to meters. Surfaced in the stats panel
        so a mis-authored export is visible rather than silently trusted. */
     out_scene->source_unit_meters = (float)scene->settings.original_unit_meters;
+    out_scene->frames_per_second = scene->settings.frames_per_second;
 
     if (!review_import_count_pass(scene, out_scene, &totals, out_error)) {
         goto cleanup;
@@ -1141,6 +1787,28 @@ int review_import_load_fbx(
         !review_import_fill_skin(scene, out_scene, &totals, out_error) ||
         !review_import_capture_nodes(scene, out_scene, out_error)) {
         goto cleanup;
+    }
+
+    /* Blend shapes, then the animation that drives them (and the nodes). The
+       element -> channel map is what links a baked "DeformPercent" track back
+       to the channel the morph pass published. */
+    {
+        uint32_t *channel_of_element = NULL;
+        int captured;
+        if (scene->elements.count > 0) {
+            channel_of_element = (uint32_t*)malloc(scene->elements.count * sizeof(uint32_t));
+            if (!channel_of_element) {
+                review_import_set_error(out_error, "out of memory while recording blend shapes");
+                goto cleanup;
+            }
+            memset(channel_of_element, 0xFF, scene->elements.count * sizeof(uint32_t));
+        }
+        captured = review_import_capture_morphs(scene, out_scene, channel_of_element, out_error) &&
+            review_import_capture_animation(scene, out_scene, channel_of_element, out_error);
+        free(channel_of_element);
+        if (!captured) {
+            goto cleanup;
+        }
     }
 
     success = 1;

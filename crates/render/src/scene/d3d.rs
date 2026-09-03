@@ -33,7 +33,7 @@ use super::gpu_types::{
     skin_weight_value, vertex_color_value,
 };
 use super::pipelines::{SCENE_VERTEX_LAYOUT, SCENE_VS, ScenePipelineSet, build_scene_pipelines};
-use super::resources::{ModelSlot, SlotId};
+use super::resources::{DEFORM_INFLUENCES_SLOT, DEFORM_SLOT_COUNT, ModelSlot, SlotId};
 use crate::rhi::gpu_profiler::{self, GpuProfiler, Zone};
 
 /// Compiled DXBC — see `build.rs`. (The scene pipelines' own shaders live in
@@ -485,12 +485,14 @@ impl SceneGpu {
     ) -> windows::core::Result<()> {
         let ctx = gpu.context();
 
+        let deform = self.active.deform_enabled();
         let uniforms = scene_uniforms(
             camera,
             frame.projection,
             frame.environment,
             frame.selection,
             frame.debug,
+            deform,
         );
         self.uniforms.update(ctx, &uniforms)?;
 
@@ -515,6 +517,8 @@ impl SceneGpu {
         self.zone_begin(ctx, Zone::Composite);
         self.record_composite(gpu, &post, gtao_active.then_some(&self.gtao_blur), dest)?;
         self.zone_end(ctx, Zone::Composite);
+        // Release the deform tables so a model swap can drop them cleanly.
+        gpu.unbind_vs_srvs(DEFORM_INFLUENCES_SLOT, DEFORM_SLOT_COUNT);
         Ok(())
     }
 
@@ -591,12 +595,16 @@ impl SceneGpu {
         // Build-on-demand / free-on-off for the derived 3D line overlays (invariant
         // 3): each view's buffer exists only while its toggle is on, rebuilt live
         // when its baked params (color / length / hidden set / scope) drift.
+        // The pose (palette + shape weights) the vertex shader deforms with,
+        // uploaded only when its revision moves.
+        self.sync_pose(ctx, frame.pose, frame.pose_revision)?;
         self.sync_line_views(
             device,
             frame.model,
             frame.model_revision,
             frame.debug,
             frame.hidden_meshes,
+            frame.scene_bounds,
         )?;
         self.sync_skeleton(
             device,
@@ -676,6 +684,17 @@ impl SceneGpu {
             CheckerTexture::Color => &self.checker_color,
         };
         self.bind_scene_shared(ctx, checker)?;
+        // The deform tables, bound for the whole frame (the GTAO G-buffer pass
+        // shares `vs_main` and reads them too); the uniform flag decides whether
+        // the shader looks at them.
+        if let Some(deform) = self
+            .active
+            .mesh
+            .as_ref()
+            .and_then(|mesh| mesh.deform.as_ref())
+        {
+            deform.bind_vs(ctx);
+        }
 
         // Skybox background first, behind all geometry, when shown.
         if frame.environment.show_background {
@@ -1014,6 +1033,7 @@ pub(super) fn scene_uniforms(
     environment: EnvironmentSettings,
     selection: SelectionView,
     debug: SceneDebugOptions,
+    deform: bool,
 ) -> SceneUniforms {
     let view_projection = camera.view_projection(projection);
     let selection_color = if selection.selection.is_active() {
@@ -1035,7 +1055,11 @@ pub(super) fn scene_uniforms(
             debug.uv_checker_tiling.max(1) as f32,
             vertex_color_value(debug),
         ],
-        camera_position: camera.eye_position().extend(0.0).to_array(),
+        // `w` enables the vertex-stage deform path (skinning + blend shapes).
+        camera_position: camera
+            .eye_position()
+            .extend(if deform { 1.0 } else { 0.0 })
+            .to_array(),
         env_params: [
             if environment.ibl_enabled { 1.0 } else { 0.0 },
             environment.intensity.max(0.0),

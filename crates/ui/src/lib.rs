@@ -33,6 +33,7 @@ mod status_bar;
 mod texture_view;
 pub mod theme;
 mod toolbar;
+mod transport;
 mod units;
 mod widgets;
 
@@ -46,7 +47,7 @@ pub use opt_state::{
 pub use overlay::draw_overlay;
 pub use review_render::{MsaaSamples, Selection};
 pub use state::{
-    AxisGizmoAction, TexViewRequest, TextureBackground, TextureIntent, TexturePoolEntry,
-    TextureSlotRef, UiOutput, UiState, WorkspaceMode,
+    AnimationUiState, AxisGizmoAction, PlaybackSpeed, TexViewRequest, TextureBackground,
+    TextureIntent, TexturePoolEntry, TextureSlotRef, UiOutput, UiState, WorkspaceMode,
 };
 pub use theme::init_style;
