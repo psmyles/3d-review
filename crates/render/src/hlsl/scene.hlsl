@@ -32,6 +32,9 @@
 //   b2 GtaoUniforms (`gtao.hlsl`, PS) · b3 PostUniforms (`post.hlsl`, PS)
 //   t0 checker (s0) · t1 irradiance / t2 prefilter / t3 brdf / t4 env cube (s1 IBL)
 //   t5..t11 the seven material slots (s2 material aniso sampler)
+//   t12..t15 the VS-stage deform buffers (influences / palette / morph deltas /
+//            morph weights) — a separate register table from the PS `t#` above,
+//            and numbered past it anyway so the plan reads as one list.
 
 cbuffer SceneUniforms : register(b0)
 {
@@ -88,7 +91,112 @@ struct VsInput
     float2 uv       : TEXCOORD0;
     float4 tangent  : TANGENT;
     float4 color    : COLOR0;
+    // The deform lane: x/y = first + count of this vertex's influence run
+    // (`deform_influences`), z/w = first + count of its blend-shape delta run
+    // (`morph_deltas`). All zero for geometry that never deforms. Matches
+    // `SceneVertex::deform` (`gpu_types.rs`).
+    uint4  deform   : BLENDINDICES0;
 };
+
+// --- The GPU deform path (VS stage). Every geometry pipeline shares `vs_main`, so
+// the mesh, the GTAO G-buffer, the selection flash and every mesh-derived overlay
+// deform identically. Enabled per frame by `camera_position.w`; a vertex whose
+// lane is empty costs one branch. The structs mirror `InfluenceEntry` /
+// `PaletteEntry` / `MorphEntry` in `gpu_types.rs` byte for byte (invariant 11).
+struct InfluenceEntry
+{
+    uint  entry;   // palette index
+    float weight;
+};
+
+// The three rows of an affine 3x4 matrix — spelled out as rows rather than an
+// HLSL matrix so the structured-buffer packing is unambiguous on both sides.
+struct PaletteEntry
+{
+    float4 r0;
+    float4 r1;
+    float4 r2;
+};
+
+struct MorphEntry
+{
+    uint   shape;    // index into `morph_weights`
+    float3 position; // world-oriented position offset at weight 1
+    float3 normal;   // world-oriented normal offset at weight 1
+};
+
+StructuredBuffer<InfluenceEntry> deform_influences : register(t12);
+StructuredBuffer<PaletteEntry>   deform_palette    : register(t13);
+StructuredBuffer<MorphEntry>     morph_deltas      : register(t14);
+StructuredBuffer<float>          morph_weights     : register(t15);
+
+float3 palette_point(PaletteEntry m, float3 p)
+{
+    float4 h = float4(p, 1.0);
+    return float3(dot(m.r0, h), dot(m.r1, h), dot(m.r2, h));
+}
+
+float3 palette_direction(PaletteEntry m, float3 v)
+{
+    return float3(dot(m.r0.xyz, v), dot(m.r1.xyz, v), dot(m.r2.xyz, v));
+}
+
+// Apply the vertex's blend-shape deltas, then its skinning run — the weighted
+// palette blend normalised by the summed weight, exactly as ufbx's own
+// `ufbx_get_skin_vertex_matrix` does (a sum within 1e-6 of one is left alone).
+// A zero normal (the overlay sentinel) stays zero through both, so overlays keep
+// their flat-color path in the pixel shader.
+void apply_deform(uint4 lane, inout float3 position, inout float3 normal, inout float3 tangent)
+{
+    // An overlay vertex derived from a mesh corner (a wireframe edge end) carries
+    // the corner's morph lane but a zero normal; the normal delta must not revive
+    // it, or the pixel shader would shade the line instead of returning its color.
+    bool has_normal = dot(normal, normal) > 1e-12;
+    [loop]
+    for (uint m = 0; m < lane.w; m++)
+    {
+        MorphEntry delta = morph_deltas[lane.z + m];
+        float weight = morph_weights[delta.shape];
+        position += delta.position * weight;
+        if (has_normal)
+        {
+            normal += delta.normal * weight;
+        }
+    }
+
+    if (lane.y == 0)
+    {
+        return;
+    }
+    float3 blended_position = 0.0;
+    float3 blended_normal = 0.0;
+    float3 blended_tangent = 0.0;
+    float total = 0.0;
+    [loop]
+    for (uint i = 0; i < lane.y; i++)
+    {
+        InfluenceEntry influence = deform_influences[lane.x + i];
+        PaletteEntry entry = deform_palette[influence.entry];
+        blended_position += palette_point(entry, position) * influence.weight;
+        blended_normal += palette_direction(entry, normal) * influence.weight;
+        blended_tangent += palette_direction(entry, tangent) * influence.weight;
+        total += influence.weight;
+    }
+    if (total <= 0.0)
+    {
+        return;
+    }
+    if (abs(total - 1.0) > 1e-6)
+    {
+        float rcp_total = 1.0 / total;
+        blended_position *= rcp_total;
+        blended_normal *= rcp_total;
+        blended_tangent *= rcp_total;
+    }
+    position = blended_position;
+    normal = blended_normal;
+    tangent = blended_tangent;
+}
 
 // Skin-weight heat map: the unlit-region base color (linear, ~sRGB 0.24 — dark
 // enough to stay out of the ramp's way, light enough to read against black) and
@@ -110,12 +218,31 @@ struct VsOutput
 VsOutput vs_main(VsInput input)
 {
     VsOutput output;
-    output.clip_position = mul(view_projection, float4(input.position, 1.0));
-    output.normal = input.normal;
+    float3 position = input.position;
+    float3 normal = input.normal;
+    float3 tangent = input.tangent.xyz;
+    if (camera_position.w > 0.5 && (input.deform.y | input.deform.w) != 0)
+    {
+        apply_deform(input.deform, position, normal, tangent);
+        // Rigid bones keep the length; a blend of several can shrink it. Renormalise
+        // only a real normal — the overlay sentinel must stay exactly zero.
+        float normal_length_sq = dot(normal, normal);
+        if (normal_length_sq > 1e-12)
+        {
+            normal *= rsqrt(normal_length_sq);
+        }
+        float tangent_length_sq = dot(tangent, tangent);
+        if (tangent_length_sq > 1e-12)
+        {
+            tangent *= rsqrt(tangent_length_sq);
+        }
+    }
+    output.clip_position = mul(view_projection, float4(position, 1.0));
+    output.normal = normal;
     output.uv = input.uv;
     output.color = input.color;
-    output.world_position = input.position;
-    output.tangent = input.tangent;
+    output.world_position = position;
+    output.tangent = float4(tangent, input.tangent.w);
     return output;
 }
 

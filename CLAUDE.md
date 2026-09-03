@@ -175,6 +175,12 @@ crates/
             src/selection_flash.rs;
             scene texture pool + off-thread decode + disk-auto-reload
             (an `impl App` block) -> src/texture_manager.rs;
+            the animation clock + pose evaluation (`AnimationSubsystem`, an
+            `impl App` block: advances `UiState::animation.time` while playing,
+            re-evaluates the pose through `review_model::anim` when the clip or
+            time moved, bumps `pose_revision`, keeps `ui.bounds` on the selected
+            clip's envelope, and is the `anim_playing` term of the redraw pacing)
+            -> src/animation.rs;
             window position/size restore via %APPDATA%, monitor-geometry
             validation + the refresh-rate query -> src/window_state.rs;
             unified undo/redo snapshot stack -> src/undo.rs;
@@ -189,12 +195,37 @@ crates/
             Vertex, Bounds, MaterialImportDefaults, TopologyFace, ModelStats,
             TriangleData (grouped per-triangle face/material/node arrays +
             `validate` lockstep guard), ModelData, recompute_bounds,
-            demo_cube_model -> src/lib.rs; per-mesh-part triangle BVH (occlusion
-            for the dimension labels) -> src/bvh.rs
+            demo_cube_model -> src/lib.rs, plus the deform data: `SceneNode::
+            rest_local` (the per-node rest TRS the clips override), `ModelData::
+            corner_to_logical` (render corner → DCC vertex), `SkinData` (CSR
+            weights over logical vertices + the `clusters` table carrying each
+            (mesh node, bone) bind matrix), `MorphData` (blend-shape channels /
+            keyframes / per-logical-vertex offset CSR), `AnimationClip` (baked
+            `NodeTrack`s + `MorphTrack`s, the stack's time range, its motion
+            envelope `bounds`), and `ModelData::validate_deform` (the funnel
+            guard for all of it). Pose evaluation — `AnimContext`, `Pose`,
+            `evaluate_pose` (parents-first recomposition, hold outside keys,
+            ufbx's in-between blend rule via `channel_effective_weights`),
+            `build_palette` → `DeformPose`, and the CPU reference
+            `deform_corner` / `clip_bounds` the shader and tests mirror ->
+            src/anim.rs; per-mesh-part triangle BVH (occlusion for the dimension
+            labels) -> src/bvh.rs
   import/   review-import: load_model/load_fbx, ImportError, the unsafe FFI
             (repr(C) mirror structs, checked_slice, model_from_bridge_scene),
             the vendored ufbx C + bridge, build.rs (cc, cfg(has_ufbx)).
-            -> src/lib.rs, src/ufbx_bridge.c/.h, build.rs
+            -> src/lib.rs, src/ufbx_bridge.c/.h, build.rs. The bridge also
+            captures each node's rest local TRS, the skin cluster table (per
+            mesh-bearing node: `geometry_to_bone × inverse(geometry_to_world)`)
+            + per-influence cluster index + deformer method, the blend shapes
+            (offsets pre-rotated into baked world orientation), and every
+            animation stack baked with `ufbx_bake_anim` (file frame rate, no key
+            reduction; "DeformPercent" element tracks → morph channels), each
+            with the same count→fill discipline. The Rust side sorts the morph
+            entries into a CSR, validates through `validate_deform`, and — for a
+            model that deforms — measures `bounds` at the rest pose and each
+            clip's envelope on the import worker. Loads with
+            `UFBX_INHERIT_MODE_HANDLING_HELPER_NODES` so `parent × local`
+            recomposes `node_to_world` exactly.
   optimize/ review-optimize: mesh optimization for the Opt workspace, over
             vendored meshoptimizer v1.2 (invariant 9's third FFI site). Depends on
             `review-model` only — hands back plain `ModelData`, never touches GPU
@@ -272,7 +303,15 @@ crates/
                 lockstep). The `--tracy`-gated GPU timestamp profiler
                 (`ID3D11Query` → Tracy GPU context) lives in rhi/gpu_profiler.rs.
             CPU vertex generation -> src/geometry/ (vertex/grid/mesh/select/
-            debug_lines/uv); editable per-material table (cbuffer `b1` + `t5..t11` +
+            debug_lines/uv, plus deform.rs — the per-model `DeformLayout`: each
+            corner's 16-byte `deform` lane and the influence / morph tables it
+            indexes; `rhi::StructuredBuffer` uploads them to VS `t12..t15`, the
+            palette + shape weights re-uploaded only on `pose_revision`, and
+            `vs_main` applies morph deltas then the normalised skinning blend so
+            the mesh, the GTAO G-buffer, the selection flash and every
+            mesh-derived overlay deform through the one shader; the skeleton
+            overlay attaches its vertices to node entries and needs no CPU
+            rebuild); editable per-material table (cbuffer `b1` + `t5..t11` +
             aniso sampler) + path-keyed texture cache -> src/material/ (state / mode /
             d3d); source-texture decode (magic-byte dispatch: PSD via `review-psd`,
             JPEG via zune's fast path, PNG/TGA/TIFF/HDR/BMP/GIF/PNM via the `image`
@@ -334,7 +373,9 @@ crates/
             gizmo, stats overlay, bounding-box dimension labels, startup help
             overlay; emits UiOutput intents. Thin root re-exports; modules: theme/
             state/assets/widgets/overlay/toolbar/status_bar/stats/texture_view/gizmo/
-            dimensions/help
+            dimensions/help/transport (the bottom-centre playback card, drawn
+            only while a clip is selected in the 3D workspace; it edits the
+            plain `UiState::animation` in place, like selection)
             + panels/ (mod.rs = width-pinning dispatch; one file per tool:
             anti_aliasing, bounding_box, environment, normals, gtao, tonemap,
             uv_checker, vertex_colors, wireframe, material_mode; plus inspector +
@@ -342,7 +383,9 @@ crates/
             workspace). The Outliner is itself a directory — panels/outliner/
             {mod.rs = entry point + tab dispatch, tree.rs = tree-model
             construction, rows.rs = row painting, nav.rs = keyboard nav + click
-            semantics, materials.rs = the materials tab}. -> src/lib.rs + src/*.rs
+            semantics, materials.rs = the materials tab, animations.rs = the
+            clip list, a tab that exists only while the model carries clips and
+            the workspace is not Opt}. -> src/lib.rs + src/*.rs
             The Opt workspace's own state (the `OptStack` the chrome edits, the
             comparison-view settings, and the last run's measured figures) ->
             src/opt_state.rs. Ownership follows the convention already used for
@@ -512,6 +555,24 @@ mesh is shaded and which is the ghost. An explicit export writes the chain to FB
 Startup is untouched: nothing Opt-specific is built until the workspace is first
 opened, and a stack with nothing enabled schedules no run.
 
+**Skinning + animation.** A skinned mesh rests in the file's *default* pose,
+skinned onto the skeleton as drawn (not the bind pose its buffers hold): GPU
+linear-blend skinning over each vertex's exact influence run, weights normalised
+by their sum as ufbx does, plus rigid node animation and blend shapes through the
+same vertex-shader deform stage. Every FBX animation stack imports as a clip
+(baked at the file's frame rate, no key reduction; frame counts come from the
+stack range, never key counts) and is listed in the Outliner's `Animations (N)`
+tab — shown only for animated files and never in Opt. Clicking a clip selects it
+paused on its first frame and shows the bottom-centre transport (go-to-start /
+step / play-pause / step / scrubber / `frame / total   s` / loop-on-by-default /
+speed); clicking it again returns to the rest pose. `Space` and `,` `.` mirror
+the transport. While a clip is selected, `F` and the bounding box use its motion
+envelope, measured once at import. Playback state is view state (never undone);
+the clock and pose live in `app` (`animation.rs`), the pose math in
+`review_model::anim`. Dual-quaternion skins are evaluated as linear and the
+Inspector says so; the Opt workspace draws the bind pose (its processed meshes
+carry no skin) and the dimension-label BVH / AO bake use the bind-pose buffers.
+
 The `ui` crate was migrated off the old hand-rolled `egui::Area` + pixel-rect
 layout system onto egui's **native windowing**: option tools are native
 `egui::Window`s (collapsible/closable, non-resizable, multi-open via
@@ -587,6 +648,34 @@ when its fixture or a vendored tree is absent.
 
 - Real GPU required for render checks; reserve CI for `check` / `clippy` /
   import unit tests.
+- **Rest pose ≠ bind pose.** `ModelData::vertices` are world-baked in the bind
+  pose, but a skinned model is *displayed* in the file's default pose: the palette
+  at rest is `bone_rest_world × world_to_bone_bind` per cluster, not identity.
+  Anything that reads the vertex buffer on the CPU (the dimension-label BVH, the
+  AO bake, `recompute_bounds`) sees the bind pose; `model.bounds` and each clip's
+  `bounds` are therefore measured through `review_model::anim` at import, and the
+  Opt workspace (which shows the bind pose on purpose) passes no pose.
+- **Every mesh-derived overlay must copy its source corner's `deform` lane.** The
+  wireframe, normal lines, heat map and selection flash deform only because their
+  builders take the slot's lanes (`geometry::deform::corner_deform`); a builder
+  that pushes `NO_DEFORM` for mesh geometry silently draws the bind pose over the
+  skinned mesh. Static geometry (grid, bounding box, pivot, UV) is `NO_DEFORM`;
+  the skeleton overlay uses `node_deform`.
+- **Structured-buffer structs are invariant-11 territory too.** `InfluenceEntry`
+  / `PaletteEntry` / `MorphEntry` in `gpu_types.rs` mirror the HLSL structs at
+  `t12..t15` byte for byte (the palette is three `float4` rows, never `float3x4`,
+  because matrix packing differs between cbuffers and structured buffers); each
+  has a `const` size assertion. `scene_vertex_size()` deliberately reports the
+  64-byte engine-equivalent vertex, not `SceneVertex`'s 80 bytes — the deform lane
+  is viewer-internal and must not move the Opt overfetch figure.
+- **`ufbx_bake_anim` facts.** Linear keys are kept as authored (only cubic
+  segments resample), stepped keys become 1 ms pairs, and `key_time_min/max` can
+  extend past the stack range — so frame counts derive from the stack range × fps
+  and the evaluator holds the end values outside the keys. Blend-channel weights
+  arrive as the `DeformPercent` element property (percent ÷ 100), and ufbx folds
+  the channel weight into per-keyframe *effective* weights
+  (`channel_effective_weights` is a verbatim port) — don't multiply the channel
+  weight in again.
 - **ufbx_write's `ufbxw_view_*` buffers are borrowed, not copied** — the pointer
   must stay valid until the save completes. `export_bridge.c` uses `ufbxw_copy_*`
   throughout so nothing is borrowed past the call; reusing one scratch buffer

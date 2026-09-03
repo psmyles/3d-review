@@ -25,12 +25,13 @@ const SCENE_SELECTION_PS: &[u8] = include_bytes!("../hlsl/scene.selection.ps.dxb
 
 /// The `SceneVertex` input layout, in field order (offsets auto-computed). Must
 /// match `#[repr(C)] SceneVertex` (`gpu_types`) and `VsInput` in `scene.hlsl`.
-pub(super) const SCENE_VERTEX_LAYOUT: [InputElement; 5] = [
+pub(super) const SCENE_VERTEX_LAYOUT: [InputElement; 6] = [
     InputElement::new("POSITION", 0, VertexFormat::Float3),
     InputElement::new("NORMAL", 0, VertexFormat::Float3),
     InputElement::new("TEXCOORD", 0, VertexFormat::Float2),
     InputElement::new("TANGENT", 0, VertexFormat::Float4),
     InputElement::new("COLOR", 0, VertexFormat::Float4),
+    InputElement::new("BLENDINDICES", 0, VertexFormat::Uint4),
 ];
 
 /// Every MSAA-dependent scene pipeline. They all draw into the MSAA scene MRT, so
@@ -229,8 +230,8 @@ mod tests {
     /// the vertex shader with no runtime error.
     ///
     /// Checked per element rather than by total stride: the layout is
-    /// `Float3, Float3, Float2, Float4, Float4`, so swapping the two `[f32; 3]`
-    /// fields (or the two `[f32; 4]` ones) on either side leaves the stride at 64
+    /// `Float3, Float3, Float2, Float4, Float4, Uint4`, so swapping the two `[f32; 3]`
+    /// fields (or the two `[f32; 4]` ones) on either side leaves the stride at 80
     /// while every affected attribute reads another field's bytes. Each element's
     /// running `APPEND_ALIGNED` offset is therefore compared against the offset of
     /// the struct field it is meant to feed, and its semantic against the name the
@@ -248,6 +249,7 @@ mod tests {
             ("TEXCOORD", offset_of!(SceneVertex, uv)),
             ("TANGENT", offset_of!(SceneVertex, tangent)),
             ("COLOR", offset_of!(SceneVertex, vertex_color)),
+            ("BLENDINDICES", offset_of!(SceneVertex, deform)),
         ];
         assert_eq!(
             SCENE_VERTEX_LAYOUT.len(),

@@ -240,6 +240,9 @@ impl App {
         self.ui.solo = false;
         self.ui.hidden_meshes.clear();
         self.ui.reset_skeletal_state(model);
+        // The clip selection and playback clock index the old model's clips.
+        self.ui.reset_animation_state(model);
+        self.reset_animation();
         // Every cached measurement is keyed on the outgoing model's node indices
         // or selection. Clearing the inputs above is not enough on its own: a new
         // model that reproduces a key — the same node index hidden or selected

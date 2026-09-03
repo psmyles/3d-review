@@ -19,6 +19,7 @@ use review_model::ModelData;
 
 use crate::scene::SceneVertex;
 
+use super::deform::corner_deform;
 use super::vertex::push_shaded_vertex;
 
 /// The heat ramp: blue (0) → cyan → green → yellow → red (1), the convention every
@@ -69,14 +70,18 @@ pub(crate) fn weight_ramp(weight: f32) -> [f32; 4] {
 /// as "nothing to draw, fall back to the mesh".
 ///
 /// [`SkinData::influence_fraction`]: review_model::SkinData::influence_fraction
-pub(crate) fn skin_weight_vertices(model: &ModelData, selected: &[u32]) -> Vec<SceneVertex> {
+pub(crate) fn skin_weight_vertices(
+    model: &ModelData,
+    lanes: &[[u32; 4]],
+    selected: &[u32],
+) -> Vec<SceneVertex> {
     let Some(skin) = model.skin.as_ref() else {
         return Vec::new();
     };
 
     let mut vertices = Vec::with_capacity(model.vertices.len());
     for (index, vertex) in model.vertices.iter().enumerate() {
-        let fraction = match skin.corner_to_logical.get(index) {
+        let fraction = match model.corner_to_logical.get(index) {
             Some(&logical) if !selected.is_empty() => {
                 skin.influence_fraction(logical as usize, selected)
             }
@@ -88,6 +93,7 @@ pub(crate) fn skin_weight_vertices(model: &ModelData, selected: &[u32]) -> Vec<S
             vertex.position.to_array(),
             vertex.normal.to_array(),
             [ramp[0], ramp[1], ramp[2], fraction],
+            corner_deform(lanes, index),
         );
     }
     vertices
@@ -133,11 +139,12 @@ mod tests {
                     ..Default::default()
                 },
             ],
+            corner_to_logical: vec![0, 0, 1],
             skin: Some(SkinData {
-                corner_to_logical: vec![0, 0, 1],
                 offsets: vec![0, 2, 3],
                 bones: vec![1, 2, 2],
                 weights: vec![0.75, 0.25, 1.0],
+                ..Default::default()
             }),
             ..Default::default()
         }
@@ -173,7 +180,7 @@ mod tests {
     #[test]
     fn the_buffer_is_parallel_to_the_mesh_vertices() {
         let model = skinned_model();
-        let vertices = skin_weight_vertices(&model, &[1]);
+        let vertices = skin_weight_vertices(&model, &[], &[1]);
         assert_eq!(vertices.len(), model.vertices.len());
         // Positions are copied straight through, so the shared index buffer,
         // material ranges and visibility lists stay valid.
@@ -184,7 +191,7 @@ mod tests {
     #[test]
     fn a_single_bone_paints_only_its_own_influence() {
         let model = skinned_model();
-        let vertices = skin_weight_vertices(&model, &[1]);
+        let vertices = skin_weight_vertices(&model, &[], &[1]);
         // Bone 1 owns 75% of logical vertex 0 -> yellow, on both its corners.
         assert_eq!(vertices[0].vertex_color, tinted(0.75));
         assert_eq!(vertices[1].vertex_color, tinted(0.75));
@@ -197,7 +204,7 @@ mod tests {
     fn selecting_both_bones_sums_to_full_influence() {
         let model = skinned_model();
         // This is the multi-select payoff: overlapping regions read hotter.
-        let vertices = skin_weight_vertices(&model, &[1, 2]);
+        let vertices = skin_weight_vertices(&model, &[], &[1, 2]);
         assert_eq!(vertices[0].vertex_color, tinted(1.0));
         assert_eq!(vertices[2].vertex_color, tinted(1.0));
     }
@@ -205,7 +212,7 @@ mod tests {
     #[test]
     fn nothing_selected_paints_the_whole_mesh_inert() {
         let model = skinned_model();
-        let vertices = skin_weight_vertices(&model, &[]);
+        let vertices = skin_weight_vertices(&model, &[], &[]);
         // Every vertex reads as zero influence, so the whole mesh renders as the
         // plain shaded base rather than a wall of ramp-blue.
         assert!(vertices.iter().all(|v| v.vertex_color == untouched()));
@@ -215,14 +222,14 @@ mod tests {
     fn an_unskinned_model_produces_no_buffer() {
         let mut model = skinned_model();
         model.skin = None;
-        assert!(skin_weight_vertices(&model, &[1]).is_empty());
+        assert!(skin_weight_vertices(&model, &[], &[1]).is_empty());
     }
 
     #[test]
     fn heat_map_vertices_keep_the_mesh_normals() {
         let mut model = skinned_model();
         model.vertices[0].normal = Vec3::new(0.0, 1.0, 0.0);
-        let vertices = skin_weight_vertices(&model, &[1]);
+        let vertices = skin_weight_vertices(&model, &[], &[1]);
         // The shader Lambert-shades this buffer, so a zero normal here would drop
         // it onto the flat overlay path and lose the silhouette entirely.
         assert_eq!(vertices[0].normal, [0.0, 1.0, 0.0]);
@@ -235,8 +242,8 @@ mod tests {
         // rather than index out of bounds. (`SkinData::validate` rejects this at
         // import, so this is belt-and-braces for a hand-built model.)
         let mut model = skinned_model();
-        model.skin.as_mut().unwrap().corner_to_logical.truncate(1);
-        let vertices = skin_weight_vertices(&model, &[1]);
+        model.corner_to_logical.truncate(1);
+        let vertices = skin_weight_vertices(&model, &[], &[1]);
         assert_eq!(vertices.len(), 3);
         assert_eq!(vertices[1].vertex_color, untouched());
         assert_eq!(vertices[2].vertex_color, untouched());

@@ -155,6 +155,10 @@ pub(crate) fn stats_grid(ui: &mut egui::Ui, state: &UiState, scoped: ScopedStats
     if stats.bone_count > 0 {
         whole_model_row(ui, "Bones", &stats.bone_count.to_string());
     }
+    // Animated files only, for the same reason.
+    if stats.clip_count > 0 {
+        whole_model_row(ui, "Clips", &stats.clip_count.to_string());
+    }
     whole_model_row(ui, "Unit", &source_unit_label(stats.source_unit_meters));
     whole_model_row(ui, "FPS", &format!("{:.0}", state.fps));
 }
@@ -485,6 +489,10 @@ fn stat_tooltip(label: &str) -> Option<&'static str> {
              a detail-texture layout."
         }
         "Bones" => "Joints in the skeleton this mesh is bound to. Rigged meshes only.",
+        "Clips" => {
+            "Animation clips (FBX animation stacks) the file carries. Listed in the \
+             Outliner's Animations tab."
+        }
         "Unit" => {
             "The world unit the source file declared (centimetres, inches…). \
              Import normalises every model to metres; this is what the file itself \

@@ -17,7 +17,7 @@ mod sampler;
 mod target;
 mod texture;
 
-pub(crate) use buffer::{DynamicConstantBuffer, IndexBuffer, VertexBuffer};
+pub(crate) use buffer::{DynamicConstantBuffer, IndexBuffer, StructuredBuffer, VertexBuffer};
 pub(crate) use pipeline::{
     BlendMode, Cull, DepthBias, DepthCompare, DepthState, InputElement, Pipeline, PipelineDesc,
     Topology, VertexFormat,
@@ -324,6 +324,22 @@ impl Gpu {
         unsafe {
             self.context
                 .PSSetShaderResources(0, Some(&NULLS[..count.min(NULLS.len())]));
+        }
+    }
+
+    /// Unbind `count` vertex-shader shader-resource slots starting at `first` —
+    /// the deform buffers (`t12..t15`), released after the frame so a model swap
+    /// can drop them without the debug layer seeing a stale binding.
+    pub(crate) fn unbind_vs_srvs(&self, first: u32, count: usize) {
+        const NULLS: [Option<ID3D11ShaderResourceView>; 8] = [const { None }; 8];
+        debug_assert!(
+            count <= NULLS.len(),
+            "unbind_vs_srvs supports at most 8 slots"
+        );
+        // SAFETY: clearing SRV slots with null views; the static array outlives call.
+        unsafe {
+            self.context
+                .VSSetShaderResources(first, Some(&NULLS[..count.min(NULLS.len())]));
         }
     }
 

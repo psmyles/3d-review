@@ -9,6 +9,8 @@ use review_model::ModelData;
 use crate::material::MaterialDrawRange;
 use crate::scene::SceneVertex;
 
+use super::deform::corner_deform;
+
 /// The shaded mesh vertices + reordered indices for `uv_channel`, with one
 /// [`MaterialDrawRange`] per group (the renderer draws one range at a time,
 /// feeding each group's parameters from the group-3 uniform). Base color /
@@ -20,6 +22,7 @@ use crate::scene::SceneVertex;
 /// Unique material-mode mesh-part index) so each part draws with its own material.
 pub(crate) fn model_mesh<'model>(
     model: &'model ModelData,
+    lanes: &[[u32; 4]],
     uv_channel: u32,
     tri_key: Option<&[u32]>,
 ) -> (Vec<SceneVertex>, Cow<'model, [u32]>, Vec<MaterialDrawRange>) {
@@ -34,6 +37,7 @@ pub(crate) fn model_mesh<'model>(
             uv: model.uv_for_channel(index, channel).to_array(),
             tangent: vertex.tangent.to_array(),
             vertex_color: vertex.vertex_color.to_array(),
+            deform: corner_deform(lanes, index),
         })
         .collect();
     let (indices, ranges) = material_draw_ranges(model, tri_key);
@@ -139,7 +143,7 @@ mod tests {
             ..Default::default()
         };
 
-        let (verts, reordered, ranges) = model_mesh(&model, 0, None);
+        let (verts, reordered, ranges) = model_mesh(&model, &[], 0, None);
 
         assert_eq!(verts.len(), triangle_count * 3);
         assert_eq!(ranges.len(), model.material_draw_count());
@@ -183,7 +187,7 @@ mod tests {
             ..Default::default()
         };
 
-        let (_, _, ranges) = model_mesh(&model, 0, Some(&part_key));
+        let (_, _, ranges) = model_mesh(&model, &[], 0, Some(&part_key));
         // First-seen part order: 1, then 0, then 2.
         let order: Vec<u32> = ranges.iter().map(|range| range.material).collect();
         assert_eq!(order, vec![1, 0, 2]);
@@ -204,7 +208,7 @@ mod tests {
             ..Default::default()
         };
 
-        let (_, reordered, ranges) = model_mesh(&model, 0, None);
+        let (_, reordered, ranges) = model_mesh(&model, &[], 0, None);
 
         assert_eq!(ranges.len(), 1);
         assert_eq!(ranges.len(), model.material_draw_count());

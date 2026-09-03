@@ -259,12 +259,15 @@ impl SceneGpu {
         // The ghost's own uniform: same camera and projection, but the flat fill
         // colour swapped in. Restored to the frame's own uniform afterwards so the
         // GTAO pass (which reads `view` from `b0`) still sees the right one.
+        // The ghost is the idle slot's mesh, drawn in its bind pose: the Opt
+        // workspace compares static geometry, so neither mesh deforms there.
         let mut uniforms = scene_uniforms(
             camera,
             frame.projection,
             frame.environment,
             frame.selection,
             frame.debug,
+            false,
         );
         uniforms.selection_color = ghost_tint(style, tint);
         self.uniforms.update(ctx, &uniforms)?;
@@ -294,6 +297,7 @@ impl SceneGpu {
             frame.environment,
             frame.selection,
             frame.debug,
+            self.active.deform_enabled(),
         );
         self.uniforms.update(ctx, &restored)?;
         Ok(())
@@ -321,7 +325,7 @@ impl SceneGpu {
         if unchanged {
             return Ok(());
         }
-        let lines = wireframe_lines(frame.model, colour, frame.hidden_meshes);
+        let lines = wireframe_lines(frame.model, &[], colour, frame.hidden_meshes);
         self.active.ghost_wireframe_buf = optional_vertex_buffer(device, &lines)?;
         self.active.ghost_wireframe_baked =
             Some((frame.model_revision, frame.hidden_meshes.to_vec(), colour));

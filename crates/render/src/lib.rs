@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use glam::{Vec2, Vec3};
-use review_model::{Bounds, MaterialImportDefaults, ModelData};
+use review_model::{Bounds, DeformPose, MaterialImportDefaults, ModelData};
 
 mod camera;
 mod config;
@@ -48,16 +48,29 @@ use tex_d3d::TexGpu;
 pub use tex_d3d::{TexBackground, TexImage};
 pub use texture::{ChannelSelect, DecodedImage, TextureSlot, decode_image, suggested_channel};
 
-/// Size in bytes of one vertex as uploaded to the GPU.
+/// Size in bytes of one *engine-equivalent* vertex: position, normal, UV,
+/// tangent and color — the tuple a game engine's vertex buffer would hold for
+/// this mesh.
 ///
 /// Exposed for the Opt workspace's vertex-fetch analysis: meshoptimizer's
-/// overfetch figure is "bytes fetched / vertex buffer size", so it only describes
-/// the real draw if it is given the size the renderer actually uploads. The
-/// layout itself stays private — this is a measurement input, not an invitation
-/// to build vertices elsewhere (invariant 1).
+/// overfetch figure is "bytes fetched / vertex buffer size", so it describes the
+/// asset's real cost only when given the size an engine would fetch. The
+/// renderer's own [`scene::SceneVertex`] additionally carries a 16-byte deform
+/// lane (skinning / blend-shape run references) that is a viewer-internal
+/// mechanism, not part of the asset — so that lane is deliberately excluded and
+/// this is pinned by the assertion below rather than measured from the struct.
+/// The layout itself stays private — this is a measurement input, not an
+/// invitation to build vertices elsewhere (invariant 1).
 pub const fn scene_vertex_size() -> usize {
-    size_of::<scene::SceneVertex>()
+    ENGINE_VERTEX_SIZE
 }
+
+/// [`scene_vertex_size`]'s value: `SceneVertex` minus its deform lane.
+const ENGINE_VERTEX_SIZE: usize = 64;
+const _: () = assert!(
+    ENGINE_VERTEX_SIZE + size_of::<[u32; 4]>() == size_of::<scene::SceneVertex>(),
+    "SceneVertex changed size: re-derive the engine-equivalent vertex size"
+);
 
 /// Shorter transition used for the WASD 45° orbit steps, which fire repeatedly
 /// and want a snappier response than the default framing/snap animation.
@@ -143,6 +156,20 @@ pub struct SceneFrame<'a> {
     /// map; empty when no bone is selected.
     pub selected_bones: &'a [u32],
     pub background: ViewportBackground,
+    /// The pose to deform the model with — the rest pose or a clip's frame, as a
+    /// ready palette + blend-shape weights built by `review_model::anim`. `None`
+    /// draws the raw bind-pose buffers (a static model, or a workspace that
+    /// deliberately shows the bind pose). Uploaded only when `pose_revision`
+    /// changes.
+    pub pose: Option<&'a DeformPose>,
+    /// Identifies the pose above; the renderer re-uploads the palette only when it
+    /// moves, so a paused clip costs nothing per frame.
+    pub pose_revision: u64,
+    /// What the bounding-box overlay (in its All Meshes scope) and framing
+    /// describe this frame: the selected clip's motion envelope while a clip is
+    /// selected, else the model's own rest bounds. `None` falls back to
+    /// `model.bounds`.
+    pub scene_bounds: Option<Bounds>,
 }
 
 impl<'a> SceneFrame<'a> {

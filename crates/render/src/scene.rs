@@ -10,4 +10,4 @@ mod pipelines;
 mod resources;
 
 pub(crate) use d3d::SceneGpu;
-pub(crate) use gpu_types::SceneVertex;
+pub(crate) use gpu_types::{InfluenceEntry, MorphEntry, SceneVertex};

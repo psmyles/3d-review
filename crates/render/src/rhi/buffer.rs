@@ -2,13 +2,17 @@
 //! and a dynamic constant buffer updated each frame via `Map(WRITE_DISCARD)`.
 
 use bytemuck::Pod;
+use windows::Win32::Graphics::Direct3D::D3D_SRV_DIMENSION_BUFFER;
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_BIND_CONSTANT_BUFFER, D3D11_BIND_FLAG, D3D11_BIND_INDEX_BUFFER, D3D11_BIND_VERTEX_BUFFER,
-    D3D11_BUFFER_DESC, D3D11_CPU_ACCESS_FLAG, D3D11_CPU_ACCESS_WRITE, D3D11_MAP_WRITE_DISCARD,
-    D3D11_MAPPED_SUBRESOURCE, D3D11_SUBRESOURCE_DATA, D3D11_USAGE, D3D11_USAGE_DYNAMIC,
-    D3D11_USAGE_IMMUTABLE, ID3D11Buffer, ID3D11Device, ID3D11DeviceContext,
+    D3D11_BIND_CONSTANT_BUFFER, D3D11_BIND_FLAG, D3D11_BIND_INDEX_BUFFER,
+    D3D11_BIND_SHADER_RESOURCE, D3D11_BIND_VERTEX_BUFFER, D3D11_BUFFER_DESC, D3D11_BUFFER_SRV,
+    D3D11_BUFFER_SRV_0, D3D11_BUFFER_SRV_1, D3D11_CPU_ACCESS_FLAG, D3D11_CPU_ACCESS_WRITE,
+    D3D11_MAP_WRITE_DISCARD, D3D11_MAPPED_SUBRESOURCE, D3D11_RESOURCE_MISC_BUFFER_STRUCTURED,
+    D3D11_SHADER_RESOURCE_VIEW_DESC, D3D11_SHADER_RESOURCE_VIEW_DESC_0, D3D11_SUBRESOURCE_DATA,
+    D3D11_USAGE, D3D11_USAGE_DYNAMIC, D3D11_USAGE_IMMUTABLE, ID3D11Buffer, ID3D11Device,
+    ID3D11DeviceContext, ID3D11ShaderResourceView,
 };
-use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32_UINT;
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R32_UINT, DXGI_FORMAT_UNKNOWN};
 use windows::core::Result;
 
 use super::out_param;
@@ -212,6 +216,165 @@ impl DynamicConstantBuffer {
         // SAFETY: the buffer is live; the one-element array outlives the call.
         unsafe {
             ctx.PSSetConstantBuffers(slot, Some(&[Some(self.buffer.clone())]));
+        }
+    }
+}
+
+/// A structured buffer read by the vertex shader through a shader-resource view
+/// — the deform path's influence runs, palette and blend-shape deltas. Either
+/// immutable (built once with the mesh) or dynamic (re-uploaded when the pose
+/// changes, via `Map(WRITE_DISCARD)` like the constant buffers). Core at feature
+/// level 11_0, the renderer's floor, so it needs no capability gate.
+pub(crate) struct StructuredBuffer<T> {
+    buffer: ID3D11Buffer,
+    srv: ID3D11ShaderResourceView,
+    /// Element capacity the buffer was created with; [`Self::update`] bounds its
+    /// copy against it.
+    capacity: u32,
+    _element: std::marker::PhantomData<T>,
+}
+
+impl<T: Pod> StructuredBuffer<T> {
+    /// An immutable structured buffer holding `data` (must be non-empty).
+    pub(crate) fn immutable(device: &ID3D11Device, data: &[T]) -> Result<Self> {
+        if data.is_empty() {
+            return Err(super::invalid_arg("structured buffer must be non-empty"));
+        }
+        let bytes: &[u8] = bytemuck::cast_slice(data);
+        let init = D3D11_SUBRESOURCE_DATA {
+            pSysMem: bytes.as_ptr() as *const _,
+            SysMemPitch: 0,
+            SysMemSlicePitch: 0,
+        };
+        Self::create(
+            device,
+            data.len(),
+            D3D11_USAGE_IMMUTABLE,
+            D3D11_CPU_ACCESS_FLAG(0),
+            Some(&init),
+        )
+    }
+
+    /// A dynamic structured buffer with room for `capacity` elements (must be
+    /// non-zero), filled by [`Self::update`].
+    pub(crate) fn dynamic(device: &ID3D11Device, capacity: usize) -> Result<Self> {
+        if capacity == 0 {
+            return Err(super::invalid_arg("structured buffer must be non-empty"));
+        }
+        Self::create(
+            device,
+            capacity,
+            D3D11_USAGE_DYNAMIC,
+            D3D11_CPU_ACCESS_WRITE,
+            None,
+        )
+    }
+
+    fn create(
+        device: &ID3D11Device,
+        capacity: usize,
+        usage: D3D11_USAGE,
+        cpu_access: D3D11_CPU_ACCESS_FLAG,
+        init: Option<&D3D11_SUBRESOURCE_DATA>,
+    ) -> Result<Self> {
+        let stride = std::mem::size_of::<T>();
+        // Structured-buffer strides must be a multiple of 4 and the element count
+        // must fit the view's 32-bit range; both are checked rather than assumed.
+        if stride == 0 || !stride.is_multiple_of(4) {
+            return Err(super::invalid_arg(
+                "structured buffer element size must be a non-zero multiple of 4",
+            ));
+        }
+        let capacity_u32 = u32::try_from(capacity)
+            .map_err(|_| super::invalid_arg("structured buffer has too many elements"))?;
+        let byte_width = stride
+            .checked_mul(capacity)
+            .and_then(|bytes| u32::try_from(bytes).ok())
+            .ok_or_else(|| super::invalid_arg("structured buffer is too large"))?;
+        let desc = D3D11_BUFFER_DESC {
+            ByteWidth: byte_width,
+            Usage: usage,
+            BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+            CPUAccessFlags: cpu_access.0 as u32,
+            MiscFlags: D3D11_RESOURCE_MISC_BUFFER_STRUCTURED.0 as u32,
+            StructureByteStride: stride as u32,
+        };
+        let mut buffer = None;
+        // SAFETY: `desc` describes a structured buffer of `capacity` elements; when
+        // `init` is given it points at exactly that many elements, alive for the
+        // call. The out-param is set on success.
+        unsafe {
+            device.CreateBuffer(
+                &desc,
+                init.map(|init| init as *const D3D11_SUBRESOURCE_DATA),
+                Some(&mut buffer),
+            )?
+        };
+        let buffer = out_param(buffer);
+
+        let srv_desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
+            Format: DXGI_FORMAT_UNKNOWN,
+            ViewDimension: D3D_SRV_DIMENSION_BUFFER,
+            Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
+                Buffer: D3D11_BUFFER_SRV {
+                    Anonymous1: D3D11_BUFFER_SRV_0 { FirstElement: 0 },
+                    Anonymous2: D3D11_BUFFER_SRV_1 {
+                        NumElements: capacity_u32,
+                    },
+                },
+            },
+        };
+        let mut srv = None;
+        // SAFETY: `buffer` is shader-resource-bindable and structured; the view
+        // covers exactly its `capacity` elements. Out-param set on success.
+        unsafe { device.CreateShaderResourceView(&buffer, Some(&srv_desc), Some(&mut srv))? };
+        Ok(Self {
+            buffer,
+            srv: out_param(srv),
+            capacity: capacity_u32,
+            _element: std::marker::PhantomData,
+        })
+    }
+
+    /// Element capacity.
+    pub(crate) fn capacity(&self) -> usize {
+        self.capacity as usize
+    }
+
+    /// Upload `data` into a dynamic buffer (discard-and-rewrite). `data` must fit
+    /// the capacity the buffer was created with — a checked error, never an
+    /// out-of-bounds GPU write. Elements past `data.len()` are left undefined,
+    /// so callers must not index them.
+    pub(crate) fn update(&self, ctx: &ID3D11DeviceContext, data: &[T]) -> Result<()> {
+        let bytes: &[u8] = bytemuck::cast_slice(data);
+        if data.len() > self.capacity as usize {
+            return Err(super::invalid_arg(
+                "structured-buffer update is larger than the buffer it was created for",
+            ));
+        }
+        // SAFETY: WRITE_DISCARD maps the whole dynamic buffer for CPU writes; the
+        // mapped region is `capacity * stride` bytes and `data.len() <= capacity`
+        // was just checked, so the copy stays in bounds. `Unmap` pairs with `Map`.
+        unsafe {
+            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+            ctx.Map(
+                &self.buffer,
+                0,
+                D3D11_MAP_WRITE_DISCARD,
+                0,
+                Some(&mut mapped),
+            )?;
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), mapped.pData as *mut u8, bytes.len());
+            ctx.Unmap(&self.buffer, 0);
+        }
+        Ok(())
+    }
+
+    /// Bind this buffer's view to vertex-shader resource slot `slot`.
+    pub(crate) fn bind_vs(&self, ctx: &ID3D11DeviceContext, slot: u32) {
+        // SAFETY: the SRV is live; the one-element array outlives the call.
+        unsafe {
+            ctx.VSSetShaderResources(slot, Some(&[Some(self.srv.clone())]));
         }
     }
 }

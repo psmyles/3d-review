@@ -223,6 +223,32 @@ pub(crate) const ICON_SKIN_WEIGHTS: AppIcon = AppIcon {
     png_bytes: include_bytes!("../../../assets/icons/icon_skin_weights.png"),
 };
 
+/// The animation transport's tiles (shown only while a clip is selected).
+pub(crate) const ICON_ANIM_PLAY: AppIcon = AppIcon {
+    id: "icon_anim_play",
+    png_bytes: include_bytes!("../../../assets/icons/icon_anim_play.png"),
+};
+pub(crate) const ICON_ANIM_PAUSE: AppIcon = AppIcon {
+    id: "icon_anim_pause",
+    png_bytes: include_bytes!("../../../assets/icons/icon_anim_pause.png"),
+};
+pub(crate) const ICON_ANIM_STEP_BACK: AppIcon = AppIcon {
+    id: "icon_anim_step_back",
+    png_bytes: include_bytes!("../../../assets/icons/icon_anim_step_back.png"),
+};
+pub(crate) const ICON_ANIM_STEP_FORWARD: AppIcon = AppIcon {
+    id: "icon_anim_step_forward",
+    png_bytes: include_bytes!("../../../assets/icons/icon_anim_step_forward.png"),
+};
+pub(crate) const ICON_ANIM_GO_TO_START: AppIcon = AppIcon {
+    id: "icon_anim_go_to_start",
+    png_bytes: include_bytes!("../../../assets/icons/icon_anim_go_to_start.png"),
+};
+pub(crate) const ICON_ANIM_LOOP: AppIcon = AppIcon {
+    id: "icon_anim_loop",
+    png_bytes: include_bytes!("../../../assets/icons/icon_anim_loop.png"),
+};
+
 /// Tone-mapped equirectangular preview thumbnails for the built-in HDR
 /// environments, shown beside each option in the Environment dropdown. They are
 /// small (128×64) sRGB PNGs generated offline from the HDRs in `assets/textures`,

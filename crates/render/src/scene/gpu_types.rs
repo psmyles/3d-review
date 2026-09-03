@@ -71,8 +71,11 @@ pub(crate) struct SceneUniforms {
     /// skybox pass.
     pub(crate) inv_view_projection: [[f32; 4]; 4],
     pub(crate) render_options: [f32; 4],
-    /// World-space camera eye in `xyz` (`w` is padding). Used by the shaded path
-    /// to build the view vector for the specular highlight / reflection.
+    /// World-space camera eye in `xyz`. Used by the shaded path to build the view
+    /// vector for the specular highlight / reflection. `w` flags the GPU deform
+    /// path (>0.5): the vertex shader then applies the blend-shape deltas and the
+    /// skinning palette bound at `t12..t15` to every vertex carrying a non-empty
+    /// [`SceneVertex::deform`] lane.
     pub(crate) camera_position: [f32; 4],
     /// Image-based lighting: `x` = IBL enabled (>0.5), `y` = intensity, `z` =
     /// show background skybox (>0.5), `w` = prefiltered-cube max mip LOD.
@@ -109,7 +112,71 @@ pub(crate) struct SceneVertex {
     /// overlay path returns. The material base color / smoothness come from the
     /// group-3 material uniform, not per vertex.
     pub(crate) vertex_color: [f32; 4],
+    /// The deform lane (`BLENDINDICES`): `x` / `y` = first index + count of this
+    /// vertex's run in the influence buffer (`t12`), `z` / `w` = first index +
+    /// count of its run in the blend-shape delta buffer (`t14`). All zero for
+    /// geometry that never deforms (grid, bounding box, UV islands); a rigid
+    /// mesh vertex references its node's single-entry run. Built by
+    /// `geometry::deform`.
+    pub(crate) deform: [u32; 4],
 }
+
+// Byte-size lock against `scene.hlsl`'s `VsInput` + `SCENE_VERTEX_LAYOUT` — the
+// per-field pins live in the layout test beside the pipelines.
+const _: () = assert!(std::mem::size_of::<SceneVertex>() == 80);
+
+/// One entry of the influence buffer (`StructuredBuffer<InfluenceEntry>` at VS
+/// `t12`): a palette entry and its weight. A vertex's run is `deform.x ..
+/// deform.x + deform.y` of these.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq)]
+pub(crate) struct InfluenceEntry {
+    pub(crate) entry: u32,
+    pub(crate) weight: f32,
+}
+
+const _: () = assert!(std::mem::size_of::<InfluenceEntry>() == 8);
+
+/// One palette entry (`StructuredBuffer<PaletteEntry>` at VS `t13`): the three
+/// rows of an affine 3×4 matrix, spelled as rows rather than an HLSL matrix type
+/// so the structured-buffer packing is unambiguous on both sides. Entry `i <
+/// node_count` is node `i`'s rigid delta, the rest are the skin clusters' — see
+/// `review_model::anim::build_palette`.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq)]
+pub(crate) struct PaletteEntry {
+    pub(crate) r0: [f32; 4],
+    pub(crate) r1: [f32; 4],
+    pub(crate) r2: [f32; 4],
+}
+
+const _: () = assert!(std::mem::size_of::<PaletteEntry>() == 48);
+
+impl PaletteEntry {
+    /// The affine rows of `matrix` (column-major on the Rust side, so the rows
+    /// are the transpose's columns).
+    pub(crate) fn from_mat4(matrix: glam::Mat4) -> Self {
+        let rows = matrix.transpose();
+        Self {
+            r0: rows.x_axis.to_array(),
+            r1: rows.y_axis.to_array(),
+            r2: rows.z_axis.to_array(),
+        }
+    }
+}
+
+/// One blend-shape delta (`StructuredBuffer<MorphEntry>` at VS `t14`): the
+/// shape whose weight (`t15`) scales it, and the world-oriented position /
+/// normal offsets. A vertex's run is `deform.z .. deform.z + deform.w`.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq)]
+pub(crate) struct MorphEntry {
+    pub(crate) shape: u32,
+    pub(crate) position: [f32; 3],
+    pub(crate) normal: [f32; 3],
+}
+
+const _: () = assert!(std::mem::size_of::<MorphEntry>() == 28);
 
 pub(super) fn shading_mode_value(mode: ShadingMode) -> f32 {
     match mode {

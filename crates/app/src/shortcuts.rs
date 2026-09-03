@@ -36,6 +36,23 @@ impl App {
             return;
         }
 
+        // Space plays / pauses the selected clip. A Named key like Escape, so it
+        // is handled before the Character extraction; bare (no modifiers), 3D
+        // workspace only, and only while a clip is selected — otherwise it stays
+        // unbound.
+        if event.state == ElementState::Pressed
+            && matches!(&event.logical_key, Key::Named(NamedKey::Space))
+        {
+            if self.modifiers.is_empty()
+                && self.ui.mode == WorkspaceMode::ThreeD
+                && self.ui.animation.selected_clip.is_some()
+            {
+                self.toggle_playback();
+                self.redraw.requested = true;
+            }
+            return;
+        }
+
         let Key::Character(character) = &event.logical_key else {
             return;
         };
@@ -137,6 +154,15 @@ impl App {
                 self.ui.opt.side = self.ui.opt.side.swapped();
             }
             "f" => self.frame_camera_on_key(),
+            // Single-frame stepping through the selected clip (pauses playback).
+            "," | "." => {
+                if self.ui.mode != WorkspaceMode::ThreeD
+                    || self.ui.animation.selected_clip.is_none()
+                {
+                    return;
+                }
+                self.step_frame(if key == "," { -1 } else { 1 });
+            }
             "r" => {
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.animate_camera_to_home();
@@ -174,7 +200,10 @@ impl App {
                     self.scene_model.bounds.or(Some(part))
                 }
             }
-            None => self.scene_model.bounds,
+            // `ui.bounds` is the selected clip's motion envelope while a clip is
+            // selected, else the model's own bounds — so F frames the whole
+            // motion rather than a single pose.
+            None => self.ui.bounds.or(self.scene_model.bounds),
         };
         if let (Some(renderer), Some(bounds)) = (self.renderer.as_mut(), target) {
             renderer.animate_camera_to_bounds(bounds);

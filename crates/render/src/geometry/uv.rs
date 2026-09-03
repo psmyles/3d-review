@@ -7,6 +7,7 @@ use review_model::ModelData;
 
 use crate::scene::SceneVertex;
 
+use super::deform::NO_DEFORM;
 use super::vertex::{push_fill_vertex, push_line};
 
 /// Color of the model's UV edges drawn over the grid (a readable cyan-blue).
@@ -35,9 +36,27 @@ pub(crate) fn uv_wireframe_lines(model: &ModelData, channel: u32) -> Vec<SceneVe
                 triangle[1] as usize,
                 triangle[2] as usize,
             ];
-            push_line(&mut vertices, uv_point(a), uv_point(b), UV_EDGE_COLOR);
-            push_line(&mut vertices, uv_point(b), uv_point(c), UV_EDGE_COLOR);
-            push_line(&mut vertices, uv_point(c), uv_point(a), UV_EDGE_COLOR);
+            push_line(
+                &mut vertices,
+                uv_point(a),
+                uv_point(b),
+                UV_EDGE_COLOR,
+                NO_DEFORM,
+            );
+            push_line(
+                &mut vertices,
+                uv_point(b),
+                uv_point(c),
+                UV_EDGE_COLOR,
+                NO_DEFORM,
+            );
+            push_line(
+                &mut vertices,
+                uv_point(c),
+                uv_point(a),
+                UV_EDGE_COLOR,
+                NO_DEFORM,
+            );
         }
         return vertices;
     }
@@ -52,7 +71,13 @@ pub(crate) fn uv_wireframe_lines(model: &ModelData, channel: u32) -> Vec<SceneVe
             let a = first + corner;
             let b = first + (corner + 1) % count;
             if a < model.vertices.len() && b < model.vertices.len() {
-                push_line(&mut vertices, uv_point(a), uv_point(b), UV_EDGE_COLOR);
+                push_line(
+                    &mut vertices,
+                    uv_point(a),
+                    uv_point(b),
+                    UV_EDGE_COLOR,
+                    NO_DEFORM,
+                );
             }
         }
     }
@@ -107,9 +132,9 @@ pub(crate) fn uv_fill_triangles(
             }
             None => UV_FILL_SOLID_COLOR,
         };
-        push_fill_vertex(&mut vertices, uv_point(a), color);
-        push_fill_vertex(&mut vertices, uv_point(b), color);
-        push_fill_vertex(&mut vertices, uv_point(c), color);
+        push_fill_vertex(&mut vertices, uv_point(a), color, NO_DEFORM);
+        push_fill_vertex(&mut vertices, uv_point(b), color, NO_DEFORM);
+        push_fill_vertex(&mut vertices, uv_point(c), color, NO_DEFORM);
     }
 
     vertices

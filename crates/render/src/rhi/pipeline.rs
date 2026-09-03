@@ -23,7 +23,7 @@ use windows::Win32::Graphics::Direct3D11::{
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT, DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_R32G32B32_FLOAT,
-    DXGI_FORMAT_R32G32B32A32_FLOAT,
+    DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32A32_UINT,
 };
 use windows::core::{BOOL, PCSTR, Result};
 
@@ -35,6 +35,8 @@ pub(crate) enum VertexFormat {
     Float2,
     Float3,
     Float4,
+    /// Four 32-bit unsigned integers — the deform lane (`BLENDINDICES`).
+    Uint4,
 }
 
 impl VertexFormat {
@@ -43,6 +45,7 @@ impl VertexFormat {
             VertexFormat::Float2 => DXGI_FORMAT_R32G32_FLOAT,
             VertexFormat::Float3 => DXGI_FORMAT_R32G32B32_FLOAT,
             VertexFormat::Float4 => DXGI_FORMAT_R32G32B32A32_FLOAT,
+            VertexFormat::Uint4 => DXGI_FORMAT_R32G32B32A32_UINT,
         }
     }
 
@@ -54,7 +57,7 @@ impl VertexFormat {
         match self {
             VertexFormat::Float2 => 8,
             VertexFormat::Float3 => 12,
-            VertexFormat::Float4 => 16,
+            VertexFormat::Float4 | VertexFormat::Uint4 => 16,
         }
     }
 }

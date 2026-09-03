@@ -2,9 +2,12 @@
 //! joint pair, plus a 3-axis marker at every joint that terminates a chain.
 //!
 //! Joint positions come from [`SceneNode::transform`]'s translation column — the
-//! bind-pose `node_to_world` the importer carried through. Geometry is world-baked
+//! rest-pose `node_to_world` the importer carried through. Geometry is world-baked
 //! at import, so these are already in the same space as the mesh and need no
-//! further transform.
+//! further transform. Under animation the overlay follows the pose through the
+//! same deform palette as the mesh: every octahedron vertex carries the deform
+//! lane of the joint it belongs to (head + ring → the parent, tail → the child),
+//! so no CPU rebuild is needed per frame.
 //!
 //! Both builders emit **zero-normal** vertices (via [`push_line`] /
 //! [`push_fill_vertex`]), which is the scene shader's overlay sentinel: the
@@ -16,7 +19,8 @@ use review_model::{ModelData, NodeKind};
 
 use crate::scene::SceneVertex;
 
-use super::vertex::{push_fill_vertex, push_line};
+use super::deform::node_deform;
+use super::vertex::{push_fill_vertex, push_line, push_line_deformed};
 
 /// An octahedron's cross-section, as a fraction of the bone's own length — the
 /// proportion Blender uses, and what makes a bone read as a tapered spike rather
@@ -42,6 +46,8 @@ pub(crate) struct BoneSegment {
     /// selecting a bone highlights the segment *leaving* it (the convention every
     /// DCC uses: the bone belongs to its head joint).
     pub(crate) node: usize,
+    /// The child joint the segment points at; the tail vertex follows it.
+    pub(crate) child: usize,
     pub(crate) head: Vec3,
     pub(crate) tail: Vec3,
 }
@@ -72,6 +78,7 @@ pub(crate) fn bone_segments(model: &ModelData) -> Vec<BoneSegment> {
         }
         segments.push(BoneSegment {
             node: parent,
+            child: index,
             head: joint_position(model, parent),
             tail: joint_position(model, index),
         });
@@ -214,12 +221,28 @@ pub(crate) fn skeleton_fill_triangles(
         };
         let fill = [base[0], base[1], base[2], base[3] * fill_alpha];
         for [a, b, c] in OCTAHEDRON_TRIANGLES {
-            for point in [points[a], points[b], points[c]] {
-                push_fill_vertex(&mut vertices, point.to_array(), fill);
+            for corner in [a, b, c] {
+                push_fill_vertex(
+                    &mut vertices,
+                    points[corner].to_array(),
+                    fill,
+                    octahedron_deform(&segment, corner),
+                );
             }
         }
     }
     vertices
+}
+
+/// The deform lane of octahedron point `point` (an index into
+/// [`octahedron_points`]'s output): the tail follows the child joint, everything
+/// else rides the parent rigidly.
+fn octahedron_deform(segment: &BoneSegment, point: usize) -> [u32; 4] {
+    if point == 1 {
+        node_deform(segment.child)
+    } else {
+        node_deform(segment.node)
+    }
 }
 
 /// The octahedron outlines plus a 3-axis marker at every terminal joint. Opaque,
@@ -244,11 +267,13 @@ pub(crate) fn skeleton_lines(
             color
         };
         for [a, b] in OCTAHEDRON_EDGES {
-            push_line(
+            push_line_deformed(
                 &mut vertices,
                 points[a].to_array(),
                 points[b].to_array(),
                 line_color,
+                octahedron_deform(&segment, a),
+                octahedron_deform(&segment, b),
             );
         }
     }
@@ -275,6 +300,7 @@ pub(crate) fn skeleton_lines(
                 (position - axis * half).to_array(),
                 (position + axis * half).to_array(),
                 line_color,
+                node_deform(joint),
             );
         }
     }
@@ -295,6 +321,7 @@ mod tests {
             mesh_part: None,
             source_vertex_count: 0,
             transform: Mat4::from_translation(position),
+            rest_local: Default::default(),
             kind,
             bone: (kind == NodeKind::Bone).then_some(BoneInfo {
                 radius: 1.0,

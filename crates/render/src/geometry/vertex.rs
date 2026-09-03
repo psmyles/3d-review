@@ -2,6 +2,10 @@
 //! the normal-length scaling the normal-line views use. This is the only place
 //! line and fill vertices are constructed, so a future vertex-layout change
 //! touches this file plus the `SceneVertex` definition.
+//!
+//! Every helper takes the vertex's `deform` lane: geometry derived from the mesh
+//! passes its source corner's lane (see [`super::deform`]) so it deforms with the
+//! mesh; static geometry passes [`super::deform::NO_DEFORM`].
 
 use glam::Vec3;
 use review_model::ModelData;
@@ -28,6 +32,7 @@ pub(super) fn push_fill_vertex(
     vertices: &mut Vec<SceneVertex>,
     position: [f32; 3],
     color: [f32; 4],
+    deform: [u32; 4],
 ) {
     vertices.push(SceneVertex {
         position,
@@ -35,6 +40,7 @@ pub(super) fn push_fill_vertex(
         uv: [0.0, 0.0],
         tangent: [1.0, 0.0, 0.0, 1.0],
         vertex_color: color,
+        deform,
     });
 }
 
@@ -47,6 +53,7 @@ pub(super) fn push_shaded_vertex(
     position: [f32; 3],
     normal: [f32; 3],
     color: [f32; 4],
+    deform: [u32; 4],
 ) {
     vertices.push(SceneVertex {
         position,
@@ -54,14 +61,30 @@ pub(super) fn push_shaded_vertex(
         uv: [0.0, 0.0],
         tangent: [1.0, 0.0, 0.0, 1.0],
         vertex_color: color,
+        deform,
     });
 }
 
+/// Push one line whose two ends share a deform lane.
 pub(super) fn push_line(
     vertices: &mut Vec<SceneVertex>,
     start: [f32; 3],
     end: [f32; 3],
     color: [f32; 4],
+    deform: [u32; 4],
+) {
+    push_line_deformed(vertices, start, end, color, deform, deform);
+}
+
+/// Push one line whose ends deform independently — a skeleton bone whose head
+/// follows the parent joint and whose tail follows the child.
+pub(super) fn push_line_deformed(
+    vertices: &mut Vec<SceneVertex>,
+    start: [f32; 3],
+    end: [f32; 3],
+    color: [f32; 4],
+    start_deform: [u32; 4],
+    end_deform: [u32; 4],
 ) {
     vertices.push(SceneVertex {
         position: start,
@@ -69,6 +92,7 @@ pub(super) fn push_line(
         uv: [0.0, 0.0],
         tangent: [1.0, 0.0, 0.0, 1.0],
         vertex_color: color,
+        deform: start_deform,
     });
     vertices.push(SceneVertex {
         position: end,
@@ -76,5 +100,6 @@ pub(super) fn push_line(
         uv: [0.0, 0.0],
         tangent: [1.0, 0.0, 0.0, 1.0],
         vertex_color: color,
+        deform: end_deform,
     });
 }

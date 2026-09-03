@@ -83,6 +83,17 @@ input/file path
   dynamic MSAA (Off/2×/4×/8×/16×), and optional FXAA.
 - Centralized theme tokens for UI colors, sizes, fonts, spacing, and radii.
 - Window icon/resource metadata, window placement restore, and installer script.
+- **Skinned meshes and animation clips.** A skinned FBX rests in its file default
+  pose with the mesh skinned onto the skeleton (GPU linear-blend skinning over
+  exact per-vertex influence runs, normalised as ufbx does); rigidly animated
+  hierarchies and blend shapes deform too. Every animation stack imports as a
+  clip (baked by ufbx at the file's frame rate, no key reduction) and is listed
+  in a third Outliner tab, `Animations (N)`, present only for animated files and
+  never in Opt. Selecting a clip lands paused on its first frame and brings up a
+  bottom-centre transport: go-to-start, step back, play/pause, step forward, a
+  frame scrubber, `frame / total   seconds`, loop (on by default) and speed
+  (0.25–2×); `Space` and `,` / `.` mirror it. Framing and the bounding box use
+  the selected clip's motion envelope, measured once at import.
 
 ## Important Implementation Details
 
@@ -93,6 +104,22 @@ input/file path
   `validate` guard.
 - Imported positions are normalized to meters, while the original source unit is
   retained for display in the stats overlay.
+- Vertices stay world-baked in the *bind* pose (invariant 1); every deformation
+  is a delta applied on the GPU. `SceneVertex` carries a 16-byte `deform` lane
+  (influence run + blend-shape run) into per-model structured buffers built with
+  the mesh; a pose is a palette of `float3x4` deltas — one per scene node
+  (`world × inverse(rest world)`, what rigid geometry and the skeleton overlay
+  reference) then one per skin cluster (`bone_world × geometry_to_bone ×
+  inverse(mesh geometry_to_world)`) — plus per-shape morph weights, uploaded only
+  when the pose revision moves. `review_model::anim` is the single definition of
+  the pose (parents-first recomposition from each node's rest local transform
+  with the clip's keys substituted per channel, ufbx's in-between blend-shape
+  rule) and the CPU reference the shader, the clip envelopes and the tests share.
+  The importer loads with ufbx's helper-node inherit-mode handling so every node
+  is a plain `parent × local` product. Dual-quaternion skins render as linear and
+  the Inspector says so; the Opt workspace draws the bind pose (its processed
+  meshes carry no skin) and hides the clip UI; dimension-label occlusion and the
+  AO bake still use the bind-pose buffers.
 - There is now a real material/texture pipeline. The editable `MaterialState`
   table (bind group 3) carries per-material base color, metallic, roughness,
   emissive, alpha mode + cutoff, and a roughness/smoothness workflow, seeded from
@@ -222,6 +249,8 @@ probing, and it is unfixed upstream through wgpu 29 / egui-wgpu 0.34 (wgpu #3332
 | Texture viewer source-format coverage | The Tex viewer decodes PNG/JPG/TGA/etc. but intentionally not compressed (DDS/KTX2) cooked textures. | Out of scope by decision (artists test source assets); revisit only if requirements change. |
 | GPU memory pressure at high MSAA | Three HDR MRTs plus the GTAO G-buffer, resolves, and depth scale quickly. | Show memory-aware limits or defaults, and profile common resolutions. |
 | Hand-wired pass order | Adding effects keeps growing the `scene/` orchestration by hand. | Introduce an explicit render graph if effect count grows further. |
+| Helper nodes from inherit-mode handling | Files using 3ds Max-style segment-scale compensation gain ufbx scale-helper nodes in the Outliner, and their node indices shift versus a `PRESERVE` load. | Accepted for exact pose recomposition; surface helpers with their own kind if users find them confusing. |
+| Opt shows the bind pose | A skinned model looks different in Opt than in 3D (rest pose) because processed meshes carry no skin. | Carry skin/morph data through `optimize` in a follow-up. |
 
 ## Recommended Next Steps
 

@@ -18,7 +18,12 @@ use review_model::{ModelData, StatsScope};
 /// Every fixture the tests below load. Asserted to exist by
 /// [`every_fixture_the_suite_loads_exists`], so a rename cannot quietly turn the
 /// whole suite green.
-const FIXTURES: [&str; 3] = ["SK_Player_01.fbx", "SM_column04.fbx", "lucy.fbx"];
+const FIXTURES: [&str; 4] = [
+    "SK_Player_01.fbx",
+    "SM_column04.fbx",
+    "lucy.fbx",
+    "AN_ZombiedogLocomotion.fbx",
+];
 
 fn fixture_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

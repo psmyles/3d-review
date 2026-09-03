@@ -7,8 +7,9 @@ use review_model::{Bounds, ModelData};
 
 use crate::scene::SceneVertex;
 
+use super::deform::{NO_DEFORM, corner_deform};
 use super::hidden::HiddenFilter;
-use super::vertex::{debug_normal_length, push_line};
+use super::vertex::{debug_normal_length, push_line, push_line_deformed};
 
 /// Wireframe line segments tracing each *original* polygon's edges (quads stay
 /// quads, n-gons stay n-gons) in the given color — not the triangulated
@@ -20,13 +21,14 @@ use super::vertex::{debug_normal_length, push_line};
 /// model somehow arrives without face topology.
 pub(crate) fn wireframe_lines(
     model: &ModelData,
+    lanes: &[[u32; 4]],
     color: [f32; 4],
     hidden_nodes: &[u32],
 ) -> Vec<SceneVertex> {
     let mut vertices = Vec::with_capacity(model.indices.len() * 2);
 
     if model.faces.is_empty() {
-        return triangulated_wireframe_lines(model, color, hidden_nodes);
+        return triangulated_wireframe_lines(model, lanes, color, hidden_nodes);
     }
 
     // Map each face to its owning scene-graph node so faces of an Outliner-hidden
@@ -58,7 +60,16 @@ pub(crate) fn wireframe_lines(
             ) else {
                 continue;
             };
-            push_line(&mut vertices, start.to_array(), end.to_array(), color);
+            // Each end follows its own corner, so a skinned edge stretches with
+            // the skin exactly as the mesh's own triangle edge does.
+            push_line_deformed(
+                &mut vertices,
+                start.to_array(),
+                end.to_array(),
+                color,
+                corner_deform(lanes, a),
+                corner_deform(lanes, b),
+            );
         }
     }
 
@@ -94,6 +105,7 @@ fn face_node_map(model: &ModelData) -> Option<Vec<u32>> {
 /// `hidden_nodes` (or a model without per-triangle node info) draws every edge.
 fn triangulated_wireframe_lines(
     model: &ModelData,
+    lanes: &[[u32; 4]],
     color: [f32; 4],
     hidden_nodes: &[u32],
 ) -> Vec<SceneVertex> {
@@ -114,13 +126,18 @@ fn triangulated_wireframe_lines(
             model.vertices.get(b).map(|vertex| vertex.position),
             model.vertices.get(c).map(|vertex| vertex.position),
         ];
-        let [Some(a), Some(b), Some(c)] = positions else {
+        let [Some(pa), Some(pb), Some(pc)] = positions else {
             continue;
         };
+        let (da, db, dc) = (
+            corner_deform(lanes, a),
+            corner_deform(lanes, b),
+            corner_deform(lanes, c),
+        );
 
-        push_line(&mut vertices, a.to_array(), b.to_array(), color);
-        push_line(&mut vertices, b.to_array(), c.to_array(), color);
-        push_line(&mut vertices, c.to_array(), a.to_array(), color);
+        push_line_deformed(&mut vertices, pa.to_array(), pb.to_array(), color, da, db);
+        push_line_deformed(&mut vertices, pb.to_array(), pc.to_array(), color, db, dc);
+        push_line_deformed(&mut vertices, pc.to_array(), pa.to_array(), color, dc, da);
     }
 
     vertices
@@ -173,6 +190,7 @@ pub(crate) fn pivot_lines(pivot: [f32; 3], half: f32) -> Vec<SceneVertex> {
             (pivot - axis * half).to_array(),
             (pivot + axis * half).to_array(),
             color,
+            NO_DEFORM,
         );
     }
     vertices
@@ -212,7 +230,7 @@ pub(crate) fn bounding_box_lines(bounds: Bounds, color: [f32; 4]) -> Vec<SceneVe
 
     let mut vertices = Vec::with_capacity(EDGES.len() * 2);
     for (a, b) in EDGES {
-        push_line(&mut vertices, corners[a], corners[b], color);
+        push_line(&mut vertices, corners[a], corners[b], color, NO_DEFORM);
     }
     vertices
 }
@@ -221,6 +239,7 @@ pub(crate) fn bounding_box_lines(bounds: Bounds, color: [f32; 4]) -> Vec<SceneVe
 /// `length_scale` is relative to the model's largest extent; `color` is baked in.
 pub(crate) fn face_normal_lines(
     model: &ModelData,
+    lanes: &[[u32; 4]],
     length_scale: f32,
     color: [f32; 4],
     hidden_nodes: &[u32],
@@ -242,6 +261,10 @@ pub(crate) fn face_normal_lines(
     let mut accum_centers = vec![Vec3::ZERO; face_count];
     let mut accum_normals = vec![Vec3::ZERO; face_count];
     let mut counts = vec![0_u32; face_count];
+    // A face's line rides the deform lane of its first corner: a face has no
+    // influences of its own, and its first corner is as good a stand-in as any
+    // (exact for rigid geometry, a close approximation across a skinned face).
+    let mut first_corner = vec![u32::MAX; face_count];
     let normal_length = debug_normal_length(model, length_scale);
 
     // Skip triangles owned by an Outliner-hidden node so a hidden mesh's faces
@@ -285,14 +308,18 @@ pub(crate) fn face_normal_lines(
             continue;
         }
 
-        if let (Some(center_accum), Some(normal_accum), Some(count)) = (
+        if let (Some(center_accum), Some(normal_accum), Some(count), Some(first)) = (
             accum_centers.get_mut(face_index),
             accum_normals.get_mut(face_index),
             counts.get_mut(face_index),
+            first_corner.get_mut(face_index),
         ) {
             *center_accum += (a + b + c) / 3.0;
             *normal_accum += normal;
             *count += 1;
+            if *first == u32::MAX {
+                *first = triangle[0];
+            }
         }
     }
 
@@ -310,7 +337,14 @@ pub(crate) fn face_normal_lines(
         }
 
         let end = center + normal.normalize() * normal_length;
-        push_line(&mut vertices, center.to_array(), end.to_array(), color);
+        let deform = corner_deform(lanes, first_corner[face_index] as usize);
+        push_line(
+            &mut vertices,
+            center.to_array(),
+            end.to_array(),
+            color,
+            deform,
+        );
     }
 
     vertices
@@ -320,6 +354,7 @@ pub(crate) fn face_normal_lines(
 /// relative to the model's largest extent; `color` is baked in.
 pub(crate) fn vertex_normal_lines(
     model: &ModelData,
+    lanes: &[[u32; 4]],
     length_scale: f32,
     color: [f32; 4],
     hidden_nodes: &[u32],
@@ -345,7 +380,13 @@ pub(crate) fn vertex_normal_lines(
 
         let start = vertex.position;
         let end = start + vertex.normal.normalize() * normal_length;
-        push_line(&mut vertices, start.to_array(), end.to_array(), color);
+        push_line(
+            &mut vertices,
+            start.to_array(),
+            end.to_array(),
+            color,
+            corner_deform(lanes, index),
+        );
     }
 
     vertices
@@ -422,11 +463,11 @@ mod tests {
         let color = [1.0, 1.0, 1.0, 1.0];
 
         // Nothing hidden -> all 3 faces, 3 edges each, 2 verts per edge = 18.
-        assert_eq!(wireframe_lines(&model, color, &[]).len(), 18);
+        assert_eq!(wireframe_lines(&model, &[], color, &[]).len(), 18);
         // Hide node 0 -> only face 2 survives (6 verts).
-        assert_eq!(wireframe_lines(&model, color, &[0]).len(), 6);
+        assert_eq!(wireframe_lines(&model, &[], color, &[0]).len(), 6);
         // Hide both nodes -> no edges at all.
-        assert!(wireframe_lines(&model, color, &[0, 1]).is_empty());
+        assert!(wireframe_lines(&model, &[], color, &[0, 1]).is_empty());
     }
 
     /// The face- and vertex-normal overlays drop the lines of an Outliner-hidden
@@ -480,12 +521,12 @@ mod tests {
 
         // Face normals: one line (2 verts) per face -> 6 with all visible, 2 when
         // node 0's two faces are hidden.
-        assert_eq!(face_normal_lines(&model, 0.1, color, &[]).len(), 6);
-        assert_eq!(face_normal_lines(&model, 0.1, color, &[0]).len(), 2);
+        assert_eq!(face_normal_lines(&model, &[], 0.1, color, &[]).len(), 6);
+        assert_eq!(face_normal_lines(&model, &[], 0.1, color, &[0]).len(), 2);
 
         // Vertex normals: one line (2 verts) per vertex -> 18 visible, 6 when node
         // 0 is hidden (only face 2's three corners remain).
-        assert_eq!(vertex_normal_lines(&model, 0.1, color, &[]).len(), 18);
-        assert_eq!(vertex_normal_lines(&model, 0.1, color, &[0]).len(), 6);
+        assert_eq!(vertex_normal_lines(&model, &[], 0.1, color, &[]).len(), 18);
+        assert_eq!(vertex_normal_lines(&model, &[], 0.1, color, &[0]).len(), 6);
     }
 }

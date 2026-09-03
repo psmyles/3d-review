@@ -81,10 +81,12 @@ mod ffi {
         slice,
     };
 
-    use glam::{Mat4, Vec2, Vec3, Vec4};
+    use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
     use review_model::{
-        BoneInfo, MaterialImportDefaults, ModelData, ModelStats, NodeKind, SceneNode, SkinData,
-        TopologyFace, TriangleData, Vertex,
+        AnimContext, AnimationClip, BoneInfo, Key, LocalTransform, MaterialImportDefaults,
+        ModelData, ModelStats, MorphChannel, MorphData, MorphKeyframe, MorphShape, MorphTrack,
+        NodeKind, NodeTrack, SceneNode, SkinCluster, SkinData, SkinDeformerInfo, SkinningMethod,
+        TopologyFace, TriangleData, Vertex, anim,
     };
 
     use crate::ImportError;
@@ -127,6 +129,101 @@ mod ffi {
         kind: u32,
         bone_radius: f32,
         bone_relative_length: f32,
+        /// The rest local transform: translation, rotation (xyzw), scale.
+        local_translation: [f32; 3],
+        local_rotation: [f32; 4],
+        local_scale: [f32; 3],
+    }
+
+    #[repr(C)]
+    struct ReviewImportSkinCluster {
+        bone: u32,
+        mesh_node: u32,
+        world_to_bone_bind: [f32; 16],
+    }
+
+    #[repr(C)]
+    struct ReviewImportSkinDeformer {
+        mesh_node: u32,
+        /// `ufbx_skinning_method` code; see [`skinning_method_from_code`].
+        method: u32,
+        max_weights_per_vertex: u32,
+    }
+
+    #[repr(C)]
+    struct ReviewImportMorphChannel {
+        name: *mut c_char,
+        mesh_node: u32,
+        rest_weight: f32,
+        keyframe_first: u32,
+        keyframe_count: u32,
+    }
+
+    #[repr(C)]
+    struct ReviewImportMorphKeyframe {
+        shape: u32,
+        target_weight: f32,
+    }
+
+    #[repr(C)]
+    struct ReviewImportMorphShape {
+        name: *mut c_char,
+    }
+
+    #[repr(C)]
+    struct ReviewImportMorphEntry {
+        logical_vertex: u32,
+        shape: u32,
+        position: [f32; 3],
+        normal: [f32; 3],
+    }
+
+    #[repr(C)]
+    struct ReviewImportAnimStack {
+        name: *mut c_char,
+        time_begin: f64,
+        time_end: f64,
+        node_track_first: u32,
+        node_track_count: u32,
+        morph_track_first: u32,
+        morph_track_count: u32,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct ReviewImportNodeTrack {
+        node: u32,
+        translation_first: u32,
+        translation_count: u32,
+        rotation_first: u32,
+        rotation_count: u32,
+        scale_first: u32,
+        scale_count: u32,
+    }
+
+    #[repr(C)]
+    struct ReviewImportVec3Key {
+        time: f64,
+        value: [f32; 3],
+    }
+
+    #[repr(C)]
+    struct ReviewImportQuatKey {
+        time: f64,
+        value: [f32; 4],
+    }
+
+    #[repr(C)]
+    struct ReviewImportMorphTrack {
+        channel: u32,
+        first: u32,
+        count: u32,
+    }
+
+    #[repr(C)]
+    struct ReviewImportScalarKey {
+        time: f64,
+        value: f32,
     }
 
     #[repr(C)]
@@ -167,6 +264,35 @@ mod ffi {
         skin_bones: *mut u32,
         skin_weights: *mut f32,
         skin_influence_count: usize,
+        /// Per influence (parallel to `skin_bones`), its `skin_clusters` index.
+        skin_influence_cluster: *mut u32,
+        skin_clusters: *mut ReviewImportSkinCluster,
+        skin_cluster_count: usize,
+        skin_deformers: *mut ReviewImportSkinDeformer,
+        skin_deformer_count: usize,
+        /// Blend shapes; all null / zero when no mesh carries any.
+        morph_channels: *mut ReviewImportMorphChannel,
+        morph_channel_count: usize,
+        morph_keyframes: *mut ReviewImportMorphKeyframe,
+        morph_keyframe_count: usize,
+        morph_shapes: *mut ReviewImportMorphShape,
+        morph_shape_count: usize,
+        morph_entries: *mut ReviewImportMorphEntry,
+        morph_entry_count: usize,
+        /// Animation clips; all null / zero for a file without animation.
+        anim_stacks: *mut ReviewImportAnimStack,
+        anim_stack_count: usize,
+        anim_node_tracks: *mut ReviewImportNodeTrack,
+        anim_node_track_count: usize,
+        anim_vec3_keys: *mut ReviewImportVec3Key,
+        anim_vec3_key_count: usize,
+        anim_quat_keys: *mut ReviewImportQuatKey,
+        anim_quat_key_count: usize,
+        anim_morph_tracks: *mut ReviewImportMorphTrack,
+        anim_morph_track_count: usize,
+        anim_scalar_keys: *mut ReviewImportScalarKey,
+        anim_scalar_key_count: usize,
+        frames_per_second: f64,
     }
 
     #[repr(C)]
@@ -298,6 +424,11 @@ mod ffi {
                     mesh_part: (node.mesh_part_index >= 0).then_some(node.mesh_part_index as usize),
                     source_vertex_count: node.source_vertex_count as usize,
                     transform: Mat4::from_cols_array(&node.transform),
+                    rest_local: LocalTransform {
+                        translation: Vec3::from_array(node.local_translation),
+                        rotation: Quat::from_array(node.local_rotation).normalize(),
+                        scale: Vec3::from_array(node.local_scale),
+                    },
                     kind,
                     bone: (kind == NodeKind::Bone).then_some(BoneInfo {
                         radius: node.bone_radius,
@@ -308,20 +439,62 @@ mod ffi {
             .collect())
     }
 
-    /// Marshal the bridge's CSR skin table. Returns `None` for an unskinned
-    /// scene (the bridge allocates nothing and reports zero influences), so the
-    /// common non-skeletal model carries no skin payload at all.
+    /// The bridge's `review_import_skin_deformer::method` codes (ufbx's
+    /// `ufbx_skinning_method`). Unknown codes read as linear, which is how the
+    /// viewer evaluates every skin anyway.
+    fn skinning_method_from_code(code: u32) -> SkinningMethod {
+        match code {
+            1 => SkinningMethod::Rigid,
+            2 => SkinningMethod::DualQuaternion,
+            3 => SkinningMethod::BlendedDqLinear,
+            _ => SkinningMethod::Linear,
+        }
+    }
+
+    /// The per-corner logical-vertex map, marshaled for every model (skinned or
+    /// not) since blend shapes need it as well as skin weights.
+    fn marshal_corner_map(scene: &ReviewImportScene) -> Result<Vec<u32>, ImportError> {
+        Ok(checked_slice(
+            scene.corner_source_vertex,
+            scene.corner_source_vertex_count,
+            "corner_source_vertex",
+        )?
+        .to_vec())
+    }
+
+    /// Marshal the bridge's CSR skin table + cluster table. Returns `None` for
+    /// an unskinned scene (the bridge allocates nothing and reports zero
+    /// influences), so the common non-skeletal model carries no skin payload at
+    /// all.
     fn marshal_skin(scene: &ReviewImportScene) -> Result<Option<SkinData>, ImportError> {
         if scene.skin_influence_count == 0 {
             return Ok(None);
         }
+        let clusters = checked_slice(
+            scene.skin_clusters,
+            scene.skin_cluster_count,
+            "skin_clusters",
+        )?
+        .iter()
+        .map(|cluster| SkinCluster {
+            bone: cluster.bone,
+            mesh_node: cluster.mesh_node,
+            world_to_bone_bind: Mat4::from_cols_array(&cluster.world_to_bone_bind),
+        })
+        .collect();
+        let deformers = checked_slice(
+            scene.skin_deformers,
+            scene.skin_deformer_count,
+            "skin_deformers",
+        )?
+        .iter()
+        .map(|deformer| SkinDeformerInfo {
+            mesh_node: deformer.mesh_node,
+            method: skinning_method_from_code(deformer.method),
+            max_weights_per_vertex: deformer.max_weights_per_vertex,
+        })
+        .collect();
         Ok(Some(SkinData {
-            corner_to_logical: checked_slice(
-                scene.corner_source_vertex,
-                scene.corner_source_vertex_count,
-                "corner_source_vertex",
-            )?
-            .to_vec(),
             offsets: checked_slice(scene.skin_offsets, scene.skin_offset_count, "skin_offsets")?
                 .to_vec(),
             bones: checked_slice(scene.skin_bones, scene.skin_influence_count, "skin_bones")?
@@ -332,7 +505,228 @@ mod ffi {
                 "skin_weights",
             )?
             .to_vec(),
+            influence_cluster: checked_slice(
+                scene.skin_influence_cluster,
+                scene.skin_influence_count,
+                "skin_influence_cluster",
+            )?
+            .to_vec(),
+            clusters,
+            deformers,
         }))
+    }
+
+    /// Marshal the bridge's blend shapes: the sparse per-shape offsets are
+    /// sorted into the per-logical-vertex CSR the shader and the CPU reference
+    /// walk. `None` when no mesh carries a channel.
+    fn marshal_morph(
+        scene: &ReviewImportScene,
+        logical_count: usize,
+    ) -> Result<Option<MorphData>, ImportError> {
+        if scene.morph_channel_count == 0 {
+            return Ok(None);
+        }
+        let keyframes = checked_slice(
+            scene.morph_keyframes,
+            scene.morph_keyframe_count,
+            "morph_keyframes",
+        )?;
+        let channels = checked_slice(
+            scene.morph_channels,
+            scene.morph_channel_count,
+            "morph_channels",
+        )?
+        .iter()
+        .map(|channel| {
+            let first = channel.keyframe_first as usize;
+            let end = first.saturating_add(channel.keyframe_count as usize);
+            let range = keyframes.get(first..end).ok_or_else(|| {
+                ImportError::LoadFailed(format!(
+                    "FBX bridge morph channel keyframes {first}..{end} exceed {}",
+                    keyframes.len()
+                ))
+            })?;
+            Ok(MorphChannel {
+                name: read_optional_c_string(channel.name).unwrap_or_default(),
+                mesh_node: channel.mesh_node,
+                rest_weight: channel.rest_weight,
+                keyframes: range
+                    .iter()
+                    .map(|key| MorphKeyframe {
+                        shape: key.shape,
+                        target_weight: key.target_weight,
+                    })
+                    .collect(),
+            })
+        })
+        .collect::<Result<Vec<_>, ImportError>>()?;
+        let shapes = checked_slice(scene.morph_shapes, scene.morph_shape_count, "morph_shapes")?
+            .iter()
+            .map(|shape| MorphShape {
+                name: read_optional_c_string(shape.name).unwrap_or_default(),
+            })
+            .collect();
+        let entries = checked_slice(
+            scene.morph_entries,
+            scene.morph_entry_count,
+            "morph_entries",
+        )?;
+
+        // Counting sort into CSR rows by logical vertex, preserving the bridge's
+        // emit order within a row. An entry naming a vertex past the logical
+        // count is a bridge drift and fails the load here.
+        let mut offsets = vec![0u32; logical_count + 1];
+        for entry in entries {
+            let logical = entry.logical_vertex as usize;
+            if logical >= logical_count {
+                return Err(ImportError::LoadFailed(format!(
+                    "FBX bridge morph entry references source vertex {logical} of {logical_count}"
+                )));
+            }
+            offsets[logical + 1] += 1;
+        }
+        for index in 1..offsets.len() {
+            offsets[index] += offsets[index - 1];
+        }
+        let mut cursor = offsets.clone();
+        let mut shape = vec![0u32; entries.len()];
+        let mut position = vec![Vec3::ZERO; entries.len()];
+        let mut normal = vec![Vec3::ZERO; entries.len()];
+        for entry in entries {
+            let slot = &mut cursor[entry.logical_vertex as usize];
+            let index = *slot as usize;
+            *slot += 1;
+            shape[index] = entry.shape;
+            position[index] = Vec3::from_array(entry.position);
+            normal[index] = Vec3::from_array(entry.normal);
+        }
+
+        Ok(Some(MorphData {
+            channels,
+            shapes,
+            offsets,
+            shape,
+            position,
+            normal,
+        }))
+    }
+
+    /// Marshal the bridge's baked animation stacks into clips.
+    fn marshal_animations(scene: &ReviewImportScene) -> Result<Vec<AnimationClip>, ImportError> {
+        if scene.anim_stack_count == 0 {
+            return Ok(Vec::new());
+        }
+        let node_tracks = checked_slice(
+            scene.anim_node_tracks,
+            scene.anim_node_track_count,
+            "anim_node_tracks",
+        )?;
+        let vec3_keys = checked_slice(
+            scene.anim_vec3_keys,
+            scene.anim_vec3_key_count,
+            "anim_vec3_keys",
+        )?;
+        let quat_keys = checked_slice(
+            scene.anim_quat_keys,
+            scene.anim_quat_key_count,
+            "anim_quat_keys",
+        )?;
+        let morph_tracks = checked_slice(
+            scene.anim_morph_tracks,
+            scene.anim_morph_track_count,
+            "anim_morph_tracks",
+        )?;
+        let scalar_keys = checked_slice(
+            scene.anim_scalar_keys,
+            scene.anim_scalar_key_count,
+            "anim_scalar_keys",
+        )?;
+
+        fn range<'a, T>(
+            items: &'a [T],
+            first: u32,
+            count: u32,
+            what: &str,
+        ) -> Result<&'a [T], ImportError> {
+            let first = first as usize;
+            let end = first.saturating_add(count as usize);
+            items.get(first..end).ok_or_else(|| {
+                ImportError::LoadFailed(format!(
+                    "FBX bridge {what} range {first}..{end} exceeds {}",
+                    items.len()
+                ))
+            })
+        }
+        let vec3 = |first: u32, count: u32| -> Result<Vec<Key<Vec3>>, ImportError> {
+            Ok(range(vec3_keys, first, count, "vec3 key")?
+                .iter()
+                .map(|key| Key {
+                    time: key.time,
+                    value: Vec3::from_array(key.value),
+                })
+                .collect())
+        };
+
+        checked_slice(scene.anim_stacks, scene.anim_stack_count, "anim_stacks")?
+            .iter()
+            .map(|stack| {
+                let tracks = range(
+                    node_tracks,
+                    stack.node_track_first,
+                    stack.node_track_count,
+                    "node track",
+                )?
+                .iter()
+                .map(|track| {
+                    Ok(NodeTrack {
+                        node: track.node,
+                        translation: vec3(track.translation_first, track.translation_count)?,
+                        rotation: range(
+                            quat_keys,
+                            track.rotation_first,
+                            track.rotation_count,
+                            "quat key",
+                        )?
+                        .iter()
+                        .map(|key| Key {
+                            time: key.time,
+                            value: Quat::from_array(key.value),
+                        })
+                        .collect(),
+                        scale: vec3(track.scale_first, track.scale_count)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, ImportError>>()?;
+                let morph_tracks = range(
+                    morph_tracks,
+                    stack.morph_track_first,
+                    stack.morph_track_count,
+                    "morph track",
+                )?
+                .iter()
+                .map(|track| {
+                    Ok(MorphTrack {
+                        channel: track.channel,
+                        keys: range(scalar_keys, track.first, track.count, "scalar key")?
+                            .iter()
+                            .map(|key| Key {
+                                time: key.time,
+                                value: key.value,
+                            })
+                            .collect(),
+                    })
+                })
+                .collect::<Result<Vec<_>, ImportError>>()?;
+                Ok(AnimationClip {
+                    name: read_optional_c_string(stack.name).unwrap_or_default(),
+                    time_begin: stack.time_begin,
+                    time_end: stack.time_end,
+                    tracks,
+                    morph_tracks,
+                    bounds: None,
+                })
+            })
+            .collect()
     }
 
     /// Marshal the bridge's material table into the editable table's import
@@ -366,11 +760,15 @@ mod ffi {
             triangles,
         } = marshal_geometry(scene)?;
         let nodes = marshal_nodes(scene)?;
+        let corner_to_logical = marshal_corner_map(scene)?;
         let skin = marshal_skin(scene)?;
+        let morph = marshal_morph(scene, scene.source_vertex_count)?;
+        let animations = marshal_animations(scene)?;
         let bone_count = nodes
             .iter()
             .filter(|node| node.kind == NodeKind::Bone)
             .count();
+        let clip_count = animations.len();
         let uv_channels = build_uv_channels(scene)?;
         let uv_set_names =
             checked_slice(scene.uv_set_names, scene.uv_set_name_count, "uv_set_names")?
@@ -409,10 +807,15 @@ mod ffi {
                 // matches the renderer's per-material grouping (invariant 5).
                 draw_count: 0,
                 bone_count,
+                clip_count,
                 source_unit_meters: scene.source_unit_meters,
             },
             materials,
+            corner_to_logical,
             skin,
+            morph,
+            animations,
+            frame_rate: scene.frames_per_second,
         };
 
         // Every index must address a real vertex. The bridge derives each one by
@@ -446,20 +849,34 @@ mod ffi {
             )
             .map_err(ImportError::LoadFailed)?;
 
-        // Same funnel guard for the skin CSR: the corner map must cover exactly
-        // the render mesh, the rows must be monotonic and terminate at the
-        // influence count, and every influence must name a real node with a
-        // finite non-negative weight. A drifted bridge fill is caught here, once.
-        if let Some(skin) = &model.skin {
-            skin.validate(
-                model.vertices.len(),
-                model.stats.vertex_count,
-                model.nodes.len(),
-            )
-            .map_err(ImportError::LoadFailed)?;
-        }
+        // Same funnel guard for everything the deform path reads: the corner map
+        // must cover exactly the render mesh, the skin / morph CSR rows must be
+        // monotonic and terminate at their entry counts, every influence must
+        // name a real node with a finite non-negative weight (and a cluster
+        // binding that same bone), and every clip must animate real nodes /
+        // channels with ordered finite keys. A drifted bridge fill is caught
+        // here, once.
+        model.validate_deform().map_err(ImportError::LoadFailed)?;
 
-        model.recompute_bounds();
+        // Bounds describe what is on screen. A skinned or morphed model rests in
+        // the file's default pose, which the GPU skins into — so its bounds are
+        // measured through the same deformation, not from the bind-pose buffer.
+        // Each clip additionally records the envelope of its whole motion, so
+        // framing and the bounding box can describe a playing clip without ever
+        // re-skinning on the redraw path.
+        if model.needs_deform() {
+            let _z = crate::prof::zone!("Clip Bounds");
+            let ctx = AnimContext::new(&model);
+            model.bounds = anim::rest_bounds(&model, &ctx);
+            let fps = model.frame_rate_or_default();
+            let mut clips = std::mem::take(&mut model.animations);
+            for clip in &mut clips {
+                clip.bounds = anim::clip_bounds(&model, &ctx, clip, fps);
+            }
+            model.animations = clips;
+        } else {
+            model.recompute_bounds();
+        }
         // The FBX may carry UVs but no tangent layer (common for Maya exports); the
         // bridge then leaves a zero tangent per vertex. Synthesize a real tangent
         // basis from the UVs + normals so normal maps shade correctly — done once
@@ -674,6 +1091,8 @@ mod ffi {
             offsets: &[u32],
             bones: &[u32],
             weights: &[f32],
+            influence_cluster: &[u32],
+            clusters: &[ReviewImportSkinCluster],
         ) -> ReviewImportScene {
             let mut scene: ReviewImportScene = unsafe { std::mem::zeroed() };
             scene.vertex_count = corner_to_logical.len();
@@ -684,7 +1103,18 @@ mod ffi {
             scene.skin_bones = bones.as_ptr() as *mut u32;
             scene.skin_weights = weights.as_ptr() as *mut f32;
             scene.skin_influence_count = bones.len();
+            scene.skin_influence_cluster = influence_cluster.as_ptr() as *mut u32;
+            scene.skin_clusters = clusters.as_ptr() as *mut ReviewImportSkinCluster;
+            scene.skin_cluster_count = clusters.len();
             scene
+        }
+
+        fn identity_cluster(bone: u32) -> ReviewImportSkinCluster {
+            ReviewImportSkinCluster {
+                bone,
+                mesh_node: 0,
+                world_to_bone_bind: Mat4::IDENTITY.to_cols_array(),
+            }
         }
 
         #[test]
@@ -699,31 +1129,215 @@ mod ffi {
 
         #[test]
         fn marshal_skin_copies_the_csr_table() {
-            let skin = marshal_skin(&skin_scene(
+            let clusters = [identity_cluster(1), identity_cluster(2)];
+            let scene = skin_scene(
                 &[0, 0, 1],
                 &[0, 2, 3],
                 &[1, 2, 2],
                 &[0.75, 0.25, 1.0],
-            ))
-            .expect("valid skin")
-            .expect("a skinned scene marshals to Some");
-            assert_eq!(skin.corner_to_logical, vec![0, 0, 1]);
+                &[0, 1, 1],
+                &clusters,
+            );
+            let corner_map = marshal_corner_map(&scene).expect("valid corner map");
+            let skin = marshal_skin(&scene)
+                .expect("valid skin")
+                .expect("a skinned scene marshals to Some");
+            assert_eq!(corner_map, vec![0, 0, 1]);
             assert_eq!(skin.offsets, vec![0, 2, 3]);
             assert_eq!(skin.bones, vec![1, 2, 2]);
             assert_eq!(skin.weights, vec![0.75, 0.25, 1.0]);
+            assert_eq!(skin.influence_cluster, vec![0, 1, 1]);
+            assert_eq!(skin.clusters.len(), 2);
+            assert_eq!(skin.clusters[1].bone, 2);
+            assert_eq!(skin.clusters[1].world_to_bone_bind, Mat4::IDENTITY);
             assert_eq!(skin.influence_range(0), 0..2);
+            assert_eq!(skin.validate(2, 3), Ok(()));
         }
 
         #[test]
         fn marshal_skin_rejects_a_null_array_with_a_nonzero_count() {
             // A count without its pointer must be a clean error naming the field,
             // not a `from_raw_parts` on null.
-            let mut scene = skin_scene(&[0], &[0, 1], &[1], &[1.0]);
+            let clusters = [identity_cluster(1)];
+            let mut scene = skin_scene(&[0], &[0, 1], &[1], &[1.0], &[0], &clusters);
             scene.skin_bones = std::ptr::null_mut();
             assert!(matches!(
                 marshal_skin(&scene),
                 Err(ImportError::LoadFailed(message)) if message.contains("skin_bones")
             ));
+            let mut scene = skin_scene(&[0], &[0, 1], &[1], &[1.0], &[0], &clusters);
+            scene.skin_influence_cluster = std::ptr::null_mut();
+            assert!(matches!(
+                marshal_skin(&scene),
+                Err(ImportError::LoadFailed(message)) if message.contains("skin_influence_cluster")
+            ));
+        }
+
+        #[test]
+        fn marshal_morph_sorts_entries_into_logical_rows() {
+            // Two shapes over three logical vertices, emitted out of vertex order.
+            let keyframes = [
+                ReviewImportMorphKeyframe {
+                    shape: 0,
+                    target_weight: 1.0,
+                },
+                ReviewImportMorphKeyframe {
+                    shape: 1,
+                    target_weight: 1.0,
+                },
+            ];
+            let channels = [
+                ReviewImportMorphChannel {
+                    name: std::ptr::null_mut(),
+                    mesh_node: 0,
+                    rest_weight: 0.25,
+                    keyframe_first: 0,
+                    keyframe_count: 1,
+                },
+                ReviewImportMorphChannel {
+                    name: std::ptr::null_mut(),
+                    mesh_node: 0,
+                    rest_weight: 0.0,
+                    keyframe_first: 1,
+                    keyframe_count: 1,
+                },
+            ];
+            let shapes = [
+                ReviewImportMorphShape {
+                    name: std::ptr::null_mut(),
+                },
+                ReviewImportMorphShape {
+                    name: std::ptr::null_mut(),
+                },
+            ];
+            let entry = |logical_vertex: u32, shape: u32, x: f32| ReviewImportMorphEntry {
+                logical_vertex,
+                shape,
+                position: [x, 0.0, 0.0],
+                normal: [0.0; 3],
+            };
+            let entries = [entry(2, 0, 2.0), entry(0, 1, 0.5), entry(2, 1, 2.5)];
+            let mut scene: ReviewImportScene = unsafe { std::mem::zeroed() };
+            scene.morph_channels = channels.as_ptr() as *mut ReviewImportMorphChannel;
+            scene.morph_channel_count = channels.len();
+            scene.morph_keyframes = keyframes.as_ptr() as *mut ReviewImportMorphKeyframe;
+            scene.morph_keyframe_count = keyframes.len();
+            scene.morph_shapes = shapes.as_ptr() as *mut ReviewImportMorphShape;
+            scene.morph_shape_count = shapes.len();
+            scene.morph_entries = entries.as_ptr() as *mut ReviewImportMorphEntry;
+            scene.morph_entry_count = entries.len();
+
+            let morph = marshal_morph(&scene, 3)
+                .expect("valid morph")
+                .expect("channels marshal to Some");
+            assert_eq!(morph.channels.len(), 2);
+            assert_eq!(morph.channels[0].rest_weight, 0.25);
+            assert_eq!(morph.channels[1].keyframes[0].shape, 1);
+            assert_eq!(morph.offsets, vec![0, 1, 1, 3]);
+            assert_eq!(morph.shape, vec![1, 0, 1]);
+            assert_eq!(morph.position[0].x, 0.5);
+            assert_eq!(morph.position[1].x, 2.0);
+            assert_eq!(morph.position[2].x, 2.5);
+            assert_eq!(morph.validate(3, 1), Ok(()));
+
+            // An entry past the logical range is a bridge drift, not a panic.
+            let bad = [entry(7, 0, 1.0)];
+            scene.morph_entries = bad.as_ptr() as *mut ReviewImportMorphEntry;
+            scene.morph_entry_count = bad.len();
+            assert!(matches!(
+                marshal_morph(&scene, 3),
+                Err(ImportError::LoadFailed(message)) if message.contains("source vertex 7 of 3")
+            ));
+        }
+
+        #[test]
+        fn marshal_animations_reads_tracks_and_key_ranges() {
+            let vec3_keys = [
+                ReviewImportVec3Key {
+                    time: 0.0,
+                    value: [0.0, 1.0, 0.0],
+                },
+                ReviewImportVec3Key {
+                    time: 1.0,
+                    value: [2.0, 1.0, 0.0],
+                },
+            ];
+            let quat_keys = [ReviewImportQuatKey {
+                time: 0.5,
+                value: [0.0, 0.0, 0.0, 1.0],
+            }];
+            let tracks = [ReviewImportNodeTrack {
+                node: 3,
+                translation_first: 0,
+                translation_count: 2,
+                rotation_first: 0,
+                rotation_count: 1,
+                scale_first: 2,
+                scale_count: 0,
+            }];
+            let scalar_keys = [ReviewImportScalarKey {
+                time: 0.0,
+                value: 0.5,
+            }];
+            let morph_tracks = [ReviewImportMorphTrack {
+                channel: 1,
+                first: 0,
+                count: 1,
+            }];
+            let stacks = [ReviewImportAnimStack {
+                name: std::ptr::null_mut(),
+                time_begin: 0.0,
+                time_end: 1.0,
+                node_track_first: 0,
+                node_track_count: 1,
+                morph_track_first: 0,
+                morph_track_count: 1,
+            }];
+            let mut scene: ReviewImportScene = unsafe { std::mem::zeroed() };
+            scene.anim_stacks = stacks.as_ptr() as *mut ReviewImportAnimStack;
+            scene.anim_stack_count = stacks.len();
+            scene.anim_node_tracks = tracks.as_ptr() as *mut ReviewImportNodeTrack;
+            scene.anim_node_track_count = tracks.len();
+            scene.anim_vec3_keys = vec3_keys.as_ptr() as *mut ReviewImportVec3Key;
+            scene.anim_vec3_key_count = vec3_keys.len();
+            scene.anim_quat_keys = quat_keys.as_ptr() as *mut ReviewImportQuatKey;
+            scene.anim_quat_key_count = quat_keys.len();
+            scene.anim_morph_tracks = morph_tracks.as_ptr() as *mut ReviewImportMorphTrack;
+            scene.anim_morph_track_count = morph_tracks.len();
+            scene.anim_scalar_keys = scalar_keys.as_ptr() as *mut ReviewImportScalarKey;
+            scene.anim_scalar_key_count = scalar_keys.len();
+
+            let clips = marshal_animations(&scene).expect("valid animation");
+            assert_eq!(clips.len(), 1);
+            let clip = &clips[0];
+            assert_eq!(clip.time_end, 1.0);
+            assert_eq!(clip.tracks.len(), 1);
+            assert_eq!(clip.tracks[0].node, 3);
+            assert_eq!(clip.tracks[0].translation.len(), 2);
+            assert_eq!(
+                clip.tracks[0].translation[1].value,
+                Vec3::new(2.0, 1.0, 0.0)
+            );
+            assert_eq!(clip.tracks[0].rotation.len(), 1);
+            assert!(clip.tracks[0].scale.is_empty());
+            assert_eq!(clip.morph_tracks[0].channel, 1);
+            assert_eq!(clip.morph_tracks[0].keys[0].value, 0.5);
+            assert_eq!(clip.validate(4, 2), Ok(()));
+
+            // A track range past the key table is a bridge drift.
+            let bad = [ReviewImportNodeTrack {
+                translation_count: 5,
+                ..tracks[0]
+            }];
+            scene.anim_node_tracks = bad.as_ptr() as *mut ReviewImportNodeTrack;
+            assert!(matches!(
+                marshal_animations(&scene),
+                Err(ImportError::LoadFailed(message)) if message.contains("vec3 key range")
+            ));
+
+            // No stacks at all is simply no clips.
+            let empty: ReviewImportScene = unsafe { std::mem::zeroed() };
+            assert!(marshal_animations(&empty).expect("no animation").is_empty());
         }
 
         #[test]
@@ -1020,15 +1634,23 @@ mod tests {
         // The funnel already ran `validate`; re-assert the shape here so a failure
         // reports as this test rather than as a generic load error.
         assert_eq!(
-            skin.validate(
-                model.vertices.len(),
-                model.stats.vertex_count,
-                model.nodes.len()
-            ),
+            skin.validate(model.stats.vertex_count, model.nodes.len()),
             Ok(())
         );
-        assert_eq!(skin.corner_to_logical.len(), model.vertices.len());
+        assert_eq!(model.corner_to_logical.len(), model.vertices.len());
         assert_eq!(skin.offsets.len(), model.stats.vertex_count + 1);
+        assert!(
+            !skin.clusters.is_empty(),
+            "a skinned mesh binds at least one cluster"
+        );
+        assert!(
+            !skin.deformers.is_empty(),
+            "every skinned mesh node reports its deformer"
+        );
+        for deformer in &skin.deformers {
+            assert!((deformer.mesh_node as usize) < model.nodes.len());
+            assert!(deformer.max_weights_per_vertex > 0);
+        }
 
         // Every influence must name a node the Outliner can actually show.
         for &bone in &skin.bones {
@@ -1112,7 +1734,7 @@ mod tests {
         }
 
         // The corner map must land inside the logical range for every render vertex.
-        for &logical in &skin.corner_to_logical {
+        for &logical in &model.corner_to_logical {
             assert!(
                 (logical as usize) < skin.logical_vertex_count(),
                 "corner maps to logical vertex {logical} of {}",
@@ -1139,6 +1761,164 @@ mod tests {
                 .iter()
                 .all(|node| node.kind != review_model::NodeKind::Bone),
             "an unskinned mesh must classify no node as a bone"
+        );
+        assert!(model.animations.is_empty(), "the cube carries no clips");
+        assert_eq!(model.stats.clip_count, 0);
+    }
+
+    /// The rest local transforms the bridge captures must compose back to the
+    /// world transforms it also captures — the check that a pose recomposed
+    /// from them (and therefore every animated frame) lands where the file says.
+    fn assert_rest_locals_recompose(model: &review_model::ModelData) {
+        let ctx = review_model::AnimContext::new(model);
+        assert!(
+            review_model::anim::rest_locals_recompose(model, &ctx, 1e-3),
+            "composing the rest local transforms must reproduce node_to_world"
+        );
+    }
+
+    /// The skinned, multi-clip fixture: every stack imports as a clip with a
+    /// playable range, every track names a real node, and the rest pose's
+    /// skinning is consistent with the file's world transforms.
+    #[test]
+    fn import_carries_animation_clips() {
+        let path = fixture("AN_ZombiedogLocomotion.fbx");
+        if !path.exists() {
+            eprintln!("skipping: {} is not present", path.display());
+            return;
+        }
+        let model = load_model(&path).expect("the locomotion fixture must import");
+
+        assert!(model.skin.is_some(), "the dog is skinned");
+        assert!(
+            model.animations.len() > 1,
+            "the fixture carries several clips, got {}",
+            model.animations.len()
+        );
+        assert_eq!(model.stats.clip_count, model.animations.len());
+        assert!(model.frame_rate > 0.0, "the file declares a frame rate");
+        for clip in &model.animations {
+            assert!(!clip.name.is_empty(), "every clip is named");
+            assert!(
+                clip.time_end > clip.time_begin,
+                "clip '{}' has an empty range {}..{}",
+                clip.name,
+                clip.time_begin,
+                clip.time_end
+            );
+            assert!(
+                !clip.tracks.is_empty(),
+                "clip '{}' animates nothing",
+                clip.name
+            );
+            for track in &clip.tracks {
+                assert!((track.node as usize) < model.nodes.len());
+            }
+            assert!(
+                clip.bounds.is_some(),
+                "clip '{}' measured no envelope",
+                clip.name
+            );
+        }
+        assert!(model.bounds.is_some());
+        assert_rest_locals_recompose(&model);
+        assert_eq!(model.validate_deform(), Ok(()));
+    }
+
+    /// The unskinned, rigidly animated fixture: node tracks and no skin, and at
+    /// least one node ends the clip somewhere other than its rest transform.
+    #[test]
+    fn rigid_clip_moves_nodes() {
+        let path = fixture("SM_Wall_Break_4x3m.fbx");
+        if !path.exists() {
+            eprintln!("skipping: {} is not present", path.display());
+            return;
+        }
+        let model = load_model(&path).expect("the wall-break fixture must import");
+
+        assert!(model.skin.is_none(), "the wall pieces are not skinned");
+        assert!(!model.animations.is_empty(), "the fixture carries a clip");
+        assert_rest_locals_recompose(&model);
+
+        let ctx = review_model::AnimContext::new(&model);
+        let mut pose = review_model::Pose::new(&model);
+        let clip = &model.animations[0];
+        review_model::anim::evaluate_pose(&model, &ctx, Some(clip), clip.time_end, &mut pose);
+        let moved = model
+            .nodes
+            .iter()
+            .zip(&pose.world)
+            .any(|(node, world)| !world.abs_diff_eq(node.transform, 1e-4));
+        assert!(moved, "the clip's last frame must move at least one node");
+    }
+
+    /// The skinned fixture's clusters must be oriented correctly: at the rest
+    /// pose a vertex owned by a single bone lands exactly on its baked position
+    /// transformed by that cluster's skinning matrix, and the recomposed rest
+    /// pose reproduces every world transform.
+    #[test]
+    fn rest_pose_skinning_matches_bind() {
+        let path = fixture("SK_Player_01.fbx");
+        if !path.exists() {
+            eprintln!("skipping: {} is not present", path.display());
+            return;
+        }
+        let model = load_model(&path).expect("the player fixture must import");
+        assert_rest_locals_recompose(&model);
+
+        let skin = model.skin.as_ref().expect("skinned");
+        let ctx = review_model::AnimContext::new(&model);
+        let mut pose = review_model::Pose::new(&model);
+        let mut deform = review_model::DeformPose::default();
+        review_model::anim::rest_pose(&model, &ctx, &mut pose);
+        review_model::anim::build_palette(&model, &ctx, &pose, &mut deform);
+        assert_eq!(
+            deform.palette.len(),
+            review_model::anim::palette_len(&model)
+        );
+
+        // The palette's node entries are identity at rest by construction; the
+        // cluster entries are `bone_world * world_to_bone_bind`. For each corner
+        // the CPU reference must agree with applying that blend by hand.
+        let mut checked = 0;
+        for corner in (0..model.vertices.len()).step_by(97) {
+            let logical = model.corner_to_logical[corner] as usize;
+            let range = skin.influence_range(logical);
+            if range.is_empty() {
+                continue;
+            }
+            let base = model.vertices[corner].position;
+            let mut expected = glam::Vec3::ZERO;
+            let mut total = 0.0;
+            for influence in range {
+                let entry = model.nodes.len() + skin.influence_cluster[influence] as usize;
+                expected += deform.palette[entry].transform_point3(base) * skin.weights[influence];
+                total += skin.weights[influence];
+            }
+            if (total - 1.0_f32).abs() > 1e-6 {
+                expected /= total;
+            }
+            let (actual, _) = review_model::anim::deform_corner(&model, &ctx, &deform, corner);
+            assert!(
+                actual.abs_diff_eq(expected, 1e-4),
+                "corner {corner}: {actual} vs {expected}"
+            );
+            checked += 1;
+        }
+        assert!(checked > 10, "sampled too few corners: {checked}");
+
+        // The rest bounds are finite and of the same order as the bind-pose
+        // buffer (the default pose may differ from the bind pose, but not by a
+        // scene's worth).
+        let mut bind = review_model::Bounds::EMPTY;
+        for vertex in &model.vertices {
+            bind.include_point(vertex.position);
+        }
+        let rest = model.bounds.expect("rest bounds");
+        assert!(rest.size().max_element() > 0.0);
+        assert!(
+            rest.size().max_element() < bind.size().max_element() * 4.0,
+            "rest {rest:?} vs bind {bind:?}"
         );
     }
 }

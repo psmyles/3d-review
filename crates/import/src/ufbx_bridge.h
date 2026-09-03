@@ -72,7 +72,119 @@ typedef struct review_import_node {
        overlay's leaf/root joint markers. */
     float bone_radius;
     float bone_relative_length;
+    /* The node's rest transform relative to its parent (`ufbx_node.local_transform`),
+       as translation / rotation quaternion (x, y, z, w) / scale — what an
+       animation clip's baked keys replace channel by channel. The scene loads with
+       helper-node inherit-mode handling, so `parent_world * TRS(local)` reproduces
+       `transform` exactly. */
+    float local_translation[3];
+    float local_rotation[4];
+    float local_scale[3];
 } review_import_node;
+
+/* One skin cluster: the binding of a bone to one mesh-bearing node. */
+typedef struct review_import_skin_cluster {
+    /* The bone node, indexing `nodes`. */
+    uint32_t bone;
+    /* The skinned mesh node, indexing `nodes`. */
+    uint32_t mesh_node;
+    /* `geometry_to_bone * inverse(mesh geometry_to_world)`, column-major 4x4:
+       takes a *baked world-space* vertex of `mesh_node` into the bone's bind
+       space, so `bone_world(pose) * this` is the cluster's skinning matrix at
+       any pose. */
+    float world_to_bone_bind[16];
+} review_import_skin_cluster;
+
+/* What one skinned mesh node's deformer declared (Inspector metadata). */
+typedef struct review_import_skin_deformer {
+    uint32_t mesh_node;
+    /* `ufbx_skinning_method`: 0 linear, 1 rigid, 2 dual quaternion, 3 blended. */
+    uint32_t method;
+    uint32_t max_weights_per_vertex;
+} review_import_skin_deformer;
+
+/* A blend-shape channel (the artist-facing slider) of one mesh node. Its
+   keyframes are `morph_keyframes[keyframe_first .. keyframe_first + keyframe_count]`
+   in ascending target-weight order. */
+typedef struct review_import_morph_channel {
+    char *name;
+    uint32_t mesh_node;
+    /* The channel's weight at the file's default pose, in [0,1]. */
+    float rest_weight;
+    uint32_t keyframe_first;
+    uint32_t keyframe_count;
+} review_import_morph_channel;
+
+typedef struct review_import_morph_keyframe {
+    /* Indexes `morph_shapes`. */
+    uint32_t shape;
+    float target_weight;
+} review_import_morph_keyframe;
+
+typedef struct review_import_morph_shape {
+    char *name;
+} review_import_morph_shape;
+
+/* One sparse blend-shape offset: `shape` moves logical vertex `logical_vertex`
+   by `position` (and its normal by `normal`), both already rotated into the
+   baked world orientation of the owning mesh node. Unsorted; the Rust side
+   builds the per-logical-vertex CSR. */
+typedef struct review_import_morph_entry {
+    uint32_t logical_vertex;
+    uint32_t shape;
+    float position[3];
+    float normal[3];
+} review_import_morph_entry;
+
+/* One animation clip (an FBX animation stack), baked to keyframes. Its node
+   tracks are `anim_node_tracks[node_track_first ..]` and its morph tracks
+   `anim_morph_tracks[morph_track_first ..]`. */
+typedef struct review_import_anim_stack {
+    char *name;
+    double time_begin;
+    double time_end;
+    uint32_t node_track_first;
+    uint32_t node_track_count;
+    uint32_t morph_track_first;
+    uint32_t morph_track_count;
+} review_import_anim_stack;
+
+/* The baked transform keys of one node within one clip: ranges into
+   `anim_vec3_keys` (translation, scale) and `anim_quat_keys` (rotation). A zero
+   count means the clip does not animate that channel. */
+typedef struct review_import_node_track {
+    uint32_t node;
+    uint32_t translation_first;
+    uint32_t translation_count;
+    uint32_t rotation_first;
+    uint32_t rotation_count;
+    uint32_t scale_first;
+    uint32_t scale_count;
+} review_import_node_track;
+
+typedef struct review_import_vec3_key {
+    double time;
+    float value[3];
+} review_import_vec3_key;
+
+typedef struct review_import_quat_key {
+    double time;
+    /* x, y, z, w */
+    float value[4];
+} review_import_quat_key;
+
+/* The baked weight keys of one blend-shape channel within one clip: a range
+   into `anim_scalar_keys`, values already divided from percent to [0,1]. */
+typedef struct review_import_morph_track {
+    uint32_t channel;
+    uint32_t first;
+    uint32_t count;
+} review_import_morph_track;
+
+typedef struct review_import_scalar_key {
+    double time;
+    float value;
+} review_import_scalar_key;
 
 typedef struct review_import_scene {
     review_import_vertex *vertices;
@@ -125,21 +237,57 @@ typedef struct review_import_scene {
     /* Per expanded corner (parallel to `vertices`, same length), the *logical*
        source vertex it came from, in a global numbering that concatenates each
        mesh-bearing node's `num_vertices` in the fill pass's traversal order —
-       so `source_vertex_count` bounds it. Skin weights are indexed by logical
-       vertex, so this is what projects them onto the render mesh. Always
-       allocated (skinned or not); NULL only when there is no geometry. */
+       so `source_vertex_count` bounds it. Skin weights and blend-shape offsets
+       are indexed by logical vertex, so this is what projects them onto the
+       render mesh. Always allocated (skinned or not); NULL only when there is
+       no geometry. */
     uint32_t *corner_source_vertex;
     size_t corner_source_vertex_count;
     /* Skin weights in compressed sparse-row form over the logical vertices:
        vertex v's influences are skin_bones/skin_weights[skin_offsets[v] ..
        skin_offsets[v + 1]]. `skin_offsets` is `source_vertex_count + 1` long.
        All three are NULL (and `skin_influence_count` 0) for an unskinned scene.
-       `skin_bones` entries index `nodes`, not a cluster table. */
+       `skin_bones` entries index `nodes`, not a cluster table; the parallel
+       `skin_influence_cluster` indexes `skin_clusters`. */
     uint32_t *skin_offsets;
     size_t skin_offset_count;
     uint32_t *skin_bones;
     float *skin_weights;
     size_t skin_influence_count;
+    uint32_t *skin_influence_cluster;
+    /* One entry per (mesh node, bone) binding, in the fill pass's traversal
+       order. NULL for an unskinned scene. */
+    review_import_skin_cluster *skin_clusters;
+    size_t skin_cluster_count;
+    /* One entry per skinned mesh node. NULL for an unskinned scene. */
+    review_import_skin_deformer *skin_deformers;
+    size_t skin_deformer_count;
+    /* Blend shapes; every array NULL (count 0) when no mesh carries a blend
+       deformer with a usable offset. */
+    review_import_morph_channel *morph_channels;
+    size_t morph_channel_count;
+    review_import_morph_keyframe *morph_keyframes;
+    size_t morph_keyframe_count;
+    review_import_morph_shape *morph_shapes;
+    size_t morph_shape_count;
+    review_import_morph_entry *morph_entries;
+    size_t morph_entry_count;
+    /* Animation clips; every array NULL (count 0) when the file carries no
+       animation stack. */
+    review_import_anim_stack *anim_stacks;
+    size_t anim_stack_count;
+    review_import_node_track *anim_node_tracks;
+    size_t anim_node_track_count;
+    review_import_vec3_key *anim_vec3_keys;
+    size_t anim_vec3_key_count;
+    review_import_quat_key *anim_quat_keys;
+    size_t anim_quat_key_count;
+    review_import_morph_track *anim_morph_tracks;
+    size_t anim_morph_track_count;
+    review_import_scalar_key *anim_scalar_keys;
+    size_t anim_scalar_key_count;
+    /* `ufbx_scene_settings.frames_per_second`; 0 when the file declared none. */
+    double frames_per_second;
 } review_import_scene;
 
 typedef struct review_import_error {

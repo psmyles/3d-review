@@ -490,6 +490,33 @@ fn node_inspector(ui: &mut egui::Ui, state: &UiState, model: &ModelData, index: 
             &format!("{:.3}, {:.3}, {:.3}", position.x, position.y, position.z),
         );
 
+        // Skinned-mesh rows: the skinning method the file declared (the viewer
+        // evaluates every skin as linear blend, and says so when the file asked
+        // for something else) and its per-vertex influence cap, plus the
+        // blend-shape channels this mesh carries.
+        if let Some(deformer) = model.skin.as_ref().and_then(|skin| {
+            skin.deformers
+                .iter()
+                .find(|deformer| deformer.mesh_node as usize == index)
+        }) {
+            crate::widgets::value_row(ui, "Skinning", deformer.method.label());
+            crate::widgets::value_row(
+                ui,
+                "Max influences",
+                &deformer.max_weights_per_vertex.to_string(),
+            );
+        }
+        let blend_channels = model.morph.as_ref().map_or(0, |morph| {
+            morph
+                .channels
+                .iter()
+                .filter(|channel| channel.mesh_node as usize == index)
+                .count()
+        });
+        if blend_channels > 0 {
+            crate::widgets::value_row(ui, "Blend shapes", &blend_channels.to_string());
+        }
+
         // Bone-only rows: what the rig authored, and how much of the mesh this
         // bone actually moves.
         if let Some(bone) = node.bone {

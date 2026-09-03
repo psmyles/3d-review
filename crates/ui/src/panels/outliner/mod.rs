@@ -24,6 +24,7 @@
 //! Reads the scene nodes from the borrowed [`ModelData`] (invariant 2: borrowed,
 //! not owned) and the material list from the app→UI snapshot.
 
+mod animations;
 mod materials;
 mod nav;
 mod rows;
@@ -33,17 +34,19 @@ use review_model::{ModelData, NodeKind, SceneNode};
 use review_render::Selection;
 
 use crate::assets::{self, AppIcon};
-use crate::state::{OutlinerTab, OutlinerViewMode, UiState};
+use crate::state::{OutlinerTab, OutlinerViewMode, UiState, WorkspaceMode};
 use crate::theme::{color, size};
 use crate::widgets;
 
+use animations::animations_tab;
 use materials::materials_tab;
 use nav::{apply_row_click, handle_nav};
 use rows::draw_rows;
 use tree::{TreeRow, flat_rows, search_rows, visible_tree_rows};
 
 /// The Outliner's tabs, in strip order. The index into this array is what
-/// [`widgets::tab_bar`] hands back on a click.
+/// [`widgets::tab_bar`] hands back on a click. The Animations tab is appended
+/// only while the model carries clips and the workspace can play them.
 const TABS: [OutlinerTab; 2] = [OutlinerTab::Scene, OutlinerTab::Materials];
 
 /// What one drawn frame of rows produced. Every mutation is deferred to after the
@@ -64,28 +67,52 @@ struct RowsOutput {
 }
 
 pub(crate) fn body(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData) {
-    // ── Tabs: Scene / Materials, as a full-width underlined tab strip ────────
+    // ── Tabs: Scene / Materials [/ Animations], as a full-width underlined
+    // tab strip. The Animations tab exists only while there is something to
+    // list and the workspace can play it: the Opt workspace compares static
+    // geometry in the bind pose, so it never offers clips.
+    let show_animations = state.animation.has_clips && state.mode != WorkspaceMode::Opt;
+    let mut tabs: Vec<OutlinerTab> = TABS.to_vec();
+    if show_animations {
+        tabs.push(OutlinerTab::Animations);
+    }
+    if !tabs.contains(&state.outliner.tab) {
+        state.outliner.tab = OutlinerTab::Scene;
+    }
     let materials_label = format!("Materials ({})", state.materials_snapshot.len());
-    let labels = ["Scene", materials_label.as_str()];
-    let active = TABS
+    let animations_label = format!("Animations ({})", model.animations.len());
+    let labels: Vec<&str> = tabs
+        .iter()
+        .map(|tab| match tab {
+            OutlinerTab::Scene => "Scene",
+            OutlinerTab::Materials => materials_label.as_str(),
+            OutlinerTab::Animations => animations_label.as_str(),
+        })
+        .collect();
+    let active = tabs
         .iter()
         .position(|tab| *tab == state.outliner.tab)
         .unwrap_or(0);
     if let Some(index) = widgets::tab_bar(ui, &labels, active) {
-        state.outliner.tab = TABS[index];
+        state.outliner.tab = tabs[index];
     }
     ui.add_space(size::PANEL_ROW_GAP);
 
     header_controls(ui, state, model);
 
-    if state.outliner.tab == OutlinerTab::Materials {
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| materials_tab(ui, state));
-        return;
+    match state.outliner.tab {
+        OutlinerTab::Materials => {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| materials_tab(ui, state));
+        }
+        OutlinerTab::Animations => {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| animations_tab(ui, state, model));
+        }
+        OutlinerTab::Scene => scene_tab(ui, state, model),
     }
-
-    scene_tab(ui, state, model);
 }
 
 /// The header strip, drawn on every tab so the controls never shift underfoot:
@@ -348,6 +375,7 @@ mod isolate_tests {
             mesh_part,
             source_vertex_count: 0,
             transform: glam::Mat4::IDENTITY,
+            rest_local: Default::default(),
             kind: if mesh_part.is_some() {
                 NodeKind::Mesh
             } else {
@@ -426,6 +454,7 @@ mod fixture {
             mesh_part: (kind == NodeKind::Mesh).then_some(0),
             source_vertex_count: 0,
             transform: glam::Mat4::IDENTITY,
+            rest_local: Default::default(),
             kind,
             bone: (kind == NodeKind::Bone).then(Default::default),
         };
