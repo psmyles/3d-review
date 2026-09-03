@@ -136,12 +136,18 @@ pub(super) fn draw_rows(
             let eye = ui.interact(eye_rect, row_id.with("eye"), egui::Sense::click());
             let hovered = eye.hovered();
             if eye.clicked() {
-                output.toggled_eye = Some(row.node);
+                // The modifiers travel with the click: Ctrl turns a plain
+                // show/hide into an isolate, applied by `apply_rows_output`.
+                output.toggled_eye = Some((row.node, ui.input(|input| input.modifiers)));
             }
             if hovered {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
-            eye.on_hover_text(if hidden { "Show mesh" } else { "Hide mesh" });
+            eye.on_hover_text(if hidden {
+                "Show mesh\nCtrl+click: show only this mesh"
+            } else {
+                "Hide mesh\nCtrl+click: show only this mesh"
+            });
 
             let icon = if hidden {
                 &assets::ICON_EYE_CLOSED

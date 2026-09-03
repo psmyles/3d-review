@@ -57,6 +57,11 @@ typedef struct review_import_node {
     /* Running index among mesh-bearing nodes, in the same order the geometry fill
        walks `scene->nodes`, or -1 when this node carries no renderable mesh. */
     int32_t mesh_part_index;
+    /* This node's mesh's own logical (DCC control-point) vertex count, 0 for a
+       node carrying no mesh. Summing it over the mesh-bearing nodes reproduces
+       `source_vertex_count` exactly, which is what lets the stats overlay report
+       a faithful Verts figure for a subset of the scene (invariant 5). */
+    uint32_t source_vertex_count;
     /* node_to_world as a column-major 4x4 (16 floats), last row implicitly
        [0,0,0,1]. */
     float transform[16];

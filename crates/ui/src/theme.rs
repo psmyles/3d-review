@@ -389,7 +389,16 @@ pub mod size {
 
     // ── Stats overlay ─────────────────────────────────────────────────────
     pub const STATS_ROW_SPACING: f32 = 3.0;
-    pub const STATS_PANEL_WIDTH: f32 = 132.0;
+    pub const STATS_PANEL_WIDTH: f32 = 260.0;
+    /// Width of one scope column on the model-stats card (All / Sel / Vis).
+    /// Fixed, so the three numeric columns line up down the card however wide
+    /// the numbers in them are; wide enough for an eight-digit count in the
+    /// monospace [`font::STATS`] face.
+    ///
+    /// In egui **points**, not design pixels: it divides up
+    /// [`STATS_PANEL_WIDTH`], which the card sets its width from raw, so the two
+    /// have to be in the same unit.
+    pub const STATS_VALUE_COLUMN: f32 = 56.0;
     pub const STATS_PANEL_PAD_X: i8 = 9;
     pub const STATS_PANEL_PAD_Y: i8 = 9;
     /// Inset of the stats overlay from the left and bottom viewport edges.

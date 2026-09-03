@@ -10,7 +10,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use glam::{Vec2, Vec3};
-use review_model::{Bounds, ModelData, ModelStats, NodeKind};
+use review_model::{
+    Bounds, MeshGroupStats, ModelData, ModelStats, NodeKind, ScopeStats, StatsScope,
+};
 use review_render::{
     ActiveMaterial, AntiAliasing, BoundingBoxScope, CameraProjection, CheckerTexture, DecodedImage,
     EnvironmentSettings, GtaoSettings, MaterialEdit, MaterialSnapshot, MsaaSamples,
@@ -744,6 +746,25 @@ impl PanelsOpen {
     }
 }
 
+/// The two *measured* scopes the stats overlay reports beside the file's own
+/// figures: the current Outliner selection, and whatever it has left visible.
+///
+/// Each is summed off the mesh by [`ModelData::scope_stats`] (invariant 5),
+/// never apportioned from the whole-model counts — which the card takes straight
+/// from [`UiState::stats`], since those are what the source file said. Together
+/// the three columns name the same slices of the scene as [`BoundsScope`], so
+/// the stats card and the bounding box answer "which geometry" the same way.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ScopedStats {
+    /// The selection's own geometry — a node's subtree, or a material slot's
+    /// triangles. `None` when nothing is selected, so the column reads as empty
+    /// rather than as a measured zero.
+    pub(crate) selected: Option<ScopeStats>,
+    /// The meshes the Outliner has left visible. Equal to `all` while nothing is
+    /// hidden, which is the honest answer rather than a reason to blank it.
+    pub(crate) visible: ScopeStats,
+}
+
 /// The measurements the chrome derives from the loaded model that are too
 /// expensive to redo every frame, each stored beside the *input* it was computed
 /// for so a change to that input — and nothing else — rebuilds it.
@@ -780,6 +801,16 @@ pub struct BoundsCaches {
     /// The sorted bone set [`BoundsCaches::bone_influence`] was measured for; a
     /// mismatch with the live selection invalidates it.
     bone_influence_key: Vec<u32>,
+    /// The model's per-(node, material) measured table — the input every column
+    /// of the stats overlay sums. Building it is an O(corners) hash walk, so it
+    /// happens once, the first frame the overlay asks for it.
+    mesh_groups: Option<Vec<MeshGroupStats>>,
+    /// The stats card's three scoped columns, and the (selection, hidden set)
+    /// they were summed for. `None` means "not measured yet" — which
+    /// [`Selection::None`] plus an empty hidden set cannot express on its own,
+    /// since that is also a perfectly ordinary live state.
+    scoped_stats: Option<ScopedStats>,
+    scoped_stats_key: (Selection, Vec<u32>),
 }
 
 impl BoundsCaches {
@@ -1169,6 +1200,48 @@ impl UiState {
         if !self.has_skin && self.debug.active_material == ActiveMaterial::SkinWeights {
             self.debug.active_material = ActiveMaterial::Source;
         }
+    }
+
+    /// The stats overlay's three scoped columns, re-summed only when the
+    /// selection or the hidden set has moved since they were last measured.
+    ///
+    /// The expensive half — the per-draw-group table the sums come from — is
+    /// built once per model and then reused; both are dropped together by
+    /// [`BoundsCaches::reset`] on load, since a new model can reproduce either
+    /// key (the same node index selected again, the same one hidden again) while
+    /// meaning something entirely different. Nothing here may run per frame: the
+    /// table walk is O(corners) with a hash per vertex (invariant 6).
+    pub(crate) fn scoped_stats(&mut self, model: &ModelData) -> ScopedStats {
+        if self.caches.mesh_groups.is_none() {
+            self.caches.mesh_groups = Some(model.mesh_group_stats());
+            self.caches.scoped_stats = None;
+        }
+        let groups = self.caches.mesh_groups.as_deref().unwrap_or_default();
+
+        let key = (self.selection, self.hidden_mesh_nodes());
+        if self.caches.scoped_stats.is_none() || self.caches.scoped_stats_key != key {
+            // The selection covers a node's whole subtree, matching the geometry
+            // the viewport highlights and the "only selection" box wraps.
+            let selected = match key.0 {
+                Selection::None => None,
+                Selection::Material(slot) => {
+                    Some(model.scope_stats(groups, StatsScope::Material(slot as u32)))
+                }
+                Selection::Node(node) => {
+                    let mask = model.node_subtree_mask(node);
+                    Some(model.scope_stats(groups, StatsScope::Nodes(&mask)))
+                }
+            };
+            let visible: Vec<bool> = (0..model.nodes.len())
+                .map(|node| !self.hidden_meshes.contains(&node))
+                .collect();
+            self.caches.scoped_stats = Some(ScopedStats {
+                selected,
+                visible: model.scope_stats(groups, StatsScope::Nodes(&visible)),
+            });
+            self.caches.scoped_stats_key = key;
+        }
+        self.caches.scoped_stats.unwrap_or_default()
     }
 
     /// Refresh [`BoundsCaches::bone_influence`] if the bone selection changed

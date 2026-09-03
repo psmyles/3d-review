@@ -118,6 +118,10 @@ mod ffi {
         name: *mut c_char,
         parent: i32,
         mesh_part_index: i32,
+        /// This node's mesh's own logical (DCC) vertex count, 0 for a node with
+        /// no mesh. Summing it over the mesh-bearing nodes reproduces
+        /// `source_vertex_count`.
+        source_vertex_count: u32,
         transform: [f32; 16],
         /// A `review_import_node_kind` code; see [`node_kind_from_code`].
         kind: u32,
@@ -292,6 +296,7 @@ mod ffi {
                     name: read_optional_c_string(node.name).unwrap_or_default(),
                     parent: (node.parent >= 0).then_some(node.parent as usize),
                     mesh_part: (node.mesh_part_index >= 0).then_some(node.mesh_part_index as usize),
+                    source_vertex_count: node.source_vertex_count as usize,
                     transform: Mat4::from_cols_array(&node.transform),
                     kind,
                     bone: (kind == NodeKind::Bone).then_some(BoneInfo {

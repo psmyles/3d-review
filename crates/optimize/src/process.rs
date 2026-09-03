@@ -1180,6 +1180,7 @@ mod tests {
                 name: name.to_owned(),
                 parent: None,
                 mesh_part: Some(index),
+                source_vertex_count: 0,
                 transform: Mat4::IDENTITY,
                 kind: NodeKind::Mesh,
                 bone: None,

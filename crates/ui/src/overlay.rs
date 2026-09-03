@@ -6,7 +6,7 @@ use review_model::{ModelData, SceneBvh};
 use review_render::{OrbitCamera, Selection};
 
 use crate::opt_state::{GhostStyle, OptIntent, OptLayout};
-use crate::state::{OptionPanel, UiOutput, UiState, WorkspaceMode, sync_debug_state};
+use crate::state::{OptionPanel, ScopedStats, UiOutput, UiState, WorkspaceMode, sync_debug_state};
 use crate::theme::{self, color, size};
 use crate::{dimensions, gizmo, help, panels, stats, status_bar, texture_view, toolbar};
 
@@ -99,9 +99,14 @@ pub fn draw_overlay(
             output.axis_gizmo_action = gizmo_response.inner;
         }
 
+        // Re-scoped here rather than inside the card, which holds only `&UiState`:
+        // the sums are cached against the selection + hidden set and rebuilt only
+        // when one of them moves (invariant 6 — nothing O(mesh) per frame).
+        let scoped = state.scoped_stats(model);
         draw_stats_overlay(
             ctx,
             state,
+            scoped,
             status_bar_height,
             side.left_inset,
             side.right_inset,
@@ -303,6 +308,7 @@ fn draw_side_panels(
 fn draw_stats_overlay(
     ctx: &egui::Context,
     state: &UiState,
+    scoped: ScopedStats,
     status_bar_height: f32,
     left_inset: f32,
     right_inset: f32,
@@ -316,7 +322,7 @@ fn draw_stats_overlay(
         left_inset,
         status_bar_height,
         size::STATS_PANEL_WIDTH,
-        |ui| stats::stats_grid(ui, state),
+        |ui| stats::stats_grid(ui, state, scoped),
     );
 
     // Opt shows a second card on the opposite edge, so the two sets of counts

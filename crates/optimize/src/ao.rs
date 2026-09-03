@@ -605,6 +605,7 @@ mod tests {
             name: name.to_owned(),
             parent,
             mesh_part: None,
+            source_vertex_count: 0,
             transform: Mat4::IDENTITY,
             kind: NodeKind::Mesh,
             bone: None,

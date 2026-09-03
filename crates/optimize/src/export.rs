@@ -855,6 +855,7 @@ mod tests {
             name: name.to_owned(),
             parent: Some(parent),
             mesh_part: Some(0),
+            source_vertex_count: 0,
             transform: Mat4::IDENTITY,
             kind: review_model::NodeKind::Mesh,
             bone: None,
@@ -909,6 +910,7 @@ mod tests {
                 name: name.to_owned(),
                 parent,
                 mesh_part: mesh,
+                source_vertex_count: 0,
                 transform: Mat4::IDENTITY,
                 kind: if mesh.is_some() {
                     review_model::NodeKind::Mesh

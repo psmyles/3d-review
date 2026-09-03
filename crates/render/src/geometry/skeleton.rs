@@ -293,6 +293,7 @@ mod tests {
             name: name.to_owned(),
             parent,
             mesh_part: None,
+            source_vertex_count: 0,
             transform: Mat4::from_translation(position),
             kind,
             bone: (kind == NodeKind::Bone).then_some(BoneInfo {
