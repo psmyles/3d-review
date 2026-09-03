@@ -79,14 +79,12 @@ pub(crate) fn body(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData) {
     if !tabs.contains(&state.outliner.tab) {
         state.outliner.tab = OutlinerTab::Scene;
     }
-    let materials_label = format!("Materials ({})", state.materials_snapshot.len());
-    let animations_label = format!("Animations ({})", model.animations.len());
     let labels: Vec<&str> = tabs
         .iter()
         .map(|tab| match tab {
             OutlinerTab::Scene => "Scene",
-            OutlinerTab::Materials => materials_label.as_str(),
-            OutlinerTab::Animations => animations_label.as_str(),
+            OutlinerTab::Materials => "Materials",
+            OutlinerTab::Animations => "Animations",
         })
         .collect();
     let active = tabs

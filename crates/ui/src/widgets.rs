@@ -242,7 +242,7 @@ pub(crate) fn icon_tile_button(
     );
 
     if let Some(texture) = assets::load_icon_texture(ui, icon) {
-        let image_padding = theme::px(ctx, size::TOOLBAR_ICON_PADDING);
+        let image_padding = rect.width().min(rect.height()) * size::TILE_ICON_INSET_RATIO;
         let image_rect = rect.shrink2(egui::vec2(image_padding, image_padding));
         egui::Image::from_texture(texture)
             .fit_to_exact_size(image_rect.size())

@@ -88,7 +88,7 @@ input/file path
   exact per-vertex influence runs, normalised as ufbx does); rigidly animated
   hierarchies and blend shapes deform too. Every animation stack imports as a
   clip (baked by ufbx at the file's frame rate, no key reduction) and is listed
-  in a third Outliner tab, `Animations (N)`, present only for animated files and
+  in a third Outliner tab, `Animations`, present only for animated files and
   never in Opt. Selecting a clip lands paused on its first frame and brings up a
   bottom-centre transport: go-to-start, step back, play/pause, step forward, a
   frame scrubber, `frame / total   seconds`, loop (on by default) and speed
