@@ -281,7 +281,11 @@ pub mod size {
     pub const TOOLBAR_GROUP_SPACING: f32 = 14.0;
     pub const TOOLBAR_ICON_SIZE: f32 = 42.0;
     pub const TOOLBAR_ICON_GAP: f32 = 3.0;
-    pub const TOOLBAR_ICON_PADDING: f32 = 8.0;
+    /// Inset of an icon inside its tile, as a fraction of the tile's edge — a
+    /// ratio rather than a length so a smaller tile (the animation transport's,
+    /// sized to a dropdown) keeps the toolbar's icon-to-tile proportion. Matches
+    /// the 8-of-42 design px the toolbar tiles were drawn with.
+    pub const TILE_ICON_INSET_RATIO: f32 = 8.0 / 42.0;
     pub const TOOLBAR_CENTER_WIDTH: f32 = 180.0;
     /// Right toolbar cluster (3D mode): view (183, four icons) + projection (48) +
     /// the side-panels toggle group (48), with two group spacings
@@ -438,6 +442,9 @@ pub mod size {
     pub const PANEL_BODY_TOP_MARGIN: i8 = 10;
     /// Compact control-row height used by panel combos (the dropdown button is
     /// shrunk to this so combo rows stay dense — combos keep their own styling).
+    /// **Egui points, not design pixels**: it is handed straight to egui's
+    /// `interact_size.y`, and the transport's tile buttons match it so a row of
+    /// buttons and a dropdown are the same height.
     pub const PANEL_ROW_H: f32 = 22.0;
     pub const PANEL_ROW_GAP: f32 = 6.0;
     /// Gap between the label and control columns of the striped panel grid (the
@@ -545,12 +552,17 @@ pub mod size {
     /// Width of the transport card (egui points — the card sets its width raw,
     /// like the legend card).
     pub const ANIM_TRANSPORT_WIDTH: f32 = 610.0;
-    /// Edge of a transport tile button (design px).
-    pub const ANIM_TRANSPORT_BUTTON: f32 = 30.0;
     /// Gap between transport controls (design px).
     pub const ANIM_TRANSPORT_GAP: f32 = 6.0;
-    /// Rail width of the transport's scrub slider (design px).
-    pub const ANIM_SCRUB_WIDTH: f32 = 170.0;
+    /// Extra breathing room reserved after the transport's frame readout, so the
+    /// loop / speed group is separated from the counter rather than butted
+    /// against it (design px). Part of the readout's fixed block, which is why the
+    /// group can't drift when the counter gains a digit.
+    pub const ANIM_TRANSPORT_GROUP_GAP: f32 = 14.0;
+    /// Floor on the transport scrubber's rail width (design px). The rail is
+    /// normally whatever the card has left over after the fixed groups; this is
+    /// only what it degrades to if the card is ever narrowed past them.
+    pub const ANIM_SCRUB_MIN_WIDTH: f32 = 80.0;
     /// Width of the playback-speed dropdown (design px).
     pub const ANIM_SPEED_COMBO_WIDTH: f32 = 64.0;
 

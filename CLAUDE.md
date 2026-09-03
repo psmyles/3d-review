@@ -561,7 +561,7 @@ linear-blend skinning over each vertex's exact influence run, weights normalised
 by their sum as ufbx does, plus rigid node animation and blend shapes through the
 same vertex-shader deform stage. Every FBX animation stack imports as a clip
 (baked at the file's frame rate, no key reduction; frame counts come from the
-stack range, never key counts) and is listed in the Outliner's `Animations (N)`
+stack range, never key counts) and is listed in the Outliner's `Animations`
 tab — shown only for animated files and never in Opt. Clicking a clip selects it
 paused on its first frame and shows the bottom-centre transport (go-to-start /
 step / play-pause / step / scrubber / `frame / total   s` / loop-on-by-default /

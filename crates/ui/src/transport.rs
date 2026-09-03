@@ -49,7 +49,15 @@ pub(crate) fn draw_transport(
     );
 }
 
-/// The card's single row of controls.
+/// The card's single row of controls: the four transport buttons pinned left,
+/// the loop toggle + speed dropdown pinned right, and the scrubber stretched
+/// across everything between them.
+///
+/// The widths of both end groups are known up front, so the rail is sized by
+/// subtraction rather than by a token — the slider is whatever the card has
+/// left. The readout between them is allocated at the width of the *widest*
+/// string this clip can produce (plus a trailing pad), so a frame counter or an
+/// elapsed time gaining a digit can't shove the right-hand controls sideways.
 fn transport_row(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
@@ -59,13 +67,40 @@ fn transport_row(
 ) {
     let anim = &mut state.animation;
     let last_frame = clip.frame_count(fps).saturating_sub(1);
-    let tile = egui::Vec2::splat(theme::px(ctx, size::ANIM_TRANSPORT_BUTTON));
+    // Square tiles the height of the speed dropdown — `compact_combo` sizes its
+    // button from `PANEL_ROW_H`, so every control in the row reads as one band.
+    // (An egui-point token, so no `theme::px` conversion.)
+    let tile = egui::Vec2::splat(size::PANEL_ROW_H);
     let button = |ui: &mut egui::Ui, icon: &AppIcon, selected: bool, tooltip: &str| {
         widgets::icon_tile_button(ui, ctx, icon, selected, tooltip, tile, false).clicked()
     };
 
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = theme::px(ctx, size::ANIM_TRANSPORT_GAP);
+        let gap = theme::px(ctx, size::ANIM_TRANSPORT_GAP);
+        ui.spacing_mut().item_spacing.x = gap;
+
+        let digits = last_frame.to_string().len();
+        let readout = format!(
+            "{:>digits$} / {last_frame}   {:.2} s",
+            clip.frame_at(anim.time, fps),
+            (anim.time - clip.time_begin).max(0.0)
+        );
+        // The frame field is space-padded to a constant width already; the elapsed
+        // seconds are not, so the block is measured at the clip's full duration.
+        let widest = format!("{last_frame} / {last_frame}   {:.2} s", clip.duration());
+        let readout_width =
+            mono_width(ui, &widest) + theme::px(ctx, size::ANIM_TRANSPORT_GROUP_GAP);
+
+        // Five tiles (four transport + loop), the combo (its `width` is the inner
+        // content, so its frame padding counts too), the readout block, and the
+        // seven gaps between the eight items. Whatever is left is the rail.
+        let combo_width = theme::px(ctx, size::ANIM_SPEED_COMBO_WIDTH);
+        let fixed = tile.x * 5.0
+            + combo_width
+            + ui.spacing().button_padding.x * 2.0
+            + readout_width
+            + gap * 7.0;
+        let rail = (ui.available_width() - fixed).max(theme::px(ctx, size::ANIM_SCRUB_MIN_WIDTH));
 
         if button(
             ui,
@@ -104,7 +139,7 @@ fn transport_row(
         // The scrubber works in whole frames; dragging it pauses playback so the
         // frame under the pointer is the one shown.
         let mut frame = clip.frame_at(anim.time, fps) as f64;
-        ui.spacing_mut().slider_width = theme::px(ctx, size::ANIM_SCRUB_WIDTH);
+        ui.spacing_mut().slider_width = rail;
         let scrub = ui.add(
             egui::Slider::new(&mut frame, 0.0..=last_frame as f64)
                 .integer()
@@ -115,16 +150,17 @@ fn transport_row(
             anim.playing = false;
         }
 
-        let elapsed = (anim.time - clip.time_begin).max(0.0);
-        let digits = last_frame.to_string().len();
-        ui.label(widgets::mono_label(
-            &format!(
-                "{:>digits$} / {last_frame}   {elapsed:.2} s",
-                clip.frame_at(anim.time, fps)
-            ),
-            font::STATS,
+        // Painted into a fixed-width block rather than laid out as a label, so
+        // its own width never depends on the value it is showing.
+        let (rect, _) =
+            ui.allocate_exact_size(egui::vec2(readout_width, tile.y), egui::Sense::hover());
+        ui.painter().text(
+            rect.left_center(),
+            egui::Align2::LEFT_CENTER,
+            readout,
+            egui::FontId::monospace(font::STATS),
             color::TEXT_VALUE,
-        ));
+        );
 
         if button(ui, &assets::ICON_ANIM_LOOP, anim.looping, "Loop playback") {
             anim.looping = !anim.looping;
@@ -133,7 +169,7 @@ fn transport_row(
         widgets::compact_combo(
             ui,
             "animation_speed",
-            theme::px(ctx, size::ANIM_SPEED_COMBO_WIDTH),
+            combo_width,
             anim.speed.label(),
             |ui| {
                 for speed in PlaybackSpeed::ALL {
@@ -142,4 +178,16 @@ fn transport_row(
             },
         );
     });
+}
+
+/// Width of `text` in the transport's monospace readout font.
+fn mono_width(ui: &egui::Ui, text: &str) -> f32 {
+    ui.painter()
+        .layout_no_wrap(
+            text.to_owned(),
+            egui::FontId::monospace(font::STATS),
+            color::TEXT_VALUE,
+        )
+        .rect
+        .width()
 }
