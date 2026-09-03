@@ -291,6 +291,7 @@ mod tests {
             name: "tail".to_owned(),
             parent: Some(0),
             mesh_part: None,
+            source_vertex_count: 0,
             transform: glam::Mat4::IDENTITY,
             kind: NodeKind::Empty,
             bone: None,

@@ -3,7 +3,7 @@
 //! build over fresh index buffers that reuse the steady-state mesh vertex buffer
 //! (invariant 1).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use review_model::ModelData;
 
@@ -91,43 +91,17 @@ pub(crate) fn selected_triangle_mask(model: &ModelData, selection: Selection) ->
             if model.triangles.node.len() != triangle_count {
                 return None;
             }
-            let subtree = node_subtree(model, node);
+            let subtree = model.node_subtree_mask(node);
             Some(
                 model
                     .triangles
                     .node
                     .iter()
-                    .map(|&n| subtree.contains(&n))
+                    .map(|&n| subtree.get(n as usize).copied().unwrap_or(false))
                     .collect(),
             )
         }
     }
-}
-
-/// The set of node indices in the subtree rooted at `root` (inclusive). Each node
-/// is in the subtree if walking its parent links reaches `root`. O(nodes × depth),
-/// built once per selection change; a guard bounds any malformed parent cycle.
-fn node_subtree(model: &ModelData, root: usize) -> HashSet<u32> {
-    let mut set = HashSet::new();
-    if root >= model.nodes.len() {
-        return set;
-    }
-    for index in 0..model.nodes.len() {
-        let mut current = Some(index);
-        let mut guard = 0;
-        while let Some(node_index) = current {
-            if node_index == root {
-                set.insert(index as u32);
-                break;
-            }
-            current = model.nodes.get(node_index).and_then(|node| node.parent);
-            guard += 1;
-            if guard > model.nodes.len() {
-                break;
-            }
-        }
-    }
-    set
 }
 
 /// Reorder the masked triangles' indices grouped by `tri_key` (the Unique
@@ -245,6 +219,7 @@ mod tests {
                 name: "root".into(),
                 parent: None,
                 mesh_part: Some(0),
+                source_vertex_count: 0,
                 transform: glam::Mat4::IDENTITY,
                 kind: review_model::NodeKind::Mesh,
                 bone: None,
@@ -253,6 +228,7 @@ mod tests {
                 name: "child".into(),
                 parent: Some(0),
                 mesh_part: Some(1),
+                source_vertex_count: 0,
                 transform: glam::Mat4::IDENTITY,
                 kind: review_model::NodeKind::Mesh,
                 bone: None,

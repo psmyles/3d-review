@@ -3,7 +3,9 @@
 //! Every value shown is a real measured number carried through import in
 //! [`review_model::ModelStats`] (invariant 5) — never a placeholder.
 
-use crate::state::{TexturePoolEntry, UiState};
+use review_model::ScopeStats;
+
+use crate::state::{ScopedStats, TexturePoolEntry, UiState};
 use crate::theme::{color, font, motion, size};
 use crate::widgets::mono_label;
 
@@ -59,13 +61,80 @@ fn human_size(bytes: u64) -> String {
     }
 }
 
-pub(crate) fn stats_grid(ui: &mut egui::Ui, state: &UiState) {
+/// The scope columns the model-stats card reports, left to right: their heading
+/// and what each one covers.
+///
+/// They name the same three slices of the scene as the bounding box's own scope
+/// dropdown ("All Meshes" / "Only Selection" / "Only Visible"), abbreviated to
+/// fit a column heading.
+const SCOPE_COLUMNS: [(&str, &str); 3] = [
+    (
+        "All",
+        "Every mesh in the file - selected or not, hidden or not. These are the \
+         counts the source file itself reports.",
+    ),
+    (
+        "Sel",
+        "Only what is selected in the Outliner: a node and everything under it, \
+         or every triangle of a material slot. Empty when nothing is selected, \
+         and a material has no authored vertex count to report.",
+    ),
+    (
+        "Vis",
+        "Only the meshes the Outliner is still showing. Identical to All until \
+         you hide something - Ctrl+click a row's eye to isolate one mesh.",
+    ),
+];
+
+/// What one scope column has to say about one row.
+enum Cell {
+    /// A measured value.
+    Value(String),
+    /// This scope was measured and has nothing to report here — nothing is
+    /// selected, or a material slot has no authored vertex count. Shown as an em
+    /// dash, never a zero (invariant 5).
+    Unmeasured,
+    /// The row isn't about a slice of geometry at all (the UV-set count, the
+    /// file's unit, the viewer's frame rate), so the column stays empty rather
+    /// than claiming the scope was measured and came up short.
+    NotScoped,
+}
+
+impl Cell {
+    fn measured(value: Option<usize>) -> Self {
+        Self::from_text(value.map(|value| value.to_string()))
+    }
+
+    fn from_text(value: Option<String>) -> Self {
+        value.map_or(Cell::Unmeasured, Cell::Value)
+    }
+}
+
+/// The model-stats overlay: every measured count, reported three ways — for the
+/// whole file, for the selection, and for what is still visible.
+///
+/// The All column is the source file's own figures as import carried them
+/// (invariant 5); the other two are measured off the mesh by
+/// [`UiState::scoped_stats`], summed from the per-draw-group table so no scan
+/// runs on the redraw path. A row with nothing to say for a scope shows an em
+/// dash, never a zero.
+pub(crate) fn stats_grid(ui: &mut egui::Ui, state: &UiState, scoped: ScopedStats) {
     let stats = &state.stats;
     ui.spacing_mut().item_spacing.y = size::STATS_ROW_SPACING;
-    stat_row(ui, "Draws", &stats.draw_count.to_string());
-    stat_row(ui, "Polys", &stats.polygon_count.to_string());
-    stat_row(ui, "Tris", &stats.triangle_count.to_string());
-    stat_row(ui, "Verts", &stats.vertex_count.to_string());
+
+    scope_heading_row(ui);
+    scoped_row(ui, "Draws", stats.draw_count, scoped, |scope| {
+        Some(scope.draw_count)
+    });
+    scoped_row(ui, "Polys", stats.polygon_count, scoped, |scope| {
+        Some(scope.polygon_count)
+    });
+    scoped_row(ui, "Tris", stats.triangle_count, scoped, |scope| {
+        Some(scope.triangle_count)
+    });
+    scoped_row(ui, "Verts", stats.vertex_count, scoped, |scope| {
+        scope.vertex_count
+    });
     // `Verts` above is the count the artist's DCC reports; `GPU Verts` is what
     // the asset costs an engine — unique vertices per draw group, measured at
     // import. (This viewer's own corner-split upload is an internal layout and
@@ -74,21 +143,170 @@ pub(crate) fn stats_grid(ui: &mut egui::Ui, state: &UiState) {
     // the kind of figure an audit tool exists to flag — a healthy game asset
     // reads a few percent, a scan with per-face normals reads +500%.
     if stats.gpu_vertex_count > 0 {
-        stat_row(ui, "GPU Verts", &stats.gpu_vertex_count.to_string());
-        if stats.vertex_count > 0 {
-            let overhead = (stats.gpu_vertex_count as f32 - stats.vertex_count as f32)
-                / stats.vertex_count as f32
-                * 100.0;
-            stat_row(ui, "Vtx Splits", &format!("{overhead:+.0}%"));
-        }
+        scoped_row(ui, "GPU Verts", stats.gpu_vertex_count, scoped, |scope| {
+            Some(scope.gpu_vertex_count)
+        });
+        splits_row(ui, stats.vertex_count, stats.gpu_vertex_count, scoped);
     }
-    stat_row(ui, "UV Sets", &stats.uv_set_count.to_string());
+    // The rest describe the file or the viewer, not a slice of geometry, so they
+    // carry one value under the All column rather than repeating it three times.
+    whole_model_row(ui, "UV Sets", &stats.uv_set_count.to_string());
     // Skeletal models only: an unrigged mesh shouldn't carry a permanent "0".
     if stats.bone_count > 0 {
-        stat_row(ui, "Bones", &stats.bone_count.to_string());
+        whole_model_row(ui, "Bones", &stats.bone_count.to_string());
     }
-    stat_row(ui, "Unit", &source_unit_label(stats.source_unit_meters));
-    stat_row(ui, "FPS", &format!("{:.0}", state.fps));
+    whole_model_row(ui, "Unit", &source_unit_label(stats.source_unit_meters));
+    whole_model_row(ui, "FPS", &format!("{:.0}", state.fps));
+}
+
+/// The column headings, each carrying its own explanation of what it covers.
+fn scope_heading_row(ui: &mut egui::Ui) {
+    ui.horizontal(|ui| {
+        ui.style_mut().interaction.selectable_labels = false;
+        // Empty label cell: the headings sit over the value columns, and the
+        // leftmost column holds row names, which need no heading.
+        ui.label(mono_label("", font::STATS, color::TEXT_MUTED));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // The columns carry their own fixed width; egui's default gap between
+            // them would push the leftmost one into the row labels.
+            ui.spacing_mut().item_spacing.x = 0.0;
+            for (heading, tooltip) in SCOPE_COLUMNS.iter().rev() {
+                let (rect, response) = value_cell(ui);
+                paint_cell(ui, rect, heading, color::TEXT_MUTED);
+                response.on_hover_text(*tooltip);
+            }
+        });
+    });
+    ui.separator();
+}
+
+/// A measured count in each of the three scopes. `all` is the whole-model figure
+/// as the source file reported it; `measure` pulls the same count out of a
+/// measured scope.
+fn scoped_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    all: usize,
+    scoped: ScopedStats,
+    measure: impl Fn(&ScopeStats) -> Option<usize>,
+) {
+    cells_row(
+        ui,
+        label,
+        [
+            Cell::Value(all.to_string()),
+            Cell::measured(scoped.selected.as_ref().and_then(&measure)),
+            Cell::measured(measure(&scoped.visible)),
+        ],
+    );
+}
+
+/// The vertex-split overhead, recomputed per scope from that scope's own two
+/// vertex counts rather than scaled off the whole model's — a selection of
+/// hard-edged props splits far more than the file's average.
+fn splits_row(ui: &mut egui::Ui, vertices: usize, gpu_vertices: usize, scoped: ScopedStats) {
+    let overhead = |vertices: Option<usize>, gpu_vertices: usize| {
+        let vertices = vertices.filter(|&count| count > 0)?;
+        let percent = (gpu_vertices as f32 - vertices as f32) / vertices as f32 * 100.0;
+        Some(format!("{percent:+.0}%"))
+    };
+    cells_row(
+        ui,
+        "Vtx Splits",
+        [
+            Cell::from_text(overhead(Some(vertices), gpu_vertices)),
+            Cell::from_text(
+                scoped
+                    .selected
+                    .and_then(|scope| overhead(scope.vertex_count, scope.gpu_vertex_count)),
+            ),
+            Cell::from_text(overhead(
+                scoped.visible.vertex_count,
+                scoped.visible.gpu_vertex_count,
+            )),
+        ],
+    );
+}
+
+/// A row whose value describes the file or the viewer as a whole, so it sits
+/// under the All column and leaves the scoped ones blank.
+fn whole_model_row(ui: &mut egui::Ui, label: &str, value: &str) {
+    cells_row(
+        ui,
+        label,
+        [
+            Cell::Value(value.to_owned()),
+            Cell::NotScoped,
+            Cell::NotScoped,
+        ],
+    );
+}
+
+/// One row of the model-stats card: its name, then a fixed-width cell per scope.
+///
+/// The whole strip is one click target that copies the row — every column of it
+/// — to the clipboard, and the widget that carries the row's explanation.
+fn cells_row(ui: &mut egui::Ui, label: &str, cells: [Cell; 3]) {
+    // Only the columns that actually carry a value; a row with one is copied as
+    // plainly as it reads on screen.
+    let measured: Vec<String> = SCOPE_COLUMNS
+        .iter()
+        .zip(&cells)
+        .filter_map(|((heading, _), cell)| match cell {
+            Cell::Value(value) => Some(format!("{heading} {value}")),
+            Cell::Unmeasured | Cell::NotScoped => None,
+        })
+        .collect();
+    let copy_text = format!("{label}: {}", measured.join(", "));
+
+    let rect = ui
+        .horizontal(|ui| {
+            // The stats are display-only. egui's labels are selectable by
+            // default, which puts a text cursor over the row and — because a
+            // selectable label senses drags — makes it an interactive widget
+            // that swallows the row's own hover, so the explanations below never
+            // reached the screen.
+            ui.style_mut().interaction.selectable_labels = false;
+            ui.label(mono_label(label, font::STATS, color::TEXT_MUTED));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Fixed columns, no gap — see [`scope_heading_row`].
+                ui.spacing_mut().item_spacing.x = 0.0;
+                for cell in cells.iter().rev() {
+                    let (rect, _) = value_cell(ui);
+                    match cell {
+                        Cell::Value(value) => paint_cell(ui, rect, value, color::TEXT_VALUE),
+                        Cell::Unmeasured => paint_cell(ui, rect, "—", color::TEXT_MUTED),
+                        Cell::NotScoped => {}
+                    }
+                }
+            });
+        })
+        .response
+        .rect;
+
+    row_interaction(ui, rect, label, copy_text);
+}
+
+/// Claim one fixed-width scope column. Fixed rather than content-sized so the
+/// three columns stay in line down the card whatever lands in them.
+fn value_cell(ui: &mut egui::Ui) -> (egui::Rect, egui::Response) {
+    let height = ui.text_style_height(&egui::TextStyle::Body);
+    ui.allocate_exact_size(
+        egui::vec2(size::STATS_VALUE_COLUMN, height),
+        egui::Sense::hover(),
+    )
+}
+
+/// Paint one column's text against the right edge of its cell, so the digits
+/// form a single column even as the numbers change width.
+fn paint_cell(ui: &egui::Ui, rect: egui::Rect, text: &str, color: egui::Color32) {
+    ui.painter().text(
+        rect.right_center(),
+        egui::Align2::RIGHT_CENTER,
+        text,
+        egui::FontId::new(font::STATS, egui::FontFamily::Monospace),
+        color,
+    );
 }
 
 /// The Opt workspace's second stats card: the measured counts and GPU-behaviour
@@ -346,6 +564,13 @@ fn value_row(ui: &mut egui::Ui, label: &str, value: &str, delta: Option<(String,
         .response
         .rect;
 
+    row_interaction(ui, rect, label, copy_text);
+}
+
+/// Turn a laid-out row into the card's one interactive element: click to copy it,
+/// hover for its explanation. Shared by both cards' rows, single- and
+/// multi-column, so a row behaves the same wherever it is drawn.
+fn row_interaction(ui: &mut egui::Ui, rect: egui::Rect, label: &str, copy_text: String) {
     // Claimed *after* the labels so it sits above them in hit order — the row,
     // not a word in it, is what the pointer finds.
     let id = ui.id().with(("stat_row", label));

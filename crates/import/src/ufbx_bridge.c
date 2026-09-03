@@ -1036,6 +1036,12 @@ static int review_import_capture_nodes(
 
         if (node->mesh && node->mesh->vertex_position.exists) {
             dst->mesh_part_index = (int32_t)mesh_part_counter++;
+            /* The same `num_vertices` the count pass summed into
+               `source_vertex_count`, kept per node so a scoped Verts stat is a
+               sum of measured values rather than an apportioning. The count
+               pass already rejected a scene whose running total exceeds
+               UINT32_MAX, so no single mesh can overflow this. */
+            dst->source_vertex_count = (uint32_t)node->mesh->num_vertices;
         } else {
             dst->mesh_part_index = -1;
         }
