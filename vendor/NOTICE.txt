@@ -1,0 +1,27 @@
+Vendored crates — provenance & maintenance
+==========================================
+
+Unlike `third_party/` (vendored C/C++ compiled into one of our own crates), this
+directory holds whole upstream *Rust* crates used as path dependencies. They are
+pinned checkouts, updated by hand — there is no registry version to bump.
+
+Each is `exclude`d in the root `Cargo.toml`. That is not cosmetic: cargo makes any
+path dependency inside the workspace directory a member automatically, which puts it
+under `cargo clippy --workspace -- -D warnings` and fails the lint on upstream's own
+style. Cargo only caps lints for crates it did not consider local, and `--exclude` on
+the command line does not change that; declaring it excluded in the manifest does.
+The crate still builds exactly as before, as a path dependency.
+
+sokol-rust
+----------
+https://github.com/floooh/sokol-rust — Rust bindings to the sokol headers, and the
+sokol C sources themselves (`src/sokol/c/`), compiled by its own build.rs.
+Pinned commit: b22a545
+License: zlib/libpng (see sokol-rust/LICENSE).
+Not on crates.io under this name — the `sokol` name there belongs to an unrelated
+2019 crate — which is why it is vendored rather than depended on by version.
+
+`sokol_gfx` is the one drawing API the renderer targets on both Windows and macOS
+(D3D11 and Metal underneath); see `mac-port-plan.md` §1 and D21. Updating the pin
+means replacing the tree wholesale and re-checking the `sg_swapchain` / `ShaderDesc`
+shapes the renderer builds by hand.

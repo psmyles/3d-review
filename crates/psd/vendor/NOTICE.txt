@@ -1,40 +1,47 @@
-Prebuilt psd_sdk artifacts — provenance & regeneration
-======================================================
+Vendored psd_sdk — provenance & maintenance
+===========================================
 
-`fire_psd.lib` and `../src/bindings.rs` are PREBUILT, committed artifacts. This
-crate links the `.lib` and includes the bindings directly; it does not compile
-any C++ or run bindgen. That is deliberate: it keeps the 3D-Review workspace free
-of a libclang/bindgen + C++ (`cl.exe`) build requirement for PSD support, matching
-how the DXBC shader blobs and baked IBL maps are committed rather than rebuilt.
+`Psd/` is a source copy of the psd_sdk library, compiled from source by this
+crate's build.rs (`cc`) together with the C-ABI wrapper in `../src/wrapper.cpp`.
+This is the same model the workspace already uses for ufbx (`crates/import`) and
+meshoptimizer + ufbx_write (`crates/optimize`): vendored source, no prebuilt
+binary, no bindgen or libclang at build time — so a clean checkout builds on any
+OS that has a C++ compiler.
 
 Underlying library
 ------------------
 psd_sdk by Molecular Matters GmbH — https://github.com/MolecularMatters/psd_sdk
 Vendored commit: f51449543273cbf12058ae92b230e0c4209f5066
-License: BSD 2-Clause (see LICENSE, reproduced here as required for binary
-redistribution). Only src/Psd/ (the library) is used.
+License: BSD 2-Clause (see LICENSE).
+Only src/Psd/ (the library) is vendored; Samples/bin/build are omitted.
 
-fire_psd.lib
-------------
-An MSVC x64 static library: the psd_sdk `src/Psd/` sources plus a thin C-ABI
-wrapper (`fire_psd_open` / `_info_get` / `_read_merged_rgba8` / `_free`, and unused
-`_icc_*`). Built release-profile, so its objects link the release dynamic CRT
-(`/MD` -> MSVCRT) and C++ STL (msvcprt) — the same CRT Rust's MSVC target links by
-default, in both debug and release Rust builds. The linker pulls those in via the
-`DEFAULTLIB` directives baked into the archive; no extra link flags are needed.
+What is compiled
+----------------
+Every `Psd/*.cpp` except the platform `NativeFile` sources, plus
+`../src/wrapper.cpp`. `PsdNativeFile_Linux.cpp` is POSIX aio and
+`PsdNativeFile_Mac.mm` is Objective-C++ (never picked up — not a `.cpp`);
+`PsdNativeFile.cpp` is the Win32 `CreateFileW` + overlapped-IO one and is
+excluded off Windows. None of the three is reachable: `wrapper.cpp` reads
+through its own in-memory `psd::File`, so no `NativeFile` is ever instantiated.
 
-Regeneration
-------------
-The full `cc` + `bindgen` compile setup lives in fire's `psd-sdk-sys` crate
-(D:\Dev\fire\crates\psd-sdk-sys). To refresh these artifacts after a psd_sdk
-update or an ABI change to the wrapper:
+The C ABI and the committed bindings
+------------------------------------
+`../src/wrapper.h` declares the C ABI (`fire_psd_open` / `_info_get` /
+`_read_merged_rgba8` / `_free`, plus the unused `_icc_*`); `../src/bindings.rs`
+is a committed Rust mirror of it, originally bindgen output. Nothing regenerates
+it during a build — the two are kept in lockstep by hand, and the size/offset
+assertions in `bindings.rs` are what turn a mismatch into a compile error. If you
+change the ABI, change both, and `../src/lib.rs` with them.
 
-  1. In the fire repo, from an "x64 Native Tools Command Prompt for VS":
-       cargo build --release -p psd-sdk-sys
-  2. Copy the outputs from
-       fire/target/release/build/psd-sdk-sys-*/out/
-     into this crate:
-       fire_psd.lib  -> vendor/fire_psd.lib
-       bindings.rs   -> ../src/bindings.rs
+To regenerate `bindings.rs` after an ABI change, run bindgen over `wrapper.h`
+(it includes only <stdint.h> / <stddef.h> so no STL headers are parsed):
 
-If the C-ABI wrapper surface changes, update crates/psd/src/lib.rs to match.
+  bindgen crates/psd/src/wrapper.h -o crates/psd/src/bindings.rs \
+    --allowlist-function 'fire_psd_.*' --allowlist-type 'fire_psd.*' \
+    -- -x c++ -std=c++17
+
+Updating psd_sdk
+----------------
+Replace `Psd/` with the new upstream `src/Psd/`, update the commit above, and
+rebuild. `wrapper.cpp` uses only psd_sdk's public parse/destroy API plus
+`psd::Document` / `psd::PlanarImage` / `psd::ImageResourcesSection` fields.

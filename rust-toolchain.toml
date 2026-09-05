@@ -1,0 +1,10 @@
+# One toolchain across both hosts, so a Windows box and the dev Mac build the same
+# thing (`mac-port-plan.md` §7). `channel = "stable"` rather than a pinned version:
+# the workspace floor lives in `[workspace.package] rust-version` (1.88), which cargo
+# already enforces, and pinning here as well would mean two places to bump.
+#
+# Both targets are listed so `rustup` installs the other host's std when someone
+# cross-checks; neither is cross-compiled in the normal build.
+[toolchain]
+channel = "stable"
+targets = ["x86_64-pc-windows-msvc", "aarch64-apple-darwin"]

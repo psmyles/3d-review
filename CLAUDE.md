@@ -95,9 +95,12 @@ decisions, phases and risks — see §4's note).
    (`checked_slice`). Free the C scene on **both** success and error paths (no leak).
    **Sanctioned exception — psd_sdk FFI** (`crates/psd`, `review-psd`): the C-ABI
    bridge to the vendored psd_sdk C++ that decodes a PSD's merged composite (source
-   art), so the viewer reads layered PSDs without a bundled ImageMagick. It links a
-   **prebuilt** static lib + committed bindgen output (no `cc`/`bindgen`/libclang at
-   build time — see that crate's `vendor/NOTICE.txt`); the `unsafe` is confined to
+   art), so the viewer reads layered PSDs without a bundled ImageMagick. It vendors
+   psd_sdk as **source** (`vendor/Psd/`, an unmodified upstream `src/Psd/` snapshot)
+   and compiles it with `cc` alongside the C-ABI `src/wrapper.cpp`, exactly as
+   `import` does with ufbx; `src/bindings.rs` is committed Rust hand-kept against
+   `src/wrapper.h`, so no `bindgen`/libclang runs at build time (see that crate's
+   `vendor/NOTICE.txt`). The `unsafe` is confined to
    its `decode_psd`, which validates header dimensions with checked arithmetic before
    sizing the output buffer. `render`'s `texture.rs` calls it through the safe API
    only — no `unsafe` there.
@@ -269,9 +272,11 @@ crates/
             re-export of this crate, not a copy. -> src/lib.rs
   psd/      review-psd: safe `decode_psd` over a C-ABI bridge to psd_sdk (C++),
             returning a PSD's merged composite as RGBA8 (invariant 9's third FFI
-            site). Links a PREBUILT MSVC static lib (`vendor/fire_psd.lib`) +
-            committed bindgen output (`src/bindings.rs`); the link-only build.rs runs
-            no cc/bindgen. -> src/lib.rs, src/bindings.rs, build.rs, vendor/
+            site). Vendors psd_sdk as SOURCE (`vendor/Psd/`) and compiles it with `cc`
+            alongside the C-ABI `src/wrapper.cpp`; `src/bindings.rs` is committed Rust
+            hand-kept against `src/wrapper.h`, so no bindgen/libclang runs.
+            -> src/lib.rs, src/wrapper.cpp, src/wrapper.h, src/bindings.rs, build.rs,
+            vendor/
   render/   review-render: per-view config/option types (ShadingMode,
             VertexColorMode, ActiveMaterial, CameraProjection, AntiAliasing,
             EnvironmentSettings, GtaoSettings, TonemapSettings, SceneDebugOptions,

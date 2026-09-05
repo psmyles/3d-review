@@ -9,6 +9,13 @@ members = [
     "crates/render",
     "crates/ui",
 ]
+# `vendor/sokol-rust` is a pinned upstream copy (`mac-port-plan.md` D21), not our code,
+# but it sits inside the workspace directory and cargo makes any path dependency there a
+# member automatically — which puts it under `cargo clippy --workspace -- -D warnings`
+# and fails the lint on upstream's own style. Cargo only caps lints for crates it did not
+# consider local, and `--exclude` on the command line does not change that; declaring it
+# excluded here does. It still builds exactly as before, as a path dependency.
+exclude = ["vendor/sokol-rust"]
 resolver = "2"
 
 # §3's review gate, in the manifest rather than only in a command line someone has

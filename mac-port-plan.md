@@ -14,9 +14,9 @@ is the *GPU layer* (`crates/render/src/rhi/` and the shaders), the egui renderer
 leaves in `app`, and the build/distribution chain. The port runs **Windows first** (Fire D13): the
 shared-shell migration is the risk, and it has to be gated on a Windows box against `main`.
 
-Status: **planned**, nothing in the tree yet. Sections are written in the present tense of the
-finished port so they can become the description once it lands; the *Status* column of §2 and the
-phase list in §8 say what is actually done.
+Status: **Phase 0 done on Windows** (D21, D22); the port itself is not started. Sections are
+written in the present tense of the finished port so they can become the description once it
+lands; the *Status* column of §2 and the phase list in §8 say what is actually done.
 
 ---
 
@@ -68,8 +68,8 @@ and are settled.
 | D18 | **Tracy GPU profiler: per-OS leaves over sokol's native handles** (*owner*). D3D11: the existing timestamp-query code unchanged, over `sg_d3d11_device()` / `sg_d3d11_device_context()` (the immediate context; `ctx.End(query)` between sokol calls is valid). Metal: per-pass zones are *not* achievable (sokol owns the command buffer and encoder; Apple silicon has no draw-boundary counter sampling) - the leaf brackets sokol's buffer with two sentinel command buffers on `sg_mtl_command_queue()` and reports their `GPUEndTime`s as one "GPU frame" zone, plus `sg_query_stats()` counts as plots on both OSes | Recorded honestly | `rhi/gpu_profiler.rs` keeps its `Zone` API; `zone_*` are no-ops on Metal; Xcode's Metal profiler covers per-pass timing there | Planned |
 | D19 | **`bake_ibl` on sokol_gfx** (*owner*): `Baker` = headless `Gpu` (device, `sg_setup`, no swapchain); `CubeTarget` = one cube image + 6×mips attachment views (`mip_level` + `slice`); render every pass for one environment → `sg_commit` → per-OS readback leaf `backend::read_image_subresource`: D3D11 staging copy + `Map(READ)` over `sg_d3d11_query_image_info` (today's body); Metal blit from the private texture to a shared `MTLBuffer` on our own command buffer from `sg_mtl_command_queue()`, committed *after* `sg_commit` (queue order = commit order) + `waitUntilCompleted`. The old RTV/SRV-hazard `unbind_*` calls go away (passes are closed) | Fire D23: the whole dev pipeline runs on the Mac; a re-bake must not need Windows | sokol uses unretained command-buffer references, so every image stays alive until its readback returns | Planned |
 | D20 | **The swapchain backbuffer is plain UNORM and the composite/egui/tex shaders sRGB-encode their own output** - `R8G8B8A8_UNORM` on D3D11 (today's contract), `BGRA8Unorm` on Metal (`CAMetalLayer` refuses RGBA8); `SWAPCHAIN_FORMAT` lives in the backend module | Fire D20. The swapchain pass needs no depth (the scene is offscreen), so Fire's `metal.rs` is reusable **as-is** | Channel order only | Planned |
-| D21 | **`vendor/sokol-rust` vendored** (Fire's pin, floooh/sokol-rust @ b22a545) and **`exclude`d from the workspace** so `-D warnings` does not lint upstream | Fire D22 + its step-8 finding: `--exclude` on the command line does not work, because cargo lints every path dependency as local; `exclude = [...]` in the root manifest does | A pinned tree updated by hand; `sg_swapchain` / `ShaderDesc` shape changes land there | Planned |
-| D22 | **PSD: vendor `psd_sdk` source + a `read_merged_rgba8` wrapper into `crates/psd`, compile with `cc`, keep the committed `bindings.rs`** (*owner*) | The prebuilt `fire_psd.lib` is gitignored (`*.lib`) and absent - the crate cannot link from a clean checkout on *any* OS today; source + `cc` is the model ufbx / meshoptimizer / ufbx_write already use and needs no bindgen or libclang at build time | `PsdNativeFile.cpp` excluded off Windows (the wrapper reads through its own in-memory `psd::File`); `cpp(true)` links `c++`. Fire's current `psd-sdk-sys` wrapper has a *newer* ABI (`fire_psd_read_merged`, a 16-byte info struct); the vendored wrapper here keeps the older one the committed bindings declare | Planned - **Phase 0, first**: it blocks building the workspace on the Mac |
+| D21 | **`vendor/sokol-rust` vendored** (Fire's pin, floooh/sokol-rust @ b22a545) and **`exclude`d from the workspace** so `-D warnings` does not lint upstream | Fire D22 + its step-8 finding: `--exclude` on the command line does not work, because cargo lints every path dependency as local; `exclude = [...]` in the root manifest does | A pinned tree updated by hand; `sg_swapchain` / `ShaderDesc` shape changes land there | Shipped (Phase 0) |
+| D22 | **PSD: vendor `psd_sdk` source + a `read_merged_rgba8` wrapper into `crates/psd`, compile with `cc`, keep the committed `bindings.rs`** (*owner*) | The prebuilt `fire_psd.lib` is gitignored (`*.lib`) and absent - the crate cannot link from a clean checkout on *any* OS today; source + `cc` is the model ufbx / meshoptimizer / ufbx_write already use and needs no bindgen or libclang at build time | `PsdNativeFile.cpp` excluded off Windows (the wrapper reads through its own in-memory `psd::File`); `cpp(true)` links `c++`. Fire's current `psd-sdk-sys` wrapper has a *newer* ABI (`fire_psd_read_merged`, a 16-byte info struct); the vendored wrapper here keeps the older one the committed bindings declare | Shipped (Phase 0) |
 
 Not adopted from Fire, and why: the single-instance socket / `interprocess` (D5/D6 there) - this
 viewer is one window per process and has no instance model; CI (Fire D23's mac leg) - deferred by
@@ -407,14 +407,41 @@ Fire §7 applies, with these deltas.
 
 ## 8. Phases
 
-### Phase 0 - unblock the checkout (either OS, ~½ day)
+### Phase 0 - unblock the checkout (either OS, ~½ day) — **done on Windows**
 
 1. **D22**: vendor the psd_sdk source + wrapper into `crates/psd`, `cc` build, delete the `.lib`
    link. Verify: `cargo test -p review-psd` + a PSD texture decodes in the viewer on Windows;
    `cargo test -p review-psd` on the Mac.
+   *Done.* `crates/psd/vendor/Psd/` (upstream `src/Psd/` @ `f514495`) + `src/wrapper.{h,cpp}`
+   compiled by `cc`; `src/bindings.rs` unchanged, so the ABI is the older
+   `fire_psd_read_merged_rgba8` / 12-byte `fire_psd_info` those bindings declare, and the wrapper
+   is byte-identical to the source the retired `.lib` was built from — no behaviour change. The
+   viewer check is now a repeatable test rather than a manual one:
+   `crates/psd/tests/real_psd.rs` decodes `assets/test_textures/T_Sides_D.psd` (skips when
+   absent). Still to run on the Mac.
 2. Bump `crates/app`'s version to match `product.json` (the build.rs warning fires today).
+   *Done* — 0.2.0 → 0.2.1; the warning no longer fires.
 3. Vendor `vendor/sokol-rust` (Fire's pin), `exclude` it, add `rust-toolchain.toml`. `cargo check
    --workspace` still green on Windows (nothing uses it yet).
+   *Done.* 94 files at `b22a545`, `exclude`d in the root manifest, provenance in
+   `vendor/NOTICE.txt`; it compiles standalone on Windows (its build.rs builds the sokol C for
+   D3D11), and nothing depends on it yet, so `[workspace.dependencies] sokol` is deliberately not
+   declared until Phase 1 step 3 wires it in.
+
+Found while doing it, not fixed (both predate the port, and neither blocks Phase 1):
+
+* **The workspace clippy gate is red on current stable** (1.98.1) from three new lints on
+  untouched code: `chunks_exact_to_as_chunks` (4× `crates/model/src/lib.rs`, 1×
+  `crates/model/src/anim.rs`), `byte_char_slices` (3× `crates/render/src/texture.rs`) and the
+  `float_literal_f32_fallback` future-incompat warning (`crates/ui/src/widgets.rs:532`). All are
+  one-line mechanical fixes. Until they land, "clippy clean" has to be read as clean with those
+  three `-A`'d.
+* **`fire_psd_info.channels` is the document's raw `channelCount`**, which counts spot/extra
+  channels, and `toolbar.rs:530` keys the Tex viewport's alpha segment on `channels == 2 | 4`. An
+  RGB PSD with one spot channel reports 5 and so reads as having no alpha. Fire hit this and fixed
+  it in its newer wrapper by reporting the *composite's* channel count instead; that fix is not
+  carried here, because it changes the ABI's meaning and Phase 0 was deliberately behaviour-
+  preserving. Worth doing on its own.
 
 ### Phase 1 - Windows on winit + sokol_gfx (branch `shell/winit-sokol`), gated
 
