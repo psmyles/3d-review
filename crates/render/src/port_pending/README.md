@@ -14,16 +14,17 @@ something rather than a rewrite from memory.
 
 | File | Was | Returns in |
 | --- | --- | --- |
-| `scene_pipelines.rs` | `src/scene/pipelines.rs` — `ScenePipelineSet` | step 4 |
-| `scene_resources.rs` | `src/scene/resources.rs` — `ModelSlot` / `DerivedViews` / every `sync_*` | step 4 |
-| `scene_d3d.rs` | `src/scene/d3d.rs` — `SceneGpu`, the passes, the uniform encoders | step 4 |
-| `material_d3d.rs` | `src/material/d3d.rs` — the material table + texture cache | step 4 |
-| `ibl.rs` | `src/ibl.rs` — the baked-map upload *and* the offline precompute | step 4 (upload), step 6 (bake) |
 | `scene_opt.rs` | `src/scene/opt.rs` — the Opt split + ghost overlay | step 4, last stages |
-| `rhi_target.rs` | `src/rhi/target.rs` — the offscreen MSAA colour + depth targets and their resolve | step 4, with the scene pass |
+| `ibl_bake.rs` | the offline precompute half of `src/ibl.rs` (its runtime upload half is live again) | step 6 |
 | `gpu_profiler_zones.rs` | `src/rhi/gpu_profiler.rs` — the timestamp-query `Zone` machinery | step 6 |
 | `bake.rs` | `src/rhi/bake.rs` — the headless bake device + readback | step 6 |
 | `bake_ibl_main.rs` | `src/bin/bake_ibl.rs` — the offline bake binary | step 6 |
+
+The files that carried MSAA and GTAO left this directory even though neither stage has
+landed: `scene_pipelines.rs`, `scene_resources.rs`, `scene_d3d.rs`, `material_d3d.rs`
+and `rhi_target.rs` were rewritten wholesale by step 4's scene stage, and the two
+features they *also* carried come back as additions to the sokol versions rather than
+as ports of the parked ones — there is nothing left in them worth diffing against.
 
 `rhi/gpu_profiler.rs` still exists and still carries the `--tracy` arming flag,
 `should_enable` and `note`; only the D3D11 query machinery moved here. The other
@@ -32,9 +33,15 @@ were **rewritten in place** on sokol_gfx rather than parked, and grow a knob at 
 time as step 4's stages need them; `target.rs` is here because nothing in step 3
 renders offscreen at all.
 
-Gone from the table already: `tex_d3d.rs` left with step 4's first stage, rewritten
-as `src/tex/gpu.rs` — two deferred `SwapchainJob`s over the generated `tex_image` /
-`tex_checker` programs, with the CPU mip chain (D7) in the new `rhi/mips.rs`.
+Gone from the table already:
+
+* `tex_d3d.rs` left with step 4's first stage, rewritten as `src/tex/gpu.rs` — two
+  deferred `SwapchainJob`s over the generated `tex_image` / `tex_checker` programs,
+  with the CPU mip chain (D7) in the new `rhi/mips.rs`.
+* `scene_pipelines.rs`, `scene_resources.rs`, `scene_d3d.rs`, `material_d3d.rs`,
+  `rhi_target.rs` and `ibl.rs`'s runtime half left with the scene stage, as
+  `scene/{pipelines,resources,gpu}.rs`, `material/gpu.rs`, `rhi/target.rs` and
+  `ibl.rs`.
 
 ## What step 6 must restore to `Cargo.toml`
 

@@ -111,6 +111,59 @@ impl Texture {
         Self::from_desc(&desc, label)
     }
 
+    /// Upload an immutable block-compressed **cube** texture from mip-major,
+    /// faces-contiguous block bytes — exactly the layout the IBL bake wrote.
+    ///
+    /// That layout is also exactly sokol's: one `mip_levels` range per mip, covering
+    /// all six faces in +X -X +Y -Y +Z -Z order. The D3D11 path had to re-index this
+    /// into `face * mips + mip` subresources; that step is gone.
+    ///
+    /// `size` is the base face resolution; the block size comes from `format`, so a
+    /// caller cannot disagree with it.
+    pub(crate) fn cube_block_compressed(
+        size: u32,
+        mips: u32,
+        format: Format,
+        data: &[u8],
+        label: &CStr,
+    ) -> GpuResult<Self> {
+        let name = label.to_str().unwrap_or("cube");
+        debug_assert!(
+            format.is_block_compressed(),
+            "cube_block_compressed needs a block-compressed format"
+        );
+        let block_bytes = format.block_bytes() as usize;
+        // Validate the payload against the layout *before* handing sokol pointers
+        // into it: a truncated baked asset would otherwise be read past its end.
+        let mip_len = |mip: u32| -> usize {
+            let blocks = (size >> mip).max(1).div_ceil(4) as usize;
+            blocks * blocks * block_bytes * 6
+        };
+        let total: usize = (0..mips).map(mip_len).sum();
+        if data.len() < total {
+            return Err(GpuError::invalid_arg(format!(
+                "'{name}' is {} bytes but its {mips}-mip layout needs {total}",
+                data.len()
+            )));
+        }
+
+        let mut desc = sg::ImageDesc::new();
+        desc._type = sg::ImageType::Cube;
+        desc.usage.immutable = true;
+        desc.width = size as i32;
+        desc.height = size as i32;
+        desc.num_mipmaps = mips as i32;
+        desc.pixel_format = format.sg();
+        desc.label = label.as_ptr();
+        let mut offset = 0usize;
+        for mip in 0..mips {
+            let len = mip_len(mip);
+            desc.data.mip_levels[mip as usize] = sg::slice_as_range(&data[offset..offset + len]);
+            offset += len;
+        }
+        Self::from_desc(&desc, label)
+    }
+
     /// Create the image and the view a binding slot reads it through, destroying
     /// both if either came back invalid.
     fn from_desc(desc: &sg::ImageDesc, label: &CStr) -> GpuResult<Self> {

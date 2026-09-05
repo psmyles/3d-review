@@ -2,17 +2,18 @@
 //!
 //! The GPU-facing `#[repr(C)]` types kept in lockstep with `review.glsl` live in
 //! [`gpu_types`] and are pinned to shdc's generated structs by size assertions
-//! (invariant 11).
+//! (invariant 11). [`pipelines`] builds the programs the scene pass draws with,
+//! [`resources`] caches everything derived per model (invariant 3), and [`gpu`] is
+//! the renderer itself: the offscreen 2-MRT pass and the composite job that reads it.
 //!
-//! The renderer itself — `SceneGpu`, its pipelines, its per-model resource cache and
-//! the Opt workspace's comparison rendering — has not been moved onto sokol_gfx yet.
-//! It is in `src/port_pending/` and returns in `mac-port-plan.md` Phase 1 step 4,
-//! stage by stage; see that directory's README.
+//! The Opt workspace's comparison rendering has not been moved onto sokol_gfx yet; it
+//! is `src/port_pending/scene_opt.rs` and returns in `mac-port-plan.md` Phase 1
+//! step 4's last stages.
 
-// The uniform encoders here have no caller until the scene stages land; the structs
-// themselves are what the invariant-11 assertions lock against `review.glsl`, which is
-// why the module stays compiled.
-#[allow(dead_code)]
+mod gpu;
 mod gpu_types;
+mod pipelines;
+mod resources;
 
+pub(crate) use gpu::SceneGpu;
 pub(crate) use gpu_types::{InfluenceEntry, MorphEntry, SceneVertex};

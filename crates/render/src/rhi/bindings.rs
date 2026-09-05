@@ -11,8 +11,9 @@
 
 use sokol::gfx as sg;
 
-use super::buffer::TransientBuffer;
+use super::buffer::{IndexBuffer, StorageBuffer, TransientBuffer, VertexBuffer};
 use super::sampler::Sampler;
+use super::target::ColorTarget;
 use super::texture::Texture;
 
 /// The resources one draw reads. Slot numbers are the shdc-generated `VIEW_*` /
@@ -39,9 +40,32 @@ impl Bindings {
         self.0.index_buffer_offset = byte_offset as i32;
     }
 
+    /// Bind an immutable mesh vertex buffer (buffer slot 0).
+    pub(crate) fn mesh_vertices(&mut self, buffer: &VertexBuffer) {
+        self.0.vertex_buffers[0] = buffer.handle();
+        self.0.vertex_buffer_offsets[0] = 0;
+    }
+
+    /// Bind an immutable index buffer.
+    pub(crate) fn mesh_indices(&mut self, buffer: &IndexBuffer) {
+        self.0.index_buffer = buffer.handle();
+        self.0.index_buffer_offset = 0;
+    }
+
     /// Bind a texture to a view slot.
     pub(crate) fn texture(&mut self, slot: usize, texture: &Texture) {
         self.0.views[slot] = texture.view();
+    }
+
+    /// Bind an offscreen colour target to a view slot, for a later pass to sample.
+    pub(crate) fn target(&mut self, slot: usize, target: &ColorTarget) {
+        self.0.views[slot] = target.texture();
+    }
+
+    /// Bind a read-only structured buffer to a view slot — the deform tables the
+    /// vertex stage indexes into.
+    pub(crate) fn storage<T: bytemuck::Pod>(&mut self, slot: usize, buffer: &StorageBuffer<T>) {
+        self.0.views[slot] = buffer.view();
     }
 
     /// Bind a sampler to a sampler slot.

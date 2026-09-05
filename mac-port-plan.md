@@ -14,13 +14,12 @@ is the *GPU layer* (`crates/render/src/rhi/` and the shaders), the egui renderer
 leaves in `app`, and the build/distribution chain. The port runs **Windows first** (Fire D13): the
 shared-shell migration is the risk, and it has to be gated on a Windows box against `main`.
 
-Status: **Phase 0 done on Windows** (D21, D22), plus **Phase 1 steps 1–3 and step 4's first
-stage**. The backend swap has happened: the device, the swapchain, the frame flow, the whole egui
-chrome and the Tex viewport run on sokol_gfx, and `app` no longer depends on `windows` at all. What
-has *not* moved yet is the 3D scene — the D3D11 scene / material / IBL draw paths are parked,
-uncompiled, in `crates/render/src/port_pending/` and `render_scene` / `render_opt_scene` /
-`render_uv_scene` are stubs that clear the frame to the viewport background. Step 4 revives them
-stage by stage. Sections are written in the present tense of the finished port so they
+Status: **Phase 0 done on Windows** (D21, D22), plus **Phase 1 steps 1–3 and step 4's first two
+stages**. The backend swap has happened: the device, the swapchain, the frame flow, the egui chrome,
+the Tex viewport and the 3D + UV scenes run on sokol_gfx, and `app` no longer depends on `windows`
+at all. Three things are still to come in step 4: **MSAA**, **GTAO**, and the **Opt workspace's
+comparison view** (the last still parked in `crates/render/src/port_pending/`, with
+`render_opt_scene` a stub that clears the frame to the viewport background). Sections are written in the present tense of the finished port so they
 can become the description once it lands; the *Status* column of §2 and the phase list in §8 say
 what is actually done.
 
@@ -653,6 +652,54 @@ Ordered so each step is verifiable by eye against the current renderer on the sa
    magnification showing hard texel edges, which is the min-linear/mag-point sampler behaving.
    Channel isolation checked on G and R. **Zero** output on sokol's validation channel across all
    three.
+
+   *Stage 2 (the scene, single-sample, no GTAO) done*, and with it the UV viewport and the skinning
+   storage buffers that were sequenced as their own stages — both came along because the scene port
+   is wholesale rather than incremental: `scene/{pipelines,resources,gpu}.rs`, `material/gpu.rs`,
+   `rhi/target.rs` and `ibl.rs`'s runtime half replace the parked D3D11 files, and `render_scene` /
+   `render_uv_scene` draw again. `scene/resources.rs` is a near-mechanical port (every `sync_*` lost
+   its `&Gpu` and nothing else); `scene/gpu.rs` is a rewrite, because the pass and binding model
+   changed underneath it.
+
+   What the sokol model actually changed, beyond the mechanical:
+
+   * **Bindings are per *program*, not per pass**, and shdc decides what a program declares by what
+     it *reads*. There is no `bind_scene_shared` any more: each draw assembles the set its own
+     program asks for, and binding one resource too many is as much a validation failure as binding
+     one too few. Three cases had to be discovered rather than deduced — `fs_main` never samples the
+     environment cube (the skybox does), so the mesh binds three IBL maps and not four; `fs_line`
+     reads nothing from the fragment-stage scene block, so shdc strips it and the line pipelines
+     apply only the vertex block while `fs_selection` takes both; and `vs_main` declares all four
+     deform storage buffers, so **every** program sharing it must bind all four — which is why
+     `SceneGpu` owns one-element `DeformDummies` for a model with no skin. §3.2 anticipated the
+     dummies; it did not anticipate the other two.
+   * **`SwapchainJob` grew a viewport rect** and the composite became one, while the offscreen scene
+     pass is issued directly — the split §3.2 called for.
+   * **Front faces are counter-clockwise, and sokol's default is the opposite.** The old D3D11
+     rasterizer set `FrontCounterClockwise = TRUE`; sokol's `face_winding` defaults to CW, so the
+     pipelines must say `Ccw`. This is the one defect that survived to the eye-check, and it is
+     worth knowing how it *looked*: not a subtle shading difference but a closed mesh rendering as
+     its own interior — back-face culling keeping the far side of every solid — which reads as a
+     translucent model with the grid showing through it. Two other hypotheses (a broken depth test,
+     a reversed-Z mix-up) fit that symptom equally well, and both were wrong; what settled it was
+     probing the depth buffer by flipping the line pipelines' compare function and watching *where*
+     the grid survived.
+
+   Deliberately not carried over yet: MSAA (`rhi/target.rs` is single-sample, `sync_targets` takes
+   no sample count, and the AA menu changes nothing), GTAO (the three passes and their targets), and
+   the Opt comparison view. Each is an addition to the sokol code rather than a port of the parked
+   D3D11, so those files left `port_pending/` with this stage.
+
+   Verified: clippy clean workspace-wide, all 20 test binaries pass (the `SceneVertex` layout test
+   came back, now asserting the sokol attribute list against the struct's field offsets), and a
+   side-by-side against a `main` build in a worktree, same window and same model:
+   `meter_cube.fbx` (opaque, identically framed, identical face shading, grid correctly occluded)
+   and `SK_Player_01.fbx` (skinned into the file's default pose, same silhouette, same materials,
+   same IBL). The only visible difference is the missing ambient-occlusion contrast in creases,
+   which is the GTAO stage. **Zero** output on sokol's validation channel. Not compared against
+   `main`: the UV viewport (it draws its grid, islands and edges, but its own eye-check belongs to
+   its stage) — and, as in step 1, no workspace or panel reachable only by clicking, since synthetic
+   input does not reach the winit window from an agent session.
 5. **Shell leaves on Windows**: `rfd` on workers (D9), `dirs` config dir (D17), `Primary` modifier
    plumbing (D10, still Ctrl here), the startup error box after `run_app`, `ScaleFactorChanged`
    forwarding.

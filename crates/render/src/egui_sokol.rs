@@ -144,7 +144,6 @@ impl EguiRenderer {
             c"egui",
         )?;
         let pipeline = Pipeline::new(&PipelineDesc {
-            shader,
             attributes: &[
                 VertexFormat::Float2,  // pos, in points
                 VertexFormat::Float2,  // uv
@@ -152,7 +151,7 @@ impl EguiRenderer {
             ],
             indexed: true,
             blend: Blend::PremultipliedAlpha,
-            label: c"egui",
+            ..PipelineDesc::swapchain(shader, c"egui")
         })?;
         Ok(Self {
             pipeline,

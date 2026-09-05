@@ -1,31 +1,24 @@
-//! The Direct3D 11 material table. Per material it holds the resolved seven
-//! texture-slot SRVs (`t5..t11`, drawn from a path-keyed upload cache so a packed
-//! map is uploaded once) and the `#[repr(C)]` [`MaterialUniform`] the shader reads
-//! from cbuffer `b1`. The uniform is rewritten per draw range into one
-//! `USAGE_DYNAMIC` cbuffer via `Map(WRITE_DISCARD)`; the SRVs are bound per range
-//! with one `PSSetShaderResources`.
+//! The GPU material table. Per material it holds the resolved seven texture-slot
+//! textures (drawn from a path-keyed upload cache so a packed map is uploaded once)
+//! and the `#[repr(C)]` [`MaterialUniform`] the shader reads from its own uniform
+//! block.
 //!
-//! No `unsafe` lives here: it drives the GPU through the safe `rhi` wrappers
-//! (`Texture`, `DynamicConstantBuffer`, `Sampler`) — the unsafe/COM is confined to
-//! `rhi` (invariant 9 amendment).
+//! Under sokol the per-range switch is two calls with no state left behind: the
+//! uniform goes up with `apply_uniforms`, and the seven textures are seven slots of
+//! the one `Bindings` value the draw is given. That is why there is no `bind_shared`
+//! / `set_range` pair any more — a range hands back what it needs and the caller
+//! assembles one bindings value per draw.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::config::MaterialMode;
-use crate::rhi::{DynamicConstantBuffer, Gpu, GpuResult, Sampler, Texture, bind_ps_textures};
+use crate::rhi::{Bindings, GpuResult, Sampler, Texture};
+use crate::shaders::generated;
 use crate::texture::{TEXTURE_SLOT_COUNT, TextureSlot};
 
 use super::state::{MaterialState, MaterialUniform};
-
-/// The pixel-shader SRV slot the first material texture binds to (`t5`); the seven
-/// slots occupy `t5..t11`, matching the register plan in `scene.hlsl`.
-const MATERIAL_SRV_BASE: u32 = 5;
-/// The material cbuffer register (`b1`).
-const MATERIAL_CBUFFER_SLOT: u32 = 1;
-/// The material sampler register (`s2`).
-const MATERIAL_SAMPLER_SLOT: u32 = 2;
 
 /// How many uploads the cache keeps beyond what the *current* material table
 /// references — the same LRU bound `TexGpu` puts on the Tex viewport's cache, for
@@ -39,11 +32,39 @@ const MATERIAL_SAMPLER_SLOT: u32 = 2;
 /// set, where the same maps recur.
 const MATERIAL_CACHE_CAP: usize = 16;
 
-/// One material's GPU-resolved data: its uniform + the seven slot SRVs (each a real
-/// upload or the per-slot fallback), shared by `Arc` so a packed map is one upload.
-struct MaterialEntry {
+/// The view slot the first material texture binds to; the seven occupy that slot and
+/// the six above it, which the generated constants confirm below.
+const MATERIAL_VIEW_BASE: usize = generated::VIEW_BASE_COLOR_TEX;
+const _: () = assert!(
+    generated::VIEW_NORMAL_TEX == MATERIAL_VIEW_BASE + 1
+        && generated::VIEW_ROUGHNESS_TEX == MATERIAL_VIEW_BASE + 2
+        && generated::VIEW_METALLIC_TEX == MATERIAL_VIEW_BASE + 3
+        && generated::VIEW_AO_TEX == MATERIAL_VIEW_BASE + 4
+        && generated::VIEW_EMISSIVE_TEX == MATERIAL_VIEW_BASE + 5
+        && generated::VIEW_OPACITY_TEX == MATERIAL_VIEW_BASE + 6,
+    "the seven material texture slots are no longer consecutive in review.glsl"
+);
+
+/// One material's GPU-resolved data: its uniform + the seven slot textures (each a
+/// real upload or the per-slot fallback), shared by `Arc` so a packed map is one
+/// upload.
+pub(crate) struct MaterialEntry {
     uniform: MaterialUniform,
     textures: [Arc<Texture>; TEXTURE_SLOT_COUNT],
+}
+
+impl MaterialEntry {
+    /// The uniform block this material's draws upload.
+    pub(crate) fn uniform(&self) -> &MaterialUniform {
+        &self.uniform
+    }
+
+    /// Bind this material's seven texture slots into `bindings`.
+    pub(crate) fn bind_textures(&self, bindings: &mut Bindings) {
+        for (slot, texture) in self.textures.iter().enumerate() {
+            bindings.texture(MATERIAL_VIEW_BASE + slot, texture);
+        }
+    }
 }
 
 /// One cached GPU upload + the source `Arc`'s pointer (the identity used to detect a
@@ -55,15 +76,13 @@ struct CachedTexture {
     last_used: u64,
 }
 
-/// The editable material table (Direct3D 11). Synced from the effective material
-/// list when the material revision or [`MaterialMode`] changes; bound per draw range.
-pub(crate) struct MaterialTableD3d {
-    /// Per-draw material uniform (cbuffer `b1`), rewritten per range.
-    uniform: DynamicConstantBuffer,
-    /// Anisotropic-repeat material sampler (`s2`).
+/// The editable material table. Synced from the effective material list when the
+/// material revision or [`MaterialMode`] changes; read per draw range.
+pub(crate) struct MaterialTable {
+    /// Anisotropic-repeat material sampler.
     sampler: Sampler,
     /// Per-slot neutral 1×1 fallbacks, bound for unassigned slots (the shader gates
-    /// them off via the slot-flags bitfield, but every slot must be bound).
+    /// them off via the slot-flags bitfield, but every declared slot must be bound).
     fallback_textures: [Arc<Texture>; TEXTURE_SLOT_COUNT],
     /// Path+srgb-keyed GPU texture cache (uploaded once, shared across materials),
     /// bounded by [`MATERIAL_CACHE_CAP`] beyond the live table.
@@ -73,26 +92,25 @@ pub(crate) struct MaterialTableD3d {
     tick: u64,
     /// One entry per material, in table order.
     entries: Vec<MaterialEntry>,
-    /// The all-fallback entry, bound for ranges whose material is out of range.
+    /// The all-fallback entry, used for ranges whose material is out of range, and
+    /// by every draw that shares the mesh shader without sampling a material (the
+    /// skybox, the grid, the overlays).
     fallback_entry: MaterialEntry,
     /// Material revision + mode the entries were last synced to (a sentinel forces
     /// the first sync).
     synced: Option<(u64, MaterialMode)>,
 }
 
-impl MaterialTableD3d {
+impl MaterialTable {
     /// Build an empty table (fallback only), before any model is loaded.
-    pub(crate) fn new(gpu: &Gpu) -> GpuResult<Self> {
-        let uniform = DynamicConstantBuffer::new::<MaterialUniform>(gpu)?;
-        let sampler = Sampler::aniso_repeat(gpu)?;
-        let fallback_textures = create_fallback_textures(gpu)?;
+    pub(crate) fn new() -> GpuResult<Self> {
+        let fallback_textures = create_fallback_textures()?;
         let fallback_entry = MaterialEntry {
             uniform: MaterialUniform::fallback(),
             textures: fallback_textures.clone(),
         };
         Ok(Self {
-            uniform,
-            sampler,
+            sampler: Sampler::aniso_repeat()?,
             fallback_textures,
             cache: HashMap::new(),
             tick: 0,
@@ -109,7 +127,6 @@ impl MaterialTableD3d {
     /// changed.
     pub(crate) fn sync(
         &mut self,
-        gpu: &Gpu,
         materials: &[MaterialState],
         revision: u64,
         mode: MaterialMode,
@@ -135,11 +152,11 @@ impl MaterialTableD3d {
                         Some(cached) if cached.identity == identity => cached.last_used = tick,
                         _ => {
                             let texture = Texture::rgba8_mipped_or_white(
-                                gpu,
                                 binding.image.width,
                                 binding.image.height,
                                 &binding.image.rgba,
                                 srgb,
+                                c"material texture",
                             )?;
                             self.cache.insert(
                                 key.clone(),
@@ -189,51 +206,43 @@ impl MaterialTableD3d {
         }
     }
 
-    /// Bind the shared material state once per pass: the cbuffer (`b1`) + the sampler
-    /// (`s2`). Per-range, only the cbuffer contents + the slot SRVs change.
-    pub(crate) fn bind_shared(&self, gpu: &Gpu) {
-        self.uniform.bind_ps(gpu, MATERIAL_CBUFFER_SLOT);
-        self.sampler.bind_ps(gpu, MATERIAL_SAMPLER_SLOT);
-    }
-
-    /// Bind one draw range's material: rewrite the cbuffer with its uniform and bind
-    /// its seven slot SRVs at `t5`. `material` indexes the table; an out-of-range
-    /// index (e.g. `u32::MAX` for un-materialed triangles) uses the fallback entry.
-    pub(crate) fn set_range(&self, gpu: &Gpu, material: u32) -> GpuResult<()> {
-        let entry = self
-            .entries
+    /// The entry a draw range uses. `material` indexes the table; an out-of-range
+    /// index (`u32::MAX` for un-materialed triangles) resolves to the fallback.
+    pub(crate) fn entry(&self, material: u32) -> &MaterialEntry {
+        self.entries
             .get(material as usize)
-            .unwrap_or(&self.fallback_entry);
-        self.uniform.update(gpu, &entry.uniform)?;
-        let refs: [&Texture; TEXTURE_SLOT_COUNT] =
-            std::array::from_fn(|slot| entry.textures[slot].as_ref());
-        bind_ps_textures(gpu, MATERIAL_SRV_BASE, &refs);
-        Ok(())
+            .unwrap_or(&self.fallback_entry)
     }
 
-    /// Bind the all-fallback material (for the skybox / grid / overlays, which don't
-    /// sample a real material but share the pipeline's resource bindings).
-    pub(crate) fn bind_fallback(&self, gpu: &Gpu) -> GpuResult<()> {
-        self.uniform.update(gpu, &self.fallback_entry.uniform)?;
-        let refs: [&Texture; TEXTURE_SLOT_COUNT] =
-            std::array::from_fn(|slot| self.fallback_entry.textures[slot].as_ref());
-        bind_ps_textures(gpu, MATERIAL_SRV_BASE, &refs);
-        Ok(())
+    /// The all-fallback entry, for the draws that share the mesh shader without
+    /// sampling a real material.
+    pub(crate) fn fallback(&self) -> &MaterialEntry {
+        &self.fallback_entry
+    }
+
+    /// The anisotropic material sampler.
+    pub(crate) fn sampler(&self) -> &Sampler {
+        &self.sampler
     }
 }
 
 /// Create the per-slot neutral 1×1 fallback textures (white base/AO/opacity,
 /// `[128,128,255]` normal, mid-grey roughness/metallic, black emissive) used for
 /// any unassigned slot.
-fn create_fallback_textures(gpu: &Gpu) -> GpuResult<[Arc<Texture>; TEXTURE_SLOT_COUNT]> {
+fn create_fallback_textures() -> GpuResult<[Arc<Texture>; TEXTURE_SLOT_COUNT]> {
     let make = |slot: TextureSlot| -> GpuResult<Arc<Texture>> {
         let pixel = fallback_pixel(slot);
-        Ok(Arc::new(Texture::rgba8_single(
-            gpu,
-            1,
-            1,
+        let format = if slot.is_srgb() {
+            crate::rhi::Format::Rgba8Srgb
+        } else {
+            crate::rhi::Format::Rgba8
+        };
+        Ok(Arc::new(Texture::immutable_2d(
             &pixel,
-            slot.is_srgb(),
+            1,
+            1,
+            format,
+            c"material fallback",
         )?))
     };
     // Destructured so the compiler proves one texture per slot (no fallible

@@ -41,6 +41,11 @@ pub enum Format {
     /// 32-bit float depth. Scene depth, cleared to 0 and tested `GreaterEqual`
     /// (Reversed-Z).
     Depth32F,
+    /// Whatever the window's backbuffer is — `R8G8B8A8_UNORM` on Direct3D 11,
+    /// `BGRA8Unorm` on Metal, which is why it lives in the backend leaf and not in
+    /// the list above (D20). Only meaningful as a *pipeline's* colour-target format:
+    /// nothing creates a texture in it.
+    Swapchain,
 }
 
 impl Format {
@@ -59,6 +64,7 @@ impl Format {
             Self::R8 => sg::PixelFormat::R8,
             Self::Bc6hUf16 => sg::PixelFormat::Bc6hRgbuf,
             Self::Depth32F => sg::PixelFormat::Depth,
+            Self::Swapchain => super::backend::SWAPCHAIN_FORMAT,
         }
     }
 
@@ -72,7 +78,7 @@ impl Format {
     pub(in crate::rhi) const fn block_bytes(self) -> u32 {
         match self {
             Self::R8 => 1,
-            Self::Rg16F | Self::Rgba8 | Self::Rgba8Srgb | Self::Depth32F => 4,
+            Self::Rg16F | Self::Rgba8 | Self::Rgba8Srgb | Self::Depth32F | Self::Swapchain => 4,
             Self::Rgba16F => 8,
             // BC6H: one 16-byte block per 4×4 texels.
             Self::Bc6hUf16 => 16,

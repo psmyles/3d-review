@@ -1,10 +1,9 @@
 //! Samplers: how a shader filters and wraps the texture it reads.
 //!
-//! Anisotropy, the mixed min-linear/mag-point sampler and the mip-LOD clamps arrive
-//! with the material and Tex stages that need them (`mac-port-plan.md` Phase 1
-//! step 4). What is here is what egui asks for, which is every combination of two
-//! filters and two wrap modes — the chrome sets them per texture, and picking the
-//! wrong one shows as a blurred icon or a bled atlas edge.
+//! [`Sampler::new`] is the general one — egui sets a filter pair and a wrap mode per
+//! texture, and picking the wrong one shows as a blurred icon or a bled atlas edge.
+//! The scene's four are named constructors below, because each is a decision with a
+//! reason rather than a combination.
 
 use std::ffi::CStr;
 
@@ -51,6 +50,10 @@ impl Wrap {
     }
 }
 
+/// Anisotropic sample count for the material sampler — 16x is the common hardware
+/// ceiling.
+const MATERIAL_ANISOTROPY: u32 = 16;
+
 /// A sampler state object.
 pub(crate) struct Sampler(sg::Sampler);
 
@@ -64,7 +67,18 @@ impl Sampler {
         wrap: Wrap,
         label: &CStr,
     ) -> GpuResult<Self> {
+        Self::build(min_filter, mag_filter, wrap, 1, label)
+    }
+
+    fn build(
+        min_filter: Filter,
+        mag_filter: Filter,
+        wrap: Wrap,
+        max_anisotropy: u32,
+        label: &CStr,
+    ) -> GpuResult<Self> {
         let mut desc = sg::SamplerDesc::new();
+        desc.max_anisotropy = max_anisotropy;
         desc.min_filter = min_filter.sg();
         desc.mag_filter = mag_filter.sg();
         desc.mipmap_filter = min_filter.sg();
@@ -79,6 +93,40 @@ impl Sampler {
             label.to_str().unwrap_or("sampler"),
         )?;
         Ok(Self(sampler))
+    }
+
+    /// Trilinear, clamp — the composite's 1:1 input sampler and the IBL sampler.
+    /// Addressing is moot at 1:1, but clamp avoids edge wrap on the cube faces.
+    pub(crate) fn linear_clamp() -> GpuResult<Self> {
+        Self::new(
+            Filter::Linear,
+            Filter::Linear,
+            Wrap::ClampToEdge,
+            c"linear-clamp",
+        )
+    }
+
+    /// Trilinear, repeat — the UV checker, whose tiled UVs run past 0..1.
+    pub(crate) fn linear_repeat() -> GpuResult<Self> {
+        Self::new(
+            Filter::Linear,
+            Filter::Linear,
+            Wrap::Repeat,
+            c"linear-repeat",
+        )
+    }
+
+    /// Anisotropic, repeat — the material sampler. With the per-texture mip chain
+    /// this is what removes grazing-angle shimmer; 16× is the common hardware
+    /// ceiling.
+    pub(crate) fn aniso_repeat() -> GpuResult<Self> {
+        Self::build(
+            Filter::Linear,
+            Filter::Linear,
+            Wrap::Repeat,
+            MATERIAL_ANISOTROPY,
+            c"aniso-repeat",
+        )
     }
 
     /// The sokol handle, for an `sg::Bindings` slot.

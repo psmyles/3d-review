@@ -42,17 +42,21 @@ mod pipeline;
 mod present;
 mod sampler;
 pub(crate) mod shader;
+mod target;
 mod texture;
 
 pub(crate) use bindings::Bindings;
-pub(crate) use buffer::TransientBuffer;
+pub(crate) use buffer::{IndexBuffer, StorageBuffer, TransientBuffer, VertexBuffer};
 pub(crate) use error::ResourceKind;
 pub use error::{GpuError, GpuResult};
 pub use format::Format;
 pub(crate) use format::{SCENE_COLOR_FORMAT, SCENE_DEPTH_FORMAT};
-pub(crate) use pipeline::{Blend, Pipeline, PipelineDesc, VertexFormat};
+pub(crate) use pipeline::{
+    Blend, Cull, Depth, DepthBias, Pipeline, PipelineDesc, Topology, VertexFormat,
+};
 pub use present::PresentStatus;
 pub(crate) use sampler::{Filter, Sampler, Wrap};
+pub(crate) use target::{ColorTarget, DepthTarget};
 pub(crate) use texture::Texture;
 
 // `SwapchainJob` is declared below rather than in a module of its own: it is half of
@@ -277,6 +281,10 @@ pub(crate) struct SwapchainJob {
     /// Vertices to draw, non-indexed — every deferred draw so far is a fullscreen
     /// triangle whose corners come from `gl_VertexIndex`.
     vertex_count: usize,
+    /// The sub-rectangle of the backbuffer this job rasterizes into, or `None` for
+    /// the whole thing. The Opt split is what needs it: each half composites into
+    /// its own rect of the same backbuffer.
+    viewport: Option<[i32; 4]>,
 }
 
 impl SwapchainJob {
@@ -305,6 +313,7 @@ impl SwapchainJob {
             uniforms,
             uniform_len: size_of::<T>(),
             vertex_count,
+            viewport: None,
         }
     }
 
@@ -314,9 +323,23 @@ impl SwapchainJob {
         self
     }
 
+    /// Restrict the draw to a sub-rectangle of the backbuffer, in physical pixels
+    /// from the top-left.
+    pub(crate) fn with_viewport(mut self, x: u32, y: u32, width: u32, height: u32) -> Self {
+        self.viewport = Some([x as i32, y as i32, width as i32, height as i32]);
+        self
+    }
+
     /// Issue the draw. Called from inside the swapchain pass and nowhere else.
-    fn replay(&self) {
+    fn replay(&self, target: (u32, u32)) {
         sg::apply_pipeline(self.pipeline);
+        // Always set one, even for a whole-backbuffer job: sokol carries pass state
+        // forward, so a job following one that narrowed the viewport would otherwise
+        // inherit it.
+        let [x, y, width, height] =
+            self.viewport
+                .unwrap_or([0, 0, target.0 as i32, target.1 as i32]);
+        sg::apply_viewport(x, y, width, height, true);
         if let Some(bindings) = &self.bindings {
             sg::apply_bindings(bindings);
         }
@@ -367,6 +390,58 @@ impl Frame<'_> {
         self.gpu.jobs.push(job);
     }
 
+    /// Open an offscreen pass over `colors` (+ `depth`), clearing the colour
+    /// attachments to `clear` and depth to 0 — Reversed-Z's "infinitely far", which
+    /// is what `GreaterEqual` tests against.
+    ///
+    /// Offscreen passes run *before* [`Self::begin_swapchain_pass`], which is why
+    /// they are issued immediately while the composite that reads them is deferred
+    /// as a [`SwapchainJob`]: there is exactly one swapchain pass per frame and the
+    /// chrome has to be inside it too.
+    pub(crate) fn begin_offscreen_pass(
+        &mut self,
+        colors: &[&ColorTarget],
+        depth: Option<&DepthTarget>,
+        clear: [f32; 4],
+        label: &'static CStr,
+    ) {
+        debug_assert!(!self.pass_open, "a pass is already open");
+        debug_assert!(!colors.is_empty(), "a pass needs at least one attachment");
+        let mut pass = sg::Pass::new();
+        for (slot, target) in colors.iter().enumerate() {
+            pass.attachments.colors[slot] = target.attachment();
+            pass.action.colors[slot] = sg::ColorAttachmentAction {
+                load_action: sg::LoadAction::Clear,
+                store_action: sg::StoreAction::Store,
+                clear_value: sg::Color {
+                    r: clear[0],
+                    g: clear[1],
+                    b: clear[2],
+                    a: clear[3],
+                },
+            };
+        }
+        if let Some(depth) = depth {
+            pass.attachments.depth_stencil = depth.attachment();
+            pass.action.depth = sg::DepthAttachmentAction {
+                load_action: sg::LoadAction::Clear,
+                store_action: sg::StoreAction::Dontcare,
+                clear_value: 0.0,
+            };
+        }
+        pass.label = label.as_ptr();
+        sg::begin_pass(&pass);
+        self.pass_open = true;
+    }
+
+    /// Close the open offscreen pass. The swapchain pass is closed by
+    /// [`Self::finish`] instead, which also commits and presents.
+    pub(crate) fn end_pass(&mut self) {
+        debug_assert!(self.pass_open, "no pass is open");
+        sg::end_pass();
+        self.pass_open = false;
+    }
+
     /// Open the one swapchain pass, clearing the backbuffer, and replay whatever the
     /// renderer queued into it.
     ///
@@ -391,8 +466,12 @@ impl Frame<'_> {
         pass.label = c"swapchain".as_ptr();
         sg::begin_pass(&pass);
         self.pass_open = true;
+        let target = (
+            self.swapchain.width.max(0) as u32,
+            self.swapchain.height.max(0) as u32,
+        );
         for job in &self.gpu.jobs {
-            job.replay();
+            job.replay(target);
         }
         self.gpu.jobs.clear();
     }

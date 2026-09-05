@@ -108,28 +108,22 @@ impl std::fmt::Debug for TexGpu {
 impl TexGpu {
     /// Build the Tex viewport's GPU resources. Called once, on the first Tex frame.
     pub(crate) fn new() -> GpuResult<Self> {
+        let image_shader = shader::make(
+            generated::tex_image_shader_desc,
+            shader::bytecode!("tex_image"),
+            c"tex image",
+        )?;
         let image_pipeline = Pipeline::new(&PipelineDesc {
-            shader: shader::make(
-                generated::tex_image_shader_desc,
-                shader::bytecode!("tex_image"),
-                c"tex image",
-            )?,
-            attributes: &[],
-            indexed: false,
             blend: Blend::StraightAlpha,
-            label: c"tex image",
+            ..PipelineDesc::swapchain(image_shader, c"tex image")
         })?;
-        let checker_pipeline = Pipeline::new(&PipelineDesc {
-            shader: shader::make(
-                generated::tex_checker_shader_desc,
-                shader::bytecode!("tex_checker"),
-                c"tex checker",
-            )?,
-            attributes: &[],
-            indexed: false,
-            blend: Blend::Opaque,
-            label: c"tex checker",
-        })?;
+        let checker_shader = shader::make(
+            generated::tex_checker_shader_desc,
+            shader::bytecode!("tex_checker"),
+            c"tex checker",
+        )?;
+        let checker_pipeline =
+            Pipeline::new(&PipelineDesc::swapchain(checker_shader, c"tex checker"))?;
         Ok(Self {
             image_pipeline,
             checker_pipeline,

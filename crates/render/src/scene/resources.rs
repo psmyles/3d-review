@@ -6,7 +6,7 @@
 //! Invariant 3 lives here: a derived view's buffer exists only while its toggle is
 //! on, is rebuilt when its baked parameters drift, and is dropped the moment the
 //! toggle goes off, so the steady-state shaded view holds no derived buffers. The
-//! passes that *draw* these buffers are in [`super::d3d`].
+//! passes that *draw* these buffers are in [`super::gpu`].
 
 use review_model::{Bounds, DeformPose, ModelData};
 
@@ -17,13 +17,14 @@ use crate::geometry::{
     uv_fill_triangles, uv_wireframe_lines, vertex_normal_lines, visible_geometry, wireframe_lines,
 };
 use crate::material::{MaterialDrawRange, build_part_key};
-use crate::rhi::{Gpu, GpuResult, IndexBuffer, StructuredBuffer, VertexBuffer};
+use crate::rhi::{Bindings, GpuResult, IndexBuffer, StorageBuffer, VertexBuffer};
 use crate::selection::{Selection, SelectionView, selection_bounds};
+use crate::shaders::generated;
 use crate::{
     ActiveMaterial, BoundingBoxScope, MaterialMode, SceneDebugOptions, ShadingMode, UvShadingMode,
 };
 
-use super::d3d::SceneGpu;
+use super::gpu::SceneGpu;
 use super::gpu_types::{InfluenceEntry, MorphEntry, PaletteEntry};
 
 /// Baked parameters for the bounding-box view. Only the inputs the chosen scope
@@ -117,12 +118,13 @@ pub(super) struct MeshBuffers {
 /// influence + blend-shape tables built with the mesh, and the dynamic palette +
 /// shape weights re-uploaded when the pose revision moves.
 pub(super) struct DeformGpu {
-    pub(super) influences: StructuredBuffer<InfluenceEntry>,
+    pub(super) influences: StorageBuffer<InfluenceEntry>,
     /// `None` when the model has no blend shapes; the shader never reads it then
-    /// (every morph lane is empty).
-    pub(super) morph: Option<StructuredBuffer<MorphEntry>>,
-    pub(super) palette: StructuredBuffer<PaletteEntry>,
-    pub(super) shape_weights: Option<StructuredBuffer<f32>>,
+    /// (every morph lane is empty), but the slot must still be bound, so the scene
+    /// binds its one-element dummy instead.
+    pub(super) morph: Option<StorageBuffer<MorphEntry>>,
+    pub(super) palette: StorageBuffer<PaletteEntry>,
+    pub(super) shape_weights: Option<StorageBuffer<f32>>,
     /// The `pose_revision` the palette currently holds; `None` until a pose has
     /// been uploaded (the deform flag stays off until then).
     pub(super) palette_revision: Option<u64>,
@@ -131,24 +133,27 @@ pub(super) struct DeformGpu {
 }
 
 impl DeformGpu {
-    fn new(gpu: &Gpu, layout: &DeformLayout) -> GpuResult<Option<Self>> {
+    fn new(layout: &DeformLayout) -> GpuResult<Option<Self>> {
         if layout.influences.is_empty() || layout.palette_len == 0 {
             return Ok(None);
         }
         let morph = if layout.morph.is_empty() {
             None
         } else {
-            Some(StructuredBuffer::immutable(gpu, &layout.morph)?)
+            Some(StorageBuffer::immutable(&layout.morph, c"morph deltas")?)
         };
         let shape_weights = if layout.shape_count == 0 {
             None
         } else {
-            Some(StructuredBuffer::dynamic(gpu, layout.shape_count)?)
+            Some(StorageBuffer::dynamic(
+                layout.shape_count,
+                c"shape weights",
+            )?)
         };
         Ok(Some(Self {
-            influences: StructuredBuffer::immutable(gpu, &layout.influences)?,
+            influences: StorageBuffer::immutable(&layout.influences, c"deform influences")?,
             morph,
-            palette: StructuredBuffer::dynamic(gpu, layout.palette_len)?,
+            palette: StorageBuffer::dynamic(layout.palette_len, c"deform palette")?,
             shape_weights,
             palette_revision: None,
             palette_scratch: Vec::with_capacity(layout.palette_len),
@@ -163,7 +168,7 @@ impl DeformGpu {
     }
 
     /// Upload `pose` (palette rows + shape weights) when `revision` moved.
-    fn upload(&mut self, gpu: &Gpu, pose: &DeformPose, revision: u64) -> GpuResult<()> {
+    fn upload(&mut self, pose: &DeformPose, revision: u64) -> GpuResult<()> {
         if self.palette_revision == Some(revision) {
             return Ok(());
         }
@@ -173,35 +178,28 @@ impl DeformGpu {
                 .iter()
                 .map(|matrix| PaletteEntry::from_mat4(*matrix)),
         );
-        self.palette.update(gpu, &self.palette_scratch)?;
+        self.palette.update(&self.palette_scratch)?;
         if let Some(weights) = &self.shape_weights {
-            weights.update(gpu, &pose.shape_weights)?;
+            weights.update(&pose.shape_weights)?;
         }
         self.palette_revision = Some(revision);
         Ok(())
     }
 
-    /// Bind the four tables to the vertex stage.
-    pub(super) fn bind_vs(&self, gpu: &Gpu) {
-        self.influences.bind_vs(gpu, DEFORM_INFLUENCES_SLOT);
-        self.palette.bind_vs(gpu, DEFORM_PALETTE_SLOT);
+    /// Bind this model's real tables over whatever `bindings` already holds. The
+    /// two optional ones are left as the caller set them — every declared slot must
+    /// be bound, so the scene fills all four with dummies first (`DeformDummies`).
+    pub(super) fn bind(&self, bindings: &mut Bindings) {
+        bindings.storage(generated::VIEW_DEFORM_INFLUENCES, &self.influences);
+        bindings.storage(generated::VIEW_DEFORM_PALETTE, &self.palette);
         if let Some(morph) = &self.morph {
-            morph.bind_vs(gpu, DEFORM_MORPH_SLOT);
+            bindings.storage(generated::VIEW_MORPH_DELTAS, morph);
         }
         if let Some(weights) = &self.shape_weights {
-            weights.bind_vs(gpu, DEFORM_WEIGHTS_SLOT);
+            bindings.storage(generated::VIEW_MORPH_WEIGHTS, weights);
         }
     }
 }
-
-/// The vertex-stage resource slots of the deform tables (`scene.hlsl`
-/// `t12..t15`).
-pub(super) const DEFORM_INFLUENCES_SLOT: u32 = 12;
-const DEFORM_PALETTE_SLOT: u32 = 13;
-const DEFORM_MORPH_SLOT: u32 = 14;
-const DEFORM_WEIGHTS_SLOT: u32 = 15;
-/// How many consecutive slots [`DeformGpu::bind_vs`] touches, for the unbind.
-pub(super) const DEFORM_SLOT_COUNT: usize = 4;
 
 /// The build-on-demand derived views (invariant 3): each buffer exists only while
 /// its toggle is on, paired with the bake key it was last built for. The 3D line
@@ -313,12 +311,21 @@ pub(super) struct ModelSlot {
     pub(super) visible_active: bool,
     visibility_baked: Option<VisibilityBaked>,
     /// This model's wireframe as drawn when it is the *ghost* in the Opt
-    /// workspace's overlay view. Deliberately separate from `views.wireframe_buf`
+    /// workspace's overlay view. Written by nothing yet — the Opt path returns in
+    /// `mac-port-plan.md` Phase 1 step 4's last stages. Deliberately separate from `views.wireframe_buf`
     /// rather than reusing it: that one is owned by the user's wireframe toggle
     /// and coloured by it, so sharing would have the two rebuild the same buffer
     /// in opposite directions every frame. `None` whenever this model is not
     /// currently the ghost (invariant 3).
+    #[allow(
+        dead_code,
+        reason = "the Opt comparison view is the last stage of the port"
+    )]
     pub(super) ghost_wireframe_buf: Option<VertexBuffer>,
+    #[allow(
+        dead_code,
+        reason = "the Opt comparison view is the last stage of the port"
+    )]
     pub(super) ghost_wireframe_baked: Option<(u64, Vec<u32>, [f32; 4])>,
 }
 
@@ -335,6 +342,7 @@ impl ModelSlot {
 
     /// Whether this slot has a mesh uploaded — `mesh_revision` alone can't say,
     /// since an empty model leaves the buffers `None` at a real revision.
+    #[allow(dead_code, reason = "read by the GTAO stage's `gtao_active`")]
     pub(super) fn has_mesh(&self) -> bool {
         self.mesh.is_some()
     }
@@ -367,6 +375,10 @@ impl ModelSlot {
 impl SceneGpu {
     /// Free both slots' ghost wireframes (invariant 3) — the overlay view is no
     /// longer showing one.
+    #[allow(
+        dead_code,
+        reason = "called by the Opt comparison view, the last stage"
+    )]
     pub(super) fn release_ghost_wireframes(&mut self) {
         for slot in [&mut self.active, &mut self.idle] {
             slot.ghost_wireframe_buf = None;
@@ -399,7 +411,6 @@ impl SceneGpu {
     /// [`Self::release_uv_views`].
     pub(super) fn sync_uv_view(
         &mut self,
-        gpu: &Gpu,
         model: &ModelData,
         model_revision: u64,
         channel: u32,
@@ -408,7 +419,7 @@ impl SceneGpu {
         let want_wireframe = Some((model_revision, channel));
         if self.active.views.uv_wireframe_baked != want_wireframe {
             self.active.views.uv_wireframe_buf =
-                optional_vertex_buffer(gpu, &uv_wireframe_lines(model, channel))?;
+                optional_vertex_buffer(&uv_wireframe_lines(model, channel))?;
             self.active.views.uv_wireframe_baked = want_wireframe;
         }
 
@@ -424,7 +435,7 @@ impl SceneGpu {
                 UvShadingMode::Shaded => uv_fill_triangles(model, channel, false),
                 UvShadingMode::Islands => uv_fill_triangles(model, channel, true),
             };
-            self.active.views.uv_fill_buf = optional_vertex_buffer(gpu, &fill)?;
+            self.active.views.uv_fill_buf = optional_vertex_buffer(&fill)?;
             self.active.views.uv_fill_baked = want_fill;
         }
 
@@ -462,7 +473,6 @@ impl SceneGpu {
     /// An empty model leaves `mesh` as `None`. Call after [`Self::sync_unique_parts`].
     pub(super) fn sync_mesh(
         &mut self,
-        gpu: &Gpu,
         model: &ModelData,
         model_revision: u64,
         uv_channel: u32,
@@ -490,12 +500,12 @@ impl SceneGpu {
             None
         } else {
             let deform = match &self.active.deform_layout {
-                Some(layout) => DeformGpu::new(gpu, layout)?,
+                Some(layout) => DeformGpu::new(layout)?,
                 None => None,
             };
             Some(MeshBuffers {
-                vertices: VertexBuffer::new(gpu, &vertices)?,
-                indices: IndexBuffer::new(gpu, &indices)?,
+                vertices: VertexBuffer::new(&vertices, c"mesh")?,
+                indices: IndexBuffer::new(&indices, c"mesh")?,
                 ranges,
                 deform,
             })
@@ -511,7 +521,6 @@ impl SceneGpu {
     /// model, mid-swap) is ignored, which also leaves the deform flag off.
     pub(super) fn sync_pose(
         &mut self,
-        gpu: &Gpu,
         pose: Option<&DeformPose>,
         pose_revision: u64,
     ) -> GpuResult<()> {
@@ -524,7 +533,7 @@ impl SceneGpu {
             return Ok(());
         };
         match pose {
-            Some(pose) if deform.accepts(pose) => deform.upload(gpu, pose, pose_revision),
+            Some(pose) if deform.accepts(pose) => deform.upload(pose, pose_revision),
             _ => {
                 deform.palette_revision = None;
                 Ok(())
@@ -541,7 +550,6 @@ impl SceneGpu {
     /// clip's envelope), else the model's own bounds.
     pub(super) fn sync_line_views(
         &mut self,
-        gpu: &Gpu,
         model: &ModelData,
         model_revision: u64,
         debug: SceneDebugOptions,
@@ -571,15 +579,12 @@ impl SceneGpu {
         };
         if !wireframe_unchanged {
             self.active.views.wireframe_buf = if wireframe_on {
-                optional_vertex_buffer(
-                    gpu,
-                    &wireframe_lines(
-                        model,
-                        self.active.lanes(),
-                        debug.wireframe_color,
-                        hidden_meshes,
-                    ),
-                )?
+                optional_vertex_buffer(&wireframe_lines(
+                    model,
+                    self.active.lanes(),
+                    debug.wireframe_color,
+                    hidden_meshes,
+                ))?
             } else {
                 None
             };
@@ -624,10 +629,10 @@ impl SceneGpu {
                     BoundingBoxScope::VisibleOnly => model.visible_bounds(scope_hidden),
                 };
                 match bounds {
-                    Some(bounds) => optional_vertex_buffer(
-                        gpu,
-                        &bounding_box_lines(bounds, debug.bounding_box_color),
-                    )?,
+                    Some(bounds) => optional_vertex_buffer(&bounding_box_lines(
+                        bounds,
+                        debug.bounding_box_color,
+                    ))?,
                     None => None,
                 }
             } else {
@@ -651,7 +656,6 @@ impl SceneGpu {
             .as_ref()
             .map_or(&[][..], |layout| layout.corner.as_slice());
         sync_normal_view(
-            gpu,
             model,
             lanes,
             &mut self.active.views.face_normal_buf,
@@ -663,7 +667,6 @@ impl SceneGpu {
             face_normal_lines,
         )?;
         sync_normal_view(
-            gpu,
             model,
             lanes,
             &mut self.active.views.vertex_normal_buf,
@@ -685,7 +688,7 @@ impl SceneGpu {
         if self.active.views.pivot_baked != want_pivot {
             self.active.views.pivot_buf = match &want_pivot {
                 Some(PivotParams { pivot, half }) => {
-                    optional_vertex_buffer(gpu, &pivot_lines(*pivot, *half))?
+                    optional_vertex_buffer(&pivot_lines(*pivot, *half))?
                 }
                 None => None,
             };
@@ -709,7 +712,6 @@ impl SceneGpu {
     /// to save a cost only paid on an explicit click.
     pub(super) fn sync_skin_weights(
         &mut self,
-        gpu: &Gpu,
         model: &ModelData,
         model_revision: u64,
         debug: SceneDebugOptions,
@@ -728,10 +730,11 @@ impl SceneGpu {
             return Ok(());
         }
         self.active.views.weights_buf = if active {
-            optional_vertex_buffer(
-                gpu,
-                &skin_weight_vertices(model, self.active.lanes(), selected_bones),
-            )?
+            optional_vertex_buffer(&skin_weight_vertices(
+                model,
+                self.active.lanes(),
+                selected_bones,
+            ))?
         } else {
             None
         };
@@ -754,7 +757,6 @@ impl SceneGpu {
     /// thousand vertices.
     pub(super) fn sync_skeleton(
         &mut self,
-        gpu: &Gpu,
         model: &ModelData,
         model_revision: u64,
         debug: SceneDebugOptions,
@@ -777,27 +779,22 @@ impl SceneGpu {
             return Ok(());
         }
         if on {
-            self.active.views.skeleton_fill_buf = optional_vertex_buffer(
-                gpu,
-                &skeleton_fill_triangles(
+            self.active.views.skeleton_fill_buf =
+                optional_vertex_buffer(&skeleton_fill_triangles(
                     model,
                     selected_bones,
                     debug.skeleton_joint_scale,
                     debug.skeleton_color,
                     debug.skeleton_selected_color,
                     SKELETON_FILL_ALPHA,
-                ),
-            )?;
-            self.active.views.skeleton_line_buf = optional_vertex_buffer(
-                gpu,
-                &skeleton_lines(
-                    model,
-                    selected_bones,
-                    debug.skeleton_joint_scale,
-                    debug.skeleton_color,
-                    debug.skeleton_selected_color,
-                ),
-            )?;
+                ))?;
+            self.active.views.skeleton_line_buf = optional_vertex_buffer(&skeleton_lines(
+                model,
+                selected_bones,
+                debug.skeleton_joint_scale,
+                debug.skeleton_color,
+                debug.skeleton_selected_color,
+            ))?;
         } else {
             self.active.views.skeleton_fill_buf = None;
             self.active.views.skeleton_line_buf = None;
@@ -830,7 +827,6 @@ impl SceneGpu {
     /// never trigger a rebuild — only a change of *what* is selected does.
     pub(super) fn sync_selection(
         &mut self,
-        gpu: &Gpu,
         model: &ModelData,
         model_revision: u64,
         view: SelectionView,
@@ -863,7 +859,7 @@ impl SceneGpu {
         };
         match geometry {
             Some((indices, ranges)) if !indices.is_empty() => {
-                self.active.selection_index = Some(IndexBuffer::new(gpu, &indices)?);
+                self.active.selection_index = Some(IndexBuffer::new(&indices, c"mesh")?);
                 self.active.selection_ranges = ranges;
             }
             _ => {
@@ -887,7 +883,6 @@ impl SceneGpu {
     /// off (full mesh).
     pub(super) fn sync_visibility(
         &mut self,
-        gpu: &Gpu,
         model: &ModelData,
         model_revision: u64,
         hidden: &[u32],
@@ -916,7 +911,7 @@ impl SceneGpu {
         match geometry {
             // Some unhidden geometry: draw the filtered list.
             Some((indices, ranges)) if !indices.is_empty() => {
-                self.active.visible_index = Some(IndexBuffer::new(gpu, &indices)?);
+                self.active.visible_index = Some(IndexBuffer::new(&indices, c"mesh")?);
                 self.active.visible_ranges = ranges;
                 self.active.visible_active = true;
             }
@@ -948,13 +943,12 @@ impl SceneGpu {
 /// [`VertexBuffer`]. The build-on-demand line views + the UV wireframe/fill use this
 /// so an off / empty view holds no allocation.
 pub(super) fn optional_vertex_buffer(
-    gpu: &Gpu,
     vertices: &[crate::scene::SceneVertex],
 ) -> GpuResult<Option<VertexBuffer>> {
     if vertices.is_empty() {
         Ok(None)
     } else {
-        Ok(Some(VertexBuffer::new(gpu, vertices)?))
+        Ok(Some(VertexBuffer::new(vertices, c"derived view")?))
     }
 }
 
@@ -969,7 +963,6 @@ type NormalLineBuilder =
 /// nothing), free when off.
 #[allow(clippy::too_many_arguments)] // Disjoint &mut field pairs + the view's plain inputs.
 fn sync_normal_view(
-    gpu: &Gpu,
     model: &ModelData,
     lanes: &[[u32; 4]],
     buf: &mut Option<VertexBuffer>,
@@ -991,7 +984,7 @@ fn sync_normal_view(
         return Ok(());
     }
     *buf = if on {
-        optional_vertex_buffer(gpu, &lines(model, lanes, length, color, hidden))?
+        optional_vertex_buffer(&lines(model, lanes, length, color, hidden))?
     } else {
         None
     };

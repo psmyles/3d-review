@@ -18,13 +18,12 @@
 //!
 //! ## Being ported (`mac-port-plan.md` Phase 1)
 //!
-//! The scene, material and IBL GPU paths have **not** been moved onto sokol_gfx yet:
-//! they are in `src/port_pending/`, and [`Renderer::render_scene`],
-//! [`Renderer::render_opt_scene`] and [`Renderer::render_uv_scene`] are stubs that
-//! draw nothing but the background. Step 4 revives them one stage at a time, each
-//! eye-checked against the D3D11 build. What is live is the frame flow, the device
-//! and swapchain, the whole egui chrome, and the **Tex viewport**
-//! ([`Renderer::render_texture`], step 4's first stage).
+//! [`Renderer::render_opt_scene`] — the Opt workspace's comparison view — has not
+//! been moved onto sokol_gfx yet: it is `src/port_pending/scene_opt.rs` and is a stub
+//! that draws nothing but the background. So are the scene's MSAA and its ambient
+//! occlusion, which arrive with their own stages of step 4. Everything else is live:
+//! the frame flow, the device and swapchain, the egui chrome, the Tex viewport and
+//! the 3D + UV scenes.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -35,12 +34,8 @@ use review_model::{Bounds, DeformPose, MaterialImportDefaults, ModelData};
 mod camera;
 mod config;
 mod egui_sokol;
-// The CPU vertex generators. Every consumer is in `port_pending` until step 4 revives
-// the scene stages, so nothing in the crate calls them right now; they stay compiled —
-// and unit-tested — because none of them touches the GPU and all of them are what
-// step 4 ports *against*.
-#[allow(dead_code, unused_imports)]
 mod geometry;
+mod ibl;
 mod material;
 mod rhi;
 mod scene;
@@ -59,6 +54,7 @@ pub use material::{
 };
 pub use rhi::gpu_profiler::enable_tracy_gpu;
 pub use rhi::{Format, Frame, Gpu, GpuBringUp, GpuError, GpuResult, PresentStatus};
+use scene::SceneGpu;
 pub use selection::{Selection, SelectionView, selection_bounds};
 use tex::TexGpu;
 pub use tex::{TexBackground, TexImage};
@@ -146,6 +142,9 @@ pub struct Renderer {
     /// The Tex viewport's pipelines + texture cache, built on the first Tex frame.
     /// `None` in a session that never opens that workspace, which is most of them.
     tex: Option<TexGpu>,
+    /// The scene's pipelines, offscreen targets, IBL maps and per-model caches, built
+    /// on the first 3D or UV frame.
+    scene: Option<SceneGpu>,
 }
 
 /// Per-frame inputs for the 3D scene render — everything `app` resolves from the
@@ -301,6 +300,7 @@ impl Renderer {
             material_names: Vec::new(),
             material_revision: 0,
             tex: None,
+            scene: None,
         }
     }
 
@@ -308,13 +308,34 @@ impl Renderer {
     /// offscreen linear-HDR targets, then a tone-mapped composite into the frame,
     /// behind the egui chrome `app` paints next.
     ///
-    /// **Stubbed** while the scene path is ported (`mac-port-plan.md` Phase 1 step 4).
-    /// It sets the frame's clear to the viewport background and draws nothing else, so
-    /// the background control still works and every caller is already in its final
-    /// shape. A gradient preset reads as its top colour until the composite lands,
-    /// which is what paints the ramp.
+    /// The composite paints the viewport background itself, wherever the scene left
+    /// no coverage, so the frame's clear is only what a skipped composite would show.
     pub fn render_scene(&mut self, frame: &mut Frame<'_>, scene: &SceneFrame<'_>) -> GpuResult<()> {
         frame.set_clear(scene.background.gradient_srgb().0);
+        let camera = self.camera;
+        let material_revision = self.material_revision;
+        self.ensure_scene(frame.size())?;
+        // Borrowed as disjoint fields rather than through a `&mut self` helper: the
+        // material table travels *into* the scene renderer, so one whole-`self` borrow
+        // would exclude the other.
+        let Some(scene_gpu) = self.scene.as_mut() else {
+            return Ok(());
+        };
+        scene_gpu.render(
+            frame,
+            scene,
+            &self.material_states,
+            material_revision,
+            camera,
+        )
+    }
+
+    /// Build the scene resources if this is the first frame that needs them. A session
+    /// that only ever looks at textures pays for none of it.
+    fn ensure_scene(&mut self, size: (u32, u32)) -> GpuResult<()> {
+        if self.scene.is_none() {
+            self.scene = Some(SceneGpu::new(size)?);
+        }
         Ok(())
     }
 
@@ -333,8 +354,12 @@ impl Renderer {
 
     /// Drop the processed mesh's GPU buffers (invariant 3). Called when the Opt
     /// workspace has nothing processed to show, so the memory isn't held while
-    /// another workspace is up. **Stubbed**: nothing holds a processed mesh yet.
-    pub fn release_processed_mesh(&mut self) {}
+    /// another workspace is up.
+    pub fn release_processed_mesh(&mut self) {
+        if let Some(scene) = self.scene.as_mut() {
+            scene.release_processed();
+        }
+    }
 
     /// Drop the Tex viewport's uploaded textures (invariant 3). Called when the Tex
     /// workspace is left, so a session that visited it once doesn't hold its mipped
@@ -349,7 +374,10 @@ impl Renderer {
 
     /// Render the 2D UV viewport (instead of the 3D scene): the 0..1 grid + the
     /// optional island fill + the model's UV edges, framed by the renderer's
-    /// `uv_camera`. **Stubbed**, as [`Self::render_scene`] is.
+    /// `uv_camera`.
+    ///
+    /// `anti_aliasing` is accepted but not yet applied: the scene renders
+    /// single-sample until the AA stage of `mac-port-plan.md` Phase 1 step 4.
     #[allow(clippy::too_many_arguments)]
     pub fn render_uv_scene(
         &mut self,
@@ -361,9 +389,22 @@ impl Renderer {
         anti_aliasing: AntiAliasing,
         background: ViewportBackground,
     ) -> GpuResult<()> {
-        let _ = (model, model_revision, channel, shading_mode, anti_aliasing);
+        let _ = anti_aliasing;
         frame.set_clear(background.gradient_srgb().0);
-        Ok(())
+        let uv_camera = self.uv_camera;
+        self.ensure_scene(frame.size())?;
+        let Some(scene_gpu) = self.scene.as_mut() else {
+            return Ok(());
+        };
+        scene_gpu.render_uv(
+            frame,
+            model,
+            model_revision,
+            uv_camera,
+            channel,
+            shading_mode,
+            background,
+        )
     }
 
     /// Render the 2D Tex viewport (instead of the 3D scene): the chosen background
