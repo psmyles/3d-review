@@ -88,12 +88,16 @@ exe="$(meta exeName)"
 file_ext="$(meta fileAssociation.extension)"; file_ext="${file_ext#.}"
 file_type_name="$(meta fileAssociation.typeName)"
 bundle_id="com.psmyles.3d-review"
-# The master artwork is a cube whose faces run almost corner to corner, and macOS
-# masks a legacy icon like this one into the rounded rect it draws everywhere — with
-# no inset the cube's own corners are what gets clipped. The alpha is *kept*: a shaped
-# icon is normal on this OS and is what the Windows .ico shows too, so there is no
-# background to invent here.
-icon_inset="8%"
+# `assets/icons/application-logo.png` has a transparent background; the Dock, Finder
+# and the app switcher all show it against whatever is behind them, which leaves the
+# cube floating. Composite it onto this instead — the same grey Fire's icon uses, so
+# the two products' tiles read as a set.
+icon_bg="343639"
+# ...inset by this much of the icon's edge on every side. The master's artwork is
+# full-bleed in *both* directions (measured: 996 x 1024 of 1024²), and macOS masks a
+# legacy icon like this one into the rounded rect it draws everywhere, so with no
+# inset the cube's own corners are what the mask cuts off.
+icon_inset="6%"
 # The `xcrun notarytool store-credentials` profile to use when none is named.
 #
 # **Not derived from the product name**, which is the obvious thing to do and is
@@ -217,14 +221,20 @@ archs="$(lipo -archs "$bin")"
 # 4. The icon
 # ---------------------------------------------------------------------------------------------
 # iconutil wants an .iconset directory of exact sizes, each the 1024² master
-# downsampled and inset. Rebuilt every run: it is well under a second, and it means a
-# change to the master cannot be silently missing from a release.
+# downsampled, inset by `icon_inset` and composited onto the opaque `icon_bg`. Rebuilt
+# every run: it is well under a second, and it means a change to the master cannot be
+# silently missing from a release.
 #
-# `sips -z` would do the downsampling but cannot inset, so the resize and the inset
-# happen together in AppKit, driven by osascript's JavaScript-for-Automation ObjC
-# bridge — which is in the base OS, so this still needs nothing installed. The bitmap
-# is retagged sRGB before anything is drawn into it; left as NSCalibratedRGB the
-# artwork comes out colour-converted, and the cube's primaries are the whole icon.
+# `sips -z` would do the downsampling but cannot composite, and a transparent icon is
+# exactly what we are trying not to ship. So the resize and the fill happen together in
+# AppKit, driven by osascript's JavaScript-for-Automation ObjC bridge — which is in the
+# base OS, so this still needs nothing installed.
+#
+# The scratch bitmap is retagged sRGB before anything is drawn into it. Without that it
+# is NSCalibratedRGB and both the fill and the artwork come out colour-converted:
+# #343639 lands as #27292b. That matters more here than for most icons — the cube's
+# faces *are* the sRGB primaries, and a colour-managed detour is exactly what would
+# take the red, green and blue off their values.
 
 say "icon"
 tmp="$(mktemp -d)"
@@ -232,21 +242,22 @@ trap 'rm -rf "$tmp"' EXIT
 iconset="$tmp/$name.iconset"
 mkdir -p "$iconset"
 
-cat > "$tmp/inset-icon.js" <<'JS'
+cat > "$tmp/flatten-icon.js" <<'JS'
 ObjC.import('AppKit');
 
-// argv: <src.png> <inset-percent> <size>:<dst.png>...
+// argv: <src.png> <rrggbb> <inset-percent> <size>:<dst.png>...
 function run(argv) {
-    var src = argv[0], inset = parseFloat(argv[1]) / 100;
+    var src = argv[0], hex = argv[1], inset = parseFloat(argv[2]) / 100;
     var img = $.NSImage.alloc.initWithContentsOfFile(src);
     if (img.isNil()) throw new Error('cannot read ' + src);
+    var rgb = [0, 2, 4].map(function (i) { return parseInt(hex.substr(i, 2), 16) / 255; });
 
-    argv.slice(2).forEach(function (spec) {
+    argv.slice(3).forEach(function (spec) {
         var colon = spec.indexOf(':');
         var size = parseInt(spec.slice(0, colon), 10), dst = spec.slice(colon + 1);
-        // Fractional at the small sizes (16² insets by just over a pixel), which is
-        // the point: the artwork is drawn into a sub-pixel rect and antialiased,
-        // rather than snapped to the edge.
+        // Fractional at the small sizes (16² insets by under a pixel), which is the
+        // point: the artwork is drawn into a sub-pixel rect and antialiased, rather
+        // than snapped to the edge.
         var pad = size * inset;
 
         var rep = $.NSBitmapImageRep.alloc
@@ -258,6 +269,8 @@ function run(argv) {
         $.NSGraphicsContext.setCurrentContext(
             $.NSGraphicsContext.graphicsContextWithBitmapImageRep(rep));
         $.NSGraphicsContext.currentContext.setImageInterpolation(3); // .high
+        $.NSColor.colorWithSRGBRedGreenBlueAlpha(rgb[0], rgb[1], rgb[2], 1.0).setFill;
+        $.NSBezierPath.fillRect($.NSMakeRect(0, 0, size, size));
         img.drawInRectFromRectOperationFraction(
             $.NSMakeRect(pad, pad, size - 2 * pad, size - 2 * pad),
             $.NSZeroRect, $.NSCompositingOperationSourceOver, 1.0);
@@ -274,14 +287,14 @@ for size in 16 32 128 256 512; do
     renders+=("$size:$iconset/icon_${size}x${size}.png")
     renders+=("$((size * 2)):$iconset/icon_${size}x${size}@2x.png")
 done
-osascript -l JavaScript "$tmp/inset-icon.js" \
-    "$repo/assets/icons/application-logo.png" "${icon_inset%\%}" "${renders[@]}" \
+osascript -l JavaScript "$tmp/flatten-icon.js" \
+    "$repo/assets/icons/application-logo.png" "$icon_bg" "${icon_inset%\%}" "${renders[@]}" \
     || die "could not render the iconset from assets/icons/application-logo.png"
 (( $(ls "$iconset" | wc -l) == ${#renders[@]} )) || die "the iconset is short of ${#renders[@]} images"
 
 icns="$tmp/$name.icns"
 iconutil -c icns "$iconset" -o "$icns"
-echo "  $(basename "$icns") — $(stat -f%z "$icns") bytes, inset $icon_inset"
+echo "  $(basename "$icns") — $(stat -f%z "$icns") bytes, on #$icon_bg, inset $icon_inset"
 
 # ---------------------------------------------------------------------------------------------
 # 5. The bundle
@@ -429,8 +442,110 @@ if [[ $do_notarize -eq 1 ]]; then
 fi
 
 # ---------------------------------------------------------------------------------------------
-# 9. Verify what actually ships
+# 9. The .dmg's own Finder icon
 # ---------------------------------------------------------------------------------------------
+# Without this the .dmg gets the generic disk-image document icon. What goes on instead
+# is that same generic icon with the cube composited over its disk graphic, so it still
+# reads as a disk image at a glance and is unmistakably ours. The base comes from
+# NSWorkspace rather than a checked-in PNG, so it is whatever the running macOS draws
+# for a .dmg and cannot go stale.
+#
+# This runs *last*, after stapling, because a custom file icon is not in the file's
+# data: it is a resource fork in the `com.apple.ResourceFork` xattr plus a flag in
+# `com.apple.FinderInfo`, and codesign, notarytool and stapler all rewrite the .dmg.
+# Applied here it costs the signature nothing — section 10 re-checks it to prove that.
+#
+# Know one limit before relying on it: xattrs travel only where the transport carries
+# them, which means AirDrop, a `ditto`-made zip, or a copy between Macs. A plain HTTPS
+# download strips the fork and the .dmg lands generic again. This is
+# cosmetic-on-your-Mac, not branding for the web.
+
+say "dmg icon"
+dmg_iconset="$tmp/dmg.iconset"
+mkdir -p "$dmg_iconset"
+cat > "$tmp/dmg-icon.js" <<'JS'
+ObjC.import('AppKit');
+
+// The cube's edge, and its centre measured from the top-left, as fractions of the
+// icon's edge. It replaces the generic download arrow, and it has to stay inside the
+// disk graphic drawn on the document — the cube overhanging that frame reads as a
+// mistake rather than as a badge.
+//
+// Fitted to the disk's interior, measured off the system artwork at 512²: x 165..348
+// and y 146..338 (338 being the top of the darker bar along its bottom), so a
+// 183 x 192 opening. Unlike a tall narrow logo this master is full-bleed in *both*
+// directions — its ink is 996 x 1024 of 1024² — so both dimensions bind at once and
+// the horizontal margin is the tighter of the two: 0.33 draws the ink 169 tall and
+// 164 wide, leaving ~12px on every side. Raising it much past 0.35 starts crowding
+// the disk's edge.
+var LOGO_SCALE = 0.33, LOGO_CX = 0.5, LOGO_CY = 0.473;
+
+// argv: <logo.png> <size>:<dst.png>...
+function run(argv) {
+    var img = $.NSImage.alloc.initWithContentsOfFile(argv[0]);
+    if (img.isNil()) throw new Error('cannot read ' + argv[0]);
+    // Deprecated in favour of -iconForContentType:, which does not bridge cleanly
+    // through JXA. It still returns the current system artwork, with reps up to 2048²,
+    // so 1024² is a downsample rather than an upscale.
+    var base = $.NSWorkspace.sharedWorkspace.iconForFileType('dmg');
+
+    argv.slice(1).forEach(function (spec) {
+        var colon = spec.indexOf(':');
+        var size = parseInt(spec.slice(0, colon), 10), dst = spec.slice(colon + 1);
+
+        var rep = $.NSBitmapImageRep.alloc
+            .initWithBitmapDataPlanesPixelsWidePixelsHighBitsPerSampleSamplesPerPixelHasAlphaIsPlanarColorSpaceNameBytesPerRowBitsPerPixel(
+                $(), size, size, 8, 4, true, false, $.NSCalibratedRGBColorSpace, 0, 0);
+        rep = rep.bitmapImageRepByRetaggingWithColorSpace($.NSColorSpace.sRGBColorSpace);
+
+        $.NSGraphicsContext.saveGraphicsState;
+        $.NSGraphicsContext.setCurrentContext(
+            $.NSGraphicsContext.graphicsContextWithBitmapImageRep(rep));
+        $.NSGraphicsContext.currentContext.setImageInterpolation(3); // .high
+        base.drawInRectFromRectOperationFraction(
+            $.NSMakeRect(0, 0, size, size), $.NSZeroRect, $.NSCompositingOperationSourceOver, 1.0);
+        var e = size * LOGO_SCALE;
+        img.drawInRectFromRectOperationFraction(
+            $.NSMakeRect(size * LOGO_CX - e / 2, size * (1 - LOGO_CY) - e / 2, e, e),
+            $.NSZeroRect, $.NSCompositingOperationSourceOver, 1.0);
+        $.NSGraphicsContext.restoreGraphicsState;
+
+        var png = rep.representationUsingTypeProperties($.NSBitmapImageFileTypePNG, $({}));
+        if (!png.writeToFileAtomically(dst, true)) throw new Error('cannot write ' + dst);
+    });
+}
+JS
+
+dmg_renders=()
+for size in 16 32 128 256 512; do
+    dmg_renders+=("$size:$dmg_iconset/icon_${size}x${size}.png")
+    dmg_renders+=("$((size * 2)):$dmg_iconset/icon_${size}x${size}@2x.png")
+done
+# The *transparent* master here, not the flattened tile: the cube is being badged onto
+# the system's disk graphic, and a grey square would cover it.
+osascript -l JavaScript "$tmp/dmg-icon.js" "$repo/assets/icons/application-logo.png" \
+    "${dmg_renders[@]}" || die "could not render the .dmg icon"
+(( $(ls "$dmg_iconset" | wc -l) == ${#dmg_renders[@]} )) || die "the .dmg iconset is short of images"
+dmg_icns="$tmp/dmg.icns"
+iconutil -c icns "$dmg_iconset" -o "$dmg_icns"
+
+# -setIcon:forFile:options: writes the fork and sets the flag in one call, which is the
+# whole reason not to do this with Rez and SetFile.
+osascript -l JavaScript -e '
+    ObjC.import("AppKit");
+    function run(argv) {
+        var img = $.NSImage.alloc.initWithContentsOfFile(argv[0]);
+        if (img.isNil()) throw new Error("cannot read " + argv[0]);
+        if (!$.NSWorkspace.sharedWorkspace.setIconForFileOptions(img, argv[1], 0))
+            throw new Error("setIcon:forFile: refused " + argv[1]);
+    }' "$dmg_icns" "$dmg" || die "could not set the .dmg's Finder icon"
+echo "  applied to $(basename "$dmg")"
+
+# ---------------------------------------------------------------------------------------------
+# 10. Verify what actually ships
+# ---------------------------------------------------------------------------------------------
+# Deliberately after the icon, not before: these have to be true of the bytes that leave
+# the Mac, and the icon is the last thing to touch them.
 
 if [[ $do_sign -eq 1 ]]; then
     say "verify"

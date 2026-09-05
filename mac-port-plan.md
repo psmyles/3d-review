@@ -1077,11 +1077,16 @@ Ordered so each step is verifiable by eye against the current renderer on the sa
    this script owed: it hard-fails on a stale `.metallib` and only warns about the Windows rows,
    the inverse of the PowerShell twin.
 
-   Two departures from Fire's script. **The icon keeps its alpha** — Fire composited its flame onto
-   an opaque background because a floating flame reads as unfinished, but this master is a cube
-   whose faces run nearly corner to corner, so the real problem is macOS masking a legacy icon into
-   a rounded rect and clipping the cube's own corners; an 8 % inset fixes that and invents no
-   background colour. And **no IBL re-bake**, for the reason step 5 measured.
+   The icon path is Fire's, wholesale: the transparent 1024² master is inset 6 % and composited
+   onto the same `#343639` grey, so the two products' tiles read as a set, and the `.dmg` gets the
+   system disk-image icon with the cube badged over its disk graphic in place of the download
+   arrow. Two things had to be re-fitted rather than copied, because the artwork differs: this
+   master is full-bleed in *both* directions (996 × 1024 of 1024², against Fire's tall narrow
+   flame), so the inset is what keeps macOS's rounded-rect mask off the cube's own corners, and the
+   `.dmg` badge is bound by width as much as height — measured against the system disk graphic's
+   183 × 192 opening at 512², `LOGO_SCALE = 0.33` leaves ~12 px on every side.
+
+   The one real departure is **no IBL re-bake**, for the reason step 5 measured.
 
    Run end to end with `--no-notarize`: a signed, verified 11.5 MB `dist/3D Review-0.2.1.dmg`, and
    the packaged bundle launches, opens a model through Launch Services and draws at 110 FPS.
