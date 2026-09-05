@@ -3,9 +3,15 @@
 //!
 //! Split out of `main.rs` to keep the `ApplicationHandler` impl + window bootstrap
 //! separate from the frame's draw order. `render` runs the egui pass, paces the next
-//! redraw, then draws the scene (Direct3D 11) and the egui chrome on top before
-//! presenting. It only reads UI state and applies the resulting `UiOutput` intents
-//! through `App`'s own helpers (invariant 2).
+//! redraw, then draws the scene and the egui chrome on top before presenting. It only
+//! reads UI state and applies the resulting `UiOutput` intents through `App`'s own
+//! helpers (invariant 2).
+//!
+//! The draw order is the one sokol_gfx's pass model imposes (`mac-port-plan.md` §3.2):
+//! acquire the frame, let the renderer record its offscreen passes, tessellate the
+//! chrome *outside* any pass, then open the **one** swapchain pass — Metal presents
+//! inside `sg_end_pass`, so a second one would double-present — composite into it,
+//! paint the chrome over that, and finish.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -48,7 +54,7 @@ impl App {
         // texture) into the undo history before this frame's egui pass.
         self.observe_edit_state();
 
-        // Bail until the D3D11 device + egui renderer exist (built in `resumed`).
+        // Bail until the GPU + egui renderer exist (built in `resumed`).
         if self.gpu.is_none() || self.egui_renderer.is_none() {
             return;
         }
@@ -89,8 +95,11 @@ impl App {
             let prev_active_material = self.ui.debug.active_material;
             let prev_buffer_view = self.ui.debug.buffer_view;
             let _z = prof::zone!("egui Run");
-            let full_output = egui_ctx.run(raw_input, |ctx| {
-                ui_output = draw_overlay(ctx, &mut self.ui, camera, &scene_model, occlusion_bvh);
+            // `run_ui` hands the closure the frame's root `Ui` — egui shows panels
+            // into a `Ui` rather than onto the `Context` — and the chrome carves its
+            // bands out of it. Floating layers still address `ui.ctx()`.
+            let full_output = egui_ctx.run_ui(raw_input, |ui| {
+                ui_output = draw_overlay(ui, &mut self.ui, camera, &scene_model, occlusion_bvh);
                 if self.ui.debug.material_mode != prev_material_mode {
                     notifications.mode(self.ui.debug.material_mode.label());
                 }
@@ -105,7 +114,7 @@ impl App {
                     notifications.mode(format!("Buffer: {}", self.ui.debug.buffer_view.label()));
                 }
                 // Toasts paint on the egui Foreground layer, above the chrome.
-                notifications.show(ctx);
+                notifications.show(ui.ctx());
             });
 
             egui_state.handle_platform_output(&window, full_output.platform_output.clone());
@@ -237,7 +246,7 @@ impl App {
         let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
-        let Some(gpu) = self.gpu.as_ref() else {
+        let Some(gpu) = self.gpu.as_mut() else {
             return;
         };
         let Some(egui_renderer) = self.egui_renderer.as_mut() else {
@@ -251,14 +260,18 @@ impl App {
         let mut faults: Vec<(&str, String)> = Vec::new();
         {
             let _z = prof::zone!("Paint + Present");
-            // Render the 3D scene through Direct3D 11 straight to the backbuffer
-            // (the call clears it), then draw the egui chrome on top — the central
-            // viewport area of the chrome is transparent, so the scene shows
-            // through. egui-directx11 tessellates the shapes internally and manages
-            // its own font/texture atlas.
+            // Acquire this frame's backbuffer. `None` means there is nothing to draw
+            // into — a minimized window, or a drawable the device refused after a
+            // reset — so the frame is skipped rather than drawn into nothing.
+            let Some(mut frame) = gpu.begin_frame() else {
+                return;
+            };
+
+            // The renderer records its offscreen passes and leaves the composite for
+            // the swapchain pass below (§3.2).
             let render_result = match workspace {
                 WorkspaceMode::Uv => renderer.render_uv_scene(
-                    gpu,
+                    &mut frame,
                     model,
                     model_revision,
                     uv_channel,
@@ -268,7 +281,7 @@ impl App {
                 ),
                 WorkspaceMode::Texture => {
                     let (image, background) = texture_draw.unwrap_or((None, TexBackground::Black));
-                    renderer.render_texture(gpu, image, background)
+                    renderer.render_texture(&mut frame, image, background)
                 }
                 WorkspaceMode::ThreeD | WorkspaceMode::Opt => {
                     let scene_frame = SceneFrame {
@@ -302,7 +315,7 @@ impl App {
                                 revision,
                             });
                         renderer.render_opt_scene(
-                            gpu,
+                            &mut frame,
                             &OptSceneFrame {
                                 base: scene_frame,
                                 processed,
@@ -320,34 +333,38 @@ impl App {
                             },
                         )
                     } else {
-                        renderer.render_scene(gpu, &scene_frame)
+                        renderer.render_scene(&mut frame, &scene_frame)
                     }
                 }
             };
             if let Err(err) = render_result {
                 faults.push(("Scene render failed", err.to_string()));
             }
-            let egui_output = egui_directx11::RendererOutput {
-                textures_delta: full_output.textures_delta,
-                shapes: full_output.shapes,
-                pixels_per_point: full_output.pixels_per_point,
-            };
-            if let Some(backbuffer_rtv) = gpu.d3d11_backbuffer_rtv()
-                && let Err(err) = egui_renderer.render(
-                    gpu.d3d11_context(),
-                    backbuffer_rtv,
-                    &egui_ctx,
-                    egui_output,
-                )
-            {
+
+            // Tessellate the chrome and upload its geometry + texture deltas. Outside
+            // any pass on purpose: both are resource updates sokol forbids inside one.
+            if let Err(err) = egui_renderer.prepare(
+                &egui_ctx,
+                full_output.shapes,
+                full_output.textures_delta,
+                full_output.pixels_per_point,
+                frame.size(),
+            ) {
                 faults.push(("UI render failed", err.to_string()));
             }
-            if let review_render::PresentStatus::DeviceLost { reason } = gpu.present(true) {
+
+            // The one swapchain pass: it owns the clear, replays whatever the
+            // renderer composited, and then the chrome paints over that.
+            frame.begin_swapchain_pass();
+            egui_renderer.paint(&frame, full_output.pixels_per_point);
+            if let review_render::PresentStatus::DeviceLost { reason } = frame.finish(true) {
                 faults.push((
                     "Graphics device lost",
                     format!("{reason:#x} - restart the viewer"),
                 ));
             }
+            // After the frame: a texture egui freed may still have been drawn from it.
+            egui_renderer.free_textures();
         }
         for (context, detail) in faults {
             self.report_gpu_fault(context, detail);

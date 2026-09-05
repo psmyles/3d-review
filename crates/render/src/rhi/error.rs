@@ -3,8 +3,14 @@
 //!
 //! `windows::core::Error` used to travel all the way out of `Renderer::render_*`,
 //! which made `render`'s public API name Direct3D. Nothing outside [`crate::rhi`]
-//! sees a backend error now: the COM `HRESULT` is turned into a [`GpuError`] at the
+//! sees a backend error now: the failure is turned into a [`GpuError`] at the
 //! wrapper that produced it, and `app` only ever formats the `Display`.
+//!
+//! There are two shapes of failure to convert. sokol_gfx reports one by handing back
+//! an id whose `sg_query_*_state` is not `Valid` (the *reason* goes to its logger,
+//! which [`crate::rhi::Gpu`] installs), so [`require_valid`] is what every wrapper
+//! ends in. The backend leaf still speaks COM `HRESULT`s, so the `windows`
+//! conversions below stay — `cfg(windows)`, since they are that leaf's alone.
 //!
 //! The four variants are the four things a caller can actually distinguish:
 //! creating a resource failed ([`GpuError::Resource`] — with the kind and a label
@@ -13,6 +19,7 @@
 //! of its own ([`GpuError::Backend`]), or the device is gone
 //! ([`GpuError::DeviceLost`], which is terminal — every later frame fails too).
 
+use sokol::gfx as sg;
 use thiserror::Error;
 
 /// The result type every `rhi` operation returns.
@@ -90,6 +97,29 @@ impl GpuError {
     }
 }
 
+/// Turn "sokol handed back an invalid id" into a [`GpuError::Resource`] naming the
+/// resource — the sokol-side twin of [`ResourceContext::resource`], and what every
+/// `sg::make_*` wrapper ends in.
+///
+/// sokol reports *why* through its logger rather than through a return value, so the
+/// message here can only name the resource; [`crate::rhi::Gpu`] installs a logger at
+/// setup precisely so the reason is not lost.
+pub(crate) fn require_valid(
+    state: sg::ResourceState,
+    kind: ResourceKind,
+    label: &str,
+) -> GpuResult<()> {
+    if state == sg::ResourceState::Valid {
+        return Ok(());
+    }
+    Err(GpuError::Resource {
+        kind,
+        label: label.to_owned(),
+        detail: format!("sokol_gfx reports the resource as {state:?}"),
+    })
+}
+
+#[cfg(windows)]
 impl From<windows::core::Error> for GpuError {
     /// The default conversion, so an internal `?` on a COM call inside `rhi` still
     /// just works. Constructors upgrade this to a [`GpuError::Resource`] naming the
@@ -106,10 +136,12 @@ impl From<windows::core::Error> for GpuError {
 /// which says whether the thing that failed was a 4K texture or a 96-byte cbuffer.
 /// Every `rhi` constructor ends in `.resource(ResourceKind::…, "…")`, which is the
 /// one place that context exists.
+#[cfg(windows)]
 pub(crate) trait ResourceContext<T> {
     fn resource(self, kind: ResourceKind, label: &str) -> GpuResult<T>;
 }
 
+#[cfg(windows)]
 impl<T> ResourceContext<T> for windows::core::Result<T> {
     fn resource(self, kind: ResourceKind, label: &str) -> GpuResult<T> {
         self.map_err(|error| GpuError::Resource {
@@ -122,6 +154,7 @@ impl<T> ResourceContext<T> for windows::core::Result<T> {
 
 /// The backend's message plus its raw code — the code is what a driver bug report
 /// is looked up by, and the message alone often omits it.
+#[cfg(windows)]
 fn backend_message(error: &windows::core::Error) -> String {
     let message = error.message();
     let code = error.code().0;

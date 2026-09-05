@@ -1,18 +1,28 @@
-//! `review-render` — the viewer's camera math + Direct3D 11 GPU layer.
+//! `review-render` — the viewer's camera math + GPU layer.
 //!
-//! The crate owns three things: the **cameras** ([`OrbitCamera`] for the 3D
-//! viewport, [`UvCamera`] for the 2D UV viewport, and the 0.3s [`CameraTransition`]
-//! easing between framings, all Reversed-Z), the per-view **config** types
-//! (re-exported from [`config`]: shading / material / environment / GTAO / tonemap /
-//! AA options), and the [`Renderer`] — the host-facing handle that holds the live
-//! camera + editable material table and, on first use, lazily builds the Direct3D 11
-//! scene/Tex GPU resources and draws each frame into the swapchain backbuffer.
+//! The crate owns four things: the **cameras** ([`OrbitCamera`] for the 3D viewport,
+//! [`UvCamera`] for the 2D UV viewport, and the 0.3s [`CameraTransition`] easing
+//! between framings, all Reversed-Z), the per-view **config** types (re-exported from
+//! [`config`]: shading / material / environment / GTAO / tonemap / AA options), the
+//! [`Renderer`] — the host-facing handle that holds the live camera + editable
+//! material table and draws each frame — and [`EguiRenderer`], which paints the
+//! chrome into the same frame.
 //!
-//! All D3D11/DXGI COM is confined to the [`rhi`] module + the scene/tex GPU
-//! submodules (invariant 9); the camera and material math above stays host-agnostic
-//! and safe, so `app` drives the renderer purely through [`Renderer`]'s public API
-//! and never touches GPU state directly (invariant 2). HLSL shaders live in
-//! `src/hlsl/` and are compiled offline to committed DXBC by `build.rs`.
+//! Drawing goes through sokol_gfx, and every GPU call is confined to the [`rhi`]
+//! module; the platform `unsafe` is confined further still, to `rhi/backend/`, which
+//! is invariant 9's sanctioned GPU site. The camera and material math above stays
+//! host-agnostic and safe, so `app` drives the renderer purely through [`Renderer`]'s
+//! public API and never touches GPU state directly (invariant 2). Shaders are one
+//! annotated-GLSL source (`src/shaders/review.glsl`) generated to per-backend sources
+//! and compiled offline to committed bytecode by `build.rs`.
+//!
+//! ## Being ported (`mac-port-plan.md` Phase 1)
+//!
+//! The scene, material, IBL and Tex GPU paths have **not** been moved onto sokol_gfx
+//! yet: they are in `src/port_pending/` and every `Renderer::render_*` below is a stub
+//! that draws nothing but the background. Step 4 revives them one stage at a time,
+//! each eye-checked against the D3D11 build. What is live is the frame flow, the
+//! device and swapchain, and the whole egui chrome.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -22,31 +32,33 @@ use review_model::{Bounds, DeformPose, MaterialImportDefaults, ModelData};
 
 mod camera;
 mod config;
+mod egui_sokol;
+// The CPU vertex generators. Every consumer is in `port_pending` until step 4 revives
+// the scene stages, so nothing in the crate calls them right now; they stay compiled —
+// and unit-tested — because none of them touches the GPU and all of them are what
+// step 4 ports *against*.
+#[allow(dead_code, unused_imports)]
 mod geometry;
-mod ibl;
 mod material;
 mod rhi;
 mod scene;
 mod selection;
 mod shaders;
-mod tex_d3d;
+mod tex;
 mod texture;
 
 use camera::CameraTransition;
 pub use camera::{OrbitCamera, UvCamera, ease_in_out_cubic};
 pub use config::*;
-#[cfg(feature = "bake")]
-pub use ibl::bake_ibl_assets;
+pub use egui_sokol::EguiRenderer;
 pub use material::{
     AlphaMode, MaterialChange, MaterialEdit, MaterialSnapshot, MaterialState, RoughnessWorkflow,
     TextureBinding,
 };
 pub use rhi::gpu_profiler::enable_tracy_gpu;
-pub use rhi::{Format, Gpu, GpuError, GpuResult, PresentStatus};
-use scene::SceneGpu;
+pub use rhi::{Format, Frame, Gpu, GpuBringUp, GpuError, GpuResult, PresentStatus};
 pub use selection::{Selection, SelectionView, selection_bounds};
-use tex_d3d::TexGpu;
-pub use tex_d3d::{TexBackground, TexImage};
+pub use tex::{TexBackground, TexImage};
 pub use texture::{ChannelSelect, DecodedImage, TextureSlot, decode_image, suggested_channel};
 
 /// Size in bytes of one *engine-equivalent* vertex: position, normal, UV,
@@ -97,10 +109,10 @@ const GRID_BOUNDS: Bounds = Bounds {
 const GRID_FAR_RADIUS: f32 = GRID_HALF_EXTENT * 2.0;
 
 /// The host-facing renderer: the live 3D/UV cameras, the editable per-material
-/// table, and (built lazily on first draw) the Direct3D 11 scene + Tex GPU
-/// resources. `app` owns one of these and drives every frame through its public
-/// API — applying [`MaterialEdit`]/camera intents in, reading stats out (invariant
-/// 2). It carries no window or swapchain; those are passed per-call as a [`Gpu`].
+/// table, and (built lazily on first draw) the scene + Tex GPU resources. `app` owns
+/// one of these and drives every frame through its public API — applying
+/// [`MaterialEdit`]/camera intents in, reading stats out (invariant 2). It carries no
+/// window or swapchain; the frame in flight is passed per-call as a [`Frame`].
 #[derive(Debug)]
 pub struct Renderer {
     pub config: RendererConfig,
@@ -128,13 +140,6 @@ pub struct Renderer {
     /// Bumped on every material edit (and on model load) so the GPU table is
     /// re-uploaded without a full mesh rebuild.
     material_revision: u64,
-    /// The Direct3D 11 scene GPU resources (pipelines / buffers / depth). Built
-    /// lazily on the first [`Self::render_scene`] (the D3D11 device doesn't exist
-    /// when [`Self::new`] runs); `None` until then.
-    scene_gpu: Option<SceneGpu>,
-    /// The Tex viewport GPU resources (image pipeline + texture cache). Built lazily
-    /// on the first [`Self::render_texture`]; `None` until then.
-    tex_gpu: Option<TexGpu>,
 }
 
 /// Per-frame inputs for the 3D scene render — everything `app` resolves from the
@@ -276,9 +281,8 @@ pub struct OptSceneFrame<'a> {
 
 impl Renderer {
     /// Create a renderer from its config with default cameras and an empty material
-    /// table. No GPU resources are built here — the Direct3D 11 device doesn't exist
-    /// until the window is up, so the scene/Tex resources are created lazily on the
-    /// first [`Self::render_scene`] / [`Self::render_texture`].
+    /// table. No GPU resources are built here — there is no device until the window is
+    /// up, so the scene/Tex resources are created lazily on the first render.
     pub fn new(config: RendererConfig) -> Self {
         Self {
             config,
@@ -290,80 +294,56 @@ impl Renderer {
             material_states: Vec::new(),
             material_names: Vec::new(),
             material_revision: 0,
-            scene_gpu: None,
-            tex_gpu: None,
         }
     }
 
-    /// Render the scene through Direct3D 11: the skybox, the per-material PBR/IBL
-    /// mesh, and the grid into offscreen linear-HDR targets, then a tone-mapped
-    /// composite to the swapchain backbuffer behind the egui chrome `app` draws next.
-    /// Builds the GPU resources on the first call (the device only exists once the
-    /// window is up).
-    pub fn render_scene(&mut self, gpu: &Gpu, frame: &SceneFrame<'_>) -> GpuResult<()> {
-        // Build the scene GPU resources on first use, then borrow them — `insert`
-        // returns the `&mut` so there's no separate unwrap. Disjoint field borrows:
-        // `scene` borrows `self.scene_gpu` mutably while the material table + camera
-        // are borrowed from their own fields.
-        let scene = match self.scene_gpu {
-            Some(ref mut scene) => scene,
-            None => self.scene_gpu.insert(SceneGpu::new(
-                gpu,
-                frame.anti_aliasing.effective_sample_count(),
-            )?),
-        };
-        scene.render(
-            gpu,
-            frame,
-            &self.material_states,
-            self.material_revision,
-            self.camera,
-        )
+    /// Render the scene: the skybox, the per-material PBR/IBL mesh, and the grid into
+    /// offscreen linear-HDR targets, then a tone-mapped composite into the frame,
+    /// behind the egui chrome `app` paints next.
+    ///
+    /// **Stubbed** while the scene path is ported (`mac-port-plan.md` Phase 1 step 4).
+    /// It sets the frame's clear to the viewport background and draws nothing else, so
+    /// the background control still works and every caller is already in its final
+    /// shape. A gradient preset reads as its top colour until the composite lands,
+    /// which is what paints the ramp.
+    pub fn render_scene(&mut self, frame: &mut Frame<'_>, scene: &SceneFrame<'_>) -> GpuResult<()> {
+        frame.set_clear(scene.background.gradient_srgb().0);
+        Ok(())
     }
 
-    /// Render the Opt workspace's comparison view: the source and processed
-    /// meshes side by side, or one ghosted over the other. Shares every setting
-    /// and every GPU resource with [`Self::render_scene`] — only the layout and
-    /// the second model differ.
-    pub fn render_opt_scene(&mut self, gpu: &Gpu, frame: &OptSceneFrame<'_>) -> GpuResult<()> {
-        let scene = match self.scene_gpu {
-            Some(ref mut scene) => scene,
-            None => self.scene_gpu.insert(SceneGpu::new(
-                gpu,
-                frame.base.anti_aliasing.effective_sample_count(),
-            )?),
-        };
-        scene.render_opt(gpu, frame, &self.material_states, self.material_revision)
+    /// Render the Opt workspace's comparison view: the source and processed meshes
+    /// side by side, or one ghosted over the other. Shares every setting and every GPU
+    /// resource with [`Self::render_scene`] — only the layout and the second model
+    /// differ. **Stubbed**, as [`Self::render_scene`] is.
+    pub fn render_opt_scene(
+        &mut self,
+        frame: &mut Frame<'_>,
+        scene: &OptSceneFrame<'_>,
+    ) -> GpuResult<()> {
+        frame.set_clear(scene.base.background.gradient_srgb().0);
+        Ok(())
     }
 
     /// Drop the processed mesh's GPU buffers (invariant 3). Called when the Opt
     /// workspace has nothing processed to show, so the memory isn't held while
-    /// another workspace is up.
-    pub fn release_processed_mesh(&mut self) {
-        if let Some(scene) = self.scene_gpu.as_mut() {
-            scene.release_processed();
-        }
-    }
+    /// another workspace is up. **Stubbed**: nothing holds a processed mesh yet.
+    pub fn release_processed_mesh(&mut self) {}
 
     /// Drop the Tex viewport's uploaded textures (invariant 3). Called when the Tex
     /// workspace is left, so a session that visited it once doesn't hold its mipped
     /// uploads — a bounded cache, but a full one is hundreds of megabytes of VRAM —
     /// for the rest of the process. The viewport's pipelines are kept, so re-entering
-    /// costs only the re-upload of whatever is looked at next.
-    pub fn release_tex_cache(&mut self) {
-        if let Some(tex) = self.tex_gpu.as_mut() {
-            tex.release_cache();
-        }
-    }
+    /// costs only the re-upload of whatever is looked at next. **Stubbed**: nothing
+    /// holds an uploaded texture yet.
+    pub fn release_tex_cache(&mut self) {}
 
-    /// Render the 2D UV viewport through Direct3D 11 (instead of the 3D scene): the
-    /// 0..1 grid + the optional island fill + the model's UV edges, framed by the
-    /// renderer's `uv_camera` and composited to the backbuffer. Builds the GPU
-    /// resources on the first call, like [`Self::render_scene`].
+    /// Render the 2D UV viewport (instead of the 3D scene): the 0..1 grid + the
+    /// optional island fill + the model's UV edges, framed by the renderer's
+    /// `uv_camera`. **Stubbed**, as [`Self::render_scene`] is.
     #[allow(clippy::too_many_arguments)]
     pub fn render_uv_scene(
         &mut self,
-        gpu: &Gpu,
+        frame: &mut Frame<'_>,
         model: &ModelData,
         model_revision: u64,
         channel: u32,
@@ -371,39 +351,27 @@ impl Renderer {
         anti_aliasing: AntiAliasing,
         background: ViewportBackground,
     ) -> GpuResult<()> {
-        let scene = match self.scene_gpu {
-            Some(ref mut scene) => scene,
-            None => self
-                .scene_gpu
-                .insert(SceneGpu::new(gpu, anti_aliasing.effective_sample_count())?),
-        };
-        scene.render_uv(
-            gpu,
-            model,
-            model_revision,
-            self.uv_camera,
-            channel,
-            shading_mode,
-            anti_aliasing,
-            background,
-        )
+        let _ = (model, model_revision, channel, shading_mode, anti_aliasing);
+        frame.set_clear(background.gradient_srgb().0);
+        Ok(())
     }
 
-    /// Render the 2D Tex viewport through Direct3D 11 (instead of the 3D scene): the
-    /// chosen background fill, then the selected image (channel-isolated, placed by
-    /// `image`'s pixel rectangle) when one is present. Builds the GPU resources on the
-    /// first call. The egui chrome is drawn on top afterwards by `app`.
+    /// Render the 2D Tex viewport (instead of the 3D scene): the chosen background
+    /// fill, then the selected image (channel-isolated, placed by `image`'s pixel
+    /// rectangle) when one is present. The egui chrome is drawn on top afterwards.
+    ///
+    /// **Partly stubbed**: the background is the frame's clear colour now
+    /// (`mac-port-plan.md` §3.2), so a solid fill is already correct and needs no draw;
+    /// the checker and the image itself arrive with step 4's first stage.
     pub fn render_texture(
         &mut self,
-        gpu: &Gpu,
+        frame: &mut Frame<'_>,
         image: Option<TexImage>,
         background: TexBackground,
     ) -> GpuResult<()> {
-        let tex = match self.tex_gpu {
-            Some(ref mut tex) => tex,
-            None => self.tex_gpu.insert(TexGpu::new(gpu)?),
-        };
-        tex.render(gpu, image, background)
+        let _ = image;
+        frame.set_clear(background.clear_color());
+        Ok(())
     }
 
     /// Seed the editable material table from a freshly loaded model's import

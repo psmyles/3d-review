@@ -8,7 +8,6 @@ rust-version.workspace = true
 [dependencies]
 anyhow.workspace = true
 egui.workspace = true
-egui-directx11.workspace = true
 egui-winit.workspace = true
 glam.workspace = true
 image.workspace = true
@@ -24,10 +23,6 @@ review-ui = { path = "../ui" }
 rfd.workspace = true
 tracy-client.workspace = true
 winit.workspace = true
-# Only `HWND` (handed to `review-render`'s safe `Gpu::new`) — all D3D11/DXGI COM
-# lives in `review-render`'s `rhi` module now (invariant 9); `app` itself has
-# zero `unsafe`.
-windows = { workspace = true, features = ["Win32_Foundation"] }
 
 [target.'cfg(windows)'.build-dependencies]
 serde_json.workspace = true

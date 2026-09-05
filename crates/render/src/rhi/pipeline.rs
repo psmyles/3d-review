@@ -1,392 +1,154 @@
-//! Graphics pipeline plumbing: shader creation from DXBC bytecode, the input
-//! layout, and the bundled D3D11 state objects (rasterizer / depth-stencil /
-//! blend) that a wgpu `RenderPipeline` rolled into one. [`Pipeline::bind`] does
-//! the `IASet*` / `VSSetShader` / `PSSetShader` / `RSSetState` /
-//! `OMSetDepthStencilState` / `OMSetBlendState` that wgpu's `set_pipeline` did in
-//! one call.
+//! Pipelines: a shader plus the fixed-function state it draws with.
 //!
-//! All D3D11 `unsafe`/COM lives here (and the sibling `rhi` modules); the scene
-//! path drives these through safe methods only (invariant 9 amendment).
+//! One [`Pipeline`] owns its shader, because nothing in this renderer shares a shader
+//! across pipelines with *different* state without also sharing the pipeline — the
+//! scene's variants each carry their own — and one owner means one `Drop`.
+//!
+//! The knobs here are exactly the ones something built so far actually sets. The
+//! renderer is being ported onto sokol_gfx one stage at a time (`mac-port-plan.md`
+//! Phase 1 step 4), and a knob nobody sets is a knob nobody has checked: depth state,
+//! culling, line topology, MSAA sample counts and offscreen colour formats arrive
+//! with the scene stages that need them. Growing it that way is deliberate — the
+//! alternative is a wrapper full of untested surface.
 
-use windows::Win32::Graphics::Direct3D::{
-    D3D_PRIMITIVE_TOPOLOGY, D3D_PRIMITIVE_TOPOLOGY_LINELIST, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
-};
-use windows::Win32::Graphics::Direct3D11::{
-    D3D11_APPEND_ALIGNED_ELEMENT, D3D11_BLEND_DESC, D3D11_BLEND_INV_SRC_ALPHA, D3D11_BLEND_ONE,
-    D3D11_BLEND_OP_ADD, D3D11_BLEND_SRC_ALPHA, D3D11_BLEND_ZERO, D3D11_COLOR_WRITE_ENABLE_ALL,
-    D3D11_COMPARISON_ALWAYS, D3D11_COMPARISON_GREATER_EQUAL, D3D11_CULL_BACK, D3D11_CULL_NONE,
-    D3D11_DEPTH_STENCIL_DESC, D3D11_DEPTH_WRITE_MASK_ALL, D3D11_DEPTH_WRITE_MASK_ZERO,
-    D3D11_FILL_SOLID, D3D11_INPUT_ELEMENT_DESC, D3D11_INPUT_PER_VERTEX_DATA, D3D11_RASTERIZER_DESC,
-    D3D11_RENDER_TARGET_BLEND_DESC, ID3D11BlendState, ID3D11DepthStencilState, ID3D11Device,
-    ID3D11InputLayout, ID3D11PixelShader, ID3D11RasterizerState, ID3D11VertexShader,
-};
-use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT, DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_R32G32B32_FLOAT,
-    DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32A32_UINT,
-};
-use windows::core::{BOOL, PCSTR, Result};
+use std::ffi::CStr;
 
-use super::{Gpu, GpuResult, ResourceContext, ResourceKind, out_param};
+use sokol::gfx as sg;
 
-/// Vertex-attribute element formats the scene buffers use, mapped to DXGI.
-#[derive(Clone, Copy)]
+use super::error::{GpuResult, ResourceKind, require_valid};
+
+/// How one vertex attribute's bytes are read. Sequential in the vertex, so the
+/// stride and each offset follow from the list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VertexFormat {
+    /// Two `f32` — a position or a UV.
     Float2,
-    Float3,
-    Float4,
-    /// Four 32-bit unsigned integers — the deform lane (`BLENDINDICES`).
-    Uint4,
+    /// Four `u8` normalised to 0..1 — a packed colour.
+    Ubyte4N,
 }
 
 impl VertexFormat {
-    fn dxgi(self) -> DXGI_FORMAT {
+    /// Bytes this attribute occupies in the vertex.
+    const fn size(self) -> i32 {
         match self {
-            VertexFormat::Float2 => DXGI_FORMAT_R32G32_FLOAT,
-            VertexFormat::Float3 => DXGI_FORMAT_R32G32B32_FLOAT,
-            VertexFormat::Float4 => DXGI_FORMAT_R32G32B32A32_FLOAT,
-            VertexFormat::Uint4 => DXGI_FORMAT_R32G32B32A32_UINT,
+            Self::Float2 => 8,
+            Self::Ubyte4N => 4,
         }
     }
 
-    /// The element's byte size — used by the invariant-11 stride test to audit
-    /// that a hand-maintained input layout covers exactly its `#[repr(C)]`
-    /// vertex struct.
-    #[cfg_attr(not(test), allow(dead_code))] // Test-only consumer.
-    pub(crate) const fn byte_size(self) -> usize {
+    const fn sg(self) -> sg::VertexFormat {
         match self {
-            VertexFormat::Float2 => 8,
-            VertexFormat::Float3 => 12,
-            VertexFormat::Float4 | VertexFormat::Uint4 => 16,
+            Self::Float2 => sg::VertexFormat::Float2,
+            Self::Ubyte4N => sg::VertexFormat::Ubyte4n,
         }
     }
 }
 
-/// One input-layout element. Offsets are auto-computed (`APPEND_ALIGNED`), so the
-/// caller only names the HLSL semantic + its format, in vertex-struct order.
-#[derive(Clone, Copy)]
-pub(crate) struct InputElement {
-    /// HLSL semantic name (without the trailing index), e.g. `"POSITION"`.
-    pub(crate) semantic: &'static str,
-    pub(crate) semantic_index: u32,
-    pub(crate) format: VertexFormat,
+/// How a draw's fragments combine with what is already in the target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Blend {
+    /// egui's premultiplied-alpha contract: `src·1 + dst·(1−srcA)` for colour, and
+    /// `src·(1−dstA) + dst·1` for alpha, which composes correctly when the chrome is
+    /// drawn over an already-opaque backbuffer *and* when it overlaps itself.
+    PremultipliedAlpha,
 }
 
-impl InputElement {
-    pub(crate) const fn new(
-        semantic: &'static str,
-        semantic_index: u32,
-        format: VertexFormat,
-    ) -> Self {
-        Self {
-            semantic,
-            semantic_index,
-            format,
-        }
-    }
-}
-
-/// Primitive topology for a pipeline.
-#[derive(Clone, Copy)]
-pub(crate) enum Topology {
-    TriangleList,
-    LineList,
-}
-
-impl Topology {
-    fn d3d(self) -> D3D_PRIMITIVE_TOPOLOGY {
+impl Blend {
+    fn state(self) -> sg::BlendState {
         match self {
-            Topology::TriangleList => D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
-            Topology::LineList => D3D_PRIMITIVE_TOPOLOGY_LINELIST,
-        }
-    }
-}
-
-/// Face culling mode. Front faces are counter-clockwise (glam's `_rh`
-/// projection + the framebuffer winding), so the rasterizer sets
-/// `FrontCounterClockwise = TRUE`.
-#[derive(Clone, Copy)]
-pub(crate) enum Cull {
-    None,
-    Back,
-}
-
-/// Depth comparison: Reversed-Z geometry uses `GreaterEqual`; the skybox and
-/// always-on-top overlays draw with `Always`.
-#[derive(Clone, Copy)]
-pub(crate) enum DepthCompare {
-    GreaterEqual,
-    Always,
-}
-
-/// Depth-stencil configuration. Reversed-Z: depth clears to 0, the mesh writes +
-/// compares `GreaterEqual`; line overlays test but don't write.
-#[derive(Clone, Copy)]
-pub(crate) struct DepthState {
-    pub(crate) test: bool,
-    pub(crate) write: bool,
-    pub(crate) compare: DepthCompare,
-}
-
-/// Color blend mode for the (single) render target.
-#[derive(Clone, Copy)]
-pub(crate) enum BlendMode {
-    /// No blending (opaque overwrite).
-    Opaque,
-    /// Standard straight-alpha blend (`src.a` over), matching wgpu's
-    /// `BlendState::ALPHA_BLENDING`.
-    AlphaBlend,
-}
-
-/// Slope-scaled depth bias (real depth-buffer units). The mesh pushes its surface
-/// back so coplanar line overlays win the Reversed-Z test; lines use zero bias.
-#[derive(Clone, Copy, Default)]
-pub(crate) struct DepthBias {
-    pub(crate) constant: i32,
-    pub(crate) slope_scaled: f32,
-}
-
-/// Everything needed to build a [`Pipeline`]: the compiled shader blobs, the input
-/// layout, and the fixed-function state. An rhi-owned description so the scene
-/// path never touches D3D11 descs directly.
-pub(crate) struct PipelineDesc<'a> {
-    pub(crate) vs: &'a [u8],
-    pub(crate) ps: &'a [u8],
-    pub(crate) input: &'a [InputElement],
-    pub(crate) topology: Topology,
-    pub(crate) cull: Cull,
-    pub(crate) depth: DepthState,
-    pub(crate) blend: BlendMode,
-    pub(crate) depth_bias: DepthBias,
-    /// MSAA sample count the pipeline renders at (1 = single-sample). Drives the
-    /// rasterizer's `MultisampleEnable`.
-    pub(crate) sample_count: u32,
-}
-
-impl<'a> PipelineDesc<'a> {
-    /// A fullscreen-triangle pass (composite / GTAO / Tex-viewport / bake): no
-    /// vertex input (the VS builds its triangle from `SV_VertexID`), no culling,
-    /// depth fully off, no bias, single-sample.
-    pub(crate) fn fullscreen(vs: &'a [u8], ps: &'a [u8], blend: BlendMode) -> Self {
-        Self {
-            vs,
-            ps,
-            input: &[],
-            topology: Topology::TriangleList,
-            cull: Cull::None,
-            depth: DepthState {
-                test: false,
-                write: false,
-                compare: DepthCompare::Always,
+            Self::PremultipliedAlpha => sg::BlendState {
+                enabled: true,
+                src_factor_rgb: sg::BlendFactor::One,
+                dst_factor_rgb: sg::BlendFactor::OneMinusSrcAlpha,
+                op_rgb: sg::BlendOp::Add,
+                src_factor_alpha: sg::BlendFactor::OneMinusDstAlpha,
+                dst_factor_alpha: sg::BlendFactor::One,
+                op_alpha: sg::BlendOp::Add,
             },
-            blend,
-            depth_bias: DepthBias::default(),
-            sample_count: 1,
         }
     }
 }
 
-/// A bundled graphics pipeline: the VS + PS, the input layout, and the three
-/// fixed-function state objects + topology. [`Self::bind`] sets them all on the
-/// immediate context (the moral equivalent of wgpu's `set_pipeline`).
+/// What a pipeline draws with.
+///
+/// The colour target is the swapchain's and the sample count is 1, because the
+/// swapchain pass is the only pass that exists so far; both become fields when the
+/// offscreen scene targets land.
+pub(crate) struct PipelineDesc<'a> {
+    /// The shader, which the built pipeline takes ownership of.
+    pub(crate) shader: sg::Shader,
+    /// The vertex attributes, in `layout(location=…)` order, packed sequentially into
+    /// one interleaved vertex buffer.
+    pub(crate) attributes: &'a [VertexFormat],
+    /// Whether draws are indexed with `u32` indices.
+    pub(crate) indexed: bool,
+    pub(crate) blend: Blend,
+    pub(crate) label: &'a CStr,
+}
+
+/// A built pipeline and the shader it owns.
 pub(crate) struct Pipeline {
-    vertex_shader: ID3D11VertexShader,
-    pixel_shader: ID3D11PixelShader,
-    /// `None` for vertex-buffer-less passes (the fullscreen composite, which builds
-    /// its vertices from `SV_VertexID`).
-    input_layout: Option<ID3D11InputLayout>,
-    rasterizer: ID3D11RasterizerState,
-    depth_stencil: ID3D11DepthStencilState,
-    blend: ID3D11BlendState,
-    topology: D3D_PRIMITIVE_TOPOLOGY,
+    pipeline: sg::Pipeline,
+    shader: sg::Shader,
 }
 
 impl Pipeline {
-    pub(crate) fn new(gpu: &Gpu, desc: &PipelineDesc) -> GpuResult<Self> {
-        let device = gpu.device();
-        // Each stage is labelled separately: "pipeline creation failed" on its own
-        // never says whether it was a shader blob, the input layout or a state
-        // object, and the three have completely different causes.
-        let kind = ResourceKind::Pipeline;
-        let vertex_shader =
-            create_vertex_shader(device, desc.vs).resource(kind, "vertex shader")?;
-        let pixel_shader = create_pixel_shader(device, desc.ps).resource(kind, "pixel shader")?;
-        let input_layout = if desc.input.is_empty() {
-            None
-        } else {
-            Some(
-                create_input_layout(device, desc.input, desc.vs)
-                    .resource(kind, "vertex input layout")?,
-            )
-        };
-        let rasterizer = create_rasterizer(device, desc.cull, desc.depth_bias, desc.sample_count)
-            .resource(kind, "rasterizer state")?;
-        let depth_stencil =
-            create_depth_stencil(device, desc.depth).resource(kind, "depth-stencil state")?;
-        let blend = create_blend(device, desc.blend).resource(kind, "blend state")?;
+    /// Build the pipeline, or fail naming it.
+    ///
+    /// On failure the shader is destroyed here: it was handed over by value, so
+    /// there is no one left to do it, and leaking a shader per failed pipeline would
+    /// hide the real error behind a pool exhaustion later.
+    pub(crate) fn new(desc: &PipelineDesc<'_>) -> GpuResult<Self> {
+        let mut pd = sg::PipelineDesc::new();
+        pd.shader = desc.shader;
+        pd.label = desc.label.as_ptr();
+        let mut stride = 0;
+        for (slot, &format) in desc.attributes.iter().enumerate() {
+            pd.layout.attrs[slot] = sg::VertexAttrState {
+                buffer_index: 0,
+                offset: stride,
+                format: format.sg(),
+            };
+            stride += format.size();
+        }
+        pd.layout.buffers[0].stride = stride;
+        if desc.indexed {
+            pd.index_type = sg::IndexType::Uint32;
+        }
+        pd.color_count = 1;
+        pd.colors[0].pixel_format = super::backend::SWAPCHAIN_FORMAT;
+        pd.colors[0].blend = desc.blend.state();
+        pd.sample_count = 1;
+
+        let pipeline = sg::make_pipeline(&pd);
+        if let Err(err) = require_valid(
+            sg::query_pipeline_state(pipeline),
+            ResourceKind::Pipeline,
+            desc.label.to_str().unwrap_or("pipeline"),
+        ) {
+            sg::destroy_pipeline(pipeline);
+            sg::destroy_shader(desc.shader);
+            return Err(err);
+        }
         Ok(Self {
-            vertex_shader,
-            pixel_shader,
-            input_layout,
-            rasterizer,
-            depth_stencil,
-            blend,
-            topology: desc.topology.d3d(),
+            pipeline,
+            shader: desc.shader,
         })
     }
 
-    /// Bind this pipeline's shaders + state to the immediate context. The blend
-    /// factor is unused by both blend modes, so it's left at zero.
-    pub(crate) fn bind(&self, gpu: &Gpu) {
-        let ctx = gpu.context();
-        // SAFETY: all handles are live for `self`'s lifetime; the immediate context
-        // owns them for the duration of these state-setting calls.
-        unsafe {
-            match &self.input_layout {
-                Some(layout) => ctx.IASetInputLayout(layout),
-                None => ctx.IASetInputLayout(None),
-            }
-            ctx.IASetPrimitiveTopology(self.topology);
-            ctx.VSSetShader(&self.vertex_shader, None);
-            ctx.PSSetShader(&self.pixel_shader, None);
-            ctx.RSSetState(&self.rasterizer);
-            ctx.OMSetDepthStencilState(&self.depth_stencil, 0);
-            ctx.OMSetBlendState(&self.blend, Some(&[0.0_f32; 4]), u32::MAX);
+    /// Make this pipeline current for the following draws.
+    pub(crate) fn apply(&self) {
+        sg::apply_pipeline(self.pipeline);
+    }
+}
+
+impl Drop for Pipeline {
+    fn drop(&mut self) {
+        // Only while sokol_gfx is still up: `Gpu`'s own `Drop` shuts it down, and a
+        // field dropped after it would be destroying handles into a dead library.
+        if sg::isvalid() {
+            sg::destroy_pipeline(self.pipeline);
+            sg::destroy_shader(self.shader);
         }
     }
-}
-
-fn create_vertex_shader(device: &ID3D11Device, dxbc: &[u8]) -> Result<ID3D11VertexShader> {
-    let mut shader = None;
-    // SAFETY: `dxbc` is a valid compiled-shader blob; the out-param is populated by
-    // the call.
-    unsafe { device.CreateVertexShader(dxbc, None, Some(&mut shader))? };
-    Ok(out_param(shader))
-}
-
-fn create_pixel_shader(device: &ID3D11Device, dxbc: &[u8]) -> Result<ID3D11PixelShader> {
-    let mut shader = None;
-    // SAFETY: `dxbc` is a valid compiled-shader blob; the out-param is populated.
-    unsafe { device.CreatePixelShader(dxbc, None, Some(&mut shader))? };
-    Ok(out_param(shader))
-}
-
-/// Build the input layout from rhi [`InputElement`]s, validated against the vertex
-/// shader's signature (`vs_dxbc`). The null-terminated semantic names are kept
-/// alive in `names` for the duration of the `CreateInputLayout` call.
-fn create_input_layout(
-    device: &ID3D11Device,
-    elements: &[InputElement],
-    vs_dxbc: &[u8],
-) -> Result<ID3D11InputLayout> {
-    let names: Vec<Vec<u8>> = elements
-        .iter()
-        .map(|element| {
-            let mut bytes = element.semantic.as_bytes().to_vec();
-            bytes.push(0);
-            bytes
-        })
-        .collect();
-    let descs: Vec<D3D11_INPUT_ELEMENT_DESC> = elements
-        .iter()
-        .zip(&names)
-        .map(|(element, name)| D3D11_INPUT_ELEMENT_DESC {
-            SemanticName: PCSTR(name.as_ptr()),
-            SemanticIndex: element.semantic_index,
-            Format: element.format.dxgi(),
-            InputSlot: 0,
-            AlignedByteOffset: D3D11_APPEND_ALIGNED_ELEMENT,
-            InputSlotClass: D3D11_INPUT_PER_VERTEX_DATA,
-            InstanceDataStepRate: 0,
-        })
-        .collect();
-    let mut layout = None;
-    // SAFETY: `descs` (and the `names` they point into) outlive the call; `vs_dxbc`
-    // is the matching compiled vertex shader.
-    unsafe { device.CreateInputLayout(&descs, vs_dxbc, Some(&mut layout))? };
-    Ok(out_param(layout))
-}
-
-fn create_rasterizer(
-    device: &ID3D11Device,
-    cull: Cull,
-    bias: DepthBias,
-    sample_count: u32,
-) -> Result<ID3D11RasterizerState> {
-    let cull_mode = match cull {
-        Cull::None => D3D11_CULL_NONE,
-        Cull::Back => D3D11_CULL_BACK,
-    };
-    let desc = D3D11_RASTERIZER_DESC {
-        FillMode: D3D11_FILL_SOLID,
-        CullMode: cull_mode,
-        // Front faces are CCW (glam `_rh` projection + the framebuffer winding).
-        FrontCounterClockwise: BOOL(1),
-        DepthBias: bias.constant,
-        DepthBiasClamp: 0.0,
-        SlopeScaledDepthBias: bias.slope_scaled,
-        DepthClipEnable: BOOL(1),
-        ScissorEnable: BOOL(0),
-        MultisampleEnable: BOOL((sample_count > 1) as i32),
-        AntialiasedLineEnable: BOOL(0),
-    };
-    let mut state = None;
-    // SAFETY: `desc` is a well-formed rasterizer description; the out-param is set.
-    unsafe { device.CreateRasterizerState(&desc, Some(&mut state))? };
-    Ok(out_param(state))
-}
-
-fn create_depth_stencil(
-    device: &ID3D11Device,
-    depth: DepthState,
-) -> Result<ID3D11DepthStencilState> {
-    let compare = match depth.compare {
-        DepthCompare::GreaterEqual => D3D11_COMPARISON_GREATER_EQUAL,
-        DepthCompare::Always => D3D11_COMPARISON_ALWAYS,
-    };
-    let desc = D3D11_DEPTH_STENCIL_DESC {
-        DepthEnable: BOOL(depth.test as i32),
-        DepthWriteMask: if depth.write {
-            D3D11_DEPTH_WRITE_MASK_ALL
-        } else {
-            D3D11_DEPTH_WRITE_MASK_ZERO
-        },
-        DepthFunc: compare,
-        StencilEnable: BOOL(0),
-        ..Default::default()
-    };
-    let mut state = None;
-    // SAFETY: `desc` is a well-formed depth-stencil description; out-param set.
-    unsafe { device.CreateDepthStencilState(&desc, Some(&mut state))? };
-    Ok(out_param(state))
-}
-
-fn create_blend(device: &ID3D11Device, mode: BlendMode) -> Result<ID3D11BlendState> {
-    let target = match mode {
-        BlendMode::Opaque => D3D11_RENDER_TARGET_BLEND_DESC {
-            BlendEnable: BOOL(0),
-            SrcBlend: D3D11_BLEND_ONE,
-            DestBlend: D3D11_BLEND_ZERO,
-            BlendOp: D3D11_BLEND_OP_ADD,
-            SrcBlendAlpha: D3D11_BLEND_ONE,
-            DestBlendAlpha: D3D11_BLEND_ZERO,
-            BlendOpAlpha: D3D11_BLEND_OP_ADD,
-            RenderTargetWriteMask: D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8,
-        },
-        BlendMode::AlphaBlend => D3D11_RENDER_TARGET_BLEND_DESC {
-            BlendEnable: BOOL(1),
-            SrcBlend: D3D11_BLEND_SRC_ALPHA,
-            DestBlend: D3D11_BLEND_INV_SRC_ALPHA,
-            BlendOp: D3D11_BLEND_OP_ADD,
-            SrcBlendAlpha: D3D11_BLEND_ONE,
-            DestBlendAlpha: D3D11_BLEND_INV_SRC_ALPHA,
-            BlendOpAlpha: D3D11_BLEND_OP_ADD,
-            RenderTargetWriteMask: D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8,
-        },
-    };
-    let mut desc = D3D11_BLEND_DESC::default();
-    desc.RenderTarget[0] = target;
-    let mut state = None;
-    // SAFETY: `desc` is a well-formed blend description; out-param set.
-    unsafe { device.CreateBlendState(&desc, Some(&mut state))? };
-    Ok(out_param(state))
 }

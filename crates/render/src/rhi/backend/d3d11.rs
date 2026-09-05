@@ -1,0 +1,369 @@
+//! The Direct3D 11 device and the DXGI flip-model swapchain sokol_gfx draws through
+//! on Windows — invariant 9's sanctioned GPU site, and the only file in the
+//! workspace that names D3D11 or DXGI.
+//!
+//! Everything that used to live in `rhi/` — pipelines, buffers, targets, textures,
+//! samplers, every draw — is sokol_gfx's now. What is left is the glue sokol cannot
+//! do for itself: create a device, point `sg_environment` at it, create a swapchain
+//! on the window, hand over a render-target view per frame, and present. The macOS
+//! twin is a `CAMetalLayer` on the same winit window handing over an `MTLDevice` and
+//! a per-frame drawable.
+//!
+//! The backbuffer is plain `R8G8B8A8_UNORM`: the flip model disallows `*_SRGB`
+//! swapchain formats, and the composite / egui / Tex shaders encode sRGB themselves
+//! (D20). The device is created on the bring-up thread ([`crate::rhi::Gpu::start`])
+//! and used from the main thread after the join — D3D11 devices are free-threaded,
+//! and only the main thread ever touches the immediate context.
+
+use std::ffi::c_void;
+
+use sokol::gfx as sg;
+use windows::Win32::Foundation::HWND;
+use windows::Win32::Graphics::Direct3D::{
+    D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL,
+    D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1,
+};
+use windows::Win32::Graphics::Direct3D11::{
+    D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_DEBUG, D3D11_CREATE_DEVICE_FLAG,
+    D3D11_SDK_VERSION, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext,
+    ID3D11RenderTargetView, ID3D11Texture2D,
+};
+use windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT, DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R8G8B8A8_UNORM,
+    DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
+};
+use windows::Win32::Graphics::Dxgi::{
+    DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET, DXGI_PRESENT, DXGI_SCALING_NONE,
+    DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_DISCARD,
+    DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter, IDXGIDevice, IDXGIFactory2, IDXGISwapChain1,
+};
+use windows::core::{BOOL, HRESULT, Interface};
+use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use winit::window::Window;
+
+use crate::rhi::error::{GpuError, GpuResult, ResourceContext, ResourceKind};
+use crate::rhi::format::Format;
+use crate::rhi::present::PresentStatus;
+
+/// What the window's backbuffer is created as, and what sokol_gfx is told to expect
+/// of a swapchain pass — so the composite, egui and Tex pipelines match it. Plain
+/// `Rgba8`: flip-model chains disallow `*_SRGB` swapchain formats, and those shaders
+/// encode sRGB themselves (D20). The Metal twin says `Bgra8`, which is why this is
+/// the backend's choice and not a shared constant.
+pub(crate) const SWAPCHAIN_FORMAT: sg::PixelFormat = sg::PixelFormat::Rgba8;
+
+/// The process's D3D11 device and its immediate context — what sokol_gfx runs on.
+pub(crate) struct Device {
+    device: ID3D11Device,
+    context: ID3D11DeviceContext,
+}
+
+// SAFETY: a D3D11 device is free-threaded by specification. The immediate context is
+// not, and it is only ever used by the main thread — the bring-up thread creates both
+// and hands them over through a `JoinHandle`, whose join is the synchronization point.
+unsafe impl Send for Device {}
+
+impl Device {
+    /// Create a hardware device, falling back to the WARP software rasterizer (RDP, a
+    /// VM, a box with no usable adapter) rather than leaving the viewer with nothing
+    /// to draw through.
+    ///
+    /// Each driver is tried with the debug layer first, so mis-bound resources
+    /// surface as `ID3D11InfoQueue` messages in a debug build; a box without the
+    /// debug runtime installed falls back to a plain device rather than failing.
+    pub(crate) fn create() -> GpuResult<Device> {
+        let base = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+        let mut last: Option<GpuError> = None;
+        for (driver, is_warp) in [
+            (D3D_DRIVER_TYPE_HARDWARE, false),
+            (D3D_DRIVER_TYPE_WARP, true),
+        ] {
+            let made = create_device(driver, base | debug_flag())
+                .or_else(|_| create_device(driver, base))
+                .resource(ResourceKind::Device, "D3D11 device");
+            match made {
+                Ok((device, context)) => {
+                    if is_warp {
+                        eprintln!(
+                            "3d-review: no hardware D3D11 device - using the WARP software renderer"
+                        );
+                    }
+                    return Ok(Device { device, context });
+                }
+                Err(err) => last = Some(err),
+            }
+        }
+        Err(last.unwrap_or_else(|| GpuError::Backend("no D3D11 driver".into())))
+    }
+
+    /// Point `env` at this device and its immediate context, so `sg_setup` runs on
+    /// them. sokol AddRefs what it keeps, so neither pointer is retained by us beyond
+    /// the device's own lifetime.
+    pub(crate) fn fill_environment(&self, env: &mut sg::Environment) {
+        env.d3d11 = sg::D3d11Environment {
+            device: self.device.as_raw(),
+            device_context: self.context.as_raw(),
+        };
+    }
+
+    /// The MSAA sample counts this adapter supports for **both** given formats — the
+    /// subset of `[1, 2, 4, 8, 16]` the scene can actually render at (invariant 4:
+    /// capability-gate, never crash). `1` is always included.
+    ///
+    /// This is a leaf because sokol only reports MSAA as a yes/no per format
+    /// (`sg_query_pixelformat().msaa`); the Metal twin answers with
+    /// `supportsTextureSampleCount:`, where Apple silicon offers 1/2/4/8 and the 16×
+    /// option disappears.
+    pub(crate) fn supported_sample_counts(&self, color: Format, depth: Format) -> Vec<u32> {
+        [1u32, 2, 4, 8, 16]
+            .into_iter()
+            .filter(|&count| {
+                count == 1 || (self.quality(color, count) > 0 && self.quality(depth, count) > 0)
+            })
+            .collect()
+    }
+
+    /// `CheckMultisampleQualityLevels` for one format — 0 means the adapter cannot
+    /// render `count`× MSAA into it.
+    fn quality(&self, format: Format, count: u32) -> u32 {
+        // SAFETY: `device` is live; `CheckMultisampleQualityLevels` is a pure query.
+        unsafe {
+            self.device
+                .CheckMultisampleQualityLevels(dxgi_format(format), count)
+                .unwrap_or(0)
+        }
+    }
+}
+
+/// The window's flip-model swapchain and the render-target view of its current
+/// backbuffer.
+pub(crate) struct Swapchain {
+    device: ID3D11Device,
+    swap_chain: IDXGISwapChain1,
+    /// The backbuffer's view, created on demand ([`Self::render_view`]) and dropped
+    /// on resize — `ResizeBuffers` refuses to run while one is outstanding.
+    rtv: Option<ID3D11RenderTargetView>,
+    width: u32,
+    height: u32,
+}
+
+impl Swapchain {
+    /// Create a `width`×`height` flip-model swapchain on `window`'s client area.
+    pub(crate) fn new(
+        device: &Device,
+        window: &Window,
+        width: u32,
+        height: u32,
+    ) -> GpuResult<Self> {
+        let hwnd = match window.window_handle().map(|handle| handle.as_raw()) {
+            Ok(RawWindowHandle::Win32(handle)) => HWND(handle.hwnd.get() as *mut c_void),
+            _ => {
+                return Err(GpuError::InvalidArg(
+                    "the window has no Win32 handle".into(),
+                ));
+            }
+        };
+        let (width, height) = (width.max(1), height.max(1));
+        let desc = DXGI_SWAP_CHAIN_DESC1 {
+            Width: width,
+            Height: height,
+            Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+            Stereo: BOOL(0),
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
+            BufferCount: 2,
+            Scaling: DXGI_SCALING_NONE,
+            SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
+            AlphaMode: DXGI_ALPHA_MODE_IGNORE,
+            Flags: 0,
+        };
+        // SAFETY: plain COM traversal device -> DXGI device -> adapter -> factory on
+        // a live device; `desc` is fully initialized and `hwnd` is the live window.
+        let swap_chain = unsafe {
+            let dxgi_device: IDXGIDevice = device
+                .device
+                .cast()
+                .resource(ResourceKind::Swapchain, "DXGI device")?;
+            let adapter: IDXGIAdapter = dxgi_device
+                .GetAdapter()
+                .resource(ResourceKind::Swapchain, "DXGI adapter")?;
+            let factory: IDXGIFactory2 = adapter
+                .GetParent()
+                .resource(ResourceKind::Swapchain, "DXGI factory")?;
+            factory
+                .CreateSwapChainForHwnd(&device.device, hwnd, &desc, None, None)
+                .resource(ResourceKind::Swapchain, "window swapchain")?
+        };
+        Ok(Swapchain {
+            device: device.device.clone(),
+            swap_chain,
+            rtv: None,
+            width,
+            height,
+        })
+    }
+
+    /// The backbuffer size in physical pixels.
+    pub(crate) fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// Drop the view and resize the backbuffers.
+    ///
+    /// **Infallible by design** (`mac-port-plan.md` §3.1): a zero dimension (a
+    /// minimized window) is remembered but not applied — DXGI refuses it — and the
+    /// frame is skipped instead, and a `ResizeBuffers` that fails leaves the old
+    /// buffers in place for the next frame to draw into. Neither is anything the
+    /// caller in `input.rs` could act on, so neither is a `Result`.
+    pub(crate) fn resize(&mut self, width: u32, height: u32) {
+        self.width = width;
+        self.height = height;
+        self.rtv = None;
+        if width == 0 || height == 0 {
+            return;
+        }
+        // SAFETY: the view — the only outstanding reference to a backbuffer — was
+        // released above; 0/UNKNOWN keep the existing buffer count and format.
+        if let Err(err) = unsafe {
+            self.swap_chain.ResizeBuffers(
+                0,
+                width,
+                height,
+                DXGI_FORMAT_UNKNOWN,
+                DXGI_SWAP_CHAIN_FLAG(0),
+            )
+        } {
+            eprintln!("3d-review: swapchain ResizeBuffers failed: {err}");
+        }
+    }
+
+    /// The twin of the Metal swapchain's `set_scale_factor`, and deliberately empty:
+    /// a DXGI swapchain's buffers *are* the window's pixels, with no scale between
+    /// the two for a DPI change to invalidate. The call exists on both so the caller
+    /// stays free of `cfg`.
+    pub(crate) fn set_scale_factor(&mut self, scale: f64) {
+        let _ = scale;
+    }
+
+    /// Acquire this frame's render target and point `sc` at it, reporting whether
+    /// there is a frame to draw. `false` (logged) means the device refused — a
+    /// device-removed reset — and the frame is skipped rather than drawn into
+    /// nothing. Nothing here waits on the display; a D3D11 frame blocks in
+    /// [`Self::present`] instead.
+    pub(crate) fn acquire(&mut self, sc: &mut sg::Swapchain) -> bool {
+        match self.render_view() {
+            Some(view) => {
+                sc.d3d11.render_view = view;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The render-target view of the current backbuffer, as the raw pointer
+    /// `sg_swapchain` takes, creating it if a resize dropped it.
+    fn render_view(&mut self) -> Option<*const c_void> {
+        if self.rtv.is_none() {
+            // SAFETY: buffer 0 of a live flip-model swapchain; the out-pointer is a
+            // live local, written only on success.
+            self.rtv = unsafe {
+                let back: ID3D11Texture2D = match self.swap_chain.GetBuffer(0) {
+                    Ok(back) => back,
+                    Err(err) => {
+                        eprintln!("3d-review: swapchain GetBuffer failed: {err}");
+                        return None;
+                    }
+                };
+                let mut rtv: Option<ID3D11RenderTargetView> = None;
+                match self
+                    .device
+                    .CreateRenderTargetView(&back, None, Some(&mut rtv))
+                {
+                    Ok(()) => rtv,
+                    Err(err) => {
+                        eprintln!("3d-review: CreateRenderTargetView failed: {err}");
+                        None
+                    }
+                }
+            };
+        }
+        self.rtv.as_ref().map(|rtv| rtv.as_raw().cast_const())
+    }
+
+    /// Present the completed frame. `vsync` selects a sync interval of 1 (wait for
+    /// vblank) vs 0 (immediate).
+    ///
+    /// Benign status codes (e.g. `DXGI_STATUS_OCCLUDED` while the window is hidden)
+    /// are not actionable and report [`PresentStatus::Presented`]; a device
+    /// removed/reset HRESULT reports [`PresentStatus::DeviceLost`] with the driver's
+    /// root cause, so the caller can surface it — after one, every subsequent frame
+    /// silently fails.
+    pub(crate) fn present(&mut self, vsync: bool) -> PresentStatus {
+        // SAFETY: presenting the live swapchain; no resources are mapped.
+        let hr = unsafe { self.swap_chain.Present(u32::from(vsync), DXGI_PRESENT(0)) };
+        if hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET {
+            // SAFETY: pure query on the live device; returns the driver's root cause
+            // for the removal (hung, reset, driver error, ...).
+            let reason = unsafe { self.device.GetDeviceRemovedReason() }
+                .err()
+                .map_or(hr.0, |err| err.code().0);
+            return PresentStatus::DeviceLost { reason };
+        }
+        PresentStatus::Presented
+    }
+}
+
+/// The renderer's [`Format`] as the DXGI format the MSAA capability query speaks.
+/// Only the formats that query is ever asked about are listed — every other format is
+/// sokol's business now, named as a `sg::PixelFormat` and never as a `DXGI_FORMAT`.
+fn dxgi_format(format: Format) -> DXGI_FORMAT {
+    match format {
+        Format::Rgba16F => DXGI_FORMAT_R16G16B16A16_FLOAT,
+        Format::Depth32F => DXGI_FORMAT_D32_FLOAT,
+        _ => DXGI_FORMAT_R8G8B8A8_UNORM,
+    }
+}
+
+/// The debug-device flag in debug builds, none in release.
+fn debug_flag() -> D3D11_CREATE_DEVICE_FLAG {
+    if cfg!(debug_assertions) {
+        D3D11_CREATE_DEVICE_DEBUG
+    } else {
+        D3D11_CREATE_DEVICE_FLAG(0)
+    }
+}
+
+/// Create a D3D11 device + immediate context on `driver` at feature level 11_1 (or
+/// the 11_0 fallback).
+fn create_device(
+    driver: D3D_DRIVER_TYPE,
+    flags: D3D11_CREATE_DEVICE_FLAG,
+) -> windows::core::Result<(ID3D11Device, ID3D11DeviceContext)> {
+    let feature_levels = [D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0];
+    let mut device: Option<ID3D11Device> = None;
+    let mut context: Option<ID3D11DeviceContext> = None;
+    let mut obtained: D3D_FEATURE_LEVEL = D3D_FEATURE_LEVEL_11_0;
+    // SAFETY: the out-params are owned `Option`s populated by the call; the feature
+    // level slice outlives it.
+    unsafe {
+        D3D11CreateDevice(
+            None,
+            driver,
+            Default::default(),
+            flags,
+            Some(&feature_levels),
+            D3D11_SDK_VERSION,
+            Some(&mut device),
+            Some(&mut obtained),
+            Some(&mut context),
+        )?;
+    }
+    match (device, context) {
+        (Some(device), Some(context)) => Ok((device, context)),
+        // Unreachable by contract: a successful HRESULT writes both out-params.
+        _ => Err(windows::core::Error::from(HRESULT(-1))),
+    }
+}

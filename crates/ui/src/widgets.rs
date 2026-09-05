@@ -334,8 +334,8 @@ pub(crate) fn segment_button(
 /// track the surrounding stock widgets, not a fixed physical size.
 ///
 /// This is the `egui_tabs` look, painted here rather than pulled in: that crate
-/// pins `egui 0.29`/`0.30`, and this workspace is on 0.33 (the ceiling set by
-/// `egui-directx11`), so linking it would fork a second `egui` into the graph.
+/// pins `egui 0.29`/`0.30` and this workspace is on 0.36, so linking it would fork a
+/// second `egui` into the graph.
 /// It also parks the selection in `ctx` temp data, which would duplicate the
 /// `UiState` field that already owns it (invariant 2).
 ///

@@ -3,25 +3,27 @@
 //!
 //! This is deliberately a *closed* list, not a mapping of everything the backend
 //! offers: it is exactly the seven formats the scene, GTAO, IBL and Tex paths draw
-//! into or sample from. Adding a format means adding a variant here and its backend
+//! into or sample from. Adding a format means adding a variant here and its
 //! translation below — which is the point, since that translation is the only place
 //! a format ever has to be named twice.
+//!
+//! The translation target is `sg::PixelFormat` now rather than `DXGI_FORMAT`, so
+//! this file is one of the many that stopped being platform code when the renderer
+//! moved onto sokol_gfx. The **swapchain** format is the exception and lives in the
+//! backend leaf: Metal's `CAMetalLayer` refuses RGBA8 and wants BGRA8, so the two
+//! OSes genuinely cannot agree on it (D20).
 //!
 //! Vertex-attribute formats are *not* here; they are their own closed enum in
 //! [`super::pipeline::VertexFormat`], because they are a different question (how a
 //! byte range in a vertex buffer is read) with a different answer per backend.
 
-use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT, DXGI_FORMAT_BC6H_UF16, DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R8_UNORM,
-    DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_R16G16_FLOAT,
-    DXGI_FORMAT_R16G16B16A16_FLOAT,
-};
+use sokol::gfx as sg;
 
 /// A texture / render-target pixel format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     /// 8-bit RGBA, gamma space, sampled and written **without** hardware sRGB
-    /// conversion. The swapchain backbuffer and the Tex viewport's images.
+    /// conversion. The egui atlas and the Tex viewport's images.
     Rgba8,
     /// 8-bit RGBA that the hardware converts to/from linear on every access — the
     /// material colour maps, whose source art is authored in sRGB.
@@ -34,7 +36,7 @@ pub enum Format {
     R8,
     /// BC6H unsigned-float block compression — the three shipped HDR cubes.
     /// GPU-native, so sampling costs nothing and there is no decode step; core in
-    /// Direct3D 11 feature level 11_0, the renderer's floor.
+    /// Direct3D 11 feature level 11_0 and on Apple silicon, the renderer's floors.
     Bc6hUf16,
     /// 32-bit float depth. Scene depth, cleared to 0 and tested `GreaterEqual`
     /// (Reversed-Z).
@@ -42,20 +44,21 @@ pub enum Format {
 }
 
 impl Format {
-    /// The Direct3D format this maps to.
+    /// The sokol_gfx format this maps to.
     ///
-    /// `pub(in crate::rhi)` on purpose: this is the one function that names a
-    /// backend enum, and the visibility is what stops a `DXGI_FORMAT` from leaking
-    /// back out into the scene or material code the way it used to.
-    pub(in crate::rhi) const fn dxgi(self) -> DXGI_FORMAT {
+    /// `pub(in crate::rhi)` on purpose: this is the one function that names the
+    /// drawing API's own enum, and the visibility is what stops an `sg::PixelFormat`
+    /// leaking back out into the scene or material code the way `DXGI_FORMAT` used
+    /// to.
+    pub(in crate::rhi) const fn sg(self) -> sg::PixelFormat {
         match self {
-            Self::Rgba8 => DXGI_FORMAT_R8G8B8A8_UNORM,
-            Self::Rgba8Srgb => DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
-            Self::Rgba16F => DXGI_FORMAT_R16G16B16A16_FLOAT,
-            Self::Rg16F => DXGI_FORMAT_R16G16_FLOAT,
-            Self::R8 => DXGI_FORMAT_R8_UNORM,
-            Self::Bc6hUf16 => DXGI_FORMAT_BC6H_UF16,
-            Self::Depth32F => DXGI_FORMAT_D32_FLOAT,
+            Self::Rgba8 => sg::PixelFormat::Rgba8,
+            Self::Rgba8Srgb => sg::PixelFormat::Srgb8a8,
+            Self::Rgba16F => sg::PixelFormat::Rgba16f,
+            Self::Rg16F => sg::PixelFormat::Rg16f,
+            Self::R8 => sg::PixelFormat::R8,
+            Self::Bc6hUf16 => sg::PixelFormat::Bc6hRgbuf,
+            Self::Depth32F => sg::PixelFormat::Depth,
         }
     }
 
@@ -76,15 +79,6 @@ impl Format {
         }
     }
 }
-
-/// The swapchain backbuffer format.
-///
-/// Plain UNORM, **not** `_SRGB`: egui blends in gamma space and our own scene
-/// composite already encodes sRGB in the post pass, so a hardware conversion on top
-/// would double-encode. It lives beside the backend for the port — Metal's
-/// `CAMetalLayer` refuses RGBA8 and wants BGRA8, so this constant is one of the few
-/// things that genuinely differs per OS.
-pub const SWAPCHAIN_FORMAT: Format = Format::Rgba8;
 
 /// The linear-HDR format both scene colour attachments use.
 pub const SCENE_COLOR_FORMAT: Format = Format::Rgba16F;

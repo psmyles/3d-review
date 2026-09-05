@@ -12,16 +12,20 @@
 //! and assigns textures via app-side decode (invariant 2).
 //!
 //! Organized into [`state`] (CPU/GPU data types incl. the `#[repr(C)]`
-//! `MaterialUniform`), [`mode`] (the effective-table / Unique-part grouping) and
-//! [`d3d`] (the Direct3D 11 material table: cbuffer `b1` + the seven texture slots
-//! `t5..t11` + a path-keyed upload cache).
+//! `MaterialUniform`) and [`mode`] (the effective-table / Unique-part grouping). The
+//! GPU table itself — the material uniform, the seven texture slots and the
+//! path-keyed upload cache — has not been moved onto sokol_gfx yet; it is
+//! `src/port_pending/material_d3d.rs` and returns in `mac-port-plan.md` Phase 1
+//! step 4.
 
-mod d3d;
+// Every consumer of the grouping and draw-range types is in `port_pending` until the
+// scene stages land; they are kept compiled (and unit-tested) rather than moved
+// there, because none of them touches the GPU.
+#[allow(dead_code)]
 mod mode;
+#[allow(dead_code)]
 mod state;
 
-pub(crate) use d3d::MaterialTableD3d;
-pub(crate) use mode::{build_part_key, effective_materials};
 pub(crate) use state::MaterialDrawRange;
 pub use state::{
     AlphaMode, MaterialChange, MaterialEdit, MaterialSnapshot, MaterialState, RoughnessWorkflow,

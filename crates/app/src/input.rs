@@ -24,8 +24,7 @@ use crate::{
 impl App {
     /// A window resize: re-derive the monitor frame cap (a resize may follow a move
     /// to another monitor), flag the windowed bounds for a deferred resample, update
-    /// the camera aspect ratios + framing safe-area, and resize the swapchain (a
-    /// failed resize is non-fatal — the old buffers stay valid for this frame).
+    /// the camera aspect ratios + framing safe-area, and resize the swapchain.
     pub(crate) fn handle_resized(&mut self, size: PhysicalSize<u32>, window: &Window) {
         self.redraw.refresh_interval = monitor_refresh_interval(window);
         // Defer recording to `about_to_wait`: a maximize resize lands before winit's
@@ -42,17 +41,12 @@ impl App {
             renderer.set_framing_safe_area(safe_w, safe_h);
         }
 
-        // Non-fatal on its own (the old buffers stay valid, and the next successful
-        // resize recovers), but a resize that keeps failing means a wedged device —
-        // so it goes through the same once-per-session fault report as the frame
-        // loop's, which is also what keeps a dragged window edge from stacking a
-        // toast per event.
-        let resize_error = self
-            .gpu
-            .as_mut()
-            .and_then(|gpu| gpu.resize(size.width, size.height).err());
-        if let Some(error) = resize_error {
-            self.report_gpu_fault("Swapchain resize failed", error);
+        // Infallible: a zero size (a minimized window) is remembered and the frame
+        // skipped, and a backend resize that fails leaves the old buffers for the next
+        // frame to draw into. Neither is anything this handler could act on, which is
+        // why the swapchain resize stopped returning a `Result` in the sokol port.
+        if let Some(gpu) = self.gpu.as_mut() {
+            gpu.resize(size.width, size.height);
         }
 
         window.request_redraw();

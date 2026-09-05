@@ -36,10 +36,8 @@ use anyhow::Context;
 use glam::Vec2;
 use notify::RecommendedWatcher;
 use review_model::{ModelData, SceneBvh};
-use review_render::{DecodedImage, Gpu, Renderer, RendererConfig};
+use review_render::{DecodedImage, EguiRenderer, Gpu, GpuBringUp, Renderer, RendererConfig};
 use review_ui::{MsaaSamples, Notifications, Selection, UiState, init_style};
-use windows::Win32::Foundation::HWND;
-use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, WindowEvent},
@@ -83,6 +81,12 @@ use window_state::{
 };
 
 fn main() -> anyhow::Result<()> {
+    // The GPU device and `sg_setup` need no window and are the longest single item on
+    // the launch path, so they start here, before anything else, and run alongside
+    // the window creation and the argument scan (`mac-port-plan.md` D8). The join is
+    // in `App::start`.
+    let gpu_bring_up = Gpu::start();
+
     // Tiny manual arg scan (the workspace has no arg parser and needs exactly one
     // flag): `--tracy` turns profiling on; the first non-flag argument is the model
     // path to open (Windows passes it for a double-clicked `.fbx` via the file
@@ -118,6 +122,7 @@ fn main() -> anyhow::Result<()> {
     let texture_proxy = event_loop.create_proxy();
 
     let mut app = App {
+        gpu_bring_up: Some(gpu_bring_up),
         initial_model,
         textures: TextureSubsystem {
             proxy: Some(texture_proxy),
@@ -137,11 +142,9 @@ struct App {
     renderer: Option<Renderer>,
     egui_ctx: Option<egui::Context>,
     egui_state: Option<egui_winit::State>,
-    /// The Direct3D 11 device + immediate context + window swapchain.
-    gpu: Option<Gpu>,
-    /// egui's Direct3D 11 renderer (replaces egui-wgpu). Draws the chrome on top of
-    /// the scene each frame.
-    egui_renderer: Option<egui_directx11::Renderer>,
+    /// Our own sokol_gfx egui renderer: tessellates the chrome and paints it into the
+    /// swapchain pass the scene composited into (`mac-port-plan.md` D3).
+    egui_renderer: Option<EguiRenderer>,
     drag_mode: Option<DragMode>,
     /// Whether the in-progress drag started in the *right* half of the Opt
     /// workspace's split view. Fixed at press time so a drag that wanders across
@@ -222,9 +225,9 @@ struct App {
     /// the egui frame and triggers the notifications (texture decode start/finish);
     /// the UI crate only provides the themed type. Shown once per frame in `render`.
     notifications: Notifications,
-    /// Whether `--tracy` was passed: arms the hand-rolled D3D11 GPU timestamp
-    /// profiler (via `review_render::enable_tracy_gpu`) in `resumed`. The scene
-    /// renderer then builds the profiler lazily once a Tracy client connects.
+    /// Whether `--tracy` was passed: arms the GPU profiler (via
+    /// `review_render::enable_tracy_gpu`) in `resumed`, and turns on sokol's per-frame
+    /// resource counters.
     tracy_enabled: bool,
     /// A GPU fault (scene/egui render failure, device lost) has already been
     /// surfaced as a toast this session. Faults repeat every frame once the
@@ -234,6 +237,16 @@ struct App {
     /// session stays up (dropping the last handle disconnects). `None` on a normal
     /// launch — the client is never started, so all instrumentation no-ops.
     _tracy: Option<tracy_client::Client>,
+    /// The GPU bring-up started on its own thread from the first line of `main`
+    /// (D8), taken and joined by `start` once the window exists.
+    gpu_bring_up: Option<GpuBringUp>,
+    /// The GPU device and the window's swapchain.
+    ///
+    /// **Last on purpose**: dropping it shuts sokol_gfx down, and every field above
+    /// that owns a GPU handle must be dropped before that happens. (Each of those
+    /// also guards its own `Drop` on `sg::isvalid()`, so the order is belt and
+    /// braces rather than the only thing holding it up.)
+    gpu: Option<Gpu>,
 }
 
 /// The on-demand redraw scheduler (invariant 6): everything that decides *when*
@@ -370,7 +383,6 @@ impl Default for App {
             renderer: None,
             egui_ctx: None,
             egui_state: None,
-            gpu: None,
             egui_renderer: None,
             drag_mode: None,
             drag_in_opt_right_view: false,
@@ -401,6 +413,8 @@ impl Default for App {
             tracy_enabled: false,
             gpu_fault_notified: false,
             _tracy: None,
+            gpu_bring_up: None,
+            gpu: None,
         }
     }
 }
@@ -441,9 +455,9 @@ fn load_window_icon() -> Option<winit::window::Icon> {
 }
 
 impl App {
-    /// Build the whole shell: window, renderer, D3D11 device, egui, then the first
-    /// frame. Split out of `resumed` (which cannot fail) so each phase propagates
-    /// its failure to one place that can report it.
+    /// Build the whole shell: window, renderer, GPU, egui, then the first frame.
+    /// Split out of `resumed` (which cannot fail) so each phase propagates its failure
+    /// to one place that can report it.
     ///
     /// Startup phase timing rides along as a sequence of Tracy zones (replacing the
     /// old `StartupTimer` laps): `phase` holds the current zone and is ended by
@@ -463,7 +477,7 @@ impl App {
         init_style(&egui_ctx);
 
         drop(phase.take());
-        phase = prof::zone!("D3D11 Device + Swapchain");
+        phase = prof::zone!("GPU Attach");
         let (gpu, egui_renderer) = self.create_startup_gpu(&window)?;
 
         drop(phase.take());
@@ -556,37 +570,41 @@ impl App {
         ))
     }
 
-    /// Startup phase 3: the Direct3D 11 device + swapchain and egui's D3D11
-    /// renderer. A single `D3D11CreateDevice` on the default adapter — no DX12
-    /// multi-adapter probing, no naga — so this is far cheaper than the old
-    /// egui-wgpu `set_window` path. Also kills the white startup flash by clearing
-    /// and presenting the fresh backbuffer black before any scene exists (this
-    /// replaced the old GDI startup paint).
+    /// Startup phase 3: join the GPU bring-up, put a swapchain on the window, and
+    /// build the egui renderer.
     ///
-    /// Both failures are fatal and reported as such: a blocked or broken D3D11
+    /// The device and `sg_setup` already happened on their own thread, started from
+    /// the first line of `main` (D8); what is left here is the swapchain, which needs
+    /// the window. It also kills the white startup flash by presenting one black frame
+    /// before any scene exists — the ordinary swapchain pass with nothing drawn into
+    /// it, not a special case (§3.2).
+    ///
+    /// Both failures are fatal and reported as such: a blocked or broken graphics
     /// driver leaves the viewer with nothing to draw through.
-    fn create_startup_gpu(
-        &mut self,
-        window: &Window,
-    ) -> anyhow::Result<(Gpu, egui_directx11::Renderer)> {
+    fn create_startup_gpu(&mut self, window: &Window) -> anyhow::Result<(Gpu, EguiRenderer)> {
         let size = window.inner_size();
-        let gpu = Gpu::new(win32_hwnd(window)?, size.width, size.height)
-            .context("failed to create the Direct3D 11 device + swapchain")?;
-        gpu.clear_backbuffer([0.0, 0.0, 0.0, 1.0]);
+        let bring_up = self
+            .gpu_bring_up
+            .take()
+            .context("the GPU bring-up was already consumed")?;
+        let mut gpu = bring_up
+            .attach(window, size.width, size.height)
+            .context("failed to create the graphics device + swapchain")?;
         // A device lost at the very first present leaves a window that will never
-        // paint; say so, since the frame loop's own fault toast only fires if a
-        // later present fails too.
-        if let review_render::PresentStatus::DeviceLost { reason } = gpu.present(false) {
-            prof::msg(&format!(
-                "startup present failed: device lost ({reason:#x})"
-            ));
-            self.notifications.error(format!(
-                "Graphics device lost ({reason:#x}) while starting up - the viewport may stay blank; restart the viewer"
-            ));
+        // paint; say so, since the frame loop's own fault toast only fires if a later
+        // present fails too.
+        if let Some(mut frame) = gpu.begin_frame() {
+            frame.begin_swapchain_pass();
+            if let review_render::PresentStatus::DeviceLost { reason } = frame.finish(false) {
+                prof::msg(&format!(
+                    "startup present failed: device lost ({reason:#x})"
+                ));
+                self.notifications.error(format!(
+                    "Graphics device lost ({reason:#x}) while starting up - the viewport may stay blank; restart the viewer"
+                ));
+            }
         }
-        // egui renders through egui-directx11 on the same device/context.
-        let egui_renderer = egui_directx11::Renderer::new(gpu.d3d11_device())
-            .context("failed to create the egui Direct3D 11 renderer")?;
+        let egui_renderer = EguiRenderer::new().context("failed to create the egui renderer")?;
         Ok((gpu, egui_renderer))
     }
 
@@ -599,24 +617,22 @@ impl App {
         renderer: Renderer,
         egui_ctx: egui::Context,
         gpu: Gpu,
-        egui_renderer: egui_directx11::Renderer,
+        egui_renderer: EguiRenderer,
     ) {
-        // The viewer talks to the GPU through Direct3D 11.
-        self.ui.capabilities.gpu_backend = "DX11".to_string();
-        // Gate the Anti-Aliasing menu on the adapter's real MSAA support (D3D11
-        // `CheckMultisampleQualityLevels` for the scene HDR + depth formats). IBL + AO
-        // stay enabled — the device requires `TEXTURE_COMPRESSION_BC` and feature
-        // level 11_0+ guarantees the `Rgba16Float`/`Rg16Float` + compute they need, so
-        // both are universal on the desktop DX11 targets.
+        // The viewer draws through sokol_gfx; the backend underneath it is the OS's.
+        self.ui.capabilities.gpu_backend = if cfg!(windows) { "DX11" } else { "Metal" }.to_string();
+        // Gate the Anti-Aliasing menu on the adapter's real MSAA support (the backend
+        // leaf's `supported_sample_counts`, since sokol only reports MSAA as a yes/no
+        // per format). IBL + AO stay enabled — every target the renderer supports has
+        // the formats they need.
         let supported_counts = gpu.supported_msaa_counts();
         self.ui.capabilities.msaa_levels = MsaaSamples::ALL
             .into_iter()
             .filter(|level| supported_counts.contains(&level.sample_count()))
             .collect();
 
-        // Under `--tracy`, arm the hand-rolled D3D11 GPU timestamp profiler. The scene
-        // renderer builds it lazily on the first frame once a Tracy client connects; a
-        // normal launch never calls this, so the scene passes record no timestamps.
+        // Under `--tracy`, arm the GPU profiler. A normal launch never calls this, so
+        // nothing profiling-related is ever built.
         if self.tracy_enabled {
             review_render::enable_tracy_gpu();
         }
@@ -627,8 +643,8 @@ impl App {
             event_loop,
             Some(window.scale_factor() as f32),
             window.theme(),
-            // D3D11 feature level 11_0+ guarantees 16384 max 2D texture dimension.
-            Some(16384),
+            // The device's real limit, rather than the 16384 the D3D11 path assumed.
+            Some(gpu.max_texture_size()),
         );
 
         self.renderer = Some(renderer);
@@ -792,6 +808,16 @@ impl ApplicationHandler<UserEvent> for App {
                 self.placement.bounds_dirty = true;
             }
             WindowEvent::Resized(size) => self.handle_resized(size, &window),
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                // The backend's business, and a no-op on Windows where the
+                // swapchain's buffers *are* the window's pixels; on macOS it sets the
+                // layer's `contentsScale`, without which a window dragged between
+                // displays of different backing scale goes soft. A `Resized` follows,
+                // which is what re-sizes the buffers.
+                if let Some(gpu) = self.gpu.as_mut() {
+                    gpu.set_scale_factor(scale_factor);
+                }
+            }
             WindowEvent::MouseInput { state, button, .. } => {
                 self.handle_mouse_input(state, button, egui_consumed);
             }
@@ -902,21 +928,6 @@ fn report_startup_failure(error: &anyhow::Error) {
         .set_title(APP_NAME)
         .set_description(format!("{APP_NAME} couldn't start.\n\n{detail}"))
         .show();
-}
-
-/// Extract the Win32 `HWND` from a winit window, for DXGI swapchain creation. The
-/// viewer is Windows-only, so a non-Win32 handle is an unrecoverable startup
-/// error — reported in a dialog rather than a panic into a console the release
-/// build doesn't have.
-fn win32_hwnd(window: &Window) -> anyhow::Result<HWND> {
-    let handle = window
-        .window_handle()
-        .context("the window exposes no native handle")?
-        .as_raw();
-    match handle {
-        RawWindowHandle::Win32(win32) => Ok(HWND(win32.hwnd.get() as *mut core::ffi::c_void)),
-        other => anyhow::bail!("expected a Win32 window handle, got {other:?}"),
-    }
 }
 
 #[cfg(test)]

@@ -57,9 +57,13 @@ impl Harness {
         let state = &mut self.state;
         let model = &self.model;
         let camera = self.camera;
-        let output = self.ctx.run(input, |ctx| {
-            review_ui::draw_overlay(ctx, state, camera, model, None);
+        let mut output = self.ctx.run_ui(input, |ui| {
+            review_ui::draw_overlay(ui, state, camera, model, None);
         });
+        // This harness lays the chrome out to inspect its geometry; it has no
+        // renderer, so the font-atlas deltas are deliberately discarded. A
+        // `TexturesDelta` panics on drop unless that is said explicitly.
+        output.textures_delta.clear();
         self.cursor = output.platform_output.cursor_icon;
         for command in output.platform_output.commands {
             if let egui::OutputCommand::CopyText(text) = command {

@@ -1,6 +1,6 @@
 # 3D Review - macOS port plan
 
-3D Review ships as a Windows-only `winit` + Direct3D 11 + `egui` (via `egui-directx11`) executable.
+3D Review shipped as a Windows-only `winit` + Direct3D 11 + `egui` (via `egui-directx11`) executable.
 This document is the resolved plan for making it run on macOS with the **minimum amount of
 platform-specific code**, the same governing constraint - and the same shape - as the Fire port
 (`/Users/chandan/Dev/fire/mac-port-plan.md`, referred to below as *Fire §n* / *Fire Dn*): **one
@@ -14,12 +14,14 @@ is the *GPU layer* (`crates/render/src/rhi/` and the shaders), the egui renderer
 leaves in `app`, and the build/distribution chain. The port runs **Windows first** (Fire D13): the
 shared-shell migration is the risk, and it has to be gated on a Windows box against `main`.
 
-Status: **Phase 0 done on Windows** (D21, D22), plus **Phase 1 steps 1–2** — the `rhi` façade
-refactor that puts `GpuError`/`GpuResult`/`Format` in front of the backend's types, and the one
-shdc shader source with its generated/committed bytecode. The backend swap itself has not started:
-the renderer still draws through Direct3D 11 and the old `hlsl/` set. Sections are written in the present
-tense of the finished port so they can become the description once it lands; the *Status* column of
-§2 and the phase list in §8 say what is actually done.
+Status: **Phase 0 done on Windows** (D21, D22), plus **Phase 1 steps 1–3**. The backend swap has
+happened: the device, the swapchain, the frame flow and the whole egui chrome run on sokol_gfx, and
+`app` no longer depends on `windows` at all. What has *not* moved yet is the scene — the D3D11
+scene / material / IBL / Tex draw paths are parked, uncompiled, in `crates/render/src/port_pending/`
+and every `Renderer::render_*` is a stub that clears the frame to the viewport background. Step 4
+revives them stage by stage. Sections are written in the present tense of the finished port so they
+can become the description once it lands; the *Status* column of §2 and the phase list in §8 say
+what is actually done.
 
 ---
 
@@ -51,14 +53,14 @@ and are settled.
 
 | # | Decision | Reason | Cost | Status |
 | -- | -------- | ------ | ---- | ------ |
-| D1 | **Shared shell: winit + sokol_gfx on both OSes** (*owner*); the only per-OS GPU code is `render/src/rhi/backend/{d3d11,metal}.rs` (device + swapchain), aliased as `backend` exactly like Fire's `render/mod.rs` | Minimum platform code; two full renderers (the D3D11 rhi + a Metal twin behind a trait) is the maintenance Fire D1 rejected | `rhi/` rewritten; Windows re-measured (D2) | Planned |
+| D1 | **Shared shell: winit + sokol_gfx on both OSes** (*owner*); the only per-OS GPU code is `render/src/rhi/backend/{d3d11,metal}.rs` (device + swapchain), aliased as `backend` exactly like Fire's `render/mod.rs` | Minimum platform code; two full renderers (the D3D11 rhi + a Metal twin behind a trait) is the maintenance Fire D1 rejected | `rhi/` rewritten; Windows re-measured (D2) | Shipped on Windows (step 3); the scene lands in step 4 |
 | D2 | **Windows migrates too, gated on three measurements** (*owner*) against `main` on the same box, same fixture, release build: (a) cold + warm startup to first presented frame with a model loaded; (b) steady-state frame time (GPU + CPU) on a fixed test model with GTAO on + 4× MSAA + a skinned clip playing; (c) private RAM + VRAM at idle with that model. Budgets: ≤ 10 ms startup median, ≤ 0.3 ms frame median, ≤ 5 % RAM/VRAM | The invariants stress runtime speed and footprint (`CLAUDE.md` §4: "spend dev-time freely to make the release runtime fast") | A harness: `scripts/gate.ps1` + a `--gate-out` stamp in `app` (Fire's `ttfp.rs` shape, extended with a frame-time and memory dump) | Planned |
-| D3 | **Keep egui; write `render/src/egui_sokol.rs`**, a sokol_gfx egui renderer, replacing `egui-directx11` on both OSes (*owner*) | No sokol egui backend exists; switching to Dear ImGui like Fire would rewrite the whole `ui` crate and retire the native-windowing invariant | ~300–400 lines + one `@program`; consumes egui's `ClippedPrimitive`s + `TexturesDelta` (§3.4) | Planned |
+| D3 | **Keep egui; write `render/src/egui_sokol.rs`**, a sokol_gfx egui renderer, replacing `egui-directx11` on both OSes (*owner*) | No sokol egui backend exists; switching to Dear ImGui like Fire would rewrite the whole `ui` crate and retire the native-windowing invariant | ~300–400 lines + one `@program`; consumes egui's `ClippedPrimitive`s + `TexturesDelta` (§3.4) | Shipped (step 3) — 380 lines |
 | D4 | **One sokol-shdc annotated-GLSL source** (`render/src/shaders/review.glsl`) generates per-backend HLSL5 + MSL *and* the `ShaderDesc` reflection into `render/src/shaders/generated/`, checked in; build.rs compiles the host's set to bytecode (*owner*) | Fire D4/D24: nothing compiles a shader at runtime, a broken shader is a build error, one source instead of two hand-kept twins | The HLSL is rewritten once (~1700 lines); `fxc` on Windows, the Metal toolchain on macOS (D5) | Planned |
 | D5 | **Bytecode is committed and freshness-gated on both OSes** - `.dxbc` (as today) *and* `.metallib` - compiled only when the generated source is newer or the blob is missing and the toolchain is present; missing blob + missing toolchain is a build error | Keeps this repo's existing "a no-fxc box builds from the committed blobs" property and extends it to the Mac, so the toolchain floor for someone who never edits a shader is Command Line Tools, not full Xcode. *Diverges from Fire* (which compiles into `OUT_DIR` on every build) on purpose | A shader edit must be followed by a rebuild on **both** OSes before commit, or one platform ships stale bytecode; `build.rs` warns when a blob is older than its generated source, and both packaging scripts fail on it | Planned |
-| D6 | **egui bumped to 0.36.1** (`egui`, `egui-winit`, `egui-notify 0.23`) in the same port (*owner*) | Dropping egui-directx11 removes the only 0.33 pin | API churn in `ui` folded into the port; verify egui-notify 0.23 tracks 0.36 at execution, else pin egui to the newest it supports | Planned |
+| D6 | **egui bumped to 0.36.1** (`egui`, `egui-winit`, `egui-notify 0.23`) in the same port (*owner*) | Dropping egui-directx11 removes the only 0.33 pin | API churn in `ui` folded into the port; verify egui-notify 0.23 tracks 0.36 at execution, else pin egui to the newest it supports | Shipped (step 3); egui-notify 0.23 does track 0.36 |
 | D7 | **CPU mip chain on the texture decode worker** (Fire D21: port Fire's `render/mips.rs`), uploaded in the one `sg_make_image` | sokol_gfx has no `GenerateMips`; sRGB textures are averaged in linear light so the result matches the hardware path | ~5 ms per 4K texture, off the UI thread (the decode worker already exists: `app/src/texture_manager.rs`) | Planned |
-| D8 | **GPU bring-up on its own thread from the first line of `main`; the window is created before the join** (Fire D18) | Device creation is the longest startup item (~135 ms for D3D11 on Fire's box) and needs no window | `App::start` reorders; `backend::Device: Send` | Planned |
+| D8 | **GPU bring-up on its own thread from the first line of `main`; the window is created before the join** (Fire D18) | Device creation is the longest startup item (~135 ms for D3D11 on Fire's box) and needs no window | `App::start` reorders; `backend::Device: Send` | Shipped (step 3) |
 | D9 | **Every `rfd` dialog runs on a worker thread and answers through `UserEvent`** (Fire §3.5: nothing called from a winit callback may pump a loop of its own - on macOS AppKit aborts the process) | Six blocking sites today (`loading.rs`, `texture_manager.rs`, three in `opt.rs`, the startup box in `main.rs`), three of them *inside* `render()`; on macOS this is a reliable crash, not a glitch | `Dialog` enum + `UserEvent::DialogDone`, one dialog at a time; the startup error box moves to after `run_app` returns | Planned |
 | D10 | **`Primary` modifier: Ctrl on Windows, ⌘ on macOS**; `help.rs`/`stats.rs` labels say "Ctrl"/"Cmd" per OS | Cmd is the only acceptable file-command chord on a Mac | `shortcuts.rs` matches `SUPER` on macOS; the Alt+RMB zoom-drag stays Option | Planned |
 | D11 | **Apple Silicon only** (Fire D10, *owner*); every vendored C tree (ufbx, meshoptimizer, ufbx_write, psd_sdk) is compiled from source by `cc`, so nothing is prebuilt per target | No Intel users to serve; unlike Fire's HEIF `.a`s there is no prebuilt native dep to re-vendor | `lipo` check in `build-mac.sh` | Planned |
@@ -70,7 +72,7 @@ and are settled.
 | D17 | **`window.cfg` via `dirs::config_dir()`** (`%APPDATA%` on Windows - the same path as today - `~/Library/Application Support` on macOS) | Drop the `APPDATA` env read in `window_state.rs`, which fails soft on macOS today | `dirs 6` | Planned |
 | D18 | **Tracy GPU profiler: per-OS leaves over sokol's native handles** (*owner*). D3D11: the existing timestamp-query code unchanged, over `sg_d3d11_device()` / `sg_d3d11_device_context()` (the immediate context; `ctx.End(query)` between sokol calls is valid). Metal: per-pass zones are *not* achievable (sokol owns the command buffer and encoder; Apple silicon has no draw-boundary counter sampling) - the leaf brackets sokol's buffer with two sentinel command buffers on `sg_mtl_command_queue()` and reports their `GPUEndTime`s as one "GPU frame" zone, plus `sg_query_stats()` counts as plots on both OSes | Recorded honestly | `rhi/gpu_profiler.rs` keeps its `Zone` API; `zone_*` are no-ops on Metal; Xcode's Metal profiler covers per-pass timing there | Planned |
 | D19 | **`bake_ibl` on sokol_gfx** (*owner*): `Baker` = headless `Gpu` (device, `sg_setup`, no swapchain); `CubeTarget` = one cube image + 6×mips attachment views (`mip_level` + `slice`); render every pass for one environment → `sg_commit` → per-OS readback leaf `backend::read_image_subresource`: D3D11 staging copy + `Map(READ)` over `sg_d3d11_query_image_info` (today's body); Metal blit from the private texture to a shared `MTLBuffer` on our own command buffer from `sg_mtl_command_queue()`, committed *after* `sg_commit` (queue order = commit order) + `waitUntilCompleted`. The old RTV/SRV-hazard `unbind_*` calls go away (passes are closed) | Fire D23: the whole dev pipeline runs on the Mac; a re-bake must not need Windows | sokol uses unretained command-buffer references, so every image stays alive until its readback returns | Planned |
-| D20 | **The swapchain backbuffer is plain UNORM and the composite/egui/tex shaders sRGB-encode their own output** - `R8G8B8A8_UNORM` on D3D11 (today's contract), `BGRA8Unorm` on Metal (`CAMetalLayer` refuses RGBA8); `SWAPCHAIN_FORMAT` lives in the backend module | Fire D20. The swapchain pass needs no depth (the scene is offscreen), so Fire's `metal.rs` is reusable **as-is** | Channel order only | Planned |
+| D20 | **The swapchain backbuffer is plain UNORM and the composite/egui/tex shaders sRGB-encode their own output** - `R8G8B8A8_UNORM` on D3D11 (today's contract), `BGRA8Unorm` on Metal (`CAMetalLayer` refuses RGBA8); `SWAPCHAIN_FORMAT` lives in the backend module | Fire D20. The swapchain pass needs no depth (the scene is offscreen), so Fire's `metal.rs` is reusable **as-is** | Channel order only | Shipped on Windows (step 3) |
 | D21 | **`vendor/sokol-rust` vendored** (Fire's pin, floooh/sokol-rust @ b22a545) and **`exclude`d from the workspace** so `-D warnings` does not lint upstream | Fire D22 + its step-8 finding: `--exclude` on the command line does not work, because cargo lints every path dependency as local; `exclude = [...]` in the root manifest does | A pinned tree updated by hand; `sg_swapchain` / `ShaderDesc` shape changes land there | Shipped (Phase 0) |
 | D22 | **PSD: vendor `psd_sdk` source + a `read_merged_rgba8` wrapper into `crates/psd`, compile with `cc`, keep the committed `bindings.rs`** (*owner*) | The prebuilt `fire_psd.lib` is gitignored (`*.lib`) and absent - the crate cannot link from a clean checkout on *any* OS today; source + `cc` is the model ufbx / meshoptimizer / ufbx_write already use and needs no bindgen or libclang at build time | `PsdNativeFile.cpp` excluded off Windows (the wrapper reads through its own in-memory `psd::File`); `cpp(true)` links `c++`. Fire's current `psd-sdk-sys` wrapper has a *newer* ABI (`fire_psd_read_merged`, a 16-byte info struct); the vendored wrapper here keeps the older one the committed bindings declare | Shipped (Phase 0) |
 
@@ -552,6 +554,68 @@ Ordered so each step is verifiable by eye against the current renderer on the sa
    new `frame.rs` flow (§3.2), `sg_setup` on the bring-up thread (D8), `Renderer::render_*`
    temporarily returning `Ok(())`. Verify: black clear + the full egui chrome, resize, vsync
    pacing, every panel and the HDR thumbnails at 100 % and 150 %.
+
+   *Done.* The viewer runs on sokol_gfx: `rhi/backend/d3d11.rs` is the whole platform GPU surface
+   (~330 lines incl. the WARP fallback), `Gpu::start` brings the device up on its own thread from
+   the first line of `main` and `GpuBringUp::attach` joins it once the window exists, `Frame` owns
+   the single swapchain pass, and `egui_sokol.rs` paints the chrome into it. `app` lost its
+   `windows` dependency entirely (D3's `win32_hwnd` and the three `d3d11_*` escape hatches from
+   step 1 are gone, and `Gpu::resize` is infallible — all four of step 1's loose ends closed here).
+   Verified: clippy clean workspace-wide, all 20 test binaries pass, and an interactive session
+   against `SK_Player_01.fbx` — chrome, Outliner tree with its icons, Inspector, stats card, axis
+   gizmo, toasts, status bar, workspace switching, the four option windows, and all six HDR
+   thumbnails in the Environment dropdown — with **zero** output on sokol's validation channel.
+   The Tex workspace's background buttons were clicked through to confirm the clear-colour path
+   end to end. Not checked: 100 % display scale (the box is at 150 %, and changing it is the
+   user's setting, not ours) — `theme::px` makes the chrome physically size-invariant anyway, and
+   that logic is untouched by this step.
+
+   How it was sequenced, and one deviation worth knowing:
+
+   * **The renderer was verified on egui 0.33 first, then bumped.** D6 folds the bump into this
+     step, and it did land here — but doing both at once would have made a broken panel ambiguous
+     between "my renderer" and "the API migration". So the egui renderer was landed against the
+     known-good 0.33 chrome, eye-checked, and only then bumped; the second eye-check then had one
+     suspect. The bump costs ~10 lines in the renderer (0.36's `TexturesDelta.set` is a map of
+     *several* deltas per texture, and `free` is a set) and about 30 in `ui`.
+   * **egui 0.36 replaced `SidePanel`/`TopBottomPanel` with one `Panel`, shown into a `Ui` rather
+     than onto the `Context`** — `Context::run` is gone in favour of `run_ui(input, |ui| …)`. So
+     `draw_overlay` now takes the frame's root `&mut Ui` and the chrome carves its bands out of
+     that; `Window`/`Area`/layer painters still address `ui.ctx()`. Builders renamed with it
+     (`default_width`/`default_height` → `default_size`, `width_range`/`height_range` →
+     `size_range`, `exact_height` → `exact_size`, `show_inside` → `show`), plus
+     `is_using_pointer` → `egui_is_using_pointer` and `set_style` → `all_styles_mut`.
+   * **`TexturesDelta` panics if dropped un-applied** in 0.36 — a genuinely good check, and it
+     caught the headless `stats_rows` test immediately. The renderer therefore takes it *by value*
+     and `clear()`s it only after every delta has been applied, so an early `?` on a failed upload
+     still trips the assertion rather than swallowing it.
+   * **The parked D3D11 code lives in `crates/render/src/port_pending/`, not only in git history.**
+     Ten files, not declared as modules, so nothing there is compiled, linted or formatted; its
+     README lists what returns in which step, plus the exact `Cargo.toml` lines step 6 must
+     restore. Step 4 is then a diff against something rather than a rewrite from memory.
+   * **The `bake` feature and the `bake_ibl` binary were removed, not left declared and empty**, so
+     a `--features bake` build cannot pass by compiling nothing. Re-baking the IBL maps is blocked
+     until step 6; the shipped viewer is unaffected, since it embeds the committed maps.
+   * **The wrappers grew only as far as step 3 exercises them** — `pipeline.rs` has two vertex
+     formats and one blend mode, `buffer.rs` has only the transient stream, `target.rs` and
+     `mips.rs` do not exist yet, and `SwapchainJob` is deferred to step 4 with the composite that
+     produces one. That is deliberate rather than lazy: the workspace lints deny warnings, so a
+     wrapper nobody calls is a build error, and a wrapper nobody calls is also a wrapper nobody has
+     checked. Each arrives with the stage that needs it.
+   * A handful of still-live-but-unused modules (`geometry/`, `material/{mode,state}`,
+     `scene/gpu_types`) carry a scoped `#[allow(dead_code)]` naming the port, because their only
+     consumers are in `port_pending`. They stay compiled — and unit-tested — because none of them
+     touches the GPU and all of them are what step 4 ports *against*. Those allows come off with
+     the stages that use them again.
+   * Release binary: 13,841,920 → **11,580,416** bytes. Recorded rather than claimed as a win —
+     the scene renderer is parked and therefore not compiled, so most of that is code that comes
+     back in step 4. What it does say is that sokol's C core plus our own egui renderer cost
+     nothing like what `egui-directx11` + the D3D11 `rhi` did. The real number is step 8's.
+   * `packaging/generate-ibl-bake.ps1` learned that the bake is parked: a normal packaging build
+     gets a one-line notice and a green no-op (the committed maps are current, and nothing that
+     determines their bytes is editable right now), while `-Force` or a genuinely missing map
+     throws with the reason and a pointer to the README. Both paths were exercised. Its freshness
+     input list also picked up `review.glsl` in place of the deleted `ibl.hlsl`.
 4. **Renderer, in this order, each stage eye-checked against `main` on the same model:** Tex
    viewport (two fullscreen jobs, CPU mips) → scene single-sample without GTAO (pipeline set,
    mesh/index buffers, IBL cube upload, checkers, material table as `apply_uniforms` + patched
@@ -564,8 +628,10 @@ Ordered so each step is verifiable by eye against the current renderer on the sa
    forwarding.
 6. **Profiler + bake** (D18, D19) on D3D11: `--tracy` GPU zones match the old capture; `bake_ibl`
    reproduces the committed `.bin`s byte-for-byte (same GPU, same encoder settings).
-7. **Cleanup**: `windows` out of `app`, `egui-directx11` out of the workspace, `hlsl/` deleted;
-   clippy clean on Windows.
+7. **Cleanup**: `hlsl/` deleted and its hand-listed `build.rs` jobs with it; the last
+   `#[allow(dead_code)]` naming the port removed; `port_pending/` empty and gone; clippy clean on
+   Windows. (`windows` left `app` and `egui-directx11` left the workspace in step 3, ahead of
+   schedule — both were one-line consequences of the swap rather than cleanup.)
 8. **Gate (D2)** with `scripts/gate.ps1` against `main`; fix or document any regression; merge.
 
 ### Phase 2 - macOS
