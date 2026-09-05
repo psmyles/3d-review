@@ -9,12 +9,11 @@ Windows and Metal on macOS) + `egui` (overlay UI, through our own sokol renderer
 
 > **The GPU layer is mid-port** (`mac-port-plan.md` Phase 1). The device,
 > swapchain, frame flow, egui chrome, Tex viewport and the **3D + UV scenes** — MSAA
-> included — are on sokol_gfx. Two things are not: **ambient occlusion** (the GTAO
-> passes) and the **Opt workspace's comparison view** (`render_opt_scene` is still a
-> stub that clears the frame to the viewport background). Each returns with its own
-> stage of step 4; the Opt path and the offline `bake_ibl` tool are still parked in
-> `crates/render/src/port_pending/` (see its README). Sections below that describe
-> those two describe what is being ported *back*, not what currently draws.
+> and ambient occlusion included — are on sokol_gfx. One thing is not: the **Opt
+> workspace's comparison view** (`render_opt_scene` is still a stub that clears the
+> frame to the viewport background), which returns with the last stage of step 4. It
+> and the offline `bake_ibl` tool are still parked in
+> `crates/render/src/port_pending/` (see its README).
 
 Deeper docs: the crate map + data flow live in §2 below; `PROJECT_STATE.md`
 (architecture, status, risk register), `RENDERING_PIPELINE.md` (render-pass
@@ -331,7 +330,8 @@ crates/
                 linear light so the result matches what the hardware produced),
                 sampler.rs, target.rs (the offscreen colour + depth attachments: an
                 image plus the views a pass attaches and a later pass samples, and at
-                2×+ MSAA a single-sample twin sokol resolves into at `end_pass`),
+                2×+ MSAA a single-sample twin sokol resolves into at `end_pass`; the
+                GTAO targets are single-sample by design),
                 bindings.rs (what a draw reads, as one value re-applied after every
                 `apply_pipeline` — sokol has no sticky slot state, so the old
                 `bind_*`/`unbind_*` pairs have no successor); gpu_profiler.rs (the
@@ -591,13 +591,12 @@ set.
 > **What actually draws right now.** The GPU port (`mac-port-plan.md` Phase 1) has
 > landed the device, the swapchain, the frame flow, the egui chrome, the Tex viewport
 > and the 3D + UV scenes on sokol_gfx — including GPU skinning, the material table,
-> the IBL/PBR shaded path, the skybox, every derived overlay and dynamic scene MSAA.
-> What step 4 has left is **ambient occlusion** (the GTAO passes are not ported, so
-> the AO toggle changes nothing) and the **Opt workspace's comparison view**
-> (`render_opt_scene` still clears the frame to the viewport background, so that
-> workspace's viewport is a flat colour while its chrome, stack editing and processing
-> all behave normally). Everything the rest of this section describes is live except
-> those two.
+> the IBL/PBR shaded path, the skybox, every derived overlay, dynamic scene MSAA and
+> the GTAO passes. Against a `main` build in a worktree, the 3D viewport is now
+> **pixel-identical** on the models checked. What step 4 has left is the **Opt
+> workspace's comparison view**: `render_opt_scene` still clears the frame to the
+> viewport background, so that workspace's viewport is a flat colour while its chrome,
+> stack editing and processing all behave normally.
 
 MVP: native window + Direct3D 11 viewport + egui chrome; FBX import via ufbx (drag-drop,
 `Ctrl+O`, double-click empty viewport, command-line/file-association path);

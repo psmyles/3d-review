@@ -14,12 +14,13 @@ is the *GPU layer* (`crates/render/src/rhi/` and the shaders), the egui renderer
 leaves in `app`, and the build/distribution chain. The port runs **Windows first** (Fire D13): the
 shared-shell migration is the risk, and it has to be gated on a Windows box against `main`.
 
-Status: **Phase 0 done on Windows** (D21, D22), plus **Phase 1 steps 1–3 and most of step 4**. The
-backend swap has happened: the device, the swapchain, the frame flow, the egui chrome, the Tex
-viewport and the 3D + UV scenes (MSAA included) run on sokol_gfx, and `app` no longer depends on
-`windows` at all. Two things are still to come in step 4: **GTAO** and the **Opt workspace's
-comparison view** (the latter still parked in `crates/render/src/port_pending/`, with
-`render_opt_scene` a stub that clears the frame to the viewport background). Sections are written in the present tense of the finished port so they
+Status: **Phase 0 done on Windows** (D21, D22), plus **Phase 1 steps 1–3 and step 4 bar its last
+stage**. The backend swap has happened: the device, the swapchain, the frame flow, the egui chrome,
+the Tex viewport and the 3D + UV scenes (MSAA and GTAO included) run on sokol_gfx, `app` no longer
+depends on `windows` at all, and the 3D viewport is **pixel-identical** to a `main` build on the
+models checked. One thing is still to come in step 4: the **Opt workspace's comparison view**, still
+parked in `crates/render/src/port_pending/`, with `render_opt_scene` a stub that clears the frame to
+the viewport background. Sections are written in the present tense of the finished port so they
 can become the description once it lands; the *Status* column of §2 and the phase list in §8 say
 what is actually done.
 
@@ -719,6 +720,35 @@ Ordered so each step is verifiable by eye against the current renderer on the sa
    rather than reasoned about: a temporary hook cycled the level through Off/2×/4×/8×/16× every 20
    frames for ~45 s, captures taken mid-run show the edge alternating between aliased and resolved,
    and sokol's validation channel stayed **silent** for the whole run.
+
+   *Stage 4 (GTAO) done.* The three passes are back — a single-sample mesh-only G-buffer (view
+   normal + Z) with its own depth, then the fullscreen occlusion and 5×5 bilateral blur into `R8` —
+   and the composite binds the blurred result instead of its placeholder. The pass model made one
+   thing simpler than D3D11: **nothing is unbound between them**. A sokol pass ends before the next
+   begins, so a target a pass wrote is free for the next to sample, and the old `unbind_ps_srvs`
+   calls that hand-guarded that hazard have no successor.
+
+   One defect, and it is the interesting part of this stage. `review.glsl` (step 2) repurposed the
+   two previously-unused `w` slots of `gtao_params` to carry the **target size in pixels**, because
+   sokol has no `GetDimensions` and the shader cannot ask; the D3D11 uniform builder this stage
+   ported from left both at zero, and nothing complains — the horizon search simply becomes one
+   pixel wide, which is a scene with no ambient occlusion in it at all. It was found by arithmetic
+   rather than by eye: the shaded cube read 21 % brighter than `main` on its side faces and *exactly
+   equal* on its top, and the shape of that difference — a term proportional to the ambient
+   attachment, zero where nothing occludes — is the composite's AO compose and nothing else. Two
+   hypotheses died on the way (a mis-ported shading path; a difference in the environment maps), the
+   second ruled out by the skybox coming back pixel-identical, which exercises the env cube, the
+   composite and the tone map but no AO.
+
+   Worth recording as a method note: an A/B run of `main` with GTAO disabled reported *no*
+   difference, which pointed away from AO entirely and cost an hour. The probe had been silently
+   dropped from the worktree by a later edit. **Check that a probe is actually in the binary you are
+   about to measure**, not just that you wrote it.
+
+   Verified: clippy clean, tests green, and the whole viewport diffed against a `main` build in a
+   worktree at 98,400 sample points per model — `meter_cube.fbx`, `SM_Speaker_01a.fbx` and
+   `SK_Player_01.fbx` come back **pixel-identical**, maximum channel-sum delta 0, with IBL on and
+   off. Zero output on sokol's validation channel.
 5. **Shell leaves on Windows**: `rfd` on workers (D9), `dirs` config dir (D17), `Primary` modifier
    plumbing (D10, still Ctrl here), the startup error box after `run_app`, `ScaleFactorChanged`
    forwarding.

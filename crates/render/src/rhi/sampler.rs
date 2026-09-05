@@ -116,6 +116,18 @@ impl Sampler {
         )
     }
 
+    /// Point, clamp — the GTAO passes. View normals and depths must **not** be
+    /// blended across geometry edges (that would bleed occlusion); clamp keeps border
+    /// samples from wrapping.
+    pub(crate) fn point_clamp() -> GpuResult<Self> {
+        Self::new(
+            Filter::Nearest,
+            Filter::Nearest,
+            Wrap::ClampToEdge,
+            c"point-clamp",
+        )
+    }
+
     /// Anisotropic, repeat — the material sampler. With the per-texture mip chain
     /// this is what removes grazing-angle shimmer; 16× is the common hardware
     /// ceiling.

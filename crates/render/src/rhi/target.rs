@@ -51,6 +51,11 @@ impl ColorTarget {
         Self::new(width, height, SCENE_COLOR_FORMAT, sample_count, label)
     }
 
+    /// A single-channel single-sample target — the raw and blurred GTAO occlusion.
+    pub(crate) fn r8(width: u32, height: u32, label: &CStr) -> GpuResult<Self> {
+        Self::new(width, height, Format::R8, 1, label)
+    }
+
     fn new(
         width: u32,
         height: u32,

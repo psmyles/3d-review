@@ -229,6 +229,10 @@ const SWAPCHAIN_COLORS: &[Format] = &[Format::Swapchain];
 /// The scene pass's two linear-HDR attachments: location 0 radiance, location 1
 /// AO-eligible diffuse ambient.
 const SCENE_COLORS: &[Format] = &[SCENE_COLOR_FORMAT, SCENE_COLOR_FORMAT];
+/// The GTAO G-buffer's one attachment: view normal in `xyz`, view Z in `w`.
+pub(crate) const GBUFFER_COLORS: &[Format] = &[SCENE_COLOR_FORMAT];
+/// The occlusion and blur passes' one attachment.
+pub(crate) const OCCLUSION_COLORS: &[Format] = &[Format::R8];
 
 impl<'a> PipelineDesc<'a> {
     /// A pipeline drawing into the frame's swapchain pass: one backbuffer-format
@@ -247,6 +251,15 @@ impl<'a> PipelineDesc<'a> {
             depth_format: None,
             sample_count: 1,
             label,
+        }
+    }
+
+    /// A pipeline drawing into a single offscreen colour attachment with no depth —
+    /// the GTAO occlusion and blur passes, which name their own format.
+    pub(crate) fn offscreen(shader: sg::Shader, colors: &'a [Format], label: &'a CStr) -> Self {
+        Self {
+            colors,
+            ..Self::swapchain(shader, label)
         }
     }
 
