@@ -25,8 +25,9 @@ use windows::Win32::Graphics::Direct3D::{
 };
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_DEBUG, D3D11_CREATE_DEVICE_FLAG,
-    D3D11_SDK_VERSION, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext,
-    ID3D11RenderTargetView, ID3D11Texture2D,
+    D3D11_QUERY, D3D11_QUERY_DATA_TIMESTAMP_DISJOINT, D3D11_QUERY_DESC, D3D11_QUERY_TIMESTAMP,
+    D3D11_QUERY_TIMESTAMP_DISJOINT, D3D11_SDK_VERSION, D3D11CreateDevice, ID3D11Device,
+    ID3D11DeviceContext, ID3D11Query, ID3D11RenderTargetView, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT, DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R8G8B8A8_UNORM,
@@ -43,6 +44,7 @@ use winit::window::Window;
 
 use crate::rhi::error::{GpuError, GpuResult, ResourceContext, ResourceKind};
 use crate::rhi::format::Format;
+use crate::rhi::gpu_profiler::TIMESTAMP_SLOTS;
 use crate::rhi::present::PresentStatus;
 
 /// What the window's backbuffer is created as, and what sokol_gfx is told to expect
@@ -366,4 +368,219 @@ fn create_device(
         // Unreachable by contract: a successful HRESULT writes both out-params.
         _ => Err(windows::core::Error::from(HRESULT(-1))),
     }
+}
+
+// ---------------------------------------------------------------------------
+// The GPU-timing leaf (`mac-port-plan.md` D18)
+// ---------------------------------------------------------------------------
+
+/// One frame's resolved GPU timestamps, handed back to [`crate::rhi::gpu_profiler`]
+/// to become Tracy zones.
+///
+/// The split is deliberate: everything platform-specific about *measuring* GPU time
+/// is here, everything about *reporting* it is shared. The Metal twin will fill one
+/// of these from two sentinel command buffers instead of a query ring, and the Tracy
+/// side will not know the difference.
+pub(crate) struct FrameTimings {
+    /// Bit *per timestamp slot* that the frame actually recorded.
+    ///
+    /// This is measured, not declared. Timestamp queries are reused across ring
+    /// slots, so a query left un-`End`-ed this frame still reads back whatever it
+    /// held when it was last written four frames ago — a stale pair that looks
+    /// perfectly valid. Only the slots in here were written by the frame these
+    /// timings belong to.
+    pub(crate) written: u16,
+    /// Ticks per second, from the disjoint query.
+    pub(crate) frequency: u64,
+    /// The raw begin/end tick pairs, in [`crate::rhi::gpu_profiler::Zone`] order.
+    pub(crate) times: [u64; TIMESTAMP_SLOTS],
+}
+
+/// One ring entry: a disjoint query (frequency + validity for the frame), the
+/// per-zone begin/end timestamp queries, and the bookkeeping to drain it a few
+/// frames after it was written.
+struct RingSlot {
+    disjoint: ID3D11Query,
+    /// `TIMESTAMP_SLOTS` timestamp queries (zone begin/end pairs).
+    timestamps: Vec<ID3D11Query>,
+    /// `true` once this slot's queries have been `End`-ed for a frame and not yet
+    /// read back.
+    pending: bool,
+    /// Which timestamp slots this frame actually wrote.
+    written: u16,
+}
+
+/// Ring depth. Generous enough that a slot written at frame N is read and freed well
+/// before it is reused at N+RING, so its results are always ready by then.
+const RING: usize = 4;
+
+/// GPU timing on Direct3D 11: a ring of per-frame timestamp queries.
+///
+/// D3D11 has no "begin/end pass with timestamp writes". Each `ID3D11Query` of type
+/// `TIMESTAMP` records the GPU clock at the point `End` is called in the command
+/// stream (`Begin` is a no-op for timestamps), and a sibling `TIMESTAMP_DISJOINT`
+/// query bracketing the whole frame yields the tick `Frequency` plus a `Disjoint`
+/// flag that invalidates a frame whose clock skipped.
+///
+/// Results are not ready the moment a frame is encoded — the GPU has to finish
+/// first — so a slot is read back only when it is about to be reused, `RING` frames
+/// later. Tracy does not mind that the numbers arrive late; it places them by the
+/// GPU's own clock.
+///
+/// It times sokol_gfx's work by recording into the **same immediate context** sokol
+/// submits through: `ctx.End(query)` between sokol calls is valid, since sokol issues
+/// its own commands on that context and neither library holds state the other
+/// disturbs. The handles come from our own [`Device`] rather than
+/// `sg_d3d11_device_context()` — they are the same objects, because we created them
+/// and handed them to `sg_setup`, and using ours avoids rebuilding a COM pointer from
+/// a `*const c_void`.
+pub(crate) struct GpuTimer {
+    /// A cloned context handle (refcounted, cheap). Held so the per-zone calls take
+    /// no parameters, which is what keeps the call sites at the passes readable.
+    context: ID3D11DeviceContext,
+    ring: Vec<RingSlot>,
+    frame_no: u64,
+    /// The ring slot being encoded this frame.
+    cur_slot: usize,
+    /// Whether a frame is open. Not every frame renders a 3D scene — the Tex
+    /// viewport draws two fullscreen jobs and nothing else — and `End`-ing a
+    /// disjoint query that was never `Begin`-ed is a validation error, so the
+    /// timestamp and close calls are no-ops until a frame is opened.
+    open: bool,
+}
+
+impl GpuTimer {
+    /// Build the query ring. Timestamp + disjoint queries are core to D3D11 feature
+    /// level 11_0+, but `CreateQuery` can still fail on an exotic driver, so this is
+    /// fallible and the caller treats `Err` as "no GPU profiling this run".
+    pub(crate) fn new(device: &Device) -> GpuResult<Self> {
+        let mut ring = Vec::with_capacity(RING);
+        for _ in 0..RING {
+            let disjoint = create_query(&device.device, D3D11_QUERY_TIMESTAMP_DISJOINT)
+                .resource(ResourceKind::Query, "disjoint timestamp")?;
+            let mut timestamps = Vec::with_capacity(TIMESTAMP_SLOTS);
+            for _ in 0..TIMESTAMP_SLOTS {
+                timestamps.push(
+                    create_query(&device.device, D3D11_QUERY_TIMESTAMP)
+                        .resource(ResourceKind::Query, "timestamp")?,
+                );
+            }
+            ring.push(RingSlot {
+                disjoint,
+                timestamps,
+                pending: false,
+                written: 0,
+            });
+        }
+        Ok(Self {
+            context: device.context.clone(),
+            ring,
+            frame_no: 0,
+            cur_slot: 0,
+            open: false,
+        })
+    }
+
+    /// Start a frame: pick this frame's ring slot, drain it if it still holds an
+    /// unread result (written `RING` frames ago, so it is done), and open the
+    /// disjoint query. Anything returned belongs to that older frame.
+    pub(crate) fn begin_frame(&mut self) -> Option<FrameTimings> {
+        self.frame_no += 1;
+        let slot = (self.frame_no % RING as u64) as usize;
+        self.cur_slot = slot;
+        let drained = if self.ring[slot].pending {
+            self.read_slot(slot)
+        } else {
+            None
+        };
+        self.ring[slot].written = 0;
+        // SAFETY: `disjoint` is a live query owned by the ring; the immediate context
+        // records into it, and `Begin` is valid for a disjoint query.
+        unsafe { self.context.Begin(&self.ring[slot].disjoint) };
+        self.open = true;
+        drained
+    }
+
+    /// Record the timestamp at `index` in this frame's slot: `End` on a timestamp
+    /// query writes the GPU clock at that point in the command stream.
+    pub(crate) fn timestamp(&mut self, index: usize) {
+        if !self.open {
+            return;
+        }
+        let slot = self.cur_slot;
+        // SAFETY: the timestamp query is live and belongs to the slot `begin_frame`
+        // selected this frame; `index` is bounds-checked by the slice index.
+        unsafe { self.context.End(&self.ring[slot].timestamps[index]) };
+        self.ring[slot].written |= 1 << index;
+    }
+
+    /// Close the frame's timing window and mark the slot for a later readback.
+    pub(crate) fn end_frame(&mut self) {
+        if !self.open {
+            return;
+        }
+        self.open = false;
+        let slot = self.cur_slot;
+        // SAFETY: the disjoint query is live and was `Begin`-ed this frame.
+        unsafe { self.context.End(&self.ring[slot].disjoint) };
+        self.ring[slot].pending = true;
+    }
+
+    /// Read one slot's disjoint + timestamps back. A frame whose clock was disjoint,
+    /// or whose results are somehow not ready, yields `None` and is dropped.
+    fn read_slot(&mut self, slot: usize) -> Option<FrameTimings> {
+        self.ring[slot].pending = false;
+
+        // Pre-zeroed so a not-ready `GetData` reads as `Frequency == 0` and is
+        // skipped: the `windows` wrapper cannot tell "ready" (`S_OK`) from "not
+        // ready" (`S_FALSE`) — both are success HRESULTs and map to `Ok(())` — and
+        // `S_FALSE` leaves the output untouched.
+        let mut disjoint = D3D11_QUERY_DATA_TIMESTAMP_DISJOINT::default();
+        // SAFETY: the disjoint query is live; the output struct is sized exactly and
+        // outlives the call.
+        let _ = unsafe {
+            self.context.GetData(
+                &self.ring[slot].disjoint,
+                Some((&mut disjoint as *mut D3D11_QUERY_DATA_TIMESTAMP_DISJOINT).cast()),
+                size_of::<D3D11_QUERY_DATA_TIMESTAMP_DISJOINT>() as u32,
+                0,
+            )
+        };
+        if disjoint.Frequency == 0 || disjoint.Disjoint.as_bool() {
+            return None;
+        }
+
+        let mut times = [0u64; TIMESTAMP_SLOTS];
+        for (index, value) in times.iter_mut().enumerate() {
+            // SAFETY: each timestamp query is live; `value` is a `u64` output slot.
+            let _ = unsafe {
+                self.context.GetData(
+                    &self.ring[slot].timestamps[index],
+                    Some((value as *mut u64).cast()),
+                    size_of::<u64>() as u32,
+                    0,
+                )
+            };
+        }
+        Some(FrameTimings {
+            written: self.ring[slot].written,
+            frequency: disjoint.Frequency,
+            times,
+        })
+    }
+}
+
+/// Create an `ID3D11Query` of `query_type`.
+fn create_query(
+    device: &ID3D11Device,
+    query_type: D3D11_QUERY,
+) -> windows::core::Result<ID3D11Query> {
+    let desc = D3D11_QUERY_DESC {
+        Query: query_type,
+        MiscFlags: 0,
+    };
+    let mut query = None;
+    // SAFETY: `desc` is a well-formed query description; the out-param is populated.
+    unsafe { device.CreateQuery(&desc, Some(&mut query))? };
+    query.ok_or_else(|| windows::core::Error::from(HRESULT(-1)))
 }

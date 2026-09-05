@@ -51,7 +51,7 @@ use crate::material::{MaterialEntry, MaterialState, MaterialTable, effective_mat
 use crate::rhi::{
     Bindings, ColorTarget, Cull, Depth, DepthBias, DepthTarget, Format, Frame, GBUFFER_COLORS,
     GpuResult, IndexBuffer, OCCLUSION_COLORS, Pipeline, PipelineDesc, Sampler, StorageBuffer,
-    SwapchainJob, Texture, Topology, VertexBuffer, shader,
+    SwapchainJob, Texture, Topology, VertexBuffer, Zone, shader,
 };
 use crate::selection::SelectionView;
 use crate::shaders::generated;
@@ -475,6 +475,7 @@ impl SceneGpu {
             scene.debug,
             self.active.deform_enabled(),
         );
+        let gtao_active = self.gtao_active(scene);
         self.record_scene_pass(
             frame,
             scene,
@@ -500,7 +501,6 @@ impl SceneGpu {
                 (style, ghost_uniforms)
             }),
         );
-        let gtao_active = self.gtao_active(scene);
         if gtao_active {
             self.record_gtao(
                 frame,
@@ -554,6 +554,7 @@ impl SceneGpu {
 
         // G-buffer: redraw the mesh (its material is irrelevant) into the
         // single-sample normal/Z target, clearing it and its own depth.
+        frame.zone_begin(Zone::GtaoGbuffer);
         frame.begin_offscreen_pass(
             &[&targets.gtao_gbuffer],
             Some(&targets.gtao_depth),
@@ -581,8 +582,10 @@ impl SceneGpu {
             }
         }
         frame.end_pass();
+        frame.zone_end(Zone::GtaoGbuffer);
 
         // Occlusion: a fullscreen pass over the G-buffer → raw AO.
+        frame.zone_begin(Zone::Gtao);
         frame.begin_offscreen_pass(&[&targets.gtao_raw], None, [0.0; 4], c"gtao");
         let mut bindings = Bindings::new();
         bindings.target(generated::VIEW_GBUFFER, &targets.gtao_gbuffer);
@@ -592,8 +595,10 @@ impl SceneGpu {
         frame.apply_uniforms(generated::UB_GTAO_PARAMS, &uniforms);
         frame.draw(0, FULLSCREEN_VERTICES);
         frame.end_pass();
+        frame.zone_end(Zone::Gtao);
 
         // Bilateral blur: the G-buffer again (for the edge stopping) plus the raw AO.
+        frame.zone_begin(Zone::GtaoBlur);
         frame.begin_offscreen_pass(&[&targets.gtao_blur], None, [0.0; 4], c"gtao blur");
         let mut bindings = Bindings::new();
         bindings.target(generated::VIEW_GBUFFER, &targets.gtao_gbuffer);
@@ -604,6 +609,7 @@ impl SceneGpu {
         frame.apply_uniforms(generated::UB_GTAO_PARAMS, &uniforms);
         frame.draw(0, FULLSCREEN_VERTICES);
         frame.end_pass();
+        frame.zone_end(Zone::GtaoBlur);
     }
 
     /// Make `slot` the active one. A no-op when it already is; otherwise a single
@@ -767,6 +773,7 @@ impl SceneGpu {
         // alpha is the composite's coverage mask, so the cleared background reads as
         // "no geometry" and the post pass paints the chosen viewport background there
         // (in display space, after tone mapping).
+        frame.zone_begin(Zone::Scene);
         frame.begin_offscreen_pass(
             &[&targets.color, &targets.ambient],
             Some(&targets.depth),
@@ -920,6 +927,7 @@ impl SceneGpu {
             self.draw_ghost(frame, *style, ghost_uniforms);
         }
         frame.end_pass();
+        frame.zone_end(Zone::Scene);
     }
 
     /// Draw the idle slot's mesh as a see-through ghost over the solid one, inside the

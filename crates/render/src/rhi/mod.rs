@@ -51,6 +51,7 @@ pub(crate) use error::ResourceKind;
 pub use error::{GpuError, GpuResult};
 pub use format::Format;
 pub(crate) use format::{SCENE_COLOR_FORMAT, SCENE_DEPTH_FORMAT};
+pub(crate) use gpu_profiler::Zone;
 pub(crate) use pipeline::{
     Blend, Cull, Depth, DepthBias, GBUFFER_COLORS, OCCLUSION_COLORS, Pipeline, PipelineDesc,
     Topology, VertexFormat,
@@ -93,6 +94,7 @@ impl GpuBringUp {
         Ok(Gpu {
             device,
             swapchain,
+            profiler: None,
             jobs: Vec::new(),
         })
     }
@@ -106,6 +108,11 @@ impl GpuBringUp {
 pub struct Gpu {
     device: backend::Device,
     swapchain: backend::Swapchain,
+    /// The `--tracy` GPU profiler (D18). Built on the first frame of an armed run
+    /// and `None` on every normal one, where nothing profiling-related exists at
+    /// all: no queries, no extra GPU calls, no per-frame branch beyond this
+    /// `Option`.
+    profiler: Option<gpu_profiler::GpuProfiler>,
     /// This frame's deferred draws, waiting for the swapchain pass to open (see
     /// [`SwapchainJob`]). Held here rather than in [`Frame`] so the allocation
     /// survives the frame that grew it and a steady-state frame allocates nothing.
@@ -223,6 +230,10 @@ impl Gpu {
         // A frame that queued jobs and then never opened its pass (an error
         // propagated out past `finish`) must not leave them for the next one.
         self.jobs.clear();
+        self.arm_profiler();
+        if let Some(profiler) = self.profiler.as_mut() {
+            profiler.begin_frame();
+        }
         Some(Frame {
             gpu: self,
             swapchain,
@@ -230,6 +241,35 @@ impl Gpu {
             pass_open: false,
             finished: false,
         })
+    }
+}
+
+impl Gpu {
+    /// Build the GPU profiler on the first frame of a `--tracy` run.
+    ///
+    /// Not at bring-up: the Tracy client connects asynchronously, so a run armed
+    /// with `--tracy` may have no server attached for the first few frames, and
+    /// [`gpu_profiler::should_enable`] would say no. Trying each frame until it says
+    /// yes costs one `Option` test per frame on a normal run. A construction failure
+    /// (an exotic driver refusing `CreateQuery`) is logged once and leaves the
+    /// profiler `None` — a run without GPU zones, not a dead viewport.
+    fn arm_profiler(&mut self) {
+        if self.profiler.is_some() || !gpu_profiler::should_enable() {
+            return;
+        }
+        match gpu_profiler::GpuProfiler::new(&self.device) {
+            Ok(profiler) => {
+                self.profiler = Some(profiler);
+                gpu_profiler::note("GPU profiling armed");
+            }
+            Err(error) => {
+                // Disarm, so this is attempted once rather than every frame.
+                gpu_profiler::disable_tracy_gpu();
+                let line = format!("3d-review: GPU profiling unavailable: {error}");
+                eprintln!("{line}");
+                gpu_profiler::note(&line);
+            }
+        }
     }
 }
 
@@ -399,6 +439,20 @@ impl Frame<'_> {
             .unwrap_or(1)
     }
 
+    /// Record a GPU zone's begin timestamp at this point in the command stream.
+    pub(crate) fn zone_begin(&mut self, zone: gpu_profiler::Zone) {
+        if let Some(profiler) = self.gpu.profiler.as_mut() {
+            profiler.zone_begin(zone);
+        }
+    }
+
+    /// Record a GPU zone's end timestamp.
+    pub(crate) fn zone_end(&mut self, zone: gpu_profiler::Zone) {
+        if let Some(profiler) = self.gpu.profiler.as_mut() {
+            profiler.zone_end(zone);
+        }
+    }
+
     /// Queue a draw for the swapchain pass. See [`SwapchainJob`].
     pub(crate) fn queue(&mut self, job: SwapchainJob) {
         debug_assert!(
@@ -495,9 +549,15 @@ impl Frame<'_> {
             self.swapchain.width.max(0) as u32,
             self.swapchain.height.max(0) as u32,
         );
+        // The composite is a deferred job, so this replay *is* the composite pass —
+        // there is nowhere earlier to bracket it. In the Tex viewport the same
+        // bracket covers that viewport's two fullscreen draws instead, which is the
+        // honest reading of "what this frame put on the backbuffer".
+        self.zone_begin(gpu_profiler::Zone::Composite);
         for job in &self.gpu.jobs {
             job.replay(target);
         }
+        self.zone_end(gpu_profiler::Zone::Composite);
         self.gpu.jobs.clear();
     }
 
@@ -564,6 +624,11 @@ impl Frame<'_> {
             self.pass_open = false;
         }
         sg::commit();
+        // After `commit`, so the plotted call counts are this frame's complete
+        // totals rather than a partial tally.
+        if let Some(profiler) = self.gpu.profiler.as_mut() {
+            profiler.end_frame();
+        }
     }
 }
 
