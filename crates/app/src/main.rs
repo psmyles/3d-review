@@ -75,6 +75,15 @@ enum UserEvent {
     /// `mac-port-plan.md` D9). `None` when the user cancelled. Boxed because the
     /// export variant carries a whole LOD chain's worth of `Arc`s.
     DialogDone(Option<Box<dialog::DialogAnswer>>),
+    /// The OS asked for a file to be opened (`mac-port-plan.md` D14): a Finder
+    /// double-click, an `open(1)`, or a drop on the Dock icon. macOS only —
+    /// Windows delivers the same intent as `argv[1]`, which `main` reads directly.
+    OpenPath(PathBuf),
+    /// A macOS menu item the viewer performs itself was chosen (D15). Routed
+    /// through the loop rather than acted on in muda's callback so it lands on the
+    /// main thread, in order with every other event, instead of racing the state
+    /// it is about to change.
+    MenuCommand(review_shell_macos::MenuCommand),
 }
 
 use animation::AnimationSubsystem;
@@ -132,6 +141,37 @@ fn main() -> anyhow::Result<()> {
 
     // The texture file-watcher posts reload events back through this proxy.
     let texture_proxy = event_loop.create_proxy();
+
+    // The two macOS shell leaves, installed here because both need the event loop
+    // to exist (the delegate to extend, and `NSApplication` to hang a menu on) and
+    // neither may run once it does. Both are no-op stubs on Windows, so there is no
+    // `cfg` here — see `review_shell_macos`.
+    //
+    // A `.fbx` opened from Finder arrives as an Apple event, not as `argv[1]`
+    // (D14): a fresh launch gets no arguments at all, and an already-running app
+    // gets no new process. Without the hook the file association does nothing.
+    let open_proxy = event_loop.create_proxy();
+    review_shell_macos::install_open_handler(move |path| {
+        // A closed event loop means the app is already exiting; a dropped open is
+        // the right answer then.
+        let _ = open_proxy.send_event(UserEvent::OpenPath(path));
+    });
+
+    // Kept alive for the life of the process: dropping the handle takes the menu
+    // bar with it (D15). Its ⌘O / ⌘N accelerators intercept those chords before
+    // winit sees them, which is why they route to the same two handlers
+    // `shortcuts.rs` reaches rather than to anything of their own.
+    let menu_proxy = event_loop.create_proxy();
+    let _menu_bar = review_shell_macos::install_menu_bar(
+        review_shell_macos::About {
+            product: APP_NAME,
+            version: env!("REVIEW_VERSION"),
+            copyright: env!("REVIEW_COPYRIGHT"),
+        },
+        move |command| {
+            let _ = menu_proxy.send_event(UserEvent::MenuCommand(command));
+        },
+    );
 
     let mut app = App {
         gpu_bring_up: Some(gpu_bring_up),
@@ -390,8 +430,12 @@ const STARTUP_WARMUP_FRAMES: u32 = 6;
 const FALLBACK_REFRESH_HZ: f64 = 60.0;
 
 /// The application's display name: the window title, the caption on a startup
-/// failure dialog, and the `%APPDATA%` folder the window placement is saved under.
-pub(crate) const APP_NAME: &str = "3D Review";
+/// failure dialog, the macOS About panel and menu, and the per-user config folder
+/// the window placement is saved under (D17).
+///
+/// From `product.json` via `build.rs`, not a literal, so the binary, the installer
+/// and the `.app` bundle cannot disagree about what this program is called.
+pub(crate) const APP_NAME: &str = env!("REVIEW_PRODUCT");
 
 /// Minimum window inner size (logical points), so the chrome never collapses.
 const MIN_WINDOW_WIDTH: f64 = 960.0;
@@ -405,6 +449,12 @@ const WHEEL_LINE_ZOOM_STEP: f32 = 0.5;
 
 /// Pixel-precise scroll (trackpads) divided by this to match one wheel notch.
 const WHEEL_PIXELS_PER_ZOOM_STEP: f32 = 120.0;
+
+/// Camera zoom per unit of trackpad pinch scale (`mac-port-plan.md` D16). A pinch
+/// delta is a scale *fraction* — a comfortable two-finger spread accumulates to
+/// roughly 1.0 over its length — so this is the zoom that whole gesture is worth,
+/// not a per-notch step like the wheel's.
+const PINCH_ZOOM_STEP: f32 = 4.0;
 
 impl Default for App {
     fn default() -> Self {
@@ -527,11 +577,24 @@ impl App {
 
         drop(phase.take());
         phase = prof::zone!("Queue Initial Model Load");
-        // Queue a file passed on the command line (file association / CLI arg)
-        // now that the renderer exists. Reuses the same path as drag-drop —
-        // the parse runs on a worker thread and lands via `ModelLoaded`, so
-        // the first frame below paints the chrome without waiting on it.
-        if let Some(path) = self.initial_model.take() {
+        // Queue the file the launch asked for, now that the renderer exists.
+        // Reuses the same path as drag-drop — the parse runs on a worker thread and
+        // lands via `ModelLoaded`, so the first frame below paints the chrome
+        // without waiting on it.
+        //
+        // Two sources, one slot, because only one model is ever resident: the
+        // command line (a Windows file association, or a CLI arg on either OS) and
+        // the macOS opens that arrived before this window existed (D14). A
+        // launch-by-open on a Mac carries *no* argv, so in practice exactly one of
+        // them is ever non-empty; when both are, the Finder open is the more
+        // specific intent and wins. Draining is also what switches the hook from
+        // queueing to delivering, so it must happen even when nothing is queued.
+        let opened_from_os = review_shell_macos::take_pending_opens();
+        let initial = opened_from_os
+            .into_iter()
+            .next_back()
+            .or_else(|| self.initial_model.take());
+        if let Some(path) = initial {
             self.open_model_from_path(&path);
         }
 
@@ -790,6 +853,8 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::OptExported(outcome) => self.handle_opt_exported(*outcome),
             UserEvent::ModelLoaded(message) => self.handle_model_loaded(*message),
             UserEvent::DialogDone(answer) => self.handle_dialog_done(answer),
+            UserEvent::OpenPath(path) => self.open_model_from_path(&path),
+            UserEvent::MenuCommand(command) => self.handle_menu_command(command),
         }
     }
 
@@ -883,6 +948,9 @@ impl ApplicationHandler<UserEvent> for App {
                 self.last_pointer_position = None;
             }
             WindowEvent::MouseWheel { delta, .. } => self.handle_mouse_wheel(delta, egui_consumed),
+            WindowEvent::PinchGesture { delta, .. } => {
+                self.handle_pinch_gesture(delta, egui_consumed);
+            }
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers.state();
             }

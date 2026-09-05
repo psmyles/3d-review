@@ -17,8 +17,8 @@ use review_ui::{OptLayout, WorkspaceMode};
 
 use crate::window_state::monitor_refresh_interval;
 use crate::{
-    App, DRAG_ZOOM_SENSITIVITY, DragMode, WHEEL_LINE_ZOOM_STEP, WHEEL_PIXELS_PER_ZOOM_STEP,
-    framing_safe_area,
+    App, DRAG_ZOOM_SENSITIVITY, DragMode, PINCH_ZOOM_STEP, WHEEL_LINE_ZOOM_STEP,
+    WHEEL_PIXELS_PER_ZOOM_STEP, framing_safe_area,
 };
 
 impl App {
@@ -246,6 +246,31 @@ impl App {
             MouseScrollDelta::LineDelta(_, y) => y * WHEEL_LINE_ZOOM_STEP,
             MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / WHEEL_PIXELS_PER_ZOOM_STEP,
         };
+        self.zoom_active_camera(amount);
+    }
+
+    /// A trackpad pinch: zoom the active camera, exactly as the wheel does
+    /// (`mac-port-plan.md` D16). macOS only in practice — winit reports
+    /// `PinchGesture` nowhere else — but routed unconditionally, because which
+    /// gestures a platform sends is winit's business and not something to `cfg` on
+    /// here.
+    ///
+    /// `delta` is a *scale fraction* per event (roughly ±0.01–0.05 as the fingers
+    /// move), not a pixel count, so it gets its own sensitivity rather than the
+    /// wheel's. It is filtered for finiteness before it reaches the camera: a NaN
+    /// would propagate straight into the orbit distance and leave the model
+    /// permanently gone with nothing to show why.
+    pub(crate) fn handle_pinch_gesture(&mut self, delta: f64, egui_consumed: bool) {
+        if egui_consumed || !delta.is_finite() {
+            return;
+        }
+        self.zoom_active_camera(delta as f32 * PINCH_ZOOM_STEP);
+    }
+
+    /// Apply `amount` zoom steps to whichever camera the current workspace (and, in
+    /// the Opt split, the pointer) says is active. Shared by the wheel and the pinch
+    /// so the two cannot drift apart on which view they act on.
+    fn zoom_active_camera(&mut self, amount: f32) {
         // The wheel acts on whichever Opt split view the pointer is over — unlike
         // a drag there is no press to anchor it to, and hovering is the natural
         // way to say which view you mean.

@@ -21,13 +21,23 @@ review-optimize = { path = "../optimize" }
 # The shared guarded Tracy helpers (zones, plots, frame marks, messages).
 review-prof.workspace = true
 review-render = { path = "../render" }
+# The macOS shell leaves — the Launch Services open hook (D14) and the menu bar
+# (D15). Depended on unconditionally: every entry point is a no-op stub off macOS,
+# which is what keeps the `cfg` out of `main.rs`. It is its own crate because the
+# delegate hook needs `unsafe`, and this one is `#![forbid(unsafe_code)]`.
+review-shell-macos = { path = "../shell-macos" }
 review-ui = { path = "../ui" }
 rfd.workspace = true
 tracy-client.workspace = true
 winit.workspace = true
 
-[target.'cfg(windows)'.build-dependencies]
+# `product.json` is read on every host now: the identity it carries reaches the
+# binary as compile-time environment variables, and the macOS About panel is one of
+# the things that reads them.
+[build-dependencies]
 serde_json.workspace = true
+
+[target.'cfg(windows)'.build-dependencies]
 winresource.workspace = true
 
 [[bin]]

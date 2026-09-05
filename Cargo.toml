@@ -7,6 +7,7 @@ members = [
     "crates/prof",
     "crates/psd",
     "crates/render",
+    "crates/shell-macos",
     "crates/ui",
 ]
 # `vendor/sokol-rust` is a pinned upstream copy (`mac-port-plan.md` D21), not our code,
@@ -117,6 +118,9 @@ objc2-app-kit = "0.2"
 objc2-foundation = "0.2"
 objc2-metal = "0.2"
 objc2-quartz-core = "0.2"
+# The macOS menu bar (D15). A Mac app without one cannot even be quit — Cmd+Q is
+# the menu's, not the window's.
+muda = { version = "0.19", default-features = false }
 winit = "0.30"
 winresource = "0.1"
 
