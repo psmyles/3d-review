@@ -33,9 +33,8 @@
 //!   bind all four. That is what [`DeformDummies`] is for: a model without a skin
 //!   has none of them.
 //!
-//! Being ported (`mac-port-plan.md` Phase 1 step 4): this is the single-sample,
-//! GTAO-free stage. MSAA and the occlusion passes arrive with the stages named for
-//! them, which is why [`SceneGpu::sync_targets`] takes no sample count yet.
+//! Being ported (`mac-port-plan.md` Phase 1 step 4): the ambient-occlusion passes
+//! are not here yet, so the composite's GTAO factor is always off.
 
 use bytemuck::Zeroable;
 use review_model::ModelData;
@@ -50,9 +49,9 @@ use crate::rhi::{
 use crate::selection::SelectionView;
 use crate::shaders::generated;
 use crate::{
-    ActiveMaterial, CameraProjection, CheckerTexture, EnvironmentSettings, OrbitCamera,
-    SceneDebugOptions, SceneFrame, ShadingMode, TonemapSettings, UvCamera, UvShadingMode,
-    ViewportBackground,
+    ActiveMaterial, AntiAliasing, CameraProjection, CheckerTexture, EnvironmentSettings,
+    OrbitCamera, SceneDebugOptions, SceneFrame, ShadingMode, TonemapSettings, UvCamera,
+    UvShadingMode, ViewportBackground,
 };
 
 use super::gpu_types::{
@@ -161,6 +160,9 @@ pub(crate) struct SceneGpu {
     color: ColorTarget,
     ambient: ColorTarget,
     depth: DepthTarget,
+    /// The last *requested* AA level, before capability clamping — cached so the
+    /// (cheap, but per-frame) adapter query only runs when the request changes.
+    requested_sample_count: u32,
     /// Everything cached for the model currently being drawn.
     pub(super) active: ModelSlot,
     /// The *other* model's cache, held so the Opt workspace can show two meshes
@@ -177,16 +179,19 @@ impl std::fmt::Debug for SceneGpu {
 }
 
 impl SceneGpu {
-    /// Build the scene GPU resources at `size`. Called once, on the first 3D frame.
-    pub(crate) fn new(size: (u32, u32)) -> GpuResult<Self> {
+    /// Build the scene GPU resources at `size` and `sample_count` MSAA. Called once,
+    /// on the first 3D frame, at the live AA level — so the first frame needs no
+    /// rebuild.
+    pub(crate) fn new(size: (u32, u32), sample_count: u32) -> GpuResult<Self> {
         let (width, height) = size;
+        let sample_count = sample_count.max(1);
         let composite_shader = shader::make(
             generated::post_shader_desc,
             shader::bytecode!("post"),
             c"composite",
         )?;
         Ok(Self {
-            scene: build_scene_pipelines()?,
+            scene: build_scene_pipelines(sample_count)?,
             composite: Pipeline::new(&PipelineDesc::swapchain(composite_shader, c"composite"))?,
             sampler: Sampler::linear_clamp()?,
             checker_sampler: Sampler::linear_repeat()?,
@@ -197,28 +202,61 @@ impl SceneGpu {
             dummies: DeformDummies::new()?,
             grid: VertexBuffer::new(&scene_lines(), c"grid")?,
             uv_grid: VertexBuffer::new(&uv_grid_lines(), c"uv grid")?,
-            color: ColorTarget::hdr(width, height, c"scene colour")?,
-            ambient: ColorTarget::hdr(width, height, c"scene ambient")?,
-            depth: DepthTarget::new(width, height, c"scene depth")?,
+            color: ColorTarget::hdr(width, height, sample_count, c"scene colour")?,
+            ambient: ColorTarget::hdr(width, height, sample_count, c"scene ambient")?,
+            depth: DepthTarget::new(width, height, sample_count, c"scene depth")?,
+            requested_sample_count: sample_count,
             active: ModelSlot::new(),
             idle: ModelSlot::new(),
             active_slot: SlotId::Source,
         })
     }
 
-    /// Reconcile the offscreen targets with the size the scene renders at, which is
-    /// not always the backbuffer's: the Opt split renders each half at half width so
-    /// the composite maps its target onto its half of the backbuffer one-to-one
-    /// instead of squashing a full-width image into it. Steady-state frames allocate
+    /// Reconcile the offscreen targets and the scene pipelines with the size the
+    /// scene renders at and the live MSAA level. Steady-state frames allocate
     /// nothing.
-    fn sync_targets(&mut self, size: (u32, u32)) -> GpuResult<()> {
+    ///
+    /// `size` is not always the backbuffer's: the Opt split renders each half at half
+    /// width so the composite maps its target onto its half of the backbuffer
+    /// one-to-one instead of squashing a full-width image into it.
+    fn sync_targets(
+        &mut self,
+        frame: &Frame<'_>,
+        size: (u32, u32),
+        sample_count: u32,
+    ) -> GpuResult<()> {
         let (width, height) = (size.0.max(1), size.1.max(1));
-        if self.color.size() == (width, height) {
+        // Only re-ask the adapter when the *request* moved (invariant 4): an
+        // unsupported level degrades to the nearest supported one rather than failing
+        // target creation on every frame.
+        let requested = sample_count.max(1);
+        let sample_count = if requested == self.requested_sample_count {
+            self.color.sample_count()
+        } else {
+            frame.clamp_msaa(requested)
+        };
+        let size_changed = self.color.size() != (width, height);
+        let samples_changed = self.color.sample_count() != sample_count;
+        if !size_changed && !samples_changed {
+            self.requested_sample_count = requested;
             return Ok(());
         }
-        self.color = ColorTarget::hdr(width, height, c"scene colour")?;
-        self.ambient = ColorTarget::hdr(width, height, c"scene ambient")?;
-        self.depth = DepthTarget::new(width, height, c"scene depth")?;
+
+        // Pipelines before targets. Their sample count is baked at creation but they
+        // own nothing the targets depend on, so a failure here leaves every resource
+        // and every field describing the level still in force, and the next frame
+        // simply tries again. Recreating the targets first would strand them at the
+        // new level with pipelines built for the old one.
+        if samples_changed {
+            self.scene = build_scene_pipelines(sample_count)?;
+        }
+        self.color = ColorTarget::hdr(width, height, sample_count, c"scene colour")?;
+        self.ambient = ColorTarget::hdr(width, height, sample_count, c"scene ambient")?;
+        self.depth = DepthTarget::new(width, height, sample_count, c"scene depth")?;
+        // Written only once everything above exists: caching the request past a
+        // failure would report the level as satisfied and leave it silently dropped
+        // until the user changed it again.
+        self.requested_sample_count = requested;
         Ok(())
     }
 
@@ -240,7 +278,7 @@ impl SceneGpu {
         self.activate(SlotId::Source);
 
         let size = frame.size();
-        self.sync_frame(scene, material_states, material_revision, size)?;
+        self.sync_frame(frame, scene, material_states, material_revision, size)?;
         self.record_view(frame, scene, camera, BackbufferRect::full(size))
     }
 
@@ -297,12 +335,17 @@ impl SceneGpu {
     /// IBL maps.
     pub(super) fn sync_frame(
         &mut self,
-        frame: &SceneFrame<'_>,
+        frame: &Frame<'_>,
+        scene: &SceneFrame<'_>,
         material_states: &[MaterialState],
         material_revision: u64,
         target_size: (u32, u32),
     ) -> GpuResult<()> {
-        self.sync_targets(target_size)?;
+        self.sync_targets(
+            frame,
+            target_size,
+            scene.anti_aliasing.effective_sample_count(),
+        )?;
 
         // Every caller of this is a 3D frame, so the UV viewport's buffers are off
         // (invariant 3); `render_uv` builds them instead and never comes through here.
@@ -310,61 +353,61 @@ impl SceneGpu {
 
         // The Unique-mode part key, then the mesh + the effective material table
         // (both depend on the active material mode's grouping).
-        self.sync_unique_parts(frame.model, frame.model_revision, frame.debug.material_mode);
+        self.sync_unique_parts(scene.model, scene.model_revision, scene.debug.material_mode);
         self.sync_mesh(
-            frame.model,
-            frame.model_revision,
-            frame.debug.uv_channel,
-            frame.debug.material_mode,
+            scene.model,
+            scene.model_revision,
+            scene.debug.uv_channel,
+            scene.debug.material_mode,
         )?;
         let effective = effective_materials(
-            frame.debug.material_mode,
+            scene.debug.material_mode,
             material_states,
             self.active.unique_part_count,
         );
         self.materials
-            .sync(&effective, material_revision, frame.debug.material_mode)?;
+            .sync(&effective, material_revision, scene.debug.material_mode)?;
 
         // The pose (palette + shape weights) the vertex shader deforms with, uploaded
         // only when its revision moves; then build-on-demand / free-on-off for the
         // derived overlays (invariant 3).
-        self.sync_pose(frame.pose, frame.pose_revision)?;
+        self.sync_pose(scene.pose, scene.pose_revision)?;
         self.sync_line_views(
-            frame.model,
-            frame.model_revision,
-            frame.debug,
-            frame.hidden_meshes,
-            frame.scene_bounds,
+            scene.model,
+            scene.model_revision,
+            scene.debug,
+            scene.hidden_meshes,
+            scene.scene_bounds,
         )?;
         self.sync_skeleton(
-            frame.model,
-            frame.model_revision,
-            frame.debug,
-            frame.selected_bones,
+            scene.model,
+            scene.model_revision,
+            scene.debug,
+            scene.selected_bones,
         )?;
         self.sync_skin_weights(
-            frame.model,
-            frame.model_revision,
-            frame.debug,
-            frame.selected_bones,
+            scene.model,
+            scene.model_revision,
+            scene.debug,
+            scene.selected_bones,
         )?;
         self.sync_selection(
-            frame.model,
-            frame.model_revision,
-            frame.selection,
-            frame.hidden_meshes,
-            frame.debug.material_mode,
+            scene.model,
+            scene.model_revision,
+            scene.selection,
+            scene.hidden_meshes,
+            scene.debug.material_mode,
         )?;
         self.sync_visibility(
-            frame.model,
-            frame.model_revision,
-            frame.hidden_meshes,
-            frame.debug.material_mode,
+            scene.model,
+            scene.model_revision,
+            scene.hidden_meshes,
+            scene.debug.material_mode,
         )?;
 
         // Reload the IBL maps when the chosen environment changes (a pure upload).
-        if self.ibl.environment != frame.environment.map {
-            self.ibl = IblMaps::from_baked(frame.environment.map)?;
+        if self.ibl.environment != scene.environment.map {
+            self.ibl = IblMaps::from_baked(scene.environment.map)?;
         }
         Ok(())
     }
@@ -640,13 +683,14 @@ impl SceneGpu {
         uv_camera: UvCamera,
         channel: u32,
         shading_mode: UvShadingMode,
+        anti_aliasing: AntiAliasing,
         background: ViewportBackground,
     ) -> GpuResult<()> {
         // The UV viewport shows the source model, so its derived buffers belong in the
         // source slot (see the note in `render`).
         self.activate(SlotId::Source);
         let size = frame.size();
-        self.sync_targets(size)?;
+        self.sync_targets(frame, size, anti_aliasing.effective_sample_count())?;
         self.sync_uv_view(model, model_revision, channel, shading_mode)?;
 
         // The UV camera's orthographic view-projection; the rest of the uniform is

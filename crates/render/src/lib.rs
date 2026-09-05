@@ -314,7 +314,7 @@ impl Renderer {
         frame.set_clear(scene.background.gradient_srgb().0);
         let camera = self.camera;
         let material_revision = self.material_revision;
-        self.ensure_scene(frame.size())?;
+        self.ensure_scene(frame, scene.anti_aliasing.effective_sample_count())?;
         // Borrowed as disjoint fields rather than through a `&mut self` helper: the
         // material table travels *into* the scene renderer, so one whole-`self` borrow
         // would exclude the other.
@@ -330,11 +330,12 @@ impl Renderer {
         )
     }
 
-    /// Build the scene resources if this is the first frame that needs them. A session
-    /// that only ever looks at textures pays for none of it.
-    fn ensure_scene(&mut self, size: (u32, u32)) -> GpuResult<()> {
+    /// Build the scene resources if this is the first frame that needs them, at the
+    /// live MSAA level so the first frame needs no rebuild. A session that only ever
+    /// looks at textures pays for none of it.
+    fn ensure_scene(&mut self, frame: &Frame<'_>, sample_count: u32) -> GpuResult<()> {
         if self.scene.is_none() {
-            self.scene = Some(SceneGpu::new(size)?);
+            self.scene = Some(SceneGpu::new(frame.size(), frame.clamp_msaa(sample_count))?);
         }
         Ok(())
     }
@@ -376,8 +377,6 @@ impl Renderer {
     /// optional island fill + the model's UV edges, framed by the renderer's
     /// `uv_camera`.
     ///
-    /// `anti_aliasing` is accepted but not yet applied: the scene renders
-    /// single-sample until the AA stage of `mac-port-plan.md` Phase 1 step 4.
     #[allow(clippy::too_many_arguments)]
     pub fn render_uv_scene(
         &mut self,
@@ -389,10 +388,9 @@ impl Renderer {
         anti_aliasing: AntiAliasing,
         background: ViewportBackground,
     ) -> GpuResult<()> {
-        let _ = anti_aliasing;
         frame.set_clear(background.gradient_srgb().0);
         let uv_camera = self.uv_camera;
-        self.ensure_scene(frame.size())?;
+        self.ensure_scene(frame, anti_aliasing.effective_sample_count())?;
         let Some(scene_gpu) = self.scene.as_mut() else {
             return Ok(());
         };
@@ -403,6 +401,7 @@ impl Renderer {
             uv_camera,
             channel,
             shading_mode,
+            anti_aliasing,
             background,
         )
     }

@@ -11,10 +11,9 @@
 //! and the sample count must agree with the pass, sokol validates that they do, and
 //! spelling them out at every call site is how they drift.
 //!
-//! The knobs here are the ones something built so far actually sets. The renderer is
-//! being ported onto sokol_gfx one stage at a time (`mac-port-plan.md` Phase 1
-//! step 4), and a knob nobody sets is a knob nobody has checked: MSAA sample counts
-//! arrive with the AA stage that needs them.
+//! A pipeline's `sample_count` has to agree with the pass it draws into, which is
+//! why the scene set is rebuilt whole whenever the AA level changes rather than
+//! patched — sokol validates the match, but only at draw time.
 
 use std::ffi::CStr;
 
@@ -220,6 +219,8 @@ pub(crate) struct PipelineDesc<'a> {
     pub(crate) colors: &'a [Format],
     /// The pass's depth format, or `None` for a pass with no depth attachment.
     pub(crate) depth_format: Option<Format>,
+    /// MSAA level of the pass's attachments. 1 is single-sample.
+    pub(crate) sample_count: u32,
     pub(crate) label: &'a CStr,
 }
 
@@ -244,25 +245,22 @@ impl<'a> PipelineDesc<'a> {
             blend: Blend::Opaque,
             colors: SWAPCHAIN_COLORS,
             depth_format: None,
+            sample_count: 1,
             label,
         }
     }
 
-    /// A pipeline drawing into the offscreen 2-MRT linear-HDR scene pass, with the
-    /// Reversed-Z depth buffer. Both attachments alpha-blend.
-    pub(crate) fn scene(shader: sg::Shader, label: &'a CStr) -> Self {
+    /// A pipeline drawing into the offscreen 2-MRT linear-HDR scene pass at
+    /// `sample_count` MSAA, with the Reversed-Z depth buffer. Both attachments
+    /// alpha-blend.
+    pub(crate) fn scene(shader: sg::Shader, sample_count: u32, label: &'a CStr) -> Self {
         Self {
-            shader,
-            attributes: &[],
-            indexed: false,
-            topology: Topology::Triangles,
-            cull: Cull::None,
-            depth: Depth::TEST_ONLY,
-            depth_bias: DepthBias::default(),
-            blend: Blend::StraightAlpha,
             colors: SCENE_COLORS,
+            depth: Depth::TEST_ONLY,
             depth_format: Some(SCENE_DEPTH_FORMAT),
-            label,
+            blend: Blend::StraightAlpha,
+            sample_count,
+            ..Self::swapchain(shader, label)
         }
     }
 }
@@ -321,7 +319,7 @@ impl Pipeline {
         // shading difference: back-face culling then keeps the far side of every
         // solid, so a closed mesh renders as its own interior.
         pd.face_winding = sg::FaceWinding::Ccw;
-        pd.sample_count = 1;
+        pd.sample_count = desc.sample_count.max(1) as i32;
 
         let pipeline = sg::make_pipeline(&pd);
         if let Err(err) = require_valid(

@@ -381,6 +381,23 @@ impl Frame<'_> {
         self.clear = [rgb[0], rgb[1], rgb[2], 1.0];
     }
 
+    /// The largest supported MSAA level at or below `requested`, from the subset the
+    /// adapter reports for **both** scene formats (invariant 4: capability-gate,
+    /// never crash). A persisted AA setting restored on a weaker adapter degrades
+    /// instead of failing target creation every frame.
+    ///
+    /// It lives on the frame because the query needs the device, which only the
+    /// [`Gpu`] holds — and the scene renderer is handed a frame, not a device.
+    pub(crate) fn clamp_msaa(&self, requested: u32) -> u32 {
+        let supported = self.gpu.supported_msaa_counts();
+        supported
+            .iter()
+            .copied()
+            .filter(|&count| count <= requested.max(1))
+            .max()
+            .unwrap_or(1)
+    }
+
     /// Queue a draw for the swapchain pass. See [`SwapchainJob`].
     pub(crate) fn queue(&mut self, job: SwapchainJob) {
         debug_assert!(
@@ -420,6 +437,13 @@ impl Frame<'_> {
                     a: clear[3],
                 },
             };
+        }
+        for (slot, target) in colors.iter().enumerate() {
+            // Present only at 2×+; sokol resolves into it at `end_pass`, which is why
+            // nothing here has to remember to.
+            if let Some(resolve) = target.resolve() {
+                pass.attachments.resolves[slot] = resolve;
+            }
         }
         if let Some(depth) = depth {
             pass.attachments.depth_stencil = depth.attachment();

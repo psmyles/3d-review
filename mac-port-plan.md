@@ -14,11 +14,11 @@ is the *GPU layer* (`crates/render/src/rhi/` and the shaders), the egui renderer
 leaves in `app`, and the build/distribution chain. The port runs **Windows first** (Fire D13): the
 shared-shell migration is the risk, and it has to be gated on a Windows box against `main`.
 
-Status: **Phase 0 done on Windows** (D21, D22), plus **Phase 1 steps 1–3 and step 4's first two
-stages**. The backend swap has happened: the device, the swapchain, the frame flow, the egui chrome,
-the Tex viewport and the 3D + UV scenes run on sokol_gfx, and `app` no longer depends on `windows`
-at all. Three things are still to come in step 4: **MSAA**, **GTAO**, and the **Opt workspace's
-comparison view** (the last still parked in `crates/render/src/port_pending/`, with
+Status: **Phase 0 done on Windows** (D21, D22), plus **Phase 1 steps 1–3 and most of step 4**. The
+backend swap has happened: the device, the swapchain, the frame flow, the egui chrome, the Tex
+viewport and the 3D + UV scenes (MSAA included) run on sokol_gfx, and `app` no longer depends on
+`windows` at all. Two things are still to come in step 4: **GTAO** and the **Opt workspace's
+comparison view** (the latter still parked in `crates/render/src/port_pending/`, with
 `render_opt_scene` a stub that clears the frame to the viewport background). Sections are written in the present tense of the finished port so they
 can become the description once it lands; the *Status* column of §2 and the phase list in §8 say
 what is actually done.
@@ -685,10 +685,9 @@ Ordered so each step is verifiable by eye against the current renderer on the sa
      probing the depth buffer by flipping the line pipelines' compare function and watching *where*
      the grid survived.
 
-   Deliberately not carried over yet: MSAA (`rhi/target.rs` is single-sample, `sync_targets` takes
-   no sample count, and the AA menu changes nothing), GTAO (the three passes and their targets), and
-   the Opt comparison view. Each is an addition to the sokol code rather than a port of the parked
-   D3D11, so those files left `port_pending/` with this stage.
+   Deliberately not carried over in this stage: MSAA (which follows immediately), GTAO (the three
+   passes and their targets), and the Opt comparison view. Each is an addition to the sokol code
+   rather than a port of the parked D3D11, so those files left `port_pending/` with this stage.
 
    Verified: clippy clean workspace-wide, all 20 test binaries pass (the `SceneVertex` layout test
    came back, now asserting the sokol attribute list against the struct's field offsets), and a
@@ -700,6 +699,26 @@ Ordered so each step is verifiable by eye against the current renderer on the sa
    `main`: the UV viewport (it draws its grid, islands and edges, but its own eye-check belongs to
    its stage) — and, as in step 1, no workspace or panel reachable only by clicking, since synthetic
    input does not reach the winit window from an agent session.
+
+   *Stage 3 (MSAA) done.* A `ColorTarget` at 2×+ now carries a single-sample twin: the attached
+   image is multisampled, the twin holds the texture view, and a `resolve_attachment` view over it
+   goes in the pass's `resolves` slot. **sokol resolves at `end_pass`**, so the old explicit
+   `ColorTarget::resolve()` — and the ordering rule that it had to run after the RTVs were unbound —
+   has no successor at all; there is nothing left to forget. The two ends are *exclusive* usages
+   (`color_attachment` on the multisampled image, `resolve_attachment` on the twin, never both),
+   `DepthTarget` takes the same sample count, `PipelineDesc` carries one, and `sync_targets` rebuilds
+   the pipeline set before the targets so a failure leaves a consistent pair. The capability clamp
+   (invariant 4) is `Frame::clamp_msaa`, which lives on the frame because the query needs the device
+   and the scene renderer is handed a frame, not a `Gpu`; the raw request is cached so the adapter is
+   only re-asked when it moves.
+
+   Verified: clippy clean, tests green, and measured rather than eyeballed — the silhouette edge of
+   `meter_cube.fbx` at row 800 goes `0,0,0 → 242,227,217` single-sample and
+   `0,0,0 → 60,57,54 → 242,227,217` at 4×, and that coverage pixel is **byte-identical** to `main`'s
+   at the same row (main's interior differs only by its GTAO darkening). The rebuild path was run
+   rather than reasoned about: a temporary hook cycled the level through Off/2×/4×/8×/16× every 20
+   frames for ~45 s, captures taken mid-run show the edge alternating between aliased and resolved,
+   and sokol's validation channel stayed **silent** for the whole run.
 5. **Shell leaves on Windows**: `rfd` on workers (D9), `dirs` config dir (D17), `Primary` modifier
    plumbing (D10, still Ctrl here), the startup error box after `run_app`, `ScaleFactorChanged`
    forwarding.

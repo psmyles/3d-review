@@ -3,9 +3,8 @@
 //! distinguish them.
 //!
 //! They live together because they change together — they all render into the
-//! offscreen 2-MRT scene pass, so the pass's formats (and, once the AA stage lands,
-//! its sample count) are baked into every one of them at creation, and an AA change
-//! replaces the whole set at once.
+//! offscreen 2-MRT scene pass, so its formats *and its sample count* are baked into
+//! every one of them at creation, and an AA change replaces the whole set at once.
 
 use crate::rhi::{
     Blend, Cull, Depth, DepthBias, GpuResult, Pipeline, PipelineDesc, Topology, VertexFormat,
@@ -67,7 +66,7 @@ pub(super) struct ScenePipelineSet {
 /// indexed — the mesh and the selection flash index into the shared vertex buffer;
 /// every line and fill view is its own vertex stream. The skybox is the one that
 /// cannot use the helper: it runs its own vertex shader and takes no vertex input.
-pub(super) fn build_scene_pipelines() -> GpuResult<ScenePipelineSet> {
+pub(super) fn build_scene_pipelines(sample_count: u32) -> GpuResult<ScenePipelineSet> {
     let program = |desc_fn: fn(sokol::gfx::Backend) -> sokol::gfx::ShaderDesc,
                    bytecode: &'static crate::rhi::shader::ShaderBytecode,
                    label: &'static std::ffi::CStr,
@@ -84,7 +83,7 @@ pub(super) fn build_scene_pipelines() -> GpuResult<ScenePipelineSet> {
             cull,
             depth,
             depth_bias,
-            ..PipelineDesc::scene(shader::make(desc_fn, bytecode, label)?, label)
+            ..PipelineDesc::scene(shader::make(desc_fn, bytecode, label)?, sample_count, label)
         })
     };
 
@@ -172,7 +171,7 @@ pub(super) fn build_scene_pipelines() -> GpuResult<ScenePipelineSet> {
     let skybox = Pipeline::new(&PipelineDesc {
         depth: Depth::ALWAYS,
         blend: Blend::Opaque,
-        ..PipelineDesc::scene(skybox_shader, c"skybox")
+        ..PipelineDesc::scene(skybox_shader, sample_count, c"skybox")
     })?;
 
     Ok(ScenePipelineSet {
