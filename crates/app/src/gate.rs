@@ -59,12 +59,20 @@ const HOLD: Duration = Duration::from_secs(4);
 const ORBIT_STEP: Vec2 = Vec2::new(0.35, 0.0);
 /// The window gate mode opens at, ignoring any saved placement: the two builds must
 /// render the same number of pixels for their frame times to be comparable. In
-/// *physical* pixels, so the number of pixels shaded is the same at any display
-/// scale — and 960 rather than a rounder 900 because the viewer's minimum window is
-/// 640 logical points, which is exactly 960 physical at 150%: a smaller request
-/// would be silently clamped there and not elsewhere. The stamp records what the
-/// swapchain actually came up at, and the harness refuses to compare two runs that
-/// disagree.
+/// *physical* pixels, so the pixel count is independent of the display scale.
+///
+/// It is a **request, not a guarantee**: the viewer's minimum window is 960 × 640
+/// logical points, and above a 1.66× display scale that minimum is the larger of the
+/// two, so the window comes up bigger than this. Measured on a 2× Retina Mac, where
+/// a run reports 1920 × 1280 rather than the 1600 × 960 asked for — the clamp is
+/// real, not hypothetical, and an earlier version of this comment claimed 150% was
+/// the worst case it had to survive.
+///
+/// That costs the comparison nothing, because the clamp is a property of the display
+/// and not of the build: two runs on one box clamp identically. What makes it safe
+/// rather than merely lucky is that the stamp records the size the swapchain actually
+/// came up at, and both harnesses refuse to compare two runs that disagree — so a
+/// figure from a 2× laptop is never silently held against one from a 1× monitor.
 pub(crate) const WINDOW_SIZE: (u32, u32) = (1600, 960);
 
 /// One frame's timings, in milliseconds.
