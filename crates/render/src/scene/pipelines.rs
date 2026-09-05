@@ -8,11 +8,9 @@
 //! single-sample composite / GTAO pipelines are built in [`super::d3d`] alongside
 //! the passes that use them.
 
-use windows::Win32::Graphics::Direct3D11::ID3D11Device;
-
 use crate::rhi::{
-    BlendMode, Cull, DepthBias, DepthCompare, DepthState, InputElement, Pipeline, PipelineDesc,
-    Topology, VertexFormat,
+    BlendMode, Cull, DepthBias, DepthCompare, DepthState, Gpu, GpuResult, InputElement, Pipeline,
+    PipelineDesc, Topology, VertexFormat,
 };
 
 /// Compiled DXBC — see `build.rs`.
@@ -99,10 +97,7 @@ const DEPTH_WRITE: DepthState = DepthState {
 /// distinguishes its pipeline: the pixel shader, topology, culling, depth
 /// behaviour and blending. The mesh adds a depth bias; the skybox is the one that
 /// cannot use the helper, running its own vertex shader with no vertex input.
-pub(super) fn build_scene_pipelines(
-    device: &ID3D11Device,
-    sample_count: u32,
-) -> windows::core::Result<ScenePipelineSet> {
+pub(super) fn build_scene_pipelines(gpu: &Gpu, sample_count: u32) -> GpuResult<ScenePipelineSet> {
     let scene_desc =
         |ps: &'static [u8], topology: Topology, cull: Cull, depth: DepthState, blend: BlendMode| {
             PipelineDesc {
@@ -119,7 +114,7 @@ pub(super) fn build_scene_pipelines(
         };
 
     let line = Pipeline::new(
-        device,
+        gpu,
         &scene_desc(
             SCENE_LINE_PS,
             Topology::LineList,
@@ -129,7 +124,7 @@ pub(super) fn build_scene_pipelines(
         ),
     )?;
     let line_overlay = Pipeline::new(
-        device,
+        gpu,
         &scene_desc(
             SCENE_LINE_PS,
             Topology::LineList,
@@ -141,7 +136,7 @@ pub(super) fn build_scene_pipelines(
 
     // Double-sided: an octahedron is viewed from every angle as the camera orbits.
     let fill_overlay = Pipeline::new(
-        device,
+        gpu,
         &scene_desc(
             SCENE_MESH_PS,
             Topology::TriangleList,
@@ -166,13 +161,13 @@ pub(super) fn build_scene_pipelines(
             BlendMode::AlphaBlend,
         )
     };
-    let mesh = Pipeline::new(device, &mesh_desc(Cull::Back))?;
-    let mesh_double_sided = Pipeline::new(device, &mesh_desc(Cull::None))?;
+    let mesh = Pipeline::new(gpu, &mesh_desc(Cull::Back))?;
+    let mesh_double_sided = Pipeline::new(gpu, &mesh_desc(Cull::None))?;
 
     // The one pipeline outside `scene_desc`: its own vertex shader builds a
     // fullscreen triangle from `SV_VertexID`, so it takes no vertex input.
     let skybox = Pipeline::new(
-        device,
+        gpu,
         &PipelineDesc {
             vs: SCENE_SKYBOX_VS,
             ps: SCENE_SKYBOX_PS,
@@ -189,7 +184,7 @@ pub(super) fn build_scene_pipelines(
     // Everything the UV fill draws sits at z=0, so grid / fill / wireframe layer by
     // draw order rather than depth.
     let uv_fill = Pipeline::new(
-        device,
+        gpu,
         &scene_desc(
             SCENE_MESH_PS,
             Topology::TriangleList,
@@ -199,7 +194,7 @@ pub(super) fn build_scene_pipelines(
         ),
     )?;
     let selection = Pipeline::new(
-        device,
+        gpu,
         &scene_desc(
             SCENE_SELECTION_PS,
             Topology::TriangleList,

@@ -287,9 +287,23 @@ crates/
             src/camera.rs; the `Renderer` façade -> src/lib.rs.
             The Direct3D 11 GPU layer:
               * src/rhi/ — the SOLE home for D3D11/DXGI COM (`windows` crate,
-                invariant 9): mod.rs (`Gpu` = device + immediate context + swapchain
-                + backbuffer + the scene/color/backbuffer pass helpers + MSAA
-                capability query), pipeline.rs (`Pipeline` = VS+PS+input-layout +
+                invariant 9) **and for the backend's types**: nothing outside `rhi`
+                names an `ID3D11*` interface, a `DXGI_FORMAT` or a
+                `windows::core::Result`. Every resource is created from a `&Gpu`,
+                every pixel format is `Format` (error.rs / format.rs), and every
+                failure is a `GpuError` — which is what makes the renderer's shape
+                independent of the API underneath it (`mac-port-plan.md` §3.1).
+                mod.rs (`Gpu` = device + immediate context + an OPTIONAL swapchain —
+                `Gpu::headless` is the bake's device — + backbuffer + the
+                scene/color/backbuffer pass helpers + MSAA capability query; the
+                three `d3d11_*` accessors are a temporary escape hatch for
+                `egui-directx11` and nothing else may call them),
+                error.rs (`GpuError`/`GpuResult`/`ResourceKind`, and the
+                `.resource(kind, label)` combinator every constructor ends in so a
+                failure names the resource, not just an HRESULT), format.rs
+                (`Format` + `SWAPCHAIN_FORMAT`/`SCENE_*_FORMAT`; its `dxgi()` is
+                `pub(in crate::rhi)`, which is what stops a `DXGI_FORMAT` leaking
+                back out), pipeline.rs (`Pipeline` = VS+PS+input-layout +
                 raster/depth/blend state bundled from DXBC), buffer.rs (immutable
                 vertex/index + dynamic `Map(WRITE_DISCARD)` cbuffer), target.rs
                 (offscreen MSAA color + depth + `ResolveSubresource`), texture.rs

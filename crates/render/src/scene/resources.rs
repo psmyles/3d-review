@@ -9,7 +9,6 @@
 //! passes that *draw* these buffers are in [`super::d3d`].
 
 use review_model::{Bounds, DeformPose, ModelData};
-use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11DeviceContext};
 
 use crate::geometry::deform::DeformLayout;
 use crate::geometry::{
@@ -18,7 +17,7 @@ use crate::geometry::{
     uv_fill_triangles, uv_wireframe_lines, vertex_normal_lines, visible_geometry, wireframe_lines,
 };
 use crate::material::{MaterialDrawRange, build_part_key};
-use crate::rhi::{IndexBuffer, StructuredBuffer, VertexBuffer};
+use crate::rhi::{Gpu, GpuResult, IndexBuffer, StructuredBuffer, VertexBuffer};
 use crate::selection::{Selection, SelectionView, selection_bounds};
 use crate::{
     ActiveMaterial, BoundingBoxScope, MaterialMode, SceneDebugOptions, ShadingMode, UvShadingMode,
@@ -132,24 +131,24 @@ pub(super) struct DeformGpu {
 }
 
 impl DeformGpu {
-    fn new(device: &ID3D11Device, layout: &DeformLayout) -> windows::core::Result<Option<Self>> {
+    fn new(gpu: &Gpu, layout: &DeformLayout) -> GpuResult<Option<Self>> {
         if layout.influences.is_empty() || layout.palette_len == 0 {
             return Ok(None);
         }
         let morph = if layout.morph.is_empty() {
             None
         } else {
-            Some(StructuredBuffer::immutable(device, &layout.morph)?)
+            Some(StructuredBuffer::immutable(gpu, &layout.morph)?)
         };
         let shape_weights = if layout.shape_count == 0 {
             None
         } else {
-            Some(StructuredBuffer::dynamic(device, layout.shape_count)?)
+            Some(StructuredBuffer::dynamic(gpu, layout.shape_count)?)
         };
         Ok(Some(Self {
-            influences: StructuredBuffer::immutable(device, &layout.influences)?,
+            influences: StructuredBuffer::immutable(gpu, &layout.influences)?,
             morph,
-            palette: StructuredBuffer::dynamic(device, layout.palette_len)?,
+            palette: StructuredBuffer::dynamic(gpu, layout.palette_len)?,
             shape_weights,
             palette_revision: None,
             palette_scratch: Vec::with_capacity(layout.palette_len),
@@ -164,12 +163,7 @@ impl DeformGpu {
     }
 
     /// Upload `pose` (palette rows + shape weights) when `revision` moved.
-    fn upload(
-        &mut self,
-        ctx: &ID3D11DeviceContext,
-        pose: &DeformPose,
-        revision: u64,
-    ) -> windows::core::Result<()> {
+    fn upload(&mut self, gpu: &Gpu, pose: &DeformPose, revision: u64) -> GpuResult<()> {
         if self.palette_revision == Some(revision) {
             return Ok(());
         }
@@ -179,23 +173,23 @@ impl DeformGpu {
                 .iter()
                 .map(|matrix| PaletteEntry::from_mat4(*matrix)),
         );
-        self.palette.update(ctx, &self.palette_scratch)?;
+        self.palette.update(gpu, &self.palette_scratch)?;
         if let Some(weights) = &self.shape_weights {
-            weights.update(ctx, &pose.shape_weights)?;
+            weights.update(gpu, &pose.shape_weights)?;
         }
         self.palette_revision = Some(revision);
         Ok(())
     }
 
     /// Bind the four tables to the vertex stage.
-    pub(super) fn bind_vs(&self, ctx: &ID3D11DeviceContext) {
-        self.influences.bind_vs(ctx, DEFORM_INFLUENCES_SLOT);
-        self.palette.bind_vs(ctx, DEFORM_PALETTE_SLOT);
+    pub(super) fn bind_vs(&self, gpu: &Gpu) {
+        self.influences.bind_vs(gpu, DEFORM_INFLUENCES_SLOT);
+        self.palette.bind_vs(gpu, DEFORM_PALETTE_SLOT);
         if let Some(morph) = &self.morph {
-            morph.bind_vs(ctx, DEFORM_MORPH_SLOT);
+            morph.bind_vs(gpu, DEFORM_MORPH_SLOT);
         }
         if let Some(weights) = &self.shape_weights {
-            weights.bind_vs(ctx, DEFORM_WEIGHTS_SLOT);
+            weights.bind_vs(gpu, DEFORM_WEIGHTS_SLOT);
         }
     }
 }
@@ -405,16 +399,16 @@ impl SceneGpu {
     /// [`Self::release_uv_views`].
     pub(super) fn sync_uv_view(
         &mut self,
-        device: &ID3D11Device,
+        gpu: &Gpu,
         model: &ModelData,
         model_revision: u64,
         channel: u32,
         shading_mode: UvShadingMode,
-    ) -> windows::core::Result<()> {
+    ) -> GpuResult<()> {
         let want_wireframe = Some((model_revision, channel));
         if self.active.views.uv_wireframe_baked != want_wireframe {
             self.active.views.uv_wireframe_buf =
-                optional_vertex_buffer(device, &uv_wireframe_lines(model, channel))?;
+                optional_vertex_buffer(gpu, &uv_wireframe_lines(model, channel))?;
             self.active.views.uv_wireframe_baked = want_wireframe;
         }
 
@@ -430,7 +424,7 @@ impl SceneGpu {
                 UvShadingMode::Shaded => uv_fill_triangles(model, channel, false),
                 UvShadingMode::Islands => uv_fill_triangles(model, channel, true),
             };
-            self.active.views.uv_fill_buf = optional_vertex_buffer(device, &fill)?;
+            self.active.views.uv_fill_buf = optional_vertex_buffer(gpu, &fill)?;
             self.active.views.uv_fill_baked = want_fill;
         }
 
@@ -468,12 +462,12 @@ impl SceneGpu {
     /// An empty model leaves `mesh` as `None`. Call after [`Self::sync_unique_parts`].
     pub(super) fn sync_mesh(
         &mut self,
-        device: &ID3D11Device,
+        gpu: &Gpu,
         model: &ModelData,
         model_revision: u64,
         uv_channel: u32,
         mode: MaterialMode,
-    ) -> windows::core::Result<()> {
+    ) -> GpuResult<()> {
         if self.active.mesh_revision == model_revision
             && self.active.mesh_uv_channel == uv_channel
             && self.active.mesh_material_mode == mode
@@ -496,12 +490,12 @@ impl SceneGpu {
             None
         } else {
             let deform = match &self.active.deform_layout {
-                Some(layout) => DeformGpu::new(device, layout)?,
+                Some(layout) => DeformGpu::new(gpu, layout)?,
                 None => None,
             };
             Some(MeshBuffers {
-                vertices: VertexBuffer::new(device, &vertices)?,
-                indices: IndexBuffer::new(device, &indices)?,
+                vertices: VertexBuffer::new(gpu, &vertices)?,
+                indices: IndexBuffer::new(gpu, &indices)?,
                 ranges,
                 deform,
             })
@@ -517,10 +511,10 @@ impl SceneGpu {
     /// model, mid-swap) is ignored, which also leaves the deform flag off.
     pub(super) fn sync_pose(
         &mut self,
-        ctx: &ID3D11DeviceContext,
+        gpu: &Gpu,
         pose: Option<&DeformPose>,
         pose_revision: u64,
-    ) -> windows::core::Result<()> {
+    ) -> GpuResult<()> {
         let Some(deform) = self
             .active
             .mesh
@@ -530,7 +524,7 @@ impl SceneGpu {
             return Ok(());
         };
         match pose {
-            Some(pose) if deform.accepts(pose) => deform.upload(ctx, pose, pose_revision),
+            Some(pose) if deform.accepts(pose) => deform.upload(gpu, pose, pose_revision),
             _ => {
                 deform.palette_revision = None;
                 Ok(())
@@ -547,13 +541,13 @@ impl SceneGpu {
     /// clip's envelope), else the model's own bounds.
     pub(super) fn sync_line_views(
         &mut self,
-        device: &ID3D11Device,
+        gpu: &Gpu,
         model: &ModelData,
         model_revision: u64,
         debug: SceneDebugOptions,
         hidden_meshes: &[u32],
         scene_bounds: Option<Bounds>,
-    ) -> windows::core::Result<()> {
+    ) -> GpuResult<()> {
         // A different mesh invalidates every view derived from it, whatever the
         // view's own parameters are doing (see `ModelSlot::views_revision`).
         // Dropping them here is what lets each bake key below stay purely about
@@ -578,7 +572,7 @@ impl SceneGpu {
         if !wireframe_unchanged {
             self.active.views.wireframe_buf = if wireframe_on {
                 optional_vertex_buffer(
-                    device,
+                    gpu,
                     &wireframe_lines(
                         model,
                         self.active.lanes(),
@@ -631,7 +625,7 @@ impl SceneGpu {
                 };
                 match bounds {
                     Some(bounds) => optional_vertex_buffer(
-                        device,
+                        gpu,
                         &bounding_box_lines(bounds, debug.bounding_box_color),
                     )?,
                     None => None,
@@ -657,7 +651,7 @@ impl SceneGpu {
             .as_ref()
             .map_or(&[][..], |layout| layout.corner.as_slice());
         sync_normal_view(
-            device,
+            gpu,
             model,
             lanes,
             &mut self.active.views.face_normal_buf,
@@ -669,7 +663,7 @@ impl SceneGpu {
             face_normal_lines,
         )?;
         sync_normal_view(
-            device,
+            gpu,
             model,
             lanes,
             &mut self.active.views.vertex_normal_buf,
@@ -691,7 +685,7 @@ impl SceneGpu {
         if self.active.views.pivot_baked != want_pivot {
             self.active.views.pivot_buf = match &want_pivot {
                 Some(PivotParams { pivot, half }) => {
-                    optional_vertex_buffer(device, &pivot_lines(*pivot, *half))?
+                    optional_vertex_buffer(gpu, &pivot_lines(*pivot, *half))?
                 }
                 None => None,
             };
@@ -715,12 +709,12 @@ impl SceneGpu {
     /// to save a cost only paid on an explicit click.
     pub(super) fn sync_skin_weights(
         &mut self,
-        device: &ID3D11Device,
+        gpu: &Gpu,
         model: &ModelData,
         model_revision: u64,
         debug: SceneDebugOptions,
         selected_bones: &[u32],
-    ) -> windows::core::Result<()> {
+    ) -> GpuResult<()> {
         let active = debug.active_material == ActiveMaterial::SkinWeights && model.skin.is_some();
         // Drift check against the borrowed inputs — no per-frame key allocation.
         let unchanged = match (&self.active.views.weights_baked, active) {
@@ -735,7 +729,7 @@ impl SceneGpu {
         }
         self.active.views.weights_buf = if active {
             optional_vertex_buffer(
-                device,
+                gpu,
                 &skin_weight_vertices(model, self.active.lanes(), selected_bones),
             )?
         } else {
@@ -760,12 +754,12 @@ impl SceneGpu {
     /// thousand vertices.
     pub(super) fn sync_skeleton(
         &mut self,
-        device: &ID3D11Device,
+        gpu: &Gpu,
         model: &ModelData,
         model_revision: u64,
         debug: SceneDebugOptions,
         selected_bones: &[u32],
-    ) -> windows::core::Result<()> {
+    ) -> GpuResult<()> {
         let on = debug.show_skeleton;
         // Drift check against the borrowed inputs — no per-frame key allocation.
         let unchanged = match (&self.active.views.skeleton_baked, on) {
@@ -784,7 +778,7 @@ impl SceneGpu {
         }
         if on {
             self.active.views.skeleton_fill_buf = optional_vertex_buffer(
-                device,
+                gpu,
                 &skeleton_fill_triangles(
                     model,
                     selected_bones,
@@ -795,7 +789,7 @@ impl SceneGpu {
                 ),
             )?;
             self.active.views.skeleton_line_buf = optional_vertex_buffer(
-                device,
+                gpu,
                 &skeleton_lines(
                     model,
                     selected_bones,
@@ -836,13 +830,13 @@ impl SceneGpu {
     /// never trigger a rebuild — only a change of *what* is selected does.
     pub(super) fn sync_selection(
         &mut self,
-        device: &ID3D11Device,
+        gpu: &Gpu,
         model: &ModelData,
         model_revision: u64,
         view: SelectionView,
         hidden: &[u32],
         mode: MaterialMode,
-    ) -> windows::core::Result<()> {
+    ) -> GpuResult<()> {
         // Drift check against the borrowed inputs — no per-frame key allocation.
         let active = view.selection.is_active();
         let unchanged = match (&self.active.selection_baked, active) {
@@ -869,7 +863,7 @@ impl SceneGpu {
         };
         match geometry {
             Some((indices, ranges)) if !indices.is_empty() => {
-                self.active.selection_index = Some(IndexBuffer::new(device, &indices)?);
+                self.active.selection_index = Some(IndexBuffer::new(gpu, &indices)?);
                 self.active.selection_ranges = ranges;
             }
             _ => {
@@ -893,12 +887,12 @@ impl SceneGpu {
     /// off (full mesh).
     pub(super) fn sync_visibility(
         &mut self,
-        device: &ID3D11Device,
+        gpu: &Gpu,
         model: &ModelData,
         model_revision: u64,
         hidden: &[u32],
         mode: MaterialMode,
-    ) -> windows::core::Result<()> {
+    ) -> GpuResult<()> {
         // Drift check against the borrowed inputs — no per-frame key allocation.
         let active = !hidden.is_empty();
         let unchanged = match (&self.active.visibility_baked, active) {
@@ -922,7 +916,7 @@ impl SceneGpu {
         match geometry {
             // Some unhidden geometry: draw the filtered list.
             Some((indices, ranges)) if !indices.is_empty() => {
-                self.active.visible_index = Some(IndexBuffer::new(device, &indices)?);
+                self.active.visible_index = Some(IndexBuffer::new(gpu, &indices)?);
                 self.active.visible_ranges = ranges;
                 self.active.visible_active = true;
             }
@@ -954,13 +948,13 @@ impl SceneGpu {
 /// [`VertexBuffer`]. The build-on-demand line views + the UV wireframe/fill use this
 /// so an off / empty view holds no allocation.
 pub(super) fn optional_vertex_buffer(
-    device: &ID3D11Device,
+    gpu: &Gpu,
     vertices: &[crate::scene::SceneVertex],
-) -> windows::core::Result<Option<VertexBuffer>> {
+) -> GpuResult<Option<VertexBuffer>> {
     if vertices.is_empty() {
         Ok(None)
     } else {
-        Ok(Some(VertexBuffer::new(device, vertices)?))
+        Ok(Some(VertexBuffer::new(gpu, vertices)?))
     }
 }
 
@@ -975,7 +969,7 @@ type NormalLineBuilder =
 /// nothing), free when off.
 #[allow(clippy::too_many_arguments)] // Disjoint &mut field pairs + the view's plain inputs.
 fn sync_normal_view(
-    device: &ID3D11Device,
+    gpu: &Gpu,
     model: &ModelData,
     lanes: &[[u32; 4]],
     buf: &mut Option<VertexBuffer>,
@@ -985,7 +979,7 @@ fn sync_normal_view(
     color: [f32; 4],
     hidden: &[u32],
     lines: NormalLineBuilder,
-) -> windows::core::Result<()> {
+) -> GpuResult<()> {
     let unchanged = match (&baked, on) {
         (None, false) => true,
         (Some(params), true) => {
@@ -997,7 +991,7 @@ fn sync_normal_view(
         return Ok(());
     }
     *buf = if on {
-        optional_vertex_buffer(device, &lines(model, lanes, length, color, hidden))?
+        optional_vertex_buffer(gpu, &lines(model, lanes, length, color, hidden))?
     } else {
         None
     };

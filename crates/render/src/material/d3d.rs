@@ -13,10 +13,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11DeviceContext};
-
 use crate::config::MaterialMode;
-use crate::rhi::{DynamicConstantBuffer, Sampler, Texture, bind_ps_textures};
+use crate::rhi::{DynamicConstantBuffer, Gpu, GpuResult, Sampler, Texture, bind_ps_textures};
 use crate::texture::{TEXTURE_SLOT_COUNT, TextureSlot};
 
 use super::state::{MaterialState, MaterialUniform};
@@ -84,10 +82,10 @@ pub(crate) struct MaterialTableD3d {
 
 impl MaterialTableD3d {
     /// Build an empty table (fallback only), before any model is loaded.
-    pub(crate) fn new(device: &ID3D11Device) -> windows::core::Result<Self> {
-        let uniform = DynamicConstantBuffer::new::<MaterialUniform>(device)?;
-        let sampler = Sampler::aniso_repeat(device)?;
-        let fallback_textures = create_fallback_textures(device)?;
+    pub(crate) fn new(gpu: &Gpu) -> GpuResult<Self> {
+        let uniform = DynamicConstantBuffer::new::<MaterialUniform>(gpu)?;
+        let sampler = Sampler::aniso_repeat(gpu)?;
+        let fallback_textures = create_fallback_textures(gpu)?;
         let fallback_entry = MaterialEntry {
             uniform: MaterialUniform::fallback(),
             textures: fallback_textures.clone(),
@@ -111,12 +109,11 @@ impl MaterialTableD3d {
     /// changed.
     pub(crate) fn sync(
         &mut self,
-        device: &ID3D11Device,
-        ctx: &ID3D11DeviceContext,
+        gpu: &Gpu,
         materials: &[MaterialState],
         revision: u64,
         mode: MaterialMode,
-    ) -> windows::core::Result<()> {
+    ) -> GpuResult<()> {
         if self.synced == Some((revision, mode)) {
             return Ok(());
         }
@@ -138,8 +135,7 @@ impl MaterialTableD3d {
                         Some(cached) if cached.identity == identity => cached.last_used = tick,
                         _ => {
                             let texture = Texture::rgba8_mipped_or_white(
-                                device,
-                                ctx,
+                                gpu,
                                 binding.image.width,
                                 binding.image.height,
                                 &binding.image.rgba,
@@ -195,37 +191,33 @@ impl MaterialTableD3d {
 
     /// Bind the shared material state once per pass: the cbuffer (`b1`) + the sampler
     /// (`s2`). Per-range, only the cbuffer contents + the slot SRVs change.
-    pub(crate) fn bind_shared(&self, ctx: &ID3D11DeviceContext) {
-        self.uniform.bind_ps(ctx, MATERIAL_CBUFFER_SLOT);
-        self.sampler.bind_ps(ctx, MATERIAL_SAMPLER_SLOT);
+    pub(crate) fn bind_shared(&self, gpu: &Gpu) {
+        self.uniform.bind_ps(gpu, MATERIAL_CBUFFER_SLOT);
+        self.sampler.bind_ps(gpu, MATERIAL_SAMPLER_SLOT);
     }
 
     /// Bind one draw range's material: rewrite the cbuffer with its uniform and bind
     /// its seven slot SRVs at `t5`. `material` indexes the table; an out-of-range
     /// index (e.g. `u32::MAX` for un-materialed triangles) uses the fallback entry.
-    pub(crate) fn set_range(
-        &self,
-        ctx: &ID3D11DeviceContext,
-        material: u32,
-    ) -> windows::core::Result<()> {
+    pub(crate) fn set_range(&self, gpu: &Gpu, material: u32) -> GpuResult<()> {
         let entry = self
             .entries
             .get(material as usize)
             .unwrap_or(&self.fallback_entry);
-        self.uniform.update(ctx, &entry.uniform)?;
+        self.uniform.update(gpu, &entry.uniform)?;
         let refs: [&Texture; TEXTURE_SLOT_COUNT] =
             std::array::from_fn(|slot| entry.textures[slot].as_ref());
-        bind_ps_textures(ctx, MATERIAL_SRV_BASE, &refs);
+        bind_ps_textures(gpu, MATERIAL_SRV_BASE, &refs);
         Ok(())
     }
 
     /// Bind the all-fallback material (for the skybox / grid / overlays, which don't
     /// sample a real material but share the pipeline's resource bindings).
-    pub(crate) fn bind_fallback(&self, ctx: &ID3D11DeviceContext) -> windows::core::Result<()> {
-        self.uniform.update(ctx, &self.fallback_entry.uniform)?;
+    pub(crate) fn bind_fallback(&self, gpu: &Gpu) -> GpuResult<()> {
+        self.uniform.update(gpu, &self.fallback_entry.uniform)?;
         let refs: [&Texture; TEXTURE_SLOT_COUNT] =
             std::array::from_fn(|slot| self.fallback_entry.textures[slot].as_ref());
-        bind_ps_textures(ctx, MATERIAL_SRV_BASE, &refs);
+        bind_ps_textures(gpu, MATERIAL_SRV_BASE, &refs);
         Ok(())
     }
 }
@@ -233,13 +225,11 @@ impl MaterialTableD3d {
 /// Create the per-slot neutral 1×1 fallback textures (white base/AO/opacity,
 /// `[128,128,255]` normal, mid-grey roughness/metallic, black emissive) used for
 /// any unassigned slot.
-fn create_fallback_textures(
-    device: &ID3D11Device,
-) -> windows::core::Result<[Arc<Texture>; TEXTURE_SLOT_COUNT]> {
-    let make = |slot: TextureSlot| -> windows::core::Result<Arc<Texture>> {
+fn create_fallback_textures(gpu: &Gpu) -> GpuResult<[Arc<Texture>; TEXTURE_SLOT_COUNT]> {
+    let make = |slot: TextureSlot| -> GpuResult<Arc<Texture>> {
         let pixel = fallback_pixel(slot);
         Ok(Arc::new(Texture::rgba8_single(
-            device,
+            gpu,
             1,
             1,
             &pixel,

@@ -41,7 +41,7 @@ pub use material::{
     TextureBinding,
 };
 pub use rhi::gpu_profiler::enable_tracy_gpu;
-pub use rhi::{Gpu, PresentStatus};
+pub use rhi::{Format, Gpu, GpuError, GpuResult, PresentStatus};
 use scene::SceneGpu;
 pub use selection::{Selection, SelectionView, selection_bounds};
 use tex_d3d::TexGpu;
@@ -299,7 +299,7 @@ impl Renderer {
     /// composite to the swapchain backbuffer behind the egui chrome `app` draws next.
     /// Builds the GPU resources on the first call (the device only exists once the
     /// window is up).
-    pub fn render_scene(&mut self, gpu: &Gpu, frame: &SceneFrame<'_>) -> windows::core::Result<()> {
+    pub fn render_scene(&mut self, gpu: &Gpu, frame: &SceneFrame<'_>) -> GpuResult<()> {
         // Build the scene GPU resources on first use, then borrow them — `insert`
         // returns the `&mut` so there's no separate unwrap. Disjoint field borrows:
         // `scene` borrows `self.scene_gpu` mutably while the material table + camera
@@ -324,11 +324,7 @@ impl Renderer {
     /// meshes side by side, or one ghosted over the other. Shares every setting
     /// and every GPU resource with [`Self::render_scene`] — only the layout and
     /// the second model differ.
-    pub fn render_opt_scene(
-        &mut self,
-        gpu: &Gpu,
-        frame: &OptSceneFrame<'_>,
-    ) -> windows::core::Result<()> {
+    pub fn render_opt_scene(&mut self, gpu: &Gpu, frame: &OptSceneFrame<'_>) -> GpuResult<()> {
         let scene = match self.scene_gpu {
             Some(ref mut scene) => scene,
             None => self.scene_gpu.insert(SceneGpu::new(
@@ -373,7 +369,7 @@ impl Renderer {
         shading_mode: UvShadingMode,
         anti_aliasing: AntiAliasing,
         background: ViewportBackground,
-    ) -> windows::core::Result<()> {
+    ) -> GpuResult<()> {
         let scene = match self.scene_gpu {
             Some(ref mut scene) => scene,
             None => self
@@ -401,7 +397,7 @@ impl Renderer {
         gpu: &Gpu,
         image: Option<TexImage>,
         background: TexBackground,
-    ) -> windows::core::Result<()> {
+    ) -> GpuResult<()> {
         let tex = match self.tex_gpu {
             Some(ref mut tex) => tex,
             None => self.tex_gpu.insert(TexGpu::new(gpu)?),

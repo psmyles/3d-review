@@ -20,19 +20,14 @@
 //! LUT stays `Rg16Float`. The device hard-requires `TEXTURE_COMPRESSION_BC` (set at
 //! device creation), so IBL is always available on the desktop D3D11 11_0+ target.
 
-#[cfg(feature = "bake")]
-use bytemuck::{Pod, Zeroable};
-use windows::Win32::Graphics::Direct3D11::ID3D11DeviceContext;
-#[cfg(feature = "bake")]
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_R16G16B16A16_FLOAT};
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_BC6H_UF16, DXGI_FORMAT_R16G16_FLOAT};
-
 use crate::EnvironmentMap;
 #[cfg(feature = "bake")]
 use crate::rhi::bake::{Baker, CubeTarget, Target2D};
 #[cfg(feature = "bake")]
 use crate::rhi::{BlendMode, DynamicConstantBuffer, Pipeline, PipelineDesc, Sampler};
-use crate::rhi::{Gpu, Texture};
+use crate::rhi::{Format, Gpu, GpuResult, Texture};
+#[cfg(feature = "bake")]
+use bytemuck::{Pod, Zeroable};
 
 /// Env cubemap face resolution. The sources are 1024×512 equirect, so 256² faces
 /// resolve the environment without upsampling blur.
@@ -49,14 +44,17 @@ const BRDF_SIZE: u32 = 512;
 /// `Rgba16Float`. The baked cube payloads are then BC6H-compressed offline; the
 /// runtime cube textures are `Bc6hRgbUfloat`, created by [`IblD3d::from_baked`].
 #[cfg(feature = "bake")]
-const ENV_FORMAT: DXGI_FORMAT = DXGI_FORMAT_R16G16B16A16_FLOAT;
+const ENV_FORMAT: Format = Format::Rgba16F;
 /// The BRDF integration LUT format (`Rg16Float`): the precompute render target +
 /// readback format (bake only); the runtime uploads the same f16 bytes raw.
 #[cfg(feature = "bake")]
-const BRDF_FORMAT: DXGI_FORMAT = DXGI_FORMAT_R16G16_FLOAT;
+const BRDF_FORMAT: Format = Format::Rg16F;
 
-/// Bytes of one BC6H 4×4 block (128-bit). The runtime cube upload strides the
-/// baked payload by whole rows of blocks.
+/// Bytes of one BC6H 4×4 block (128-bit) — the granularity the bake's written
+/// payload is validated against. The runtime upload no longer needs it: the block
+/// size now comes from the `Format` itself inside `Texture::cube_block_compressed`,
+/// so the two can't disagree.
+#[cfg(feature = "bake")]
 const BC6H_BLOCK_BYTES: u32 = 16;
 
 /// Bytes per texel of the *uncompressed* maps. `Rgba16Float` (4×f16) sizes the
@@ -125,40 +123,33 @@ impl IblD3d {
     /// from their mip-major BC6H `.bin` payloads, the shared BRDF LUT from raw f16.
     /// A pure upload (no precompute), so the first frame and every environment switch
     /// are near-instant.
-    pub(crate) fn from_baked(
-        gpu: &Gpu,
-        environment: EnvironmentMap,
-    ) -> windows::core::Result<Self> {
-        let device = gpu.device();
+    pub(crate) fn from_baked(gpu: &Gpu, environment: EnvironmentMap) -> GpuResult<Self> {
         let irradiance = Texture::cube_block_compressed(
-            device,
+            gpu,
             IRRADIANCE_SIZE,
             1,
-            DXGI_FORMAT_BC6H_UF16,
-            BC6H_BLOCK_BYTES,
+            Format::Bc6hUf16,
             baked_irradiance_bytes(environment),
         )?;
         let prefilter = Texture::cube_block_compressed(
-            device,
+            gpu,
             PREFILTER_SIZE,
             PREFILTER_MIPS,
-            DXGI_FORMAT_BC6H_UF16,
-            BC6H_BLOCK_BYTES,
+            Format::Bc6hUf16,
             baked_prefilter_bytes(environment),
         )?;
         let env_cube = Texture::cube_block_compressed(
-            device,
+            gpu,
             ENV_CUBE_SIZE,
             1,
-            DXGI_FORMAT_BC6H_UF16,
-            BC6H_BLOCK_BYTES,
+            Format::Bc6hUf16,
             baked_env_bytes(environment),
         )?;
         let brdf = Texture::immutable_2d(
-            device,
+            gpu,
             BRDF_SIZE,
             BRDF_SIZE,
-            DXGI_FORMAT_R16G16_FLOAT,
+            Format::Rg16F,
             BRDF_SIZE * RG16F_BPP,
             BAKED_BRDF_BYTES,
         )?;
@@ -173,11 +164,11 @@ impl IblD3d {
 
     /// Bind the IBL maps to the scene pixel-shader slots `irradiance t1`,
     /// `prefilter t2`, `brdf t3`, `env t4` (see the register plan in `scene.hlsl`).
-    pub(crate) fn bind_ps(&self, ctx: &ID3D11DeviceContext) {
-        self.irradiance.bind_ps(ctx, 1);
-        self.prefilter.bind_ps(ctx, 2);
-        self.brdf.bind_ps(ctx, 3);
-        self.env_cube.bind_ps(ctx, 4);
+    pub(crate) fn bind_ps(&self, gpu: &Gpu) {
+        self.irradiance.bind_ps(gpu, 1);
+        self.prefilter.bind_ps(gpu, 2);
+        self.brdf.bind_ps(gpu, 3);
+        self.env_cube.bind_ps(gpu, 4);
     }
 }
 
@@ -311,7 +302,7 @@ fn load_equirect_from_file(
         .map(|&c| half::f16::from_f32(c.min(F16_MAX)).to_bits())
         .collect();
     let texture = Texture::immutable_2d(
-        baker.device(),
+        baker.gpu(),
         width,
         height,
         ENV_FORMAT,
@@ -430,17 +421,18 @@ pub fn bake_ibl_assets() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&out_dir)?;
 
     let baker = Baker::new()?;
-    let device = baker.device();
-    let ctx = baker.context();
+    // Every bake resource is built from the headless device the baker owns, exactly
+    // as the runtime builds its own from the windowed one.
+    let gpu = baker.gpu();
 
     // Shared bake resources: the per-face/pass uniform (`b0`), the linear-clamp
     // sampler (`s0`), and the four fullscreen pipelines (all share `IBL_VS`,
     // depth-less opaque overwrite — they cover the whole target).
-    let cbuffer = DynamicConstantBuffer::new::<FaceUniform>(device)?;
-    let sampler = Sampler::linear_clamp(device)?;
-    let fullscreen = |ps: &[u8]| -> windows::core::Result<Pipeline> {
+    let cbuffer = DynamicConstantBuffer::new::<FaceUniform>(gpu)?;
+    let sampler = Sampler::linear_clamp(gpu)?;
+    let fullscreen = |ps: &[u8]| -> GpuResult<Pipeline> {
         Pipeline::new(
-            device,
+            gpu,
             &PipelineDesc::fullscreen(IBL_VS, ps, BlendMode::Opaque),
         )
     };
@@ -452,20 +444,20 @@ pub fn bake_ibl_assets() -> Result<(), Box<dyn std::error::Error>> {
     // Render targets, reused across environments (each is re-rendered per env). The
     // env cube is both a render target (equirect pass) and a sampled source (the
     // irradiance / prefilter convolutions).
-    let env_cube = CubeTarget::new(device, ENV_CUBE_SIZE, 1, ENV_FORMAT)?;
-    let irradiance = CubeTarget::new(device, IRRADIANCE_SIZE, 1, ENV_FORMAT)?;
-    let prefilter = CubeTarget::new(device, PREFILTER_SIZE, PREFILTER_MIPS, ENV_FORMAT)?;
-    let brdf = Target2D::new(device, BRDF_SIZE, BRDF_SIZE, BRDF_FORMAT)?;
+    let env_cube = CubeTarget::new(gpu, ENV_CUBE_SIZE, 1, ENV_FORMAT)?;
+    let irradiance = CubeTarget::new(gpu, IRRADIANCE_SIZE, 1, ENV_FORMAT)?;
+    let prefilter = CubeTarget::new(gpu, PREFILTER_SIZE, PREFILTER_MIPS, ENV_FORMAT)?;
+    let brdf = Target2D::new(gpu, BRDF_SIZE, BRDF_SIZE, BRDF_FORMAT)?;
 
     // The uniform + sampler stay bound throughout (only the source texture + RTV
     // change per pass); `cbuffer.update` re-fills `b0` per face/mip.
-    cbuffer.bind_vs(ctx, 0);
-    cbuffer.bind_ps(ctx, 0);
-    sampler.bind_ps(ctx, 0);
+    cbuffer.bind_vs(gpu, 0);
+    cbuffer.bind_ps(gpu, 0);
+    sampler.bind_ps(gpu, 0);
 
     // The BRDF integration LUT is environment-independent — bake it once.
-    brdf_pipeline.bind(ctx);
-    cbuffer.update(ctx, &face_uniform(FACE_BASES[0], 0.0))?;
+    brdf_pipeline.bind(gpu);
+    cbuffer.update(gpu, &face_uniform(FACE_BASES[0], 0.0))?;
     baker.begin_target(brdf.rtv(), BRDF_SIZE);
     baker.draw_fullscreen();
     baker.unbind_targets();
@@ -485,10 +477,10 @@ pub fn bake_ibl_assets() -> Result<(), Box<dyn std::error::Error>> {
         let equirect = load_equirect_from_file(&baker, *environment)?;
 
         // Equirect -> env cube (6 faces).
-        equirect_pipeline.bind(ctx);
-        equirect.bind_ps(ctx, 0);
+        equirect_pipeline.bind(gpu);
+        equirect.bind_ps(gpu, 0);
         for (face, basis) in FACE_BASES.iter().enumerate() {
-            cbuffer.update(ctx, &face_uniform(*basis, 0.0))?;
+            cbuffer.update(gpu, &face_uniform(*basis, 0.0))?;
             baker.begin_target(env_cube.rtv(face as u32, 0), ENV_CUBE_SIZE);
             baker.draw_fullscreen();
         }
@@ -502,17 +494,17 @@ pub fn bake_ibl_assets() -> Result<(), Box<dyn std::error::Error>> {
         // (The prefilter pass below is safe only by accident — by then the irradiance
         // target has displaced the env cube from the RTV slot.)
         baker.unbind_targets();
-        irradiance_pipeline.bind(ctx);
-        env_cube.bind_ps_srv(ctx, 1);
+        irradiance_pipeline.bind(gpu);
+        env_cube.bind_ps_srv(gpu, 1);
         for (face, basis) in FACE_BASES.iter().enumerate() {
-            cbuffer.update(ctx, &face_uniform(*basis, 0.0))?;
+            cbuffer.update(gpu, &face_uniform(*basis, 0.0))?;
             baker.begin_target(irradiance.rtv(face as u32, 0), IRRADIANCE_SIZE);
             baker.draw_fullscreen();
         }
 
         // Env cube -> prefiltered specular (mip = roughness, 6 faces each).
-        prefilter_pipeline.bind(ctx);
-        env_cube.bind_ps_srv(ctx, 1);
+        prefilter_pipeline.bind(gpu);
+        env_cube.bind_ps_srv(gpu, 1);
         for mip in 0..PREFILTER_MIPS {
             let roughness = if PREFILTER_MIPS > 1 {
                 mip as f32 / PREFILTER_MAX_LOD
@@ -521,7 +513,7 @@ pub fn bake_ibl_assets() -> Result<(), Box<dyn std::error::Error>> {
             };
             let size = (PREFILTER_SIZE >> mip).max(1);
             for (face, basis) in FACE_BASES.iter().enumerate() {
-                cbuffer.update(ctx, &face_uniform(*basis, roughness))?;
+                cbuffer.update(gpu, &face_uniform(*basis, roughness))?;
                 baker.begin_target(prefilter.rtv(face as u32, mip), size);
                 baker.draw_fullscreen();
             }

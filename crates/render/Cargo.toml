@@ -35,6 +35,9 @@ zune-image.workspace = true
 # in neither wgpu nor pollster — the whole workspace is Direct3D 11.
 intel_tex_2 = { version = "0.5", optional = true }
 review-model = { path = "../model" }
+# The renderer's own `GpuError`, which replaced `windows::core::Error` in every
+# `rhi` signature so the backend's error type stops at the module boundary.
+thiserror.workspace = true
 # Tracy profiler client — always compiled in, inert until the client is started
 # (`--tracy`). Drives the hand-rolled D3D11 GPU timestamp-query profiler
 # (`scene/gpu_profiler.rs`) + the first-frame CPU zones in the app/render structure.

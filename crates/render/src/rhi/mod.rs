@@ -7,10 +7,18 @@
 //! `unsafe`: the device/swapchain ([`Gpu`]), the [`Pipeline`] + vertex/constant
 //! buffers + targets/textures/samplers the scene path draws with, the `--tracy`
 //! GPU timestamp profiler, and the offline bake device.
+//!
+//! It is also the sole home for the backend's *types*. Nothing outside `rhi` names
+//! an `ID3D11*` interface, a `DXGI_FORMAT` or a `windows::core::Result`: every
+//! resource is created from a [`Gpu`], every format is a [`Format`], and every
+//! failure is a [`GpuError`]. That is what makes the renderer's shape independent
+//! of which API is underneath it — see `mac-port-plan.md` §3.1.
 
 #[cfg(feature = "bake")]
 pub(crate) mod bake;
 mod buffer;
+mod error;
+mod format;
 pub(crate) mod gpu_profiler;
 mod pipeline;
 mod sampler;
@@ -18,6 +26,10 @@ mod target;
 mod texture;
 
 pub(crate) use buffer::{DynamicConstantBuffer, IndexBuffer, StructuredBuffer, VertexBuffer};
+pub use error::{GpuError, GpuResult};
+pub(crate) use error::{ResourceContext, ResourceKind};
+pub use format::Format;
+pub(crate) use format::{SCENE_COLOR_FORMAT, SCENE_DEPTH_FORMAT, SWAPCHAIN_FORMAT};
 pub(crate) use pipeline::{
     BlendMode, Cull, DepthBias, DepthCompare, DepthState, InputElement, Pipeline, PipelineDesc,
     Topology, VertexFormat,
@@ -36,35 +48,40 @@ use windows::Win32::Graphics::Direct3D11::{
     ID3D11DeviceContext, ID3D11RenderTargetView, ID3D11ShaderResourceView, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT, DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R8G8B8A8_UNORM,
-    DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
+    DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
     DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET, DXGI_PRESENT, DXGI_SCALING_NONE,
     DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_DISCARD,
     DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter, IDXGIDevice, IDXGIFactory2, IDXGISwapChain1,
 };
-use windows::core::{BOOL, Interface, Result};
+use windows::core::{BOOL, Interface};
 
-/// The swapchain backbuffer format. Per egui-directx11's contract the render
-/// target must be **gamma-space, viewed as non-sRGB-aware** (no `_SRGB`): egui
-/// blends in gamma space, and our own scene composite already encodes sRGB in the
-/// post pass, so a plain UNORM backbuffer is exactly right.
-const BACKBUFFER_FORMAT: DXGI_FORMAT = DXGI_FORMAT_R8G8B8A8_UNORM;
-
-/// The D3D11 device, immediate context, and the window swapchain.
+/// The window swapchain and the view over its current backbuffer.
 ///
-/// One immediate context drives all rendering (auto state-tracking; no DX12-style
-/// barriers). `app` creates this in `resumed`, hands `&device` to
-/// `egui_directx11::Renderer`, and drives the per-frame clear/present.
-pub struct Gpu {
-    device: ID3D11Device,
-    context: ID3D11DeviceContext,
+/// Split out from [`Gpu`] because the offline IBL bake runs on a device with **no**
+/// swapchain: a `Gpu` whose `swapchain` is `None` is a headless device, which is
+/// exactly what `bake.rs` wants and what the sokol port keeps (`Baker` = headless
+/// `Gpu`; `mac-port-plan.md` D19).
+struct Swapchain {
     swap_chain: IDXGISwapChain1,
     /// The current backbuffer render-target view. Rebuilt on resize. `None` only
     /// transiently inside `resize` while the old view is released before
     /// `ResizeBuffers`.
     backbuffer_rtv: Option<ID3D11RenderTargetView>,
+}
+
+/// The D3D11 device, immediate context, and (for an on-screen device) the window
+/// swapchain.
+///
+/// One immediate context drives all rendering (auto state-tracking; no DX12-style
+/// barriers). `app` creates this in `resumed` and drives the per-frame
+/// clear/present; every GPU resource in the renderer is created from it.
+pub struct Gpu {
+    device: ID3D11Device,
+    context: ID3D11DeviceContext,
+    /// `None` on a headless device (the offline bake).
+    swapchain: Option<Swapchain>,
     size: (u32, u32),
 }
 
@@ -75,43 +92,88 @@ impl Gpu {
     /// resources surface as `ID3D11InfoQueue` messages, replacing wgpu's validation
     /// safety net); if the debug layer runtime isn't installed, creation falls back
     /// to a non-debug device.
-    pub fn new(hwnd: HWND, width: u32, height: u32) -> Result<Self> {
+    pub fn new(hwnd: HWND, width: u32, height: u32) -> GpuResult<Self> {
         let width = width.max(1);
         let height = height.max(1);
 
         let base_flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
-        let (device, context) =
-            create_device(base_flags | debug_flag()).or_else(|_| create_device(base_flags))?;
+        let (device, context) = create_device(base_flags | debug_flag())
+            .or_else(|_| create_device(base_flags))
+            .resource(ResourceKind::Device, "D3D11 hardware device")?;
 
-        let swap_chain = create_swap_chain(&device, hwnd, width, height)?;
-        let backbuffer_rtv = create_backbuffer_rtv(&device, &swap_chain)?;
+        let swap_chain = create_swap_chain(&device, hwnd, width, height)
+            .resource(ResourceKind::Swapchain, "window swapchain")?;
+        let backbuffer_rtv = create_backbuffer_rtv(&device, &swap_chain)
+            .resource(ResourceKind::Target, "swapchain backbuffer")?;
 
         Ok(Self {
             device,
             context,
-            swap_chain,
-            backbuffer_rtv: Some(backbuffer_rtv),
+            swapchain: Some(Swapchain {
+                swap_chain,
+                backbuffer_rtv: Some(backbuffer_rtv),
+            }),
             size: (width, height),
         })
     }
 
-    /// The D3D11 device — handed to `egui_directx11::Renderer::new` and used to
-    /// build GPU resources.
-    pub fn device(&self) -> &ID3D11Device {
+    /// Create a **headless** device + immediate context — no swapchain, no window.
+    /// The offline IBL bake renders into its own offscreen targets and reads them
+    /// back, so it never needs a present surface.
+    ///
+    /// The debug layer is requested in debug builds (the bake usually runs as a
+    /// `cargo run` debug build), falling back to a non-debug device when the debug
+    /// runtime isn't installed.
+    #[cfg(feature = "bake")]
+    pub(crate) fn headless() -> GpuResult<Self> {
+        let (device, context) = create_device(debug_flag())
+            .or_else(|_| create_device(D3D11_CREATE_DEVICE_FLAG(0)))
+            .resource(ResourceKind::Device, "headless D3D11 device")?;
+        Ok(Self {
+            device,
+            context,
+            swapchain: None,
+            size: (1, 1),
+        })
+    }
+
+    /// The D3D11 device — the handle every `rhi` resource is created from.
+    pub(in crate::rhi) fn device(&self) -> &ID3D11Device {
         &self.device
     }
 
     /// The immediate context — the single command stream all rendering records to.
-    pub fn context(&self) -> &ID3D11DeviceContext {
+    pub(in crate::rhi) fn context(&self) -> &ID3D11DeviceContext {
         &self.context
     }
 
-    /// The current backbuffer render-target view (the present surface). `None`
-    /// only when a failed [`Gpu::resize`] could not rebuild the view (the next
-    /// successful resize restores it) — callers skip backbuffer work that frame
-    /// instead of panicking.
-    pub fn backbuffer_rtv(&self) -> Option<&ID3D11RenderTargetView> {
-        self.backbuffer_rtv.as_ref()
+    /// The current backbuffer render-target view (the present surface). `None` on a
+    /// headless device, and when a failed [`Gpu::resize`] could not rebuild the view
+    /// (the next successful resize restores it) — callers skip backbuffer work that
+    /// frame instead of panicking.
+    pub(in crate::rhi) fn backbuffer_rtv(&self) -> Option<&ID3D11RenderTargetView> {
+        self.swapchain.as_ref()?.backbuffer_rtv.as_ref()
+    }
+
+    /// The D3D11 device, for `egui-directx11`.
+    ///
+    /// **Temporary.** This and its two siblings below are the only places a backend
+    /// interface escapes `rhi`, and they exist solely because `egui-directx11`
+    /// records into our device itself. They go away with it, when the port replaces
+    /// that crate with our own egui renderer (`mac-port-plan.md` D3 / Phase 1
+    /// step 3). Nothing else may call them.
+    pub fn d3d11_device(&self) -> &ID3D11Device {
+        self.device()
+    }
+
+    /// The immediate context, for `egui-directx11`. See [`Gpu::d3d11_device`].
+    pub fn d3d11_context(&self) -> &ID3D11DeviceContext {
+        self.context()
+    }
+
+    /// The backbuffer view egui draws its chrome onto. See [`Gpu::d3d11_device`].
+    pub fn d3d11_backbuffer_rtv(&self) -> Option<&ID3D11RenderTargetView> {
+        self.backbuffer_rtv()
     }
 
     /// The current backbuffer size in physical pixels.
@@ -120,10 +182,10 @@ impl Gpu {
     }
 
     /// The MSAA sample counts the adapter supports for **both** the scene HDR color
-    /// format (`Rgba16Float`) and the scene depth format (`D32_FLOAT`) — the subset
-    /// of `[1, 2, 4, 8, 16]` the scene can actually render at (invariant 4:
-    /// capability-gate, never crash). `1` (single-sample) is always included. The UI
-    /// drops unsupported entries from the Anti-Aliasing menu.
+    /// format and the scene depth format — the subset of `[1, 2, 4, 8, 16]` the
+    /// scene can actually render at (invariant 4: capability-gate, never crash).
+    /// `1` (single-sample) is always included. The UI drops unsupported entries from
+    /// the Anti-Aliasing menu.
     pub fn supported_msaa_counts(&self) -> Vec<u32> {
         [1u32, 2, 4, 8, 16]
             .into_iter()
@@ -153,7 +215,7 @@ impl Gpu {
                 .CheckMultisampleQualityLevels(format, count)
                 .unwrap_or(0)
         };
-        levels(DXGI_FORMAT_R16G16B16A16_FLOAT) > 0 && levels(DXGI_FORMAT_D32_FLOAT) > 0
+        levels(SCENE_COLOR_FORMAT.dxgi()) > 0 && levels(SCENE_DEPTH_FORMAT.dxgi()) > 0
     }
 
     /// Clear the backbuffer to `rgba` (gamma-space). Used for the first-frame
@@ -172,17 +234,20 @@ impl Gpu {
 
     /// Resize the swapchain to `width`×`height`. Releases the old backbuffer view,
     /// resizes the buffers, and rebuilds the view. A no-op for a zero or unchanged
-    /// size.
-    pub fn resize(&mut self, width: u32, height: u32) -> Result<()> {
+    /// size, and on a headless device.
+    pub fn resize(&mut self, width: u32, height: u32) -> GpuResult<()> {
         if width == 0 || height == 0 || (width, height) == self.size {
             return Ok(());
         }
+        let Some(swapchain) = self.swapchain.as_mut() else {
+            return Ok(());
+        };
         // The backbuffer view must be released before `ResizeBuffers`.
-        self.backbuffer_rtv = None;
+        swapchain.backbuffer_rtv = None;
         // SAFETY: no outstanding references to the swapchain buffers remain (the
         // RTV was just dropped); 0/UNKNOWN keep the existing buffer count + format.
         let resized = unsafe {
-            self.swap_chain.ResizeBuffers(
+            swapchain.swap_chain.ResizeBuffers(
                 0,
                 width,
                 height,
@@ -194,10 +259,13 @@ impl Gpu {
         // failed resize the old buffers remain, so this restores the previous
         // (stale-sized) view rather than leaving the field `None` and skipping
         // every subsequent backbuffer draw until a resize succeeds.
-        self.backbuffer_rtv = create_backbuffer_rtv(&self.device, &self.swap_chain).ok();
-        resized?;
-        if self.backbuffer_rtv.is_none() {
-            self.backbuffer_rtv = Some(create_backbuffer_rtv(&self.device, &self.swap_chain)?);
+        swapchain.backbuffer_rtv = create_backbuffer_rtv(&self.device, &swapchain.swap_chain).ok();
+        resized.resource(ResourceKind::Swapchain, "swapchain resize")?;
+        if swapchain.backbuffer_rtv.is_none() {
+            swapchain.backbuffer_rtv = Some(
+                create_backbuffer_rtv(&self.device, &swapchain.swap_chain)
+                    .resource(ResourceKind::Target, "swapchain backbuffer")?,
+            );
         }
         self.size = (width, height);
         Ok(())
@@ -351,8 +419,15 @@ impl Gpu {
     /// removed/reset HRESULT reports [`PresentStatus::DeviceLost`] so the caller
     /// can surface it — after it, every subsequent frame silently fails.
     pub fn present(&self, vsync: bool) -> PresentStatus {
+        let Some(swapchain) = self.swapchain.as_ref() else {
+            return PresentStatus::Presented;
+        };
         // SAFETY: presenting the live swapchain; no resources are mapped.
-        let hr = unsafe { self.swap_chain.Present(u32::from(vsync), DXGI_PRESENT(0)) };
+        let hr = unsafe {
+            swapchain
+                .swap_chain
+                .Present(u32::from(vsync), DXGI_PRESENT(0))
+        };
         if hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET {
             // SAFETY: pure query on the live device; returns the driver's root
             // cause for the removal (hung, reset, driver error, ...).
@@ -379,10 +454,11 @@ pub enum PresentStatus {
 /// Bind a single SRV to pixel-shader slot `slot` — the one-off form of
 /// `bind_ps_textures`, shared by the texture / target / bake wrappers so the
 /// one-element bind is written once.
-pub(crate) fn bind_ps_srv(ctx: &ID3D11DeviceContext, slot: u32, srv: &ID3D11ShaderResourceView) {
+pub(crate) fn bind_ps_srv(gpu: &Gpu, slot: u32, srv: &ID3D11ShaderResourceView) {
     // SAFETY: the SRV is live; the one-element array outlives the call.
     unsafe {
-        ctx.PSSetShaderResources(slot, Some(&[Some(srv.clone())]));
+        gpu.context()
+            .PSSetShaderResources(slot, Some(&[Some(srv.clone())]));
     }
 }
 
@@ -391,13 +467,6 @@ pub(crate) fn bind_ps_srv(ctx: &ID3D11DeviceContext, slot: u32, srv: &ID3D11Shad
 /// unreachable; one named helper instead of a bare `unwrap` at every call site.
 pub(crate) fn out_param<T>(value: Option<T>) -> T {
     value.expect("COM call succeeded but left its out-param empty")
-}
-
-/// An `E_INVALIDARG` [`windows::core::Error`] with a descriptive message — for
-/// rhi-side validation failures (bad payload sizes, mismatched layouts) that
-/// should surface as render errors rather than fed to the driver.
-pub(crate) fn invalid_arg(message: &str) -> windows::core::Error {
-    windows::core::Error::new(windows::Win32::Foundation::E_INVALIDARG, message)
 }
 
 /// A full-target viewport (top-left origin, depth 0..1) at `width`×`height`.
@@ -428,7 +497,9 @@ fn debug_flag() -> D3D11_CREATE_DEVICE_FLAG {
 
 /// Create a hardware D3D11 device + immediate context at feature level 11_1 (or
 /// 11_0 fallback).
-fn create_device(flags: D3D11_CREATE_DEVICE_FLAG) -> Result<(ID3D11Device, ID3D11DeviceContext)> {
+fn create_device(
+    flags: D3D11_CREATE_DEVICE_FLAG,
+) -> windows::core::Result<(ID3D11Device, ID3D11DeviceContext)> {
     let feature_levels = [D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0];
     let mut device: Option<ID3D11Device> = None;
     let mut context: Option<ID3D11DeviceContext> = None;
@@ -457,7 +528,7 @@ fn create_swap_chain(
     hwnd: HWND,
     width: u32,
     height: u32,
-) -> Result<IDXGISwapChain1> {
+) -> windows::core::Result<IDXGISwapChain1> {
     // Walk device -> DXGI device -> adapter -> factory.
     let dxgi_device: IDXGIDevice = device.cast()?;
     // SAFETY: a live DXGI device always has an adapter.
@@ -468,7 +539,7 @@ fn create_swap_chain(
     let desc = DXGI_SWAP_CHAIN_DESC1 {
         Width: width,
         Height: height,
-        Format: BACKBUFFER_FORMAT,
+        Format: SWAPCHAIN_FORMAT.dxgi(),
         Stereo: BOOL(0),
         SampleDesc: DXGI_SAMPLE_DESC {
             Count: 1,
@@ -491,7 +562,7 @@ fn create_swap_chain(
 fn create_backbuffer_rtv(
     device: &ID3D11Device,
     swap_chain: &IDXGISwapChain1,
-) -> Result<ID3D11RenderTargetView> {
+) -> windows::core::Result<ID3D11RenderTargetView> {
     // SAFETY: buffer 0 always exists on a created swapchain.
     let backbuffer: ID3D11Texture2D = unsafe { swap_chain.GetBuffer(0)? };
     let mut rtv: Option<ID3D11RenderTargetView> = None;

@@ -332,9 +332,13 @@ impl App {
                 shapes: full_output.shapes,
                 pixels_per_point: full_output.pixels_per_point,
             };
-            if let Some(backbuffer_rtv) = gpu.backbuffer_rtv()
-                && let Err(err) =
-                    egui_renderer.render(gpu.context(), backbuffer_rtv, &egui_ctx, egui_output)
+            if let Some(backbuffer_rtv) = gpu.d3d11_backbuffer_rtv()
+                && let Err(err) = egui_renderer.render(
+                    gpu.d3d11_context(),
+                    backbuffer_rtv,
+                    &egui_ctx,
+                    egui_output,
+                )
             {
                 faults.push(("UI render failed", err.to_string()));
             }

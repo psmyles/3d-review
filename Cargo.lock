@@ -2223,6 +2223,7 @@ dependencies = [
  "intel_tex_2",
  "review-model",
  "review-psd",
+ "thiserror 2.0.18",
  "tracy-client",
  "windows",
  "zune-core",

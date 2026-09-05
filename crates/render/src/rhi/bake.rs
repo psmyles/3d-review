@@ -11,45 +11,47 @@
 //! renderer never touches this module — it loads the committed baked maps via
 //! `IblD3d::from_baked` (a pure upload).
 
+use super::{Format, Gpu, GpuResult, ResourceContext, ResourceKind, out_param};
 use windows::Win32::Graphics::Direct3D::D3D_SRV_DIMENSION_TEXTURECUBE;
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_READ,
-    D3D11_CREATE_DEVICE_FLAG, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
-    D3D11_RENDER_TARGET_VIEW_DESC, D3D11_RENDER_TARGET_VIEW_DESC_0,
+    D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_READ, D3D11_MAP_READ,
+    D3D11_MAPPED_SUBRESOURCE, D3D11_RENDER_TARGET_VIEW_DESC, D3D11_RENDER_TARGET_VIEW_DESC_0,
     D3D11_RESOURCE_MISC_TEXTURECUBE, D3D11_RTV_DIMENSION_TEXTURE2DARRAY,
     D3D11_SHADER_RESOURCE_VIEW_DESC, D3D11_SHADER_RESOURCE_VIEW_DESC_0, D3D11_TEX2D_ARRAY_RTV,
     D3D11_TEXCUBE_SRV, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING,
     ID3D11Device, ID3D11DeviceContext, ID3D11RenderTargetView, ID3D11ShaderResourceView,
     ID3D11Texture2D,
 };
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_SAMPLE_DESC};
-use windows::core::Result;
-
-use super::out_param;
+use windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC;
 
 /// A headless Direct3D 11 device + immediate context (no swapchain) for the offline
 /// IBL bake, with safe wrappers for the fullscreen passes + subresource readback.
 pub(crate) struct Baker {
-    device: ID3D11Device,
-    context: ID3D11DeviceContext,
+    /// A headless [`Gpu`] — device + immediate context, no swapchain. Every bake
+    /// resource is created from it exactly as the runtime's are, which is what lets
+    /// `ibl.rs` share `Pipeline` / `Sampler` / `Texture` with the render path.
+    gpu: Gpu,
 }
 
 impl Baker {
-    /// Create the headless device + immediate context. The debug layer is requested
-    /// in debug builds (the bake usually runs as a `cargo run` debug build), falling
-    /// back to a non-debug device when the debug runtime isn't installed.
-    pub(crate) fn new() -> Result<Self> {
-        let (device, context) = super::create_device(super::debug_flag())
-            .or_else(|_| super::create_device(D3D11_CREATE_DEVICE_FLAG(0)))?;
-        Ok(Self { device, context })
+    /// Create the headless device + immediate context.
+    pub(crate) fn new() -> GpuResult<Self> {
+        Ok(Self {
+            gpu: Gpu::headless()?,
+        })
     }
 
-    pub(crate) fn device(&self) -> &ID3D11Device {
-        &self.device
+    /// The headless device the bake's pipelines, buffers and targets are built from.
+    pub(crate) fn gpu(&self) -> &Gpu {
+        &self.gpu
     }
 
-    pub(crate) fn context(&self) -> &ID3D11DeviceContext {
-        &self.context
+    fn device(&self) -> &ID3D11Device {
+        self.gpu.device()
+    }
+
+    fn context(&self) -> &ID3D11DeviceContext {
+        self.gpu.context()
     }
 
     /// Begin a single-target, depth-less fullscreen pass into `rtv`: bind it as the
@@ -59,11 +61,11 @@ impl Baker {
         // SAFETY: `rtv` is live; the local arrays / viewport outlive the calls. The
         // immediate context owns the bound target for their duration.
         unsafe {
-            self.context
+            self.context()
                 .OMSetRenderTargets(Some(&[Some(rtv.clone())]), None);
-            self.context
+            self.context()
                 .ClearRenderTargetView(rtv, &[0.0_f32, 0.0, 0.0, 1.0]);
-            self.context
+            self.context()
                 .RSSetViewports(Some(&[super::viewport(size, size)]));
         }
     }
@@ -74,14 +76,14 @@ impl Baker {
     pub(crate) fn draw_fullscreen(&self) {
         // SAFETY: a plain 3-vertex draw on the immediate context; bound state is the
         // caller's responsibility.
-        unsafe { self.context.Draw(3, 0) };
+        unsafe { self.context().Draw(3, 0) };
     }
 
     /// Unbind all render targets — call before reading a just-rendered texture back
     /// (a resource can't be both a bound render target and a copy source).
     pub(crate) fn unbind_targets(&self) {
         // SAFETY: clearing the render-target slots with a single null view.
-        unsafe { self.context.OMSetRenderTargets(Some(&[None]), None) };
+        unsafe { self.context().OMSetRenderTargets(Some(&[None]), None) };
     }
 
     /// Unbind the first two pixel-shader SRV slots — call before re-rendering the env
@@ -89,7 +91,7 @@ impl Baker {
     /// the previous one, which would otherwise be an RTV/SRV conflict).
     pub(crate) fn unbind_srvs(&self) {
         // SAFETY: clearing SRV slots 0..2 with null views; the local array outlives.
-        unsafe { self.context.PSSetShaderResources(0, Some(&[None, None])) };
+        unsafe { self.context().PSSetShaderResources(0, Some(&[None, None])) };
     }
 
     /// Copy one subresource (`mip + face*mip_count` for a cube; 0 for a 2D target) of
@@ -102,15 +104,15 @@ impl Baker {
         subresource: u32,
         width: u32,
         height: u32,
-        format: DXGI_FORMAT,
+        format: Format,
         bpp: u32,
-    ) -> Result<Vec<u8>> {
+    ) -> GpuResult<Vec<u8>> {
         let desc = D3D11_TEXTURE2D_DESC {
             Width: width,
             Height: height,
             MipLevels: 1,
             ArraySize: 1,
-            Format: format,
+            Format: format.dxgi(),
             SampleDesc: DXGI_SAMPLE_DESC {
                 Count: 1,
                 Quality: 0,
@@ -123,16 +125,17 @@ impl Baker {
         let mut staging = None;
         // SAFETY: a CPU-readable staging texture with no initial data; out-param set.
         unsafe {
-            self.device
-                .CreateTexture2D(&desc, None, Some(&mut staging))?
-        };
+            self.device()
+                .CreateTexture2D(&desc, None, Some(&mut staging))
+        }
+        .resource(ResourceKind::Texture, "readback staging")?;
         let staging = out_param(staging);
 
         // SAFETY: `source` is not currently bound as a render target (callers unbind
         // first); the single source subresource matches the staging texture's only
         // subresource in format + size. A null box copies the whole subresource.
         unsafe {
-            self.context
+            self.context()
                 .CopySubresourceRegion(&staging, 0, 0, 0, 0, source, subresource, None);
         }
 
@@ -143,7 +146,7 @@ impl Baker {
         // `Unmap` is paired with the `Map`.
         unsafe {
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-            self.context
+            self.context()
                 .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
             let base = mapped.pData as *const u8;
             let row_pitch = mapped.RowPitch as usize;
@@ -151,7 +154,7 @@ impl Baker {
                 let src = base.add(row * row_pitch);
                 out.extend_from_slice(std::slice::from_raw_parts(src, tight_row));
             }
-            self.context.Unmap(&staging, 0);
+            self.context().Unmap(&staging, 0);
         }
         Ok(out)
     }
@@ -168,18 +171,14 @@ pub(crate) struct CubeTarget {
 }
 
 impl CubeTarget {
-    pub(crate) fn new(
-        device: &ID3D11Device,
-        size: u32,
-        mips: u32,
-        format: DXGI_FORMAT,
-    ) -> Result<Self> {
+    pub(crate) fn new(gpu: &Gpu, size: u32, mips: u32, format: Format) -> GpuResult<Self> {
+        let device = gpu.device();
         let desc = D3D11_TEXTURE2D_DESC {
             Width: size,
             Height: size,
             MipLevels: mips,
             ArraySize: 6,
-            Format: format,
+            Format: format.dxgi(),
             SampleDesc: DXGI_SAMPLE_DESC {
                 Count: 1,
                 Quality: 0,
@@ -199,7 +198,7 @@ impl CubeTarget {
         for mip in 0..mips {
             for face in 0..6 {
                 let rtv_desc = D3D11_RENDER_TARGET_VIEW_DESC {
-                    Format: format,
+                    Format: format.dxgi(),
                     ViewDimension: D3D11_RTV_DIMENSION_TEXTURE2DARRAY,
                     Anonymous: D3D11_RENDER_TARGET_VIEW_DESC_0 {
                         Texture2DArray: D3D11_TEX2D_ARRAY_RTV {
@@ -220,7 +219,7 @@ impl CubeTarget {
         }
 
         let srv_desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
-            Format: format,
+            Format: format.dxgi(),
             ViewDimension: D3D_SRV_DIMENSION_TEXTURECUBE,
             Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
                 TextureCube: D3D11_TEXCUBE_SRV {
@@ -255,8 +254,8 @@ impl CubeTarget {
     }
 
     /// Bind the whole cube as a sampled shader resource at pixel-shader slot `slot`.
-    pub(crate) fn bind_ps_srv(&self, ctx: &ID3D11DeviceContext, slot: u32) {
-        super::bind_ps_srv(ctx, slot, &self.srv);
+    pub(crate) fn bind_ps_srv(&self, gpu: &Gpu, slot: u32) {
+        super::bind_ps_srv(gpu, slot, &self.srv);
     }
 
     /// The underlying texture, for [`Baker::readback_subresource`].
@@ -273,18 +272,14 @@ pub(crate) struct Target2D {
 }
 
 impl Target2D {
-    pub(crate) fn new(
-        device: &ID3D11Device,
-        width: u32,
-        height: u32,
-        format: DXGI_FORMAT,
-    ) -> Result<Self> {
+    pub(crate) fn new(gpu: &Gpu, width: u32, height: u32, format: Format) -> GpuResult<Self> {
+        let device = gpu.device();
         let desc = D3D11_TEXTURE2D_DESC {
             Width: width,
             Height: height,
             MipLevels: 1,
             ArraySize: 1,
-            Format: format,
+            Format: format.dxgi(),
             SampleDesc: DXGI_SAMPLE_DESC {
                 Count: 1,
                 Quality: 0,

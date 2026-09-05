@@ -18,8 +18,7 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11_DEPTH_STENCIL_DESC, D3D11_DEPTH_WRITE_MASK_ALL, D3D11_DEPTH_WRITE_MASK_ZERO,
     D3D11_FILL_SOLID, D3D11_INPUT_ELEMENT_DESC, D3D11_INPUT_PER_VERTEX_DATA, D3D11_RASTERIZER_DESC,
     D3D11_RENDER_TARGET_BLEND_DESC, ID3D11BlendState, ID3D11DepthStencilState, ID3D11Device,
-    ID3D11DeviceContext, ID3D11InputLayout, ID3D11PixelShader, ID3D11RasterizerState,
-    ID3D11VertexShader,
+    ID3D11InputLayout, ID3D11PixelShader, ID3D11RasterizerState, ID3D11VertexShader,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT, DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_R32G32B32_FLOAT,
@@ -27,7 +26,7 @@ use windows::Win32::Graphics::Dxgi::Common::{
 };
 use windows::core::{BOOL, PCSTR, Result};
 
-use super::out_param;
+use super::{Gpu, GpuResult, ResourceContext, ResourceKind, out_param};
 
 /// Vertex-attribute element formats the scene buffers use, mapped to DXGI.
 #[derive(Clone, Copy)]
@@ -202,17 +201,28 @@ pub(crate) struct Pipeline {
 }
 
 impl Pipeline {
-    pub(crate) fn new(device: &ID3D11Device, desc: &PipelineDesc) -> Result<Self> {
-        let vertex_shader = create_vertex_shader(device, desc.vs)?;
-        let pixel_shader = create_pixel_shader(device, desc.ps)?;
+    pub(crate) fn new(gpu: &Gpu, desc: &PipelineDesc) -> GpuResult<Self> {
+        let device = gpu.device();
+        // Each stage is labelled separately: "pipeline creation failed" on its own
+        // never says whether it was a shader blob, the input layout or a state
+        // object, and the three have completely different causes.
+        let kind = ResourceKind::Pipeline;
+        let vertex_shader =
+            create_vertex_shader(device, desc.vs).resource(kind, "vertex shader")?;
+        let pixel_shader = create_pixel_shader(device, desc.ps).resource(kind, "pixel shader")?;
         let input_layout = if desc.input.is_empty() {
             None
         } else {
-            Some(create_input_layout(device, desc.input, desc.vs)?)
+            Some(
+                create_input_layout(device, desc.input, desc.vs)
+                    .resource(kind, "vertex input layout")?,
+            )
         };
-        let rasterizer = create_rasterizer(device, desc.cull, desc.depth_bias, desc.sample_count)?;
-        let depth_stencil = create_depth_stencil(device, desc.depth)?;
-        let blend = create_blend(device, desc.blend)?;
+        let rasterizer = create_rasterizer(device, desc.cull, desc.depth_bias, desc.sample_count)
+            .resource(kind, "rasterizer state")?;
+        let depth_stencil =
+            create_depth_stencil(device, desc.depth).resource(kind, "depth-stencil state")?;
+        let blend = create_blend(device, desc.blend).resource(kind, "blend state")?;
         Ok(Self {
             vertex_shader,
             pixel_shader,
@@ -226,7 +236,8 @@ impl Pipeline {
 
     /// Bind this pipeline's shaders + state to the immediate context. The blend
     /// factor is unused by both blend modes, so it's left at zero.
-    pub(crate) fn bind(&self, ctx: &ID3D11DeviceContext) {
+    pub(crate) fn bind(&self, gpu: &Gpu) {
+        let ctx = gpu.context();
         // SAFETY: all handles are live for `self`'s lifetime; the immediate context
         // owns them for the duration of these state-setting calls.
         unsafe {

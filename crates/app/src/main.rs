@@ -585,7 +585,7 @@ impl App {
             ));
         }
         // egui renders through egui-directx11 on the same device/context.
-        let egui_renderer = egui_directx11::Renderer::new(gpu.device())
+        let egui_renderer = egui_directx11::Renderer::new(gpu.d3d11_device())
             .context("failed to create the egui Direct3D 11 renderer")?;
         Ok((gpu, egui_renderer))
     }

@@ -15,14 +15,11 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11_RESOURCE_MISC_GENERATE_MIPS, D3D11_RESOURCE_MISC_TEXTURECUBE,
     D3D11_SHADER_RESOURCE_VIEW_DESC, D3D11_SHADER_RESOURCE_VIEW_DESC_0, D3D11_SUBRESOURCE_DATA,
     D3D11_TEXCUBE_SRV, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_USAGE_IMMUTABLE,
-    ID3D11Device, ID3D11DeviceContext, ID3D11ShaderResourceView,
+    ID3D11ShaderResourceView,
 };
-use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_SAMPLE_DESC,
-};
-use windows::core::Result;
+use windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC;
 
-use super::{invalid_arg, out_param};
+use super::{Format, Gpu, GpuError, GpuResult, ResourceContext, ResourceKind, out_param};
 
 /// A sampled GPU texture: a 2D or cube texture plus the shader-resource view a
 /// pixel shader reads it through. The underlying texture is kept alive by the SRV's
@@ -34,18 +31,23 @@ pub(crate) struct Texture {
 impl Texture {
     /// Create an immutable block-compressed **cube** texture (the baked BC6H IBL
     /// cubes) from mip-major, faces-contiguous block bytes — exactly the layout the
-    /// bake tool wrote. `size` is the base face
-    /// resolution; `block_bytes` is one block's size (16 for BC6H). The D3D11
+    /// bake tool wrote. `size` is the base face resolution; the block size comes
+    /// from `format` itself, so a caller can no longer disagree with it. The D3D11
     /// subresource order is `face * mips + mip`, so the mip-major source is
     /// re-indexed accordingly.
     pub(crate) fn cube_block_compressed(
-        device: &ID3D11Device,
+        gpu: &Gpu,
         size: u32,
         mips: u32,
-        format: DXGI_FORMAT,
-        block_bytes: u32,
+        format: Format,
         data: &[u8],
-    ) -> Result<Self> {
+    ) -> GpuResult<Self> {
+        let device = gpu.device();
+        debug_assert!(
+            format.is_block_compressed(),
+            "cube_block_compressed needs a block-compressed format"
+        );
+        let block_bytes = format.block_bytes();
         // Validate the payload against the computed subresource layout *before*
         // handing pointers to the driver: a truncated baked asset would otherwise
         // make D3D11 read past the end of `data` (out of bounds, not an error).
@@ -56,7 +58,7 @@ impl Texture {
             })
             .sum();
         if data.len() < total_len {
-            return Err(invalid_arg(
+            return Err(GpuError::invalid_arg(
                 "block-compressed cube payload is shorter than its subresource layout",
             ));
         }
@@ -85,7 +87,7 @@ impl Texture {
             Height: size,
             MipLevels: mips,
             ArraySize: 6,
-            Format: format,
+            Format: format.dxgi(),
             SampleDesc: DXGI_SAMPLE_DESC {
                 Count: 1,
                 Quality: 0,
@@ -98,11 +100,12 @@ impl Texture {
         let mut texture = None;
         // SAFETY: `desc` describes an immutable cube; `subdata` (alive for the call)
         // holds the 6×mips initial-data entries pointing into `data` (also alive).
-        unsafe { device.CreateTexture2D(&desc, Some(subdata.as_ptr()), Some(&mut texture))? };
+        unsafe { device.CreateTexture2D(&desc, Some(subdata.as_ptr()), Some(&mut texture)) }
+            .resource(ResourceKind::Texture, "block-compressed cube")?;
         let texture = out_param(texture);
 
         let srv_desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
-            Format: format,
+            Format: format.dxgi(),
             ViewDimension: D3D_SRV_DIMENSION_TEXTURECUBE,
             Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
                 TextureCube: D3D11_TEXCUBE_SRV {
@@ -114,26 +117,28 @@ impl Texture {
         let mut srv = None;
         // SAFETY: `texture` is shader-resource-bindable; `srv_desc` matches its cube
         // format + mip count. Out-param set.
-        unsafe { device.CreateShaderResourceView(&texture, Some(&srv_desc), Some(&mut srv))? };
+        unsafe { device.CreateShaderResourceView(&texture, Some(&srv_desc), Some(&mut srv)) }
+            .resource(ResourceKind::Texture, "block-compressed cube view")?;
         Ok(Self {
             srv: out_param(srv),
         })
     }
 
     /// Create an immutable single-mip 2D texture from tightly-packed `data`
-    /// (`row_pitch` bytes per row) — the raw `Rg16Float` BRDF LUT.
+    /// (`row_pitch` bytes per row) — the raw [`Format::Rg16F`] BRDF LUT.
     pub(crate) fn immutable_2d(
-        device: &ID3D11Device,
+        gpu: &Gpu,
         width: u32,
         height: u32,
-        format: DXGI_FORMAT,
+        format: Format,
         row_pitch: u32,
         data: &[u8],
-    ) -> Result<Self> {
+    ) -> GpuResult<Self> {
+        let device = gpu.device();
         // The driver reads `row_pitch` bytes per row for `height` rows; a short
         // payload would be an out-of-bounds read, so reject it here.
         if data.len() < row_pitch as usize * height as usize {
-            return Err(invalid_arg(
+            return Err(GpuError::invalid_arg(
                 "2D texture payload is shorter than pitch × height",
             ));
         }
@@ -147,7 +152,7 @@ impl Texture {
             Height: height,
             MipLevels: 1,
             ArraySize: 1,
-            Format: format,
+            Format: format.dxgi(),
             SampleDesc: DXGI_SAMPLE_DESC {
                 Count: 1,
                 Quality: 0,
@@ -159,11 +164,13 @@ impl Texture {
         };
         let mut texture = None;
         // SAFETY: immutable 2D texture with full initial data alive for the call.
-        unsafe { device.CreateTexture2D(&desc, Some(&init), Some(&mut texture))? };
+        unsafe { device.CreateTexture2D(&desc, Some(&init), Some(&mut texture)) }
+            .resource(ResourceKind::Texture, "immutable 2D")?;
         let texture = out_param(texture);
         let mut srv = None;
         // SAFETY: `texture` is shader-resource-bindable; a default view desc matches.
-        unsafe { device.CreateShaderResourceView(&texture, None, Some(&mut srv))? };
+        unsafe { device.CreateShaderResourceView(&texture, None, Some(&mut srv)) }
+            .resource(ResourceKind::Texture, "immutable 2D view")?;
         Ok(Self {
             srv: out_param(srv),
         })
@@ -172,14 +179,13 @@ impl Texture {
     /// Create an immutable single-mip RGBA8 2D texture (sRGB or linear) — the
     /// per-slot 1×1 material fallbacks and the UV-checker textures (no mips needed).
     pub(crate) fn rgba8_single(
-        device: &ID3D11Device,
+        gpu: &Gpu,
         width: u32,
         height: u32,
         rgba: &[u8],
         srgb: bool,
-    ) -> Result<Self> {
-        let format = rgba8_format(srgb);
-        Self::immutable_2d(device, width, height, format, width * 4, rgba)
+    ) -> GpuResult<Self> {
+        Self::immutable_2d(gpu, width, height, rgba8_format(srgb), width * 4, rgba)
     }
 
     /// Create an RGBA8 2D texture (sRGB or linear) with a full, runtime-generated
@@ -187,17 +193,17 @@ impl Texture {
     /// `UpdateSubresource`, then `GenerateMips` fills the rest, so anisotropic
     /// minification has levels to filter.
     pub(crate) fn rgba8_mipped(
-        device: &ID3D11Device,
-        ctx: &ID3D11DeviceContext,
+        gpu: &Gpu,
         width: u32,
         height: u32,
         rgba: &[u8],
         srgb: bool,
-    ) -> Result<Self> {
+    ) -> GpuResult<Self> {
+        let (device, ctx) = (gpu.device(), gpu.context());
         // Enforced here (not just documented at the call sites): the mip-0 upload
         // below reads `width*height*4` bytes.
         if rgba.len() < width as usize * height as usize * 4 {
-            return Err(invalid_arg(
+            return Err(GpuError::invalid_arg(
                 "RGBA8 payload is shorter than width × height × 4",
             ));
         }
@@ -208,7 +214,7 @@ impl Texture {
             Height: height,
             MipLevels: mips,
             ArraySize: 1,
-            Format: format,
+            Format: format.dxgi(),
             SampleDesc: DXGI_SAMPLE_DESC {
                 Count: 1,
                 Quality: 0,
@@ -222,7 +228,8 @@ impl Texture {
         let mut texture = None;
         // SAFETY: a default-usage mip-mapped 2D texture; mip0 is filled below and the
         // rest generated, so no initial data is supplied.
-        unsafe { device.CreateTexture2D(&desc, None, Some(&mut texture))? };
+        unsafe { device.CreateTexture2D(&desc, None, Some(&mut texture)) }
+            .resource(ResourceKind::Texture, "mipped RGBA8")?;
         let texture = out_param(texture);
 
         // SAFETY: writing mip 0 of `texture`; `rgba` (>= width*height*4 bytes,
@@ -239,7 +246,8 @@ impl Texture {
         }
         let mut srv = None;
         // SAFETY: `texture` is shader-resource-bindable across all mips; default desc.
-        unsafe { device.CreateShaderResourceView(&texture, None, Some(&mut srv))? };
+        unsafe { device.CreateShaderResourceView(&texture, None, Some(&mut srv)) }
+            .resource(ResourceKind::Texture, "mipped RGBA8 view")?;
         let srv = out_param(srv);
         // SAFETY: the SRV covers the full mip chain of a render-target-capable
         // texture, so GenerateMips can downsample mip0 into the rest.
@@ -252,48 +260,43 @@ impl Texture {
     /// decode hiccup must never fail the render path. Shared by the material
     /// slots (sRGB per slot) and the Tex viewport (raw).
     pub(crate) fn rgba8_mipped_or_white(
-        device: &ID3D11Device,
-        ctx: &ID3D11DeviceContext,
+        gpu: &Gpu,
         width: u32,
         height: u32,
         rgba: &[u8],
         srgb: bool,
-    ) -> Result<Self> {
+    ) -> GpuResult<Self> {
         let width = width.max(1);
         let height = height.max(1);
         if rgba.len() < (width as usize * height as usize * 4) {
-            return Self::rgba8_single(device, 1, 1, &[255, 255, 255, 255], srgb);
+            return Self::rgba8_single(gpu, 1, 1, &[255, 255, 255, 255], srgb);
         }
-        Self::rgba8_mipped(device, ctx, width, height, rgba, srgb)
+        Self::rgba8_mipped(gpu, width, height, rgba, srgb)
     }
 
     /// Bind this texture's SRV to pixel-shader slot `slot`.
-    pub(crate) fn bind_ps(&self, ctx: &ID3D11DeviceContext, slot: u32) {
-        super::bind_ps_srv(ctx, slot, &self.srv);
+    pub(crate) fn bind_ps(&self, gpu: &Gpu, slot: u32) {
+        super::bind_ps_srv(gpu, slot, &self.srv);
     }
 }
 
 /// Bind `textures` to consecutive pixel-shader SRV slots starting at `slot` in one
 /// call (the seven material slots → `t5..t11`). Fixed-size so the per-draw-range
 /// rebind allocates nothing.
-pub(crate) fn bind_ps_textures<const N: usize>(
-    ctx: &ID3D11DeviceContext,
-    slot: u32,
-    textures: &[&Texture; N],
-) {
+pub(crate) fn bind_ps_textures<const N: usize>(gpu: &Gpu, slot: u32, textures: &[&Texture; N]) {
     let srvs: [Option<ID3D11ShaderResourceView>; N] =
         std::array::from_fn(|index| Some(textures[index].srv.clone()));
     // SAFETY: every SRV is live; the local array outlives the call.
     unsafe {
-        ctx.PSSetShaderResources(slot, Some(&srvs));
+        gpu.context().PSSetShaderResources(slot, Some(&srvs));
     }
 }
 
-fn rgba8_format(srgb: bool) -> DXGI_FORMAT {
+const fn rgba8_format(srgb: bool) -> Format {
     if srgb {
-        DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
+        Format::Rgba8Srgb
     } else {
-        DXGI_FORMAT_R8G8B8A8_UNORM
+        Format::Rgba8
     }
 }
 

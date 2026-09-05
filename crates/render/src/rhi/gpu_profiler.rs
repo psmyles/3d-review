@@ -38,6 +38,8 @@ use windows::Win32::Graphics::Direct3D11::{
 };
 use windows::core::Result;
 
+use super::{Gpu, GpuResult, ResourceContext, ResourceKind};
+
 use super::out_param;
 
 /// Set by `app` on a `--tracy` launch. Read by the scene renderer (which has no
@@ -170,13 +172,18 @@ impl GpuProfiler {
     /// Build the query ring. Timestamp + disjoint queries are core to D3D11 feature
     /// level 11_0+, but `CreateQuery` can still fail on an exotic driver, so this is
     /// fallible and the caller treats `Err` as "no profiling this run".
-    pub(crate) fn new(device: &ID3D11Device) -> Result<Self> {
+    pub(crate) fn new(gpu: &Gpu) -> GpuResult<Self> {
+        let device = gpu.device();
         let mut ring = Vec::with_capacity(RING);
         for _ in 0..RING {
-            let disjoint = create_query(device, D3D11_QUERY_TIMESTAMP_DISJOINT)?;
+            let disjoint = create_query(device, D3D11_QUERY_TIMESTAMP_DISJOINT)
+                .resource(ResourceKind::Query, "disjoint timestamp")?;
             let mut timestamps = Vec::with_capacity(SLOTS);
             for _ in 0..SLOTS {
-                timestamps.push(create_query(device, D3D11_QUERY_TIMESTAMP)?);
+                timestamps.push(
+                    create_query(device, D3D11_QUERY_TIMESTAMP)
+                        .resource(ResourceKind::Query, "timestamp")?,
+                );
             }
             ring.push(RingSlot {
                 disjoint,
@@ -197,7 +204,8 @@ impl GpuProfiler {
     /// unread result (it was written `RING` frames ago, so it is done), then begin
     /// the disjoint query for the new frame. `mask` is the set of zones about to be
     /// encoded. Call once per `render`, before encoding.
-    pub(crate) fn begin_frame(&mut self, ctx: &ID3D11DeviceContext, mask: u16) {
+    pub(crate) fn begin_frame(&mut self, gpu: &Gpu, mask: u16) {
+        let ctx = gpu.context();
         self.frame_no += 1;
         let slot = (self.frame_no % RING as u64) as usize;
         self.cur_slot = slot;
@@ -212,13 +220,13 @@ impl GpuProfiler {
 
     /// Record this zone's *begin* timestamp at the current point in the command
     /// stream. Call right before the zone's draws.
-    pub(crate) fn zone_begin(&self, ctx: &ID3D11DeviceContext, zone: Zone) {
-        self.end_timestamp(ctx, zone.base());
+    pub(crate) fn zone_begin(&self, gpu: &Gpu, zone: Zone) {
+        self.end_timestamp(gpu.context(), zone.base());
     }
 
     /// Record this zone's *end* timestamp. Call right after the zone's draws.
-    pub(crate) fn zone_end(&self, ctx: &ID3D11DeviceContext, zone: Zone) {
-        self.end_timestamp(ctx, zone.base() + 1);
+    pub(crate) fn zone_end(&self, gpu: &Gpu, zone: Zone) {
+        self.end_timestamp(gpu.context(), zone.base() + 1);
     }
 
     /// `End` the timestamp query at `index` in this frame's slot (records the GPU
@@ -232,7 +240,8 @@ impl GpuProfiler {
     /// End the disjoint query, closing the frame's timing window, and mark the slot
     /// pending so a later `begin_frame` reads it back. Call once per `render`, after
     /// encoding.
-    pub(crate) fn end_frame(&mut self, ctx: &ID3D11DeviceContext) {
+    pub(crate) fn end_frame(&mut self, gpu: &Gpu) {
+        let ctx = gpu.context();
         let slot = self.cur_slot;
         // SAFETY: the disjoint query is live and was `Begin`-ed this frame.
         unsafe { ctx.End(&self.ring[slot].disjoint) };

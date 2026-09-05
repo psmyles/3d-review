@@ -14,9 +14,11 @@ is the *GPU layer* (`crates/render/src/rhi/` and the shaders), the egui renderer
 leaves in `app`, and the build/distribution chain. The port runs **Windows first** (Fire D13): the
 shared-shell migration is the risk, and it has to be gated on a Windows box against `main`.
 
-Status: **Phase 0 done on Windows** (D21, D22); the port itself is not started. Sections are
-written in the present tense of the finished port so they can become the description once it
-lands; the *Status* column of §2 and the phase list in §8 say what is actually done.
+Status: **Phase 0 done on Windows** (D21, D22), and **Phase 1 step 1** — the `rhi` façade refactor
+that puts `GpuError`/`GpuResult`/`Format` in front of the backend's types. The backend swap itself
+has not started: the renderer is still Direct3D 11 underneath. Sections are written in the present
+tense of the finished port so they can become the description once it lands; the *Status* column of
+§2 and the phase list in §8 say what is actually done.
 
 ---
 
@@ -388,7 +390,11 @@ Fire §7 applies, with these deltas.
   `[env]` cannot be made host-conditional).
 * **Clippy scope:** `exclude = ["vendor/sokol-rust"]` in the root manifest (D21). `cargo clippy
   --workspace --all-targets -- -D warnings` must pass on *both* hosts, because each host's clippy
-  never sees the other's leaf.
+  never sees the other's leaf. It **aborts at the first failing crate**, so a run that reports one
+  crate's lints says nothing about the crates downstream of it — after fixing, re-run to the end
+  rather than assuming the list was complete. A toolchain bump can also turn a clean tree red on
+  code nobody touched; fix those rather than `-A`-ing them, since a `future_incompat` warning
+  becomes a hard error later.
 * **Tests:** everything headless (`model`, `import`, `render`'s geometry / material / camera,
   `optimize` + its fixture suites) runs on both. Added by the port: the egui renderer's
   mesh→buffer packing, the CPU mip chain (against a hardware-matching reference), the
@@ -428,15 +434,21 @@ Fire §7 applies, with these deltas.
    D3D11), and nothing depends on it yet, so `[workspace.dependencies] sokol` is deliberately not
    declared until Phase 1 step 3 wires it in.
 
-Found while doing it, not fixed (both predate the port, and neither blocks Phase 1):
+Found while doing it:
 
-* **The workspace clippy gate is red on current stable** (1.98.1) from three new lints on
-  untouched code: `chunks_exact_to_as_chunks` (4× `crates/model/src/lib.rs`, 1×
-  `crates/model/src/anim.rs`), `byte_char_slices` (3× `crates/render/src/texture.rs`) and the
-  `float_literal_f32_fallback` future-incompat warning (`crates/ui/src/widgets.rs:532`). All are
-  one-line mechanical fixes. Until they land, "clippy clean" has to be read as clean with those
-  three `-A`'d.
-* **`fire_psd_info.channels` is the document's raw `channelCount`**, which counts spot/extra
+* **The workspace clippy gate had gone red on current stable** (1.98.1) from three lints on
+  untouched code — *fixed during Phase 1, thirteen sites in all*. `float_literal_f32_fallback`
+  (`crates/ui/src/widgets.rs:532`) was the one that mattered: a future-incompat warning, so it
+  becomes a hard error on a later toolchain. `byte_char_slices` (3× `crates/render/src/texture.rs`)
+  became byte-string literals. `chunks_exact_to_as_chunks` (9× across `model`,
+  `render/geometry` and `optimize`'s `real_models` test) became `as_chunks::<3>().0`, which hands
+  back `&[[u32; 3]]` rather than `&[u32]` — the triangle shape moves into the type and the
+  remainder is dropped identically, so nothing changes at run time. `slice::as_chunks` stabilised
+  in 1.88, exactly the workspace floor, so no MSRV bump. Worth knowing for the next such sweep:
+  **clippy aborts at the first failing crate**, so `model`'s five sites were hiding `render`'s and
+  `optimize`'s — a run that reports one crate's lints is not evidence the rest are clean.
+* **`fire_psd_info.channels` is the document's raw `channelCount`** (not fixed; it predates the
+  port and does not block Phase 1), which counts spot/extra
   channels, and `toolbar.rs:530` keys the Tex viewport's alpha segment on `channels == 2 | 4`. An
   RGB PSD with one spot channel reports 5 and so reads as having no alpha. Fire hit this and fixed
   it in its newer wrapper by reporting the *composite's* channel count instead; that fix is not
@@ -452,6 +464,24 @@ Ordered so each step is verifiable by eye against the current renderer on the sa
    `material/d3d.rs`, `tex_d3d.rs`, `ibl.rs`, `lib.rs`); `windows::core::Result` disappears from
    `render`'s public API. Pure refactor, pixel-identical, tests green. This is what makes step 4 a
    swap instead of a rewrite.
+   *Done.* `rhi/error.rs` + `rhi/format.rs` are new; every constructor now takes `&Gpu` (the two
+   `(device, ctx)` parameter pairs collapse into one handle) and ends in
+   `.resource(kind, label)`, so a failure names the resource instead of only an HRESULT.
+   `Format::dxgi()` is `pub(in crate::rhi)`, which is what *enforces* the boundary rather than
+   just documenting it — `grep -r 'windows::\|ID3D11\|DXGI_' crates/render/src` outside `rhi/`
+   is now empty. `Gpu` gained an **optional** swapchain: `Gpu::headless()` is the bake's device,
+   so `Baker` is already "a headless `Gpu`" as D19 wants, and `rhi::bake` no longer creates a
+   device of its own. Three deviations worth knowing: `Gpu::new` still takes an `HWND` and
+   `d3d11_device()` / `d3d11_context()` / `d3d11_backbuffer_rtv()` remain `pub` purely for
+   `egui-directx11` (all four go in step 3); `Gpu::resize` is still fallible (step 3); and
+   `Texture::cube_block_compressed` lost its `block_bytes` parameter, which now comes from the
+   `Format`. Verified: `cargo clippy --workspace --all-targets -- -D warnings` clean with no `-A`
+   escapes (the three stale-toolchain lints Phase 0 found were cleared in the same pass), the same
+   for `-p review-render --features bake`, all tests green, and the viewer eye-checked against
+   `SK_Player_01.fbx` — skinned mesh in its default pose, IBL/PBR shading, GTAO, grid + axes,
+   Outliner and toolbar all unchanged. The UV / Tex / Opt viewports compile and share the same
+   `rhi` calls but were **not** eye-checked: synthetic clicks do not reach the winit window from
+   an agent session, so that check is one manual click each.
 2. **Shaders first, no runtime change.** Write `review.glsl` (all 15 programs, §4) +
    `scripts/gen-shaders.ps1/.sh`; generate; the new `build.rs` compiles the generated HLSL to
    committed DXBC with the existing freshness gate (D5). Verify: shdc accepts it, `fxc /WX`

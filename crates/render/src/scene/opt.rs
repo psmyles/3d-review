@@ -10,11 +10,9 @@
 //!
 //! [`ModelSlot`]: super::resources::ModelSlot
 
-use windows::Win32::Graphics::Direct3D11::ID3D11Device;
-
 use crate::geometry::wireframe_lines;
 use crate::material::MaterialState;
-use crate::rhi::Gpu;
+use crate::rhi::{Gpu, GpuResult};
 use crate::{GhostStyle, OptSceneFrame, OptView, OrbitCamera, ProcessedModelRef, SceneFrame};
 
 use super::d3d::{BackbufferRect, SceneGpu, scene_uniforms};
@@ -34,7 +32,7 @@ impl SceneGpu {
         frame: &OptSceneFrame<'_>,
         material_states: &[MaterialState],
         material_revision: u64,
-    ) -> windows::core::Result<()> {
+    ) -> GpuResult<()> {
         let size = gpu.size();
 
         match frame.view {
@@ -79,7 +77,7 @@ impl SceneGpu {
         frame: &OptSceneFrame<'_>,
         material_states: &[MaterialState],
         material_revision: u64,
-    ) -> windows::core::Result<()> {
+    ) -> GpuResult<()> {
         // No ghost is drawn in the split view, so its buffers go (invariant 3).
         self.release_ghost_wireframes();
 
@@ -190,7 +188,7 @@ impl SceneGpu {
         swap: bool,
         tint: [f32; 3],
         size: (u32, u32),
-    ) -> windows::core::Result<()> {
+    ) -> GpuResult<()> {
         let processed_frame = frame.base.with_model(processed.model, processed.revision);
         // `swap` decides which mesh reads as solid; the other becomes the ghost.
         let (solid_slot, solid_frame, ghost_slot, ghost_frame) = if swap {
@@ -215,7 +213,7 @@ impl SceneGpu {
         self.activate(ghost_slot);
         self.sync_frame(gpu, ghost_frame, material_states, material_revision, size)?;
         if ghost == GhostStyle::Wireframe {
-            self.sync_ghost_wireframe(gpu.device(), ghost_frame, tint)?;
+            self.sync_ghost_wireframe(gpu, ghost_frame, tint)?;
         } else {
             self.release_ghost_wireframes();
         }
@@ -253,9 +251,7 @@ impl SceneGpu {
         frame: &SceneFrame<'_>,
         style: GhostStyle,
         tint: [f32; 3],
-    ) -> windows::core::Result<()> {
-        let ctx = gpu.context();
-
+    ) -> GpuResult<()> {
         // The ghost's own uniform: same camera and projection, but the flat fill
         // colour swapped in. Restored to the frame's own uniform afterwards so the
         // GTAO pass (which reads `view` from `b0`) still sees the right one.
@@ -270,21 +266,21 @@ impl SceneGpu {
             false,
         );
         uniforms.selection_color = ghost_tint(style, tint);
-        self.uniforms.update(ctx, &uniforms)?;
+        self.uniforms.update(gpu, &uniforms)?;
 
         match style {
             GhostStyle::Xray => {
                 if let Some(mesh) = &self.idle.mesh {
-                    self.scene.selection.bind(ctx);
-                    mesh.vertices.bind(ctx);
-                    mesh.indices.bind(ctx);
+                    self.scene.selection.bind(gpu);
+                    mesh.vertices.bind(gpu);
+                    mesh.indices.bind(gpu);
                     gpu.draw_indexed_range(mesh.indices.count(), 0);
                 }
             }
             GhostStyle::Wireframe => {
                 if let Some(lines) = &self.idle.ghost_wireframe_buf {
-                    self.scene.line.bind(ctx);
-                    lines.bind(ctx);
+                    self.scene.line.bind(gpu);
+                    lines.bind(gpu);
                     gpu.draw(lines.count());
                 }
             }
@@ -299,7 +295,7 @@ impl SceneGpu {
             frame.debug,
             self.active.deform_enabled(),
         );
-        self.uniforms.update(ctx, &restored)?;
+        self.uniforms.update(gpu, &restored)?;
         Ok(())
     }
 
@@ -308,10 +304,10 @@ impl SceneGpu {
     /// not an overlay on it.
     fn sync_ghost_wireframe(
         &mut self,
-        device: &ID3D11Device,
+        gpu: &Gpu,
         frame: &SceneFrame<'_>,
         tint: [f32; 3],
-    ) -> windows::core::Result<()> {
+    ) -> GpuResult<()> {
         let colour = ghost_tint(GhostStyle::Wireframe, tint);
         // Drift check against the borrowed inputs — no per-frame key allocation.
         let unchanged = match &self.active.ghost_wireframe_baked {
@@ -326,7 +322,7 @@ impl SceneGpu {
             return Ok(());
         }
         let lines = wireframe_lines(frame.model, &[], colour, frame.hidden_meshes);
-        self.active.ghost_wireframe_buf = optional_vertex_buffer(device, &lines)?;
+        self.active.ghost_wireframe_buf = optional_vertex_buffer(gpu, &lines)?;
         self.active.ghost_wireframe_baked =
             Some((frame.model_revision, frame.hidden_meshes.to_vec(), colour));
         Ok(())

@@ -7,15 +7,15 @@
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_DEPTH_STENCIL, D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE,
     D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, ID3D11DepthStencilView, ID3D11Device,
-    ID3D11DeviceContext, ID3D11RenderTargetView, ID3D11ShaderResourceView, ID3D11Texture2D,
+    ID3D11RenderTargetView, ID3D11ShaderResourceView, ID3D11Texture2D,
 };
-use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT, DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT,
-    DXGI_SAMPLE_DESC,
-};
+use windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC;
 use windows::core::Result;
 
-use super::out_param;
+use super::{
+    Format, Gpu, GpuResult, ResourceContext, ResourceKind, SCENE_COLOR_FORMAT, SCENE_DEPTH_FORMAT,
+    out_param,
+};
 
 /// An offscreen color target: a texture with a render-target view (a pass draws into
 /// it) and a shader-resource view (a later pass samples it). At `sample_count == 1`
@@ -23,8 +23,8 @@ use super::out_param;
 /// is multisampled (RTV only) and a separate single-sample `resolve` texture holds
 /// the SRV — [`Self::resolve`] copies the MSAA texture into it. Recreated on resize
 /// or sample-count change. The scene color / ambient targets are linear-HDR
-/// (`R16G16B16A16_FLOAT`) and MSAA-capable; the GTAO G-buffer reuses the HDR format
-/// single-sample, and the raw / blurred AO targets are single-channel `R8_UNORM`.
+/// ([`Format::Rgba16F`]) and MSAA-capable; the GTAO G-buffer reuses the HDR format
+/// single-sample, and the raw / blurred AO targets are single-channel [`Format::R8`].
 pub(crate) struct ColorTarget {
     /// The texture the scene renders into (multisampled when `sample_count > 1`).
     render: ID3D11Texture2D,
@@ -35,49 +35,50 @@ pub(crate) struct ColorTarget {
     /// Single-sample resolve of `render`, present only when `sample_count > 1`. The
     /// MSAA resolve writes the per-pixel average here; the SRV reads it.
     resolve: Option<ID3D11Texture2D>,
-    format: DXGI_FORMAT,
+    format: Format,
     width: u32,
     height: u32,
 }
 
 impl ColorTarget {
-    /// A single-sample linear-HDR (`R16G16B16A16_FLOAT`) target — the GTAO view
-    /// normal/Z G-buffer.
-    pub(crate) fn new(device: &ID3D11Device, width: u32, height: u32) -> Result<Self> {
-        Self::build(device, width, height, DXGI_FORMAT_R16G16B16A16_FLOAT, 1)
+    /// A single-sample linear-HDR target — the GTAO view normal/Z G-buffer.
+    pub(crate) fn new(gpu: &Gpu, width: u32, height: u32) -> GpuResult<Self> {
+        Self::build(gpu, width, height, SCENE_COLOR_FORMAT, 1, "G-buffer")
     }
 
     /// A linear-HDR target at `sample_count` MSAA — the scene color / ambient MRT.
     /// `sample_count == 1` is single-sample (no resolve); `> 1` is multisampled with a
     /// single-sample resolve the composite samples.
     pub(crate) fn hdr_msaa(
-        device: &ID3D11Device,
+        gpu: &Gpu,
         width: u32,
         height: u32,
         sample_count: u32,
-    ) -> Result<Self> {
+    ) -> GpuResult<Self> {
         Self::build(
-            device,
+            gpu,
             width,
             height,
-            DXGI_FORMAT_R16G16B16A16_FLOAT,
+            SCENE_COLOR_FORMAT,
             sample_count,
+            "scene color",
         )
     }
 
-    /// A single-channel single-sample `R8_UNORM` target — the raw + blurred GTAO
-    /// occlusion.
-    pub(crate) fn r8(device: &ID3D11Device, width: u32, height: u32) -> Result<Self> {
-        Self::build(device, width, height, DXGI_FORMAT_R8_UNORM, 1)
+    /// A single-channel single-sample target — the raw + blurred GTAO occlusion.
+    pub(crate) fn r8(gpu: &Gpu, width: u32, height: u32) -> GpuResult<Self> {
+        Self::build(gpu, width, height, Format::R8, 1, "occlusion")
     }
 
     fn build(
-        device: &ID3D11Device,
+        gpu: &Gpu,
         width: u32,
         height: u32,
-        format: DXGI_FORMAT,
+        format: Format,
         sample_count: u32,
-    ) -> Result<Self> {
+        label: &str,
+    ) -> GpuResult<Self> {
+        let device = gpu.device();
         let width = width.max(1);
         let height = height.max(1);
         let sample_count = sample_count.max(1);
@@ -98,11 +99,13 @@ impl ColorTarget {
             format,
             sample_count,
             render_bind as u32,
-        )?;
+        )
+        .resource(ResourceKind::Target, label)?;
         let mut rtv = None;
         // SAFETY: `render` is render-target-bindable; a default RTV desc infers the
         // (MS or 2D) view dimension from the texture. Out-param set.
-        unsafe { device.CreateRenderTargetView(&render, None, Some(&mut rtv))? };
+        unsafe { device.CreateRenderTargetView(&render, None, Some(&mut rtv)) }
+            .resource(ResourceKind::Target, label)?;
 
         let (srv, resolve) = if multisampled {
             // Single-sample resolve target, sampled after the MSAA resolve.
@@ -113,10 +116,13 @@ impl ColorTarget {
                 format,
                 1,
                 D3D11_BIND_SHADER_RESOURCE.0 as u32,
-            )?;
-            (create_srv(device, &resolve)?, Some(resolve))
+            )
+            .resource(ResourceKind::Target, label)?;
+            let srv = create_srv(device, &resolve).resource(ResourceKind::Target, label)?;
+            (srv, Some(resolve))
         } else {
-            (create_srv(device, &render)?, None)
+            let srv = create_srv(device, &render).resource(ResourceKind::Target, label)?;
+            (srv, None)
         };
 
         Ok(Self {
@@ -141,53 +147,59 @@ impl ColorTarget {
     /// Resolve the multisampled render texture into the single-sample resolve texture
     /// (a no-op when single-sample). Call after the scene pass has drawn + the render
     /// texture is no longer bound as a render target, before the composite samples it.
-    pub(crate) fn resolve(&self, ctx: &ID3D11DeviceContext) {
+    pub(crate) fn resolve(&self, gpu: &Gpu) {
         if let Some(resolve) = &self.resolve {
             // SAFETY: `resolve` (single-sample) + `render` (multisample) share the same
             // format + size; neither is bound as a render target at the call site.
-            unsafe { ctx.ResolveSubresource(resolve, 0, &self.render, 0, self.format) };
+            unsafe {
+                gpu.context()
+                    .ResolveSubresource(resolve, 0, &self.render, 0, self.format.dxgi())
+            };
         }
     }
 
     /// Bind the sampled view to pixel-shader slot `slot` (the resolve when MSAA, the
     /// render texture otherwise).
-    pub(crate) fn bind_ps_srv(&self, ctx: &ID3D11DeviceContext, slot: u32) {
-        super::bind_ps_srv(ctx, slot, &self.srv);
+    pub(crate) fn bind_ps_srv(&self, gpu: &Gpu, slot: u32) {
+        super::bind_ps_srv(gpu, slot, &self.srv);
     }
 }
 
-/// The scene depth buffer (`D32_FLOAT`, Reversed-Z), at `sample_count` MSAA to match
-/// the color MRT. Recreated alongside the color targets on resize / sample-count
-/// change.
+/// The scene depth buffer ([`Format::Depth32F`], Reversed-Z), at `sample_count` MSAA
+/// to match the color MRT. Recreated alongside the color targets on resize /
+/// sample-count change.
 pub(crate) struct DepthTarget {
     view: ID3D11DepthStencilView,
 }
 
 impl DepthTarget {
     /// A single-sample depth target — the GTAO G-buffer depth.
-    pub(crate) fn new(device: &ID3D11Device, width: u32, height: u32) -> Result<Self> {
-        Self::with_samples(device, width, height, 1)
+    pub(crate) fn new(gpu: &Gpu, width: u32, height: u32) -> GpuResult<Self> {
+        Self::with_samples(gpu, width, height, 1)
     }
 
     /// A depth target at `sample_count` MSAA — the scene depth.
     pub(crate) fn with_samples(
-        device: &ID3D11Device,
+        gpu: &Gpu,
         width: u32,
         height: u32,
         sample_count: u32,
-    ) -> Result<Self> {
+    ) -> GpuResult<Self> {
+        let device = gpu.device();
         let texture = create_texture(
             device,
             width.max(1),
             height.max(1),
-            DXGI_FORMAT_D32_FLOAT,
+            SCENE_DEPTH_FORMAT,
             sample_count.max(1),
             D3D11_BIND_DEPTH_STENCIL.0 as u32,
-        )?;
+        )
+        .resource(ResourceKind::Target, "scene depth")?;
         let mut view = None;
         // SAFETY: `texture` is depth-stencil-bindable; a default DSV desc (None)
         // matches its typed `D32_FLOAT` format + (MS or 2D) dimension. Out-param set.
-        unsafe { device.CreateDepthStencilView(&texture, None, Some(&mut view))? };
+        unsafe { device.CreateDepthStencilView(&texture, None, Some(&mut view)) }
+            .resource(ResourceKind::Target, "scene depth")?;
         Ok(Self {
             view: out_param(view),
         })
@@ -204,7 +216,7 @@ fn create_texture(
     device: &ID3D11Device,
     width: u32,
     height: u32,
-    format: DXGI_FORMAT,
+    format: Format,
     sample_count: u32,
     bind_flags: u32,
 ) -> Result<ID3D11Texture2D> {
@@ -213,7 +225,7 @@ fn create_texture(
         Height: height,
         MipLevels: 1,
         ArraySize: 1,
-        Format: format,
+        Format: format.dxgi(),
         SampleDesc: DXGI_SAMPLE_DESC {
             Count: sample_count,
             Quality: 0,

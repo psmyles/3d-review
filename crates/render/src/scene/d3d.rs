@@ -11,15 +11,14 @@
 //! flash.
 
 use review_model::ModelData;
-use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11DeviceContext};
 
 use crate::geometry::{scene_lines, uv_grid_lines};
 use crate::ibl::{IblD3d, PREFILTER_MAX_LOD};
 use crate::material::{MaterialDrawRange, MaterialState, MaterialTableD3d, effective_materials};
 use crate::rhi::{
     BlendMode, ColorTarget, Cull, DepthBias, DepthCompare, DepthState, DepthTarget,
-    DynamicConstantBuffer, Gpu, IndexBuffer, Pipeline, PipelineDesc, Sampler, Texture, Topology,
-    VertexBuffer,
+    DynamicConstantBuffer, Gpu, GpuResult, IndexBuffer, Pipeline, PipelineDesc, Sampler, Texture,
+    Topology, VertexBuffer,
 };
 use crate::selection::SelectionView;
 use crate::{
@@ -184,7 +183,7 @@ pub(crate) struct SceneGpu {
     /// frame and never touched otherwise (every scene pass records no timestamps).
     gpu_profiler: Option<GpuProfiler>,
     /// Building the profiler failed once — don't re-attempt its `RING × (SLOTS+1)`
-    /// `CreateQuery` calls every frame on a device that keeps refusing them.
+    /// `CreateQuery` calls every frame on a gpu that keeps refusing them.
     gpu_profiler_failed: bool,
 }
 
@@ -198,28 +197,27 @@ impl SceneGpu {
     /// Build the scene GPU resources. Called once on the first frame; `sample_count`
     /// is the initial scene MSAA level (the live AA setting), so the scene pipelines +
     /// targets start at the right level and the first frame needs no rebuild.
-    pub(crate) fn new(gpu: &Gpu, sample_count: u32) -> windows::core::Result<Self> {
-        let device = gpu.device();
+    pub(crate) fn new(gpu: &Gpu, sample_count: u32) -> GpuResult<Self> {
         let (width, height) = gpu.size();
         // Capability-gate the initial level too (invariant 4): a persisted AA
         // setting restored on a weaker adapter degrades instead of failing.
         let requested_sample_count = sample_count.max(1);
         let sample_count = gpu.clamp_msaa(requested_sample_count);
 
-        let uniforms = DynamicConstantBuffer::new::<SceneUniforms>(device)?;
-        let post_uniforms = DynamicConstantBuffer::new::<PostUniforms>(device)?;
-        let gtao_uniforms = DynamicConstantBuffer::new::<GtaoUniforms>(device)?;
+        let uniforms = DynamicConstantBuffer::new::<SceneUniforms>(gpu)?;
+        let post_uniforms = DynamicConstantBuffer::new::<PostUniforms>(gpu)?;
+        let gtao_uniforms = DynamicConstantBuffer::new::<GtaoUniforms>(gpu)?;
 
         // The MSAA-dependent scene pipelines (line / mesh / double-sided mesh /
         // skybox / UV fill / selection fill) — all draw into the MSAA scene MRT, so
         // their sample count is baked at the live AA level and rebuilt when it changes
         // ([`Self::rebuild_scene_pipelines`]).
-        let scene = build_scene_pipelines(device, sample_count)?;
+        let scene = build_scene_pipelines(gpu, sample_count)?;
 
         // The composite: a fullscreen triangle, opaque overwrite of the backbuffer.
         // Always single-sample — it draws to the backbuffer, not the MSAA MRT.
         let composite_pipeline = Pipeline::new(
-            device,
+            gpu,
             &PipelineDesc::fullscreen(POST_VS, POST_PS, BlendMode::Opaque),
         )?;
 
@@ -227,7 +225,7 @@ impl SceneGpu {
         // No culling (backfaces still occlude), writes + tests depth (Reversed-Z
         // `GreaterEqual`), no bias, opaque single target.
         let gtao_gbuffer_pipeline = Pipeline::new(
-            device,
+            gpu,
             &PipelineDesc {
                 vs: SCENE_VS,
                 ps: SCENE_GTAO_GBUFFER_PS,
@@ -248,32 +246,32 @@ impl SceneGpu {
         // The two GTAO fullscreen passes (occlusion + bilateral blur): opaque
         // writes into the `R8` AO targets, differing only in the PS.
         let gtao_pipeline = Pipeline::new(
-            device,
+            gpu,
             &PipelineDesc::fullscreen(GTAO_VS, GTAO_PS, BlendMode::Opaque),
         )?;
         let gtao_blur_pipeline = Pipeline::new(
-            device,
+            gpu,
             &PipelineDesc::fullscreen(GTAO_VS, GTAO_BLUR_PS, BlendMode::Opaque),
         )?;
 
-        let sampler = Sampler::linear_clamp(device)?;
-        let checker_sampler = Sampler::linear_repeat(device)?;
-        let gtao_sampler = Sampler::point_clamp(device)?;
-        let checker_greyscale = decode_checker(device, CHECKER_GREYSCALE_PNG)?;
-        let checker_color = decode_checker(device, CHECKER_COLOR_PNG)?;
+        let sampler = Sampler::linear_clamp(gpu)?;
+        let checker_sampler = Sampler::linear_repeat(gpu)?;
+        let gtao_sampler = Sampler::point_clamp(gpu)?;
+        let checker_greyscale = decode_checker(gpu, CHECKER_GREYSCALE_PNG)?;
+        let checker_color = decode_checker(gpu, CHECKER_COLOR_PNG)?;
         let ibl = IblD3d::from_baked(gpu, EnvironmentSettings::default().map)?;
-        let materials = MaterialTableD3d::new(device)?;
-        let grid = VertexBuffer::new(device, &scene_lines())?;
-        let uv_grid = VertexBuffer::new(device, &uv_grid_lines())?;
+        let materials = MaterialTableD3d::new(gpu)?;
+        let grid = VertexBuffer::new(gpu, &scene_lines())?;
+        let uv_grid = VertexBuffer::new(gpu, &uv_grid_lines())?;
         // The scene MRT + depth carry the MSAA level; the GTAO targets stay single-
         // sample (its own mesh-only pass, never resolved).
-        let color = ColorTarget::hdr_msaa(device, width, height, sample_count)?;
-        let ambient = ColorTarget::hdr_msaa(device, width, height, sample_count)?;
-        let depth = DepthTarget::with_samples(device, width, height, sample_count)?;
-        let gtao_gbuffer = ColorTarget::new(device, width, height)?;
-        let gtao_depth = DepthTarget::new(device, width, height)?;
-        let gtao_raw = ColorTarget::r8(device, width, height)?;
-        let gtao_blur = ColorTarget::r8(device, width, height)?;
+        let color = ColorTarget::hdr_msaa(gpu, width, height, sample_count)?;
+        let ambient = ColorTarget::hdr_msaa(gpu, width, height, sample_count)?;
+        let depth = DepthTarget::with_samples(gpu, width, height, sample_count)?;
+        let gtao_gbuffer = ColorTarget::new(gpu, width, height)?;
+        let gtao_depth = DepthTarget::new(gpu, width, height)?;
+        let gtao_raw = ColorTarget::r8(gpu, width, height)?;
+        let gtao_blur = ColorTarget::r8(gpu, width, height)?;
 
         Ok(Self {
             uniforms,
@@ -311,16 +309,16 @@ impl SceneGpu {
     }
 
     /// Record a profiled zone's begin timestamp (a no-op without `--tracy`).
-    fn zone_begin(&self, ctx: &ID3D11DeviceContext, zone: Zone) {
+    fn zone_begin(&self, gpu: &Gpu, zone: Zone) {
         if let Some(profiler) = self.gpu_profiler.as_ref() {
-            profiler.zone_begin(ctx, zone);
+            profiler.zone_begin(gpu, zone);
         }
     }
 
     /// Record a profiled zone's end timestamp (a no-op without `--tracy`).
-    fn zone_end(&self, ctx: &ID3D11DeviceContext, zone: Zone) {
+    fn zone_end(&self, gpu: &Gpu, zone: Zone) {
         if let Some(profiler) = self.gpu_profiler.as_ref() {
-            profiler.zone_end(ctx, zone);
+            profiler.zone_end(gpu, zone);
         }
     }
 
@@ -334,13 +332,7 @@ impl SceneGpu {
     /// backbuffer's: the Opt workspace's split view renders each half at half
     /// width so the composite maps its target onto its half of the backbuffer
     /// one-to-one instead of squashing a full-width image into it.
-    fn sync_targets(
-        &mut self,
-        gpu: &Gpu,
-        sample_count: u32,
-        size: (u32, u32),
-    ) -> windows::core::Result<()> {
-        let device = gpu.device();
+    fn sync_targets(&mut self, gpu: &Gpu, sample_count: u32, size: (u32, u32)) -> GpuResult<()> {
         let (width, height) = (size.0.max(1), size.1.max(1));
         // Capability-clamp a *changed* request (invariant 4: an unsupported level
         // — e.g. restored settings on a weaker adapter — degrades to the nearest
@@ -360,18 +352,18 @@ impl SceneGpu {
         // simply tries again. Recreating the targets first would strand them at the
         // new level with pipelines built for the old one.
         if samples_changed {
-            self.rebuild_scene_pipelines(device, sample_count)?;
+            self.rebuild_scene_pipelines(gpu, sample_count)?;
         }
         if size_changed || samples_changed {
-            self.color = ColorTarget::hdr_msaa(device, width, height, sample_count)?;
-            self.ambient = ColorTarget::hdr_msaa(device, width, height, sample_count)?;
-            self.depth = DepthTarget::with_samples(device, width, height, sample_count)?;
+            self.color = ColorTarget::hdr_msaa(gpu, width, height, sample_count)?;
+            self.ambient = ColorTarget::hdr_msaa(gpu, width, height, sample_count)?;
+            self.depth = DepthTarget::with_samples(gpu, width, height, sample_count)?;
         }
         if size_changed {
-            self.gtao_gbuffer = ColorTarget::new(device, width, height)?;
-            self.gtao_depth = DepthTarget::new(device, width, height)?;
-            self.gtao_raw = ColorTarget::r8(device, width, height)?;
-            self.gtao_blur = ColorTarget::r8(device, width, height)?;
+            self.gtao_gbuffer = ColorTarget::new(gpu, width, height)?;
+            self.gtao_depth = DepthTarget::new(gpu, width, height)?;
+            self.gtao_raw = ColorTarget::r8(gpu, width, height)?;
+            self.gtao_blur = ColorTarget::r8(gpu, width, height)?;
         }
         // Both fields are the record of what was actually built, so they are written
         // only once everything above exists. `requested_sample_count` in particular
@@ -386,12 +378,8 @@ impl SceneGpu {
     /// Rebuild the MSAA-dependent scene pipelines at `sample_count` (their sample
     /// count is baked into the rasterizer + must match the MSAA targets). The
     /// composite + GTAO pipelines are single-sample and untouched.
-    fn rebuild_scene_pipelines(
-        &mut self,
-        device: &ID3D11Device,
-        sample_count: u32,
-    ) -> windows::core::Result<()> {
-        self.scene = build_scene_pipelines(device, sample_count)?;
+    fn rebuild_scene_pipelines(&mut self, gpu: &Gpu, sample_count: u32) -> GpuResult<()> {
+        self.scene = build_scene_pipelines(gpu, sample_count)?;
         Ok(())
     }
 
@@ -407,7 +395,7 @@ impl SceneGpu {
         material_states: &[MaterialState],
         material_revision: u64,
         camera: OrbitCamera,
-    ) -> windows::core::Result<()> {
+    ) -> GpuResult<()> {
         // Every workspace but Opt draws the source model, and Opt may have left
         // the processed slot active. Without this the source mesh would be synced
         // *into* the processed slot — rebuilding both, and discarding the
@@ -437,7 +425,7 @@ impl SceneGpu {
     pub(super) fn begin_gpu_frame(&mut self, gpu: &Gpu, gtao_active: bool) {
         if self.gpu_profiler.is_none() && !self.gpu_profiler_failed && gpu_profiler::should_enable()
         {
-            match GpuProfiler::new(gpu.device()) {
+            match GpuProfiler::new(gpu) {
                 Ok(profiler) => self.gpu_profiler = Some(profiler),
                 Err(error) => {
                     self.gpu_profiler_failed = true;
@@ -446,7 +434,7 @@ impl SceneGpu {
             }
         }
         if let Some(profiler) = self.gpu_profiler.as_mut() {
-            profiler.begin_frame(gpu.context(), gpu_profiler::frame_mask(gtao_active));
+            profiler.begin_frame(gpu, gpu_profiler::frame_mask(gtao_active));
         }
     }
 
@@ -454,7 +442,7 @@ impl SceneGpu {
     /// later in `begin_frame`).
     pub(super) fn end_gpu_frame(&mut self, gpu: &Gpu) {
         if let Some(profiler) = self.gpu_profiler.as_mut() {
-            profiler.end_frame(gpu.context());
+            profiler.end_frame(gpu);
         }
     }
 
@@ -468,7 +456,7 @@ impl SceneGpu {
         camera: OrbitCamera,
         gtao_active: bool,
         dest: BackbufferRect,
-    ) -> windows::core::Result<()> {
+    ) -> GpuResult<()> {
         self.record_view_with_ghost(gpu, frame, camera, gtao_active, dest, None)
     }
 
@@ -482,9 +470,7 @@ impl SceneGpu {
         gtao_active: bool,
         dest: BackbufferRect,
         ghost: Option<(GhostStyle, [f32; 3])>,
-    ) -> windows::core::Result<()> {
-        let ctx = gpu.context();
-
+    ) -> GpuResult<()> {
         let deform = self.active.deform_enabled();
         let uniforms = scene_uniforms(
             camera,
@@ -494,7 +480,7 @@ impl SceneGpu {
             frame.debug,
             deform,
         );
-        self.uniforms.update(ctx, &uniforms)?;
+        self.uniforms.update(gpu, &uniforms)?;
 
         self.record_scene_pass(gpu, frame)?;
         if let Some((style, tint)) = ghost {
@@ -514,9 +500,9 @@ impl SceneGpu {
             frame.tonemap,
             flat_display(frame),
         );
-        self.zone_begin(ctx, Zone::Composite);
+        self.zone_begin(gpu, Zone::Composite);
         self.record_composite(gpu, &post, gtao_active.then_some(&self.gtao_blur), dest)?;
-        self.zone_end(ctx, Zone::Composite);
+        self.zone_end(gpu, Zone::Composite);
         // Release the deform tables so a model swap can drop them cleanly.
         gpu.unbind_vs_srvs(DEFORM_INFLUENCES_SLOT, DEFORM_SLOT_COUNT);
         Ok(())
@@ -555,10 +541,7 @@ impl SceneGpu {
         material_states: &[MaterialState],
         material_revision: u64,
         target_size: (u32, u32),
-    ) -> windows::core::Result<()> {
-        let device = gpu.device();
-        let ctx = gpu.context();
-
+    ) -> GpuResult<()> {
         self.sync_targets(
             gpu,
             frame.anti_aliasing.effective_sample_count(),
@@ -573,7 +556,7 @@ impl SceneGpu {
         // (both depend on the active material mode's grouping).
         self.sync_unique_parts(frame.model, frame.model_revision, frame.debug.material_mode);
         self.sync_mesh(
-            device,
+            gpu,
             frame.model,
             frame.model_revision,
             frame.debug.uv_channel,
@@ -585,8 +568,7 @@ impl SceneGpu {
             self.active.unique_part_count,
         );
         self.materials.sync(
-            device,
-            ctx,
+            gpu,
             &effective,
             material_revision,
             frame.debug.material_mode,
@@ -597,9 +579,9 @@ impl SceneGpu {
         // when its baked params (color / length / hidden set / scope) drift.
         // The pose (palette + shape weights) the vertex shader deforms with,
         // uploaded only when its revision moves.
-        self.sync_pose(ctx, frame.pose, frame.pose_revision)?;
+        self.sync_pose(gpu, frame.pose, frame.pose_revision)?;
         self.sync_line_views(
-            device,
+            gpu,
             frame.model,
             frame.model_revision,
             frame.debug,
@@ -607,14 +589,14 @@ impl SceneGpu {
             frame.scene_bounds,
         )?;
         self.sync_skeleton(
-            device,
+            gpu,
             frame.model,
             frame.model_revision,
             frame.debug,
             frame.selected_bones,
         )?;
         self.sync_skin_weights(
-            device,
+            gpu,
             frame.model,
             frame.model_revision,
             frame.debug,
@@ -625,7 +607,7 @@ impl SceneGpu {
         // the highlight-flash fill source) and the per-mesh visibility filter, when
         // the selection / hidden set / model / mode drifts (invariant 3).
         self.sync_selection(
-            device,
+            gpu,
             frame.model,
             frame.model_revision,
             frame.selection,
@@ -633,7 +615,7 @@ impl SceneGpu {
             frame.debug.material_mode,
         )?;
         self.sync_visibility(
-            device,
+            gpu,
             frame.model,
             frame.model_revision,
             frame.hidden_meshes,
@@ -651,25 +633,20 @@ impl SceneGpu {
     /// (`t0`/`s0`), the IBL maps (`t1..t4`) + their sampler (`s1`), and the
     /// material cbuffer + sampler (`b1`/`s2`). The mesh loop rebinds `b1` +
     /// `t5..t11` per range.
-    fn bind_scene_shared(
-        &self,
-        ctx: &ID3D11DeviceContext,
-        checker: &Texture,
-    ) -> windows::core::Result<()> {
-        self.uniforms.bind_vs(ctx, SCENE_CBUFFER_SLOT);
-        self.uniforms.bind_ps(ctx, SCENE_CBUFFER_SLOT);
-        checker.bind_ps(ctx, 0);
-        self.checker_sampler.bind_ps(ctx, 0);
-        self.ibl.bind_ps(ctx);
-        self.sampler.bind_ps(ctx, 1);
-        self.materials.bind_shared(ctx);
-        self.materials.bind_fallback(ctx)
+    fn bind_scene_shared(&self, gpu: &Gpu, checker: &Texture) -> GpuResult<()> {
+        self.uniforms.bind_vs(gpu, SCENE_CBUFFER_SLOT);
+        self.uniforms.bind_ps(gpu, SCENE_CBUFFER_SLOT);
+        checker.bind_ps(gpu, 0);
+        self.checker_sampler.bind_ps(gpu, 0);
+        self.ibl.bind_ps(gpu);
+        self.sampler.bind_ps(gpu, 1);
+        self.materials.bind_shared(gpu);
+        self.materials.bind_fallback(gpu)
     }
 
     /// The offscreen 2-MRT scene pass: skybox, the mesh draw list, the grid, the
     /// derived line overlays, the pivot marker and the selection flash.
-    fn record_scene_pass(&self, gpu: &Gpu, frame: &SceneFrame<'_>) -> windows::core::Result<()> {
-        let ctx = gpu.context();
+    fn record_scene_pass(&self, gpu: &Gpu, frame: &SceneFrame<'_>) -> GpuResult<()> {
         let debug = frame.debug;
         let selection = frame.selection;
 
@@ -678,12 +655,12 @@ impl SceneGpu {
         // "no geometry" and the post pass paints the chosen viewport background
         // there (in display space, after tone mapping).
         gpu.begin_scene_pass(&[&self.color, &self.ambient], &self.depth, [0.0; 4]);
-        self.zone_begin(ctx, Zone::Scene);
+        self.zone_begin(gpu, Zone::Scene);
         let checker = match debug.uv_checker_texture {
             CheckerTexture::Greyscale => &self.checker_greyscale,
             CheckerTexture::Color => &self.checker_color,
         };
-        self.bind_scene_shared(ctx, checker)?;
+        self.bind_scene_shared(gpu, checker)?;
         // The deform tables, bound for the whole frame (the GTAO G-buffer pass
         // shares `vs_main` and reads them too); the uniform flag decides whether
         // the shader looks at them.
@@ -693,12 +670,12 @@ impl SceneGpu {
             .as_ref()
             .and_then(|mesh| mesh.deform.as_ref())
         {
-            deform.bind_vs(ctx);
+            deform.bind_vs(gpu);
         }
 
         // Skybox background first, behind all geometry, when shown.
         if frame.environment.show_background {
-            self.scene.skybox.bind(ctx);
+            self.scene.skybox.bind(gpu);
             gpu.draw(3);
         }
 
@@ -716,7 +693,7 @@ impl SceneGpu {
             } else {
                 &self.scene.mesh
             };
-            pipeline.bind(ctx);
+            pipeline.bind(gpu);
             // The skin-weight heat map is a drop-in replacement for the mesh's
             // vertex buffer: same length, same order, so the index buffer, the
             // per-material ranges and the solo / visibility lists below all stay
@@ -729,7 +706,7 @@ impl SceneGpu {
                 .weights_buf
                 .as_ref()
                 .unwrap_or(&mesh.vertices);
-            vertex_source.bind(ctx);
+            vertex_source.bind(gpu);
             // Solo draws only the selection (empty → nothing); visible draws the
             // filtered list (None while active means every mesh is hidden → nothing);
             // otherwise the whole mesh.
@@ -747,17 +724,17 @@ impl SceneGpu {
                 Some((&mesh.indices, mesh.ranges.as_slice()))
             };
             if let Some((index_buffer, ranges)) = draw_list {
-                index_buffer.bind(ctx);
+                index_buffer.bind(gpu);
                 for range in ranges {
-                    self.materials.set_range(ctx, range.material)?;
+                    self.materials.set_range(gpu, range.material)?;
                     gpu.draw_indexed_range(range.index_count, range.first_index);
                 }
             }
         }
 
         if debug.show_grid {
-            self.scene.line.bind(ctx);
-            self.grid.bind(ctx);
+            self.scene.line.bind(gpu);
+            self.grid.bind(gpu);
             gpu.draw(self.grid.count());
         }
 
@@ -773,9 +750,9 @@ impl SceneGpu {
             &self.active.views.vertex_normal_buf,
         ];
         if line_views.iter().any(|view| view.is_some()) {
-            self.scene.line.bind(ctx);
+            self.scene.line.bind(gpu);
             for buffer in line_views.into_iter().flatten() {
-                buffer.bind(ctx);
+                buffer.bind(gpu);
                 gpu.draw(buffer.count());
             }
         }
@@ -784,8 +761,8 @@ impl SceneGpu {
         // line pipeline (depth compare `Always`), so the 3-axis cross reads through
         // the mesh instead of being occluded inside it.
         if let Some(pivot) = &self.active.views.pivot_buf {
-            self.scene.line_overlay.bind(ctx);
-            pivot.bind(ctx);
+            self.scene.line_overlay.bind(gpu);
+            pivot.bind(gpu);
             gpu.draw(pivot.count());
         }
 
@@ -794,13 +771,13 @@ impl SceneGpu {
         // character it deforms. The per-bone selection tint is already baked into
         // these buffers (see `sync_skeleton`).
         if let Some(fill) = &self.active.views.skeleton_fill_buf {
-            self.scene.fill_overlay.bind(ctx);
-            fill.bind(ctx);
+            self.scene.fill_overlay.bind(gpu);
+            fill.bind(gpu);
             gpu.draw(fill.count());
         }
         if let Some(lines) = &self.active.views.skeleton_line_buf {
-            self.scene.line_overlay.bind(ctx);
-            lines.bind(ctx);
+            self.scene.line_overlay.bind(gpu);
+            lines.bind(gpu);
             gpu.draw(lines.count());
         }
 
@@ -814,12 +791,12 @@ impl SceneGpu {
         if flash
             && let (Some(mesh), Some(index)) = (&self.active.mesh, &self.active.selection_index)
         {
-            self.scene.selection.bind(ctx);
-            mesh.vertices.bind(ctx);
-            index.bind(ctx);
+            self.scene.selection.bind(gpu);
+            mesh.vertices.bind(gpu);
+            index.bind(gpu);
             gpu.draw_indexed_range(index.count(), 0);
         }
-        self.zone_end(ctx, Zone::Scene);
+        self.zone_end(gpu, Zone::Scene);
         Ok(())
     }
 
@@ -835,20 +812,19 @@ impl SceneGpu {
         camera: OrbitCamera,
         projection: CameraProjection,
         gtao: GtaoSettings,
-    ) -> windows::core::Result<()> {
-        let ctx = gpu.context();
+    ) -> GpuResult<()> {
         let gtao_uniforms = build_gtao_uniforms(camera, projection, gtao);
-        self.gtao_uniforms.update(ctx, &gtao_uniforms)?;
+        self.gtao_uniforms.update(gpu, &gtao_uniforms)?;
 
         // G-buffer: redraw the whole mesh (material irrelevant) into the
         // single-sample normal/Z target, clearing the target + its depth.
-        self.zone_begin(ctx, Zone::GtaoGbuffer);
+        self.zone_begin(gpu, Zone::GtaoGbuffer);
         gpu.begin_scene_pass(&[&self.gtao_gbuffer], &self.gtao_depth, [0.0; 4]);
-        self.uniforms.bind_vs(ctx, SCENE_CBUFFER_SLOT);
-        self.uniforms.bind_ps(ctx, SCENE_CBUFFER_SLOT);
-        self.gtao_gbuffer_pipeline.bind(ctx);
+        self.uniforms.bind_vs(gpu, SCENE_CBUFFER_SLOT);
+        self.uniforms.bind_ps(gpu, SCENE_CBUFFER_SLOT);
+        self.gtao_gbuffer_pipeline.bind(gpu);
         if let Some(mesh) = &self.active.mesh {
-            mesh.vertices.bind(ctx);
+            mesh.vertices.bind(gpu);
             // Match the shaded mesh's visibility so a hidden mesh casts no AO; solo
             // is deliberately left out, so only the per-mesh hide filters the AO.
             // `None` while active means every mesh is hidden → nothing to occlude.
@@ -858,32 +834,32 @@ impl SceneGpu {
                 Some(&mesh.indices)
             };
             if let Some(index) = index {
-                index.bind(ctx);
+                index.bind(gpu);
                 gpu.draw_indexed_range(index.count(), 0);
             }
         }
-        self.zone_end(ctx, Zone::GtaoGbuffer);
+        self.zone_end(gpu, Zone::GtaoGbuffer);
 
         // Occlusion: a fullscreen pass reading the G-buffer (`t0`) → raw AO.
-        self.zone_begin(ctx, Zone::Gtao);
+        self.zone_begin(gpu, Zone::Gtao);
         gpu.begin_color_pass(&self.gtao_raw);
-        self.gtao_pipeline.bind(ctx);
-        self.gtao_uniforms.bind_ps(ctx, GTAO_CBUFFER_SLOT);
-        self.gtao_sampler.bind_ps(ctx, 0);
-        self.gtao_gbuffer.bind_ps_srv(ctx, 0);
+        self.gtao_pipeline.bind(gpu);
+        self.gtao_uniforms.bind_ps(gpu, GTAO_CBUFFER_SLOT);
+        self.gtao_sampler.bind_ps(gpu, 0);
+        self.gtao_gbuffer.bind_ps_srv(gpu, 0);
         gpu.draw(3);
-        self.zone_end(ctx, Zone::Gtao);
+        self.zone_end(gpu, Zone::Gtao);
 
         // Bilateral blur: reads the G-buffer (`t0`) + raw AO (`t1`) → blurred AO.
         // `begin_color_pass` rebinds the RTV to `gtao_blur`, releasing `gtao_raw`
         // as a render target before it's bound below as an SRV.
-        self.zone_begin(ctx, Zone::GtaoBlur);
+        self.zone_begin(gpu, Zone::GtaoBlur);
         gpu.begin_color_pass(&self.gtao_blur);
-        self.gtao_blur_pipeline.bind(ctx);
-        self.gtao_gbuffer.bind_ps_srv(ctx, 0);
-        self.gtao_raw.bind_ps_srv(ctx, 1);
+        self.gtao_blur_pipeline.bind(gpu);
+        self.gtao_gbuffer.bind_ps_srv(gpu, 0);
+        self.gtao_raw.bind_ps_srv(gpu, 1);
         gpu.draw(3);
-        self.zone_end(ctx, Zone::GtaoBlur);
+        self.zone_end(gpu, Zone::GtaoBlur);
         // Drop the G-buffer / raw SRVs before the composite binds the scene
         // targets (and before next frame rebinds them as render targets).
         gpu.unbind_ps_srvs(2);
@@ -902,20 +878,19 @@ impl SceneGpu {
         post: &PostUniforms,
         ao: Option<&ColorTarget>,
         dest: BackbufferRect,
-    ) -> windows::core::Result<()> {
-        let ctx = gpu.context();
-        self.post_uniforms.update(ctx, post)?;
+    ) -> GpuResult<()> {
+        self.post_uniforms.update(gpu, post)?;
         gpu.begin_backbuffer_blit_rect(dest.x, dest.y, dest.width, dest.height);
         // The scene RTVs are unbound now (the backbuffer is the only bound
         // target), so the multisample resolve source is free.
-        self.color.resolve(ctx);
-        self.ambient.resolve(ctx);
-        self.composite_pipeline.bind(ctx);
-        self.post_uniforms.bind_ps(ctx, POST_CBUFFER_SLOT);
-        self.color.bind_ps_srv(ctx, 0);
-        ao.unwrap_or(&self.ambient).bind_ps_srv(ctx, 1);
-        self.ambient.bind_ps_srv(ctx, 2);
-        self.sampler.bind_ps(ctx, 0);
+        self.color.resolve(gpu);
+        self.ambient.resolve(gpu);
+        self.composite_pipeline.bind(gpu);
+        self.post_uniforms.bind_ps(gpu, POST_CBUFFER_SLOT);
+        self.color.bind_ps_srv(gpu, 0);
+        ao.unwrap_or(&self.ambient).bind_ps_srv(gpu, 1);
+        self.ambient.bind_ps_srv(gpu, 2);
+        self.sampler.bind_ps(gpu, 0);
         gpu.draw(3);
         // Release the offscreen SRVs so next frame can bind them as render targets.
         gpu.unbind_ps_srvs(3);
@@ -939,20 +914,17 @@ impl SceneGpu {
         shading_mode: UvShadingMode,
         anti_aliasing: AntiAliasing,
         background: ViewportBackground,
-    ) -> windows::core::Result<()> {
-        let device = gpu.device();
-        let ctx = gpu.context();
-
+    ) -> GpuResult<()> {
         // The UV viewport shows the source model, so its derived buffers belong in
         // the source slot (see the note in `render`).
         self.activate(SlotId::Source);
         self.sync_targets(gpu, anti_aliasing.effective_sample_count(), gpu.size())?;
-        self.sync_uv_view(device, model, model_revision, channel, shading_mode)?;
+        self.sync_uv_view(gpu, model, model_revision, channel, shading_mode)?;
 
         // The UV camera's orthographic view-projection; the rest of the uniform is
         // unused by the UV path (lines/fill return their own vertex color).
         let uniforms = uv_scene_uniforms(uv_camera);
-        self.uniforms.update(ctx, &uniforms)?;
+        self.uniforms.update(gpu, &uniforms)?;
 
         // Clear to zero (radiance + coverage); the background is painted in the
         // composite, matching the 3D path.
@@ -960,24 +932,24 @@ impl SceneGpu {
         // `fs_main` (the UV fill) samples the checker + every material slot at the top
         // (uniform control flow) before its zero-normal early-out, so all of group
         // 1/2/3 must be bound even though the UV draws never use the sampled values.
-        self.bind_scene_shared(ctx, &self.checker_greyscale)?;
+        self.bind_scene_shared(gpu, &self.checker_greyscale)?;
 
         // Reference grid first.
-        self.scene.line.bind(ctx);
-        self.uv_grid.bind(ctx);
+        self.scene.line.bind(gpu);
+        self.uv_grid.bind(gpu);
         gpu.draw(self.uv_grid.count());
 
         // Island fill (Shaded / Islands), under the wireframe.
         if let Some(fill) = &self.active.views.uv_fill_buf {
-            self.scene.uv_fill.bind(ctx);
-            fill.bind(ctx);
+            self.scene.uv_fill.bind(gpu);
+            fill.bind(gpu);
             gpu.draw(fill.count());
         }
 
         // The model's UV edges on top.
         if let Some(wireframe) = &self.active.views.uv_wireframe_buf {
-            self.scene.line.bind(ctx);
-            wireframe.bind(ctx);
+            self.scene.line.bind(gpu);
+            wireframe.bind(gpu);
             gpu.draw(wireframe.count());
         }
 
@@ -994,18 +966,18 @@ impl SceneGpu {
 /// Decode a baked UV-checker PNG into an sRGB GPU texture. A decode failure is a
 /// packaging bug — fall back to a 1×1 white texel rather than failing the build of
 /// the scene resources.
-fn decode_checker(device: &ID3D11Device, png_bytes: &[u8]) -> windows::core::Result<Texture> {
+fn decode_checker(gpu: &Gpu, png_bytes: &[u8]) -> GpuResult<Texture> {
     match image::load_from_memory(png_bytes) {
         Ok(image) => {
             let rgba = image.to_rgba8();
             let (width, height) = rgba.dimensions();
-            Texture::rgba8_single(device, width, height, &rgba, true)
+            Texture::rgba8_single(gpu, width, height, &rgba, true)
         }
         Err(error) => {
             // Degrading to flat white is deliberate, but not silently: a corrupt
             // baked checker is a packaging bug worth seeing under `--tracy`.
             gpu_profiler::note(&format!("baked UV-checker PNG failed to decode: {error}"));
-            Texture::rgba8_single(device, 1, 1, &[255, 255, 255, 255], true)
+            Texture::rgba8_single(gpu, 1, 1, &[255, 255, 255, 255], true)
         }
     }
 }

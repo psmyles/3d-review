@@ -16,9 +16,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
-use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11DeviceContext};
 
-use crate::rhi::{BlendMode, DynamicConstantBuffer, Gpu, Pipeline, PipelineDesc, Sampler, Texture};
+use crate::rhi::{
+    BlendMode, DynamicConstantBuffer, Gpu, GpuResult, Pipeline, PipelineDesc, Sampler, Texture,
+};
 use crate::texture::DecodedImage;
 
 /// Compiled DXBC — see `build.rs`.
@@ -122,20 +123,19 @@ impl std::fmt::Debug for TexGpu {
 
 impl TexGpu {
     /// Build the Tex viewport GPU resources. Called once on the first Tex frame.
-    pub(crate) fn new(gpu: &Gpu) -> windows::core::Result<Self> {
-        let device = gpu.device();
+    pub(crate) fn new(gpu: &Gpu) -> GpuResult<Self> {
         // Both passes are a fullscreen triangle; the image alpha-blends over the
         // background, the checker overwrites opaquely.
         let image_pipeline = Pipeline::new(
-            device,
+            gpu,
             &PipelineDesc::fullscreen(TEX_VS, TEX_IMAGE_PS, BlendMode::AlphaBlend),
         )?;
         let checker_pipeline = Pipeline::new(
-            device,
+            gpu,
             &PipelineDesc::fullscreen(TEX_VS, TEX_CHECKER_PS, BlendMode::Opaque),
         )?;
-        let uniforms = DynamicConstantBuffer::new::<TexUniforms>(device)?;
-        let sampler = Sampler::tex_view(device)?;
+        let uniforms = DynamicConstantBuffer::new::<TexUniforms>(gpu)?;
+        let sampler = Sampler::tex_view(gpu)?;
         Ok(Self {
             image_pipeline,
             checker_pipeline,
@@ -154,10 +154,7 @@ impl TexGpu {
         gpu: &Gpu,
         image: Option<TexImage>,
         background: TexBackground,
-    ) -> windows::core::Result<()> {
-        let device = gpu.device();
-        let ctx = gpu.context();
-
+    ) -> GpuResult<()> {
         // Solid backgrounds clear the whole backbuffer (the chrome bands then cover
         // everything outside the canvas); the checker draws a fullscreen pass.
         let solid = match background {
@@ -178,14 +175,14 @@ impl TexGpu {
                 bg_dark: CHECKER_DARK,
                 ..TexUniforms::default()
             };
-            self.uniforms.update(ctx, &uniforms)?;
-            self.checker_pipeline.bind(ctx);
-            self.uniforms.bind_ps(ctx, 0);
+            self.uniforms.update(gpu, &uniforms)?;
+            self.checker_pipeline.bind(gpu);
+            self.uniforms.bind_ps(gpu, 0);
             gpu.draw(3);
         }
 
         if let Some(image) = image {
-            self.ensure_texture(device, ctx, &image.path, &image.image)?;
+            self.ensure_texture(gpu, &image.path, &image.image)?;
             if let Some(cached) = self.cache.get(&image.path) {
                 let uniforms = TexUniforms {
                     img_min: image.min_px,
@@ -195,11 +192,11 @@ impl TexGpu {
                     target_srgb: 0,
                     ..TexUniforms::default()
                 };
-                self.uniforms.update(ctx, &uniforms)?;
-                self.image_pipeline.bind(ctx);
-                self.uniforms.bind_ps(ctx, 0);
-                cached.texture.bind_ps(ctx, 0);
-                self.sampler.bind_ps(ctx, 0);
+                self.uniforms.update(gpu, &uniforms)?;
+                self.image_pipeline.bind(gpu);
+                self.uniforms.bind_ps(gpu, 0);
+                cached.texture.bind_ps(gpu, 0);
+                self.sampler.bind_ps(gpu, 0);
                 gpu.draw(3);
                 gpu.unbind_ps_srvs(1);
             }
@@ -223,11 +220,10 @@ impl TexGpu {
     /// least-recently-used entry.
     fn ensure_texture(
         &mut self,
-        device: &ID3D11Device,
-        ctx: &ID3D11DeviceContext,
+        gpu: &Gpu,
         path: &Path,
         image: &Arc<DecodedImage>,
-    ) -> windows::core::Result<()> {
+    ) -> GpuResult<()> {
         self.tick += 1;
         let now = self.tick;
         if let Some(cached) = self.cache.get_mut(path)
@@ -238,14 +234,8 @@ impl TexGpu {
         }
         // Raw upload (`Rgba8Unorm`, no sRGB decode) so the displayed texel equals
         // the stored texel; a degenerate buffer falls back to a white texel.
-        let texture = Texture::rgba8_mipped_or_white(
-            device,
-            ctx,
-            image.width,
-            image.height,
-            &image.rgba,
-            false,
-        )?;
+        let texture =
+            Texture::rgba8_mipped_or_white(gpu, image.width, image.height, &image.rgba, false)?;
         // Cap only on genuine inserts: replacing a path's stale upload (disk reload)
         // doesn't grow the set, so it must not evict another entry.
         if !self.cache.contains_key(path)

@@ -9,13 +9,12 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11_BUFFER_SRV_0, D3D11_BUFFER_SRV_1, D3D11_CPU_ACCESS_FLAG, D3D11_CPU_ACCESS_WRITE,
     D3D11_MAP_WRITE_DISCARD, D3D11_MAPPED_SUBRESOURCE, D3D11_RESOURCE_MISC_BUFFER_STRUCTURED,
     D3D11_SHADER_RESOURCE_VIEW_DESC, D3D11_SHADER_RESOURCE_VIEW_DESC_0, D3D11_SUBRESOURCE_DATA,
-    D3D11_USAGE, D3D11_USAGE_DYNAMIC, D3D11_USAGE_IMMUTABLE, ID3D11Buffer, ID3D11Device,
-    ID3D11DeviceContext, ID3D11ShaderResourceView,
+    D3D11_USAGE, D3D11_USAGE_DYNAMIC, D3D11_USAGE_IMMUTABLE, ID3D11Buffer,
+    ID3D11ShaderResourceView,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R32_UINT, DXGI_FORMAT_UNKNOWN};
-use windows::core::Result;
 
-use super::out_param;
+use super::{Gpu, GpuError, GpuResult, ResourceContext, ResourceKind, out_param};
 
 /// Build a `D3D11_BUFFER_DESC` with this module's common defaults (no misc flags,
 /// no structured stride). The four arguments are the only fields that vary across
@@ -49,11 +48,12 @@ impl VertexBuffer {
     /// Create an immutable vertex buffer from `data`. `data` must be non-empty
     /// (D3D11 rejects a zero-byte buffer); callers that may have no geometry skip
     /// the draw rather than building an empty buffer.
-    pub(crate) fn new<T: Pod>(device: &ID3D11Device, data: &[T]) -> Result<Self> {
+    pub(crate) fn new<T: Pod>(gpu: &Gpu, data: &[T]) -> GpuResult<Self> {
+        let device = gpu.device();
         // A real error, not a debug_assert: in release an empty slice would reach
         // `CreateBuffer` with `ByteWidth: 0` and fail as an opaque E_INVALIDARG.
         if data.is_empty() {
-            return Err(super::invalid_arg("vertex buffer must be non-empty"));
+            return Err(GpuError::invalid_arg("vertex buffer must be non-empty"));
         }
         let bytes: &[u8] = bytemuck::cast_slice(data);
         let desc = buffer_desc(
@@ -70,7 +70,8 @@ impl VertexBuffer {
         let mut buffer = None;
         // SAFETY: `desc` matches `init` (immutable buffer with full initial data);
         // `init.pSysMem` points at `bytes`, alive for the call. The out-param is set.
-        unsafe { device.CreateBuffer(&desc, Some(&init), Some(&mut buffer))? };
+        unsafe { device.CreateBuffer(&desc, Some(&init), Some(&mut buffer)) }
+            .resource(ResourceKind::Buffer, "vertex buffer")?;
         Ok(Self {
             buffer: out_param(buffer),
             stride: std::mem::size_of::<T>() as u32,
@@ -83,10 +84,10 @@ impl VertexBuffer {
     }
 
     /// Bind this buffer to input slot 0.
-    pub(crate) fn bind(&self, ctx: &ID3D11DeviceContext) {
+    pub(crate) fn bind(&self, gpu: &Gpu) {
         // SAFETY: the buffer is live; the stride/offset locals outlive the call.
         unsafe {
-            ctx.IASetVertexBuffers(
+            gpu.context().IASetVertexBuffers(
                 0,
                 1,
                 Some(&Some(self.buffer.clone())),
@@ -106,10 +107,11 @@ pub(crate) struct IndexBuffer {
 
 impl IndexBuffer {
     /// Create an immutable index buffer from `indices` (must be non-empty).
-    pub(crate) fn new(device: &ID3D11Device, indices: &[u32]) -> Result<Self> {
+    pub(crate) fn new(gpu: &Gpu, indices: &[u32]) -> GpuResult<Self> {
+        let device = gpu.device();
         // See `VertexBuffer::new` — checked in release too.
         if indices.is_empty() {
-            return Err(super::invalid_arg("index buffer must be non-empty"));
+            return Err(GpuError::invalid_arg("index buffer must be non-empty"));
         }
         let bytes: &[u8] = bytemuck::cast_slice(indices);
         let desc = buffer_desc(
@@ -126,7 +128,8 @@ impl IndexBuffer {
         let mut buffer = None;
         // SAFETY: immutable buffer with full initial data; `init.pSysMem` points at
         // `bytes`, alive for the call. The out-param is set.
-        unsafe { device.CreateBuffer(&desc, Some(&init), Some(&mut buffer))? };
+        unsafe { device.CreateBuffer(&desc, Some(&init), Some(&mut buffer)) }
+            .resource(ResourceKind::Buffer, "index buffer")?;
         Ok(Self {
             buffer: out_param(buffer),
             count: indices.len() as u32,
@@ -138,10 +141,11 @@ impl IndexBuffer {
     }
 
     /// Bind this index buffer (32-bit indices) to the input assembler.
-    pub(crate) fn bind(&self, ctx: &ID3D11DeviceContext) {
+    pub(crate) fn bind(&self, gpu: &Gpu) {
         // SAFETY: the buffer is live for the duration of the call.
         unsafe {
-            ctx.IASetIndexBuffer(&self.buffer, DXGI_FORMAT_R32_UINT, 0);
+            gpu.context()
+                .IASetIndexBuffer(&self.buffer, DXGI_FORMAT_R32_UINT, 0);
         }
     }
 }
@@ -158,7 +162,8 @@ pub(crate) struct DynamicConstantBuffer {
 
 impl DynamicConstantBuffer {
     /// Create a dynamic constant buffer sized for `T` (rounded up to 16 bytes).
-    pub(crate) fn new<T>(device: &ID3D11Device) -> Result<Self> {
+    pub(crate) fn new<T>(gpu: &Gpu) -> GpuResult<Self> {
+        let device = gpu.device();
         let size = std::mem::size_of::<T>().next_multiple_of(16) as u32;
         let desc = buffer_desc(
             size,
@@ -168,7 +173,8 @@ impl DynamicConstantBuffer {
         );
         let mut buffer = None;
         // SAFETY: a dynamic cbuffer with no initial data; the out-param is set.
-        unsafe { device.CreateBuffer(&desc, None, Some(&mut buffer))? };
+        unsafe { device.CreateBuffer(&desc, None, Some(&mut buffer)) }
+            .resource(ResourceKind::Buffer, "constant buffer")?;
         Ok(Self {
             buffer: out_param(buffer),
             size,
@@ -178,10 +184,11 @@ impl DynamicConstantBuffer {
     /// Upload `value` into the buffer (discard-and-rewrite). `T` must fit the
     /// buffer's rounded-up size — i.e. be the `T` passed to [`Self::new`] — and a
     /// mismatch is a checked error, never an out-of-bounds GPU write.
-    pub(crate) fn update<T: Pod>(&self, ctx: &ID3D11DeviceContext, value: &T) -> Result<()> {
+    pub(crate) fn update<T: Pod>(&self, gpu: &Gpu, value: &T) -> GpuResult<()> {
+        let ctx = gpu.context();
         let bytes = bytemuck::bytes_of(value);
         if bytes.len() > self.size as usize {
-            return Err(super::invalid_arg(
+            return Err(GpuError::invalid_arg(
                 "constant-buffer update is larger than the buffer it was created for",
             ));
         }
@@ -204,18 +211,20 @@ impl DynamicConstantBuffer {
     }
 
     /// Bind this buffer to the vertex-shader constant slot `slot`.
-    pub(crate) fn bind_vs(&self, ctx: &ID3D11DeviceContext, slot: u32) {
+    pub(crate) fn bind_vs(&self, gpu: &Gpu, slot: u32) {
         // SAFETY: the buffer is live; the one-element array outlives the call.
         unsafe {
-            ctx.VSSetConstantBuffers(slot, Some(&[Some(self.buffer.clone())]));
+            gpu.context()
+                .VSSetConstantBuffers(slot, Some(&[Some(self.buffer.clone())]));
         }
     }
 
     /// Bind this buffer to the pixel-shader constant slot `slot`.
-    pub(crate) fn bind_ps(&self, ctx: &ID3D11DeviceContext, slot: u32) {
+    pub(crate) fn bind_ps(&self, gpu: &Gpu, slot: u32) {
         // SAFETY: the buffer is live; the one-element array outlives the call.
         unsafe {
-            ctx.PSSetConstantBuffers(slot, Some(&[Some(self.buffer.clone())]));
+            gpu.context()
+                .PSSetConstantBuffers(slot, Some(&[Some(self.buffer.clone())]));
         }
     }
 }
@@ -236,9 +245,9 @@ pub(crate) struct StructuredBuffer<T> {
 
 impl<T: Pod> StructuredBuffer<T> {
     /// An immutable structured buffer holding `data` (must be non-empty).
-    pub(crate) fn immutable(device: &ID3D11Device, data: &[T]) -> Result<Self> {
+    pub(crate) fn immutable(gpu: &Gpu, data: &[T]) -> GpuResult<Self> {
         if data.is_empty() {
-            return Err(super::invalid_arg("structured buffer must be non-empty"));
+            return Err(GpuError::invalid_arg("structured buffer must be non-empty"));
         }
         let bytes: &[u8] = bytemuck::cast_slice(data);
         let init = D3D11_SUBRESOURCE_DATA {
@@ -247,7 +256,7 @@ impl<T: Pod> StructuredBuffer<T> {
             SysMemSlicePitch: 0,
         };
         Self::create(
-            device,
+            gpu,
             data.len(),
             D3D11_USAGE_IMMUTABLE,
             D3D11_CPU_ACCESS_FLAG(0),
@@ -257,12 +266,12 @@ impl<T: Pod> StructuredBuffer<T> {
 
     /// A dynamic structured buffer with room for `capacity` elements (must be
     /// non-zero), filled by [`Self::update`].
-    pub(crate) fn dynamic(device: &ID3D11Device, capacity: usize) -> Result<Self> {
+    pub(crate) fn dynamic(gpu: &Gpu, capacity: usize) -> GpuResult<Self> {
         if capacity == 0 {
-            return Err(super::invalid_arg("structured buffer must be non-empty"));
+            return Err(GpuError::invalid_arg("structured buffer must be non-empty"));
         }
         Self::create(
-            device,
+            gpu,
             capacity,
             D3D11_USAGE_DYNAMIC,
             D3D11_CPU_ACCESS_WRITE,
@@ -271,26 +280,27 @@ impl<T: Pod> StructuredBuffer<T> {
     }
 
     fn create(
-        device: &ID3D11Device,
+        gpu: &Gpu,
         capacity: usize,
         usage: D3D11_USAGE,
         cpu_access: D3D11_CPU_ACCESS_FLAG,
         init: Option<&D3D11_SUBRESOURCE_DATA>,
-    ) -> Result<Self> {
+    ) -> GpuResult<Self> {
+        let device = gpu.device();
         let stride = std::mem::size_of::<T>();
         // Structured-buffer strides must be a multiple of 4 and the element count
         // must fit the view's 32-bit range; both are checked rather than assumed.
         if stride == 0 || !stride.is_multiple_of(4) {
-            return Err(super::invalid_arg(
+            return Err(GpuError::invalid_arg(
                 "structured buffer element size must be a non-zero multiple of 4",
             ));
         }
         let capacity_u32 = u32::try_from(capacity)
-            .map_err(|_| super::invalid_arg("structured buffer has too many elements"))?;
+            .map_err(|_| GpuError::invalid_arg("structured buffer has too many elements"))?;
         let byte_width = stride
             .checked_mul(capacity)
             .and_then(|bytes| u32::try_from(bytes).ok())
-            .ok_or_else(|| super::invalid_arg("structured buffer is too large"))?;
+            .ok_or_else(|| GpuError::invalid_arg("structured buffer is too large"))?;
         let desc = D3D11_BUFFER_DESC {
             ByteWidth: byte_width,
             Usage: usage,
@@ -308,8 +318,9 @@ impl<T: Pod> StructuredBuffer<T> {
                 &desc,
                 init.map(|init| init as *const D3D11_SUBRESOURCE_DATA),
                 Some(&mut buffer),
-            )?
-        };
+            )
+        }
+        .resource(ResourceKind::Buffer, "structured buffer")?;
         let buffer = out_param(buffer);
 
         let srv_desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
@@ -327,7 +338,8 @@ impl<T: Pod> StructuredBuffer<T> {
         let mut srv = None;
         // SAFETY: `buffer` is shader-resource-bindable and structured; the view
         // covers exactly its `capacity` elements. Out-param set on success.
-        unsafe { device.CreateShaderResourceView(&buffer, Some(&srv_desc), Some(&mut srv))? };
+        unsafe { device.CreateShaderResourceView(&buffer, Some(&srv_desc), Some(&mut srv)) }
+            .resource(ResourceKind::Buffer, "structured-buffer view")?;
         Ok(Self {
             buffer,
             srv: out_param(srv),
@@ -345,10 +357,11 @@ impl<T: Pod> StructuredBuffer<T> {
     /// the capacity the buffer was created with — a checked error, never an
     /// out-of-bounds GPU write. Elements past `data.len()` are left undefined,
     /// so callers must not index them.
-    pub(crate) fn update(&self, ctx: &ID3D11DeviceContext, data: &[T]) -> Result<()> {
+    pub(crate) fn update(&self, gpu: &Gpu, data: &[T]) -> GpuResult<()> {
+        let ctx = gpu.context();
         let bytes: &[u8] = bytemuck::cast_slice(data);
         if data.len() > self.capacity as usize {
-            return Err(super::invalid_arg(
+            return Err(GpuError::invalid_arg(
                 "structured-buffer update is larger than the buffer it was created for",
             ));
         }
@@ -371,10 +384,11 @@ impl<T: Pod> StructuredBuffer<T> {
     }
 
     /// Bind this buffer's view to vertex-shader resource slot `slot`.
-    pub(crate) fn bind_vs(&self, ctx: &ID3D11DeviceContext, slot: u32) {
+    pub(crate) fn bind_vs(&self, gpu: &Gpu, slot: u32) {
         // SAFETY: the SRV is live; the one-element array outlives the call.
         unsafe {
-            ctx.VSSetShaderResources(slot, Some(&[Some(self.srv.clone())]));
+            gpu.context()
+                .VSSetShaderResources(slot, Some(&[Some(self.srv.clone())]));
         }
     }
 }
