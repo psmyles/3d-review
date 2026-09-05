@@ -27,7 +27,8 @@
 #   --no-sign                  skip codesign entirely. The bundle runs here and nowhere
 #                              else. Implies --no-notarize. Never ship this.
 #   --notarize-profile <name>  use a different `xcrun notarytool store-credentials`
-#                              profile.
+#                              profile. The default is account-level, not per-product
+#                              — see the note beside `notary_profile` below.
 #   --no-notarize              skip notarization and stapling. The .dmg is still signed,
 #                              but macOS 15+ has no Control-click bypass any more —
 #                              opening it on another Mac means System Settings →
@@ -93,12 +94,24 @@ bundle_id="com.psmyles.3d-review"
 # icon is normal on this OS and is what the Windows .ico shows too, so there is no
 # background to invent here.
 icon_inset="8%"
-# The `xcrun notarytool store-credentials` profile to use when none is named: the
-# product name lower-cased with spaces removed, which is what the setup line printed
-# on failure tells you to create. The credential lives in the data-protection
-# keychain, which `security(1)` cannot even enumerate — so there is no point
-# pre-flighting it here; notarytool's own error is immediate and says what is missing.
-notary_profile="${notary_profile:-$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]' | tr -d ' ')}"
+# The `xcrun notarytool store-credentials` profile to use when none is named.
+#
+# **Not derived from the product name**, which is the obvious thing to do and is
+# wrong: what the profile holds is an Apple ID, a team ID and an app-specific
+# password, and all three belong to the *account*, not to a product. One profile
+# notarizes everything this team signs, and `fire` is what that one profile happens to
+# be called here because it was created for the first product to need it. A
+# `3dreview`-shaped default would have meant every release of this repo carrying a
+# `--notarize-profile` flag to reach a credential it already had.
+#
+# Change this only if the profile is renamed or replaced; an app-specific password
+# cannot be read back once created, so re-creating one under a new name means minting
+# a fresh password at appleid.apple.com (which does not invalidate the old one).
+#
+# The credential lives in the data-protection keychain, which `security(1)` cannot
+# even enumerate — so there is no point pre-flighting it here; notarytool's own error
+# is immediate and says exactly what is missing.
+notary_profile="${notary_profile:-fire}"
 
 # `--no-sign` leaves nothing notarizable: notarization is a check on a Developer ID
 # signature.
