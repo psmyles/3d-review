@@ -33,7 +33,15 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_app_kit::NSView;
 use objc2_foundation::CGSize;
-use objc2_metal::{MTLCreateSystemDefaultDevice, MTLDevice, MTLPixelFormat};
+#[cfg(feature = "bake")]
+use objc2_metal::{
+    MTLBlitCommandEncoder, MTLBuffer, MTLCommandEncoder, MTLOrigin, MTLResourceOptions, MTLSize,
+    MTLTexture,
+};
+use objc2_metal::{
+    MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandQueue, MTLCreateSystemDefaultDevice,
+    MTLDevice, MTLPixelFormat,
+};
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 use sokol::gfx as sg;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -41,7 +49,7 @@ use winit::window::Window;
 
 use crate::rhi::error::{GpuError, GpuResult};
 use crate::rhi::format::Format;
-use crate::rhi::gpu_profiler::TIMESTAMP_SLOTS;
+use crate::rhi::gpu_profiler::{TIMESTAMP_SLOTS, Zone};
 use crate::rhi::present::PresentStatus;
 
 /// What the window's backbuffer is created as, and what sokol_gfx is told to expect
@@ -287,50 +295,183 @@ pub(crate) struct FrameTimings {
     pub(crate) times: [u64; TIMESTAMP_SLOTS],
 }
 
-/// GPU timing on Metal — **not implemented yet** (`mac-port-plan.md` Phase 2 step 5).
+/// Ring depth. Generous enough that a frame's sentinels have long completed by the
+/// time their slot comes round again, so a readback never has to block. The same
+/// number, for the same reason, as the D3D11 leaf's query ring.
+const RING: usize = 4;
+
+/// One ring entry: the two sentinel command buffers bracketing one frame's work.
+#[derive(Default)]
+struct RingSlot {
+    /// Committed before sokol's frame buffer, so the GPU reaches it first.
+    begin: Option<Retained<ProtocolObject<dyn MTLCommandBuffer>>>,
+    /// Committed after `sg_commit`, so the GPU reaches it last.
+    end: Option<Retained<ProtocolObject<dyn MTLCommandBuffer>>>,
+}
+
+/// GPU timing on Metal: two empty command buffers per frame, on sokol's own queue
+/// (`mac-port-plan.md` D18).
 ///
-/// Per-pass zones are not achievable at all here: sokol owns the command buffer and
-/// the encoder, and Apple silicon has no draw-boundary counter sampling, so the most
-/// this leaf can ever report is the frame as a whole — two sentinel command buffers
-/// on `sg_mtl_command_queue()` and the difference of their `GPUEndTime`s. Until that
-/// lands, [`Self::new`] fails, which the caller already treats as "no GPU profiling
-/// this run" and reports once: `--tracy` still gives CPU zones and sokol's own
-/// per-frame call counts, just no GPU timeline.
+/// **This measures the frame, not the passes, and that is the ceiling rather than a
+/// shortcut.** Timing a pass would mean sampling counters at its boundaries, which
+/// needs the command buffer and encoder sokol owns and does not hand out; Apple
+/// silicon additionally has no draw-boundary counter sampling at all. Xcode's Metal
+/// profiler is what covers per-pass timing on this OS.
+///
+/// What *is* available is the queue's own ordering. Command buffers on one
+/// `MTLCommandQueue` execute in commit order, so an empty buffer committed before
+/// sokol's frame and another committed after it bracket that frame on the GPU
+/// timeline, and each reports a `GPUEndTime` the driver filled in. The difference is
+/// the frame's GPU cost — reported as the one [`Zone::Frame`] the shared profiler
+/// knows about. Using sokol's queue rather than one of our own is what makes the
+/// ordering a guarantee instead of a hope.
+///
+/// [`Zone::Frame`]: crate::rhi::gpu_profiler::Zone::Frame
 pub(crate) struct GpuTimer {
-    _private: (),
+    /// sokol's command queue, retained. The same object `sg_commit` submits through.
+    queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+    ring: Vec<RingSlot>,
+    frame_no: u64,
+    /// The ring slot being recorded this frame.
+    cur_slot: usize,
+    /// Whether a frame is open. Not every frame renders a 3D scene, and a frame that
+    /// opened no window of its own must not close one.
+    open: bool,
 }
 
 impl GpuTimer {
+    /// Take a retained handle on sokol's queue. Fails if sokol is not on Metal or has
+    /// not been set up, which the caller treats as "no GPU profiling this run".
     pub(crate) fn new(device: &Device) -> GpuResult<Self> {
+        // The device is not needed: the queue is sokol's, and creating one of our own
+        // would put our sentinels on a timeline with no ordering relationship to the
+        // frame they are supposed to bracket. Taken as a parameter anyway, because
+        // the D3D11 twin needs it and the two are aliased rather than behind a trait.
         let _ = device;
-        Err(GpuError::Backend(
-            "GPU timing on Metal is not implemented yet (mac-port-plan.md Phase 2 step 5)".into(),
-        ))
+        let queue = sg::mtl_command_queue().cast_mut().cast();
+        // SAFETY: sokol hands back a pointer to the queue it owns for the life of the
+        // device. `retain` takes a reference of our own rather than ownership of
+        // sokol's, so dropping this timer does not take sokol's queue with it.
+        let queue = unsafe { Retained::retain(queue) }.ok_or_else(|| {
+            GpuError::Backend("sokol_gfx is not running on a Metal command queue".into())
+        })?;
+        Ok(Self {
+            queue,
+            ring: (0..RING).map(|_| RingSlot::default()).collect(),
+            frame_no: 0,
+            cur_slot: 0,
+            open: false,
+        })
     }
 
+    /// Open a frame: pick its ring slot, read back whatever older frame that slot
+    /// still holds, and commit the opening sentinel.
     pub(crate) fn begin_frame(&mut self) -> Option<FrameTimings> {
-        None
+        self.frame_no += 1;
+        self.cur_slot = (self.frame_no % RING as u64) as usize;
+        let drained = self.read_slot(self.cur_slot);
+        self.ring[self.cur_slot] = RingSlot {
+            begin: self.sentinel(),
+            end: None,
+        };
+        self.open = self.ring[self.cur_slot].begin.is_some();
+        drained
     }
 
+    /// A no-op: there are no per-pass timestamps to record here. The shared profiler
+    /// calls this at every pass boundary on both OSes; on this one the answer is that
+    /// the boundary is not observable — see the type's documentation.
     pub(crate) fn timestamp(&mut self, index: usize) {
         let _ = index;
     }
 
-    pub(crate) fn end_frame(&mut self) {}
+    /// Close the frame by committing the trailing sentinel. Called after `sg_commit`,
+    /// so this buffer is behind the frame's own work in the queue.
+    pub(crate) fn end_frame(&mut self) {
+        if !self.open {
+            return;
+        }
+        self.open = false;
+        self.ring[self.cur_slot].end = self.sentinel();
+    }
+
+    /// An empty command buffer, committed immediately. It encodes nothing; the only
+    /// thing wanted from it is the `GPUEndTime` the driver stamps when the GPU
+    /// reaches it.
+    fn sentinel(&self) -> Option<Retained<ProtocolObject<dyn MTLCommandBuffer>>> {
+        let buffer = self.queue.commandBuffer()?;
+        buffer.commit();
+        Some(buffer)
+    }
+
+    /// Read one slot's pair back, if the frame it belongs to has finished on the GPU.
+    ///
+    /// A slot whose buffers are not both `Completed` yields `None` and is dropped
+    /// rather than waited on: a profiler that stalls the frame it is measuring
+    /// measures the stall. With a ring of four that should never happen.
+    fn read_slot(&mut self, slot: usize) -> Option<FrameTimings> {
+        let entry = std::mem::take(&mut self.ring[slot]);
+        let (begin, end) = (entry.begin?, entry.end?);
+        if begin.status() != MTLCommandBufferStatus::Completed
+            || end.status() != MTLCommandBufferStatus::Completed
+        {
+            return None;
+        }
+        // SAFETY: reading the timing properties of two completed command buffers,
+        // which is exactly when the driver has filled them in.
+        let (begin_time, end_time) = unsafe { (begin.GPUEndTime(), end.GPUEndTime()) };
+
+        let mut times = [0u64; TIMESTAMP_SLOTS];
+        let base = Zone::Frame.base();
+        times[base] = seconds_to_nanos(begin_time);
+        times[base + 1] = seconds_to_nanos(end_time);
+        Some(FrameTimings {
+            written: Zone::Frame.slot_bits(),
+            // `GPUEndTime` is already seconds, so the "ticks" handed to the shared
+            // profiler are plain nanoseconds and the tick rate is 1 GHz.
+            frequency: 1_000_000_000,
+            times,
+        })
+    }
+}
+
+/// A `CFTimeInterval` (seconds on the mach timebase) as whole nanoseconds. Negative
+/// and non-finite values clamp to zero — the shared profiler drops a zone whose end
+/// does not exceed its begin, so a driver that filled in nothing reports nothing.
+fn seconds_to_nanos(seconds: f64) -> u64 {
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return 0;
+    }
+    (seconds * 1.0e9) as u64
 }
 
 // ---------------------------------------------------------------------------
 // The readback leaf, for the offline bake only (`mac-port-plan.md` D19)
 // ---------------------------------------------------------------------------
 
-/// Copy one subresource of a sokol image back to the CPU as tight, row-padding-free
-/// bytes — **not implemented yet** (`mac-port-plan.md` Phase 2 step 5).
+/// Row alignment for the destination of a texture→buffer blit.
 ///
-/// The design is settled: blit the private texture into a shared `MTLBuffer` on our
-/// own command buffer from `sg_mtl_command_queue()`, committed *after* `sg_commit`
-/// (queue order is commit order) and waited on. Until then `bake_ibl` fails loudly on
-/// this Mac rather than writing a file of zeroes over the committed maps; the viewer
-/// never compiles this, and the committed `.bin`s are what ships.
+/// Metal states `destinationBytesPerRow` must be a multiple of the texture's pixel
+/// size, and requires 256 on some device families. 256 satisfies every one of them
+/// and costs only the padding stripped off below — the same shape as the D3D11 twin,
+/// which de-pads the staging texture's `RowPitch`.
+#[cfg(feature = "bake")]
+const BLIT_ROW_ALIGNMENT: usize = 256;
+
+/// Copy one subresource of a sokol image back to the CPU as tight, row-padding-free
+/// bytes.
+///
+/// sokol_gfx has no readback of any kind — it is a rendering API, and every path that
+/// draws needs none — so this is a leaf, and it is compiled only into the `bake` tool.
+///
+/// The blit runs on **sokol's own queue** and is committed *after* `sg_commit` (the
+/// bake calls `Baker::flush` before every readback), so queue order is what guarantees
+/// the passes that filled this image have finished. `waitUntilCompleted` then blocks
+/// until the copy itself is done, which is exactly right for an offline tool.
+///
+/// `slice` is the cube face (or array layer). Unlike the D3D11 twin there is no
+/// subresource arithmetic to get wrong: Metal addresses the face and the mip as two
+/// separate arguments.
 #[cfg(feature = "bake")]
 pub(crate) fn read_image_subresource(
     image: sg::Image,
@@ -341,8 +482,97 @@ pub(crate) fn read_image_subresource(
     format: Format,
     bpp: u32,
 ) -> GpuResult<Vec<u8>> {
-    let _ = (image, mip, slice, width, height, format, bpp);
-    Err(GpuError::Backend(
-        "GPU readback on Metal is not implemented yet (mac-port-plan.md Phase 2 step 5)".into(),
-    ))
+    // Unused here, and deliberately still in the signature: the D3D11 twin needs it
+    // to size a staging texture, and the two modules are aliased as one `backend`
+    // rather than kept apart by a trait. Metal reads the format from the texture.
+    let _ = format;
+
+    let info = sg::mtl_query_image_info(image);
+    let texture = info
+        .tex
+        .get(info.active_slot.max(0) as usize)
+        .copied()
+        .unwrap_or(std::ptr::null());
+    // SAFETY: sokol hands back pointers to the objects it owns for the life of the
+    // image and the device; `retain` takes references of our own, so nothing sokol
+    // owns is released when these are dropped. The bake holds every target until it
+    // has written its file, so the image outlives this call.
+    let (texture, device, queue) = unsafe {
+        (
+            Retained::retain(texture.cast_mut().cast::<ProtocolObject<dyn MTLTexture>>()),
+            Retained::retain(
+                sg::mtl_device()
+                    .cast_mut()
+                    .cast::<ProtocolObject<dyn MTLDevice>>(),
+            ),
+            Retained::retain(
+                sg::mtl_command_queue()
+                    .cast_mut()
+                    .cast::<ProtocolObject<dyn MTLCommandQueue>>(),
+            ),
+        )
+    };
+    let (Some(texture), Some(device), Some(queue)) = (texture, device, queue) else {
+        return Err(GpuError::invalid_arg(
+            "no Metal texture, device or queue for readback",
+        ));
+    };
+
+    let tight_row = (width as usize) * (bpp as usize);
+    let padded_row = tight_row.div_ceil(BLIT_ROW_ALIGNMENT) * BLIT_ROW_ALIGNMENT;
+    let total = padded_row
+        .checked_mul(height as usize)
+        .ok_or_else(|| GpuError::invalid_arg("readback destination size overflowed"))?;
+
+    // Shared storage, sized exactly as computed above, so the CPU read at the end
+    // stays inside it.
+    let buffer = device
+        .newBufferWithLength_options(total, MTLResourceOptions::MTLResourceStorageModeShared)
+        .ok_or_else(|| GpuError::invalid_arg("readback buffer was not created"))?;
+
+    let command_buffer = queue
+        .commandBuffer()
+        .ok_or_else(|| GpuError::invalid_arg("no Metal command buffer for readback"))?;
+    let blit = command_buffer
+        .blitCommandEncoder()
+        .ok_or_else(|| GpuError::invalid_arg("no Metal blit encoder for readback"))?;
+    // SAFETY: the source rectangle is the whole subresource the caller named, and the
+    // destination is the buffer just sized for exactly `padded_row * height` bytes.
+    unsafe {
+        blit.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toBuffer_destinationOffset_destinationBytesPerRow_destinationBytesPerImage(
+            &texture,
+            slice as usize,
+            mip as usize,
+            MTLOrigin { x: 0, y: 0, z: 0 },
+            MTLSize {
+                width: width as usize,
+                height: height as usize,
+                depth: 1,
+            },
+            &buffer,
+            0,
+            padded_row,
+            total,
+        );
+    }
+    blit.endEncoding();
+    command_buffer.commit();
+    // SAFETY: blocking on a committed command buffer. This is an offline tool; there
+    // is no frame to stall.
+    unsafe { command_buffer.waitUntilCompleted() };
+
+    let mut out = Vec::with_capacity(tight_row * height as usize);
+    let base = buffer.contents().as_ptr().cast::<u8>();
+    // SAFETY: the buffer is shared-storage and the copy above has completed, so its
+    // contents are visible to the CPU; every tight row read starts inside the
+    // `padded_row * height` bytes it was created with.
+    unsafe {
+        for row in 0..height as usize {
+            out.extend_from_slice(std::slice::from_raw_parts(
+                base.add(row * padded_row),
+                tight_row,
+            ));
+        }
+    }
+    Ok(out)
 }

@@ -61,17 +61,31 @@ pub(crate) enum Zone {
     Gtao,
     GtaoBlur,
     Composite,
+    /// The frame as a whole — **written by the backend leaf, never by a pass.**
+    ///
+    /// It exists because Metal cannot answer the per-pass question at all (D18):
+    /// sokol owns the command buffer and the encoder, and Apple silicon has no
+    /// draw-boundary counter sampling, so the honest measurement there is two
+    /// sentinel command buffers bracketing sokol's. D3D11, which *can* time each
+    /// pass, never writes these slots — and since which zones a frame reported is
+    /// measured rather than declared, a capture on either OS simply shows what that
+    /// OS could actually measure, with no `cfg` anywhere in this file.
+    Frame,
 }
 
 impl Zone {
     /// Index of this zone's *begin* timestamp; the *end* is +1.
-    const fn base(self) -> usize {
+    ///
+    /// `pub(crate)` for [`Zone::Frame`]'s sake: the backend leaf that writes those
+    /// slots has to know where they are.
+    pub(crate) const fn base(self) -> usize {
         match self {
             Zone::Scene => 0,
             Zone::GtaoGbuffer => 2,
             Zone::Gtao => 4,
             Zone::GtaoBlur => 6,
             Zone::Composite => 8,
+            Zone::Frame => 10,
         }
     }
 
@@ -83,23 +97,26 @@ impl Zone {
             Zone::Gtao => "GTAO Occlusion",
             Zone::GtaoBlur => "GTAO Blur",
             Zone::Composite => "Composite",
+            Zone::Frame => "GPU Frame",
         }
     }
 
     /// The two timestamp-slot bits this zone occupies, for testing against the
-    /// frame's measured `written` set.
-    const fn slot_bits(self) -> u16 {
+    /// frame's measured `written` set — and, in the backend leaf, for declaring
+    /// which slots it just wrote.
+    pub(crate) const fn slot_bits(self) -> u16 {
         (1 << self.base()) | (1 << (self.base() + 1))
     }
 }
 
 /// Encode order, used to walk a frame's timestamps when feeding Tracy.
-const ZONES: [Zone; 5] = [
+const ZONES: [Zone; 6] = [
     Zone::Scene,
     Zone::GtaoGbuffer,
     Zone::Gtao,
     Zone::GtaoBlur,
     Zone::Composite,
+    Zone::Frame,
 ];
 
 /// Number of timestamp slots a frame needs (zones × 2). The backend leaf sizes its
@@ -186,10 +203,19 @@ impl GpuProfiler {
             let Some(client) = Client::running() else {
                 return;
             };
-            // ns per tick = 1e9 / frequency; the baseline is the first recorded tick,
-            // so the GPU timeline lines up with the CPU one.
+            // ns per tick = 1e9 / frequency; the baseline is the first tick this
+            // frame actually *recorded*, so the GPU timeline lines up with the CPU
+            // one. "First recorded", not `times[0]`: slot 0 is the scene pass's
+            // begin, which the D3D11 leaf always writes and the Metal one never
+            // does — taking it unconditionally would calibrate that backend's whole
+            // timeline against a zero.
             let period = 1.0e9 / timings.frequency as f32;
-            let baseline = timings.times.first().copied().unwrap_or(0) as i64;
+            let baseline = ZONES
+                .iter()
+                .filter(|zone| timings.written & zone.slot_bits() == zone.slot_bits())
+                .map(|zone| timings.times[zone.base()])
+                .min()
+                .unwrap_or(0) as i64;
             self.ctx = client
                 .new_gpu_context(Some(CONTEXT_NAME), CONTEXT_TYPE, baseline, period)
                 .ok();
@@ -229,6 +255,10 @@ const CONTEXT_TYPE: GpuContextType = GpuContextType::Direct3D11;
 const CONTEXT_NAME: &str = "GPU (Metal frame)";
 /// Tracy has no Metal context type, and picking a neighbouring API's would make a
 /// capture claim something untrue about what it is looking at. `Invalid` is the
-/// enum's own "some other API", which is exactly the case here.
+/// enum's own "stand in for other types of contexts", which is exactly the case.
+///
+/// Tracy's timeline labels the row **"GPU (Metal frame) — Invalid context 0"**. That
+/// is the enum name leaking into the UI, not a fault: the context is live and its
+/// zones are there beside it. Do not "fix" it by claiming Vulkan or D3D12.
 #[cfg(target_os = "macos")]
 const CONTEXT_TYPE: GpuContextType = GpuContextType::Invalid;

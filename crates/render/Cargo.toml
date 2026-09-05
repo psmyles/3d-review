@@ -70,8 +70,14 @@ objc2-metal = { workspace = true, features = [
     "MTLDevice",                     # MTLCreateSystemDefaultDevice, the device sokol runs on
     "MTLPixelFormat",                # the layer's BGRA8Unorm backbuffer format
     "MTLDrawable",                   # CAMetalDrawable's base protocol
-    "MTLTexture",                    # the drawable's texture (sokol reads it, we don't)
+    "MTLTexture",                    # the drawable's texture, and the bake's readback source
     "MTLResource",
+    "MTLCommandQueue",               # sokol's queue: the timing sentinels and the bake's blit
+    "MTLCommandBuffer",              # ...the buffers on it, and their GPUEndTime
+    "MTLCommandEncoder",             # endEncoding
+    "MTLBlitCommandEncoder",         # the bake's texture -> buffer copy
+    "MTLBuffer",                     # ...its shared-storage destination
+    "MTLTypes",                      # MTLOrigin / MTLSize
 ] }
 objc2-quartz-core = { workspace = true, features = [
     "CALayer",                       # contentsScale, the layer the view hosts
