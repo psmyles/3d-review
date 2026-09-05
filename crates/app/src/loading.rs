@@ -27,6 +27,7 @@ use review_model::ModelData;
 use review_render::Renderer;
 use review_ui::Selection;
 
+use crate::dialog::Dialog;
 use crate::{App, TEXTURE_EXTENSIONS, UserEvent, file_label, prof};
 
 /// A second primary click counts as a double-click only within this interval…
@@ -66,17 +67,12 @@ impl App {
         }
     }
 
+    /// Ask for a model to open. The picker runs on a worker thread and comes back
+    /// through the event loop (`dialog.rs`), so the answer lands in
+    /// [`Self::open_model_from_path`] one turn of the loop later rather than in
+    /// this call.
     pub(crate) fn open_model_from_dialog(&mut self) {
-        let file = rfd::FileDialog::new()
-            .add_filter("FBX", &["fbx"])
-            .set_title("Open Model")
-            .pick_file();
-
-        let Some(path) = file else {
-            return;
-        };
-
-        self.open_model_from_path(&path);
+        self.ask(Dialog::OpenModel);
     }
 
     pub(crate) fn open_model_from_path(&mut self, path: &Path) {

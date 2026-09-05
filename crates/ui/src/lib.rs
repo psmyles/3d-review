@@ -18,6 +18,30 @@
 // no `unsafe` may ever land in this crate.
 #![forbid(unsafe_code)]
 
+/// The primary modifier's user-facing name, as a **literal** so it can be
+/// `concat!`ed into the `const` shortcut tables that show it.
+///
+/// `app`'s `shortcuts::primary_held` is the dispatch side of the same decision
+/// (`mac-port-plan.md` D10); this is only what the chrome calls the key. Written
+/// as a macro rather than a `const` because most uses sit inside a longer const
+/// string, and there is no const string concatenation.
+#[cfg(target_os = "macos")]
+macro_rules! primary_key {
+    () => {
+        "Cmd"
+    };
+}
+#[cfg(not(target_os = "macos"))]
+macro_rules! primary_key {
+    () => {
+        "Ctrl"
+    };
+}
+
+/// The primary modifier's user-facing name for the places that build their label
+/// at run time: `Ctrl` on Windows and Linux, `Cmd` on macOS.
+pub(crate) const PRIMARY_MODIFIER: &str = primary_key!();
+
 mod assets;
 mod dimensions;
 mod gizmo;

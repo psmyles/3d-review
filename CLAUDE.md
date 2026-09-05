@@ -187,13 +187,24 @@ crates/
             `fn main`, the `ApplicationHandler` impl and the window + GPU startup
             path -> src/main.rs; the per-frame render loop ->
             src/frame.rs; pointer/scroll/resize routing -> src/input.rs; the
-            keyboard dispatch (which `ui`'s help.rs tables must mirror) ->
+            keyboard dispatch (which `ui`'s help.rs tables must mirror; file
+            commands chord with the **primary** modifier — `Ctrl` here, `Cmd` on
+            macOS, D10 — and `ui`'s `primary_key!` is what names it on screen) ->
             src/shortcuts.rs; the model-load funnel — drag-drop, Ctrl+O,
             double-click, CLI/file-association — plus the one
             `reset_ui_for_new_model` both paths share -> src/loading.rs;
             applying `UiOutput` intents to the Renderer (invariant 2's concrete
             realization) -> src/ui_intents.rs; the selection-flash animation ->
             src/selection_flash.rs;
+            every native file dialog — opened on a worker thread and answered
+            through `UserEvent::DialogDone` (`mac-port-plan.md` D9), one at a time
+            -> src/dialog.rs. Nothing in this crate may call `rfd` inline from a
+            winit callback: on macOS a modal run loop entered from one aborts the
+            process. The single exception is the startup error box, which `main`
+            raises *after* `run_app` has returned. A request carries its own
+            subject with it (the LOD chain to export, the serialized preset), so
+            the answer acts on what the user was looking at when they asked rather
+            than on whatever the state has since become;
             scene texture pool + off-thread decode + disk-auto-reload
             (an `impl App` block) -> src/texture_manager.rs;
             the animation clock + pose evaluation (`AnimationSubsystem`, an
@@ -202,7 +213,9 @@ crates/
             time moved, bumps `pose_revision`, keeps `ui.bounds` on the selected
             clip's envelope, and is the `anim_playing` term of the redraw pacing)
             -> src/animation.rs;
-            window position/size restore via %APPDATA%, monitor-geometry
+            window position/size restore via the OS config dir (`dirs`, D17:
+            `%APPDATA%\3D Review` on Windows — the same path as before —
+            `~/Library/Application Support/3D Review` on macOS), monitor-geometry
             validation + the refresh-rate query -> src/window_state.rs;
             unified undo/redo snapshot stack -> src/undo.rs;
             the Opt workspace's processing loop -> src/opt.rs (an `impl App` block
@@ -527,6 +540,7 @@ Pinned (workspace deps): `winit 0.30`, `sokol` (a vendored checkout — see
 `vendor/NOTICE.txt`), `windows 0.62` (Direct3D 11/DXGI, a `cfg(windows)` dep of
 `render` **only**, for the backend leaf), `egui`/`egui-winit 0.36` +
 `egui-notify 0.23`, `glam 0.30`, `bytemuck 1`, `thiserror 2`, `rfd 0.15`,
+`dirs 6` (the per-user config dir `window.cfg` lives in),
 `image 0.25` (png + hdr + tga/tiff/jpeg/pnm), `half 2`,
 `zune-image`/`zune-core 0.5` (JPEG-only + simd; the texture fast path), `cc 1`
 (build dep), `tracy-client 0.18`. Edition 2024.

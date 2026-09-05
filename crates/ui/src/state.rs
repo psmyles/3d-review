@@ -1066,7 +1066,7 @@ pub struct UiState {
     pub animation: AnimationUiState,
     /// Bone nodes selected in the Outliner, in click order (the last entry is the
     /// primary, mirrored into [`UiState::selection`]). Drives the skeleton
-    /// overlay's highlight and the skin-weight heat map. Ctrl-click toggles a
+    /// overlay's highlight and the skin-weight heat map. Primary-click toggles a
     /// member, Shift-click takes a range; clicking any non-bone row clears it.
     ///
     /// Kept beside [`UiState::selection`] rather than inside it because
@@ -1074,7 +1074,7 @@ pub struct UiState {
     /// snapshots, where a growable set would be the wrong shape.
     pub selected_bones: Vec<usize>,
     /// Anchor row for Shift-click range selection: the last plainly-clicked or
-    /// Ctrl-clicked bone. `None` until a bone is clicked.
+    /// Primary-clicked bone. `None` until a bone is clicked.
     pub bone_anchor: Option<usize>,
     /// Whether the loaded model carries any bone node. Gates the skeleton toolbar
     /// button (hidden entirely for an unrigged model). Set by `app` on load.

@@ -35,6 +35,10 @@ rust-version = "1.88"
 anyhow = "1"
 bytemuck = { version = "1", features = ["derive"] }
 cc = "1"
+# The per-user config directory `window.cfg` lives in (`mac-port-plan.md` D17):
+# `%APPDATA%` on Windows — the same path the hand-read `APPDATA` env var gave —
+# and `~/Library/Application Support` on macOS, where that env var does not exist.
+dirs = "6"
 # egui renders through our own sokol_gfx renderer (`render/src/egui_sokol.rs`,
 # `mac-port-plan.md` D3), which is what lifted the 0.33 ceiling egui-directx11
 # 0.12.1 (`^0.33`) had pinned us to — that crate is gone (D6). egui-notify 0.23

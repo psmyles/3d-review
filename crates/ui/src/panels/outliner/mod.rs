@@ -16,7 +16,7 @@
 //! colored glyph, a truncating name, and — on mesh-bearing nodes — a visibility
 //! eye pinned to the right edge. Clicking anywhere on the strip sets
 //! [`UiState::selection`]; on a *bone* row the modifiers additionally build
-//! [`UiState::selected_bones`] (Ctrl toggles, Shift takes a range), which feeds the
+//! [`UiState::selected_bones`] (the primary modifier toggles, Shift takes a range), which feeds the
 //! skeleton overlay's highlight and the skin-weight heat map. The arrow keys walk
 //! the same rows (see [`nav::resolve_nav`]) whenever no widget — the search box
 //! above all — holds egui's keyboard focus.
@@ -58,7 +58,7 @@ struct RowsOutput {
     clicked: Option<(usize, egui::Modifiers)>,
     toggled_collapse: Option<usize>,
     /// The mesh row whose visibility eye was clicked, and the modifiers held —
-    /// Ctrl isolates that mesh instead of toggling it.
+    /// the primary modifier isolates that mesh instead of toggling it.
     toggled_eye: Option<(usize, egui::Modifiers)>,
     /// Whether a pending [`OutlinerState::scroll_to_selection`] was honored.
     ///
@@ -304,7 +304,8 @@ fn apply_rows_output(state: &mut UiState, model: &ModelData, rows: &[TreeRow], o
     }
 }
 
-/// Ctrl+click on a mesh row's eye: hide every *other* mesh node, so only this one
+/// Primary+click on a mesh row's eye (`Ctrl` here, `Cmd` on macOS - egui's own
+/// `Modifiers::command`): hide every *other* mesh node, so only this one
 /// is left in the viewport.
 ///
 /// Clicking it again on the mesh that is already alone shows everything back —

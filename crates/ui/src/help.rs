@@ -41,11 +41,20 @@ const RIGHT_SHORTCUTS: [(&str, &str); 8] = [
 /// Bottom-section rows: (key-cap chord, description) for the file / edit
 /// commands.
 const CHORD_SHORTCUTS: [(&[&str], &str); 6] = [
-    (&["Ctrl", "N"], "Reset 3D Review to start state"),
-    (&["Ctrl", "O"], "Open model from file dialog"),
-    (&["Ctrl", "Z"], "Undo"),
-    (&["Ctrl", "Y"], "Redo"),
-    (&["Ctrl", "Shift", "Z"], "Redo (alternate chord)"),
+    (
+        &[crate::PRIMARY_MODIFIER, "N"],
+        "Reset 3D Review to start state",
+    ),
+    (
+        &[crate::PRIMARY_MODIFIER, "O"],
+        "Open model from file dialog",
+    ),
+    (&[crate::PRIMARY_MODIFIER, "Z"], "Undo"),
+    (&[crate::PRIMARY_MODIFIER, "Y"], "Redo"),
+    (
+        &[crate::PRIMARY_MODIFIER, "Shift", "Z"],
+        "Redo (alternate chord)",
+    ),
     (&["Esc"], "Clear selection"),
 ];
 
@@ -186,7 +195,7 @@ fn shortcut_row(ui: &mut egui::Ui, keys: &[&str], desc: &str) {
     });
 }
 
-/// Paint one key-cap tile with its glyph centered. Word labels ("Ctrl") get a
+/// Paint one key-cap tile with its glyph centered. Word labels ("Ctrl", "Cmd") get a
 /// wider cap; single glyphs are square.
 fn key_cap(ui: &mut egui::Ui, label: &str) {
     let width = if label.chars().count() > 1 {

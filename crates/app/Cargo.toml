@@ -7,6 +7,8 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+# The per-user config directory `window.cfg` is written to (D17).
+dirs.workspace = true
 egui.workspace = true
 egui-winit.workspace = true
 glam.workspace = true

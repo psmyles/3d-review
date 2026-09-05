@@ -81,8 +81,12 @@ const SCOPE_COLUMNS: [(&str, &str); 3] = [
     ),
     (
         "Vis",
-        "Only the meshes the Outliner is still showing. Identical to All until \
-         you hide something - Ctrl+click a row's eye to isolate one mesh.",
+        concat!(
+            "Only the meshes the Outliner is still showing. Identical to All ",
+            "until you hide something - ",
+            primary_key!(),
+            "+click a row's eye to isolate one mesh."
+        ),
     ),
 ];
 

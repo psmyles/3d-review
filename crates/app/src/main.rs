@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 mod animation;
+mod dialog;
 mod frame;
 mod input;
 mod loading;
@@ -69,6 +70,10 @@ enum UserEvent {
     /// A background model import finished (posted by the import thread). Boxed
     /// because it carries the whole parsed model.
     ModelLoaded(Box<loading::ModelLoaded>),
+    /// A native file dialog closed (posted by the thread that opened it —
+    /// `mac-port-plan.md` D9). `None` when the user cancelled. Boxed because the
+    /// export variant carries a whole LOD chain's worth of `Arc`s.
+    DialogDone(Option<Box<dialog::DialogAnswer>>),
 }
 
 use animation::AnimationSubsystem;
@@ -132,9 +137,19 @@ fn main() -> anyhow::Result<()> {
         _tracy: tracy,
         ..App::default()
     };
-    event_loop
+    let outcome = event_loop
         .run_app(&mut app)
-        .context("application event loop failed")
+        .context("application event loop failed");
+
+    // Report a startup failure now, from `main`'s own stack rather than from the
+    // `resumed` callback that hit it: `rfd`'s message box runs a modal loop of its
+    // own, and on macOS AppKit aborts the process rather than re-enter one from
+    // inside an event callback (`mac-port-plan.md` D9). By here the event loop has
+    // returned, so there is no loop to re-enter.
+    if let Some(error) = app.startup_error.take() {
+        report_startup_failure(&error);
+    }
+    outcome
 }
 
 struct App {
@@ -221,6 +236,16 @@ struct App {
     /// The scene texture pool + decode cache + disk-auto-reload subsystem; its
     /// logic lives in `texture_manager.rs`.
     textures: TextureSubsystem,
+    /// Whether a native file dialog is currently up on its worker thread
+    /// (`dialog.rs`, `mac-port-plan.md` D9). The dialogs no longer block the event
+    /// loop, which is what makes it possible to ask for a second one while the
+    /// first is on screen — this is what says no.
+    dialog_open: bool,
+    /// The failure that stopped `start` from bringing the viewer up, held until
+    /// `run_app` has returned so the error dialog is opened from `main` rather than
+    /// from inside a winit callback (D9 again: on macOS a modal run loop entered
+    /// from a callback aborts the process).
+    startup_error: Option<anyhow::Error>,
     /// The toast notification system (egui-notify). `app` owns it because it owns
     /// the egui frame and triggers the notifications (texture decode start/finish);
     /// the UI crate only provides the themed type. Shown once per frame in `render`.
@@ -409,6 +434,8 @@ impl Default for App {
             drag_in_progress: false,
             frame_showing_selection: false,
             textures: TextureSubsystem::default(),
+            dialog_open: false,
+            startup_error: None,
             notifications: Notifications::new(),
             tracy_enabled: false,
             gpu_fault_notified: false,
@@ -738,6 +765,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::OptProcessed(message) => self.handle_opt_processed(*message),
             UserEvent::OptExported(outcome) => self.handle_opt_exported(*outcome),
             UserEvent::ModelLoaded(message) => self.handle_model_loaded(*message),
+            UserEvent::DialogDone(answer) => self.handle_dialog_done(answer),
         }
     }
 
@@ -747,10 +775,12 @@ impl ApplicationHandler<UserEvent> for App {
         };
 
         // A startup failure has no window to report itself in and, in a release
-        // build (`windows_subsystem = "windows"`), no console either — so it goes
-        // to a native dialog before the process ends, rather than vanishing.
+        // build (`windows_subsystem = "windows"`), no console either — so it is
+        // held here and shown as a native dialog by `main`, once the loop has
+        // returned. Opening it from inside this callback is exactly the re-entrant
+        // modal D9 forbids.
         if let Err(error) = self.start(event_loop) {
-            report_startup_failure(&error);
+            self.startup_error = Some(error);
             event_loop.exit();
         }
     }
@@ -920,6 +950,10 @@ fn framing_safe_area(height_px: u32, scale_factor: f32) -> (f32, f32) {
 /// with no diagnostic at all — the symptom being an icon that bounces and nothing
 /// opening. The whole `anyhow` chain is shown (`{:#}`), so the dialog names both
 /// the stage that failed and the underlying cause.
+///
+/// Called from `main` **after** `run_app` returns, never from a winit callback —
+/// unlike the file dialogs in `dialog.rs` this one legitimately blocks, because at
+/// that point there is nothing left for it to block.
 fn report_startup_failure(error: &anyhow::Error) {
     let detail = format!("{error:#}");
     prof::msg(&format!("startup failed: {detail}"));

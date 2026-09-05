@@ -14,12 +14,14 @@ is the *GPU layer* (`crates/render/src/rhi/` and the shaders), the egui renderer
 leaves in `app`, and the build/distribution chain. The port runs **Windows first** (Fire D13): the
 shared-shell migration is the risk, and it has to be gated on a Windows box against `main`.
 
-Status: **Phase 0 done on Windows** (D21, D22), plus **Phase 1 steps 1–4**. The backend swap is
+Status: **Phase 0 done on Windows** (D21, D22), plus **Phase 1 steps 1–5**. The backend swap is
 complete: every draw path — the frame flow, the egui chrome, the Tex viewport, the 3D and UV scenes
 with MSAA and GTAO, and the Opt workspace's comparison view — runs on sokol_gfx, `app` no longer
 depends on `windows` at all, and the viewport is **pixel-identical** to a `main` build on the models
-checked. What is still parked in `crates/render/src/port_pending/` is not a draw path: the Tracy GPU
-zones and the offline IBL bake, both step 6. Next are the shell leaves (step 5), then 6–8. Sections are written in the present tense of the finished port so they
+checked. The shell leaves that would have crashed or misbehaved on macOS are done too — file
+dialogs off the event loop (D9), the primary modifier (D10), the config directory (D17). What is
+still parked in `crates/render/src/port_pending/` is not a draw path: the Tracy GPU zones and the
+offline IBL bake, both step 6. Next are 6–8. Sections are written in the present tense of the finished port so they
 can become the description once it lands; the *Status* column of §2 and the phase list in §8 say
 what is actually done.
 
@@ -61,15 +63,15 @@ and are settled.
 | D6 | **egui bumped to 0.36.1** (`egui`, `egui-winit`, `egui-notify 0.23`) in the same port (*owner*) | Dropping egui-directx11 removes the only 0.33 pin | API churn in `ui` folded into the port; verify egui-notify 0.23 tracks 0.36 at execution, else pin egui to the newest it supports | Shipped (step 3); egui-notify 0.23 does track 0.36 |
 | D7 | **CPU mip chain**, uploaded in the one `sg_make_image` | sokol_gfx has no `GenerateMips`; sRGB textures are averaged in linear light so the result matches the hardware path | ~5 ms per 4K texture | Shipped (step 4 stage 1) as `rhi/mips.rs`, but built **at upload**, not on the decode worker: the chain differs between the raw and sRGB uploads of the same pixels, so it is not a property of the decoded image (see step 4) |
 | D8 | **GPU bring-up on its own thread from the first line of `main`; the window is created before the join** (Fire D18) | Device creation is the longest startup item (~135 ms for D3D11 on Fire's box) and needs no window | `App::start` reorders; `backend::Device: Send` | Shipped (step 3) |
-| D9 | **Every `rfd` dialog runs on a worker thread and answers through `UserEvent`** (Fire §3.5: nothing called from a winit callback may pump a loop of its own - on macOS AppKit aborts the process) | Six blocking sites today (`loading.rs`, `texture_manager.rs`, three in `opt.rs`, the startup box in `main.rs`), three of them *inside* `render()`; on macOS this is a reliable crash, not a glitch | `Dialog` enum + `UserEvent::DialogDone`, one dialog at a time; the startup error box moves to after `run_app` returns | Planned |
-| D10 | **`Primary` modifier: Ctrl on Windows, ⌘ on macOS**; `help.rs`/`stats.rs` labels say "Ctrl"/"Cmd" per OS | Cmd is the only acceptable file-command chord on a Mac | `shortcuts.rs` matches `SUPER` on macOS; the Alt+RMB zoom-drag stays Option | Planned |
+| D9 | **Every `rfd` dialog runs on a worker thread and answers through `UserEvent`** (Fire §3.5: nothing called from a winit callback may pump a loop of its own - on macOS AppKit aborts the process) | Six blocking sites today (`loading.rs`, `texture_manager.rs`, three in `opt.rs`, the startup box in `main.rs`), three of them *inside* `render()`; on macOS this is a reliable crash, not a glitch | `Dialog` enum + `UserEvent::DialogDone`, one dialog at a time; the startup error box moves to after `run_app` returns | Shipped (step 5) — `app/src/dialog.rs` |
+| D10 | **`Primary` modifier: Ctrl on Windows, ⌘ on macOS**; `help.rs`/`stats.rs` labels say "Ctrl"/"Cmd" per OS | Cmd is the only acceptable file-command chord on a Mac | `shortcuts.rs` matches `SUPER` on macOS; the Alt+RMB zoom-drag stays Option | Shipped (step 5); still `Ctrl` on this OS, `Cmd` arrives with the `cfg` |
 | D11 | **Apple Silicon only** (Fire D10, *owner*); every vendored C tree (ufbx, meshoptimizer, ufbx_write, psd_sdk) is compiled from source by `cc`, so nothing is prebuilt per target | No Intel users to serve; unlike Fire's HEIF `.a`s there is no prebuilt native dep to re-vendor | `lipo` check in `build-mac.sh` | Planned |
 | D12 | **Build, sign, notarize only on the dev Mac via `scripts/build-mac.sh`** (Fire D11/D12, *owner*); `Info.plist` heredoc from `product.json`; `.icns` from the 1024² master `assets/icons/application-logo.png`; `.fbx` in `CFBundleDocumentTypes` with `LSHandlerRank = Alternate` | Mirrors `packaging/build-windows-installer.ps1`; keeps the Developer ID cert off any shared machine. `Alternate` volunteers for `.fbx` in "Open With" without taking it from anything | `scripts/dev-app.sh` for the unsigned dev bundle - needed to test Finder opens at all, since a bare binary is not what `open` delivers files to | Planned |
 | D13 | **Windows first, then macOS** (*owner*) | The shared code and the gate risk are the Windows migration; mac is leaves + packaging | The Mac waits one phase | Decided |
 | D14 | **Open-file events via `openfiles.rs`** (Fire's `class_addMethod` hook adding `application:openURLs:` to winit's delegate) feeding `App::open_model_from_path`; opens that arrive before the window are held and handed to `start()` | Launch Services gives a fresh launch *no argv* and a running app *no new process*; without it `.fbx` association does nothing on macOS | ~130 lines copied; no IPC needed (one window, one process, no single-instance socket) | Planned |
 | D15 | **Minimal `muda` menu bar** (App / File: Open… ⌘O, New ⌘N / Window) with `with_default_menu(false)`; `Open…` routes through D9 (*owner*) | A Mac app without a menu bar reads as broken; winit's default menu would replace ours wholesale, and it is where ⌘Q comes from, so ours must carry Quit | ~150 lines `menubar.rs`, `cfg(target_os = "macos")`; accelerators intercept keys before winit sees them, so only the menu items carry one | Planned |
 | D16 | **Pinch → wheel zoom** on the orbit, UV and Tex cameras (Fire D15); gesture math stays in logical px, rendering in physical px | Trackpad users | `WindowEvent::PinchGesture`, factor `1 + delta`, NaN-filtered | Planned |
-| D17 | **`window.cfg` via `dirs::config_dir()`** (`%APPDATA%` on Windows - the same path as today - `~/Library/Application Support` on macOS) | Drop the `APPDATA` env read in `window_state.rs`, which fails soft on macOS today | `dirs 6` | Planned |
+| D17 | **`window.cfg` via `dirs::config_dir()`** (`%APPDATA%` on Windows - the same path as today - `~/Library/Application Support` on macOS) | Drop the `APPDATA` env read in `window_state.rs`, which fails soft on macOS today | `dirs 6` | Shipped (step 5); a unit test pins the Windows path unchanged |
 | D18 | **Tracy GPU profiler: per-OS leaves over sokol's native handles** (*owner*). D3D11: the existing timestamp-query code unchanged, over `sg_d3d11_device()` / `sg_d3d11_device_context()` (the immediate context; `ctx.End(query)` between sokol calls is valid). Metal: per-pass zones are *not* achievable (sokol owns the command buffer and encoder; Apple silicon has no draw-boundary counter sampling) - the leaf brackets sokol's buffer with two sentinel command buffers on `sg_mtl_command_queue()` and reports their `GPUEndTime`s as one "GPU frame" zone, plus `sg_query_stats()` counts as plots on both OSes | Recorded honestly | `rhi/gpu_profiler.rs` keeps its `Zone` API; `zone_*` are no-ops on Metal; Xcode's Metal profiler covers per-pass timing there | Planned |
 | D19 | **`bake_ibl` on sokol_gfx** (*owner*): `Baker` = headless `Gpu` (device, `sg_setup`, no swapchain); `CubeTarget` = one cube image + 6×mips attachment views (`mip_level` + `slice`); render every pass for one environment → `sg_commit` → per-OS readback leaf `backend::read_image_subresource`: D3D11 staging copy + `Map(READ)` over `sg_d3d11_query_image_info` (today's body); Metal blit from the private texture to a shared `MTLBuffer` on our own command buffer from `sg_mtl_command_queue()`, committed *after* `sg_commit` (queue order = commit order) + `waitUntilCompleted`. The old RTV/SRV-hazard `unbind_*` calls go away (passes are closed) | Fire D23: the whole dev pipeline runs on the Mac; a re-bake must not need Windows | sokol uses unretained command-buffer references, so every image stays alive until its readback returns | Planned |
 | D20 | **The swapchain backbuffer is plain UNORM and the composite/egui/tex shaders sRGB-encode their own output** - `R8G8B8A8_UNORM` on D3D11 (today's contract), `BGRA8Unorm` on Metal (`CAMetalLayer` refuses RGBA8); `SWAPCHAIN_FORMAT` lives in the backend module | Fire D20. The swapchain pass needs no depth (the scene is offscreen), so Fire's `metal.rs` is reusable **as-is** | Channel order only | Shipped on Windows (step 3) |
@@ -775,7 +777,37 @@ Ordered so each step is verifiable by eye against the current renderer on the sa
    a fraction of a pixel. Every full-backbuffer path, the overlay included, matches exactly.
 5. **Shell leaves on Windows**: `rfd` on workers (D9), `dirs` config dir (D17), `Primary` modifier
    plumbing (D10, still Ctrl here), the startup error box after `run_app`, `ScaleFactorChanged`
-   forwarding.
+   forwarding. *Done.* `ScaleFactorChanged` turned out to have landed already in step 3, with the
+   backend leaf that owns it; the other four are this step.
+
+   **D9** is the one with substance. Six blocking `rfd` calls became one `dialog.rs`: a `Dialog`
+   request (carrying whatever its answer will act on) goes to a worker, the worker blocks on the OS
+   dialog, and `UserEvent::DialogDone` applies the answer on the main thread — the shape
+   `loading.rs` and `texture_manager.rs` already had. Two things the blocking version got for free
+   had to be arranged: **one dialog at a time** (a modal made a second unreachable; nothing freezes
+   now, so `App::ask` drops a request that arrives while one is up), and **the payload is captured
+   when the dialog opens, not when it closes** — the workspace stays live behind the picker, so
+   an export or a preset save that re-read `self` on the way out would race a background run or a
+   slider drag with no visible cause. The request carries its own subject out and back instead.
+   The startup error box is the one dialog that still blocks, and legitimately: `main` raises it
+   after `run_app` has returned, where there is no loop left to re-enter.
+
+   Verified on the running viewer, since none of this is unit-testable. Synthetic input is
+   unavailable in this environment (`GetForegroundWindow` returns 0, so neither `mouse_event` nor
+   `keybd_event` lands anywhere), so a temporary `REVIEW_DIALOG_PROBE` drove it and was removed
+   afterwards. With the picker up: the dialog window is a `#32770` on a **worker** thread id, never
+   the winit thread's; the viewer window resized 2575×1407 → 1280×800 *behind* it and came
+   back correctly re-laid-out and re-rendered, which is the whole claim — the old code would
+   have been frozen inside the OS modal loop. Cancelling it (`WM_CLOSE`) round-tripped to the main
+   thread and re-armed three times, each on a fresh worker thread, with no leaked `dialog_open`. A
+   canned answer posted through the same path loaded a different model, framed it and filled the
+   Outliner, so the accept side is covered too. An injected startup failure raised the error box
+   from `main`'s own stack with the viewer window already gone — 32 threads left, not 97.
+
+   One thing that looked like a bug and was not: an oversized window (20000 px tall, past D3D11's
+   16384 limit) makes `ResizeBuffers` fail and `GetBuffer` fail after it, which reads alarming in
+   the log. It recovers completely on the next in-range resize, exactly as `d3d11.rs`'s comment
+   claims. Left alone.
 6. **Profiler + bake** (D18, D19) on D3D11: `--tracy` GPU zones match the old capture; `bake_ibl`
    reproduces the committed `.bin`s byte-for-byte (same GPU, same encoder settings).
 7. **Cleanup**: `hlsl/` deleted and its hand-listed `build.rs` jobs with it; the last
