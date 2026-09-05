@@ -311,8 +311,7 @@ pub(super) struct ModelSlot {
     pub(super) visible_active: bool,
     visibility_baked: Option<VisibilityBaked>,
     /// This model's wireframe as drawn when it is the *ghost* in the Opt
-    /// workspace's overlay view. Written by nothing yet — the Opt path returns in
-    /// `mac-port-plan.md` Phase 1 step 4's last stages. Deliberately separate from `views.wireframe_buf`
+    /// workspace's overlay view. Deliberately separate from `views.wireframe_buf`
     /// rather than reusing it: that one is owned by the user's wireframe toggle
     /// and coloured by it, so sharing would have the two rebuild the same buffer
     /// in opposite directions every frame. `None` whenever this model is not
@@ -342,7 +341,6 @@ impl ModelSlot {
 
     /// Whether this slot has a mesh uploaded — `mesh_revision` alone can't say,
     /// since an empty model leaves the buffers `None` at a real revision.
-    #[allow(dead_code, reason = "read by the GTAO stage's `gtao_active`")]
     pub(super) fn has_mesh(&self) -> bool {
         self.mesh.is_some()
     }

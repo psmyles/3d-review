@@ -7,13 +7,13 @@ Windows and Metal on macOS) + `egui` (overlay UI, through our own sokol renderer
 + vendored `ufbx` (FBX parsing via a C bridge). Pure-Rust, no web/Electron layer.
 **Target priority: Windows.**
 
-> **The GPU layer is mid-port** (`mac-port-plan.md` Phase 1). The device,
-> swapchain, frame flow, egui chrome, Tex viewport and the **3D + UV scenes** — MSAA
-> and ambient occlusion included — are on sokol_gfx. One thing is not: the **Opt
-> workspace's comparison view** (`render_opt_scene` is still a stub that clears the
-> frame to the viewport background), which returns with the last stage of step 4. It
-> and the offline `bake_ibl` tool are still parked in
-> `crates/render/src/port_pending/` (see its README).
+> **The GPU layer's port is complete through `mac-port-plan.md` Phase 1 step 4**:
+> every draw path — the frame flow, the egui chrome, the Tex viewport, the 3D and UV
+> scenes with MSAA and ambient occlusion, and the Opt workspace's comparison view —
+> runs on sokol_gfx, and the viewport is pixel-identical to the Direct3D 11 build on
+> the models checked. What is still parked in `crates/render/src/port_pending/` (see
+> its README) is not a draw path: the Tracy GPU zones (step 6) and the offline
+> `bake_ibl` tool (step 6), which is why re-baking the IBL maps is still blocked.
 
 Deeper docs: the crate map + data flow live in §2 below; `PROJECT_STATE.md`
 (architecture, status, risk register), `RENDERING_PIPELINE.md` (render-pass
@@ -331,7 +331,8 @@ crates/
                 sampler.rs, target.rs (the offscreen colour + depth attachments: an
                 image plus the views a pass attaches and a later pass samples, and at
                 2×+ MSAA a single-sample twin sokol resolves into at `end_pass`; the
-                GTAO targets are single-sample by design),
+                GTAO targets are single-sample by design, and `scene/gpu.rs` groups the
+                seven of them into a `TargetSet` the Opt split holds *two* of),
                 bindings.rs (what a draw reads, as one value re-applied after every
                 `apply_pipeline` — sokol has no sticky slot state, so the old
                 `bind_*`/`unbind_*` pairs have no successor); gpu_profiler.rs (the
@@ -359,9 +360,9 @@ crates/
                 SceneVertex, each with a `const` size assertion **against shdc's
                 generated struct** as well as a literal, so invariant 11 is pinned to
                 the shader rather than to a hand-typed number.
-              * src/port_pending/ — the D3D11 Opt comparison view, the Tracy GPU
-                zones and the offline IBL bake, parked and uncompiled until the step
-                that revives each. See that directory's README.
+              * src/port_pending/ — the D3D11 Tracy GPU zones and the offline IBL
+                bake, parked and uncompiled until step 6 revives them. See that
+                directory's README.
             CPU vertex generation -> src/geometry/ (vertex/grid/mesh/select/
             debug_lines/uv, plus deform.rs — the per-model `DeformLayout`: each
             corner's 16-byte `deform` lane and the influence / morph tables it
@@ -393,20 +394,22 @@ crates/
             invariant 11 is pinned to the shader rather than to a hand-typed number.
             The old hand-written src/hlsl/*.hlsl set is still committed and still
             compiled by build.rs, but **nothing includes it any more** — it goes with
-            `mac-port-plan.md` Phase 1 step 7, once the scene draws through the
-            generated blobs.
+            `mac-port-plan.md` Phase 1 step 7.
             Per-model GPU state (mesh buffers, derived views, selection/visibility
             draw lists, each with its bake key) lives in a `ModelSlot`; `SceneGpu`
             holds an **active/idle pair** so the Opt workspace can keep the source
             and processed meshes both resident and alternate between them within a
             frame for one `mem::swap` — a single slot would rebuild both meshes on
             every alternation. `render`/`render_uv` claim the source slot
-            explicitly. `render_opt` draws the split (each half through the *same*
-            targets sized to half the backbuffer, composited into its own half via
-            a viewport rect — D3D11 clips to the viewport and the composite's UVs
-            come from its vertex attribute, so no scissor and no shader change) or
-            the overlay (one mesh solid, the other a ghost: the x-ray reuses the
-            selection-flash fill, the wireframe ghost the line pipeline).
+            explicitly. `render_opt` (src/scene/opt.rs) draws the split — each half
+            into its **own** `TargetSet` sized to half the viewport, composited into
+            its own half via a viewport rect. Two sets, not one: the composite is a
+            deferred `SwapchainJob`, so both halves' passes have run before either
+            composite does and a shared set would show the second view in both. Two
+            half-width sets cost what one full-width set does, and the second is
+            released the moment a single view is drawn. The overlay is one view (one
+            mesh solid, the other a ghost: the x-ray reuses the selection-flash fill,
+            the wireframe ghost the line pipeline).
             Scene depth is `Depth32Float`, Reversed-Z. The offscreen scene pass is
             **2-MRT** linear-HDR (`R16G16B16A16_FLOAT`): location 0 = linear scene
             radiance, location 1 = AO-eligible diffuse-ambient radiance; GTAO has a
@@ -588,15 +591,14 @@ set.
 
 ## 5. Current state
 
-> **What actually draws right now.** The GPU port (`mac-port-plan.md` Phase 1) has
-> landed the device, the swapchain, the frame flow, the egui chrome, the Tex viewport
-> and the 3D + UV scenes on sokol_gfx — including GPU skinning, the material table,
-> the IBL/PBR shaded path, the skybox, every derived overlay, dynamic scene MSAA and
-> the GTAO passes. Against a `main` build in a worktree, the 3D viewport is now
-> **pixel-identical** on the models checked. What step 4 has left is the **Opt
-> workspace's comparison view**: `render_opt_scene` still clears the frame to the
-> viewport background, so that workspace's viewport is a flat colour while its chrome,
-> stack editing and processing all behave normally.
+> **Everything below draws again.** The GPU port (`mac-port-plan.md` Phase 1 step 4)
+> is complete: the frame flow, the egui chrome, the Tex viewport, the 3D and UV scenes
+> — GPU skinning, the material table, the IBL/PBR shaded path, the skybox, every
+> derived overlay, dynamic scene MSAA and the GTAO passes — and the Opt workspace's
+> split and ghost-overlay comparison all run on sokol_gfx. Against a `main` build in a
+> worktree the viewport is **pixel-identical** on the models checked. The steps left
+> are the Tracy GPU profiler and the offline IBL bake (step 6), the shell leaves
+> (step 5) and the cleanup (step 7).
 
 MVP: native window + Direct3D 11 viewport + egui chrome; FBX import via ufbx (drag-drop,
 `Ctrl+O`, double-click empty viewport, command-line/file-association path);

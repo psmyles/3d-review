@@ -18,12 +18,10 @@
 //!
 //! ## Being ported (`mac-port-plan.md` Phase 1)
 //!
-//! [`Renderer::render_opt_scene`] — the Opt workspace's comparison view — has not
-//! been moved onto sokol_gfx yet: it is `src/port_pending/scene_opt.rs` and is a stub
-//! that draws nothing but the background. So are the scene's MSAA and its ambient
-//! occlusion, which arrive with their own stages of step 4. Everything else is live:
-//! the frame flow, the device and swapchain, the egui chrome, the Tex viewport and
-//! the 3D + UV scenes.
+//! Every draw path is live: the frame flow, the device and swapchain, the egui
+//! chrome, the Tex viewport, the 3D + UV scenes (MSAA and ambient occlusion included)
+//! and the Opt workspace's comparison view. What step 4 leaves for later steps is the
+//! Tracy GPU profiler and the offline IBL bake, both still in `src/port_pending/`.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -343,14 +341,19 @@ impl Renderer {
     /// Render the Opt workspace's comparison view: the source and processed meshes
     /// side by side, or one ghosted over the other. Shares every setting and every GPU
     /// resource with [`Self::render_scene`] — only the layout and the second model
-    /// differ. **Stubbed**, as [`Self::render_scene`] is.
+    /// differ.
     pub fn render_opt_scene(
         &mut self,
         frame: &mut Frame<'_>,
         scene: &OptSceneFrame<'_>,
     ) -> GpuResult<()> {
         frame.set_clear(scene.base.background.gradient_srgb().0);
-        Ok(())
+        let material_revision = self.material_revision;
+        self.ensure_scene(frame, scene.base.anti_aliasing.effective_sample_count())?;
+        let Some(scene_gpu) = self.scene.as_mut() else {
+            return Ok(());
+        };
+        scene_gpu.render_opt(frame, scene, &self.material_states, material_revision)
     }
 
     /// Drop the processed mesh's GPU buffers (invariant 3). Called when the Opt

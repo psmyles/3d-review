@@ -5,6 +5,10 @@ port (`mac-port-plan.md` Phase 1). They are **not declared as modules** — noth
 here is compiled, linted or formatted — so the tree builds and the viewer runs while
 the renderer is rebuilt underneath them stage by stage.
 
+**Step 4 is done**: every draw path is back on sokol_gfx, so what is left here belongs
+to steps 6 (the Tracy GPU zones and the offline IBL bake) and 7 (deleting this
+directory).
+
 That is deliberate rather than incidental: the plan's step 3 lands the new `rhi`
 core, the frame flow and the egui renderer with `Renderer::render_*` stubbed, and
 step 4 revives the scene "in this order, each stage eye-checked against `main` on the
@@ -14,7 +18,6 @@ something rather than a rewrite from memory.
 
 | File | Was | Returns in |
 | --- | --- | --- |
-| `scene_opt.rs` | `src/scene/opt.rs` — the Opt split + ghost overlay | step 4, last stages |
 | `ibl_bake.rs` | the offline precompute half of `src/ibl.rs` (its runtime upload half is live again) | step 6 |
 | `gpu_profiler_zones.rs` | `src/rhi/gpu_profiler.rs` — the timestamp-query `Zone` machinery | step 6 |
 | `bake.rs` | `src/rhi/bake.rs` — the headless bake device + readback | step 6 |
@@ -42,6 +45,7 @@ Gone from the table already:
   `rhi_target.rs` and `ibl.rs`'s runtime half left with the scene stage, as
   `scene/{pipelines,resources,gpu}.rs`, `material/gpu.rs`, `rhi/target.rs` and
   `ibl.rs`.
+* `scene_opt.rs` left with step 4's last stage, as `src/scene/opt.rs`.
 
 ## What step 6 must restore to `Cargo.toml`
 

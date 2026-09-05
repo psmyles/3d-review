@@ -14,13 +14,12 @@ is the *GPU layer* (`crates/render/src/rhi/` and the shaders), the egui renderer
 leaves in `app`, and the build/distribution chain. The port runs **Windows first** (Fire D13): the
 shared-shell migration is the risk, and it has to be gated on a Windows box against `main`.
 
-Status: **Phase 0 done on Windows** (D21, D22), plus **Phase 1 steps 1–3 and step 4 bar its last
-stage**. The backend swap has happened: the device, the swapchain, the frame flow, the egui chrome,
-the Tex viewport and the 3D + UV scenes (MSAA and GTAO included) run on sokol_gfx, `app` no longer
-depends on `windows` at all, and the 3D viewport is **pixel-identical** to a `main` build on the
-models checked. One thing is still to come in step 4: the **Opt workspace's comparison view**, still
-parked in `crates/render/src/port_pending/`, with `render_opt_scene` a stub that clears the frame to
-the viewport background. Sections are written in the present tense of the finished port so they
+Status: **Phase 0 done on Windows** (D21, D22), plus **Phase 1 steps 1–4**. The backend swap is
+complete: every draw path — the frame flow, the egui chrome, the Tex viewport, the 3D and UV scenes
+with MSAA and GTAO, and the Opt workspace's comparison view — runs on sokol_gfx, `app` no longer
+depends on `windows` at all, and the viewport is **pixel-identical** to a `main` build on the models
+checked. What is still parked in `crates/render/src/port_pending/` is not a draw path: the Tracy GPU
+zones and the offline IBL bake, both step 6. Next are the shell leaves (step 5), then 6–8. Sections are written in the present tense of the finished port so they
 can become the description once it lands; the *Status* column of §2 and the phase list in §8 say
 what is actually done.
 
@@ -749,6 +748,31 @@ Ordered so each step is verifiable by eye against the current renderer on the sa
    worktree at 98,400 sample points per model — `meter_cube.fbx`, `SM_Speaker_01a.fbx` and
    `SK_Player_01.fbx` come back **pixel-identical**, maximum channel-sum delta 0, with IBL on and
    off. Zero output on sokol's validation channel.
+
+   *Stage 5 (the Opt comparison view) done, and step 4 with it.* `scene/opt.rs` replaces the parked
+   `scene_opt.rs`: the split, the x-ray and wireframe ghosts, and the ghost's tint through the
+   `selection_color` uniform, all over pipelines that already existed.
+
+   The one design change §3.2 called for and this stage had to make: **the split needs two target
+   sets.** The parked D3D11 version rendered both halves through one set and composited in between;
+   with the composite a deferred job, both halves' passes have run before either composite does, so
+   a shared set shows the second view in both — which is exactly what the first run of this stage
+   did, the source half rendering the processed mesh. The seven per-view targets are now a
+   `TargetSet`, `SceneGpu` holds a second one built only by the split (at half width, so the pair
+   costs what one full-width set did) and released the moment a single view is drawn.
+
+   Two things fell out of the pass model rather than being ported: the ghost needs no
+   "restore the frame's uniform afterwards" step, because sokol applies uniforms per draw and the
+   next draw's own call is the restore; and the split's black backdrop is the swapchain pass's clear
+   rather than a `clear_backbuffer` of its own.
+
+   Verified against a `main` build in a worktree, both layouts, same window and model
+   (`SM_Speaker_01a.fbx` with one Reduce operation, so the two meshes genuinely differ): the
+   **overlay is pixel-identical** (0 of 98,400 samples differ), and the **split** differs on 2.7 % of
+   samples — traced to the chrome, not the renderer. The Opt split is the only path that renders
+   into the UI's *measured* chrome-free rect rather than the whole backbuffer, and that rect is one
+   pixel narrower under egui 0.36 than under 0.33 (left edge 462 vs 461), which scales each half by
+   a fraction of a pixel. Every full-backbuffer path, the overlay included, matches exactly.
 5. **Shell leaves on Windows**: `rfd` on workers (D9), `dirs` config dir (D17), `Primary` modifier
    plumbing (D10, still Ctrl here), the startup error box after `run_app`, `ScaleFactorChanged`
    forwarding.

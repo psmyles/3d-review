@@ -57,14 +57,15 @@ use crate::selection::SelectionView;
 use crate::shaders::generated;
 use crate::{
     ActiveMaterial, AntiAliasing, CameraProjection, CheckerTexture, EnvironmentSettings,
-    GtaoSettings, OrbitCamera, SceneDebugOptions, SceneFrame, ShadingMode, TonemapSettings,
-    UvCamera, UvShadingMode, ViewportBackground,
+    GhostStyle, GtaoSettings, OrbitCamera, SceneDebugOptions, SceneFrame, ShadingMode,
+    TonemapSettings, UvCamera, UvShadingMode, ViewportBackground,
 };
 
 use super::gpu_types::{
     GtaoUniforms, InfluenceEntry, MorphEntry, PaletteEntry, PostUniforms, SceneUniforms,
     buffer_view_value, shading_mode_value, skin_weight_value, vertex_color_value,
 };
+use super::opt::ghost_tint;
 use super::pipelines::{SCENE_VERTEX_LAYOUT, ScenePipelineSet, build_scene_pipelines};
 use super::resources::{DeformGpu, ModelSlot, SlotId};
 
@@ -137,6 +138,64 @@ impl DeformDummies {
     }
 }
 
+/// Everything one view renders through: the 2-MRT scene attachments with their depth,
+/// and GTAO's own single-sample targets.
+///
+/// They live together because they are always sized together and always belong to one
+/// view. The Opt split holds two of these — at half width each, so the pair costs what
+/// one full-width set would — because its composites are deferred and both halves'
+/// results have to still be there when they run.
+pub(super) struct TargetSet {
+    /// Offscreen linear-HDR attachments: location 0 scene colour, location 1 ambient.
+    color: ColorTarget,
+    ambient: ColorTarget,
+    depth: DepthTarget,
+    /// GTAO's targets, all **single-sample**: the view-normal/Z G-buffer (HDR) with
+    /// its own depth, then the raw and blurred occlusion (`R8`).
+    gtao_gbuffer: ColorTarget,
+    gtao_depth: DepthTarget,
+    gtao_raw: ColorTarget,
+    gtao_blur: ColorTarget,
+}
+
+impl TargetSet {
+    fn new(width: u32, height: u32, sample_count: u32) -> GpuResult<Self> {
+        let (width, height) = (width.max(1), height.max(1));
+        Ok(Self {
+            color: ColorTarget::hdr(width, height, sample_count, c"scene colour")?,
+            ambient: ColorTarget::hdr(width, height, sample_count, c"scene ambient")?,
+            depth: DepthTarget::new(width, height, sample_count, c"scene depth")?,
+            gtao_gbuffer: ColorTarget::hdr(width, height, 1, c"gtao gbuffer")?,
+            gtao_depth: DepthTarget::new(width, height, 1, c"gtao depth")?,
+            gtao_raw: ColorTarget::r8(width, height, c"gtao raw")?,
+            gtao_blur: ColorTarget::r8(width, height, c"gtao blur")?,
+        })
+    }
+
+    /// Recreate the set when the render size or the MSAA level moved. Steady-state
+    /// frames allocate nothing.
+    fn sync(&mut self, size: (u32, u32), sample_count: u32) -> GpuResult<()> {
+        let (width, height) = (size.0.max(1), size.1.max(1));
+        let size_changed = self.color.size() != (width, height);
+        let samples_changed = self.color.sample_count() != sample_count;
+        if !size_changed && !samples_changed {
+            return Ok(());
+        }
+        self.color = ColorTarget::hdr(width, height, sample_count, c"scene colour")?;
+        self.ambient = ColorTarget::hdr(width, height, sample_count, c"scene ambient")?;
+        self.depth = DepthTarget::new(width, height, sample_count, c"scene depth")?;
+        // GTAO's targets are single-sample by design (its own mesh-only pass, never
+        // resolved), so only a size change touches them.
+        if size_changed {
+            self.gtao_gbuffer = ColorTarget::hdr(width, height, 1, c"gtao gbuffer")?;
+            self.gtao_depth = DepthTarget::new(width, height, 1, c"gtao depth")?;
+            self.gtao_raw = ColorTarget::r8(width, height, c"gtao raw")?;
+            self.gtao_blur = ColorTarget::r8(width, height, c"gtao blur")?;
+        }
+        Ok(())
+    }
+}
+
 /// The scene GPU resources, built once (lazily) on the first render. The offscreen
 /// targets are recreated on resize; the mesh buffers when the model changes; the IBL
 /// maps when the environment changes.
@@ -172,17 +231,18 @@ pub(crate) struct SceneGpu {
     grid: VertexBuffer,
     /// The static 0..1 UV reference grid (built once; model-independent).
     uv_grid: VertexBuffer,
-    /// Offscreen linear-HDR targets: location 0 scene colour, location 1 ambient.
-    color: ColorTarget,
-    ambient: ColorTarget,
-    depth: DepthTarget,
-    /// GTAO's targets, all at the render resolution and all **single-sample**: the
-    /// view-normal/Z G-buffer (HDR) with its own depth, then the raw and blurred
-    /// occlusion (`R8`).
-    gtao_gbuffer: ColorTarget,
-    gtao_depth: DepthTarget,
-    gtao_raw: ColorTarget,
-    gtao_blur: ColorTarget,
+    /// Everything one view renders through.
+    targets: TargetSet,
+    /// A second set for the Opt split's right-hand view, at the same half-width size
+    /// as the first — so the two together cost what one full-width set would.
+    ///
+    /// It exists because the composite is a *deferred* job (`mac-port-plan.md` §3.2):
+    /// both halves' passes have run by the time either composite does, so a shared set
+    /// would show the second view's contents in both. `None` outside the split
+    /// (invariant 3).
+    split_targets: Option<TargetSet>,
+    /// The MSAA level the pipelines are built for.
+    sample_count: u32,
     /// The last *requested* AA level, before capability clamping — cached so the
     /// (cheap, but per-frame) adapter query only runs when the request changes.
     requested_sample_count: u32,
@@ -269,13 +329,9 @@ impl SceneGpu {
             dummies: DeformDummies::new()?,
             grid: VertexBuffer::new(&scene_lines(), c"grid")?,
             uv_grid: VertexBuffer::new(&uv_grid_lines(), c"uv grid")?,
-            color: ColorTarget::hdr(width, height, sample_count, c"scene colour")?,
-            ambient: ColorTarget::hdr(width, height, sample_count, c"scene ambient")?,
-            depth: DepthTarget::new(width, height, sample_count, c"scene depth")?,
-            gtao_gbuffer: ColorTarget::hdr(width, height, 1, c"gtao gbuffer")?,
-            gtao_depth: DepthTarget::new(width, height, 1, c"gtao depth")?,
-            gtao_raw: ColorTarget::r8(width, height, c"gtao raw")?,
-            gtao_blur: ColorTarget::r8(width, height, c"gtao blur")?,
+            targets: TargetSet::new(width, height, sample_count)?,
+            split_targets: None,
+            sample_count,
             requested_sample_count: sample_count,
             active: ModelSlot::new(),
             idle: ModelSlot::new(),
@@ -296,47 +352,64 @@ impl SceneGpu {
         size: (u32, u32),
         sample_count: u32,
     ) -> GpuResult<()> {
-        let (width, height) = (size.0.max(1), size.1.max(1));
+        let sample_count = self.sync_sample_count(frame, sample_count)?;
+        self.targets.sync(size, sample_count)
+    }
+
+    /// Reconcile the MSAA level the scene pipelines are built for with what the AA
+    /// setting asks for, and hand back the level the targets must match.
+    ///
+    /// The pipelines are rebuilt here, *before* any target is: their sample count is
+    /// baked at creation but they own nothing the targets depend on, so a failure
+    /// leaves every resource and every field describing the level still in force, and
+    /// the next frame simply tries again. Recreating the targets first would strand
+    /// them at the new level with pipelines built for the old one.
+    fn sync_sample_count(&mut self, frame: &Frame<'_>, requested: u32) -> GpuResult<u32> {
         // Only re-ask the adapter when the *request* moved (invariant 4): an
         // unsupported level degrades to the nearest supported one rather than failing
         // target creation on every frame.
-        let requested = sample_count.max(1);
-        let sample_count = if requested == self.requested_sample_count {
-            self.color.sample_count()
-        } else {
-            frame.clamp_msaa(requested)
-        };
-        let size_changed = self.color.size() != (width, height);
-        let samples_changed = self.color.sample_count() != sample_count;
-        if !size_changed && !samples_changed {
-            self.requested_sample_count = requested;
-            return Ok(());
+        let requested = requested.max(1);
+        if requested == self.requested_sample_count {
+            return Ok(self.sample_count);
         }
-
-        // Pipelines before targets. Their sample count is baked at creation but they
-        // own nothing the targets depend on, so a failure here leaves every resource
-        // and every field describing the level still in force, and the next frame
-        // simply tries again. Recreating the targets first would strand them at the
-        // new level with pipelines built for the old one.
-        if samples_changed {
+        let sample_count = frame.clamp_msaa(requested);
+        if sample_count != self.sample_count {
             self.scene = build_scene_pipelines(sample_count)?;
+            self.sample_count = sample_count;
         }
-        self.color = ColorTarget::hdr(width, height, sample_count, c"scene colour")?;
-        self.ambient = ColorTarget::hdr(width, height, sample_count, c"scene ambient")?;
-        self.depth = DepthTarget::new(width, height, sample_count, c"scene depth")?;
-        // GTAO's targets are single-sample by design (its own mesh-only pass, never
-        // resolved), so only a size change touches them.
-        if size_changed {
-            self.gtao_gbuffer = ColorTarget::hdr(width, height, 1, c"gtao gbuffer")?;
-            self.gtao_depth = DepthTarget::new(width, height, 1, c"gtao depth")?;
-            self.gtao_raw = ColorTarget::r8(width, height, c"gtao raw")?;
-            self.gtao_blur = ColorTarget::r8(width, height, c"gtao blur")?;
-        }
-        // Written only once everything above exists: caching the request past a
-        // failure would report the level as satisfied and leave it silently dropped
-        // until the user changed it again.
+        // Written only once the rebuild succeeded: caching the request past a failure
+        // would report the level as satisfied and leave it silently dropped until the
+        // user changed it again.
         self.requested_sample_count = requested;
-        Ok(())
+        Ok(sample_count)
+    }
+
+    /// Build (or resize) the split's second target set, and hand back both. Called
+    /// only by the Opt split; every other path uses [`Self::targets`] alone.
+    pub(super) fn sync_split_targets(&mut self, size: (u32, u32)) -> GpuResult<()> {
+        match self.split_targets.as_mut() {
+            Some(set) => set.sync(size, self.sample_count),
+            None => {
+                self.split_targets = Some(TargetSet::new(size.0, size.1, self.sample_count)?);
+                Ok(())
+            }
+        }
+    }
+
+    /// Drop the split's second set (invariant 3) — no split is on screen.
+    pub(super) fn release_split_targets(&mut self) {
+        self.split_targets = None;
+    }
+
+    /// The primary target set, which every single-view path renders through.
+    pub(super) fn targets(&self) -> &TargetSet {
+        &self.targets
+    }
+
+    /// The split's second set, or the primary one if it somehow has not been built —
+    /// a wrong-looking right half beats a blank frame.
+    pub(super) fn split_targets(&self) -> &TargetSet {
+        self.split_targets.as_ref().unwrap_or(&self.targets)
     }
 
     /// Render the scene: skybox + mesh (per-material PBR/IBL) + grid + overlays into
@@ -355,20 +428,44 @@ impl SceneGpu {
         // the processed slot — rebuilding both, and discarding the processed cache on
         // every switch between workspaces.
         self.activate(SlotId::Source);
+        // One view, so the split's second target set goes (invariant 3). It is the
+        // only path a workspace switch out of Opt is guaranteed to reach.
+        self.release_split_targets();
 
         let size = frame.size();
         self.sync_frame(frame, scene, material_states, material_revision, size)?;
-        self.record_view(frame, scene, camera, BackbufferRect::full(size))
+        self.record_view(
+            frame,
+            scene,
+            camera,
+            &self.targets,
+            BackbufferRect::full(size),
+        )
     }
 
     /// Draw the active slot's model into `dest`: the scene pass, then the composite.
     /// Assumes [`Self::sync_frame`] has already run for this model.
     pub(super) fn record_view(
-        &mut self,
+        &self,
         frame: &mut Frame<'_>,
         scene: &SceneFrame<'_>,
         camera: OrbitCamera,
+        targets: &TargetSet,
         dest: BackbufferRect,
+    ) -> GpuResult<()> {
+        self.record_view_with_ghost(frame, scene, camera, targets, dest, None)
+    }
+
+    /// [`Self::record_view`], optionally drawing the *idle* slot's mesh as a ghost
+    /// inside the same scene pass — the Opt workspace's overlay comparison.
+    pub(super) fn record_view_with_ghost(
+        &self,
+        frame: &mut Frame<'_>,
+        scene: &SceneFrame<'_>,
+        camera: OrbitCamera,
+        targets: &TargetSet,
+        dest: BackbufferRect,
+        ghost: Option<(GhostStyle, [f32; 3])>,
     ) -> GpuResult<()> {
         let uniforms = scene_uniforms(
             camera,
@@ -378,10 +475,41 @@ impl SceneGpu {
             scene.debug,
             self.active.deform_enabled(),
         );
-        self.record_scene_pass(frame, scene, &uniforms);
+        self.record_scene_pass(
+            frame,
+            scene,
+            targets,
+            &uniforms,
+            ghost.map(|(style, tint)| {
+                // The ghost's own uniform: the same camera and projection, with the flat
+                // fill colour swapped in. Under sokol nothing has to be *restored*
+                // afterwards — uniforms are applied per draw, so the next draw's own call
+                // is the restore.
+                //
+                // The ghost is the idle slot's mesh in its bind pose: the Opt workspace
+                // compares static geometry, so neither mesh deforms there.
+                let mut ghost_uniforms = scene_uniforms(
+                    camera,
+                    scene.projection,
+                    scene.environment,
+                    scene.selection,
+                    scene.debug,
+                    false,
+                );
+                ghost_uniforms.selection_color = ghost_tint(style, tint);
+                (style, ghost_uniforms)
+            }),
+        );
         let gtao_active = self.gtao_active(scene);
         if gtao_active {
-            self.record_gtao(frame, camera, scene.projection, scene.gtao, &uniforms);
+            self.record_gtao(
+                frame,
+                camera,
+                scene.projection,
+                scene.gtao,
+                targets,
+                &uniforms,
+            );
         }
         self.queue_composite(
             frame,
@@ -391,6 +519,7 @@ impl SceneGpu {
                 scene.tonemap,
                 flat_display(scene),
             ),
+            targets,
             gtao_active,
             dest,
         );
@@ -418,15 +547,16 @@ impl SceneGpu {
         camera: OrbitCamera,
         projection: CameraProjection,
         gtao: GtaoSettings,
+        targets: &TargetSet,
         scene_uniforms: &SceneUniforms,
     ) {
-        let uniforms = build_gtao_uniforms(camera, projection, gtao, self.gtao_raw.size());
+        let uniforms = build_gtao_uniforms(camera, projection, gtao, targets.gtao_raw.size());
 
         // G-buffer: redraw the mesh (its material is irrelevant) into the
         // single-sample normal/Z target, clearing it and its own depth.
         frame.begin_offscreen_pass(
-            &[&self.gtao_gbuffer],
-            Some(&self.gtao_depth),
+            &[&targets.gtao_gbuffer],
+            Some(&targets.gtao_depth),
             [0.0; 4],
             c"gtao gbuffer",
         );
@@ -453,9 +583,9 @@ impl SceneGpu {
         frame.end_pass();
 
         // Occlusion: a fullscreen pass over the G-buffer → raw AO.
-        frame.begin_offscreen_pass(&[&self.gtao_raw], None, [0.0; 4], c"gtao");
+        frame.begin_offscreen_pass(&[&targets.gtao_raw], None, [0.0; 4], c"gtao");
         let mut bindings = Bindings::new();
-        bindings.target(generated::VIEW_GBUFFER, &self.gtao_gbuffer);
+        bindings.target(generated::VIEW_GBUFFER, &targets.gtao_gbuffer);
         bindings.sampler(generated::SMP_GTAO_SAMPLER, &self.gtao_sampler);
         frame.apply_pipeline(&self.gtao_pipeline);
         frame.apply_bindings(&bindings);
@@ -464,10 +594,10 @@ impl SceneGpu {
         frame.end_pass();
 
         // Bilateral blur: the G-buffer again (for the edge stopping) plus the raw AO.
-        frame.begin_offscreen_pass(&[&self.gtao_blur], None, [0.0; 4], c"gtao blur");
+        frame.begin_offscreen_pass(&[&targets.gtao_blur], None, [0.0; 4], c"gtao blur");
         let mut bindings = Bindings::new();
-        bindings.target(generated::VIEW_GBUFFER, &self.gtao_gbuffer);
-        bindings.target(generated::VIEW_RAW_AO, &self.gtao_raw);
+        bindings.target(generated::VIEW_GBUFFER, &targets.gtao_gbuffer);
+        bindings.target(generated::VIEW_RAW_AO, &targets.gtao_raw);
         bindings.sampler(generated::SMP_GTAO_SAMPLER, &self.gtao_sampler);
         frame.apply_pipeline(&self.gtao_blur_pipeline);
         frame.apply_bindings(&bindings);
@@ -626,7 +756,9 @@ impl SceneGpu {
         &self,
         frame: &mut Frame<'_>,
         scene: &SceneFrame<'_>,
+        targets: &TargetSet,
         uniforms: &SceneUniforms,
+        ghost: Option<(GhostStyle, SceneUniforms)>,
     ) {
         let debug = scene.debug;
         let selection = scene.selection;
@@ -636,8 +768,8 @@ impl SceneGpu {
         // "no geometry" and the post pass paints the chosen viewport background there
         // (in display space, after tone mapping).
         frame.begin_offscreen_pass(
-            &[&self.color, &self.ambient],
-            Some(&self.depth),
+            &[&targets.color, &targets.ambient],
+            Some(&targets.depth),
             [0.0; 4],
             c"scene",
         );
@@ -784,7 +916,46 @@ impl SceneGpu {
             frame.draw(0, index.count());
         }
 
+        if let Some((style, ghost_uniforms)) = &ghost {
+            self.draw_ghost(frame, *style, ghost_uniforms);
+        }
         frame.end_pass();
+    }
+
+    /// Draw the idle slot's mesh as a see-through ghost over the solid one, inside the
+    /// scene pass the caller has already opened.
+    ///
+    /// Both styles reuse pipelines that already exist. The x-ray is the
+    /// selection-flash fill — a flat tinted colour, alpha-blended, depth-tested but not
+    /// depth-writing, which is exactly ghost behaviour — with the tint fed through the
+    /// same `selection_color` uniform it always reads. The wireframe ghost is the
+    /// derived wireframe view drawn with the line pipeline. Neither needs a shader
+    /// change, so the committed bytecode stays valid.
+    ///
+    /// The deform tables it binds are the **active** slot's, not the idle one's: the
+    /// ghost is drawn in its bind pose (its uniform's deform flag is off), so the
+    /// tables are never read — they only have to be bound, because `vs_main` declares
+    /// them.
+    fn draw_ghost(&self, frame: &mut Frame<'_>, style: GhostStyle, uniforms: &SceneUniforms) {
+        match style {
+            GhostStyle::Xray => {
+                if let Some(mesh) = &self.idle.mesh {
+                    let mut bindings = self.line_bindings();
+                    bindings.mesh_vertices(&mesh.vertices);
+                    bindings.mesh_indices(&mesh.indices);
+                    frame.apply_pipeline(&self.scene.selection);
+                    frame.apply_bindings(&bindings);
+                    frame.apply_uniforms(generated::UB_SCENE_VS, uniforms);
+                    frame.apply_uniforms(generated::UB_SCENE_FS, uniforms);
+                    frame.draw(0, mesh.indices.count());
+                }
+            }
+            GhostStyle::Wireframe => {
+                if let Some(lines) = &self.idle.ghost_wireframe_buf {
+                    self.draw_lines(frame, &self.scene.line, &[lines], uniforms);
+                }
+            }
+        }
     }
 
     /// Draw a set of line buffers through one pipeline. They share everything but the
@@ -822,20 +993,21 @@ impl SceneGpu {
         &self,
         frame: &mut Frame<'_>,
         post: &PostUniforms,
+        targets: &TargetSet,
         gtao_active: bool,
         dest: BackbufferRect,
     ) {
         let mut bindings = Bindings::new();
-        bindings.target(generated::VIEW_SCENE_COLOR, &self.color);
+        bindings.target(generated::VIEW_SCENE_COLOR, &targets.color);
         bindings.target(
             generated::VIEW_GTAO_TEXTURE,
             if gtao_active {
-                &self.gtao_blur
+                &targets.gtao_blur
             } else {
-                &self.ambient
+                &targets.ambient
             },
         );
-        bindings.target(generated::VIEW_AMBIENT_TEXTURE, &self.ambient);
+        bindings.target(generated::VIEW_AMBIENT_TEXTURE, &targets.ambient);
         bindings.sampler(generated::SMP_SCENE_SAMPLER, &self.sampler);
         frame.queue(
             SwapchainJob::new(
@@ -880,9 +1052,10 @@ impl SceneGpu {
 
         // Clear to zero (radiance + coverage); the background is painted in the
         // composite, matching the 3D path.
+        let targets = &self.targets;
         frame.begin_offscreen_pass(
-            &[&self.color, &self.ambient],
-            Some(&self.depth),
+            &[&targets.color, &targets.ambient],
+            Some(&targets.depth),
             [0.0; 4],
             c"uv scene",
         );
@@ -915,7 +1088,7 @@ impl SceneGpu {
         // 3D scene), no GTAO (the flat UV viewport has no depth to occlude), over the
         // chosen viewport background.
         let post = post_uniforms(background, false, TonemapSettings::default(), false);
-        self.queue_composite(frame, &post, false, BackbufferRect::full(size));
+        self.queue_composite(frame, &post, targets, false, BackbufferRect::full(size));
         Ok(())
     }
 }
