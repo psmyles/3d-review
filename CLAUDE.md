@@ -7,13 +7,14 @@ Windows and Metal on macOS) + `egui` (overlay UI, through our own sokol renderer
 + vendored `ufbx` (FBX parsing via a C bridge). Pure-Rust, no web/Electron layer.
 **Target priority: Windows.**
 
-> **The GPU layer is fully on sokol_gfx** (`mac-port-plan.md` Phase 1 steps 1–6):
+> **The GPU layer is fully on sokol_gfx** (`mac-port-plan.md` Phase 1, steps 1–7):
 > every draw path — the frame flow, the egui chrome, the Tex viewport, the 3D and UV
 > scenes with MSAA and ambient occlusion, and the Opt workspace's comparison view —
 > plus the `--tracy` GPU profiler and the offline `bake_ibl` tool. The viewport is
 > pixel-identical to the Direct3D 11 build on the models checked, and a fresh bake
-> reproduces every committed `.bin` byte for byte. `crates/render/src/port_pending/`
-> is empty but for its README and goes with step 7, alongside the dead `src/hlsl/`.
+> reproduces every committed `.bin` byte for byte. Nothing is parked or duplicated
+> any more: the hand-written `src/hlsl/` set and `src/port_pending/` are both gone,
+> so `src/shaders/review.glsl` is the only shader source in the workspace.
 
 Deeper docs: the crate map + data flow live in §2 below; `PROJECT_STATE.md`
 (architecture, status, risk register), `RENDERING_PIPELINE.md` (render-pass
@@ -392,7 +393,6 @@ crates/
                 never touches it. sokol's closed passes are what retired the old
                 `unbind_*` dance — a render target cannot still be bound when the next
                 pass samples it.
-              * src/port_pending/ — empty but for its README; it goes with step 7.
             CPU vertex generation -> src/geometry/ (vertex/grid/mesh/select/
             debug_lines/uv, plus deform.rs — the per-model `DeformLayout`: each
             corner's 16-byte `deform` lane and the influence / morph tables it
@@ -422,9 +422,6 @@ crates/
             shader at run time, and a broken shader is a build error. That reflection
             is also what every `#[repr(C)]` GPU struct asserts its size against, so
             invariant 11 is pinned to the shader rather than to a hand-typed number.
-            The old hand-written src/hlsl/*.hlsl set is still committed and still
-            compiled by build.rs, but **nothing includes it any more** — it goes with
-            `mac-port-plan.md` Phase 1 step 7.
             Per-model GPU state (mesh buffers, derived views, selection/visibility
             draw lists, each with its bake key) lives in a `ModelSlot`; `SceneGpu`
             holds an **active/idle pair** so the Opt workspace can keep the source
@@ -447,13 +444,14 @@ crates/
             raw/blurred `R8` occlusion, and the composite darkens the ambient by the
             scalar AO factor. HDR image-based lighting: at runtime the env cube +
             irradiance + prefilter + shared BRDF LUT are **loaded**
-            (`IblD3d::from_baked`, a pure D3D11 upload — no startup precompute) from
+            (`IblMaps::from_baked`, a pure upload — no startup precompute) from
             offline-baked assets (`assets/ibl_baked/`) for the PBR shaded path +
             skybox. The three HDR cubes ship **BC6H** block-compressed
             (`Bc6hRgbUfloat`, ~8× smaller than `Rgba16Float`, GPU-native so no
             decode); the shared BRDF LUT stays `Rg16Float`. The precompute that bakes
-            + BC6H-encodes them (the `ibl.hlsl` passes run on a headless D3D11 device
-            via `rhi::bake`, then `intel_tex_2` encodes BC6H) compiles only into the
+            + BC6H-encodes them (`review.glsl`'s four `ibl_*` programs run on a
+            headless sokol device via `rhi::bake`, then `intel_tex_2` encodes BC6H)
+            compiles only into the
             offline `bake_ibl` tool (render's `bake` feature, src/bin/bake_ibl.rs) ->
             src/ibl.rs. The model wireframe is a plain LineList drawn in the scene
             pass via the line pipeline (depth-tested against the mesh so hidden-face
@@ -574,9 +572,8 @@ workspace still builds and FBX import returns a clear error. `build.rs` (render)
 compiles the generated per-backend shader sources to committed bytecode with `fxc`,
 but only when a blob is stale and `fxc` is present (a no-fxc CI box uses the
 committed blobs). It discovers those jobs from the filenames in
-`src/shaders/generated/`, so adding a program touches only `review.glsl`; the
-hand-listed legacy `src/hlsl/*.hlsl` jobs sit beside them until step 7 deletes that
-set.
+`src/shaders/generated/`, so adding a program touches only `review.glsl` — there
+is no hand-listed job table to keep in step with it.
 
 ## 4. Locked decisions — DO NOT RE-LITIGATE
 
@@ -610,11 +607,12 @@ set.
   original face topology + source stats). FBX is the only MVP import format,
   parsed by vendored `ufbx` through a single C bridge — don't round-trip through
   glTF (drops quad topology, changes vertex counts).
-- Shading is one HLSL scene shader (`hlsl/scene.hlsl`) covering shaded / unlit /
-  wireframe / uv-checker / vertex-color paths; tone mapping + sRGB encoding live in
-  the post shader (`hlsl/post.hlsl`), and the model wireframe is a depth-tested
-  line-list draw in the scene pass. HLSL is compiled offline to committed DXBC by
-  `build.rs` (`fxc`); the runtime does no shader compilation. `3D`, `UV` and `Tex`
+- Shading is one scene program (`@program mesh` in `shaders/review.glsl`) covering
+  shaded / unlit / wireframe / uv-checker / vertex-color paths; tone mapping + sRGB
+  encoding live in the `post` program, and the model wireframe is a depth-tested
+  line-list draw in the scene pass. The whole set is generated per backend by
+  sokol-shdc and compiled offline to committed bytecode by `build.rs` (`fxc` here);
+  the runtime does no shader compilation. `3D`, `UV` and `Tex`
   viewports are all implemented; the `Tex` image is drawn by its own minimal
   fullscreen-triangle pipeline (`TexGpu`, outside the scene MRT/tonemap path) so
   channel isolation is a uniform swizzle and the displayed texel equals the stored
@@ -732,7 +730,7 @@ status-bar AA button; **HDR image-based lighting + PBR** is the default Shaded
 look — six baked HDR environments (each with a preview thumbnail shown in the
 Environment dropdown), baked irradiance/prefilter/BRDF-LUT maps loaded by `ibl.rs`,
 an optional skybox, and a live 0–360° environment yaw rotation (applied at sample
-time in `scene.hlsl` via `projection_params.y`, so it never rebuilds the IBL maps);
+time in the scene program via `projection_params.y`, so it never rebuilds the maps);
 **Ambient Occlusion** (GTAO internally) is on by default — horizon-based occlusion
 (a structured 4×4 spatial dither decorrelates slices) + 5×5 bilateral blur over a
 *separate single-sample* view-normal/view-Z G-buffer (its own mesh-only pass, not
@@ -749,7 +747,7 @@ panel — Environment / Ambient Occlusion / Tonemapper / Anti Aliasing).
 
 The renderer is **fully linear-HDR with Reversed-Z scene depth**, on a **2-MRT**
 scene pass: location 0 carries linear radiance (tone mapping + `linear_to_srgb`
-happen in `post.hlsl`); location 1 is the AO-eligible diffuse ambient radiance (IBL
+happen in the `post` program); location 1 is the AO-eligible diffuse ambient radiance (IBL
 diffuse + analytic fill only), which post darkens by the scalar GTAO factor. Scene
 depth is `Depth32Float` cleared to 0 with `GreaterEqual` and infinite reversed
 perspective (`perspective_infinite_reverse_rh`); the egui renderer then draws the
@@ -865,21 +863,21 @@ when its fixture or a vendored tree is absent.
   `build.rs` rejects a broken shader, and each struct's `size_of` assertion against
   **shdc's generated struct** rejects a layout that drifted. Re-run
   `scripts/gen-shaders.ps1` after editing the GLSL and commit what it writes.
-- The scene geometry pass is **MRT** with **two** color targets: `scene.hlsl`'s
-  `FragOutput` writes `SV_Target0` (linear scene radiance) and `SV_Target1`
-  (AO-eligible diffuse ambient radiance), so every scene pipeline
-  (mesh/line/uv-fill/skybox) renders into *two* RTVs and the offscreen pass binds
-  *two* attachments (+ MSAA resolves) — keep them in lockstep with `FragOutput`.
+- The scene geometry pass is **MRT** with **two** color targets: the scene
+  fragment shaders in `review.glsl` write location 0 (linear scene radiance) and
+  location 1 (AO-eligible diffuse ambient radiance), so every scene pipeline
+  (mesh/line/uv-fill/skybox) declares *two* color formats and the offscreen pass
+  binds *two* attachments (+ MSAA resolves) — keep the three in lockstep.
   Both locations alpha-blend. Overlays (zero-normal verts) write 0 to location 1 so
   they aren't AO-darkened. GTAO does not read location 1: it has its own
   single-sample mesh-only pass (`fs_gtao_gbuffer`, one `SV_Target0` output of view
   normal `xyz` + view Z `w`) into a separate G-buffer target, avoiding MSAA edge
-  averaging. GTAO is horizon-based (`gtao.hlsl`, a structured 4×4 spatial dither
-  decorrelates slices) and outputs a single scalar occlusion (`R8Unorm`);
-  `post.hlsl` darkens the diffuse ambient (location 1) by that scalar factor — an
-  additive correction over location 0 so MSAA stays correct and direct/emissive
-  light is never darkened. Tone mapping + sRGB encoding happen once in `post.hlsl`,
-  not in the scene shader. fxc notes: use `SampleLevel` (not `Sample`) for any
+  averaging. GTAO is horizon-based (the `gtao` program, where a structured 4×4
+  spatial dither decorrelates slices) and outputs a single scalar occlusion
+  (`R8Unorm`); `post` darkens the diffuse ambient (location 1) by that scalar factor
+  — an additive correction over location 0 so MSAA stays correct and direct/emissive
+  light is never darkened. Tone mapping + sRGB encoding happen once in `post`, not
+  in the scene shader. fxc notes: use `SampleLevel` (not `Sample`) for any
   texture read inside a loop/branch (non-uniform control flow), and guard a
   possibly-negative `pow` base with `max(x, 0.0)` so `/WX` doesn't reject it.
 - CPU-side vertex generation (grid, wireframe, face/vertex normal lines) lives in
@@ -901,9 +899,9 @@ when its fixture or a vendored tree is absent.
   (65504), so the bake's `ibl.rs` `load_equirect_from_file` clamps every channel to
   `F16_MAX` before the `Rgba16Float` upload — otherwise they become `inf`, the
   (unbounded) irradiance integral turns to `NaN`, and the model shows black
-  speckles + a dead spot at the sun. `ibl.hlsl` additionally clamps each *sampled*
-  radiance to `IBL_RADIANCE_CLAMP` in both convolutions (irradiance + prefilter) to
-  kill fireflies, and `scene.hlsl`'s skybox clamps `env * intensity` to f16 max so
+  speckles + a dead spot at the sun. The `ibl_*` programs additionally clamp each
+  *sampled* radiance to `IBL_RADIANCE_CLAMP` in both convolutions (irradiance +
+  prefilter) to kill fireflies, and the skybox clamps `env * intensity` to f16 max so
   the intensity multiply can't re-overflow the HDR target. (These clamps run at
   bake time now; the shipped maps are already finite.) Don't drop them.
 - Environment-dropdown HDR thumbnails (`assets/thumbnails/T_HDR_*.png`) are
@@ -920,13 +918,14 @@ when its fixture or a vendored tree is absent.
   runtime creates BC6H textures, which are core in Direct3D 11 feature level 11_0
   (the renderer's floor), so no explicit feature request is needed.
   They're committed; `packaging/generate-ibl-bake.ps1` regenerates them by running
-  the `bake_ibl` tool (`cargo run -p review-render --features bake --bin bake_ibl`,
-  needs a real GPU; the bake runs its `ibl.hlsl` passes on a headless D3D11 device).
+  the `bake_ibl` tool (`cargo run --release -p review-render --features bake --bin
+  bake_ibl`, needs a real GPU; the bake runs its `ibl_*` programs on a headless
+  sokol device).
   The installer build (`build-windows-installer.ps1`) invokes it, but it is
   **freshness-gated**: the script only runs the GPU bake when a baked `.bin` is
   missing or older than an input that determines its bytes (a source HDR, or
-  `ibl.rs` / `ibl.hlsl` / `bake_ibl.rs` — i.e. an IBL precompute constant like
-  sizes/mips/format, or the encode path); otherwise it's a fast no-op, so a normal
+  `ibl.rs` / `review.glsl` / `bake_ibl.rs` / `rhi/bake.rs` — i.e. an IBL precompute
+  constant like sizes/mips/format, or the encode path); otherwise it's a fast no-op, so a normal
   build touches no GPU. Pass `-Force` to re-bake regardless, or run it manually
   after adding/replacing an HDR or changing a precompute constant. The shipping
   binary carries the baked maps, not the raw HDRs — `T_HDR_*.hdr` are bake-tool

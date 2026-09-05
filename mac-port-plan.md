@@ -14,15 +14,16 @@ is the *GPU layer* (`crates/render/src/rhi/` and the shaders), the egui renderer
 leaves in `app`, and the build/distribution chain. The port runs **Windows first** (Fire D13): the
 shared-shell migration is the risk, and it has to be gated on a Windows box against `main`.
 
-Status: **Phase 0 done on Windows** (D21, D22), plus **Phase 1 steps 1–6**. The backend swap is
+Status: **Phase 0 done on Windows** (D21, D22), plus **Phase 1 steps 1–7**. The backend swap is
 complete: every draw path — the frame flow, the egui chrome, the Tex viewport, the 3D and UV scenes
 with MSAA and GTAO, and the Opt workspace's comparison view — runs on sokol_gfx, `app` no longer
 depends on `windows` at all, and the viewport is **pixel-identical** to a `main` build on the models
 checked. The shell leaves that would have crashed or misbehaved on macOS are done too — file
 dialogs off the event loop (D9), the primary modifier (D10), the config directory (D17), and so are
 the two non-drawing leaves: the `--tracy` GPU profiler (D18) and the offline IBL bake (D19), which
-reproduces every committed `.bin` byte for byte. `crates/render/src/port_pending/` is empty but for
-its README. Next are 7 (cleanup) and 8 (the gate). Sections are written in the present tense of the finished port so they
+reproduces every committed `.bin` byte for byte. Step 7 then swept up: `src/hlsl/` and
+`src/port_pending/` are both deleted, so `src/shaders/review.glsl` is the only shader source in the
+workspace and nothing is parked. What is left is 8, the gate. Sections are written in the present tense of the finished port so they
 can become the description once it lands; the *Status* column of §2 and the phase list in §8 say
 what is actually done.
 
@@ -868,7 +869,31 @@ Ordered so each step is verifiable by eye against the current renderer on the sa
    reader — the parked bake was the only thing still naming `hlsl/ibl.*.dxbc`); the last
    `#[allow(dead_code)]` naming the port removed; `port_pending/` is already empty but for its
    README, so this is the commit that deletes it; clippy clean on Windows. (`windows` left `app` and `egui-directx11` left the workspace in step 3, ahead of
-   schedule — both were one-line consequences of the swap rather than cleanup.)
+   schedule — both were one-line consequences of the swap rather than cleanup.) *Done.*
+
+   `src/hlsl/` is gone — five hand-written sources and the twenty committed `.dxbc` blobs — and
+   with it `build.rs`'s `LEGACY_SHADERS` table and the `legacy_jobs` resolver that read it. One
+   discovered job list over `src/shaders/generated/` is all that remains, and since SPIRV-Cross
+   names every generated entry point `main`, `ShaderJob` no longer carries an entry-point field at
+   all: the compile step is now exactly "every `review_*_hlsl5_*.hlsl` in that directory, stage
+   from the filename". `port_pending/` and its README went in the same commit, as that README
+   asked. No `.hlsl` filename is named anywhere in the docs any more either — every reference is
+   now to a `review.glsl` program.
+
+   The `#[allow(dead_code)]`s the step called for turned out to be attached to **live** code:
+   `ghost_wireframe_buf`, `ghost_wireframe_baked` and `release_ghost_wireframes` in
+   `scene/resources.rs`, each reading "the Opt comparison view is the last stage of the port" — a
+   stage that landed back in step 4. That is the lesson worth keeping: an `#[allow]` whose lint no
+   longer fires is *itself* silent, so a migration-scoped suppression outlives its reason by
+   default and nothing in the build says so. `#[expect]` is the form that self-retires —
+   `unfulfilled_lint_expectations` fires the moment the code becomes live — and is what a
+   temporary suppression should have used.
+
+   Verified: clippy `-D warnings` clean across the workspace in both the default and
+   `--features bake` configurations, 298 tests green, the viewer relaunched and captured
+   unchanged, and `FXC_FORCE=1 cargo build -p review-render` recompiles all 30 generated sources
+   through the rewritten job list and reproduces every committed `.dxbc` **byte for byte** — which
+   is what says the job-list rewrite changed no shader.
 8. **Gate (D2)** with `scripts/gate.ps1` against `main`; fix or document any regression; merge.
 
 ### Phase 2 - macOS

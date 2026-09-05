@@ -15,13 +15,6 @@
 //! public API and never touches GPU state directly (invariant 2). Shaders are one
 //! annotated-GLSL source (`src/shaders/review.glsl`) generated to per-backend sources
 //! and compiled offline to committed bytecode by `build.rs`.
-//!
-//! ## Being ported (`mac-port-plan.md` Phase 1)
-//!
-//! Every draw path is live: the frame flow, the device and swapchain, the egui
-//! chrome, the Tex viewport, the 3D + UV scenes (MSAA and ambient occlusion included)
-//! and the Opt workspace's comparison view. What step 4 leaves for later steps is the
-//! Tracy GPU profiler and the offline IBL bake, both still in `src/port_pending/`.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

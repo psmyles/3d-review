@@ -316,15 +316,7 @@ pub(super) struct ModelSlot {
     /// and coloured by it, so sharing would have the two rebuild the same buffer
     /// in opposite directions every frame. `None` whenever this model is not
     /// currently the ghost (invariant 3).
-    #[allow(
-        dead_code,
-        reason = "the Opt comparison view is the last stage of the port"
-    )]
     pub(super) ghost_wireframe_buf: Option<VertexBuffer>,
-    #[allow(
-        dead_code,
-        reason = "the Opt comparison view is the last stage of the port"
-    )]
     pub(super) ghost_wireframe_baked: Option<(u64, Vec<u32>, [f32; 4])>,
 }
 
@@ -373,10 +365,6 @@ impl ModelSlot {
 impl SceneGpu {
     /// Free both slots' ghost wireframes (invariant 3) — the overlay view is no
     /// longer showing one.
-    #[allow(
-        dead_code,
-        reason = "called by the Opt comparison view, the last stage"
-    )]
     pub(super) fn release_ghost_wireframes(&mut self) {
         for slot in [&mut self.active, &mut self.idle] {
             slot.ghost_wireframe_buf = None;
