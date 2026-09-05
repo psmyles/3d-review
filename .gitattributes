@@ -11,5 +11,10 @@ crates/render/src/shaders/generated/*.hlsl text eol=lf
 crates/render/src/shaders/generated/*.metal text eol=lf
 crates/render/src/shaders/generated/*.rs text eol=lf
 crates/render/src/shaders/generated/bytecode.manifest text eol=lf
+# The digest of the review.glsl the set was generated from — build.rs compares it
+# against the file's own hash, so a CRLF conversion here would make every build warn.
+crates/render/src/shaders/generated/review.glsl.sha256 text eol=lf
+# And review.glsl itself, since that hash is taken over its bytes.
+crates/render/src/shaders/review.glsl text eol=lf
 crates/render/src/shaders/generated/*.dxbc binary
 crates/render/src/shaders/generated/*.metallib binary

@@ -82,4 +82,13 @@ rustfmt --edition 2024 --config newline_style=Unix "$gen/review.rs"
 sed -E "/sokol-shdc -i /s#-o [^ ]*#-o $gen/review.rs#" "$gen/review.rs" > "$gen/review.rs.tmp"
 mv "$gen/review.rs.tmp" "$gen/review.rs"
 
+# --- 4. record which review.glsl this set was generated from -----------------
+# The one staleness question the bytecode manifest cannot answer: it chains a blob to
+# the generated source it was compiled from, and this is the link above that. Without
+# it, editing review.glsl and forgetting to run this script leaves a tree where every
+# digest agrees and the whole shader set is a revision behind. Content, not mtimes,
+# for the same reason as the manifest — a fresh checkout writes review.glsl and the
+# generated directory microseconds apart, in git's order, not the author's.
+shasum -a 256 "$src" | cut -d' ' -f1 > "$gen/review.glsl.sha256"
+
 echo "regenerated $(ls -1 "$gen" | wc -l) files in $gen"

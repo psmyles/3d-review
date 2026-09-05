@@ -305,4 +305,20 @@ mod tests {
         expected.push(crate::APP_NAME);
         assert_eq!(state_dir(), Some(expected));
     }
+
+    /// The macOS twin: `~/Library/Application Support/3D Review` (D17). The same
+    /// `dirs::config_dir()` call answers for both OSes, so the only thing worth
+    /// pinning per host is *which* directory it resolves to — a `dirs` upgrade that
+    /// moved this would strand a Mac user's saved placement exactly as silently.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_config_directory_is_application_support_on_macos() {
+        let Some(home) = std::env::var_os("HOME") else {
+            return;
+        };
+        let mut expected = std::path::PathBuf::from(home);
+        expected.push("Library/Application Support");
+        expected.push(crate::APP_NAME);
+        assert_eq!(state_dir(), Some(expected));
+    }
 }

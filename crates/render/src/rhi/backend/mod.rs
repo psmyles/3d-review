@@ -22,6 +22,10 @@
 
 #[cfg(windows)]
 mod d3d11;
+#[cfg(target_os = "macos")]
+mod metal;
 
 #[cfg(windows)]
 pub(crate) use d3d11::*;
+#[cfg(target_os = "macos")]
+pub(crate) use metal::*;

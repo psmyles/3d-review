@@ -65,4 +65,13 @@ $text = [IO.File]::ReadAllText("$repo/$gen/review.rs")
 $text = [Regex]::Replace($text, '(sokol-shdc -i .*?)-o \S+', "`$1-o $gen/review.rs")
 [IO.File]::WriteAllText("$repo/$gen/review.rs", $text)
 
+# --- 4. record which review.glsl this set was generated from -----------------
+# The one staleness question the bytecode manifest cannot answer: it chains a blob to
+# the generated source it was compiled from, and this is the link above that. Without it,
+# editing review.glsl and forgetting to run this script leaves a tree where every digest
+# agrees and the whole shader set is a revision behind. Written LF-terminated and
+# lower-case so the file is byte-identical to the bash twin's `shasum` output.
+$sourceHash = (Get-FileHash -Algorithm SHA256 "$repo/$src").Hash.ToLowerInvariant()
+[IO.File]::WriteAllText("$repo/$gen/review.glsl.sha256", "$sourceHash`n")
+
 Write-Host "regenerated $((Get-ChildItem $gen).Count) files in $gen"

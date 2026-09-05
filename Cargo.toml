@@ -104,6 +104,19 @@ zune-image = { version = "0.5", default-features = false, features = ["jpeg", "s
 tracy-client = { version = "0.18", features = ["manual-lifetime", "ondemand"] }
 windows = "0.62.2"
 windows-sys = "0.52"
+
+# --- macOS platform leaf: the CAMetalLayer sokol_gfx draws through
+# (`crates/render/src/rhi/backend/metal.rs`, invariant 9's sanctioned GPU site).
+# Pinned to the versions winit 0.30 already pulls, so the mac build compiles no extra
+# crates. `rfd` pulls a second, newer objc2 family; the two coexist because nothing
+# passes objc2 types between them — this glue only hands sokol_gfx raw pointers.
+# Their default feature is only `std`; every class is opt-in, so `render` names just
+# the handful it needs and nothing else is generated.
+objc2 = "0.5"
+objc2-app-kit = "0.2"
+objc2-foundation = "0.2"
+objc2-metal = "0.2"
+objc2-quartz-core = "0.2"
 winit = "0.30"
 winresource = "0.1"
 

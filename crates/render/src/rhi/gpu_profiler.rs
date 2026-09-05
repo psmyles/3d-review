@@ -225,3 +225,10 @@ impl GpuProfiler {
 const CONTEXT_NAME: &str = "GPU (D3D11 scene)";
 #[cfg(windows)]
 const CONTEXT_TYPE: GpuContextType = GpuContextType::Direct3D11;
+#[cfg(target_os = "macos")]
+const CONTEXT_NAME: &str = "GPU (Metal frame)";
+/// Tracy has no Metal context type, and picking a neighbouring API's would make a
+/// capture claim something untrue about what it is looking at. `Invalid` is the
+/// enum's own "some other API", which is exactly the case here.
+#[cfg(target_os = "macos")]
+const CONTEXT_TYPE: GpuContextType = GpuContextType::Invalid;
