@@ -41,9 +41,11 @@ use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
-    DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET, DXGI_PRESENT, DXGI_SCALING_NONE,
-    DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_DISCARD,
-    DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter, IDXGIDevice, IDXGIFactory2, IDXGISwapChain1,
+    DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET, DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+    DXGI_PRESENT, DXGI_PRESENT_ALLOW_TEARING, DXGI_SCALING_NONE, DXGI_SWAP_CHAIN_DESC1,
+    DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING, DXGI_SWAP_EFFECT_FLIP_DISCARD,
+    DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter, IDXGIDevice, IDXGIFactory2, IDXGIFactory5,
+    IDXGISwapChain1,
 };
 use windows::core::{BOOL, HRESULT, Interface};
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -158,6 +160,12 @@ pub(crate) struct Swapchain {
     rtv: Option<ID3D11RenderTargetView>,
     width: u32,
     height: u32,
+    /// Whether this adapter/compositor pair allows a tearing present, which is what
+    /// makes a vsync-off present actually uncapped. Without it a flip-model
+    /// `Present(0, 0)` still queues behind DWM and comes back at the refresh rate —
+    /// so `present(false)` would measure the monitor. The shipped viewer always
+    /// presents with vsync on and never sees this; the D2 gate is what needs it.
+    tearing: bool,
 }
 
 impl Swapchain {
@@ -177,6 +185,14 @@ impl Swapchain {
             }
         };
         let (width, height) = (width.max(1), height.max(1));
+        // Queried before the description is built, because supporting tearing means
+        // creating the chain with the flag — it cannot be turned on at present time.
+        let tearing = tearing_supported(device);
+        let flags = if tearing {
+            DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING.0 as u32
+        } else {
+            0
+        };
         let desc = DXGI_SWAP_CHAIN_DESC1 {
             Width: width,
             Height: height,
@@ -191,7 +207,7 @@ impl Swapchain {
             Scaling: DXGI_SCALING_NONE,
             SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
             AlphaMode: DXGI_ALPHA_MODE_IGNORE,
-            Flags: 0,
+            Flags: flags,
         };
         // SAFETY: plain COM traversal device -> DXGI device -> adapter -> factory on
         // a live device; `desc` is fully initialized and `hwnd` is the live window.
@@ -216,6 +232,7 @@ impl Swapchain {
             rtv: None,
             width,
             height,
+            tearing,
         })
     }
 
@@ -238,16 +255,19 @@ impl Swapchain {
         if width == 0 || height == 0 {
             return;
         }
+        // The flags must repeat what the chain was created with — `ResizeBuffers`
+        // treats them as the new flag set, so passing 0 here would quietly drop
+        // tearing support on the first resize.
+        let flags = if self.tearing {
+            DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING
+        } else {
+            DXGI_SWAP_CHAIN_FLAG(0)
+        };
         // SAFETY: the view — the only outstanding reference to a backbuffer — was
         // released above; 0/UNKNOWN keep the existing buffer count and format.
         if let Err(err) = unsafe {
-            self.swap_chain.ResizeBuffers(
-                0,
-                width,
-                height,
-                DXGI_FORMAT_UNKNOWN,
-                DXGI_SWAP_CHAIN_FLAG(0),
-            )
+            self.swap_chain
+                .ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, flags)
         } {
             eprintln!("3d-review: swapchain ResizeBuffers failed: {err}");
         }
@@ -315,8 +335,15 @@ impl Swapchain {
     /// root cause, so the caller can surface it — after one, every subsequent frame
     /// silently fails.
     pub(crate) fn present(&mut self, vsync: bool) -> PresentStatus {
+        // Tearing is only legal with a sync interval of 0, and only on a chain
+        // created with the matching flag.
+        let flags = if !vsync && self.tearing {
+            DXGI_PRESENT_ALLOW_TEARING
+        } else {
+            DXGI_PRESENT(0)
+        };
         // SAFETY: presenting the live swapchain; no resources are mapped.
-        let hr = unsafe { self.swap_chain.Present(u32::from(vsync), DXGI_PRESENT(0)) };
+        let hr = unsafe { self.swap_chain.Present(u32::from(vsync), flags) };
         if hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET {
             // SAFETY: pure query on the live device; returns the driver's root cause
             // for the removal (hung, reset, driver error, ...).
@@ -326,6 +353,34 @@ impl Swapchain {
             return PresentStatus::DeviceLost { reason };
         }
         PresentStatus::Presented
+    }
+}
+
+/// Whether the DXGI factory reports `PRESENT_ALLOW_TEARING`. `IDXGIFactory5` and
+/// the feature both arrived in Windows 10; anything older, or a `cast` that fails,
+/// answers no and the swapchain is created exactly as before.
+fn tearing_supported(device: &Device) -> bool {
+    // SAFETY: plain COM traversal on a live device, then a pure feature query whose
+    // out-parameter is a `BOOL` sized by `size_of`.
+    unsafe {
+        let Ok(dxgi_device) = device.device.cast::<IDXGIDevice>() else {
+            return false;
+        };
+        let Ok(adapter) = dxgi_device.GetAdapter() else {
+            return false;
+        };
+        let Ok(factory) = adapter.GetParent::<IDXGIFactory5>() else {
+            return false;
+        };
+        let mut allowed = BOOL(0);
+        factory
+            .CheckFeatureSupport(
+                DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+                std::ptr::from_mut(&mut allowed).cast(),
+                u32::try_from(size_of::<BOOL>()).unwrap_or(4),
+            )
+            .is_ok()
+            && allowed.as_bool()
     }
 }
 

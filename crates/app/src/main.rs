@@ -8,6 +8,7 @@
 mod animation;
 mod dialog;
 mod frame;
+mod gate;
 mod input;
 mod loading;
 mod opt;
@@ -77,6 +78,7 @@ enum UserEvent {
 }
 
 use animation::AnimationSubsystem;
+use gate::Gate;
 use selection_flash::FlashProgress;
 use texture_manager::TextureDecode;
 use undo::UndoStack;
@@ -92,15 +94,20 @@ fn main() -> anyhow::Result<()> {
     // in `App::start`.
     let gpu_bring_up = Gpu::start();
 
-    // Tiny manual arg scan (the workspace has no arg parser and needs exactly one
-    // flag): `--tracy` turns profiling on; the first non-flag argument is the model
+    // Tiny manual arg scan (the workspace has no arg parser and needs two flags):
+    // `--tracy` turns profiling on, `--gate-out <file>` runs the D2 measurement and
+    // writes its stamp there (`gate.rs`); the first non-flag argument is the model
     // path to open (Windows passes it for a double-clicked `.fbx` via the file
-    // association). The two coexist in any order, e.g. `3d-review --tracy a.fbx`.
+    // association). They coexist in any order, e.g. `3d-review --tracy a.fbx`.
     let mut tracy_enabled = false;
     let mut initial_model: Option<PathBuf> = None;
-    for arg in std::env::args_os().skip(1) {
+    let mut gate_out: Option<PathBuf> = None;
+    let mut args = std::env::args_os().skip(1);
+    while let Some(arg) = args.next() {
         if arg == "--tracy" {
             tracy_enabled = true;
+        } else if arg == "--gate-out" {
+            gate_out = args.next().map(PathBuf::from);
         } else if initial_model.is_none() && !arg.to_string_lossy().starts_with("--") {
             initial_model = Some(PathBuf::from(arg));
         }
@@ -129,6 +136,7 @@ fn main() -> anyhow::Result<()> {
     let mut app = App {
         gpu_bring_up: Some(gpu_bring_up),
         initial_model,
+        gate: gate_out.map(Gate::new),
         textures: TextureSubsystem {
             proxy: Some(texture_proxy),
             ..TextureSubsystem::default()
@@ -204,6 +212,10 @@ struct App {
     /// Model to load once the window/renderer exist, taken from the command line
     /// (file association / `3d-review.exe <path>`). Consumed in `resumed`.
     initial_model: Option<PathBuf>,
+    /// The D2 gate run, when `--gate-out` was passed: it measures startup, frame
+    /// time and (from the outside, during its hold) memory, then exits. `None` for
+    /// every normal launch, which is every launch that is not `scripts/gate.ps1`.
+    gate: Option<Gate>,
     /// The window-placement tracker: startup maximize + the windowed bounds
     /// persisted on exit.
     placement: PlacementTracker,
@@ -427,6 +439,7 @@ impl Default for App {
             occlusion_bvh_revision: u64::MAX,
             ui,
             initial_model: None,
+            gate: None,
             placement: PlacementTracker::default(),
             selection_flash: None,
             flashed_selection: Selection::None,
@@ -548,8 +561,13 @@ impl App {
         // the initial state ourselves.
         self.placement.start_maximized = review_import::startup_show_maximized();
 
-        let saved =
-            window_state::load().filter(|placement| placement_is_visible(event_loop, placement));
+        // A gate run opens at a fixed size and ignores the saved placement: the two
+        // builds have to render the same number of pixels for their frame times to
+        // mean anything, and whatever this box's window happens to be is not that.
+        let saved = (self.gate.is_none())
+            .then(window_state::load)
+            .flatten()
+            .filter(|placement| placement_is_visible(event_loop, placement));
         let maximized =
             self.placement.start_maximized || saved.is_some_and(|placement| placement.maximized);
 
@@ -574,7 +592,13 @@ impl App {
                 MIN_WINDOW_WIDTH,
                 MIN_WINDOW_HEIGHT,
             ))
-            .with_maximized(maximized);
+            .with_maximized(maximized && self.gate.is_none());
+        if self.gate.is_some() {
+            attributes = attributes.with_inner_size(winit::dpi::PhysicalSize::new(
+                gate::WINDOW_SIZE.0,
+                gate::WINDOW_SIZE.1,
+            ));
+        }
         if let Some(placement) = restore_bounds {
             // Position/size are the restored (non-maximized) bounds; setting them
             // even when maximized gives un-maximize a sensible target.
@@ -880,6 +904,23 @@ impl ApplicationHandler<UserEvent> for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
 
+        // A gate run drives itself: frames back to back until the stamp is written
+        // (the pacer below would cap it at the refresh rate, which is the thing
+        // being measured), then idle until the hold ends and the process exits.
+        if self.gate_active() {
+            if self.gate_should_exit() {
+                event_loop.exit();
+            } else if self.gate_wants_redraw() {
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+                event_loop.set_control_flow(ControlFlow::Poll);
+            } else {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(now + GATE_POLL));
+            }
+            return;
+        }
+
         // Sample windowed bounds once the event burst has settled, so a maximize
         // (whose `Moved` arrives before the maximized flag is set) doesn't poison
         // the saved placement with fullscreen geometry. `record_windowed_bounds`
@@ -922,6 +963,9 @@ impl ApplicationHandler<UserEvent> for App {
         }
     }
 }
+
+/// How often the loop wakes during a gate run's idle hold, to notice the deadline.
+const GATE_POLL: Duration = Duration::from_millis(100);
 
 /// Fraction of the window framing should fill, leaving room for the chrome that
 /// overlays the full-window 3D scene (toolbar on top, status bar on the bottom)

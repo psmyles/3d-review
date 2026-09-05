@@ -198,6 +198,10 @@ crates/
             applying `UiOutput` intents to the Renderer (invariant 2's concrete
             realization) -> src/ui_intents.rs; the selection-flash animation ->
             src/selection_flash.rs;
+            the D2 gate stamp (`--gate-out <file>`: load the fixture, play a
+            scripted orbit, write one JSON stamp of startup + frame timings, then idle
+            with the model resident so `scripts/gate.ps1` can sample memory from
+            outside, and exit) -> src/gate.rs;
             every native file dialog — opened on a worker thread and answered
             through `UserEvent::DialogDone` (`mac-port-plan.md` D9), one at a time
             -> src/dialog.rs. Nothing in this crate may call `rfd` inline from a
@@ -367,6 +371,12 @@ crates/
                 `sg_environment` at it, owns the DXGI flip-model swapchain, hands
                 sokol a render-target view per frame, presents, and answers
                 `supported_sample_counts` (sokol only reports MSAA as a yes/no).
+                The swapchain is created with `ALLOW_TEARING` where the factory
+                offers it, and a vsync-**off** present passes the matching flag: without
+                that a flip-model `Present(0, 0)` still queues behind DWM, so
+                `finish(false)` returned the refresh interval rather than the frame's
+                own cost (which is what the D2 gate measures). Inert for the viewer,
+                which always presents with vsync on.
                 It also carries the two leaves for what sokol has no notion of:
                 `GpuTimer` (timestamp + disjoint queries, D18) and, `bake`-gated,
                 `read_image_subresource` (a staging copy + `Map(READ)`, D19). Its
@@ -538,6 +548,12 @@ PATH so `cc` can compile `ufbx.c`).
   changes. (The shaders are validated by `fxc /WX` in render's `build.rs`, not a
   test.)
 - `cargo build --release` — release binary.
+- `scripts/gate.ps1 -A <baseline exe> -B <exe> -Fixture <fbx>` — the D2 gate
+  (`mac-port-plan.md`): interleaved release launches of two builds, comparing
+  startup / frame time / RAM + VRAM against a budget on each delta. Needs a real
+  GPU and a quiet box. The baseline build is `main` plus
+  `scripts/gate-baseline.patch`, which adds the same `--gate-out` stamp to a branch
+  that predates it.
 - `cargo run --release -p review-render --features bake --bin bake_ibl` — the
   offline IBL re-bake (needs a real GPU; it creates its own headless device). Writes
   `assets/ibl_baked/` **in place**, and validates each payload before writing so a

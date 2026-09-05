@@ -174,6 +174,9 @@ impl App {
                 self.notifications
                     .success(format!("Loaded {}", file_label(path)));
                 prof::msg(&format!("model loaded: {}", path.display()));
+                // A gate run starts measuring from here — the first present with
+                // the model actually on screen (`gate.rs`); no-op otherwise.
+                self.gate_model_ready(path);
             }
             Err(error) => {
                 // Surface the cause, not just the file name — without `--tracy`

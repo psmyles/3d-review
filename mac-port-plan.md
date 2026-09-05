@@ -14,7 +14,7 @@ is the *GPU layer* (`crates/render/src/rhi/` and the shaders), the egui renderer
 leaves in `app`, and the build/distribution chain. The port runs **Windows first** (Fire D13): the
 shared-shell migration is the risk, and it has to be gated on a Windows box against `main`.
 
-Status: **Phase 0 done on Windows** (D21, D22), plus **Phase 1 steps 1–7**. The backend swap is
+Status: **Phase 0 done on Windows** (D21, D22), plus **Phase 1 steps 1–8**, the merge excepted. The backend swap is
 complete: every draw path — the frame flow, the egui chrome, the Tex viewport, the 3D and UV scenes
 with MSAA and GTAO, and the Opt workspace's comparison view — runs on sokol_gfx, `app` no longer
 depends on `windows` at all, and the viewport is **pixel-identical** to a `main` build on the models
@@ -23,7 +23,9 @@ dialogs off the event loop (D9), the primary modifier (D10), the config director
 the two non-drawing leaves: the `--tracy` GPU profiler (D18) and the offline IBL bake (D19), which
 reproduces every committed `.bin` byte for byte. Step 7 then swept up: `src/hlsl/` and
 `src/port_pending/` are both deleted, so `src/shaders/review.glsl` is the only shader source in the
-workspace and nothing is parked. What is left is 8, the gate. Sections are written in the present tense of the finished port so they
+workspace and nothing is parked. Step 8 measured it: **all three D2 budgets pass**, and the frame is
+**43–61 % faster** on both fixtures with memory slightly *down*, so nothing had to be fixed or
+excused. What is left of Phase 1 is the merge itself. Sections are written in the present tense of the finished port so they
 can become the description once it lands; the *Status* column of §2 and the phase list in §8 say
 what is actually done.
 
@@ -58,7 +60,7 @@ and are settled.
 | # | Decision | Reason | Cost | Status |
 | -- | -------- | ------ | ---- | ------ |
 | D1 | **Shared shell: winit + sokol_gfx on both OSes** (*owner*); the only per-OS GPU code is `render/src/rhi/backend/{d3d11,metal}.rs` (device + swapchain), aliased as `backend` exactly like Fire's `render/mod.rs` | Minimum platform code; two full renderers (the D3D11 rhi + a Metal twin behind a trait) is the maintenance Fire D1 rejected | `rhi/` rewritten; Windows re-measured (D2) | Shipped on Windows (step 3); the scene lands in step 4 |
-| D2 | **Windows migrates too, gated on three measurements** (*owner*) against `main` on the same box, same fixture, release build: (a) cold + warm startup to first presented frame with a model loaded; (b) steady-state frame time (GPU + CPU) on a fixed test model with GTAO on + 4× MSAA + a skinned clip playing; (c) private RAM + VRAM at idle with that model. Budgets: ≤ 10 ms startup median, ≤ 0.3 ms frame median, ≤ 5 % RAM/VRAM | The invariants stress runtime speed and footprint (`CLAUDE.md` §4: "spend dev-time freely to make the release runtime fast") | A harness: `scripts/gate.ps1` + a `--gate-out` stamp in `app` (Fire's `ttfp.rs` shape, extended with a frame-time and memory dump) | Planned |
+| D2 | **Windows migrates too, gated on three measurements** (*owner*) against `main` on the same box, same fixture, release build: (a) cold + warm startup to first presented frame with a model loaded; (b) steady-state frame time (GPU + CPU) on a fixed test model with GTAO on + 4× MSAA + a skinned clip playing; (c) private RAM + VRAM at idle with that model. Budgets: ≤ 10 ms startup median, ≤ 0.3 ms frame median, ≤ 5 % RAM/VRAM | The invariants stress runtime speed and footprint (`CLAUDE.md` §4: "spend dev-time freely to make the release runtime fast") | A harness: `scripts/gate.ps1` + a `--gate-out` stamp in `app` (Fire's `ttfp.rs` shape, extended with a frame-time and memory dump) | Measured on Windows (step 8): startup +4.8 ms, frame −0.53 ms, RAM −2.8 %, VRAM −1.0 % — all three pass |
 | D3 | **Keep egui; write `render/src/egui_sokol.rs`**, a sokol_gfx egui renderer, replacing `egui-directx11` on both OSes (*owner*) | No sokol egui backend exists; switching to Dear ImGui like Fire would rewrite the whole `ui` crate and retire the native-windowing invariant | ~300–400 lines + one `@program`; consumes egui's `ClippedPrimitive`s + `TexturesDelta` (§3.4) | Shipped (step 3) — 380 lines |
 | D4 | **One sokol-shdc annotated-GLSL source** (`render/src/shaders/review.glsl`) generates per-backend HLSL5 + MSL *and* the `ShaderDesc` reflection into `render/src/shaders/generated/`, checked in; build.rs compiles the host's set to bytecode (*owner*) | Fire D4/D24: nothing compiles a shader at runtime, a broken shader is a build error, one source instead of two hand-kept twins | The HLSL is rewritten once (~1700 lines); `fxc` on Windows, the Metal toolchain on macOS (D5) | Planned |
 | D5 | **Bytecode is committed and freshness-gated on both OSes** - `.dxbc` (as today) *and* `.metallib` - compiled only when the generated source is newer or the blob is missing and the toolchain is present; missing blob + missing toolchain is a build error | Keeps this repo's existing "a no-fxc box builds from the committed blobs" property and extends it to the Mac, so the toolchain floor for someone who never edits a shader is Command Line Tools, not full Xcode. *Diverges from Fire* (which compiles into `OUT_DIR` on every build) on purpose | A shader edit must be followed by a rebuild on **both** OSes before commit, or one platform ships stale bytecode; `build.rs` warns when a blob is older than its generated source, and both packaging scripts fail on it | Planned |
@@ -410,11 +412,27 @@ Fire §7 applies, with these deltas.
   `.app` (`com.psmyles.3d-review.dev`); the only way to exercise D14 and Retina before packaging.
 * **Gate harness (D2):** `scripts/gate.ps1` (Windows; a bash twin later for mac-vs-mac numbers):
   N interleaved launches of A and B with a fixture FBX, reading the `--gate-out <file>` stamp that
-  `app` writes (process-creation → first present via `GetProcessTimes` / `proc_pidinfo`, then
-  median frame time over 300 frames of a scripted orbit with GTAO + 4× + a clip playing, then
-  `PROCESS_MEMORY_COUNTERS` / `DXGI_QUERY_VIDEO_MEMORY_INFO` ↔ `task_info` /
-  `MTLDevice.currentAllocatedSize`), then exits. One warm-up launch before measuring; the first
-  launch after a build is an outlier (Fire step 7).
+  `app` writes (`crates/app/src/gate.rs`) — first present with the model up, then median frame time
+  over 300 frames of a scripted orbit with GTAO + 4× + a clip playing. One warm-up launch of each
+  before measuring; the first launch after a build is an outlier (Fire step 7). *Built in step 8*,
+  with two deliberate departures from this sketch:
+
+  * **Both ends of a measurement live where they can be read honestly.** The stamp carries the
+    wall clock at first present; the *process-creation* end is `Process.StartTime`
+    (`GetProcessTimes`) read by the script, because `app` is `forbid(unsafe_code)` and has no
+    business calling it. Memory is sampled from outside too — the stamp is written and the process
+    then idles with the model resident for four seconds, which is exactly the state D2 asks about,
+    so private bytes come from `Get-Process` and VRAM from the `GPU Process Memory` performance
+    counter rather than from a `DXGI_QUERY_VIDEO_MEMORY_INFO` call that the backend leaf would then
+    owe a `MTLDevice.currentAllocatedSize` twin for. Nothing was added to the shipped binary to
+    learn what Windows already reports about any process.
+  * **`--gate-out` ships in the release binary** rather than behind a `gate` feature. A
+    feature-gated harness measures a binary nobody ships; the cost of not gating it is one
+    `Option<Gate>` test per frame.
+
+  The baseline needs the same instrumentation, and `main` predates it, so the patch that adds it is
+  committed as `scripts/gate-baseline.patch` — the measurement is reproducible rather than taken on
+  trust, and `crates/app/src/gate.rs` inside it is byte-identical to the port's copy.
 
 ---
 
@@ -895,6 +913,50 @@ Ordered so each step is verifiable by eye against the current renderer on the sa
    through the rewritten job list and reproduces every committed `.dxbc` **byte for byte** — which
    is what says the job-list rewrite changed no shader.
 8. **Gate (D2)** with `scripts/gate.ps1` against `main`; fix or document any regression; merge.
+   *Measured; nothing needed fixing or excusing.* Five interleaved runs per build plus a discarded
+   warm-up each, release builds of both, same box, 1600×960, 4× MSAA, GTAO on, vsync off.
+
+   | Measure | `main` | port | Δ | budget |
+   | --- | --- | --- | --- | --- |
+   | **SK_Player_01** — 141 978 tris, skinned, clip playing | | | | |
+   | startup (ms) | 1423.6 | 1428.4 | **+4.8** (+0.3 %) | +10 ms ✔ |
+   | frame (ms, median) | 0.879 | 0.346 | **−0.532** (−60.6 %) | +0.3 ms ✔ |
+   | frame (ms, p95) | 1.054 | 0.489 | −0.565 (−53.6 %) | — |
+   | cpu/frame (ms) | 0.764 | 0.301 | −0.463 (−60.6 %) | — |
+   | private (MB) | 382.7 | 372.0 | **−10.7** (−2.8 %) | +5 % ✔ |
+   | GPU dedicated (MB) | 260.1 | 257.5 | **−2.6** (−1.0 %) | +5 % ✔ |
+   | **xyzrgb_dragon** — 249 882 tris, static | | | | |
+   | startup (ms) | 841.4 | 812.3 | −29.2 (−3.5 %) | +10 ms ✔ |
+   | frame (ms, median) | 0.592 | 0.337 | −0.255 (−43.1 %) | +0.3 ms ✔ |
+   | frame (ms, p95) | 1.087 | 0.531 | −0.556 (−51.2 %) | — |
+   | cpu/frame (ms) | 0.437 | 0.163 | −0.274 (−62.7 %) | — |
+   | private (MB) | 412.6 | 410.5 | −2.1 (−0.5 %) | +5 % ✔ |
+   | GPU dedicated (MB) | 288.4 | 284.2 | −4.2 (−1.5 %) | +5 % ✔ |
+
+   Two fixtures rather than D2's one: the skinned one is what D2 specifies, and the dragon is there
+   because the skinned fixture is CPU-bound at this size and a GPU-side regression could have hidden
+   behind that. Both are comfortably inside every budget, and the frame is the *opposite* of a
+   regression — the port is 43–61 % faster per frame, with the CPU half falling by about the same
+   proportion, which is where a swapped drawing API would be expected to show up.
+
+   **A measurement bug worth recording, because it made the frame figure meaningless and looked
+   entirely plausible.** The first runs reported a median frame time of *exactly* 8.34 ms on both
+   builds — 1000/120, this monitor's refresh — despite presenting with a sync interval of 0. A
+   flip-model swapchain without `ALLOW_TEARING` still queues behind DWM, which releases one buffer
+   per vblank, so `present(false)` measured the display rather than the frame. The fix is the flag
+   on the swapchain plus `DXGI_PRESENT_ALLOW_TEARING` on a vsync-off present, in both builds; it is
+   inert for the shipped viewer, which always presents with vsync on. With it the same runs report
+   0.35 ms and 0.88 ms. The lesson is the shape of the number, not the flag: a median that lands on
+   a round multiple of the refresh interval is measuring the compositor, whatever it is labelled.
+
+   **One number moved the wrong way, and D2 does not budget it: the release binary is
+   13 842 432 → 16 345 088 bytes (+2.50 MB, +18 %).** Sections: `.text` +2.07 MB, `.rdata`
+   +0.41 MB, `.data` +0.53 MB — so it is mostly code. The vendored sokol C accounts for at most
+   0.6 MB of that (`sokol-rust.lib` is 610 KB, of which `sokol_gfx.o` is 247 KB) and the generated
+   shader payload for under 0.2 MB, which leaves roughly 1.5 MB unattributed. That runs against the
+   footprint argument the wgpu migration was made on, so it deserves one focused look (a `cargo
+   bloat` pass on an unstripped build) — but it is a follow-up, not a gate: D2's three measurements
+   are startup, frame and memory, and all three pass.
 
 ### Phase 2 - macOS
 

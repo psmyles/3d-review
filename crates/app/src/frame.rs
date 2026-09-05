@@ -31,6 +31,11 @@ use crate::prof;
 impl App {
     pub(crate) fn render(&mut self) {
         let _frame = prof::zone!("Frame");
+        // Timestamps the frame and steps the scripted orbit; no-op without
+        // `--gate-out` (`gate.rs`).
+        self.gate_frame_begin();
+        let gate_active = self.gate_active();
+        let vsync = self.gate_vsync();
         let Some(window) = self.window.as_ref().cloned() else {
             return;
         };
@@ -258,6 +263,7 @@ impl App {
         // so the reporter — which needs all of `self` — runs once it closes. An
         // empty `Vec` allocates nothing, so a clean frame pays for none of this.
         let mut faults: Vec<(&str, String)> = Vec::new();
+        let before_present: Option<Instant>;
         {
             let _z = prof::zone!("Paint + Present");
             // Acquire this frame's backbuffer. `None` means there is nothing to draw
@@ -357,7 +363,10 @@ impl App {
             // renderer composited, and then the chrome paints over that.
             frame.begin_swapchain_pass();
             egui_renderer.paint(&frame, full_output.pixels_per_point);
-            if let review_render::PresentStatus::DeviceLost { reason } = frame.finish(true) {
+            // The CPU half of the gate's frame figure ends here: everything after
+            // this is the present itself.
+            before_present = gate_active.then(Instant::now);
+            if let review_render::PresentStatus::DeviceLost { reason } = frame.finish(vsync) {
                 faults.push((
                     "Graphics device lost",
                     format!("{reason:#x} - restart the viewer"),
@@ -369,6 +378,7 @@ impl App {
         for (context, detail) in faults {
             self.report_gpu_fault(context, detail);
         }
+        self.gate_after_present(before_present);
 
         // Delimit the frame for Tracy's frame view (no-op unless `--tracy`).
         prof::frame_mark();
