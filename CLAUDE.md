@@ -10,7 +10,9 @@ Built on `winit` (window/event loop) + **Direct3D 11** (GPU, native via the
 Deeper docs: the crate map + data flow live in §2 below; `PROJECT_STATE.md`
 (architecture, status, risk register), `RENDERING_PIPELINE.md` (render-pass
 detail), `materials and textures plan.md` (the active materials/textures
-roadmap), and `TODO.md` (running notes).
+roadmap), `TODO.md` (running notes), and `mac-port-plan.md` (the macOS port:
+the planned migration of the GPU layer to `winit` + `sokol_gfx` on both OSes, its
+decisions, phases and risks — see §4's note).
 
 ## 1. Invariants — the rules an agent will break if not told
 
@@ -475,6 +477,13 @@ a blob is stale and `fxc` is present (a no-fxc CI box uses the committed blobs).
   the runtime *and* the offline bake tool. This supersedes the original
   "direct wgpu" decision — **do not reintroduce wgpu.** All D3D11 COM lives in
   `render/src/rhi/` + `app`'s swapchain bootstrap (invariant 9).
+  **Scheduled to be superseded** by `mac-port-plan.md`: the D3D11 half of this
+  decision gives way to **`sokol_gfx` as the one drawing API on both Windows and
+  macOS** (D3D11 and Metal underneath, one ~200-line device/swapchain leaf per OS),
+  with `egui-directx11` replaced by an in-tree egui renderer and the HLSL replaced
+  by one sokol-shdc GLSL source. The wgpu ban stands. Until that port lands this
+  bullet describes the tree; once it does, §1 invariant 9, §2 and this section are
+  rewritten per the plan's Phase 3.
 - UI chrome uses egui's **native windowing** (`Window` / `SidePanel` /
   `TopBottomPanel`) and stock widgets (`Grid` / `Slider` / `DragValue` /
   `ComboBox`), styled from egui's default `Visuals::dark()` plus a few theme-token
