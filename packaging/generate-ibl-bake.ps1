@@ -26,14 +26,6 @@
     unconditionally. Pass `-Force` to re-bake regardless. The mtime idiom mirrors
     `generate-hdr-thumbnails.ps1`.
 
-    TEMPORARILY PARKED: the bake path is Direct3D 11 code that has not been moved
-    onto sokol_gfx yet (`mac-port-plan.md` Phase 1 step 6). It lives in
-    `crates/render/src/port_pending/`, and the render crate's `bake` feature and
-    `bake_ibl` binary were removed with it. While that is so, this script reports
-    the committed maps as current and exits — which is correct, since they are what
-    the viewer embeds and nothing that changes their bytes can be edited right now —
-    and throws if they are actually missing or `-Force` asks for a real bake.
-
     Requires a real GPU (the bake creates its own headless device) and the MSVC toolchain on
     PATH (the workspace compiles the vendored `ufbx.c`), i.e. run it from the
     "x64 Native Tools Command Prompt for VS 2022" like any other build here.
@@ -80,23 +72,12 @@ function Test-IblBakeStale {
     return $newestInput -gt $oldestOutput
 }
 
-# --- Parked while the bake path is ported (mac-port-plan.md Phase 1 step 6) -----
-# The `bake` feature and the `bake_ibl` binary do not exist right now, so the cargo
-# invocation below cannot run. Exiting quietly on a normal build is honest rather
-# than lax: the committed maps are current and are exactly what the viewer embeds,
-# and nothing that determines their bytes is editable while the bake path is parked.
-# A missing map, or an explicit -Force, is a real request the script cannot satisfy,
-# so it says so instead of pretending.
-$bakeParked = -not (Test-Path (Join-Path $repoRoot 'crates\render\src\bin\bake_ibl.rs'))
-if ($bakeParked) {
-    $missing = @(Get-ChildItem -Path (Join-Path $repoRoot 'assets\ibl_baked\T_IBL_*.bin') -ErrorAction SilentlyContinue).Count -eq 0
-    if ($Force -or $missing) {
-        throw ('The IBL bake tool is parked in crates\render\src\port_pending\ while the renderer ' +
-               'moves onto sokol_gfx (mac-port-plan.md Phase 1 step 6), so the maps cannot be re-baked yet. ' +
-               'Restore the bake feature + binary per that directory''s README first.')
-    }
-    Write-Host '==> IBL bake parked for the sokol_gfx port; using the committed maps (see crates\render\src\port_pending\README.md).' -ForegroundColor DarkGray
-    return
+# --- The tool has to be there ---------------------------------------------------
+# The bake tool must exist to be run. It is a checked-in source file, so a missing
+# one means a broken tree rather than a configuration choice, and saying so beats a
+# cargo error about an unknown binary.
+if (-not (Test-Path (Join-Path $repoRoot 'crates\render\src\bin\bake_ibl.rs'))) {
+    throw 'crates\render\src\bin\bake_ibl.rs is missing - the IBL bake tool cannot be run.'
 }
 
 if (-not $Force -and -not (Test-IblBakeStale)) {

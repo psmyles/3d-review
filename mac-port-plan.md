@@ -14,14 +14,15 @@ is the *GPU layer* (`crates/render/src/rhi/` and the shaders), the egui renderer
 leaves in `app`, and the build/distribution chain. The port runs **Windows first** (Fire D13): the
 shared-shell migration is the risk, and it has to be gated on a Windows box against `main`.
 
-Status: **Phase 0 done on Windows** (D21, D22), plus **Phase 1 steps 1–5**. The backend swap is
+Status: **Phase 0 done on Windows** (D21, D22), plus **Phase 1 steps 1–6**. The backend swap is
 complete: every draw path — the frame flow, the egui chrome, the Tex viewport, the 3D and UV scenes
 with MSAA and GTAO, and the Opt workspace's comparison view — runs on sokol_gfx, `app` no longer
 depends on `windows` at all, and the viewport is **pixel-identical** to a `main` build on the models
 checked. The shell leaves that would have crashed or misbehaved on macOS are done too — file
-dialogs off the event loop (D9), the primary modifier (D10), the config directory (D17). What is
-still parked in `crates/render/src/port_pending/` is not a draw path: the Tracy GPU zones and the
-offline IBL bake, both step 6. Next are 6–8. Sections are written in the present tense of the finished port so they
+dialogs off the event loop (D9), the primary modifier (D10), the config directory (D17), and so are
+the two non-drawing leaves: the `--tracy` GPU profiler (D18) and the offline IBL bake (D19), which
+reproduces every committed `.bin` byte for byte. `crates/render/src/port_pending/` is empty but for
+its README. Next are 7 (cleanup) and 8 (the gate). Sections are written in the present tense of the finished port so they
 can become the description once it lands; the *Status* column of §2 and the phase list in §8 say
 what is actually done.
 
@@ -72,8 +73,8 @@ and are settled.
 | D15 | **Minimal `muda` menu bar** (App / File: Open… ⌘O, New ⌘N / Window) with `with_default_menu(false)`; `Open…` routes through D9 (*owner*) | A Mac app without a menu bar reads as broken; winit's default menu would replace ours wholesale, and it is where ⌘Q comes from, so ours must carry Quit | ~150 lines `menubar.rs`, `cfg(target_os = "macos")`; accelerators intercept keys before winit sees them, so only the menu items carry one | Planned |
 | D16 | **Pinch → wheel zoom** on the orbit, UV and Tex cameras (Fire D15); gesture math stays in logical px, rendering in physical px | Trackpad users | `WindowEvent::PinchGesture`, factor `1 + delta`, NaN-filtered | Planned |
 | D17 | **`window.cfg` via `dirs::config_dir()`** (`%APPDATA%` on Windows - the same path as today - `~/Library/Application Support` on macOS) | Drop the `APPDATA` env read in `window_state.rs`, which fails soft on macOS today | `dirs 6` | Shipped (step 5); a unit test pins the Windows path unchanged |
-| D18 | **Tracy GPU profiler: per-OS leaves over sokol's native handles** (*owner*). D3D11: the existing timestamp-query code unchanged, over `sg_d3d11_device()` / `sg_d3d11_device_context()` (the immediate context; `ctx.End(query)` between sokol calls is valid). Metal: per-pass zones are *not* achievable (sokol owns the command buffer and encoder; Apple silicon has no draw-boundary counter sampling) - the leaf brackets sokol's buffer with two sentinel command buffers on `sg_mtl_command_queue()` and reports their `GPUEndTime`s as one "GPU frame" zone, plus `sg_query_stats()` counts as plots on both OSes | Recorded honestly | `rhi/gpu_profiler.rs` keeps its `Zone` API; `zone_*` are no-ops on Metal; Xcode's Metal profiler covers per-pass timing there | Planned |
-| D19 | **`bake_ibl` on sokol_gfx** (*owner*): `Baker` = headless `Gpu` (device, `sg_setup`, no swapchain); `CubeTarget` = one cube image + 6×mips attachment views (`mip_level` + `slice`); render every pass for one environment → `sg_commit` → per-OS readback leaf `backend::read_image_subresource`: D3D11 staging copy + `Map(READ)` over `sg_d3d11_query_image_info` (today's body); Metal blit from the private texture to a shared `MTLBuffer` on our own command buffer from `sg_mtl_command_queue()`, committed *after* `sg_commit` (queue order = commit order) + `waitUntilCompleted`. The old RTV/SRV-hazard `unbind_*` calls go away (passes are closed) | Fire D23: the whole dev pipeline runs on the Mac; a re-bake must not need Windows | sokol uses unretained command-buffer references, so every image stays alive until its readback returns | Planned |
+| D18 | **Tracy GPU profiler: per-OS leaves over sokol's native handles** (*owner*). D3D11: the existing timestamp-query code unchanged, over `sg_d3d11_device()` / `sg_d3d11_device_context()` (the immediate context; `ctx.End(query)` between sokol calls is valid). Metal: per-pass zones are *not* achievable (sokol owns the command buffer and encoder; Apple silicon has no draw-boundary counter sampling) - the leaf brackets sokol's buffer with two sentinel command buffers on `sg_mtl_command_queue()` and reports their `GPUEndTime`s as one "GPU frame" zone, plus `sg_query_stats()` counts as plots on both OSes | Recorded honestly | `rhi/gpu_profiler.rs` keeps its `Zone` API; `zone_*` are no-ops on Metal; Xcode's Metal profiler covers per-pass timing there | Shipped on Windows (step 6); the Metal leaf is Phase 2 step 5 |
+| D19 | **`bake_ibl` on sokol_gfx** (*owner*): `Baker` = headless `Gpu` (device, `sg_setup`, no swapchain); `CubeTarget` = one cube image + 6×mips attachment views (`mip_level` + `slice`); render every pass for one environment → `sg_commit` → per-OS readback leaf `backend::read_image_subresource`: D3D11 staging copy + `Map(READ)` over `sg_d3d11_query_image_info` (today's body); Metal blit from the private texture to a shared `MTLBuffer` on our own command buffer from `sg_mtl_command_queue()`, committed *after* `sg_commit` (queue order = commit order) + `waitUntilCompleted`. The old RTV/SRV-hazard `unbind_*` calls go away (passes are closed) | Fire D23: the whole dev pipeline runs on the Mac; a re-bake must not need Windows | sokol uses unretained command-buffer references, so every image stays alive until its readback returns | Shipped on Windows (step 6); byte-identical output |
 | D20 | **The swapchain backbuffer is plain UNORM and the composite/egui/tex shaders sRGB-encode their own output** - `R8G8B8A8_UNORM` on D3D11 (today's contract), `BGRA8Unorm` on Metal (`CAMetalLayer` refuses RGBA8); `SWAPCHAIN_FORMAT` lives in the backend module | Fire D20. The swapchain pass needs no depth (the scene is offscreen), so Fire's `metal.rs` is reusable **as-is** | Channel order only | Shipped on Windows (step 3) |
 | D21 | **`vendor/sokol-rust` vendored** (Fire's pin, floooh/sokol-rust @ b22a545) and **`exclude`d from the workspace** so `-D warnings` does not lint upstream | Fire D22 + its step-8 finding: `--exclude` on the command line does not work, because cargo lints every path dependency as local; `exclude = [...]` in the root manifest does | A pinned tree updated by hand; `sg_swapchain` / `ShaderDesc` shape changes land there | Shipped (Phase 0) |
 | D22 | **PSD: vendor `psd_sdk` source + a `read_merged_rgba8` wrapper into `crates/psd`, compile with `cc`, keep the committed `bindings.rs`** (*owner*) | The prebuilt `fire_psd.lib` is gitignored (`*.lib`) and absent - the crate cannot link from a clean checkout on *any* OS today; source + `cc` is the model ufbx / meshoptimizer / ufbx_write already use and needs no bindgen or libclang at build time | `PsdNativeFile.cpp` excluded off Windows (the wrapper reads through its own in-memory `psd::File`); `cpp(true)` links `c++`. Fire's current `psd-sdk-sys` wrapper has a *newer* ABI (`fire_psd_read_merged`, a 16-byte info struct); the vendored wrapper here keeps the older one the committed bindings declare | Shipped (Phase 0) |
@@ -809,10 +810,64 @@ Ordered so each step is verifiable by eye against the current renderer on the sa
    the log. It recovers completely on the next in-range resize, exactly as `d3d11.rs`'s comment
    claims. Left alone.
 6. **Profiler + bake** (D18, D19) on D3D11: `--tracy` GPU zones match the old capture; `bake_ibl`
-   reproduces the committed `.bin`s byte-for-byte (same GPU, same encoder settings).
-7. **Cleanup**: `hlsl/` deleted and its hand-listed `build.rs` jobs with it; the last
-   `#[allow(dead_code)]` naming the port removed; `port_pending/` empty and gone; clippy clean on
-   Windows. (`windows` left `app` and `egui-directx11` left the workspace in step 3, ahead of
+   reproduces the committed `.bin`s byte-for-byte (same GPU, same encoder settings). *Done, and the
+   byte-for-byte criterion is met on all 19 files* — which also says the shdc-generated HLSL from
+   `review.glsl` is bit-identical in effect to the hand-written `ibl.hlsl` it replaced.
+
+   **D18** splits the way §5 wants a leaf split: `backend::GpuTimer` *measures* (a ring of D3D11
+   timestamp + disjoint queries), `rhi/gpu_profiler.rs` *reports* (the `Zone` set, the Tracy GPU
+   context, the spans), and they meet at `backend::FrameTimings` so the Metal twin — which can only
+   bracket a whole frame — drops in without touching the Tracy side. It records into the same
+   immediate context sokol submits through, using our own `backend::Device` handles rather than
+   `sg_d3d11_device_context()`: the same objects, since we created them and handed them to
+   `sg_setup`, without rebuilding a COM pointer from a `*const c_void`.
+
+   One design change against the parked code, and it is a correctness fix rather than a preference.
+   The old profiler *declared* which zones a frame would encode (`frame_mask(gtao_active)`) and
+   skipped the rest at readback. Timestamp queries are reused across ring slots, so a query left
+   un-`End`-ed this frame still reads back what it held four frames ago — a declared-but-unwritten
+   zone reports those stale ticks as a perfectly plausible duration. And the Tex viewport renders no
+   scene pass at all while the UV path does not go through `record_view`, so on those frames
+   `end_frame` would `End` a disjoint query that was never `Begin`-ed. The mask is now **measured**:
+   `GpuTimer::timestamp` records a bit per slot it actually writes, a zone is emitted only when both
+   halves were written by the frame the timings belong to, and an `open` flag makes the timestamp and
+   close calls no-ops on a frame that never opened one.
+
+   Verified with a real capture (`tracy-capture` 25 s against a `--tracy` run, redraws forced by
+   resizing, then `tracy-csvexport -g`): all five zones present with sane relative costs — GTAO
+   Occlusion 428 µs median > Scene Geometry 309 > GTAO Blur 137 > Composite 84 > GTAO G-Buffer 40 —
+   275–276 events each across ~280 drained frames, and the five `sg_query_stats` plots reporting
+   (5 passes, 83 draws, 7 pipeline binds, 1712 uniform bytes per frame).
+
+   **D19** is smaller than the parked version because sokol does most of what it did. `rhi/bake.rs`
+   is a headless `Gpu` (device, `sg_setup`, no swapchain), a `CubeTarget` (one attachment view per
+   face/mip via `ImageViewDesc`'s `mip_level` + `slice`, plus a cube texture view) and a `Target2D`;
+   what went away is every RTV, every SRV slot, and the manual unbinding — the RTV/SRV hazard that
+   once baked six flat black cubes cannot arise when a pass is closed by `sg_end_pass`. What is left
+   that sokol cannot do is readback, which is the `backend::read_image_subresource` leaf.
+
+   Two bugs on the way, both worth recording because both were **silent**:
+
+   * sokol *rejects* an empty `sg_apply_bindings` rather than ignoring it, and the BRDF LUT pass is
+     the one that reads nothing at all. `SwapchainJob` already carried an `Option` for exactly this
+     rule and the bake helper did not.
+   * `dxgi_format` in the backend ended in `_ => R8G8B8A8_UNORM`. That was harmless while
+     `supported_sample_counts` was its only caller — it asks about the two scene formats and nothing
+     else — and silently wrong the moment the readback reused it: the BRDF's `Rg16Float` source got
+     an `Rgba8` staging texture, and `CopySubresourceRegion` between mismatched formats is a no-op
+     that reports success. The LUT read back as its own cleared zeroes, which in `Rg16Float` is
+     byte-identical to "the pass never ran". It is now exhaustive with no catch-all, so adding a
+     `Format` is a compile error here.
+
+   Two method notes. The bake's `reject_degenerate` guard is what turned both of those into a clean
+   failure instead of six destroyed environments — it overwrites committed assets in place, and it
+   refused to write. And the first run was `--release`, where sokol's validation layer is **compiled
+   out**: the empty-bindings rejection was invisible until the same run was repeated in debug. Run a
+   misbehaving bake in debug before reasoning about it.
+7. **Cleanup**: `hlsl/` deleted and its hand-listed `build.rs` jobs with it (step 6 removed its last
+   reader — the parked bake was the only thing still naming `hlsl/ibl.*.dxbc`); the last
+   `#[allow(dead_code)]` naming the port removed; `port_pending/` is already empty but for its
+   README, so this is the commit that deletes it; clippy clean on Windows. (`windows` left `app` and `egui-directx11` left the workspace in step 3, ahead of
    schedule — both were one-line consequences of the swap rather than cleanup.)
 8. **Gate (D2)** with `scripts/gate.ps1` against `main`; fix or document any regression; merge.
 

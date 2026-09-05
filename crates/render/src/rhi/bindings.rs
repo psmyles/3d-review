@@ -73,6 +73,14 @@ impl Bindings {
         self.0.samplers[slot] = sampler.handle();
     }
 
+    /// Bind the bake's render-target cube as a sampled source — the one resource
+    /// that is both attachment and texture, and the reason the IBL convolutions
+    /// exist at all.
+    #[cfg(feature = "bake")]
+    pub(crate) fn cube_target(&mut self, slot: usize, target: &super::bake::CubeTarget) {
+        self.0.views[slot] = target.texture();
+    }
+
     /// The sokol value, for [`super::Frame::apply_bindings`].
     pub(in crate::rhi) fn raw(&self) -> &sg::Bindings {
         &self.0

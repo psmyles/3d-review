@@ -7,13 +7,13 @@ Windows and Metal on macOS) + `egui` (overlay UI, through our own sokol renderer
 + vendored `ufbx` (FBX parsing via a C bridge). Pure-Rust, no web/Electron layer.
 **Target priority: Windows.**
 
-> **The GPU layer's port is complete through `mac-port-plan.md` Phase 1 step 4**:
+> **The GPU layer is fully on sokol_gfx** (`mac-port-plan.md` Phase 1 steps 1–6):
 > every draw path — the frame flow, the egui chrome, the Tex viewport, the 3D and UV
 > scenes with MSAA and ambient occlusion, and the Opt workspace's comparison view —
-> runs on sokol_gfx, and the viewport is pixel-identical to the Direct3D 11 build on
-> the models checked. What is still parked in `crates/render/src/port_pending/` (see
-> its README) is not a draw path: the Tracy GPU zones (step 6) and the offline
-> `bake_ibl` tool (step 6), which is why re-baking the IBL maps is still blocked.
+> plus the `--tracy` GPU profiler and the offline `bake_ibl` tool. The viewport is
+> pixel-identical to the Direct3D 11 build on the models checked, and a fresh bake
+> reproduces every committed `.bin` byte for byte. `crates/render/src/port_pending/`
+> is empty but for its README and goes with step 7, alongside the dead `src/hlsl/`.
 
 Deeper docs: the crate map + data flow live in §2 below; `PROJECT_STATE.md`
 (architecture, status, risk register), `RENDERING_PIPELINE.md` (render-pass
@@ -148,8 +148,9 @@ decisions, phases and risks — see §4's note).
    reads the window's raw handle itself, no longer depends on `windows` at all.
    Every `unsafe` carries a `// SAFETY:` rationale and touches only GPU plumbing —
    never model geometry, camera math, or material logic, which stay safe.
-   *(The parked D3D11 code in `crates/render/src/port_pending/` is not compiled and
-   is therefore not a site; it becomes safe sokol code as each stage is revived.)*
+   *(`crates/render/src/rhi/bake.rs` and the `bake`-gated half of `ibl.rs` are safe
+   sokol code; the bake's one `unsafe` is `read_image_subresource` in the backend
+   leaf, where the rest of the D3D11 `unsafe` already lives.)*
 10. **`crates/model` is host-agnostic.** It depends only on `glam` — no GPU API,
     `egui`, `winit`, or importer types. This is what kept the renderer swappable
     (wgpu → D3D11 → sokol_gfx); don't add rendering/UI deps to `model`.
@@ -349,7 +350,12 @@ crates/
                 bindings.rs (what a draw reads, as one value re-applied after every
                 `apply_pipeline` — sokol has no sticky slot state, so the old
                 `bind_*`/`unbind_*` pairs have no successor); gpu_profiler.rs (the
-                `--tracy` arming flag + the Tracy message channel). `SwapchainJob` (in
+                `--tracy` GPU profiler — the `Zone` set, the Tracy GPU context and the
+                spans, over the backend's `GpuTimer` — plus the arming flag and the
+                Tracy message channel; which zones a frame encodes is **measured**, not
+                declared, because timestamp queries are reused across ring slots and a
+                declared-but-unwritten zone would report ticks from four frames ago as
+                a plausible duration). `SwapchainJob` (in
                 mod.rs beside `Frame`) is a draw *recorded* before the swapchain pass
                 exists and replayed when it opens — every `Renderer::render_*` runs
                 before that pass, and there is only ever one of it per frame, so the
@@ -360,6 +366,12 @@ crates/
                 `sg_environment` at it, owns the DXGI flip-model swapchain, hands
                 sokol a render-target view per frame, presents, and answers
                 `supported_sample_counts` (sokol only reports MSAA as a yes/no).
+                It also carries the two leaves for what sokol has no notion of:
+                `GpuTimer` (timestamp + disjoint queries, D18) and, `bake`-gated,
+                `read_image_subresource` (a staging copy + `Map(READ)`, D19). Its
+                `dxgi_format` is deliberately exhaustive with **no** catch-all arm —
+                the one it used to have made a wrong-format staging texture, and
+                `CopySubresourceRegion` between mismatched formats is a silent no-op.
                 The two modules are twins aliased as `backend`, not a trait:
                 anything added to one must be added to the other.
               * src/egui_sokol.rs — the egui renderer (D3), which replaced
@@ -373,9 +385,14 @@ crates/
                 SceneVertex, each with a `const` size assertion **against shdc's
                 generated struct** as well as a literal, so invariant 11 is pinned to
                 the shader rather than to a hand-typed number.
-              * src/port_pending/ — the D3D11 Tracy GPU zones and the offline IBL
-                bake, parked and uncompiled until step 6 revives them. See that
-                directory's README.
+              * src/rhi/bake.rs — the offline bake's headless sokol_gfx (a device, no
+                swapchain), the render-target `CubeTarget` (one attachment view per
+                face/mip plus a cube texture view) and `Target2D`, and the one-call
+                fullscreen pass they are drawn with. `[feature bake]` only; the runtime
+                never touches it. sokol's closed passes are what retired the old
+                `unbind_*` dance — a render target cannot still be bound when the next
+                pass samples it.
+              * src/port_pending/ — empty but for its README; it goes with step 7.
             CPU vertex generation -> src/geometry/ (vertex/grid/mesh/select/
             debug_lines/uv, plus deform.rs — the per-model `DeformLayout`: each
             corner's 16-byte `deform` lane and the influence / morph tables it
@@ -523,12 +540,13 @@ PATH so `cc` can compile `ufbx.c`).
   changes. (The shaders are validated by `fxc /WX` in render's `build.rs`, not a
   test.)
 - `cargo build --release` — release binary.
-- ~~`cargo run -p review-render --features bake --bin bake_ibl`~~ — the offline IBL
-  re-bake, **temporarily unavailable**: it is Direct3D 11 code parked in
-  `crates/render/src/port_pending/` until `mac-port-plan.md` Phase 1 step 6, and the
-  `bake` feature and its binary were removed with it so a `--features bake` build
-  cannot pass by compiling nothing. The committed maps under `assets/ibl_baked/` are
-  current and are what the viewer embeds, so only re-baking is blocked.
+- `cargo run --release -p review-render --features bake --bin bake_ibl` — the
+  offline IBL re-bake (needs a real GPU; it creates its own headless device). Writes
+  `assets/ibl_baked/` **in place**, and validates each payload before writing so a
+  dead pass cannot destroy a good map. `--release` because the BC6H encoder's
+  highest-quality profile is slow — but note that sokol's validation layer is compiled
+  *out* of a release build, so if the bake misbehaves, reproduce it in debug where a
+  bad call says so.
 - `scripts/gen-shaders.ps1` (or `.sh`) — regenerate `crates/render/src/shaders/
   generated/` after editing `review.glsl`. Fetches `sokol-shdc` into the
   gitignored `.tools/` on first run; **commit what it writes**, since a plain

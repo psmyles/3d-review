@@ -32,6 +32,8 @@
 //! ```
 
 pub(crate) mod backend;
+#[cfg(feature = "bake")]
+pub(crate) mod bake;
 mod bindings;
 mod buffer;
 mod error;

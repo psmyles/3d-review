@@ -46,6 +46,8 @@ use camera::CameraTransition;
 pub use camera::{OrbitCamera, UvCamera, ease_in_out_cubic};
 pub use config::*;
 pub use egui_sokol::EguiRenderer;
+#[cfg(feature = "bake")]
+pub use ibl::bake_ibl_assets;
 pub use material::{
     AlphaMode, MaterialChange, MaterialEdit, MaterialSnapshot, MaterialState, RoughnessWorkflow,
     TextureBinding,
