@@ -30,10 +30,16 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot)
+    [string]$RepoRoot
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Repo root = parent of this script's folder, as in the other packaging scripts.
+# Resolved here rather than as a `param` default: under Windows PowerShell,
+# `powershell -File <script>` binds parameters before $PSScriptRoot is populated, so
+# the default would come out empty.
+if (-not $RepoRoot) { $RepoRoot = Split-Path -Parent $PSScriptRoot }
 
 $generated = Join-Path $RepoRoot 'crates\render\src\shaders\generated'
 $manifestPath = Join-Path $generated 'bytecode.manifest'
