@@ -1,15 +1,19 @@
 //! What the Tex viewport is asked to draw: the background fill and the placed image.
 //!
 //! Plain value types, host-agnostic — `app` resolves both from the live UI state
-//! (invariant 2) and the GPU path in `tex_d3d` consumes them. They live apart from
-//! that path because the *background* is now the swapchain pass's clear colour rather
-//! than a draw of its own (`mac-port-plan.md` §3.2), so it is read a frame before any
-//! Tex GPU resource is touched — and on a frame where none is.
+//! (invariant 2) and the GPU path in [`gpu`] consumes them. They live apart from that
+//! path because the *background* is now the swapchain pass's clear colour rather than
+//! a draw of its own (`mac-port-plan.md` §3.2), so it is read a frame before any Tex
+//! GPU resource is touched — and on a frame where none is.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::texture::DecodedImage;
+
+mod gpu;
+
+pub(crate) use gpu::TexGpu;
 
 /// The grey solid fill (gamma space, written verbatim to the UNORM backbuffer) —
 /// `Color32::from_gray(128)` in the UI theme.

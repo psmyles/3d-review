@@ -18,11 +18,13 @@
 //!
 //! ## Being ported (`mac-port-plan.md` Phase 1)
 //!
-//! The scene, material, IBL and Tex GPU paths have **not** been moved onto sokol_gfx
-//! yet: they are in `src/port_pending/` and every `Renderer::render_*` below is a stub
-//! that draws nothing but the background. Step 4 revives them one stage at a time,
-//! each eye-checked against the D3D11 build. What is live is the frame flow, the
-//! device and swapchain, and the whole egui chrome.
+//! The scene, material and IBL GPU paths have **not** been moved onto sokol_gfx yet:
+//! they are in `src/port_pending/`, and [`Renderer::render_scene`],
+//! [`Renderer::render_opt_scene`] and [`Renderer::render_uv_scene`] are stubs that
+//! draw nothing but the background. Step 4 revives them one stage at a time, each
+//! eye-checked against the D3D11 build. What is live is the frame flow, the device
+//! and swapchain, the whole egui chrome, and the **Tex viewport**
+//! ([`Renderer::render_texture`], step 4's first stage).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -58,6 +60,7 @@ pub use material::{
 pub use rhi::gpu_profiler::enable_tracy_gpu;
 pub use rhi::{Format, Frame, Gpu, GpuBringUp, GpuError, GpuResult, PresentStatus};
 pub use selection::{Selection, SelectionView, selection_bounds};
+use tex::TexGpu;
 pub use tex::{TexBackground, TexImage};
 pub use texture::{ChannelSelect, DecodedImage, TextureSlot, decode_image, suggested_channel};
 
@@ -140,6 +143,9 @@ pub struct Renderer {
     /// Bumped on every material edit (and on model load) so the GPU table is
     /// re-uploaded without a full mesh rebuild.
     material_revision: u64,
+    /// The Tex viewport's pipelines + texture cache, built on the first Tex frame.
+    /// `None` in a session that never opens that workspace, which is most of them.
+    tex: Option<TexGpu>,
 }
 
 /// Per-frame inputs for the 3D scene render — everything `app` resolves from the
@@ -294,6 +300,7 @@ impl Renderer {
             material_states: Vec::new(),
             material_names: Vec::new(),
             material_revision: 0,
+            tex: None,
         }
     }
 
@@ -333,9 +340,12 @@ impl Renderer {
     /// workspace is left, so a session that visited it once doesn't hold its mipped
     /// uploads — a bounded cache, but a full one is hundreds of megabytes of VRAM —
     /// for the rest of the process. The viewport's pipelines are kept, so re-entering
-    /// costs only the re-upload of whatever is looked at next. **Stubbed**: nothing
-    /// holds an uploaded texture yet.
-    pub fn release_tex_cache(&mut self) {}
+    /// costs only the re-upload of whatever is looked at next.
+    pub fn release_tex_cache(&mut self) {
+        if let Some(tex) = self.tex.as_mut() {
+            tex.release_cache();
+        }
+    }
 
     /// Render the 2D UV viewport (instead of the 3D scene): the 0..1 grid + the
     /// optional island fill + the model's UV edges, framed by the renderer's
@@ -360,18 +370,22 @@ impl Renderer {
     /// fill, then the selected image (channel-isolated, placed by `image`'s pixel
     /// rectangle) when one is present. The egui chrome is drawn on top afterwards.
     ///
-    /// **Partly stubbed**: the background is the frame's clear colour now
-    /// (`mac-port-plan.md` §3.2), so a solid fill is already correct and needs no draw;
-    /// the checker and the image itself arrive with step 4's first stage.
+    /// A solid background needs no draw of its own — it is the frame's clear colour
+    /// (`mac-port-plan.md` §3.2); the checker and the image are queued as deferred
+    /// draws, because the one swapchain pass has not opened yet.
     pub fn render_texture(
         &mut self,
         frame: &mut Frame<'_>,
         image: Option<TexImage>,
         background: TexBackground,
     ) -> GpuResult<()> {
-        let _ = image;
-        frame.set_clear(background.clear_color());
-        Ok(())
+        // Built on the first Tex frame rather than at startup: a session that never
+        // opens this workspace pays for none of it.
+        let tex = match self.tex.as_mut() {
+            Some(tex) => tex,
+            None => self.tex.insert(TexGpu::new()?),
+        };
+        tex.render(frame, image, background)
     }
 
     /// Seed the editable material table from a freshly loaded model's import

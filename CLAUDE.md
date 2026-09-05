@@ -8,12 +8,13 @@ Windows and Metal on macOS) + `egui` (overlay UI, through our own sokol renderer
 **Target priority: Windows.**
 
 > **The GPU layer is mid-port** (`mac-port-plan.md` Phase 1). The device,
-> swapchain, frame flow and egui chrome are on sokol_gfx; the **scene, material,
-> IBL and Tex draw paths are not yet** — they are parked, uncompiled, in
-> `crates/render/src/port_pending/` (see its README) and `Renderer::render_*` is
-> a stub that clears the frame to the viewport background. Sections below that
-> describe the scene renderer describe what is being ported *back*, not what
-> currently draws. The offline `bake_ibl` tool is parked with them.
+> swapchain, frame flow, egui chrome and the **Tex viewport** are on sokol_gfx;
+> the **scene, material and IBL draw paths are not yet** — they are parked,
+> uncompiled, in `crates/render/src/port_pending/` (see its README), and
+> `render_scene` / `render_opt_scene` / `render_uv_scene` are stubs that clear the
+> frame to the viewport background. Sections below that describe the scene renderer
+> describe what is being ported *back*, not what currently draws. The offline
+> `bake_ibl` tool is parked with them.
 
 Deeper docs: the crate map + data flow live in §2 below; `PROJECT_STATE.md`
 (architecture, status, risk register), `RENDERING_PIPELINE.md` (render-pass
@@ -324,11 +325,16 @@ crates/
                 generated `ShaderDesc` with this host's committed bytecode swapped
                 in, and the `bytecode!` macro that picks the per-OS blob);
                 pipeline.rs, buffer.rs (`TransientBuffer`, the per-frame geometry
-                stream), texture.rs, sampler.rs, bindings.rs (what a draw reads, as
-                one value re-applied after every `apply_pipeline` — sokol has no
-                sticky slot state, so the old `bind_*`/`unbind_*` pairs have no
+                stream), texture.rs, mips.rs (the CPU mip chain, D7 — sokol has no
+                `GenerateMips`; sRGB is averaged in linear light so the result matches
+                what the hardware produced), sampler.rs, bindings.rs (what a draw
+                reads, as one value re-applied after every `apply_pipeline` — sokol has
+                no sticky slot state, so the old `bind_*`/`unbind_*` pairs have no
                 successor); gpu_profiler.rs (the `--tracy` arming flag + the Tracy
-                message channel).
+                message channel). `SwapchainJob` (in mod.rs beside `Frame`) is a draw
+                *recorded* before the swapchain pass exists and replayed when it opens
+                — every `Renderer::render_*` runs before that pass, and there is only
+                ever one of it per frame.
               * src/rhi/backend/ — the device + swapchain leaf, one module per OS and
                 **the only platform GPU code in the workspace** (invariant 9's
                 sanctioned `unsafe`). d3d11.rs creates the device, points
@@ -348,10 +354,10 @@ crates/
                 SceneVertex, each with a `const` size assertion **against shdc's
                 generated struct** as well as a literal, so invariant 11 is pinned to
                 the shader rather than to a hand-typed number.
-              * src/port_pending/ — the D3D11 scene / material / IBL / Tex / bake
-                paths, parked and uncompiled until `mac-port-plan.md` Phase 1 step 4
-                revives them stage by stage. See that directory's README for what
-                returns when.
+              * src/port_pending/ — the D3D11 scene / material / IBL / bake paths,
+                parked and uncompiled until `mac-port-plan.md` Phase 1 step 4 revives
+                them stage by stage. See that directory's README for what returns
+                when.
             CPU vertex generation -> src/geometry/ (vertex/grid/mesh/select/
             debug_lines/uv, plus deform.rs — the per-model `DeformLayout`: each
             corner's 16-byte `deform` lane and the influence / morph tables it
@@ -368,9 +374,9 @@ crates/
             PNG/TGA/TIFF/HDR/BMP/GIF/PNM via the `image` crate — no ImageMagick) +
             filename channel auto-detect -> src/texture.rs; what the Tex viewport is
             asked to draw (`TexBackground` — a solid fill *is* the frame's clear now
-            — and the placed `TexImage`) -> src/tex.rs, with its image draw
-            (deliberately outside the scene MRT/tonemap path so the displayed texel
-            equals the stored texel) in port_pending.
+            — and the placed `TexImage`) -> src/tex.rs, with its image + checker draw
+            (two deferred `SwapchainJob`s, deliberately outside the scene MRT/tonemap
+            path so the displayed texel equals the stored texel) -> src/tex/gpu.rs.
             Shaders are ONE source: src/shaders/review.glsl, all 15 programs in
             sokol-shdc's annotated GLSL. `scripts/gen-shaders.{sh,ps1}` turns it into
             the checked-in src/shaders/generated/ — per-backend HLSL5 + MSL sources
@@ -579,13 +585,14 @@ set.
 ## 5. Current state
 
 > **What actually draws right now.** The GPU port (`mac-port-plan.md` Phase 1) has
-> landed the device, the swapchain, the frame flow and the whole egui chrome on
-> sokol_gfx; the scene itself has **not** moved yet. Every `Renderer::render_*` is a
-> stub that clears the frame to the viewport background, so the viewport is a flat
-> colour in all four workspaces while the chrome, the Outliner, the stats, the
-> gizmo, model loading, animation and the Opt processing all behave normally. The
+> landed the device, the swapchain, the frame flow, the whole egui chrome and — as
+> step 4's first stage — the **Tex viewport** on sokol_gfx; the 3D scene itself has
+> **not** moved yet. `render_scene` / `render_opt_scene` / `render_uv_scene` are
+> stubs that clear the frame to the viewport background, so the viewport is a flat
+> colour in the 3D, UV and Opt workspaces while the chrome, the Outliner, the stats,
+> the gizmo, model loading, animation and the Opt processing all behave normally. The
 > rest of this section describes the renderer as it was and as step 4 restores it,
-> stage by stage — Tex, then the scene, skinning, MSAA, GTAO, the Opt split, UV.
+> stage by stage — the scene, then skinning, MSAA, GTAO, the Opt split, UV.
 
 MVP: native window + Direct3D 11 viewport + egui chrome; FBX import via ufbx (drag-drop,
 `Ctrl+O`, double-click empty viewport, command-line/file-association path);
@@ -594,11 +601,11 @@ axes; shaded / unlit / wireframe / shaded+wireframe, source-color / UV-checker /
 vertex-color materials, plus bounding-box, face- and vertex-normal debug
 overlays; orthographic/perspective toggle; animated axis gizmo (orbit +
 snap-to-axis); a 2D UV viewport (independent pan/zoom, UV channel picker, wire
-layout, shaded fill, per-island coloring); a 2D Tex viewport (a Direct3D 11 image
+layout, shaded fill, per-island coloring); a 2D Tex viewport (a fullscreen image
 draw via `TexGpu` over the scene texture pool: texture picker, RGB/R/G/B/A channel
 isolation — a shader uniform swizzle, so switching is instant; the `A` segment
-auto-hides for opaque images — mipmapped, pan (LMB-drag) / zoom (wheel or
-RMB-drag) / `F`-to-fit, black/white/grey/checker
+auto-hides for opaque images — mipmapped (a CPU chain, D7), pan (LMB-drag) / zoom
+(wheel or RMB-drag) / `F`-to-fit, black/white/grey/checker
 background fill, and a real-values stats panel). Windows packaging (exe icon/resource
 metadata + Inno Setup installer) is present.
 

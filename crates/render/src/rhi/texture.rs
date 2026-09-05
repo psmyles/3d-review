@@ -2,9 +2,8 @@
 //!
 //! sokol separates the two — an `sg::Image` is storage, an `sg::View` is how a
 //! binding slot reads it — so a [`Texture`] owns a matched pair and hands out only
-//! the view. Mipped uploads, the BC6H cubes and the render-target views arrive with
-//! the scene stages that need them (`mac-port-plan.md` Phase 1 step 4); the CPU mip
-//! chain (D7) lands with the first of those.
+//! the view. The BC6H cubes and the render-target views arrive with the scene stages
+//! that need them (`mac-port-plan.md` Phase 1 step 4).
 
 use std::ffi::CStr;
 
@@ -12,6 +11,7 @@ use sokol::gfx as sg;
 
 use super::error::{GpuError, GpuResult, ResourceKind, require_valid};
 use super::format::Format;
+use super::mips;
 
 /// An immutable 2D texture and its sampling view.
 pub(crate) struct Texture {
@@ -61,11 +61,65 @@ impl Texture {
         desc.pixel_format = format.sg();
         desc.data.mip_levels[0] = sg::slice_as_range(pixels);
         desc.label = label.as_ptr();
-        let image = sg::make_image(&desc);
+        Self::from_desc(&desc, label)
+    }
+
+    /// Upload a decoded RGBA8 image (sRGB or raw) with a full CPU-generated mip
+    /// chain — the Tex viewport's images and, when that stage lands, the material
+    /// slots. A degenerate or short pixel buffer falls back to a 1×1 white texel: a
+    /// decode hiccup must never fail the render path.
+    ///
+    /// The chain is built here rather than on the decode worker D7 names, because it
+    /// is not a property of the decoded image alone — the same pixels are uploaded
+    /// raw by the Tex viewport and sRGB by a material slot, and the two chains differ
+    /// (see [`mips`]). It costs a few milliseconds once per texture, on the frame it
+    /// is first looked at.
+    pub(crate) fn rgba8_mipped_or_white(
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+        srgb: bool,
+        label: &CStr,
+    ) -> GpuResult<Self> {
+        let format = if srgb {
+            Format::Rgba8Srgb
+        } else {
+            Format::Rgba8
+        };
+        let (width, height) = (width.max(1), height.max(1));
+        let expected = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|texels| texels.checked_mul(4));
+        if expected.is_none_or(|expected| rgba.len() < expected) {
+            return Self::immutable_2d(&[255, 255, 255, 255], 1, 1, format, label);
+        }
+
+        let levels = mips::levels_below_base(rgba, width, height, srgb);
+        let mut desc = sg::ImageDesc::new();
+        desc._type = sg::ImageType::Dim2;
+        desc.usage.immutable = true;
+        desc.width = width as i32;
+        desc.height = height as i32;
+        desc.num_mipmaps = levels.len() as i32 + 1;
+        desc.pixel_format = format.sg();
+        desc.data.mip_levels[0] = sg::slice_as_range(rgba);
+        for (level, pixels) in levels.iter().enumerate() {
+            desc.data.mip_levels[level + 1] = sg::slice_as_range(pixels);
+        }
+        desc.label = label.as_ptr();
+        // `levels` is alive across the call, which is what the ranges above point at.
+        Self::from_desc(&desc, label)
+    }
+
+    /// Create the image and the view a binding slot reads it through, destroying
+    /// both if either came back invalid.
+    fn from_desc(desc: &sg::ImageDesc, label: &CStr) -> GpuResult<Self> {
+        let name = label.to_str().unwrap_or("texture");
+        let image = sg::make_image(desc);
 
         let mut view_desc = sg::ViewDesc::new();
         view_desc.texture.image = image;
-        view_desc.label = label.as_ptr();
+        view_desc.label = desc.label;
         let view = sg::make_view(&view_desc);
 
         let made = require_valid(sg::query_image_state(image), ResourceKind::Texture, name)

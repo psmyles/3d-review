@@ -37,6 +37,7 @@ mod buffer;
 mod error;
 mod format;
 pub(crate) mod gpu_profiler;
+mod mips;
 mod pipeline;
 mod present;
 mod sampler;
@@ -53,6 +54,9 @@ pub(crate) use pipeline::{Blend, Pipeline, PipelineDesc, VertexFormat};
 pub use present::PresentStatus;
 pub(crate) use sampler::{Filter, Sampler, Wrap};
 pub(crate) use texture::Texture;
+
+// `SwapchainJob` is declared below rather than in a module of its own: it is half of
+// `Frame`'s contract, and the two are read together.
 
 use std::ffi::{CStr, c_char, c_void};
 
@@ -81,7 +85,11 @@ impl GpuBringUp {
             .join()
             .map_err(|_| GpuError::Backend("the GPU bring-up thread panicked".into()))??;
         let swapchain = backend::Swapchain::new(&device, window, width, height)?;
-        Ok(Gpu { device, swapchain })
+        Ok(Gpu {
+            device,
+            swapchain,
+            jobs: Vec::new(),
+        })
     }
 }
 
@@ -93,6 +101,10 @@ impl GpuBringUp {
 pub struct Gpu {
     device: backend::Device,
     swapchain: backend::Swapchain,
+    /// This frame's deferred draws, waiting for the swapchain pass to open (see
+    /// [`SwapchainJob`]). Held here rather than in [`Frame`] so the allocation
+    /// survives the frame that grew it and a steady-state frame allocates nothing.
+    jobs: Vec<SwapchainJob>,
 }
 
 impl Gpu {
@@ -203,6 +215,9 @@ impl Gpu {
         if !self.swapchain.acquire(&mut swapchain) {
             return None;
         }
+        // A frame that queued jobs and then never opened its pass (an error
+        // propagated out past `finish`) must not leave them for the next one.
+        self.jobs.clear();
         Some(Frame {
             gpu: self,
             swapchain,
@@ -228,6 +243,88 @@ impl std::fmt::Debug for Gpu {
             .field("backend", &sg::query_backend())
             .field("size", &(width, height))
             .finish()
+    }
+}
+
+/// Most bytes a [`SwapchainJob`] can carry for its uniform block — enough for the
+/// largest one any deferred draw uploads (`tex_params`, 64 bytes). Checked at the
+/// call site, at compile time, so a block that outgrows it is a build error and not
+/// a truncated upload.
+const MAX_JOB_UNIFORM_BYTES: usize = 64;
+
+/// One draw recorded before the swapchain pass exists and replayed once it opens.
+///
+/// The renderer's entry points run *before* [`Frame::begin_swapchain_pass`] — there
+/// is exactly one such pass per frame and it has to contain the chrome as well — so
+/// anything they draw to the backbuffer (the Tex viewport's two fullscreen draws,
+/// and the scene composite when that stage lands) is queued as one of these instead
+/// of issued directly.
+///
+/// Every field is a `Copy` sokol id or inline bytes: a job keeps **no borrow** of the
+/// resources it names, so a queued draw does not pin the renderer's pipelines for the
+/// life of the frame. What it does rely on is that they outlive the frame — which
+/// they do, since the [`crate::Renderer`] that owns them outlives every frame it
+/// draws.
+pub(crate) struct SwapchainJob {
+    pipeline: sg::Pipeline,
+    /// `None` for a shader that reads nothing: sokol validates bindings against what
+    /// the shader declared, so binding an unexpected slot is as wrong as leaving a
+    /// declared one empty.
+    bindings: Option<sg::Bindings>,
+    uniform_slot: usize,
+    uniforms: [u8; MAX_JOB_UNIFORM_BYTES],
+    uniform_len: usize,
+    /// Vertices to draw, non-indexed — every deferred draw so far is a fullscreen
+    /// triangle whose corners come from `gl_VertexIndex`.
+    vertex_count: usize,
+}
+
+impl SwapchainJob {
+    /// A draw of `vertex_count` vertices through `pipeline`, with one uniform block.
+    ///
+    /// `T` is the `#[repr(C)]` mirror of that block, size-asserted against shdc's
+    /// generated struct beside its declaration (invariant 11).
+    pub(crate) fn new<T: Pod>(
+        pipeline: &Pipeline,
+        vertex_count: usize,
+        uniform_slot: usize,
+        value: &T,
+    ) -> Self {
+        const {
+            assert!(
+                size_of::<T>() <= MAX_JOB_UNIFORM_BYTES,
+                "a deferred draw's uniform block outgrew MAX_JOB_UNIFORM_BYTES"
+            );
+        }
+        let mut uniforms = [0u8; MAX_JOB_UNIFORM_BYTES];
+        uniforms[..size_of::<T>()].copy_from_slice(bytemuck::bytes_of(value));
+        Self {
+            pipeline: pipeline.handle(),
+            bindings: None,
+            uniform_slot,
+            uniforms,
+            uniform_len: size_of::<T>(),
+            vertex_count,
+        }
+    }
+
+    /// Give the draw the textures and samplers it reads.
+    pub(crate) fn with_bindings(mut self, bindings: &Bindings) -> Self {
+        self.bindings = Some(*bindings.raw());
+        self
+    }
+
+    /// Issue the draw. Called from inside the swapchain pass and nowhere else.
+    fn replay(&self) {
+        sg::apply_pipeline(self.pipeline);
+        if let Some(bindings) = &self.bindings {
+            sg::apply_bindings(bindings);
+        }
+        sg::apply_uniforms(
+            self.uniform_slot,
+            &sg::slice_as_range(&self.uniforms[..self.uniform_len]),
+        );
+        sg::draw(0, self.vertex_count, 1);
     }
 }
 
@@ -261,7 +358,17 @@ impl Frame<'_> {
         self.clear = [rgb[0], rgb[1], rgb[2], 1.0];
     }
 
-    /// Open the one swapchain pass, clearing the backbuffer.
+    /// Queue a draw for the swapchain pass. See [`SwapchainJob`].
+    pub(crate) fn queue(&mut self, job: SwapchainJob) {
+        debug_assert!(
+            !self.pass_open,
+            "a job queued after the pass opened would never be replayed"
+        );
+        self.gpu.jobs.push(job);
+    }
+
+    /// Open the one swapchain pass, clearing the backbuffer, and replay whatever the
+    /// renderer queued into it.
     ///
     /// Everything drawn on-screen goes between this and [`Self::finish`]. There is
     /// exactly one per frame: Metal presents inside `sg_end_pass`, so a second pass
@@ -284,6 +391,10 @@ impl Frame<'_> {
         pass.label = c"swapchain".as_ptr();
         sg::begin_pass(&pass);
         self.pass_open = true;
+        for job in &self.gpu.jobs {
+            job.replay();
+        }
+        self.gpu.jobs.clear();
     }
 
     /// Make `pipeline` current for the following draws.

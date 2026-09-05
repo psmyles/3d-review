@@ -14,12 +14,13 @@ is the *GPU layer* (`crates/render/src/rhi/` and the shaders), the egui renderer
 leaves in `app`, and the build/distribution chain. The port runs **Windows first** (Fire D13): the
 shared-shell migration is the risk, and it has to be gated on a Windows box against `main`.
 
-Status: **Phase 0 done on Windows** (D21, D22), plus **Phase 1 steps 1–3**. The backend swap has
-happened: the device, the swapchain, the frame flow and the whole egui chrome run on sokol_gfx, and
-`app` no longer depends on `windows` at all. What has *not* moved yet is the scene — the D3D11
-scene / material / IBL / Tex draw paths are parked, uncompiled, in `crates/render/src/port_pending/`
-and every `Renderer::render_*` is a stub that clears the frame to the viewport background. Step 4
-revives them stage by stage. Sections are written in the present tense of the finished port so they
+Status: **Phase 0 done on Windows** (D21, D22), plus **Phase 1 steps 1–3 and step 4's first
+stage**. The backend swap has happened: the device, the swapchain, the frame flow, the whole egui
+chrome and the Tex viewport run on sokol_gfx, and `app` no longer depends on `windows` at all. What
+has *not* moved yet is the 3D scene — the D3D11 scene / material / IBL draw paths are parked,
+uncompiled, in `crates/render/src/port_pending/` and `render_scene` / `render_opt_scene` /
+`render_uv_scene` are stubs that clear the frame to the viewport background. Step 4 revives them
+stage by stage. Sections are written in the present tense of the finished port so they
 can become the description once it lands; the *Status* column of §2 and the phase list in §8 say
 what is actually done.
 
@@ -59,7 +60,7 @@ and are settled.
 | D4 | **One sokol-shdc annotated-GLSL source** (`render/src/shaders/review.glsl`) generates per-backend HLSL5 + MSL *and* the `ShaderDesc` reflection into `render/src/shaders/generated/`, checked in; build.rs compiles the host's set to bytecode (*owner*) | Fire D4/D24: nothing compiles a shader at runtime, a broken shader is a build error, one source instead of two hand-kept twins | The HLSL is rewritten once (~1700 lines); `fxc` on Windows, the Metal toolchain on macOS (D5) | Planned |
 | D5 | **Bytecode is committed and freshness-gated on both OSes** - `.dxbc` (as today) *and* `.metallib` - compiled only when the generated source is newer or the blob is missing and the toolchain is present; missing blob + missing toolchain is a build error | Keeps this repo's existing "a no-fxc box builds from the committed blobs" property and extends it to the Mac, so the toolchain floor for someone who never edits a shader is Command Line Tools, not full Xcode. *Diverges from Fire* (which compiles into `OUT_DIR` on every build) on purpose | A shader edit must be followed by a rebuild on **both** OSes before commit, or one platform ships stale bytecode; `build.rs` warns when a blob is older than its generated source, and both packaging scripts fail on it | Planned |
 | D6 | **egui bumped to 0.36.1** (`egui`, `egui-winit`, `egui-notify 0.23`) in the same port (*owner*) | Dropping egui-directx11 removes the only 0.33 pin | API churn in `ui` folded into the port; verify egui-notify 0.23 tracks 0.36 at execution, else pin egui to the newest it supports | Shipped (step 3); egui-notify 0.23 does track 0.36 |
-| D7 | **CPU mip chain on the texture decode worker** (Fire D21: port Fire's `render/mips.rs`), uploaded in the one `sg_make_image` | sokol_gfx has no `GenerateMips`; sRGB textures are averaged in linear light so the result matches the hardware path | ~5 ms per 4K texture, off the UI thread (the decode worker already exists: `app/src/texture_manager.rs`) | Planned |
+| D7 | **CPU mip chain**, uploaded in the one `sg_make_image` | sokol_gfx has no `GenerateMips`; sRGB textures are averaged in linear light so the result matches the hardware path | ~5 ms per 4K texture | Shipped (step 4 stage 1) as `rhi/mips.rs`, but built **at upload**, not on the decode worker: the chain differs between the raw and sRGB uploads of the same pixels, so it is not a property of the decoded image (see step 4) |
 | D8 | **GPU bring-up on its own thread from the first line of `main`; the window is created before the join** (Fire D18) | Device creation is the longest startup item (~135 ms for D3D11 on Fire's box) and needs no window | `App::start` reorders; `backend::Device: Send` | Shipped (step 3) |
 | D9 | **Every `rfd` dialog runs on a worker thread and answers through `UserEvent`** (Fire §3.5: nothing called from a winit callback may pump a loop of its own - on macOS AppKit aborts the process) | Six blocking sites today (`loading.rs`, `texture_manager.rs`, three in `opt.rs`, the startup box in `main.rs`), three of them *inside* `render()`; on macOS this is a reliable crash, not a glitch | `Dialog` enum + `UserEvent::DialogDone`, one dialog at a time; the startup error box moves to after `run_app` returns | Planned |
 | D10 | **`Primary` modifier: Ctrl on Windows, ⌘ on macOS**; `help.rs`/`stats.rs` labels say "Ctrl"/"Cmd" per OS | Cmd is the only acceptable file-command chord on a Mac | `shortcuts.rs` matches `SUPER` on macOS; the Alt+RMB zoom-drag stays Option | Planned |
@@ -623,6 +624,35 @@ Ordered so each step is verifiable by eye against the current renderer on the sa
    gradient, tone-map operators, buffer views, selection flash) → skinning storage buffers +
    dummies (clips, skin-weight view) → MSAA (resolve views, AA menu from the leaf) → GTAO (dims via
    uniform) → Opt split (two target sets) + ghost overlay → UV viewport.
+
+   *Stage 1 (Tex viewport) done.* `src/tex/gpu.rs` replaces the parked `tex_d3d.rs`: the two
+   fullscreen programs `tex_checker` / `tex_image` from the generated bytecode, the path-keyed LRU
+   upload cache unchanged, and channel isolation still one uniform. Two things arrived with it:
+
+   * **`SwapchainJob` (the deferred draw §3.2 called for) landed here rather than with the
+     composite**, because the Tex viewport needs it for exactly the same reason: every
+     `Renderer::render_*` runs *before* the frame's one swapchain pass opens. It is
+     `{pipeline, optional bindings, one uniform block inline, vertex count}` — all `Copy` sokol
+     ids, so a queued draw keeps no borrow — and the queue lives on `Gpu` rather than `Frame` so a
+     steady-state frame allocates nothing. Deliberately *not* carrying a viewport rect yet: the
+     Opt split is what needs one, and a knob nobody sets is a knob nobody has checked.
+   * **The CPU mip chain (D7) is built at upload, not on the decode worker.** The chain is not a
+     property of the decoded image alone — the Tex viewport uploads the same pixels raw and a
+     material slot uploads them sRGB, and the two chains differ, because hardware `GenerateMips`
+     averages an sRGB view in *linear light* and a UNORM view in stored bytes. `rhi/mips.rs` does
+     both (the sRGB conversion through a 256-entry forward table and a 4096-entry inverse one, so
+     a 4K chain costs no `powf` per texel), and the cost is a few milliseconds on the frame a
+     texture is first looked at. Moving it to the worker would mean carrying *two* chains per
+     decoded image; revisit with the material stage, which is the one that would benefit.
+
+   Verified: clippy clean workspace-wide, all 20 test binaries pass (four new unit tests pin the
+   mip filter, incl. the linear-light sRGB average), and three runs against
+   `assets/test_textures/T_Sides_D.psd` — checker background with the image composited over it and
+   the background showing where the shader discards outside the rect; a solid grey background with
+   the image minified to 12 % (cleanly filtered, so the chain is being sampled); and a 6×
+   magnification showing hard texel edges, which is the min-linear/mag-point sampler behaving.
+   Channel isolation checked on G and R. **Zero** output on sokol's validation channel across all
+   three.
 5. **Shell leaves on Windows**: `rfd` on workers (D9), `dirs` config dir (D17), `Primary` modifier
    plumbing (D10, still Ctrl here), the startup error box after `run_app`, `ScaleFactorChanged`
    forwarding.

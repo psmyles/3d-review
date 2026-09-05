@@ -47,6 +47,13 @@ impl VertexFormat {
 /// How a draw's fragments combine with what is already in the target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Blend {
+    /// No blending: the fragment overwrites what is there. The Tex viewport's
+    /// checker, which is a background.
+    Opaque,
+    /// Straight (non-premultiplied) alpha: `src·srcA + dst·(1−srcA)`. What an image
+    /// whose stored alpha is its own coverage composites with — the Tex viewport's
+    /// image over its background.
+    StraightAlpha,
     /// egui's premultiplied-alpha contract: `src·1 + dst·(1−srcA)` for colour, and
     /// `src·(1−dstA) + dst·1` for alpha, which composes correctly when the chrome is
     /// drawn over an already-opaque backbuffer *and* when it overlaps itself.
@@ -56,6 +63,16 @@ pub(crate) enum Blend {
 impl Blend {
     fn state(self) -> sg::BlendState {
         match self {
+            Self::Opaque => sg::BlendState::new(),
+            Self::StraightAlpha => sg::BlendState {
+                enabled: true,
+                src_factor_rgb: sg::BlendFactor::SrcAlpha,
+                dst_factor_rgb: sg::BlendFactor::OneMinusSrcAlpha,
+                op_rgb: sg::BlendOp::Add,
+                src_factor_alpha: sg::BlendFactor::One,
+                dst_factor_alpha: sg::BlendFactor::OneMinusSrcAlpha,
+                op_alpha: sg::BlendOp::Add,
+            },
             Self::PremultipliedAlpha => sg::BlendState {
                 enabled: true,
                 src_factor_rgb: sg::BlendFactor::One,
@@ -139,6 +156,11 @@ impl Pipeline {
     /// Make this pipeline current for the following draws.
     pub(crate) fn apply(&self) {
         sg::apply_pipeline(self.pipeline);
+    }
+
+    /// The sokol handle, for a deferred [`super::SwapchainJob`].
+    pub(in crate::rhi) fn handle(&self) -> sg::Pipeline {
+        self.pipeline
     }
 }
 

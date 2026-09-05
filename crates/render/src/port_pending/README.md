@@ -14,7 +14,6 @@ something rather than a rewrite from memory.
 
 | File | Was | Returns in |
 | --- | --- | --- |
-| `tex_d3d.rs` | `src/tex_d3d.rs` — the Tex viewport's image draw | step 4, first stage |
 | `scene_pipelines.rs` | `src/scene/pipelines.rs` — `ScenePipelineSet` | step 4 |
 | `scene_resources.rs` | `src/scene/resources.rs` — `ModelSlot` / `DerivedViews` / every `sync_*` | step 4 |
 | `scene_d3d.rs` | `src/scene/d3d.rs` — `SceneGpu`, the passes, the uniform encoders | step 4 |
@@ -32,6 +31,10 @@ something rather than a rewrite from memory.
 were **rewritten in place** on sokol_gfx rather than parked, and grow a knob at a
 time as step 4's stages need them; `target.rs` is here because nothing in step 3
 renders offscreen at all.
+
+Gone from the table already: `tex_d3d.rs` left with step 4's first stage, rewritten
+as `src/tex/gpu.rs` — two deferred `SwapchainJob`s over the generated `tex_image` /
+`tex_checker` programs, with the CPU mip chain (D7) in the new `rhi/mips.rs`.
 
 ## What step 6 must restore to `Cargo.toml`
 
