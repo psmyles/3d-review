@@ -89,6 +89,10 @@ struct TexUniforms {
 // while the shader keeps reading the old offsets — wrong pixels, not an error.
 // The two `float2`s and the four scalars each pack into one 16-byte register.
 const _: () = assert!(std::mem::size_of::<TexUniforms>() == 64);
+const _: () = assert!(
+    std::mem::size_of::<TexUniforms>()
+        == std::mem::size_of::<crate::shaders::generated::TexParams>()
+);
 
 /// An uploaded Tex texture: the mip-mapped GPU texture, the decoded image it was
 /// built from (an identity check — a disk reload swaps the `Arc`, forcing a

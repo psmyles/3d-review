@@ -88,6 +88,11 @@ struct FaceUniform {
 // committed maps rather than failing the bake.
 #[cfg(feature = "bake")]
 const _: () = assert!(std::mem::size_of::<FaceUniform>() == 64);
+#[cfg(feature = "bake")]
+const _: () = assert!(
+    std::mem::size_of::<FaceUniform>()
+        == std::mem::size_of::<crate::shaders::generated::FaceParams>()
+);
 
 /// World-space basis (forward, right, up) for each cubemap face, in layer order
 /// `+X, -X, +Y, -Y, +Z, -Z`. A fullscreen-triangle clip position `(x, y)` maps to

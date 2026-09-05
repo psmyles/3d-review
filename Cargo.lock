@@ -2223,6 +2223,7 @@ dependencies = [
  "intel_tex_2",
  "review-model",
  "review-psd",
+ "sokol",
  "thiserror 2.0.18",
  "tracy-client",
  "windows",
@@ -2541,6 +2542,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd538fb6910ac1099850255cf94a94df6551fbdd602454387d0adb2d1ca6dead"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "sokol"
+version = "0.1.0"
+dependencies = [
+ "cc",
 ]
 
 [[package]]

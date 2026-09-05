@@ -14,9 +14,10 @@ is the *GPU layer* (`crates/render/src/rhi/` and the shaders), the egui renderer
 leaves in `app`, and the build/distribution chain. The port runs **Windows first** (Fire D13): the
 shared-shell migration is the risk, and it has to be gated on a Windows box against `main`.
 
-Status: **Phase 0 done on Windows** (D21, D22), and **Phase 1 step 1** — the `rhi` façade refactor
-that puts `GpuError`/`GpuResult`/`Format` in front of the backend's types. The backend swap itself
-has not started: the renderer is still Direct3D 11 underneath. Sections are written in the present
+Status: **Phase 0 done on Windows** (D21, D22), plus **Phase 1 steps 1–2** — the `rhi` façade
+refactor that puts `GpuError`/`GpuResult`/`Format` in front of the backend's types, and the one
+shdc shader source with its generated/committed bytecode. The backend swap itself has not started:
+the renderer still draws through Direct3D 11 and the old `hlsl/` set. Sections are written in the present
 tense of the finished port so they can become the description once it lands; the *Status* column of
 §2 and the phase list in §8 say what is actually done.
 
@@ -488,6 +489,63 @@ Ordered so each step is verifiable by eye against the current renderer on the sa
    compiles all 30, `generated/review.rs` exposes the expected constants/structs, the size
    assertions compile - this is where the `MorphEntry` alignment and `uint` questions are answered
    before any renderer code exists. Keep the old `.hlsl` until step 4 renders correctly.
+   *Done.* All 15 programs in `crates/render/src/shaders/review.glsl`; shdc emits 60 per-backend
+   sources + the reflection into `generated/` (checked in), and `fxc /WX /O3` compiles all 30
+   DXBC blobs clean. build.rs **discovers** the generated jobs by filename rather than listing
+   them, so adding a program touches only `review.glsl`; the hand-listed legacy jobs stay beside
+   them until step 7. The old `hlsl/` set still draws every frame — nothing includes the new
+   bytecode yet.
+
+   The three open questions are answered:
+
+   * **`MorphEntry` is 28 bytes.** shdc's Rust emitter stamps `align(4)` on a scalar-only struct
+     (only vec/mat members get `align(16)`), so the seven-scalar declaration the plan called for
+     does hold at 28. `InfluenceEntry` 8, `PaletteEntry` 48, all matching.
+   * **`uint` in a uniform block is rejected**, as expected; `PostUniforms`' and `TexUniforms`'
+     flags are `int` in the shader and come back as `i32` in the generated struct. The Rust
+     structs still declare `u32` — same bits, same size, and the assertions pass — so flipping
+     them is step 3/4's business, not a silent change here.
+   * **A uniform block belongs to exactly one stage** (`sg_shader_uniform_block.stage`), so
+     `SceneUniforms` really is declared twice, at UB 0 (VS) and UB 1 (FS). GLSL puts block members
+     in global scope, so the two would collide on member names — the fix is a block *instance
+     name* (`su.` / `sc.`), which shdc accepts. The same applies to the IBL face block (0 VS /
+     1 FS), which the plan had not anticipated.
+
+   Four things worth knowing that the plan did not cover:
+
+   * **A storage buffer must hold exactly one flexible array of a struct** — shdc rejects a bare
+     `float[]`. The morph-weight buffer is therefore `struct MorphWeight { float value; }`, the
+     same 4 bytes.
+   * **shdc renumbers the HLSL registers** it emits (a `binding=12` storage buffer can land on
+     `t0`), and strips resources a shader declares but never reads. Neither matters — the runtime
+     binds by the *sokol* slot and the reflection carries the mapping — but it does mean the
+     register plan in the HLSL comments is no longer the register plan on the GPU. The declared
+     slots come out exactly as §4 specifies (0 checker, 1–4 IBL, 5–11 material, 12–15 deform),
+     pinned by a test.
+   * **A shader must declare only the views it uses**, since sokol validates that every declared
+     view is bound: the blanket-include approach would force the skybox and line pipelines to bind
+     seven material textures they never sample.
+   * **The generated `review.rs` needs `clippy::all` silenced** at the module declaration, for the
+     same reason `vendor/sokol-rust` is `exclude`d — it is machine-written, and today it trips
+     `large_const_arrays` (shdc emits each shader source as a multi-KB `const [u8; N]`).
+   * **`cargo fmt --all` reformats the vendored sokol tree**, and D21's `exclude` does not stop it:
+     the exclude keeps the crate out of the build and lint graph, but fmt follows *path
+     dependencies*, so it only started happening once `review-render` depended on sokol. It
+     rewrote 60-odd upstream files to a style that is neither upstream's (their rustfmt.toml is
+     half nightly-only options, silently dropped on stable) nor ours — every line of which would
+     conflict at the next pin bump. The fix is `disable_all_formatting = true` in
+     `vendor/sokol-rust/rustfmt.toml`, since rustfmt reads the nearest config above each file and
+     the `ignore` option is nightly-only; it is the one local modification to the pinned tree, and
+     `vendor/NOTICE.txt` records it.
+
+   Two deviations, both deliberate: the `sokol` workspace dependency lands **here** rather than in
+   step 3, because step 2's own verification (the generated reflection compiling, with the size
+   assertions against it) requires the crate that `generated/review.rs` imports; and the four
+   bake-only IBL programs are compiled by build.rs unconditionally rather than under the `bake`
+   feature, so the committed blob set stays complete — `cfg` gates which ones are
+   `include_bytes!`'d, which is what decides binary size. Measured cost of carrying sokol unused:
+   +17.9 KB on the release binary (13,824,000 → 13,841,920), the linker having dropped nearly all
+   of it.
 3. **rhi core + app loop, scene stubbed** (one big-bang commit): `backend/d3d11.rs` (Fire's + the
    debug-layer fallback + `supported_sample_counts`), `Gpu`/`Frame`/jobs, `shader / pipeline /
    buffer / texture / sampler / target / mips`, `egui_sokol.rs` (D3) + the egui 0.36 bump (D6), the

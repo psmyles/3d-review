@@ -2,6 +2,22 @@
 # NOTE: For info about what these do see https://rust-lang.github.io/rustfmt/
 #
 
+# --- LOCAL MODIFICATION (3D Review) --------------------------------------------
+# This tree is a pinned upstream checkout and must stay byte-identical to it, but
+# `cargo fmt --all` reaches it anyway: it follows path dependencies, and the
+# workspace `exclude` only keeps it out of the *build* graph, not out of fmt. It
+# then formats these files with the settings below minus everything nightly-only,
+# which is nobody's style, and every reformatted line becomes a conflict the next
+# time the pin moves.
+#
+# rustfmt reads the nearest rustfmt.toml above each file, so switching it off here
+# is what actually stops that — the stable `ignore` option is nightly-only, and a
+# root-level setting would not reach these files. The only line below this comment
+# is ours; the rest is upstream's, kept so the setting is easy to drop when
+# re-vendoring. See vendor/NOTICE.txt.
+disable_all_formatting = true
+# -------------------------------------------------------------------------------
+
 group_imports = "StdExternalCrate"
 match_block_trailing_comma = true
 use_field_init_shorthand = true

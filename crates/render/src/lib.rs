@@ -28,6 +28,7 @@ mod material;
 mod rhi;
 mod scene;
 mod selection;
+mod shaders;
 mod tex_d3d;
 mod texture;
 

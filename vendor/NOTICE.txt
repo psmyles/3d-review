@@ -25,3 +25,12 @@ Not on crates.io under this name — the `sokol` name there belongs to an unrela
 (D3D11 and Metal underneath); see `mac-port-plan.md` §1 and D21. Updating the pin
 means replacing the tree wholesale and re-checking the `sg_swapchain` / `ShaderDesc`
 shapes the renderer builds by hand.
+
+One local modification, and only one: `sokol-rust/rustfmt.toml` gains
+`disable_all_formatting = true`. `cargo fmt --all` follows path dependencies, so it
+reaches this tree even though the workspace `exclude`s it — the exclude keeps it out
+of the build and lint graph, not out of fmt — and reformats upstream's code to a
+style that is neither theirs nor ours, turning every touched line into a conflict at
+the next pin bump. rustfmt reads the nearest rustfmt.toml above each file, so that is
+the one place the switch works; the stable `ignore` option is nightly-only. Drop the
+line when re-vendoring, then add it back.

@@ -3,202 +3,194 @@
 //! The renderer ships its shaders as **compiled DXBC bytecode** (`include_bytes!`
 //! at runtime — no runtime shader compilation, matching the §4 "precompute
 //! offline" decision). The compiled `.dxbc` blobs are committed next to their
-//! `.hlsl` source under `src/hlsl/`; this build script regenerates them with
-//! `fxc` (the Windows SDK HLSL compiler) — but only when it is **freshness-gated
-//! stale** (the `.hlsl` is newer than its `.dxbc`, or the `.dxbc` is missing) and
-//! `fxc` is actually available.
+//! source; this build script regenerates them with `fxc` (the Windows SDK HLSL
+//! compiler) — but only when a blob is **freshness-gated stale** (its source is
+//! newer, or the blob is missing) and `fxc` is actually available.
 //!
 //! This mirrors the IBL-bake freshness gate: a normal `cargo build` (or CI's
 //! `cargo check`, where `fxc` is usually absent) is a no-op and uses the committed
 //! bytecode, so the build never *requires* `fxc`; an active shader edit on a dev
 //! box with the SDK on hand recompiles automatically. Set `FXC_FORCE=1` to
 //! recompile regardless of timestamps.
+//!
+//! Two source sets are compiled, for as long as the sokol port is mid-flight
+//! (`mac-port-plan.md` Phase 1):
+//!
+//!  * `src/hlsl/*.hlsl` — the hand-written HLSL the renderer draws with **today**,
+//!    with one job per entry point. Deleted in Phase 1 step 7, once the sokol path
+//!    renders correctly.
+//!  * `src/shaders/generated/review_*_hlsl5_*.hlsl` — the Direct3D half of what
+//!    sokol-shdc generates from the single annotated-GLSL source
+//!    (`src/shaders/review.glsl`, D4). Every entry point is `main`, and the job
+//!    list is *discovered* rather than hand-listed: the set of programs is decided
+//!    in review.glsl, so a program added there must not also have to be added here.
+//!    Compiled from now on so a broken shader is a build error (D5) even though
+//!    nothing renders with it until step 4.
+//!
+//! macOS compiles the `metal_macos` half of the same generated set to `.metallib`
+//! instead; that arrives with the Metal backend (Phase 2 step 2).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::SystemTime;
 
-/// One shader entry point to compile: the source file (under `src/hlsl/`), the
-/// `fxc` profile, the entry-point function, and the committed output blob.
+/// One shader entry point to compile: the source file, the `fxc` profile, the
+/// entry-point function, and the committed output blob (both paths absolute).
 struct ShaderJob {
-    source: &'static str,
+    source: PathBuf,
     profile: &'static str,
-    entry: &'static str,
-    output: &'static str,
+    entry: String,
+    output: PathBuf,
 }
 
-/// Every HLSL entry point the renderer compiles.
-const SHADERS: &[ShaderJob] = &[
-    ShaderJob {
-        source: "scene.hlsl",
-        profile: "vs_5_0",
-        entry: "vs_main",
-        output: "scene.vs.dxbc",
-    },
-    ShaderJob {
-        source: "scene.hlsl",
-        profile: "ps_5_0",
-        entry: "fs_line",
-        output: "scene.line.ps.dxbc",
-    },
-    ShaderJob {
-        source: "scene.hlsl",
-        profile: "ps_5_0",
-        entry: "fs_main",
-        output: "scene.mesh.ps.dxbc",
-    },
-    ShaderJob {
-        source: "scene.hlsl",
-        profile: "vs_5_0",
-        entry: "vs_skybox",
-        output: "scene.skybox.vs.dxbc",
-    },
-    ShaderJob {
-        source: "scene.hlsl",
-        profile: "ps_5_0",
-        entry: "fs_skybox",
-        output: "scene.skybox.ps.dxbc",
-    },
-    ShaderJob {
-        source: "scene.hlsl",
-        profile: "ps_5_0",
-        entry: "fs_selection",
-        output: "scene.selection.ps.dxbc",
-    },
-    ShaderJob {
-        source: "scene.hlsl",
-        profile: "ps_5_0",
-        entry: "fs_gtao_gbuffer",
-        output: "scene.gtao_gbuffer.ps.dxbc",
-    },
-    ShaderJob {
-        source: "gtao.hlsl",
-        profile: "vs_5_0",
-        entry: "vs_fullscreen",
-        output: "gtao.vs.dxbc",
-    },
-    ShaderJob {
-        source: "gtao.hlsl",
-        profile: "ps_5_0",
-        entry: "fs_gtao",
-        output: "gtao.ps.dxbc",
-    },
-    ShaderJob {
-        source: "gtao.hlsl",
-        profile: "ps_5_0",
-        entry: "fs_blur",
-        output: "gtao.blur.ps.dxbc",
-    },
-    ShaderJob {
-        source: "post.hlsl",
-        profile: "vs_5_0",
-        entry: "vs_fullscreen",
-        output: "post.vs.dxbc",
-    },
-    ShaderJob {
-        source: "post.hlsl",
-        profile: "ps_5_0",
-        entry: "fs_post",
-        output: "post.ps.dxbc",
-    },
-    ShaderJob {
-        source: "tex.hlsl",
-        profile: "vs_5_0",
-        entry: "vs_fullscreen",
-        output: "tex.vs.dxbc",
-    },
-    ShaderJob {
-        source: "tex.hlsl",
-        profile: "ps_5_0",
-        entry: "fs_image",
-        output: "tex.image.ps.dxbc",
-    },
-    ShaderJob {
-        source: "tex.hlsl",
-        profile: "ps_5_0",
-        entry: "fs_checker",
-        output: "tex.checker.ps.dxbc",
-    },
+/// The hand-written HLSL entry points, as (source, profile, entry, output). One
+/// row per `fxc` invocation, because these files carry several entry points each.
+const LEGACY_SHADERS: &[(&str, &str, &str, &str)] = &[
+    ("scene.hlsl", "vs_5_0", "vs_main", "scene.vs.dxbc"),
+    ("scene.hlsl", "ps_5_0", "fs_line", "scene.line.ps.dxbc"),
+    ("scene.hlsl", "ps_5_0", "fs_main", "scene.mesh.ps.dxbc"),
+    ("scene.hlsl", "vs_5_0", "vs_skybox", "scene.skybox.vs.dxbc"),
+    ("scene.hlsl", "ps_5_0", "fs_skybox", "scene.skybox.ps.dxbc"),
+    (
+        "scene.hlsl",
+        "ps_5_0",
+        "fs_selection",
+        "scene.selection.ps.dxbc",
+    ),
+    (
+        "scene.hlsl",
+        "ps_5_0",
+        "fs_gtao_gbuffer",
+        "scene.gtao_gbuffer.ps.dxbc",
+    ),
+    ("gtao.hlsl", "vs_5_0", "vs_fullscreen", "gtao.vs.dxbc"),
+    ("gtao.hlsl", "ps_5_0", "fs_gtao", "gtao.ps.dxbc"),
+    ("gtao.hlsl", "ps_5_0", "fs_blur", "gtao.blur.ps.dxbc"),
+    ("post.hlsl", "vs_5_0", "vs_fullscreen", "post.vs.dxbc"),
+    ("post.hlsl", "ps_5_0", "fs_post", "post.ps.dxbc"),
+    ("tex.hlsl", "vs_5_0", "vs_fullscreen", "tex.vs.dxbc"),
+    ("tex.hlsl", "ps_5_0", "fs_image", "tex.image.ps.dxbc"),
+    ("tex.hlsl", "ps_5_0", "fs_checker", "tex.checker.ps.dxbc"),
     // IBL precompute (offline `bake` feature only at runtime, but always compiled
     // here so the committed blobs stay fresh): one fullscreen VS + four passes.
-    ShaderJob {
-        source: "ibl.hlsl",
-        profile: "vs_5_0",
-        entry: "vs_fullscreen",
-        output: "ibl.vs.dxbc",
-    },
-    ShaderJob {
-        source: "ibl.hlsl",
-        profile: "ps_5_0",
-        entry: "fs_equirect_to_cube",
-        output: "ibl.equirect.ps.dxbc",
-    },
-    ShaderJob {
-        source: "ibl.hlsl",
-        profile: "ps_5_0",
-        entry: "fs_irradiance",
-        output: "ibl.irradiance.ps.dxbc",
-    },
-    ShaderJob {
-        source: "ibl.hlsl",
-        profile: "ps_5_0",
-        entry: "fs_prefilter",
-        output: "ibl.prefilter.ps.dxbc",
-    },
-    ShaderJob {
-        source: "ibl.hlsl",
-        profile: "ps_5_0",
-        entry: "fs_brdf",
-        output: "ibl.brdf.ps.dxbc",
-    },
+    ("ibl.hlsl", "vs_5_0", "vs_fullscreen", "ibl.vs.dxbc"),
+    (
+        "ibl.hlsl",
+        "ps_5_0",
+        "fs_equirect_to_cube",
+        "ibl.equirect.ps.dxbc",
+    ),
+    (
+        "ibl.hlsl",
+        "ps_5_0",
+        "fs_irradiance",
+        "ibl.irradiance.ps.dxbc",
+    ),
+    (
+        "ibl.hlsl",
+        "ps_5_0",
+        "fs_prefilter",
+        "ibl.prefilter.ps.dxbc",
+    ),
+    ("ibl.hlsl", "ps_5_0", "fs_brdf", "ibl.brdf.ps.dxbc"),
 ];
 
 fn main() {
-    let hlsl_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/hlsl");
+    let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let hlsl_dir = crate_dir.join("src/hlsl");
+    let generated_dir = crate_dir.join("src/shaders/generated");
 
-    // Re-run when any HLSL source changes (so an edit triggers recompilation when
-    // fxc is present). The committed .dxbc outputs are not watched — we write them.
-    for source in distinct_sources() {
-        println!("cargo:rerun-if-changed={}", hlsl_dir.join(source).display());
-    }
     println!("cargo:rerun-if-env-changed=FXC_FORCE");
+    println!("cargo:rerun-if-changed=build.rs");
+
+    let mut jobs = legacy_jobs(&hlsl_dir);
+    jobs.extend(generated_jobs(&generated_dir));
+
+    // Re-run when any source changes, so an edit recompiles where fxc is present.
+    // The committed .dxbc outputs are deliberately not watched — we write them.
+    let mut sources: Vec<&Path> = jobs.iter().map(|job| job.source.as_path()).collect();
+    sources.sort_unstable();
+    sources.dedup();
+    for source in sources {
+        println!("cargo:rerun-if-changed={}", source.display());
+    }
 
     let force = std::env::var_os("FXC_FORCE").is_some();
     let fxc = find_fxc();
 
-    for job in SHADERS {
-        let source_path = hlsl_dir.join(job.source);
-        let output_path = hlsl_dir.join(job.output);
-
-        let stale = force || is_stale(&source_path, &output_path);
-        if !stale {
+    for job in &jobs {
+        if !(force || is_stale(&job.source, &job.output)) {
             continue;
         }
-
         let Some(fxc) = fxc.as_ref() else {
-            // No fxc on this machine. If the committed blob exists, use it
-            // silently; only warn if it's missing (that *is* a build break — the
-            // runtime `include_bytes!` will fail).
-            if !output_path.exists() {
+            // No fxc on this machine, so the committed blob is what ships. Say so
+            // when it is stale (D5's two-host discipline: a shader edited on the
+            // other OS leaves this one's bytecode behind) and warn louder when it
+            // is missing entirely.
+            if job.output.exists() {
                 println!(
-                    "cargo:warning=fxc not found and {} is missing; the build will fail. \
-                     Install the Windows SDK or run packaging/compile-hlsl on a machine with fxc.",
-                    output_path.display()
+                    "cargo:warning={} is older than its source and fxc is not available; \
+                     building with the committed bytecode.",
+                    job.output.display()
+                );
+            } else {
+                println!(
+                    "cargo:warning=fxc not found and {} is missing; anything that \
+                     include_bytes! it will fail to build. Install the Windows SDK.",
+                    job.output.display()
                 );
             }
             continue;
         };
-
-        compile(fxc, &source_path, &output_path, job);
+        compile(fxc, job);
     }
 }
 
-/// The distinct source files referenced by [`SHADERS`], for `rerun-if-changed`.
-fn distinct_sources() -> Vec<&'static str> {
-    let mut sources: Vec<&'static str> = SHADERS.iter().map(|job| job.source).collect();
-    sources.sort_unstable();
-    sources.dedup();
-    sources
+/// The hand-written HLSL jobs, resolved against `src/hlsl/`.
+fn legacy_jobs(hlsl_dir: &Path) -> Vec<ShaderJob> {
+    LEGACY_SHADERS
+        .iter()
+        .map(|&(source, profile, entry, output)| ShaderJob {
+            source: hlsl_dir.join(source),
+            profile,
+            entry: entry.to_owned(),
+            output: hlsl_dir.join(output),
+        })
+        .collect()
+}
+
+/// Discover the generated Direct3D sources: every
+/// `review_<program>_hlsl5_<vertex|fragment>.hlsl` under `src/shaders/generated/`,
+/// each compiled to a `.dxbc` sibling. SPIRV-Cross names every entry point `main`,
+/// and the stage comes from the filename — so there is nothing to hand-list, which
+/// is the point: `review.glsl` alone decides which programs exist.
+fn generated_jobs(generated_dir: &Path) -> Vec<ShaderJob> {
+    let Ok(entries) = std::fs::read_dir(generated_dir) else {
+        // The directory is absent only before `scripts/gen-shaders` has ever run.
+        return Vec::new();
+    };
+    let mut jobs: Vec<ShaderJob> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "hlsl"))
+        .filter_map(|path| {
+            let stem = path.file_stem()?.to_str()?;
+            let profile = match stem.rsplit_once('_')? {
+                (_, "vertex") => "vs_5_0",
+                (_, "fragment") => "ps_5_0",
+                _ => return None,
+            };
+            Some(ShaderJob {
+                output: path.with_extension("dxbc"),
+                source: path,
+                profile,
+                entry: "main".to_owned(),
+            })
+        })
+        .collect();
+    // `read_dir` order is filesystem-defined; sort so build output is reproducible.
+    jobs.sort_unstable_by(|a, b| a.source.cmp(&b.source));
+    jobs
 }
 
 /// Whether `output` needs to be (re)built from `source`: missing output, or a
@@ -221,7 +213,7 @@ fn mtime(path: &Path) -> std::io::Result<SystemTime> {
 /// Invoke `fxc` to compile one entry point to a committed `.dxbc` blob. A compile
 /// failure is fatal (panics the build) — when fxc *is* present, a broken shader
 /// must not slip through as a silently-stale blob.
-fn compile(fxc: &Path, source: &Path, output: &Path, job: &ShaderJob) {
+fn compile(fxc: &Path, job: &ShaderJob) {
     // /O3 highest optimization; /WX warnings-as-errors so a sloppy translation
     // fails the build rather than shipping; default (column-major) matrix packing.
     let status = Command::new(fxc)
@@ -229,30 +221,30 @@ fn compile(fxc: &Path, source: &Path, output: &Path, job: &ShaderJob) {
         .arg("/T")
         .arg(job.profile)
         .arg("/E")
-        .arg(job.entry)
+        .arg(&job.entry)
         .arg("/O3")
         .arg("/WX")
         .arg("/Fo")
-        .arg(output)
-        .arg(source)
+        .arg(&job.output)
+        .arg(&job.source)
         .status()
         .unwrap_or_else(|err| panic!("failed to launch fxc ({}): {err}", fxc.display()));
 
     if !status.success() {
         panic!(
             "fxc failed to compile {} entry `{}` ({}) -> {}",
-            source.display(),
+            job.source.display(),
             job.entry,
             job.profile,
-            output.display()
+            job.output.display()
         );
     }
 }
 
 /// Locate `fxc.exe`: first on `PATH`, then by scanning the Windows SDK's
 /// per-version `bin\<ver>\x64` directories and picking the newest. Returns `None`
-/// when no SDK is installed (a normal CI box), in which case the committed blobs
-/// are used as-is.
+/// when no SDK is installed (a normal CI box, or any Mac), in which case the
+/// committed blobs are used as-is.
 fn find_fxc() -> Option<PathBuf> {
     // On PATH (e.g. a Developer Command Prompt that added the SDK bin).
     if Command::new("fxc").arg("/?").output().is_ok() {

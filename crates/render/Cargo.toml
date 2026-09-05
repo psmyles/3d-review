@@ -35,6 +35,11 @@ zune-image.workspace = true
 # in neither wgpu nor pollster — the whole workspace is Direct3D 11.
 intel_tex_2 = { version = "0.5", optional = true }
 review-model = { path = "../model" }
+# sokol_gfx. Present from the shader step onward so `src/shaders/generated/review.rs`
+# — shdc's reflection, which names `sokol::gfx` types — compiles, and with it the
+# size assertions that pin every `#[repr(C)]` uniform against the generated layout.
+# Nothing draws through it until Phase 1 step 3.
+sokol.workspace = true
 # The renderer's own `GpuError`, which replaced `windows::core::Error` in every
 # `rhi` signature so the backend's error type stops at the module boundary.
 thiserror.workspace = true
