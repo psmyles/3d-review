@@ -1,0 +1,3 @@
+# A patch must round-trip byte-exact: the files it applies to are LF, so letting
+# the working copy get CRLF line endings makes `git apply` reject it.
+*.patch -text
