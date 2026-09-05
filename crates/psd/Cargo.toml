@@ -5,16 +5,18 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
-# This crate links a PREBUILT static library (`vendor/fire_psd.lib`) and includes
-# committed bindgen output (`src/bindings.rs`); it does NOT compile the vendored
-# psd_sdk C++ or run bindgen here. So it needs neither a C++ toolchain, libclang,
-# nor `cc`/`bindgen` build-deps — just the MSVC linker the workspace already uses.
-# See `vendor/NOTICE.txt` for how the `.lib` + bindings were produced and how to
-# regenerate them.
+# `cc` compiles the vendored psd_sdk C++ (`vendor/Psd/`) plus the C-ABI
+# `src/wrapper.cpp` — the same source-plus-`cc` model as ufbx (`crates/import`) and
+# meshoptimizer (`crates/optimize`), so a clean checkout builds on any OS with a C++
+# compiler. `src/bindings.rs` is committed and hand-kept against `src/wrapper.h`, so
+# no bindgen or libclang runs here. See `vendor/NOTICE.txt`.
 build = "build.rs"
 
 [dependencies]
 thiserror.workspace = true
+
+[build-dependencies]
+cc.workspace = true
 
 [lints]
 workspace = true

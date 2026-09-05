@@ -8,10 +8,12 @@
 //! out to a bundled ImageMagick — the merged composite ("Maximize Compatibility")
 //! is what the viewer displays.
 //!
-//! Unlike a normal `-sys` crate this one links a **prebuilt** static lib
-//! (`vendor/fire_psd.lib`) and includes committed bindgen output
-//! (`src/bindings.rs`) — see `build.rs` / `vendor/NOTICE.txt`. No C++ toolchain,
-//! libclang, or bindgen runs at build time.
+//! The psd_sdk C++ is **vendored as source** (`vendor/Psd/`) and compiled by `cc`
+//! alongside the C-ABI `src/wrapper.cpp` — the same model as ufbx
+//! (`crates/import`) and meshoptimizer (`crates/optimize`), so a clean checkout
+//! builds on any OS with a C++ compiler. `src/bindings.rs` is committed Rust kept
+//! in lockstep with `src/wrapper.h` by hand, so no bindgen or libclang runs at
+//! build time — see `build.rs` / `vendor/NOTICE.txt`.
 //!
 //! Safety: [`decode_psd`] validates the header dimensions with checked arithmetic
 //! before sizing the output buffer, so a malformed header can never wrap to an
