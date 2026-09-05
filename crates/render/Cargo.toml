@@ -59,6 +59,11 @@ windows = { workspace = true, features = [
 version = "0.5"
 optional = true
 
+[build-dependencies]
+# The shader-bytecode manifest keys freshness on file content rather than on
+# mtimes, which stop meaning anything the moment two hosts commit blobs (D5).
+sha2.workspace = true
+
 [features]
 # The offline IBL precompute (`mac-port-plan.md` D19): the bake half of `src/ibl.rs`,
 # the headless device + render targets in `src/rhi/bake.rs`, the readback leaf in the

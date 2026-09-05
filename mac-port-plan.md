@@ -62,8 +62,8 @@ and are settled.
 | D1 | **Shared shell: winit + sokol_gfx on both OSes** (*owner*); the only per-OS GPU code is `render/src/rhi/backend/{d3d11,metal}.rs` (device + swapchain), aliased as `backend` exactly like Fire's `render/mod.rs` | Minimum platform code; two full renderers (the D3D11 rhi + a Metal twin behind a trait) is the maintenance Fire D1 rejected | `rhi/` rewritten; Windows re-measured (D2) | Shipped on Windows (step 3); the scene lands in step 4 |
 | D2 | **Windows migrates too, gated on three measurements** (*owner*) against `main` on the same box, same fixture, release build: (a) cold + warm startup to first presented frame with a model loaded; (b) steady-state frame time (GPU + CPU) on a fixed test model with GTAO on + 4× MSAA + a skinned clip playing; (c) private RAM + VRAM at idle with that model. Budgets: ≤ 10 ms startup median, ≤ 0.3 ms frame median, ≤ 5 % RAM/VRAM | The invariants stress runtime speed and footprint (`CLAUDE.md` §4: "spend dev-time freely to make the release runtime fast") | A harness: `scripts/gate.ps1` + a `--gate-out` stamp in `app` (Fire's `ttfp.rs` shape, extended with a frame-time and memory dump) | Measured on Windows (step 8): startup +4.8 ms, frame −0.53 ms, RAM −2.8 %, VRAM −1.0 % — all three pass |
 | D3 | **Keep egui; write `render/src/egui_sokol.rs`**, a sokol_gfx egui renderer, replacing `egui-directx11` on both OSes (*owner*) | No sokol egui backend exists; switching to Dear ImGui like Fire would rewrite the whole `ui` crate and retire the native-windowing invariant | ~300–400 lines + one `@program`; consumes egui's `ClippedPrimitive`s + `TexturesDelta` (§3.4) | Shipped (step 3) — 380 lines |
-| D4 | **One sokol-shdc annotated-GLSL source** (`render/src/shaders/review.glsl`) generates per-backend HLSL5 + MSL *and* the `ShaderDesc` reflection into `render/src/shaders/generated/`, checked in; build.rs compiles the host's set to bytecode (*owner*) | Fire D4/D24: nothing compiles a shader at runtime, a broken shader is a build error, one source instead of two hand-kept twins | The HLSL is rewritten once (~1700 lines); `fxc` on Windows, the Metal toolchain on macOS (D5) | Planned |
-| D5 | **Bytecode is committed and freshness-gated on both OSes** - `.dxbc` (as today) *and* `.metallib` - compiled only when the generated source is newer or the blob is missing and the toolchain is present; missing blob + missing toolchain is a build error | Keeps this repo's existing "a no-fxc box builds from the committed blobs" property and extends it to the Mac, so the toolchain floor for someone who never edits a shader is Command Line Tools, not full Xcode. *Diverges from Fire* (which compiles into `OUT_DIR` on every build) on purpose | A shader edit must be followed by a rebuild on **both** OSes before commit, or one platform ships stale bytecode; `build.rs` warns when a blob is older than its generated source, and both packaging scripts fail on it | Planned |
+| D4 | **One sokol-shdc annotated-GLSL source** (`render/src/shaders/review.glsl`) generates per-backend HLSL5 + MSL *and* the `ShaderDesc` reflection into `render/src/shaders/generated/`, checked in; build.rs compiles the host's set to bytecode (*owner*) | Fire D4/D24: nothing compiles a shader at runtime, a broken shader is a build error, one source instead of two hand-kept twins | The HLSL is rewritten once (~1700 lines); `fxc` on Windows, the Metal toolchain on macOS (D5) | Shipped on Windows (step 2); the MSL half is generated and committed, awaiting a Mac to compile it |
+| D5 | **Bytecode is committed and freshness-gated on both OSes** - `.dxbc` (as today) *and* `.metallib` - compiled only when the generated source is newer or the blob is missing and the toolchain is present; missing blob + missing toolchain is a build error | Keeps this repo's existing "a no-fxc box builds from the committed blobs" property and extends it to the Mac, so the toolchain floor for someone who never edits a shader is Command Line Tools, not full Xcode. *Diverges from Fire* (which compiles into `OUT_DIR` on every build) on purpose | A shader edit must be followed by a rebuild on **both** OSes before commit, or one platform ships stale bytecode; `build.rs` warns when a blob is older than its generated source, and both packaging scripts fail on it | Half shipped: `.dxbc` committed, freshness keyed on content (`bytecode.manifest`) and enforced by `packaging/check-shader-bytecode.ps1`; `.metallib` awaits Phase 2 step 2 |
 | D6 | **egui bumped to 0.36.1** (`egui`, `egui-winit`, `egui-notify 0.23`) in the same port (*owner*) | Dropping egui-directx11 removes the only 0.33 pin | API churn in `ui` folded into the port; verify egui-notify 0.23 tracks 0.36 at execution, else pin egui to the newest it supports | Shipped (step 3); egui-notify 0.23 does track 0.36 |
 | D7 | **CPU mip chain**, uploaded in the one `sg_make_image` | sokol_gfx has no `GenerateMips`; sRGB textures are averaged in linear light so the result matches the hardware path | ~5 ms per 4K texture | Shipped (step 4 stage 1) as `rhi/mips.rs`, but built **at upload**, not on the decode worker: the chain differs between the raw and sRGB uploads of the same pixels, so it is not a property of the decoded image (see step 4) |
 | D8 | **GPU bring-up on its own thread from the first line of `main`; the window is created before the join** (Fire D18) | Device creation is the longest startup item (~135 ms for D3D11 on Fire's box) and needs no window | `App::start` reorders; `backend::Device: Send` | Shipped (step 3) |
@@ -408,6 +408,26 @@ Fire §7 applies, with these deltas.
   `optimize` + its fixture suites) runs on both. Added by the port: the egui renderer's
   mesh→buffer packing, the CPU mip chain (against a hardware-matching reference), the
   generated-struct size assertions, the `.bin`-to-`sg_image_data` slicing.
+* **Two-host bytecode discipline (D5), enforced rather than remembered:**
+  `crates/render/build.rs` records what each committed blob was compiled from in
+  `src/shaders/generated/bytecode.manifest` — SHA-256 of the generated source and of the blob, one
+  row per program, both hosts' rows in the one file — and rebuilds a blob whose row no longer
+  matches. `packaging/check-shader-bytecode.ps1` fails the installer build on any mismatch, and
+  warns (never fails) about the other host's rows, since a Windows installer ships no `.metallib`.
+  The Mac's `build-mac.sh` owes the mirror of that check.
+
+  Content, not mtimes, and the reason is specific: a shader edited on the Mac arrives here as a new
+  generated source beside a blob a revision behind, both written by `git checkout` in the same
+  instant. "Is the source newer than the blob?" is a coin toss on the one occasion the answer
+  matters, which is why the old timestamp gate had to go. The digest is SHA-256 rather than
+  something smaller only so both packaging shells can recompute it (`Get-FileHash`,
+  `shasum -a 256`) without a toolchain.
+
+  What no mechanism catches: editing `review.glsl` and forgetting to run `scripts/gen-shaders`. The
+  blobs would match their committed sources perfectly and the whole set would simply be a revision
+  behind. `build.rs` warns when `review.glsl` is newer than everything generated from it — the one
+  staleness question timestamps *can* answer, because it is asked of a working copy where the edit
+  just happened.
 * **Dev bundle:** `scripts/dev-app.sh` wraps `target/{debug,release}/3d-review` in an unsigned
   `.app` (`com.psmyles.3d-review.dev`); the only way to exercise D14 and Retina before packaging.
 * **Gate harness (D2):** `scripts/gate.ps1` (Windows; a bash twin later for mac-vs-mac numbers):
@@ -960,10 +980,20 @@ Ordered so each step is verifiable by eye against the current renderer on the sa
 
 ### Phase 2 - macOS
 
-1. Mac setup per §7; `cargo test --workspace` green (everything is headless). First light without
-   a line of new code, as in Fire.
+1. Mac setup per §7, then the tests that can run at all today:
+   `cargo test -p review-model -p review-import -p review-optimize -p review-psd`. **Not**
+   `--workspace`, and there is no "first light without a line of new code" — that was written
+   before the shape of the port was settled and is wrong. `rhi/backend/mod.rs` declares only
+   `#[cfg(windows)] mod d3d11`, so `review-render` does not compile on macOS at all until step 2
+   writes `metal.rs`, and `review-ui` depends on `review-render`, so `ui` and `app` follow it. What
+   step 1 *does* prove is the half that has nothing to do with the GPU: that all four vendored C
+   trees (ufbx, meshoptimizer, ufbx_write, psd_sdk) compile under Apple clang and that the parsers,
+   the optimizer and the PSD decoder agree with Windows — which is exactly what would be miserable
+   to debug later, tangled up in a new backend.
 2. `rhi/backend/metal.rs` from Fire verbatim (+ `supported_sample_counts`); `build.rs`'s
-   `compile_shaders_metal` per (program, stage) with the committed-blob gate (D5); first
+   `compile_shaders_metal` per (program, stage) with the committed-blob gate (D5) — which is now
+   `src/shaders/generated/bytecode.manifest`, so the Metal half is a second job list feeding the
+   same freshness machinery, and its rows join the Windows ones in the one committed file; first
    `cargo run`. Verify: shaded model, GTAO, MSAA levels offered = 1/2/4/8, a skinned clip playing,
    Opt split, UV, Tex, the egui chrome - each by eye against the Windows build's screenshots.
 3. Leaves: `openfiles.rs` (D14), `menubar.rs` (D15), `Primary = ⌘` + labels (D10), pinch (D16),

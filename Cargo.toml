@@ -67,6 +67,11 @@ review-prof = { path = "crates/prof" }
 # only FFI site besides `crates/import` + the sanctioned D3D11 sites — invariant 9).
 review-psd = { path = "crates/psd" }
 rfd = "0.15"
+# Build-script only: the shader-bytecode manifest keys freshness on content, and
+# the packaging scripts on both OSes have to recompute the same digest from a
+# shell (`Get-FileHash`, `shasum -a 256`). That portability is what picks SHA-256
+# over something we could hand-roll in ten lines.
+sha2 = "0.10"
 # The shared GPU API the renderer is being ported onto (`mac-port-plan.md` D1/D21):
 # sokol_gfx, over D3D11 on Windows and Metal on macOS. A pinned upstream checkout
 # rather than a registry crate — the `sokol` name on crates.io is an unrelated 2019

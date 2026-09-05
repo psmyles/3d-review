@@ -11,6 +11,11 @@
 # The PowerShell twin `gen-shaders.ps1` does the same thing for a Windows shell without
 # bash. Keep the two in step.
 #
+# Regenerating is only half of it: `cargo build -p review-render` then recompiles the
+# bytecode for *this* host and updates `generated/bytecode.manifest`, and both go in the
+# same commit. The other host's blobs are now visibly stale until it does the same (D5),
+# which is what `packaging/check-shader-bytecode.ps1` and its Mac twin exist to catch.
+#
 # sokol-shdc is a prebuilt binary from floooh/sokol-tools-bin. Point SOKOL_SHDC at a copy,
 # or let this script fetch one into the repo-ignored `.tools/`.
 set -euo pipefail

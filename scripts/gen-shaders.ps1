@@ -9,6 +9,11 @@
 # host's backend to bytecode (fxc -> DXBC here). Run this after editing review.glsl and
 # commit the result; the output is platform-independent text.
 #
+# Regenerating is only half of it: `cargo build -p review-render` then recompiles the
+# bytecode for this host and updates `generated\bytecode.manifest`, and both go in the
+# same commit. The other host's blobs are visibly stale until it does the same (D5),
+# which is what packaging\check-shader-bytecode.ps1 and its Mac twin exist to catch.
+#
 # sokol-shdc is a prebuilt binary from floooh/sokol-tools-bin. Set $env:SOKOL_SHDC to point
 # at a copy, or let this script fetch one into the repo-ignored `.tools/`.
 $ErrorActionPreference = 'Stop'

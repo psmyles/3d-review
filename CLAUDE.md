@@ -591,6 +591,17 @@ committed blobs). It discovers those jobs from the filenames in
 `src/shaders/generated/`, so adding a program touches only `review.glsl` — there
 is no hand-listed job table to keep in step with it.
 
+**Stale means "does not match", not "is older than"** — `src/shaders/generated/
+bytecode.manifest` records the SHA-256 of each generated source and of the blob
+compiled from it, and is committed beside them. Commit it whenever you commit
+bytecode. Timestamps cannot answer this once two OSes commit blobs (D5): a shader
+rebuilt on the Mac reaches Windows as a new source next to a blob one revision
+behind, both stamped by `git checkout` at the same instant. `packaging/check-
+shader-bytecode.ps1` fails a release build on any mismatch (the installer build
+runs it); `build.rs` additionally warns when `review.glsl` is newer than everything
+generated from it, which is the one thing the manifest cannot see — that you edited
+the shader and never ran `scripts/gen-shaders`.
+
 ## 4. Locked decisions — DO NOT RE-LITIGATE
 
 - **Spend dev-time freely to make the release runtime fast, efficient, and
