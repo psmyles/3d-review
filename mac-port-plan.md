@@ -14,20 +14,23 @@ is the *GPU layer* (`crates/render/src/rhi/` and the shaders), the egui renderer
 leaves in `app`, and the build/distribution chain. The port runs **Windows first** (Fire D13): the
 shared-shell migration is the risk, and it has to be gated on a Windows box against `main`.
 
-Status: **Phase 0 done on Windows** (D21, D22), plus **Phase 1 steps 1–8**, the merge excepted. The backend swap is
-complete: every draw path — the frame flow, the egui chrome, the Tex viewport, the 3D and UV scenes
-with MSAA and GTAO, and the Opt workspace's comparison view — runs on sokol_gfx, `app` no longer
-depends on `windows` at all, and the viewport is **pixel-identical** to a `main` build on the models
-checked. The shell leaves that would have crashed or misbehaved on macOS are done too — file
-dialogs off the event loop (D9), the primary modifier (D10), the config directory (D17), and so are
-the two non-drawing leaves: the `--tracy` GPU profiler (D18) and the offline IBL bake (D19), which
-reproduces every committed `.bin` byte for byte. Step 7 then swept up: `src/hlsl/` and
-`src/port_pending/` are both deleted, so `src/shaders/review.glsl` is the only shader source in the
-workspace and nothing is parked. Step 8 measured it: **all three D2 budgets pass**, and the frame is
-**43–61 % faster** on both fixtures with memory slightly *down*, so nothing had to be fixed or
-excused. What is left of Phase 1 is the merge itself. Sections are written in the present tense of the finished port so they
-can become the description once it lands; the *Status* column of §2 and the phase list in §8 say
-what is actually done.
+Status: **Phase 0 and Phase 1 done on Windows** (the merge excepted), and **Phase 2 steps 1–7 done
+on the Mac** — everything but the notarization credential. The backend swap is complete on both
+OSes: every draw path — the frame flow, the egui chrome, the Tex viewport, the 3D and UV scenes
+with MSAA and GTAO, and the Opt workspace's comparison view — runs on sokol_gfx, over Direct3D 11
+on Windows and Metal on macOS, with a ~200-line device/swapchain leaf per OS and nothing else
+platform-specific in the renderer. The viewport is **pixel-identical** to a `main` build on the
+models checked, and **all three D2 budgets pass** on Windows with the frame **43–61 % faster** and
+memory slightly *down*.
+
+On the Mac the viewer builds, runs and draws; the shell leaves are in (Finder opens, the menu bar,
+⌘ as the primary modifier, pinch-zoom, the config directory); Retina needed no code; the Tracy GPU
+profiler and the offline IBL bake both work on Metal; `scripts/gate.sh` has recorded the baseline
+numbers; and `scripts/build-mac.sh` produces a signed, verified `.dmg`. What is left is the Phase 1
+merge, notarization (which needs a `notarytool` keychain profile), and Phase 3's documentation
+sweep. Sections are written in the present tense of the finished port so they can become the
+description once it lands; the *Status* column of §2 and the phase list in §8 say what is actually
+done.
 
 ---
 
@@ -59,25 +62,25 @@ and are settled.
 
 | # | Decision | Reason | Cost | Status |
 | -- | -------- | ------ | ---- | ------ |
-| D1 | **Shared shell: winit + sokol_gfx on both OSes** (*owner*); the only per-OS GPU code is `render/src/rhi/backend/{d3d11,metal}.rs` (device + swapchain), aliased as `backend` exactly like Fire's `render/mod.rs` | Minimum platform code; two full renderers (the D3D11 rhi + a Metal twin behind a trait) is the maintenance Fire D1 rejected | `rhi/` rewritten; Windows re-measured (D2) | Shipped on Windows (step 3); the scene lands in step 4 |
-| D2 | **Windows migrates too, gated on three measurements** (*owner*) against `main` on the same box, same fixture, release build: (a) cold + warm startup to first presented frame with a model loaded; (b) steady-state frame time (GPU + CPU) on a fixed test model with GTAO on + 4× MSAA + a skinned clip playing; (c) private RAM + VRAM at idle with that model. Budgets: ≤ 10 ms startup median, ≤ 0.3 ms frame median, ≤ 5 % RAM/VRAM | The invariants stress runtime speed and footprint (`CLAUDE.md` §4: "spend dev-time freely to make the release runtime fast") | A harness: `scripts/gate.ps1` + a `--gate-out` stamp in `app` (Fire's `ttfp.rs` shape, extended with a frame-time and memory dump) | Measured on Windows (step 8): startup +4.8 ms, frame −0.53 ms, RAM −2.8 %, VRAM −1.0 % — all three pass |
+| D1 | **Shared shell: winit + sokol_gfx on both OSes** (*owner*); the only per-OS GPU code is `render/src/rhi/backend/{d3d11,metal}.rs` (device + swapchain), aliased as `backend` exactly like Fire's `render/mod.rs` | Minimum platform code; two full renderers (the D3D11 rhi + a Metal twin behind a trait) is the maintenance Fire D1 rejected | `rhi/` rewritten; Windows re-measured (D2) | Shipped on both OSes (Phase 1 step 3/4; Phase 2 step 2) |
+| D2 | **Windows migrates too, gated on three measurements** (*owner*) against `main` on the same box, same fixture, release build: (a) cold + warm startup to first presented frame with a model loaded; (b) steady-state frame time (GPU + CPU) on a fixed test model with GTAO on + 4× MSAA + a skinned clip playing; (c) private RAM + VRAM at idle with that model. Budgets: ≤ 10 ms startup median, ≤ 0.3 ms frame median, ≤ 5 % RAM/VRAM | The invariants stress runtime speed and footprint (`CLAUDE.md` §4: "spend dev-time freely to make the release runtime fast") | A harness: `scripts/gate.ps1` + a `--gate-out` stamp in `app` (Fire's `ttfp.rs` shape, extended with a frame-time and memory dump) | Measured on Windows (Phase 1 step 8): startup +4.8 ms, frame −0.53 ms, RAM −2.8 %, VRAM −1.0 % — all three pass. Mac baseline recorded (Phase 2 step 6), no cross-OS budget |
 | D3 | **Keep egui; write `render/src/egui_sokol.rs`**, a sokol_gfx egui renderer, replacing `egui-directx11` on both OSes (*owner*) | No sokol egui backend exists; switching to Dear ImGui like Fire would rewrite the whole `ui` crate and retire the native-windowing invariant | ~300–400 lines + one `@program`; consumes egui's `ClippedPrimitive`s + `TexturesDelta` (§3.4) | Shipped (step 3) — 380 lines |
-| D4 | **One sokol-shdc annotated-GLSL source** (`render/src/shaders/review.glsl`) generates per-backend HLSL5 + MSL *and* the `ShaderDesc` reflection into `render/src/shaders/generated/`, checked in; build.rs compiles the host's set to bytecode (*owner*) | Fire D4/D24: nothing compiles a shader at runtime, a broken shader is a build error, one source instead of two hand-kept twins | The HLSL is rewritten once (~1700 lines); `fxc` on Windows, the Metal toolchain on macOS (D5) | Shipped on Windows (step 2); the MSL half is generated and committed, awaiting a Mac to compile it |
-| D5 | **Bytecode is committed and freshness-gated on both OSes** - `.dxbc` (as today) *and* `.metallib` - compiled only when the generated source is newer or the blob is missing and the toolchain is present; missing blob + missing toolchain is a build error | Keeps this repo's existing "a no-fxc box builds from the committed blobs" property and extends it to the Mac, so the toolchain floor for someone who never edits a shader is Command Line Tools, not full Xcode. *Diverges from Fire* (which compiles into `OUT_DIR` on every build) on purpose | A shader edit must be followed by a rebuild on **both** OSes before commit, or one platform ships stale bytecode; `build.rs` warns when a blob is older than its generated source, and both packaging scripts fail on it | Half shipped: `.dxbc` committed, freshness keyed on content (`bytecode.manifest`) and enforced by `packaging/check-shader-bytecode.ps1`; `.metallib` awaits Phase 2 step 2 |
+| D4 | **One sokol-shdc annotated-GLSL source** (`render/src/shaders/review.glsl`) generates per-backend HLSL5 + MSL *and* the `ShaderDesc` reflection into `render/src/shaders/generated/`, checked in; build.rs compiles the host's set to bytecode (*owner*) | Fire D4/D24: nothing compiles a shader at runtime, a broken shader is a build error, one source instead of two hand-kept twins | The HLSL is rewritten once (~1700 lines); `fxc` on Windows, the Metal toolchain on macOS (D5) | Shipped on both OSes: the MSL half compiles to `.metallib` on the Mac (Phase 2 step 2), warning-free under `-Werror` |
+| D5 | **Bytecode is committed and freshness-gated on both OSes** - `.dxbc` (as today) *and* `.metallib` - compiled only when the generated source is newer or the blob is missing and the toolchain is present; missing blob + missing toolchain is a build error | Keeps this repo's existing "a no-fxc box builds from the committed blobs" property and extends it to the Mac, so the toolchain floor for someone who never edits a shader is Command Line Tools, not full Xcode. *Diverges from Fire* (which compiles into `OUT_DIR` on every build) on purpose | A shader edit must be followed by a rebuild on **both** OSes before commit, or one platform ships stale bytecode; `build.rs` warns when a blob is older than its generated source, and both packaging scripts fail on it | Shipped: both hosts' blobs committed, freshness keyed on content (`bytecode.manifest`), enforced by `packaging/check-shader-bytecode.{ps1,sh}`. Plus `generated/review.glsl.sha256`, which closes the one link the manifest could not see |
 | D6 | **egui bumped to 0.36.1** (`egui`, `egui-winit`, `egui-notify 0.23`) in the same port (*owner*) | Dropping egui-directx11 removes the only 0.33 pin | API churn in `ui` folded into the port; verify egui-notify 0.23 tracks 0.36 at execution, else pin egui to the newest it supports | Shipped (step 3); egui-notify 0.23 does track 0.36 |
 | D7 | **CPU mip chain**, uploaded in the one `sg_make_image` | sokol_gfx has no `GenerateMips`; sRGB textures are averaged in linear light so the result matches the hardware path | ~5 ms per 4K texture | Shipped (step 4 stage 1) as `rhi/mips.rs`, but built **at upload**, not on the decode worker: the chain differs between the raw and sRGB uploads of the same pixels, so it is not a property of the decoded image (see step 4) |
 | D8 | **GPU bring-up on its own thread from the first line of `main`; the window is created before the join** (Fire D18) | Device creation is the longest startup item (~135 ms for D3D11 on Fire's box) and needs no window | `App::start` reorders; `backend::Device: Send` | Shipped (step 3) |
 | D9 | **Every `rfd` dialog runs on a worker thread and answers through `UserEvent`** (Fire §3.5: nothing called from a winit callback may pump a loop of its own - on macOS AppKit aborts the process) | Six blocking sites today (`loading.rs`, `texture_manager.rs`, three in `opt.rs`, the startup box in `main.rs`), three of them *inside* `render()`; on macOS this is a reliable crash, not a glitch | `Dialog` enum + `UserEvent::DialogDone`, one dialog at a time; the startup error box moves to after `run_app` returns | Shipped (step 5) — `app/src/dialog.rs` |
 | D10 | **`Primary` modifier: Ctrl on Windows, ⌘ on macOS**; `help.rs`/`stats.rs` labels say "Ctrl"/"Cmd" per OS | Cmd is the only acceptable file-command chord on a Mac | `shortcuts.rs` matches `SUPER` on macOS; the Alt+RMB zoom-drag stays Option | Shipped (step 5); still `Ctrl` on this OS, `Cmd` arrives with the `cfg` |
-| D11 | **Apple Silicon only** (Fire D10, *owner*); every vendored C tree (ufbx, meshoptimizer, ufbx_write, psd_sdk) is compiled from source by `cc`, so nothing is prebuilt per target | No Intel users to serve; unlike Fire's HEIF `.a`s there is no prebuilt native dep to re-vendor | `lipo` check in `build-mac.sh` | Planned |
-| D12 | **Build, sign, notarize only on the dev Mac via `scripts/build-mac.sh`** (Fire D11/D12, *owner*); `Info.plist` heredoc from `product.json`; `.icns` from the 1024² master `assets/icons/application-logo.png`; `.fbx` in `CFBundleDocumentTypes` with `LSHandlerRank = Alternate` | Mirrors `packaging/build-windows-installer.ps1`; keeps the Developer ID cert off any shared machine. `Alternate` volunteers for `.fbx` in "Open With" without taking it from anything | `scripts/dev-app.sh` for the unsigned dev bundle - needed to test Finder opens at all, since a bare binary is not what `open` delivers files to | Planned |
+| D11 | **Apple Silicon only** (Fire D10, *owner*); every vendored C tree (ufbx, meshoptimizer, ufbx_write, psd_sdk) is compiled from source by `cc`, so nothing is prebuilt per target | No Intel users to serve; unlike Fire's HEIF `.a`s there is no prebuilt native dep to re-vendor | `lipo` check in `build-mac.sh` | Shipped (Phase 2 step 7) |
+| D12 | **Build, sign, notarize only on the dev Mac via `scripts/build-mac.sh`** (Fire D11/D12, *owner*); `Info.plist` heredoc from `product.json`; `.icns` from the 1024² master `assets/icons/application-logo.png`; `.fbx` in `CFBundleDocumentTypes` with `LSHandlerRank = Alternate` | Mirrors `packaging/build-windows-installer.ps1`; keeps the Developer ID cert off any shared machine. `Alternate` volunteers for `.fbx` in "Open With" without taking it from anything | `scripts/dev-app.sh` for the unsigned dev bundle - needed to test Finder opens at all, since a bare binary is not what `open` delivers files to | Shipped (Phase 2 step 7); signed `.dmg` verified, notarization awaits a `notarytool` profile |
 | D13 | **Windows first, then macOS** (*owner*) | The shared code and the gate risk are the Windows migration; mac is leaves + packaging | The Mac waits one phase | Decided |
-| D14 | **Open-file events via `openfiles.rs`** (Fire's `class_addMethod` hook adding `application:openURLs:` to winit's delegate) feeding `App::open_model_from_path`; opens that arrive before the window are held and handed to `start()` | Launch Services gives a fresh launch *no argv* and a running app *no new process*; without it `.fbx` association does nothing on macOS | ~130 lines copied; no IPC needed (one window, one process, no single-instance socket) | Planned |
-| D15 | **Minimal `muda` menu bar** (App / File: Open… ⌘O, New ⌘N / Window) with `with_default_menu(false)`; `Open…` routes through D9 (*owner*) | A Mac app without a menu bar reads as broken; winit's default menu would replace ours wholesale, and it is where ⌘Q comes from, so ours must carry Quit | ~150 lines `menubar.rs`, `cfg(target_os = "macos")`; accelerators intercept keys before winit sees them, so only the menu items carry one | Planned |
-| D16 | **Pinch → wheel zoom** on the orbit, UV and Tex cameras (Fire D15); gesture math stays in logical px, rendering in physical px | Trackpad users | `WindowEvent::PinchGesture`, factor `1 + delta`, NaN-filtered | Planned |
+| D14 | **Open-file events via `openfiles.rs`** (Fire's `class_addMethod` hook adding `application:openURLs:` to winit's delegate) feeding `App::open_model_from_path`; opens that arrive before the window are held and handed to `start()` | Launch Services gives a fresh launch *no argv* and a running app *no new process*; without it `.fbx` association does nothing on macOS | ~150 lines, in the new `crates/shell-macos` rather than in `app`, which stays `forbid(unsafe_code)`; no IPC needed (one window, one process, no single-instance socket) | Shipped (Phase 2 step 3); verified cold and on a running app |
+| D15 | **Minimal `muda` menu bar** (App / File: Open… ⌘O, New ⌘N / Window) with `with_default_menu(false)`; `Open…` routes through D9 (*owner*) | A Mac app without a menu bar reads as broken; winit's default menu would replace ours wholesale, and it is where ⌘Q comes from, so ours must carry Quit | ~120 lines `menubar.rs` in `crates/shell-macos`; accelerators intercept keys before winit sees them, so only the two app items carry one | Shipped (Phase 2 step 3) |
+| D16 | **Pinch → wheel zoom** on the orbit, UV and Tex cameras (Fire D15); gesture math stays in logical px, rendering in physical px | Trackpad users | `WindowEvent::PinchGesture` through the same `zoom_active_camera` the wheel uses, NaN-filtered | Shipped (Phase 2 step 3) |
 | D17 | **`window.cfg` via `dirs::config_dir()`** (`%APPDATA%` on Windows - the same path as today - `~/Library/Application Support` on macOS) | Drop the `APPDATA` env read in `window_state.rs`, which fails soft on macOS today | `dirs 6` | Shipped (step 5); a unit test pins the Windows path unchanged |
-| D18 | **Tracy GPU profiler: per-OS leaves over sokol's native handles** (*owner*). D3D11: the existing timestamp-query code unchanged, over `sg_d3d11_device()` / `sg_d3d11_device_context()` (the immediate context; `ctx.End(query)` between sokol calls is valid). Metal: per-pass zones are *not* achievable (sokol owns the command buffer and encoder; Apple silicon has no draw-boundary counter sampling) - the leaf brackets sokol's buffer with two sentinel command buffers on `sg_mtl_command_queue()` and reports their `GPUEndTime`s as one "GPU frame" zone, plus `sg_query_stats()` counts as plots on both OSes | Recorded honestly | `rhi/gpu_profiler.rs` keeps its `Zone` API; `zone_*` are no-ops on Metal; Xcode's Metal profiler covers per-pass timing there | Shipped on Windows (step 6); the Metal leaf is Phase 2 step 5 |
-| D19 | **`bake_ibl` on sokol_gfx** (*owner*): `Baker` = headless `Gpu` (device, `sg_setup`, no swapchain); `CubeTarget` = one cube image + 6×mips attachment views (`mip_level` + `slice`); render every pass for one environment → `sg_commit` → per-OS readback leaf `backend::read_image_subresource`: D3D11 staging copy + `Map(READ)` over `sg_d3d11_query_image_info` (today's body); Metal blit from the private texture to a shared `MTLBuffer` on our own command buffer from `sg_mtl_command_queue()`, committed *after* `sg_commit` (queue order = commit order) + `waitUntilCompleted`. The old RTV/SRV-hazard `unbind_*` calls go away (passes are closed) | Fire D23: the whole dev pipeline runs on the Mac; a re-bake must not need Windows | sokol uses unretained command-buffer references, so every image stays alive until its readback returns | Shipped on Windows (step 6); byte-identical output |
+| D18 | **Tracy GPU profiler: per-OS leaves over sokol's native handles** (*owner*). D3D11: the existing timestamp-query code unchanged, over `sg_d3d11_device()` / `sg_d3d11_device_context()` (the immediate context; `ctx.End(query)` between sokol calls is valid). Metal: per-pass zones are *not* achievable (sokol owns the command buffer and encoder; Apple silicon has no draw-boundary counter sampling) - the leaf brackets sokol's buffer with two sentinel command buffers on `sg_mtl_command_queue()` and reports their `GPUEndTime`s as one "GPU frame" zone, plus `sg_query_stats()` counts as plots on both OSes | Recorded honestly | `rhi/gpu_profiler.rs` keeps its `Zone` API plus a backend-written `Zone::Frame`; `zone_*` are no-ops on Metal; Xcode's Metal profiler covers per-pass timing there | Shipped on both (Phase 1 step 6; Phase 2 step 5) — 226 GPU zones captured on Metal |
+| D19 | **`bake_ibl` on sokol_gfx** (*owner*): `Baker` = headless `Gpu` (device, `sg_setup`, no swapchain); `CubeTarget` = one cube image + 6×mips attachment views (`mip_level` + `slice`); render every pass for one environment → `sg_commit` → per-OS readback leaf `backend::read_image_subresource`: D3D11 staging copy + `Map(READ)` over `sg_d3d11_query_image_info` (today's body); Metal blit from the private texture to a shared `MTLBuffer` on our own command buffer from `sg_mtl_command_queue()`, committed *after* `sg_commit` (queue order = commit order) + `waitUntilCompleted`. The old RTV/SRV-hazard `unbind_*` calls go away (passes are closed) | Fire D23: the whole dev pipeline runs on the Mac; a re-bake must not need Windows | sokol uses unretained command-buffer references, so every image stays alive until its readback returns | Shipped on both (Phase 1 step 6; Phase 2 step 5). Byte-identical on Windows; on Metal **numerically equivalent, not byte-identical** — ≤0.021 on a 0..1 BRDF LUT, GPU float precision, so the committed Windows bake stays the one shipped set |
 | D20 | **The swapchain backbuffer is plain UNORM and the composite/egui/tex shaders sRGB-encode their own output** - `R8G8B8A8_UNORM` on D3D11 (today's contract), `BGRA8Unorm` on Metal (`CAMetalLayer` refuses RGBA8); `SWAPCHAIN_FORMAT` lives in the backend module | Fire D20. The swapchain pass needs no depth (the scene is offscreen), so Fire's `metal.rs` is reusable **as-is** | Channel order only | Shipped on Windows (step 3) |
 | D21 | **`vendor/sokol-rust` vendored** (Fire's pin, floooh/sokol-rust @ b22a545) and **`exclude`d from the workspace** so `-D warnings` does not lint upstream | Fire D22 + its step-8 finding: `--exclude` on the command line does not work, because cargo lints every path dependency as local; `exclude = [...]` in the root manifest does | A pinned tree updated by hand; `sg_swapchain` / `ShaderDesc` shape changes land there | Shipped (Phase 0) |
 | D22 | **PSD: vendor `psd_sdk` source + a `read_merged_rgba8` wrapper into `crates/psd`, compile with `cc`, keep the committed `bindings.rs`** (*owner*) | The prebuilt `fire_psd.lib` is gitignored (`*.lib`) and absent - the crate cannot link from a clean checkout on *any* OS today; source + `cc` is the model ufbx / meshoptimizer / ufbx_write already use and needs no bindgen or libclang at build time | `PsdNativeFile.cpp` excluded off Windows (the wrapper reads through its own in-memory `psd::File`); `cpp(true)` links `c++`. Fire's current `psd-sdk-sys` wrapper has a *newer* ABI (`fire_psd_read_merged`, a 16-byte info struct); the vendored wrapper here keeps the older one the committed bindings declare | Shipped (Phase 0) |
@@ -978,36 +981,113 @@ Ordered so each step is verifiable by eye against the current renderer on the sa
    bloat` pass on an unstripped build) — but it is a follow-up, not a gate: D2's three measurements
    are startup, frame and memory, and all three pass.
 
-### Phase 2 - macOS
+### Phase 2 - macOS — **steps 1–7 done**, notarization excepted
 
-1. Mac setup per §7, then the tests that can run at all today:
-   `cargo test -p review-model -p review-import -p review-optimize -p review-psd`. **Not**
-   `--workspace`, and there is no "first light without a line of new code" — that was written
-   before the shape of the port was settled and is wrong. `rhi/backend/mod.rs` declares only
-   `#[cfg(windows)] mod d3d11`, so `review-render` does not compile on macOS at all until step 2
-   writes `metal.rs`, and `review-ui` depends on `review-render`, so `ui` and `app` follow it. What
-   step 1 *does* prove is the half that has nothing to do with the GPU: that all four vendored C
+1. **Done.** Mac setup per §7, then the tests that can run at all today:
+   `cargo test -p review-model -p review-import -p review-optimize -p review-psd` — **182 green**.
+   **Not** `--workspace`, and there is no "first light without a line of new code" — that was
+   written before the shape of the port was settled and is wrong. `rhi/backend/mod.rs` declared only
+   `#[cfg(windows)] mod d3d11`, so `review-render` did not compile on macOS at all until step 2
+   wrote `metal.rs`, and `review-ui` depends on `review-render`, so `ui` and `app` followed it. What
+   step 1 *did* prove is the half that has nothing to do with the GPU: that all four vendored C
    trees (ufbx, meshoptimizer, ufbx_write, psd_sdk) compile under Apple clang and that the parsers,
-   the optimizer and the PSD decoder agree with Windows — which is exactly what would be miserable
-   to debug later, tangled up in a new backend.
-2. `rhi/backend/metal.rs` from Fire verbatim (+ `supported_sample_counts`); `build.rs`'s
-   `compile_shaders_metal` per (program, stage) with the committed-blob gate (D5) — which is now
-   `src/shaders/generated/bytecode.manifest`, so the Metal half is a second job list feeding the
-   same freshness machinery, and its rows join the Windows ones in the one committed file; first
-   `cargo run`. Verify: shaded model, GTAO, MSAA levels offered = 1/2/4/8, a skinned clip playing,
-   Opt split, UV, Tex, the egui chrome - each by eye against the Windows build's screenshots.
-3. Leaves: `openfiles.rs` (D14), `menubar.rs` (D15), `Primary = ⌘` + labels (D10), pinch (D16),
-   `dev-app.sh`. Verify with `open -a` on a cold app, on a running app, and a Finder drag onto
-   the Dock icon.
-4. Retina: physical-pixel scene targets from `scale_factor` (`theme::px` already converts the
-   chrome); verify a 2× screenshot's chrome heights and that the scene viewport rect maps to whole
-   physical pixels.
-5. Profiler / bake leaves for Metal (D18 / D19); run `bake_ibl` on the Mac and diff the `.bin`s
-   against the committed ones (expect BC6H-identical or a documented tolerance).
-6. Measure (Fire's `ttfp.sh` twin as `gate.sh`): the startup breakdown; no cross-OS budget, the
-   number to beat is the next mac build's.
-7. `scripts/build-mac.sh` (Fire's, with the `.fbx` document type + `application-logo.png` →
-   `.icns`), sign, notarize, staple, `.dmg`; the `spctl -a -t open` check.
+   the optimizer and the PSD decoder agree with Windows — which is exactly what would have been
+   miserable to debug later, tangled up in a new backend.
+2. **Done.** `rhi/backend/metal.rs` from Fire (+ `supported_sample_counts`, and a `present(vsync)`
+   that sets `displaySyncEnabled` since Metal has no per-present sync interval); `build.rs`'s Metal
+   half per (program, stage) with the committed-blob gate (D5), its rows joining the Windows ones in
+   the one `bytecode.manifest`, and the toolchain found by *running* `xcrun metal --version` rather
+   than `--find`, since Command Line Tools ship a stub that resolves and then fails at first
+   compile. All 30 MSL sources compile warning-free under `-Werror -O3`.
+
+   Verified by eye against the Windows build: the shaded model with IBL/PBR, GTAO, the grid, the
+   axis gizmo, the stats overlay, the Outliner/Inspector/toolbar/status-bar chrome, a skinned
+   character with its 72-bone skeleton, and 109–114 FPS. **The MSAA menu offers 1/2/4, not the
+   1/2/4/8 predicted here**: Apple silicon answers `supportsTextureSampleCount:` no at 8, which is
+   the case invariant 4's capability gate exists for.
+
+   Two things found on the way and fixed rather than left. `build.rs`'s "review.glsl is newer than
+   generated/" warning fired on **every** macOS build of a clean tree — git wrote review.glsl 6 ms
+   after the generated directory and the check compared mtimes strictly; a tolerance cannot fix it
+   (a real edit *is* followed by a build seconds later), so `gen-shaders.{sh,ps1}` now records the
+   digest of the review.glsl it ran on as `generated/review.glsl.sha256` and build.rs compares
+   content, closing the one staleness link the manifest could never see. And `window_state.rs`'s
+   config-directory test had a Windows arm only; it now has the macOS twin D17 names.
+3. **Done.** Leaves: the open hook (D14), the menu bar (D15), `Primary = ⌘` + labels (D10, already
+   in from Phase 1 step 5), pinch (D16), `dev-app.sh`.
+
+   **The open hook and the menu bar live in a new crate, `crates/shell-macos`, not in `app`** — a
+   departure from §6, which listed objc2 as a dependency of `app` itself. `class_addMethod` on
+   winit's delegate needs `unsafe`, and `crates/app` is `#![forbid(unsafe_code)]` (invariant 9);
+   weakening that on the OS being ported to is the wrong trade when the project already isolates
+   `unsafe` behind named crates (`psd`, `optimize`, the GPU backend leaf). `app` hands the crate a
+   callback and gets back paths and a two-variant command enum; every entry point is a no-op stub
+   off macOS, so `main.rs` gained no `cfg`.
+
+   Verified with the dev bundle: a cold `open -a` came up *showing* the model with no argv, and an
+   `open -a` at a running instance loaded a second one. Note for anyone testing by hand that plain
+   `open <app> <file>` is **not** the test — it opens the two independently and sends the `.fbx` to
+   the system default handler; `-a` is what routes it through Launch Services.
+4. **Done — no code needed.** The Windows port had already done the work, because Windows has HiDPI
+   too: winit's `inner_size()` is physical pixels, so the layer's drawable and every offscreen scene
+   target are physical-sized, and `scene_viewport_px` already rounds each edge to a whole physical
+   pixel (with a test at 2×). Measured on a 2× display rather than assumed: the toolbar band is
+   **73 physical px** and the status bar **64**, exactly their design-pixel tokens.
+5. **Done.** Profiler / bake leaves for Metal (D18 / D19).
+
+   D18 needed one shared change: `Zone` gains a `Frame` variant only a backend leaf ever writes.
+   D3D11 never writes those slots and Metal writes nothing else, so — because which zones a frame
+   reported is *measured* rather than declared — a capture on either OS shows exactly what that OS
+   could measure, with no `cfg` in `gpu_profiler.rs`. The Tracy baseline had to become the lowest
+   *written* timestamp rather than `times[0]` (the scene pass's begin), which would have calibrated
+   Metal's whole timeline against a zero. Captured with `tracy-capture`: 226 GPU zones beside 225
+   CPU ones.
+
+   **The Metal bake does not reproduce the committed `.bin`s byte for byte** — this step anticipated
+   "BC6H-identical or a documented tolerance", and the measurement says which. The BRDF LUT (pure
+   math, no sampling, 1024-byte rows involving no padding at all) differs in 3.5 % of its values by
+   at most 0.021 on a 0..1 range, mean 2.3e-4. Across a prefilter cube the difference rate falls
+   with mip size — 21 % / 11 % / 6.7 % / 5.1 % / 6.0 % — tracking convolution sample count, and the
+   two mips whose rows are actually padded are the *least* different, where a de-padding bug would
+   have made them ~100 %. So it is GPU float precision, not the leaf. The committed Windows bake
+   stays the one set of bytes both hosts embed, and `build-mac.sh` deliberately runs no re-bake.
+6. **Done.** `scripts/gate.sh`, with one difference of substance: **no cross-OS budget**, since
+   holding a Mac against a Windows PC compares two machines rather than two builds. It measures one
+   build and records it, or two interleaved with D2's budgets on the delta. Process creation comes
+   from `proc_pidinfo`'s `pbi_start_tvsec` (the analogue of `Process.StartTime`, read by the script
+   rather than by the `forbid(unsafe_code)` viewer); memory is the physical footprint, and there is
+   **no VRAM row** because Apple silicon's unified memory already counts it inside that figure.
+
+   Recorded on this Mac (release, 1920×1280, 4× MSAA, GTAO on, a clip playing, 5 runs, medians):
+
+   | fixture | startup | frame | footprint |
+   | --- | --- | --- | --- |
+   | `SK_Player_01` (141 978 tris) | 941.0 ms | 3.416 ms | 842 MB |
+   | `SM_Ammo_Crate_01a` (8 055 tris) | 199.0 ms | 3.368 ms | 628 MB |
+
+   The startup spread between them is the FBX import, which is the same host-agnostic code on both
+   OSes; the frame time is flat between them, which is what a fill-bound 4×-MSAA + GTAO frame looks
+   like. Also found here: `gate.rs`'s `WINDOW_SIZE` comment claimed 150 % was the worst display
+   scale its 1600×960 request had to survive, but on a 2× Mac the viewer's 960×640-logical minimum
+   wins and the window comes up 1920×1280. Nothing is broken by it — the clamp is a property of the
+   display, not the build, and both harnesses already refuse to compare runs whose stamped sizes
+   disagree — but the comment was stating a guarantee the constant does not have.
+7. **Done but for notarization.** `scripts/build-mac.sh` (Fire's, with the `.fbx` document type and
+   `application-logo.png` → `.icns`), plus `packaging/check-shader-bytecode.sh`, the mirror §7 said
+   this script owed: it hard-fails on a stale `.metallib` and only warns about the Windows rows,
+   the inverse of the PowerShell twin.
+
+   Two departures from Fire's script. **The icon keeps its alpha** — Fire composited its flame onto
+   an opaque background because a floating flame reads as unfinished, but this master is a cube
+   whose faces run nearly corner to corner, so the real problem is macOS masking a legacy icon into
+   a rounded rect and clipping the cube's own corners; an 8 % inset fixes that and invents no
+   background colour. And **no IBL re-bake**, for the reason step 5 measured.
+
+   Run end to end with `--no-notarize`: a signed, verified 11.5 MB `dist/3D Review-0.2.1.dmg`, and
+   the packaged bundle launches, opens a model through Launch Services and draws at 110 FPS.
+   **Notarization is the one step not exercised** — it needs an `xcrun notarytool store-credentials`
+   profile, which does not exist in this keychain yet; the script prints the exact command when it
+   is missing.
 
 ### Phase 3 - cleanup
 

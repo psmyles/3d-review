@@ -1,20 +1,30 @@
 # CLAUDE.md — 3D Review (Rust)
 
-A Windows-first **native** 3D model-audit viewer (think F3D / Autodesk FBX
-Review). Drag-drop an **FBX**, inspect game assets, switch through debug views.
-Built on `winit` (window/event loop) + **`sokol_gfx`** (GPU, over Direct3D 11 on
-Windows and Metal on macOS) + `egui` (overlay UI, through our own sokol renderer)
-+ vendored `ufbx` (FBX parsing via a C bridge). Pure-Rust, no web/Electron layer.
-**Target priority: Windows.**
+A **native** 3D model-audit viewer (think F3D / Autodesk FBX Review), running on
+**Windows and macOS from one shared shell**. Drag-drop an **FBX**, inspect game
+assets, switch through debug views. Built on `winit` (window/event loop) +
+**`sokol_gfx`** (GPU, over Direct3D 11 on Windows and Metal on macOS) + `egui`
+(overlay UI, through our own sokol renderer) + vendored `ufbx` (FBX parsing via a
+C bridge). Pure-Rust, no web/Electron layer. **Target priority: Windows** — it is
+the platform the D2 performance budgets gate, and the one a change is checked
+against first.
 
-> **The GPU layer is fully on sokol_gfx** (`mac-port-plan.md` Phase 1, steps 1–7):
-> every draw path — the frame flow, the egui chrome, the Tex viewport, the 3D and UV
-> scenes with MSAA and ambient occlusion, and the Opt workspace's comparison view —
-> plus the `--tracy` GPU profiler and the offline `bake_ibl` tool. The viewport is
-> pixel-identical to the Direct3D 11 build on the models checked, and a fresh bake
-> reproduces every committed `.bin` byte for byte. Nothing is parked or duplicated
-> any more: the hand-written `src/hlsl/` set and `src/port_pending/` are both gone,
-> so `src/shaders/review.glsl` is the only shader source in the workspace.
+> **The GPU layer is fully on sokol_gfx, on both OSes** (`mac-port-plan.md` Phase 1
+> and Phase 2): every draw path — the frame flow, the egui chrome, the Tex viewport,
+> the 3D and UV scenes with MSAA and ambient occlusion, and the Opt workspace's
+> comparison view — plus the `--tracy` GPU profiler and the offline `bake_ibl` tool.
+> The viewport is pixel-identical to the old Direct3D 11 build on the models checked.
+> Nothing is parked or duplicated: the hand-written `src/hlsl/` set and
+> `src/port_pending/` are both gone, so `src/shaders/review.glsl` is the only shader
+> source in the workspace.
+>
+> Two things differ per OS and are *measured* rather than assumed. The MSAA menu
+> offers 1/2/4/8/16 on Windows and **1/2/4** on Apple silicon, which is what
+> invariant 4's capability gate is for. And a fresh `bake_ibl` reproduces every
+> committed `.bin` byte for byte on Windows but only *numerically* on Metal (≤0.021
+> on a 0..1 BRDF LUT — GPU float precision), so the committed Windows bake is the one
+> set of bytes both hosts embed and the Mac packaging script deliberately runs no
+> re-bake.
 
 Deeper docs: the crate map + data flow live in §2 below; `PROJECT_STATE.md`
 (architecture, status, risk register), `RENDERING_PIPELINE.md` (render-pass
@@ -140,13 +150,24 @@ decisions, phases and risks — see §4's note).
    **Sanctioned exception — the platform GPU leaf** (`crates/render/src/rhi/backend/`)
    is the *only* place the renderer's `unsafe` lives, and it is ~200 lines per OS:
    `d3d11.rs` creates the device, hands it to `sg_setup`, owns the DXGI swapchain,
-   hands sokol_gfx a render-target view per frame and presents; the macOS twin will
-   do the same with a `CAMetalLayer`. Everything sokol_gfx draws with — pipelines,
+   hands sokol_gfx a render-target view per frame and presents; `metal.rs` does the
+   same with an `MTLDevice` and a `CAMetalLayer` hosted on winit's `NSView`. They are
+   twins aliased as `backend`, not a trait — anything added to one must be added to
+   the other. Everything sokol_gfx draws with — pipelines,
    buffers, targets, textures, samplers — is safe Rust over its C API, so what used
    to be ~2000 lines of pervasive COM `unsafe` is now that leaf plus the one
    `extern "C"` logger callback in `rhi/mod.rs`. `crates/app` is **fully safe**
    (`#![forbid(unsafe_code)]` — as are `model` and `ui`) and, since `Gpu::attach`
    reads the window's raw handle itself, no longer depends on `windows` at all.
+   **Sanctioned exception — the macOS shell leaf** (`crates/shell-macos`,
+   `review-shell-macos`): the Launch Services open hook (D14) and the `muda` menu bar
+   (D15). It is its own crate for exactly the reason `app` is `forbid(unsafe_code)`:
+   teaching winit's application delegate to answer `application:openURLs:` is
+   `class_addMethod` and nothing else, and that `unsafe` belongs in a named, bounded
+   site rather than loose in the shell. It knows nothing of models, cameras, frames or
+   GPU state — `app` hands it a callback and gets back paths and a two-variant
+   `MenuCommand` — and every entry point is a no-op stub off macOS, so `main.rs`
+   carries no `cfg` for it.
    Every `unsafe` carries a `// SAFETY:` rationale and touches only GPU plumbing —
    never model geometry, camera math, or material logic, which stay safe.
    *(`crates/render/src/rhi/bake.rs` and the `bake`-gated half of `ibl.rs` are safe
@@ -305,6 +326,18 @@ crates/
             `optimize` have none; `app` and `import` keep one for `Client::start`
             and the allocation hooks). Each consumer's `src/prof.rs` is a
             re-export of this crate, not a copy. -> src/lib.rs
+  shell-macos/ review-shell-macos: the two macOS shell leaves, and nothing else —
+            the Launch Services open hook (`openfiles.rs`, D14: `class_addMethod` on
+            winit's application delegate, so a Finder double-click / `open(1)` / a
+            drop on the Dock icon reaches the viewer, which on this OS arrives as an
+            Apple event and *never* as argv) and the `muda` menu bar (`menubar.rs`,
+            D15: App / File {New ⌘N, Open… ⌘O} / Window, everything else a predefined
+            item on AppKit's own responder chain — and where ⌘Q comes from). Its own
+            crate because the delegate hook needs `unsafe` and `app` is
+            `#![forbid(unsafe_code)]`; `app` hands it a callback and gets back paths
+            and a two-variant `MenuCommand`, so it depends on neither `winit` nor any
+            crate of ours. Every entry point is a no-op stub off macOS.
+            -> src/lib.rs, src/openfiles.rs, src/menubar.rs
   psd/      review-psd: safe `decode_psd` over a C-ABI bridge to psd_sdk (C++),
             returning a PSD's merged composite as RGBA8 (invariant 9's third FFI
             site). Vendors psd_sdk as SOURCE (`vendor/Psd/`) and compiles it with `cc`
@@ -371,6 +404,16 @@ crates/
                 `sg_environment` at it, owns the DXGI flip-model swapchain, hands
                 sokol a render-target view per frame, presents, and answers
                 `supported_sample_counts` (sokol only reports MSAA as a yes/no).
+                metal.rs is its twin: an `MTLDevice`, a `CAMetalLayer` hosted on
+                winit's `NSView` (layer-*hosting*, not layer-backed, so AppKit does
+                not redraw it behind us), a drawable per frame, and
+                `supportsTextureSampleCount:`. Four things differ there and each is
+                load-bearing — a `BGRA8Unorm` backbuffer (a `CAMetalLayer` refuses
+                RGBA8; a storage channel *order* only, so D20 holds), sokol presenting
+                inside `sg_end_pass` rather than us (a second present would
+                double-present), the frame blocking at `nextDrawable` rather than at
+                present, and vsync being the layer's `displaySyncEnabled` rather than
+                an argument to a present call.
                 The swapchain is created with `ALLOW_TEARING` where the factory
                 offers it, and a vsync-**off** present passes the matching flag: without
                 that a flip-model `Present(0, 0)` still queues behind DWM, so
@@ -536,8 +579,12 @@ same `render` path as the source.
 
 ## 3. Build & run
 
-Use the **x64 Native Tools Command Prompt for VS 2022** (MSVC `cl` must be on
-PATH so `cc` can compile `ufbx.c`).
+**Windows:** use the **x64 Native Tools Command Prompt for VS 2022** (MSVC `cl`
+must be on PATH so `cc` can compile `ufbx.c`). **macOS:** Xcode Command Line Tools
+are enough (Apple clang compiles every vendored C tree); the full Metal toolchain
+(`xcodebuild -downloadComponent MetalToolchain`) is needed **only** to edit shaders
+— verify it by *running* `xcrun -sdk macosx metal --version`, since CLT ships a stub
+that `xcrun --find` locates and that then fails at first compile.
 
 - `cargo run -p review-app` — launch the viewer.
 - `cargo check --workspace` — fast type check.
@@ -553,7 +600,21 @@ PATH so `cc` can compile `ufbx.c`).
   startup / frame time / RAM + VRAM against a budget on each delta. Needs a real
   GPU and a quiet box. The baseline build is `main` plus
   `scripts/gate-baseline.patch`, which adds the same `--gate-out` stamp to a branch
-  that predates it.
+  that predates it. `scripts/gate.sh` is the Mac twin, with **no cross-OS budget** —
+  comparing a Mac against a Windows PC compares two machines, not two builds — so it
+  also has a one-build mode that just records the numbers the next Mac build has to
+  beat. There is no VRAM row there: unified memory already counts it in the footprint.
+- `scripts/dev-app.sh [--debug] [model.fbx]` (macOS) — wrap the built binary in an
+  unsigned `.app` and launch it. The only way to exercise the menu bar, the Dock, and
+  the Launch Services open path at all: a bare executable gets none of them, and is
+  not what `open` hands files to. It launches with `open -a`, which is load-bearing —
+  plain `open <app> <file>` sends the `.fbx` to the system default handler instead.
+- `scripts/build-mac.sh` — the release chain (D12): `.icns`, `Info.plist` with the
+  `.fbx` document type, codesign with the hardened runtime, notarize, staple, `.dmg`,
+  and the `spctl -a -t open` check. Run by hand on the dev Mac so the Developer ID
+  cert never leaves that keychain. `packaging/check-shader-bytecode.sh` (which it runs
+  first) is the mirror of the `.ps1`: it hard-fails on a stale `.metallib` and only
+  warns about the Windows rows.
 - `cargo run --release -p review-render --features bake --bin bake_ibl` — the
   offline IBL re-bake (needs a real GPU; it creates its own headless device). Writes
   `assets/ibl_baked/` **in place**, and validates each payload before writing so a
@@ -566,11 +627,19 @@ PATH so `cc` can compile `ufbx.c`).
   gitignored `.tools/` on first run; **commit what it writes**, since a plain
   build never runs it. The bytecode beside it is per-host (D5): a shader edit
   committed from one OS ships stale bytecode for the other until that host
-  rebuilds, and build.rs says so.
+  rebuilds, and build.rs says so. It also writes `generated/review.glsl.sha256` —
+  the digest of the shader the set was generated *from*, which is the one staleness
+  question `bytecode.manifest` cannot answer (it chains a blob to its generated
+  source, and this is the link above that). Editing `review.glsl` and forgetting to
+  run this script is what that catches, and build.rs warns on it.
 
 Pinned (workspace deps): `winit 0.30`, `sokol` (a vendored checkout — see
 `vendor/NOTICE.txt`), `windows 0.62` (Direct3D 11/DXGI, a `cfg(windows)` dep of
-`render` **only**, for the backend leaf), `egui`/`egui-winit 0.36` +
+`render` **only**, for the backend leaf), the `objc2 0.5` family
+(`objc2-metal`/`-quartz-core`/`-app-kit`/`-foundation` 0.2 — the versions winit
+already pulls, so the Mac build compiles nothing extra; a `cfg(target_os = "macos")`
+dep of `render` for the Metal leaf and of `shell-macos` for the shell ones) +
+`muda 0.19` (the menu bar), `egui`/`egui-winit 0.36` +
 `egui-notify 0.23`, `glam 0.30`, `bytemuck 1`, `thiserror 2`, `rfd 0.15`,
 `dirs 6` (the per-user config dir `window.cfg` lives in),
 `image 0.25` (png + hdr + tga/tiff/jpeg/pnm), `half 2`,
@@ -585,9 +654,11 @@ Pinned (workspace deps): `winit 0.30`, `sokol` (a vendored checkout — see
 `build.rs` (import) compiles `ufbx.c` + the bridge with `cc` **only when**
 `third_party/ufbx/ufbx.{c,h}` exist, and sets `cfg(has_ufbx)`; without them the
 workspace still builds and FBX import returns a clear error. `build.rs` (render)
-compiles the generated per-backend shader sources to committed bytecode with `fxc`,
-but only when a blob is stale and `fxc` is present (a no-fxc CI box uses the
-committed blobs). It discovers those jobs from the filenames in
+compiles **this host's half** of the generated shader sources to committed bytecode —
+`fxc` → `.dxbc` on Windows, `xcrun metal -Werror -O3` → `.metallib` on macOS — but
+only when a blob is stale and the compiler is present (a box with neither uses the
+committed blobs). The source list, the compiler and the blob extension are `cfg`-chosen
+from one shared skeleton, and the jobs are discovered from the filenames in
 `src/shaders/generated/`, so adding a program touches only `review.glsl` — there
 is no hand-listed job table to keep in step with it.
 
@@ -597,10 +668,11 @@ compiled from it, and is committed beside them. Commit it whenever you commit
 bytecode. Timestamps cannot answer this once two OSes commit blobs (D5): a shader
 rebuilt on the Mac reaches Windows as a new source next to a blob one revision
 behind, both stamped by `git checkout` at the same instant. `packaging/check-
-shader-bytecode.ps1` fails a release build on any mismatch (the installer build
-runs it); `build.rs` additionally warns when `review.glsl` is newer than everything
-generated from it, which is the one thing the manifest cannot see — that you edited
-the shader and never ran `scripts/gen-shaders`.
+shader-bytecode.{ps1,sh}` fails a release build on any mismatch (each hard-fails on
+its own host's blobs and only warns about the other's; both packaging builds run
+theirs). The one thing the manifest cannot see — that you edited `review.glsl` and
+never ran `scripts/gen-shaders` — is caught by `generated/review.glsl.sha256`, which
+those scripts write and `build.rs` compares against the file's own digest.
 
 ## 4. Locked decisions — DO NOT RE-LITIGATE
 
