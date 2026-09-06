@@ -1,3 +1,0 @@
-- Texture view in UV mode
-- UV seam mode
-- quick open/hide outliner box on left edge of the viewport
