@@ -97,7 +97,7 @@ icon_bg="343639"
 # full-bleed in *both* directions (measured: 996 x 1024 of 1024²), and macOS masks a
 # legacy icon like this one into the rounded rect it draws everywhere, so with no
 # inset the cube's own corners are what the mask cuts off.
-icon_inset="6%"
+icon_inset="10%"
 # The `xcrun notarytool store-credentials` profile to use when none is named.
 #
 # **Not derived from the product name**, which is the obvious thing to do and is
