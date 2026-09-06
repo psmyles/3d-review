@@ -1,227 +1,347 @@
-//! Offline HLSL → DXBC compilation for the Direct3D 11 scene path.
+//! Offline compilation of the generated shader sources to this host's bytecode.
 //!
-//! The renderer ships its shaders as **compiled DXBC bytecode** (`include_bytes!`
-//! at runtime — no runtime shader compilation, matching the §4 "precompute
-//! offline" decision). The compiled `.dxbc` blobs are committed next to their
-//! `.hlsl` source under `src/hlsl/`; this build script regenerates them with
-//! `fxc` (the Windows SDK HLSL compiler) — but only when it is **freshness-gated
-//! stale** (the `.hlsl` is newer than its `.dxbc`, or the `.dxbc` is missing) and
-//! `fxc` is actually available.
+//! The renderer ships its shaders as **compiled bytecode** (`include_bytes!` at
+//! runtime — no runtime shader compilation, matching the §4 "precompute offline"
+//! decision): DXBC via `fxc` on Windows, a `.metallib` via `xcrun metal` on macOS.
+//! The blobs are committed next to their source; this build script regenerates them,
+//! but only when a blob does not match the source it was built from and the host's
+//! shader compiler is actually available. A normal `cargo build` (or CI's
+//! `cargo check`, where neither compiler is installed) is a no-op and uses the
+//! committed bytecode, so the build never *requires* a shader toolchain. Set
+//! `FXC_FORCE=1` to recompile regardless.
 //!
-//! This mirrors the IBL-bake freshness gate: a normal `cargo build` (or CI's
-//! `cargo check`, where `fxc` is usually absent) is a no-op and uses the committed
-//! bytecode, so the build never *requires* `fxc`; an active shader edit on a dev
-//! box with the SDK on hand recompiles automatically. Set `FXC_FORCE=1` to
-//! recompile regardless of timestamps.
+//! Each host owns exactly one half of the generated set and never touches the other's
+//! blobs or manifest rows — that is D5's two-host discipline, and it is why the
+//! source list, the compiler and the blob extension below are all `cfg`-chosen from
+//! one shared skeleton rather than duplicated per OS.
+//!
+//! **Freshness is keyed on content, not timestamps** ([`MANIFEST`]), because D5's
+//! two-host discipline is exactly where mtimes stop working. When a shader edited on
+//! the Mac arrives here, `git checkout` writes the generated source and the stale
+//! `.dxbc` at the *same* moment, so "is the source newer than the blob?" is a coin
+//! toss on the one occasion the answer matters. The manifest instead records what
+//! each blob was compiled from, so a blob that does not correspond to the committed
+//! source is detected however the two files got their timestamps — and
+//! `packaging/check-shader-bytecode.ps1` fails the release build on it rather than
+//! shipping bytecode that does not match the shaders in the tree.
+//!
+//! The source set is this host's half of what sokol-shdc generates from the single
+//! annotated-GLSL source (`src/shaders/review.glsl`, D4):
+//! `src/shaders/generated/review_*_hlsl5_*.hlsl` on Windows and
+//! `review_*_metal_macos_*.metal` on macOS. The job list is *discovered* rather than
+//! hand-listed — the set of programs is decided in review.glsl, so a program added
+//! there must not also have to be added here. Compiling them is what makes a broken
+//! shader a build error (D5) rather than a runtime surprise; nothing compiles a
+//! shader at run time.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::SystemTime;
 
-/// One shader entry point to compile: the source file (under `src/hlsl/`), the
-/// `fxc` profile, the entry-point function, and the committed output blob.
+/// One shader to compile: the source file, its stage profile, and the committed
+/// output blob (both paths absolute). There is no entry-point field because the
+/// generated entry point is fixed per backend (`main` for HLSL, `main0` for MSL) and
+/// the reflection in `review.rs` already names it.
 struct ShaderJob {
-    source: &'static str,
+    source: PathBuf,
+    /// The source's file name, which is how the manifest names it — the manifest
+    /// sits beside the sources, so a full path would only tie it to one checkout.
+    source_name: String,
+    /// What [`stage_profile`] made of the filename's stage suffix: the `fxc` target
+    /// profile on Windows, and empty on macOS, where `metal` reads the stage from the
+    /// source's own `[[vertex]]` / `[[fragment]]` attribute — so only the Windows
+    /// `compile` reads it.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     profile: &'static str,
-    entry: &'static str,
-    output: &'static str,
+    output: PathBuf,
 }
 
-/// Every HLSL entry point the renderer compiles.
-const SHADERS: &[ShaderJob] = &[
-    ShaderJob {
-        source: "scene.hlsl",
-        profile: "vs_5_0",
-        entry: "vs_main",
-        output: "scene.vs.dxbc",
-    },
-    ShaderJob {
-        source: "scene.hlsl",
-        profile: "ps_5_0",
-        entry: "fs_line",
-        output: "scene.line.ps.dxbc",
-    },
-    ShaderJob {
-        source: "scene.hlsl",
-        profile: "ps_5_0",
-        entry: "fs_main",
-        output: "scene.mesh.ps.dxbc",
-    },
-    ShaderJob {
-        source: "scene.hlsl",
-        profile: "vs_5_0",
-        entry: "vs_skybox",
-        output: "scene.skybox.vs.dxbc",
-    },
-    ShaderJob {
-        source: "scene.hlsl",
-        profile: "ps_5_0",
-        entry: "fs_skybox",
-        output: "scene.skybox.ps.dxbc",
-    },
-    ShaderJob {
-        source: "scene.hlsl",
-        profile: "ps_5_0",
-        entry: "fs_selection",
-        output: "scene.selection.ps.dxbc",
-    },
-    ShaderJob {
-        source: "scene.hlsl",
-        profile: "ps_5_0",
-        entry: "fs_gtao_gbuffer",
-        output: "scene.gtao_gbuffer.ps.dxbc",
-    },
-    ShaderJob {
-        source: "gtao.hlsl",
-        profile: "vs_5_0",
-        entry: "vs_fullscreen",
-        output: "gtao.vs.dxbc",
-    },
-    ShaderJob {
-        source: "gtao.hlsl",
-        profile: "ps_5_0",
-        entry: "fs_gtao",
-        output: "gtao.ps.dxbc",
-    },
-    ShaderJob {
-        source: "gtao.hlsl",
-        profile: "ps_5_0",
-        entry: "fs_blur",
-        output: "gtao.blur.ps.dxbc",
-    },
-    ShaderJob {
-        source: "post.hlsl",
-        profile: "vs_5_0",
-        entry: "vs_fullscreen",
-        output: "post.vs.dxbc",
-    },
-    ShaderJob {
-        source: "post.hlsl",
-        profile: "ps_5_0",
-        entry: "fs_post",
-        output: "post.ps.dxbc",
-    },
-    ShaderJob {
-        source: "tex.hlsl",
-        profile: "vs_5_0",
-        entry: "vs_fullscreen",
-        output: "tex.vs.dxbc",
-    },
-    ShaderJob {
-        source: "tex.hlsl",
-        profile: "ps_5_0",
-        entry: "fs_image",
-        output: "tex.image.ps.dxbc",
-    },
-    ShaderJob {
-        source: "tex.hlsl",
-        profile: "ps_5_0",
-        entry: "fs_checker",
-        output: "tex.checker.ps.dxbc",
-    },
-    // IBL precompute (offline `bake` feature only at runtime, but always compiled
-    // here so the committed blobs stay fresh): one fullscreen VS + four passes.
-    ShaderJob {
-        source: "ibl.hlsl",
-        profile: "vs_5_0",
-        entry: "vs_fullscreen",
-        output: "ibl.vs.dxbc",
-    },
-    ShaderJob {
-        source: "ibl.hlsl",
-        profile: "ps_5_0",
-        entry: "fs_equirect_to_cube",
-        output: "ibl.equirect.ps.dxbc",
-    },
-    ShaderJob {
-        source: "ibl.hlsl",
-        profile: "ps_5_0",
-        entry: "fs_irradiance",
-        output: "ibl.irradiance.ps.dxbc",
-    },
-    ShaderJob {
-        source: "ibl.hlsl",
-        profile: "ps_5_0",
-        entry: "fs_prefilter",
-        output: "ibl.prefilter.ps.dxbc",
-    },
-    ShaderJob {
-        source: "ibl.hlsl",
-        profile: "ps_5_0",
-        entry: "fs_brdf",
-        output: "ibl.brdf.ps.dxbc",
-    },
-];
-
 fn main() {
-    let hlsl_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/hlsl");
+    let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let generated_dir = crate_dir.join("src/shaders/generated");
 
-    // Re-run when any HLSL source changes (so an edit triggers recompilation when
-    // fxc is present). The committed .dxbc outputs are not watched — we write them.
-    for source in distinct_sources() {
-        println!("cargo:rerun-if-changed={}", hlsl_dir.join(source).display());
-    }
     println!("cargo:rerun-if-env-changed=FXC_FORCE");
+    println!("cargo:rerun-if-changed=build.rs");
+
+    let jobs = generated_jobs(&generated_dir);
+    warn_if_shader_source_changed(&crate_dir, &generated_dir);
+
+    // Re-run when any source changes, so an edit recompiles where fxc is present.
+    // The committed .dxbc outputs are deliberately not watched — we write them.
+    let mut sources: Vec<&Path> = jobs.iter().map(|job| job.source.as_path()).collect();
+    sources.sort_unstable();
+    sources.dedup();
+    for source in sources {
+        println!("cargo:rerun-if-changed={}", source.display());
+    }
 
     let force = std::env::var_os("FXC_FORCE").is_some();
-    let fxc = find_fxc();
+    let tool = find_tool();
+    let manifest_path = generated_dir.join(MANIFEST);
+    let mut manifest = read_manifest(&manifest_path);
+    let mut manifest_dirty = false;
 
-    for job in SHADERS {
-        let source_path = hlsl_dir.join(job.source);
-        let output_path = hlsl_dir.join(job.output);
-
-        let stale = force || is_stale(&source_path, &output_path);
-        if !stale {
+    for job in &jobs {
+        let Some(source_fp) = fingerprint(&job.source) else {
+            println!(
+                "cargo:warning={} could not be read; skipping it.",
+                job.source.display()
+            );
+            continue;
+        };
+        // Up to date only if the source is the one recorded *and* the blob beside it
+        // is the one that compile produced — a blob truncated or replaced after the
+        // fact is as stale as one never rebuilt.
+        let recorded = manifest.get(&job.source_name);
+        let blob_fp = fingerprint(&job.output);
+        if !force
+            && recorded.map(|row| &row.0) == Some(&source_fp)
+            && recorded.map(|row| &row.1) == blob_fp.as_ref()
+        {
             continue;
         }
-
-        let Some(fxc) = fxc.as_ref() else {
-            // No fxc on this machine. If the committed blob exists, use it
-            // silently; only warn if it's missing (that *is* a build break — the
-            // runtime `include_bytes!` will fail).
-            if !output_path.exists() {
+        let Some(tool) = tool.as_ref() else {
+            // No shader compiler on this machine, so the committed blob is what
+            // ships. Say so when it does not match its source (D5's two-host
+            // discipline: a shader edited on the other OS leaves this one's bytecode
+            // behind) and warn louder when it is missing entirely. The manifest is
+            // deliberately left alone, so the packaging check still fails on this.
+            if job.output.exists() {
                 println!(
-                    "cargo:warning=fxc not found and {} is missing; the build will fail. \
-                     Install the Windows SDK or run packaging/compile-hlsl on a machine with fxc.",
-                    output_path.display()
+                    "cargo:warning={} was not built from the committed source and {} is not \
+                     available; building with the bytecode as committed.",
+                    job.output.display(),
+                    TOOL_NAME
+                );
+            } else {
+                println!(
+                    "cargo:warning={} not found and {} is missing; anything that \
+                     include_bytes! it will fail to build. {}",
+                    TOOL_NAME,
+                    job.output.display(),
+                    TOOL_INSTALL_HINT
                 );
             }
             continue;
         };
+        compile(tool, job);
+        let Some(built) = fingerprint(&job.output) else {
+            println!(
+                "cargo:warning={} could not be read back after compiling.",
+                job.output.display()
+            );
+            continue;
+        };
+        manifest.insert(job.source_name.clone(), (source_fp, built));
+        manifest_dirty = true;
+    }
 
-        compile(fxc, &source_path, &output_path, job);
+    // Rows whose source is gone (a program removed from review.glsl) go with it.
+    // Rows for the *other* host's sources are left exactly as they are: on Windows
+    // that is every `*_metal_macos_*` row and on macOS every `*_hlsl5_*` one, each
+    // rebuildable only on the host that owns it.
+    let before = manifest.len();
+    manifest.retain(|source, _| generated_dir.join(source).is_file());
+    manifest_dirty |= manifest.len() != before;
+
+    if manifest_dirty {
+        write_manifest(&manifest_path, &manifest);
     }
 }
 
-/// The distinct source files referenced by [`SHADERS`], for `rerun-if-changed`.
-fn distinct_sources() -> Vec<&'static str> {
-    let mut sources: Vec<&'static str> = SHADERS.iter().map(|job| job.source).collect();
-    sources.sort_unstable();
-    sources.dedup();
-    sources
+/// The record of what each committed blob was compiled from: one line per generated
+/// source, `<source> <sha256> <bytes> <blob sha256> <bytes>`, sorted, written by
+/// whichever host compiled it. Both ends are recorded, so
+/// `packaging/check-shader-bytecode.ps1` can verify the blob it is about to ship and
+/// not merely the source it came from. Both hosts' rows live in the one file — a
+/// Windows build never touches a `*_metal_macos_*` row and vice versa — so a shader
+/// rebuilt on one OS and not the other is visible in the diff as much as in the check.
+const MANIFEST: &str = "bytecode.manifest";
+
+/// One file's identity: the SHA-256 of its bytes, plus its length. The digest is
+/// not a security measure — the question is only "did this file change" — but it has
+/// to be one every consumer can recompute without a toolchain, and both packaging
+/// scripts are shells (`Get-FileHash` here, `shasum -a 256` on the Mac). That is what
+/// picks SHA-256 over the ten-line hash this would otherwise want.
+type Fingerprint = (String, u64);
+
+/// One row: the generated source, then the blob compiled from it.
+type Row = (Fingerprint, Fingerprint);
+
+fn fingerprint(path: &Path) -> Option<Fingerprint> {
+    use sha2::{Digest, Sha256};
+
+    let bytes = std::fs::read(path).ok()?;
+    let digest = Sha256::digest(&bytes);
+    let mut hex = String::with_capacity(64);
+    for byte in digest {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    Some((hex, bytes.len() as u64))
 }
 
-/// Whether `output` needs to be (re)built from `source`: missing output, or a
-/// source modified more recently than the output. A missing/unreadable mtime errs
-/// toward rebuilding (when fxc is available).
-fn is_stale(source: &Path, output: &Path) -> bool {
-    let Ok(output_mtime) = mtime(output) else {
-        return true;
+fn read_manifest(path: &Path) -> BTreeMap<String, Row> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return BTreeMap::new();
     };
-    match mtime(source) {
-        Ok(source_mtime) => source_mtime > output_mtime,
-        Err(_) => true,
+    text.lines()
+        .filter(|line| !line.starts_with('#') && !line.trim().is_empty())
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let source = fields.next()?.to_owned();
+            let source_hash = fields.next()?.to_owned();
+            let source_len = fields.next()?.parse().ok()?;
+            let blob_hash = fields.next()?.to_owned();
+            let blob_len = fields.next()?.parse().ok()?;
+            Some((source, ((source_hash, source_len), (blob_hash, blob_len))))
+        })
+        .collect()
+}
+
+fn write_manifest(path: &Path, manifest: &BTreeMap<String, Row>) {
+    let mut text = String::from(concat!(
+        "# Written by crates/render/build.rs: what each committed shader blob was\n",
+        "# compiled from. Commit it with the blobs; do not edit by hand.\n",
+        "# <generated source> <sha256> <bytes> <blob sha256> <bytes>\n",
+    ));
+    for (source, ((source_hash, source_len), (blob_hash, blob_len))) in manifest {
+        text.push_str(&format!(
+            "{source} {source_hash} {source_len} {blob_hash} {blob_len}\n"
+        ));
+    }
+    if let Err(err) = std::fs::write(path, text) {
+        println!("cargo:warning=could not write {}: {err}", path.display());
     }
 }
 
-fn mtime(path: &Path) -> std::io::Result<SystemTime> {
-    std::fs::metadata(path)?.modified()
+/// Where `scripts/gen-shaders.{sh,ps1}` records the digest of the `review.glsl` it
+/// last ran on, beside the sources it produced from it.
+const SOURCE_DIGEST: &str = "review.glsl.sha256";
+
+/// Warn when `review.glsl` is not the shader the generated sources were made from —
+/// i.e. it was edited and `scripts/gen-shaders` never run.
+///
+/// Nothing else catches this: the blobs would match their committed sources perfectly
+/// and the whole set would simply be a shader revision behind. It is the one staleness
+/// question [`MANIFEST`] cannot answer, because the manifest's chain starts at the
+/// generated source and this is the link above it.
+///
+/// This used to compare mtimes, which was wrong for the same reason the manifest keys
+/// on content: a fresh checkout writes `review.glsl` and the generated directory in
+/// whatever order git happens to walk them, microseconds apart, and a strict `>` then
+/// fires on every build of a clean tree. (Measured: 6 ms apart on this repo's first
+/// macOS checkout.) A tolerance cannot fix it either — a *real* edit is followed by a
+/// build seconds later, so no window separates the two cases. The digest does, exactly.
+fn warn_if_shader_source_changed(crate_dir: &Path, generated_dir: &Path) {
+    let glsl = crate_dir.join("src/shaders/review.glsl");
+    println!("cargo:rerun-if-changed={}", glsl.display());
+    let digest_path = generated_dir.join(SOURCE_DIGEST);
+    println!("cargo:rerun-if-changed={}", digest_path.display());
+
+    let Some((current, _)) = fingerprint(&glsl) else {
+        return;
+    };
+    // No record at all: an old checkout from before this file existed. Silent — the
+    // next `gen-shaders` writes one, and a warning nobody can act on is noise.
+    let Ok(recorded) = std::fs::read_to_string(&digest_path) else {
+        return;
+    };
+    if recorded.trim() != current {
+        println!(
+            "cargo:warning=review.glsl does not match what src/shaders/generated/ was \
+             built from; run scripts/gen-shaders.sh (or .ps1) and commit what it writes."
+        );
+    }
 }
 
-/// Invoke `fxc` to compile one entry point to a committed `.dxbc` blob. A compile
-/// failure is fatal (panics the build) — when fxc *is* present, a broken shader
-/// must not slip through as a silently-stale blob.
-fn compile(fxc: &Path, source: &Path, output: &Path, job: &ShaderJob) {
+/// Discover this host's generated sources: every
+/// `review_<program>_<backend>_<vertex|fragment>.<ext>` under `src/shaders/generated/`
+/// whose extension this host owns, each compiled to a [`BLOB_EXT`] sibling. The stage
+/// comes from the filename — so there is nothing to hand-list, which is the point:
+/// `review.glsl` alone decides which programs exist.
+///
+/// The other host's sources are skipped entirely, by extension: a `.metal` here is
+/// not a job with no compiler, it is not this build's business at all.
+fn generated_jobs(generated_dir: &Path) -> Vec<ShaderJob> {
+    let Ok(entries) = std::fs::read_dir(generated_dir) else {
+        // The directory is absent only before `scripts/gen-shaders` has ever run.
+        return Vec::new();
+    };
+    let mut jobs: Vec<ShaderJob> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == SOURCE_EXT))
+        .filter_map(|path| {
+            let stem = path.file_stem()?.to_str()?;
+            let profile = stage_profile(stem)?;
+            Some(ShaderJob {
+                output: path.with_extension(BLOB_EXT),
+                source_name: path.file_name()?.to_str()?.to_owned(),
+                source: path,
+                profile,
+            })
+        })
+        .collect();
+    // `read_dir` order is filesystem-defined; sort so build output is reproducible.
+    jobs.sort_unstable_by(|a, b| a.source.cmp(&b.source));
+    jobs
+}
+
+/// The `fxc` target profile for a generated source's stage suffix, and `None` for a
+/// file that is not one of shdc's stage sources.
+#[cfg(windows)]
+fn stage_profile(stem: &str) -> Option<&'static str> {
+    match stem.rsplit_once('_')? {
+        (_, "vertex") => Some("vs_5_0"),
+        (_, "fragment") => Some("ps_5_0"),
+        _ => None,
+    }
+}
+
+/// `metal` reads the stage from the source's own `[[vertex]]` / `[[fragment]]`
+/// attribute, so there is no profile to pass — but the suffix still has to be checked,
+/// because it is what identifies the file as one of shdc's stage sources.
+#[cfg(target_os = "macos")]
+fn stage_profile(stem: &str) -> Option<&'static str> {
+    match stem.rsplit_once('_')? {
+        (_, "vertex" | "fragment") => Some(""),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The host half: which sources this build owns, and what compiles them
+// ---------------------------------------------------------------------------
+
+/// Extension of the generated sources this host compiles, and of the blobs it writes
+/// beside them. The other host's files differ in both, which is how the two job lists
+/// stay disjoint without a filename convention to parse.
+#[cfg(windows)]
+const SOURCE_EXT: &str = "hlsl";
+#[cfg(windows)]
+const BLOB_EXT: &str = "dxbc";
+#[cfg(target_os = "macos")]
+const SOURCE_EXT: &str = "metal";
+#[cfg(target_os = "macos")]
+const BLOB_EXT: &str = "metallib";
+
+/// What to call the host's shader compiler in a build warning, and what to tell
+/// someone who does not have it.
+#[cfg(windows)]
+const TOOL_NAME: &str = "fxc";
+#[cfg(windows)]
+const TOOL_INSTALL_HINT: &str = "Install the Windows SDK.";
+#[cfg(target_os = "macos")]
+const TOOL_NAME: &str = "the Metal toolchain";
+#[cfg(target_os = "macos")]
+const TOOL_INSTALL_HINT: &str =
+    "Install Xcode and run: xcodebuild -downloadComponent MetalToolchain.";
+
+/// Invoke `fxc` to compile one generated source to a committed `.dxbc` blob. A
+/// compile failure is fatal (panics the build) — when fxc *is* present, a broken
+/// shader must not slip through as a silently-stale blob.
+#[cfg(windows)]
+fn compile(fxc: &Path, job: &ShaderJob) {
     // /O3 highest optimization; /WX warnings-as-errors so a sloppy translation
     // fails the build rather than shipping; default (column-major) matrix packing.
     let status = Command::new(fxc)
@@ -229,31 +349,56 @@ fn compile(fxc: &Path, source: &Path, output: &Path, job: &ShaderJob) {
         .arg("/T")
         .arg(job.profile)
         .arg("/E")
-        .arg(job.entry)
+        .arg("main")
         .arg("/O3")
         .arg("/WX")
         .arg("/Fo")
-        .arg(output)
-        .arg(source)
+        .arg(&job.output)
+        .arg(&job.source)
         .status()
         .unwrap_or_else(|err| panic!("failed to launch fxc ({}): {err}", fxc.display()));
 
     if !status.success() {
         panic!(
-            "fxc failed to compile {} entry `{}` ({}) -> {}",
-            source.display(),
-            job.entry,
+            "fxc failed to compile {} ({}) -> {}",
+            job.source.display(),
             job.profile,
-            output.display()
+            job.output.display()
+        );
+    }
+}
+
+/// Invoke `xcrun metal` to compile one generated MSL source straight to a committed
+/// `.metallib`. Fatal on failure, for the same reason as the fxc twin.
+///
+/// One invocation, not the `metal -c` → `metallib` pair: the driver does both, and a
+/// single-source library is exactly what `sg_make_shader` loads with
+/// `newLibraryWithData:`. `-Werror` is the counterpart of fxc's `/WX`, and holds today
+/// — every one of shdc's generated MSL sources compiles warning-free.
+#[cfg(target_os = "macos")]
+fn compile(xcrun: &Path, job: &ShaderJob) {
+    let status = Command::new(xcrun)
+        .args(["-sdk", "macosx", "metal", "-Werror", "-O3", "-o"])
+        .arg(&job.output)
+        .arg(&job.source)
+        .status()
+        .unwrap_or_else(|err| panic!("failed to launch xcrun ({}): {err}", xcrun.display()));
+
+    if !status.success() {
+        panic!(
+            "metal failed to compile {} -> {}",
+            job.source.display(),
+            job.output.display()
         );
     }
 }
 
 /// Locate `fxc.exe`: first on `PATH`, then by scanning the Windows SDK's
 /// per-version `bin\<ver>\x64` directories and picking the newest. Returns `None`
-/// when no SDK is installed (a normal CI box), in which case the committed blobs
-/// are used as-is.
-fn find_fxc() -> Option<PathBuf> {
+/// when no SDK is installed (a normal CI box), in which case the committed blobs are
+/// used as-is.
+#[cfg(windows)]
+fn find_tool() -> Option<PathBuf> {
     // On PATH (e.g. a Developer Command Prompt that added the SDK bin).
     if Command::new("fxc").arg("/?").output().is_ok() {
         return Some(PathBuf::from("fxc"));
@@ -280,4 +425,21 @@ fn find_fxc() -> Option<PathBuf> {
     // newest (10.0.22621.0 < 10.0.26100.0).
     candidates.sort();
     candidates.pop()
+}
+
+/// Confirm the Metal toolchain is really installed, by **running** it.
+///
+/// `xcrun --find metal` is not the check: Command Line Tools ship a `metal` stub that
+/// exists, resolves, and fails with a message about a missing toolchain the moment it
+/// is asked to compile anything (`mac-port-plan.md` §7). Asking it for `--version` is
+/// the cheapest question that actually goes through the real compiler, so a box
+/// without the 839 MB toolchain answers "no" here and builds from the committed
+/// `.metallib`s instead of panicking mid-compile.
+#[cfg(target_os = "macos")]
+fn find_tool() -> Option<PathBuf> {
+    let ran = Command::new("xcrun")
+        .args(["-sdk", "macosx", "metal", "--version"])
+        .output()
+        .ok()?;
+    ran.status.success().then(|| PathBuf::from("xcrun"))
 }

@@ -1,152 +1,156 @@
-//! Texture sampler plumbing: the composite / IBL linear-clamp sampler (`s1`), the
-//! UV-checker repeat sampler (`s0`), and the material anisotropic-repeat sampler
-//! (`s2`).
+//! Samplers: how a shader filters and wraps the texture it reads.
+//!
+//! [`Sampler::new`] is the general one — egui sets a filter pair and a wrap mode per
+//! texture, and picking the wrong one shows as a blurred icon or a bled atlas edge.
+//! The scene's four are named constructors below, because each is a decision with a
+//! reason rather than a combination.
 
-use windows::Win32::Graphics::Direct3D11::{
-    D3D11_COMPARISON_NEVER, D3D11_FILTER_ANISOTROPIC, D3D11_FILTER_MIN_LINEAR_MAG_POINT_MIP_LINEAR,
-    D3D11_FILTER_MIN_MAG_MIP_LINEAR, D3D11_FILTER_MIN_MAG_MIP_POINT, D3D11_FLOAT32_MAX,
-    D3D11_SAMPLER_DESC, D3D11_TEXTURE_ADDRESS_CLAMP, D3D11_TEXTURE_ADDRESS_WRAP, ID3D11Device,
-    ID3D11DeviceContext, ID3D11SamplerState,
-};
-use windows::core::Result;
+use std::ffi::CStr;
 
-use super::out_param;
+use sokol::gfx as sg;
 
-/// Anisotropic-filter sample count for the material sampler — 16× is the common
-/// hardware ceiling.
-const MATERIAL_ANISOTROPY: u32 = 16;
+use super::error::{GpuResult, ResourceKind, require_valid};
 
-/// A texture sampler state.
-pub(crate) struct Sampler {
-    state: ID3D11SamplerState,
+/// How a texture is filtered when it is not sampled 1:1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Filter {
+    /// Bilinear — text, images, anything continuous.
+    Linear,
+    /// Point — pixel art, and any texture that must not be softened.
+    Nearest,
 }
 
+impl Filter {
+    const fn sg(self) -> sg::Filter {
+        match self {
+            Self::Linear => sg::Filter::Linear,
+            Self::Nearest => sg::Filter::Nearest,
+        }
+    }
+}
+
+/// What a sample outside 0..1 reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Wrap {
+    /// Repeat the texture.
+    Repeat,
+    /// Hold the edge texel.
+    ClampToEdge,
+    /// Repeat, flipping every other copy.
+    MirroredRepeat,
+}
+
+impl Wrap {
+    const fn sg(self) -> sg::Wrap {
+        match self {
+            Self::Repeat => sg::Wrap::Repeat,
+            Self::ClampToEdge => sg::Wrap::ClampToEdge,
+            Self::MirroredRepeat => sg::Wrap::MirroredRepeat,
+        }
+    }
+}
+
+/// Anisotropic sample count for the material sampler — 16x is the common hardware
+/// ceiling.
+const MATERIAL_ANISOTROPY: u32 = 16;
+
+/// A sampler state object.
+pub(crate) struct Sampler(sg::Sampler);
+
 impl Sampler {
-    /// A trilinear sampler with clamp addressing — the composite reads its
-    /// full-resolution (1:1) inputs, so addressing is moot, but clamp avoids edge
-    /// wrap on any future sub-rect sampling.
-    pub(crate) fn linear_clamp(device: &ID3D11Device) -> Result<Self> {
-        let desc = D3D11_SAMPLER_DESC {
-            Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR,
-            AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
-            AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
-            AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
-            MipLODBias: 0.0,
-            MaxAnisotropy: 1,
-            ComparisonFunc: D3D11_COMPARISON_NEVER,
-            BorderColor: [0.0; 4],
-            MinLOD: 0.0,
-            MaxLOD: D3D11_FLOAT32_MAX,
-        };
-        let mut state = None;
-        // SAFETY: `desc` is a well-formed sampler description; the out-param is set.
-        unsafe { device.CreateSamplerState(&desc, Some(&mut state))? };
-        Ok(Self {
-            state: out_param(state),
-        })
+    /// A sampler with separate minify and magnify filters and one wrap mode on both
+    /// axes. The mipmap filter follows the minify filter, which is what a caller
+    /// asking for "linear minification" always means.
+    pub(crate) fn new(
+        min_filter: Filter,
+        mag_filter: Filter,
+        wrap: Wrap,
+        label: &CStr,
+    ) -> GpuResult<Self> {
+        Self::build(min_filter, mag_filter, wrap, 1, label)
     }
 
-    /// A trilinear sampler with **repeat** addressing — the UV-checker sampler
-    /// (`s0`), whose tiled UVs run past the 0..1 range.
-    pub(crate) fn linear_repeat(device: &ID3D11Device) -> Result<Self> {
-        let desc = D3D11_SAMPLER_DESC {
-            Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR,
-            AddressU: D3D11_TEXTURE_ADDRESS_WRAP,
-            AddressV: D3D11_TEXTURE_ADDRESS_WRAP,
-            AddressW: D3D11_TEXTURE_ADDRESS_WRAP,
-            MipLODBias: 0.0,
-            MaxAnisotropy: 1,
-            ComparisonFunc: D3D11_COMPARISON_NEVER,
-            BorderColor: [0.0; 4],
-            MinLOD: 0.0,
-            MaxLOD: D3D11_FLOAT32_MAX,
-        };
-        let mut state = None;
-        // SAFETY: `desc` is a well-formed sampler description; the out-param is set.
-        unsafe { device.CreateSamplerState(&desc, Some(&mut state))? };
-        Ok(Self {
-            state: out_param(state),
-        })
+    fn build(
+        min_filter: Filter,
+        mag_filter: Filter,
+        wrap: Wrap,
+        max_anisotropy: u32,
+        label: &CStr,
+    ) -> GpuResult<Self> {
+        let mut desc = sg::SamplerDesc::new();
+        desc.max_anisotropy = max_anisotropy;
+        desc.min_filter = min_filter.sg();
+        desc.mag_filter = mag_filter.sg();
+        desc.mipmap_filter = min_filter.sg();
+        desc.wrap_u = wrap.sg();
+        desc.wrap_v = wrap.sg();
+        desc.wrap_w = wrap.sg();
+        desc.label = label.as_ptr();
+        let sampler = sg::make_sampler(&desc);
+        require_valid(
+            sg::query_sampler_state(sampler),
+            ResourceKind::Sampler,
+            label.to_str().unwrap_or("sampler"),
+        )?;
+        Ok(Self(sampler))
     }
 
-    /// A point (nearest), clamp-addressed sampler — the GTAO sampler (`s0` of the
-    /// GTAO passes). The occlusion + bilateral blur read view normals / depths from
-    /// the G-buffer, which must **not** be linearly blended across geometry edges
-    /// (that would bleed occlusion); clamp keeps border samples from wrapping.
-    pub(crate) fn point_clamp(device: &ID3D11Device) -> Result<Self> {
-        let desc = D3D11_SAMPLER_DESC {
-            Filter: D3D11_FILTER_MIN_MAG_MIP_POINT,
-            AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
-            AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
-            AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
-            MipLODBias: 0.0,
-            MaxAnisotropy: 1,
-            ComparisonFunc: D3D11_COMPARISON_NEVER,
-            BorderColor: [0.0; 4],
-            MinLOD: 0.0,
-            MaxLOD: D3D11_FLOAT32_MAX,
-        };
-        let mut state = None;
-        // SAFETY: `desc` is a well-formed sampler description; the out-param is set.
-        unsafe { device.CreateSamplerState(&desc, Some(&mut state))? };
-        Ok(Self {
-            state: out_param(state),
-        })
+    /// Trilinear, clamp — the composite's 1:1 input sampler and the IBL sampler.
+    /// Addressing is moot at 1:1, but clamp avoids edge wrap on the cube faces.
+    pub(crate) fn linear_clamp() -> GpuResult<Self> {
+        Self::new(
+            Filter::Linear,
+            Filter::Linear,
+            Wrap::ClampToEdge,
+            c"linear-clamp",
+        )
     }
 
-    /// A linear-minify / point-magnify, clamp-addressed sampler — the Tex viewport
-    /// sampler. Crisp texels when zoomed in (nearest magnify), smooth when zoomed out
-    /// (linear minify over the mip chain); clamp keeps the border from wrapping.
-    /// The Tex-viewport sampler.
-    pub(crate) fn tex_view(device: &ID3D11Device) -> Result<Self> {
-        let desc = D3D11_SAMPLER_DESC {
-            Filter: D3D11_FILTER_MIN_LINEAR_MAG_POINT_MIP_LINEAR,
-            AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
-            AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
-            AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
-            MipLODBias: 0.0,
-            MaxAnisotropy: 1,
-            ComparisonFunc: D3D11_COMPARISON_NEVER,
-            BorderColor: [0.0; 4],
-            MinLOD: 0.0,
-            MaxLOD: D3D11_FLOAT32_MAX,
-        };
-        let mut state = None;
-        // SAFETY: `desc` is a well-formed sampler description; the out-param is set.
-        unsafe { device.CreateSamplerState(&desc, Some(&mut state))? };
-        Ok(Self {
-            state: out_param(state),
-        })
+    /// Trilinear, repeat — the UV checker, whose tiled UVs run past 0..1.
+    pub(crate) fn linear_repeat() -> GpuResult<Self> {
+        Self::new(
+            Filter::Linear,
+            Filter::Linear,
+            Wrap::Repeat,
+            c"linear-repeat",
+        )
     }
 
-    /// An anisotropic, repeat-addressed sampler — the material sampler (`s2`).
-    /// Combined with the per-texture mip chain this removes grazing-angle shimmer.
-    pub(crate) fn aniso_repeat(device: &ID3D11Device) -> Result<Self> {
-        let desc = D3D11_SAMPLER_DESC {
-            Filter: D3D11_FILTER_ANISOTROPIC,
-            AddressU: D3D11_TEXTURE_ADDRESS_WRAP,
-            AddressV: D3D11_TEXTURE_ADDRESS_WRAP,
-            AddressW: D3D11_TEXTURE_ADDRESS_WRAP,
-            MipLODBias: 0.0,
-            MaxAnisotropy: MATERIAL_ANISOTROPY,
-            ComparisonFunc: D3D11_COMPARISON_NEVER,
-            BorderColor: [0.0; 4],
-            MinLOD: 0.0,
-            MaxLOD: D3D11_FLOAT32_MAX,
-        };
-        let mut state = None;
-        // SAFETY: `desc` is a well-formed sampler description; the out-param is set.
-        unsafe { device.CreateSamplerState(&desc, Some(&mut state))? };
-        Ok(Self {
-            state: out_param(state),
-        })
+    /// Point, clamp — the GTAO passes. View normals and depths must **not** be
+    /// blended across geometry edges (that would bleed occlusion); clamp keeps border
+    /// samples from wrapping.
+    pub(crate) fn point_clamp() -> GpuResult<Self> {
+        Self::new(
+            Filter::Nearest,
+            Filter::Nearest,
+            Wrap::ClampToEdge,
+            c"point-clamp",
+        )
     }
 
-    /// Bind this sampler to pixel-shader sampler slot `slot`.
-    pub(crate) fn bind_ps(&self, ctx: &ID3D11DeviceContext, slot: u32) {
-        // SAFETY: the sampler is live; the one-element array outlives the call.
-        unsafe {
-            ctx.PSSetSamplers(slot, Some(&[Some(self.state.clone())]));
+    /// Anisotropic, repeat — the material sampler. With the per-texture mip chain
+    /// this is what removes grazing-angle shimmer; 16× is the common hardware
+    /// ceiling.
+    pub(crate) fn aniso_repeat() -> GpuResult<Self> {
+        Self::build(
+            Filter::Linear,
+            Filter::Linear,
+            Wrap::Repeat,
+            MATERIAL_ANISOTROPY,
+            c"aniso-repeat",
+        )
+    }
+
+    /// The sokol handle, for an `sg::Bindings` slot.
+    pub(crate) fn handle(&self) -> sg::Sampler {
+        self.0
+    }
+}
+
+impl Drop for Sampler {
+    fn drop(&mut self) {
+        if sg::isvalid() {
+            sg::destroy_sampler(self.0);
         }
     }
 }

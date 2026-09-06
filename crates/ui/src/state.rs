@@ -913,23 +913,23 @@ impl BoundsCaches {
 #[derive(Debug, Clone)]
 pub struct Capabilities {
     /// MSAA levels the active adapter actually supports, set by `app` from the
-    /// device's `supported_msaa_counts()` (D3D11 `CheckMultisampleQualityLevels`).
+    /// device's `supported_msaa_counts()`, which the backend leaf answers.
     /// The Anti Aliasing menu disables any level not in this list (invariant 4).
     /// Empty until the adapter is known (the panel then falls back to offering only
     /// the current level).
     pub msaa_levels: Vec<MsaaSamples>,
-    /// Whether the active adapter can build the IBL maps. Always true on the D3D11
+    /// Whether the active adapter can build the IBL maps. Always true on the desktop
     /// target (the device hard-requires `TEXTURE_COMPRESSION_BC` for the BC6H IBL
     /// cubes, and 11_0+ guarantees the float formats), so the Environment panel never
     /// disables the IBL toggle in practice; kept as a field for the capability seam.
     pub(crate) ibl: bool,
-    /// Whether the active adapter can run GTAO. Always true on the D3D11 target
+    /// Whether the active adapter can run GTAO. Always true on the desktop target
     /// (the G-buffer + horizon passes need only float render targets + samplers
     /// guaranteed at feature level 11_0+), so the status-bar AO button is never
     /// disabled in practice; kept as a field for the capability seam.
     pub(crate) gtao: bool,
-    /// Friendly name of the graphics backend (e.g. "DX11"), shown in the help
-    /// overlay title; set by `app` (the renderer is always Direct3D 11).
+    /// Friendly name of the graphics API sokol_gfx is running on (e.g. "DX11"),
+    /// shown in the help overlay title; set by `app`.
     pub gpu_backend: String,
     /// Application version shown in the help overlay title (e.g. "0.1.0"), set by
     /// `app` from its `CARGO_PKG_VERSION`.
@@ -990,7 +990,7 @@ pub struct UiState {
     pub texture_view: TextureViewState,
     /// The Tex viewport's central canvas rect (egui points), written by
     /// [`crate::texture_view`] each Tex frame and read by `app` to place the image in
-    /// the D3D11 Tex draw (migration Phase 4). `None` until the Tex viewport has been
+    /// the Tex image draw. `None` until the Tex viewport has been
     /// laid out at least once.
     pub texture_canvas: Option<egui::Rect>,
     /// The chrome-free scene area (egui points): the window minus the toolbar,
@@ -1066,7 +1066,7 @@ pub struct UiState {
     pub animation: AnimationUiState,
     /// Bone nodes selected in the Outliner, in click order (the last entry is the
     /// primary, mirrored into [`UiState::selection`]). Drives the skeleton
-    /// overlay's highlight and the skin-weight heat map. Ctrl-click toggles a
+    /// overlay's highlight and the skin-weight heat map. Primary-click toggles a
     /// member, Shift-click takes a range; clicking any non-bone row clears it.
     ///
     /// Kept beside [`UiState::selection`] rather than inside it because
@@ -1074,7 +1074,7 @@ pub struct UiState {
     /// snapshots, where a growable set would be the wrong shape.
     pub selected_bones: Vec<usize>,
     /// Anchor row for Shift-click range selection: the last plainly-clicked or
-    /// Ctrl-clicked bone. `None` until a bone is clicked.
+    /// Primary-clicked bone. `None` until a bone is clicked.
     pub bone_anchor: Option<usize>,
     /// Whether the loaded model carries any bone node. Gates the skeleton toolbar
     /// button (hidden entirely for an unrigged model). Set by `app` on load.

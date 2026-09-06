@@ -30,7 +30,7 @@ pub(crate) fn uv_wireframe_lines(model: &ModelData, channel: u32) -> Vec<SceneVe
     };
 
     if model.faces.is_empty() {
-        for triangle in model.indices.chunks_exact(3) {
+        for triangle in model.indices.as_chunks::<3>().0 {
             let [a, b, c] = [
                 triangle[0] as usize,
                 triangle[1] as usize,
@@ -109,7 +109,7 @@ pub(crate) fn uv_fill_triangles(
     };
 
     let mut vertices = Vec::with_capacity(model.indices.len());
-    for (triangle_index, triangle) in model.indices.chunks_exact(3).enumerate() {
+    for (triangle_index, triangle) in model.indices.as_chunks::<3>().0.iter().enumerate() {
         let [a, b, c] = [
             triangle[0] as usize,
             triangle[1] as usize,

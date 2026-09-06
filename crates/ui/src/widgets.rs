@@ -334,8 +334,8 @@ pub(crate) fn segment_button(
 /// track the surrounding stock widgets, not a fixed physical size.
 ///
 /// This is the `egui_tabs` look, painted here rather than pulled in: that crate
-/// pins `egui 0.29`/`0.30`, and this workspace is on 0.33 (the ceiling set by
-/// `egui-directx11`), so linking it would fork a second `egui` into the graph.
+/// pins `egui 0.29`/`0.30` and this workspace is on 0.36, so linking it would fork a
+/// second `egui` into the graph.
 /// It also parks the selection in `ctx` temp data, which would duplicate the
 /// `UiState` field that already owns it (invariant 2).
 ///
@@ -529,7 +529,7 @@ pub(crate) fn style_combo_popup(ui: &mut egui::Ui) {
     ui.spacing_mut().interact_size.y = size::PANEL_COMBO_OPTION_H;
     ui.spacing_mut().button_padding.y = size::PANEL_COMBO_OPTION_PAD_Y;
     ui.visuals_mut().selection.bg_fill = egui::Color32::TRANSPARENT;
-    ui.visuals_mut().selection.stroke = egui::Stroke::new(0.0, color::TEXT_COMBO_SELECTED);
+    ui.visuals_mut().selection.stroke = egui::Stroke::new(0.0_f32, color::TEXT_COMBO_SELECTED);
     ui.visuals_mut().widgets.inactive.fg_stroke.color = color::TEXT_COMBO_DIM;
 }
 

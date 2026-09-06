@@ -1,0 +1,20 @@
+# A patch must round-trip byte-exact: the files it applies to are LF, so letting
+# the working copy get CRLF line endings makes `git apply` reject it.
+*.patch -text
+
+# The generated shader sources are hashed into bytecode.manifest, so their bytes
+# must be the same on every host: `core.autocrlf` would otherwise hand a Windows
+# clone CRLF and the Mac LF, giving one committed source two digests and putting
+# the two hosts in a permanent rebuild loop (D5). The compiled blobs are binary and
+# must never be touched at all.
+crates/render/src/shaders/generated/*.hlsl text eol=lf
+crates/render/src/shaders/generated/*.metal text eol=lf
+crates/render/src/shaders/generated/*.rs text eol=lf
+crates/render/src/shaders/generated/bytecode.manifest text eol=lf
+# The digest of the review.glsl the set was generated from — build.rs compares it
+# against the file's own hash, so a CRLF conversion here would make every build warn.
+crates/render/src/shaders/generated/review.glsl.sha256 text eol=lf
+# And review.glsl itself, since that hash is taken over its bytes.
+crates/render/src/shaders/review.glsl text eol=lf
+crates/render/src/shaders/generated/*.dxbc binary
+crates/render/src/shaders/generated/*.metallib binary

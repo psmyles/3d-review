@@ -1,303 +1,201 @@
-//! GPU texture plumbing for the scene path: immutable block-compressed cube maps
-//! (the baked BC6H IBL cubes), immutable raw 2D maps (the BRDF LUT + the per-slot
-//! fallbacks + the checker), and RGBA8 2D textures with a runtime-generated mip
-//! chain (the material slots). Each owns a single shader-resource view the pixel
-//! shaders sample.
+//! Textures: an image plus the view a shader samples it through.
 //!
-//! All D3D11 `unsafe`/COM lives here (and the sibling `rhi` modules); the material /
-//! IBL paths drive these through safe methods only (invariant 9 amendment).
+//! sokol separates the two — an `sg::Image` is storage, an `sg::View` is how a
+//! binding slot reads it — so a [`Texture`] owns a matched pair and hands out only
+//! the view. The BC6H cubes and the render-target views arrive with the scene stages
+//! that need them (`mac-port-plan.md` Phase 1 step 4).
 
-use std::ffi::c_void;
+use std::ffi::CStr;
 
-use windows::Win32::Graphics::Direct3D::D3D_SRV_DIMENSION_TEXTURECUBE;
-use windows::Win32::Graphics::Direct3D11::{
-    D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_FLAG,
-    D3D11_RESOURCE_MISC_GENERATE_MIPS, D3D11_RESOURCE_MISC_TEXTURECUBE,
-    D3D11_SHADER_RESOURCE_VIEW_DESC, D3D11_SHADER_RESOURCE_VIEW_DESC_0, D3D11_SUBRESOURCE_DATA,
-    D3D11_TEXCUBE_SRV, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_USAGE_IMMUTABLE,
-    ID3D11Device, ID3D11DeviceContext, ID3D11ShaderResourceView,
-};
-use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_SAMPLE_DESC,
-};
-use windows::core::Result;
+use sokol::gfx as sg;
 
-use super::{invalid_arg, out_param};
+use super::error::{GpuError, GpuResult, ResourceKind, require_valid};
+use super::format::Format;
+use super::mips;
 
-/// A sampled GPU texture: a 2D or cube texture plus the shader-resource view a
-/// pixel shader reads it through. The underlying texture is kept alive by the SRV's
-/// internal reference, so only the view is stored.
+/// An immutable 2D texture and its sampling view.
 pub(crate) struct Texture {
-    srv: ID3D11ShaderResourceView,
+    image: sg::Image,
+    view: sg::View,
 }
 
 impl Texture {
-    /// Create an immutable block-compressed **cube** texture (the baked BC6H IBL
-    /// cubes) from mip-major, faces-contiguous block bytes — exactly the layout the
-    /// bake tool wrote. `size` is the base face
-    /// resolution; `block_bytes` is one block's size (16 for BC6H). The D3D11
-    /// subresource order is `face * mips + mip`, so the mip-major source is
-    /// re-indexed accordingly.
+    /// Upload a single-mip 2D texture from tightly packed rows.
+    ///
+    /// Immutable: the content is handed over at creation and never updated. That is
+    /// deliberate for the egui atlas — sokol's `sg_update_image` is whole-image and
+    /// once-per-frame, so a sub-rectangle patch is expressed as "recreate from the
+    /// CPU shadow", which an immutable image does with no extra machinery.
+    pub(crate) fn immutable_2d(
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+        format: Format,
+        label: &CStr,
+    ) -> GpuResult<Self> {
+        let name = label.to_str().unwrap_or("texture");
+        let expected = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|texels| texels.checked_mul(format.block_bytes() as usize))
+            .ok_or_else(|| {
+                GpuError::invalid_arg(format!("'{name}' is {width}x{height}, which overflows"))
+            })?;
+        if format.is_block_compressed() {
+            return Err(GpuError::invalid_arg(format!(
+                "'{name}' asks for a block-compressed 2D upload, which has no caller yet"
+            )));
+        }
+        if pixels.len() != expected {
+            return Err(GpuError::invalid_arg(format!(
+                "'{name}' is {width}x{height} ({expected} bytes) but was given {}",
+                pixels.len()
+            )));
+        }
+
+        let mut desc = sg::ImageDesc::new();
+        desc._type = sg::ImageType::Dim2;
+        desc.usage.immutable = true;
+        desc.width = width as i32;
+        desc.height = height as i32;
+        desc.num_mipmaps = 1;
+        desc.pixel_format = format.sg();
+        desc.data.mip_levels[0] = sg::slice_as_range(pixels);
+        desc.label = label.as_ptr();
+        Self::from_desc(&desc, label)
+    }
+
+    /// Upload a decoded RGBA8 image (sRGB or raw) with a full CPU-generated mip
+    /// chain — the Tex viewport's images and, when that stage lands, the material
+    /// slots. A degenerate or short pixel buffer falls back to a 1×1 white texel: a
+    /// decode hiccup must never fail the render path.
+    ///
+    /// The chain is built here rather than on the decode worker D7 names, because it
+    /// is not a property of the decoded image alone — the same pixels are uploaded
+    /// raw by the Tex viewport and sRGB by a material slot, and the two chains differ
+    /// (see [`mips`]). It costs a few milliseconds once per texture, on the frame it
+    /// is first looked at.
+    pub(crate) fn rgba8_mipped_or_white(
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+        srgb: bool,
+        label: &CStr,
+    ) -> GpuResult<Self> {
+        let format = if srgb {
+            Format::Rgba8Srgb
+        } else {
+            Format::Rgba8
+        };
+        let (width, height) = (width.max(1), height.max(1));
+        let expected = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|texels| texels.checked_mul(4));
+        if expected.is_none_or(|expected| rgba.len() < expected) {
+            return Self::immutable_2d(&[255, 255, 255, 255], 1, 1, format, label);
+        }
+
+        let levels = mips::levels_below_base(rgba, width, height, srgb);
+        let mut desc = sg::ImageDesc::new();
+        desc._type = sg::ImageType::Dim2;
+        desc.usage.immutable = true;
+        desc.width = width as i32;
+        desc.height = height as i32;
+        desc.num_mipmaps = levels.len() as i32 + 1;
+        desc.pixel_format = format.sg();
+        desc.data.mip_levels[0] = sg::slice_as_range(rgba);
+        for (level, pixels) in levels.iter().enumerate() {
+            desc.data.mip_levels[level + 1] = sg::slice_as_range(pixels);
+        }
+        desc.label = label.as_ptr();
+        // `levels` is alive across the call, which is what the ranges above point at.
+        Self::from_desc(&desc, label)
+    }
+
+    /// Upload an immutable block-compressed **cube** texture from mip-major,
+    /// faces-contiguous block bytes — exactly the layout the IBL bake wrote.
+    ///
+    /// That layout is also exactly sokol's: one `mip_levels` range per mip, covering
+    /// all six faces in +X -X +Y -Y +Z -Z order. The D3D11 path had to re-index this
+    /// into `face * mips + mip` subresources; that step is gone.
+    ///
+    /// `size` is the base face resolution; the block size comes from `format`, so a
+    /// caller cannot disagree with it.
     pub(crate) fn cube_block_compressed(
-        device: &ID3D11Device,
         size: u32,
         mips: u32,
-        format: DXGI_FORMAT,
-        block_bytes: u32,
+        format: Format,
         data: &[u8],
-    ) -> Result<Self> {
-        // Validate the payload against the computed subresource layout *before*
-        // handing pointers to the driver: a truncated baked asset would otherwise
-        // make D3D11 read past the end of `data` (out of bounds, not an error).
-        let total_len: usize = (0..mips)
-            .map(|mip| {
-                let blocks = (size >> mip).max(1).div_ceil(4) as usize;
-                blocks * blocks * block_bytes as usize * 6
-            })
-            .sum();
-        if data.len() < total_len {
-            return Err(invalid_arg(
-                "block-compressed cube payload is shorter than its subresource layout",
-            ));
+        label: &CStr,
+    ) -> GpuResult<Self> {
+        let name = label.to_str().unwrap_or("cube");
+        debug_assert!(
+            format.is_block_compressed(),
+            "cube_block_compressed needs a block-compressed format"
+        );
+        let block_bytes = format.block_bytes() as usize;
+        // Validate the payload against the layout *before* handing sokol pointers
+        // into it: a truncated baked asset would otherwise be read past its end.
+        let mip_len = |mip: u32| -> usize {
+            let blocks = (size >> mip).max(1).div_ceil(4) as usize;
+            blocks * blocks * block_bytes * 6
+        };
+        let total: usize = (0..mips).map(mip_len).sum();
+        if data.len() < total {
+            return Err(GpuError::invalid_arg(format!(
+                "'{name}' is {} bytes but its {mips}-mip layout needs {total}",
+                data.len()
+            )));
         }
 
-        let mut subdata = vec![D3D11_SUBRESOURCE_DATA::default(); (6 * mips) as usize];
+        let mut desc = sg::ImageDesc::new();
+        desc._type = sg::ImageType::Cube;
+        desc.usage.immutable = true;
+        desc.width = size as i32;
+        desc.height = size as i32;
+        desc.num_mipmaps = mips as i32;
+        desc.pixel_format = format.sg();
+        desc.label = label.as_ptr();
         let mut offset = 0usize;
         for mip in 0..mips {
-            let face_size = (size >> mip).max(1);
-            // Block-compressed faces stride by whole rows of 4×4 blocks.
-            let blocks = face_size.div_ceil(4);
-            let row_pitch = blocks * block_bytes;
-            let len = (row_pitch * blocks) as usize;
-            for face in 0..6 {
-                let index = (face * mips + mip) as usize;
-                subdata[index] = D3D11_SUBRESOURCE_DATA {
-                    pSysMem: data[offset..].as_ptr() as *const c_void,
-                    SysMemPitch: row_pitch,
-                    SysMemSlicePitch: len as u32,
-                };
-                offset += len;
-            }
+            let len = mip_len(mip);
+            desc.data.mip_levels[mip as usize] = sg::slice_as_range(&data[offset..offset + len]);
+            offset += len;
         }
-
-        let desc = D3D11_TEXTURE2D_DESC {
-            Width: size,
-            Height: size,
-            MipLevels: mips,
-            ArraySize: 6,
-            Format: format,
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
-            },
-            Usage: D3D11_USAGE_IMMUTABLE,
-            BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
-            CPUAccessFlags: 0,
-            MiscFlags: D3D11_RESOURCE_MISC_TEXTURECUBE.0 as u32,
-        };
-        let mut texture = None;
-        // SAFETY: `desc` describes an immutable cube; `subdata` (alive for the call)
-        // holds the 6×mips initial-data entries pointing into `data` (also alive).
-        unsafe { device.CreateTexture2D(&desc, Some(subdata.as_ptr()), Some(&mut texture))? };
-        let texture = out_param(texture);
-
-        let srv_desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
-            Format: format,
-            ViewDimension: D3D_SRV_DIMENSION_TEXTURECUBE,
-            Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
-                TextureCube: D3D11_TEXCUBE_SRV {
-                    MostDetailedMip: 0,
-                    MipLevels: mips,
-                },
-            },
-        };
-        let mut srv = None;
-        // SAFETY: `texture` is shader-resource-bindable; `srv_desc` matches its cube
-        // format + mip count. Out-param set.
-        unsafe { device.CreateShaderResourceView(&texture, Some(&srv_desc), Some(&mut srv))? };
-        Ok(Self {
-            srv: out_param(srv),
-        })
+        Self::from_desc(&desc, label)
     }
 
-    /// Create an immutable single-mip 2D texture from tightly-packed `data`
-    /// (`row_pitch` bytes per row) — the raw `Rg16Float` BRDF LUT.
-    pub(crate) fn immutable_2d(
-        device: &ID3D11Device,
-        width: u32,
-        height: u32,
-        format: DXGI_FORMAT,
-        row_pitch: u32,
-        data: &[u8],
-    ) -> Result<Self> {
-        // The driver reads `row_pitch` bytes per row for `height` rows; a short
-        // payload would be an out-of-bounds read, so reject it here.
-        if data.len() < row_pitch as usize * height as usize {
-            return Err(invalid_arg(
-                "2D texture payload is shorter than pitch × height",
-            ));
+    /// Create the image and the view a binding slot reads it through, destroying
+    /// both if either came back invalid.
+    fn from_desc(desc: &sg::ImageDesc, label: &CStr) -> GpuResult<Self> {
+        let name = label.to_str().unwrap_or("texture");
+        let image = sg::make_image(desc);
+
+        let mut view_desc = sg::ViewDesc::new();
+        view_desc.texture.image = image;
+        view_desc.label = desc.label;
+        let view = sg::make_view(&view_desc);
+
+        let made = require_valid(sg::query_image_state(image), ResourceKind::Texture, name)
+            .and_then(|()| require_valid(sg::query_view_state(view), ResourceKind::Texture, name));
+        if let Err(err) = made {
+            sg::destroy_view(view);
+            sg::destroy_image(image);
+            return Err(err);
         }
-        let init = D3D11_SUBRESOURCE_DATA {
-            pSysMem: data.as_ptr() as *const c_void,
-            SysMemPitch: row_pitch,
-            SysMemSlicePitch: 0,
-        };
-        let desc = D3D11_TEXTURE2D_DESC {
-            Width: width,
-            Height: height,
-            MipLevels: 1,
-            ArraySize: 1,
-            Format: format,
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
-            },
-            Usage: D3D11_USAGE_IMMUTABLE,
-            BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
-            CPUAccessFlags: 0,
-            MiscFlags: 0,
-        };
-        let mut texture = None;
-        // SAFETY: immutable 2D texture with full initial data alive for the call.
-        unsafe { device.CreateTexture2D(&desc, Some(&init), Some(&mut texture))? };
-        let texture = out_param(texture);
-        let mut srv = None;
-        // SAFETY: `texture` is shader-resource-bindable; a default view desc matches.
-        unsafe { device.CreateShaderResourceView(&texture, None, Some(&mut srv))? };
-        Ok(Self {
-            srv: out_param(srv),
-        })
+        Ok(Self { image, view })
     }
 
-    /// Create an immutable single-mip RGBA8 2D texture (sRGB or linear) — the
-    /// per-slot 1×1 material fallbacks and the UV-checker textures (no mips needed).
-    pub(crate) fn rgba8_single(
-        device: &ID3D11Device,
-        width: u32,
-        height: u32,
-        rgba: &[u8],
-        srgb: bool,
-    ) -> Result<Self> {
-        let format = rgba8_format(srgb);
-        Self::immutable_2d(device, width, height, format, width * 4, rgba)
-    }
-
-    /// Create an RGBA8 2D texture (sRGB or linear) with a full, runtime-generated
-    /// mip chain — the material texture slots. Mip 0 is uploaded via
-    /// `UpdateSubresource`, then `GenerateMips` fills the rest, so anisotropic
-    /// minification has levels to filter.
-    pub(crate) fn rgba8_mipped(
-        device: &ID3D11Device,
-        ctx: &ID3D11DeviceContext,
-        width: u32,
-        height: u32,
-        rgba: &[u8],
-        srgb: bool,
-    ) -> Result<Self> {
-        // Enforced here (not just documented at the call sites): the mip-0 upload
-        // below reads `width*height*4` bytes.
-        if rgba.len() < width as usize * height as usize * 4 {
-            return Err(invalid_arg(
-                "RGBA8 payload is shorter than width × height × 4",
-            ));
-        }
-        let format = rgba8_format(srgb);
-        let mips = mip_level_count(width, height);
-        let desc = D3D11_TEXTURE2D_DESC {
-            Width: width,
-            Height: height,
-            MipLevels: mips,
-            ArraySize: 1,
-            Format: format,
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
-            },
-            Usage: D3D11_USAGE_DEFAULT,
-            // GenerateMips needs both render-target + shader-resource binding.
-            BindFlags: (D3D11_BIND_SHADER_RESOURCE.0 | D3D11_BIND_RENDER_TARGET.0) as u32,
-            CPUAccessFlags: D3D11_CPU_ACCESS_FLAG(0).0 as u32,
-            MiscFlags: D3D11_RESOURCE_MISC_GENERATE_MIPS.0 as u32,
-        };
-        let mut texture = None;
-        // SAFETY: a default-usage mip-mapped 2D texture; mip0 is filled below and the
-        // rest generated, so no initial data is supplied.
-        unsafe { device.CreateTexture2D(&desc, None, Some(&mut texture))? };
-        let texture = out_param(texture);
-
-        // SAFETY: writing mip 0 of `texture`; `rgba` (>= width*height*4 bytes,
-        // checked above) is alive for the call, `width*4` is its row pitch.
-        unsafe {
-            ctx.UpdateSubresource(
-                &texture,
-                0,
-                None,
-                rgba.as_ptr() as *const c_void,
-                width * 4,
-                0,
-            );
-        }
-        let mut srv = None;
-        // SAFETY: `texture` is shader-resource-bindable across all mips; default desc.
-        unsafe { device.CreateShaderResourceView(&texture, None, Some(&mut srv))? };
-        let srv = out_param(srv);
-        // SAFETY: the SRV covers the full mip chain of a render-target-capable
-        // texture, so GenerateMips can downsample mip0 into the rest.
-        unsafe { ctx.GenerateMips(&srv) };
-        Ok(Self { srv })
-    }
-
-    /// Upload a decoded RGBA8 image as a mip-mapped texture, falling back to a
-    /// 1×1 white texel when the pixel buffer is degenerate / mismatched — a
-    /// decode hiccup must never fail the render path. Shared by the material
-    /// slots (sRGB per slot) and the Tex viewport (raw).
-    pub(crate) fn rgba8_mipped_or_white(
-        device: &ID3D11Device,
-        ctx: &ID3D11DeviceContext,
-        width: u32,
-        height: u32,
-        rgba: &[u8],
-        srgb: bool,
-    ) -> Result<Self> {
-        let width = width.max(1);
-        let height = height.max(1);
-        if rgba.len() < (width as usize * height as usize * 4) {
-            return Self::rgba8_single(device, 1, 1, &[255, 255, 255, 255], srgb);
-        }
-        Self::rgba8_mipped(device, ctx, width, height, rgba, srgb)
-    }
-
-    /// Bind this texture's SRV to pixel-shader slot `slot`.
-    pub(crate) fn bind_ps(&self, ctx: &ID3D11DeviceContext, slot: u32) {
-        super::bind_ps_srv(ctx, slot, &self.srv);
+    /// The sampling view, for an `sg::Bindings` slot.
+    pub(crate) fn view(&self) -> sg::View {
+        self.view
     }
 }
 
-/// Bind `textures` to consecutive pixel-shader SRV slots starting at `slot` in one
-/// call (the seven material slots → `t5..t11`). Fixed-size so the per-draw-range
-/// rebind allocates nothing.
-pub(crate) fn bind_ps_textures<const N: usize>(
-    ctx: &ID3D11DeviceContext,
-    slot: u32,
-    textures: &[&Texture; N],
-) {
-    let srvs: [Option<ID3D11ShaderResourceView>; N] =
-        std::array::from_fn(|index| Some(textures[index].srv.clone()));
-    // SAFETY: every SRV is live; the local array outlives the call.
-    unsafe {
-        ctx.PSSetShaderResources(slot, Some(&srvs));
+impl Drop for Texture {
+    fn drop(&mut self) {
+        if sg::isvalid() {
+            sg::destroy_view(self.view);
+            sg::destroy_image(self.image);
+        }
     }
-}
-
-fn rgba8_format(srgb: bool) -> DXGI_FORMAT {
-    if srgb {
-        DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
-    } else {
-        DXGI_FORMAT_R8G8B8A8_UNORM
-    }
-}
-
-/// Full mip-chain length for a `width`×`height` texture: `floor(log2(max)) + 1`.
-fn mip_level_count(width: u32, height: u32) -> u32 {
-    32 - width.max(height).max(1).leading_zeros()
 }

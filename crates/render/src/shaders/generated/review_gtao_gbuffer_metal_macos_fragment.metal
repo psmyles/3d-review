@@ -1,0 +1,40 @@
+#include <metal_stdlib>
+#include <simd/simd.h>
+
+using namespace metal;
+
+struct scene_fs
+{
+    float4x4 view_projection;
+    float4x4 inv_view_projection;
+    float4 render_options;
+    float4 camera_position;
+    float4 env_params;
+    float4 projection_params;
+    float4x4 view;
+    float4 selection_color;
+};
+
+struct main0_out
+{
+    float4 frag_gbuffer [[color(0)]];
+};
+
+struct main0_in
+{
+    float3 v_normal [[user(locn0)]];
+    float3 v_world_position [[user(locn3)]];
+};
+
+fragment main0_out main0(main0_in in [[stage_in]], constant scene_fs& sc [[buffer(1)]])
+{
+    main0_out out = {};
+    if (dot(in.v_normal, in.v_normal) < 9.9999999747524270787835121154785e-07)
+    {
+        out.frag_gbuffer = float4(0.0);
+        return out;
+    }
+    out.frag_gbuffer = float4(fast::normalize((sc.view * float4(in.v_normal, 0.0)).xyz), (sc.view * float4(in.v_world_position, 1.0)).z);
+    return out;
+}
+

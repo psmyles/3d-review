@@ -27,6 +27,7 @@ use review_model::ModelData;
 use review_render::Renderer;
 use review_ui::Selection;
 
+use crate::dialog::Dialog;
 use crate::{App, TEXTURE_EXTENSIONS, UserEvent, file_label, prof};
 
 /// A second primary click counts as a double-click only within this interval…
@@ -66,17 +67,24 @@ impl App {
         }
     }
 
+    /// Ask for a model to open. The picker runs on a worker thread and comes back
+    /// through the event loop (`dialog.rs`), so the answer lands in
+    /// [`Self::open_model_from_path`] one turn of the loop later rather than in
+    /// this call.
+    /// A macOS menu item the viewer performs itself (`mac-port-plan.md` D15).
+    ///
+    /// Both land on the same handlers the primary-modifier chords in
+    /// `shortcuts.rs` fire, which is the point: the menu is a second door onto the
+    /// existing commands, never a second implementation of them.
+    pub(crate) fn handle_menu_command(&mut self, command: review_shell_macos::MenuCommand) {
+        match command {
+            review_shell_macos::MenuCommand::Open => self.open_model_from_dialog(),
+            review_shell_macos::MenuCommand::New => self.reset_to_start_state(),
+        }
+    }
+
     pub(crate) fn open_model_from_dialog(&mut self) {
-        let file = rfd::FileDialog::new()
-            .add_filter("FBX", &["fbx"])
-            .set_title("Open Model")
-            .pick_file();
-
-        let Some(path) = file else {
-            return;
-        };
-
-        self.open_model_from_path(&path);
+        self.ask(Dialog::OpenModel);
     }
 
     pub(crate) fn open_model_from_path(&mut self, path: &Path) {
@@ -178,6 +186,9 @@ impl App {
                 self.notifications
                     .success(format!("Loaded {}", file_label(path)));
                 prof::msg(&format!("model loaded: {}", path.display()));
+                // A gate run starts measuring from here — the first present with
+                // the model actually on screen (`gate.rs`); no-op otherwise.
+                self.gate_model_ready(path);
             }
             Err(error) => {
                 // Surface the cause, not just the file name — without `--tracy`

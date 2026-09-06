@@ -1,503 +1,693 @@
-//! Direct3D 11 / DXGI plumbing — the GPU device, immediate context, and the
-//! window swapchain.
+//! The GPU plumbing: sokol_gfx, plus the one per-OS device/swapchain leaf it runs
+//! on ([`backend`]).
 //!
-//! This module is the **sole** home for Direct3D 11 / DXGI COM (`unsafe`) in the
-//! renderer — the sanctioned exception to invariant 9. Everything here is GPU
-//! plumbing only; no model geometry, camera math, or material logic lives in
-//! `unsafe`: the device/swapchain ([`Gpu`]), the [`Pipeline`] + vertex/constant
-//! buffers + targets/textures/samplers the scene path draws with, the `--tracy`
-//! GPU timestamp profiler, and the offline bake device.
+//! This module is the **sole** home for the drawing API in the renderer, and — in
+//! its `backend/` leaf — for the platform GPU `unsafe` that is invariant 9's
+//! sanctioned exception. Everything here is GPU plumbing; no model geometry, camera
+//! math or material logic lives near it.
+//!
+//! It is also the sole home for the backend's *types*. Nothing outside `rhi` names an
+//! `sg::` type, a pixel format enum or a window handle: every resource is created
+//! through a wrapper, every format is a [`Format`], and every failure is a
+//! [`GpuError`]. That is what makes the renderer's shape independent of what is
+//! underneath it — see `mac-port-plan.md` §3.1.
+//!
+//! ## The frame
+//!
+//! sokol_gfx is a process singleton with no thread affinity: [`Gpu::start`] creates
+//! the device and calls `sg_setup` on a bring-up thread while the window is being
+//! created (D8), and the join is the synchronisation. Everything after runs on the
+//! main thread.
+//!
+//! A frame is **exactly one swapchain pass**, because the Metal backend presents
+//! inside `sg_end_pass` and a second one would double-present:
+//!
+//! ```ignore
+//! let Some(mut frame) = gpu.begin_frame() else { return };  // None: nothing to draw into
+//! renderer.render_scene(&mut frame, &scene_frame)?;         // offscreen passes
+//! egui.prepare(&ctx, output)?;                              // outside any pass
+//! frame.begin_swapchain_pass();                             // the pass owns the clear
+//! egui.paint(ppp);
+//! frame.finish(vsync)                                       // end_pass, commit, present
+//! ```
 
+pub(crate) mod backend;
 #[cfg(feature = "bake")]
 pub(crate) mod bake;
+mod bindings;
 mod buffer;
+mod error;
+mod format;
 pub(crate) mod gpu_profiler;
+mod mips;
 mod pipeline;
+mod present;
 mod sampler;
+pub(crate) mod shader;
 mod target;
 mod texture;
 
-pub(crate) use buffer::{DynamicConstantBuffer, IndexBuffer, StructuredBuffer, VertexBuffer};
+pub(crate) use bindings::Bindings;
+pub(crate) use buffer::{IndexBuffer, StorageBuffer, TransientBuffer, VertexBuffer};
+pub(crate) use error::ResourceKind;
+pub use error::{GpuError, GpuResult};
+pub use format::Format;
+pub(crate) use format::{SCENE_COLOR_FORMAT, SCENE_DEPTH_FORMAT};
+pub(crate) use gpu_profiler::Zone;
 pub(crate) use pipeline::{
-    BlendMode, Cull, DepthBias, DepthCompare, DepthState, InputElement, Pipeline, PipelineDesc,
+    Blend, Cull, Depth, DepthBias, GBUFFER_COLORS, OCCLUSION_COLORS, Pipeline, PipelineDesc,
     Topology, VertexFormat,
 };
-pub(crate) use sampler::Sampler;
+pub use present::PresentStatus;
+pub(crate) use sampler::{Filter, Sampler, Wrap};
 pub(crate) use target::{ColorTarget, DepthTarget};
-pub(crate) use texture::{Texture, bind_ps_textures};
+pub(crate) use texture::Texture;
 
-use windows::Win32::Foundation::{HMODULE, HWND};
-use windows::Win32::Graphics::Direct3D::{
-    D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1,
-};
-use windows::Win32::Graphics::Direct3D11::{
-    D3D11_CLEAR_DEPTH, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_DEBUG,
-    D3D11_CREATE_DEVICE_FLAG, D3D11_SDK_VERSION, D3D11_VIEWPORT, D3D11CreateDevice, ID3D11Device,
-    ID3D11DeviceContext, ID3D11RenderTargetView, ID3D11ShaderResourceView, ID3D11Texture2D,
-};
-use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT, DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R8G8B8A8_UNORM,
-    DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
-};
-use windows::Win32::Graphics::Dxgi::{
-    DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET, DXGI_PRESENT, DXGI_SCALING_NONE,
-    DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_DISCARD,
-    DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter, IDXGIDevice, IDXGIFactory2, IDXGISwapChain1,
-};
-use windows::core::{BOOL, Interface, Result};
+// `SwapchainJob` is declared below rather than in a module of its own: it is half of
+// `Frame`'s contract, and the two are read together.
 
-/// The swapchain backbuffer format. Per egui-directx11's contract the render
-/// target must be **gamma-space, viewed as non-sRGB-aware** (no `_SRGB`): egui
-/// blends in gamma space, and our own scene composite already encodes sRGB in the
-/// post pass, so a plain UNORM backbuffer is exactly right.
-const BACKBUFFER_FORMAT: DXGI_FORMAT = DXGI_FORMAT_R8G8B8A8_UNORM;
+use std::ffi::{CStr, c_char, c_void};
 
-/// The D3D11 device, immediate context, and the window swapchain.
+use bytemuck::Pod;
+use sokol::gfx as sg;
+use winit::window::Window;
+
+/// The GPU bring-up running on its own thread.
 ///
-/// One immediate context drives all rendering (auto state-tracking; no DX12-style
-/// barriers). `app` creates this in `resumed`, hands `&device` to
-/// `egui_directx11::Renderer`, and drives the per-frame clear/present.
+/// Device creation is the single longest item on the launch path and needs no window
+/// (D8), so it starts from the first line of `main` and the window is created
+/// alongside it. [`Self::attach`] joins the thread and puts a swapchain on the
+/// finished window.
+pub struct GpuBringUp(std::thread::JoinHandle<GpuResult<backend::Device>>);
+
+impl GpuBringUp {
+    /// Join the bring-up and create the swapchain on `window`, yielding the [`Gpu`]
+    /// every later frame draws through.
+    ///
+    /// A panic on the bring-up thread surfaces as a [`GpuError::Backend`] rather than
+    /// being re-raised here: it is a startup failure the shell reports in a dialog,
+    /// not something to abort a process that has a window up.
+    pub fn attach(self, window: &Window, width: u32, height: u32) -> GpuResult<Gpu> {
+        let device = self
+            .0
+            .join()
+            .map_err(|_| GpuError::Backend("the GPU bring-up thread panicked".into()))??;
+        let swapchain = backend::Swapchain::new(&device, window, width, height)?;
+        Ok(Gpu {
+            device,
+            swapchain,
+            profiler: None,
+            jobs: Vec::new(),
+        })
+    }
+}
+
+/// The process's GPU: the device sokol_gfx runs on and the window's swapchain.
+///
+/// One of these exists for the life of the process. Its `Drop` shuts sokol_gfx down,
+/// so it must be the **last** GPU-holding field of `App` to be dropped — every
+/// wrapper's own `Drop` guards on `sg::isvalid()` for the same reason.
 pub struct Gpu {
-    device: ID3D11Device,
-    context: ID3D11DeviceContext,
-    swap_chain: IDXGISwapChain1,
-    /// The current backbuffer render-target view. Rebuilt on resize. `None` only
-    /// transiently inside `resize` while the old view is released before
-    /// `ResizeBuffers`.
-    backbuffer_rtv: Option<ID3D11RenderTargetView>,
-    size: (u32, u32),
+    device: backend::Device,
+    swapchain: backend::Swapchain,
+    /// The `--tracy` GPU profiler (D18). Built on the first frame of an armed run
+    /// and `None` on every normal one, where nothing profiling-related exists at
+    /// all: no queries, no extra GPU calls, no per-frame branch beyond this
+    /// `Option`.
+    profiler: Option<gpu_profiler::GpuProfiler>,
+    /// This frame's deferred draws, waiting for the swapchain pass to open (see
+    /// [`SwapchainJob`]). Held here rather than in [`Frame`] so the allocation
+    /// survives the frame that grew it and a steady-state frame allocates nothing.
+    jobs: Vec<SwapchainJob>,
 }
 
 impl Gpu {
-    /// Create the device + immediate context + a flip-model swapchain on `hwnd`.
+    /// Start bringing the GPU up on a worker thread, right now.
     ///
-    /// In debug builds the D3D11 debug layer is requested first (so mis-bound
-    /// resources surface as `ID3D11InfoQueue` messages, replacing wgpu's validation
-    /// safety net); if the debug layer runtime isn't installed, creation falls back
-    /// to a non-debug device.
-    pub fn new(hwnd: HWND, width: u32, height: u32) -> Result<Self> {
-        let width = width.max(1);
-        let height = height.max(1);
-
-        let base_flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
-        let (device, context) =
-            create_device(base_flags | debug_flag()).or_else(|_| create_device(base_flags))?;
-
-        let swap_chain = create_swap_chain(&device, hwnd, width, height)?;
-        let backbuffer_rtv = create_backbuffer_rtv(&device, &swap_chain)?;
-
-        Ok(Self {
-            device,
-            context,
-            swap_chain,
-            backbuffer_rtv: Some(backbuffer_rtv),
-            size: (width, height),
-        })
+    /// The device and `sg_setup` need no window, and together they are the longest
+    /// single item on the launch path, so they run alongside window creation instead
+    /// of after it (D8). sokol_gfx has no thread affinity — it is set up here and
+    /// used from the main thread after [`GpuBringUp::attach`] joins.
+    pub fn start() -> GpuBringUp {
+        GpuBringUp(
+            std::thread::Builder::new()
+                .name("gpu-bring-up".into())
+                .spawn(Self::bring_up)
+                .expect("the GPU bring-up thread must start"),
+        )
     }
 
-    /// The D3D11 device — handed to `egui_directx11::Renderer::new` and used to
-    /// build GPU resources.
-    pub fn device(&self) -> &ID3D11Device {
-        &self.device
-    }
+    /// The device, and sokol_gfx set up on it. Runs on the bring-up thread.
+    fn bring_up() -> GpuResult<backend::Device> {
+        let device = backend::Device::create()?;
 
-    /// The immediate context — the single command stream all rendering records to.
-    pub fn context(&self) -> &ID3D11DeviceContext {
-        &self.context
-    }
-
-    /// The current backbuffer render-target view (the present surface). `None`
-    /// only when a failed [`Gpu::resize`] could not rebuild the view (the next
-    /// successful resize restores it) — callers skip backbuffer work that frame
-    /// instead of panicking.
-    pub fn backbuffer_rtv(&self) -> Option<&ID3D11RenderTargetView> {
-        self.backbuffer_rtv.as_ref()
+        let mut desc = sg::Desc::new();
+        desc.environment.defaults = sg::EnvironmentDefaults {
+            color_format: backend::SWAPCHAIN_FORMAT,
+            depth_format: sg::PixelFormat::None,
+            sample_count: 1,
+        };
+        device.fill_environment(&mut desc.environment);
+        // Validation failures are otherwise completely silent — sokol reports the
+        // *reason* a resource came back invalid only through this channel, and a
+        // windowed release build has no console for the default logger to print to.
+        desc.logger = sg::Logger {
+            func: Some(log_sokol),
+            user_data: std::ptr::null_mut(),
+        };
+        sg::setup(&desc);
+        if !sg::isvalid() {
+            return Err(GpuError::Resource {
+                kind: ResourceKind::Device,
+                label: "sokol_gfx".into(),
+                detail: "sg_setup did not come up on the graphics device".into(),
+            });
+        }
+        // Per-frame draw/pipeline/bindings counts, plotted alongside the GPU zones on
+        // a `--tracy` run. Off otherwise: sokol tallies them on every call.
+        if gpu_profiler::should_enable() {
+            sg::enable_stats();
+        }
+        Ok(device)
     }
 
     /// The current backbuffer size in physical pixels.
     pub fn size(&self) -> (u32, u32) {
-        self.size
+        self.swapchain.size()
     }
 
-    /// The MSAA sample counts the adapter supports for **both** the scene HDR color
-    /// format (`Rgba16Float`) and the scene depth format (`D32_FLOAT`) — the subset
-    /// of `[1, 2, 4, 8, 16]` the scene can actually render at (invariant 4:
-    /// capability-gate, never crash). `1` (single-sample) is always included. The UI
-    /// drops unsupported entries from the Anti-Aliasing menu.
+    /// Resize the swapchain. Infallible: a zero size (a minimized window) is
+    /// remembered and the frame skipped, and a backend resize that fails leaves the
+    /// old buffers for the next frame — neither is anything `input.rs` could act on.
+    pub fn resize(&mut self, width: u32, height: u32) {
+        if (width, height) != self.swapchain.size() {
+            self.swapchain.resize(width, height);
+        }
+    }
+
+    /// Forward a `ScaleFactorChanged` to the backend. A no-op on Windows, where the
+    /// swapchain's buffers *are* the window's pixels; on macOS it sets the layer's
+    /// `contentsScale`, without which a window dragged between displays of different
+    /// backing scale goes soft.
+    pub fn set_scale_factor(&mut self, scale: f64) {
+        self.swapchain.set_scale_factor(scale);
+    }
+
+    /// The MSAA sample counts the adapter supports for **both** scene formats — the
+    /// subset of `[1, 2, 4, 8, 16]` the scene can actually render at (invariant 4:
+    /// capability-gate, never crash). `1` is always included; the UI drops the rest
+    /// from the Anti-Aliasing menu.
     pub fn supported_msaa_counts(&self) -> Vec<u32> {
-        [1u32, 2, 4, 8, 16]
-            .into_iter()
-            .filter(|&count| count == 1 || self.supports_sample_count(count))
-            .collect()
+        self.device
+            .supported_sample_counts(SCENE_COLOR_FORMAT, SCENE_DEPTH_FORMAT)
     }
 
-    /// Clamp a requested scene MSAA count to the highest level the adapter
-    /// actually supports (≤ the request). Invariant 4: the renderer degrades an
-    /// unsupported level (e.g. a persisted AA setting restored on a weaker
-    /// adapter) instead of failing target creation for the whole frame.
+    /// The largest 2D texture this device can create, for `egui-winit`'s texture-size
+    /// cap — a real query now rather than the hardcoded 16384 the D3D11 path assumed.
+    pub fn max_texture_size(&self) -> usize {
+        sg::query_limits().max_image_size_2d.max(0) as usize
+    }
+
+    /// Begin a frame: acquire the backbuffer and hand back the [`Frame`] every pass
+    /// this frame is recorded through.
+    ///
+    /// `None` means there is nothing to draw into — a zero-sized (minimized) window,
+    /// or a drawable the device refused after a reset — and the caller skips the
+    /// frame rather than drawing into nothing.
+    pub fn begin_frame(&mut self) -> Option<Frame<'_>> {
+        let (width, height) = self.swapchain.size();
+        if width == 0 || height == 0 {
+            return None;
+        }
+        let mut swapchain = sg::Swapchain::new();
+        swapchain.width = width as i32;
+        swapchain.height = height as i32;
+        swapchain.sample_count = 1;
+        swapchain.color_format = backend::SWAPCHAIN_FORMAT;
+        // The scene renders offscreen, so the swapchain pass needs no depth buffer.
+        swapchain.depth_format = sg::PixelFormat::None;
+        if !self.swapchain.acquire(&mut swapchain) {
+            return None;
+        }
+        // A frame that queued jobs and then never opened its pass (an error
+        // propagated out past `finish`) must not leave them for the next one.
+        self.jobs.clear();
+        self.arm_profiler();
+        if let Some(profiler) = self.profiler.as_mut() {
+            profiler.begin_frame();
+        }
+        Some(Frame {
+            gpu: self,
+            swapchain,
+            clear: [0.0, 0.0, 0.0, 1.0],
+            pass_open: false,
+            finished: false,
+        })
+    }
+}
+
+impl Gpu {
+    /// Build the GPU profiler on the first frame of a `--tracy` run.
+    ///
+    /// Not at bring-up: the Tracy client connects asynchronously, so a run armed
+    /// with `--tracy` may have no server attached for the first few frames, and
+    /// [`gpu_profiler::should_enable`] would say no. Trying each frame until it says
+    /// yes costs one `Option` test per frame on a normal run. A construction failure
+    /// (an exotic driver refusing `CreateQuery`) is logged once and leaves the
+    /// profiler `None` — a run without GPU zones, not a dead viewport.
+    fn arm_profiler(&mut self) {
+        if self.profiler.is_some() || !gpu_profiler::should_enable() {
+            return;
+        }
+        match gpu_profiler::GpuProfiler::new(&self.device) {
+            Ok(profiler) => {
+                self.profiler = Some(profiler);
+                gpu_profiler::note("GPU profiling armed");
+            }
+            Err(error) => {
+                // Disarm, so this is attempted once rather than every frame.
+                gpu_profiler::disable_tracy_gpu();
+                let line = format!("3d-review: GPU profiling unavailable: {error}");
+                eprintln!("{line}");
+                gpu_profiler::note(&line);
+            }
+        }
+    }
+}
+
+impl Drop for Gpu {
+    fn drop(&mut self) {
+        if sg::isvalid() {
+            sg::shutdown();
+        }
+    }
+}
+
+impl std::fmt::Debug for Gpu {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (width, height) = self.swapchain.size();
+        f.debug_struct("Gpu")
+            .field("backend", &sg::query_backend())
+            .field("size", &(width, height))
+            .finish()
+    }
+}
+
+/// Most bytes a [`SwapchainJob`] can carry for its uniform block — enough for the
+/// largest one any deferred draw uploads (`tex_params`, 64 bytes). Checked at the
+/// call site, at compile time, so a block that outgrows it is a build error and not
+/// a truncated upload.
+const MAX_JOB_UNIFORM_BYTES: usize = 64;
+
+/// One draw recorded before the swapchain pass exists and replayed once it opens.
+///
+/// The renderer's entry points run *before* [`Frame::begin_swapchain_pass`] — there
+/// is exactly one such pass per frame and it has to contain the chrome as well — so
+/// anything they draw to the backbuffer (the Tex viewport's two fullscreen draws,
+/// and the scene composite when that stage lands) is queued as one of these instead
+/// of issued directly.
+///
+/// Every field is a `Copy` sokol id or inline bytes: a job keeps **no borrow** of the
+/// resources it names, so a queued draw does not pin the renderer's pipelines for the
+/// life of the frame. What it does rely on is that they outlive the frame — which
+/// they do, since the [`crate::Renderer`] that owns them outlives every frame it
+/// draws.
+pub(crate) struct SwapchainJob {
+    pipeline: sg::Pipeline,
+    /// `None` for a shader that reads nothing: sokol validates bindings against what
+    /// the shader declared, so binding an unexpected slot is as wrong as leaving a
+    /// declared one empty.
+    bindings: Option<sg::Bindings>,
+    uniform_slot: usize,
+    uniforms: [u8; MAX_JOB_UNIFORM_BYTES],
+    uniform_len: usize,
+    /// Vertices to draw, non-indexed — every deferred draw so far is a fullscreen
+    /// triangle whose corners come from `gl_VertexIndex`.
+    vertex_count: usize,
+    /// The sub-rectangle of the backbuffer this job rasterizes into, or `None` for
+    /// the whole thing. The Opt split is what needs it: each half composites into
+    /// its own rect of the same backbuffer.
+    viewport: Option<[i32; 4]>,
+}
+
+impl SwapchainJob {
+    /// A draw of `vertex_count` vertices through `pipeline`, with one uniform block.
+    ///
+    /// `T` is the `#[repr(C)]` mirror of that block, size-asserted against shdc's
+    /// generated struct beside its declaration (invariant 11).
+    pub(crate) fn new<T: Pod>(
+        pipeline: &Pipeline,
+        vertex_count: usize,
+        uniform_slot: usize,
+        value: &T,
+    ) -> Self {
+        const {
+            assert!(
+                size_of::<T>() <= MAX_JOB_UNIFORM_BYTES,
+                "a deferred draw's uniform block outgrew MAX_JOB_UNIFORM_BYTES"
+            );
+        }
+        let mut uniforms = [0u8; MAX_JOB_UNIFORM_BYTES];
+        uniforms[..size_of::<T>()].copy_from_slice(bytemuck::bytes_of(value));
+        Self {
+            pipeline: pipeline.handle(),
+            bindings: None,
+            uniform_slot,
+            uniforms,
+            uniform_len: size_of::<T>(),
+            vertex_count,
+            viewport: None,
+        }
+    }
+
+    /// Give the draw the textures and samplers it reads.
+    pub(crate) fn with_bindings(mut self, bindings: &Bindings) -> Self {
+        self.bindings = Some(*bindings.raw());
+        self
+    }
+
+    /// Restrict the draw to a sub-rectangle of the backbuffer, in physical pixels
+    /// from the top-left.
+    pub(crate) fn with_viewport(mut self, x: u32, y: u32, width: u32, height: u32) -> Self {
+        self.viewport = Some([x as i32, y as i32, width as i32, height as i32]);
+        self
+    }
+
+    /// Issue the draw. Called from inside the swapchain pass and nowhere else.
+    fn replay(&self, target: (u32, u32)) {
+        sg::apply_pipeline(self.pipeline);
+        // Always set one, even for a whole-backbuffer job: sokol carries pass state
+        // forward, so a job following one that narrowed the viewport would otherwise
+        // inherit it.
+        let [x, y, width, height] =
+            self.viewport
+                .unwrap_or([0, 0, target.0 as i32, target.1 as i32]);
+        sg::apply_viewport(x, y, width, height, true);
+        if let Some(bindings) = &self.bindings {
+            sg::apply_bindings(bindings);
+        }
+        sg::apply_uniforms(
+            self.uniform_slot,
+            &sg::slice_as_range(&self.uniforms[..self.uniform_len]),
+        );
+        sg::draw(0, self.vertex_count, 1);
+    }
+}
+
+/// One frame in flight: the acquired backbuffer, the clear it opens with, and the
+/// single swapchain pass everything on-screen is drawn into.
+///
+/// It borrows the [`Gpu`] for its whole life, which is what makes "one frame at a
+/// time" a compile-time fact rather than a convention.
+pub struct Frame<'gpu> {
+    gpu: &'gpu mut Gpu,
+    swapchain: sg::Swapchain,
+    clear: [f32; 4],
+    pass_open: bool,
+    finished: bool,
+}
+
+impl Frame<'_> {
+    /// The backbuffer size in physical pixels.
+    pub fn size(&self) -> (u32, u32) {
+        (
+            self.swapchain.width.max(0) as u32,
+            self.swapchain.height.max(0) as u32,
+        )
+    }
+
+    /// Set the colour the swapchain pass clears to (linear 0..1, gamma-space since
+    /// the backbuffer is plain UNORM). Black unless something asks otherwise — the
+    /// Tex viewport's solid backgrounds are exactly this and need no draw of their
+    /// own. Must be called before [`Self::begin_swapchain_pass`].
+    pub(crate) fn set_clear(&mut self, rgb: [f32; 3]) {
+        self.clear = [rgb[0], rgb[1], rgb[2], 1.0];
+    }
+
+    /// The largest supported MSAA level at or below `requested`, from the subset the
+    /// adapter reports for **both** scene formats (invariant 4: capability-gate,
+    /// never crash). A persisted AA setting restored on a weaker adapter degrades
+    /// instead of failing target creation every frame.
+    ///
+    /// It lives on the frame because the query needs the device, which only the
+    /// [`Gpu`] holds — and the scene renderer is handed a frame, not a device.
     pub(crate) fn clamp_msaa(&self, requested: u32) -> u32 {
-        let requested = requested.max(1);
-        [16u32, 8, 4, 2]
-            .into_iter()
-            .filter(|&count| count <= requested)
-            .find(|&count| self.supports_sample_count(count))
+        let supported = self.gpu.supported_msaa_counts();
+        supported
+            .iter()
+            .copied()
+            .filter(|&count| count <= requested.max(1))
+            .max()
             .unwrap_or(1)
     }
 
-    /// Whether the adapter supports `count`× MSAA for both the scene color + depth
-    /// formats (`CheckMultisampleQualityLevels > 0` for each).
-    fn supports_sample_count(&self, count: u32) -> bool {
-        // SAFETY: `device` is live; `CheckMultisampleQualityLevels` is a pure query.
-        let levels = |format: DXGI_FORMAT| unsafe {
-            self.device
-                .CheckMultisampleQualityLevels(format, count)
-                .unwrap_or(0)
-        };
-        levels(DXGI_FORMAT_R16G16B16A16_FLOAT) > 0 && levels(DXGI_FORMAT_D32_FLOAT) > 0
-    }
-
-    /// Clear the backbuffer to `rgba` (gamma-space). Used for the first-frame
-    /// black fill (replacing the old GDI hack) and the per-frame scene clear behind
-    /// the egui chrome.
-    pub fn clear_backbuffer(&self, rgba: [f32; 4]) {
-        let Some(rtv) = self.backbuffer_rtv() else {
-            return;
-        };
-        // SAFETY: `rtv` is a live RTV for the current backbuffer; the immediate
-        // context owns it for the duration of the call.
-        unsafe {
-            self.context.ClearRenderTargetView(rtv, &rgba);
+    /// Record a GPU zone's begin timestamp at this point in the command stream.
+    pub(crate) fn zone_begin(&mut self, zone: gpu_profiler::Zone) {
+        if let Some(profiler) = self.gpu.profiler.as_mut() {
+            profiler.zone_begin(zone);
         }
     }
 
-    /// Resize the swapchain to `width`×`height`. Releases the old backbuffer view,
-    /// resizes the buffers, and rebuilds the view. A no-op for a zero or unchanged
-    /// size.
-    pub fn resize(&mut self, width: u32, height: u32) -> Result<()> {
-        if width == 0 || height == 0 || (width, height) == self.size {
-            return Ok(());
-        }
-        // The backbuffer view must be released before `ResizeBuffers`.
-        self.backbuffer_rtv = None;
-        // SAFETY: no outstanding references to the swapchain buffers remain (the
-        // RTV was just dropped); 0/UNKNOWN keep the existing buffer count + format.
-        let resized = unsafe {
-            self.swap_chain.ResizeBuffers(
-                0,
-                width,
-                height,
-                DXGI_FORMAT_UNKNOWN,
-                DXGI_SWAP_CHAIN_FLAG(0),
-            )
-        };
-        // Rebuild the view over whichever buffers the swapchain now holds — on a
-        // failed resize the old buffers remain, so this restores the previous
-        // (stale-sized) view rather than leaving the field `None` and skipping
-        // every subsequent backbuffer draw until a resize succeeds.
-        self.backbuffer_rtv = create_backbuffer_rtv(&self.device, &self.swap_chain).ok();
-        resized?;
-        if self.backbuffer_rtv.is_none() {
-            self.backbuffer_rtv = Some(create_backbuffer_rtv(&self.device, &self.swap_chain)?);
-        }
-        self.size = (width, height);
-        Ok(())
-    }
-
-    /// Issue a non-indexed draw of `count` vertices from vertex 0. The pipeline +
-    /// vertex buffer + constant buffers must already be bound.
-    pub(crate) fn draw(&self, count: u32) {
-        // SAFETY: a plain draw on the immediate context; bound state is the
-        // caller's responsibility (set just before via the rhi wrappers).
-        unsafe {
-            self.context.Draw(count, 0);
+    /// Record a GPU zone's end timestamp.
+    pub(crate) fn zone_end(&mut self, zone: gpu_profiler::Zone) {
+        if let Some(profiler) = self.gpu.profiler.as_mut() {
+            profiler.zone_end(zone);
         }
     }
 
-    /// Issue an indexed draw of `count` indices starting at `start_index` in the
-    /// bound index buffer — one per-material draw range over the reordered mesh.
-    /// Pass `start_index = 0` to draw the whole buffer.
-    pub(crate) fn draw_indexed_range(&self, count: u32, start_index: u32) {
-        // SAFETY: indexed draw on the immediate context; bound state is the
-        // caller's responsibility.
-        unsafe {
-            self.context.DrawIndexed(count, start_index, 0);
-        }
+    /// Queue a draw for the swapchain pass. See [`SwapchainJob`].
+    pub(crate) fn queue(&mut self, job: SwapchainJob) {
+        debug_assert!(
+            !self.pass_open,
+            "a job queued after the pass opened would never be replayed"
+        );
+        self.gpu.jobs.push(job);
     }
 
-    /// Begin the offscreen scene pass: bind `colors` as MRT render targets + `depth`
-    /// as the DSV, clear color 0 to `clear` and any further colors to transparent,
-    /// clear depth to the Reversed-Z far value (0), and set the viewport to the
-    /// first color target's size. The scene draws into these; the composite then
-    /// samples them.
-    pub(crate) fn begin_scene_pass(
-        &self,
+    /// Open an offscreen pass over `colors` (+ `depth`), clearing the colour
+    /// attachments to `clear` and depth to 0 — Reversed-Z's "infinitely far", which
+    /// is what `GreaterEqual` tests against.
+    ///
+    /// Offscreen passes run *before* [`Self::begin_swapchain_pass`], which is why
+    /// they are issued immediately while the composite that reads them is deferred
+    /// as a [`SwapchainJob`]: there is exactly one swapchain pass per frame and the
+    /// chrome has to be inside it too.
+    pub(crate) fn begin_offscreen_pass(
+        &mut self,
         colors: &[&ColorTarget],
-        depth: &DepthTarget,
+        depth: Option<&DepthTarget>,
         clear: [f32; 4],
+        label: &'static CStr,
     ) {
-        // Fixed-size scratch (the scene MRT is at most 2 targets) so the per-frame
-        // pass setup allocates nothing.
-        debug_assert!(
-            colors.len() <= 2,
-            "begin_scene_pass supports at most 2 MRTs"
-        );
-        let mut rtvs: [Option<ID3D11RenderTargetView>; 2] = [const { None }; 2];
-        for (rtv, color) in rtvs.iter_mut().zip(colors) {
-            *rtv = Some(color.rtv().clone());
+        debug_assert!(!self.pass_open, "a pass is already open");
+        debug_assert!(!colors.is_empty(), "a pass needs at least one attachment");
+        let mut pass = sg::Pass::new();
+        for (slot, target) in colors.iter().enumerate() {
+            pass.attachments.colors[slot] = target.attachment();
+            pass.action.colors[slot] = sg::ColorAttachmentAction {
+                load_action: sg::LoadAction::Clear,
+                store_action: sg::StoreAction::Store,
+                clear_value: sg::Color {
+                    r: clear[0],
+                    g: clear[1],
+                    b: clear[2],
+                    a: clear[3],
+                },
+            };
         }
-        let rtvs = &rtvs[..colors.len().min(2)];
-        let (width, height) = colors.first().map_or(self.size, |c| c.size());
-        // SAFETY: every RTV + the DSV are live; the local arrays/viewport outlive
-        // the calls. The immediate context owns the bound targets.
-        unsafe {
-            self.context.OMSetRenderTargets(Some(rtvs), depth.view());
-            for (index, color) in colors.iter().enumerate() {
-                let value = if index == 0 { clear } else { [0.0; 4] };
-                self.context.ClearRenderTargetView(color.rtv(), &value);
+        for (slot, target) in colors.iter().enumerate() {
+            // Present only at 2×+; sokol resolves into it at `end_pass`, which is why
+            // nothing here has to remember to.
+            if let Some(resolve) = target.resolve() {
+                pass.attachments.resolves[slot] = resolve;
             }
-            self.context
-                .ClearDepthStencilView(depth.view(), D3D11_CLEAR_DEPTH.0, 0.0, 0);
-            self.context
-                .RSSetViewports(Some(&[viewport(width, height)]));
         }
-    }
-
-    /// Begin a single-color, depth-less pass into `target` (the GTAO occlusion +
-    /// bilateral-blur fullscreen passes): bind its RTV with no DSV and set its
-    /// viewport. No clear is issued — the fullscreen triangle overwrites every
-    /// pixel of the target.
-    pub(crate) fn begin_color_pass(&self, target: &ColorTarget) {
-        let (width, height) = target.size();
-        // SAFETY: the target RTV is live; the local arrays/viewport outlive the
-        // calls. The immediate context owns the bound target.
-        unsafe {
-            self.context
-                .OMSetRenderTargets(Some(&[Some(target.rtv().clone())]), None);
-            self.context
-                .RSSetViewports(Some(&[viewport(width, height)]));
+        if let Some(depth) = depth {
+            pass.attachments.depth_stencil = depth.attachment();
+            pass.action.depth = sg::DepthAttachmentAction {
+                load_action: sg::LoadAction::Clear,
+                store_action: sg::StoreAction::Dontcare,
+                clear_value: 0.0,
+            };
         }
+        pass.label = label.as_ptr();
+        sg::begin_pass(&pass);
+        self.pass_open = true;
     }
 
-    /// Begin the backbuffer composite pass: bind the backbuffer RTV (no depth) and
-    /// set the full-backbuffer viewport. The composite overwrites every pixel, so
-    /// no clear is issued. A no-op while the backbuffer view is unavailable (a
-    /// failed resize).
-    pub(crate) fn begin_backbuffer_blit(&self) {
-        let (width, height) = self.size;
-        self.begin_backbuffer_blit_rect(0, 0, width, height);
+    /// Close the open offscreen pass. The swapchain pass is closed by
+    /// [`Self::finish`] instead, which also commits and presents.
+    pub(crate) fn end_pass(&mut self) {
+        debug_assert!(self.pass_open, "no pass is open");
+        sg::end_pass();
+        self.pass_open = false;
     }
 
-    /// [`Self::begin_backbuffer_blit`] into a sub-rectangle of the backbuffer.
+    /// Open the one swapchain pass, clearing the backbuffer, and replay whatever the
+    /// renderer queued into it.
     ///
-    /// The composite draws an oversized triangle covering the whole viewport, and
-    /// D3D11 rasterizes only within the bound viewport rect — so restricting the
-    /// viewport is all it takes to composite into part of the backbuffer, with no
-    /// scissor state and no change to the shader. Pixels outside the rect keep
-    /// whatever the previous pass left there, which is what lets the Opt
-    /// workspace's split view paint its two halves in two passes.
-    pub(crate) fn begin_backbuffer_blit_rect(&self, x: u32, y: u32, width: u32, height: u32) {
-        let Some(rtv) = self.backbuffer_rtv() else {
-            return;
+    /// Everything drawn on-screen goes between this and [`Self::finish`]. There is
+    /// exactly one per frame: Metal presents inside `sg_end_pass`, so a second pass
+    /// would double-present. The startup black frame is this pass with nothing drawn
+    /// into it — the same code path, not a special case.
+    pub fn begin_swapchain_pass(&mut self) {
+        debug_assert!(!self.pass_open, "the swapchain pass is already open");
+        let mut pass = sg::Pass::new();
+        pass.swapchain = self.swapchain;
+        pass.action.colors[0] = sg::ColorAttachmentAction {
+            load_action: sg::LoadAction::Clear,
+            store_action: sg::StoreAction::Store,
+            clear_value: sg::Color {
+                r: self.clear[0],
+                g: self.clear[1],
+                b: self.clear[2],
+                a: self.clear[3],
+            },
         };
-        // SAFETY: the backbuffer RTV is live; the viewport array outlives the call.
-        unsafe {
-            self.context
-                .OMSetRenderTargets(Some(&[Some(rtv.clone())]), None);
-            self.context
-                .RSSetViewports(Some(&[viewport_at(x, y, width, height)]));
-        }
-    }
-
-    /// Unbind `count` pixel-shader shader-resource slots (starting at 0). Called
-    /// after the composite so the offscreen color targets aren't still bound as
-    /// SRVs when the next frame binds them as render targets (which the D3D11 debug
-    /// layer would otherwise flag).
-    pub(crate) fn unbind_ps_srvs(&self, count: usize) {
-        // A fixed null table (the render path unbinds at most 3 slots) so the
-        // per-frame cleanup allocates nothing.
-        const NULLS: [Option<ID3D11ShaderResourceView>; 8] = [const { None }; 8];
-        debug_assert!(
-            count <= NULLS.len(),
-            "unbind_ps_srvs supports at most 8 slots"
+        pass.label = c"swapchain".as_ptr();
+        sg::begin_pass(&pass);
+        self.pass_open = true;
+        let target = (
+            self.swapchain.width.max(0) as u32,
+            self.swapchain.height.max(0) as u32,
         );
-        // SAFETY: clearing SRV slots with null views; the static array outlives call.
-        unsafe {
-            self.context
-                .PSSetShaderResources(0, Some(&NULLS[..count.min(NULLS.len())]));
+        // The composite is a deferred job, so this replay *is* the composite pass —
+        // there is nowhere earlier to bracket it. In the Tex viewport the same
+        // bracket covers that viewport's two fullscreen draws instead, which is the
+        // honest reading of "what this frame put on the backbuffer".
+        self.zone_begin(gpu_profiler::Zone::Composite);
+        for job in &self.gpu.jobs {
+            job.replay(target);
         }
+        self.zone_end(gpu_profiler::Zone::Composite);
+        self.gpu.jobs.clear();
     }
 
-    /// Unbind `count` vertex-shader shader-resource slots starting at `first` —
-    /// the deform buffers (`t12..t15`), released after the frame so a model swap
-    /// can drop them without the debug layer seeing a stale binding.
-    pub(crate) fn unbind_vs_srvs(&self, first: u32, count: usize) {
-        const NULLS: [Option<ID3D11ShaderResourceView>; 8] = [const { None }; 8];
-        debug_assert!(
-            count <= NULLS.len(),
-            "unbind_vs_srvs supports at most 8 slots"
-        );
-        // SAFETY: clearing SRV slots with null views; the static array outlives call.
-        unsafe {
-            self.context
-                .VSSetShaderResources(first, Some(&NULLS[..count.min(NULLS.len())]));
-        }
+    /// Make `pipeline` current for the following draws.
+    pub(crate) fn apply_pipeline(&self, pipeline: &Pipeline) {
+        debug_assert!(self.pass_open, "a draw needs an open pass");
+        pipeline.apply();
     }
 
-    /// Present the backbuffer. `vsync` selects a sync interval of 1 (wait for
-    /// vblank) vs 0 (immediate) — mirrors the old `AutoVsync` present mode.
+    /// Bind what the following draws read. sokol resets bindings at every
+    /// `apply_pipeline`, so this belongs *after* one, not once per pass.
+    pub(crate) fn apply_bindings(&self, bindings: &Bindings) {
+        debug_assert!(self.pass_open, "a draw needs an open pass");
+        sg::apply_bindings(bindings.raw());
+    }
+
+    /// Upload one uniform block.
     ///
-    /// Status codes (e.g. `DXGI_STATUS_OCCLUDED` while the window is hidden) are
-    /// not actionable and report [`PresentStatus::Presented`]; a device
-    /// removed/reset HRESULT reports [`PresentStatus::DeviceLost`] so the caller
-    /// can surface it — after it, every subsequent frame silently fails.
-    pub fn present(&self, vsync: bool) -> PresentStatus {
-        // SAFETY: presenting the live swapchain; no resources are mapped.
-        let hr = unsafe { self.swap_chain.Present(u32::from(vsync), DXGI_PRESENT(0)) };
-        if hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET {
-            // SAFETY: pure query on the live device; returns the driver's root
-            // cause for the removal (hung, reset, driver error, ...).
-            let reason = unsafe { self.device.GetDeviceRemovedReason() }
-                .err()
-                .map(|error| error.code().0)
-                .unwrap_or(hr.0);
-            return PresentStatus::DeviceLost { reason };
+    /// `T` is a `#[repr(C)]` mirror of the block in `review.glsl`, size-asserted
+    /// against shdc's generated struct beside its declaration (invariant 11) — which
+    /// is what makes this safe to hand over as raw bytes.
+    pub(crate) fn apply_uniforms<T: Pod>(&self, slot: usize, value: &T) {
+        debug_assert!(self.pass_open, "a uniform upload needs an open pass");
+        sg::apply_uniforms(slot, &sg::value_as_range(value));
+    }
+
+    /// Restrict rasterization to a sub-rectangle of the target, in physical pixels
+    /// from the top-left. The composite's Opt split uses this; egui restores the full
+    /// rect before painting.
+    pub(crate) fn set_viewport(&self, x: i32, y: i32, width: i32, height: i32) {
+        debug_assert!(self.pass_open, "a viewport needs an open pass");
+        sg::apply_viewport(x, y, width, height, true);
+    }
+
+    /// Clip the following draws to a rectangle, in physical pixels from the top-left
+    /// — egui's per-mesh `clip_rect`.
+    pub(crate) fn set_scissor(&self, x: i32, y: i32, width: i32, height: i32) {
+        debug_assert!(self.pass_open, "a scissor needs an open pass");
+        sg::apply_scissor_rect(x, y, width, height, true);
+    }
+
+    /// Draw `count` elements — indices when the pipeline is indexed, vertices when
+    /// it is not — starting at `base`.
+    pub(crate) fn draw(&self, base: usize, count: usize) {
+        debug_assert!(self.pass_open, "a draw needs an open pass");
+        sg::draw(base, count, 1);
+    }
+
+    /// Close the pass, submit the frame and present it.
+    ///
+    /// `vsync` selects a sync interval of 1 (wait for vblank) vs 0. The redraw pacer
+    /// in `app` does not rely on this blocking — on Metal the wait is at
+    /// `nextDrawable`, not at present.
+    pub fn finish(&mut self, vsync: bool) -> PresentStatus {
+        self.end_and_commit();
+        self.finished = true;
+        self.gpu.swapchain.present(vsync)
+    }
+
+    /// End any open pass and submit. Shared by [`Self::finish`] and the `Drop` guard.
+    fn end_and_commit(&mut self) {
+        if self.pass_open {
+            sg::end_pass();
+            self.pass_open = false;
         }
-        PresentStatus::Presented
+        sg::commit();
+        // After `commit`, so the plotted call counts are this frame's complete
+        // totals rather than a partial tally.
+        if let Some(profiler) = self.gpu.profiler.as_mut() {
+            profiler.end_frame();
+        }
     }
 }
 
-/// Outcome of a [`Gpu::present`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PresentStatus {
-    /// The frame presented (including benign status codes like occluded).
-    Presented,
-    /// The D3D11 device was removed or reset (driver crash/TDR, adapter change).
-    /// The swapchain is dead; `reason` is the driver's removal HRESULT.
-    DeviceLost { reason: i32 },
-}
-
-/// Bind a single SRV to pixel-shader slot `slot` — the one-off form of
-/// `bind_ps_textures`, shared by the texture / target / bake wrappers so the
-/// one-element bind is written once.
-pub(crate) fn bind_ps_srv(ctx: &ID3D11DeviceContext, slot: u32, srv: &ID3D11ShaderResourceView) {
-    // SAFETY: the SRV is live; the one-element array outlives the call.
-    unsafe {
-        ctx.PSSetShaderResources(slot, Some(&[Some(srv.clone())]));
+impl Drop for Frame<'_> {
+    fn drop(&mut self) {
+        // A frame abandoned mid-flight — a render error propagated out past
+        // `finish` — must still close its pass and commit. Leaving sokol_gfx inside
+        // a pass makes the *next* frame's `begin_pass` a validation failure, which
+        // would turn one bad frame into a permanently dead viewport.
+        if !self.finished && sg::isvalid() {
+            self.end_and_commit();
+        }
     }
 }
 
-/// Unwrap a COM out-param that the preceding successful HRESULT guarantees was
-/// written (the `windows` crate models out-params as `Option`s). Practically
-/// unreachable; one named helper instead of a bare `unwrap` at every call site.
-pub(crate) fn out_param<T>(value: Option<T>) -> T {
-    value.expect("COM call succeeded but left its out-param empty")
-}
-
-/// An `E_INVALIDARG` [`windows::core::Error`] with a descriptive message — for
-/// rhi-side validation failures (bad payload sizes, mismatched layouts) that
-/// should surface as render errors rather than fed to the driver.
-pub(crate) fn invalid_arg(message: &str) -> windows::core::Error {
-    windows::core::Error::new(windows::Win32::Foundation::E_INVALIDARG, message)
-}
-
-/// A full-target viewport (top-left origin, depth 0..1) at `width`×`height`.
-fn viewport(width: u32, height: u32) -> D3D11_VIEWPORT {
-    viewport_at(0, 0, width, height)
-}
-
-/// A viewport covering `width`×`height` pixels at `(x, y)`, depth 0..1.
-fn viewport_at(x: u32, y: u32, width: u32, height: u32) -> D3D11_VIEWPORT {
-    D3D11_VIEWPORT {
-        TopLeftX: x as f32,
-        TopLeftY: y as f32,
-        Width: width as f32,
-        Height: height as f32,
-        MinDepth: 0.0,
-        MaxDepth: 1.0,
-    }
-}
-
-/// The debug-device flag in debug builds, none in release.
-fn debug_flag() -> D3D11_CREATE_DEVICE_FLAG {
-    if cfg!(debug_assertions) {
-        D3D11_CREATE_DEVICE_DEBUG
-    } else {
-        D3D11_CREATE_DEVICE_FLAG(0)
-    }
-}
-
-/// Create a hardware D3D11 device + immediate context at feature level 11_1 (or
-/// 11_0 fallback).
-fn create_device(flags: D3D11_CREATE_DEVICE_FLAG) -> Result<(ID3D11Device, ID3D11DeviceContext)> {
-    let feature_levels = [D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0];
-    let mut device: Option<ID3D11Device> = None;
-    let mut context: Option<ID3D11DeviceContext> = None;
-    let mut obtained: D3D_FEATURE_LEVEL = D3D_FEATURE_LEVEL_11_0;
-    // SAFETY: out-params are owned `Option`s populated by the call; the feature
-    // level slice outlives the call.
-    unsafe {
-        D3D11CreateDevice(
-            None,
-            D3D_DRIVER_TYPE_HARDWARE,
-            HMODULE::default(),
-            flags,
-            Some(&feature_levels),
-            D3D11_SDK_VERSION,
-            Some(&mut device),
-            Some(&mut obtained),
-            Some(&mut context),
-        )?;
-    }
-    Ok((out_param(device), out_param(context)))
-}
-
-/// Create a flip-model swapchain on `hwnd` from `device`'s DXGI factory.
-fn create_swap_chain(
-    device: &ID3D11Device,
-    hwnd: HWND,
-    width: u32,
-    height: u32,
-) -> Result<IDXGISwapChain1> {
-    // Walk device -> DXGI device -> adapter -> factory.
-    let dxgi_device: IDXGIDevice = device.cast()?;
-    // SAFETY: a live DXGI device always has an adapter.
-    let adapter: IDXGIAdapter = unsafe { dxgi_device.GetAdapter()? };
-    // SAFETY: a live adapter's parent is always the DXGI factory that made it.
-    let factory: IDXGIFactory2 = unsafe { adapter.GetParent()? };
-
-    let desc = DXGI_SWAP_CHAIN_DESC1 {
-        Width: width,
-        Height: height,
-        Format: BACKBUFFER_FORMAT,
-        Stereo: BOOL(0),
-        SampleDesc: DXGI_SAMPLE_DESC {
-            Count: 1,
-            Quality: 0,
-        },
-        BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
-        BufferCount: 2,
-        Scaling: DXGI_SCALING_NONE,
-        SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
-        AlphaMode: DXGI_ALPHA_MODE_IGNORE,
-        Flags: 0,
+/// sokol_gfx's log/validation channel.
+///
+/// Everything sokol has to say about a resource that came back invalid, a pass that
+/// was mis-configured or a binding that was left unbound arrives here and nowhere
+/// else, so it goes to stderr *and* to the Tracy message channel — a windowed release
+/// build has no console, and `--tracy` is the only place a running session can be
+/// watched. Level 0 is sokol's own "panic": the library cannot continue, so neither
+/// do we.
+extern "C" fn log_sokol(
+    tag: *const c_char,
+    level: u32,
+    item: u32,
+    message: *const c_char,
+    line: u32,
+    file: *const c_char,
+    _user_data: *mut c_void,
+) {
+    // SAFETY: sokol passes NUL-terminated C string literals from its own static
+    // storage, or null. `from_ptr` is only reached for a non-null pointer, and the
+    // borrow ends inside this call.
+    let text = |ptr: *const c_char| -> &str {
+        if ptr.is_null() {
+            ""
+        } else {
+            unsafe { CStr::from_ptr(ptr) }.to_str().unwrap_or("")
+        }
     };
-
-    // SAFETY: `device` is a valid IUnknown; `hwnd` is the live window; `desc` is a
-    // well-formed flip-model description.
-    unsafe { factory.CreateSwapChainForHwnd(device, hwnd, &desc, None, None) }
-}
-
-/// Create the render-target view over swapchain buffer 0.
-fn create_backbuffer_rtv(
-    device: &ID3D11Device,
-    swap_chain: &IDXGISwapChain1,
-) -> Result<ID3D11RenderTargetView> {
-    // SAFETY: buffer 0 always exists on a created swapchain.
-    let backbuffer: ID3D11Texture2D = unsafe { swap_chain.GetBuffer(0)? };
-    let mut rtv: Option<ID3D11RenderTargetView> = None;
-    // SAFETY: `backbuffer` is a render-target-capable texture; default view desc.
-    unsafe {
-        device.CreateRenderTargetView(&backbuffer, None, Some(&mut rtv))?;
+    let severity = match level {
+        0 => "panic",
+        1 => "error",
+        2 => "warning",
+        _ => "info",
+    };
+    let line = format!(
+        "{}: {severity} [id {item}] {} ({}:{line})",
+        text(tag),
+        text(message),
+        text(file),
+    );
+    eprintln!("{line}");
+    gpu_profiler::note(&line);
+    if level == 0 {
+        panic!("{line}");
     }
-    Ok(out_param(rtv))
 }

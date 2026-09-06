@@ -1,10 +1,9 @@
 //! The Tex viewport: a 2D image viewer for the scene texture pool.
 //!
-//! The viewed texture is drawn by `review_render`'s `TexGpu` (a Direct3D 11 draw
-//! issued by `app`, behind the egui chrome), not a hand-rolled image blit. This
-//! module owns only the *interaction*: it lays out the canvas, handles pan/zoom/fit,
-//! paints the background fill, and emits the placement + channel selection that
-//! `app` feeds to `TexGpu`. Channel isolation is a uniform the shader swizzles on,
+//! The viewed texture is drawn by the renderer into the same frame, behind the egui
+//! chrome, not by a hand-rolled image blit. This module owns only the *interaction*:
+//! it lays out the canvas, handles pan/zoom/fit, paints the background fill, and
+//! emits the placement + channel selection that `app` feeds to the renderer. Channel isolation is a uniform the shader swizzles on,
 //! so switching RGB/R/G/B/A is free
 //! (no CPU rebuild, no re-upload); the GPU texture is uploaded once per image and
 //! reused (invariant 2: the pixels live in the app-owned [`TexturePoolEntry`]; the
@@ -22,7 +21,8 @@ use crate::theme::{self, color, font, motion, size};
 /// floating texture-stats panel when toggled on. Called from the overlay only in
 /// [`crate::state::WorkspaceMode::Texture`]. `output_format` is egui's framebuffer
 /// format, needed to build the image paint callback's pipeline.
-pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
+pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState) {
+    let ctx = &root.ctx().clone();
     // Keep the selection in range (a removed texture may have shrunk the pool).
     if state.texture_view.selected >= state.texture_pool.len() {
         state.texture_view.selected = 0;
@@ -33,11 +33,11 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
     let entry = state.texture_pool.get(state.texture_view.selected).cloned();
 
     // No frame fill: the background fill + the image are drawn by `app` through the
-    // D3D11 RHI (migration Phase 4), behind this transparent CentralPanel. The canvas
-    // rect is captured here and handed to `app` to place the image.
+    // renderer, behind this transparent CentralPanel. The canvas rect is captured
+    // here and handed to `app` to place the image.
     let canvas_rect = egui::CentralPanel::default()
         .frame(egui::Frame::NONE)
-        .show(ctx, |ui| {
+        .show(root, |ui| {
             let rect = ui.max_rect();
             match &entry {
                 Some(entry) => draw_canvas(ui, ctx, &mut state.texture_view, rect, entry),
@@ -53,9 +53,9 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
     }
 }
 
-/// Handle the canvas interaction (pan / zoom / fit). The background fill + the image
-/// itself are drawn by `app` through the D3D11 RHI (migration Phase 4); this module
-/// owns only placement + interaction.
+/// Handle the canvas interaction (pan / zoom / fit). The background fill is the
+/// frame's clear colour and the image is a renderer draw; this module owns only
+/// placement + interaction.
 fn draw_canvas(
     ui: &mut egui::Ui,
     ctx: &egui::Context,

@@ -1,11 +1,30 @@
 # CLAUDE.md — 3D Review (Rust)
 
-A Windows-first **native** 3D model-audit viewer (think F3D / Autodesk FBX
-Review). Drag-drop an **FBX**, inspect game assets, switch through debug views.
-Built on `winit` (window/event loop) + **Direct3D 11** (GPU, native via the
-`windows` crate) + `egui` (overlay UI, via `egui-directx11`) + vendored `ufbx`
-(FBX parsing via a C bridge). Pure-Rust, no web/Electron layer.
-**Target priority: Windows.**
+A **native** 3D model-audit viewer (think F3D / Autodesk FBX Review), running on
+**Windows and macOS from one shared shell**. Drag-drop an **FBX**, inspect game
+assets, switch through debug views. Built on `winit` (window/event loop) +
+**`sokol_gfx`** (GPU, over Direct3D 11 on Windows and Metal on macOS) + `egui`
+(overlay UI, through our own sokol renderer) + vendored `ufbx` (FBX parsing via a
+C bridge). Pure-Rust, no web/Electron layer. **Target priority: Windows** — it is
+the platform the D2 performance budgets gate, and the one a change is checked
+against first.
+
+> **The GPU layer is fully on sokol_gfx, on both OSes** (`mac-port-plan.md` Phase 1
+> and Phase 2): every draw path — the frame flow, the egui chrome, the Tex viewport,
+> the 3D and UV scenes with MSAA and ambient occlusion, and the Opt workspace's
+> comparison view — plus the `--tracy` GPU profiler and the offline `bake_ibl` tool.
+> The viewport is pixel-identical to the old Direct3D 11 build on the models checked.
+> Nothing is parked or duplicated: the hand-written `src/hlsl/` set and
+> `src/port_pending/` are both gone, so `src/shaders/review.glsl` is the only shader
+> source in the workspace.
+>
+> Two things differ per OS and are *measured* rather than assumed. The MSAA menu
+> offers 1/2/4/8/16 on Windows and **1/2/4** on Apple silicon, which is what
+> invariant 4's capability gate is for. And a fresh `bake_ibl` reproduces every
+> committed `.bin` byte for byte on Windows but only *numerically* on Metal (≤0.021
+> on a 0..1 BRDF LUT — GPU float precision), so the committed Windows bake is the one
+> set of bytes both hosts embed and the Mac packaging script deliberately runs no
+> re-bake.
 
 Deeper docs: the crate map + data flow live in §2 below; `PROJECT_STATE.md`
 (architecture, status, risk register), `RENDERING_PIPELINE.md` (render-pass
@@ -18,7 +37,7 @@ decisions, phases and risks — see §4's note).
 
 > **Lean on the existing system; don't hand-roll your own.** Before building any
 > mechanism, reach for what's already there — first the platform/framework
-> primitive (e.g. egui's native `Window`/`SidePanel`/`Grid`/`Slider`, winit
+> primitive (e.g. egui's native `Window`/`Panel`/`Grid`/`Slider`, winit
 > facilities, an `rhi` wrapper), then an existing helper in this codebase (a
 > `theme` token, a
 > `widgets` primitive, an `import`/`render` funnel). The UI chrome was *migrated
@@ -50,10 +69,10 @@ decisions, phases and risks — see §4's note).
    alone, so `release_uv_views` runs from the 3D path's `sync_frame`.
 4. **Heavy derived views are GPU compute and capability-gated.** Compute-based
    views (normals/tangents/overdraw, post-MVP) read buffers already on the GPU
-   and write transient storage buffers. Gate them on Direct3D 11 feature/format
-   support (`CheckFeatureSupport` / `CheckFormatSupport` /
-   `CheckMultisampleQualityLevels`) and disable them in the UI when the active
-   device can't run them — never crash.
+   and write transient storage buffers. Gate them on what the device reports —
+   `sg_query_features()` / `sg_query_limits()` / `sg_query_pixelformat()`, plus
+   `backend::supported_sample_counts` where sokol's answer is only a yes/no — and
+   disable them in the UI when the active device can't run them, never crash.
 5. **Faithful stats.** The Model Stats panel reads source DCC counts carried
    through import in `ModelStats` (original polygon/vertex counts), **never**
    post-triangulation render counts. Every stat shown must be a real measured
@@ -89,7 +108,7 @@ decisions, phases and risks — see §4's note).
 
 9. **All `unsafe` and all C/FFI lives in `crates/import`, `crates/psd` and
    `crates/optimize`** —
-   *plus* the scoped Direct3D 11 sites below. No `unsafe` leaks into `model` / `ui`,
+   *plus* the scoped GPU site below. No `unsafe` leaks into `model` / `ui`,
    nor into `render`'s geometry / material / camera modules. Before
    `slice::from_raw_parts`, null-check the pointer and treat len 0 as empty
    (`checked_slice`). Free the C scene on **both** success and error paths (no leak).
@@ -128,33 +147,50 @@ decisions, phases and risks — see §4's note).
    `ops`/`process`/`stack`/`preset`/`submesh` are ordinary safe Rust, and the crate
    `forbid`s `unsafe_code` outright when neither vendored tree is present. `app`
    calls it through the safe API only.
-   **Sanctioned exception — Direct3D 11 / DXGI COM** (via the `windows` crate) is
-   `unsafe` and pervasive in the renderer. It is confined to **one** place:
-   `crates/render/src/rhi/` (the GPU-plumbing module — device, swapchain,
-   pipelines, buffers, offscreen targets, textures, samplers, the GPU profiler, and
-   the bake-only `rhi::bake`; shared by the runtime and the `bake_ibl` binary).
-   `crates/app` is **fully safe** (`#![forbid(unsafe_code)]` — as are `model` and
-   `ui`): its device/swapchain bootstrap goes through the safe `Gpu::new` wrapper,
-   including the first-frame black clear+present that replaced the old GDI
-   `startup_paint` hack. Every `unsafe` carries a `// SAFETY:` rationale and
-   touches only GPU plumbing — never model geometry, camera math, or material
-   logic, which stay safe.
-10. **`crates/model` is host-agnostic.** It depends only on `glam` — no `windows`/
-    D3D, `egui`, `winit`, or importer types. This is what kept the renderer
-    swappable (wgpu → D3D11); don't add rendering/UI deps to `model`.
-11. **GPU structs are `#[repr(C)]` + `bytemuck` `Pod`/`Zeroable`.** Match the HLSL
-    `cbuffer` / vertex-input layout exactly (16-byte cbuffer packing) — don't
-    reorder fields without updating the shader. Nothing about this is caught at
-    run time: a dynamic cbuffer is sized from the Rust struct and only rejects a
-    payload *larger* than itself, so a field added on one side alone uploads
-    happily and the shader reads every later field shifted. Every such struct
-    therefore carries a `const _: () = assert!(size_of::<T>() == N);` beside it,
-    and `SCENE_VERTEX_LAYOUT` is pinned per field with `offset_of!` (a
-    stride-only check passes when two same-size fields swap). Add the assertion
-    with the struct — it is the only thing that turns this invariant into a
-    build error. Each cbuffer also gets its **own** register across all shaders
-    (scene `b0`, material `b1`, GTAO `b2`, post `b3`), so a slot never means two
-    different structs.
+   **Sanctioned exception — the platform GPU leaf** (`crates/render/src/rhi/backend/`)
+   is the *only* place the renderer's `unsafe` lives, and it is ~200 lines per OS:
+   `d3d11.rs` creates the device, hands it to `sg_setup`, owns the DXGI swapchain,
+   hands sokol_gfx a render-target view per frame and presents; `metal.rs` does the
+   same with an `MTLDevice` and a `CAMetalLayer` hosted on winit's `NSView`. They are
+   twins aliased as `backend`, not a trait — anything added to one must be added to
+   the other. Everything sokol_gfx draws with — pipelines,
+   buffers, targets, textures, samplers — is safe Rust over its C API, so what used
+   to be ~2000 lines of pervasive COM `unsafe` is now that leaf plus the one
+   `extern "C"` logger callback in `rhi/mod.rs`. `crates/app` is **fully safe**
+   (`#![forbid(unsafe_code)]` — as are `model` and `ui`) and, since `Gpu::attach`
+   reads the window's raw handle itself, no longer depends on `windows` at all.
+   **Sanctioned exception — the macOS shell leaf** (`crates/shell-macos`,
+   `review-shell-macos`): the Launch Services open hook (D14) and the `muda` menu bar
+   (D15). It is its own crate for exactly the reason `app` is `forbid(unsafe_code)`:
+   teaching winit's application delegate to answer `application:openURLs:` is
+   `class_addMethod` and nothing else, and that `unsafe` belongs in a named, bounded
+   site rather than loose in the shell. It knows nothing of models, cameras, frames or
+   GPU state — `app` hands it a callback and gets back paths and a two-variant
+   `MenuCommand` — and every entry point is a no-op stub off macOS, so `main.rs`
+   carries no `cfg` for it.
+   Every `unsafe` carries a `// SAFETY:` rationale and touches only GPU plumbing —
+   never model geometry, camera math, or material logic, which stay safe.
+   *(`crates/render/src/rhi/bake.rs` and the `bake`-gated half of `ibl.rs` are safe
+   sokol code; the bake's one `unsafe` is `read_image_subresource` in the backend
+   leaf, where the rest of the D3D11 `unsafe` already lives.)*
+10. **`crates/model` is host-agnostic.** It depends only on `glam` — no GPU API,
+    `egui`, `winit`, or importer types. This is what kept the renderer swappable
+    (wgpu → D3D11 → sokol_gfx); don't add rendering/UI deps to `model`.
+11. **GPU structs are `#[repr(C)]` + `bytemuck` `Pod`/`Zeroable`.** Match the
+    shader's uniform-block / vertex-input layout exactly (std140's 16-byte block
+    packing) — don't reorder fields without updating `review.glsl`. Nothing about
+    this is caught at run time: a uniform upload is sized from the Rust struct and
+    only rejects a payload *larger* than the block, so a field added on one side
+    alone uploads happily and the shader reads every later field shifted. Every
+    such struct therefore carries **two** `const` assertions beside it: a literal
+    `size_of::<T>() == N`, and `size_of::<T>() == size_of::<generated::T>()`
+    against shdc's reflection — the second is what pins the invariant to the
+    *shader* rather than to a hand-typed number. Add both with the struct; they
+    are the only thing that turns this invariant into a build error. Vertex
+    attribute locations are pinned the same way, by a test asserting the generated
+    `ATTR_*` constants against the layout every program that shares `vs_main`
+    expects. Each uniform block also gets its own slot across all programs (scene
+    VS 0 / scene FS 1 / material 2), so a slot never means two different structs.
 
 ## 2. Where things live
 
@@ -162,22 +198,40 @@ decisions, phases and risks — see §4's note).
 crates/
   app/      review-app: winit ApplicationHandler, event loop, input routing
             (LMB orbit / RMB pan / wheel zoom / F frame / drag-drop /
-            double-click-open), egui_winit + egui-directx11 wiring, the D3D11
-            device/swapchain bootstrap (in `resumed`, via the safe `Gpu::new` —
-            `app` has zero `unsafe`; incl. the first-frame black clear+present
-            that replaced the GDI startup hack) + per-frame draw order (scene →
-            composite → egui chrome on top → Present), redraw timing, applies
-            UiOutput back to Renderer. One `impl App` block per concern, one
-            file each: `fn main`, the `ApplicationHandler` impl and the window +
-            `Gpu::new` startup path -> src/main.rs; the per-frame render loop ->
+            double-click-open), egui_winit wiring, the GPU bootstrap (`Gpu::start`
+            on the *first line of main*, on its own thread — device creation needs
+            no window and is the longest launch item — joined by
+            `GpuBringUp::attach` in `resumed`, which puts the swapchain on the
+            window; `app` has zero `unsafe` and no platform GPU dependency at all)
+            + the per-frame draw order (`begin_frame` → the renderer's offscreen
+            passes → egui tessellation *outside* any pass → the one swapchain pass
+            {composite, chrome} → `finish`), redraw timing, applies UiOutput back
+            to Renderer. One `impl App` block per concern, one file each:
+            `fn main`, the `ApplicationHandler` impl and the window + GPU startup
+            path -> src/main.rs; the per-frame render loop ->
             src/frame.rs; pointer/scroll/resize routing -> src/input.rs; the
-            keyboard dispatch (which `ui`'s help.rs tables must mirror) ->
+            keyboard dispatch (which `ui`'s help.rs tables must mirror; file
+            commands chord with the **primary** modifier — `Ctrl` here, `Cmd` on
+            macOS, D10 — and `ui`'s `primary_key!` is what names it on screen) ->
             src/shortcuts.rs; the model-load funnel — drag-drop, Ctrl+O,
             double-click, CLI/file-association — plus the one
             `reset_ui_for_new_model` both paths share -> src/loading.rs;
             applying `UiOutput` intents to the Renderer (invariant 2's concrete
             realization) -> src/ui_intents.rs; the selection-flash animation ->
             src/selection_flash.rs;
+            the D2 gate stamp (`--gate-out <file>`: load the fixture, play a
+            scripted orbit, write one JSON stamp of startup + frame timings, then idle
+            with the model resident so `scripts/gate.ps1` can sample memory from
+            outside, and exit) -> src/gate.rs;
+            every native file dialog — opened on a worker thread and answered
+            through `UserEvent::DialogDone` (`mac-port-plan.md` D9), one at a time
+            -> src/dialog.rs. Nothing in this crate may call `rfd` inline from a
+            winit callback: on macOS a modal run loop entered from one aborts the
+            process. The single exception is the startup error box, which `main`
+            raises *after* `run_app` has returned. A request carries its own
+            subject with it (the LOD chain to export, the serialized preset), so
+            the answer acts on what the user was looking at when they asked rather
+            than on whatever the state has since become;
             scene texture pool + off-thread decode + disk-auto-reload
             (an `impl App` block) -> src/texture_manager.rs;
             the animation clock + pose evaluation (`AnimationSubsystem`, an
@@ -186,7 +240,9 @@ crates/
             time moved, bumps `pose_revision`, keeps `ui.bounds` on the selected
             clip's envelope, and is the `anim_playing` term of the redraw pacing)
             -> src/animation.rs;
-            window position/size restore via %APPDATA%, monitor-geometry
+            window position/size restore via the OS config dir (`dirs`, D17:
+            `%APPDATA%\3D Review` on Windows — the same path as before —
+            `~/Library/Application Support/3D Review` on macOS), monitor-geometry
             validation + the refresh-rate query -> src/window_state.rs;
             unified undo/redo snapshot stack -> src/undo.rs;
             the Opt workspace's processing loop -> src/opt.rs (an `impl App` block
@@ -270,6 +326,18 @@ crates/
             `optimize` have none; `app` and `import` keep one for `Client::start`
             and the allocation hooks). Each consumer's `src/prof.rs` is a
             re-export of this crate, not a copy. -> src/lib.rs
+  shell-macos/ review-shell-macos: the two macOS shell leaves, and nothing else —
+            the Launch Services open hook (`openfiles.rs`, D14: `class_addMethod` on
+            winit's application delegate, so a Finder double-click / `open(1)` / a
+            drop on the Dock icon reaches the viewer, which on this OS arrives as an
+            Apple event and *never* as argv) and the `muda` menu bar (`menubar.rs`,
+            D15: App / File {New ⌘N, Open… ⌘O} / Window, everything else a predefined
+            item on AppKit's own responder chain — and where ⌘Q comes from). Its own
+            crate because the delegate hook needs `unsafe` and `app` is
+            `#![forbid(unsafe_code)]`; `app` hands it a callback and gets back paths
+            and a two-variant `MenuCommand`, so it depends on neither `winit` nor any
+            crate of ours. Every entry point is a no-op stub off macOS.
+            -> src/lib.rs, src/openfiles.rs, src/menubar.rs
   psd/      review-psd: safe `decode_psd` over a C-ABI bridge to psd_sdk (C++),
             returning a PSD's merged composite as RGBA8 (invariant 9's third FFI
             site). Vendors psd_sdk as SOURCE (`vendor/Psd/`) and compiles it with `cc`
@@ -285,30 +353,99 @@ crates/
             viewport), CameraTransition (0.3s ease-in-out cubic) and the shared
             `ease_in_out_cubic` curve the chrome's own animations re-use ->
             src/camera.rs; the `Renderer` façade -> src/lib.rs.
-            The Direct3D 11 GPU layer:
-              * src/rhi/ — the SOLE home for D3D11/DXGI COM (`windows` crate,
-                invariant 9): mod.rs (`Gpu` = device + immediate context + swapchain
-                + backbuffer + the scene/color/backbuffer pass helpers + MSAA
-                capability query), pipeline.rs (`Pipeline` = VS+PS+input-layout +
-                raster/depth/blend state bundled from DXBC), buffer.rs (immutable
-                vertex/index + dynamic `Map(WRITE_DISCARD)` cbuffer), target.rs
-                (offscreen MSAA color + depth + `ResolveSubresource`), texture.rs
-                (BC6H cube / immutable 2D / mipped RGBA8), sampler.rs, and bake.rs
-                (offline-only headless device + cube/2D render targets + readback,
-                `bake` feature).
-              * src/scene/ — d3d.rs (`SceneGpu` itself: target reconciliation, the
-                2-MRT offscreen scene pass + GTAO + composite-to-backbuffer pass
-                recorders, the `render`/`render_uv` entry points and the uniform
-                encoders); resources.rs (`ModelSlot`, `DerivedViews` and every
-                `sync_*`/`release_*` build-on-demand cache incl. `sync_line_views`
-                — invariant 3 lives here); pipelines.rs (`ScenePipelineSet` +
-                `build_scene_pipelines`, stored as ONE field so an AA rebuild
-                cannot strand a pipeline at the old sample count); opt.rs (the Opt
-                workspace's split + ghost-overlay comparison rendering); and
-                gpu_types.rs (the #[repr(C)] scene/post/GTAO uniforms + SceneVertex,
-                each with a `const` size assertion, kept in HLSL
-                lockstep). The `--tracy`-gated GPU timestamp profiler
-                (`ID3D11Query` → Tracy GPU context) lives in rhi/gpu_profiler.rs.
+            The GPU layer:
+              * src/rhi/ — the SOLE home for the drawing API (sokol_gfx) **and for
+                the backend's types**: nothing outside `rhi` names an `sg::` type, a
+                pixel format enum or a window handle. Every resource goes through a
+                wrapper, every pixel format is `Format` (format.rs), and every
+                failure is a `GpuError` (error.rs) — which is what makes the
+                renderer's shape independent of the API underneath it
+                (`mac-port-plan.md` §3.1). mod.rs (`Gpu` = the device + the window's
+                swapchain, brought up on its own thread by `Gpu::start` and joined by
+                `GpuBringUp::attach`; `Frame` = one frame in flight, borrowing the
+                `Gpu` so "one frame at a time" is a compile-time fact, carrying the
+                clear colour, the single `begin_swapchain_pass` and every draw verb,
+                with a `Drop` guard that closes an abandoned pass so one bad frame
+                cannot wedge the next; plus the sokol logger, without which
+                validation failures are silent); error.rs (`GpuError`/`GpuResult`/
+                `ResourceKind`, `require_valid` for sokol's invalid-id reports and
+                the `.resource(kind, label)` combinator for the backend leaf's
+                HRESULTs); format.rs (`Format` + `SCENE_*_FORMAT`; its `sg()` is
+                `pub(in crate::rhi)`, which is what stops an `sg::PixelFormat`
+                leaking back out); present.rs (`PresentStatus`); shader.rs (the
+                generated `ShaderDesc` with this host's committed bytecode swapped
+                in, and the `bytecode!` macro that picks the per-OS blob);
+                pipeline.rs, buffer.rs (`TransientBuffer`, the per-frame geometry
+                stream, plus the immutable `VertexBuffer`/`IndexBuffer` and the
+                `StorageBuffer<T>` the deform tables live in), texture.rs, mips.rs (the
+                CPU mip chain, D7 — sokol has no `GenerateMips`; sRGB is averaged in
+                linear light so the result matches what the hardware produced),
+                sampler.rs, target.rs (the offscreen colour + depth attachments: an
+                image plus the views a pass attaches and a later pass samples, and at
+                2×+ MSAA a single-sample twin sokol resolves into at `end_pass`; the
+                GTAO targets are single-sample by design, and `scene/gpu.rs` groups the
+                seven of them into a `TargetSet` the Opt split holds *two* of),
+                bindings.rs (what a draw reads, as one value re-applied after every
+                `apply_pipeline` — sokol has no sticky slot state, so the old
+                `bind_*`/`unbind_*` pairs have no successor); gpu_profiler.rs (the
+                `--tracy` GPU profiler — the `Zone` set, the Tracy GPU context and the
+                spans, over the backend's `GpuTimer` — plus the arming flag and the
+                Tracy message channel; which zones a frame encodes is **measured**, not
+                declared, because timestamp queries are reused across ring slots and a
+                declared-but-unwritten zone would report ticks from four frames ago as
+                a plausible duration). `SwapchainJob` (in
+                mod.rs beside `Frame`) is a draw *recorded* before the swapchain pass
+                exists and replayed when it opens — every `Renderer::render_*` runs
+                before that pass, and there is only ever one of it per frame, so the
+                composite is deferred while the offscreen passes are issued directly.
+              * src/rhi/backend/ — the device + swapchain leaf, one module per OS and
+                **the only platform GPU code in the workspace** (invariant 9's
+                sanctioned `unsafe`). d3d11.rs creates the device, points
+                `sg_environment` at it, owns the DXGI flip-model swapchain, hands
+                sokol a render-target view per frame, presents, and answers
+                `supported_sample_counts` (sokol only reports MSAA as a yes/no).
+                metal.rs is its twin: an `MTLDevice`, a `CAMetalLayer` hosted on
+                winit's `NSView` (layer-*hosting*, not layer-backed, so AppKit does
+                not redraw it behind us), a drawable per frame, and
+                `supportsTextureSampleCount:`. Four things differ there and each is
+                load-bearing — a `BGRA8Unorm` backbuffer (a `CAMetalLayer` refuses
+                RGBA8; a storage channel *order* only, so D20 holds), sokol presenting
+                inside `sg_end_pass` rather than us (a second present would
+                double-present), the frame blocking at `nextDrawable` rather than at
+                present, and vsync being the layer's `displaySyncEnabled` rather than
+                an argument to a present call.
+                The swapchain is created with `ALLOW_TEARING` where the factory
+                offers it, and a vsync-**off** present passes the matching flag: without
+                that a flip-model `Present(0, 0)` still queues behind DWM, so
+                `finish(false)` returned the refresh interval rather than the frame's
+                own cost (which is what the D2 gate measures). Inert for the viewer,
+                which always presents with vsync on.
+                It also carries the two leaves for what sokol has no notion of:
+                `GpuTimer` (timestamp + disjoint queries, D18) and, `bake`-gated,
+                `read_image_subresource` (a staging copy + `Map(READ)`, D19). Its
+                `dxgi_format` is deliberately exhaustive with **no** catch-all arm —
+                the one it used to have made a wrong-format staging texture, and
+                `CopySubresourceRegion` between mismatched formats is a silent no-op.
+                The two modules are twins aliased as `backend`, not a trait:
+                anything added to one must be added to the other.
+              * src/egui_sokol.rs — the egui renderer (D3), which replaced
+                `egui-directx11`. One program, one interleaved vertex stream, a
+                texture per egui id with a **CPU shadow** it is recreated from (sokol
+                has no sub-rectangle image update, and egui patches its atlas by
+                sub-rect), and a sampler per distinct `TextureOptions`. `prepare`
+                runs outside any pass, `paint` inside the swapchain pass, and
+                `free_textures` after the frame.
+              * src/scene/gpu_types.rs — the #[repr(C)] scene/post/GTAO uniforms +
+                SceneVertex, each with a `const` size assertion **against shdc's
+                generated struct** as well as a literal, so invariant 11 is pinned to
+                the shader rather than to a hand-typed number.
+              * src/rhi/bake.rs — the offline bake's headless sokol_gfx (a device, no
+                swapchain), the render-target `CubeTarget` (one attachment view per
+                face/mip plus a cube texture view) and `Target2D`, and the one-call
+                fullscreen pass they are drawn with. `[feature bake]` only; the runtime
+                never touches it. sokol's closed passes are what retired the old
+                `unbind_*` dance — a render target cannot still be bound when the next
+                pass samples it.
             CPU vertex generation -> src/geometry/ (vertex/grid/mesh/select/
             debug_lines/uv, plus deform.rs — the per-model `DeformLayout`: each
             corner's 16-byte `deform` lane and the influence / morph tables it
@@ -319,33 +456,40 @@ crates/
             mesh-derived overlay deform through the one shader; the skeleton
             overlay attaches its vertices to node entries and needs no CPU
             rebuild); editable per-material table (cbuffer `b1` + `t5..t11` +
-            aniso sampler) + path-keyed texture cache -> src/material/ (state / mode /
-            d3d); source-texture decode (magic-byte dispatch: PSD via `review-psd`,
-            JPEG via zune's fast path, PNG/TGA/TIFF/HDR/BMP/GIF/PNM via the `image`
-            crate — no ImageMagick) + filename channel auto-detect -> src/texture.rs;
-            the Tex viewport's own minimal image draw (`TexGpu` — a fullscreen-
-            triangle pipeline + path-keyed mipped cache + channel-select/placement
-            uniform, deliberately outside the scene MRT/tonemap path so the displayed
-            texel equals the stored texel) -> src/tex_d3d.rs.
-            Shaders are hand-written HLSL in src/hlsl/*.hlsl, compiled offline to
-            committed DXBC blobs by build.rs (`fxc`, freshness-gated, `/WX`); the
-            runtime `include_bytes!`s the DXBC (no runtime shader compilation):
-            scene.hlsl (mesh / line / skybox / selection / uv-fill / gtao-gbuffer),
-            post.hlsl (composite: AO-darkened ambient + tone map + sRGB), gtao.hlsl
-            (horizon occlusion + bilateral blur), tex.hlsl (Tex viewport image /
-            checker), ibl.hlsl (the bake-only IBL precompute).
+            aniso sampler) + path-keyed texture cache -> src/material/ (state / mode,
+            plus gpu — the uploaded table and its path-keyed LRU cache); source-texture decode
+            (magic-byte dispatch: PSD via `review-psd`, JPEG via zune's fast path,
+            PNG/TGA/TIFF/HDR/BMP/GIF/PNM via the `image` crate — no ImageMagick) +
+            filename channel auto-detect -> src/texture.rs; what the Tex viewport is
+            asked to draw (`TexBackground` — a solid fill *is* the frame's clear now
+            — and the placed `TexImage`) -> src/tex.rs, with its image + checker draw
+            (two deferred `SwapchainJob`s, deliberately outside the scene MRT/tonemap
+            path so the displayed texel equals the stored texel) -> src/tex/gpu.rs.
+            Shaders are ONE source: src/shaders/review.glsl, all 15 programs in
+            sokol-shdc's annotated GLSL. `scripts/gen-shaders.{sh,ps1}` turns it into
+            the checked-in src/shaders/generated/ — per-backend HLSL5 + MSL sources
+            and shdc's Rust reflection (bind slots, attribute locations, a struct per
+            uniform block) — and build.rs compiles this host's half to committed
+            bytecode beside it (`fxc /WX /O3`, freshness-gated, jobs *discovered* by
+            filename). The runtime `include_bytes!`s the bytecode; nothing compiles a
+            shader at run time, and a broken shader is a build error. That reflection
+            is also what every `#[repr(C)]` GPU struct asserts its size against, so
+            invariant 11 is pinned to the shader rather than to a hand-typed number.
             Per-model GPU state (mesh buffers, derived views, selection/visibility
             draw lists, each with its bake key) lives in a `ModelSlot`; `SceneGpu`
             holds an **active/idle pair** so the Opt workspace can keep the source
             and processed meshes both resident and alternate between them within a
             frame for one `mem::swap` — a single slot would rebuild both meshes on
             every alternation. `render`/`render_uv` claim the source slot
-            explicitly. `render_opt` draws the split (each half through the *same*
-            targets sized to half the backbuffer, composited into its own half via
-            a viewport rect — D3D11 clips to the viewport and the composite's UVs
-            come from its vertex attribute, so no scissor and no shader change) or
-            the overlay (one mesh solid, the other a ghost: the x-ray reuses the
-            selection-flash fill, the wireframe ghost the line pipeline).
+            explicitly. `render_opt` (src/scene/opt.rs) draws the split — each half
+            into its **own** `TargetSet` sized to half the viewport, composited into
+            its own half via a viewport rect. Two sets, not one: the composite is a
+            deferred `SwapchainJob`, so both halves' passes have run before either
+            composite does and a shared set would show the second view in both. Two
+            half-width sets cost what one full-width set does, and the second is
+            released the moment a single view is drawn. The overlay is one view (one
+            mesh solid, the other a ghost: the x-ray reuses the selection-flash fill,
+            the wireframe ghost the line pipeline).
             Scene depth is `Depth32Float`, Reversed-Z. The offscreen scene pass is
             **2-MRT** linear-HDR (`R16G16B16A16_FLOAT`): location 0 = linear scene
             radiance, location 1 = AO-eligible diffuse-ambient radiance; GTAO has a
@@ -353,30 +497,34 @@ crates/
             raw/blurred `R8` occlusion, and the composite darkens the ambient by the
             scalar AO factor. HDR image-based lighting: at runtime the env cube +
             irradiance + prefilter + shared BRDF LUT are **loaded**
-            (`IblD3d::from_baked`, a pure D3D11 upload — no startup precompute) from
+            (`IblMaps::from_baked`, a pure upload — no startup precompute) from
             offline-baked assets (`assets/ibl_baked/`) for the PBR shaded path +
             skybox. The three HDR cubes ship **BC6H** block-compressed
             (`Bc6hRgbUfloat`, ~8× smaller than `Rgba16Float`, GPU-native so no
             decode); the shared BRDF LUT stays `Rg16Float`. The precompute that bakes
-            + BC6H-encodes them (the `ibl.hlsl` passes run on a headless D3D11 device
-            via `rhi::bake`, then `intel_tex_2` encodes BC6H) compiles only into the
+            + BC6H-encodes them (`review.glsl`'s four `ibl_*` programs run on a
+            headless sokol device via `rhi::bake`, then `intel_tex_2` encodes BC6H)
+            compiles only into the
             offline `bake_ibl` tool (render's `bake` feature, src/bin/bake_ibl.rs) ->
             src/ibl.rs. The model wireframe is a plain LineList drawn in the scene
             pass via the line pipeline (depth-tested against the mesh so hidden-face
-            edges are occluded; fixed 1px hardware width) -> src/scene/d3d.rs +
+            edges are occluded; fixed 1px hardware width) -> src/scene/gpu.rs +
             src/geometry/ (`wireframe_lines`).
   ui/       review-ui: egui chrome built on egui's **native windowing**, not a
             hand-rolled layout system. Option tools are native `egui::Window`s
             (collapsible/closable, non-resizable, multi-open via
             `UiState::panels_open`); the Outliner (left) + Inspector (right) are
-            dockable, resizable `egui::SidePanel`s; the toolbar + status bar are
-            `egui::TopBottomPanel` bands (interiors still hand-laid via
-            `scope_builder` — the one remaining rework step). The 3D/UV scene + the
-            composite are drawn by `app` (Direct3D 11) *before* egui, which paints
-            its chrome on top with a transparent central viewport; the Tex viewport
-            (`texture_view.rs`) handles only interaction (pan/zoom/fit, background
-            fill, channel pick) and hands the image to `review_render`'s `TexGpu`
-            (a D3D11 draw, also issued by `app`) — `ui` owns no GPU state. Plus axis
+            dockable, resizable `egui::Panel`s; the toolbar + status bar are
+            `egui::Panel` bands (interiors still hand-laid via
+            `scope_builder` — the one remaining rework step). `draw_overlay` takes
+            the frame's root `&mut Ui` (egui shows panels into a `Ui`, not onto the
+            `Context`) and carves the bands out of it; floating chrome — `Window`,
+            `Area`, the layer painters — still addresses `ui.ctx()`. The 3D/UV scene
+            + the composite are drawn by the renderer into the same frame *before*
+            egui, which paints its chrome over them with a transparent central
+            viewport; the Tex viewport (`texture_view.rs`) handles only interaction
+            (pan/zoom/fit, background fill, channel pick) and hands the image to the
+            renderer — `ui` owns no GPU state. Plus axis
             gizmo, stats overlay, bounding-box dimension labels, startup help
             overlay; emits UiOutput intents. Thin root re-exports; modules: theme/
             state/assets/widgets/overlay/toolbar/status_bar/stats/texture_view/gizmo/
@@ -401,7 +549,7 @@ crates/
             reprocess and what undo compares; only the file-dialog actions (export,
             preset load/save) travel as an `OptIntent`. In Opt the left side panel
             splits horizontally — the scene tree on top, the operation stack in a
-            resizable `TopBottomPanel::show_inside` band below — and the Inspector
+            resizable nested `egui::Panel` band below — and the Inspector
             retargets at the selected operation's parameters, the export settings,
             or the selected object's overrides.
 third_party/ufbx/   vendored ufbx.c / ufbx.h (compiled only if present)
@@ -416,9 +564,9 @@ assets/test_models/ local FBX fixtures for manual checks
 ```
 
 Data flow: input/file-drop → `app` → `import` (FBX→`ModelData`) → `model`
-(shared) → `render` (camera + D3D11 GPU resources) → `app` draws the scene +
-composite, then `ui` paints the egui chrome on top → `app` (applies UI intents,
-requests redraw). See §2 above + `PROJECT_STATE.md`. The Opt workspace branches
+(shared) → `render` (camera + GPU resources) → `app` opens the frame, the renderer
+records its passes and composites, then `ui`'s chrome is painted over it in the same
+swapchain pass → `app` (applies UI intents, requests redraw). See §2 above + `PROJECT_STATE.md`. The Opt workspace branches
 off that at `model`: `optimize` turns a `ModelData` plus an operation stack into
 one `ModelData` per LOD level on a worker thread, and those go back through the
 same `render` path as the source.
@@ -431,8 +579,12 @@ same `render` path as the source.
 
 ## 3. Build & run
 
-Use the **x64 Native Tools Command Prompt for VS 2022** (MSVC `cl` must be on
-PATH so `cc` can compile `ufbx.c`).
+**Windows:** use the **x64 Native Tools Command Prompt for VS 2022** (MSVC `cl`
+must be on PATH so `cc` can compile `ufbx.c`). **macOS:** Xcode Command Line Tools
+are enough (Apple clang compiles every vendored C tree); the full Metal toolchain
+(`xcodebuild -downloadComponent MetalToolchain`) is needed **only** to edit shaders
+— verify it by *running* `xcrun -sdk macosx metal --version`, since CLT ships a stub
+that `xcrun --find` locates and that then fails at first compile.
 
 - `cargo run -p review-app` — launch the viewer.
 - `cargo check --workspace` — fast type check.
@@ -440,19 +592,61 @@ PATH so `cc` can compile `ufbx.c`).
   claiming done.**
 - `cargo fmt --all` — format.
 - `cargo test --workspace` — unit tests (model / import / render); add alongside
-  changes. (HLSL is validated by `fxc /WX` in render's `build.rs`, not a test.)
+  changes. (The shaders are validated by `fxc /WX` in render's `build.rs`, not a
+  test.)
 - `cargo build --release` — release binary.
-- `cargo run -p review-render --features bake --bin bake_ibl` — re-bake the IBL
-  maps (needs a real GPU; outputs committed under `assets/ibl_baked/`).
+- `scripts/gate.ps1 -A <baseline exe> -B <exe> -Fixture <fbx>` — the D2 gate
+  (`mac-port-plan.md`): interleaved release launches of two builds, comparing
+  startup / frame time / RAM + VRAM against a budget on each delta. Needs a real
+  GPU and a quiet box. The baseline build is `main` plus
+  `scripts/gate-baseline.patch`, which adds the same `--gate-out` stamp to a branch
+  that predates it. `scripts/gate.sh` is the Mac twin, with **no cross-OS budget** —
+  comparing a Mac against a Windows PC compares two machines, not two builds — so it
+  also has a one-build mode that just records the numbers the next Mac build has to
+  beat. There is no VRAM row there: unified memory already counts it in the footprint.
+- `scripts/dev-app.sh [--debug] [model.fbx]` (macOS) — wrap the built binary in an
+  unsigned `.app` and launch it. The only way to exercise the menu bar, the Dock, and
+  the Launch Services open path at all: a bare executable gets none of them, and is
+  not what `open` hands files to. It launches with `open -a`, which is load-bearing —
+  plain `open <app> <file>` sends the `.fbx` to the system default handler instead.
+- `scripts/build-mac.sh` — the release chain (D12): `.icns`, `Info.plist` with the
+  `.fbx` document type, codesign with the hardened runtime, notarize, staple, `.dmg`,
+  and the `spctl -a -t open` check. Run by hand on the dev Mac so the Developer ID
+  cert never leaves that keychain. `packaging/check-shader-bytecode.sh` (which it runs
+  first) is the mirror of the `.ps1`: it hard-fails on a stale `.metallib` and only
+  warns about the Windows rows.
+- `cargo run --release -p review-render --features bake --bin bake_ibl` — the
+  offline IBL re-bake (needs a real GPU; it creates its own headless device). Writes
+  `assets/ibl_baked/` **in place**, and validates each payload before writing so a
+  dead pass cannot destroy a good map. `--release` because the BC6H encoder's
+  highest-quality profile is slow — but note that sokol's validation layer is compiled
+  *out* of a release build, so if the bake misbehaves, reproduce it in debug where a
+  bad call says so.
+- `scripts/gen-shaders.ps1` (or `.sh`) — regenerate `crates/render/src/shaders/
+  generated/` after editing `review.glsl`. Fetches `sokol-shdc` into the
+  gitignored `.tools/` on first run; **commit what it writes**, since a plain
+  build never runs it. The bytecode beside it is per-host (D5): a shader edit
+  committed from one OS ships stale bytecode for the other until that host
+  rebuilds, and build.rs says so. It also writes `generated/review.glsl.sha256` —
+  the digest of the shader the set was generated *from*, which is the one staleness
+  question `bytecode.manifest` cannot answer (it chains a blob to its generated
+  source, and this is the link above that). Editing `review.glsl` and forgetting to
+  run this script is what that catches, and build.rs warns on it.
 
-Pinned (workspace deps): `winit 0.30`, `windows 0.62` (Direct3D 11/DXGI), `egui`/
-`egui-winit 0.33`, `egui-directx11 0.12`, `glam 0.30`, `bytemuck 1`,
-`thiserror 2`, `rfd 0.15`, `image 0.25` (png + hdr + tga/tiff/jpeg/pnm), `half 2`,
+Pinned (workspace deps): `winit 0.30`, `sokol` (a vendored checkout — see
+`vendor/NOTICE.txt`), `windows 0.62` (Direct3D 11/DXGI, a `cfg(windows)` dep of
+`render` **only**, for the backend leaf), the `objc2 0.5` family
+(`objc2-metal`/`-quartz-core`/`-app-kit`/`-foundation` 0.2 — the versions winit
+already pulls, so the Mac build compiles nothing extra; a `cfg(target_os = "macos")`
+dep of `render` for the Metal leaf and of `shell-macos` for the shell ones) +
+`muda 0.19` (the menu bar), `egui`/`egui-winit 0.36` +
+`egui-notify 0.23`, `glam 0.30`, `bytemuck 1`, `thiserror 2`, `rfd 0.15`,
+`dirs 6` (the per-user config dir `window.cfg` lives in),
+`image 0.25` (png + hdr + tga/tiff/jpeg/pnm), `half 2`,
 `zune-image`/`zune-core 0.5` (JPEG-only + simd; the texture fast path), `cc 1`
-(build dep), `tracy-client 0.18`. `intel_tex_2` is a `bake`-only dep (CPU
-BC6H encoder). Edition 2024.
+(build dep), `tracy-client 0.18`. Edition 2024.
 
-> **MSRV:** `rust-version = "1.88"` — the floor required by `egui 0.33`.
+> **MSRV:** `rust-version = "1.88"`.
 > The FFI's `unsafe extern "C" { … }` blocks are the idiomatic (and, under
 > Edition 2024, required) form. Bump the floor only when adopting a feature
 > that needs a higher version.
@@ -460,8 +654,25 @@ BC6H encoder). Edition 2024.
 `build.rs` (import) compiles `ufbx.c` + the bridge with `cc` **only when**
 `third_party/ufbx/ufbx.{c,h}` exist, and sets `cfg(has_ufbx)`; without them the
 workspace still builds and FBX import returns a clear error. `build.rs` (render)
-compiles the HLSL in `src/hlsl/*.hlsl` to committed DXBC with `fxc`, but only when
-a blob is stale and `fxc` is present (a no-fxc CI box uses the committed blobs).
+compiles **this host's half** of the generated shader sources to committed bytecode —
+`fxc` → `.dxbc` on Windows, `xcrun metal -Werror -O3` → `.metallib` on macOS — but
+only when a blob is stale and the compiler is present (a box with neither uses the
+committed blobs). The source list, the compiler and the blob extension are `cfg`-chosen
+from one shared skeleton, and the jobs are discovered from the filenames in
+`src/shaders/generated/`, so adding a program touches only `review.glsl` — there
+is no hand-listed job table to keep in step with it.
+
+**Stale means "does not match", not "is older than"** — `src/shaders/generated/
+bytecode.manifest` records the SHA-256 of each generated source and of the blob
+compiled from it, and is committed beside them. Commit it whenever you commit
+bytecode. Timestamps cannot answer this once two OSes commit blobs (D5): a shader
+rebuilt on the Mac reaches Windows as a new source next to a blob one revision
+behind, both stamped by `git checkout` at the same instant. `packaging/check-
+shader-bytecode.{ps1,sh}` fails a release build on any mismatch (each hard-fails on
+its own host's blobs and only warns about the other's; both packaging builds run
+theirs). The one thing the manifest cannot see — that you edited `review.glsl` and
+never ran `scripts/gen-shaders` — is caught by `generated/review.glsl.sha256`, which
+those scripts write and `build.rs` compares against the file's own digest.
 
 ## 4. Locked decisions — DO NOT RE-LITIGATE
 
@@ -474,23 +685,18 @@ a blob is stale and `fxc` is present (a no-fxc CI box uses the committed blobs).
   slowest, **highest-quality** profile (`very_slow_settings`) because that work
   happens once on a dev machine and only sharpens what runs. When a choice trades
   dev-time effort for a better runtime, take it.
-- Native stack: direct `winit` + **native Direct3D 11** (via the `windows` crate),
-  not `eframe`/wgpu. `egui` is an overlay rendered by `egui-directx11` on the same
-  D3D11 device. The renderer was migrated off `wgpu` to shrink the shipped binary,
-  startup time, and baseline RAM (one `D3D11CreateDevice` instead of probing every
-  DX12 adapter); the workspace carries **zero** wgpu/naga/pollster/egui-wgpu, in
-  the runtime *and* the offline bake tool. This supersedes the original
-  "direct wgpu" decision — **do not reintroduce wgpu.** All D3D11 COM lives in
-  `render/src/rhi/` + `app`'s swapchain bootstrap (invariant 9).
-  **Scheduled to be superseded** by `mac-port-plan.md`: the D3D11 half of this
-  decision gives way to **`sokol_gfx` as the one drawing API on both Windows and
-  macOS** (D3D11 and Metal underneath, one ~200-line device/swapchain leaf per OS),
-  with `egui-directx11` replaced by an in-tree egui renderer and the HLSL replaced
-  by one sokol-shdc GLSL source. The wgpu ban stands. Until that port lands this
-  bullet describes the tree; once it does, §1 invariant 9, §2 and this section are
-  rewritten per the plan's Phase 3.
-- UI chrome uses egui's **native windowing** (`Window` / `SidePanel` /
-  `TopBottomPanel`) and stock widgets (`Grid` / `Slider` / `DragValue` /
+- Native stack: direct `winit` + **`sokol_gfx` as the one drawing API on both
+  Windows and macOS** (Direct3D 11 and Metal underneath), with one ~200-line
+  device/swapchain leaf per OS in `render/src/rhi/backend/` — not `eframe`, not
+  wgpu, and not a second native shell per platform (`mac-port-plan.md` D1). `egui`
+  is an overlay drawn by our own sokol renderer (`render/src/egui_sokol.rs`, D3).
+  The renderer was migrated off `wgpu` first, to shrink the shipped binary, startup
+  time and baseline RAM (one device creation instead of probing every DX12 adapter);
+  the workspace carries **zero** wgpu/naga/pollster/egui-wgpu. That ban stands, and
+  so does the "no second shell" one: **do not reintroduce wgpu, and do not add a
+  per-OS renderer** — anything sokol genuinely cannot do becomes a named leaf beside
+  the device (mips, timestamp queries, readback, exact MSAA counts), not a fork.
+- UI chrome uses egui's **native windowing** (`Window` / `Panel`) and stock widgets (`Grid` / `Slider` / `DragValue` /
   `ComboBox`), styled from egui's default `Visuals::dark()` plus a few theme-token
   overrides. The old hand-rolled `egui::Area` + pixel-rect panel system is gone —
   do **not** bring it back (see the lead-in to §1). Styling exceptions: keep the
@@ -500,11 +706,12 @@ a blob is stale and `fxc` is present (a no-fxc CI box uses the committed blobs).
   original face topology + source stats). FBX is the only MVP import format,
   parsed by vendored `ufbx` through a single C bridge — don't round-trip through
   glTF (drops quad topology, changes vertex counts).
-- Shading is one HLSL scene shader (`hlsl/scene.hlsl`) covering shaded / unlit /
-  wireframe / uv-checker / vertex-color paths; tone mapping + sRGB encoding live in
-  the post shader (`hlsl/post.hlsl`), and the model wireframe is a depth-tested
-  line-list draw in the scene pass. HLSL is compiled offline to committed DXBC by
-  `build.rs` (`fxc`); the runtime does no shader compilation. `3D`, `UV` and `Tex`
+- Shading is one scene program (`@program mesh` in `shaders/review.glsl`) covering
+  shaded / unlit / wireframe / uv-checker / vertex-color paths; tone mapping + sRGB
+  encoding live in the `post` program, and the model wireframe is a depth-tested
+  line-list draw in the scene pass. The whole set is generated per backend by
+  sokol-shdc and compiled offline to committed bytecode by `build.rs` (`fxc` here);
+  the runtime does no shader compilation. `3D`, `UV` and `Tex`
   viewports are all implemented; the `Tex` image is drawn by its own minimal
   fullscreen-triangle pipeline (`TexGpu`, outside the scene MRT/tonemap path) so
   channel isolation is a uniform swizzle and the displayed texel equals the stored
@@ -513,6 +720,15 @@ a blob is stale and `fxc` is present (a no-fxc CI box uses the committed blobs).
 
 ## 5. Current state
 
+> **Everything below draws again.** The GPU port (`mac-port-plan.md` Phase 1 step 4)
+> is complete: the frame flow, the egui chrome, the Tex viewport, the 3D and UV scenes
+> — GPU skinning, the material table, the IBL/PBR shaded path, the skybox, every
+> derived overlay, dynamic scene MSAA and the GTAO passes — and the Opt workspace's
+> split and ghost-overlay comparison all run on sokol_gfx. Against a `main` build in a
+> worktree the viewport is **pixel-identical** on the models checked. The steps left
+> are the Tracy GPU profiler and the offline IBL bake (step 6), the shell leaves
+> (step 5) and the cleanup (step 7).
+
 MVP: native window + Direct3D 11 viewport + egui chrome; FBX import via ufbx (drag-drop,
 `Ctrl+O`, double-click empty viewport, command-line/file-association path);
 orbit/pan/zoom + frame-on-`F` + home reset + 45° WASD orbit steps; grid with
@@ -520,11 +736,11 @@ axes; shaded / unlit / wireframe / shaded+wireframe, source-color / UV-checker /
 vertex-color materials, plus bounding-box, face- and vertex-normal debug
 overlays; orthographic/perspective toggle; animated axis gizmo (orbit +
 snap-to-axis); a 2D UV viewport (independent pan/zoom, UV channel picker, wire
-layout, shaded fill, per-island coloring); a 2D Tex viewport (a Direct3D 11 image
+layout, shaded fill, per-island coloring); a 2D Tex viewport (a fullscreen image
 draw via `TexGpu` over the scene texture pool: texture picker, RGB/R/G/B/A channel
 isolation — a shader uniform swizzle, so switching is instant; the `A` segment
-auto-hides for opaque images — mipmapped, pan (LMB-drag) / zoom (wheel or
-RMB-drag) / `F`-to-fit, black/white/grey/checker
+auto-hides for opaque images — mipmapped (a CPU chain, D7), pan (LMB-drag) / zoom
+(wheel or RMB-drag) / `F`-to-fit, black/white/grey/checker
 background fill, and a real-values stats panel). Windows packaging (exe icon/resource
 metadata + Inno Setup installer) is present.
 
@@ -590,8 +806,8 @@ carry no skin) and the dimension-label BVH / AO bake use the bind-pose buffers.
 The `ui` crate was migrated off the old hand-rolled `egui::Area` + pixel-rect
 layout system onto egui's **native windowing**: option tools are native
 `egui::Window`s (collapsible/closable, non-resizable, multi-open via
-`UiState::panels_open`), the Outliner/Inspector are dockable `egui::SidePanel`s,
-the toolbar/status bar are `TopBottomPanel` bands, and panel bodies use stock
+`UiState::panels_open`), the Outliner/Inspector are dockable `egui::Panel`s,
+the toolbar/status bar are `egui::Panel` bands, and panel bodies use stock
 `Grid`/`Slider`/`DragValue`/`ComboBox` widgets dispatched by
 `panels::draw_panel_body` (which pins each panel to one width). Styling derives
 from egui's default `Visuals::dark()` installed once at startup
@@ -613,7 +829,7 @@ status-bar AA button; **HDR image-based lighting + PBR** is the default Shaded
 look — six baked HDR environments (each with a preview thumbnail shown in the
 Environment dropdown), baked irradiance/prefilter/BRDF-LUT maps loaded by `ibl.rs`,
 an optional skybox, and a live 0–360° environment yaw rotation (applied at sample
-time in `scene.hlsl` via `projection_params.y`, so it never rebuilds the IBL maps);
+time in the scene program via `projection_params.y`, so it never rebuilds the maps);
 **Ambient Occlusion** (GTAO internally) is on by default — horizon-based occlusion
 (a structured 4×4 spatial dither decorrelates slices) + 5×5 bilateral blur over a
 *separate single-sample* view-normal/view-Z G-buffer (its own mesh-only pass, not
@@ -630,11 +846,11 @@ panel — Environment / Ambient Occlusion / Tonemapper / Anti Aliasing).
 
 The renderer is **fully linear-HDR with Reversed-Z scene depth**, on a **2-MRT**
 scene pass: location 0 carries linear radiance (tone mapping + `linear_to_srgb`
-happen in `post.hlsl`); location 1 is the AO-eligible diffuse ambient radiance (IBL
+happen in the `post` program); location 1 is the AO-eligible diffuse ambient radiance (IBL
 diffuse + analytic fill only), which post darkens by the scalar GTAO factor. Scene
 depth is `Depth32Float` cleared to 0 with `GreaterEqual` and infinite reversed
-perspective (`perspective_infinite_reverse_rh`); egui-directx11 then draws the
-chrome on top of the backbuffer with no depth. The model wireframe is a plain
+perspective (`perspective_infinite_reverse_rh`); the egui renderer then draws the
+chrome into the same swapchain pass, after the composite and with no depth. The model wireframe is a plain
 `LineList` drawn inside the scene pass via the line pipeline, so it depth-tests
 against the mesh (Reversed-Z `GreaterEqual`, no depth write) and edges on hidden
 faces are occluded, while the scene MSAA antialiases it (the trade-off is fixed 1px
@@ -738,27 +954,29 @@ when its fixture or a vendored tree is absent.
   collide with a later operation's *old* id and be rewritten twice, silently
   reattaching the user's per-object settings to the wrong operation — reachable
   with one reorder plus a preset round-trip.
-- GPU struct field order must match the HLSL `cbuffer`/vertex-input layouts
-  (invariant 11) — the shaders live in `crates/render/src/hlsl/*.hlsl` (compiled to
-  DXBC by `build.rs`, `include_bytes!`'d at runtime); update `scene.hlsl` in
-  lockstep with the `#[repr(C)]` `SceneUniforms`/`SceneVertex` structs in
-  `scene/gpu_types.rs` (mind HLSL's 16-byte cbuffer packing). `fxc /WX` in
-  `build.rs` catches a broken shader at build time.
-- The scene geometry pass is **MRT** with **two** color targets: `scene.hlsl`'s
-  `FragOutput` writes `SV_Target0` (linear scene radiance) and `SV_Target1`
-  (AO-eligible diffuse ambient radiance), so every scene pipeline
-  (mesh/line/uv-fill/skybox) renders into *two* RTVs and the offscreen pass binds
-  *two* attachments (+ MSAA resolves) — keep them in lockstep with `FragOutput`.
+- GPU struct field order must match the shader's uniform-block / vertex-input
+  layouts (invariant 11) — the one shader source is
+  `crates/render/src/shaders/review.glsl`; update it in lockstep with the
+  `#[repr(C)]` `SceneUniforms`/`SceneVertex` structs in `scene/gpu_types.rs` (mind
+  std140's 16-byte block packing). Two things catch a mistake now: `fxc /WX` in
+  `build.rs` rejects a broken shader, and each struct's `size_of` assertion against
+  **shdc's generated struct** rejects a layout that drifted. Re-run
+  `scripts/gen-shaders.ps1` after editing the GLSL and commit what it writes.
+- The scene geometry pass is **MRT** with **two** color targets: the scene
+  fragment shaders in `review.glsl` write location 0 (linear scene radiance) and
+  location 1 (AO-eligible diffuse ambient radiance), so every scene pipeline
+  (mesh/line/uv-fill/skybox) declares *two* color formats and the offscreen pass
+  binds *two* attachments (+ MSAA resolves) — keep the three in lockstep.
   Both locations alpha-blend. Overlays (zero-normal verts) write 0 to location 1 so
   they aren't AO-darkened. GTAO does not read location 1: it has its own
   single-sample mesh-only pass (`fs_gtao_gbuffer`, one `SV_Target0` output of view
   normal `xyz` + view Z `w`) into a separate G-buffer target, avoiding MSAA edge
-  averaging. GTAO is horizon-based (`gtao.hlsl`, a structured 4×4 spatial dither
-  decorrelates slices) and outputs a single scalar occlusion (`R8Unorm`);
-  `post.hlsl` darkens the diffuse ambient (location 1) by that scalar factor — an
-  additive correction over location 0 so MSAA stays correct and direct/emissive
-  light is never darkened. Tone mapping + sRGB encoding happen once in `post.hlsl`,
-  not in the scene shader. fxc notes: use `SampleLevel` (not `Sample`) for any
+  averaging. GTAO is horizon-based (the `gtao` program, where a structured 4×4
+  spatial dither decorrelates slices) and outputs a single scalar occlusion
+  (`R8Unorm`); `post` darkens the diffuse ambient (location 1) by that scalar factor
+  — an additive correction over location 0 so MSAA stays correct and direct/emissive
+  light is never darkened. Tone mapping + sRGB encoding happen once in `post`, not
+  in the scene shader. fxc notes: use `SampleLevel` (not `Sample`) for any
   texture read inside a loop/branch (non-uniform control flow), and guard a
   possibly-negative `pow` base with `max(x, 0.0)` so `/WX` doesn't reject it.
 - CPU-side vertex generation (grid, wireframe, face/vertex normal lines) lives in
@@ -780,9 +998,9 @@ when its fixture or a vendored tree is absent.
   (65504), so the bake's `ibl.rs` `load_equirect_from_file` clamps every channel to
   `F16_MAX` before the `Rgba16Float` upload — otherwise they become `inf`, the
   (unbounded) irradiance integral turns to `NaN`, and the model shows black
-  speckles + a dead spot at the sun. `ibl.hlsl` additionally clamps each *sampled*
-  radiance to `IBL_RADIANCE_CLAMP` in both convolutions (irradiance + prefilter) to
-  kill fireflies, and `scene.hlsl`'s skybox clamps `env * intensity` to f16 max so
+  speckles + a dead spot at the sun. The `ibl_*` programs additionally clamp each
+  *sampled* radiance to `IBL_RADIANCE_CLAMP` in both convolutions (irradiance +
+  prefilter) to kill fireflies, and the skybox clamps `env * intensity` to f16 max so
   the intensity multiply can't re-overflow the HDR target. (These clamps run at
   bake time now; the shipped maps are already finite.) Don't drop them.
 - Environment-dropdown HDR thumbnails (`assets/thumbnails/T_HDR_*.png`) are
@@ -799,13 +1017,14 @@ when its fixture or a vendored tree is absent.
   runtime creates BC6H textures, which are core in Direct3D 11 feature level 11_0
   (the renderer's floor), so no explicit feature request is needed.
   They're committed; `packaging/generate-ibl-bake.ps1` regenerates them by running
-  the `bake_ibl` tool (`cargo run -p review-render --features bake --bin bake_ibl`,
-  needs a real GPU; the bake runs its `ibl.hlsl` passes on a headless D3D11 device).
+  the `bake_ibl` tool (`cargo run --release -p review-render --features bake --bin
+  bake_ibl`, needs a real GPU; the bake runs its `ibl_*` programs on a headless
+  sokol device).
   The installer build (`build-windows-installer.ps1`) invokes it, but it is
   **freshness-gated**: the script only runs the GPU bake when a baked `.bin` is
   missing or older than an input that determines its bytes (a source HDR, or
-  `ibl.rs` / `ibl.hlsl` / `bake_ibl.rs` — i.e. an IBL precompute constant like
-  sizes/mips/format, or the encode path); otherwise it's a fast no-op, so a normal
+  `ibl.rs` / `review.glsl` / `bake_ibl.rs` / `rhi/bake.rs` — i.e. an IBL precompute
+  constant like sizes/mips/format, or the encode path); otherwise it's a fast no-op, so a normal
   build touches no GPU. Pass `-Force` to re-bake regardless, or run it manually
   after adding/replacing an HDR or changing a precompute constant. The shipping
   binary carries the baked maps, not the raw HDRs — `T_HDR_*.hdr` are bake-tool

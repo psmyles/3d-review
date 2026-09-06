@@ -13,14 +13,14 @@
 //!
 //! Organized into [`state`] (CPU/GPU data types incl. the `#[repr(C)]`
 //! `MaterialUniform`), [`mode`] (the effective-table / Unique-part grouping) and
-//! [`d3d`] (the Direct3D 11 material table: cbuffer `b1` + the seven texture slots
-//! `t5..t11` + a path-keyed upload cache).
+//! [`gpu`] (the uploaded table: one entry per material, its uniform and its seven
+//! texture slots, over a path-keyed LRU upload cache).
 
-mod d3d;
+mod gpu;
 mod mode;
 mod state;
 
-pub(crate) use d3d::MaterialTableD3d;
+pub(crate) use gpu::{MaterialEntry, MaterialTable};
 pub(crate) use mode::{build_part_key, effective_materials};
 pub(crate) use state::MaterialDrawRange;
 pub use state::{

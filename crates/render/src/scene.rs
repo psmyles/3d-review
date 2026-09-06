@@ -1,13 +1,18 @@
-//! The scene render. The live Direct3D 11 renderer is [`SceneGpu`] in [`d3d`]; the
-//! GPU-facing `#[repr(C)]` types it keeps in lockstep with the HLSL shaders live in
-//! [`gpu_types`]. (The `--tracy` GPU timestamp profiler is D3D11 plumbing and lives
-//! in `rhi::gpu_profiler`, per invariant 9.)
+//! The scene render.
+//!
+//! The GPU-facing `#[repr(C)]` types kept in lockstep with `review.glsl` live in
+//! [`gpu_types`] and are pinned to shdc's generated structs by size assertions
+//! (invariant 11). [`pipelines`] builds the programs the scene pass draws with,
+//! [`resources`] caches everything derived per model (invariant 3), [`gpu`] is the
+//! renderer itself (the offscreen 2-MRT pass, the GTAO passes and the composite job
+//! that reads them), and [`opt`] is the Opt workspace's comparison layout over the
+//! same passes.
 
-mod d3d;
+mod gpu;
 mod gpu_types;
 mod opt;
 mod pipelines;
 mod resources;
 
-pub(crate) use d3d::SceneGpu;
+pub(crate) use gpu::SceneGpu;
 pub(crate) use gpu_types::{InfluenceEntry, MorphEntry, SceneVertex};

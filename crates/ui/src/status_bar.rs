@@ -25,16 +25,17 @@ fn status_bar_frame() -> egui::Frame {
         .inner_margin(egui::Margin::same(0))
 }
 
-pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
+pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState) {
+    let ctx = &root.ctx().clone();
     let status_bar_height = theme::px(ctx, size::STATUS_BAR_HEIGHT);
     let group_height = theme::px(ctx, size::TOOLBAR_GROUP_HEIGHT);
     let single_icon_group_width = theme::px(ctx, size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH);
     let quint_icon_group_width = theme::px(ctx, size::TOOLBAR_QUINT_ICON_GROUP_WIDTH);
 
-    egui::TopBottomPanel::bottom("status_bar")
-        .exact_height(status_bar_height)
+    egui::Panel::bottom("status_bar")
+        .exact_size(status_bar_height)
         .frame(status_bar_frame())
-        .show(ctx, |ui| {
+        .show(root, |ui| {
             // The UV workspace keeps a clean status bar (its tools are in the
             // toolbar). The 3D workspace shows the model-stats toggle + the
             // rendering-quality group; the Texture workspace shows the texture-stats
