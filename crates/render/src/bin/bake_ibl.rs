@@ -1,22 +1,21 @@
-//! Offline IBL bake tool.
+//! Offline IBL bake tool (`cargo run -p review-render --features bake --bin bake_ibl`).
 //!
-//! Precomputes the env-cube / irradiance / prefilter / BRDF maps for every
-//! built-in HDR environment and writes them to `assets/ibl_baked/` as raw
-//! little-endian `f16`, so the shipping viewer loads them by upload instead of
-//! running the 43-pass precompute at startup.
+//! Regenerates every `assets/ibl_baked/T_IBL_*.bin` from the source HDRs in
+//! `assets/textures/` on a headless GPU device. Needs a real GPU; it is never part of
+//! a normal build, and the shipped viewer embeds the committed results rather than
+//! ever running this (`mac-port-plan.md` D19).
 //!
-//! Run with (needs a real GPU; dev-only, like the HDR thumbnail script):
+//! It **overwrites committed assets in place**, so `review_render`'s bake validates
+//! each payload before writing it: a pass that rendered nothing would otherwise
+//! destroy known-good maps that took a GPU run to make.
 //!
-//! ```text
-//! cargo run -p review-render --features bake --bin bake_ibl
-//! ```
-//!
-//! Re-run whenever an `assets/textures/T_HDR_*.hdr` changes; the outputs are
-//! committed. `packaging/generate-ibl-bake.ps1` wraps this.
+//! `packaging/generate-ibl-bake.ps1` is the wrapper the installer build uses, and it
+//! is freshness-gated — it only invokes this when a baked `.bin` is missing or older
+//! than something that determines its bytes.
 
 fn main() {
-    if let Err(err) = review_render::bake_ibl_assets() {
-        eprintln!("IBL bake failed: {err}");
+    if let Err(error) = review_render::bake_ibl_assets() {
+        eprintln!("bake_ibl failed: {error}");
         std::process::exit(1);
     }
 }

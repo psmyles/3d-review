@@ -30,7 +30,8 @@ pub(crate) fn toolbar_frame() -> egui::Frame {
         .inner_margin(egui::Margin::same(0))
 }
 
-pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
+pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState) {
+    let ctx = &root.ctx().clone();
     let toolbar_height = theme::px(ctx, size::TOOLBAR_HEIGHT);
     let overlay_margin = theme::px(ctx, size::OVERLAY_MARGIN);
     let group_spacing = theme::px(ctx, size::TOOLBAR_GROUP_SPACING);
@@ -47,10 +48,10 @@ pub(crate) fn draw(ctx: &egui::Context, state: &mut UiState) {
     let quint_icon_group_width = theme::px(ctx, size::TOOLBAR_QUINT_ICON_GROUP_WIDTH);
     let mode_group_width = theme::px(ctx, size::TOOLBAR_MODE_GROUP_WIDTH);
 
-    egui::TopBottomPanel::top("app_toolbar")
-        .exact_height(toolbar_height)
+    egui::Panel::top("app_toolbar")
+        .exact_size(toolbar_height)
         .frame(toolbar_frame())
-        .show(ctx, |ui| {
+        .show(root, |ui| {
             let bar_rect = ui.max_rect();
             ui.painter().line_segment(
                 [

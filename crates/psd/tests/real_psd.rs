@@ -9,8 +9,8 @@
 use std::path::PathBuf;
 
 fn fixture() -> Option<PathBuf> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../assets/test_textures/T_Sides_D.psd");
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/test_textures/T_Sides_D.psd");
     path.exists().then_some(path)
 }
 

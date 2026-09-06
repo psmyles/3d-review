@@ -86,7 +86,17 @@ if (-not $SkipBuild) {
     }
 }
 
-# --- 6. Read product metadata --------------------------------------------------
+# --- 6. Verify the committed shader bytecode -----------------------------------
+# The viewer `include_bytes!`s blobs committed beside the generated shader sources
+# and compiles nothing at run time, so an installer must not ship bytecode that is
+# not the shader beside it. build.rs rebuilds a stale blob where fxc is present (the
+# step above) and only *warns* where it is not; this fails instead — and it is what
+# catches a shader rebuilt on the Mac and not here, which no timestamp comparison can
+# (`mac-port-plan.md` D5).
+Write-Host '==> Checking shader bytecode...' -ForegroundColor Cyan
+& (Join-Path $PSScriptRoot 'check-shader-bytecode.ps1')
+
+# --- 7. Read product metadata --------------------------------------------------
 if (-not (Test-Path $productJson)) { throw "product.json not found at $productJson." }
 $meta = Get-Content $productJson -Raw | ConvertFrom-Json
 
@@ -103,7 +113,7 @@ if (-not (Test-Path $exePath)) {
     throw "Release exe not found at $exePath. Run without -SkipBuild, or build first."
 }
 
-# --- 7. Locate ISCC and compile the installer ----------------------------------
+# --- 8. Locate ISCC and compile the installer ----------------------------------
 $iscc = (Get-Command 'ISCC.exe' -ErrorAction SilentlyContinue)?.Source
 if (-not $iscc) {
     $candidates = @(

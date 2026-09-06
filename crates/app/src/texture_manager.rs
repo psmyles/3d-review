@@ -15,7 +15,8 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use review_render::{ChannelSelect, DecodedImage, TextureSlot, decode_image, suggested_channel};
 use review_ui::{TexturePoolEntry, TextureSlotRef};
 
-use crate::{App, TEXTURE_EXTENSIONS, UserEvent, file_label, prof};
+use crate::dialog::Dialog;
+use crate::{App, UserEvent, file_label, prof};
 
 /// A finished background texture decode, posted back to the event loop. Carries
 /// what the decode was *for* ([`TextureDecodeRequest`]) so the main thread knows
@@ -75,18 +76,11 @@ impl App {
             .collect();
     }
 
-    /// Open the multi-select image picker and import each chosen file into the
-    /// scene texture pool. Done from `apply_ui_output` (the modal blocks the loop).
+    /// Ask for images to add to the scene texture pool. The multi-select picker
+    /// runs on a worker thread (`dialog.rs`); each chosen file reaches
+    /// [`Self::import_texture_path`] when the answer comes back.
     pub(crate) fn import_textures(&mut self) {
-        let files = rfd::FileDialog::new()
-            .add_filter("Image", &TEXTURE_EXTENSIONS)
-            .set_title("Import Textures")
-            .pick_files();
-        if let Some(files) = files {
-            for path in files {
-                self.import_texture_path(path);
-            }
-        }
+        self.ask(Dialog::ImportTextures);
     }
 
     /// Import `path` into the scene texture pool. An already-decoded file (cache

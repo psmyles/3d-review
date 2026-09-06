@@ -693,7 +693,10 @@ pub fn apply_visuals(ctx: &egui::Context) {
     style.visuals.handle_shape = egui::style::HandleShape::Rect {
         aspect_ratio: size::SLIDER_HANDLE_ASPECT_RATIO,
     };
-    ctx.set_style(style);
+    // `all_styles_mut` rather than a single-theme setter: the viewer is dark-only,
+    // but installing the style under both themes keeps it correct if the OS theme
+    // flips mid-session.
+    ctx.all_styles_mut(|slot| *slot = style.clone());
 }
 
 /// Convert a design-pixel [`size`] / [`font`] token into egui points for the

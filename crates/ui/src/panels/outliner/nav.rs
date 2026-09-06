@@ -173,7 +173,7 @@ pub(super) fn resolve_nav(
 /// * Plain click — select this node alone. On a bone that also becomes the whole
 ///   bone set and the range anchor; re-clicking the selected row clears both,
 ///   preserving the flat list's long-standing toggle behavior.
-/// * Ctrl-click on a bone — toggle its membership. The primary [`Selection`]
+/// * Primary-click on a bone — toggle its membership. The primary [`Selection`]
 ///   follows the set's last member, or clears when the set empties.
 /// * Shift-click on a bone — take every row between the anchor and this one, in
 ///   the order the rows are currently drawn, so the range matches what the user
@@ -400,7 +400,7 @@ mod tests {
             "primary follows the last member"
         );
 
-        // Ctrl-clicking a member again removes it; the primary falls back.
+        // Primary-clicking a member again removes it; the primary falls back.
         apply_row_click(&mut state, 3, NodeKind::Bone, mods(true, false), &ORDER);
         assert_eq!(state.selected_bones, vec![2]);
         assert_eq!(state.selection, Selection::Node(2));

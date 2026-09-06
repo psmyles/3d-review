@@ -102,7 +102,7 @@ fn material_inspector(ui: &mut egui::Ui, state: &UiState, index: usize) -> Inspe
     // A material slider handle / color-picker being dragged keeps egui's pointer
     // captured (the background 3D viewport isn't an egui widget, so camera orbit
     // never sets this). `app` coalesces the whole drag into one undo step.
-    out.material_edit_active = ui.ctx().is_using_pointer();
+    out.material_edit_active = ui.ctx().egui_is_using_pointer();
 
     out
 }

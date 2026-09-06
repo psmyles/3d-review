@@ -16,13 +16,18 @@ use crate::{dimensions, gizmo, help, panels, stats, status_bar, texture_view, to
 /// borrowed, never copied). `bvh` is `None` until `app` has built it for the
 /// current model (lazily, the first time the labels need it).
 pub fn draw_overlay(
-    ctx: &egui::Context,
+    root: &mut egui::Ui,
     state: &mut UiState,
     camera: OrbitCamera,
     model: &ModelData,
     bvh: Option<&SceneBvh>,
 ) -> UiOutput {
     let _z = crate::prof::zone!("Draw Overlay");
+    // egui shows panels into a `Ui` rather than onto the `Context`, so the frame's
+    // root `Ui` is what carves the chrome bands and the side panels out of the
+    // window. Everything that floats — `Window`, `Area`, the layer painters — still
+    // addresses the `Context` directly.
+    let ctx = &root.ctx().clone();
     // Visuals + fonts are installed once at startup (`theme::init_style`); the
     // style is derived only from constant tokens, so there is nothing to re-apply
     // here each frame.
@@ -35,8 +40,8 @@ pub fn draw_overlay(
     // Native chrome panels first: the top toolbar and bottom status bar carve their
     // bands, then the dockable side panels fill the middle — declared in this order
     // so the side panels sit *between* the bars, not under them.
-    toolbar::draw(ctx, state);
-    status_bar::draw(ctx, state);
+    toolbar::draw(root, state);
+    status_bar::draw(root, state);
 
     // The side panels, option panels, axis gizmo and stats overlay are all 3D-scene
     // chrome; the UV / Texture workspaces keep a clean viewport (just the UV dropdown
@@ -47,7 +52,7 @@ pub fn draw_overlay(
         // already do); their live widths inset the floating viewport chrome below so
         // the gizmo / stats never land on top of a panel. The Inspector emits
         // material-edit intents for `app` to apply (invariant 2).
-        let side = draw_side_panels(ctx, state, model);
+        let side = draw_side_panels(root, state, model);
         output.material_edit = side.inspector.material_edit;
         output.texture = side.inspector.texture;
         output.material_edit_active = side.inspector.material_edit_active;
@@ -129,9 +134,9 @@ pub fn draw_overlay(
     } else if state.mode == WorkspaceMode::Texture {
         // The Tex workspace paints a 2D image viewer (channel-isolated, pan/zoom)
         // over a chosen background fill, plus its own floating stats panel. The
-        // image itself is drawn by `app` through the D3D11 RHI (migration Phase 4);
-        // this lays out the canvas + interaction + background fill only.
-        texture_view::draw(ctx, state);
+        // image itself is drawn by the renderer into the same frame, behind the
+        // chrome; this lays out the canvas + interaction + background fill only.
+        texture_view::draw(root, state);
     }
 
     // The startup cheat-sheet sits on top of all the chrome (drawn last). It
@@ -232,13 +237,13 @@ struct OptEmission {
 
 /// Draw the dockable Outliner (left) and Inspector (right) side panels and return
 /// the Inspector's material edit plus the panels' live widths. Both are native
-/// `egui::SidePanel`s — resizable by dragging their inner edge, with egui owning
+/// `egui::Panel`s — resizable by dragging their inner edge, with egui owning
 /// the width across frames — and both are gated on the one
 /// [`UiState::side_panels_open`] flag, so the pair opens and closes together. The
 /// Outliner mutates [`UiState::selection`] directly; the Inspector returns an
 /// intent for `app` to apply (invariant 2).
 fn draw_side_panels(
-    ctx: &egui::Context,
+    root: &mut egui::Ui,
     state: &mut UiState,
     model: &ModelData,
 ) -> SidePanelLayout {
@@ -251,27 +256,27 @@ fn draw_side_panels(
 
     let mut left_inset = 0.0;
     if state.side_panels_open {
-        let response = egui::SidePanel::left("outliner_panel")
+        let response = egui::Panel::left("outliner_panel")
             .resizable(true)
-            .default_width(size::SIDE_PANEL_DEFAULT_WIDTH)
-            .width_range(size::SIDE_PANEL_MIN_WIDTH..=size::OUTLINER_MAX_WIDTH)
-            .show(ctx, |ui| {
+            .default_size(size::SIDE_PANEL_DEFAULT_WIDTH)
+            .size_range(size::SIDE_PANEL_MIN_WIDTH..=size::OUTLINER_MAX_WIDTH)
+            .show(root, |ui| {
                 // In Opt the left panel is split horizontally: the operation
                 // stack takes a resizable band at the bottom and the scene tree
-                // keeps the rest. `show_inside` is egui's own nested-panel
-                // primitive, so egui owns the divider drag and the split height
-                // across frames exactly as it owns the side panel's width.
+                // keeps the rest. A nested `Panel` is egui's own primitive for
+                // this, so egui owns the divider drag and the split height across
+                // frames exactly as it owns the side panel's width.
                 if opt_mode {
-                    let stack = egui::TopBottomPanel::bottom("opt_stack_pane")
+                    let stack = egui::Panel::bottom("opt_stack_pane")
                         .resizable(true)
-                        .default_height(size::OPT_STACK_DEFAULT_HEIGHT)
-                        .height_range(size::OPT_STACK_MIN_HEIGHT..=size::OPT_STACK_MAX_HEIGHT)
-                        .show_inside(ui, |ui| panels::opt_stack::body(ui, state));
+                        .default_size(size::OPT_STACK_DEFAULT_HEIGHT)
+                        .size_range(size::OPT_STACK_MIN_HEIGHT..=size::OPT_STACK_MAX_HEIGHT)
+                        .show(ui, |ui| panels::opt_stack::body(ui, state));
                     if stack.inner.is_some() {
                         opt.intent = stack.inner;
                     }
                     egui::CentralPanel::default()
-                        .show_inside(ui, |ui| panels::outliner::body(ui, state, model));
+                        .show(ui, |ui| panels::outliner::body(ui, state, model));
                 } else {
                     panels::outliner::body(ui, state, model);
                 }
@@ -282,11 +287,11 @@ fn draw_side_panels(
     let mut right_inset = 0.0;
     let mut inspector = panels::inspector::InspectorOutput::default();
     if state.side_panels_open {
-        let response = egui::SidePanel::right("inspector_panel")
+        let response = egui::Panel::right("inspector_panel")
             .resizable(true)
-            .default_width(size::SIDE_PANEL_DEFAULT_WIDTH)
-            .width_range(size::SIDE_PANEL_MIN_WIDTH..=size::OUTLINER_MAX_WIDTH)
-            .show(ctx, |ui| {
+            .default_size(size::SIDE_PANEL_DEFAULT_WIDTH)
+            .size_range(size::SIDE_PANEL_MIN_WIDTH..=size::OUTLINER_MAX_WIDTH)
+            .show(root, |ui| {
                 // Opt retargets the Inspector at whatever the stack pane has
                 // selected — an operation's parameters, the export settings, or
                 // the selected object's overrides. A material selection still

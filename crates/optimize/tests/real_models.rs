@@ -636,7 +636,9 @@ fn indexing_preserves_every_triangle_of_the_source() {
     let corners = |mesh: &ModelData| {
         let mut all: Vec<[[u32; 3]; 3]> = mesh
             .indices
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|triangle| {
                 let mut corner = [[0u32; 3]; 3];
                 for (slot, &index) in corner.iter_mut().zip(triangle) {

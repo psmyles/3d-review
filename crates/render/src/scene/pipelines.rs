@@ -1,213 +1,178 @@
-//! The MSAA-dependent scene pipelines: the shader blobs they are built from, the
-//! `SceneVertex` input layout every one of them reads, the named depth states that
-//! distinguish them, and [`build_scene_pipelines`], which produces the whole set at
-//! one sample count.
+//! The scene pipeline set: the shader programs the scene pass draws with, the
+//! `SceneVertex` layout every one of them reads, and the depth states that
+//! distinguish them.
 //!
-//! They live together because they change together: their sample count is baked in
-//! at creation, so an anti-aliasing change replaces the entire set at once. The
-//! single-sample composite / GTAO pipelines are built in [`super::d3d`] alongside
-//! the passes that use them.
-
-use windows::Win32::Graphics::Direct3D11::ID3D11Device;
+//! They live together because they change together — they all render into the
+//! offscreen 2-MRT scene pass, so its formats *and its sample count* are baked into
+//! every one of them at creation, and an AA change replaces the whole set at once.
 
 use crate::rhi::{
-    BlendMode, Cull, DepthBias, DepthCompare, DepthState, InputElement, Pipeline, PipelineDesc,
-    Topology, VertexFormat,
+    Blend, Cull, Depth, DepthBias, GpuResult, Pipeline, PipelineDesc, Topology, VertexFormat,
+    shader,
 };
+use crate::shaders::generated;
 
-/// Compiled DXBC — see `build.rs`.
-pub(super) const SCENE_VS: &[u8] = include_bytes!("../hlsl/scene.vs.dxbc");
-const SCENE_LINE_PS: &[u8] = include_bytes!("../hlsl/scene.line.ps.dxbc");
-const SCENE_MESH_PS: &[u8] = include_bytes!("../hlsl/scene.mesh.ps.dxbc");
-const SCENE_SKYBOX_VS: &[u8] = include_bytes!("../hlsl/scene.skybox.vs.dxbc");
-const SCENE_SKYBOX_PS: &[u8] = include_bytes!("../hlsl/scene.skybox.ps.dxbc");
-const SCENE_SELECTION_PS: &[u8] = include_bytes!("../hlsl/scene.selection.ps.dxbc");
-
-/// The `SceneVertex` input layout, in field order (offsets auto-computed). Must
-/// match `#[repr(C)] SceneVertex` (`gpu_types`) and `VsInput` in `scene.hlsl`.
-pub(super) const SCENE_VERTEX_LAYOUT: [InputElement; 6] = [
-    InputElement::new("POSITION", 0, VertexFormat::Float3),
-    InputElement::new("NORMAL", 0, VertexFormat::Float3),
-    InputElement::new("TEXCOORD", 0, VertexFormat::Float2),
-    InputElement::new("TANGENT", 0, VertexFormat::Float4),
-    InputElement::new("COLOR", 0, VertexFormat::Float4),
-    InputElement::new("BLENDINDICES", 0, VertexFormat::Uint4),
+/// The `SceneVertex` attribute layout, in `layout(location=…)` order. Pinned to the
+/// struct by the test below and to the shader by `shaders::tests`.
+pub(super) const SCENE_VERTEX_LAYOUT: [VertexFormat; 6] = [
+    VertexFormat::Float3, // position
+    VertexFormat::Float3, // normal
+    VertexFormat::Float2, // uv
+    VertexFormat::Float4, // tangent
+    VertexFormat::Float4, // vertex colour
+    VertexFormat::Uint4,  // deform lane
 ];
 
-/// Every MSAA-dependent scene pipeline. They all draw into the MSAA scene MRT, so
-/// their sample count is baked at the live AA level; [`SceneGpu`] stores this whole
-/// set as one field and [`SceneGpu::rebuild_scene_pipelines`] replaces it wholesale,
-/// so an AA change can't leave one of them behind at the old sample count.
-///
-/// [`SceneGpu`]: super::d3d::SceneGpu
-/// [`SceneGpu::rebuild_scene_pipelines`]: super::d3d::SceneGpu
+/// Slope-scaled depth bias for the mesh: it pushes its surface back so the coplanar
+/// line overlays win the Reversed-Z test against it.
+const MESH_DEPTH_BIAS: DepthBias = DepthBias {
+    constant: -2.0,
+    slope_scaled: -2.0,
+};
+
+/// Every pipeline that draws into the scene pass. Held as one set rather than
+/// unpacked into fields: an AA change replaces all of them at once, and one left
+/// behind by a missed assignment would stay baked at the old sample count — a
+/// validation error and undefined rendering, with nothing to catch it at compile
+/// time.
 pub(super) struct ScenePipelineSet {
     /// Line overlays (grid / wireframe / bounding box / normal lines): depth-tested
     /// against the mesh, so edges on hidden faces are occluded.
     pub(super) line: Pipeline,
-    /// Always-on-top line variant (depth compare `Always`, no write): used by the
-    /// pivot marker and the skeleton outlines so they show through the mesh rather
-    /// than being occluded inside it.
+    /// Always-on-top line variant: the pivot marker and the skeleton outlines, which
+    /// live *inside* the mesh and would otherwise be invisible.
     pub(super) line_overlay: Pipeline,
     /// Always-on-top triangle fill, for the skeleton overlay's octahedra.
     pub(super) fill_overlay: Pipeline,
-    /// The shaded mesh: back-face culled, depth-writing, biased back so coplanar
-    /// line overlays win the test.
+    /// The shaded mesh: back-face culled, depth-writing, biased back.
     pub(super) mesh: Pipeline,
     /// [`Self::mesh`] unculled, for the Backface Rendering option.
     pub(super) mesh_double_sided: Pipeline,
     /// The environment background, drawn first behind all geometry.
     pub(super) skybox: Pipeline,
-    /// Flat-color triangle fill for the UV islands (`fs_main`'s zero-normal overlay
-    /// branch — same as the line views but filled).
+    /// Flat-colour triangle fill for the UV islands (`fs_main`'s zero-normal overlay
+    /// branch — the same shader as the mesh, filled rather than lined).
     pub(super) uv_fill: Pipeline,
-    /// Selection-flash fill (`fs_selection`): flat highlight color × fade,
-    /// depth-tested (Reversed-Z `GreaterEqual`) but no depth write, alpha-blended.
-    /// Doubles as the Opt overlay's x-ray ghost.
+    /// Selection-flash fill: flat highlight colour × fade, depth-tested but not
+    /// depth-writing, alpha-blended. Doubles as the Opt overlay's x-ray ghost.
     pub(super) selection: Pipeline,
 }
 
-/// Depth-tested against the mesh (Reversed-Z) but never depth-writing: the line
-/// overlays, the UV island fill and the selection flash all layer onto a surface
-/// the mesh pass already wrote, and must not push each other out of the way.
-const DEPTH_TEST_ONLY: DepthState = DepthState {
-    test: true,
-    write: false,
-    compare: DepthCompare::GreaterEqual,
-};
-
-/// Always-on-top: the comparison always passes, so the draw reads *through* solid
-/// geometry. The pivot marker and the skeleton live inside the mesh, so depth-testing
-/// them would hide them entirely; the skybox is behind everything by construction.
-const DEPTH_ALWAYS: DepthState = DepthState {
-    test: true,
-    write: false,
-    compare: DepthCompare::Always,
-};
-
-/// The mesh's own depth state — the only scene pipeline that writes depth.
-const DEPTH_WRITE: DepthState = DepthState {
-    test: true,
-    write: true,
-    compare: DepthCompare::GreaterEqual,
-};
-
-/// Build every MSAA-dependent scene pipeline at `sample_count`.
+/// Build every scene pipeline.
 ///
-/// They share a vertex shader, the `SceneVertex` input layout and that sample
-/// count, so `scene_desc` fills those in and each call below spells out only what
-/// distinguishes its pipeline: the pixel shader, topology, culling, depth
-/// behaviour and blending. The mesh adds a depth bias; the skybox is the one that
-/// cannot use the helper, running its own vertex shader with no vertex input.
-pub(super) fn build_scene_pipelines(
-    device: &ID3D11Device,
-    sample_count: u32,
-) -> windows::core::Result<ScenePipelineSet> {
-    let scene_desc =
-        |ps: &'static [u8], topology: Topology, cull: Cull, depth: DepthState, blend: BlendMode| {
-            PipelineDesc {
-                vs: SCENE_VS,
-                ps,
-                input: &SCENE_VERTEX_LAYOUT,
-                topology,
-                cull,
-                depth,
-                blend,
-                depth_bias: DepthBias::default(),
-                sample_count,
-            }
-        };
-
-    let line = Pipeline::new(
-        device,
-        &scene_desc(
-            SCENE_LINE_PS,
-            Topology::LineList,
-            Cull::None,
-            DEPTH_TEST_ONLY,
-            BlendMode::AlphaBlend,
-        ),
-    )?;
-    let line_overlay = Pipeline::new(
-        device,
-        &scene_desc(
-            SCENE_LINE_PS,
-            Topology::LineList,
-            Cull::None,
-            DEPTH_ALWAYS,
-            BlendMode::AlphaBlend,
-        ),
-    )?;
-
-    // Double-sided: an octahedron is viewed from every angle as the camera orbits.
-    let fill_overlay = Pipeline::new(
-        device,
-        &scene_desc(
-            SCENE_MESH_PS,
-            Topology::TriangleList,
-            Cull::None,
-            DEPTH_ALWAYS,
-            BlendMode::AlphaBlend,
-        ),
-    )?;
-
-    // The mesh alone pushes its surface back (slope-scaled bias) so the coplanar
-    // line overlays win the depth test against it.
-    let mesh_desc = |cull| PipelineDesc {
-        depth_bias: DepthBias {
-            constant: -2,
-            slope_scaled: -2.0,
-        },
-        ..scene_desc(
-            SCENE_MESH_PS,
-            Topology::TriangleList,
+/// They share `vs_main`, the `SceneVertex` layout and the pass's formats, so
+/// `program` fills those in and each call spells out only what distinguishes it: the
+/// program, topology, culling, depth behaviour, bias, and whether its draws are
+/// indexed — the mesh and the selection flash index into the shared vertex buffer;
+/// every line and fill view is its own vertex stream. The skybox is the one that
+/// cannot use the helper: it runs its own vertex shader and takes no vertex input.
+pub(super) fn build_scene_pipelines(sample_count: u32) -> GpuResult<ScenePipelineSet> {
+    let program = |desc_fn: fn(sokol::gfx::Backend) -> sokol::gfx::ShaderDesc,
+                   bytecode: &'static crate::rhi::shader::ShaderBytecode,
+                   label: &'static std::ffi::CStr,
+                   topology: Topology,
+                   cull: Cull,
+                   depth: Depth,
+                   depth_bias: DepthBias,
+                   indexed: bool|
+     -> GpuResult<Pipeline> {
+        Pipeline::new(&PipelineDesc {
+            attributes: &SCENE_VERTEX_LAYOUT,
+            indexed,
+            topology,
             cull,
-            DEPTH_WRITE,
-            BlendMode::AlphaBlend,
-        )
+            depth,
+            depth_bias,
+            ..PipelineDesc::scene(shader::make(desc_fn, bytecode, label)?, sample_count, label)
+        })
     };
-    let mesh = Pipeline::new(device, &mesh_desc(Cull::Back))?;
-    let mesh_double_sided = Pipeline::new(device, &mesh_desc(Cull::None))?;
 
-    // The one pipeline outside `scene_desc`: its own vertex shader builds a
-    // fullscreen triangle from `SV_VertexID`, so it takes no vertex input.
-    let skybox = Pipeline::new(
-        device,
-        &PipelineDesc {
-            vs: SCENE_SKYBOX_VS,
-            ps: SCENE_SKYBOX_PS,
-            input: &[],
-            topology: Topology::TriangleList,
-            cull: Cull::None,
-            depth: DEPTH_ALWAYS,
-            blend: BlendMode::Opaque,
-            depth_bias: DepthBias::default(),
-            sample_count,
-        },
+    let line = program(
+        generated::line_shader_desc,
+        shader::bytecode!("line"),
+        c"scene line",
+        Topology::Lines,
+        Cull::None,
+        Depth::TEST_ONLY,
+        DepthBias::default(),
+        false,
+    )?;
+    let line_overlay = program(
+        generated::line_shader_desc,
+        shader::bytecode!("line"),
+        c"scene line overlay",
+        Topology::Lines,
+        Cull::None,
+        Depth::ALWAYS,
+        DepthBias::default(),
+        false,
+    )?;
+    // Double-sided: an octahedron is viewed from every angle as the camera orbits.
+    let fill_overlay = program(
+        generated::mesh_shader_desc,
+        shader::bytecode!("mesh"),
+        c"scene fill overlay",
+        Topology::Triangles,
+        Cull::None,
+        Depth::ALWAYS,
+        DepthBias::default(),
+        false,
+    )?;
+    let mesh = program(
+        generated::mesh_shader_desc,
+        shader::bytecode!("mesh"),
+        c"scene mesh",
+        Topology::Triangles,
+        Cull::Back,
+        Depth::WRITE,
+        MESH_DEPTH_BIAS,
+        true,
+    )?;
+    let mesh_double_sided = program(
+        generated::mesh_shader_desc,
+        shader::bytecode!("mesh"),
+        c"scene mesh double-sided",
+        Topology::Triangles,
+        Cull::None,
+        Depth::WRITE,
+        MESH_DEPTH_BIAS,
+        true,
+    )?;
+    // Everything the UV fill draws sits at z = 0, so grid / fill / wireframe layer by
+    // draw order rather than by depth.
+    let uv_fill = program(
+        generated::mesh_shader_desc,
+        shader::bytecode!("mesh"),
+        c"uv fill",
+        Topology::Triangles,
+        Cull::None,
+        Depth::TEST_ONLY,
+        DepthBias::default(),
+        false,
+    )?;
+    let selection = program(
+        generated::selection_shader_desc,
+        shader::bytecode!("selection"),
+        c"scene selection",
+        Topology::Triangles,
+        Cull::None,
+        Depth::TEST_ONLY,
+        DepthBias::default(),
+        true,
     )?;
 
-    // Everything the UV fill draws sits at z=0, so grid / fill / wireframe layer by
-    // draw order rather than depth.
-    let uv_fill = Pipeline::new(
-        device,
-        &scene_desc(
-            SCENE_MESH_PS,
-            Topology::TriangleList,
-            Cull::None,
-            DEPTH_TEST_ONLY,
-            BlendMode::AlphaBlend,
-        ),
+    // The one pipeline outside the helper: its own vertex shader builds a fullscreen
+    // triangle from `gl_VertexIndex`, so it takes no vertex input and no index buffer.
+    let skybox_shader = shader::make(
+        generated::skybox_shader_desc,
+        shader::bytecode!("skybox"),
+        c"skybox",
     )?;
-    let selection = Pipeline::new(
-        device,
-        &scene_desc(
-            SCENE_SELECTION_PS,
-            Topology::TriangleList,
-            Cull::None,
-            DEPTH_TEST_ONLY,
-            BlendMode::AlphaBlend,
-        ),
-    )?;
+    let skybox = Pipeline::new(&PipelineDesc {
+        depth: Depth::ALWAYS,
+        blend: Blend::Opaque,
+        ..PipelineDesc::scene(skybox_shader, sample_count, c"skybox")
+    })?;
 
     Ok(ScenePipelineSet {
         line,
@@ -224,53 +189,42 @@ pub(super) fn build_scene_pipelines(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::SceneVertex;
+    use std::mem::{offset_of, size_of};
 
-    /// Invariant 11: the hand-maintained input-element list must cover exactly
-    /// the `#[repr(C)] SceneVertex` — a drifted field order/size would misfeed
-    /// the vertex shader with no runtime error.
+    /// Invariant 11: the hand-maintained attribute list must cover exactly the
+    /// `#[repr(C)] SceneVertex` — a drifted field order or size would misfeed the
+    /// vertex shader with no runtime error.
     ///
-    /// Checked per element rather than by total stride: the layout is
+    /// Checked per attribute rather than by total stride: the layout is
     /// `Float3, Float3, Float2, Float4, Float4, Uint4`, so swapping the two `[f32; 3]`
-    /// fields (or the two `[f32; 4]` ones) on either side leaves the stride at 80
-    /// while every affected attribute reads another field's bytes. Each element's
-    /// running `APPEND_ALIGNED` offset is therefore compared against the offset of
-    /// the struct field it is meant to feed, and its semantic against the name the
-    /// shader reads that field by.
+    /// fields (or the two 16-byte ones) on either side leaves the stride at 80 while
+    /// every affected attribute reads another field's bytes.
     #[test]
-    fn scene_vertex_layout_matches_struct_fields() {
-        use crate::scene::SceneVertex;
-        use std::mem::{offset_of, size_of};
-
-        // In layout order: the HLSL semantic, and the `SceneVertex` field whose
-        // bytes it must land on.
-        let fields = [
-            ("POSITION", offset_of!(SceneVertex, position)),
-            ("NORMAL", offset_of!(SceneVertex, normal)),
-            ("TEXCOORD", offset_of!(SceneVertex, uv)),
-            ("TANGENT", offset_of!(SceneVertex, tangent)),
-            ("COLOR", offset_of!(SceneVertex, vertex_color)),
-            ("BLENDINDICES", offset_of!(SceneVertex, deform)),
+    fn the_scene_vertex_layout_matches_the_struct_fields() {
+        let offsets = [
+            offset_of!(SceneVertex, position),
+            offset_of!(SceneVertex, normal),
+            offset_of!(SceneVertex, uv),
+            offset_of!(SceneVertex, tangent),
+            offset_of!(SceneVertex, vertex_color),
+            offset_of!(SceneVertex, deform),
         ];
         assert_eq!(
             SCENE_VERTEX_LAYOUT.len(),
-            fields.len(),
-            "SCENE_VERTEX_LAYOUT must have one element per SceneVertex field"
+            offsets.len(),
+            "SCENE_VERTEX_LAYOUT must have one attribute per SceneVertex field"
         );
-
         let mut offset = 0;
-        for (element, (semantic, field_offset)) in SCENE_VERTEX_LAYOUT.iter().zip(fields) {
+        for (attribute, field_offset) in SCENE_VERTEX_LAYOUT.iter().zip(offsets) {
             assert_eq!(
-                element.semantic, semantic,
-                "SCENE_VERTEX_LAYOUT element order must match SceneVertex field order"
+                offset, field_offset as i32,
+                "each attribute must start at the byte offset of the field it feeds"
             );
-            assert_eq!(
-                offset, field_offset,
-                "{semantic} must start at the byte offset of the SceneVertex field it feeds"
-            );
-            offset += element.format.byte_size();
+            offset += attribute.size();
         }
         assert_eq!(
-            offset,
+            offset as usize,
             size_of::<SceneVertex>(),
             "SCENE_VERTEX_LAYOUT must cover every byte of SceneVertex"
         );

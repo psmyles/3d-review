@@ -112,7 +112,7 @@ fn triangulated_wireframe_lines(
     let mut vertices = Vec::with_capacity(model.indices.len() * 2);
     let hidden = HiddenFilter::new(model, hidden_nodes);
 
-    for (triangle_index, triangle) in model.indices.chunks_exact(3).enumerate() {
+    for (triangle_index, triangle) in model.indices.as_chunks::<3>().0.iter().enumerate() {
         if hidden.is_hidden(triangle_index) {
             continue;
         }
@@ -272,7 +272,7 @@ pub(crate) fn face_normal_lines(
     // info) every triangle counts.
     let hidden = HiddenFilter::new(model, hidden_nodes);
 
-    for (triangle_index, triangle) in model.indices.chunks_exact(3).enumerate() {
+    for (triangle_index, triangle) in model.indices.as_chunks::<3>().0.iter().enumerate() {
         if hidden.is_hidden(triangle_index) {
             continue;
         }
@@ -402,7 +402,7 @@ fn visible_vertex_mask(model: &ModelData, hidden_nodes: &[u32]) -> Option<Vec<bo
         return None;
     }
     let mut mask = vec![false; model.vertices.len()];
-    for (triangle_index, triangle) in model.indices.chunks_exact(3).enumerate() {
+    for (triangle_index, triangle) in model.indices.as_chunks::<3>().0.iter().enumerate() {
         if hidden.is_hidden(triangle_index) {
             continue;
         }

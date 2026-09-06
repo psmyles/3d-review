@@ -194,6 +194,10 @@ pub(crate) struct MaterialUniform {
 // the buffer, so a field added on one side alone grows both and uploads happily
 // while the shader keeps reading the old offsets — wrong pixels, not an error.
 const _: () = assert!(std::mem::size_of::<MaterialUniform>() == 96);
+const _: () = assert!(
+    std::mem::size_of::<MaterialUniform>()
+        == std::mem::size_of::<crate::shaders::generated::Material>()
+);
 
 impl MaterialUniform {
     pub(super) fn from_state(state: &MaterialState) -> Self {

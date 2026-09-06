@@ -61,7 +61,7 @@ pub(crate) fn body(
 
     // A slider handle being dragged keeps egui's pointer captured; the 3D
     // viewport is not an egui widget, so orbiting the camera never sets this.
-    out.edit_active = ui.ctx().is_using_pointer();
+    out.edit_active = ui.ctx().egui_is_using_pointer();
     out
 }
 

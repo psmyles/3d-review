@@ -7,6 +7,7 @@ members = [
     "crates/prof",
     "crates/psd",
     "crates/render",
+    "crates/shell-macos",
     "crates/ui",
 ]
 # `vendor/sokol-rust` is a pinned upstream copy (`mac-port-plan.md` D21), not our code,
@@ -35,13 +36,19 @@ rust-version = "1.88"
 anyhow = "1"
 bytemuck = { version = "1", features = ["derive"] }
 cc = "1"
-# egui 0.33 is the ceiling set by egui-directx11 0.12.1 (`^0.33`). egui-wgpu was
-# dropped in the D3D11 migration; egui now renders via egui-directx11 (D3D11) and
-# the scene is drawn by our own D3D11 path. egui-notify 0.21 tracks egui 0.33.
-egui = "0.33.3"
-egui-directx11 = "0.12.1"
-egui-notify = "0.21"
-egui-winit = "0.33"
+# The per-user config directory `window.cfg` lives in (`mac-port-plan.md` D17):
+# `%APPDATA%` on Windows — the same path the hand-read `APPDATA` env var gave —
+# and `~/Library/Application Support` on macOS, where that env var does not exist.
+dirs = "6"
+# egui renders through our own sokol_gfx renderer (`render/src/egui_sokol.rs`,
+# `mac-port-plan.md` D3), which is what lifted the 0.33 ceiling egui-directx11
+# 0.12.1 (`^0.33`) had pinned us to — that crate is gone (D6). egui-notify 0.23
+# tracks egui 0.36.
+# `bytemuck` gives `epaint::Vertex` a `Pod` impl, so our egui renderer casts a
+# tessellated mesh straight to bytes for the GPU with no `unsafe` of its own.
+egui = { version = "0.36.1", features = ["bytemuck"] }
+egui-notify = "0.23"
+egui-winit = "0.36"
 glam = "0.30"
 half = "2"
 image = { version = "0.25", default-features = false, features = [
@@ -61,6 +68,16 @@ review-prof = { path = "crates/prof" }
 # only FFI site besides `crates/import` + the sanctioned D3D11 sites — invariant 9).
 review-psd = { path = "crates/psd" }
 rfd = "0.15"
+# Build-script only: the shader-bytecode manifest keys freshness on content, and
+# the packaging scripts on both OSes have to recompute the same digest from a
+# shell (`Get-FileHash`, `shasum -a 256`). That portability is what picks SHA-256
+# over something we could hand-roll in ten lines.
+sha2 = "0.10"
+# The shared GPU API the renderer is being ported onto (`mac-port-plan.md` D1/D21):
+# sokol_gfx, over D3D11 on Windows and Metal on macOS. A pinned upstream checkout
+# rather than a registry crate — the `sokol` name on crates.io is an unrelated 2019
+# crate — and `exclude`d above so `-D warnings` does not lint it. See vendor/NOTICE.txt.
+sokol = { path = "vendor/sokol-rust" }
 # Derived on `review-optimize`'s operation-stack types only, so a stack can be
 # saved/loaded as a JSON preset. Deliberately not a `review-model` dependency —
 # that crate stays glam-only (invariant 10).
@@ -88,6 +105,22 @@ zune-image = { version = "0.5", default-features = false, features = ["jpeg", "s
 tracy-client = { version = "0.18", features = ["manual-lifetime", "ondemand"] }
 windows = "0.62.2"
 windows-sys = "0.52"
+
+# --- macOS platform leaf: the CAMetalLayer sokol_gfx draws through
+# (`crates/render/src/rhi/backend/metal.rs`, invariant 9's sanctioned GPU site).
+# Pinned to the versions winit 0.30 already pulls, so the mac build compiles no extra
+# crates. `rfd` pulls a second, newer objc2 family; the two coexist because nothing
+# passes objc2 types between them — this glue only hands sokol_gfx raw pointers.
+# Their default feature is only `std`; every class is opt-in, so `render` names just
+# the handful it needs and nothing else is generated.
+objc2 = "0.5"
+objc2-app-kit = "0.2"
+objc2-foundation = "0.2"
+objc2-metal = "0.2"
+objc2-quartz-core = "0.2"
+# The macOS menu bar (D15). A Mac app without one cannot even be quit — Cmd+Q is
+# the menu's, not the window's.
+muda = { version = "0.19", default-features = false }
 winit = "0.30"
 winresource = "0.1"
 

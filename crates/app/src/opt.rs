@@ -25,15 +25,18 @@
 //! only the source's measured figures, which the workspace shows as the baseline
 //! every later change is quoted against.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use review_model::ModelData;
 use review_optimize::{
-    ExportReport, OpKind, OptError, ProcessInput, ProcessedResult, export_fbx, preset, process,
+    ExportOptions, ExportReport, OpKind, OptError, ProcessInput, ProcessedResult, export_fbx,
+    preset, process,
 };
 use review_ui::{OptIntent, OptLevelView, OptResultView};
 
+use crate::dialog::Dialog;
 use crate::{App, UserEvent, prof};
 
 /// How long a run may take before the user is told it is still going. Below this
@@ -326,11 +329,13 @@ impl App {
         }
     }
 
-    /// Write the current LOD chain to disk.
+    /// Ask where to write the current LOD chain.
     ///
-    /// The write runs on a worker like processing does: a large chain in ASCII is
-    /// slow enough to drop frames, and freezing the window mid-export is exactly
-    /// the failure the workspace is built to avoid.
+    /// The chain, the source model and the export options are captured *here*, not
+    /// when the picker closes: the workspace stays live behind the dialog, so a
+    /// background run could land a different chain, or the user edit the stack,
+    /// between the click and the chosen path. What they clicked Export on is what
+    /// travels out to the dialog worker and comes back to be written.
     fn export_opt_result(&mut self) {
         let Some(result) = self.opt.as_ref().and_then(|opt| opt.processed.clone()) else {
             self.notifications
@@ -345,15 +350,26 @@ impl App {
         } else {
             self.scene_model.name.clone()
         };
-        let Some(path) = rfd::FileDialog::new()
-            .set_title("Export optimized mesh")
-            .add_filter("FBX", &["fbx"])
-            .set_file_name(format!("{stem}.fbx"))
-            .save_file()
-        else {
-            return;
-        };
+        self.ask(Dialog::ExportOpt {
+            result,
+            source: Arc::clone(&self.scene_model),
+            options: self.ui.opt.stack.export,
+            stem,
+        });
+    }
 
+    /// Write a chosen LOD chain out to `path`.
+    ///
+    /// The write runs on a worker like processing does: a large chain in ASCII is
+    /// slow enough to drop frames, and freezing the window mid-export is exactly
+    /// the failure the workspace is built to avoid.
+    pub(crate) fn spawn_opt_export(
+        &mut self,
+        path: PathBuf,
+        result: Arc<ProcessedResult>,
+        source: Arc<ModelData>,
+        options: ExportOptions,
+    ) {
         let Some(proxy) = self.textures.proxy.clone() else {
             prof::msg("no event-loop proxy; cannot export off-thread");
             self.notifications
@@ -361,8 +377,6 @@ impl App {
             return;
         };
 
-        let source = Arc::clone(&self.scene_model);
-        let options = self.ui.opt.stack.export;
         self.notifications.begin_activity("Exporting FBX…");
 
         std::thread::spawn(move || {
@@ -525,6 +539,12 @@ impl App {
         }
     }
 
+    /// Ask where to save the operation stack as a preset.
+    ///
+    /// The stack is serialized before the picker opens, for the same reason the
+    /// export captures its chain: the chrome keeps running behind the dialog, so
+    /// the stack the user was looking at when they clicked Save is the one that
+    /// gets written, not whatever it has become by the time they choose a name.
     fn save_opt_preset(&mut self) {
         let json = match preset::to_json(&self.ui.opt.stack) {
             Ok(json) => json,
@@ -534,42 +554,36 @@ impl App {
                 return;
             }
         };
-        let Some(path) = rfd::FileDialog::new()
-            .set_title("Save optimization preset")
-            .add_filter("Optimization preset", &[preset::PRESET_EXTENSION])
-            .set_file_name("optimization-preset.json")
-            .save_file()
-        else {
-            return;
-        };
+        self.ask(Dialog::SavePreset { json });
+    }
 
-        match std::fs::write(&path, json) {
+    /// Write a serialized preset to the chosen path.
+    pub(crate) fn write_opt_preset(&mut self, path: &Path, json: &str) {
+        match std::fs::write(path, json) {
             Ok(()) => self
                 .notifications
-                .success(format!("Saved {}", crate::file_label(&path))),
+                .success(format!("Saved {}", crate::file_label(path))),
             Err(error) => {
                 prof::msg(&format!("preset save failed {}: {error}", path.display()));
                 self.notifications
-                    .error(format!("Couldn't save {}", crate::file_label(&path)));
+                    .error(format!("Couldn't save {}", crate::file_label(path)));
             }
         }
     }
 
+    /// Ask for a preset to load.
     fn load_opt_preset(&mut self) {
-        let Some(path) = rfd::FileDialog::new()
-            .set_title("Load optimization preset")
-            .add_filter("Optimization preset", &[preset::PRESET_EXTENSION])
-            .pick_file()
-        else {
-            return;
-        };
+        self.ask(Dialog::LoadPreset);
+    }
 
-        let json = match std::fs::read_to_string(&path) {
+    /// Apply a chosen preset file to the operation stack.
+    pub(crate) fn read_opt_preset(&mut self, path: &Path) {
+        let json = match std::fs::read_to_string(path) {
             Ok(json) => json,
             Err(error) => {
                 prof::msg(&format!("preset read failed {}: {error}", path.display()));
                 self.notifications
-                    .error(format!("Couldn't read {}", crate::file_label(&path)));
+                    .error(format!("Couldn't read {}", crate::file_label(path)));
                 return;
             }
         };
@@ -594,7 +608,7 @@ impl App {
         self.redraw.requested = true;
 
         self.notifications
-            .success(format!("Loaded {}", crate::file_label(&path)));
+            .success(format!("Loaded {}", crate::file_label(path)));
         if dropped > 0 {
             self.notifications.info(format!(
                 "{dropped} per-object override{} referenced objects this model \

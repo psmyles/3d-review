@@ -1,11 +1,11 @@
 //! Persist the window's last position, size, and maximized state so the viewer
 //! reopens where the user left it.
 //!
-//! The state file lives under `%APPDATA%` (the per-user *Roaming* profile), not
-//! next to the executable: an install in `Program Files` is read-only for a
-//! non-admin user, so writing config beside the exe would silently fail. Reading
-//! and writing here needs no `unsafe`, so this stays in `app` rather than
-//! `import` (invariant 9 only funnels FFI through `import`).
+//! The state file lives in the OS's per-user config directory, not next to the
+//! executable: an install in `Program Files` is read-only for a non-admin user, so
+//! writing config beside the exe would silently fail. Reading and writing here
+//! needs no `unsafe`, so this stays in `app` rather than `import` (invariant 9
+//! only funnels FFI through `import`).
 //!
 //! The format is a tiny `key=value` text file — deliberately dependency-free
 //! (no serde) for a five-field record. A missing, unreadable, or malformed file
@@ -32,12 +32,14 @@ pub struct WindowPlacement {
     pub maximized: bool,
 }
 
-/// Directory holding the state file: `%APPDATA%\<app name>`. `None` if `APPDATA`
-/// isn't set (e.g. an unusual environment), in which case persistence is simply
-/// skipped.
+/// Directory holding the state file: `<config dir>\<app name>` — `%APPDATA%\3D
+/// Review` on Windows (the per-user *Roaming* profile, exactly the path the
+/// hand-read `APPDATA` env var used to give) and `~/Library/Application
+/// Support/3D Review` on macOS, where that variable does not exist at all
+/// (`mac-port-plan.md` D17). `None` on a platform or environment `dirs` can't
+/// answer for, in which case persistence is simply skipped.
 fn state_dir() -> Option<PathBuf> {
-    let appdata = std::env::var_os("APPDATA")?;
-    let mut path = PathBuf::from(appdata);
+    let mut path = dirs::config_dir()?;
     path.push(crate::APP_NAME);
     Some(path)
 }
@@ -92,7 +94,8 @@ pub fn load() -> Option<WindowPlacement> {
     Some(placement)
 }
 
-/// Write the placement to `%APPDATA%`. Failures are logged and swallowed —
+/// Write the placement to the config directory. Failures are logged and
+/// swallowed —
 /// losing window position is not worth interrupting the user.
 pub fn save(placement: WindowPlacement) {
     let Some(dir) = state_dir() else {
@@ -146,7 +149,7 @@ impl App {
             Some(((position.x, position.y), (size.width, size.height)));
     }
 
-    /// Persist the current window placement to `%APPDATA%` on exit. Uses the last
+    /// Persist the current window placement on exit. Uses the last
     /// recorded non-maximized bounds (so un-maximize restores correctly) together
     /// with the live maximized state.
     pub(crate) fn save_window_placement(&mut self) {
@@ -279,4 +282,43 @@ pub(crate) fn monitor_refresh_interval(window: &Window) -> Duration {
         .filter(|millihertz| *millihertz > 0)
         .map(|millihertz| Duration::from_secs_f64(1000.0 / f64::from(millihertz)))
         .unwrap_or_else(|| Duration::from_secs_f64(1.0 / FALLBACK_REFRESH_HZ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::state_dir;
+
+    /// `dirs::config_dir()` must resolve to the *same* directory the hand-read
+    /// `APPDATA` environment variable used to give (`mac-port-plan.md` D17) — the
+    /// point of the swap is a path that also exists on macOS, not a new location
+    /// on Windows. Getting this wrong would silently strand every existing user's
+    /// saved window placement, with no error and no way to notice but a window
+    /// that stopped reopening where it was left.
+    #[cfg(windows)]
+    #[test]
+    fn the_config_directory_is_still_appdata_on_windows() {
+        let Some(appdata) = std::env::var_os("APPDATA") else {
+            // No roaming profile in this environment; nothing to compare against.
+            return;
+        };
+        let mut expected = std::path::PathBuf::from(appdata);
+        expected.push(crate::APP_NAME);
+        assert_eq!(state_dir(), Some(expected));
+    }
+
+    /// The macOS twin: `~/Library/Application Support/3D Review` (D17). The same
+    /// `dirs::config_dir()` call answers for both OSes, so the only thing worth
+    /// pinning per host is *which* directory it resolves to — a `dirs` upgrade that
+    /// moved this would strand a Mac user's saved placement exactly as silently.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_config_directory_is_application_support_on_macos() {
+        let Some(home) = std::env::var_os("HOME") else {
+            return;
+        };
+        let mut expected = std::path::PathBuf::from(home);
+        expected.push("Library/Application Support");
+        expected.push(crate::APP_NAME);
+        assert_eq!(state_dir(), Some(expected));
+    }
 }

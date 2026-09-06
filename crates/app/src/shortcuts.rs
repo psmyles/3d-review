@@ -9,14 +9,34 @@
 use review_render::{ShadingMode, selection_bounds};
 use review_ui::{Selection, TexViewRequest, WorkspaceMode};
 use winit::event::{ElementState, KeyEvent};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use crate::App;
 
+/// Whether the **primary** modifier — the one file and edit commands chord with —
+/// is held: `Ctrl` on Windows and Linux, `Cmd` on macOS (`mac-port-plan.md` D10).
+///
+/// Ctrl is not an acceptable file-command modifier on a Mac, where `Ctrl`+click is
+/// a *secondary* click and `Cmd`+O is what every application binds. The bare-key
+/// camera shortcuts below are unaffected — they fire only with no modifier at all,
+/// on either OS — and the `Alt`+RMB zoom drag in [`crate::input`] stays `Alt`
+/// (`Option` on a Mac), which is the DCC convention rather than an OS one.
+///
+/// The user-facing names for this key live beside the shortcut tables that show
+/// them, in `review_ui`'s `primary_key!`.
+fn primary_held(modifiers: ModifiersState) -> bool {
+    if cfg!(target_os = "macos") {
+        modifiers.super_key()
+    } else {
+        modifiers.control_key()
+    }
+}
+
 impl App {
-    /// Dispatch a viewport keyboard shortcut on key-down. Ctrl-modified keys are
-    /// file commands; the bare keys are view / camera shortcuts and only fire
-    /// when no modifier is held (so Shift/Alt/Ctrl combinations stay free).
+    /// Dispatch a viewport keyboard shortcut on key-down. Keys modified by the
+    /// primary modifier ([`primary_held`]) are file commands; the bare keys are
+    /// view / camera shortcuts and only fire when no modifier is held (so every
+    /// combination stays free).
     /// Keyboard events egui has already consumed are filtered out by the caller.
     ///
     /// Adding/changing a binding here? Update the startup help card's tables in
@@ -57,7 +77,7 @@ impl App {
             return;
         };
 
-        if self.modifiers.control_key() {
+        if primary_held(self.modifiers) {
             // File commands fire on key-down only.
             if event.state != ElementState::Pressed {
                 return;
@@ -67,7 +87,8 @@ impl App {
             } else if character.eq_ignore_ascii_case("o") {
                 self.open_model_from_dialog();
             } else if character.eq_ignore_ascii_case("z") {
-                // Ctrl+Z undoes; Ctrl+Shift+Z redoes (the common alt-redo chord).
+                // Primary+Z undoes; Primary+Shift+Z redoes (the common alt-redo
+                // chord, and the only redo chord on a Mac).
                 if self.modifiers.shift_key() {
                     self.redo();
                 } else {
@@ -83,7 +104,7 @@ impl App {
             return;
         }
 
-        // Matched case-insensitively, exactly like the Ctrl chords above: winit's
+        // Matched case-insensitively, exactly like the chords above: winit's
         // `ModifiersState` carries no Caps Lock bit, so the guard above can't see
         // it — with Caps Lock on the key arrives as "G" and an exact match would
         // leave every one of these shortcuts dead.

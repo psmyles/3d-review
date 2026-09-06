@@ -84,8 +84,9 @@ impl App {
                     self.remove_texture(&path);
                     redraw = true;
                 }
-                // Import textures into the pool ("Add textures…"). The modal picker
-                // blocks the loop, so it does not schedule a redraw itself.
+                // Import textures into the pool ("Add textures…"). The picker
+                // runs on a worker (`dialog.rs`) and nothing has changed yet, so
+                // this schedules no redraw; the answer's own handler does.
                 TextureIntent::Import => self.import_textures(),
             }
         }

@@ -75,7 +75,7 @@ impl AnimContext {
         let mut corner_node = vec![u32::MAX; model.vertices.len()];
         let triangle_count = model.indices.len() / 3;
         if model.triangles.node.len() == triangle_count {
-            for (triangle, corners) in model.indices.chunks_exact(3).enumerate() {
+            for (triangle, corners) in model.indices.as_chunks::<3>().0.iter().enumerate() {
                 for &corner in corners {
                     if let Some(slot) = corner_node.get_mut(corner as usize) {
                         *slot = model.triangles.node[triangle];

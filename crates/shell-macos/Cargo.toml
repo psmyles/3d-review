@@ -1,0 +1,34 @@
+[package]
+name = "review-shell-macos"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# The macOS shell leaves: the Launch Services open hook (D14) and the menu bar
+# (D15). Its own crate rather than a module of `app` for the reason `psd` and the
+# GPU backend leaf are: it needs `unsafe` — `class_addMethod` on winit's
+# application delegate is not expressible any other way — and invariant 9 keeps
+# `crates/app` at `#![forbid(unsafe_code)]`. Everything here is shell plumbing;
+# no model, camera, GPU or UI type crosses into it, and `app` talks to it through
+# plain paths and a two-variant command enum.
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true }
+objc2-app-kit = { workspace = true, features = [
+    "NSApplication",                 # the delegate `openfiles` extends with openURLs:
+    "NSResponder",
+] }
+objc2-foundation = { workspace = true, features = [
+    "NSArray",                       # the openURLs: argument
+    "NSEnumerator",                  # ...and walking it
+    "NSString",
+    "NSThread",                      # MainThreadMarker::new
+    "NSURL",                         # what a Finder open actually delivers
+] }
+# The menu bar. `default-features = false` drops its GTK/Windows halves, which
+# would otherwise be compiled for a crate that only ever builds on macOS.
+muda = { workspace = true, default-features = false }
+
+[lints]
+workspace = true

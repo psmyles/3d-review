@@ -1210,7 +1210,7 @@ impl ModelData {
         // n-gon from counting its polygon once per triangle.
         let mut counted_face = vec![false; self.faces.len()];
 
-        for (triangle, corners) in self.indices.chunks_exact(3).enumerate() {
+        for (triangle, corners) in self.indices.as_chunks::<3>().0.iter().enumerate() {
             let node = node_tags.map_or(0, |tags| tags[triangle]);
             let material = material_tags.map_or(0, |tags| tags[triangle]);
             let group_index = *group_of.entry((node, material)).or_insert_with(|| {
@@ -1401,7 +1401,7 @@ impl ModelData {
         }
 
         let mut accumulated = vec![Vec3::ZERO; self.vertices.len()];
-        for triangle in self.indices.chunks_exact(3) {
+        for triangle in self.indices.as_chunks::<3>().0 {
             let [i0, i1, i2] = [
                 triangle[0] as usize,
                 triangle[1] as usize,
@@ -1446,7 +1446,7 @@ impl ModelData {
 
         let mut tangents = vec![Vec3::ZERO; vertex_count];
         let mut bitangents = vec![Vec3::ZERO; vertex_count];
-        for triangle in self.indices.chunks_exact(3) {
+        for triangle in self.indices.as_chunks::<3>().0 {
             let [i0, i1, i2] = [
                 triangle[0] as usize,
                 triangle[1] as usize,
@@ -1511,7 +1511,7 @@ impl ModelData {
         }
         let hidden: std::collections::HashSet<u32> = hidden_nodes.iter().copied().collect();
         let mut bounds = Bounds::EMPTY;
-        for (triangle_index, triangle) in self.indices.chunks_exact(3).enumerate() {
+        for (triangle_index, triangle) in self.indices.as_chunks::<3>().0.iter().enumerate() {
             if hidden.contains(&self.triangles.node[triangle_index]) {
                 continue;
             }

@@ -45,6 +45,14 @@ pub(crate) struct PostUniforms {
 // the shader keeps reading the old offsets — wrong pixels, not an error. Changing
 // this number means the HLSL moved with it.
 const _: () = assert!(std::mem::size_of::<PostUniforms>() == 48);
+// ...and against the layout sokol-shdc generated from `review.glsl`, which is what
+// turns invariant 11 into a check against the *shader* rather than against a number
+// someone typed here. The shader's four flags are `int` (shdc's uniform-block subset
+// has no unsigned type); same bits, same slot.
+const _: () = assert!(
+    std::mem::size_of::<PostUniforms>()
+        == std::mem::size_of::<crate::shaders::generated::PostParams>()
+);
 
 /// GTAO-pass uniform (cbuffer `b2` in `gtao.hlsl`): a `float4x4` + two `float4`s,
 /// all 16-byte aligned. Uploaded each frame so the panel sliders stay live.
@@ -62,6 +70,10 @@ pub(crate) struct GtaoUniforms {
 // Byte-size lock against `gtao.hlsl`'s cbuffer — see [`PostUniforms`] above for
 // why a silent size drift is invisible at runtime.
 const _: () = assert!(std::mem::size_of::<GtaoUniforms>() == 96);
+const _: () = assert!(
+    std::mem::size_of::<GtaoUniforms>()
+        == std::mem::size_of::<crate::shaders::generated::GtaoParams>()
+);
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -96,6 +108,17 @@ pub(crate) struct SceneUniforms {
 
 // Byte-size lock against `scene.hlsl`'s `b0` — see [`PostUniforms`] above.
 const _: () = assert!(std::mem::size_of::<SceneUniforms>() == 272);
+// One value, uploaded to both stages, so it is pinned against *both* generated
+// blocks — `scene_vs` and `scene_fs` are the same bytes declared twice because a
+// sokol uniform block belongs to exactly one stage.
+const _: () = assert!(
+    std::mem::size_of::<SceneUniforms>()
+        == std::mem::size_of::<crate::shaders::generated::SceneVs>()
+);
+const _: () = assert!(
+    std::mem::size_of::<SceneUniforms>()
+        == std::mem::size_of::<crate::shaders::generated::SceneFs>()
+);
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -136,6 +159,10 @@ pub(crate) struct InfluenceEntry {
 }
 
 const _: () = assert!(std::mem::size_of::<InfluenceEntry>() == 8);
+const _: () = assert!(
+    std::mem::size_of::<InfluenceEntry>()
+        == std::mem::size_of::<crate::shaders::generated::Influenceentry>()
+);
 
 /// One palette entry (`StructuredBuffer<PaletteEntry>` at VS `t13`): the three
 /// rows of an affine 3×4 matrix, spelled as rows rather than an HLSL matrix type
@@ -151,6 +178,10 @@ pub(crate) struct PaletteEntry {
 }
 
 const _: () = assert!(std::mem::size_of::<PaletteEntry>() == 48);
+const _: () = assert!(
+    std::mem::size_of::<PaletteEntry>()
+        == std::mem::size_of::<crate::shaders::generated::Paletteentry>()
+);
 
 impl PaletteEntry {
     /// The affine rows of `matrix` (column-major on the Rust side, so the rows
@@ -177,6 +208,14 @@ pub(crate) struct MorphEntry {
 }
 
 const _: () = assert!(std::mem::size_of::<MorphEntry>() == 28);
+// The one that had to be checked rather than assumed: `review.glsl` declares this
+// entry as seven scalars, because a `vec3` member would pad the std430 struct to 48
+// bytes and shift every entry after the first. shdc emits `align(4)`, so the two
+// agree at 28 — but only as long as the shader keeps spelling it out.
+const _: () = assert!(
+    std::mem::size_of::<MorphEntry>()
+        == std::mem::size_of::<crate::shaders::generated::Morphentry>()
+);
 
 pub(super) fn shading_mode_value(mode: ShadingMode) -> f32 {
     match mode {

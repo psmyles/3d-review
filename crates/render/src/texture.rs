@@ -348,9 +348,9 @@ fn packed_channel(token: &str, slot: TextureSlot) -> Option<ChannelSelect> {
     }
 
     let want = match slot {
-        TextureSlot::Ao => [b'O', b'A'].as_slice(),
-        TextureSlot::Roughness => [b'R'].as_slice(),
-        TextureSlot::Metallic => [b'M'].as_slice(),
+        TextureSlot::Ao => b"OA".as_slice(),
+        TextureSlot::Roughness => b"R".as_slice(),
+        TextureSlot::Metallic => b"M".as_slice(),
         _ => return None,
     };
     let position = upper.bytes().position(|b| want.contains(&b))?;

@@ -1,380 +1,352 @@
-//! GPU buffer plumbing: an immutable vertex buffer (rebuilt wholesale on change)
-//! and a dynamic constant buffer updated each frame via `Map(WRITE_DISCARD)`.
+//! GPU buffers: the per-frame geometry stream ([`TransientBuffer`]), the immutable
+//! mesh buffers ([`VertexBuffer`] / [`IndexBuffer`]) and the read-only structured
+//! buffers the vertex shader deforms through ([`StorageBuffer`]).
+//!
+//! All four are the same sokol object with different usage flags, so they share
+//! [`make`] and differ only in what they promise the caller.
+
+use std::ffi::CStr;
+use std::marker::PhantomData;
 
 use bytemuck::Pod;
-use windows::Win32::Graphics::Direct3D::D3D_SRV_DIMENSION_BUFFER;
-use windows::Win32::Graphics::Direct3D11::{
-    D3D11_BIND_CONSTANT_BUFFER, D3D11_BIND_FLAG, D3D11_BIND_INDEX_BUFFER,
-    D3D11_BIND_SHADER_RESOURCE, D3D11_BIND_VERTEX_BUFFER, D3D11_BUFFER_DESC, D3D11_BUFFER_SRV,
-    D3D11_BUFFER_SRV_0, D3D11_BUFFER_SRV_1, D3D11_CPU_ACCESS_FLAG, D3D11_CPU_ACCESS_WRITE,
-    D3D11_MAP_WRITE_DISCARD, D3D11_MAPPED_SUBRESOURCE, D3D11_RESOURCE_MISC_BUFFER_STRUCTURED,
-    D3D11_SHADER_RESOURCE_VIEW_DESC, D3D11_SHADER_RESOURCE_VIEW_DESC_0, D3D11_SUBRESOURCE_DATA,
-    D3D11_USAGE, D3D11_USAGE_DYNAMIC, D3D11_USAGE_IMMUTABLE, ID3D11Buffer, ID3D11Device,
-    ID3D11DeviceContext, ID3D11ShaderResourceView,
-};
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R32_UINT, DXGI_FORMAT_UNKNOWN};
-use windows::core::Result;
+use sokol::gfx as sg;
 
-use super::out_param;
+use super::error::{GpuError, GpuResult, ResourceKind, require_valid};
 
-/// Build a `D3D11_BUFFER_DESC` with this module's common defaults (no misc flags,
-/// no structured stride). The four arguments are the only fields that vary across
-/// the vertex / index / constant buffers below.
-fn buffer_desc(
-    size: u32,
-    usage: D3D11_USAGE,
-    bind: D3D11_BIND_FLAG,
-    cpu_access: D3D11_CPU_ACCESS_FLAG,
-) -> D3D11_BUFFER_DESC {
-    D3D11_BUFFER_DESC {
-        ByteWidth: size,
-        Usage: usage,
-        BindFlags: bind.0 as u32,
-        CPUAccessFlags: cpu_access.0 as u32,
-        MiscFlags: 0,
-        StructureByteStride: 0,
+/// A buffer written from the CPU once per frame and consumed by the GPU in that same
+/// frame — the egui chrome's vertices and indices, which are re-tessellated every
+/// frame anyway and never survive one.
+///
+/// sokol enforces the contract: the write must happen **before** the buffer is bound
+/// in the frame, and a frame that binds it without writing it is a validation error
+/// rather than a stale draw. That is why the renderer writes in `prepare` (outside
+/// any pass) and binds in `paint`.
+///
+/// It grows by reallocation. egui's vertex count settles within a few frames of a
+/// layout change and then never moves, so a growth path measured in "once per resize"
+/// beats sizing for a worst case that never happens.
+pub(crate) struct TransientBuffer {
+    buffer: sg::Buffer,
+    /// Capacity in bytes.
+    capacity: usize,
+    index: bool,
+    label: &'static CStr,
+}
+
+impl TransientBuffer {
+    /// A vertex-stream buffer of `capacity` bytes.
+    pub(crate) fn vertices(capacity: usize, label: &'static CStr) -> GpuResult<Self> {
+        Self::new(capacity, false, label)
+    }
+
+    /// An index-stream buffer of `capacity` bytes.
+    pub(crate) fn indices(capacity: usize, label: &'static CStr) -> GpuResult<Self> {
+        Self::new(capacity, true, label)
+    }
+
+    fn new(capacity: usize, index: bool, label: &'static CStr) -> GpuResult<Self> {
+        let capacity = capacity.max(1);
+        let mut desc = sg::BufferDesc::new();
+        desc.size = capacity;
+        desc.usage.write_transient = true;
+        desc.usage.index_buffer = index;
+        desc.usage.vertex_buffer = !index;
+        desc.label = label.as_ptr();
+        let buffer = sg::make_buffer(&desc);
+        require_valid(
+            sg::query_buffer_state(buffer),
+            ResourceKind::Buffer,
+            label.to_str().unwrap_or("buffer"),
+        )?;
+        Ok(Self {
+            buffer,
+            capacity,
+            index,
+            label,
+        })
+    }
+
+    /// The sokol handle, for an `sg::Bindings`.
+    pub(crate) fn handle(&self) -> sg::Buffer {
+        self.buffer
+    }
+
+    /// Write this frame's whole payload, reallocating first if it no longer fits.
+    ///
+    /// Growth rounds up to the next power of two so a slowly growing chrome does not
+    /// reallocate every frame.
+    pub(crate) fn write(&mut self, bytes: &[u8]) -> GpuResult<()> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        if bytes.len() > self.capacity {
+            let grown = bytes.len().next_power_of_two();
+            let replacement = Self::new(grown, self.index, self.label)?;
+            // Only once the replacement exists, so a failed growth leaves the old
+            // buffer usable and the frame merely clipped rather than the viewer dead.
+            let old = std::mem::replace(self, replacement);
+            drop(old);
+        }
+        // `dst.offset` must be a multiple of 4; 0 always is.
+        let mut desc = sg::WriteBufferDesc::new();
+        desc.src = sg::WriteBufferSource {
+            data: sg::slice_as_range(bytes),
+            offset: 0,
+        };
+        desc.dst = sg::BufferLocation {
+            buffer: self.buffer,
+            offset: 0,
+        };
+        desc.size = bytes.len();
+        sg::write_buffer_transient(&desc);
+        Ok(())
     }
 }
 
-/// An immutable vertex buffer + its stride and vertex count. Geometry is rebuilt
-/// wholesale on change, so immutable storage with
-/// initial data is the natural fit.
+impl Drop for TransientBuffer {
+    fn drop(&mut self) {
+        if sg::isvalid() {
+            sg::destroy_buffer(self.buffer);
+        }
+    }
+}
+
+/// An immutable vertex buffer, uploaded once and drawn from until it is dropped —
+/// the mesh, the grid, and every derived line/fill view.
+///
+/// It carries its own vertex count so a draw cannot disagree with it: every caller
+/// draws the whole buffer, and the count is what `Frame::draw` is given.
 pub(crate) struct VertexBuffer {
-    buffer: ID3D11Buffer,
-    stride: u32,
-    count: u32,
+    buffer: sg::Buffer,
+    count: usize,
 }
 
 impl VertexBuffer {
-    /// Create an immutable vertex buffer from `data`. `data` must be non-empty
-    /// (D3D11 rejects a zero-byte buffer); callers that may have no geometry skip
-    /// the draw rather than building an empty buffer.
-    pub(crate) fn new<T: Pod>(device: &ID3D11Device, data: &[T]) -> Result<Self> {
-        // A real error, not a debug_assert: in release an empty slice would reach
-        // `CreateBuffer` with `ByteWidth: 0` and fail as an opaque E_INVALIDARG.
-        if data.is_empty() {
-            return Err(super::invalid_arg("vertex buffer must be non-empty"));
-        }
-        let bytes: &[u8] = bytemuck::cast_slice(data);
-        let desc = buffer_desc(
-            std::mem::size_of_val(bytes) as u32,
-            D3D11_USAGE_IMMUTABLE,
-            D3D11_BIND_VERTEX_BUFFER,
-            D3D11_CPU_ACCESS_FLAG(0),
-        );
-        let init = D3D11_SUBRESOURCE_DATA {
-            pSysMem: bytes.as_ptr() as *const _,
-            SysMemPitch: 0,
-            SysMemSlicePitch: 0,
-        };
-        let mut buffer = None;
-        // SAFETY: `desc` matches `init` (immutable buffer with full initial data);
-        // `init.pSysMem` points at `bytes`, alive for the call. The out-param is set.
-        unsafe { device.CreateBuffer(&desc, Some(&init), Some(&mut buffer))? };
+    /// Upload `vertices`. Rejects an empty set: sokol has no zero-sized buffer, and
+    /// a view with nothing in it is expressed as `None` rather than as an empty
+    /// buffer (`scene::resources::optional_vertex_buffer`).
+    pub(crate) fn new<T: Pod>(vertices: &[T], label: &CStr) -> GpuResult<Self> {
+        let mut usage = sg::BufferUsage::new();
+        usage.vertex_buffer = true;
+        usage.immutable = true;
         Ok(Self {
-            buffer: out_param(buffer),
-            stride: std::mem::size_of::<T>() as u32,
-            count: data.len() as u32,
+            buffer: make(bytemuck::cast_slice(vertices), usage, label)?,
+            count: vertices.len(),
         })
     }
 
-    pub(crate) fn count(&self) -> u32 {
-        self.count
+    /// The sokol handle, for an `sg::Bindings`.
+    pub(crate) fn handle(&self) -> sg::Buffer {
+        self.buffer
     }
 
-    /// Bind this buffer to input slot 0.
-    pub(crate) fn bind(&self, ctx: &ID3D11DeviceContext) {
-        // SAFETY: the buffer is live; the stride/offset locals outlive the call.
-        unsafe {
-            ctx.IASetVertexBuffers(
-                0,
-                1,
-                Some(&Some(self.buffer.clone())),
-                Some(&self.stride),
-                Some(&0),
-            );
+    /// How many vertices to draw.
+    pub(crate) fn count(&self) -> usize {
+        self.count
+    }
+}
+
+impl Drop for VertexBuffer {
+    fn drop(&mut self) {
+        if sg::isvalid() {
+            sg::destroy_buffer(self.buffer);
         }
     }
 }
 
-/// An immutable 32-bit index buffer + its index count. Like [`VertexBuffer`],
-/// rebuilt wholesale when the mesh changes.
+/// An immutable `u32` index buffer, uploaded with the mesh it indexes (or with a
+/// derived draw list over the same vertices — the selection and visibility lists).
 pub(crate) struct IndexBuffer {
-    buffer: ID3D11Buffer,
-    count: u32,
+    buffer: sg::Buffer,
+    count: usize,
 }
 
 impl IndexBuffer {
-    /// Create an immutable index buffer from `indices` (must be non-empty).
-    pub(crate) fn new(device: &ID3D11Device, indices: &[u32]) -> Result<Self> {
-        // See `VertexBuffer::new` — checked in release too.
-        if indices.is_empty() {
-            return Err(super::invalid_arg("index buffer must be non-empty"));
-        }
-        let bytes: &[u8] = bytemuck::cast_slice(indices);
-        let desc = buffer_desc(
-            std::mem::size_of_val(bytes) as u32,
-            D3D11_USAGE_IMMUTABLE,
-            D3D11_BIND_INDEX_BUFFER,
-            D3D11_CPU_ACCESS_FLAG(0),
-        );
-        let init = D3D11_SUBRESOURCE_DATA {
-            pSysMem: bytes.as_ptr() as *const _,
-            SysMemPitch: 0,
-            SysMemSlicePitch: 0,
-        };
-        let mut buffer = None;
-        // SAFETY: immutable buffer with full initial data; `init.pSysMem` points at
-        // `bytes`, alive for the call. The out-param is set.
-        unsafe { device.CreateBuffer(&desc, Some(&init), Some(&mut buffer))? };
+    pub(crate) fn new(indices: &[u32], label: &CStr) -> GpuResult<Self> {
+        let mut usage = sg::BufferUsage::new();
+        usage.index_buffer = true;
+        usage.immutable = true;
         Ok(Self {
-            buffer: out_param(buffer),
-            count: indices.len() as u32,
+            buffer: make(bytemuck::cast_slice(indices), usage, label)?,
+            count: indices.len(),
         })
     }
 
-    pub(crate) fn count(&self) -> u32 {
+    pub(crate) fn handle(&self) -> sg::Buffer {
+        self.buffer
+    }
+
+    /// How many indices the whole buffer holds.
+    pub(crate) fn count(&self) -> usize {
         self.count
     }
+}
 
-    /// Bind this index buffer (32-bit indices) to the input assembler.
-    pub(crate) fn bind(&self, ctx: &ID3D11DeviceContext) {
-        // SAFETY: the buffer is live for the duration of the call.
-        unsafe {
-            ctx.IASetIndexBuffer(&self.buffer, DXGI_FORMAT_R32_UINT, 0);
+impl Drop for IndexBuffer {
+    fn drop(&mut self) {
+        if sg::isvalid() {
+            sg::destroy_buffer(self.buffer);
         }
     }
 }
 
-/// A `USAGE_DYNAMIC` constant buffer updated each frame with `Map(WRITE_DISCARD)`.
-/// The byte size is rounded up to a 16-byte multiple (the cbuffer requirement).
-pub(crate) struct DynamicConstantBuffer {
-    buffer: ID3D11Buffer,
-    /// The rounded-up byte size the buffer was created with; [`Self::update`]
-    /// bounds its copy against it so a mismatched `T` can never scribble past the
-    /// mapped region.
-    size: u32,
+/// A read-only structured buffer the vertex stage indexes into — the four deform
+/// tables at view slots 12..15.
+///
+/// Two flavours, because two of the tables are properties of the *model* (the
+/// influence runs and the blend-shape deltas, uploaded once with the mesh) and two
+/// are properties of the *pose* (the joint palette and the shape weights, rewritten
+/// when the pose revision moves). Both are the same sokol object; only the usage
+/// differs.
+pub(crate) struct StorageBuffer<T> {
+    buffer: sg::Buffer,
+    view: sg::View,
+    /// Elements the buffer was sized for. A dynamic upload shorter than this is
+    /// allowed (the tail keeps whatever was there, and the shader never reads it);
+    /// a longer one is refused.
+    capacity: usize,
+    label: &'static CStr,
+    element: PhantomData<T>,
 }
 
-impl DynamicConstantBuffer {
-    /// Create a dynamic constant buffer sized for `T` (rounded up to 16 bytes).
-    pub(crate) fn new<T>(device: &ID3D11Device) -> Result<Self> {
-        let size = std::mem::size_of::<T>().next_multiple_of(16) as u32;
-        let desc = buffer_desc(
-            size,
-            D3D11_USAGE_DYNAMIC,
-            D3D11_BIND_CONSTANT_BUFFER,
-            D3D11_CPU_ACCESS_WRITE,
-        );
-        let mut buffer = None;
-        // SAFETY: a dynamic cbuffer with no initial data; the out-param is set.
-        unsafe { device.CreateBuffer(&desc, None, Some(&mut buffer))? };
-        Ok(Self {
-            buffer: out_param(buffer),
-            size,
-        })
+impl<T: Pod> StorageBuffer<T> {
+    /// Upload a table that never changes.
+    pub(crate) fn immutable(elements: &[T], label: &'static CStr) -> GpuResult<Self> {
+        let mut usage = sg::BufferUsage::new();
+        usage.storage_buffer = true;
+        usage.immutable = true;
+        Self::build(bytemuck::cast_slice(elements), elements.len(), usage, label)
     }
 
-    /// Upload `value` into the buffer (discard-and-rewrite). `T` must fit the
-    /// buffer's rounded-up size — i.e. be the `T` passed to [`Self::new`] — and a
-    /// mismatch is a checked error, never an out-of-bounds GPU write.
-    pub(crate) fn update<T: Pod>(&self, ctx: &ID3D11DeviceContext, value: &T) -> Result<()> {
-        let bytes = bytemuck::bytes_of(value);
-        if bytes.len() > self.size as usize {
-            return Err(super::invalid_arg(
-                "constant-buffer update is larger than the buffer it was created for",
-            ));
-        }
-        // SAFETY: WRITE_DISCARD maps the whole dynamic buffer for CPU writes; the
-        // mapped region is `self.size` bytes and `bytes.len() <= self.size` was
-        // just checked, so the copy stays in bounds. `Unmap` pairs with the `Map`.
-        unsafe {
-            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-            ctx.Map(
-                &self.buffer,
-                0,
-                D3D11_MAP_WRITE_DISCARD,
-                0,
-                Some(&mut mapped),
-            )?;
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), mapped.pData as *mut u8, bytes.len());
-            ctx.Unmap(&self.buffer, 0);
-        }
-        Ok(())
+    /// Allocate a table of `capacity` elements to be rewritten with
+    /// [`Self::update`]. Its initial contents are zero, and nothing reads it before
+    /// the first update — which is what `DeformGpu::palette_revision` tracks.
+    pub(crate) fn dynamic(capacity: usize, label: &'static CStr) -> GpuResult<Self> {
+        let mut usage = sg::BufferUsage::new();
+        usage.storage_buffer = true;
+        usage.dynamic_update = true;
+        let bytes = capacity
+            .checked_mul(size_of::<T>())
+            .ok_or_else(|| GpuError::invalid_arg(format!("'{}' overflows", name(label))))?;
+        Self::build(&vec![0u8; bytes], capacity, usage, label)
     }
 
-    /// Bind this buffer to the vertex-shader constant slot `slot`.
-    pub(crate) fn bind_vs(&self, ctx: &ID3D11DeviceContext, slot: u32) {
-        // SAFETY: the buffer is live; the one-element array outlives the call.
-        unsafe {
-            ctx.VSSetConstantBuffers(slot, Some(&[Some(self.buffer.clone())]));
-        }
-    }
-
-    /// Bind this buffer to the pixel-shader constant slot `slot`.
-    pub(crate) fn bind_ps(&self, ctx: &ID3D11DeviceContext, slot: u32) {
-        // SAFETY: the buffer is live; the one-element array outlives the call.
-        unsafe {
-            ctx.PSSetConstantBuffers(slot, Some(&[Some(self.buffer.clone())]));
-        }
-    }
-}
-
-/// A structured buffer read by the vertex shader through a shader-resource view
-/// — the deform path's influence runs, palette and blend-shape deltas. Either
-/// immutable (built once with the mesh) or dynamic (re-uploaded when the pose
-/// changes, via `Map(WRITE_DISCARD)` like the constant buffers). Core at feature
-/// level 11_0, the renderer's floor, so it needs no capability gate.
-pub(crate) struct StructuredBuffer<T> {
-    buffer: ID3D11Buffer,
-    srv: ID3D11ShaderResourceView,
-    /// Element capacity the buffer was created with; [`Self::update`] bounds its
-    /// copy against it.
-    capacity: u32,
-    _element: std::marker::PhantomData<T>,
-}
-
-impl<T: Pod> StructuredBuffer<T> {
-    /// An immutable structured buffer holding `data` (must be non-empty).
-    pub(crate) fn immutable(device: &ID3D11Device, data: &[T]) -> Result<Self> {
-        if data.is_empty() {
-            return Err(super::invalid_arg("structured buffer must be non-empty"));
-        }
-        let bytes: &[u8] = bytemuck::cast_slice(data);
-        let init = D3D11_SUBRESOURCE_DATA {
-            pSysMem: bytes.as_ptr() as *const _,
-            SysMemPitch: 0,
-            SysMemSlicePitch: 0,
-        };
-        Self::create(
-            device,
-            data.len(),
-            D3D11_USAGE_IMMUTABLE,
-            D3D11_CPU_ACCESS_FLAG(0),
-            Some(&init),
-        )
-    }
-
-    /// A dynamic structured buffer with room for `capacity` elements (must be
-    /// non-zero), filled by [`Self::update`].
-    pub(crate) fn dynamic(device: &ID3D11Device, capacity: usize) -> Result<Self> {
-        if capacity == 0 {
-            return Err(super::invalid_arg("structured buffer must be non-empty"));
-        }
-        Self::create(
-            device,
-            capacity,
-            D3D11_USAGE_DYNAMIC,
-            D3D11_CPU_ACCESS_WRITE,
-            None,
-        )
-    }
-
-    fn create(
-        device: &ID3D11Device,
+    fn build(
+        bytes: &[u8],
         capacity: usize,
-        usage: D3D11_USAGE,
-        cpu_access: D3D11_CPU_ACCESS_FLAG,
-        init: Option<&D3D11_SUBRESOURCE_DATA>,
-    ) -> Result<Self> {
-        let stride = std::mem::size_of::<T>();
-        // Structured-buffer strides must be a multiple of 4 and the element count
-        // must fit the view's 32-bit range; both are checked rather than assumed.
-        if stride == 0 || !stride.is_multiple_of(4) {
-            return Err(super::invalid_arg(
-                "structured buffer element size must be a non-zero multiple of 4",
-            ));
+        usage: sg::BufferUsage,
+        label: &'static CStr,
+    ) -> GpuResult<Self> {
+        // sokol requires a storage buffer's size to be a multiple of 4; every element
+        // type here is a multiple of 4 bytes, so the only way to break it is an empty
+        // table — which callers express as `None` (or as the one-element dummy the
+        // scene binds when a model has no deform tables at all).
+        if bytes.is_empty() {
+            return Err(GpuError::invalid_arg(format!(
+                "'{}' would be an empty storage buffer",
+                name(label)
+            )));
         }
-        let capacity_u32 = u32::try_from(capacity)
-            .map_err(|_| super::invalid_arg("structured buffer has too many elements"))?;
-        let byte_width = stride
-            .checked_mul(capacity)
-            .and_then(|bytes| u32::try_from(bytes).ok())
-            .ok_or_else(|| super::invalid_arg("structured buffer is too large"))?;
-        let desc = D3D11_BUFFER_DESC {
-            ByteWidth: byte_width,
-            Usage: usage,
-            BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
-            CPUAccessFlags: cpu_access.0 as u32,
-            MiscFlags: D3D11_RESOURCE_MISC_BUFFER_STRUCTURED.0 as u32,
-            StructureByteStride: stride as u32,
+        let buffer = if usage.immutable {
+            make(bytes, usage, label)?
+        } else {
+            let mut desc = sg::BufferDesc::new();
+            desc.size = bytes.len();
+            desc.usage = usage;
+            desc.label = label.as_ptr();
+            let buffer = sg::make_buffer(&desc);
+            require_valid(
+                sg::query_buffer_state(buffer),
+                ResourceKind::Buffer,
+                name(label),
+            )?;
+            buffer
         };
-        let mut buffer = None;
-        // SAFETY: `desc` describes a structured buffer of `capacity` elements; when
-        // `init` is given it points at exactly that many elements, alive for the
-        // call. The out-param is set on success.
-        unsafe {
-            device.CreateBuffer(
-                &desc,
-                init.map(|init| init as *const D3D11_SUBRESOURCE_DATA),
-                Some(&mut buffer),
-            )?
-        };
-        let buffer = out_param(buffer);
 
-        let srv_desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
-            Format: DXGI_FORMAT_UNKNOWN,
-            ViewDimension: D3D_SRV_DIMENSION_BUFFER,
-            Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
-                Buffer: D3D11_BUFFER_SRV {
-                    Anonymous1: D3D11_BUFFER_SRV_0 { FirstElement: 0 },
-                    Anonymous2: D3D11_BUFFER_SRV_1 {
-                        NumElements: capacity_u32,
-                    },
-                },
-            },
-        };
-        let mut srv = None;
-        // SAFETY: `buffer` is shader-resource-bindable and structured; the view
-        // covers exactly its `capacity` elements. Out-param set on success.
-        unsafe { device.CreateShaderResourceView(&buffer, Some(&srv_desc), Some(&mut srv))? };
+        let mut view_desc = sg::ViewDesc::new();
+        view_desc.storage_buffer.buffer = buffer;
+        view_desc.label = label.as_ptr();
+        let view = sg::make_view(&view_desc);
+        if let Err(err) = require_valid(
+            sg::query_view_state(view),
+            ResourceKind::Buffer,
+            name(label),
+        ) {
+            sg::destroy_view(view);
+            sg::destroy_buffer(buffer);
+            return Err(err);
+        }
         Ok(Self {
             buffer,
-            srv: out_param(srv),
-            capacity: capacity_u32,
-            _element: std::marker::PhantomData,
+            view,
+            capacity,
+            label,
+            element: PhantomData,
         })
     }
 
-    /// Element capacity.
-    pub(crate) fn capacity(&self) -> usize {
-        self.capacity as usize
-    }
-
-    /// Upload `data` into a dynamic buffer (discard-and-rewrite). `data` must fit
-    /// the capacity the buffer was created with — a checked error, never an
-    /// out-of-bounds GPU write. Elements past `data.len()` are left undefined,
-    /// so callers must not index them.
-    pub(crate) fn update(&self, ctx: &ID3D11DeviceContext, data: &[T]) -> Result<()> {
-        let bytes: &[u8] = bytemuck::cast_slice(data);
-        if data.len() > self.capacity as usize {
-            return Err(super::invalid_arg(
-                "structured-buffer update is larger than the buffer it was created for",
-            ));
+    /// Rewrite a dynamic table's contents. Once per frame at most — sokol's
+    /// `sg_update_buffer` is a whole-buffer, once-per-frame operation, which is
+    /// exactly what a pose upload is.
+    pub(crate) fn update(&self, elements: &[T]) -> GpuResult<()> {
+        if elements.len() > self.capacity {
+            return Err(GpuError::invalid_arg(format!(
+                "'{}' holds {} elements but was given {}",
+                name(self.label),
+                self.capacity,
+                elements.len()
+            )));
         }
-        // SAFETY: WRITE_DISCARD maps the whole dynamic buffer for CPU writes; the
-        // mapped region is `capacity * stride` bytes and `data.len() <= capacity`
-        // was just checked, so the copy stays in bounds. `Unmap` pairs with `Map`.
-        unsafe {
-            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-            ctx.Map(
-                &self.buffer,
-                0,
-                D3D11_MAP_WRITE_DISCARD,
-                0,
-                Some(&mut mapped),
-            )?;
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), mapped.pData as *mut u8, bytes.len());
-            ctx.Unmap(&self.buffer, 0);
+        if elements.is_empty() {
+            return Ok(());
         }
+        sg::update_buffer(self.buffer, &sg::slice_as_range(elements));
         Ok(())
     }
 
-    /// Bind this buffer's view to vertex-shader resource slot `slot`.
-    pub(crate) fn bind_vs(&self, ctx: &ID3D11DeviceContext, slot: u32) {
-        // SAFETY: the SRV is live; the one-element array outlives the call.
-        unsafe {
-            ctx.VSSetShaderResources(slot, Some(&[Some(self.srv.clone())]));
+    /// Elements the buffer was sized for — how a pose is checked against the model
+    /// it was built for.
+    pub(crate) fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// The view a binding slot reads it through.
+    pub(in crate::rhi) fn view(&self) -> sg::View {
+        self.view
+    }
+}
+
+impl<T> Drop for StorageBuffer<T> {
+    fn drop(&mut self) {
+        if sg::isvalid() {
+            sg::destroy_view(self.view);
+            sg::destroy_buffer(self.buffer);
         }
     }
+}
+
+/// Create an immutable buffer from `bytes`, or fail naming it.
+fn make(bytes: &[u8], usage: sg::BufferUsage, label: &CStr) -> GpuResult<sg::Buffer> {
+    if bytes.is_empty() {
+        return Err(GpuError::invalid_arg(format!(
+            "'{}' would be an empty buffer",
+            name(label)
+        )));
+    }
+    let mut desc = sg::BufferDesc::new();
+    desc.size = bytes.len();
+    desc.usage = usage;
+    desc.data = sg::slice_as_range(bytes);
+    desc.label = label.as_ptr();
+    let buffer = sg::make_buffer(&desc);
+    require_valid(
+        sg::query_buffer_state(buffer),
+        ResourceKind::Buffer,
+        name(label),
+    )?;
+    Ok(buffer)
+}
+
+fn name(label: &CStr) -> &str {
+    label.to_str().unwrap_or("buffer")
 }
