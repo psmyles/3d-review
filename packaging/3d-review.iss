@@ -1,6 +1,6 @@
 ; Inno Setup script for 3D Review.
 ;
-; Do not run this directly — invoke packaging\build-installer.ps1, which builds
+; Do not run this directly — invoke packaging\build-windows-installer.ps1, which builds
 ; the release exe, reads product.json (the canonical source of product identity)
 ; and passes the values below as /D defines. Defaults are provided so the script
 ; can also be opened standalone in the Inno Setup IDE for editing.
@@ -26,7 +26,7 @@
   #define MyAppTypeName "FBX 3D Model"
 #endif
 #ifndef MyAppUrl
-  #define MyAppUrl "https://github.com/chandan/3d-review-rs"
+  #define MyAppUrl "https://github.com/psmyles/3d-review"
 #endif
 
 [Setup]

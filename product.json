@@ -5,7 +5,7 @@
   "publisher": "Chandan Singh",
   "description": "A 3D model viewer and auditor",
   "copyright": "Copyright (c) 2026 Chandan Singh",
-  "homepage": "https://github.com/psmyles/3d-review-rs",
+  "homepage": "https://github.com/psmyles/3d-review",
   "exeName": "3d-review",
   "fileAssociation": {
     "extension": ".fbx",
