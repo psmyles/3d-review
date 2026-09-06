@@ -44,7 +44,6 @@ No web layer, no Electron, no wgpu. Is is designed to be fast: fast to start, fa
     - [Shaders](#shaders)
     - [Baked assets and packaging](#baked-assets-and-packaging)
   - [Architecture](#architecture)
-  - [License](#license)
 
 ---
 
@@ -608,9 +607,3 @@ crate map, build notes) and `docs/mac-port-plan.md` (the cross-platform work, it
 decisions and its measurements). `docs/PROJECT_STATE.md` and
 `docs/RENDERING_PIPELINE.md` are older audit notes from before the GPU layer moved
 to `sokol_gfx` and are due a rewrite.
-
-## License
-
-The workspace manifest declares `MIT OR Apache-2.0`. Vendored third-party code
-carries its own license and notice files under `third_party/`, `vendor/` and
-`crates/psd/vendor/`.
