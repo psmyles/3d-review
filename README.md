@@ -601,9 +601,3 @@ Data flows one way: input and file drops reach `app`, which drives `import` into
 `model`, which `render` turns into GPU resources; `app` draws the scene and then
 `ui` paints its chrome on top; UI intents come back to `app`, which is the only
 place that applies them.
-
-Deeper documentation lives in `CLAUDE.md` (the current reference: invariants,
-crate map, build notes) and `docs/mac-port-plan.md` (the cross-platform work, its
-decisions and its measurements). `docs/PROJECT_STATE.md` and
-`docs/RENDERING_PIPELINE.md` are older audit notes from before the GPU layer moved
-to `sokol_gfx` and are due a rewrite.
