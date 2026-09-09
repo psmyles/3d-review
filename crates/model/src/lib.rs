@@ -850,10 +850,6 @@ pub struct AnimationClip {
     pub time_end: f64,
     pub tracks: Vec<NodeTrack>,
     pub morph_tracks: Vec<MorphTrack>,
-    /// The union of the posed mesh's bounds over every frame of the clip,
-    /// measured once at import — what framing and the bounding-box overlay use
-    /// while the clip is selected. `None` when the model has no geometry.
-    pub bounds: Option<Bounds>,
 }
 
 impl AnimationClip {
@@ -2232,6 +2228,153 @@ mod tests {
         assert_eq!(skin.summed_weight(1, &[1, 2]), 1.0);
         // Nothing selected -> no weight anywhere.
         assert_eq!(skin.summed_weight(0, &[]), 0.0);
+    }
+
+    /// Two rigid mesh nodes, one triangle each, one of them animated: the shape
+    /// `clip_bounds`'s per-frame walk is narrowed on. `translated` is what the
+    /// clip pushes node 1 to at its end key.
+    fn partly_animated_model(translated: Vec3) -> ModelData {
+        let corner = |x: f32, y: f32| Vertex {
+            position: Vec3::new(x, y, 0.0),
+            ..Vertex::default()
+        };
+        ModelData {
+            vertices: vec![
+                corner(0.0, 0.0),
+                corner(1.0, 0.0),
+                corner(0.0, 1.0),
+                corner(4.0, 0.0),
+                corner(5.0, 0.0),
+                corner(4.0, 1.0),
+                corner(8.0, 0.0),
+                corner(9.0, 0.0),
+                corner(8.0, 1.0),
+            ],
+            indices: (0..9).collect(),
+            faces: (0..3)
+                .map(|face| TopologyFace {
+                    first_index: face * 3,
+                    index_count: 3,
+                })
+                .collect(),
+            triangles: TriangleData {
+                to_face: vec![0, 1, 2],
+                material: vec![0, 0, 0],
+                node: vec![0, 1, 2],
+            },
+            nodes: vec![
+                // Untracked root: static for the whole clip.
+                SceneNode::default(),
+                // The tracked node.
+                SceneNode::default(),
+                // Untracked, but a child of the tracked node — it rides along, so
+                // `clip_moved_nodes` has to reach it through the parent link.
+                SceneNode {
+                    parent: Some(1),
+                    ..SceneNode::default()
+                },
+            ],
+            stats: ModelStats {
+                vertex_count: 9,
+                triangle_count: 3,
+                ..ModelStats::default()
+            },
+            // Corner-expanded, one logical vertex each, as import produces.
+            corner_to_logical: (0..9).collect(),
+            animations: vec![AnimationClip {
+                name: "move".to_owned(),
+                time_begin: 0.0,
+                time_end: 1.0,
+                // Only node 1 is tracked; node 0 must be measured once, at rest.
+                tracks: vec![NodeTrack {
+                    node: 1,
+                    translation: vec![
+                        Key {
+                            time: 0.0,
+                            value: Vec3::ZERO,
+                        },
+                        Key {
+                            time: 1.0,
+                            value: translated,
+                        },
+                    ],
+                    ..NodeTrack::default()
+                }],
+                ..AnimationClip::default()
+            }],
+            frame_rate: 24.0,
+            ..ModelData::default()
+        }
+    }
+
+    /// The definition `clip_bounds` is an optimization of: the union of the whole
+    /// mesh's bounds over every frame, measured with no knowledge of which nodes
+    /// the clip touches.
+    fn brute_force_clip_bounds(
+        model: &ModelData,
+        ctx: &AnimContext,
+        clip: &AnimationClip,
+    ) -> Bounds {
+        let fps = model.frame_rate_or_default();
+        let mut pose = Pose::new(model);
+        let mut deform = DeformPose::default();
+        let mut bounds = Bounds::EMPTY;
+        for frame in 0..clip.frame_count(fps) {
+            anim::evaluate_pose(
+                model,
+                ctx,
+                Some(clip),
+                clip.frame_time(frame, fps),
+                &mut pose,
+            );
+            anim::build_palette(model, ctx, &pose, &mut deform);
+            if let Some(frame_bounds) = anim::posed_bounds(model, ctx, &deform) {
+                bounds.include_point(frame_bounds.min);
+                bounds.include_point(frame_bounds.max);
+            }
+        }
+        bounds
+    }
+
+    /// `clip_bounds` only re-measures the corners the clip can move; the corners
+    /// it leaves alone are measured once, at rest. That must give exactly what
+    /// walking the whole mesh every frame gives — including the static node's
+    /// contribution, which no frame of the clip moves.
+    #[test]
+    fn clip_bounds_matches_walking_every_corner_every_frame() {
+        for translated in [
+            Vec3::new(10.0, 0.0, 0.0),
+            // Backwards, so the animated node's envelope no longer contains its
+            // rest position on that axis: a static remainder measured from the
+            // whole model's rest bounds would be too big here.
+            Vec3::new(-9.0, -3.0, 2.0),
+            // Not moving at all: the clip has a track but it changes nothing.
+            Vec3::ZERO,
+        ] {
+            let model = partly_animated_model(translated);
+            let ctx = AnimContext::new(&model);
+            let clip = &model.animations[0];
+            let measured = anim::clip_bounds(&model, &ctx, clip, model.frame_rate_or_default())
+                .expect("bounds");
+            let expected = brute_force_clip_bounds(&model, &ctx, clip);
+            assert_eq!(measured.min, expected.min, "min for {translated}");
+            assert_eq!(measured.max, expected.max, "max for {translated}");
+        }
+    }
+
+    /// A clip that tracks nothing leaves every corner static, so the whole
+    /// per-frame walk is skipped and the answer is the rest pose's bounds. (This
+    /// is the case a game FBX's empty "Take 001" hits.)
+    #[test]
+    fn a_clip_with_no_tracks_measures_the_rest_pose() {
+        let mut model = partly_animated_model(Vec3::X);
+        model.animations[0].tracks.clear();
+        let ctx = AnimContext::new(&model);
+        let clip = &model.animations[0];
+        assert_eq!(
+            anim::clip_bounds(&model, &ctx, clip, model.frame_rate_or_default()),
+            anim::rest_bounds(&model, &ctx)
+        );
     }
 
     #[test]

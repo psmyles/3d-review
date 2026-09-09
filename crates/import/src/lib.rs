@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use review_model::ModelData;
+use review_model::{AnimContext, ModelData};
 use thiserror::Error;
 
 mod prof;
@@ -49,19 +49,115 @@ pub fn startup_show_maximized() -> bool {
     false
 }
 
+/// The stage an import is in, as reported to [`load_model_with_progress`].
+///
+/// These are the four measured phases of a load, in order; the numbers beside
+/// them are a 2.8M-triangle, 120 MB FBX, which is the shape that made a progress
+/// indicator worth having at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportStage {
+    /// ufbx parsing the file (~1.6 s). The one stage with a real denominator:
+    /// `done`/`total` are bytes, straight from ufbx's own progress callback.
+    Reading,
+    /// Marshaling the bridge's flat arrays into `ModelData`, validating them, and
+    /// the rest-pose bounds and tangents the first frame needs (~0.3 s). No
+    /// denominator. The model is drawable at the end of this stage.
+    Building,
+    /// Measuring each clip's motion envelope (~0.6 s); `done`/`total` count clips.
+    /// Runs *after* the model is on screen — see [`measure_clip_bounds`].
+    Measuring,
+    /// The per-draw-group stats table (~2.6 s). No denominator, and also after the
+    /// model is on screen — see [`ModelData::mesh_group_stats`].
+    Finishing,
+}
+
+impl ImportStage {
+    /// The user-facing verb for this stage, as it appears in the loading card.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Reading => "Reading",
+            Self::Building => "Building mesh",
+            Self::Measuring => "Measuring animation",
+            Self::Finishing => "Measuring stats",
+        }
+    }
+}
+
+/// One progress report from an import. `total` is 0 when the stage has no
+/// denominator, in which case only the stage itself is meaningful.
+#[derive(Debug, Clone, Copy)]
+pub struct ImportProgress {
+    pub stage: ImportStage,
+    pub done: u64,
+    pub total: u64,
+}
+
+impl ImportProgress {
+    /// A stage with no denominator, or one that hasn't started counting.
+    pub fn stage(stage: ImportStage) -> Self {
+        Self {
+            stage,
+            done: 0,
+            total: 0,
+        }
+    }
+
+    /// How far through this stage the import is, `None` when it can't be known.
+    pub fn fraction(self) -> Option<f32> {
+        (self.total > 0).then(|| (self.done as f32 / self.total as f32).clamp(0.0, 1.0))
+    }
+}
+
+/// What [`load_model_with_progress`] reports through. Called on the importing
+/// thread — from inside the ufbx parse for [`ImportStage::Reading`] — so it must
+/// be cheap and must not block: `app` throttles and forwards to the event loop.
+pub type ProgressSink<'a> = &'a dyn Fn(ImportProgress);
+
+/// Import `path` completely, reporting nothing: the drawable model plus every
+/// measurement [`load_model_with_progress`] leaves for the caller. What a test or
+/// a batch tool wants; the viewer takes the staged path instead, so it can put
+/// the mesh on screen before the measuring is done.
 pub fn load_model(path: impl AsRef<Path>) -> Result<ModelData, ImportError> {
+    let mut model = load_model_with_progress(path, &|_| {})?;
+    model.stats.gpu_vertex_count = model.count_gpu_vertices();
+    Ok(model)
+}
+
+/// Import `path` as far as *drawable*, reporting each stage to `progress` as it
+/// goes: geometry, materials, the scene graph, the rest-pose bounds the camera
+/// frames on, and tangents.
+///
+/// This is the one import funnel (invariant 7), and it stops where the viewport
+/// stops caring. Two measurements are deliberately **not** made here, because
+/// nothing on screen needs them and together they are the majority of a large
+/// load — a 2.8M-triangle scene reaches this point in 1.8 s and takes another
+/// 3.2 s to measure:
+///
+/// * each clip's motion envelope ([`measure_clip_bounds`]), which only framing
+///   and the bounding box on a *selected* clip use;
+/// * the per-draw-group table ([`ModelData::mesh_group_stats`]) behind the stats
+///   card's GPU Verts row and its scoped columns — hence `stats.gpu_vertex_count`
+///   is left `0`, which the card reads as "not measured yet" and simply omits.
+///
+/// The caller makes them when it wants them; [`load_model`] makes them straight
+/// away, `app` makes them on the import worker after the model is on screen and
+/// folds each into the UI as it lands.
+pub fn load_model_with_progress(
+    path: impl AsRef<Path>,
+    progress: ProgressSink<'_>,
+) -> Result<ModelData, ImportError> {
     let path = path.as_ref();
     match path.extension().and_then(|extension| extension.to_str()) {
-        Some(extension) if extension.eq_ignore_ascii_case("fbx") => load_fbx(path),
+        Some(extension) if extension.eq_ignore_ascii_case("fbx") => load_fbx(path, progress),
         Some(extension) => Err(ImportError::UnsupportedExtension(extension.to_owned())),
         None => Err(ImportError::UnsupportedExtension("<none>".to_owned())),
     }
 }
 
-pub fn load_fbx(_path: &Path) -> Result<ModelData, ImportError> {
+pub fn load_fbx(_path: &Path, _progress: ProgressSink<'_>) -> Result<ModelData, ImportError> {
     #[cfg(has_ufbx)]
     {
-        ffi::load_fbx(_path)
+        ffi::load_fbx(_path, _progress)
     }
 
     #[cfg(not(has_ufbx))]
@@ -70,10 +166,31 @@ pub fn load_fbx(_path: &Path) -> Result<ModelData, ImportError> {
     }
 }
 
+/// Each clip's motion envelope — the union of the posed mesh's bounds over every
+/// frame — parallel to [`ModelData::animations`]. `None` for a clip that moves
+/// nothing measurable.
+///
+/// Split out of the import funnel so it can run *after* the model is drawn (see
+/// [`load_model_with_progress`]); it lives here rather than in the caller so the
+/// two things a caller could get wrong — using the file's own frame rate, and
+/// building the [`AnimContext`] once rather than per clip — are decided once.
+pub fn measure_clip_bounds(model: &ModelData) -> Vec<Option<review_model::Bounds>> {
+    if model.animations.is_empty() {
+        return Vec::new();
+    }
+    let ctx = AnimContext::new(model);
+    let fps = model.frame_rate_or_default();
+    model
+        .animations
+        .iter()
+        .map(|clip| review_model::anim::clip_bounds(model, &ctx, clip, fps))
+        .collect()
+}
+
 #[cfg(has_ufbx)]
 mod ffi {
     use std::{
-        ffi::{CStr, CString},
+        ffi::{CStr, CString, c_void},
         mem::MaybeUninit,
         os::raw::{c_char, c_int},
         path::Path,
@@ -300,17 +417,49 @@ mod ffi {
         message: [c_char; 256],
     }
 
+    /// The bridge's progress hook: `user` is a `*const ProgressSink`.
+    type ReviewImportProgressFn = unsafe extern "C" fn(*mut c_void, u64, u64);
+
     unsafe extern "C" {
         fn review_import_load_fbx(
             path: *const c_char,
             out_scene: *mut ReviewImportScene,
             out_error: *mut ReviewImportError,
+            progress: Option<ReviewImportProgressFn>,
+            progress_user: *mut c_void,
         ) -> c_int;
 
         fn review_import_free_scene(scene: *mut ReviewImportScene);
     }
 
-    pub(super) fn load_fbx(path: &Path) -> Result<ModelData, ImportError> {
+    /// The trampoline the bridge calls from inside the ufbx parse. `user` is the
+    /// `&ProgressSink` handed to [`load_fbx`], which outlives the whole call.
+    ///
+    /// A panic here would unwind through C, so the sink is called inside
+    /// `catch_unwind` and a panicking one is simply ignored — a broken progress
+    /// indicator must not take the import down with it.
+    unsafe extern "C" fn report_read_progress(user: *mut c_void, done: u64, total: u64) {
+        let Some(sink) = NonNull::new(user.cast::<crate::ProgressSink<'_>>()) else {
+            return;
+        };
+        // SAFETY: `user` is the `&ProgressSink` `load_fbx` passed to the bridge,
+        // which borrows it for no longer than the `review_import_load_fbx` call
+        // this callback is made from; the pointer is therefore live and aligned,
+        // and nothing else aliases it mutably.
+        let sink = unsafe { sink.as_ref() };
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            sink(crate::ImportProgress {
+                stage: crate::ImportStage::Reading,
+                done,
+                total,
+            });
+        }));
+    }
+
+    pub(super) fn load_fbx(
+        path: &Path,
+        progress: crate::ProgressSink<'_>,
+    ) -> Result<ModelData, ImportError> {
         let _z = crate::prof::zone!("Load FBX");
         let path_string = path.to_string_lossy();
         let c_path = CString::new(path_string.as_bytes())
@@ -329,7 +478,18 @@ mod ffi {
             // `cleanup:` path calls `review_import_free_scene`, so no C buffers
             // leak and no free is needed here on the error return below). All
             // three pointers are non-null and valid for the duration of the call.
-            unsafe { review_import_load_fbx(c_path.as_ptr(), scene.as_mut_ptr(), &mut error) }
+            // `progress_user` is a pointer to this stack borrow of the caller's
+            // sink, which the bridge only dereferences from within this call.
+            let mut sink = progress;
+            unsafe {
+                review_import_load_fbx(
+                    c_path.as_ptr(),
+                    scene.as_mut_ptr(),
+                    &mut error,
+                    Some(report_read_progress),
+                    (&raw mut sink).cast::<c_void>(),
+                )
+            }
         };
 
         if loaded == 0 {
@@ -342,7 +502,7 @@ mod ffi {
         let model = {
             // Walk the flat bridge arrays into our `ModelData` (slices, bounds, BVH).
             let _z = crate::prof::zone!("Build ModelData");
-            model_from_bridge_scene(path, &scene)
+            model_from_bridge_scene(path, &scene, progress)
         };
         // SAFETY: `scene` is the bridge-allocated scene we own; this frees its C-side
         // buffers exactly once, on both the success and error paths of the extraction
@@ -723,7 +883,6 @@ mod ffi {
                     time_end: stack.time_end,
                     tracks,
                     morph_tracks,
-                    bounds: None,
                 })
             })
             .collect()
@@ -752,7 +911,9 @@ mod ffi {
     fn model_from_bridge_scene(
         path: &Path,
         scene: &ReviewImportScene,
+        progress: crate::ProgressSink<'_>,
     ) -> Result<ModelData, ImportError> {
+        progress(crate::ImportProgress::stage(crate::ImportStage::Building));
         let MarshaledGeometry {
             vertices,
             indices,
@@ -861,19 +1022,13 @@ mod ffi {
         // Bounds describe what is on screen. A skinned or morphed model rests in
         // the file's default pose, which the GPU skins into — so its bounds are
         // measured through the same deformation, not from the bind-pose buffer.
-        // Each clip additionally records the envelope of its whole motion, so
-        // framing and the bounding box can describe a playing clip without ever
-        // re-skinning on the redraw path.
+        // (Each clip's own motion envelope is *not* measured here: nothing is on
+        // screen that needs it until a clip is selected, and on a large scene it
+        // costs more than everything above it — see `measure_clip_bounds`.)
         if model.needs_deform() {
-            let _z = crate::prof::zone!("Clip Bounds");
+            let _z = crate::prof::zone!("Rest Bounds");
             let ctx = AnimContext::new(&model);
             model.bounds = anim::rest_bounds(&model, &ctx);
-            let fps = model.frame_rate_or_default();
-            let mut clips = std::mem::take(&mut model.animations);
-            for clip in &mut clips {
-                clip.bounds = anim::clip_bounds(&model, &ctx, clip, fps);
-            }
-            model.animations = clips;
         } else {
             model.recompute_bounds();
         }
@@ -887,10 +1042,10 @@ mod ffi {
         // The renderer groups triangles into one draw per distinct material slot;
         // report that count so Draws is the real draw-call count.
         model.stats.draw_count = model.material_draw_count();
-        // The asset's real GPU vertex cost (unique vertices per draw group) —
-        // the corner-expanded buffer built above is this viewer's internal
-        // layout and is deliberately not a reported stat.
-        model.stats.gpu_vertex_count = model.count_gpu_vertices();
+        // `stats.gpu_vertex_count` stays 0 — "not measured yet". It is an
+        // O(corners) hash walk over the whole mesh, by far the longest item in a
+        // large import, and it is a *displayed number*, not something the viewport
+        // draws with; the caller measures it once the model is up.
 
         Ok(model)
     }
@@ -1382,7 +1537,7 @@ mod ffi {
             let vertices = blank_vertices(3);
             let scene = geometry_scene(&vertices, &[0, 1, 3]);
             assert!(matches!(
-                model_from_bridge_scene(Path::new("mesh.fbx"), &scene),
+                model_from_bridge_scene(Path::new("mesh.fbx"), &scene, &|_| {}),
                 Err(ImportError::LoadFailed(message))
                     if message.contains("index 3") && message.contains("3 vertices")
             ));
@@ -1392,8 +1547,8 @@ mod ffi {
         fn indices_within_the_vertex_buffer_load() {
             let vertices = blank_vertices(3);
             let scene = geometry_scene(&vertices, &[0, 1, 2]);
-            let model =
-                model_from_bridge_scene(Path::new("mesh.fbx"), &scene).expect("a whole triangle");
+            let model = model_from_bridge_scene(Path::new("mesh.fbx"), &scene, &|_| {})
+                .expect("a whole triangle");
             assert_eq!(model.indices, vec![0, 1, 2]);
             assert_eq!(model.name, "mesh");
         }
@@ -1814,11 +1969,6 @@ mod tests {
             for track in &clip.tracks {
                 assert!((track.node as usize) < model.nodes.len());
             }
-            assert!(
-                clip.bounds.is_some(),
-                "clip '{}' measured no envelope",
-                clip.name
-            );
         }
         assert!(model.bounds.is_some());
         assert_rest_locals_recompose(&model);
@@ -1850,6 +2000,103 @@ mod tests {
             .zip(&pose.world)
             .any(|(node, world)| !world.abs_diff_eq(node.transform, 1e-4));
         assert!(moved, "the clip's last frame must move at least one node");
+    }
+
+    /// [`measure_clip_bounds`] — the deferred measurement `app` runs once the model
+    /// is on screen — must give exactly what walking the whole mesh in every frame
+    /// gives. `clip_bounds` narrows that walk to the corners the clip can actually
+    /// move, the difference between a 5-second load and a 100-second one on a large
+    /// scene, so this pins the narrowed answer to the definition it replaced, over
+    /// real files rather than a synthetic one: a skinned character (the skin arm of
+    /// the predicate), a rigid destructible (the node arm), and a locomotion clip.
+    #[test]
+    fn measured_clip_bounds_match_walking_every_corner() {
+        for name in [
+            "SK_Player_01.fbx",
+            "AN_ZombiedogLocomotion.fbx",
+            "SM_Wall_Break_4x3m.fbx",
+        ] {
+            let path = fixture(name);
+            if !path.exists() {
+                eprintln!("skipping: {} is not present", path.display());
+                continue;
+            }
+            let model = load_model(&path).unwrap_or_else(|error| panic!("{name}: {error}"));
+            if model.animations.is_empty() {
+                continue;
+            }
+
+            let measured = crate::measure_clip_bounds(&model);
+            assert_eq!(
+                measured.len(),
+                model.animations.len(),
+                "{name}: one envelope per clip"
+            );
+
+            let ctx = review_model::AnimContext::new(&model);
+            let fps = model.frame_rate_or_default();
+            let mut pose = review_model::Pose::new(&model);
+            let mut deform = review_model::DeformPose::default();
+            for (clip, measured) in model.animations.iter().zip(&measured) {
+                let mut expected = review_model::Bounds::EMPTY;
+                for frame in 0..clip.frame_count(fps) {
+                    review_model::anim::evaluate_pose(
+                        &model,
+                        &ctx,
+                        Some(clip),
+                        clip.frame_time(frame, fps),
+                        &mut pose,
+                    );
+                    review_model::anim::build_palette(&model, &ctx, &pose, &mut deform);
+                    if let Some(frame_bounds) =
+                        review_model::anim::posed_bounds(&model, &ctx, &deform)
+                    {
+                        expected.include_point(frame_bounds.min);
+                        expected.include_point(frame_bounds.max);
+                    }
+                }
+                let measured = measured.expect("an animated clip has an envelope");
+                assert_eq!(measured.min, expected.min, "{name} / {} min", clip.name);
+                assert_eq!(measured.max, expected.max, "{name} / {} max", clip.name);
+            }
+        }
+    }
+
+    /// The staged import publishes a *drawable* model and leaves the two costly
+    /// measurements to the caller: whatever the viewport needs on the first frame
+    /// must already be there, and the deferred pair must not be.
+    #[test]
+    fn a_staged_import_is_drawable_but_unmeasured() {
+        let path = fixture("SM_Wall_Break_4x3m.fbx");
+        if !path.exists() {
+            eprintln!("skipping: {} is not present", path.display());
+            return;
+        }
+        let staged =
+            crate::load_model_with_progress(&path, &|_| {}).expect("the fixture must import");
+
+        // Everything the first frame draws with.
+        assert!(!staged.vertices.is_empty(), "geometry");
+        assert!(!staged.indices.is_empty(), "indices");
+        assert!(!staged.nodes.is_empty(), "scene graph");
+        assert!(staged.stats.draw_count > 0, "draw groups");
+        assert!(staged.bounds.is_some(), "the camera frames on the bounds");
+        assert!(!staged.has_degenerate_tangents(), "tangents");
+
+        // …and neither of the two measurements that cost the most.
+        assert_eq!(
+            staged.stats.gpu_vertex_count, 0,
+            "GPU Verts is measured after the model is up"
+        );
+
+        // The complete entry point makes them, so a test or batch caller still
+        // gets a fully measured model.
+        let complete = load_model(&path).expect("the fixture must import");
+        assert_eq!(
+            complete.stats.gpu_vertex_count,
+            complete.count_gpu_vertices()
+        );
+        assert!(complete.stats.gpu_vertex_count > 0);
     }
 
     /// The skinned fixture's clusters must be oriented correctly: at the rest
