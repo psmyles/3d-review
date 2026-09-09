@@ -45,6 +45,9 @@ No web layer, no Electron, no wgpu. Is is designed to be fast: fast to start, fa
     - [Baked assets and packaging](#baked-assets-and-packaging)
   - [Architecture](#architecture)
 
+Deeper documentation lives in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and
+[docs/GOTCHAS.md](docs/GOTCHAS.md).
+
 ---
 
 ## Getting a model in
@@ -601,3 +604,13 @@ Data flows one way: input and file drops reach `app`, which drives `import` into
 `model`, which `render` turns into GPU resources; `app` draws the scene and then
 `ui` paints its chrome on top; UI intents come back to `app`, which is the only
 place that applies them.
+
+For the file-by-file crate map, the invariants those boundaries enforce, and the
+reasoning behind the stack:
+
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** - data flow, crate map,
+  invariants, settled decisions, and the platform decision index the source
+  comments cite by number.
+- **[docs/GOTCHAS.md](docs/GOTCHAS.md)** - the traps that have already cost
+  someone a day: rest pose versus bind pose, GPU struct layout, the multi-target
+  scene pass, the FBX libraries' sharp edges, and the baked assets.

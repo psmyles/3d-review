@@ -68,9 +68,18 @@ enum UserEvent {
     OptProcessed(Box<opt::OptProcessed>),
     /// A background FBX export finished (posted by the export thread).
     OptExported(Box<Result<review_optimize::ExportReport, review_optimize::OptError>>),
-    /// A background model import finished (posted by the import thread). Boxed
-    /// because it carries the whole parsed model.
+    /// A background model import produced a drawable model (posted by the import
+    /// thread). Boxed because it carries the whole parsed model.
     ModelLoaded(Box<loading::ModelLoaded>),
+    /// A background model import reached a new stage, or moved within one
+    /// (posted by the import thread, already throttled there — see `loading.rs`).
+    /// Rewrites the loading card's stage line in place.
+    ModelLoadProgress(loading::ModelLoadProgress),
+    /// One of the measurements the import deferred until after the model was on
+    /// screen has landed (posted by the same thread, which keeps measuring once
+    /// it has published the mesh). Boxed because the draw-group table is one
+    /// entry per (node, material) pair.
+    ModelMeasured(Box<loading::ModelMeasured>),
     /// A native file dialog closed (posted by the thread that opened it —
     /// `mac-port-plan.md` D9). `None` when the user cancelled. Boxed because the
     /// export variant carries a whole LOD chain's worth of `Arc`s.
@@ -852,6 +861,8 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::OptProcessed(message) => self.handle_opt_processed(*message),
             UserEvent::OptExported(outcome) => self.handle_opt_exported(*outcome),
             UserEvent::ModelLoaded(message) => self.handle_model_loaded(*message),
+            UserEvent::ModelLoadProgress(message) => self.handle_model_load_progress(message),
+            UserEvent::ModelMeasured(message) => self.handle_model_measured(*message),
             UserEvent::DialogDone(answer) => self.handle_dialog_done(answer),
             UserEvent::OpenPath(path) => self.open_model_from_path(&path),
             UserEvent::MenuCommand(command) => self.handle_menu_command(command),

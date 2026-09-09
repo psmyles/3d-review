@@ -1100,6 +1100,17 @@ pub struct UiState {
     /// ownership). `None` when no model is loaded. Read by the dimension-label
     /// overlay to place each box edge's axis-length readout.
     pub bounds: Option<Bounds>,
+    /// Per clip, its motion envelope — parallel to `ModelData::animations`, and
+    /// what [`UiState::bounds`] becomes while that clip is selected.
+    ///
+    /// It lives here rather than on the clip because it is *measured after the
+    /// model is on screen*: it costs a pose and a mesh walk per frame of the clip,
+    /// which would otherwise hold a large scene off the viewport for as long as
+    /// the parse itself did. `app` fills each entry in when its import worker
+    /// reports it; an entry still `None` simply falls back to the whole model's
+    /// box, so a clip selected in the first moments of a load frames on something
+    /// sensible and tightens up when the measurement lands.
+    pub clip_bounds: Vec<Option<Bounds>>,
     /// The per-model derived measurements that are too costly to recompute every
     /// frame (the visible-only and selection-only boxes, the bone-influence
     /// count). `app` resets the whole set on model load — see [`BoundsCaches`].
@@ -1166,6 +1177,7 @@ impl Default for UiState {
             hidden_meshes: HashSet::new(),
             side_panels_open: true,
             bounds: None,
+            clip_bounds: Vec::new(),
             caches: BoundsCaches::default(),
             fps: 0.0,
             show_help_overlay: true,
@@ -1309,17 +1321,18 @@ impl UiState {
     /// selection or the hidden set has moved since they were last measured.
     ///
     /// The expensive half — the per-draw-group table the sums come from — is
-    /// built once per model and then reused; both are dropped together by
+    /// measured off the main thread and handed over by
+    /// [`UiState::set_mesh_group_stats`]; both are dropped together by
     /// [`BoundsCaches::reset`] on load, since a new model can reproduce either
     /// key (the same node index selected again, the same one hidden again) while
-    /// meaning something entirely different. Nothing here may run per frame: the
-    /// table walk is O(corners) with a hash per vertex (invariant 6).
+    /// meaning something entirely different. Until the table arrives the columns
+    /// sum an empty one and read as zero, which is what the card already renders
+    /// as "not measured yet". Nothing here may build it: the walk is O(corners)
+    /// with a hash per vertex (invariant 6).
     pub(crate) fn scoped_stats(&mut self, model: &ModelData) -> ScopedStats {
-        if self.caches.mesh_groups.is_none() {
-            self.caches.mesh_groups = Some(model.mesh_group_stats());
-            self.caches.scoped_stats = None;
-        }
-        let groups = self.caches.mesh_groups.as_deref().unwrap_or_default();
+        let Some(groups) = self.caches.mesh_groups.as_deref() else {
+            return ScopedStats::default();
+        };
 
         let key = (self.selection, self.hidden_mesh_nodes());
         if self.caches.scoped_stats.is_none() || self.caches.scoped_stats_key != key {
@@ -1345,6 +1358,22 @@ impl UiState {
             self.caches.scoped_stats_key = key;
         }
         self.caches.scoped_stats.unwrap_or_default()
+    }
+
+    /// Take the model's measured per-draw-group table — the walk behind both the
+    /// `GPU Verts` row and the stats card's scoped columns — from `app`, which
+    /// measures it on the import worker once the model is already drawn.
+    ///
+    /// Both consumers are updated together on purpose: [`UiState::scoped_stats`]
+    /// would otherwise build the same table itself, on the main thread, the first
+    /// frame the card asked for it — an O(corners) hash walk that is a 2.6 s
+    /// stall on a 2.8M-triangle scene (invariant 6: nothing that size runs on the
+    /// redraw path).
+    pub fn set_mesh_group_stats(&mut self, groups: Vec<MeshGroupStats>) {
+        self.stats.gpu_vertex_count = groups.iter().map(|group| group.gpu_vertex_count).sum();
+        self.caches.mesh_groups = Some(groups);
+        // The columns were summed from no table (or the outgoing model's); re-sum.
+        self.caches.scoped_stats = None;
     }
 
     /// Refresh [`BoundsCaches::bone_influence`] if the bone selection changed

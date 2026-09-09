@@ -135,8 +135,14 @@ impl App {
             anim.last_tick = None;
         }
 
-        // Framing and the bounding box describe the selected clip's whole motion.
-        self.ui.bounds = clip.and_then(|clip| clip.bounds).or(model.bounds);
+        // Framing and the bounding box describe the selected clip's whole motion —
+        // once it has been measured. That happens on the import worker just after
+        // the model is drawn (`loading.rs`), so a clip selected in the first
+        // moments of a load frames on the whole model until its envelope lands.
+        let clip_envelope = state
+            .selected_clip
+            .and_then(|index| self.ui.clip_bounds.get(index).copied().flatten());
+        self.ui.bounds = clip_envelope.or(model.bounds);
 
         let key = (state.selected_clip, state.time.to_bits());
         if anim.evaluated != Some(key) || rebuilt {

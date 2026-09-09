@@ -18,7 +18,7 @@
 //! ## `unsafe`
 //!
 //! Invariant 9 confines `unsafe`/FFI to a named set of sites; this crate is one
-//! of them (see CLAUDE.md). All of it lives in `ffi` (declarations) and
+//! of them (see docs/ARCHITECTURE.md). All of it lives in `ffi` (declarations) and
 //! [`meshopt`] (checked wrappers that validate every buffer and index before the
 //! call and re-validate the reported sizes after). Nothing above that layer —
 //! [`ops`], [`process`], [`stack`], [`preset`] — contains any.
