@@ -15,10 +15,10 @@
 # keychain: the "Developer ID Application" identity, and the `notarytool` profile named
 # below. Neither is ever passed on a command line, and neither lives in the repo.
 #
-# It edits one tracked file: like the Windows installer script, it writes
-# product.json's version into crates/app/Cargo.toml before building, so the manifest
-# cannot drift from the version the app and the bundle report. Everything else it
-# writes goes to target/ and dist/.
+# It edits two tracked files: like the Windows installer script, it writes
+# product.json's version into crates/app/Cargo.toml and refreshes Cargo.lock before
+# building, so neither can drift from the version the app and the bundle report.
+# Everything else it writes goes to target/ and dist/.
 #
 # Options
 #   --sign-id <identity>       codesign identity; default is the "Developer ID
@@ -189,6 +189,13 @@ echo "  $(ls "$baked"/T_IBL_*.bin | wc -l | tr -d ' ') baked IBL maps, $thumbnai
 # reads it into the manifest — crates/app/build.rs only *warns* when the two disagree,
 # in a `cargo:warning` that scrolls past. So the release syncs it, exactly as the
 # Windows installer script does.
+#
+# Cargo.lock records the member's version too, and is committed. `cargo update
+# --workspace` re-resolves the workspace members *only*, so the lock picks the new
+# version up while every registry dependency stays pinned exactly as it was — which a
+# bare `cargo generate-lockfile` would not guarantee. Deliberately not `--offline`: on
+# a machine whose registry cache is cold that would fail here, before the build that
+# would have populated it.
 
 say "syncing crates/app/Cargo.toml version to $version"
 app_toml="$repo/crates/app/Cargo.toml"
@@ -201,6 +208,16 @@ else
     echo "  updated: $current -> $version."
     [[ $do_build -eq 1 ]] || echo "  note: --no-build, so target/ still holds a $current binary."
 fi
+
+# Run it unconditionally: the manifest can already be in sync while the lock is not
+# (someone edited Cargo.toml by hand), and with both in sync it is a no-op.
+cargo update --manifest-path "$repo/Cargo.toml" --workspace --quiet \
+    || die "could not refresh Cargo.lock for version $version"
+lock_version="$(awk '/^name = "review-app"$/ { getline; print }' "$repo/Cargo.lock" \
+    | sed -n -E 's/^version = "([^"]*)".*/\1/p' | head -1)"
+[[ "$lock_version" == "$version" ]] \
+    || die "Cargo.lock still records review-app $lock_version, not $version"
+echo "  Cargo.lock: review-app $lock_version."
 
 # ---------------------------------------------------------------------------------------------
 # 3. Build

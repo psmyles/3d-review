@@ -638,6 +638,18 @@ pub(crate) fn value_row(ui: &mut egui::Ui, label: &str, value: &str) {
 /// A label + a row of square preset-color swatch buttons (each a stock
 /// `egui::Button` at the standard button height); clicking one writes it into
 /// `selected`. The active swatch is outlined with the selection stroke.
+///
+/// Two things keep every swatch the same square in every widget state — without
+/// them the row's height changes as the pointer crosses it, resizing the whole
+/// option window. A stock button sizes itself as
+/// `content + button_padding + frame stroke`, where the padding egui picks
+/// already subtracts *its own* per-state `bg_stroke.width` (0 idle, 1 hovered)
+/// so the total holds steady. Overriding the stroke breaks that compensation, so
+/// the swatches carry **no content atom** (`Button::new(())`, not `""` — an empty
+/// string is still a text atom one row tall): with nothing inside, `min_size`
+/// alone decides the square and neither the selection stroke nor the state's
+/// stroke can grow it. The corner radius is likewise pinned to the idle one, as
+/// egui rounds a hovered widget more than an idle one.
 pub(crate) fn color_swatch_row(
     ui: &mut egui::Ui,
     label: &str,
@@ -652,9 +664,11 @@ pub(crate) fn color_swatch_row(
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = size::PANEL_SWATCH_GAP;
             let side = ui.spacing().interact_size.y;
+            let corner_radius = ui.visuals().widgets.inactive.corner_radius;
             for &swatch in colors {
-                let mut button = egui::Button::new("")
+                let mut button = egui::Button::new(())
                     .fill(swatch)
+                    .corner_radius(corner_radius)
                     .min_size(egui::vec2(side, side));
                 if *selected == swatch {
                     button = button.stroke(egui::Stroke::new(
@@ -907,4 +921,71 @@ pub(crate) fn bold_text(
         );
     }
     painter.text(pos, egui::Align2::CENTER_CENTER, text, font, color);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Lay out one [`color_swatch_row`] headlessly with `selected` marked and the
+    /// pointer at `pointer`, and return the height the row's content took. Two
+    /// passes, because a widget's state follows the *previous* pass's response —
+    /// the second is the one that reflects the pointer.
+    fn swatch_row_height(selected: egui::Color32, pointer: Option<egui::Pos2>) -> f32 {
+        const COLORS: [egui::Color32; 3] = [
+            egui::Color32::WHITE,
+            egui::Color32::GREEN,
+            egui::Color32::RED,
+        ];
+        let ctx = egui::Context::default();
+        let mut height = 0.0;
+        for _ in 0..2 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400.0, 200.0),
+                )),
+                events: pointer.map(egui::Event::PointerMoved).into_iter().collect(),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                let before = ui.cursor().top();
+                panel_grid(ui, "swatch_test", |ui| {
+                    let mut selected = selected;
+                    color_swatch_row(ui, "Color", &mut selected, &COLORS);
+                });
+                height = ui.min_rect().bottom() - before;
+            });
+            // Headless: nothing consumes the font-atlas upload, and epaint
+            // panics on a dropped delta.
+            output.textures_delta.clear();
+        }
+        height
+    }
+
+    /// A swatch must occupy the same square whether it is idle, hovered or
+    /// selected: the row sits in a non-resizable option window, so a swatch that
+    /// grows under the pointer (or once picked) resizes the whole window.
+    #[test]
+    fn swatch_row_height_is_state_independent() {
+        let idle = swatch_row_height(egui::Color32::WHITE, None);
+        assert!(idle > 0.0, "the row laid out nothing");
+
+        // Nothing selected in the row at all — the baseline a plain button gives.
+        assert_eq!(
+            swatch_row_height(egui::Color32::BLUE, None),
+            idle,
+            "the selection stroke changed the row height"
+        );
+
+        // Sweep the pointer across the whole row: no position may change it.
+        for x in (0..400).step_by(4) {
+            let pointer = egui::pos2(x as f32, idle * 0.5);
+            assert_eq!(
+                swatch_row_height(egui::Color32::WHITE, Some(pointer)),
+                idle,
+                "hovering at x={x} changed the row height"
+            );
+        }
+    }
 }
