@@ -173,6 +173,34 @@ fn draw_split_divider(ctx: &egui::Context, state: &UiState, viewport: egui::Rect
 /// position/size/collapsed state in memory, constrained to `viewport` so they
 /// stay inside the free scene area, and several can be open at once). A window's
 /// title-bar X clears it from [`UiState::panels_open`].
+/// The frame every option window shares. Extracted from [`draw_option_panels`] so
+/// the size test below measures the window the overlay actually builds — a test
+/// that rebuilt this by hand would keep passing after this lost a call.
+///
+/// Position and the open-flag stay with the caller: they are per-window, and
+/// `open` borrows.
+fn option_window<'open>(panel: OptionPanel) -> egui::Window<'open> {
+    egui::Window::new(panel.title())
+        .id(egui::Id::new(panel.window_id()))
+        // The option panels have compact, fixed content (a two-column table), so
+        // they aren't resizable — which also drops egui's bottom-right resize
+        // grip. The body pins a consistent width (see `draw_panel_body`).
+        .resizable(false)
+        // …and the *window* has to be told to take that width. `resizable(false)`
+        // alone leaves egui's own default window size in force — 340pt wide, wider
+        // than the 256pt body — so the frame sat 70pt wider than its content, as a
+        // band of dead space down the right of every panel. `auto_sized` shrinks
+        // the frame onto the body instead. It also turns scrolling off, which
+        // these already had off.
+        .auto_sized()
+        .collapsible(true)
+        // Persistent chrome, not a transient popup: skip egui's fade so an
+        // always-present window never spins the on-demand redraw loop
+        // (invariant 6).
+        .fade_in(false)
+        .fade_out(false)
+}
+
 fn draw_option_panels(ctx: &egui::Context, state: &mut UiState, viewport: egui::Rect) {
     for (slot, panel) in OptionPanel::ALL.into_iter().enumerate() {
         if !state.panels_open.is_open(panel) {
@@ -191,23 +219,12 @@ fn draw_option_panels(ctx: &egui::Context, state: &mut UiState, viewport: egui::
         // egui's `.open(&mut bool)` paints the title-bar X and flips this false
         // when it's clicked; mirror that back into the open-set after the window.
         let mut open = true;
-        egui::Window::new(panel.title())
-            .id(egui::Id::new(panel.window_id()))
+        option_window(panel)
             .open(&mut open)
-            // The option panels have compact, fixed content (a two-column table),
-            // so they aren't resizable — which also drops egui's bottom-right
-            // resize grip. The body pins a consistent width (see `draw_panel_body`).
-            .resizable(false)
-            .collapsible(true)
             .default_pos(default_pos)
             // Keep the window inside the free viewport so it can never be dragged
             // over the toolbar, the status bar or a side panel.
             .constrain_to(viewport)
-            // Persistent chrome, not a transient popup: skip egui's fade so an
-            // always-present window never spins the on-demand redraw loop
-            // (invariant 6).
-            .fade_in(false)
-            .fade_out(false)
             .show(ctx, |ui| panels::draw_panel_body(ui, state, panel));
         if !open {
             state.panels_open.set(panel, false);
@@ -424,4 +441,76 @@ fn legend_row(ui: &mut egui::Ui, swatch: egui::Color32, text: &str) {
             color::TEXT_BODY,
         ));
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::size;
+
+    /// The width `draw_panel_body` pins every option panel's contents to.
+    fn body_width() -> f32 {
+        size::PANEL_LABEL_COL_WIDTH + size::PANEL_GRID_COL_GAP + size::PANEL_CONTROL_COL_WIDTH
+    }
+
+    /// Lay `panel` out in a headless context and return its window's outer width.
+    fn measured_width(panel: OptionPanel) -> f32 {
+        let ctx = egui::Context::default();
+        crate::theme::init_style(&ctx);
+        let mut state = UiState::default();
+        let mut width = 0.0;
+        // Three passes: egui's `Grid` learns its column widths from the previous
+        // frame, so the first pass is not yet settled.
+        for _ in 0..3 {
+            ctx.begin_pass(Default::default());
+            let mut open = true;
+            if let Some(response) = option_window(panel)
+                .open(&mut open)
+                .show(&ctx, |ui| panels::draw_panel_body(ui, &mut state, panel))
+            {
+                width = response.response.rect.width();
+            }
+            let mut output = ctx.end_pass();
+            output.textures_delta.clear();
+        }
+        width
+    }
+
+    /// Every option window must hug the width its body pins, and they must all
+    /// come out the same width.
+    ///
+    /// `egui::Window` defaults to 340pt wide and keeps that unless it is told to
+    /// size itself to its contents — `resizable(false)` alone does not do it. The
+    /// panels went out for a while with 70pt of dead space down their right-hand
+    /// side because of exactly that, so this pins the frame to the body.
+    #[test]
+    fn option_windows_hug_their_body() {
+        // The frame's own margins and stroke, which the window is allowed to add
+        // on top of the body. Generous: the point is to catch egui's 340pt default
+        // (84pt of slack), not to pin the exact frame thickness.
+        const MAX_FRAME: f32 = 32.0;
+
+        let body = body_width();
+        let mut widths = Vec::new();
+        for panel in OptionPanel::ALL {
+            let width = measured_width(panel);
+            assert!(
+                width >= body,
+                "{}: window {width} is narrower than its {body}pt body",
+                panel.title()
+            );
+            assert!(
+                width - body <= MAX_FRAME,
+                "{}: window {width} is {:.0}pt wider than its {body}pt body — \
+                 dead space on the right (is `auto_sized` still set?)",
+                panel.title(),
+                width - body,
+            );
+            widths.push(width);
+        }
+        assert!(
+            widths.windows(2).all(|w| (w[0] - w[1]).abs() < 0.01),
+            "option windows must all be the same width, got {widths:?}"
+        );
+    }
 }
