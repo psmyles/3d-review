@@ -1,6 +1,6 @@
 //! Source-image decoding for the material texture slots (Phase 3).
 //!
-//! Decoding uses prebuilt decoders only (CLAUDE.md): the Rust `image` crate for the
+//! Decoding uses prebuilt decoders only: the Rust `image` crate for the
 //! formats it covers (PNG/TGA/TIFF/HDR/BMP/GIF/PNM), **zune** for the JPEG fast path
 //! (platform intrinsics + unsafe fast paths, measured faster than `image`'s decoder),
 //! and the prebuilt psd_sdk FFI crate ([`review_psd`]) for layered **PSD** source art

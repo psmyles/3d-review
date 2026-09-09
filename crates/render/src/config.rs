@@ -178,10 +178,10 @@ impl Default for EnvironmentSettings {
     }
 }
 
-/// Ground-Truth Ambient Occlusion configuration for the shaded view (CLAUDE.md
-/// render roadmap, Phase 5). Read by the scene renderer to drive the GTAO + blur
-/// passes and the composite multiply. (User-facing UI calls this "Ambient
-/// Occlusion"; the internal implementation is GTAO.)
+/// Ground-Truth Ambient Occlusion configuration for the shaded view. Read by the
+/// scene renderer to drive the GTAO + blur passes and the composite multiply.
+/// (User-facing UI calls this "Ambient Occlusion"; the internal implementation is
+/// GTAO.)
 ///
 /// GTAO samples a single-sample view-space normal + depth G-buffer, marches the
 /// screen-space horizon per slice to estimate the cosine-weighted visible arc,

@@ -297,8 +297,9 @@ fn load_equirect_from_file(
 /// unsigned BC6H blocks the runtime uploads.
 ///
 /// The encoder's **highest-quality** profile (`very_slow_settings`): this runs once
-/// offline, so the extra bake time buys a sharper shipped map (CLAUDE.md §4). Output
-/// size is identical across profiles — BC6H is fixed-rate at 16 bytes per block —
+/// offline, so the extra bake time buys a sharper shipped map (see the settled
+/// decisions in docs/ARCHITECTURE.md). Output size is identical across profiles —
+/// BC6H is fixed-rate at 16 bytes per block —
 /// only encode time and per-block accuracy change.
 #[cfg(feature = "bake")]
 fn compress_bc6h_face(size: u32, rgba_f16: &[u8]) -> Vec<u8> {

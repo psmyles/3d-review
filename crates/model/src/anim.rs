@@ -493,18 +493,43 @@ pub fn deform_logical_position(
 /// vertex's corners, so that is the whole set — else every corner.
 pub fn posed_bounds(model: &ModelData, ctx: &AnimContext, deform: &DeformPose) -> Option<Bounds> {
     let mut bounds = Bounds::EMPTY;
-    if !ctx.logical_corner.is_empty() {
-        for &corner in &ctx.logical_corner {
-            if corner != u32::MAX {
-                bounds.include_point(deform_corner(model, ctx, deform, corner as usize).0);
-            }
-        }
-    } else {
-        for corner in 0..model.vertices.len() {
-            bounds.include_point(deform_corner(model, ctx, deform, corner).0);
-        }
+    for corner in bounds_corners(model, ctx) {
+        bounds.include_point(deform_corner(model, ctx, deform, corner as usize).0);
     }
     (!bounds.is_empty()).then_some(bounds)
+}
+
+/// The corners a bounds measurement walks: one per logical vertex when the corner
+/// map is present — positions are shared across a logical vertex's corners, so
+/// that is the whole set — else every corner. Shared by [`posed_bounds`] and
+/// [`clip_bounds`] so the two can never disagree on what "the mesh" is.
+fn bounds_corners<'a>(model: &'a ModelData, ctx: &'a AnimContext) -> impl Iterator<Item = u32> {
+    match (!ctx.logical_corner.is_empty()).then_some(ctx.logical_corner.as_slice()) {
+        Some(corners) => Either::Left(corners.iter().copied().filter(|&c| c != u32::MAX)),
+        None => Either::Right(0..model.vertices.len() as u32),
+    }
+}
+
+/// A two-armed iterator, so [`bounds_corners`] can return either walk without
+/// boxing it.
+enum Either<L, R> {
+    Left(L),
+    Right(R),
+}
+
+impl<L, R, T> Iterator for Either<L, R>
+where
+    L: Iterator<Item = T>,
+    R: Iterator<Item = T>,
+{
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        match self {
+            Self::Left(left) => left.next(),
+            Self::Right(right) => right.next(),
+        }
+    }
 }
 
 /// The bounds of the file's default pose — what a skinned or morphed model's
@@ -517,9 +542,86 @@ pub fn rest_bounds(model: &ModelData, ctx: &AnimContext) -> Option<Bounds> {
     posed_bounds(model, ctx, &deform)
 }
 
+/// Which nodes `clip` can pose away from their rest world transform: every node
+/// it tracks, plus every descendant of one, since a parent's motion carries its
+/// whole subtree.
+///
+/// Every other node poses at *exactly* its rest world matrix in every frame —
+/// [`evaluate_pose`] falls back to `rest_local` for an untracked node, which is
+/// what [`rest_pose`] gives it too — so anything riding it holds one position for
+/// the whole clip. That is what [`clip_bounds`] exploits.
+fn clip_moved_nodes(model: &ModelData, ctx: &AnimContext, clip: &AnimationClip) -> Vec<bool> {
+    let mut moved = vec![false; model.nodes.len()];
+    for track in &clip.tracks {
+        if let Some(slot) = moved.get_mut(track.node as usize) {
+            *slot = true;
+        }
+    }
+    // Parents first, so a parent's flag is already final when its children read it.
+    for &index in &ctx.order {
+        if let Some(node) = model.nodes.get(index)
+            && let Some(parent) = node.parent
+            && parent < moved.len()
+            && parent != index
+            && moved[parent]
+        {
+            moved[index] = true;
+        }
+    }
+    moved
+}
+
+/// Can `clip` move render corner `corner`? Mirrors [`deform_corner`]'s three
+/// sources exactly — blend-shape offsets, the skin blend, then the rigid node
+/// fallback — so a corner this rejects is one every frame leaves where the rest
+/// pose put it.
+fn corner_moves(
+    model: &ModelData,
+    ctx: &AnimContext,
+    clip: &AnimationClip,
+    moved_nodes: &[bool],
+    corner: usize,
+) -> bool {
+    let logical = model.corner_to_logical.get(corner).map(|&v| v as usize);
+
+    // A blend shape only moves a vertex it carries an offset for, and only while
+    // some channel's weight is animated. (A channel held at a constant weight
+    // holds the same one in the rest pose, so it moves nothing across frames.)
+    if !clip.morph_tracks.is_empty()
+        && let (Some(morph), Some(logical)) = (&model.morph, logical)
+        && !morph.entry_range(logical).is_empty()
+    {
+        return true;
+    }
+
+    // Skinned corners ride their clusters' bones, not their own node.
+    if let (Some(skin), Some(logical)) = (&model.skin, logical) {
+        let range = skin.influence_range(logical);
+        if !range.is_empty() {
+            return skin.bones[range]
+                .iter()
+                .any(|&bone| moved_nodes.get(bone as usize).copied().unwrap_or(false));
+        }
+    }
+
+    // Unskinned (or a skinned corner with no influences): rigid on its own node.
+    let node = ctx.corner_node.get(corner).copied().unwrap_or(u32::MAX);
+    moved_nodes.get(node as usize).copied().unwrap_or(false)
+}
+
 /// The union of the posed bounds over every frame of `clip` at `fps` — measured
 /// once at import so framing and the bounding-box overlay can describe the whole
 /// motion without ever re-skinning on the redraw path.
+///
+/// Only the corners `clip` can actually move are re-measured per frame; the rest
+/// hold their rest-pose position in every frame and so are measured once. That
+/// makes the cost proportional to the *animated* part of the scene rather than to
+/// the whole mesh, which is the difference between a usable load and an unusable
+/// one on the shape a game FBX actually takes: a large static set with a small
+/// animated prop in it, over a long take. (A 2.8M-triangle exterior with a
+/// 2401-frame clip reaching 1.5% of its triangles walked all 2.07M logical
+/// vertices 2401 times.) The measured bounds are unchanged — a static corner's
+/// palette entry is the same matrix at rest as in every frame.
 pub fn clip_bounds(
     model: &ModelData,
     ctx: &AnimContext,
@@ -529,21 +631,39 @@ pub fn clip_bounds(
     let fps = frame_rate_or_default(fps);
     let mut pose = Pose::new(model);
     let mut deform = DeformPose::default();
+
+    // Split the corners `posed_bounds` would walk into the ones this clip can
+    // move and the ones it cannot, measuring the latter as we go — in the rest
+    // pose, which is the pose they hold in every frame of the clip.
+    let moved_nodes = clip_moved_nodes(model, ctx, clip);
+    rest_pose(model, ctx, &mut pose);
+    build_palette(model, ctx, &pose, &mut deform);
     let mut bounds = Bounds::EMPTY;
-    for frame in 0..clip.frame_count(fps) {
-        evaluate_pose(
-            model,
-            ctx,
-            Some(clip),
-            clip.frame_time(frame, fps),
-            &mut pose,
-        );
-        build_palette(model, ctx, &pose, &mut deform);
-        if let Some(frame_bounds) = posed_bounds(model, ctx, &deform) {
-            bounds.include_point(frame_bounds.min);
-            bounds.include_point(frame_bounds.max);
+    let mut moving: Vec<u32> = Vec::new();
+    for corner in bounds_corners(model, ctx) {
+        if corner_moves(model, ctx, clip, &moved_nodes, corner as usize) {
+            moving.push(corner);
+        } else {
+            bounds.include_point(deform_corner(model, ctx, &deform, corner as usize).0);
         }
     }
+
+    if !moving.is_empty() {
+        for frame in 0..clip.frame_count(fps) {
+            evaluate_pose(
+                model,
+                ctx,
+                Some(clip),
+                clip.frame_time(frame, fps),
+                &mut pose,
+            );
+            build_palette(model, ctx, &pose, &mut deform);
+            for &corner in &moving {
+                bounds.include_point(deform_corner(model, ctx, &deform, corner as usize).0);
+            }
+        }
+    }
+
     (!bounds.is_empty()).then_some(bounds)
 }
 

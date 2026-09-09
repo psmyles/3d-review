@@ -1720,13 +1720,35 @@ static int review_import_capture_nodes(
     return 1;
 }
 
+/* What `review_import_load_fbx` hands ufbx's progress callback: the caller's
+   own function pointer plus its opaque user data. Lives on the load's stack, so
+   it outlives every callback ufbx makes. */
+typedef struct review_import_progress_ctx {
+    review_import_progress_fn fn;
+    void *user;
+} review_import_progress_ctx;
+
+static ufbx_progress_result review_import_progress_cb(void *user, const ufbx_progress *progress)
+{
+    review_import_progress_ctx *ctx = (review_import_progress_ctx*)user;
+    if (ctx && ctx->fn && progress) {
+        ctx->fn(ctx->user, progress->bytes_read, progress->bytes_total);
+    }
+    /* The viewer never cancels a load: a superseded one is dropped by generation
+       on the Rust side (`loading.rs`), which costs nothing extra here. */
+    return UFBX_PROGRESS_CONTINUE;
+}
+
 int review_import_load_fbx(
     const char *path,
     review_import_scene *out_scene,
-    review_import_error *out_error
+    review_import_error *out_error,
+    review_import_progress_fn progress,
+    void *progress_user
 )
 {
     ufbx_load_opts load_opts = { 0 };
+    review_import_progress_ctx progress_ctx;
     ufbx_error error;
     ufbx_scene *scene = NULL;
     review_import_totals totals = { 0 };
@@ -1759,6 +1781,16 @@ int review_import_load_fbx(
        then compose back to `node_to_world` exactly, which is what lets a pose
        be recomposed from them at runtime. */
     load_opts.inherit_mode_handling = UFBX_INHERIT_MODE_HANDLING_HELPER_NODES;
+    if (progress) {
+        progress_ctx.fn = progress;
+        progress_ctx.user = progress_user;
+        load_opts.progress_cb.fn = &review_import_progress_cb;
+        load_opts.progress_cb.user = &progress_ctx;
+        /* Roughly 0.5% of a 100 MB file per report: often enough that the bar
+           moves smoothly, rare enough that the callback never shows up in a
+           profile of the parse. */
+        load_opts.progress_interval_hint = 512 * 1024;
+    }
     scene = ufbx_load_file(path, &load_opts, &error);
     if (!scene) {
         char buffer[256];

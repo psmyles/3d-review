@@ -25,6 +25,9 @@ pub mod color {
     pub const GROUP_BG: Color32 = Color32::from_rgb(18, 19, 22);
     /// Translucent fill behind the stats overlay.
     pub const STATS_OVERLAY_BG: Color32 = Color32::from_rgba_premultiplied(20, 22, 25, 130);
+    /// Unfilled track of the activity card's progress bar; the filled part is
+    /// [`ACCENT`], so the bar reads as the same accent every other control uses.
+    pub const ACTIVITY_PROGRESS_TRACK: Color32 = Color32::from_gray(72);
     /// Translucent fill behind the axis gizmo while hovered / dragged.
     pub const GIZMO_BG: Color32 = Color32::from_rgba_premultiplied(8, 12, 16, 90);
     /// Translucent pill behind a bounding-box dimension label. The pill keeps the
@@ -346,6 +349,25 @@ pub mod size {
     /// track the display scale.
     pub const NOTIFICATION_SPACING: f32 = 8.0;
     pub const NOTIFICATION_ROW: f32 = 34.0 + NOTIFICATION_SPACING;
+
+    // ── The activity card (drawn by us, not by egui-notify) ───────────────
+    /// The activity card's fixed width. Fixed on purpose: it reports a job's
+    /// progress by rewriting its own text every few frames, and a card sized to
+    /// its content would shuffle its left edge on every one of them. Long titles
+    /// truncate instead.
+    ///
+    /// **egui points**, like [`NOTIFICATION_SPACING`] and for the same reason —
+    /// it is measured against text egui has already laid out.
+    pub const ACTIVITY_WIDTH: f32 = 232.0;
+    /// Inset from the card's edge to its text.
+    pub const ACTIVITY_PADDING: f32 = 10.0;
+    /// Gap between the card's title line and the stage line under it.
+    pub const ACTIVITY_LINE_GAP: f32 = 4.0;
+    /// Corner radius of the card, matching egui-notify's own toast boxes so the
+    /// two read as one system.
+    pub const ACTIVITY_CORNER_RADIUS: u8 = 4;
+    /// Thickness of the progress bar under the stage line.
+    pub const ACTIVITY_PROGRESS_HEIGHT: f32 = 3.0;
 
     // ── Material inspector: texture mapping + files ───────────────────────
     /// Fixed label-column width for a Texture-mapping row (property name), so the

@@ -294,10 +294,23 @@ typedef struct review_import_error {
     char message[256];
 } review_import_error;
 
+/* Called from inside the ufbx parse with the bytes read so far, so a large file
+   can drive a progress indicator instead of a silent wait. `user` is passed
+   through untouched; `bytes_total` is 0 when the size isn't known. Invoked on
+   the calling thread only, never after `review_import_load_fbx` returns. */
+typedef void (*review_import_progress_fn)(
+    void *user,
+    uint64_t bytes_read,
+    uint64_t bytes_total
+);
+
+/* `progress` may be NULL, in which case no progress is reported. */
 int review_import_load_fbx(
     const char *path,
     review_import_scene *out_scene,
-    review_import_error *out_error
+    review_import_error *out_error,
+    review_import_progress_fn progress,
+    void *progress_user
 );
 
 void review_import_free_scene(review_import_scene *scene);
