@@ -152,6 +152,10 @@ pub mod color {
     /// Default bounding-box edge color (a distinct amber that reads against the
     /// shaded model and the grid).
     pub const BOUNDING_BOX_DEFAULT: Color32 = Color32::from_rgb(255, 205, 64);
+    /// Default UV-seam edge color: the bright green a DCC tool marks texture
+    /// borders in. The seam lines are the same 1px the wireframe is, so the color
+    /// is all that separates them — hence one that no other overlay default uses.
+    pub const UV_SEAM_DEFAULT: Color32 = Color32::from_rgb(29, 255, 27);
 
     /// Default skeleton-overlay bone color: a bright cyan-blue that separates
     /// from both skin tones and the orange selection highlight.
@@ -176,6 +180,18 @@ pub mod color {
         VERTEX_NORMAL_DEFAULT,
         Color32::from_rgb(29, 255, 27),
         FACE_NORMAL_DEFAULT,
+    ];
+
+    /// Swatch palette offered for the UV-seam color row: green (default), white,
+    /// black, magenta, amber, cyan. The default leads so reset stays highlighted
+    /// on its swatch.
+    pub const UV_SEAM_SWATCHES: [Color32; 6] = [
+        UV_SEAM_DEFAULT,
+        Color32::WHITE,
+        Color32::BLACK,
+        Color32::from_rgb(255, 96, 216),
+        Color32::from_rgb(255, 205, 64),
+        Color32::from_rgb(32, 224, 232),
     ];
 
     /// Swatch palette offered for the wireframe color row: 60% grey (default),
@@ -295,20 +311,19 @@ pub mod size {
     /// (183 + 14 + 48 + 14 + 48 = 307), plus a little slack. It grows leftward from
     /// the right edge, away from the centered mode segments.
     pub const TOOLBAR_RIGHT_WIDTH: f32 = 320.0;
-    /// Left toolbar cluster: shading (5) + material (4) + normals (2) groups,
-    /// with two group spacings between them (228 + 14 + 183 + 14 + 93).
-    pub const TOOLBAR_LEFT_WIDTH: f32 = 532.0;
+    /// Left toolbar cluster: shading (5) + material (4) + geometry-debug (3)
+    /// groups, with two group spacings between them (228 + 14 + 183 + 14 + 138).
+    pub const TOOLBAR_LEFT_WIDTH: f32 = 577.0;
     /// Five-icon shading group: show-wireframe, wireframe-only, unlit, shaded,
     /// backface-rendering.
     pub const TOOLBAR_SHADING_GROUP_WIDTH: f32 = 228.0;
     /// Four-icon active-material group: source material, UV checker, vertex colors,
     /// buffers (6 padding + 4×42 icons + 3×3 gaps).
     pub const TOOLBAR_MATERIAL_GROUP_WIDTH: f32 = 183.0;
-    /// Two-icon normal-debug group: face normals, vertex normals.
-    pub const TOOLBAR_NORMALS_GROUP_WIDTH: f32 = 93.0;
     pub const TOOLBAR_SINGLE_ICON_GROUP_WIDTH: f32 = 48.0;
-    /// Width of a three-icon toolbar group (e.g. the UV-shading wire / shaded /
-    /// islands group).
+    /// Width of a three-icon toolbar group (the geometry-debug face-normals /
+    /// vertex-normals / UV-seams group, and the UV-shading wire / shaded / islands
+    /// group): 6 padding + 3×42 icons + 2×3 gaps.
     pub const TOOLBAR_TRIPLE_ICON_GROUP_WIDTH: f32 = 138.0;
     /// Width of a four-icon toolbar group (the toolbar's bounding box / pivot /
     /// gizmo / grid view group): 6 padding + 4×42 icons + 3×3 gaps.

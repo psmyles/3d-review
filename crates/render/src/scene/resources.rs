@@ -14,7 +14,8 @@ use crate::geometry::deform::DeformLayout;
 use crate::geometry::{
     bounding_box_lines, face_normal_lines, model_mesh, model_pivot, pivot_half_extent, pivot_lines,
     selection_geometry, skeleton_fill_triangles, skeleton_lines, skin_weight_vertices,
-    uv_fill_triangles, uv_wireframe_lines, vertex_normal_lines, visible_geometry, wireframe_lines,
+    uv_fill_triangles, uv_seam_lines, uv_wireframe_lines, vertex_normal_lines, visible_geometry,
+    wireframe_lines,
 };
 use crate::material::{MaterialDrawRange, build_part_key};
 use crate::rhi::{Bindings, GpuResult, IndexBuffer, StorageBuffer, VertexBuffer};
@@ -46,6 +47,15 @@ struct BoundingBoxParams {
 struct NormalParams {
     length: f32,
     color: [f32; 4],
+    hidden: Vec<u32>,
+}
+
+/// Baked parameters for the UV-seam view. The channel is in the key because the
+/// seams themselves change with the UV set, not just their color.
+#[derive(PartialEq)]
+struct UvSeamParams {
+    color: [f32; 4],
+    channel: u32,
     hidden: Vec<u32>,
 }
 
@@ -221,6 +231,9 @@ pub(super) struct DerivedViews {
     /// One line per vertex along its normal; `None` while off.
     pub(super) vertex_normal_buf: Option<VertexBuffer>,
     vertex_baked: Option<NormalParams>,
+    /// One line per UV-seam edge; `None` while off.
+    pub(super) uv_seam_buf: Option<VertexBuffer>,
+    uv_seam_baked: Option<UvSeamParams>,
     /// 3-axis pivot marker at the model's origin; `None` while off. The bake key
     /// is the pivot position + half-length (both model-derived).
     pub(super) pivot_buf: Option<VertexBuffer>,
@@ -663,6 +676,38 @@ impl SceneGpu {
             hidden_meshes,
             vertex_normal_lines,
         )?;
+
+        // UV seams: the edges where the chosen UV set is cut. Its own shape rather
+        // than a third `sync_normal_view` — there is no line length, and the UV
+        // channel is part of the key because changing it changes which edges are
+        // seams at all, not merely how they look.
+        let uv_seam_unchanged = match (&self.active.views.uv_seam_baked, debug.uv_seams) {
+            (None, false) => true,
+            (Some(params), true) => {
+                params.color == debug.uv_seam_color
+                    && params.channel == debug.uv_seam_channel
+                    && params.hidden == hidden_meshes
+            }
+            _ => false,
+        };
+        if !uv_seam_unchanged {
+            self.active.views.uv_seam_buf = if debug.uv_seams {
+                optional_vertex_buffer(&uv_seam_lines(
+                    model,
+                    lanes,
+                    debug.uv_seam_color,
+                    debug.uv_seam_channel,
+                    hidden_meshes,
+                ))?
+            } else {
+                None
+            };
+            self.active.views.uv_seam_baked = debug.uv_seams.then(|| UvSeamParams {
+                color: debug.uv_seam_color,
+                channel: debug.uv_seam_channel,
+                hidden: hidden_meshes.to_vec(),
+            });
+        }
 
         // Pivot marker: a 3-axis cross at the model's origin. Its bytes depend only
         // on the model (pivot position + size), so the bake key rebuilds it on a

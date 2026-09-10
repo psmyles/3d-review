@@ -19,6 +19,7 @@ pub(crate) mod outliner;
 mod skeleton;
 mod tonemap;
 mod uv_checker;
+mod uv_seams;
 mod vertex_colors;
 mod wireframe;
 
@@ -61,6 +62,7 @@ pub(crate) fn draw_panel_body(ui: &mut egui::Ui, state: &mut UiState, panel: Opt
         OptionPanel::UvChecker => uv_checker::body(ui, state),
         OptionPanel::FaceNormals => normals::face_body(ui, state),
         OptionPanel::VertexNormals => normals::vertex_body(ui, state),
+        OptionPanel::UvSeams => uv_seams::body(ui, state),
         OptionPanel::Skeleton => skeleton::body(ui, state),
         OptionPanel::VertexColors => vertex_colors::body(ui, state),
         OptionPanel::AntiAliasing => anti_aliasing::body(ui, state),

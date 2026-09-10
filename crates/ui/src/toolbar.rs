@@ -8,8 +8,8 @@ use crate::assets::{
     ICON_AXIS_GIZMO, ICON_BACKFACE, ICON_BBOX, ICON_BUFFERS, ICON_GRID, ICON_NODE_BONE,
     ICON_NORMALS_FACE, ICON_NORMALS_VERTEX, ICON_OUTLINER, ICON_PIVOT, ICON_SHADING_SHADED,
     ICON_SHADING_TEXTURE, ICON_SHADING_UNLIT, ICON_SHADING_WIRE, ICON_SHADING_WIRE_ONLY,
-    ICON_SKIN_WEIGHTS, ICON_UV, ICON_UV_ISLANDS, ICON_UV_SHADED, ICON_UV_WIRE, ICON_VERTEX_COLORS,
-    ICON_VIEW_ORTHO, ICON_VIEW_PERSPECTIVE,
+    ICON_SKIN_WEIGHTS, ICON_UV, ICON_UV_ISLANDS, ICON_UV_SEAM, ICON_UV_SHADED, ICON_UV_WIRE,
+    ICON_VERTEX_COLORS, ICON_VIEW_ORTHO, ICON_VIEW_PERSPECTIVE,
 };
 use crate::state::{
     OptionPanel, TextureChannelView, TexturePoolEntry, UiState, ViewProjectionMode, WorkspaceMode,
@@ -41,7 +41,6 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState) {
     let right_width = theme::px(ctx, size::TOOLBAR_RIGHT_WIDTH);
     let shading_group_width = theme::px(ctx, size::TOOLBAR_SHADING_GROUP_WIDTH);
     let material_group_width = theme::px(ctx, size::TOOLBAR_MATERIAL_GROUP_WIDTH);
-    let normals_group_width = theme::px(ctx, size::TOOLBAR_NORMALS_GROUP_WIDTH);
     let single_icon_group_width = theme::px(ctx, size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH);
     let triple_icon_group_width = theme::px(ctx, size::TOOLBAR_TRIPLE_ICON_GROUP_WIDTH);
     let quad_icon_group_width = theme::px(ctx, size::TOOLBAR_QUAD_ICON_GROUP_WIDTH);
@@ -107,7 +106,7 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState) {
                             material_group_width
                         };
                         draw_material_group(ui, ctx, state, material_width);
-                        draw_normals_group(ui, ctx, state, normals_group_width);
+                        draw_geometry_debug_group(ui, ctx, state, triple_icon_group_width);
                     },
                 );
             } else if state.mode == WorkspaceMode::Uv {
@@ -354,9 +353,15 @@ fn draw_material_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiSta
     });
 }
 
-/// Normal-debug group: the face- and vertex-normal line overlays. Independent
-/// toggles — any combination can be active. Each retains its options panel.
-fn draw_normals_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiState, width: f32) {
+/// Geometry-debug group: the face- and vertex-normal line overlays and the UV-seam
+/// edges. Independent toggles — any combination can be active — and each retains its
+/// own options panel.
+fn draw_geometry_debug_group(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    state: &mut UiState,
+    width: f32,
+) {
     toolbar_group_shell(ui, ctx, width, |ui| {
         option_toggle(
             ui,
@@ -375,6 +380,15 @@ fn draw_normals_group(ui: &mut egui::Ui, ctx: &egui::Context, state: &mut UiStat
             &mut state.panels_open,
             OptionPanel::VertexNormals,
             "Vertex Normal (right-click for options)",
+        );
+        option_toggle(
+            ui,
+            ctx,
+            &ICON_UV_SEAM,
+            &mut state.debug.uv_seams,
+            &mut state.panels_open,
+            OptionPanel::UvSeams,
+            "UV Seams (right-click for options)",
         );
     });
 }

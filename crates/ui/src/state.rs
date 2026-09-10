@@ -423,6 +423,27 @@ pub struct NormalPanelState {
     pub color: egui::Color32,
 }
 
+/// Editable state backing the UV Seams options panel: the edge color, and which
+/// of the model's UV sets the seam test reads. The channel is the seam view's own
+/// rather than the UV checker's — which set is cut is a different question from
+/// which set the checker is showing, and reading them side by side is the point.
+#[derive(Debug, Clone)]
+pub struct UvSeamPanelState {
+    pub color: egui::Color32,
+    /// 0-based index into [`UiState::uv_sets`]; clamped back to 0 when a reload
+    /// leaves it past the end.
+    pub uv_channel: u32,
+}
+
+impl Default for UvSeamPanelState {
+    fn default() -> Self {
+        Self {
+            color: theme::color::UV_SEAM_DEFAULT,
+            uv_channel: 0,
+        }
+    }
+}
+
 /// Editable state backing the Skeleton options panel. The renderer bakes both
 /// values into the skeleton overlay's vertex buffers via [`SceneDebugOptions`].
 #[derive(Debug, Clone)]
@@ -720,6 +741,7 @@ pub enum OptionPanel {
     UvChecker,
     FaceNormals,
     VertexNormals,
+    UvSeams,
     Skeleton,
     VertexColors,
     AntiAliasing,
@@ -732,7 +754,7 @@ pub enum OptionPanel {
 impl OptionPanel {
     /// Every panel, in toolbar order. Iterated each frame to draw the open ones
     /// (and to give each a stable cascade slot), so the order is deterministic.
-    pub(crate) const ALL: [OptionPanel; 14] = [
+    pub(crate) const ALL: [OptionPanel; 15] = [
         OptionPanel::Wireframe,
         OptionPanel::MaterialMode,
         OptionPanel::BufferView,
@@ -740,6 +762,7 @@ impl OptionPanel {
         OptionPanel::UvChecker,
         OptionPanel::FaceNormals,
         OptionPanel::VertexNormals,
+        OptionPanel::UvSeams,
         OptionPanel::Skeleton,
         OptionPanel::VertexColors,
         OptionPanel::AntiAliasing,
@@ -759,6 +782,7 @@ impl OptionPanel {
             OptionPanel::UvChecker => "UV Checker",
             OptionPanel::FaceNormals => "Face Normals",
             OptionPanel::VertexNormals => "Vertex Normals",
+            OptionPanel::UvSeams => "UV Seams",
             OptionPanel::Skeleton => "Skeleton",
             OptionPanel::VertexColors => "Vertex Colors",
             OptionPanel::AntiAliasing => "Anti Aliasing",
@@ -780,6 +804,7 @@ impl OptionPanel {
             OptionPanel::UvChecker => "panel_uv_checker",
             OptionPanel::FaceNormals => "panel_face_normals",
             OptionPanel::VertexNormals => "panel_vertex_normals",
+            OptionPanel::UvSeams => "panel_uv_seams",
             OptionPanel::Skeleton => "panel_skeleton",
             OptionPanel::VertexColors => "panel_vertex_colors",
             OptionPanel::AntiAliasing => "panel_anti_aliasing",
@@ -1005,6 +1030,7 @@ pub struct UiState {
     pub bounding_box: BoundingBoxPanelState,
     pub face_normals: NormalPanelState,
     pub vertex_normals: NormalPanelState,
+    pub uv_seams: UvSeamPanelState,
     pub skeleton: SkeletonPanelState,
     pub vertex_colors: VertexColorPanelState,
     /// Scene antialiasing (MSAA level). Read straight by the viewport callback —
@@ -1153,6 +1179,7 @@ impl Default for UiState {
                 length: DEFAULT_NORMAL_LENGTH,
                 color: theme::color::VERTEX_NORMAL_DEFAULT,
             },
+            uv_seams: UvSeamPanelState::default(),
             skeleton: SkeletonPanelState::default(),
             vertex_colors: VertexColorPanelState::default(),
             anti_aliasing: AntiAliasing::default(),
@@ -1416,6 +1443,14 @@ pub(crate) fn sync_debug_state(state: &mut UiState) {
     state.debug.vertex_normal_length = state.vertex_normals.length;
     state.debug.face_normal_color = theme::color32_to_rgba(state.face_normals.color);
     state.debug.vertex_normal_color = theme::color32_to_rgba(state.vertex_normals.color);
+    state.debug.uv_seam_color = theme::color32_to_rgba(state.uv_seams.color);
+    // A reload can shrink the UV-set list under a channel the panel still points
+    // at; the renderer falls back to `Vertex::uv` for an out-of-range channel, so
+    // clamping here is what keeps the panel's readout honest about that.
+    if !state.uv_sets.is_empty() && state.uv_seams.uv_channel >= state.uv_sets.len() as u32 {
+        state.uv_seams.uv_channel = 0;
+    }
+    state.debug.uv_seam_channel = state.uv_seams.uv_channel;
     state.debug.wireframe_color = theme::color32_to_rgba(state.wireframe.color);
     state.debug.bounding_box_color = theme::color32_to_rgba(state.bounding_box.color);
     state.debug.bounding_box_scope = match state.bounding_box.scope {

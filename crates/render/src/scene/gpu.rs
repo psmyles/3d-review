@@ -859,10 +859,11 @@ impl SceneGpu {
         }
 
         // The static grid, then the derived line overlays (wireframe / bounding box /
-        // face+vertex normals) on top of the mesh. All share the line pipeline
-        // (depth-tested Reversed-Z `GreaterEqual`, no depth write — the mesh pushed
-        // its surface back so coplanar edges win). Each buffer is `None` while its
-        // view is off.
+        // face+vertex normals / UV seams) on top of the mesh. All share the line
+        // pipeline (depth-tested Reversed-Z `GreaterEqual`, no depth write — the mesh
+        // pushed its surface back so coplanar edges win). Each buffer is `None` while
+        // its view is off. Seams go last: they sit exactly on wireframe edges, and
+        // with equal depth and no depth write the later draw is the one that shows.
         let mut line_views: Vec<&VertexBuffer> = Vec::new();
         if debug.show_grid {
             line_views.push(&self.grid);
@@ -873,6 +874,7 @@ impl SceneGpu {
                 &self.active.views.bounding_box_buf,
                 &self.active.views.face_normal_buf,
                 &self.active.views.vertex_normal_buf,
+                &self.active.views.uv_seam_buf,
             ]
             .into_iter()
             .flatten(),

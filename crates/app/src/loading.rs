@@ -438,9 +438,10 @@ impl App {
 
         self.ui.stats = model.stats;
         self.ui.bounds = model.bounds;
-        // Both UV pickers reset to channel 0 so neither points past the new
-        // model's UV-set count; the view's dropdown labels come with it.
+        // Every UV picker resets to channel 0 so none points past the new model's
+        // UV-set count; the view's dropdown labels come with it.
         self.ui.uv_checker.uv_channel = 0;
+        self.ui.uv_seams.uv_channel = 0;
         self.ui.uv_sets = model.uv_set_labels();
         self.ui.uv_view_channel = 0;
 
