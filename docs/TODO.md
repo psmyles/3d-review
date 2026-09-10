@@ -1,6 +1,4 @@
 - Texture view in UV mode
-- UV seam mode
 - quick open/hide outliner box on left edge of the viewport
-- loading progress toast to show percentage
 - object selection via direct viewport click
 - split viewport has bounding box values shown off lines

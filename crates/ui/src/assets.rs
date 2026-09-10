@@ -75,6 +75,11 @@ pub(crate) const ICON_NORMALS_VERTEX: AppIcon = AppIcon {
     id: "icon_normals_vertex",
     png_bytes: include_bytes!("../../../assets/icons/icon_normals_vertex.png"),
 };
+/// "UV Seams" — the mesh edges where the chosen UV set is cut.
+pub(crate) const ICON_UV_SEAM: AppIcon = AppIcon {
+    id: "icon_uv_seam",
+    png_bytes: include_bytes!("../../../assets/icons/icon_uv_seam.png"),
+};
 pub(crate) const ICON_VERTEX_COLORS: AppIcon = AppIcon {
     id: "icon_vertex_colors",
     png_bytes: include_bytes!("../../../assets/icons/icon_vertex_colors.png"),

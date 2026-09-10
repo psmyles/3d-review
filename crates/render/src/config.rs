@@ -638,6 +638,25 @@ pub struct SceneDebugOptions {
     pub vertex_normal_length: f32,
     pub face_normal_color: [f32; 4],
     pub vertex_normal_color: [f32; 4],
+    /// Whether the UV-seam overlay is drawn: the mesh edges across which
+    /// [`uv_seam_channel`] is discontinuous, highlighted in [`uv_seam_color`] —
+    /// the read Maya gives with "texture border edges". An ordinary depth-tested
+    /// line view, so it composes with any shading mode.
+    ///
+    /// [`uv_seam_channel`]: SceneDebugOptions::uv_seam_channel
+    /// [`uv_seam_color`]: SceneDebugOptions::uv_seam_color
+    pub uv_seams: bool,
+    /// Color of the UV-seam edges, baked into that view's line buffer and
+    /// rebuilt when it changes. The line pipeline's width is fixed at 1px, so
+    /// this is the whole of what separates a seam from the wireframe under it.
+    pub uv_seam_color: [f32; 4],
+    /// Which model UV set the seam test reads (0-based). Deliberately its own
+    /// channel rather than [`uv_channel`]: the seams a lightmap set carries are
+    /// a different question from which set the checker is showing, and the two
+    /// are useful side by side.
+    ///
+    /// [`uv_channel`]: SceneDebugOptions::uv_channel
+    pub uv_seam_channel: u32,
     /// Color of the model wireframe overlay, baked into the line vertex buffer
     /// and rebuilt when it changes.
     pub wireframe_color: [f32; 4],
@@ -685,6 +704,9 @@ impl Default for SceneDebugOptions {
             vertex_normal_length: 0.03,
             face_normal_color: [1.0, 0.1, 0.1, 0.95],
             vertex_normal_color: [0.14, 0.92, 0.96, 0.95],
+            uv_seams: false,
+            uv_seam_color: [0.11, 1.0, 0.11, 1.0],
+            uv_seam_channel: 0,
             wireframe_color: [0.6, 0.6, 0.6, 1.0],
             bounding_box_color: [1.0, 0.803_921_6, 0.250_980_4, 1.0],
             bounding_box_scope: BoundingBoxScope::default(),
