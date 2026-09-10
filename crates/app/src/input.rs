@@ -52,8 +52,9 @@ impl App {
         window.request_redraw();
     }
 
-    /// A mouse-button press/release: drag-mode selection (orbit/pan/zoom depending on
-    /// workspace and modifiers), startup-help dismissal, and double-click-to-open.
+    /// A mouse-button press/release: drag-mode selection (orbit/look/pan/zoom
+    /// depending on workspace and modifiers), startup-help dismissal, and
+    /// double-click-to-open.
     /// `egui_consumed` is whether egui claimed this event.
     pub(crate) fn handle_mouse_input(
         &mut self,
@@ -63,6 +64,9 @@ impl App {
     ) {
         if state == ElementState::Released {
             self.drag_mode = None;
+            // A flight lives only as long as the drag that armed it: a movement
+            // key still down when the button comes up must not arm the next one.
+            self.flycam.release_all();
             return;
         }
 
@@ -88,7 +92,7 @@ impl App {
         }
 
         // The UV viewport is a 2D pan/zoom workspace: LMB pans, RMB zooms (down =
-        // in). The 3D scene keeps LMB orbit / RMB pan-or-zoom. The Tex viewport
+        // in). The 3D scene is LMB orbit / RMB look / MMB pan. The Tex viewport
         // handles its own pan/zoom inside egui (its canvas senses the drag), so
         // an unclaimed press there must not start a 3D-camera drag.
         let uv_mode = match self.ui.mode {
@@ -119,11 +123,19 @@ impl App {
             }
             MouseButton::Right => {
                 // UV mode: RMB zoom-drags. 3D: Alt+RMB zoom-drags (down = in, up =
-                // out), plain RMB pans.
+                // out), Shift+RMB pans, plain RMB looks around — and, while it is
+                // held, arms the WASD/QE flycam (`flycam.rs`), which is the gesture
+                // Unity and Unreal both bind.
+                //
+                // Shift+RMB is there because pan lost its plain-RMB binding to the
+                // look drag and the middle button it moved to is not a button every
+                // pointing device has (a Mac trackpad has none).
                 self.drag_mode = Some(if uv_mode || self.modifiers.alt_key() {
                     DragMode::Zoom
-                } else {
+                } else if self.modifiers.shift_key() {
                     DragMode::Pan
+                } else {
+                    DragMode::Look
                 });
             }
             MouseButton::Middle => {
@@ -133,7 +145,7 @@ impl App {
         }
     }
 
-    /// Pointer motion: drive the active drag (orbit/pan/zoom, 2D in UV mode) and
+    /// Pointer motion: drive the active drag (orbit/look/pan/zoom, 2D in UV mode) and
     /// record the new pointer position for the next delta.
     pub(crate) fn handle_cursor_moved(&mut self, position: PhysicalPosition<f64>, window: &Window) {
         let current = Vec2::new(position.x as f32, position.y as f32);
@@ -160,6 +172,16 @@ impl App {
                         renderer.orbit_opt_camera(delta);
                     } else {
                         renderer.orbit_camera(delta);
+                    }
+                }
+                // Look turns the camera in place instead of around the pivot. 3D
+                // only — the UV viewport binds RMB to its zoom drag, so it never
+                // starts one.
+                DragMode::Look => {
+                    if opt_right {
+                        renderer.look_opt_camera(delta);
+                    } else {
+                        renderer.look_camera(delta);
                     }
                 }
                 // Pan drives the 2D UV camera in UV mode, the 3D camera otherwise.
@@ -246,6 +268,11 @@ impl App {
             MouseScrollDelta::LineDelta(_, y) => y * WHEEL_LINE_ZOOM_STEP,
             MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / WHEEL_PIXELS_PER_ZOOM_STEP,
         };
+        // While the look drag is up the wheel sets how fast the flycam moves
+        // rather than dollying the camera — where both Unity and Unreal put it.
+        if self.adjust_fly_speed(amount) {
+            return;
+        }
         self.zoom_active_camera(amount);
     }
 

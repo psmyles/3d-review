@@ -11,11 +11,13 @@ use crate::theme::{color, font, size};
 // The shortcut cheat-sheet. All rows come from these tables — none are written
 // inline in the draw code — so this block is the one place to keep in lockstep
 // with the actual bindings in `app`'s `handle_keyboard_shortcut`
-// (crates/app/src/main.rs), which carries the mirror-image pointer comment.
+// (crates/app/src/shortcuts.rs), which carries the mirror-image pointer comment,
+// and — for the mouse rows — with `handle_mouse_input` (crates/app/src/input.rs)
+// plus the flycam it arms (crates/app/src/flycam.rs).
 
 /// Left-column shortcut rows: (key-cap glyph, description) for the bare-key
-/// display toggles.
-const LEFT_SHORTCUTS: [(&str, &str); 8] = [
+/// display toggles and the clip transport.
+const LEFT_SHORTCUTS: [(&str, &str); 10] = [
     ("`", "Toggle wireframe overlay"),
     ("1", "Wireframe only"),
     ("2", "Unlit shading mode"),
@@ -24,18 +26,35 @@ const LEFT_SHORTCUTS: [(&str, &str); 8] = [
     ("G", "Toggle grid display"),
     ("X", "Swap source / processed (Opt overlay)"),
     ("Space", "Play / pause the selected clip"),
+    (",", "Previous frame of the selected clip"),
+    (".", "Next frame of the selected clip"),
 ];
 
-/// Right-column shortcut rows (camera framing + WASD orbit steps).
+/// Right-column shortcut rows: the camera keys. The six flycam directions move
+/// the camera only while the right mouse button is held — which the mouse
+/// section below spells out, since a key cap on its own cannot.
 const RIGHT_SHORTCUTS: [(&str, &str); 8] = [
     ("F", "Frame model / selection"),
     ("R", "Reset camera"),
-    ("W", "Orbit camera up"),
-    ("A", "Orbit camera left"),
-    ("S", "Orbit camera down"),
-    ("D", "Orbit camera right"),
-    (",", "Previous frame of the selected clip"),
-    (".", "Next frame of the selected clip"),
+    ("W", "Fly camera forward"),
+    ("S", "Fly camera back"),
+    ("A", "Fly camera left"),
+    ("D", "Fly camera right"),
+    ("Q", "Fly camera down"),
+    ("E", "Fly camera up"),
+];
+
+/// The mouse gestures the 3D viewport binds, shown between the key columns and
+/// the file chords. The flycam is the reason this section exists: `WASD` alone
+/// says nothing about the right-button hold that arms it.
+const MOUSE_GESTURES: [(&str, &str); 4] = [
+    ("Left drag", "Orbit around the pivot"),
+    (
+        "Right drag",
+        "Look around; hold to fly with W A S D and Q E",
+    ),
+    ("Right drag + wheel", "Set the fly speed"),
+    ("Middle drag", "Pan (or Shift + right drag)"),
 ];
 
 /// Bottom-section rows: (key-cap chord, description) for the file / edit
@@ -141,6 +160,14 @@ fn draw_card_contents(ui: &mut egui::Ui, state: &UiState) {
         ui.add_space(size::HELP_COLUMN_GAP);
         shortcut_column(ui, &RIGHT_SHORTCUTS);
     });
+
+    section_divider(ui);
+    for (i, (gesture, desc)) in MOUSE_GESTURES.iter().enumerate() {
+        if i > 0 {
+            ui.add_space(size::HELP_ROW_GAP);
+        }
+        shortcut_row(ui, &[gesture], desc);
+    }
 
     section_divider(ui);
     for (i, (keys, desc)) in CHORD_SHORTCUTS.iter().enumerate() {
