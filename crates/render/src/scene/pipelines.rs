@@ -56,6 +56,12 @@ pub(super) struct ScenePipelineSet {
     /// Selection-flash fill: flat highlight colour × fade, depth-tested but not
     /// depth-writing, alpha-blended. Doubles as the Opt overlay's x-ray ghost.
     pub(super) selection: Pipeline,
+    /// The model wireframe: an *indexed* line draw over the mesh's own vertex
+    /// buffer. It runs `fs_selection` rather than `fs_line` because those
+    /// vertices carry the mesh's colours — the wireframe colour rides in the
+    /// `selection_color` uniform instead, which is also what makes a colour
+    /// change free. Depth behaviour matches [`Self::line`].
+    pub(super) wireframe: Pipeline,
 }
 
 /// Build every scene pipeline.
@@ -161,6 +167,17 @@ pub(super) fn build_scene_pipelines(sample_count: u32) -> GpuResult<ScenePipelin
         true,
     )?;
 
+    let wireframe = program(
+        generated::selection_shader_desc,
+        shader::bytecode!("selection"),
+        c"scene wireframe",
+        Topology::Lines,
+        Cull::None,
+        Depth::TEST_ONLY,
+        DepthBias::default(),
+        true,
+    )?;
+
     // The one pipeline outside the helper: its own vertex shader builds a fullscreen
     // triangle from `gl_VertexIndex`, so it takes no vertex input and no index buffer.
     let skybox_shader = shader::make(
@@ -183,6 +200,7 @@ pub(super) fn build_scene_pipelines(sample_count: u32) -> GpuResult<ScenePipelin
         skybox,
         uv_fill,
         selection,
+        wireframe,
     })
 }
 

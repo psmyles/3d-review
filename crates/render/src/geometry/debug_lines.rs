@@ -14,32 +14,62 @@ use super::deform::{NO_DEFORM, corner_deform};
 use super::hidden::HiddenFilter;
 use super::vertex::{debug_normal_length, push_line, push_line_deformed};
 
-/// Wireframe line segments tracing each *original* polygon's edges (quads stay
-/// quads, n-gons stay n-gons) in the given color — not the triangulated
-/// diagonals, which a viewer must not show as real edges (Maya/Blender don't).
+/// The model wireframe: each *original* polygon's edges (quads stay quads, n-gons
+/// stay n-gons — not the triangulated diagonals, which a viewer must not show as
+/// real edges; Maya/Blender don't), as a **`LineList` index buffer over the
+/// mesh's own vertex buffer**.
 ///
 /// The import bridge lays out each face's corners as a contiguous run of
 /// vertices, so a `TopologyFace` is the closed loop over the `index_count`
-/// vertices starting at `first_index`. Falls back to triangle edges only if a
-/// model somehow arrives without face topology.
-pub(crate) fn wireframe_lines(
-    model: &ModelData,
-    lanes: &[[u32; 4]],
-    color: [f32; 4],
-    hidden_nodes: &[u32],
-) -> Vec<SceneVertex> {
-    let mut vertices = Vec::with_capacity(model.indices.len() * 2);
+/// vertices starting at `first_index`. Faces owned by an Outliner-hidden mesh are
+/// skipped (their edges disappear with the mesh); a model that somehow arrives
+/// without face topology falls back to triangle edges.
+///
+/// Indices, not a fresh vertex stream, because this is invariant 1 exactly:
+/// a derived view indexes *into* the shared geometry. Two `u32` corner indices
+/// per edge is 8 bytes where two 80-byte [`SceneVertex`]es were 160 — the 20×
+/// that makes the wireframe cheap enough to build without a visible hitch, and
+/// cheap enough to keep resident across a toggle (see
+/// `DerivedViews::wireframe_index`). It also drops the two things that used to be
+/// baked into every vertex: the deform lane (the mesh corner already carries its
+/// own, so a skinned wireframe follows the skin for free) and the colour, which
+/// moves to the `selection_color` uniform — so dragging the wireframe colour
+/// slider now rebuilds nothing at all.
+///
+/// The returned indices address [`ModelData::vertices`] directly, which is
+/// exactly what the mesh vertex buffer holds (`model_mesh` maps it 1:1);
+/// out-of-range corners are dropped per edge.
+pub(crate) fn wireframe_edge_indices(model: &ModelData, hidden_nodes: &[u32]) -> Vec<u32> {
+    let vertex_count = model.vertices.len();
+    let mut indices: Vec<u32> = Vec::with_capacity(model.indices.len() * 2);
+    let mut push_edge = |a: usize, b: usize| {
+        if a < vertex_count && b < vertex_count {
+            indices.push(a as u32);
+            indices.push(b as u32);
+        }
+    };
 
     if model.faces.is_empty() {
-        return triangulated_wireframe_lines(model, lanes, color, hidden_nodes);
+        // Triangle-edge fallback, mirroring `triangulated_wireframe_lines`.
+        let hidden = HiddenFilter::new(model, hidden_nodes);
+        for (triangle_index, triangle) in model.indices.as_chunks::<3>().0.iter().enumerate() {
+            if hidden.is_hidden(triangle_index) {
+                continue;
+            }
+            let [a, b, c] = [
+                triangle[0] as usize,
+                triangle[1] as usize,
+                triangle[2] as usize,
+            ];
+            push_edge(a, b);
+            push_edge(b, c);
+            push_edge(c, a);
+        }
+        return indices;
     }
 
-    // Map each face to its owning scene-graph node so faces of an Outliner-hidden
-    // mesh are skipped — `None` when the model carries no per-triangle node info,
-    // in which case visibility can't be resolved and every face is drawn.
     let hidden = HiddenFilter::new(model, hidden_nodes);
     let face_node = hidden.is_active().then(|| face_node_map(model)).flatten();
-
     for (face_index, face) in model.faces.iter().enumerate() {
         if let Some(map) = face_node.as_ref()
             && map
@@ -53,30 +83,12 @@ pub(crate) fn wireframe_lines(
             continue;
         }
         let first = face.first_index as usize;
-
         for corner in 0..count {
-            let a = first + corner;
-            let b = first + (corner + 1) % count;
-            let (Some(start), Some(end)) = (
-                model.vertices.get(a).map(|vertex| vertex.position),
-                model.vertices.get(b).map(|vertex| vertex.position),
-            ) else {
-                continue;
-            };
-            // Each end follows its own corner, so a skinned edge stretches with
-            // the skin exactly as the mesh's own triangle edge does.
-            push_line_deformed(
-                &mut vertices,
-                start.to_array(),
-                end.to_array(),
-                color,
-                corner_deform(lanes, a),
-                corner_deform(lanes, b),
-            );
+            push_edge(first + corner, first + (corner + 1) % count);
         }
     }
 
-    vertices
+    indices
 }
 
 /// A per-face owning scene-graph node index, parallel to [`ModelData::faces`].
@@ -101,49 +113,6 @@ fn face_node_map(model: &ModelData) -> Option<Vec<u32>> {
         }
     }
     Some(map)
-}
-
-/// Triangle-edge fallback for [`wireframe_lines`] when face topology is absent.
-/// Skips triangles owned by an Outliner-hidden node (via `tri_node`); an empty
-/// `hidden_nodes` (or a model without per-triangle node info) draws every edge.
-fn triangulated_wireframe_lines(
-    model: &ModelData,
-    lanes: &[[u32; 4]],
-    color: [f32; 4],
-    hidden_nodes: &[u32],
-) -> Vec<SceneVertex> {
-    let mut vertices = Vec::with_capacity(model.indices.len() * 2);
-    let hidden = HiddenFilter::new(model, hidden_nodes);
-
-    for (triangle_index, triangle) in model.indices.as_chunks::<3>().0.iter().enumerate() {
-        if hidden.is_hidden(triangle_index) {
-            continue;
-        }
-        let [a, b, c] = [
-            triangle[0] as usize,
-            triangle[1] as usize,
-            triangle[2] as usize,
-        ];
-        let positions = [
-            model.vertices.get(a).map(|vertex| vertex.position),
-            model.vertices.get(b).map(|vertex| vertex.position),
-            model.vertices.get(c).map(|vertex| vertex.position),
-        ];
-        let [Some(pa), Some(pb), Some(pc)] = positions else {
-            continue;
-        };
-        let (da, db, dc) = (
-            corner_deform(lanes, a),
-            corner_deform(lanes, b),
-            corner_deform(lanes, c),
-        );
-
-        push_line_deformed(&mut vertices, pa.to_array(), pb.to_array(), color, da, db);
-        push_line_deformed(&mut vertices, pb.to_array(), pc.to_array(), color, db, dc);
-        push_line_deformed(&mut vertices, pc.to_array(), pa.to_array(), color, dc, da);
-    }
-
-    vertices
 }
 
 /// Half-length of each pivot-marker axis line, as a fraction of the model's
@@ -708,7 +677,7 @@ mod tests {
     /// node removes exactly its faces' line segments, while an empty hidden set
     /// keeps every edge.
     #[test]
-    fn wireframe_lines_drops_hidden_nodes() {
+    fn wireframe_edges_drop_hidden_nodes() {
         // 3 triangular faces: faces 0,1 owned by node 0, face 2 by node 1.
         let tri_node = vec![0u32, 0, 1];
         let tri_to_face = vec![0u32, 1, 2];
@@ -733,14 +702,16 @@ mod tests {
             },
             ..Default::default()
         };
-        let color = [1.0, 1.0, 1.0, 1.0];
 
-        // Nothing hidden -> all 3 faces, 3 edges each, 2 verts per edge = 18.
-        assert_eq!(wireframe_lines(&model, &[], color, &[]).len(), 18);
-        // Hide node 0 -> only face 2 survives (6 verts).
-        assert_eq!(wireframe_lines(&model, &[], color, &[0]).len(), 6);
+        // Nothing hidden -> all 3 faces, 3 edges each, 2 indices per edge = 18.
+        let all = wireframe_edge_indices(&model, &[]);
+        assert_eq!(all.len(), 18);
+        // Every index addresses a real vertex of the shared mesh buffer.
+        assert!(all.iter().all(|&i| (i as usize) < model.vertices.len()));
+        // Hide node 0 -> only face 2 survives (6 indices), and they are its corners.
+        assert_eq!(wireframe_edge_indices(&model, &[0]), vec![6, 7, 7, 8, 8, 6]);
         // Hide both nodes -> no edges at all.
-        assert!(wireframe_lines(&model, &[], color, &[0, 1]).is_empty());
+        assert!(wireframe_edge_indices(&model, &[0, 1]).is_empty());
     }
 
     /// The face- and vertex-normal overlays drop the lines of an Outliner-hidden
@@ -976,3 +947,4 @@ mod tests {
         assert_eq!(uv_seam_lines(&model, &[], color, 7, &[]).len(), 8);
     }
 }
+

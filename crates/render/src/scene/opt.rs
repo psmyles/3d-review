@@ -16,13 +16,13 @@
 //!
 //! [`ModelSlot`]: super::resources::ModelSlot
 
-use crate::geometry::wireframe_lines;
+use crate::geometry::wireframe_edge_indices;
 use crate::material::MaterialState;
-use crate::rhi::{Frame, GpuResult};
+use crate::rhi::{Frame, GpuResult, IndexBuffer};
 use crate::{GhostStyle, OptSceneFrame, OptView, ProcessedModelRef, SceneFrame};
 
 use super::gpu::{BackbufferRect, SceneGpu};
-use super::resources::{SlotId, optional_vertex_buffer};
+use super::resources::SlotId;
 
 impl SceneGpu {
     /// Render the Opt workspace: the source and processed meshes side by side, or one
@@ -211,7 +211,7 @@ impl SceneGpu {
         self.activate(ghost_slot);
         self.sync_frame(frame, ghost_frame, material_states, material_revision, size)?;
         if ghost == GhostStyle::Wireframe {
-            self.sync_ghost_wireframe(ghost_frame, tint)?;
+            self.sync_ghost_wireframe(ghost_frame)?;
         } else {
             self.release_ghost_wireframes();
         }
@@ -233,24 +233,27 @@ impl SceneGpu {
     /// Build the active slot's ghost wireframe, which exists regardless of the user's
     /// wireframe toggle — in the wireframe ghost style it *is* the ghost, not an
     /// overlay on it.
-    fn sync_ghost_wireframe(&mut self, scene: &SceneFrame<'_>, tint: [f32; 3]) -> GpuResult<()> {
-        let colour = ghost_tint(GhostStyle::Wireframe, tint);
+    fn sync_ghost_wireframe(&mut self, scene: &SceneFrame<'_>) -> GpuResult<()> {
         // Drift check against the borrowed inputs — no per-frame key allocation.
+        // The colour is no longer part of the key: it rides in the `selection_color`
+        // uniform at draw time, so a tint change rebuilds nothing.
         let unchanged = match &self.active.ghost_wireframe_baked {
-            Some((revision, hidden, baked_colour)) => {
-                *revision == scene.model_revision
-                    && hidden == scene.hidden_meshes
-                    && *baked_colour == colour
+            Some((revision, hidden)) => {
+                *revision == scene.model_revision && hidden == scene.hidden_meshes
             }
             None => false,
         };
         if unchanged {
             return Ok(());
         }
-        let lines = wireframe_lines(scene.model, &[], colour, scene.hidden_meshes);
-        self.active.ghost_wireframe_buf = optional_vertex_buffer(&lines)?;
+        let edges = wireframe_edge_indices(scene.model, scene.hidden_meshes);
+        self.active.ghost_wireframe_index = if edges.is_empty() {
+            None
+        } else {
+            Some(IndexBuffer::new(&edges, c"ghost wireframe")?)
+        };
         self.active.ghost_wireframe_baked =
-            Some((scene.model_revision, scene.hidden_meshes.to_vec(), colour));
+            Some((scene.model_revision, scene.hidden_meshes.to_vec()));
         Ok(())
     }
 }

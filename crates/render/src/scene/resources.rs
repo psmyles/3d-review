@@ -15,7 +15,7 @@ use crate::geometry::{
     bounding_box_lines, face_normal_lines, model_mesh, model_pivot, pivot_half_extent, pivot_lines,
     selection_geometry, skeleton_fill_triangles, skeleton_lines, skin_weight_vertices,
     uv_fill_triangles, uv_seam_lines, uv_wireframe_lines, vertex_normal_lines, visible_geometry,
-    wireframe_lines,
+    wireframe_edge_indices,
 };
 use crate::material::{MaterialDrawRange, build_part_key};
 use crate::rhi::{Bindings, GpuResult, IndexBuffer, StorageBuffer, VertexBuffer};
@@ -218,9 +218,21 @@ impl DeformGpu {
 /// viewport.
 #[derive(Default)]
 pub(super) struct DerivedViews {
-    /// Model wireframe (original-polygon edges); the key is `(color, hidden)`.
-    pub(super) wireframe_buf: Option<VertexBuffer>,
-    wireframe_baked: Option<([f32; 4], Vec<u32>)>,
+    /// Model wireframe (original-polygon edges) as a `LineList` **index buffer
+    /// over the mesh's own vertex buffer** — 8 bytes per edge, not 160
+    /// (`wireframe_edge_indices`). Its colour is a uniform, so the key is the
+    /// Outliner's hidden set alone.
+    ///
+    /// **The one documented exception to invariant 3**: this buffer is *not*
+    /// freed when the wireframe is switched off. Toggling the overlay (or the
+    /// Shaded+Wireframe mode) is a per-second UI gesture on the very models
+    /// where rebuilding it is most expensive, and re-deriving it on each flip is
+    /// a visible stall. Indexing the shared vertex buffer is what makes keeping
+    /// it affordable: a 3M-corner asset retains ~24 MB rather than ~480 MB. It
+    /// is still dropped with the rest of `DerivedViews` when the model changes
+    /// (see `ModelSlot::views_revision`), so nothing outlives its mesh.
+    pub(super) wireframe_index: Option<IndexBuffer>,
+    wireframe_baked: Option<Vec<u32>>,
     /// Axis-aligned bounding box; `None` while off or when the scope wraps no
     /// geometry.
     pub(super) bounding_box_buf: Option<VertexBuffer>,
@@ -323,14 +335,15 @@ pub(super) struct ModelSlot {
     /// filtered list instead of the full mesh.
     pub(super) visible_active: bool,
     visibility_baked: Option<VisibilityBaked>,
-    /// This model's wireframe as drawn when it is the *ghost* in the Opt
-    /// workspace's overlay view. Deliberately separate from `views.wireframe_buf`
-    /// rather than reusing it: that one is owned by the user's wireframe toggle
-    /// and coloured by it, so sharing would have the two rebuild the same buffer
-    /// in opposite directions every frame. `None` whenever this model is not
+    /// This model's wireframe edge indices as drawn when it is the *ghost* in the
+    /// Opt workspace's overlay view — the same `LineList`-over-the-mesh form as
+    /// `views.wireframe_index`, over *this* slot's vertex buffer. Kept separate
+    /// from that one because the ghost is a different slot's mesh and exists
+    /// regardless of the user's wireframe toggle; the colour no longer divides
+    /// them (both read it from the uniform). `None` whenever this model is not
     /// currently the ghost (invariant 3).
-    pub(super) ghost_wireframe_buf: Option<VertexBuffer>,
-    pub(super) ghost_wireframe_baked: Option<(u64, Vec<u32>, [f32; 4])>,
+    pub(super) ghost_wireframe_index: Option<IndexBuffer>,
+    pub(super) ghost_wireframe_baked: Option<(u64, Vec<u32>)>,
 }
 
 impl ModelSlot {
@@ -380,7 +393,7 @@ impl SceneGpu {
     /// longer showing one.
     pub(super) fn release_ghost_wireframes(&mut self) {
         for slot in [&mut self.active, &mut self.idle] {
-            slot.ghost_wireframe_buf = None;
+            slot.ghost_wireframe_index = None;
             slot.ghost_wireframe_baked = None;
         }
     }
@@ -564,31 +577,23 @@ impl SceneGpu {
             self.active.views_revision = model_revision;
         }
 
-        // Wireframe rebuilds when its color *or* the Outliner's hidden set drifts
-        // (edges of a hidden mesh disappear with the mesh). On in both the wireframe
-        // overlay and the wireframe-only shading mode.
+        // Wireframe: built on first use and then *kept* across toggles — the one
+        // documented exception to invariant 3 (see `DerivedViews::wireframe_index`).
+        // On in both the wireframe overlay and the wireframe-only shading mode.
+        // Its colour is a uniform now, so only the Outliner's hidden set can drift
+        // it (edges of a hidden mesh disappear with the mesh); a colour drag
+        // rebuilds nothing.
         let wireframe_on =
             debug.wireframe_overlay || matches!(debug.shading_mode, ShadingMode::Wireframe);
-        let wireframe_unchanged = match (&self.active.views.wireframe_baked, wireframe_on) {
-            (None, false) => true,
-            (Some((color, hidden)), true) => {
-                *color == debug.wireframe_color && hidden == hidden_meshes
-            }
-            _ => false,
-        };
-        if !wireframe_unchanged {
-            self.active.views.wireframe_buf = if wireframe_on {
-                optional_vertex_buffer(&wireframe_lines(
-                    model,
-                    self.active.lanes(),
-                    debug.wireframe_color,
-                    hidden_meshes,
-                ))?
-            } else {
+        let wireframe_stale = self.active.views.wireframe_baked.as_deref() != Some(hidden_meshes);
+        if wireframe_on && wireframe_stale {
+            let edges = wireframe_edge_indices(model, hidden_meshes);
+            self.active.views.wireframe_index = if edges.is_empty() {
                 None
+            } else {
+                Some(IndexBuffer::new(&edges, c"wireframe")?)
             };
-            self.active.views.wireframe_baked =
-                wireframe_on.then(|| (debug.wireframe_color, hidden_meshes.to_vec()));
+            self.active.views.wireframe_baked = Some(hidden_meshes.to_vec());
         }
 
         // Bounding box: only the inputs the chosen scope depends on go in the bake

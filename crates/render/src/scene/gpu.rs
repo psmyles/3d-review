@@ -864,21 +864,23 @@ impl SceneGpu {
         // pushed its surface back so coplanar edges win). Each buffer is `None` while
         // its view is off. Seams go last: they sit exactly on wireframe edges, and
         // with equal depth and no depth write the later draw is the one that shows.
-        let mut line_views: Vec<&VertexBuffer> = Vec::new();
         if debug.show_grid {
-            line_views.push(&self.grid);
+            self.draw_lines(frame, &self.scene.line, &[&self.grid], uniforms);
         }
-        line_views.extend(
-            [
-                &self.active.views.wireframe_buf,
-                &self.active.views.bounding_box_buf,
-                &self.active.views.face_normal_buf,
-                &self.active.views.vertex_normal_buf,
-                &self.active.views.uv_seam_buf,
-            ]
-            .into_iter()
-            .flatten(),
-        );
+        // The wireframe sits between the grid and the rest: it is the one line view
+        // drawn indexed over the mesh vertex buffer, on its own pipeline.
+        if debug.wireframe_overlay || matches!(debug.shading_mode, ShadingMode::Wireframe) {
+            self.draw_wireframe(frame, uniforms, debug.wireframe_color);
+        }
+        let line_views: Vec<&VertexBuffer> = [
+            &self.active.views.bounding_box_buf,
+            &self.active.views.face_normal_buf,
+            &self.active.views.vertex_normal_buf,
+            &self.active.views.uv_seam_buf,
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
         self.draw_lines(frame, &self.scene.line, &line_views, uniforms);
 
         // Pivot marker + the skeleton's outlines: the always-on-top line pipeline
@@ -938,9 +940,10 @@ impl SceneGpu {
     /// Both styles reuse pipelines that already exist. The x-ray is the
     /// selection-flash fill — a flat tinted colour, alpha-blended, depth-tested but not
     /// depth-writing, which is exactly ghost behaviour — with the tint fed through the
-    /// same `selection_color` uniform it always reads. The wireframe ghost is the
-    /// derived wireframe view drawn with the line pipeline. Neither needs a shader
-    /// change, so the committed bytecode stays valid.
+    /// same `selection_color` uniform it always reads. The wireframe ghost is the same
+    /// fragment shader over the same mesh vertex buffer, drawn as an indexed
+    /// `LineList` through the wireframe pipeline, so it reads that tint too. Neither
+    /// needs a shader change, so the committed bytecode stays valid.
     ///
     /// The deform tables it binds are the **active** slot's, not the idle one's: the
     /// ghost is drawn in its bind pose (its uniform's deform flag is off), so the
@@ -961,11 +964,44 @@ impl SceneGpu {
                 }
             }
             GhostStyle::Wireframe => {
-                if let Some(lines) = &self.idle.ghost_wireframe_buf {
-                    self.draw_lines(frame, &self.scene.line, &[lines], uniforms);
+                if let (Some(mesh), Some(edges)) =
+                    (&self.idle.mesh, &self.idle.ghost_wireframe_index)
+                {
+                    let mut bindings = self.line_bindings();
+                    bindings.mesh_vertices(&mesh.vertices);
+                    bindings.mesh_indices(edges);
+                    frame.apply_pipeline(&self.scene.wireframe);
+                    frame.apply_bindings(&bindings);
+                    frame.apply_uniforms(generated::UB_SCENE_VS, uniforms);
+                    frame.apply_uniforms(generated::UB_SCENE_FS, uniforms);
+                    frame.draw(0, edges.count());
                 }
             }
         }
+    }
+
+    /// Draw the model wireframe: a `LineList` over the mesh's *own* vertex buffer,
+    /// indexed by the retained edge list (`wireframe_edge_indices`).
+    ///
+    /// It runs `fs_selection`, so the colour comes from the `selection_color`
+    /// uniform rather than from the vertices — the mesh's vertices carry the mesh's
+    /// own colours. As with the Opt ghost, nothing needs restoring afterwards:
+    /// uniforms are applied per draw, so the next draw's own call is the restore.
+    fn draw_wireframe(&self, frame: &mut Frame<'_>, uniforms: &SceneUniforms, color: [f32; 4]) {
+        let (Some(mesh), Some(edges)) = (&self.active.mesh, &self.active.views.wireframe_index)
+        else {
+            return;
+        };
+        let mut wire_uniforms = *uniforms;
+        wire_uniforms.selection_color = color;
+        let mut bindings = self.line_bindings();
+        bindings.mesh_vertices(&mesh.vertices);
+        bindings.mesh_indices(edges);
+        frame.apply_pipeline(&self.scene.wireframe);
+        frame.apply_bindings(&bindings);
+        frame.apply_uniforms(generated::UB_SCENE_VS, &wire_uniforms);
+        frame.apply_uniforms(generated::UB_SCENE_FS, &wire_uniforms);
+        frame.draw(0, edges.count());
     }
 
     /// Draw a set of line buffers through one pipeline. They share everything but the
