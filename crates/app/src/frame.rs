@@ -22,7 +22,8 @@ use review_render::{
     SceneFrame, SceneViewport, TexBackground, TexImage,
 };
 use review_ui::{
-    ComparisonSide, OptLayout, TextureBackground, UiOutput, WorkspaceMode, draw_overlay, theme,
+    ComparisonSide, OptLayout, OptOverlayLevel, OptOverlayView, TextureBackground, UiOutput,
+    WorkspaceMode, draw_overlay, theme,
 };
 
 use crate::App;
@@ -77,6 +78,31 @@ impl App {
             self.occlusion_bvh_revision = self.scene_revision;
         }
 
+        // The Opt workspace's processed level, resolved *before* the egui pass so its
+        // half of the split can be labelled with its own box and its own camera. Like
+        // every other input the chrome reads, this is the state as of the start of the
+        // frame: `sync_opt` below may land a newer result that this frame's render
+        // then draws, leaving the labels one frame behind on that frame alone. The
+        // revision call is idempotent within a frame, so the render's own call further
+        // down still resolves the same level.
+        let opt_level = (self.ui.mode == WorkspaceMode::Opt)
+            .then(|| self.opt_processed_revision())
+            .flatten()
+            .zip(self.opt.as_ref().and_then(|opt| opt.processed.clone()));
+        let opt_level_model = opt_level.as_ref().and_then(|(revision, result)| {
+            result
+                .lod(self.ui.opt.active_lod)
+                .map(|lod| (&lod.model, *revision))
+        });
+        // Occlusion for those labels, on the same terms as the source's above.
+        if let Some((model, revision)) = opt_level_model
+            && self.ui.debug.show_bounding_box
+            && self.opt_occlusion_bvh_revision != revision
+        {
+            self.opt_occlusion_bvh = Some(SceneBvh::build(model));
+            self.opt_occlusion_bvh_revision = revision;
+        }
+
         let (full_output, ui_output) = {
             let Some(egui_state) = self.egui_state.as_mut() else {
                 return;
@@ -89,6 +115,17 @@ impl App {
             let camera = renderer.camera;
             let scene_model = self.scene_model.clone();
             let occlusion_bvh = self.occlusion_bvh.as_ref();
+            // Supplied for the whole Opt workspace, not only once a level exists:
+            // the split lays out two halves either way, drawing the source into both
+            // until a run lands, so its labels need that half's camera regardless.
+            let opt_overlay = (self.ui.mode == WorkspaceMode::Opt).then(|| OptOverlayView {
+                camera: renderer.opt_camera,
+                level: opt_level_model.map(|(model, revision)| OptOverlayLevel {
+                    model,
+                    bvh: self.opt_occlusion_bvh.as_ref(),
+                    revision,
+                }),
+            });
             // Borrowed as a disjoint field so the egui closure can show the toasts
             // alongside its `&mut self.ui` borrow (the toast system lives in `app`).
             let notifications = &mut self.notifications;
@@ -108,7 +145,14 @@ impl App {
             // into a `Ui` rather than onto the `Context` — and the chrome carves its
             // bands out of it. Floating layers still address `ui.ctx()`.
             let full_output = egui_ctx.run_ui(raw_input, |ui| {
-                ui_output = draw_overlay(ui, &mut self.ui, camera, &scene_model, occlusion_bvh);
+                ui_output = draw_overlay(
+                    ui,
+                    &mut self.ui,
+                    camera,
+                    &scene_model,
+                    occlusion_bvh,
+                    opt_overlay,
+                );
                 if self.ui.debug.material_mode != prev_material_mode {
                     notifications.mode(self.ui.debug.material_mode.label());
                 }

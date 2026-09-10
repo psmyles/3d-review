@@ -912,6 +912,17 @@ pub struct BoundsCaches {
     /// since that is also a perfectly ordinary live state.
     scoped_stats: Option<ScopedStats>,
     scoped_stats_key: (Selection, Vec<u32>),
+    /// The Opt workspace's *processed* level measured under the active bounding-box
+    /// scope, for the split's right-hand dimension labels. Its own slot rather than
+    /// a share of the two above: both meshes are measured in the same frame, so one
+    /// slot would thrash between them every frame.
+    processed_bounds: Option<Bounds>,
+    /// What [`BoundsCaches::processed_bounds`] was measured for. The revision leads
+    /// because a reprocess replaces the mesh outright; the scope and its inputs
+    /// follow, exactly as for the source's two scoped caches. `None` until measured
+    /// — which no key value can express on its own, since a level legitimately
+    /// measures to `None` when the scope selects no geometry.
+    processed_bounds_key: Option<(u64, BoundsScope, Selection, Vec<u32>)>,
 }
 
 impl BoundsCaches {
@@ -1250,6 +1261,47 @@ impl UiState {
                 self.caches.visible_bounds
             }
         }
+    }
+
+    /// The box the bounding-box view draws for an Opt **processed** level, under the
+    /// active scope — the right half of the split's dimension labels.
+    ///
+    /// The same three scopes as [`UiState::measured_bounds`], resolved against the
+    /// processed mesh instead of the source: All Meshes is that level's own bounds
+    /// (never [`UiState::bounds`], which measures the source and would report the
+    /// LOD as unchanged), and the two scoped scans are the same O(triangle) walks,
+    /// so they are cached against the level's revision as well as the scope's own
+    /// inputs. A reprocess bumps the revision and re-measures.
+    ///
+    /// This mirrors what the renderer draws for its processed slot, which is the
+    /// point: the label has to describe the box actually on screen beside it.
+    pub(crate) fn processed_bounds(&mut self, model: &ModelData, revision: u64) -> Option<Bounds> {
+        let scope = self.bounding_box.scope;
+        // Only the inputs the chosen scope reads go in the key, so an unrelated
+        // change can't force a re-measure (the same discipline the renderer's
+        // bounding-box bake key follows).
+        let selection = match scope {
+            BoundsScope::OnlySelection => self.selection,
+            _ => Selection::None,
+        };
+        let mut hidden: Vec<u32> = match scope {
+            BoundsScope::VisibleOnly => self.hidden_meshes.iter().map(|&i| i as u32).collect(),
+            _ => Vec::new(),
+        };
+        hidden.sort_unstable();
+
+        let key = (revision, scope, selection, hidden);
+        if self.caches.processed_bounds_key.as_ref() != Some(&key) {
+            self.caches.processed_bounds = match scope {
+                BoundsScope::AllMeshes => model.bounds,
+                BoundsScope::OnlySelection => selection_bounds(model, selection),
+                // An empty hidden set makes `visible_bounds` the whole-model box.
+                BoundsScope::VisibleOnly if key.3.is_empty() => model.bounds,
+                BoundsScope::VisibleOnly => model.visible_bounds(&key.3),
+            };
+            self.caches.processed_bounds_key = Some(key);
+        }
+        self.caches.processed_bounds
     }
 
     /// The selection view the renderer reads each frame (invariant 2: a plain

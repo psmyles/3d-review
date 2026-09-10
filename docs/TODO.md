@@ -1,4 +1,4 @@
 - Texture view in UV mode
 - quick open/hide outliner box on left edge of the viewport
 - object selection via direct viewport click
-- split viewport has bounding box values shown off lines
+- show file name in application title bar
