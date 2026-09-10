@@ -603,8 +603,13 @@ pub mod size {
     pub const HELP_ROW_GAP: f32 = 5.0;
     /// Key-cap tile geometry: square single keys, wider caps for word labels
     /// ("Ctrl"), shared corner radius, and the gaps that flank them.
+    /// `WIDE_WIDTH` is the *minimum* a word cap gets; a longer label ("Right
+    /// drag + wheel") grows the tile to its measured glyph run plus `PAD_X` on
+    /// each side, since a cap narrower than its legend paints the text outside
+    /// itself and over the row's description.
     pub const HELP_KEYCAP_SIZE: f32 = 22.0;
     pub const HELP_KEYCAP_WIDE_WIDTH: f32 = 38.0;
+    pub const HELP_KEYCAP_PAD_X: f32 = 8.0;
     pub const HELP_KEYCAP_CORNER_RADIUS: f32 = 4.0;
     /// Gap between two key-caps in one chord (Ctrl + N).
     pub const HELP_KEYCAP_GAP: f32 = 6.0;
