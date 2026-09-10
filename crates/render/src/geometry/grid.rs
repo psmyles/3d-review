@@ -41,17 +41,24 @@ pub(crate) fn scene_lines() -> Vec<SceneVertex> {
         );
     }
 
+    // Both axes sit *on* the floor plane, coplanar with the grid lines they replace.
+    // They cannot z-fight with them: the line pipeline is depth-test-only, so nothing
+    // here writes depth, and they are emitted after the grid in the same buffer over
+    // the identical span — the later draw simply paints over the earlier one. Lifting
+    // them clear in world Y (as this used to) is parallax, not a depth nudge: at a
+    // grazing camera a couple of millimetres slides the axis visibly off the grid line
+    // it names, and two *different* lifts stop the axes intersecting at the origin.
     push_line(
         &mut vertices,
-        [-extent, 0.002, 0.0],
-        [extent, 0.002, 0.0],
+        [-extent, 0.0, 0.0],
+        [extent, 0.0, 0.0],
         [0.94, 0.23, 0.28, 1.0],
         NO_DEFORM,
     );
     push_line(
         &mut vertices,
-        [0.0, 0.004, -extent],
-        [0.0, 0.004, extent],
+        [0.0, 0.0, -extent],
+        [0.0, 0.0, extent],
         [0.18, 0.53, 1.0, 1.0],
         NO_DEFORM,
     );
