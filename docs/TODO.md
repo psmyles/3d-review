@@ -1,5 +1,3 @@
 - Texture view in UV mode
 - quick open/hide outliner box on left edge of the viewport
 - object selection via direct viewport click
-- show file name in application title bar
-- wireframe cache to avoid toggle delay
