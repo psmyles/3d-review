@@ -222,11 +222,27 @@ fn shortcut_row(ui: &mut egui::Ui, keys: &[&str], desc: &str) {
     });
 }
 
-/// Paint one key-cap tile with its glyph centered. Word labels ("Ctrl", "Cmd") get a
-/// wider cap; single glyphs are square.
+/// Paint one key-cap tile with its glyph centered. Single glyphs are square;
+/// anything longer is sized to its own laid-out legend (padded, and never
+/// narrower than a word cap like "Ctrl"), because the cap is painted *centered*
+/// on the rect it allocates — a fixed width narrower than the text spills the
+/// legend out both sides of the tile and over the row's description, which is
+/// what the long mouse-gesture labels used to do.
 fn key_cap(ui: &mut egui::Ui, label: &str) {
+    // Key glyphs read as monospace, like physical key-cap legends. The backtick
+    // is the lone glyph that renders tiny at the shared size, so bump just it.
+    let glyph_size = if label == "`" {
+        font::HELP_KEYCAP_BACKTICK
+    } else {
+        font::HELP_KEYCAP
+    };
+    let galley = ui.painter().layout_no_wrap(
+        label.to_owned(),
+        egui::FontId::monospace(glyph_size),
+        color::TEXT_PRIMARY,
+    );
     let width = if label.chars().count() > 1 {
-        size::HELP_KEYCAP_WIDE_WIDTH
+        (galley.size().x + 2.0 * size::HELP_KEYCAP_PAD_X).max(size::HELP_KEYCAP_WIDE_WIDTH)
     } else {
         size::HELP_KEYCAP_SIZE
     };
@@ -241,20 +257,8 @@ fn key_cap(ui: &mut egui::Ui, label: &str) {
         egui::Stroke::new(size::HAIRLINE, color::HELP_KEYCAP_BORDER),
         egui::StrokeKind::Inside,
     );
-    // Key glyphs read as monospace, like physical key-cap legends. The backtick
-    // is the lone glyph that renders tiny at the shared size, so bump just it.
-    let glyph_size = if label == "`" {
-        font::HELP_KEYCAP_BACKTICK
-    } else {
-        font::HELP_KEYCAP
-    };
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        label,
-        egui::FontId::monospace(glyph_size),
-        color::TEXT_PRIMARY,
-    );
+    let text_pos = rect.center() - 0.5 * galley.size();
+    ui.painter().galley(text_pos, galley, color::TEXT_PRIMARY);
 }
 
 /// A centered single line of text spanning the card width.
