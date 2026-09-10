@@ -7,6 +7,7 @@
 
 mod animation;
 mod dialog;
+mod flycam;
 mod frame;
 mod gate;
 mod input;
@@ -96,6 +97,7 @@ enum UserEvent {
 }
 
 use animation::AnimationSubsystem;
+use flycam::FlyCam;
 use gate::Gate;
 use selection_flash::FlashProgress;
 use texture_manager::TextureDecode;
@@ -222,6 +224,11 @@ struct App {
     /// workspace's split view. Fixed at press time so a drag that wanders across
     /// the divider keeps moving the camera it began with.
     drag_in_opt_right_view: bool,
+    /// The right-button WASD/QE flycam: held movement keys plus the
+    /// wheel-adjusted speed (`flycam.rs`). Held here rather than in the renderer
+    /// because it is input state — the renderer only ever sees the resulting
+    /// per-frame move (invariant 2).
+    flycam: FlyCam,
     last_pointer_position: Option<Vec2>,
     last_primary_click: Option<(Instant, Vec2)>,
     /// Latest keyboard modifier state, tracked from `ModifiersChanged` so
@@ -482,6 +489,7 @@ impl Default for App {
             egui_renderer: None,
             drag_mode: None,
             drag_in_opt_right_view: false,
+            flycam: FlyCam::default(),
             last_pointer_position: None,
             last_primary_click: None,
             modifiers: ModifiersState::empty(),
@@ -521,6 +529,9 @@ impl Default for App {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DragMode {
     Orbit,
+    /// Turn the camera in place (the right-button drag Unity and Unreal bind).
+    /// Also what arms the WASD/QE flycam — see `flycam.rs`.
+    Look,
     Pan,
     Zoom,
 }
@@ -956,6 +967,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::CursorLeft { .. } => {
                 self.drag_mode = None;
+                self.flycam.release_all();
                 self.last_pointer_position = None;
             }
             WindowEvent::MouseWheel { delta, .. } => self.handle_mouse_wheel(delta, egui_consumed),

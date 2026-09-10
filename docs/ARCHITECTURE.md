@@ -72,6 +72,7 @@ One `impl App` block per concern, one file each:
 | `frame.rs` | The per-frame render loop |
 | `input.rs` | Pointer / scroll / resize / pinch routing |
 | `shortcuts.rs` | Keyboard dispatch (the help tables in `ui` mirror it) |
+| `flycam.rs` | The RMB-held WASD/QE flycam: held-key direction bits, integrated once per frame |
 | `loading.rs` | The model-load funnel — drag-drop, Ctrl+O, double-click, CLI/file association |
 | `ui_intents.rs` | Applying `UiOutput` intents to the renderer (invariant 2, made concrete) |
 | `selection_flash.rs` | The selection-flash animation |
@@ -193,7 +194,9 @@ the whole GPU layer.
   `CameraProjection`, `AntiAliasing`, `EnvironmentSettings`, `GtaoSettings`,
   `TonemapSettings`, `SceneDebugOptions`, `RendererConfig`.
 - `camera.rs` — `OrbitCamera` (framing / orbit / pan / zoom, ortho and
-  perspective, reversed-Z infinite perspective), `UvCamera`, `CameraTransition`
+  perspective, reversed-Z infinite perspective, plus the flycam's `look` — which
+  turns about the eye rather than the pivot — and `fly`), `UvCamera`,
+  `CameraTransition`
   (0.3 s ease-in-out cubic) and the shared `ease_in_out_cubic` curve the chrome's
   own animations reuse.
 - `lib.rs` — the `Renderer` façade.

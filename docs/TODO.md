@@ -3,5 +3,4 @@
 - quick open/hide outliner box on left edge of the viewport
 - loading progress toast to show percentage
 - object selection via direct viewport click
-- change WASD to move camera in the viewport as Unity and Unreal allow
 - split viewport has bounding box values shown off lines

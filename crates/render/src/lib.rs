@@ -77,9 +77,6 @@ const _: () = assert!(
     "SceneVertex changed size: re-derive the engine-equivalent vertex size"
 );
 
-/// Shorter transition used for the WASD 45° orbit steps, which fire repeatedly
-/// and want a snappier response than the default framing/snap animation.
-const ORBIT_TRANSITION_SECONDS: f32 = 0.1;
 /// Fraction of the safe area the empty "home" grid view fills. Below 1.0 so the
 /// reference grid sits comfortably back in the viewport with margin around it,
 /// rather than filling the window edge-to-edge. Only affects the home/reset
@@ -114,7 +111,7 @@ pub struct Renderer {
     /// The Opt workspace's *right-hand* camera, used only by the split view with
     /// camera sync off. With sync on it simply mirrors [`Self::camera`], which is
     /// why it needs no transition of its own: the animated moves (framing, home,
-    /// the WASD steps, the gizmo) all drive the main camera, and the second view
+    /// the gizmo) all drive the main camera, and the second view
     /// follows it or is dragged by hand.
     pub opt_camera: OrbitCamera,
     camera_transition: Option<CameraTransition>,
@@ -607,6 +604,25 @@ impl Renderer {
         self.camera.orbit(delta);
     }
 
+    /// Turn the 3D camera in place (the right-button look drag), as against
+    /// [`orbit_camera`], which swings it around the pivot.
+    ///
+    /// [`orbit_camera`]: Renderer::orbit_camera
+    pub fn look_camera(&mut self, delta: Vec2) {
+        self.camera_transition = None;
+        self.camera.look(delta);
+    }
+
+    /// Fly the 3D camera for `seconds` along `direction` — a unit vector in camera
+    /// axes (x right, y world-up, z forward) — at the framing-scaled base speed
+    /// times the caller's `speed_scale`. The WASD/QE half of the flycam; `app`
+    /// integrates it per frame while the right button is held.
+    pub fn fly_camera(&mut self, direction: Vec3, seconds: f32, speed_scale: f32) {
+        self.camera_transition = None;
+        let distance = self.camera.fly_speed() * speed_scale * seconds;
+        self.camera.fly(direction * distance);
+    }
+
     pub fn set_camera_aspect_ratio(&mut self, aspect_ratio: f32) {
         self.camera.aspect_ratio = aspect_ratio;
         self.opt_camera.aspect_ratio = aspect_ratio;
@@ -621,6 +637,15 @@ impl Renderer {
     /// follow it.
     pub fn orbit_opt_camera(&mut self, delta: Vec2) {
         self.opt_camera.orbit(delta);
+    }
+
+    pub fn look_opt_camera(&mut self, delta: Vec2) {
+        self.opt_camera.look(delta);
+    }
+
+    pub fn fly_opt_camera(&mut self, direction: Vec3, seconds: f32, speed_scale: f32) {
+        let distance = self.opt_camera.fly_speed() * speed_scale * seconds;
+        self.opt_camera.fly(direction * distance);
     }
 
     pub fn pan_opt_camera(&mut self, delta_pixels: Vec2, viewport_size: Vec2) {
@@ -666,22 +691,6 @@ impl Renderer {
 
     pub fn animate_camera_to_offset_direction(&mut self, direction: Vec3) {
         self.animate_camera_to(self.camera.with_offset_direction(direction));
-    }
-
-    /// Animate a relative orbit by the given yaw / pitch deltas (radians). Based
-    /// off any in-flight transition's target (not the mid-flight camera) so
-    /// repeated key presses chain into successive 45° steps. Pitch is clamped to
-    /// match interactive [`OrbitCamera::orbit`]. Uses the shorter
-    /// [`ORBIT_TRANSITION_SECONDS`] so each step feels snappy.
-    pub fn animate_orbit_by(&mut self, yaw_delta: f32, pitch_delta: f32) {
-        let mut end = self.camera_transition.map_or(self.camera, |t| t.end);
-        end.yaw += yaw_delta;
-        end.pitch = (end.pitch + pitch_delta).clamp(-1.5, 1.5);
-        self.camera_transition = Some(CameraTransition::with_duration(
-            self.camera,
-            end,
-            ORBIT_TRANSITION_SECONDS,
-        ));
     }
 
     /// The default "home" view, re-framed for the live aspect ratio and the

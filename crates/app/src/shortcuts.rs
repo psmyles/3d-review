@@ -12,6 +12,7 @@ use winit::event::{ElementState, KeyEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use crate::App;
+use crate::flycam::FlyDirection;
 
 /// Whether the **primary** modifier — the one file and edit commands chord with —
 /// is held: `Ctrl` on Windows and Linux, `Cmd` on macOS (`mac-port-plan.md` D10).
@@ -33,10 +34,11 @@ fn primary_held(modifiers: ModifiersState) -> bool {
 }
 
 impl App {
-    /// Dispatch a viewport keyboard shortcut on key-down. Keys modified by the
-    /// primary modifier ([`primary_held`]) are file commands; the bare keys are
-    /// view / camera shortcuts and only fire when no modifier is held (so every
-    /// combination stays free).
+    /// Dispatch a viewport keyboard shortcut. Keys modified by the primary
+    /// modifier ([`primary_held`]) are file commands; the bare keys are view /
+    /// camera shortcuts and only fire when no modifier is held (so every
+    /// combination stays free). Everything here acts on key-down except the six
+    /// flycam movement keys, which are *held* rather than pressed.
     /// Keyboard events egui has already consumed are filtered out by the caller.
     ///
     /// Adding/changing a binding here? Update the startup help card's tables in
@@ -100,18 +102,36 @@ impl App {
             return;
         }
 
-        if !self.modifiers.is_empty() {
-            return;
-        }
-
         // Matched case-insensitively, exactly like the chords above: winit's
         // `ModifiersState` carries no Caps Lock bit, so the guard above can't see
         // it — with Caps Lock on the key arrives as "G" and an exact match would
         // leave every one of these shortcuts dead.
         let key = character.to_ascii_lowercase();
 
-        // In the UV workspace the 3D camera shortcuts (WASD orbit / shading /
-        // grid) don't apply; only F / R, which reframe the 2D UV view.
+        // The flycam's six movement keys (`flycam.rs`) are *held*, not pressed:
+        // they only set a direction bit here, and `step_flycam` moves the camera
+        // once per frame while the right button is down. None of them is bound to
+        // anything else, so an unarmed press is simply inert.
+        //
+        // A release is honoured whatever modifiers are down and whatever
+        // workspace is up: pressing a modifier (or switching view) mid-flight
+        // must not leave a direction stuck on with no key left to clear it.
+        if let Some(direction) = FlyDirection::from_key(&key) {
+            let pressed = event.state == ElementState::Pressed;
+            if pressed && (!self.modifiers.is_empty() || !self.ui.mode.is_scene()) {
+                return;
+            }
+            self.set_fly_key(direction, pressed);
+            self.redraw.requested = true;
+            return;
+        }
+
+        if !self.modifiers.is_empty() {
+            return;
+        }
+
+        // In the UV workspace the 3D display shortcuts (shading / grid) don't
+        // apply; only F / R, which reframe the 2D UV view.
         if self.ui.mode == WorkspaceMode::Uv {
             if event.state == ElementState::Pressed && matches!(key.as_str(), "f" | "r") {
                 if let Some(renderer) = self.renderer.as_mut() {
@@ -133,26 +153,10 @@ impl App {
             return;
         }
 
-        // Each 45° orbit step (radians). Sign maps the requested side to the
-        // yaw/pitch convention in `OrbitCamera` (negative pitch lifts the eye up).
-        const ORBIT_STEP: f32 = std::f32::consts::FRAC_PI_4;
-
-        // WASD orbits fire on key *release*: holding a key emits a burst of
-        // repeat key-down events (which would snap the camera with no animation),
-        // but exactly one release — so a brief hold animates a single clean step.
-        if event.state == ElementState::Released {
-            match key.as_str() {
-                "a" => self.orbit_camera_step(ORBIT_STEP, 0.0),
-                "d" => self.orbit_camera_step(-ORBIT_STEP, 0.0),
-                "w" => self.orbit_camera_step(0.0, -ORBIT_STEP),
-                "s" => self.orbit_camera_step(0.0, ORBIT_STEP),
-                _ => return,
-            }
-            self.redraw.requested = true;
+        // Every remaining shortcut is an instant toggle / command on key-down.
+        if event.state != ElementState::Pressed {
             return;
         }
-
-        // Remaining shortcuts are instant toggles/commands on key-down.
         match key.as_str() {
             "`" => self.ui.debug.wireframe_overlay = !self.ui.debug.wireframe_overlay,
             "1" => self.ui.shading_mode = ShadingMode::Wireframe,
@@ -193,13 +197,6 @@ impl App {
         }
 
         self.redraw.requested = true;
-    }
-
-    /// Animate a relative 45° camera orbit (radians) for the WASD shortcuts.
-    fn orbit_camera_step(&mut self, yaw_delta: f32, pitch_delta: f32) {
-        if let Some(renderer) = self.renderer.as_mut() {
-            renderer.animate_orbit_by(yaw_delta, pitch_delta);
-        }
     }
 
     /// Frame the camera on `F`. With a mesh part (a node) selected, alternate

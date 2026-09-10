@@ -46,6 +46,10 @@ impl App {
         {
             let _z = prof::zone!("Camera Animation");
             self.update_camera_animation();
+            // Move the flycam by this frame's share of whatever direction keys are
+            // held (`flycam.rs`). Beside the transition step because it is the
+            // other thing that moves the camera without an input event of its own.
+            self.step_flycam();
         }
         // Advance the selection-highlight flash and feed this frame's fade into the
         // UI snapshot the scene callback reads. Done before the egui run below so the
@@ -160,6 +164,9 @@ impl App {
         let flash_active = self.selection_flash.is_some();
         // A playing clip keeps pacing frames until it pauses or stops.
         let anim_playing = self.animation_playing();
+        // A held flycam key is a live interaction (invariant 6): keep pacing
+        // frames so movement is continuous, and stop the moment it is let go.
+        let flying = self.flycam_active();
         // Pump startup warmup frames (Phase B) until the deferred GPU-resource
         // build drains, so the scene pipelines + GTAO pass compile behind
         // the already-shown grid. Paced like the other continuous-redraw sources.
@@ -169,6 +176,7 @@ impl App {
             || camera_animating
             || flash_active
             || anim_playing
+            || flying
             || warming_up
         {
             let frame_start = self.redraw.last_render_instant.unwrap_or_else(Instant::now);

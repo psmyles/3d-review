@@ -85,8 +85,13 @@ toolbar swaps its tool groups to match the active workspace.
 
 An orbit camera with framing, panning and zooming, in perspective or orthographic
 projection. `F` frames the model, or the selection when one is active; pressing it
-again goes back to the whole model. `R` returns to the home framing. `WASD` orbit
-in animated 45 degree steps. Camera moves ease over 0.3 s rather than snapping.
+again goes back to the whole model. `R` returns to the home framing. Camera moves
+ease over 0.3 s rather than snapping.
+
+Holding the right mouse button looks around instead of orbiting, and — as in Unity
+and Unreal — arms a flycam: `W` `A` `S` `D` move along the view, `Q` and `E` drop
+and lift, and the wheel sets how fast. The speed scales with the size of what is
+framed, so a 2 cm prop and a 200 m level both handle the same.
 
 Display toggles live in the toolbar's right-hand group: the floor grid with axes,
 the axis gizmo (click an axis to snap the camera to it), the object pivot
@@ -454,9 +459,10 @@ Review` on macOS.
 
 A cheat-sheet of these is shown on launch and dismissed by any key or click.
 
-**Mouse (3D)** - left-drag orbits, right-drag pans, middle-drag pans,
-Alt+right-drag zooms, wheel zooms. Double-clicking the empty viewport opens a
-file.
+**Mouse (3D)** - left-drag orbits, right-drag looks around (and flies with
+`WASD`/`QE`; the wheel sets the fly speed while it is held), middle-drag pans, as
+does Shift+right-drag, Alt+right-drag zooms, wheel zooms. Double-clicking the
+empty viewport opens a file.
 
 **Mouse (UV)** - left-drag pans, right-drag zooms, wheel zooms.
 
@@ -475,7 +481,7 @@ The on-screen labels follow the platform.
 | `G`                                  | Toggle the grid                                   |
 | `F`                                  | Frame the model, or the selection                 |
 | `R`                                  | Reset the camera (refits the image in UV and Tex) |
-| `W` `A` `S` `D`                      | Orbit the camera in 45 degree steps               |
+| `W` `A` `S` `D` `Q` `E`              | Fly the camera (while the right button is held)   |
 | `Space`                              | Play / pause the selected clip                    |
 | `,` / `.`                            | Previous / next frame of the selected clip        |
 | `X`                                  | Swap source and processed in the Opt overlay      |

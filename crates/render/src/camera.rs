@@ -26,6 +26,14 @@ const MAX_DEPTH_RATIO: f32 = 5_000.0;
 /// Absolute floor for the near plane so it never collapses to zero.
 const MIN_Z_NEAR: f32 = 0.01;
 
+/// Flycam speed (world units per second) per unit of framed scene radius, so a
+/// 2 cm prop and a 200 m level move at the same *apparent* pace: at this rate a
+/// straight run crosses the framed content's diameter in a little over a second.
+const FLY_SPEED_PER_RADIUS: f32 = 1.5;
+/// Floor under the scaled flycam speed, so framing something microscopic doesn't
+/// leave the movement keys apparently dead. Sized to the near-plane floor.
+const MIN_FLY_SPEED: f32 = 0.01;
+
 /// Default half-height (in UV units) of the UV viewport, so the unit square is
 /// shown with comfortable margin around it. The visible vertical span is twice
 /// this; `> 0.5` leaves the 0..1 square framed back from the edges.
@@ -234,6 +242,40 @@ impl OrbitCamera {
         self.pitch = (self.pitch - delta.y * 0.01).clamp(-1.5, 1.5);
     }
 
+    /// Rotate about the camera's **own eye position** — the first-person "look
+    /// around" Unity and Unreal bind to a right-button drag, as against
+    /// [`orbit`], which swings the eye around a stationary `target`.
+    ///
+    /// The eye is pinned and the pivot re-projected `distance` ahead along the new
+    /// view direction, so a left-button orbit afterwards turns around whatever the
+    /// user has just looked at rather than around where they came from.
+    ///
+    /// [`orbit`]: OrbitCamera::orbit
+    pub fn look(&mut self, delta: Vec2) {
+        let eye = self.eye_position();
+        self.orbit(delta);
+        self.target = eye + self.forward_dir() * self.distance;
+    }
+
+    /// Move the camera bodily through the scene, keeping its orientation — the
+    /// WASD/QE flycam. `delta` is a world-unit displacement in camera axes: x
+    /// right and z forward (both tilted with the view), and y **world** up, which
+    /// is what makes Q/E rise and fall vertically however the camera is pitched.
+    ///
+    /// Only `target` moves; the eye is derived from it, so `distance` — and with
+    /// it the near/far fit and the orbit pivot — travels along with the camera.
+    pub fn fly(&mut self, delta: Vec3) {
+        let right = self.rotation().transform_vector3(Vec3::X);
+        self.target += right * delta.x + Vec3::Y * delta.y + self.forward_dir() * delta.z;
+    }
+
+    /// Base flycam speed in world units per second, scaled to the framed content
+    /// so movement feels the same whatever real-world size the model is authored
+    /// at. `app` multiplies this by the user's wheel-adjusted speed scale.
+    pub fn fly_speed(self) -> f32 {
+        (self.scene_radius * FLY_SPEED_PER_RADIUS).max(MIN_FLY_SPEED)
+    }
+
     pub fn set_offset_direction(&mut self, direction: Vec3) {
         *self = self.with_offset_direction(direction);
     }
@@ -351,19 +393,11 @@ pub(crate) struct CameraTransition {
 
 impl CameraTransition {
     pub(crate) fn new(start: OrbitCamera, end: OrbitCamera) -> Self {
-        Self::with_duration(start, end, CAMERA_TRANSITION_SECONDS)
-    }
-
-    pub(crate) fn with_duration(
-        start: OrbitCamera,
-        end: OrbitCamera,
-        duration_seconds: f32,
-    ) -> Self {
         Self {
             start,
             end,
             elapsed_seconds: 0.0,
-            duration_seconds,
+            duration_seconds: CAMERA_TRANSITION_SECONDS,
         }
     }
 
@@ -457,6 +491,53 @@ mod tests {
         assert!((ndc_z(projection, -near) - 1.0).abs() < 1e-5);
         let distant = ndc_z(projection, -near * 1_000.0);
         assert!(distant > 0.0 && distant < 0.01);
+    }
+
+    #[test]
+    fn look_pivots_about_the_eye() {
+        let mut camera = OrbitCamera::default();
+        let eye = camera.eye_position();
+        camera.look(Vec2::new(40.0, 25.0));
+
+        // The eye is pinned and only the aim changes; the pivot rides `distance`
+        // ahead of it along the new forward.
+        assert!((camera.eye_position() - eye).length() < 1e-4);
+        let expected_target = eye + camera.forward_dir() * camera.distance;
+        assert!((camera.target - expected_target).length() < 1e-4);
+    }
+
+    #[test]
+    fn fly_translates_eye_and_pivot_together() {
+        let mut camera = OrbitCamera::default();
+        let eye = camera.eye_position();
+        let target = camera.target;
+        let distance = camera.distance;
+        camera.fly(Vec3::new(0.0, 0.5, 2.0));
+
+        // A flight is a rigid translation: the eye/pivot separation (and so the
+        // near/far fit) is untouched, and both moved by the same vector.
+        assert!((camera.distance - distance).abs() < 1e-5);
+        let moved = camera.target - target;
+        assert!((camera.eye_position() - eye - moved).length() < 1e-4);
+        // Forward is world-tilted by the default pitch, the vertical lane is not.
+        assert!((moved - (camera.forward_dir() * 2.0 + Vec3::Y * 0.5)).length() < 1e-4);
+    }
+
+    #[test]
+    fn fly_speed_scales_with_the_framed_content() {
+        let mut small = OrbitCamera::default();
+        small.frame_bounds(Bounds {
+            min: Vec3::splat(-0.01),
+            max: Vec3::splat(0.01),
+        });
+        let mut large = OrbitCamera::default();
+        large.frame_bounds(Bounds {
+            min: Vec3::splat(-100.0),
+            max: Vec3::splat(100.0),
+        });
+
+        assert!(large.fly_speed() > small.fly_speed() * 100.0);
+        assert!(small.fly_speed() >= MIN_FLY_SPEED);
     }
 
     #[test]
