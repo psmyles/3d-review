@@ -39,7 +39,7 @@ use review_render::Renderer;
 use review_ui::Selection;
 
 use crate::dialog::Dialog;
-use crate::{App, TEXTURE_EXTENSIONS, UserEvent, file_label, prof};
+use crate::{APP_NAME, App, TEXTURE_EXTENSIONS, UserEvent, file_label, prof};
 
 /// The shortest gap between two progress reports reaching the event loop. The
 /// loading card rewrites itself in place, so this is only about not waking the
@@ -294,6 +294,18 @@ impl App {
         self.request_redraw();
     }
 
+    /// Name the loaded model in the window title — `Barrel.fbx — 3D Review`
+    /// — so the title bar, Alt+Tab and the taskbar button say which file is
+    /// open. `None` is the empty start state, which restores the bare product name.
+    fn set_window_title(&self, model: Option<&str>) {
+        if let Some(window) = self.window.as_ref() {
+            match model {
+                Some(name) => window.set_title(&format!("{name} - {APP_NAME}")),
+                None => window.set_title(APP_NAME),
+            }
+        }
+    }
+
     /// Ask for one more frame, from a background result that changed what is on
     /// screen.
     fn request_redraw(&mut self) {
@@ -356,8 +368,9 @@ impl App {
                 // Any Opt result (and any node override) describes the previous
                 // model, so drop both before the new one is drawn.
                 self.reset_opt_for_new_model();
-                self.notifications
-                    .success(format!("Loaded {}", file_label(path)));
+                let label = file_label(path);
+                self.set_window_title(Some(&label));
+                self.notifications.success(format!("Loaded {label}"));
                 prof::msg(&format!("model loaded: {}", path.display()));
                 // A gate run starts measuring from here — the first present with
                 // the model actually on screen (`gate.rs`); no-op otherwise.
@@ -401,6 +414,7 @@ impl App {
         self.scene_model = empty;
         self.scene_revision = self.next_model_revision();
         self.reset_opt_for_new_model();
+        self.set_window_title(None);
 
         prof::msg("reset to start state");
         self.redraw.requested = true;
