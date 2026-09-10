@@ -23,8 +23,26 @@ const FRAME_MARGIN: f32 = 1.04;
 /// ratio still keeps the near plane from collapsing when framing tiny content and
 /// provides the finite far range used by orthographic projection.
 const MAX_DEPTH_RATIO: f32 = 5_000.0;
+/// Fraction of the orbit distance the near plane may sit at once a zoom brings
+/// the pivot in closer than the depth-ratio fit above would clear. Below 1.0 so
+/// the pivot — and a margin in front of it — always stays inside the frustum.
+/// Without this the ratio fit is what ends up stopping a zoom-in, and it stops
+/// it *further out* the larger the scene is: framing a 500 m level puts the near
+/// plane at 10 cm, so the surface being inspected clips away while the camera
+/// still has distance left to give.
+const NEAR_PIVOT_FRACTION: f32 = 0.25;
 /// Absolute floor for the near plane so it never collapses to zero.
-const MIN_Z_NEAR: f32 = 0.01;
+const MIN_Z_NEAR: f32 = 1.0e-5;
+/// Floor under the orbit distance, so the eye can never reach or pass its own
+/// pivot. Deliberately far below any scale a model is authored at (0.1 mm, world
+/// units being meters) — inspecting a rivet or a texel of trim is exactly what
+/// this viewer is for, so nothing but the user should stop a zoom-in. Shared
+/// with the framing fit, where it guards degenerate (zero-size) bounds.
+const MIN_ORBIT_DISTANCE: f32 = 1.0e-4;
+/// Guards a degenerate zero-span orthographic projection. Sized under what
+/// [`MIN_ORBIT_DISTANCE`] yields, so it never cuts an ortho zoom short of what
+/// the perspective view allows.
+const MIN_ORTHO_HALF_HEIGHT: f32 = 1.0e-6;
 
 /// Flycam speed (world units per second) per unit of framed scene radius, so a
 /// 2 cm prop and a 200 m level move at the same *apparent* pace: at this rate a
@@ -212,7 +230,7 @@ impl OrbitCamera {
         // non-linear, so iterate to a fixed point (cheap: 8 corners, 6 passes).
         let mut pan_u = 0.0_f32;
         let mut pan_v = 0.0_f32;
-        let mut distance = 0.05_f32;
+        let mut distance = MIN_ORBIT_DISTANCE;
         for _ in 0..6 {
             distance = 0.0;
             for &(u, v, w) in &corners {
@@ -220,7 +238,7 @@ impl OrbitCamera {
                     .max((u + pan_u).abs() / tan_h - w)
                     .max((v + pan_v).abs() / tan_v - w);
             }
-            distance = distance.max(0.05);
+            distance = distance.max(MIN_ORBIT_DISTANCE);
             pan_u +=
                 silhouette_recenter(corners.iter().map(|&(u, _, w)| (u + pan_u, distance + w)));
             pan_v +=
@@ -293,7 +311,7 @@ impl OrbitCamera {
 
     pub fn zoom(&mut self, amount: f32) {
         let scale = (1.0 - amount * 0.1).clamp(0.2, 5.0);
-        self.distance = (self.distance * scale).max(0.05);
+        self.distance = (self.distance * scale).max(MIN_ORBIT_DISTANCE);
     }
 
     pub fn pan_screen_delta(&mut self, delta_pixels: Vec2, viewport_size: Vec2) {
@@ -335,11 +353,21 @@ impl OrbitCamera {
     /// buffer keeps its precision across the model regardless of zoom. This is
     /// what prevents close / intersecting faces from flickering and swapping
     /// draw order — a fixed tiny near plane with a huge far plane does not.
+    ///
+    /// That ratio fit alone, though, is a zoom limit in disguise: it is scaled to
+    /// the *scene*, not to how close the camera has come, so on a large model it
+    /// parks the near plane metres out and clips away the very surface the user
+    /// zoomed in to read. So the near plane also tracks the pivot
+    /// ([`NEAR_PIVOT_FRACTION`]), taking whichever of the two is nearer — the
+    /// ratio governs the ordinary case, the pivot term takes over on a close
+    /// approach and keeps what's being inspected inside the frustum.
     pub fn near_far(self) -> (f32, f32) {
         // Far must clear the grid even when the model is tiny.
         let content_radius = self.scene_radius.max(GRID_FAR_RADIUS);
         let z_far = (self.distance + content_radius).max(MIN_Z_NEAR * 2.0);
-        let z_near = (z_far / MAX_DEPTH_RATIO).max(MIN_Z_NEAR);
+        let z_near = (z_far / MAX_DEPTH_RATIO)
+            .min(self.distance * NEAR_PIVOT_FRACTION)
+            .max(MIN_Z_NEAR);
         (z_near, z_far)
     }
 
@@ -375,7 +403,7 @@ impl OrbitCamera {
     }
 
     fn orthographic_half_height(self) -> f32 {
-        (self.distance * (self.fov_y_radians * 0.5).tan()).max(0.001)
+        (self.distance * (self.fov_y_radians * 0.5).tan()).max(MIN_ORTHO_HALF_HEIGHT)
     }
 
     fn rotation(self) -> Mat4 {
@@ -477,6 +505,10 @@ pub fn ease_in_out_cubic(t: f32) -> f32 {
 mod tests {
     use super::*;
 
+    /// One mouse-wheel notch's worth of zoom, matching `app`'s
+    /// `WHEEL_LINE_ZOOM_STEP`, so the zoom-range tests exercise the real step.
+    const WHEEL_NOTCH: f32 = 0.5;
+
     fn ndc_z(projection: Mat4, view_z: f32) -> f32 {
         let clip = projection * Vec3::new(0.0, 0.0, view_z).extend(1.0);
         clip.z / clip.w
@@ -538,6 +570,50 @@ mod tests {
 
         assert!(large.fly_speed() > small.fly_speed() * 100.0);
         assert!(small.fly_speed() >= MIN_FLY_SPEED);
+    }
+
+    #[test]
+    fn zoom_in_is_not_capped_short_of_close_inspection() {
+        let mut camera = OrbitCamera::default();
+        for _ in 0..400 {
+            camera.zoom(WHEEL_NOTCH);
+        }
+
+        // A tenth of a millimetre from the pivot: whatever the user is reading,
+        // the wheel got them to it.
+        assert!(camera.distance <= 2.0e-4, "distance {}", camera.distance);
+        assert!(camera.distance > 0.0);
+    }
+
+    #[test]
+    fn near_plane_follows_the_pivot_on_a_close_approach() {
+        // A large scene: the depth-ratio fit alone would park the near plane
+        // 10 cm out and clip away everything the zoom was aimed at.
+        let mut camera = OrbitCamera::default().framed_to_bounds(
+            Bounds {
+                min: Vec3::splat(-500.0),
+                max: Vec3::splat(500.0),
+            },
+            Vec2::ONE,
+        );
+        while camera.distance > 0.01 {
+            camera.zoom(WHEEL_NOTCH);
+        }
+
+        let (near, _) = camera.near_far();
+        assert!(
+            near < camera.distance,
+            "near {near} pivot {}",
+            camera.distance
+        );
+    }
+
+    #[test]
+    fn near_plane_still_uses_the_depth_ratio_at_normal_range() {
+        let camera = OrbitCamera::default();
+        let (near, far) = camera.near_far();
+
+        assert!((near - far / MAX_DEPTH_RATIO).abs() < 1e-6, "near {near}");
     }
 
     #[test]
