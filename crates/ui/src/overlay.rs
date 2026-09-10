@@ -5,22 +5,57 @@
 use review_model::{ModelData, SceneBvh};
 use review_render::{OrbitCamera, Selection};
 
-use crate::opt_state::{GhostStyle, OptIntent, OptLayout};
+use crate::dimensions::DimensionView;
+use crate::opt_state::{ComparisonSide, GhostStyle, OptIntent, OptLayout};
 use crate::state::{OptionPanel, ScopedStats, UiOutput, UiState, WorkspaceMode, sync_debug_state};
 use crate::theme::{self, color, size};
 use crate::{dimensions, gizmo, help, panels, stats, status_bar, texture_view, toolbar, transport};
+
+/// The Opt workspace's second view, as the overlay needs to see it. `app` supplies
+/// this whenever that workspace is active; every other workspace passes `None`.
+///
+/// It exists for the dimension labels. The split draws two meshes through two
+/// cameras, so a readout describing what is actually on screen needs both —
+/// measuring the source's box beside the processed mesh would report every LOD as
+/// unchanged. Plain borrowed values, per invariant 2 — and `Copy`, like the camera
+/// beside it, so `app` can hand it to egui's `FnMut` frame closure.
+#[derive(Clone, Copy)]
+pub struct OptOverlayView<'a> {
+    /// The camera the second view is drawn through. Meaningful even before a run
+    /// produces a level: the split draws the *source* through it into the right half
+    /// until one lands, so the half is laid out the same either way.
+    pub camera: OrbitCamera,
+    /// The processed level, once a run has produced one. `None` leaves both halves
+    /// of the split showing the source, which is exactly what the renderer draws.
+    pub level: Option<OptOverlayLevel<'a>>,
+}
+
+/// One processed LOD level the overlay measures and occludes against.
+#[derive(Clone, Copy)]
+pub struct OptOverlayLevel<'a> {
+    pub model: &'a ModelData,
+    /// Occlusion structure over `model`; `None` until `app` has built it (lazily,
+    /// the first frame the labels need it for this level).
+    pub bvh: Option<&'a SceneBvh>,
+    /// Identifies `model`, so the measured box can be cached across frames and
+    /// re-measured when a reprocess replaces the mesh.
+    pub revision: u64,
+}
 
 /// Draw the full egui overlay and return the intents emitted this frame. `model`
 /// is the shared scene geometry and `bvh` an acceleration structure over it, both
 /// read only for the bounding-box dimension labels' occlusion test (invariant 1:
 /// borrowed, never copied). `bvh` is `None` until `app` has built it for the
-/// current model (lazily, the first time the labels need it).
+/// current model (lazily, the first time the labels need it). `opt` carries the
+/// same three things for the Opt workspace's processed level; see
+/// [`OptOverlayView`].
 pub fn draw_overlay(
     root: &mut egui::Ui,
     state: &mut UiState,
     camera: OrbitCamera,
     model: &ModelData,
     bvh: Option<&SceneBvh>,
+    opt: Option<OptOverlayView<'_>>,
 ) -> UiOutput {
     let _z = crate::prof::zone!("Draw Overlay");
     // egui shows panels into a `Ui` rather than onto the `Context`, so the frame's
@@ -81,10 +116,11 @@ pub fn draw_overlay(
         draw_split_divider(ctx, state, viewport);
 
         // Bounding-box dimension labels sit on the viewport (under the chrome).
-        // The measured box is resolved here (cached for the "visible only" scan)
-        // so the overlay never redoes the O(triangle) bounds walk per frame.
-        let bounds = state.measured_bounds(model);
-        dimensions::draw_dimension_labels(ctx, state, camera, model, bvh, bounds, viewport);
+        // Each measured box is resolved here (cached per scope, and per level for
+        // the processed one) so the overlay never redoes an O(triangle) bounds walk
+        // per frame.
+        let views = dimension_views(state, camera, model, bvh, opt, screen, viewport);
+        dimensions::draw_dimension_labels(ctx, state, &views);
 
         draw_option_panels(ctx, state, viewport);
 
@@ -156,16 +192,121 @@ fn draw_split_divider(ctx: &egui::Context, state: &UiState, viewport: egui::Rect
     if state.mode != WorkspaceMode::Opt || state.opt.layout != OptLayout::Split {
         return;
     }
-    // The renderer splits the same rect the same way (`SceneViewport`), so the
-    // line lands exactly on the seam between the two composites.
-    let x = viewport.center().x;
+    let (left, _) = split_halves(viewport);
     ctx.layer_painter(egui::LayerId::background()).line_segment(
         [
-            egui::pos2(x, viewport.top()),
-            egui::pos2(x, viewport.bottom()),
+            egui::pos2(left.right(), viewport.top()),
+            egui::pos2(left.right(), viewport.bottom()),
         ],
         egui::Stroke::new(size::HAIRLINE, color::DIVIDER),
     );
+}
+
+/// The two rects the Opt split lays its views out in. The renderer halves the same
+/// rect the same way (`SceneViewport`), so these are where its two composites
+/// actually land — which is what lets the divider sit on the seam and the dimension
+/// labels project into the half they belong to.
+fn split_halves(viewport: egui::Rect) -> (egui::Rect, egui::Rect) {
+    let x = viewport.center().x;
+    (
+        egui::Rect::from_min_max(viewport.min, egui::pos2(x, viewport.max.y)),
+        egui::Rect::from_min_max(egui::pos2(x, viewport.min.y), viewport.max),
+    )
+}
+
+/// The labelled views this frame: normally one over the whole viewport, but two in
+/// the Opt split — each with its own mesh, camera and half of the screen.
+///
+/// `screen` is the whole window, which is what a single view's clip space maps onto
+/// (the renderer draws the scene over the full backbuffer and the chrome paints on
+/// top); `viewport` is the chrome-free area, which labels are kept inside and which
+/// the split halves.
+fn dimension_views<'a>(
+    state: &mut UiState,
+    camera: OrbitCamera,
+    model: &'a ModelData,
+    bvh: Option<&'a SceneBvh>,
+    opt: Option<OptOverlayView<'a>>,
+    screen: egui::Rect,
+    viewport: egui::Rect,
+) -> Vec<DimensionView<'a>> {
+    if !state.debug.show_bounding_box {
+        return Vec::new();
+    }
+    let source_bounds = state.measured_bounds(model);
+    // Measured before the branch so the cache is refreshed in whichever layout is up,
+    // including the overlay, where only one of the two meshes is labelled.
+    let level = opt.and_then(|opt| opt.level);
+    let level_bounds = level.map(|level| state.processed_bounds(level.model, level.revision));
+
+    // The split lays out two halves whether or not a run has landed — until one does,
+    // the renderer draws the source into both — so the right half falls back to the
+    // source rather than losing its labels. Every other case is a single view over
+    // the whole screen, including an overlay with nothing processed, which the
+    // renderer draws as the plain 3D scene.
+    let split = state.mode == WorkspaceMode::Opt && state.opt.layout == OptLayout::Split;
+    if split && let Some(opt) = opt {
+        let (left, right) = split_halves(viewport);
+        // Once a level exists its own measurement stands even when it is `None` — the
+        // scope selecting no geometry there means the renderer draws no box on that
+        // half either, so labelling it with the source's would describe nothing.
+        let (right_bounds, right_model, right_bvh) = match level {
+            Some(level) => (level_bounds.flatten(), level.model, level.bvh),
+            None => (source_bounds, model, bvh),
+        };
+        return [
+            (source_bounds, model, bvh, camera, left),
+            (right_bounds, right_model, right_bvh, opt.camera, right),
+        ]
+        .into_iter()
+        .filter_map(|(bounds, model, bvh, camera, half)| {
+            Some(DimensionView {
+                // Each view is half as wide as the area it draws into, and the
+                // renderer corrects its camera's aspect to match; a label projected
+                // through the uncorrected one drifts sideways from its own box.
+                camera: half_camera(camera, half),
+                model,
+                bvh,
+                bounds: bounds?,
+                image: half,
+                clamp: half,
+            })
+        })
+        .collect();
+    }
+
+    // One view. In the overlay layout both meshes share the space, so the labels
+    // describe whichever reads as solid — otherwise a swapped overlay measures the
+    // mesh underneath the one you can see. Its two cameras are synced, so either
+    // serves to project with.
+    let (bounds, model, bvh) = match level {
+        Some(level) if state.opt.side == ComparisonSide::Processed => {
+            (level_bounds.flatten(), level.model, level.bvh)
+        }
+        _ => (source_bounds, model, bvh),
+    };
+    bounds
+        .map(|bounds| DimensionView {
+            camera,
+            model,
+            bvh,
+            bounds,
+            image: screen,
+            clamp: viewport,
+        })
+        .into_iter()
+        .collect()
+}
+
+/// `camera` re-aspected for one half of the Opt split. Each view is half as wide as
+/// the area it draws into, and the renderer corrects for that on its side; a label
+/// projected through the uncorrected camera would drift horizontally from the box it
+/// belongs to.
+fn half_camera(mut camera: OrbitCamera, half: egui::Rect) -> OrbitCamera {
+    if half.height() > 0.0 {
+        camera.aspect_ratio = half.width() / half.height();
+    }
+    camera
 }
 
 /// Draw every open tool option panel as its own native `egui::Window`

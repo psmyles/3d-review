@@ -68,7 +68,7 @@ pub use opt_state::{
     ComparisonSide, GhostStyle, OptIntent, OptLayout, OptLevelView, OptResultView, OptUiState,
     StackItem,
 };
-pub use overlay::draw_overlay;
+pub use overlay::{OptOverlayLevel, OptOverlayView, draw_overlay};
 pub use review_render::{MsaaSamples, Selection};
 pub use state::{
     AnimationUiState, AxisGizmoAction, PlaybackSpeed, TexViewRequest, TextureBackground,

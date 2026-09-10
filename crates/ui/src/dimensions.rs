@@ -18,35 +18,82 @@ use crate::state::{UiState, ViewProjectionMode};
 use crate::theme::{self, color, font, size};
 use crate::units::match_known_unit;
 
-/// Draw the axis-length label at the centre of each of the 12 bounding-box
-/// edges. No-op unless the bounding-box view is active and the model has bounds.
+/// One labelled view: a mesh, the camera looking at it, and the two rects that
+/// place its labels.
+///
+/// There is normally one of these — the whole viewport — but the Opt workspace's
+/// split is two, each with its own mesh, camera and half of the screen. Bundling
+/// them is what keeps the projection honest there: a label's position depends on
+/// *which* rect the camera's image covers and on that rect's aspect, and both
+/// differ per half.
+pub(crate) struct DimensionView<'a> {
+    /// The camera as it draws into [`DimensionView::image`] — the caller is
+    /// responsible for its `aspect_ratio` matching that rect, since the renderer
+    /// overrides the aspect per half in the split.
+    pub(crate) camera: OrbitCamera,
+    pub(crate) model: &'a ModelData,
+    /// Occlusion structure over `model`; `None` draws every on-screen label.
+    pub(crate) bvh: Option<&'a SceneBvh>,
+    /// The box to measure — resolved by the caller (through
+    /// [`UiState::measured_bounds`] / [`UiState::processed_bounds`]) so the
+    /// O(triangle) scoped scans stay cached rather than per-frame.
+    pub(crate) bounds: Bounds,
+    /// The rect this view's image covers, i.e. what its clip space maps onto. The
+    /// whole window for a single view (the renderer draws the scene over the full
+    /// backbuffer and the chrome paints on top), one half of the scene viewport
+    /// for a split half.
+    pub(crate) image: egui::Rect,
+    /// The rect labels are kept inside, so one near an edge never spills over the
+    /// toolbar, a side panel, or — in the split — the other half.
+    pub(crate) clamp: egui::Rect,
+}
+
+/// Draw the axis-length label at the centre of each of the 12 bounding-box edges,
+/// for every view. No-op unless the bounding-box view is active.
+///
 /// An edge whose midpoint is hidden behind the *visible* model geometry (the
 /// camera→midpoint segment is blocked by a triangle of a non-hidden mesh part,
-/// tested through `bvh`) is skipped; meshes hidden in the Outliner don't occlude,
-/// since they aren't drawn. When `bvh` is `None` (not built yet for this model)
-/// every edge label is drawn.
+/// tested through the view's `bvh`) is skipped; meshes hidden in the Outliner don't
+/// occlude, since they aren't drawn. When a view's `bvh` is `None` (not built yet
+/// for that mesh) every one of its edge labels is drawn.
 pub(crate) fn draw_dimension_labels(
     ctx: &egui::Context,
     state: &UiState,
-    camera: OrbitCamera,
-    model: &ModelData,
-    bvh: Option<&SceneBvh>,
-    bounds: Option<Bounds>,
-    viewport: egui::Rect,
+    views: &[DimensionView<'_>],
 ) {
     if !state.debug.show_bounding_box {
         return;
     }
-    // The box to measure is supplied by the caller ([`UiState::measured_bounds`])
-    // so the O(triangle) "visible only" scan stays cached, not per-frame.
-    let Some(bounds) = bounds else {
-        return;
-    };
     // The Outliner-hidden meshes are excluded from the occlusion test: they aren't
     // drawn, so they can't hide a label. (The measured box, above, already accounts
-    // for them in "visible only" mode.)
+    // for them in "visible only" mode.) Node indices are shared across the source and
+    // its processed levels, so one list serves every view.
     let hidden: Vec<u32> = state.hidden_meshes.iter().map(|&i| i as u32).collect();
 
+    // Painted on the background order, after the viewport scene callback (added
+    // earlier in the frame) but beneath the egui chrome areas, so the labels sit
+    // over the model and the box but under the toolbar / panels / gizmo.
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Background,
+        egui::Id::new("dimension_labels"),
+    ));
+
+    for view in views {
+        draw_view_labels(ctx, state, &painter, view, &hidden);
+    }
+}
+
+/// Every label for one view. Split out from [`draw_dimension_labels`] so the two
+/// halves of the Opt split share one implementation rather than the caller
+/// duplicating the projection.
+fn draw_view_labels(
+    ctx: &egui::Context,
+    state: &UiState,
+    painter: &egui::Painter,
+    view: &DimensionView<'_>,
+    hidden: &[u32],
+) {
+    let (bounds, camera, model) = (view.bounds, view.camera, view.model);
     let size_world = bounds.size();
     // Per-axis label text (the axis length in the file's authored unit), shared
     // by the four box edges parallel to that axis.
@@ -57,14 +104,6 @@ pub(crate) fn draw_dimension_labels(
     ];
 
     let view_projection = camera.view_projection(state.projection_mode.into());
-    let screen = ctx.content_rect();
-    // Painted on the background order, after the viewport scene callback (added
-    // earlier in the frame) but beneath the egui chrome areas, so the labels sit
-    // over the model and the box but under the toolbar / panels / gizmo.
-    let painter = ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Background,
-        egui::Id::new("dimension_labels"),
-    ));
 
     let axis_colors = [
         color::DIMENSION_LABEL_X,
@@ -87,17 +126,20 @@ pub(crate) fn draw_dimension_labels(
         } else {
             eye
         };
-        if bvh.is_some_and(|bvh| bvh.segment_occluded(model, ray_origin, midpoint, &hidden)) {
+        if view
+            .bvh
+            .is_some_and(|bvh| bvh.segment_occluded(model, ray_origin, midpoint, hidden))
+        {
             continue;
         }
-        if let Some(pos) = project(view_projection, midpoint, screen) {
+        if let Some(pos) = project(view_projection, midpoint, view.image) {
             draw_label(
-                &painter,
+                painter,
                 ctx,
                 pos,
                 &labels[axis],
                 axis_colors[axis],
-                viewport,
+                view.clamp,
             );
         }
     }
@@ -127,9 +169,9 @@ fn edge_midpoints(min: Vec3, max: Vec3) -> [(Vec3, usize); 12] {
     ]
 }
 
-/// Project a world point to a viewport pixel position, or `None` when it is
-/// behind the camera or outside the visible frame.
-fn project(view_projection: Mat4, world: Vec3, screen: egui::Rect) -> Option<egui::Pos2> {
+/// Project a world point into `image` — the rect the camera's picture covers — or
+/// `None` when it is behind the camera or outside that picture.
+fn project(view_projection: Mat4, world: Vec3, image: egui::Rect) -> Option<egui::Pos2> {
     let clip = view_projection * world.extend(1.0);
     if clip.w <= 0.0 {
         return None; // behind the camera
@@ -139,8 +181,8 @@ fn project(view_projection: Mat4, world: Vec3, screen: egui::Rect) -> Option<egu
         return None; // off-screen
     }
     Some(egui::pos2(
-        screen.left() + (ndc.x * 0.5 + 0.5) * screen.width(),
-        screen.top() + (0.5 - ndc.y * 0.5) * screen.height(),
+        image.left() + (ndc.x * 0.5 + 0.5) * image.width(),
+        image.top() + (0.5 - ndc.y * 0.5) * image.height(),
     ))
 }
 

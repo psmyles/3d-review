@@ -261,6 +261,14 @@ struct App {
     /// which model it covers so it rebuilds when a new model loads.
     occlusion_bvh: Option<SceneBvh>,
     occlusion_bvh_revision: u64,
+    /// The same structure over the Opt workspace's *processed* level, for the right
+    /// half of the split's dimension labels. Its own slot rather than a share of
+    /// [`Self::occlusion_bvh`]: both meshes are on screen in the same frame, so one
+    /// slot would rebuild both of them every frame. Built under the same conditions
+    /// — only while the bounding-box view is on — and rebuilt when a reprocess bumps
+    /// [`Self::opt_occlusion_bvh_revision`].
+    opt_occlusion_bvh: Option<SceneBvh>,
+    opt_occlusion_bvh_revision: u64,
     /// The animation clock + the pose it evaluates for the renderer; its logic
     /// lives in `animation.rs`.
     animation: AnimationSubsystem,
@@ -500,10 +508,12 @@ impl Default for App {
             model_load_generation: 0,
             opt: None,
             occlusion_bvh: None,
+            opt_occlusion_bvh: None,
             animation: AnimationSubsystem::default(),
             // A sentinel distinct from the initial `scene_revision` (0) so the BVH
             // is treated as stale until first built.
             occlusion_bvh_revision: u64::MAX,
+            opt_occlusion_bvh_revision: u64::MAX,
             ui,
             initial_model: None,
             gate: None,
