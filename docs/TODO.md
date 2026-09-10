@@ -2,4 +2,4 @@
 - quick open/hide outliner box on left edge of the viewport
 - object selection via direct viewport click
 - show file name in application title bar
-- grid is not at y 0
+- wireframe cache to avoid toggle delay
