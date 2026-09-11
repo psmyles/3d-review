@@ -316,8 +316,24 @@ int review_export_fbx(const rvo_export_scene *scene, const char *path, int ascii
         ufbxw_mesh_set_polygons(out, mesh, ufbxw_copy_int_array(out, source->indices, index_count),
                                 ufbxw_copy_int_array(out, face_offsets, offsets_needed));
 
-        /* Attributes are vertex-mapped: the optimizer already splits a vertex
-         * wherever any attribute differs. */
+        /* Attribute values are one per vertex: the optimizer already splits a
+         * vertex wherever any attribute differs.
+         *
+         * Normals are written vertex-mapped and Direct, which is what ufbx_write
+         * does for them (the normal layer forbids an index array).
+         *
+         * UV and color layers are handed over POLYGON_VERTEX-mapped and indexed
+         * by the mesh's own index buffer instead — the same values, reached
+         * through the PolygonVertexIndex stream. Their non-indexed setters ask
+         * ufbx_write to `generate_indices`, which dedups the values and emits an
+         * index array *as long as the value array*; paired with VERTEX mapping
+         * that produces `ByVertice` + `IndexToDirect` with a per-control-point
+         * index array. FBX allows that shape, but readers that assume an indexed
+         * UV/color layer is per polygon vertex — Unity among them, which rejects
+         * the mesh with "has invalid UV coordinates" / "invalid vertex Colors"
+         * and blames the exporting tool — cannot read it. `ByPolygonVertex` +
+         * `IndexToDirect` is what every DCC writes, and its index array length
+         * matches PolygonVertexIndex, so there is nothing left to guess. */
         if (source->normals) {
             ufbxw_mesh_set_normals(out, mesh,
                                    ufbxw_copy_vec3_array(out, (const ufbxw_vec3 *)source->normals,
@@ -325,18 +341,22 @@ int review_export_fbx(const rvo_export_scene *scene, const char *path, int ascii
                                    UFBXW_ATTRIBUTE_MAPPING_VERTEX);
         }
         for (size_t s = 0; s < source->uv_set_count; s++) {
-            ufbxw_mesh_set_uvs(out, mesh, (int32_t)s,
-                               ufbxw_copy_vec2_array(out, (const ufbxw_vec2 *)source->uv_sets[s],
-                                                     source->vertex_count),
-                               UFBXW_ATTRIBUTE_MAPPING_VERTEX);
+            ufbxw_mesh_set_uvs_indexed(
+                out, mesh, (int32_t)s,
+                ufbxw_copy_vec2_array(out, (const ufbxw_vec2 *)source->uv_sets[s],
+                                      source->vertex_count),
+                ufbxw_copy_int_array(out, source->indices, index_count),
+                UFBXW_ATTRIBUTE_MAPPING_POLYGON_VERTEX);
             ufbxw_mesh_set_attribute_name(out, mesh, UFBXW_MESH_ATTRIBUTE_UV, (int32_t)s,
                                           source->uv_set_names[s]);
         }
         if (source->colors) {
-            ufbxw_mesh_set_colors(out, mesh, 0,
-                                  ufbxw_copy_vec4_array(out, (const ufbxw_vec4 *)source->colors,
-                                                        source->vertex_count),
-                                  UFBXW_ATTRIBUTE_MAPPING_VERTEX);
+            ufbxw_mesh_set_colors_indexed(
+                out, mesh, 0,
+                ufbxw_copy_vec4_array(out, (const ufbxw_vec4 *)source->colors,
+                                      source->vertex_count),
+                ufbxw_copy_int_array(out, source->indices, index_count),
+                UFBXW_ATTRIBUTE_MAPPING_POLYGON_VERTEX);
         }
 
         /* Materials connect to the *node*, and per-face assignment indexes that
