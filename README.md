@@ -304,7 +304,8 @@ only the visible meshes, and copied to the clipboard.
 
 A fourth workspace that turns the viewer into a mesh optimizer, built on [**meshoptimizer**](https://meshoptimizer.org/). It shares every 3D control, so the processed mesh can be
 inspected with the same shading modes, buffer views and overlays as the source.
-Static meshes only for now.
+A skinned, animated or blend-shaped asset keeps all of that through the stack
+and into the export; the workspace itself shows the bind pose.
 
 Nothing for Opt is built until the workspace is first opened, and a stack with
 nothing enabled schedules no work, so a session that never opens Opt pays nothing
@@ -433,9 +434,16 @@ An explicit export writes the chain to FBX through vendored `ufbx_write`.
   like the source asset, or write flat meshes with identity transforms.
 - **Format** - binary or ASCII FBX.
 
-Output is always triangulated, carries the source materials (without textures) and
-vertex colors, and declares a unit scale of 100, since import converts every file
-to meters while FBX conventionally stores centimeters.
+The export keeps **everything the stack did not change**. Quads and n-gons
+survive wherever no operation rebuilt the buffer (a simplified level is written
+as triangles, and the report says which operation did it); materials go out as
+authored, with their texture paths, embedded images and layered textures; the
+node hierarchy keeps its pivots, rotation orders, user properties, lights,
+cameras, nulls and LOD groups; skins, bind poses, blend shapes and the original
+animation curves are written back; so are color sets, smoothing, creases, holes,
+polygon groups, display layers, selection sets and the scene's own settings and
+metadata. Files are written as FBX 7.7 in the source file's own unit. The
+export report lists only genuine losses.
 
 ## Undo, presets and session state
 
@@ -546,7 +554,8 @@ prebuilt libraries:
 
 - `third_party/ufbx` - FBX reading.
 - `third_party/meshoptimizer` - the Opt operations.
-- `third_party/ufbx-write` - the Opt FBX export.
+- `third_party/ufbx-write` - the Opt FBX export (carried with a small
+  documented patch set, see its `NOTICE.txt`).
 - `crates/psd/vendor/Psd` - PSD decoding.
 - `vendor/sokol-rust` - the graphics API bindings.
 

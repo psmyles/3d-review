@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(has_meshopt)");
     println!("cargo:rustc-check-cfg=cfg(has_ufbxw)");
+    println!("cargo:rustc-check-cfg=cfg(has_ufbxw_probe)");
 
     build_meshoptimizer();
     build_ufbx_write();
@@ -88,6 +89,24 @@ fn build_ufbx_write() {
         .compile("ufbxwrite");
 
     println!("cargo:rustc-cfg=has_ufbxw");
+
+    // The vendored writer carries this project's patches
+    // (`third_party/ufbx-write/review.patch`), and `src/ufbxw_probe.c` writes a
+    // scene exercising each so `tests/ufbxw_patches.rs` can read it back. A
+    // build script cannot see `cfg(test)`, so the probe is gated on the profile
+    // instead: tests run under `dev`, and the release binary carries none of it.
+    let probe_c = Path::new("src/ufbxw_probe.c");
+    println!("cargo:rerun-if-changed={}", probe_c.display());
+    println!("cargo:rerun-if-env-changed=PROFILE");
+    if std::env::var("PROFILE").as_deref() != Ok("release") {
+        cc::Build::new()
+            .file(probe_c)
+            .include(dir)
+            .warnings(true)
+            .flag_if_supported("/wd4201")
+            .compile("ufbxw_probe");
+        println!("cargo:rustc-cfg=has_ufbxw_probe");
+    }
 }
 
 /// Every `*.cpp` in the vendored directory, sorted so the compile order (and

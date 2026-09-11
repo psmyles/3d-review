@@ -37,6 +37,10 @@ mod export_ffi;
 mod ffi;
 mod prof;
 
+#[cfg(has_ufbxw_probe)]
+#[doc(hidden)]
+pub mod probe;
+
 mod ao;
 
 pub mod export;

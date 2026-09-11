@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "ufbx_extras.h"
+
 typedef struct review_import_vertex {
     float position[3];
     float normal[3];
@@ -31,6 +33,10 @@ typedef struct review_import_material {
     float smoothness;
     float metallic;
     float emissive[3];
+    /* The ufbx material this deduplicated slot came from, for the extras
+       capture (which needs its properties and texture connections). Opaque to
+       the Rust side; valid only while the ufbx scene is. */
+    const void *source;
 } review_import_material;
 
 /* One scene-graph node. Carries the full hierarchy (every ufbx node, mesh-bearing
@@ -93,6 +99,14 @@ typedef struct review_import_skin_cluster {
        space, so `bone_world(pose) * this` is the cluster's skinning matrix at
        any pose. */
     float world_to_bone_bind[16];
+    /* The authored cluster matrices, as the file wrote them and a re-export
+       writes them back: `Transform` (mesh node to bone, `mesh_node_to_bone`)
+       and `TransformLink` (bone to world at bind, `bind_to_world`) — the
+       latter in the scene's normalized (meter) space. Column-major 4x4. */
+    double mesh_node_to_bone[16];
+    double bind_to_world[16];
+    /* The cluster's own name (usually the bone's), owned, NUL-terminated. */
+    char *name;
 } review_import_skin_cluster;
 
 /* What one skinned mesh node's deformer declared (Inspector metadata). */
@@ -304,10 +318,16 @@ typedef void (*review_import_progress_fn)(
     uint64_t bytes_total
 );
 
-/* `progress` may be NULL, in which case no progress is reported. */
+/* `progress` may be NULL, in which case no progress is reported. `out_extras`
+   may be NULL to skip the source-property capture; when given it is filled from
+   the same ufbx scene in the same call (invariant 7) and must be released with
+   `review_import_free_extras` — separately from `out_scene`, so the geometry
+   can be freed the moment the model is built while the extras wait to be
+   marshaled after it is on screen. */
 int review_import_load_fbx(
     const char *path,
     review_import_scene *out_scene,
+    review_import_extras *out_extras,
     review_import_error *out_error,
     review_import_progress_fn progress,
     void *progress_user

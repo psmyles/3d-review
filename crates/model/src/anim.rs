@@ -872,6 +872,9 @@ mod tests {
             bone,
             mesh_node: 0,
             world_to_bone_bind: model.nodes[bone as usize].transform.inverse(),
+            mesh_node_to_bone: Mat4::IDENTITY,
+            bind_to_world: model.nodes[bone as usize].transform,
+            name: String::new(),
         };
         model.skin = Some(SkinData {
             offsets: vec![0, 1, 3, 5],

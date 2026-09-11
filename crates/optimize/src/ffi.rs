@@ -76,6 +76,14 @@ pub mod simplify_options {
     pub const REGULARIZE_LIGHT: c_uint = 1 << 6;
 }
 
+/// `meshopt_Stream`: one attribute stream of a multi-stream call.
+#[repr(C)]
+pub struct MeshoptStream {
+    pub data: *const c_void,
+    pub size: usize,
+    pub stride: usize,
+}
+
 unsafe extern "C" {
     pub fn meshopt_generateVertexRemap(
         destination: *mut c_uint,
@@ -108,6 +116,15 @@ unsafe extern "C" {
         index_count: usize,
         remap: *const c_uint,
     );
+
+    pub fn meshopt_filterIndexBufferMulti(
+        destination: *mut c_uint,
+        indices: *const c_uint,
+        index_count: usize,
+        vertex_count: usize,
+        streams: *const MeshoptStream,
+        stream_count: usize,
+    ) -> usize;
 
     pub fn meshopt_filterIndexBuffer(
         destination: *mut c_uint,

@@ -1,0 +1,635 @@
+diff --git a/third_party/ufbx-write/ufbx_write.c b/third_party/ufbx-write/ufbx_write.c
+index 723cebe..219f98d 100644
+--- a/third_party/ufbx-write/ufbx_write.c
++++ b/third_party/ufbx-write/ufbx_write.c
+@@ -1488,6 +1488,7 @@ static bool ufbxwi_id_list_remove_one(void *p_list, ufbxw_id id)
+ UFBXWI_LIST_TYPE(ufbxwi_uint32_list, uint32_t);
+ UFBXWI_LIST_TYPE(ufbxwi_ktime_list, ufbxw_ktime);
+ UFBXWI_LIST_TYPE(ufbxwi_real_list, ufbxw_real);
++UFBXWI_LIST_TYPE(ufbxwi_int32_list, int32_t);
+ UFBXWI_LIST_TYPE(ufbxwi_float_list, float);
+ UFBXWI_LIST_TYPE(ufbxwi_byte_list, char);
+ 
+@@ -3837,6 +3838,23 @@ typedef enum ufbxwi_token {
+ 	UFBXWI_d_X,
+ 	UFBXWI_d_Y,
+ 	UFBXWI_d_Z,
++	// review patches P2/P4
++	UFBXWI_Alphas,
++	UFBXWI_BlendModes,
++	UFBXWI_DisplayLevels,
++	UFBXWI_FbxLODGroup,
++	UFBXWI_FbxLayeredTexture,
++	UFBXWI_FbxNull,
++	UFBXWI_LayeredTexture,
++	UFBXWI_LodGroup,
++	UFBXWI_Look,
++	UFBXWI_MaxDistance,
++	UFBXWI_MinDistance,
++	UFBXWI_MinMaxDistance,
++	UFBXWI_Null,
++	UFBXWI_Thresholds,
++	UFBXWI_ThresholdsUsedAsPercentage,
++	UFBXWI_WorldSpace,
+ 	UFBXWI_TOKEN_COUNT,
+ 	UFBXWI_TOKEN_FORCE_32BIT = 0x7fffffff,
+ } ufbxwi_token;
+@@ -4244,6 +4262,23 @@ static const ufbxw_string ufbxwi_tokens[] = {
+ 	{ "d|X", 3 },
+ 	{ "d|Y", 3 },
+ 	{ "d|Z", 3 },
++	// review patches P2/P4
++	{ "Alphas", 6 },
++	{ "BlendModes", 10 },
++	{ "DisplayLevels", 13 },
++	{ "FbxLODGroup", 11 },
++	{ "FbxLayeredTexture", 17 },
++	{ "FbxNull", 7 },
++	{ "LayeredTexture", 14 },
++	{ "LodGroup", 8 },
++	{ "Look", 4 },
++	{ "MaxDistance", 11 },
++	{ "MinDistance", 11 },
++	{ "MinMaxDistance", 14 },
++	{ "Null", 4 },
++	{ "Thresholds", 10 },
++	{ "ThresholdsUsedAsPercentage", 26 },
++	{ "WorldSpace", 10 },
+ };
+ 
+ // Not including none
+@@ -5414,6 +5449,10 @@ typedef struct {
+ 	ufbxw_string filename;
+ 	ufbxw_string relative_filename;
+ 	ufbxw_video video;
++	// review patch P4: `LayeredTexture` state, parallel to the layer connections in order
++	bool layered;
++	ufbxwi_int32_list blend_modes;
++	ufbxwi_real_list alphas;
+ } ufbxwi_texture;
+ 
+ typedef struct {
+@@ -5701,6 +5740,7 @@ static const ufbxwi_object_desc ufbxwi_object_types[] = {
+ 	{ UFBXWI_Implementation },
+ 	{ UFBXWI_BindingTable },
+ 	{ UFBXWI_Texture },
++	{ UFBXWI_LayeredTexture }, // review patch P4
+ 	{ UFBXWI_Video },
+ 	{ UFBXWI_Model },
+ 	{ UFBXWI_AnimationCurveNode },
+@@ -5744,6 +5784,7 @@ typedef struct {
+ 	ufbxw_real double_200;
+ 	ufbxw_real double_320;
+ 	ufbxw_real double_4000;
++	ufbxw_real double_neg100; // review patch P4
+ 	ufbxw_real double_0_5;
+ 	ufbxw_real double_0_816;
+ 	ufbxw_real double_0_612;
+@@ -5781,6 +5822,7 @@ static const ufbxwi_prop_defaults ufbxwi_prop_default_data = {
+ 	(ufbxw_real)200.0,
+ 	(ufbxw_real)320.0,
+ 	(ufbxw_real)4000.0,
++	(ufbxw_real)-100.0,
+ 	(ufbxw_real)0.5,
+ 	(ufbxw_real)0.816,
+ 	(ufbxw_real)0.612,
+@@ -6063,6 +6105,44 @@ static const ufbxwi_prop_desc ufbxwi_skeleton_props[] = {
+ 	{ UFBXWI_LimbLength, UFBXW_PROP_TYPE_DOUBLE, ufbxwi_field(ufbxwi_skeleton, limb_length), ufbxwi_default(double_1) },
+ };
+ 
++// review patch P2: `FbxNull` template
++static const ufbxwi_prop_desc ufbxwi_null_props[] = {
++	{ UFBXWI_Color, UFBXW_PROP_TYPE_COLOR, ufbxwi_default(vec3_color) },
++	{ UFBXWI_Size, UFBXW_PROP_TYPE_DOUBLE, ufbxwi_default(double_100) },
++	{ UFBXWI_Look, UFBXW_PROP_TYPE_ENUM, ufbxwi_default(int_1) },
++};
++
++// review patch P4: `FbxLODGroup` template. The per-level `Thresholds|Level<n>` / `DisplayLevels|Level<n>`
++// properties are added per element by `ufbxw_lod_group_add_level()`.
++static const ufbxwi_prop_desc ufbxwi_lod_group_props[] = {
++	{ UFBXWI_Color, UFBXW_PROP_TYPE_COLOR, ufbxwi_default(vec3_color) },
++	{ UFBXWI_MinMaxDistance, UFBXW_PROP_TYPE_BOOL },
++	{ UFBXWI_MinDistance, UFBXW_PROP_TYPE_DOUBLE, ufbxwi_default(double_neg100) },
++	{ UFBXWI_MaxDistance, UFBXW_PROP_TYPE_DOUBLE, ufbxwi_default(double_100) },
++	{ UFBXWI_WorldSpace, UFBXW_PROP_TYPE_BOOL },
++	{ UFBXWI_ThresholdsUsedAsPercentage, UFBXW_PROP_TYPE_BOOL },
++};
++
++// review patch P4: `FbxLayeredTexture` template
++static const ufbxwi_prop_desc ufbxwi_layered_texture_props[] = {
++	{ UFBXWI_TextureTypeUse, UFBXW_PROP_TYPE_ENUM, },
++	{ UFBXWI_Texture_alpha, UFBXW_PROP_TYPE_NUMBER, ufbxwi_default(double_1), 0, UFBXW_PROP_FLAG_ANIMATABLE },
++	{ UFBXWI_CurrentMappingType, UFBXW_PROP_TYPE_ENUM, },
++	{ UFBXWI_WrapModeU, UFBXW_PROP_TYPE_ENUM, },
++	{ UFBXWI_WrapModeV, UFBXW_PROP_TYPE_ENUM, },
++	{ UFBXWI_UVSwap, UFBXW_PROP_TYPE_BOOL, },
++	{ UFBXWI_PremultiplyAlpha, UFBXW_PROP_TYPE_BOOL, ufbxwi_default(bool_true) },
++	{ UFBXWI_Translation, UFBXW_PROP_TYPE_VECTOR, 0, 0, UFBXW_PROP_FLAG_ANIMATABLE },
++	{ UFBXWI_Rotation, UFBXW_PROP_TYPE_VECTOR, 0, 0, UFBXW_PROP_FLAG_ANIMATABLE  },
++	{ UFBXWI_Scaling, UFBXW_PROP_TYPE_VECTOR, ufbxwi_default(vec3_1), 0, UFBXW_PROP_FLAG_ANIMATABLE },
++	{ UFBXWI_TextureRotationPivot, UFBXW_PROP_TYPE_VECTOR3D, },
++	{ UFBXWI_TextureScalingPivot, UFBXW_PROP_TYPE_VECTOR3D, },
++	{ UFBXWI_CurrentTextureBlendMode, UFBXW_PROP_TYPE_ENUM, ufbxwi_default(int_1) },
++	{ UFBXWI_UVSet, UFBXW_PROP_TYPE_STRING, ufbxwi_default(string_default) },
++	{ UFBXWI_UseMaterial, UFBXW_PROP_TYPE_BOOL },
++	{ UFBXWI_UseMipMap, UFBXW_PROP_TYPE_BOOL },
++};
++
+ static const ufbxwi_prop_desc ufbxwi_scene_info_props[] = {
+ 	{ UFBXWI_DocumentUrl, UFBXW_PROP_TYPE_URL, ufbxwi_field(ufbxwi_scene_info, document_url) },
+ 	{ UFBXWI_SrcDocumentUrl, UFBXW_PROP_TYPE_URL, ufbxwi_field(ufbxwi_scene_info, src_document_url) },
+@@ -6926,6 +7006,17 @@ static bool ufbxwi_init_file_texture(ufbxw_scene *scene, void *data)
+ 	return true;
+ }
+ 
++// review patch P4
++static bool ufbxwi_init_layered_texture(ufbxw_scene *scene, void *data)
++{
++	ufbxwi_texture *texture = (ufbxwi_texture*)data;
++	texture->type.data = ufbxwi_empty_char;
++	texture->filename.data = ufbxwi_empty_char;
++	texture->relative_filename.data = ufbxwi_empty_char;
++	texture->layered = true;
++	return true;
++}
++
+ static bool ufbxwi_init_video(ufbxw_scene *scene, void *data)
+ {
+ 	ufbxwi_video *video = (ufbxwi_video*)data;
+@@ -7045,6 +7136,18 @@ static const ufbxwi_element_type_desc ufbxwi_element_types[] = {
+ 		ufbxwi_skeleton_props, ufbxwi_arraycount(ufbxwi_skeleton_props), &ufbxwi_init_skeleton_root,
+ 		0,
+ 	},
++	{
++		// review patch P2
++		UFBXW_ELEMENT_NODE_ATTRIBUTE, UFBXWI_Null, UFBXWI_Null, UFBXWI_NodeAttribute, UFBXWI_NodeAttribute, UFBXWI_FbxNull,
++		ufbxwi_null_props, ufbxwi_arraycount(ufbxwi_null_props), NULL,
++		0,
++	},
++	{
++		// review patch P4
++		UFBXW_ELEMENT_NODE_ATTRIBUTE, UFBXWI_LodGroup, UFBXWI_LodGroup, UFBXWI_NodeAttribute, UFBXWI_NodeAttribute, UFBXWI_FbxLODGroup,
++		ufbxwi_lod_group_props, ufbxwi_arraycount(ufbxwi_lod_group_props), NULL,
++		0,
++	},
+ 	{
+ 		UFBXW_ELEMENT_BIND_POSE, UFBXWI_TOKEN_NONE, UFBXWI_BindPose, UFBXWI_Pose, UFBXWI_Pose, UFBXWI_TOKEN_NONE,
+ 		NULL, 0, NULL,
+@@ -7105,6 +7208,12 @@ static const ufbxwi_element_type_desc ufbxwi_element_types[] = {
+ 		ufbxwi_file_texture_props, ufbxwi_arraycount(ufbxwi_file_texture_props), &ufbxwi_init_file_texture,
+ 		0,
+ 	},
++	{
++		// review patch P4
++		UFBXW_ELEMENT_TEXTURE, UFBXWI_FbxLayeredTexture, UFBXWI_TOKEN_EMPTY, UFBXWI_LayeredTexture, UFBXWI_LayeredTexture, UFBXWI_FbxLayeredTexture,
++		ufbxwi_layered_texture_props, ufbxwi_arraycount(ufbxwi_layered_texture_props), &ufbxwi_init_layered_texture,
++		0,
++	},
+ 	{
+ 		UFBXW_ELEMENT_VIDEO, UFBXWI_TOKEN_NONE, UFBXWI_TOKEN_EMPTY, UFBXWI_Video, UFBXWI_Video, UFBXWI_FbxVideo,
+ 		ufbxwi_video_props, ufbxwi_arraycount(ufbxwi_video_props), &ufbxwi_init_video,
+@@ -7934,7 +8043,8 @@ static void ufbxwi_collect_src_connections(const ufbxw_scene *scene, ufbxwi_allo
+ 	ufbxwi_conn_collect_conns(scene, ator, conns, dst_type, dst_data);
+ }
+ 
+-static ufbxw_anim_prop ufbxwi_animate_prop(ufbxw_scene *scene, ufbxw_id id, ufbxwi_token prop, ufbxw_anim_layer layer)
++// review patch P5: `curve_mask` selects the components that get a curve
++static ufbxw_anim_prop ufbxwi_animate_prop(ufbxw_scene *scene, ufbxw_id id, ufbxwi_token prop, ufbxw_anim_layer layer, uint32_t curve_mask)
+ {
+ 	ufbxwi_element *element = ufbxwi_get_element(scene, id);
+ 	if (!element) return ufbxw_null_anim_prop;
+@@ -8015,8 +8125,6 @@ static ufbxw_anim_prop ufbxwi_animate_prop(ufbxw_scene *scene, ufbxw_id id, ufbx
+ 	}
+ 
+ 	for (size_t i = 0; i < curve_count; i++) {
+-		ufbxw_anim_curve curve = { ufbxw_create_element(scene, UFBXW_ELEMENT_ANIM_CURVE) };
+-
+ 		ufbxwi_token prop_name = i == 0 ? first_curve_prop : curve_props[i];
+ 
+ 		// Manually add the properties so we can point them to the known default values
+@@ -8030,6 +8138,10 @@ static ufbxw_anim_prop ufbxwi_animate_prop(ufbxw_scene *scene, ufbxw_id id, ufbx
+ 		p->flags = UFBXW_PROP_FLAG_ANIMATABLE;
+ 		p->value = ufbxwi_prop_value_field(offsetof(ufbxwi_anim_prop, defaults) + i * sizeof(ufbxw_real));
+ 
++		// review patch P5: the default property is always present, the curve only when asked for
++		if ((curve_mask & (1u << i)) == 0) continue;
++
++		ufbxw_anim_curve curve = { ufbxw_create_element(scene, UFBXW_ELEMENT_ANIM_CURVE) };
+ 		ufbxwi_connect_imp(scene, UFBXW_CONNECTION_ANIM_CURVE_PROP, curve.id, anim.id, 0, prop_name, 0);
+ 	}
+ 
+@@ -8497,6 +8609,12 @@ static const ufbxwi_mesh_attribute_info ufbxwi_mesh_attribute_infos[] = {
+ 	{ "LayerElementColor", "Colors", "ColorIndex", 101, 4, UFBXWI_MESH_ATTRIBUTE_TYPE_VEC4 | UFBXWI_MESH_ATTRIBUTE_FLAG_REQUIRE_INDICES },
+ 	{ "LayerElementSmoothing", "Smoothing", "", 102, 6, UFBXWI_MESH_ATTRIBUTE_TYPE_INT | UFBXWI_MESH_ATTRIBUTE_FLAG_FORBID_INDICES },
+ 	{ "LayerElementMaterial", NULL, "Materials", 101, 7, UFBXWI_MESH_ATTRIBUTE_TYPE_NONE | UFBXWI_MESH_ATTRIBUTE_FLAG_REQUIRE_INDICES },
++	// review patch P3. Hole/Visibility are booleans in the FBX SDK; written as int arrays (0/1) like Smoothing, which every reader converts.
++	{ "LayerElementEdgeCrease", "EdgeCrease", NULL, 101, 8, UFBXWI_MESH_ATTRIBUTE_TYPE_REAL | UFBXWI_MESH_ATTRIBUTE_FLAG_FORBID_INDICES },
++	{ "LayerElementVertexCrease", "VertexCrease", "VertexCreaseIndex", 101, 9, UFBXWI_MESH_ATTRIBUTE_TYPE_REAL },
++	{ "LayerElementHole", "Hole", NULL, 101, 10, UFBXWI_MESH_ATTRIBUTE_TYPE_INT | UFBXWI_MESH_ATTRIBUTE_FLAG_FORBID_INDICES },
++	{ "LayerElementVisibility", "Visibility", NULL, 101, 11, UFBXWI_MESH_ATTRIBUTE_TYPE_INT | UFBXWI_MESH_ATTRIBUTE_FLAG_FORBID_INDICES },
++	{ "LayerElementPolygonGroup", "PolygonGroup", NULL, 101, 12, UFBXWI_MESH_ATTRIBUTE_TYPE_INT | UFBXWI_MESH_ATTRIBUTE_FLAG_FORBID_INDICES },
+ };
+ 
+ static const ufbxwi_attribute_mapping_info ufbxwi_attribute_mapping_infos[] = {
+@@ -10035,6 +10153,11 @@ static void ufbxwi_ascii_dom_write(ufbxwi_save_context *sc, const char *tag, con
+ 			ufbxw_string str = sc->scene->string_pool.tokens.data[token];
+ 			ufbxwi_ascii_dom_string(sc, str.data, str.length);
+ 		} break;
++		case 'R': {
++			// review patch P1
++			ufbxw_blob value = va_arg(args, ufbxw_blob);
++			ufbxwi_ascii_dom_string(sc, (const char*)value.data, value.size);
++		} break;
+ 		default:
+ 			ufbxwi_unreachable("bad format specifier");
+ 		}
+@@ -11065,7 +11188,8 @@ static void ufbxwi_save_props(ufbxwi_save_context *sc, const ufbxwi_element *ele
+ 
+ 			// Skip writing if the value matches the template
+ 			// TODO: Force saving properties that are animated
+-			if (tmpl_prop != NULL && tmpl_prop->type == base->type) {
++			// review patch P1: unless the user asked for it to be written explicitly
++			if (tmpl_prop != NULL && tmpl_prop->type == base->type && (base->flags & UFBXW_PROP_FLAG_EXPLICIT) == 0) {
+ 				const void *base_data = ufbxwi_resolve_prop_value(element, base->value);
+ 				const void *tmpl_data = ufbxwi_resolve_prop_value(tmpl, tmpl_prop->value);
+ 				size_t data_size = ufbxwi_prop_data_infos[scene->prop_types.data[base->type].data_type].size;
+@@ -11099,10 +11223,18 @@ static void ufbxwi_save_props(ufbxwi_save_context *sc, const ufbxwi_element *ele
+ 		const ufbxwi_prop_type *type = &scene->prop_types.data[p->type];
+ 		const void *data = ufbxwi_resolve_prop_value(element, p->value);
+ 
+-		// TODO: Proper flags
++		// review patch P1: the FBX SDK joins flags with '+' ("A+U", "A+U+H")
+ 		char flags[16];
+ 		char *flag = flags;
+ 		if (p->flags & UFBXW_PROP_FLAG_ANIMATABLE) *flag++ = 'A';
++		if (p->flags & UFBXW_PROP_FLAG_USER) {
++			if (flag != flags) *flag++ = '+';
++			*flag++ = 'U';
++		}
++		if (p->flags & UFBXW_PROP_FLAG_HIDDEN) {
++			if (flag != flags) *flag++ = '+';
++			*flag++ = 'H';
++		}
+ 		*flag++ = '\0';
+ 		ufbxw_assert(flag <= flags + sizeof(flags));
+ 
+@@ -11150,8 +11282,9 @@ static void ufbxwi_save_props(ufbxwi_save_context *sc, const ufbxwi_element *ele
+ 			ufbxwi_dom_value(sc, "P", "SSSCDS", name, type->type, type->sub_type, flags, d->value, d->string);
+ 		} break;
+ 		case UFBXW_PROP_DATA_BLOB: {
++			// review patch P1
+ 			const ufbxw_blob *d = (const ufbxw_blob*)data;
+-			ufbxw_assert(0 && "TODO");
++			ufbxwi_dom_value(sc, "P", "SSSCR", name, type->type, type->sub_type, flags, *d);
+ 		} break;
+ 		case UFBXW_PROP_DATA_USER_INT: {
+ 			const ufbxw_user_int *d = (const ufbxw_user_int*)data;
+@@ -11741,8 +11874,10 @@ static void ufbxwi_save_element(ufbxwi_save_context *sc, ufbxwi_element *element
+ 		ufbxwi_dom_value(sc, "Version", "I", 100);
+ 	} else if (type == UFBXW_ELEMENT_TEXTURE) {
+ 		const ufbxwi_texture *texture = (const ufbxwi_texture*)element;
+-		ufbxwi_dom_value(sc, "Type", "S", texture->type);
+-		ufbxwi_dom_value(sc, "Version", "I", 202);
++		if (!texture->layered) {
++			ufbxwi_dom_value(sc, "Type", "S", texture->type);
++			ufbxwi_dom_value(sc, "Version", "I", 202);
++		}
+ 	} else if (type == UFBXW_ELEMENT_VIDEO) {
+ 		ufbxwi_dom_value(sc, "Type", "C", "Clip");
+ 	}
+@@ -11802,6 +11937,17 @@ static void ufbxwi_save_element(ufbxwi_save_context *sc, ufbxwi_element *element
+ 		ufbxwi_save_skeleton(sc, (ufbxwi_skeleton*)element);
+ 	}
+ 
++	// review patch P2: a `Null` attribute declares itself like the SDK does; a LOD group has no body beyond its properties.
++	if (type == UFBXW_ELEMENT_NODE_ATTRIBUTE && et->sub_type == UFBXWI_Null) {
++		ufbxwi_dom_value(sc, "TypeFlags", "C", "Null");
++	}
++
++	// review patch P2: cameras were written without their `TypeFlags`
++	if (type == UFBXW_ELEMENT_CAMERA) {
++		ufbxwi_dom_value(sc, "TypeFlags", "C", "Camera");
++		ufbxwi_dom_value(sc, "GeometryVersion", "I", 124);
++	}
++
+ 	if (type == UFBXW_ELEMENT_BIND_POSE) {
+ 		ufbxwi_save_bind_pose(sc, (ufbxwi_bind_pose*)element);
+ 	}
+@@ -11826,8 +11972,16 @@ static void ufbxwi_save_element(ufbxwi_save_context *sc, ufbxwi_element *element
+ 
+ 	if (type == UFBXW_ELEMENT_TEXTURE) {
+ 		const ufbxwi_texture *texture = (const ufbxwi_texture*)element;
+-		ufbxwi_dom_value(sc, "FileName", "S", texture->filename);
+-		ufbxwi_dom_value(sc, "RelativeFilename", "S", texture->relative_filename);
++		if (texture->layered) {
++			// review patch P4: per-layer arrays, parallel to the layer connections
++			ufbxw_buffer_id blend_modes = ufbxwi_create_external_buffer(&sc->buffers, UFBXWI_BUFFER_TYPE_INT, texture->blend_modes.data, texture->blend_modes.count, 0);
++			ufbxw_buffer_id alphas = ufbxwi_create_external_buffer(&sc->buffers, UFBXWI_BUFFER_TYPE_REAL, texture->alphas.data, texture->alphas.count, 0);
++			ufbxwi_dom_array(sc, "BlendModes", blend_modes);
++			ufbxwi_dom_array(sc, "Alphas", alphas);
++		} else {
++			ufbxwi_dom_value(sc, "FileName", "S", texture->filename);
++			ufbxwi_dom_value(sc, "RelativeFilename", "S", texture->relative_filename);
++		}
+ 	}
+ 
+ 	if (type == UFBXW_ELEMENT_VIDEO) {
+@@ -13171,6 +13325,57 @@ ufbxw_abi void ufbxw_set_string(ufbxw_scene *scene, ufbxw_id id, const char *pro
+ 	ufbxwi_set_prop(scene, id, prop, strlen(prop), &str, UFBXW_PROP_DATA_STRING);
+ }
+ 
++// review patch P1
++ufbxw_abi void ufbxw_add_real_string(ufbxw_scene *scene, ufbxw_id id, const char *prop, ufbxw_prop_type type, ufbxw_real value, const char *str)
++{
++	ufbxw_real_string rs;
++	rs.value = value;
++	if (!ufbxwi_intern_string(&scene->string_pool, &rs.string, str, strlen(str))) return;
++	ufbxwi_add_prop(scene, id, prop, strlen(prop), type, &rs, UFBXW_PROP_DATA_REAL_STRING);
++}
++
++ufbxw_abi void ufbxw_add_blob(ufbxw_scene *scene, ufbxw_id id, const char *prop, ufbxw_prop_type type, const void *data, size_t size)
++{
++	ufbxw_blob blob;
++	blob.size = size;
++	if (size > 0) {
++		void *copy = ufbxwi_alloc_size(&scene->ator, 1, size, NULL);
++		if (!copy) return;
++		memcpy(copy, data, size);
++		blob.data = copy;
++	} else {
++		blob.data = ufbxwi_empty_char;
++	}
++	ufbxwi_add_prop(scene, id, prop, strlen(prop), type, &blob, UFBXW_PROP_DATA_BLOB);
++}
++
++ufbxw_abi void ufbxw_set_prop_flags(ufbxw_scene *scene, ufbxw_id id, const char *prop, uint32_t flags)
++{
++	ufbxwi_token token = ufbxwi_get_token(&scene->string_pool, prop, strlen(prop));
++	ufbxwi_element *element = ufbxwi_get_element(scene, id);
++	if (!token || !element) return;
++
++	ufbxwi_prop *p = ufbxwi_element_edit_prop(scene, element, token);
++	if (!p) {
++		ufbxwi_failf(&scene->error, UFBXW_ERROR_PROP_NOT_FOUND, "Property not found: %s", prop);
++		return;
++	}
++
++	uint32_t mask = UFBXW_PROP_FLAG_ANIMATABLE | UFBXW_PROP_FLAG_USER | UFBXW_PROP_FLAG_HIDDEN | UFBXW_PROP_FLAG_EXPLICIT;
++	p->flags = (p->flags & ~mask) | (flags & mask);
++}
++
++ufbxw_abi uint32_t ufbxw_get_prop_flags(ufbxw_scene *scene, ufbxw_id id, const char *prop)
++{
++	ufbxwi_token token = ufbxwi_get_token(&scene->string_pool, prop, strlen(prop));
++	ufbxwi_element *element = ufbxwi_get_element(scene, id);
++	if (!token || !element) return 0;
++
++	ufbxwi_prop *p = ufbxwi_element_find_prop(scene, element, token);
++	if (!p) return 0;
++	return p->flags & (UFBXW_PROP_FLAG_ANIMATABLE | UFBXW_PROP_FLAG_USER | UFBXW_PROP_FLAG_HIDDEN | UFBXW_PROP_FLAG_EXPLICIT);
++}
++
+ ufbxw_abi void ufbxw_add_bool(ufbxw_scene *scene, ufbxw_id id, const char *prop, ufbxw_prop_type type, bool value)
+ {
+ 	ufbxwi_add_prop(scene, id, prop, strlen(prop), type, &value, UFBXW_PROP_DATA_BOOL);
+@@ -13291,7 +13496,21 @@ ufbxw_abi ufbxw_anim_prop ufbxw_animate_prop_len(ufbxw_scene *scene, ufbxw_id id
+ 	ufbxwi_token token = ufbxwi_intern_token(&scene->string_pool, prop, prop_len);
+ 	if (!token) return ufbxw_null_anim_prop;
+ 
+-	return ufbxwi_animate_prop(scene, id, token, layer);
++	return ufbxwi_animate_prop(scene, id, token, layer, ~0u);
++}
++
++// review patch P5
++ufbxw_abi ufbxw_anim_prop ufbxw_animate_prop_masked(ufbxw_scene *scene, ufbxw_id id, const char *prop, ufbxw_anim_layer layer, uint32_t curve_mask)
++{
++	return ufbxw_animate_prop_masked_len(scene, id, prop, strlen(prop), layer, curve_mask);
++}
++
++ufbxw_abi ufbxw_anim_prop ufbxw_animate_prop_masked_len(ufbxw_scene *scene, ufbxw_id id, const char *prop, size_t prop_len, ufbxw_anim_layer layer, uint32_t curve_mask)
++{
++	ufbxwi_token token = ufbxwi_intern_token(&scene->string_pool, prop, prop_len);
++	if (!token) return ufbxw_null_anim_prop;
++
++	return ufbxwi_animate_prop(scene, id, token, layer, curve_mask);
+ }
+ 
+ ufbxw_abi ufbxw_template ufbxw_get_element_template(ufbxw_scene *scene, ufbxw_id id)
+@@ -13603,17 +13822,17 @@ ufbxw_abi bool ufbxw_node_get_visibility_inheritance(ufbxw_scene *scene, ufbxw_n
+ 
+ ufbxw_abi ufbxw_anim_prop ufbxw_node_animate_translation(ufbxw_scene *scene, ufbxw_node node, ufbxw_anim_layer layer)
+ {
+-	return ufbxwi_animate_prop(scene, node.id, UFBXWI_Lcl_Translation, layer);
++	return ufbxwi_animate_prop(scene, node.id, UFBXWI_Lcl_Translation, layer, ~0u);
+ }
+ 
+ ufbxw_abi ufbxw_anim_prop ufbxw_node_animate_rotation(ufbxw_scene *scene, ufbxw_node node, ufbxw_anim_layer layer)
+ {
+-	return ufbxwi_animate_prop(scene, node.id, UFBXWI_Lcl_Rotation, layer);
++	return ufbxwi_animate_prop(scene, node.id, UFBXWI_Lcl_Rotation, layer, ~0u);
+ }
+ 
+ ufbxw_abi ufbxw_anim_prop ufbxw_node_animate_scaling(ufbxw_scene *scene, ufbxw_node node, ufbxw_anim_layer layer)
+ {
+-	return ufbxwi_animate_prop(scene, node.id, UFBXWI_Lcl_Scaling, layer);
++	return ufbxwi_animate_prop(scene, node.id, UFBXWI_Lcl_Scaling, layer, ~0u);
+ }
+ 
+ ufbxw_abi ufbxw_transform ufbxw_node_get_local_transform(ufbxw_scene *scene, ufbxw_node node)
+@@ -13872,6 +14091,50 @@ ufbxw_abi ufbxw_bone ufbxw_create_bone(ufbxw_scene *scene, ufbxw_bone_type type,
+ 	return bone;
+ }
+ 
++// review patch P2
++ufbxw_abi ufbxw_null ufbxw_create_null(ufbxw_scene *scene, ufbxw_node node)
++{
++	ufbxw_null null_attr = { ufbxw_create_element_ex(scene, UFBXW_ELEMENT_NODE_ATTRIBUTE, "Null") };
++	if (node.id) {
++		ufbxwi_connect(scene, UFBXW_CONNECTION_NODE_ATTRIBUTE, null_attr.id, node.id, 0);
++	}
++	return null_attr;
++}
++
++// review patch P4
++ufbxw_abi ufbxw_lod_group ufbxw_create_lod_group(ufbxw_scene *scene, ufbxw_node node)
++{
++	ufbxw_lod_group group = { ufbxw_create_element_ex(scene, UFBXW_ELEMENT_NODE_ATTRIBUTE, "LodGroup") };
++	if (node.id) {
++		ufbxwi_connect(scene, UFBXW_CONNECTION_NODE_ATTRIBUTE, group.id, node.id, 0);
++	}
++	return group;
++}
++
++ufbxw_abi void ufbxw_lod_group_add_level(ufbxw_scene *scene, ufbxw_lod_group group, ufbxw_real distance, int32_t display)
++{
++	ufbxwi_element *element = ufbxwi_get_element(scene, group.id);
++	ufbxwi_check_element(scene, group.id, element);
++
++	// The level count is the number of `DisplayLevels|Level<n>` properties already present.
++	char name[64];
++	size_t level = 0;
++	for (;;) {
++		int len = snprintf(name, sizeof(name), "DisplayLevels|Level%zu", level);
++		ufbxwi_token token = ufbxwi_get_token(&scene->string_pool, name, (size_t)len);
++		if (!token || !ufbxwi_props_find_prop(&element->props, token)) break;
++		level++;
++	}
++
++	if (level > 0) {
++		// Level `n` starts at `Thresholds|Level<n-1>`; the first level has no threshold.
++		snprintf(name, sizeof(name), "Thresholds|Level%zu", level - 1);
++		ufbxw_add_real_string(scene, group.id, name, UFBXW_PROP_TYPE_DISTANCE, distance, "cm");
++	}
++	snprintf(name, sizeof(name), "DisplayLevels|Level%zu", level);
++	ufbxw_add_int(scene, group.id, name, UFBXW_PROP_TYPE_ENUM, display);
++}
++
+ ufbxw_abi void ufbxw_mesh_set_uvs(ufbxw_scene *scene, ufbxw_mesh mesh, int32_t set, ufbxw_vec2_buffer uvs, ufbxw_attribute_mapping mapping)
+ {
+ 	ufbxw_mesh_attribute_desc desc = { 0 };
+@@ -14381,11 +14644,34 @@ ufbxw_abi ufbxw_texture ufbxw_create_texture(ufbxw_scene *scene, ufbxw_texture_t
+ 	case UFBXW_TEXTURE_FILE:
+ 		type_name = "FbxFileTexture";
+ 		break;
++	case UFBXW_TEXTURE_LAYERED:
++		type_name = "FbxLayeredTexture"; // review patch P4
++		break;
+ 	}
+ 	ufbxw_texture texture = { ufbxw_create_element_ex(scene, UFBXW_ELEMENT_TEXTURE, type_name) };
+ 	return texture;
+ }
+ 
++// review patch P4
++ufbxw_abi void ufbxw_texture_add_layer(ufbxw_scene *scene, ufbxw_texture layered, ufbxw_texture layer, int32_t blend_mode, ufbxw_real alpha)
++{
++	ufbxwi_texture *td = ufbxwi_get_texture(scene, layered);
++	ufbxwi_check_element(scene, layered.id, td);
++	ufbxwi_check_element(scene, layer.id, ufbxwi_get_texture(scene, layer));
++	if (!td->layered) {
++		ufbxwi_failf(&scene->error, UFBXW_ERROR_WRONG_DATA_TYPE, "Texture is not a layered texture");
++		return;
++	}
++
++	int32_t *mode = ufbxwi_list_push_copy(&scene->ator, &td->blend_modes, int32_t, &blend_mode);
++	ufbxwi_check(mode);
++	ufbxw_real *a = ufbxwi_list_push_copy(&scene->ator, &td->alphas, ufbxw_real, &alpha);
++	ufbxwi_check(a);
++
++	// The layer order is the connection order; the generic connection is the only one a texture -> texture pair matches.
++	ufbxwi_connect(scene, UFBXW_CONNECTION_CUSTOM, layer.id, layered.id, 0);
++}
++
+ ufbxw_abi void ufbxw_texture_set_video(ufbxw_scene *scene, ufbxw_texture texture, ufbxw_video video)
+ {
+ 	ufbxwi_set_src_connection(scene, UFBXW_CONNECTION_VIDEO_TEXTURE, video.id, texture.id);
+diff --git a/third_party/ufbx-write/ufbx_write.h b/third_party/ufbx-write/ufbx_write.h
+index 036a95a..2706a2e 100644
+--- a/third_party/ufbx-write/ufbx_write.h
++++ b/third_party/ufbx-write/ufbx_write.h
+@@ -207,6 +207,8 @@ typedef struct ufbxw_cache_file { ufbxw_id id; } ufbxw_cache_file;
+ typedef struct ufbxw_light { ufbxw_id id; } ufbxw_light;
+ typedef struct ufbxw_camera { ufbxw_id id; } ufbxw_camera;
+ typedef struct ufbxw_bone { ufbxw_id id; } ufbxw_bone;
++typedef struct ufbxw_null { ufbxw_id id; } ufbxw_null;
++typedef struct ufbxw_lod_group { ufbxw_id id; } ufbxw_lod_group;
+ typedef struct ufbxw_bind_pose { ufbxw_id id; } ufbxw_bind_pose;
+ typedef struct ufbxw_material { ufbxw_id id; } ufbxw_material;
+ typedef struct ufbxw_implementation { ufbxw_id id; } ufbxw_implementation;
+@@ -445,6 +447,10 @@ typedef enum ufbxw_prop_data_type {
+ typedef enum ufbxw_prop_flag {
+ 	UFBXW_PROP_FLAG_ANIMATABLE = 0x1,
+ 	UFBXW_PROP_FLAG_USER = 0x2,
++	UFBXW_PROP_FLAG_HIDDEN = 0x4,
++	// review patch P1: always write the property, even when its value equals the template's.
++	// Not itself written to the file. For carrying a source's explicit properties through verbatim.
++	UFBXW_PROP_FLAG_EXPLICIT = 0x8,
+ } ufbxw_prop_flag;
+ 
+ typedef enum ufbxw_prop_type {
+@@ -640,6 +646,12 @@ typedef enum ufbxw_mesh_attribute {
+ 	UFBXW_MESH_ATTRIBUTE_COLOR,
+ 	UFBXW_MESH_ATTRIBUTE_SMOOTHING,
+ 	UFBXW_MESH_ATTRIBUTE_MATERIAL,
++	// review patch P3: subdivision/topology layers
++	UFBXW_MESH_ATTRIBUTE_EDGE_CREASE,   // `LayerElementEdgeCrease`, real, ByEdge
++	UFBXW_MESH_ATTRIBUTE_VERTEX_CREASE, // `LayerElementVertexCrease`, real, ByVertice
++	UFBXW_MESH_ATTRIBUTE_HOLE,          // `LayerElementHole`, int (0/1), ByPolygon
++	UFBXW_MESH_ATTRIBUTE_VISIBILITY,    // `LayerElementVisibility`, int (0/1), ByEdge
++	UFBXW_MESH_ATTRIBUTE_POLYGON_GROUP, // `LayerElementPolygonGroup`, int, ByPolygon
+ 
+ 	UFBXW_MESH_ATTRIBUTE_FIRST_CUSTOM,
+ } ufbxw_mesh_attribute;
+@@ -813,6 +825,17 @@ ufbxw_abi void ufbxw_add_vec3(ufbxw_scene *scene, ufbxw_id id, const char *prop,
+ ufbxw_abi void ufbxw_add_vec4(ufbxw_scene *scene, ufbxw_id id, const char *prop, ufbxw_prop_type type, ufbxw_vec4 value);
+ ufbxw_abi void ufbxw_add_string(ufbxw_scene *scene, ufbxw_id id, const char *prop, ufbxw_prop_type type, const char *value);
+ 
++// review patch P1: value kinds `ufbxw_add_*` did not cover, and explicit property flags.
++// `ufbxw_add_real_string()` is for `UFBXW_PROP_TYPE_DISTANCE` (a number plus a unit string).
++// `ufbxw_add_blob()` copies the bytes into the scene.
++ufbxw_abi void ufbxw_add_real_string(ufbxw_scene *scene, ufbxw_id id, const char *prop, ufbxw_prop_type type, ufbxw_real value, const char *str);
++ufbxw_abi void ufbxw_add_blob(ufbxw_scene *scene, ufbxw_id id, const char *prop, ufbxw_prop_type type, const void *data, size_t size);
++
++// Set `ufbxw_prop_flag` bits on an existing property (template or added), replacing its flags.
++// The flags are written into the `Properties70` entry: `A` (animatable), `U` (user-defined), `H` (hidden).
++ufbxw_abi void ufbxw_set_prop_flags(ufbxw_scene *scene, ufbxw_id id, const char *prop, uint32_t flags);
++ufbxw_abi uint32_t ufbxw_get_prop_flags(ufbxw_scene *scene, ufbxw_id id, const char *prop);
++
+ ufbxw_abi bool ufbxw_get_bool(ufbxw_scene *scene, ufbxw_id id, const char *prop);
+ ufbxw_abi int32_t ufbxw_get_int(ufbxw_scene *scene, ufbxw_id id, const char *prop);
+ ufbxw_abi int64_t ufbxw_get_int64(ufbxw_scene *scene, ufbxw_id id, const char *prop);
+@@ -827,6 +850,14 @@ ufbxw_abi ufbxw_prop_data_type ufbxw_get_prop_data_type(ufbxw_scene *scene, ufbx
+ ufbxw_abi ufbxw_anim_prop ufbxw_animate_prop(ufbxw_scene *scene, ufbxw_id id, const char *prop, ufbxw_anim_layer layer);
+ ufbxw_abi ufbxw_anim_prop ufbxw_animate_prop_len(ufbxw_scene *scene, ufbxw_id id, const char *prop, size_t prop_len, ufbxw_anim_layer layer);
+ 
++// review patch P5: animate a property creating curves only for the components whose bit is
++// set in `curve_mask` (bit 0 = X / the single component). A source curve node that carries
++// only its defaults on some components must not gain curves there — a reader that finds a
++// curve treats the value as non-constant. `ufbxw_anim_get_curve()` indexes the curves that
++// were created, in component order.
++ufbxw_abi ufbxw_anim_prop ufbxw_animate_prop_masked(ufbxw_scene *scene, ufbxw_id id, const char *prop, ufbxw_anim_layer layer, uint32_t curve_mask);
++ufbxw_abi ufbxw_anim_prop ufbxw_animate_prop_masked_len(ufbxw_scene *scene, ufbxw_id id, const char *prop, size_t prop_len, ufbxw_anim_layer layer, uint32_t curve_mask);
++
+ ufbxw_abi ufbxw_template ufbxw_get_element_template(ufbxw_scene *scene, ufbxw_id id);
+ 
+ // -- Node
+@@ -1143,6 +1174,21 @@ typedef enum ufbxw_bone_type {
+ 
+ ufbxw_abi ufbxw_bone ufbxw_create_bone(ufbxw_scene *scene, ufbxw_bone_type type, ufbxw_node node);
+ 
++// -- Null (review patch P2)
++
++// A `Null` node attribute (an empty / locator). Template properties: `Color`, `Size`, `Look`.
++ufbxw_abi ufbxw_null ufbxw_create_null(ufbxw_scene *scene, ufbxw_node node);
++
++// -- LOD group (review patch P4)
++
++// A `LodGroup` node attribute. Levels map to the node's children in order.
++// Template properties: `MinMaxDistance`, `MinDistance`, `MaxDistance`, `WorldSpace`, `ThresholdsUsedAsPercentage`.
++ufbxw_abi ufbxw_lod_group ufbxw_create_lod_group(ufbxw_scene *scene, ufbxw_node node);
++
++// Append one level. `distance` is the threshold at which this level *starts* (ignored for the first level,
++// which has none); `display` is the FBX `DisplayLevels` enum (0 = use LOD, 1 = show, 2 = hide).
++ufbxw_abi void ufbxw_lod_group_add_level(ufbxw_scene *scene, ufbxw_lod_group group, ufbxw_real distance, int32_t display);
++
+ // -- Bind pose
+ 
+ ufbxw_abi ufbxw_bind_pose ufbxw_create_bind_pose(ufbxw_scene *scene);
+@@ -1169,6 +1215,7 @@ ufbxw_abi void ufbxw_material_set_texture_len(ufbxw_scene *scene, ufbxw_material
+ 
+ typedef enum {
+ 	UFBXW_TEXTURE_FILE,
++	UFBXW_TEXTURE_LAYERED, // review patch P4: `LayeredTexture`, composed of `ufbxw_texture_add_layer()` textures
+ } ufbxw_texture_type;
+ 
+ ufbxw_abi ufbxw_texture ufbxw_create_texture(ufbxw_scene *scene, ufbxw_texture_type type);
+@@ -1184,6 +1231,10 @@ ufbxw_abi void ufbxw_texture_set_relative_filename_len(ufbxw_scene *scene, ufbxw
+ 
+ ufbxw_abi void ufbxw_texture_set_content(ufbxw_scene *scene, ufbxw_texture texture, ufbxw_byte_buffer content);
+ 
++// review patch P4: append a layer to a `UFBXW_TEXTURE_LAYERED` texture. `blend_mode` is the FBX
++// `BlendModes` enum value (translucent = 0, additive = 1, ... as ufbx's `ufbx_blend_mode`), `alpha` in 0..1.
++ufbxw_abi void ufbxw_texture_add_layer(ufbxw_scene *scene, ufbxw_texture layered, ufbxw_texture layer, int32_t blend_mode, ufbxw_real alpha);
++
+ // -- Implementation (material)
+ // TODO: Hide these somehow?
+ 

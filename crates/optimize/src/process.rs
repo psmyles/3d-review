@@ -29,14 +29,17 @@
 
 use std::time::{Duration, Instant};
 
-use review_model::{ModelData, ModelStats, TriangleData, Vertex};
+use review_model::{
+    AnimContext, ModelData, ModelStats, MorphData, SkinData, SourceExtras, TriangleData, Vertex,
+    anim,
+};
 
 use crate::meshopt::{self, AnalysisCounters};
 use crate::ops;
 use crate::stack::{
     LodLevel, LodParams, OpInstance, OpKind, OptStack, SimplifyAlgorithm, SimplifySettings,
 };
-use crate::submesh::{self, Submesh, TagPresence};
+use crate::submesh::{self, NO_FACE, Submesh, TagPresence};
 use crate::{OptError, Warnings};
 
 /// Everything a run needs. Borrowed rather than owned so the caller can hand in
@@ -58,6 +61,10 @@ pub struct ProcessInput<'a> {
     /// what occludes. Every other operation still processes hidden geometry
     /// (it is exported either way).
     pub hidden_nodes: &'a [u32],
+    /// The source-property capture that accompanies `model`, when it has
+    /// landed. Carried through processing for the exporter; no operation reads
+    /// it. `None` in the moments between a load and its capture arriving.
+    pub extras: Option<&'a SourceExtras>,
 }
 
 /// One output level: the mesh, and what measuring it produced.
@@ -67,6 +74,103 @@ pub struct ProcessedLod {
     pub level: usize,
     pub model: ModelData,
     pub metrics: AnalysisMetrics,
+    /// What the source authored about this level's vertices and faces that the
+    /// stack did not change — for the export; the viewport reads none of it.
+    pub carry: LevelCarry,
+}
+
+/// The polygon topology of one processed piece (a node's triangles of one
+/// material), in the assembled level's vertex and triangle numbering.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct NodePolygons {
+    pub node: u32,
+    /// Material slot, or `NO_MATERIAL`.
+    pub material: u32,
+    /// The assembled index of this piece's first triangle; `triangle_face` is
+    /// parallel to the piece's triangles from there.
+    pub triangle_first: u32,
+    /// Per triangle of the piece, the local face or [`NO_FACE`].
+    pub triangle_face: Vec<u32>,
+    /// `face_count + 1` starts into `corners`.
+    pub face_offsets: Vec<u32>,
+    /// Assembled vertex indices.
+    pub corners: Vec<u32>,
+    /// Per face, the source face it came from (`ModelData::faces` of the source).
+    pub source_face: Vec<u32>,
+    pub face_smoothing: Vec<bool>,
+    pub face_hole: Vec<bool>,
+    pub face_group: Vec<u32>,
+    /// Assembled vertex pairs.
+    pub edges: Vec<[u32; 2]>,
+    /// Per edge, the source edge index (`MeshExtras::edges` of the part).
+    pub source_edge: Vec<u32>,
+    pub edge_smoothing: Vec<bool>,
+    pub edge_crease: Vec<f32>,
+    pub edge_visibility: Vec<bool>,
+}
+
+impl NodePolygons {
+    pub fn face_count(&self) -> usize {
+        self.face_offsets.len().saturating_sub(1)
+    }
+
+    pub fn face(&self, face: usize) -> &[u32] {
+        let first = self.face_offsets[face] as usize;
+        let end = self.face_offsets[face + 1] as usize;
+        &self.corners[first..end]
+    }
+}
+
+/// Everything a level carries for the export beyond its `ModelData`. The
+/// model itself stays a pure triangle mesh with the layout the renderer
+/// expects; this is where the polygons the operations preserved, the extra
+/// color sets and the vertex creases live, all in the level's own numbering.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LevelCarry {
+    /// One entry per piece that still knows its source polygons.
+    pub polygons: Vec<NodePolygons>,
+    /// Vertex-color sets beyond the first, each parallel to the level's
+    /// vertices (white where a piece had none). Empty when no piece had any.
+    pub color_channels: Vec<Vec<glam::Vec4>>,
+    /// Per vertex; empty when no piece carried creases.
+    pub vertex_crease: Vec<f32>,
+    /// Skin layers beyond the first, per node: `(level vertex, cluster, weight)`
+    /// with the cluster indexing that layer's cluster list in the source's
+    /// `MeshExtras::extra_skins`.
+    pub extra_skins: Vec<LevelSkinLayer>,
+    /// The primary skin's dual-quaternion weights: `(level vertex, weight)`.
+    pub dq_weights: Vec<(u32, f32)>,
+    /// Per level vertex, a source corner it came from (`u32::MAX` unknown).
+    pub source_corner: Vec<u32>,
+}
+
+/// One skin layer beyond the first, over a level's vertices.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LevelSkinLayer {
+    pub node: u32,
+    /// Index into the node's `MeshExtras::extra_skins`.
+    pub layer: usize,
+    pub influences: Vec<(u32, u32, f32)>,
+}
+
+impl LevelCarry {
+    /// The level's polygon count: the faces that survived plus every triangle
+    /// that belongs to none.
+    pub fn polygon_count(&self, triangle_count: usize) -> usize {
+        let faces: usize = self.polygons.iter().map(NodePolygons::face_count).sum();
+        let faced: usize = self
+            .polygons
+            .iter()
+            .map(|piece| {
+                piece
+                    .triangle_face
+                    .iter()
+                    .filter(|&&face| face != NO_FACE)
+                    .count()
+            })
+            .sum();
+        faces + triangle_count.saturating_sub(faced)
+    }
 }
 
 /// Measured figures for one level. Every field is a real measurement of the
@@ -165,14 +269,8 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
     }
 
     let mut warnings = Warnings::default();
-    if input.model.skin.is_some() {
-        warnings.push(
-            "Source mesh is skinned. Opt processes static geometry only — skinning \
-             is dropped from the processed mesh and from any export.",
-        );
-    }
 
-    let (mut submeshes, tags) = submesh::partition(input.model);
+    let (mut submeshes, tags) = submesh::partition(input.model, input.extras);
     if submeshes.is_empty() {
         return Err(OptError::EmptyMesh);
     }
@@ -304,7 +402,7 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
 
     let mut lods = Vec::with_capacity(levels.len());
     for (index, level) in levels.into_iter().enumerate() {
-        let model = assemble(
+        let (model, carry) = assemble(
             &level.submeshes,
             input.model,
             tags,
@@ -313,6 +411,7 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
                 normals: normals_invalidated,
                 tangents: geometry_changed,
             },
+            &mut warnings,
         );
         // A level can legitimately collapse to nothing when the target ratio and
         // error budget are aggressive enough. That is a real result, not a bug —
@@ -334,6 +433,7 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
             level: index,
             model,
             metrics,
+            carry,
         });
     }
 
@@ -582,12 +682,21 @@ fn assemble(
     tags: TagPresence,
     level: usize,
     rebuild: Rebuild,
-) -> ModelData {
+    warnings: &mut Warnings,
+) -> (ModelData, LevelCarry) {
     let _z = crate::prof::zone!("Assemble Model");
 
     let total_vertices: usize = submeshes.iter().map(|piece| piece.vertices.len()).sum();
     let total_indices: usize = submeshes.iter().map(|piece| piece.indices.len()).sum();
     let channel_count = source.uv_channels.len();
+    let color_channel_count = submeshes
+        .iter()
+        .map(|piece| piece.color_channels.len())
+        .max()
+        .unwrap_or(0);
+    let any_crease = submeshes
+        .iter()
+        .any(|piece| !piece.vertex_crease.is_empty());
 
     let mut vertices: Vec<Vertex> = Vec::with_capacity(total_vertices);
     let mut indices: Vec<u32> = Vec::with_capacity(total_indices);
@@ -595,14 +704,152 @@ fn assemble(
         vec![Vec::with_capacity(total_vertices); channel_count];
     let mut triangle_node: Vec<u32> = Vec::new();
     let mut triangle_material: Vec<u32> = Vec::new();
+    let vertex_count: usize = submeshes
+        .iter()
+        .filter(|piece| !piece.is_empty())
+        .map(|piece| piece.vertices.len())
+        .sum();
+    let mut carry = LevelCarry {
+        polygons: Vec::new(),
+        color_channels: vec![Vec::with_capacity(total_vertices); color_channel_count],
+        vertex_crease: Vec::with_capacity(if any_crease { total_vertices } else { 0 }),
+        extra_skins: Vec::new(),
+        dq_weights: Vec::new(),
+        source_corner: Vec::with_capacity(total_vertices),
+    };
+    // The deform tables over the level's own vertices, each of which is its own
+    // logical vertex now (`corner_to_logical` is the identity). Built only when
+    // the source had the table: a level of an unskinned model stays `None`.
+    let any_skin = source.skin.is_some() && submeshes.iter().any(|piece| !piece.skin.is_empty());
+    let any_morph = source.morph.is_some() && submeshes.iter().any(|piece| !piece.morph.is_empty());
+    let mut skin_offsets: Vec<u32> = Vec::new();
+    let mut skin_bones: Vec<u32> = Vec::new();
+    let mut skin_weights: Vec<f32> = Vec::new();
+    let mut skin_clusters: Vec<u32> = Vec::new();
+    let mut morph_offsets: Vec<u32> = Vec::new();
+    let mut morph_shape: Vec<u32> = Vec::new();
+    let mut morph_position: Vec<glam::Vec3> = Vec::new();
+    let mut morph_normal: Vec<glam::Vec3> = Vec::new();
+    if any_skin {
+        skin_offsets.push(0);
+    }
+    if any_morph {
+        morph_offsets.push(0);
+    }
 
     for piece in submeshes {
         if piece.is_empty() {
             continue;
         }
         let base = vertices.len() as u32;
+        let triangle_first = (indices.len() / 3) as u32;
         vertices.extend_from_slice(&piece.vertices);
         indices.extend(piece.indices.iter().map(|&index| index + base));
+        if piece.source_corner.len() == piece.vertices.len() {
+            carry.source_corner.extend_from_slice(&piece.source_corner);
+        } else {
+            carry.source_corner.resize(vertices.len(), u32::MAX);
+        }
+
+        for (channel, destination) in carry.color_channels.iter_mut().enumerate() {
+            match piece.color_channels.get(channel) {
+                Some(colors) => destination.extend_from_slice(colors),
+                None => destination.resize(vertices.len(), glam::Vec4::ONE),
+            }
+        }
+        if any_crease {
+            if piece.vertex_crease.is_empty() {
+                carry.vertex_crease.resize(vertices.len(), 0.0);
+            } else {
+                carry.vertex_crease.extend_from_slice(&piece.vertex_crease);
+            }
+        }
+        if any_skin {
+            for vertex in 0..piece.vertices.len() {
+                for &(cluster, weight) in piece.skin.row(vertex) {
+                    let bone = source
+                        .skin
+                        .as_ref()
+                        .and_then(|skin| skin.clusters.get(cluster as usize))
+                        .map_or(u32::MAX, |entry| entry.bone);
+                    skin_bones.push(bone);
+                    skin_weights.push(weight);
+                    skin_clusters.push(cluster);
+                }
+                skin_offsets.push(skin_bones.len() as u32);
+            }
+        }
+        if any_morph {
+            for vertex in 0..piece.vertices.len() {
+                for entry in piece.morph.row(vertex) {
+                    morph_shape.push(entry.shape);
+                    morph_position.push(entry.position);
+                    morph_normal.push(entry.normal);
+                }
+                morph_offsets.push(morph_shape.len() as u32);
+            }
+        }
+        for (layer, rows) in piece.extra_skins.iter().enumerate() {
+            if rows.is_empty() {
+                continue;
+            }
+            let slot = match carry
+                .extra_skins
+                .iter()
+                .position(|entry| entry.node == piece.node && entry.layer == layer)
+            {
+                Some(slot) => slot,
+                None => {
+                    carry.extra_skins.push(LevelSkinLayer {
+                        node: piece.node,
+                        layer,
+                        influences: Vec::new(),
+                    });
+                    carry.extra_skins.len() - 1
+                }
+            };
+            for vertex in 0..piece.vertices.len() {
+                for &(cluster, weight) in rows.row(vertex) {
+                    carry.extra_skins[slot].influences.push((
+                        base + vertex as u32,
+                        cluster,
+                        weight,
+                    ));
+                }
+            }
+        }
+        for vertex in 0..piece.vertices.len() {
+            for &weight in piece.dq_weight.row(vertex) {
+                carry.dq_weights.push((base + vertex as u32, weight));
+            }
+        }
+        if let Some(polygons) = &piece.polygons {
+            carry.polygons.push(NodePolygons {
+                node: piece.node,
+                material: piece.material,
+                triangle_first,
+                triangle_face: polygons.triangle_face.clone(),
+                face_offsets: polygons.face_offsets.clone(),
+                corners: polygons
+                    .corners
+                    .iter()
+                    .map(|&corner| corner + base)
+                    .collect(),
+                source_face: polygons.source_face.clone(),
+                face_smoothing: polygons.face_smoothing.clone(),
+                face_hole: polygons.face_hole.clone(),
+                face_group: polygons.face_group.clone(),
+                edges: polygons
+                    .edges
+                    .iter()
+                    .map(|edge| [edge[0] + base, edge[1] + base])
+                    .collect(),
+                source_edge: polygons.source_edge.clone(),
+                edge_smoothing: polygons.edge_smoothing.clone(),
+                edge_crease: polygons.edge_crease.clone(),
+                edge_visibility: polygons.edge_visibility.clone(),
+            });
+        }
 
         for (channel, destination) in uv_channels.iter_mut().enumerate() {
             match piece.uv_channels.get(channel) {
@@ -639,15 +886,48 @@ fn assemble(
         bounds: None,
         stats: ModelStats::default(),
         materials: source.materials.clone(),
-        // Static-mesh tool: skinning, blend shapes and animation are dropped,
-        // with a warning raised by the caller so the user knows rather than
-        // discovers it at export. The corner map goes with them — a rebuilt
-        // vertex buffer has no logical vertices to map back to.
-        corner_to_logical: Vec::new(),
-        skin: None,
-        morph: None,
-        animations: Vec::new(),
-        frame_rate: 0.0,
+        // Every level vertex is its own logical vertex: the rows the pieces
+        // carried per vertex become the tables, and the map is the identity.
+        corner_to_logical: if any_skin || any_morph {
+            (0..vertex_count as u32).collect()
+        } else {
+            Vec::new()
+        },
+        skin: any_skin.then(|| SkinData {
+            offsets: skin_offsets,
+            bones: skin_bones,
+            weights: skin_weights,
+            influence_cluster: skin_clusters,
+            clusters: source
+                .skin
+                .as_ref()
+                .map(|skin| skin.clusters.clone())
+                .unwrap_or_default(),
+            deformers: source
+                .skin
+                .as_ref()
+                .map(|skin| skin.deformers.clone())
+                .unwrap_or_default(),
+        }),
+        morph: any_morph.then(|| MorphData {
+            channels: source
+                .morph
+                .as_ref()
+                .map(|morph| morph.channels.clone())
+                .unwrap_or_default(),
+            shapes: source
+                .morph
+                .as_ref()
+                .map(|morph| morph.shapes.clone())
+                .unwrap_or_default(),
+            offsets: morph_offsets,
+            shape: morph_shape,
+            position: morph_position,
+            normal: morph_normal,
+        }),
+        // The clips address nodes and channels, both carried unchanged.
+        animations: source.animations.clone(),
+        frame_rate: source.frame_rate,
     };
 
     // Normals first: tangents are orthonormalized against them, so rebuilding
@@ -663,9 +943,30 @@ fn assemble(
         model.generate_tangents();
     }
 
-    model.recompute_bounds();
-    model.stats = measured_stats(&model, source);
-    model
+    // The stats first: `validate_deform` reads the logical count off them.
+    model.stats = measured_stats(&model, source, &carry);
+    if let Err(error) = model.validate_deform() {
+        // Never publish a table the funnel guard rejects; the level draws as
+        // static geometry and the user hears why.
+        warnings.push(&format!(
+            "The processed mesh's skin / blend-shape data did not reconcile ({error}); it was \
+             dropped from this level and its export."
+        ));
+        model.corner_to_logical = Vec::new();
+        model.skin = None;
+        model.morph = None;
+        model.animations = Vec::new();
+        model.stats = measured_stats(&model, source, &carry);
+    }
+    // A deforming level rests in the file's default pose like the source does;
+    // its bounds are measured through the same deformation.
+    if model.needs_deform() {
+        let ctx = AnimContext::new(&model);
+        model.bounds = anim::rest_bounds(&model, &ctx);
+    } else {
+        model.recompute_bounds();
+    }
+    (model, carry)
 }
 
 /// `"Asset"` for level 0, `"Asset_LOD1"` and up for the rest — the same naming
@@ -682,14 +983,15 @@ fn level_name(source_name: &str, level: usize) -> String {
 /// Stats measured off the processed mesh itself.
 ///
 /// Two figures deliberately differ in meaning from their source counterparts:
-/// `polygon_count` equals the triangle count (the output *is* triangulated, so
-/// its polygons are its triangles), and `vertex_count` is the real length of the
-/// vertex buffer rather than the source file's logical DCC count. Both are
-/// honest measurements of the mesh in hand, which is what the overlay must show.
-fn measured_stats(model: &ModelData, source: &ModelData) -> ModelStats {
+/// `polygon_count` counts the source faces the stack preserved plus every
+/// triangle no face survived for (a simplified piece is all triangles), and
+/// `vertex_count` is the real length of the vertex buffer rather than the
+/// source file's logical DCC count. Both are honest measurements of the mesh
+/// in hand, which is what the overlay must show.
+fn measured_stats(model: &ModelData, source: &ModelData, carry: &LevelCarry) -> ModelStats {
     let triangle_count = model.indices.len() / 3;
     ModelStats {
-        polygon_count: triangle_count,
+        polygon_count: carry.polygon_count(triangle_count),
         triangle_count,
         vertex_count: model.vertices.len(),
         gpu_vertex_count: model.count_gpu_vertices(),
@@ -699,9 +1001,7 @@ fn measured_stats(model: &ModelData, source: &ModelData) -> ModelStats {
         // The node graph is carried through unchanged, so its bone count still
         // describes this model — even though the skin binding itself is dropped.
         bone_count: source.stats.bone_count,
-        // No clips survive processing (the level has no animation), so none are
-        // reported.
-        clip_count: 0,
+        clip_count: model.animations.len(),
         source_unit_meters: source.stats.source_unit_meters,
     }
 }
@@ -718,7 +1018,7 @@ fn measure(
     simplify_error: f32,
     warnings: &mut Warnings,
 ) -> AnalysisMetrics {
-    let (submeshes, _) = submesh::partition(model);
+    let (submeshes, _) = submesh::partition(model, None);
     measure_submeshes(&submeshes, render_vertex_size, simplify_error, warnings)
 }
 
@@ -786,6 +1086,7 @@ mod tests {
             stack,
             render_vertex_size: VERTEX_SIZE,
             hidden_nodes: &[],
+            extras: None,
         })
         .expect("the demo cube always processes")
     }
@@ -1142,6 +1443,7 @@ mod tests {
             stack,
             render_vertex_size: VERTEX_SIZE,
             hidden_nodes: hidden,
+            extras: None,
         })
         .expect("processing succeeds")
     }
@@ -1735,22 +2037,80 @@ mod tests {
         }
     }
 
+    /// A skinned source keeps its skin through the stack: every level vertex
+    /// carries the influences of the corner it came from, over the source's
+    /// clusters, and the clips ride along.
     #[test]
-    fn a_skinned_source_is_reported_and_stripped() {
+    fn a_skinned_source_keeps_its_skin_and_clips() {
         let mut model = demo_cube_model();
-        model.skin = Some(review_model::SkinData::default());
+        let corners = model.vertices.len();
+        model.corner_to_logical = (0..corners as u32).collect();
+        model.stats.vertex_count = corners;
+        model.nodes = vec![
+            review_model::SceneNode::default(),
+            review_model::SceneNode {
+                name: "Bone".to_owned(),
+                kind: review_model::NodeKind::Bone,
+                ..Default::default()
+            },
+        ];
+        let cluster = review_model::SkinCluster {
+            bone: 1,
+            mesh_node: 0,
+            world_to_bone_bind: glam::Mat4::IDENTITY,
+            mesh_node_to_bone: glam::Mat4::IDENTITY,
+            bind_to_world: glam::Mat4::IDENTITY,
+            name: "Bone".to_owned(),
+        };
+        model.skin = Some(review_model::SkinData {
+            offsets: (0..=corners as u32).collect(),
+            bones: vec![1; corners],
+            weights: (0..corners).map(|i| 0.25 + (i % 4) as f32 * 0.25).collect(),
+            influence_cluster: vec![0; corners],
+            clusters: vec![cluster],
+            deformers: vec![review_model::SkinDeformerInfo {
+                mesh_node: 0,
+                method: review_model::SkinningMethod::Linear,
+                max_weights_per_vertex: 1,
+            }],
+        });
+        model.animations = vec![review_model::AnimationClip {
+            name: "Idle".to_owned(),
+            time_begin: 0.0,
+            time_end: 1.0,
+            ..Default::default()
+        }];
         let mut stack = OptStack::default();
+        stack.push_op(OpKind::Weld(WeldParams::default()));
         stack.push_op(OpKind::FilterTriangles);
 
         let result = run_model(&model, &stack);
-
-        assert!(result.lods[0].model.skin.is_none());
+        let level = &result.lods[0].model;
+        let skin = level.skin.as_ref().expect("the skin survives");
+        assert_eq!(skin.logical_vertex_count(), level.vertices.len());
+        assert_eq!(level.corner_to_logical.len(), level.vertices.len());
+        // Every surviving vertex kept an influence with a weight the source had.
+        for vertex in 0..level.vertices.len() {
+            let range = skin.influence_range(vertex);
+            assert_eq!(range.len(), 1, "one influence per vertex");
+            assert!(
+                model
+                    .skin
+                    .as_ref()
+                    .unwrap()
+                    .weights
+                    .contains(&skin.weights[range.start])
+            );
+        }
+        assert_eq!(level.animations.len(), 1);
+        assert_eq!(level.stats.clip_count, 1);
+        assert!(level.validate_deform().is_ok());
         assert!(
-            result
+            !result
                 .warnings
                 .iter()
-                .any(|warning| warning.contains("skinned")),
-            "the user is told: {:?}",
+                .any(|warning| warning.contains("skin")),
+            "nothing was dropped: {:?}",
             result.warnings
         );
     }

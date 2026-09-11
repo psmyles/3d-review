@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use review_model::{AnimContext, ModelData};
+use review_model::{AnimContext, ModelData, SourceExtras};
 use thiserror::Error;
 
 mod prof;
@@ -63,6 +63,10 @@ pub enum ImportStage {
     /// the rest-pose bounds and tangents the first frame needs (~0.3 s). No
     /// denominator. The model is drawable at the end of this stage.
     Building,
+    /// Marshaling the source-property capture ([`SourceExtras`]) — authored
+    /// properties, textures, topology layers, curves. No denominator, and after
+    /// the model is on screen — see [`PendingExtras`].
+    Extras,
     /// Measuring each clip's motion envelope (~0.6 s); `done`/`total` count clips.
     /// Runs *after* the model is on screen — see [`measure_clip_bounds`].
     Measuring,
@@ -77,6 +81,7 @@ impl ImportStage {
         match self {
             Self::Reading => "Reading",
             Self::Building => "Building mesh",
+            Self::Extras => "Reading source properties",
             Self::Measuring => "Measuring animation",
             Self::Finishing => "Measuring stats",
         }
@@ -123,6 +128,88 @@ pub fn load_model(path: impl AsRef<Path>) -> Result<ModelData, ImportError> {
     Ok(model)
 }
 
+/// [`load_model`] plus the source-property capture: the complete import, for
+/// tests, batch callers and anything that will re-export. `None` extras means
+/// the capture was unavailable, never that the file had nothing to capture.
+pub fn load_model_full(
+    path: impl AsRef<Path>,
+) -> Result<(ModelData, Option<SourceExtras>), ImportError> {
+    let StagedImport { mut model, extras } = load_model_staged(path, &|_| {})?;
+    model.stats.gpu_vertex_count = model.count_gpu_vertices();
+    let extras = extras.marshal(&model)?;
+    Ok((model, extras))
+}
+
+/// A drawable model plus the source-property capture still waiting to be
+/// marshaled. See [`load_model_staged`].
+pub struct StagedImport {
+    pub model: ModelData,
+    pub extras: PendingExtras,
+}
+
+/// The source-property capture as the C bridge left it: taken in the same
+/// extraction call as the geometry (invariant 7), but marshaled into
+/// [`SourceExtras`] only when [`PendingExtras::marshal`] is called — which
+/// `app` does *after* it has published the model, so the viewport shows the
+/// mesh first and the properties stream in behind it. The C buffers are freed
+/// when this is marshaled or dropped, on every path.
+pub struct PendingExtras {
+    #[cfg(has_ufbx)]
+    handle: Option<ffi::ExtrasHandle>,
+}
+
+impl PendingExtras {
+    /// Nothing captured (a build without vendored ufbx, or a caller that
+    /// declined the capture).
+    pub fn none() -> Self {
+        Self {
+            #[cfg(has_ufbx)]
+            handle: None,
+        }
+    }
+
+    /// Marshal the capture against the model it was taken with. `Ok(None)` when
+    /// nothing was captured; `Err` when the capture does not describe `model`
+    /// (a drift the funnel guard [`SourceExtras::validate`] caught), in which
+    /// case nothing is published.
+    pub fn marshal(self, model: &ModelData) -> Result<Option<SourceExtras>, ImportError> {
+        #[cfg(has_ufbx)]
+        {
+            let _z = crate::prof::zone!("Marshal Extras");
+            match self.handle {
+                Some(handle) => handle.marshal(model).map(Some),
+                None => Ok(None),
+            }
+        }
+        #[cfg(not(has_ufbx))]
+        {
+            let _ = model;
+            Ok(None)
+        }
+    }
+}
+
+impl std::fmt::Debug for PendingExtras {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PendingExtras")
+    }
+}
+
+/// [`load_model_with_progress`] that also keeps the source-property capture,
+/// for the caller to marshal once the model is on screen. Same stages, same
+/// stopping point for the model itself.
+pub fn load_model_staged(
+    path: impl AsRef<Path>,
+    progress: ProgressSink<'_>,
+) -> Result<StagedImport, ImportError> {
+    let path = path.as_ref();
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some(extension) if extension.eq_ignore_ascii_case("fbx") => load_fbx_staged(path, progress),
+        Some(extension) => Err(ImportError::UnsupportedExtension(extension.to_owned())),
+        None => Err(ImportError::UnsupportedExtension("<none>".to_owned())),
+    }
+}
+
 /// Import `path` as far as *drawable*, reporting each stage to `progress` as it
 /// goes: geometry, materials, the scene graph, the rest-pose bounds the camera
 /// frames on, and tangents.
@@ -157,7 +244,19 @@ pub fn load_model_with_progress(
 pub fn load_fbx(_path: &Path, _progress: ProgressSink<'_>) -> Result<ModelData, ImportError> {
     #[cfg(has_ufbx)]
     {
-        ffi::load_fbx(_path, _progress)
+        ffi::load_fbx(_path, _progress, false).map(|staged| staged.model)
+    }
+
+    #[cfg(not(has_ufbx))]
+    {
+        Err(ImportError::UfbxUnavailable)
+    }
+}
+
+fn load_fbx_staged(_path: &Path, _progress: ProgressSink<'_>) -> Result<StagedImport, ImportError> {
+    #[cfg(has_ufbx)]
+    {
+        ffi::load_fbx(_path, _progress, true)
     }
 
     #[cfg(not(has_ufbx))]
@@ -198,15 +297,16 @@ mod ffi {
         slice,
     };
 
-    use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
+    use glam::{DMat4, Mat4, Quat, Vec2, Vec3, Vec4};
     use review_model::{
-        AnimContext, AnimationClip, BoneInfo, Key, LocalTransform, MaterialImportDefaults,
-        ModelData, ModelStats, MorphChannel, MorphData, MorphKeyframe, MorphShape, MorphTrack,
-        NodeKind, NodeTrack, SceneNode, SkinCluster, SkinData, SkinDeformerInfo, SkinningMethod,
-        TopologyFace, TriangleData, Vertex, anim,
+        AnimContext, AnimationClip, BoneInfo, ExtrasCounts, Key, LocalTransform,
+        MaterialImportDefaults, ModelData, ModelStats, MorphChannel, MorphData, MorphKeyframe,
+        MorphShape, MorphTrack, NodeKind, NodeTrack, SceneNode, SkinCluster, SkinData,
+        SkinDeformerInfo, SkinningMethod, SourceExtras, TopologyFace, TriangleData, Vertex, anim,
+        extras,
     };
 
-    use crate::ImportError;
+    use crate::{ImportError, PendingExtras, StagedImport};
 
     #[repr(C)]
     struct ReviewImportVertex {
@@ -230,6 +330,8 @@ mod ffi {
         smoothness: f32,
         metallic: f32,
         emissive: [f32; 3],
+        /// The bridge's own back-reference to the ufbx material; opaque here.
+        _source: *const c_void,
     }
 
     #[repr(C)]
@@ -257,6 +359,9 @@ mod ffi {
         bone: u32,
         mesh_node: u32,
         world_to_bone_bind: [f32; 16],
+        mesh_node_to_bone: [f64; 16],
+        bind_to_world: [f64; 16],
+        name: *mut c_char,
     }
 
     #[repr(C)]
@@ -417,6 +522,483 @@ mod ffi {
         message: [c_char; 256],
     }
 
+    // ---- The source-property capture (`ufbx_extras.h`), field for field. ----
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct XStr {
+        offset: u32,
+        length: u32,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct XBytes {
+        offset: usize,
+        length: usize,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct XPropRange {
+        first: u32,
+        count: u32,
+    }
+
+    #[repr(C)]
+    struct XProp {
+        name: XStr,
+        kind: u32,
+        flags: u32,
+        value_int: i64,
+        value_real: [f64; 4],
+        value_str: XStr,
+        value_blob: XBytes,
+    }
+
+    #[repr(C)]
+    struct XNode {
+        props: XPropRange,
+        rotation_order: u32,
+        inherit_mode: u32,
+        original_inherit_mode: u32,
+        geometry_to_node: [f64; 16],
+        synthetic: u32,
+        visible: u32,
+        attribute_kind: u32,
+        attribute_index: i32,
+        attribute_name: XStr,
+        attribute_props: XPropRange,
+    }
+
+    #[repr(C)]
+    struct XLight {
+        color: [f64; 3],
+        intensity: f64,
+        local_direction: [f64; 3],
+        kind: u32,
+        decay: u32,
+        area_shape: u32,
+        inner_angle: f64,
+        outer_angle: f64,
+        cast_light: u32,
+        cast_shadows: u32,
+    }
+
+    #[repr(C)]
+    struct XCamera {
+        projection_mode: u32,
+        resolution_is_pixels: u32,
+        resolution: [f64; 2],
+        field_of_view_deg: [f64; 2],
+        orthographic_extent: f64,
+        aspect_ratio: f64,
+        near_plane: f64,
+        far_plane: f64,
+        aspect_mode: u32,
+        aperture_mode: u32,
+        gate_fit: u32,
+        aperture_format: u32,
+        focal_length_mm: f64,
+        film_size_inch: [f64; 2],
+        aperture_size_inch: [f64; 2],
+        squeeze_ratio: f64,
+    }
+
+    #[repr(C)]
+    struct XLodGroup {
+        relative_distances: u32,
+        ignore_parent_transform: u32,
+        use_distance_limit: u32,
+        distance_limit_min: f64,
+        distance_limit_max: f64,
+        level_first: u32,
+        level_count: u32,
+    }
+
+    #[repr(C)]
+    struct XLodLevel {
+        distance: f64,
+        display: u32,
+    }
+
+    #[repr(C)]
+    struct XMaterial {
+        props: XPropRange,
+        shader_type: u32,
+        shading_model: XStr,
+        texture_first: u32,
+        texture_count: u32,
+    }
+
+    #[repr(C)]
+    struct XMaterialTexture {
+        material_prop: XStr,
+        shader_prop: XStr,
+        texture: u32,
+    }
+
+    #[repr(C)]
+    struct XTexture {
+        name: XStr,
+        kind: u32,
+        filename: XStr,
+        absolute_filename: XStr,
+        relative_filename: XStr,
+        uv_set: XStr,
+        wrap_u: u32,
+        wrap_v: u32,
+        has_uv_transform: u32,
+        uv_translation: [f64; 3],
+        uv_rotation: [f64; 4],
+        uv_scale: [f64; 3],
+        content: XBytes,
+        video: i32,
+        layer_first: u32,
+        layer_count: u32,
+        props: XPropRange,
+    }
+
+    #[repr(C)]
+    struct XTextureLayer {
+        texture: u32,
+        blend_mode: u32,
+        alpha: f64,
+    }
+
+    #[repr(C)]
+    struct XVideo {
+        name: XStr,
+        filename: XStr,
+        absolute_filename: XStr,
+        relative_filename: XStr,
+        content: XBytes,
+        props: XPropRange,
+    }
+
+    #[repr(C)]
+    struct XColorSet {
+        name: XStr,
+        index: u32,
+        value_first: u32,
+    }
+
+    #[repr(C)]
+    struct XFaceGroup {
+        id: i32,
+        name: XStr,
+    }
+
+    #[repr(C)]
+    struct XExtraSkin {
+        method: u32,
+        max_weights_per_vertex: u32,
+        cluster_first: u32,
+        cluster_count: u32,
+        offset_first: u32,
+        influence_first: u32,
+        influence_count: u32,
+    }
+
+    #[repr(C)]
+    struct XExtraCluster {
+        bone: u32,
+        name: XStr,
+        mesh_node_to_bone: [f64; 16],
+        bind_to_world: [f64; 16],
+    }
+
+    #[repr(C)]
+    struct XExtraInfluence {
+        cluster: u32,
+        weight: f32,
+    }
+
+    #[repr(C)]
+    struct XDqWeight {
+        logical_vertex: u32,
+        weight: f64,
+    }
+
+    #[repr(C)]
+    struct XMesh {
+        node: u32,
+        name: XStr,
+        props: XPropRange,
+        corner_first: u32,
+        corner_count: u32,
+        logical_first: u32,
+        logical_count: u32,
+        face_first: u32,
+        face_count: u32,
+        tangents_authored: u32,
+        reversed_winding: u32,
+        color_set_first: u32,
+        color_set_count: u32,
+        edge_first: u32,
+        edge_count: u32,
+        face_group_first: u32,
+        face_group_count: u32,
+        has_face_smoothing: u32,
+        has_face_hole: u32,
+        has_face_group: u32,
+        has_edge_smoothing: u32,
+        has_edge_crease: u32,
+        has_edge_visibility: u32,
+        has_vertex_crease: u32,
+        subdivision_preview_levels: u32,
+        subdivision_render_levels: u32,
+        subdivision_display_mode: u32,
+        subdivision_boundary: u32,
+        subdivision_uv_boundary: u32,
+        extra_skin_first: u32,
+        extra_skin_count: u32,
+        dq_first: u32,
+        dq_count: u32,
+    }
+
+    #[repr(C)]
+    struct XPose {
+        name: XStr,
+        is_bind_pose: u32,
+        entry_first: u32,
+        entry_count: u32,
+        props: XPropRange,
+    }
+
+    #[repr(C)]
+    struct XPoseEntry {
+        node: u32,
+        bone_to_world: [f64; 16],
+    }
+
+    #[repr(C)]
+    struct XDisplayLayer {
+        name: XStr,
+        visible: u32,
+        frozen: u32,
+        ui_color: [f64; 3],
+        node_first: u32,
+        node_count: u32,
+        props: XPropRange,
+    }
+
+    #[repr(C)]
+    struct XSelectionSet {
+        name: XStr,
+        props: XPropRange,
+        node_first: u32,
+        node_count: u32,
+    }
+
+    #[repr(C)]
+    struct XSelectionNode {
+        node: i32,
+        include_node: u32,
+        vertex_first: u32,
+        vertex_count: u32,
+        edge_first: u32,
+        edge_count: u32,
+        face_first: u32,
+        face_count: u32,
+    }
+
+    #[repr(C)]
+    struct XAnimStack {
+        name: XStr,
+        props: XPropRange,
+        clip: i32,
+        time_begin: f64,
+        time_end: f64,
+        layer_first: u32,
+        layer_count: u32,
+    }
+
+    #[repr(C)]
+    struct XAnimLayer {
+        name: XStr,
+        weight: f64,
+        weight_is_animated: u32,
+        blended: u32,
+        additive: u32,
+        compose_rotation: u32,
+        compose_scale: u32,
+        props: XPropRange,
+        anim_prop_first: u32,
+        anim_prop_count: u32,
+    }
+
+    #[repr(C)]
+    struct XAnimProp {
+        target_kind: u32,
+        target: u32,
+        element_type: u32,
+        element_name: XStr,
+        prop_name: XStr,
+        default_value: [f64; 3],
+        curves: [i32; 3],
+    }
+
+    #[repr(C)]
+    struct XAnimCurve {
+        key_first: u32,
+        key_count: u32,
+        pre_mode: u32,
+        pre_repeat: i32,
+        post_mode: u32,
+        post_repeat: i32,
+    }
+
+    #[repr(C)]
+    struct XAnimKey {
+        time: f64,
+        value: f64,
+        interpolation: u32,
+        left_dx: f32,
+        left_dy: f32,
+        right_dx: f32,
+        right_dy: f32,
+    }
+
+    #[repr(C)]
+    struct XScene {
+        creator: XStr,
+        filename: XStr,
+        original_file_path: XStr,
+        version: u32,
+        ascii: u32,
+        original_vendor: XStr,
+        original_name: XStr,
+        original_version: XStr,
+        latest_vendor: XStr,
+        latest_name: XStr,
+        latest_version: XStr,
+        scene_props: XPropRange,
+        settings_props: XPropRange,
+        axis_right: u32,
+        axis_up: u32,
+        axis_front: u32,
+        original_axis_up: u32,
+        unit_meters: f64,
+        original_unit_meters: f64,
+        frames_per_second: f64,
+        ambient_color: [f64; 3],
+        default_camera: XStr,
+        time_mode: u32,
+        time_protocol: u32,
+        snap_mode: u32,
+    }
+
+    #[repr(C)]
+    struct ReviewImportExtras {
+        strings: *mut c_char,
+        string_count: usize,
+        string_capacity: usize,
+        bytes: *mut u8,
+        byte_count: usize,
+        byte_capacity: usize,
+        props: *mut XProp,
+        prop_count: usize,
+        scene: XScene,
+        nodes: *mut XNode,
+        node_count: usize,
+        lights: *mut XLight,
+        light_count: usize,
+        cameras: *mut XCamera,
+        camera_count: usize,
+        lod_groups: *mut XLodGroup,
+        lod_group_count: usize,
+        lod_levels: *mut XLodLevel,
+        lod_level_count: usize,
+        materials: *mut XMaterial,
+        material_count: usize,
+        material_textures: *mut XMaterialTexture,
+        material_texture_count: usize,
+        textures: *mut XTexture,
+        texture_count: usize,
+        texture_layers: *mut XTextureLayer,
+        texture_layer_count: usize,
+        videos: *mut XVideo,
+        video_count: usize,
+        meshes: *mut XMesh,
+        mesh_count: usize,
+        color_sets: *mut XColorSet,
+        color_set_count: usize,
+        color_values: *mut f64,
+        color_value_count: usize,
+        edges: *mut u32,
+        edge_smoothing: *mut u8,
+        edge_crease: *mut f64,
+        edge_visibility: *mut u8,
+        edge_count: usize,
+        face_smoothing: *mut u8,
+        face_hole: *mut u8,
+        face_group: *mut u32,
+        face_count: usize,
+        vertex_crease: *mut f64,
+        vertex_crease_count: usize,
+        face_groups: *mut XFaceGroup,
+        face_group_count: usize,
+        extra_skins: *mut XExtraSkin,
+        extra_skin_count: usize,
+        extra_clusters: *mut XExtraCluster,
+        extra_cluster_count: usize,
+        extra_skin_offsets: *mut u32,
+        extra_skin_offset_count: usize,
+        extra_influences: *mut XExtraInfluence,
+        extra_influence_count: usize,
+        dq_weights: *mut XDqWeight,
+        dq_weight_count: usize,
+        poses: *mut XPose,
+        pose_count: usize,
+        pose_entries: *mut XPoseEntry,
+        pose_entry_count: usize,
+        display_layers: *mut XDisplayLayer,
+        display_layer_count: usize,
+        layer_nodes: *mut u32,
+        layer_node_count: usize,
+        selection_sets: *mut XSelectionSet,
+        selection_set_count: usize,
+        selection_nodes: *mut XSelectionNode,
+        selection_node_count: usize,
+        selection_indices: *mut u32,
+        selection_index_count: usize,
+        anim_stacks: *mut XAnimStack,
+        anim_stack_count: usize,
+        stack_layers: *mut u32,
+        stack_layer_count: usize,
+        anim_layers: *mut XAnimLayer,
+        anim_layer_count: usize,
+        anim_props: *mut XAnimProp,
+        anim_prop_count: usize,
+        anim_curves: *mut XAnimCurve,
+        anim_curve_count: usize,
+        anim_keys: *mut XAnimKey,
+        anim_key_count: usize,
+    }
+
+    /// The C-side capture, owned until marshaled. It holds only heap buffers
+    /// the bridge allocated for this call — nothing borrowed from ufbx, whose
+    /// scene is already freed — so moving it to another thread is sound.
+    pub(crate) struct ExtrasHandle {
+        raw: Box<ReviewImportExtras>,
+    }
+
+    // SAFETY: the handle exclusively owns C heap allocations that no other
+    // thread references (the bridge hands them over and never touches them
+    // again); the pointers inside are plain data until `review_import_free_extras`.
+    unsafe impl Send for ExtrasHandle {}
+
+    impl Drop for ExtrasHandle {
+        fn drop(&mut self) {
+            // SAFETY: `raw` was filled by `review_import_load_fbx` and is freed
+            // exactly once, here; the bridge's free tolerates a zeroed struct.
+            unsafe {
+                review_import_free_extras(&mut *self.raw);
+            }
+        }
+    }
+
     /// The bridge's progress hook: `user` is a `*const ProgressSink`.
     type ReviewImportProgressFn = unsafe extern "C" fn(*mut c_void, u64, u64);
 
@@ -424,12 +1006,15 @@ mod ffi {
         fn review_import_load_fbx(
             path: *const c_char,
             out_scene: *mut ReviewImportScene,
+            out_extras: *mut ReviewImportExtras,
             out_error: *mut ReviewImportError,
             progress: Option<ReviewImportProgressFn>,
             progress_user: *mut c_void,
         ) -> c_int;
 
         fn review_import_free_scene(scene: *mut ReviewImportScene);
+
+        fn review_import_free_extras(extras: *mut ReviewImportExtras);
     }
 
     /// The trampoline the bridge calls from inside the ufbx parse. `user` is the
@@ -459,13 +1044,21 @@ mod ffi {
     pub(super) fn load_fbx(
         path: &Path,
         progress: crate::ProgressSink<'_>,
-    ) -> Result<ModelData, ImportError> {
+        capture_extras: bool,
+    ) -> Result<StagedImport, ImportError> {
         let _z = crate::prof::zone!("Load FBX");
         let path_string = path.to_string_lossy();
         let c_path = CString::new(path_string.as_bytes())
             .map_err(|_| ImportError::LoadFailed("path contains embedded NUL byte".to_owned()))?;
         let mut scene = MaybeUninit::<ReviewImportScene>::zeroed();
         let mut error = ReviewImportError { message: [0; 256] };
+        // Boxed so the handle that outlives this call never moves the struct
+        // the bridge wrote pointers into. Zeroed is a valid "nothing captured"
+        // value the free tolerates.
+        // SAFETY: `ReviewImportExtras` is all raw pointers and integers, for
+        // which the all-zero bit pattern is a valid value.
+        let mut extras: Option<Box<ReviewImportExtras>> =
+            capture_extras.then(|| Box::new(unsafe { std::mem::zeroed() }));
 
         let loaded = {
             // The ufbx C parse + the bridge's two-pass extraction (the bulk of a
@@ -480,11 +1073,19 @@ mod ffi {
             // three pointers are non-null and valid for the duration of the call.
             // `progress_user` is a pointer to this stack borrow of the caller's
             // sink, which the bridge only dereferences from within this call.
+            // `extras` is either null (no capture) or a live boxed struct the
+            // bridge fills and this call's handle then owns.
             let mut sink = progress;
+            let extras_ptr = extras
+                .as_deref_mut()
+                .map_or(std::ptr::null_mut(), |extras| {
+                    extras as *mut ReviewImportExtras
+                });
             unsafe {
                 review_import_load_fbx(
                     c_path.as_ptr(),
                     scene.as_mut_ptr(),
+                    extras_ptr,
                     &mut error,
                     Some(report_read_progress),
                     (&raw mut sink).cast::<c_void>(),
@@ -493,8 +1094,12 @@ mod ffi {
         };
 
         if loaded == 0 {
+            // The bridge freed both outputs on its failure path; the zeroed box
+            // is dropped here without a free.
             return Err(ImportError::LoadFailed(read_error_message(&error)));
         }
+        // From here the capture is owned by a handle that frees it on drop.
+        let extras = extras.map(|raw| ExtrasHandle { raw });
 
         // SAFETY: `loaded != 0` means the bridge fully initialized `scene`, so the
         // `MaybeUninit` now holds a valid `ReviewImportScene`.
@@ -511,7 +1116,10 @@ mod ffi {
         unsafe {
             review_import_free_scene(&mut scene);
         }
-        model
+        Ok(StagedImport {
+            model: model?,
+            extras: PendingExtras { handle: extras },
+        })
     }
 
     /// The bridge's flat geometry arrays, marshaled into owned Rust buffers.
@@ -640,6 +1248,9 @@ mod ffi {
             bone: cluster.bone,
             mesh_node: cluster.mesh_node,
             world_to_bone_bind: Mat4::from_cols_array(&cluster.world_to_bone_bind),
+            mesh_node_to_bone: DMat4::from_cols_array(&cluster.mesh_node_to_bone).as_mat4(),
+            bind_to_world: DMat4::from_cols_array(&cluster.bind_to_world).as_mat4(),
+            name: read_optional_c_string(cluster.name).unwrap_or_default(),
         })
         .collect();
         let deformers = checked_slice(
@@ -1094,6 +1705,818 @@ mod ffi {
         Ok(channels)
     }
 
+    // ---- Marshaling the capture into `SourceExtras` ----
+
+    impl ExtrasHandle {
+        pub(crate) fn marshal(self, model: &ModelData) -> Result<SourceExtras, ImportError> {
+            let extras = marshal_extras(&self.raw)?;
+            extras
+                .validate(&ExtrasCounts::of(model))
+                .map_err(|message| {
+                    ImportError::LoadFailed(format!("source properties: {message}"))
+                })?;
+            Ok(extras)
+        }
+    }
+
+    /// Borrowed views over the capture's arenas and tables, with the range
+    /// checks every reference goes through.
+    struct ExtrasView<'a> {
+        strings: &'a [u8],
+        bytes: &'a [u8],
+        props: &'a [XProp],
+    }
+
+    impl ExtrasView<'_> {
+        fn str(&self, s: XStr) -> String {
+            let first = s.offset as usize;
+            let end = first.saturating_add(s.length as usize);
+            self.strings
+                .get(first..end)
+                .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+                .unwrap_or_default()
+        }
+
+        fn bytes(&self, b: XBytes) -> Vec<u8> {
+            let end = b.offset.saturating_add(b.length);
+            self.bytes
+                .get(b.offset..end)
+                .map(<[u8]>::to_vec)
+                .unwrap_or_default()
+        }
+
+        fn props(&self, range: XPropRange) -> Result<Vec<extras::Prop>, ImportError> {
+            slice_range(self.props, range.first, range.count, "props")?
+                .iter()
+                .map(|prop| {
+                    Ok(extras::Prop {
+                        name: self.str(prop.name),
+                        kind: extras::PropType::from_code(prop.kind),
+                        flags: extras::PropFlags(prop.flags),
+                        value_int: prop.value_int,
+                        value_real: prop.value_real,
+                        value_str: self.str(prop.value_str),
+                        value_blob: self.bytes(prop.value_blob),
+                    })
+                })
+                .collect()
+        }
+    }
+
+    fn slice_range<'a, T>(
+        items: &'a [T],
+        first: u32,
+        count: u32,
+        what: &str,
+    ) -> Result<&'a [T], ImportError> {
+        let first = first as usize;
+        let end = first.saturating_add(count as usize);
+        items.get(first..end).ok_or_else(|| {
+            ImportError::LoadFailed(format!(
+                "source properties: {what} range {first}..{end} exceeds {}",
+                items.len()
+            ))
+        })
+    }
+
+    fn dmat(m: &[f64; 16]) -> Mat4 {
+        DMat4::from_cols_array(m).as_mat4()
+    }
+
+    fn v3(v: [f64; 3]) -> Vec3 {
+        Vec3::new(v[0] as f32, v[1] as f32, v[2] as f32)
+    }
+
+    fn marshal_extras(raw: &ReviewImportExtras) -> Result<SourceExtras, ImportError> {
+        let view = ExtrasView {
+            strings: checked_slice(raw.strings.cast::<u8>(), raw.string_count, "strings")?,
+            bytes: checked_slice(raw.bytes, raw.byte_count, "bytes")?,
+            props: checked_slice(raw.props, raw.prop_count, "props")?,
+        };
+        let lights = checked_slice(raw.lights, raw.light_count, "lights")?;
+        let cameras = checked_slice(raw.cameras, raw.camera_count, "cameras")?;
+        let lod_groups = checked_slice(raw.lod_groups, raw.lod_group_count, "lod_groups")?;
+        let lod_levels = checked_slice(raw.lod_levels, raw.lod_level_count, "lod_levels")?;
+
+        let scene = {
+            let s = &raw.scene;
+            extras::SceneExtras {
+                creator: view.str(s.creator),
+                filename: view.str(s.filename),
+                original_file_path: view.str(s.original_file_path),
+                version: s.version,
+                ascii: s.ascii != 0,
+                original_application: extras::Application {
+                    vendor: view.str(s.original_vendor),
+                    name: view.str(s.original_name),
+                    version: view.str(s.original_version),
+                },
+                latest_application: extras::Application {
+                    vendor: view.str(s.latest_vendor),
+                    name: view.str(s.latest_name),
+                    version: view.str(s.latest_version),
+                },
+                scene_props: view.props(s.scene_props)?,
+                settings_props: view.props(s.settings_props)?,
+                axes: [
+                    extras::CoordinateAxis::from_code(s.axis_right),
+                    extras::CoordinateAxis::from_code(s.axis_up),
+                    extras::CoordinateAxis::from_code(s.axis_front),
+                ],
+                original_axis_up: extras::CoordinateAxis::from_code(s.original_axis_up),
+                unit_meters: s.unit_meters,
+                original_unit_meters: s.original_unit_meters,
+                frames_per_second: s.frames_per_second,
+                ambient_color: v3(s.ambient_color),
+                default_camera: view.str(s.default_camera),
+                time_mode: extras::TimeMode::from_code(s.time_mode),
+                time_protocol: extras::TimeProtocol::from_code(s.time_protocol),
+                snap_mode: extras::SnapMode::from_code(s.snap_mode),
+            }
+        };
+
+        let nodes = checked_slice(raw.nodes, raw.node_count, "nodes")?
+            .iter()
+            .map(|node| {
+                let kind = extras::AttributeKind::from_code(node.attribute_kind);
+                let attribute = if kind == extras::AttributeKind::None {
+                    None
+                } else {
+                    let typed = |what: &str| -> Result<usize, ImportError> {
+                        usize::try_from(node.attribute_index).map_err(|_| {
+                            ImportError::LoadFailed(format!(
+                                "source properties: a {what} has no parameters"
+                            ))
+                        })
+                    };
+                    let light = if kind == extras::AttributeKind::Light {
+                        let light = lights.get(typed("light")?).ok_or_else(|| {
+                            ImportError::LoadFailed(
+                                "source properties: light index out of range".to_owned(),
+                            )
+                        })?;
+                        Some(extras::LightExtras {
+                            color: v3(light.color),
+                            intensity: light.intensity,
+                            local_direction: v3(light.local_direction),
+                            kind: extras::LightType::from_code(light.kind),
+                            decay: extras::LightDecay::from_code(light.decay),
+                            area_shape: extras::LightAreaShape::from_code(light.area_shape),
+                            inner_angle: light.inner_angle,
+                            outer_angle: light.outer_angle,
+                            cast_light: light.cast_light != 0,
+                            cast_shadows: light.cast_shadows != 0,
+                        })
+                    } else {
+                        None
+                    };
+                    let camera = if kind == extras::AttributeKind::Camera {
+                        let camera = cameras.get(typed("camera")?).ok_or_else(|| {
+                            ImportError::LoadFailed(
+                                "source properties: camera index out of range".to_owned(),
+                            )
+                        })?;
+                        Some(extras::CameraExtras {
+                            projection_mode: extras::ProjectionMode::from_code(
+                                camera.projection_mode,
+                            ),
+                            resolution_is_pixels: camera.resolution_is_pixels != 0,
+                            resolution: camera.resolution,
+                            field_of_view_deg: camera.field_of_view_deg,
+                            orthographic_extent: camera.orthographic_extent,
+                            aspect_ratio: camera.aspect_ratio,
+                            near_plane: camera.near_plane,
+                            far_plane: camera.far_plane,
+                            aspect_mode: extras::AspectMode::from_code(camera.aspect_mode),
+                            aperture_mode: extras::ApertureMode::from_code(camera.aperture_mode),
+                            gate_fit: extras::GateFit::from_code(camera.gate_fit),
+                            aperture_format: extras::ApertureFormat::from_code(
+                                camera.aperture_format,
+                            ),
+                            focal_length_mm: camera.focal_length_mm,
+                            film_size_inch: camera.film_size_inch,
+                            aperture_size_inch: camera.aperture_size_inch,
+                            squeeze_ratio: camera.squeeze_ratio,
+                        })
+                    } else {
+                        None
+                    };
+                    let lod_group = if kind == extras::AttributeKind::LodGroup {
+                        let group = lod_groups.get(typed("LOD group")?).ok_or_else(|| {
+                            ImportError::LoadFailed(
+                                "source properties: LOD group index out of range".to_owned(),
+                            )
+                        })?;
+                        Some(extras::LodGroupExtras {
+                            relative_distances: group.relative_distances != 0,
+                            ignore_parent_transform: group.ignore_parent_transform != 0,
+                            use_distance_limit: group.use_distance_limit != 0,
+                            distance_limit_min: group.distance_limit_min,
+                            distance_limit_max: group.distance_limit_max,
+                            levels: slice_range(
+                                lod_levels,
+                                group.level_first,
+                                group.level_count,
+                                "LOD levels",
+                            )?
+                            .iter()
+                            .map(|level| extras::LodLevel {
+                                distance: level.distance,
+                                display: extras::LodDisplay::from_code(level.display),
+                            })
+                            .collect(),
+                        })
+                    } else {
+                        None
+                    };
+                    Some(extras::AttributeExtras {
+                        kind,
+                        name: view.str(node.attribute_name),
+                        props: view.props(node.attribute_props)?,
+                        light,
+                        camera,
+                        lod_group,
+                    })
+                };
+                Ok(extras::NodeExtras {
+                    props: view.props(node.props)?,
+                    rotation_order: extras::RotationOrder::from_code(node.rotation_order),
+                    inherit_mode: extras::InheritMode::from_code(node.inherit_mode),
+                    original_inherit_mode: extras::InheritMode::from_code(
+                        node.original_inherit_mode,
+                    ),
+                    geometry_to_node: dmat(&node.geometry_to_node),
+                    synthetic: extras::Synthetic::from_code(node.synthetic),
+                    visible: node.visible != 0,
+                    attribute,
+                })
+            })
+            .collect::<Result<Vec<_>, ImportError>>()?;
+
+        let material_textures = checked_slice(
+            raw.material_textures,
+            raw.material_texture_count,
+            "material_textures",
+        )?;
+        let materials = checked_slice(raw.materials, raw.material_count, "materials")?
+            .iter()
+            .map(|material| {
+                Ok(extras::MaterialExtras {
+                    shader_type: extras::ShaderType::from_code(material.shader_type),
+                    shading_model: view.str(material.shading_model),
+                    props: view.props(material.props)?,
+                    textures: slice_range(
+                        material_textures,
+                        material.texture_first,
+                        material.texture_count,
+                        "material textures",
+                    )?
+                    .iter()
+                    .map(|texture| extras::MaterialTexture {
+                        material_prop: view.str(texture.material_prop),
+                        shader_prop: view.str(texture.shader_prop),
+                        texture: texture.texture,
+                    })
+                    .collect(),
+                })
+            })
+            .collect::<Result<Vec<_>, ImportError>>()?;
+
+        let texture_layers = checked_slice(
+            raw.texture_layers,
+            raw.texture_layer_count,
+            "texture_layers",
+        )?;
+        let textures = checked_slice(raw.textures, raw.texture_count, "textures")?
+            .iter()
+            .map(|texture| {
+                Ok(extras::TextureExtras {
+                    name: view.str(texture.name),
+                    kind: extras::TextureKind::from_code(texture.kind),
+                    filename: view.str(texture.filename),
+                    absolute_filename: view.str(texture.absolute_filename),
+                    relative_filename: view.str(texture.relative_filename),
+                    uv_set: view.str(texture.uv_set),
+                    wrap_u: extras::WrapMode::from_code(texture.wrap_u),
+                    wrap_v: extras::WrapMode::from_code(texture.wrap_v),
+                    uv_transform: (texture.has_uv_transform != 0).then(|| {
+                        (
+                            v3(texture.uv_translation),
+                            Quat::from_xyzw(
+                                texture.uv_rotation[0] as f32,
+                                texture.uv_rotation[1] as f32,
+                                texture.uv_rotation[2] as f32,
+                                texture.uv_rotation[3] as f32,
+                            )
+                            .normalize(),
+                            v3(texture.uv_scale),
+                        )
+                    }),
+                    content: view.bytes(texture.content),
+                    video: u32::try_from(texture.video).ok(),
+                    layers: slice_range(
+                        texture_layers,
+                        texture.layer_first,
+                        texture.layer_count,
+                        "texture layers",
+                    )?
+                    .iter()
+                    .map(|layer| extras::TextureLayer {
+                        texture: layer.texture,
+                        blend_mode: extras::BlendMode::from_code(layer.blend_mode),
+                        alpha: layer.alpha,
+                    })
+                    .collect(),
+                    props: view.props(texture.props)?,
+                })
+            })
+            .collect::<Result<Vec<_>, ImportError>>()?;
+
+        let videos = checked_slice(raw.videos, raw.video_count, "videos")?
+            .iter()
+            .map(|video| {
+                Ok(extras::VideoExtras {
+                    name: view.str(video.name),
+                    filename: view.str(video.filename),
+                    absolute_filename: view.str(video.absolute_filename),
+                    relative_filename: view.str(video.relative_filename),
+                    content: view.bytes(video.content),
+                    props: view.props(video.props)?,
+                })
+            })
+            .collect::<Result<Vec<_>, ImportError>>()?;
+
+        let color_sets = checked_slice(raw.color_sets, raw.color_set_count, "color_sets")?;
+        let color_values = checked_slice(raw.color_values, raw.color_value_count, "color_values")?;
+        let edges = checked_slice(raw.edges, raw.edge_count.saturating_mul(2), "edges")?;
+        let edge_smoothing = checked_slice(raw.edge_smoothing, raw.edge_count, "edge_smoothing")?;
+        let edge_crease = checked_slice(raw.edge_crease, raw.edge_count, "edge_crease")?;
+        let edge_visibility =
+            checked_slice(raw.edge_visibility, raw.edge_count, "edge_visibility")?;
+        let face_smoothing = checked_slice(raw.face_smoothing, raw.face_count, "face_smoothing")?;
+        let face_hole = checked_slice(raw.face_hole, raw.face_count, "face_hole")?;
+        let face_group = checked_slice(raw.face_group, raw.face_count, "face_group")?;
+        let vertex_crease =
+            checked_slice(raw.vertex_crease, raw.vertex_crease_count, "vertex_crease")?;
+        let face_groups = checked_slice(raw.face_groups, raw.face_group_count, "face_groups")?;
+        let extra_skins = checked_slice(raw.extra_skins, raw.extra_skin_count, "extra_skins")?;
+        let extra_clusters = checked_slice(
+            raw.extra_clusters,
+            raw.extra_cluster_count,
+            "extra_clusters",
+        )?;
+        let extra_skin_offsets = checked_slice(
+            raw.extra_skin_offsets,
+            raw.extra_skin_offset_count,
+            "extra_skin_offsets",
+        )?;
+        let extra_influences = checked_slice(
+            raw.extra_influences,
+            raw.extra_influence_count,
+            "extra_influences",
+        )?;
+        let dq_weights = checked_slice(raw.dq_weights, raw.dq_weight_count, "dq_weights")?;
+
+        let meshes = checked_slice(raw.meshes, raw.mesh_count, "meshes")?
+            .iter()
+            .map(|mesh| {
+                let corners = mesh.corner_count as usize;
+                // Every face layer is `face_count` long, whichever the file carried.
+                slice_range(
+                    face_smoothing,
+                    mesh.face_first,
+                    mesh.face_count,
+                    "face layers",
+                )?;
+                let logical = mesh.logical_count as usize;
+                let color_sets = slice_range(
+                    color_sets,
+                    mesh.color_set_first,
+                    mesh.color_set_count,
+                    "color sets",
+                )?
+                .iter()
+                .map(|set| {
+                    let values = if set.value_first == u32::MAX {
+                        Vec::new()
+                    } else {
+                        let count = corners.checked_mul(4).ok_or_else(|| {
+                            ImportError::LoadFailed(
+                                "source properties: color set overflows".to_owned(),
+                            )
+                        })?;
+                        let first = set.value_first as usize;
+                        color_values
+                            .get(first..first.saturating_add(count))
+                            .ok_or_else(|| {
+                                ImportError::LoadFailed(
+                                    "source properties: color set values out of range".to_owned(),
+                                )
+                            })?
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
+                            .map(|c| Vec4::new(c[0] as f32, c[1] as f32, c[2] as f32, c[3] as f32))
+                            .collect()
+                    };
+                    Ok(extras::ColorSetExtras {
+                        name: view.str(set.name),
+                        index: set.index,
+                        values,
+                    })
+                })
+                .collect::<Result<Vec<_>, ImportError>>()?;
+                let edge_range = |items: &[u8]| -> Result<Vec<bool>, ImportError> {
+                    Ok(
+                        slice_range(items, mesh.edge_first, mesh.edge_count, "edge layer")?
+                            .iter()
+                            .map(|&v| v != 0)
+                            .collect(),
+                    )
+                };
+                let face_range = |items: &[u8]| -> Result<Vec<bool>, ImportError> {
+                    Ok(
+                        slice_range(items, mesh.face_first, mesh.face_count, "face layer")?
+                            .iter()
+                            .map(|&v| v != 0)
+                            .collect(),
+                    )
+                };
+                let pair_first = mesh.edge_first.saturating_mul(2);
+                let pair_count = mesh.edge_count.saturating_mul(2);
+                let extra_skins = slice_range(
+                    extra_skins,
+                    mesh.extra_skin_first,
+                    mesh.extra_skin_count,
+                    "skin layers",
+                )?
+                .iter()
+                .map(|skin| {
+                    let offsets = slice_range(
+                        extra_skin_offsets,
+                        skin.offset_first,
+                        (logical as u32).saturating_add(1),
+                        "skin layer rows",
+                    )?
+                    .to_vec();
+                    Ok(extras::SkinLayerExtras {
+                        method: skinning_method_from_code(skin.method),
+                        max_weights_per_vertex: skin.max_weights_per_vertex,
+                        clusters: slice_range(
+                            extra_clusters,
+                            skin.cluster_first,
+                            skin.cluster_count,
+                            "skin layer clusters",
+                        )?
+                        .iter()
+                        .map(|cluster| extras::ExtraCluster {
+                            bone: cluster.bone,
+                            name: view.str(cluster.name),
+                            mesh_node_to_bone: dmat(&cluster.mesh_node_to_bone),
+                            bind_to_world: dmat(&cluster.bind_to_world),
+                        })
+                        .collect(),
+                        offsets,
+                        influences: slice_range(
+                            extra_influences,
+                            skin.influence_first,
+                            skin.influence_count,
+                            "skin layer influences",
+                        )?
+                        .iter()
+                        .map(|influence| (influence.cluster, influence.weight))
+                        .collect(),
+                    })
+                })
+                .collect::<Result<Vec<_>, ImportError>>()?;
+                Ok(extras::MeshExtras {
+                    node: mesh.node,
+                    name: view.str(mesh.name),
+                    props: view.props(mesh.props)?,
+                    corner_first: mesh.corner_first,
+                    corner_count: mesh.corner_count,
+                    logical_first: mesh.logical_first,
+                    logical_count: mesh.logical_count,
+                    face_first: mesh.face_first,
+                    face_count: mesh.face_count,
+                    tangents_authored: mesh.tangents_authored != 0,
+                    reversed_winding: mesh.reversed_winding != 0,
+                    color_sets,
+                    edges: slice_range(edges, pair_first, pair_count, "edges")?
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|pair| [pair[0], pair[1]])
+                        .collect(),
+                    edge_smoothing: if mesh.has_edge_smoothing != 0 {
+                        edge_range(edge_smoothing)?
+                    } else {
+                        Vec::new()
+                    },
+                    edge_crease: if mesh.has_edge_crease != 0 {
+                        slice_range(edge_crease, mesh.edge_first, mesh.edge_count, "edge crease")?
+                            .iter()
+                            .map(|&v| v as f32)
+                            .collect()
+                    } else {
+                        Vec::new()
+                    },
+                    edge_visibility: if mesh.has_edge_visibility != 0 {
+                        edge_range(edge_visibility)?
+                    } else {
+                        Vec::new()
+                    },
+                    face_smoothing: if mesh.has_face_smoothing != 0 {
+                        face_range(face_smoothing)?
+                    } else {
+                        Vec::new()
+                    },
+                    face_hole: if mesh.has_face_hole != 0 {
+                        face_range(face_hole)?
+                    } else {
+                        Vec::new()
+                    },
+                    face_group: if mesh.has_face_group != 0 {
+                        slice_range(face_group, mesh.face_first, mesh.face_count, "face group")?
+                            .to_vec()
+                    } else {
+                        Vec::new()
+                    },
+                    face_groups: slice_range(
+                        face_groups,
+                        mesh.face_group_first,
+                        mesh.face_group_count,
+                        "face groups",
+                    )?
+                    .iter()
+                    .map(|group| extras::FaceGroup {
+                        id: group.id,
+                        name: view.str(group.name),
+                    })
+                    .collect(),
+                    vertex_crease: if mesh.has_vertex_crease != 0 {
+                        slice_range(
+                            vertex_crease,
+                            mesh.logical_first,
+                            mesh.logical_count,
+                            "vertex crease",
+                        )?
+                        .iter()
+                        .map(|&v| v as f32)
+                        .collect()
+                    } else {
+                        Vec::new()
+                    },
+                    subdivision: extras::SubdivisionExtras {
+                        preview_levels: mesh.subdivision_preview_levels,
+                        render_levels: mesh.subdivision_render_levels,
+                        display_mode: extras::SubdivisionDisplayMode::from_code(
+                            mesh.subdivision_display_mode,
+                        ),
+                        boundary: extras::SubdivisionBoundary::from_code(mesh.subdivision_boundary),
+                        uv_boundary: extras::SubdivisionBoundary::from_code(
+                            mesh.subdivision_uv_boundary,
+                        ),
+                    },
+                    extra_skins,
+                    dq_weights: slice_range(
+                        dq_weights,
+                        mesh.dq_first,
+                        mesh.dq_count,
+                        "dual-quaternion weights",
+                    )?
+                    .iter()
+                    .map(|w| (w.logical_vertex, w.weight as f32))
+                    .collect(),
+                })
+            })
+            .collect::<Result<Vec<_>, ImportError>>()?;
+
+        let pose_entries = checked_slice(raw.pose_entries, raw.pose_entry_count, "pose_entries")?;
+        let poses = checked_slice(raw.poses, raw.pose_count, "poses")?
+            .iter()
+            .map(|pose| {
+                Ok(extras::PoseExtras {
+                    name: view.str(pose.name),
+                    is_bind_pose: pose.is_bind_pose != 0,
+                    entries: slice_range(
+                        pose_entries,
+                        pose.entry_first,
+                        pose.entry_count,
+                        "pose entries",
+                    )?
+                    .iter()
+                    .map(|entry| extras::PoseEntry {
+                        node: entry.node,
+                        bone_to_world: dmat(&entry.bone_to_world),
+                    })
+                    .collect(),
+                    props: view.props(pose.props)?,
+                })
+            })
+            .collect::<Result<Vec<_>, ImportError>>()?;
+
+        let layer_nodes = checked_slice(raw.layer_nodes, raw.layer_node_count, "layer_nodes")?;
+        let display_layers = checked_slice(
+            raw.display_layers,
+            raw.display_layer_count,
+            "display_layers",
+        )?
+        .iter()
+        .map(|layer| {
+            Ok(extras::DisplayLayerExtras {
+                name: view.str(layer.name),
+                visible: layer.visible != 0,
+                frozen: layer.frozen != 0,
+                ui_color: v3(layer.ui_color),
+                nodes: slice_range(
+                    layer_nodes,
+                    layer.node_first,
+                    layer.node_count,
+                    "display layer nodes",
+                )?
+                .to_vec(),
+                props: view.props(layer.props)?,
+            })
+        })
+        .collect::<Result<Vec<_>, ImportError>>()?;
+
+        let selection_nodes = checked_slice(
+            raw.selection_nodes,
+            raw.selection_node_count,
+            "selection_nodes",
+        )?;
+        let selection_indices = checked_slice(
+            raw.selection_indices,
+            raw.selection_index_count,
+            "selection_indices",
+        )?;
+        let selection_sets = checked_slice(
+            raw.selection_sets,
+            raw.selection_set_count,
+            "selection_sets",
+        )?
+        .iter()
+        .map(|set| {
+            Ok(extras::SelectionSetExtras {
+                name: view.str(set.name),
+                props: view.props(set.props)?,
+                nodes: slice_range(
+                    selection_nodes,
+                    set.node_first,
+                    set.node_count,
+                    "selection nodes",
+                )?
+                .iter()
+                .map(|node| {
+                    Ok(extras::SelectionNodeExtras {
+                        node: u32::try_from(node.node).ok(),
+                        include_node: node.include_node != 0,
+                        vertices: slice_range(
+                            selection_indices,
+                            node.vertex_first,
+                            node.vertex_count,
+                            "selection vertices",
+                        )?
+                        .to_vec(),
+                        edges: slice_range(
+                            selection_indices,
+                            node.edge_first,
+                            node.edge_count,
+                            "selection edges",
+                        )?
+                        .to_vec(),
+                        faces: slice_range(
+                            selection_indices,
+                            node.face_first,
+                            node.face_count,
+                            "selection faces",
+                        )?
+                        .to_vec(),
+                    })
+                })
+                .collect::<Result<Vec<_>, ImportError>>()?,
+            })
+        })
+        .collect::<Result<Vec<_>, ImportError>>()?;
+
+        let anim_keys = checked_slice(raw.anim_keys, raw.anim_key_count, "anim_keys")?;
+        let anim_curves = checked_slice(raw.anim_curves, raw.anim_curve_count, "anim_curves")?;
+        let anim_props = checked_slice(raw.anim_props, raw.anim_prop_count, "anim_props")?;
+        let curve_of = |index: i32| -> Result<Option<extras::Curve>, ImportError> {
+            let Ok(index) = usize::try_from(index) else {
+                return Ok(None);
+            };
+            let curve = anim_curves.get(index).ok_or_else(|| {
+                ImportError::LoadFailed("source properties: curve index out of range".to_owned())
+            })?;
+            Ok(Some(extras::Curve {
+                keys: slice_range(anim_keys, curve.key_first, curve.key_count, "keys")?
+                    .iter()
+                    .map(|key| extras::RawKey {
+                        time: key.time,
+                        value: key.value,
+                        interpolation: extras::Interpolation::from_code(key.interpolation),
+                        left: (key.left_dx, key.left_dy),
+                        right: (key.right_dx, key.right_dy),
+                    })
+                    .collect(),
+                pre: extras::Extrapolation {
+                    mode: extras::ExtrapolationMode::from_code(curve.pre_mode),
+                    repeat_count: curve.pre_repeat,
+                },
+                post: extras::Extrapolation {
+                    mode: extras::ExtrapolationMode::from_code(curve.post_mode),
+                    repeat_count: curve.post_repeat,
+                },
+            }))
+        };
+        let anim_layers = checked_slice(raw.anim_layers, raw.anim_layer_count, "anim_layers")?
+            .iter()
+            .map(|layer| {
+                Ok(extras::LayerCurves {
+                    name: view.str(layer.name),
+                    weight: layer.weight,
+                    weight_is_animated: layer.weight_is_animated != 0,
+                    blended: layer.blended != 0,
+                    additive: layer.additive != 0,
+                    compose_rotation: layer.compose_rotation != 0,
+                    compose_scale: layer.compose_scale != 0,
+                    props: view.props(layer.props)?,
+                    anim: slice_range(
+                        anim_props,
+                        layer.anim_prop_first,
+                        layer.anim_prop_count,
+                        "animated properties",
+                    )?
+                    .iter()
+                    .map(|prop| {
+                        let target = match prop.target_kind {
+                            1 => extras::ElementRef::Node(prop.target),
+                            2 => extras::ElementRef::NodeAttribute(prop.target),
+                            3 => extras::ElementRef::Material(prop.target),
+                            4 => extras::ElementRef::Texture(prop.target),
+                            5 => extras::ElementRef::Video(prop.target),
+                            6 => extras::ElementRef::BlendChannel(prop.target),
+                            7 => extras::ElementRef::DisplayLayer(prop.target),
+                            8 => extras::ElementRef::AnimLayer(prop.target),
+                            _ => extras::ElementRef::Unmapped {
+                                element_type: prop.element_type,
+                                name: view.str(prop.element_name),
+                            },
+                        };
+                        Ok(extras::AnimPropCurves {
+                            target,
+                            prop_name: view.str(prop.prop_name),
+                            default: v3(prop.default_value),
+                            curves: [
+                                curve_of(prop.curves[0])?,
+                                curve_of(prop.curves[1])?,
+                                curve_of(prop.curves[2])?,
+                            ],
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ImportError>>()?,
+                })
+            })
+            .collect::<Result<Vec<_>, ImportError>>()?;
+
+        let stack_layers = checked_slice(raw.stack_layers, raw.stack_layer_count, "stack_layers")?;
+        let animations = checked_slice(raw.anim_stacks, raw.anim_stack_count, "anim_stacks")?
+            .iter()
+            .map(|stack| {
+                Ok(extras::ClipCurves {
+                    name: view.str(stack.name),
+                    props: view.props(stack.props)?,
+                    clip: u32::try_from(stack.clip).ok(),
+                    time_begin: stack.time_begin,
+                    time_end: stack.time_end,
+                    layers: slice_range(
+                        stack_layers,
+                        stack.layer_first,
+                        stack.layer_count,
+                        "stack layers",
+                    )?
+                    .to_vec(),
+                })
+            })
+            .collect::<Result<Vec<_>, ImportError>>()?;
+
+        Ok(SourceExtras {
+            scene,
+            nodes,
+            materials,
+            textures,
+            videos,
+            meshes,
+            poses,
+            display_layers,
+            selection_sets,
+            anim_layers,
+            animations,
+        })
+    }
+
     fn read_error_message(error: &ReviewImportError) -> String {
         // SAFETY: `error.message` is a fixed 256-byte array the bridge always writes
         // as a NUL-terminated string (it is zero-initialized at `[0; 256]` before the
@@ -1269,6 +2692,9 @@ mod ffi {
                 bone,
                 mesh_node: 0,
                 world_to_bone_bind: Mat4::IDENTITY.to_cols_array(),
+                mesh_node_to_bone: DMat4::IDENTITY.to_cols_array(),
+                bind_to_world: DMat4::IDENTITY.to_cols_array(),
+                name: std::ptr::null_mut(),
             }
         }
 
@@ -2097,6 +3523,103 @@ mod tests {
             complete.count_gpu_vertices()
         );
         assert!(complete.stats.gpu_vertex_count > 0);
+    }
+
+    /// Every fixture's source-property capture must describe the model it came
+    /// with: `load_model_full` runs the funnel guard, so an index that drifted
+    /// from the geometry fails here rather than in an export.
+    #[test]
+    fn every_fixture_captures_valid_extras() {
+        let dir = fixture("");
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            eprintln!("skipping: {} is not present", dir.display());
+            return;
+        };
+        let mut checked = 0;
+        // `RVO_EXTRAS_FIXTURE=<name>` narrows the walk to one file, for
+        // isolating a fixture that misbehaves.
+        let only = std::env::var("RVO_EXTRAS_FIXTURE").ok();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("fbx"))
+            {
+                continue;
+            }
+            if let Some(only) = &only
+                && path.file_name().is_none_or(|name| name != only.as_str())
+            {
+                continue;
+            }
+            let (model, extras) = crate::load_model_full(&path)
+                .unwrap_or_else(|error| panic!("{} must import: {error}", path.display()));
+            let extras = extras.unwrap_or_else(|| panic!("{} captured no extras", path.display()));
+            // Beyond the guard: the parts cover the model, each node's props were
+            // read, and the clip map points at the clips the model has.
+            assert_eq!(extras.nodes.len(), model.nodes.len());
+            assert_eq!(extras.materials.len(), model.materials.len());
+            assert!(
+                extras.nodes.iter().any(|node| !node.props.is_empty()),
+                "{} has nodes without any authored property",
+                path.display()
+            );
+            assert_eq!(
+                extras
+                    .animations
+                    .iter()
+                    .filter(|stack| stack.clip.is_some())
+                    .count(),
+                model.animations.len(),
+                "{} stacks vs clips",
+                path.display()
+            );
+            assert!(
+                extras.scene.version > 0,
+                "{} has no version",
+                path.display()
+            );
+            eprintln!(
+                "{}: v{} {} nodes, {} materials, {} textures, {} meshes, {} poses, {} layers, {} sets, {} stacks",
+                path.file_name().unwrap().to_string_lossy(),
+                extras.scene.version,
+                extras.nodes.len(),
+                extras.materials.len(),
+                extras.textures.len(),
+                extras.meshes.len(),
+                extras.poses.len(),
+                extras.display_layers.len(),
+                extras.selection_sets.len(),
+                extras.animations.len(),
+            );
+            checked += 1;
+        }
+        eprintln!("checked {checked} fixtures");
+    }
+
+    /// The skinned fixture carries the authored cluster matrices: `Transform`
+    /// (mesh node → bone) and `TransformLink` (bind → world), which must be
+    /// consistent with the palette matrix the viewer derives.
+    #[test]
+    fn skin_clusters_carry_authored_matrices() {
+        let path = fixture("SK_Player_01.fbx");
+        if !path.exists() {
+            eprintln!("skipping: {} is not present", path.display());
+            return;
+        }
+        let model = load_model(&path).expect("the fixture must import");
+        let skin = model.skin.as_ref().expect("skinned");
+        for cluster in &skin.clusters {
+            assert!(cluster.bind_to_world.is_finite());
+            assert!(cluster.mesh_node_to_bone.is_finite());
+            // `TransformLink` is the bone's world at bind; its inverse composed
+            // with the mesh node's world is what `mesh_node_to_bone` encodes.
+            let mesh_world = model.nodes[cluster.mesh_node as usize].transform;
+            let expected = cluster.bind_to_world.inverse() * mesh_world;
+            let delta = (expected - cluster.mesh_node_to_bone).abs();
+            let max = delta.to_cols_array().into_iter().fold(0f32, f32::max);
+            assert!(max < 1e-3, "cluster {} drifts by {max}", cluster.name);
+        }
     }
 
     /// The skinned fixture's clusters must be oriented correctly: at the rest

@@ -183,6 +183,103 @@ Conventionally centimeters, while import normalizes every file to meters — so 
 writer sets `UnitScaleFactor = 100`. Without it the geometry reads back exactly
 100× too small, which no error reports.
 
+The matching coordinate scale is applied **once, at the top of the hierarchy**:
+`place_node` builds the chain against a root frame of `1/per_meter` instead of
+the identity. Applying it per *local* value double-counts, because import parks
+the unit normalization in the node transforms themselves — so the node inverse
+`build_mesh` runs the geometry through already returns the source's unit. That
+double-count cancelled in the positions (a 100× subtree under a 100× too-small
+node scale) and passed every bounds round trip, but it left the reimported
+`geometry_to_world` at 1e-4 and the cofactor matrix ufbx derives normals from at
+1e-8 — under the reader's epsilon, so every normal fell back to a constant
+`(0, 1, 0)` and the exported mesh came back lit but featureless.
+
+### A normal transposes the forward matrix, not the inverse
+
+`build_mesh` sends positions through `node.transform.inverse()`, so the normal
+matrix is the transpose of `node.transform` itself. `inverse().transpose()` is
+the map for the opposite direction and rotates every normal the wrong way round.
+The two agree for a pure uniform scale, so it hides until a rotated node is
+exported.
+
+### ufbx_write seeds every scene with a "Take 001" animation stack
+
+`ufbxw_create_scene` creates a default `AnimationStack` named `Take 001` and its
+`BaseLayer` unless `no_default_anim_stack` / `no_default_anim_layer` are set — so
+a static mesh came back out of the exporter carrying an empty animation, listed
+in the Outliner's Animations tab and shown as a take by every DCC.
+
+### A processed level keeps its deform rows only because the weld key carries a row id
+
+`Submesh` holds the skin / extra-skin / dual-quaternion / morph rows per vertex
+(`VertexRows`, a CSR), and a vertex remap *gathers* them from a representative
+old vertex — a scatter would let the last writer win. That is exact only if every
+vertex merged into a slot carried identical rows, so `ops::weld` (and the index
+pass) folds one `u32` row id — the dedup of the concatenated row bytes — into the
+exact key and into the tolerance predicate, and `filter_triangles` feeds it as a
+second stream to `meshopt_filterIndexBufferMulti`. Drop the id and a 50 % LOD
+silently re-skins vertices to a neighbour's bones.
+
+### Polygons ride the pipeline as a carry, and each operation class treats it one way
+
+`PolygonCarry` maps faces and edges onto local vertices. A vertex remap rewrites
+its corners; an operation that keeps triangles whole (filter, prune, the
+cache/overdraw reorders) reconciles it by canonical triangle content, dropping
+faces that lost a triangle; a simplify clears it, and the export writes that
+level as triangles with a note naming the operation. The processed `ModelData`
+still carries no `faces` / `to_face` — the renderer assumes the corner-split
+layout — so the polygons live in `ProcessedLod::carry`, which only the exporter
+reads. `face_group` there is the group *id* (`face_groups[i].id`), not ufbx's
+table index, which is what `ufbx_face.face_group` holds.
+
+### A skin cluster's `Transform` is `mesh_node_to_bone` verbatim; only `TransformLink` is in scene units
+
+ufbx reads `Transform` as-is and root-transforms `TransformLink`
+(`bind_to_world`, so import holds it in meters), which is why the export scales
+`bind_to_world`'s translation by `per_meter` and leaves `Transform` alone. A bind
+pose's `bone_to_world` rows scale the same way. Getting either wrong passes every
+bounds round trip — the skinned pose is what breaks — so
+`skin_survives_with_its_authored_cluster_matrices` compares the reimported
+matrices numerically.
+
+### Blend-shape normal deltas go out unnormalized
+
+ufbx pre-rotates the offsets it hands import (`matrix_for_normals`); the export
+inverts that through the node's cofactor matrix and must not normalize the
+result — a delta is a difference of normals, and its length is the shape's.
+
+### Every property is written before any curve binds to it, and a curve node gets only the curves the source had
+
+ufbx_write's `animate_prop` needs the target property to exist, so the bridge
+writes nodes / attributes / materials / textures / channels / layers first and
+the animation last (`RVO_TARGET_*` resolves each `ElementRef` to an export id).
+Its `d|X/Y/Z` defaults are always written, but a component the source keyed
+nothing on gets no `AnimationCurve` (patch P5, `ufbxw_animate_prop_masked`): a
+reader treats *any* curve, even an empty one, as a non-constant value — ufbx then
+adds a scale helper under every bone whose `Lcl Scaling` Maya wrote as a
+default-only curve node, and the dog fixture came back with 42 nodes the source
+did not have. Deleting the unwanted curves after the fact is not an option:
+`ufbxw_delete_element` leaves the curve node's connection list pointing at the
+freed slot, which the next element reuses.
+
+### Keys at the same ktime are not merged, and the first key's left tangent cannot round-trip
+
+ufbx_write sorts out-of-order keys but keeps equal ktimes
+(`round(t × KTIME_SECOND)`), so `curve_data` skips a key equal to the previous
+one. Tangents convert as `slope = dy/dx`, `weight = dx / interval` (left: the
+previous interval, right: the next) — the exact inverse of ufbx's
+`dx = weight × interval`, `dy = dx × slope` — but a first key has no previous
+interval, so its left handle is dropped by the reader; the round-trip test skips
+it, and nothing evaluates it.
+
+### ufbx_write elides a property equal to its template default, and that loses authored zeros
+
+A source `Lcl Translation` of `(0, 0, 0)` or a `ReflectionFactor` of `0` is
+authored data the reader would otherwise fall back to the template for. Patch
+P1's `UFBXW_PROP_FLAG_EXPLICIT`, set on every property the bridge writes, forces
+it out. The elision is upstream's design — don't remove the flag to "clean up"
+the file.
+
 ### Recovering from a malformed index drops the whole triangle, never one corner
 
 An index buffer is a flat corner stream, so `continue`-ing past a single bad

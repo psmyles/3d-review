@@ -7,10 +7,73 @@ License:   MIT OR Unlicense — see LICENSE
 
 What is vendored
 ----------------
-An unmodified copy of `ufbx_write.h` and `ufbx_write.c`. Refreshing this
-directory is a plain re-copy of a newer commit (update the hash above, then
-re-run the workspace tests — in particular `crates/optimize`'s export
-round-trip, which re-imports written files through the vendored ufbx reader).
+`ufbx_write.h` and `ufbx_write.c` from the commit above, **plus this
+project's patches**, recorded as `review.patch` (a unified diff against the
+pristine upstream files). Refreshing this directory is therefore: copy the
+newer upstream pair in, update the hash above, re-apply `review.patch`
+(`git apply third_party/ufbx-write/review.patch`, resolving any drift by
+hand), regenerate the patch from the result (`git diff -- ufbx_write.h
+ufbx_write.c > review.patch` before committing), then re-run the workspace
+tests — `crates/optimize`'s `ufbxw_patches` suite exercises every hunk, and
+its export round-trips re-import written files through the vendored ufbx
+reader. Drop a hunk only once upstream provides the same thing.
+
+The patches (each hunk is marked `review patch P<n>` in the source)
+--------------------------------------------------------------------
+The exporter retains every source property the optimization stack did not
+change, and four things it needs to write had no upstream entry point:
+
+P1  Property flags and value kinds. `ufbxw_set_prop_flags()` /
+    `ufbxw_get_prop_flags()` set `UFBXW_PROP_FLAG_USER` / `_ANIMATABLE` /
+    `_HIDDEN` (new) on an existing property, and the `Properties70` writer
+    emits them as the SDK does (`"A+U"`, `"U"`, `"H"`) where it previously
+    wrote only `A`. `UFBXW_PROP_FLAG_EXPLICIT` (never written to the file)
+    makes the writer emit a property even when its value equals the template
+    default it would otherwise elide it for, so a source's explicit properties
+    reach the output verbatim. `ufbxw_add_real_string()` adds a
+    `Distance`-typed value, `ufbxw_add_blob()` a `Blob` (upstream asserted on
+    writing one); the ASCII writer gains the `R` (raw bytes) format the binary
+    writer already had.
+
+P2  `Null` node attribute. `ufbxw_create_null()` attaches a `Null` attribute
+    (template `FbxNull`: `Color`, `Size`, `Look`) so an empty / locator round
+    trips as one instead of an attribute-less Model. The element writer emits
+    its `TypeFlags: "Null"`, and — the same site — the `TypeFlags: "Camera"`
+    + `GeometryVersion` cameras were written without.
+
+P3  Topology layers. Five `ufbxw_mesh_attribute` kinds for the generic
+    `ufbxw_mesh_set_attribute()`: `EDGE_CREASE` (`LayerElementEdgeCrease`,
+    real, ByEdge), `VERTEX_CREASE` (`LayerElementVertexCrease`, real,
+    ByVertice), `HOLE` (`LayerElementHole`, ByPolygon), `VISIBILITY`
+    (`LayerElementVisibility`, ByEdge), `POLYGON_GROUP`
+    (`LayerElementPolygonGroup`, int, ByPolygon). Hole and Visibility are
+    written as 0/1 int arrays, exactly as upstream writes `Smoothing`.
+
+P4  LOD groups and layered textures. `ufbxw_create_lod_group()` +
+    `ufbxw_lod_group_add_level()` write a `LodGroup` node attribute (template
+    `FbxLODGroup`) with the per-level `Thresholds|Level<n>` (Distance) and
+    `DisplayLevels|Level<n>` (enum) properties ufbx derives its levels from.
+    `UFBXW_TEXTURE_LAYERED` + `ufbxw_texture_add_layer()` write a
+    `LayeredTexture` object (its own object type and `FbxLayeredTexture`
+    template) with `BlendModes` / `Alphas` arrays parallel to the layer
+    connections, which go out as plain OO connections from each layer.
+
+P5  Curve nodes without curves. `ufbxw_animate_prop_masked()` (and `_len`)
+    take a component bit mask and create an `AnimationCurve` only for the
+    components in it; the `d|X`/`d|Y`/`d|Z` default properties are always
+    present. Upstream's `ufbxw_animate_prop()` creates one curve per
+    component and offers no way to remove one (`ufbxw_delete_element()`
+    leaves the curve node's connection list pointing at the freed slot).
+    Maya writes curve nodes that carry only their defaults — every bone's
+    `Lcl Scaling`, its `lockInfluenceWeights` — and a reader treats any
+    curve, even an empty one, as a non-constant value: ufbx then adds a
+    scale helper under each such node, so a re-read of the export had 42
+    nodes the source did not.
+
+Everything else is upstream's, untouched: the patches add table rows,
+element types, tokens and entry points beside the existing ones and change
+four writer sites (property flags, blob values, the node-attribute /
+texture bodies, the curve-node builder).
 
 Stability
 ---------
@@ -26,6 +89,9 @@ How it is built
 `cc`, and sets `cfg(has_ufbxw)` only when this directory is present — the same
 optional-vendoring contract `crates/import` has for ufbx. Delete this directory
 and the workspace still builds; export then reports `OptError::Unavailable`.
+In non-release profiles it also compiles `src/ufbxw_probe.c`
+(`cfg(has_ufbxw_probe)`), the test-only scene that drives every patched entry
+point for `tests/ufbxw_patches.rs`.
 
 `ufbx_write.c` needs C99 or later. It has no OS-specific code and no threading
 unless explicitly opted in, so nothing extra is configured. Note the header

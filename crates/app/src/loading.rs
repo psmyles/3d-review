@@ -32,9 +32,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use review_import::{
-    ImportError, ImportProgress, ImportStage, load_model_with_progress, measure_clip_bounds,
+    ImportError, ImportProgress, ImportStage, StagedImport, load_model_staged, measure_clip_bounds,
 };
-use review_model::{Bounds, MeshGroupStats, ModelData};
+use review_model::{Bounds, MeshGroupStats, ModelData, SourceExtras};
 use review_render::Renderer;
 use review_ui::Selection;
 
@@ -64,6 +64,17 @@ pub(crate) struct ModelLoaded {
     /// Already an `Arc`: the worker keeps a handle so it can go on measuring the
     /// model it has just published, and `app` would have made one anyway.
     result: Result<Arc<ModelData>, ImportError>,
+}
+
+/// The source-property capture, marshaled on the import worker right after
+/// the model was published. `Ok(None)` when this build cannot capture; `Err`
+/// when the capture did not describe the model (nothing is kept, and the
+/// export says so).
+#[derive(Debug)]
+pub(crate) struct SourceExtrasReady {
+    /// Matched against the current load generation exactly as [`ModelLoaded`] is.
+    generation: u64,
+    extras: Result<Option<Arc<SourceExtras>>, ImportError>,
 }
 
 /// One of the measurements an import defers until after the model is drawn.
@@ -202,9 +213,13 @@ impl App {
                         },
                     ));
                 };
-                let result = {
+                let staged = {
                     let _z = prof::zone!("Import Model");
-                    load_model_with_progress(&path, &report).map(Arc::new)
+                    load_model_staged(&path, &report)
+                };
+                let (result, pending) = match staged {
+                    Ok(StagedImport { model, extras }) => (Ok(Arc::new(model)), Some(extras)),
+                    Err(error) => (Err(error), None),
                 };
                 let measure = result.as_ref().ok().map(Arc::clone);
                 // A send failure only means the event loop has exited.
@@ -214,12 +229,21 @@ impl App {
                     result,
                 })));
 
-                // The model is on screen from here; what is left is measurement.
-                // Each piece is sent the moment it lands, so the stats card and
-                // the clip framing fill in one at a time rather than together.
+                // The model is on screen from here; what is left is the source
+                // properties and the measurements. Each piece is sent the moment
+                // it lands, so the stats card and the clip framing fill in one at
+                // a time rather than together.
                 let Some(model) = measure else {
                     return;
                 };
+                if let Some(pending) = pending {
+                    let _z = prof::zone!("Marshal Extras");
+                    report(ImportProgress::stage(ImportStage::Extras));
+                    let extras = pending.marshal(&model).map(|extras| extras.map(Arc::new));
+                    let _ = proxy.send_event(UserEvent::SourceExtrasReady(Box::new(
+                        SourceExtrasReady { generation, extras },
+                    )));
+                }
                 let send = |measurement, last| {
                     let _ = proxy.send_event(UserEvent::ModelMeasured(Box::new(ModelMeasured {
                         generation,
@@ -245,15 +269,18 @@ impl App {
             // No proxy to post back through (never the case once `main` has
             // built the event loop) — load in place, measurements and all, so the
             // file still opens fully.
-            let result = load_model_with_progress(path, &|_| {}).map(Arc::new);
-            if let Ok(model) = result.as_ref() {
-                let clip_bounds = measure_clip_bounds(model);
-                let groups = model.mesh_group_stats();
-                self.apply_loaded_model(path, result);
-                self.ui.clip_bounds = clip_bounds;
-                self.ui.set_mesh_group_stats(groups);
-            } else {
-                self.apply_loaded_model(path, result);
+            match load_model_staged(path, &|_| {}) {
+                Ok(StagedImport { model, extras }) => {
+                    let model = Arc::new(model);
+                    let clip_bounds = measure_clip_bounds(&model);
+                    let groups = model.mesh_group_stats();
+                    let extras = extras.marshal(&model).map(|extras| extras.map(Arc::new));
+                    self.apply_loaded_model(path, Ok(Arc::clone(&model)));
+                    self.apply_source_extras(extras);
+                    self.ui.clip_bounds = clip_bounds;
+                    self.ui.set_mesh_group_stats(groups);
+                }
+                Err(error) => self.apply_loaded_model(path, Err(error)),
             }
         }
 
@@ -292,6 +319,31 @@ impl App {
             ModelMeasurement::MeshGroups(groups) => self.ui.set_mesh_group_stats(groups),
         }
         self.request_redraw();
+    }
+
+    /// Keep the source-property capture of the model on screen. A capture whose
+    /// generation has been superseded describes a model no longer shown and is
+    /// dropped.
+    pub(crate) fn handle_source_extras_ready(&mut self, message: SourceExtrasReady) {
+        if message.generation != self.model_load_generation {
+            return;
+        }
+        self.apply_source_extras(message.extras);
+    }
+
+    fn apply_source_extras(&mut self, extras: Result<Option<Arc<SourceExtras>>, ImportError>) {
+        match extras {
+            Ok(extras) => self.scene_extras = extras,
+            Err(error) => {
+                // The model stays; only the re-export fidelity is lost, and the
+                // export report will say so.
+                self.scene_extras = None;
+                prof::msg(&format!("source properties dropped: {error}"));
+                self.notifications.error(format!(
+                    "Couldn't read the file's source properties: {error}"
+                ));
+            }
+        }
     }
 
     /// Name the loaded model in the window title — `Barrel.fbx — 3D Review`
@@ -364,6 +416,9 @@ impl App {
                 self.ui.material_revision = material_revision;
                 self.reset_ui_for_new_model(&model);
                 self.scene_model = model;
+                // The capture describing this model arrives on its own event a
+                // moment later; the previous model's must not stand in for it.
+                self.scene_extras = None;
                 self.scene_revision = self.next_model_revision();
                 // Any Opt result (and any node override) describes the previous
                 // model, so drop both before the new one is drawn.
@@ -412,6 +467,7 @@ impl App {
         self.ui.material_revision = material_revision;
         self.reset_ui_for_new_model(&empty);
         self.scene_model = empty;
+        self.scene_extras = None;
         self.scene_revision = self.next_model_revision();
         self.reset_opt_for_new_model();
         self.set_window_title(None);

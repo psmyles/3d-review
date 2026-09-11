@@ -33,7 +33,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use review_model::ModelData;
+use review_model::{ModelData, SourceExtras};
 use review_optimize::{ExportOptions, ProcessedResult, preset};
 
 use crate::{App, TEXTURE_EXTENSIONS, UserEvent, prof};
@@ -58,6 +58,9 @@ pub(crate) enum Dialog {
         /// The source model the chain was processed from — the exporter reads its
         /// materials and node names.
         source: Arc<ModelData>,
+        /// The source's property capture as it stood when Export was clicked
+        /// (`None` if it had not landed yet, which the report notes).
+        extras: Option<Arc<SourceExtras>>,
         options: ExportOptions,
         /// Default file name stem, which the per-LOD packaging also suffixes.
         stem: String,
@@ -79,6 +82,7 @@ pub(crate) enum DialogAnswer {
         path: PathBuf,
         result: Arc<ProcessedResult>,
         source: Arc<ModelData>,
+        extras: Option<Arc<SourceExtras>>,
         options: ExportOptions,
     },
     SavePreset {
@@ -118,6 +122,7 @@ impl Dialog {
             Dialog::ExportOpt {
                 result,
                 source,
+                extras,
                 options,
                 stem,
             } => rfd::FileDialog::new()
@@ -129,6 +134,7 @@ impl Dialog {
                     path,
                     result,
                     source,
+                    extras,
                     options,
                 }),
             Dialog::SavePreset { json } => rfd::FileDialog::new()
@@ -198,8 +204,9 @@ impl App {
                 path,
                 result,
                 source,
+                extras,
                 options,
-            } => self.spawn_opt_export(path, result, source, options),
+            } => self.spawn_opt_export(path, result, source, extras, options),
             DialogAnswer::SavePreset { path, json } => self.write_opt_preset(&path, &json),
             DialogAnswer::LoadPreset(path) => self.read_opt_preset(&path),
         }

@@ -453,9 +453,10 @@ fn export_body(ui: &mut egui::Ui, state: &mut UiState) -> Option<OptIntent> {
     ui.label(
         egui::RichText::new(
             "Where and how the processed mesh - and its LOD chain, if the stack \
-             generates one - is written. Output is always triangulated, and carries \
-             the materials as imported - material edits made in the viewer stay \
-             previews.",
+             generates one - is written. Everything the stack did not change is \
+             written as authored: polygons, materials and textures, skins, blend \
+             shapes, animation curves and properties. Material edits made in the \
+             viewer stay previews.",
         )
         .color(color::TEXT_MUTED),
     );

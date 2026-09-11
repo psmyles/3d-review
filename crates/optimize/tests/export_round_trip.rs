@@ -55,6 +55,7 @@ fn run(model: &ModelData, stack: &OptStack) -> ProcessedResult {
         stack,
         render_vertex_size: VERTEX_SIZE,
         hidden_nodes: &[],
+        extras: None,
     })
     .expect("processing succeeds")
 }
@@ -101,7 +102,7 @@ fn a_written_file_reads_back_with_the_same_geometry() {
 
     let dir = temp_dir("round_trip_geometry");
     let path = dir.join("monkey.fbx");
-    let report = export_fbx(&result.lods, &model, &path, &ExportOptions::default())
+    let report = export_fbx(&result.lods, &model, None, &path, &ExportOptions::default())
         .expect("export succeeds");
 
     assert_eq!(report.files, vec![path.clone()]);
@@ -140,6 +141,7 @@ fn a_lod_chain_writes_suffixed_sibling_nodes_into_one_file() {
     export_fbx(
         &result.lods,
         &model,
+        None,
         &path,
         &ExportOptions {
             packaging: LodPackaging::SingleFileSuffixed,
@@ -190,6 +192,7 @@ fn one_file_per_lod_writes_a_numbered_file_for_each_level() {
     let report = export_fbx(
         &result.lods,
         &model,
+        None,
         &path,
         &ExportOptions {
             packaging: LodPackaging::FilePerLod,
@@ -235,6 +238,7 @@ fn rebuilt_and_flat_hierarchies_place_the_geometry_identically() {
         export_fbx(
             &result.lods,
             &model,
+            None,
             &path,
             &ExportOptions {
                 hierarchy,
@@ -266,7 +270,8 @@ fn a_multi_material_mesh_keeps_its_materials() {
 
     let dir = temp_dir("round_trip_materials");
     let path = dir.join("materials.fbx");
-    export_fbx(&result.lods, &model, &path, &ExportOptions::default()).expect("export succeeds");
+    export_fbx(&result.lods, &model, None, &path, &ExportOptions::default())
+        .expect("export succeeds");
 
     let loaded = reimport(&path);
     assert!(
@@ -294,6 +299,7 @@ fn ascii_output_reads_back_too() {
     export_fbx(
         &result.lods,
         &model,
+        None,
         &path,
         &ExportOptions {
             format: FbxFormat::Ascii,
@@ -325,6 +331,7 @@ fn ascii_export(name: &str, dir_name: &str) -> Option<String> {
     export_fbx(
         &result.lods,
         &model,
+        None,
         &path,
         &ExportOptions {
             format: FbxFormat::Ascii,
@@ -445,7 +452,8 @@ fn uv_sets_survive_the_round_trip() {
 
     let dir = temp_dir("round_trip_uvs");
     let path = dir.join("uvs.fbx");
-    export_fbx(&result.lods, &model, &path, &ExportOptions::default()).expect("export succeeds");
+    export_fbx(&result.lods, &model, None, &path, &ExportOptions::default())
+        .expect("export succeeds");
 
     let loaded = reimport(&path);
     assert_eq!(
@@ -479,7 +487,8 @@ fn baked_ao_survives_an_export_round_trip() {
 
     let dir = temp_dir("round_trip_bake_ao");
     let path = dir.join("baked.fbx");
-    export_fbx(&result.lods, &model, &path, &ExportOptions::default()).expect("export succeeds");
+    export_fbx(&result.lods, &model, None, &path, &ExportOptions::default())
+        .expect("export succeeds");
 
     let loaded = reimport(&path);
     let (mut lowest, mut highest) = (f32::INFINITY, f32::NEG_INFINITY);
@@ -499,12 +508,99 @@ fn baked_ao_survives_an_export_round_trip() {
     );
 }
 
+/// Shading has to survive the file, and the way it stops doing so is silent:
+/// ufbx falls a zero-length normal back to a constant `(0, 1, 0)`, which reads
+/// as a lit but featureless mesh rather than as an error. Two things sank it,
+/// both only visible on a non-metric source — its node transforms carry the
+/// unit normalization import parked there, so applying `per_meter` to the
+/// *local* coordinates as well shrank the whole hierarchy by a second factor of
+/// 100 and, on re-import, the cofactor matrix with it, until every normal
+/// underflowed the reader's epsilon.
+#[test]
+fn normals_survive_the_round_trip() {
+    // A centimeter fixture: at a metric source the two factors are both 1 and
+    // the bug cannot appear at all.
+    let Some(model) = fixture("rock_pillar_03.fbx") else {
+        return;
+    };
+    let result = run(&model, &passthrough());
+
+    let dir = temp_dir("round_trip_normals");
+    let path = dir.join("normals.fbx");
+    export_fbx(&result.lods, &model, None, &path, &ExportOptions::default())
+        .expect("export succeeds");
+
+    let loaded = reimport(&path);
+    // Every normal against the geometric normal of a face it belongs to. The
+    // comparison is deliberately not source-against-export vertex by vertex:
+    // the indexing pass renumbers the buffer, so what is checkable is that the
+    // normals still agree with the surface they sit on — which a constant
+    // fallback, or a normal transformed the wrong way round, does not.
+    let agreement = |mesh: &ModelData| {
+        let (mut total, mut corners) = (0.0f64, 0usize);
+        for triangle in 0..mesh.indices.len() / 3 {
+            let corner: Vec<_> = (0..3)
+                .map(|offset| mesh.indices[triangle * 3 + offset] as usize)
+                .collect();
+            let position: Vec<_> = corner.iter().map(|&i| mesh.vertices[i].position).collect();
+            let face = (position[1] - position[0])
+                .cross(position[2] - position[0])
+                .normalize_or_zero();
+            if face == glam::Vec3::ZERO {
+                continue;
+            }
+            for &i in &corner {
+                total += f64::from(face.dot(mesh.vertices[i].normal));
+                corners += 1;
+            }
+        }
+        total / corners as f64
+    };
+
+    let source = agreement(&model);
+    let written = agreement(&loaded);
+    assert!(
+        source > 0.5,
+        "the fixture's own normals face its surface: {source}"
+    );
+    assert!(
+        written > source - 0.05,
+        "the written normals agree with the surface as well as the source's do:          {written} against {source}"
+    );
+}
+
+/// ufbx_write seeds every scene it creates with a "Take 001" stack and its
+/// BaseLayer, so a static mesh came back out of the tool carrying an empty
+/// animation — listed in the Outliner's Animations tab and shown as a take by
+/// every DCC. The export writes no animation at all, so neither has anything to
+/// hold.
+#[test]
+fn no_animation_is_written_for_a_static_mesh() {
+    let Some(text) = ascii_export("rock_pillar_03.fbx", "round_trip_no_anim") else {
+        return;
+    };
+    assert!(
+        !text.contains("AnimationStack"),
+        "a static export declares no animation stack"
+    );
+    assert!(
+        !text.contains("AnimationLayer"),
+        "a static export declares no animation layer"
+    );
+}
+
 #[test]
 fn exporting_nothing_is_an_error_rather_than_an_empty_file() {
     let dir = temp_dir("round_trip_empty");
     let path = dir.join("empty.fbx");
-    let error = export_fbx(&[], &ModelData::default(), &path, &ExportOptions::default())
-        .expect_err("an empty chain cannot be exported");
+    let error = export_fbx(
+        &[],
+        &ModelData::default(),
+        None,
+        &path,
+        &ExportOptions::default(),
+    )
+    .expect_err("an empty chain cannot be exported");
     assert!(
         matches!(error, review_optimize::OptError::EmptyMesh),
         "got {error:?}"

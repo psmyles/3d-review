@@ -216,6 +216,7 @@ impl App {
     fn spawn_process(&mut self) {
         let stack = Arc::clone(&self.ui.opt.stack);
         let model = Arc::clone(&self.scene_model);
+        let extras = self.scene_extras.clone();
         let stack_revision = self.ui.opt.stack_revision;
 
         // A stack with nothing enabled still runs: it produces no mesh, but it
@@ -279,6 +280,7 @@ impl App {
                     stack: &stack,
                     render_vertex_size,
                     hidden_nodes: &hidden,
+                    extras: extras.as_deref(),
                 })
             };
             // A send failure only means the event loop has exited.
@@ -353,6 +355,7 @@ impl App {
         self.ask(Dialog::ExportOpt {
             result,
             source: Arc::clone(&self.scene_model),
+            extras: self.scene_extras.clone(),
             options: self.ui.opt.stack.export,
             stem,
         });
@@ -368,6 +371,7 @@ impl App {
         path: PathBuf,
         result: Arc<ProcessedResult>,
         source: Arc<ModelData>,
+        extras: Option<Arc<review_model::SourceExtras>>,
         options: ExportOptions,
     ) {
         let Some(proxy) = self.textures.proxy.clone() else {
@@ -383,7 +387,7 @@ impl App {
             prof::thread_name("mesh-export");
             let outcome = {
                 let _z = prof::zone!("Export FBX");
-                export_fbx(&result.lods, &source, &path, &options)
+                export_fbx(&result.lods, &source, extras.as_deref(), &path, &options)
             };
             let _ = proxy.send_event(UserEvent::OptExported(Box::new(outcome)));
         });
@@ -408,9 +412,11 @@ impl App {
                 } else {
                     format!("Exported {name} ({} triangles)", report.triangle_count)
                 });
-                // The notes describe what the format could not carry (untextured
-                // materials, dropped skinning), which the user should learn now
-                // rather than when the file reaches an engine.
+                // The notes describe the genuine losses (a level written as
+                // triangles because a simplify rebuilt it, an animation target
+                // that has no element in the file, an export before the source
+                // capture landed), which the user should learn now rather than
+                // when the file reaches an engine.
                 for note in report.notes {
                     self.notifications.info(note);
                 }
