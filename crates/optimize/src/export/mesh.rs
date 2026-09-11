@@ -416,13 +416,13 @@ pub(crate) struct MeshNotes {
 ///
 /// All three are `None` when the geometry stays in world space — a flattened
 /// hierarchy, a node with no inverse, or no source node at all.
-pub(crate) struct LocalFrame {
+struct LocalFrame {
     /// Positions.
-    pub(crate) to_local: Option<Mat4>,
+    to_local: Option<Mat4>,
     /// Normals.
-    pub(crate) normal_to_local: Option<Mat3>,
+    normal_to_local: Option<Mat3>,
     /// Tangents and other surface directions.
-    pub(crate) direction_to_local: Option<Mat3>,
+    direction_to_local: Option<Mat3>,
 }
 
 /// Build the [`LocalFrame`] for one node's geometry.
@@ -431,7 +431,7 @@ pub(crate) struct LocalFrame {
 /// node's local space, or it would be transformed twice on import. With the
 /// capture that space is the *geometry* space — the node's geometric transform
 /// (written back as its `Geometric*` properties) sits between the two.
-pub(crate) fn local_frame(
+fn local_frame(
     hierarchy: HierarchyMode,
     source_node: Option<&review_model::SceneNode>,
     group: &NodeGroup,
@@ -466,21 +466,21 @@ pub(crate) fn local_frame(
 
 /// The source faces this node's geometry still belongs to, and which of their
 /// layers anything authored.
-pub(crate) struct CarriedFaces<'a> {
+struct CarriedFaces<'a> {
     /// The carry pieces that belong to this node.
-    pub(crate) pieces: Vec<&'a NodePolygons>,
+    pieces: Vec<&'a NodePolygons>,
     /// Level triangle -> (piece, face within it).
-    pub(crate) face_of_triangle: HashMap<usize, (usize, usize)>,
-    pub(crate) any_face_smoothing: bool,
-    pub(crate) any_face_hole: bool,
-    pub(crate) any_face_group: bool,
-    pub(crate) any_edge_smoothing: bool,
-    pub(crate) any_edge_crease: bool,
-    pub(crate) any_edge_visibility: bool,
+    face_of_triangle: HashMap<usize, (usize, usize)>,
+    any_face_smoothing: bool,
+    any_face_hole: bool,
+    any_face_group: bool,
+    any_edge_smoothing: bool,
+    any_edge_crease: bool,
+    any_edge_visibility: bool,
 }
 
 /// Which carried face each level triangle belongs to, for this node's pieces.
-pub(crate) fn carried_faces<'a>(carry: &'a LevelCarry, group: &NodeGroup) -> CarriedFaces<'a> {
+fn carried_faces<'a>(carry: &'a LevelCarry, group: &NodeGroup) -> CarriedFaces<'a> {
     let pieces: Vec<&NodePolygons> = carry
         .polygons
         .iter()
@@ -510,19 +510,19 @@ pub(crate) fn carried_faces<'a>(carry: &'a LevelCarry, group: &NodeGroup) -> Car
 }
 
 /// The polygon edges of one mesh, and the layers over them.
-pub(crate) struct EdgeStreams {
+struct EdgeStreams {
     /// Each edge as the corner it starts at.
-    pub(crate) edges: Vec<i32>,
-    pub(crate) edge_sources: Vec<u32>,
-    pub(crate) edge_smoothing: Vec<u8>,
-    pub(crate) edge_crease: Vec<f64>,
-    pub(crate) edge_visibility: Vec<u8>,
+    edges: Vec<i32>,
+    edge_sources: Vec<u32>,
+    edge_smoothing: Vec<u8>,
+    edge_crease: Vec<f64>,
+    edge_visibility: Vec<u8>,
 }
 
 /// Name each carried edge by the corner it starts at in the stream just built.
 ///
 /// An edge whose face the level no longer has cannot be named, and is dropped.
-pub(crate) fn edge_streams(
+fn edge_streams(
     pieces: &[&NodePolygons],
     local_of_global: &[i32],
     corner_of_edge: &HashMap<(i32, i32), i32>,
