@@ -36,7 +36,9 @@ use std::sync::Arc;
 use review_model::{ModelData, SourceExtras};
 use review_optimize::{ExportOptions, ProcessedResult, preset};
 
-use crate::{App, TEXTURE_EXTENSIONS, UserEvent, prof};
+use crate::events::UserEvent;
+use crate::loading::TEXTURE_EXTENSIONS;
+use crate::{App, prof};
 
 /// A dialog to open, carrying whatever its answer will act on.
 ///

@@ -15,11 +15,8 @@ use winit::window::Window;
 
 use review_ui::{OptLayout, WorkspaceMode};
 
+use crate::App;
 use crate::window_state::monitor_refresh_interval;
-use crate::{
-    App, DRAG_ZOOM_SENSITIVITY, DragMode, PINCH_ZOOM_STEP, WHEEL_LINE_ZOOM_STEP,
-    WHEEL_PIXELS_PER_ZOOM_STEP, framing_safe_area,
-};
 
 impl App {
     /// A window resize: re-derive the monitor frame cap (a resize may follow a move
@@ -325,5 +322,79 @@ impl App {
             renderer.sync_opt_camera();
         }
         self.redraw.requested = true;
+    }
+}
+
+/// Camera zoom per pixel of a right-button zoom-drag (pointer-down zooms in).
+pub(crate) const DRAG_ZOOM_SENSITIVITY: f32 = 0.01;
+
+/// Camera zoom per wheel notch for line-based scroll deltas (mice).
+pub(crate) const WHEEL_LINE_ZOOM_STEP: f32 = 0.5;
+
+/// Pixel-precise scroll (trackpads) divided by this to match one wheel notch.
+pub(crate) const WHEEL_PIXELS_PER_ZOOM_STEP: f32 = 120.0;
+
+/// Camera zoom per unit of trackpad pinch scale (`mac-port-plan.md` D16). A pinch
+/// delta is a scale *fraction* — a comfortable two-finger spread accumulates to
+/// roughly 1.0 over its length — so this is the zoom that whole gesture is worth,
+/// not a per-notch step like the wheel's.
+pub(crate) const PINCH_ZOOM_STEP: f32 = 4.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DragMode {
+    Orbit,
+    /// Turn the camera in place (the right-button drag Unity and Unreal bind).
+    /// Also what arms the WASD/QE flycam — see `flycam.rs`.
+    Look,
+    Pan,
+    Zoom,
+}
+
+/// Fraction of the window framing should fill, leaving room for the chrome that
+/// overlays the full-window 3D scene (toolbar on top, status bar on the bottom)
+/// so a framed model doesn't hide under it. Width is left unconstrained — the
+/// option panel floats and is transient.
+///
+/// Both terms are egui points: the window height converted from physical pixels,
+/// and the bands' height from [`review_ui::theme::chrome_height`], which scales
+/// the design-pixel tokens exactly as the bands themselves are scaled when drawn.
+/// Reading those tokens raw against a height in points over-reserved the chrome
+/// on every scaled display — half again at 150%, twice over at 200%.
+pub(crate) fn framing_safe_area(height_px: u32, scale_factor: f32) -> (f32, f32) {
+    let logical_height = height_px as f32 / scale_factor.max(0.1);
+    let chrome = review_ui::theme::chrome_height(scale_factor);
+    let height_fraction = if logical_height > chrome {
+        (logical_height - chrome) / logical_height
+    } else {
+        1.0
+    };
+    (1.0, height_fraction.clamp(0.4, 1.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::framing_safe_area;
+
+    /// The chrome tokens are design pixels, scaled to points exactly as the bands
+    /// that draw them are — so the band reserved for the chrome is the same slice
+    /// of the window at every display scale. Reading them raw against a height
+    /// already in points instead over-reserved 46 points at 150% and 69 at 200%,
+    /// framing every loaded model visibly small on a HiDPI display.
+    #[test]
+    fn the_framing_safe_area_holds_across_display_scales() {
+        let (width, unscaled) = framing_safe_area(1000, 1.0);
+        let (_, scaled) = framing_safe_area(1000, 2.0);
+        assert_eq!(width, 1.0);
+        assert!((unscaled - scaled).abs() < 1e-6, "{unscaled} vs {scaled}");
+        // 1000 physical pixels of window, less the 73 + 64 design pixels of bands.
+        assert!((scaled - 0.863).abs() < 1e-4, "{scaled}");
+    }
+
+    /// A window shorter than its own chrome has no band left to frame into, so it
+    /// frames against the whole window rather than a zero (or negative) fraction.
+    #[test]
+    fn a_window_shorter_than_the_chrome_frames_whole() {
+        assert_eq!(framing_safe_area(100, 1.0), (1.0, 1.0));
+        assert_eq!(framing_safe_area(100, 0.0), (1.0, 1.0));
     }
 }

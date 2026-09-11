@@ -515,6 +515,50 @@ fn scene_viewport_px(rect: egui::Rect, ppp: f32, size: (u32, u32)) -> SceneViewp
     }
 }
 
+impl App {
+    fn update_camera_animation(&mut self) {
+        let now = Instant::now();
+        let delta_seconds = self
+            .redraw
+            .last_render_instant
+            .map_or(0.0, |last| now.duration_since(last).as_secs_f32());
+        self.redraw.last_render_instant = Some(now);
+
+        // The viewer redraws on demand, so FPS is only meaningful across
+        // consecutive frames (camera animation / interaction). Ignore the long
+        // gaps after an idle period and exponentially smooth the live rate.
+        if (0.0..0.25).contains(&delta_seconds) && delta_seconds > 0.0 {
+            let instant_fps = 1.0 / delta_seconds;
+            self.ui.fps = if self.ui.fps > 0.0 {
+                self.ui.fps * 0.9 + instant_fps * 0.1
+            } else {
+                instant_fps
+            };
+        }
+
+        // Tracy plots (no-op unless `--tracy`): the live smoothed frame rate plus
+        // the measured model stats, so they read alongside the timeline.
+        prof::plot!("FPS", self.ui.fps);
+        prof::plot!("Triangles", self.ui.stats.triangle_count as f64);
+        prof::plot!("Draw Calls", self.ui.stats.draw_count as f64);
+
+        // Advance any live camera transition. The follow-up redraw is scheduled
+        // by the paced `repaint_at` logic in `render` (which checks
+        // `is_camera_animating`), so we don't request one directly here — doing so
+        // would bypass the refresh-rate cap.
+        //
+        // Cap the step: the viewer redraws on demand, so after an idle period
+        // `last_render_instant` is stale and the first frame's delta is the whole
+        // idle gap. Advancing a transition by that would fast-forward it to the
+        // end in one frame (skipping the animation entirely) — most visible on the
+        // short 0.1 s WASD orbits, where almost any delta exceeds the duration.
+        // One ~30 Hz frame is plenty to keep motion smooth.
+        const MAX_ANIMATION_STEP: f32 = 1.0 / 30.0;
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.update_camera_animation(delta_seconds.min(MAX_ANIMATION_STEP));
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::scene_viewport_px;
