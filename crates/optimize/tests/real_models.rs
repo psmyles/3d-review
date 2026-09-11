@@ -68,6 +68,7 @@ fn run(model: &ModelData, stack: &OptStack) -> ProcessedResult {
         stack,
         render_vertex_size: VERTEX_SIZE,
         hidden_nodes: &[],
+        extras: None,
     })
     .expect("a real fixture always processes")
 }
@@ -470,18 +471,30 @@ fn a_multi_material_character_keeps_every_triangle_tagged() {
         );
     }
 
-    // The fixture is skinned, which this tool drops — and says so.
-    if model.skin.is_some() {
+    // The fixture is skinned; every level keeps a skin over its own vertices,
+    // valid by the same guard the import runs, with the clips beside it.
+    if let Some(source_skin) = &model.skin {
+        for lod in &result.lods {
+            let skin = lod
+                .model
+                .skin
+                .as_ref()
+                .expect("skinning is kept on every level");
+            assert_eq!(skin.logical_vertex_count(), lod.model.vertices.len());
+            assert_eq!(skin.clusters.len(), source_skin.clusters.len());
+            assert!(
+                lod.model.validate_deform().is_ok(),
+                "LOD {} deform data",
+                lod.level
+            );
+            assert_eq!(lod.model.animations.len(), model.animations.len());
+        }
         assert!(
-            result.lods.iter().all(|lod| lod.model.skin.is_none()),
-            "skinning is dropped from every level"
-        );
-        assert!(
-            result
+            !result
                 .warnings
                 .iter()
-                .any(|warning| warning.contains("skinned")),
-            "the user is told skinning was dropped: {:?}",
+                .any(|warning| warning.contains("skin")),
+            "nothing about the skin was dropped: {:?}",
             result.warnings
         );
     }

@@ -357,6 +357,67 @@ pub fn filter_index_buffer(
     Err(OptError::Unavailable)
 }
 
+/// [`filter_index_buffer`] with a second stream: one `u32` per vertex naming
+/// its deform row, so two triangles are duplicates only when their vertices
+/// deform alike as well as sit at the same positions.
+#[cfg(has_meshopt)]
+pub fn filter_index_buffer_with_rows(
+    indices: &[u32],
+    positions: &[f32],
+    row_ids: &[u32],
+    vertex_count: usize,
+) -> Result<Vec<u32>, OptError> {
+    check_indices(indices, vertex_count)?;
+    check_stream(positions, vertex_count, POSITION_COMPONENTS)?;
+    if row_ids.len() != vertex_count {
+        return Err(OptError::StreamLength {
+            len: row_ids.len(),
+            expected: vertex_count,
+        });
+    }
+
+    let streams = [
+        crate::ffi::MeshoptStream {
+            data: positions.as_ptr().cast(),
+            size: POSITION_STRIDE,
+            stride: POSITION_STRIDE,
+        },
+        crate::ffi::MeshoptStream {
+            data: row_ids.as_ptr().cast(),
+            size: size_of::<u32>(),
+            stride: size_of::<u32>(),
+        },
+    ];
+    let mut destination = vec![0u32; indices.len()];
+    // SAFETY: `destination` is the documented worst-case size (`index_count`);
+    // `indices` is checked whole-triangle and in range; both streams are
+    // exactly `vertex_count` elements of the declared size and stride, so every
+    // per-vertex read stays in bounds; two streams is below the limit of 16.
+    let produced = unsafe {
+        crate::ffi::meshopt_filterIndexBufferMulti(
+            destination.as_mut_ptr(),
+            indices.as_ptr(),
+            indices.len(),
+            vertex_count,
+            streams.as_ptr(),
+            streams.len(),
+        )
+    };
+    check_index_result(produced, destination.len())?;
+    destination.truncate(produced);
+    Ok(destination)
+}
+
+#[cfg(not(has_meshopt))]
+pub fn filter_index_buffer_with_rows(
+    _indices: &[u32],
+    _positions: &[f32],
+    _row_ids: &[u32],
+    _vertex_count: usize,
+) -> Result<Vec<u32>, OptError> {
+    Err(OptError::Unavailable)
+}
+
 /// Remove small disconnected components whose extent is below `target_error`
 /// (relative to the mesh extent, i.e. the same scale as [`simplify`]'s error).
 #[cfg(has_meshopt)]

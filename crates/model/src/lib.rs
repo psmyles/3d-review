@@ -6,8 +6,10 @@ use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 
 pub mod anim;
 mod bvh;
+pub mod extras;
 pub use anim::{AnimContext, DeformPose, Pose};
 pub use bvh::{Bvh, SceneBvh};
+pub use extras::{ExtrasCounts, SourceExtras};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Vertex {
@@ -451,7 +453,7 @@ pub struct SkinData {
 }
 
 /// One skin cluster: the binding of a bone to a mesh node.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SkinCluster {
     /// The bone, indexing [`ModelData::nodes`].
     pub bone: u32,
@@ -463,6 +465,15 @@ pub struct SkinCluster {
     /// skinned position is the weighted sum of those applied to the baked vertex
     /// — exact for any pose, including the file's own default one.
     pub world_to_bone_bind: Mat4,
+    /// The authored `Transform` of the cluster: mesh node → bone, as the file
+    /// wrote it (in the file's own units). Carried for re-export; the palette
+    /// above is what the viewer uses.
+    pub mesh_node_to_bone: Mat4,
+    /// The authored `TransformLink`: bone → world at bind time, in the scene's
+    /// normalized (meter) space. Carried for re-export.
+    pub bind_to_world: Mat4,
+    /// The cluster's own name (usually the bone's).
+    pub name: String,
 }
 
 /// The skinning method an FBX skin deformer declares. The viewer always
@@ -2167,6 +2178,9 @@ mod tests {
             bone,
             mesh_node: 0,
             world_to_bone_bind: Mat4::IDENTITY,
+            mesh_node_to_bone: Mat4::IDENTITY,
+            bind_to_world: Mat4::IDENTITY,
+            name: String::new(),
         };
         SkinData {
             offsets: vec![0, 2, 3],

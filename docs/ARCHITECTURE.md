@@ -126,7 +126,12 @@ Host-agnostic data only. Depends on `glam` and nothing else: no GPU API, no
   table carrying each (mesh node, bone) bind matrix), `MorphData` (blend-shape
   channels / keyframes / per-logical-vertex offset CSR), `AnimationClip` (baked
   `NodeTrack`s and `MorphTrack`s and the stack's time range), and
-  `ModelData::validate_deform` (the funnel guard for all of it).
+  `ModelData::validate_deform` (the funnel guard for all of it). `SkinCluster`
+  also carries the authored `mesh_node_to_bone` / `bind_to_world` matrices and
+  the cluster name, for the export.
+- `extras.rs` — `SourceExtras`, the source-property capture the exporter gives
+  back (see [The source-property capture](#the-source-property-capture)), with
+  `validate` and `ExtrasCounts`.
 - `anim.rs` — pose evaluation. `AnimContext`, `Pose`, `evaluate_pose`
   (parents-first recomposition, hold outside keys, ufbx's in-between blend rule
   via `channel_effective_weights`), `build_palette` → `DeformPose`, and the CPU
@@ -144,7 +149,8 @@ is on screen and lives in `UiState::clip_bounds` — see
 FFI (`repr(C)` mirror structs, `checked_slice`, `model_from_bridge_scene`), the
 vendored ufbx C plus the bridge, and `build.rs` (`cc`, `cfg(has_ufbx)`).
 
-Files: `src/lib.rs`, `src/ufbx_bridge.c`, `src/ufbx_bridge.h`, `build.rs`.
+Files: `src/lib.rs`, `src/ufbx_bridge.c`, `src/ufbx_bridge.h`,
+`src/ufbx_extras.c`, `src/ufbx_extras.h`, `build.rs`.
 
 The bridge captures each node's rest local TRS; the skin cluster table (per
 mesh-bearing node: `geometry_to_bone × inverse(geometry_to_world)`) with a
@@ -182,6 +188,31 @@ callers.
 On a 2.8M-triangle, 120 MB scene that is the mesh on screen in ~2.1 s, its clip
 envelope at ~2.8 s and its stats at ~5.7 s, against ~5.2 s of blank viewport if
 the whole thing is measured up front.
+
+#### The source-property capture
+
+Everything the viewer never reads but the exporter must give back is
+`review_model::SourceExtras` (`crates/model/src/extras.rs`): every explicit
+property of every node / attribute / material / texture / video / mesh / layer
+(`Prop`, carrying ufbx's type and flags), rotation order, inherit mode, geometric
+transforms, light / camera / null / LOD-group parameters, texture paths and
+embedded content, layered textures, every color set, edges with their smoothing /
+crease / visibility, face smoothing / holes / groups, vertex creases, subdivision
+settings, the second and later skin deformers, dual-quaternion weights, authored
+bind poses, display layers, selection sets, scene metadata and settings, and the
+**authored animation curves** of every animated property. Every enum is our own
+mirror; nothing from ufbx leaks into `model`.
+
+The C side captures it in `ufbx_extras.c` inside the one bridge call (the same
+count→fill and the same free as the geometry — invariant 7). The Rust side
+marshals it *after* the mesh is published: `load_model_staged` returns the model
+plus a `PendingExtras`, `app` runs `marshal` on the import worker
+(`ImportStage::Extras`, "Reading source properties") and posts
+`UserEvent::SourceExtrasReady`, which lands in `App::scene_extras` and travels
+with every Opt run and export request. `validate` drops a malformed capture with
+a toast rather than publishing it. Measured cost: ≤3 % of time-to-mesh on the
+largest fixtures, so the C entry was not split. `load_model_full` returns
+`(ModelData, Option<SourceExtras>)` for tests and batch callers.
 
 ### `render` — `review-render`
 
@@ -362,16 +393,46 @@ versioned JSON envelope. The two operations that simplify share one
 `process::simplify_submeshes` — the LOD op fans its output out into levels,
 `Reduce` writes its own back in place.
 
-Processed meshes are pure triangles and carry **no** face topology (`faces` and
-`triangles.to_face` are left empty — the corner-run layout a `TopologyFace`
-describes cannot survive welding; every `render` consumer already falls back to
-per-triangle behaviour).
+**Everything the stack did not change is carried through.** A `Submesh` holds,
+beside its vertices, the per-vertex rows a vertex remap must follow
+(`VertexRows`: skin, extra skin layers, DQ weights, blend-shape offsets; plus
+extra color sets and vertex creases) and a `PolygonCarry` — the source's faces
+and edges with their smoothing / crease / hole / group / visibility layers, over
+local vertices. Operations keep them by class (see
+[GOTCHAS](GOTCHAS.md#polygons-ride-the-pipeline-as-a-carry-and-each-operation-class-treats-it-one-way)):
+a vertex remap gathers rows and rewrites corners, an operation that keeps
+triangles whole reconciles the polygons by triangle content, a simplify clears
+them. `assemble` hands each level back as a `ModelData` that *deforms* — its own
+`SkinData` / `MorphData` over the level's vertices, the source's clips cloned,
+bounds at rest — plus a `LevelCarry` of what the renderer has no use for
+(polygons, color sets, creases, extra skins, DQ weights, a source-corner map).
+The processed `ModelData` still leaves `faces` / `triangles.to_face` empty: the
+corner-run layout the renderer assumes cannot survive a weld, so the polygons
+reach only the exporter.
 
 `export.rs` and `export_bridge.c` write a LOD chain out as FBX via vendored
-ufbx_write: suffixed siblings in one file or one file per level, rebuilt or
-flattened hierarchy, source materials, untextured. Output is always triangulated
-and declares `UnitScaleFactor = 100`, since import normalizes every file to
-meters while FBX's conventional unit is centimeters.
+ufbx_write (suffixed siblings in one file or one file per level, rebuilt or
+flattened hierarchy), giving back **every source property the stack did not
+change**: the authored node graph (props, pivots, rotation order, inherit type,
+geometric transforms, user properties with the `U` flag; ufbx's synthetic helper
+nodes are skipped and their children re-parented), bones / lights / cameras /
+nulls / LOD groups, materials as authored (Lambert / Phong / custom shading
+model, every prop, textures with their paths as authored, embedded content,
+layered textures — a source without a capture gets Phong with
+`ShininessExponent = (10·smoothness)²` and `ReflectionFactor = metallic`), quads
+and n-gons wherever no operation rebuilt the buffer, every color set and topology
+layer, authored tangents (synthesized ones are not written), skins with their
+authored cluster matrices, extra layers, DQ weights and bind poses, blend shapes,
+the authored animation curves of every animated property, display layers,
+selection sets, and the scene settings and metadata. The FBX version is always
+7700. `ExportReport.notes` lists only genuine losses: a level written as
+triangles because a simplify rebuilt it, an unmapped animation target, an export
+issued before the capture landed. Output is written in the source file's own
+unit (`UnitScale`), since import normalizes every file to meters.
+
+`ufbxw_probe.c` (non-release profiles only, `cfg(has_ufbxw_probe)`) writes a
+test-only scene exercising every writer patch; `tests/ufbxw_patches.rs` reads it
+back through ufbx.
 
 ### `psd` — `review-psd`
 
@@ -401,7 +462,7 @@ is a re-export of this crate, not a copy.
 | --- | --- |
 | `third_party/ufbx` | `ufbx.c` / `ufbx.h` — FBX reading |
 | `third_party/meshoptimizer` | The Opt operations |
-| `third_party/ufbx-write` | `ufbx_write.c` / `.h` — the Opt FBX export |
+| `third_party/ufbx-write` | `ufbx_write.c` / `.h` — the Opt FBX export. **Patched** (`review.patch`, listed in `NOTICE.txt`): property flags + explicit values, the `Null` attribute, topology layers, LOD groups + layered textures, curve nodes with only the curves asked for |
 | `crates/psd/vendor/Psd` | PSD decoding |
 | `vendor/sokol-rust` | The graphics API bindings |
 

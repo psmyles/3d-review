@@ -222,6 +222,9 @@ mod tests {
             bone,
             mesh_node: 1,
             world_to_bone_bind: Mat4::IDENTITY,
+            mesh_node_to_bone: Mat4::IDENTITY,
+            bind_to_world: Mat4::IDENTITY,
+            name: String::new(),
         };
         model.skin = Some(SkinData {
             offsets: vec![0, 2, 2, 2],

@@ -38,6 +38,10 @@ pub fn weld(submesh: &mut Submesh, params: &WeldParams) -> Result<(), OptError> 
     }
     let vertex_count = submesh.vertices.len();
 
+    // Deform rows are part of a vertex's identity for every weld: two vertices
+    // that skin or morph differently are different vertices however alike they
+    // look, and merging them would hand one of them the other's binding.
+    let row_ids = submesh.row_ids();
     let (remap, unique) = if params.attribute_tolerance > 0.0 {
         let positions = submesh.positions();
         let attributes = AttributeView::new(submesh, params);
@@ -45,10 +49,13 @@ pub fn weld(submesh: &mut Submesh, params: &WeldParams) -> Result<(), OptError> 
             &submesh.indices,
             &positions,
             vertex_count,
-            |a, b| attributes.within_tolerance(a, b, params.attribute_tolerance),
+            |a, b| {
+                attributes.within_tolerance(a, b, params.attribute_tolerance)
+                    && (row_ids.is_empty() || row_ids.get(a as usize) == row_ids.get(b as usize))
+            },
         )?
     } else {
-        let (key_bytes, stride) = weld_key(submesh, params);
+        let (key_bytes, stride) = weld_key(submesh, params, &row_ids);
         meshopt::generate_vertex_remap(&submesh.indices, &key_bytes, vertex_count, stride)?
     };
 
@@ -65,8 +72,23 @@ pub fn filter_triangles(submesh: &mut Submesh) -> Result<(), OptError> {
         return Ok(());
     }
     let positions = submesh.positions();
-    submesh.indices =
-        meshopt::filter_index_buffer(&submesh.indices, &positions, submesh.vertices.len())?;
+    let before = submesh.polygons.is_some().then(|| submesh.indices.clone());
+    // A duplicate triangle is only a duplicate when it deforms the same way:
+    // the deform row rides beside the position as a second stream.
+    let row_ids = submesh.row_ids();
+    submesh.indices = if row_ids.is_empty() {
+        meshopt::filter_index_buffer(&submesh.indices, &positions, submesh.vertices.len())?
+    } else {
+        meshopt::filter_index_buffer_with_rows(
+            &submesh.indices,
+            &positions,
+            &row_ids,
+            submesh.vertices.len(),
+        )?
+    };
+    if let Some(before) = before {
+        submesh.reconcile_triangles(&before);
+    }
     Ok(())
 }
 
@@ -78,8 +100,12 @@ pub fn prune_components(submesh: &mut Submesh, error: f32) -> Result<(), OptErro
         return Ok(());
     }
     let positions = submesh.positions();
+    let before = submesh.polygons.is_some().then(|| submesh.indices.clone());
     submesh.indices =
         meshopt::simplify_prune(&submesh.indices, &positions, submesh.vertices.len(), error)?;
+    if let Some(before) = before {
+        submesh.reconcile_triangles(&before);
+    }
     Ok(())
 }
 
@@ -90,7 +116,11 @@ pub fn optimize_vertex_cache(submesh: &mut Submesh) -> Result<(), OptError> {
     if submesh.is_empty() {
         return Ok(());
     }
+    let before = submesh.polygons.is_some().then(|| submesh.indices.clone());
     submesh.indices = meshopt::optimize_vertex_cache(&submesh.indices, submesh.vertices.len())?;
+    if let Some(before) = before {
+        submesh.reconcile_triangles(&before);
+    }
     Ok(())
 }
 
@@ -102,12 +132,16 @@ pub fn optimize_overdraw(submesh: &mut Submesh, threshold: f32) -> Result<(), Op
         return Ok(());
     }
     let positions = submesh.positions();
+    let before = submesh.polygons.is_some().then(|| submesh.indices.clone());
     submesh.indices = meshopt::optimize_overdraw(
         &submesh.indices,
         &positions,
         submesh.vertices.len(),
         threshold,
     )?;
+    if let Some(before) = before {
+        submesh.reconcile_triangles(&before);
+    }
     Ok(())
 }
 
@@ -183,6 +217,8 @@ pub fn simplify(
     };
 
     submesh.indices = outcome.indices;
+    // The simplifier's triangles correspond to no source face.
+    submesh.clear_polygons();
     Ok(outcome.error)
 }
 
@@ -241,12 +277,13 @@ fn simplify_attribute_stream(submesh: &Submesh, settings: &SimplifySettings) -> 
 /// canonical NaN, because the comparison is bitwise: without that, two vertices
 /// at visually identical positions could fail to merge over a sign bit no one
 /// can see.
-fn weld_key(submesh: &Submesh, params: &WeldParams) -> (Vec<u8>, usize) {
+fn weld_key(submesh: &Submesh, params: &WeldParams, row_ids: &[u32]) -> (Vec<u8>, usize) {
     let uv_sets = weld_uv_sets(submesh, params);
     let components = 3
         + if params.compare_normals { 3 } else { 0 }
         + uv_sets * 2
-        + if params.compare_colors { 4 } else { 0 };
+        + if params.compare_colors { 4 } else { 0 }
+        + usize::from(!row_ids.is_empty());
     let stride = components * size_of::<f32>();
 
     let mut bytes = Vec::with_capacity(submesh.vertices.len() * stride);
@@ -280,6 +317,9 @@ fn weld_key(submesh: &Submesh, params: &WeldParams) -> (Vec<u8>, usize) {
             push(vertex.vertex_color.y, &mut bytes);
             push(vertex.vertex_color.z, &mut bytes);
             push(vertex.vertex_color.w, &mut bytes);
+        }
+        if let Some(&row) = row_ids.get(index) {
+            bytes.extend_from_slice(&row.to_ne_bytes());
         }
     }
 

@@ -207,6 +207,8 @@ typedef struct ufbxw_cache_file { ufbxw_id id; } ufbxw_cache_file;
 typedef struct ufbxw_light { ufbxw_id id; } ufbxw_light;
 typedef struct ufbxw_camera { ufbxw_id id; } ufbxw_camera;
 typedef struct ufbxw_bone { ufbxw_id id; } ufbxw_bone;
+typedef struct ufbxw_null { ufbxw_id id; } ufbxw_null;
+typedef struct ufbxw_lod_group { ufbxw_id id; } ufbxw_lod_group;
 typedef struct ufbxw_bind_pose { ufbxw_id id; } ufbxw_bind_pose;
 typedef struct ufbxw_material { ufbxw_id id; } ufbxw_material;
 typedef struct ufbxw_implementation { ufbxw_id id; } ufbxw_implementation;
@@ -445,6 +447,10 @@ typedef enum ufbxw_prop_data_type {
 typedef enum ufbxw_prop_flag {
 	UFBXW_PROP_FLAG_ANIMATABLE = 0x1,
 	UFBXW_PROP_FLAG_USER = 0x2,
+	UFBXW_PROP_FLAG_HIDDEN = 0x4,
+	// review patch P1: always write the property, even when its value equals the template's.
+	// Not itself written to the file. For carrying a source's explicit properties through verbatim.
+	UFBXW_PROP_FLAG_EXPLICIT = 0x8,
 } ufbxw_prop_flag;
 
 typedef enum ufbxw_prop_type {
@@ -640,6 +646,12 @@ typedef enum ufbxw_mesh_attribute {
 	UFBXW_MESH_ATTRIBUTE_COLOR,
 	UFBXW_MESH_ATTRIBUTE_SMOOTHING,
 	UFBXW_MESH_ATTRIBUTE_MATERIAL,
+	// review patch P3: subdivision/topology layers
+	UFBXW_MESH_ATTRIBUTE_EDGE_CREASE,   // `LayerElementEdgeCrease`, real, ByEdge
+	UFBXW_MESH_ATTRIBUTE_VERTEX_CREASE, // `LayerElementVertexCrease`, real, ByVertice
+	UFBXW_MESH_ATTRIBUTE_HOLE,          // `LayerElementHole`, int (0/1), ByPolygon
+	UFBXW_MESH_ATTRIBUTE_VISIBILITY,    // `LayerElementVisibility`, int (0/1), ByEdge
+	UFBXW_MESH_ATTRIBUTE_POLYGON_GROUP, // `LayerElementPolygonGroup`, int, ByPolygon
 
 	UFBXW_MESH_ATTRIBUTE_FIRST_CUSTOM,
 } ufbxw_mesh_attribute;
@@ -813,6 +825,17 @@ ufbxw_abi void ufbxw_add_vec3(ufbxw_scene *scene, ufbxw_id id, const char *prop,
 ufbxw_abi void ufbxw_add_vec4(ufbxw_scene *scene, ufbxw_id id, const char *prop, ufbxw_prop_type type, ufbxw_vec4 value);
 ufbxw_abi void ufbxw_add_string(ufbxw_scene *scene, ufbxw_id id, const char *prop, ufbxw_prop_type type, const char *value);
 
+// review patch P1: value kinds `ufbxw_add_*` did not cover, and explicit property flags.
+// `ufbxw_add_real_string()` is for `UFBXW_PROP_TYPE_DISTANCE` (a number plus a unit string).
+// `ufbxw_add_blob()` copies the bytes into the scene.
+ufbxw_abi void ufbxw_add_real_string(ufbxw_scene *scene, ufbxw_id id, const char *prop, ufbxw_prop_type type, ufbxw_real value, const char *str);
+ufbxw_abi void ufbxw_add_blob(ufbxw_scene *scene, ufbxw_id id, const char *prop, ufbxw_prop_type type, const void *data, size_t size);
+
+// Set `ufbxw_prop_flag` bits on an existing property (template or added), replacing its flags.
+// The flags are written into the `Properties70` entry: `A` (animatable), `U` (user-defined), `H` (hidden).
+ufbxw_abi void ufbxw_set_prop_flags(ufbxw_scene *scene, ufbxw_id id, const char *prop, uint32_t flags);
+ufbxw_abi uint32_t ufbxw_get_prop_flags(ufbxw_scene *scene, ufbxw_id id, const char *prop);
+
 ufbxw_abi bool ufbxw_get_bool(ufbxw_scene *scene, ufbxw_id id, const char *prop);
 ufbxw_abi int32_t ufbxw_get_int(ufbxw_scene *scene, ufbxw_id id, const char *prop);
 ufbxw_abi int64_t ufbxw_get_int64(ufbxw_scene *scene, ufbxw_id id, const char *prop);
@@ -826,6 +849,14 @@ ufbxw_abi ufbxw_prop_data_type ufbxw_get_prop_data_type(ufbxw_scene *scene, ufbx
 
 ufbxw_abi ufbxw_anim_prop ufbxw_animate_prop(ufbxw_scene *scene, ufbxw_id id, const char *prop, ufbxw_anim_layer layer);
 ufbxw_abi ufbxw_anim_prop ufbxw_animate_prop_len(ufbxw_scene *scene, ufbxw_id id, const char *prop, size_t prop_len, ufbxw_anim_layer layer);
+
+// review patch P5: animate a property creating curves only for the components whose bit is
+// set in `curve_mask` (bit 0 = X / the single component). A source curve node that carries
+// only its defaults on some components must not gain curves there — a reader that finds a
+// curve treats the value as non-constant. `ufbxw_anim_get_curve()` indexes the curves that
+// were created, in component order.
+ufbxw_abi ufbxw_anim_prop ufbxw_animate_prop_masked(ufbxw_scene *scene, ufbxw_id id, const char *prop, ufbxw_anim_layer layer, uint32_t curve_mask);
+ufbxw_abi ufbxw_anim_prop ufbxw_animate_prop_masked_len(ufbxw_scene *scene, ufbxw_id id, const char *prop, size_t prop_len, ufbxw_anim_layer layer, uint32_t curve_mask);
 
 ufbxw_abi ufbxw_template ufbxw_get_element_template(ufbxw_scene *scene, ufbxw_id id);
 
@@ -1143,6 +1174,21 @@ typedef enum ufbxw_bone_type {
 
 ufbxw_abi ufbxw_bone ufbxw_create_bone(ufbxw_scene *scene, ufbxw_bone_type type, ufbxw_node node);
 
+// -- Null (review patch P2)
+
+// A `Null` node attribute (an empty / locator). Template properties: `Color`, `Size`, `Look`.
+ufbxw_abi ufbxw_null ufbxw_create_null(ufbxw_scene *scene, ufbxw_node node);
+
+// -- LOD group (review patch P4)
+
+// A `LodGroup` node attribute. Levels map to the node's children in order.
+// Template properties: `MinMaxDistance`, `MinDistance`, `MaxDistance`, `WorldSpace`, `ThresholdsUsedAsPercentage`.
+ufbxw_abi ufbxw_lod_group ufbxw_create_lod_group(ufbxw_scene *scene, ufbxw_node node);
+
+// Append one level. `distance` is the threshold at which this level *starts* (ignored for the first level,
+// which has none); `display` is the FBX `DisplayLevels` enum (0 = use LOD, 1 = show, 2 = hide).
+ufbxw_abi void ufbxw_lod_group_add_level(ufbxw_scene *scene, ufbxw_lod_group group, ufbxw_real distance, int32_t display);
+
 // -- Bind pose
 
 ufbxw_abi ufbxw_bind_pose ufbxw_create_bind_pose(ufbxw_scene *scene);
@@ -1169,6 +1215,7 @@ ufbxw_abi void ufbxw_material_set_texture_len(ufbxw_scene *scene, ufbxw_material
 
 typedef enum {
 	UFBXW_TEXTURE_FILE,
+	UFBXW_TEXTURE_LAYERED, // review patch P4: `LayeredTexture`, composed of `ufbxw_texture_add_layer()` textures
 } ufbxw_texture_type;
 
 ufbxw_abi ufbxw_texture ufbxw_create_texture(ufbxw_scene *scene, ufbxw_texture_type type);
@@ -1183,6 +1230,10 @@ ufbxw_abi void ufbxw_texture_set_relative_filename(ufbxw_scene *scene, ufbxw_tex
 ufbxw_abi void ufbxw_texture_set_relative_filename_len(ufbxw_scene *scene, ufbxw_texture texture, const char *relative_filename, size_t relative_filename_len);
 
 ufbxw_abi void ufbxw_texture_set_content(ufbxw_scene *scene, ufbxw_texture texture, ufbxw_byte_buffer content);
+
+// review patch P4: append a layer to a `UFBXW_TEXTURE_LAYERED` texture. `blend_mode` is the FBX
+// `BlendModes` enum value (translucent = 0, additive = 1, ... as ufbx's `ufbx_blend_mode`), `alpha` in 0..1.
+ufbxw_abi void ufbxw_texture_add_layer(ufbxw_scene *scene, ufbxw_texture layered, ufbxw_texture layer, int32_t blend_mode, ufbxw_real alpha);
 
 // -- Implementation (material)
 // TODO: Hide these somehow?

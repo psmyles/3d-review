@@ -81,6 +81,10 @@ enum UserEvent {
     /// it has published the mesh). Boxed because the draw-group table is one
     /// entry per (node, material) pair.
     ModelMeasured(Box<loading::ModelMeasured>),
+    /// The source-property capture of the model on screen has been marshaled
+    /// (posted by the import thread right after the mesh). Carried for the
+    /// exporter; nothing in the viewport reads it.
+    SourceExtrasReady(Box<loading::SourceExtrasReady>),
     /// A native file dialog closed (posted by the thread that opened it —
     /// `mac-port-plan.md` D9). `None` when the user cancelled. Boxed because the
     /// export variant carries a whole LOD chain's worth of `Arc`s.
@@ -239,6 +243,12 @@ struct App {
     /// when the next frame draws.
     redraw: RedrawScheduler,
     scene_model: Arc<ModelData>,
+    /// The source-property capture that accompanies [`Self::scene_model`]
+    /// (`review_model::SourceExtras`): everything the file authored that the
+    /// viewer does not draw with, carried so an export can write it back. `None`
+    /// until the import worker marshals it, which happens right after the mesh
+    /// is on screen — and `None` again the moment a new load begins.
+    scene_extras: Option<Arc<review_model::SourceExtras>>,
     scene_revision: u64,
     /// Source of every model revision handed to the renderer, for the source mesh
     /// and each processed Opt level alike. One shared counter because the
@@ -503,6 +513,7 @@ impl Default for App {
             modifiers: ModifiersState::empty(),
             redraw: RedrawScheduler::default(),
             scene_model,
+            scene_extras: None,
             scene_revision: 0,
             model_revision_counter: 0,
             model_load_generation: 0,
@@ -884,6 +895,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::ModelLoaded(message) => self.handle_model_loaded(*message),
             UserEvent::ModelLoadProgress(message) => self.handle_model_load_progress(message),
             UserEvent::ModelMeasured(message) => self.handle_model_measured(*message),
+            UserEvent::SourceExtrasReady(message) => self.handle_source_extras_ready(*message),
             UserEvent::DialogDone(answer) => self.handle_dialog_done(answer),
             UserEvent::OpenPath(path) => self.open_model_from_path(&path),
             UserEvent::MenuCommand(command) => self.handle_menu_command(command),

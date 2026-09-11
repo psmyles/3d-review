@@ -6,6 +6,22 @@
 #include <stdlib.h>
 #include <string.h>
 
+static void review_import_set_error(review_import_error *out_error, const char *message);
+
+/* The extras capture (ufbx_extras.c) reports through the same error type. */
+void review_import_set_error_message(review_import_error *out_error, const char *message)
+{
+    review_import_set_error(out_error, message);
+}
+
+int review_import_capture_extras(const ufbx_scene *scene,
+                                 const ufbx_material *const *material_sources,
+                                 size_t material_count,
+                                 const uint32_t *channel_of_element,
+                                 const int32_t *clip_of_stack,
+                                 review_import_extras *out,
+                                 review_import_error *out_error);
+
 static void review_import_set_error(review_import_error *out_error, const char *message)
 {
     size_t length;
@@ -159,6 +175,12 @@ void review_import_free_scene(review_import_scene *scene)
     free(scene->skin_bones);
     free(scene->skin_weights);
     free(scene->skin_influence_cluster);
+    if (scene->skin_clusters) {
+        size_t index;
+        for (index = 0; index < scene->skin_cluster_count; index++) {
+            free(scene->skin_clusters[index].name);
+        }
+    }
     free(scene->skin_clusters);
     free(scene->skin_deformers);
     if (scene->morph_channels) {
@@ -203,6 +225,19 @@ static void review_import_write_matrix(float out[16], const ufbx_matrix *matrix)
         out[col * 4 + 1] = (float)matrix->cols[col].y;
         out[col * 4 + 2] = (float)matrix->cols[col].z;
         out[col * 4 + 3] = (col == 3) ? 1.0f : 0.0f;
+    }
+}
+
+/* The double-precision twin of `review_import_write_matrix`, for the authored
+   matrices a re-export writes back verbatim. */
+static void review_import_write_matrix_d(double out[16], const ufbx_matrix *matrix)
+{
+    size_t col;
+    for (col = 0; col < 4; col++) {
+        out[col * 4 + 0] = matrix->cols[col].x;
+        out[col * 4 + 1] = matrix->cols[col].y;
+        out[col * 4 + 2] = matrix->cols[col].z;
+        out[col * 4 + 3] = (col == 3) ? 1.0 : 0.0;
     }
 }
 
@@ -300,13 +335,21 @@ static void review_import_material_base_color_linear(const ufbx_material *materi
 }
 
 /* Resolve the material's metalness in [0,1], defaulting to 0 (dielectric) when
-   the material declares none. */
+   the material declares none. A classic Phong material has no metalness, but
+   the exporter writes the viewer's metallic figure to `ReflectionFactor` (the
+   closest slot the Phong model has), so that factor is read back as the
+   fallback: what this tool wrote, this tool reads. */
 static float review_import_material_metallic(const ufbx_material *material)
 {
     float metallic = 0.0f;
 
     if (material && material->pbr.metalness.has_value) {
         metallic = (float)material->pbr.metalness.value_real;
+    } else if (material && material->fbx.reflection_factor.has_value &&
+               (material->shader_type == UFBX_SHADER_FBX_PHONG ||
+                material->shader_type == UFBX_SHADER_FBX_LAMBERT ||
+                material->shader_type == UFBX_SHADER_UNKNOWN)) {
+        metallic = (float)material->fbx.reflection_factor.value_real;
     }
 
     if (metallic < 0.0f) {
@@ -425,6 +468,7 @@ static uint32_t review_import_add_material(review_import_scene *scene, const ufb
         slot->smoothness = review_import_material_smoothness(material);
         slot->metallic = review_import_material_metallic(material);
         review_import_material_emissive(material, slot->emissive);
+        slot->source = material;
         scene->material_count += 1;
     }
 
@@ -812,7 +856,22 @@ static int review_import_fill_vertex(
     dst->tangent[2] = (float)tangent.z;
     if (mesh->vertex_tangent.exists) {
         review_import_normalize3(dst->tangent, fallback_tangent);
+        /* Handedness: the sign of the authored bitangent against the
+           right-handed `normal × tangent`, so a mirrored UV island keeps its
+           authored basis and a re-export writes the same binormal back. +1
+           when the file carries no bitangent layer. */
         dst->tangent[3] = 1.0f;
+        if (mesh->vertex_bitangent.exists) {
+            ufbx_vec3 bitangent = ufbx_transform_direction(
+                normal_matrix, review_import_get_vec3(&mesh->vertex_bitangent, mesh_index, &ok));
+            float cross[3];
+            cross[0] = dst->normal[1] * dst->tangent[2] - dst->normal[2] * dst->tangent[1];
+            cross[1] = dst->normal[2] * dst->tangent[0] - dst->normal[0] * dst->tangent[2];
+            cross[2] = dst->normal[0] * dst->tangent[1] - dst->normal[1] * dst->tangent[0];
+            if (cross[0] * bitangent.x + cross[1] * bitangent.y + cross[2] * bitangent.z < 0.0) {
+                dst->tangent[3] = -1.0f;
+            }
+        }
     } else {
         /* No tangent layer in the file: leave a zero tangent (skip the
            constant fallback) so the Rust importer detects it and
@@ -1103,6 +1162,14 @@ static int review_import_fill_skin(
                     ? ufbx_matrix_mul(&cluster->geometry_to_bone, &world_to_geometry)
                     : ufbx_identity_matrix;
                 review_import_write_matrix(dst->world_to_bone_bind, &bind);
+                review_import_write_matrix_d(dst->mesh_node_to_bone, &cluster->mesh_node_to_bone);
+                review_import_write_matrix_d(dst->bind_to_world, &cluster->bind_to_world);
+                dst->name = review_import_dup_ufbx_string(cluster->name);
+                if (!dst->name) {
+                    free(cluster_map);
+                    review_import_set_error(out_error, "out of memory while recording skin clusters");
+                    return 0;
+                }
                 cluster_map[cluster_index] = (uint32_t)clusters_emitted;
                 clusters_emitted++;
             }
@@ -1386,6 +1453,7 @@ static int review_import_capture_animation(
     const ufbx_scene *scene,
     review_import_scene *out_scene,
     const uint32_t *channel_of_element,
+    int32_t *clip_of_stack,
     review_import_error *out_error
 )
 {
@@ -1495,6 +1563,10 @@ static int review_import_capture_animation(
         if (!dst->name) {
             review_import_set_error(out_error, "out of memory while recording animation clips");
             goto cleanup;
+        }
+        /* Which clip this stack became, for the extras' authored curves. */
+        if (clip_of_stack) {
+            clip_of_stack[stack_index] = (int32_t)out_scene->anim_stack_count;
         }
         out_scene->anim_stack_count++;
         dst->time_begin = stack->time_begin;
@@ -1742,6 +1814,7 @@ static ufbx_progress_result review_import_progress_cb(void *user, const ufbx_pro
 int review_import_load_fbx(
     const char *path,
     review_import_scene *out_scene,
+    review_import_extras *out_extras,
     review_import_error *out_error,
     review_import_progress_fn progress,
     void *progress_user
@@ -1757,6 +1830,9 @@ int review_import_load_fbx(
     memset(&error, 0, sizeof(error));
     if (out_scene) {
         memset(out_scene, 0, sizeof(*out_scene));
+    }
+    if (out_extras) {
+        memset(out_extras, 0, sizeof(*out_extras));
     }
     review_import_set_error(out_error, NULL);
 
@@ -1823,9 +1899,12 @@ int review_import_load_fbx(
 
     /* Blend shapes, then the animation that drives them (and the nodes). The
        element -> channel map is what links a baked "DeformPercent" track back
-       to the channel the morph pass published. */
+       to the channel the morph pass published — and, with the stack -> clip
+       map, what the source-property capture resolves its animated targets
+       through. */
     {
         uint32_t *channel_of_element = NULL;
+        int32_t *clip_of_stack = NULL;
         int captured;
         if (scene->elements.count > 0) {
             channel_of_element = (uint32_t*)malloc(scene->elements.count * sizeof(uint32_t));
@@ -1835,9 +1914,40 @@ int review_import_load_fbx(
             }
             memset(channel_of_element, 0xFF, scene->elements.count * sizeof(uint32_t));
         }
+        if (scene->anim_stacks.count > 0) {
+            clip_of_stack = (int32_t*)malloc(scene->anim_stacks.count * sizeof(int32_t));
+            if (!clip_of_stack) {
+                free(channel_of_element);
+                review_import_set_error(out_error, "out of memory while recording animation clips");
+                goto cleanup;
+            }
+            memset(clip_of_stack, 0xFF, scene->anim_stacks.count * sizeof(int32_t));
+        }
         captured = review_import_capture_morphs(scene, out_scene, channel_of_element, out_error) &&
-            review_import_capture_animation(scene, out_scene, channel_of_element, out_error);
+            review_import_capture_animation(scene, out_scene, channel_of_element, clip_of_stack, out_error);
+        if (captured && out_extras) {
+            /* The deduplicated material table's sources, for the capture's
+               material properties and animated-material targets. */
+            const ufbx_material **material_sources = NULL;
+            if (out_scene->material_count > 0) {
+                size_t index;
+                material_sources = (const ufbx_material**)calloc(out_scene->material_count, sizeof(const ufbx_material*));
+                if (!material_sources) {
+                    captured = 0;
+                    review_import_set_error(out_error, "out of memory while recording source properties");
+                }
+                for (index = 0; material_sources && index < out_scene->material_count; index++) {
+                    material_sources[index] = (const ufbx_material*)out_scene->materials[index].source;
+                }
+            }
+            if (captured) {
+                captured = review_import_capture_extras(scene, material_sources, out_scene->material_count,
+                                                        channel_of_element, clip_of_stack, out_extras, out_error);
+            }
+            free((void*)material_sources);
+        }
         free(channel_of_element);
+        free(clip_of_stack);
         if (!captured) {
             goto cleanup;
         }
@@ -1848,6 +1958,9 @@ int review_import_load_fbx(
 cleanup:
     if (!success) {
         review_import_free_scene(out_scene);
+        if (out_extras) {
+            review_import_free_extras(out_extras);
+        }
     }
     if (scene) {
         ufbx_free_scene(scene);
