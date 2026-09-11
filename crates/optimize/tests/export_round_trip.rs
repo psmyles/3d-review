@@ -311,6 +311,127 @@ fn ascii_output_reads_back_too() {
     );
 }
 
+/// Export `name` as ASCII and hand back the text, or `None` when the fixture is
+/// absent. ASCII because these two tests are about what the *file* says, which a
+/// re-import normalizes away: a reader resolves the declared unit and flattens
+/// an indexed layer, so neither a wrong `UnitScaleFactor` paired with matching
+/// coordinates nor an unreadable-but-well-formed layer shape shows up in the
+/// model that comes back.
+fn ascii_export(name: &str, dir_name: &str) -> Option<String> {
+    let model = fixture(name)?;
+    let result = run(&model, &passthrough());
+    let dir = temp_dir(dir_name);
+    let path = dir.join("out.fbx");
+    export_fbx(
+        &result.lods,
+        &model,
+        &path,
+        &ExportOptions {
+            format: FbxFormat::Ascii,
+            ..ExportOptions::default()
+        },
+    )
+    .expect("export succeeds");
+    Some(std::fs::read_to_string(&path).expect("ASCII output is text"))
+}
+
+/// The `P: "<name>", ...,<value>` scene-settings property, as written.
+fn scene_property(text: &str, name: &str) -> String {
+    let needle = format!("P: \"{name}\"");
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with(&needle))
+        .unwrap_or_else(|| panic!("the file declares {name}"));
+    line.rsplit(',')
+        .next()
+        .expect("a property carries a value")
+        .to_owned()
+}
+
+#[test]
+fn the_written_file_declares_the_sources_own_unit() {
+    // FBX declares its unit rather than fixing one, and import normalizes every
+    // file to meters — so an export has to say which unit its coordinates are
+    // in. Writing the source's own unit is what keeps a centimeter asset a
+    // centimeter asset through the tool. Both fixtures are checked: a wrong
+    // hard-coded factor would still pass over one of them.
+    for (name, expected) in [("SM_Ammo_Crate_01a.fbx", "1"), ("SM_column04.fbx", "2.54")] {
+        let Some(text) = ascii_export(name, "round_trip_unit") else {
+            continue;
+        };
+        assert_eq!(
+            scene_property(&text, "UnitScaleFactor"),
+            expected,
+            "{name} should be written in the unit it was authored in"
+        );
+    }
+    // The declared factor and the coordinates have to agree, which is what the
+    // bounds round trips above measure: they re-import (back into meters) and
+    // compare against the source's metric bounds, so declaring a unit without
+    // scaling the geometry — or the reverse — moves them by 100x.
+}
+
+#[test]
+fn uv_and_color_layers_are_polygon_vertex_indexed() {
+    // `ByVertice` + `IndexToDirect` — what ufbx_write's non-indexed UV/color
+    // setters produce, since they dedup the values and emit an index array as
+    // long as the value array — is legal FBX that readers assuming a
+    // per-polygon-vertex index cannot load. Unity is one: it rejects the mesh
+    // with "has invalid UV coordinates" and blames the exporting tool. Assert
+    // the shape every DCC writes instead, including the index array length that
+    // makes it unambiguous.
+    let Some(text) = ascii_export("SM_Ammo_Crate_01a.fbx", "round_trip_layers") else {
+        return;
+    };
+
+    let mut polygon_indices = 0usize;
+    let mut layer: Option<&str> = None;
+    let mut checked = 0usize;
+    for line in text.lines().map(str::trim) {
+        if let Some(rest) = line.strip_prefix("PolygonVertexIndex: *") {
+            polygon_indices = array_size(rest);
+        } else if line.starts_with("LayerElementUV:") {
+            layer = Some("UV");
+        } else if line.starts_with("LayerElementColor:") {
+            layer = Some("Color");
+        } else if line.starts_with("LayerElement") {
+            layer = None;
+        } else if let Some(which) = layer {
+            if let Some(mapping) = line.strip_prefix("MappingInformationType: ") {
+                assert_eq!(mapping, "\"ByPolygonVertex\"", "{which} layer mapping");
+            } else if let Some(reference) = line.strip_prefix("ReferenceInformationType: ") {
+                assert_eq!(
+                    reference, "\"IndexToDirect\"",
+                    "{which} layer reference mode"
+                );
+            } else if let Some(rest) = line
+                .strip_prefix("UVIndex: *")
+                .or_else(|| line.strip_prefix("ColorIndex: *"))
+            {
+                assert_eq!(
+                    array_size(rest),
+                    polygon_indices,
+                    "{which} layer indexes every polygon vertex exactly once"
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert!(
+        checked >= 2,
+        "the fixture should have contributed UV and color layers to check, saw {checked}"
+    );
+}
+
+/// The count out of an ASCII FBX array header, e.g. `12888 {` -> 12888.
+fn array_size(rest: &str) -> usize {
+    rest.split_whitespace()
+        .next()
+        .and_then(|count| count.parse().ok())
+        .expect("an array header carries its length")
+}
+
 #[test]
 fn uv_sets_survive_the_round_trip() {
     let Some(model) = fixture("monkey.fbx") else {

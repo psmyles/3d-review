@@ -35,13 +35,65 @@ use crate::stack::{ExportOptions, FbxFormat, HierarchyMode, LodPackaging};
 /// A root node's parent index — `RVO_NO_PARENT` in `export_bridge.h`.
 const NO_PARENT: i32 = -1;
 
-/// Centimeters per exported unit, written as FBX's `UnitScaleFactor`.
+/// FBX's `UnitScaleFactor` — centimeters per scene unit — for each unit a DCC
+/// authors in. Mirrors `review-ui`'s `KNOWN_UNITS` table (its meters-per-unit
+/// figures × 100), which is the same set import reads back off a file.
+const KNOWN_UNIT_SCALES_CM: [f64; 6] = [100.0, 1.0, 0.1, 2.54, 30.48, 91.44];
+
+/// `UnitScaleFactor` for a source that declared no unit (the demo cube, a file
+/// missing the metadata): meters, which is what import normalizes to and so
+/// what the geometry already is.
+const DEFAULT_UNIT_SCALE_CM: f64 = 100.0;
+
+/// The unit one export is written in — the *source file's* own, so a centimeter
+/// asset comes back out of the tool as centimeters instead of being silently
+/// re-authored in meters.
 ///
-/// Import normalizes every file to meters, so that is what the geometry reaching
-/// the writer is in. FBX does not fix a unit — it declares one, conventionally
-/// centimeters — so writing metric coordinates without saying so makes the model
-/// read back a hundred times too small.
-const UNIT_SCALE_CM: f64 = 100.0;
+/// Import normalizes every file to meters, so the geometry reaching the writer
+/// is metric whatever the file declared. FBX does not fix a unit, it *declares*
+/// one, so honouring the source means two figures that have to agree: the
+/// declared factor, and coordinates actually expressed in that unit.
+#[derive(Debug, Clone, Copy)]
+struct UnitScale {
+    /// Exported units per meter — `100.0` for a centimeter file. Multiplies
+    /// every vertex position and every node translation.
+    ///
+    /// One factor covers both because uniform scaling acts on an affine
+    /// transform by conjugation: it leaves the linear part alone and scales the
+    /// translation. Scaling each *local* translation and each *local* position
+    /// by `s` therefore scales the assembled scene by `s` exactly — no scale
+    /// node injected, and rotations, scalings and normals untouched.
+    per_meter: f32,
+    /// Centimeters per exported unit, written as FBX's `UnitScaleFactor`.
+    unit_scale_cm: f64,
+}
+
+impl UnitScale {
+    /// `source_unit_meters` is [`review_model::ModelStats::source_unit_meters`]:
+    /// meters per source unit as the file declared it, `0.0` for none.
+    fn from_source(source_unit_meters: f32) -> Self {
+        let declared = f64::from(source_unit_meters) * 100.0;
+        let unit_scale_cm = if declared.is_finite() && declared > 0.0 {
+            // Snap to the unit the DCC meant. The factor reaches us through an
+            // f32, so a centimeter file's `0.01` becomes `0.99999998` here, and
+            // writing that would leave the file declaring a unit no importer
+            // names and every coordinate scaled by its reciprocal.
+            KNOWN_UNIT_SCALES_CM
+                .into_iter()
+                .find(|known| (declared - known).abs() <= known * 0.001)
+                .unwrap_or(declared)
+        } else {
+            DEFAULT_UNIT_SCALE_CM
+        };
+        Self {
+            // Derived from the snapped factor rather than from the source figure
+            // a second time: the declared unit and the coordinates must be exact
+            // reciprocals, or the file says one thing and carries another.
+            per_meter: (100.0 / unit_scale_cm) as f32,
+            unit_scale_cm,
+        }
+    }
+}
 
 /// What an export actually produced, for the confirmation the user sees.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,6 +202,9 @@ fn level_path(path: &Path, level: usize) -> PathBuf {
 /// here, so the whole thing must outlive the `review_export_fbx` call — which it
 /// does, since [`write_scene`] takes it by reference.
 struct SceneData {
+    /// The unit every coordinate below is expressed in, and the factor the file
+    /// declares so a reader recovers it.
+    unit: UnitScale,
     nodes: Vec<NodeData>,
     materials: Vec<MaterialData>,
     meshes: Vec<MeshData>,
@@ -192,6 +247,7 @@ fn build_scene(
     report: &mut ExportReport,
 ) -> Result<SceneData, OptError> {
     let mut scene = SceneData {
+        unit: UnitScale::from_source(source.stats.source_unit_meters),
         nodes: Vec::new(),
         materials: Vec::new(),
         meshes: Vec::new(),
@@ -241,6 +297,7 @@ fn build_scene(
                 suffix_levels.then_some(lod.level),
                 options.hierarchy,
                 source,
+                scene.unit,
             );
             report.triangle_count += mesh.triangle_count;
             scene.meshes.push(mesh);
@@ -417,6 +474,9 @@ fn place_node(
         } else {
             node.name.clone()
         };
+        // The translation is a length, so it moves into the file's unit with the
+        // geometry; the rotation and scaling are unitless and stay as they are.
+        let translation = scene.unit.per_meter * translation;
         scene.nodes.push(NodeData {
             name: c_string(&name, "Node"),
             parent,
@@ -461,6 +521,7 @@ fn build_mesh(
     suffix_level: Option<usize>,
     hierarchy: HierarchyMode,
     source: &ModelData,
+    unit: UnitScale,
 ) -> MeshData {
     // Geometry is world-baked; under `Rebuild` it has to move back into the
     // owning node's local space, or it would be transformed twice on import.
@@ -507,10 +568,15 @@ fn build_mesh(
                 let vertex = model.vertices[global];
                 *slot = (positions.len() / 3) as i32;
 
-                let position = match to_local {
-                    Some(inverse) => inverse.transform_point3(vertex.position),
-                    None => vertex.position,
-                };
+                // Out of world meters and into the file's own unit. Applied to
+                // the *local* position, which is all a uniform scale needs
+                // (see `UnitScale::per_meter`); the normal below is a direction
+                // and a uniform scale leaves it alone.
+                let position = unit.per_meter
+                    * match to_local {
+                        Some(inverse) => inverse.transform_point3(vertex.position),
+                        None => vertex.position,
+                    };
                 positions.extend_from_slice(&[
                     f64::from(position.x),
                     f64::from(position.y),
@@ -732,7 +798,7 @@ fn write_scene(scene: &SceneData, path: &Path, format: FbxFormat) -> Result<(), 
         .collect();
 
     let payload = RvoExportScene {
-        unit_scale_cm: UNIT_SCALE_CM,
+        unit_scale_cm: scene.unit.unit_scale_cm,
         nodes: nodes.as_ptr(),
         node_count: nodes.len(),
         materials: if materials.is_empty() {
@@ -825,6 +891,33 @@ mod tests {
     }
 
     #[test]
+    fn unit_scale_follows_the_source_and_snaps_to_the_unit_it_meant() {
+        // A centimeter file's 0.01 arrives through an f32, so the naive
+        // `x * 100.0` is 0.99999998 — a factor no importer names, and one whose
+        // reciprocal drifts every coordinate written with it.
+        let centimeters = UnitScale::from_source(0.01);
+        assert_eq!(centimeters.unit_scale_cm, 1.0);
+        assert_eq!(centimeters.per_meter, 100.0);
+
+        let inches = UnitScale::from_source(0.0254);
+        assert_eq!(inches.unit_scale_cm, 2.54);
+
+        let meters = UnitScale::from_source(1.0);
+        assert_eq!(meters.unit_scale_cm, 100.0);
+        assert_eq!(meters.per_meter, 1.0);
+
+        // An unrecognised unit is still the file's own unit and is written as
+        // declared; only a missing one falls back to the meters the geometry
+        // already is.
+        assert_eq!(UnitScale::from_source(0.5).unit_scale_cm, 50.0);
+        for missing in [0.0, -1.0, f32::NAN] {
+            let fallback = UnitScale::from_source(missing);
+            assert_eq!(fallback.unit_scale_cm, DEFAULT_UNIT_SCALE_CM);
+            assert_eq!(fallback.per_meter, 1.0);
+        }
+    }
+
+    #[test]
     fn c_string_falls_back_for_empty_text() {
         assert_eq!(c_string("", "Mesh").to_bytes(), b"Mesh");
     }
@@ -872,6 +965,7 @@ mod tests {
     fn place_node_cuts_a_parent_cycle_and_says_so() {
         let source = cyclic_model();
         let mut scene = SceneData {
+            unit: UnitScale::from_source(0.0),
             nodes: Vec::new(),
             materials: Vec::new(),
             meshes: Vec::new(),
@@ -935,6 +1029,7 @@ mod tests {
 
     fn empty_scene() -> SceneData {
         SceneData {
+            unit: UnitScale::from_source(0.0),
             nodes: Vec::new(),
             materials: Vec::new(),
             meshes: Vec::new(),
