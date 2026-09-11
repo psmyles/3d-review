@@ -947,4 +947,3 @@ mod tests {
         assert_eq!(uv_seam_lines(&model, &[], color, 7, &[]).len(), 8);
     }
 }
-

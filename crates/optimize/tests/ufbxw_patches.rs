@@ -16,12 +16,9 @@ use std::path::{Path, PathBuf};
 use review_model::{ModelData, NodeKind};
 use review_optimize::probe::write_patch_probe;
 
-fn temp_dir(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create the temp directory");
-    dir
-}
+mod common;
+
+use common::{line_with, line_with_all, temp_dir};
 
 /// Write the probe scene and read it back, or `None` when this checkout cannot
 /// import FBX at all.
@@ -45,22 +42,6 @@ fn probe(dir: &Path, ascii: bool) -> Option<(PathBuf, ModelData)> {
 fn ascii_text(dir: &Path) -> Option<String> {
     let (path, _) = probe(dir, true)?;
     Some(std::fs::read_to_string(&path).expect("read the ASCII probe"))
-}
-
-/// The first line containing `needle`, or a panic naming it.
-fn line_with<'a>(text: &'a str, needle: &str) -> &'a str {
-    text.lines()
-        .find(|line| line.contains(needle))
-        .unwrap_or_else(|| panic!("no line contains {needle:?}"))
-}
-
-/// The first line containing every needle. A property template in the
-/// Definitions block precedes the element that overrides it, so a value check
-/// has to name the value as well as the property.
-fn line_with_all<'a>(text: &'a str, needles: &[&str]) -> &'a str {
-    text.lines()
-        .find(|line| needles.iter().all(|needle| line.contains(needle)))
-        .unwrap_or_else(|| panic!("no line contains all of {needles:?}"))
 }
 
 fn node<'a>(model: &'a ModelData, name: &str) -> &'a review_model::SceneNode {
