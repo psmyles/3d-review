@@ -16,11 +16,8 @@
 //! annotated-GLSL source (`src/shaders/review.glsl`) generated to per-backend sources
 //! and compiled offline to committed bytecode by `build.rs`.
 
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-
 use glam::{Vec2, Vec3};
-use review_model::{Bounds, DeformPose, MaterialImportDefaults, ModelData};
+use review_model::{Bounds, DeformPose, ModelData};
 
 mod camera;
 mod config;
@@ -28,6 +25,7 @@ mod egui_sokol;
 mod geometry;
 mod ibl;
 mod material;
+mod renderer;
 mod rhi;
 mod scene;
 mod selection;
@@ -81,7 +79,7 @@ const _: () = assert!(
 /// reference grid sits comfortably back in the viewport with margin around it,
 /// rather than filling the window edge-to-edge. Only affects the home/reset
 /// view — loaded models still frame tight to the safe area.
-const HOME_FILL_FRACTION: f32 = 0.68;
+pub(crate) const HOME_FILL_FRACTION: f32 = 0.68;
 
 /// Half-extent of the static reference grid: a 2 m square floor (±1 m) ruled in
 /// 10 cm cells. Shared with `geometry::scene_lines` and the home-view framing so
@@ -89,7 +87,7 @@ const HOME_FILL_FRACTION: f32 = 0.68;
 pub(crate) const GRID_HALF_EXTENT: f32 = 1.0;
 /// Axis-aligned bounds of that flat grid, used to frame the empty "home" view so
 /// the whole floor is visible on launch and on reset.
-const GRID_BOUNDS: Bounds = Bounds {
+pub(crate) const GRID_BOUNDS: Bounds = Bounds {
     min: Vec3::new(-GRID_HALF_EXTENT, 0.0, -GRID_HALF_EXTENT),
     max: Vec3::new(GRID_HALF_EXTENT, 0.0, GRID_HALF_EXTENT),
 };
@@ -421,319 +419,5 @@ impl Renderer {
             None => self.tex.insert(TexGpu::new()?),
         };
         tex.render(frame, image, background)
-    }
-
-    /// Seed the editable material table from a freshly loaded model's import
-    /// defaults (or clear it for an empty model). Bumps the material revision so
-    /// the GPU table is rebuilt/re-uploaded on the next frame.
-    pub fn set_model_materials(&mut self, materials: &[MaterialImportDefaults]) {
-        self.material_states = materials
-            .iter()
-            .map(|material| MaterialState {
-                base_color: material.base_color,
-                metallic: material.metallic,
-                // Roughness is the complement of the imported glossiness.
-                roughness: (1.0 - material.smoothness).clamp(0.0, 1.0),
-                emissive: material.emissive,
-                ..MaterialState::default()
-            })
-            .collect();
-        self.material_names = materials
-            .iter()
-            .map(|material| material.name.clone())
-            .collect();
-        self.material_revision = self.material_revision.wrapping_add(1);
-    }
-
-    /// Apply one UI material-edit intent to the editable table, bumping the
-    /// revision so the renderer re-uploads. Out-of-range indices are ignored.
-    pub fn set_material_param(&mut self, edit: MaterialEdit) {
-        let Some(state) = self.material_states.get_mut(edit.index) else {
-            return;
-        };
-        match edit.change {
-            MaterialChange::BaseColor(rgb) => state.base_color = Vec3::from_array(rgb),
-            MaterialChange::Metallic(value) => state.metallic = value.clamp(0.0, 1.0),
-            MaterialChange::Roughness(value) => state.roughness = value.clamp(0.0, 1.0),
-            MaterialChange::Emissive(rgb) => state.emissive = Vec3::from_array(rgb),
-            MaterialChange::Channel(slot, channel) => {
-                // Re-route an already-assigned slot; ignored if the slot is empty
-                // or out of range.
-                if let Some(Some(binding)) = state.textures.get_mut(slot) {
-                    binding.channel = channel;
-                }
-            }
-            MaterialChange::AlphaMode(mode) => state.alpha_mode = mode,
-            MaterialChange::AlphaCutoff(value) => state.alpha_cutoff = value.clamp(0.0, 1.0),
-            MaterialChange::Workflow(workflow) => state.workflow = workflow,
-        }
-        self.material_revision = self.material_revision.wrapping_add(1);
-    }
-
-    /// The editable material parameters, carried into the scene callback each frame.
-    pub fn material_states(&self) -> &[MaterialState] {
-        &self.material_states
-    }
-
-    /// The current material revision (bumped on edit / load).
-    pub fn material_revision(&self) -> u64 {
-        self.material_revision
-    }
-
-    /// A name+value snapshot of the editable materials for the UI (invariant 2:
-    /// the UI reads this plain value, never renderer-owned state).
-    pub fn material_snapshot(&self) -> Vec<MaterialSnapshot> {
-        self.material_names
-            .iter()
-            .cloned()
-            .zip(self.material_states.iter().cloned())
-            .map(|(name, state)| MaterialSnapshot { name, state })
-            .collect()
-    }
-
-    /// Replace the entire editable material table with a captured set of states
-    /// (the undo/redo restore path). Bumps the revision so the GPU table
-    /// re-uploads on the next frame. The names are left untouched: the material
-    /// count only changes on model load (which clears the undo history), so the
-    /// restored states always line up with the current `material_names`.
-    pub fn restore_materials(&mut self, states: Vec<MaterialState>) {
-        self.material_states = states;
-        self.material_revision = self.material_revision.wrapping_add(1);
-    }
-
-    /// Assign (or replace) a decoded image to one of a material's seven texture
-    /// slots, with the chosen channel routing. The image is shared by `Arc` (the
-    /// app decodes once and may reuse it across slots / materials). Bumps the
-    /// revision so the GPU table uploads + rebinds on the next frame. Out-of-range
-    /// material indices are ignored.
-    pub fn set_texture_slot(
-        &mut self,
-        material: usize,
-        slot: TextureSlot,
-        path: PathBuf,
-        image: Arc<DecodedImage>,
-        channel: ChannelSelect,
-    ) {
-        let Some(state) = self.material_states.get_mut(material) else {
-            return;
-        };
-        state.textures[slot.index()] = Some(TextureBinding {
-            path,
-            image,
-            channel,
-        });
-        // Assigning an opacity map switches the material to alpha-blend so the
-        // translucency shows; the Inspector can switch it to Clip.
-        if slot == TextureSlot::Opacity && state.alpha_mode == AlphaMode::Opaque {
-            state.alpha_mode = AlphaMode::Blend;
-        }
-        self.material_revision = self.material_revision.wrapping_add(1);
-    }
-
-    /// Clear a material's texture slot back to the shader's neutral fallback.
-    pub fn clear_texture_slot(&mut self, material: usize, slot: TextureSlot) {
-        let Some(state) = self.material_states.get_mut(material) else {
-            return;
-        };
-        state.textures[slot.index()] = None;
-        // Clearing the opacity map restores opaque compositing.
-        if slot == TextureSlot::Opacity {
-            state.alpha_mode = AlphaMode::Opaque;
-        }
-        self.material_revision = self.material_revision.wrapping_add(1);
-    }
-
-    /// Replace the decoded image of every texture binding that references `path`
-    /// (across all materials / slots) with `image` — the disk-auto-reload path.
-    /// Keeps each binding's channel routing. Returns `true` (and bumps the
-    /// revision) when at least one binding matched.
-    pub fn reload_texture(&mut self, path: &Path, image: Arc<DecodedImage>) -> bool {
-        let mut changed = false;
-        for state in &mut self.material_states {
-            for binding in state.textures.iter_mut().flatten() {
-                if binding.path == path {
-                    binding.image = Arc::clone(&image);
-                    changed = true;
-                }
-            }
-        }
-        if changed {
-            self.material_revision = self.material_revision.wrapping_add(1);
-        }
-        changed
-    }
-
-    /// Every distinct source path currently bound to a material slot (for the disk
-    /// watcher to register / reconcile).
-    pub fn texture_paths(&self) -> Vec<PathBuf> {
-        let mut paths: Vec<PathBuf> = Vec::new();
-        for state in &self.material_states {
-            for binding in state.textures.iter().flatten() {
-                if !paths.contains(&binding.path) {
-                    paths.push(binding.path.clone());
-                }
-            }
-        }
-        paths
-    }
-
-    pub fn set_uv_aspect_ratio(&mut self, aspect_ratio: f32) {
-        self.uv_camera.aspect_ratio = aspect_ratio;
-    }
-
-    pub fn pan_uv_camera(&mut self, delta_pixels: Vec2, viewport_size: Vec2) {
-        self.uv_camera.pan_screen_delta(delta_pixels, viewport_size);
-    }
-
-    pub fn zoom_uv_camera(&mut self, amount: f32) {
-        self.uv_camera.zoom(amount);
-    }
-
-    pub fn reset_uv_camera(&mut self) {
-        self.uv_camera.reset();
-    }
-
-    /// Set the fraction of the viewport that subsequent framing should fill, so
-    /// the model lands inside the band left visible by the toolbar / status bar.
-    pub fn set_framing_safe_area(&mut self, width_fraction: f32, height_fraction: f32) {
-        self.framing_safe_area = Vec2::new(width_fraction, height_fraction);
-    }
-
-    pub fn orbit_camera(&mut self, delta: Vec2) {
-        self.camera_transition = None;
-        self.camera.orbit(delta);
-    }
-
-    /// Turn the 3D camera in place (the right-button look drag), as against
-    /// [`orbit_camera`], which swings it around the pivot.
-    ///
-    /// [`orbit_camera`]: Renderer::orbit_camera
-    pub fn look_camera(&mut self, delta: Vec2) {
-        self.camera_transition = None;
-        self.camera.look(delta);
-    }
-
-    /// Fly the 3D camera for `seconds` along `direction` — a unit vector in camera
-    /// axes (x right, y world-up, z forward) — at the framing-scaled base speed
-    /// times the caller's `speed_scale`. The WASD/QE half of the flycam; `app`
-    /// integrates it per frame while the right button is held.
-    pub fn fly_camera(&mut self, direction: Vec3, seconds: f32, speed_scale: f32) {
-        self.camera_transition = None;
-        let distance = self.camera.fly_speed() * speed_scale * seconds;
-        self.camera.fly(direction * distance);
-    }
-
-    pub fn set_camera_aspect_ratio(&mut self, aspect_ratio: f32) {
-        self.camera.aspect_ratio = aspect_ratio;
-        self.opt_camera.aspect_ratio = aspect_ratio;
-        if let Some(transition) = self.camera_transition.as_mut() {
-            transition.start.aspect_ratio = aspect_ratio;
-            transition.end.aspect_ratio = aspect_ratio;
-        }
-    }
-
-    /// Orbit / pan / zoom the Opt split view's right-hand camera. Used only while
-    /// camera sync is off; with it on, `app` drives the main camera and both views
-    /// follow it.
-    pub fn orbit_opt_camera(&mut self, delta: Vec2) {
-        self.opt_camera.orbit(delta);
-    }
-
-    pub fn look_opt_camera(&mut self, delta: Vec2) {
-        self.opt_camera.look(delta);
-    }
-
-    pub fn fly_opt_camera(&mut self, direction: Vec3, seconds: f32, speed_scale: f32) {
-        let distance = self.opt_camera.fly_speed() * speed_scale * seconds;
-        self.opt_camera.fly(direction * distance);
-    }
-
-    pub fn pan_opt_camera(&mut self, delta_pixels: Vec2, viewport_size: Vec2) {
-        self.opt_camera
-            .pan_screen_delta(delta_pixels, viewport_size);
-    }
-
-    pub fn zoom_opt_camera(&mut self, amount: f32) {
-        self.opt_camera.zoom(amount);
-    }
-
-    /// Point the Opt split view's right-hand camera wherever the main one is
-    /// looking — what "sync views" does, and what re-enabling it snaps back to.
-    pub fn sync_opt_camera(&mut self) {
-        self.opt_camera = self.camera;
-    }
-
-    pub fn pan_camera(&mut self, delta_pixels: Vec2, viewport_size: Vec2) {
-        self.camera_transition = None;
-        self.camera.pan_screen_delta(delta_pixels, viewport_size);
-    }
-
-    pub fn zoom_camera(&mut self, amount: f32) {
-        self.camera_transition = None;
-        self.camera.zoom(amount);
-    }
-
-    pub fn animate_camera_to(&mut self, end: OrbitCamera) {
-        self.camera_transition = Some(CameraTransition::new(self.camera, end));
-    }
-
-    pub fn animate_camera_to_bounds(&mut self, bounds: Bounds) {
-        self.animate_camera_to(self.camera.framed_to_bounds(bounds, self.framing_safe_area));
-    }
-
-    /// Snap (no animation) to a framing of `bounds`. Used when a model is
-    /// loaded into the empty viewport, where a fly-in from the home view would
-    /// only delay showing the model already framed.
-    pub fn snap_camera_to_bounds(&mut self, bounds: Bounds) {
-        self.camera_transition = None;
-        self.camera = self.camera.framed_to_bounds(bounds, self.framing_safe_area);
-    }
-
-    pub fn animate_camera_to_offset_direction(&mut self, direction: Vec3) {
-        self.animate_camera_to(self.camera.with_offset_direction(direction));
-    }
-
-    /// The default "home" view, re-framed for the live aspect ratio and the
-    /// chrome-aware safe area so the whole grid stays visible regardless of
-    /// window shape. Shared by the animated reset and the instant startup frame
-    /// so both land on exactly the same view.
-    fn home_camera(&self) -> OrbitCamera {
-        let home = OrbitCamera {
-            aspect_ratio: self.camera.aspect_ratio,
-            ..OrbitCamera::default()
-        };
-        // Fill only a fraction of the safe area so the grid sits back from the
-        // edges (see HOME_FILL_FRACTION) instead of filling the window.
-        home.framed_to_bounds(GRID_BOUNDS, self.framing_safe_area * HOME_FILL_FRACTION)
-    }
-
-    /// Animate back to the home view.
-    pub fn animate_camera_to_home(&mut self) {
-        self.animate_camera_to(self.home_camera());
-    }
-
-    /// Snap (no animation) to the home view. Used at startup once the real
-    /// window size / safe area are known, so the initial frame matches the
-    /// reset view rather than the full-window `OrbitCamera::default` framing.
-    pub fn reset_camera_to_home(&mut self) {
-        self.camera_transition = None;
-        self.camera = self.home_camera();
-    }
-
-    pub fn update_camera_animation(&mut self, delta_seconds: f32) -> bool {
-        let Some(transition) = self.camera_transition.as_mut() else {
-            return false;
-        };
-
-        let (camera, finished) = transition.step(delta_seconds);
-        self.camera = camera;
-        if finished {
-            self.camera_transition = None;
-        }
-        true
-    }
-
-    pub fn is_camera_animating(&self) -> bool {
-        self.camera_transition.is_some()
     }
 }
