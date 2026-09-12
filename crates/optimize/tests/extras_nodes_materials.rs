@@ -189,8 +189,11 @@ fn phong_figures_survive_with_and_without_the_capture() {
     };
     let material = &model.materials[0];
     // A shininess exponent of 20 reads as this smoothness; both paths must
-    // bring it back, and the metallic written to `ReflectionFactor` too.
+    // bring it back. The fixture is a classic Phong, so it has no metalness to
+    // carry: its `ReflectionFactor` is Phong reflectivity, which import
+    // deliberately does not read (see `review_import_material_metallic`).
     assert!((material.smoothness - 0.447_213_6).abs() < 1e-5);
+    assert_eq!(material.metallic, 0.0);
     let dir = temp_dir("extras_phong");
 
     let (_, with_capture, with_extras) = round_trip(&model, &extras, &dir, FbxFormat::Binary);
@@ -204,7 +207,10 @@ fn phong_figures_survive_with_and_without_the_capture() {
     export_fbx(&result.lods, &model, None, &path, &ExportOptions::default()).expect("export");
     let (without_capture, _) = reload(&path);
     assert!((without_capture.materials[0].smoothness - material.smoothness).abs() < 1e-5);
-    assert!((without_capture.materials[0].metallic - material.metallic).abs() < 1e-5);
+    // Metalness is one-way through the Phong fallback: the writer puts it on
+    // `ReflectionFactor` as the closest slot the model has, and the reader does
+    // not take it back off. For this dielectric fixture the two agree anyway.
+    assert_eq!(without_capture.materials[0].metallic, 0.0);
 }
 
 #[test]

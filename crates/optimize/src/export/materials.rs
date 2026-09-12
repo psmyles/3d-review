@@ -156,6 +156,12 @@ pub(crate) fn build_materials_from_extras(
 
 /// Materials from what the viewer shows, for an export before the capture
 /// landed: a Phong carrying the PBR figures on its classic slots.
+///
+/// Smoothness round-trips exactly (see [`viewer_material`]); metalness does
+/// not. Phong has no metalness, so it goes out on `ReflectionFactor` as the
+/// closest slot there is, and import does not read that slot back — it is
+/// Phong reflectivity in every file this tool did not write, and guessing
+/// otherwise made ordinary game assets import as metal.
 pub(crate) fn build_materials_from_viewer(scene: &mut SceneData, source: &ModelData) {
     for (index, material) in source.materials.iter().enumerate() {
         let name = c_string(&material.name, &format!("Material{index}"));
