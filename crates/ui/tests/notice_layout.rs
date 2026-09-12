@@ -132,29 +132,71 @@ fn a_later_notice_lays_out_like_the_first() {
     );
 }
 
-/// A title longer than the card truncates inside it rather than widening the
-/// card or spilling past its frame.
+/// A message longer than one line **wraps** rather than truncating, so the card
+/// grows downward instead of cutting the text — and it still never grows wider.
+///
+/// This is the whole point of the header/body split. The message used to be the
+/// card's header, clipped to a single line, so
+/// `Couldn't load pedestal.fbx: unexpected end of file` reached the user as
+/// `Couldn't load pedestal.fbx: unexpected en…` — everything after the colon,
+/// which is the only part that says what went wrong, was the part thrown away.
 #[test]
-fn a_long_title_does_not_widen_the_card() {
+fn a_long_message_wraps_instead_of_being_cut_off() {
     let mut harness = Harness::new();
-    harness.notifications.success("Loaded a.fbx");
+    harness.notifications.error("Couldn't load a.fbx");
     for _ in 0..3 {
         harness.pass(0.01);
     }
-    let short = harness.column().width();
+    let short = harness.column();
 
-    harness.pass(5.0);
-    harness
-        .notifications
-        .success(format!("Loaded {}.fbx", "very_long_asset_name_".repeat(10)));
+    let mut harness = Harness::new();
+    harness.notifications.error(
+        "Couldn't load pedestal.fbx: unexpected end of file while reading the \
+         geometry of 'stone_007_mesh', which is the kind of sentence a user has \
+         to read all of.",
+    );
     for _ in 0..3 {
         harness.pass(0.01);
     }
-    let long = harness.column().width();
+    let long = harness.column();
 
     assert!(
-        (long - short).abs() < 1.0,
-        "a long title widened the card from {short}pt to {long}pt"
+        long.height() > short.height() + 10.0,
+        "the long message did not wrap: {}pt against the short one's {}pt",
+        long.height(),
+        short.height()
+    );
+    assert!(
+        (long.width() - short.width()).abs() < 1.0,
+        "a long message widened the card from {}pt to {}pt",
+        short.width(),
+        long.width()
+    );
+}
+
+/// A mode notice keeps its bare one-line shape: no kind header, no divider. It
+/// names the view you just switched into, in a word, because you pressed the key
+/// that switched it — so it has nothing to classify and nothing to explain.
+#[test]
+fn a_mode_notice_stays_compact() {
+    let mut harness = Harness::new();
+    harness.notifications.mode("Wireframe");
+    for _ in 0..3 {
+        harness.pass(0.01);
+    }
+    let compact = harness.column().height();
+
+    let mut harness = Harness::new();
+    harness.notifications.info("Wireframe");
+    for _ in 0..3 {
+        harness.pass(0.01);
+    }
+    let headed = harness.column().height();
+
+    assert!(
+        compact < headed,
+        "the mode notice ({compact}pt) should be shorter than the same text \
+         under a kind header ({headed}pt)"
     );
 }
 

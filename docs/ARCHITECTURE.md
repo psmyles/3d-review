@@ -372,8 +372,15 @@ it, anchored only to the four screen corners, and turned a multi-part result int
 one box per line. One `egui::Area` anchored bottom-centre of the free viewport
 (offset by `UiState::chrome_insets`, the open side panels' widths) holds a column
 of cards, each framed with `egui::Frame::window` so it matches an option window.
-The title is tinted by `NoticeKind` — Progress blue, Info, Success green, Warning
-amber, Error red — and carries egui's own ✕ glyph. `success`/`info`/`mode` expire
+A card is a header over a body: the header carries only the kind — `Warning`,
+`Success`, `Error`, `Info`, or `Working` while a job runs — tinted by
+`NoticeKind` (Progress blue, Info, Success green, Warning amber, Error red) with
+egui's own ✕ glyph, then a hairline edge to edge, then the message wrapped
+beneath it. The card's frame therefore carries no inner margin; the header and
+the body pad themselves, so the divider spans the full width. The message used to
+be the header, clipped to one line, which threw away the half of an error that
+said what went wrong. `mode` notices stay a bare single line
+(`Notice::compact`). `success`/`info`/`mode` expire
 after `motion::NOTIFICATION_EVENT`; `warning`/`error` and any `report(kind, title,
 lines)` with a body stay until dismissed. A keyed push (`mode`, `error_keyed`)
 rewrites its slot in place. Deadlines run on egui's clock and resolve on the first

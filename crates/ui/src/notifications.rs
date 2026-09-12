@@ -21,13 +21,20 @@
 //! animates at all.
 //!
 //! **A card is framed like an option window** ([`egui::Frame::window`], which is
-//! the same builder `egui::Window` uses — minus its shadow, see [`card_frame`]),
-//! so the notices read as part of the same chrome rather than as a second
-//! surface style. The one part that is ours is the title row: the title is tinted by [`NoticeKind`] — blue while
-//! a job runs, green on success, amber on a warning, red on an error — so the
-//! kind is legible before the sentence is read, and a ✕ sits at its right,
-//! painted with egui's own two-stroke glyph so it matches the window close
-//! button beside it.
+//! the same builder `egui::Window` uses — minus its shadow and its padding, see
+//! [`card_frame`]), so the notices read as part of the same chrome rather than
+//! as a second surface style.
+//!
+//! **A card is a header over a body.** The header says what kind of thing this
+//! is and nothing more — `Warning`, `Success`, `Error`, `Info`, or `Working`
+//! while a job runs — in that kind's colour, with egui's own two-stroke ✕ at its
+//! right; then a hairline edge to edge, and under it the message, wrapped across
+//! as many lines as it takes. The message used to *be* the header, truncated to
+//! one line, which is the one thing a notification cannot afford to lose: a card
+//! reading `Couldn't load pedestal.fbx: unexpected en…` has cut exactly the half
+//! that says what went wrong. A kind is a word, so it always fits; a message is a
+//! sentence, so it gets room. The **mode** notice is the one exception and stays
+//! a single bare line — see [`Notice::compact`].
 //!
 //! **Dismissal.** A routine confirmation ([`Notifications::success`] /
 //! [`Notifications::info`] / [`Notifications::mode`]) expires on its own after
@@ -79,7 +86,21 @@ pub enum NoticeKind {
 }
 
 impl NoticeKind {
-    /// The title tint for this kind.
+    /// What a card's header calls this kind. The header says only this, so the
+    /// word has to carry the whole classification on its own — which is why a
+    /// running job reads "Working" rather than "Progress": the header names what
+    /// is happening, not what the variant is called.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Progress => "Working",
+            Self::Info => "Info",
+            Self::Success => "Success",
+            Self::Warning => "Warning",
+            Self::Error => "Error",
+        }
+    }
+
+    /// The header tint for this kind.
     fn color(self) -> Color32 {
         match self {
             Self::Progress => color::NOTICE_PROGRESS,
@@ -119,11 +140,22 @@ struct Notice {
     /// Identity for the ✕, since the vector's indices shift as notices expire.
     id: u64,
     kind: NoticeKind,
-    /// The headline, tinted by `kind`. Truncated rather than wrapped: a second
-    /// title line would shift everything below it.
-    title: String,
-    /// Detail under the title, one wrapped line each. Empty for a plain notice.
+    /// What the notice actually says, wrapped across as many lines as it needs.
+    /// A card's header carries only the kind, so this is the whole of the
+    /// message and none of it may be cut.
+    message: String,
+    /// Further detail under the message, one wrapped line each — an export's
+    /// per-mesh notes, a run's warnings. Empty for a plain notice.
     lines: Vec<String>,
+    /// Draw as a single line with no header and no divider.
+    ///
+    /// Only [`Notifications::mode`] sets this. A mode notice is one word naming
+    /// the view you just switched to, it is gone in two seconds, and you asked
+    /// for it by pressing the key — a `Info` header over a divider over the word
+    /// `Unlit` is three times the furniture for none of the information. Every
+    /// other notice reports something you did not ask for and has to say what
+    /// kind of thing it is.
+    compact: bool,
     dismiss: Dismiss,
     /// A slot name. A keyed push *replaces* the notice already holding the key
     /// rather than stacking beside it, so rapid mode switching rewrites one card
@@ -185,35 +217,35 @@ impl Notifications {
 
     /// Push a transient success notice (e.g. a model or texture finished
     /// loading). Expires on its own.
-    pub fn success(&mut self, title: impl Into<String>) {
-        self.push(NoticeKind::Success, title.into(), Vec::new(), None);
+    pub fn success(&mut self, message: impl Into<String>) {
+        self.push(NoticeKind::Success, message.into(), Vec::new(), None);
     }
 
     /// Push a transient info notice. Expires on its own.
-    pub fn info(&mut self, title: impl Into<String>) {
-        self.push(NoticeKind::Info, title.into(), Vec::new(), None);
+    pub fn info(&mut self, message: impl Into<String>) {
+        self.push(NoticeKind::Info, message.into(), Vec::new(), None);
     }
 
     /// Push a warning: the work went through, but not entirely as asked. Stays
     /// until dismissed — the user is meant to read it, and it is usually the
     /// only sign that something silently differs from what they expect.
-    pub fn warning(&mut self, title: impl Into<String>) {
-        self.push(NoticeKind::Warning, title.into(), Vec::new(), None);
+    pub fn warning(&mut self, message: impl Into<String>) {
+        self.push(NoticeKind::Warning, message.into(), Vec::new(), None);
     }
 
     /// Push an error notice. Stays until dismissed.
-    pub fn error(&mut self, title: impl Into<String>) {
-        self.push(NoticeKind::Error, title.into(), Vec::new(), None);
+    pub fn error(&mut self, message: impl Into<String>) {
+        self.push(NoticeKind::Error, message.into(), Vec::new(), None);
     }
 
     /// Push an error into a named slot, replacing whatever error already holds
     /// it. For a failure that *repeats* — a wedged device reports itself every
     /// frame — so the viewport gets one card rather than a new one per frame.
-    pub fn error_keyed(&mut self, key: &'static str, title: impl Into<String>) {
-        self.push(NoticeKind::Error, title.into(), Vec::new(), Some(key));
+    pub fn error_keyed(&mut self, key: &'static str, message: impl Into<String>) {
+        self.push(NoticeKind::Error, message.into(), Vec::new(), Some(key));
     }
 
-    /// Push one notice carrying a body: a headline plus a detail line each for
+    /// Push one notice carrying extra detail: the message, plus a line each for
     /// however many things the operation has to say. This is what keeps a
     /// multi-part result — an export's per-mesh notes, a run's warnings — to a
     /// single card instead of one per line.
@@ -222,33 +254,50 @@ impl Notifications {
     /// there because the user has to read them, and a success big enough to have
     /// a body is no longer a routine confirmation. With no lines it behaves
     /// exactly like the matching one-line push.
-    pub fn report(&mut self, kind: NoticeKind, title: impl Into<String>, lines: Vec<String>) {
-        self.push(kind, title.into(), lines, None);
+    pub fn report(&mut self, kind: NoticeKind, message: impl Into<String>, lines: Vec<String>) {
+        self.push(kind, message.into(), lines, None);
     }
 
     /// Show the current view mode (e.g. the material mode name), **replacing**
     /// any mode notice still on screen. Keyed to one slot, so rapid mode
     /// switching rewrites one card in place instead of stacking a card per
     /// switch.
-    pub fn mode(&mut self, title: impl Into<String>) {
-        self.push(NoticeKind::Info, title.into(), Vec::new(), Some(MODE_KEY));
+    pub fn mode(&mut self, message: impl Into<String>) {
+        let notice = self.build(NoticeKind::Info, message.into(), Vec::new(), Some(MODE_KEY));
+        self.place(Notice {
+            compact: true,
+            ..notice
+        });
     }
 
     /// Build a notice and either replace its keyed slot or append it.
     fn push(
         &mut self,
         kind: NoticeKind,
-        title: String,
+        message: String,
         lines: Vec<String>,
         key: Option<&'static str>,
     ) {
+        let notice = self.build(kind, message, lines, key);
+        self.place(notice);
+    }
+
+    /// Assemble a notice and claim its id, without showing it yet.
+    fn build(
+        &mut self,
+        kind: NoticeKind,
+        message: String,
+        lines: Vec<String>,
+        key: Option<&'static str>,
+    ) -> Notice {
         // A body means the card waits to be read; otherwise the kind decides.
         let auto = lines.is_empty() && kind.auto_dismisses();
         let notice = Notice {
             id: self.next_id,
             kind,
-            title,
+            message,
             lines,
+            compact: false,
             dismiss: if auto {
                 Dismiss::After {
                     remaining: motion::NOTIFICATION_EVENT,
@@ -260,6 +309,12 @@ impl Notifications {
             key,
         };
         self.next_id += 1;
+        notice
+    }
+
+    /// Put a built notice in the column, replacing its keyed slot if it has one.
+    fn place(&mut self, notice: Notice) {
+        let key = notice.key;
         match key.and_then(|key| self.notices.iter().position(|n| n.key == Some(key))) {
             // In place, so the replacement doesn't jump to the end of the column
             // — the point of a slot is that the card stays where the user last
@@ -416,18 +471,39 @@ impl Notifications {
 /// The slot every mode notice shares.
 const MODE_KEY: &str = "mode";
 
-/// A card's frame: an option window's, minus its shadow.
+/// A card's frame: an option window's, minus its shadow and its padding.
 ///
 /// [`egui::Frame::window`] is the same builder `egui::Window` uses, so the fill,
-/// stroke, corner radius and padding track whatever the option windows do and a
-/// notice never drifts out of step with the chrome beside it. The shadow is the
-/// one part that doesn't carry: egui's is offset 20pt *downward* with a 15pt
-/// blur, which is right for a single window floating over the viewport and wrong
-/// for a column — every card would cast onto the card below it, and the bottom
-/// one onto the status bar 8pt under it. The fill and the stroke already
-/// separate a card from the model behind it.
+/// stroke and corner radius track whatever the option windows do and a notice
+/// never drifts out of step with the chrome beside it. Two parts don't carry:
+///
+/// The **shadow**, because egui's is offset 20pt downward with a 15pt blur —
+/// right for a single window floating over the viewport, wrong for a column,
+/// where every card would cast onto the card below it and the bottom one onto
+/// the status bar 8pt under it. The fill and the stroke already separate a card
+/// from the model behind it.
+///
+/// The **inner margin**, because the divider under the header runs edge to edge.
+/// A frame that padded its content would inset the divider with it; instead the
+/// padding is applied to the header and the body separately ([`card_pad`]), so
+/// the line between them spans the full card.
 fn card_frame(ui: &egui::Ui) -> egui::Frame {
-    egui::Frame::window(ui.style()).shadow(egui::epaint::Shadow::NONE)
+    egui::Frame::window(ui.style())
+        .shadow(egui::epaint::Shadow::NONE)
+        .inner_margin(0)
+}
+
+/// The padding the header and the body each carry, which is the padding
+/// `Frame::window` would have applied to the card as a whole — taken from the
+/// same style value, so a card is inset exactly like an option window even
+/// though its own frame has no margin.
+fn card_pad(ui: &egui::Ui) -> egui::Margin {
+    ui.style().spacing.window_margin
+}
+
+/// The card's full outer width: the text column plus the padding either side.
+fn card_width(ui: &egui::Ui) -> f32 {
+    size::NOTIFICATION_WIDTH + card_pad(ui).sum().x
 }
 
 /// What a drawn card reports back to [`Notifications::show`].
@@ -438,24 +514,36 @@ struct CardResponse {
     hovered: bool,
 }
 
-/// Draw one notice: the tinted title, its ✕, and the body lines under them.
+/// Draw one notice: the kind in the header, then the message and any detail
+/// lines in the body under it.
 fn notice_card(ui: &mut egui::Ui, notice: &Notice) -> CardResponse {
     let mut dismissed = false;
     let frame = card_frame(ui).show(ui, |ui| {
-        ui.set_width(size::NOTIFICATION_WIDTH);
-        ui.spacing_mut().item_spacing.y = size::NOTIFICATION_LINE_GAP;
-        dismissed = title_row(ui, notice.kind, &notice.title, true);
-        let shown = notice.lines.len().min(size::NOTIFICATION_MAX_LINES);
-        for line in &notice.lines[..shown] {
-            ui.label(egui::RichText::new(line).color(color::TEXT_BODY));
+        ui.set_width(card_width(ui));
+        if notice.compact {
+            dismissed = compact_row(ui, notice);
+            return;
         }
-        // The column grows upward from the status bar, so a card long enough to
-        // run its own title off the top of the window says how much it is
-        // holding back instead.
-        let hidden = notice.lines.len() - shown;
-        if hidden > 0 {
-            ui.label(egui::RichText::new(format!("+ {hidden} more")).color(color::TEXT_MUTED));
-        }
+        dismissed = header(ui, notice.kind, true);
+        body(ui, |ui| {
+            // The message itself, wrapped. This is the part the user is here to
+            // read, so it gets the room to be read in. It was the card's
+            // *header* once, truncated to a single line, which showed half of
+            // "Couldn't load pedestal.fbx: unexpected end of file" and cut the
+            // half that says what went wrong.
+            ui.label(egui::RichText::new(&notice.message).color(color::TEXT_BODY));
+            let shown = notice.lines.len().min(size::NOTIFICATION_MAX_LINES);
+            for line in &notice.lines[..shown] {
+                ui.label(egui::RichText::new(line).color(color::TEXT_BODY));
+            }
+            // The column grows upward from the status bar, so a card long enough
+            // to run its own header off the top of the window says how much it
+            // is holding back instead.
+            let hidden = notice.lines.len() - shown;
+            if hidden > 0 {
+                ui.label(egui::RichText::new(format!("+ {hidden} more")).color(color::TEXT_MUTED));
+            }
+        });
     });
     CardResponse {
         dismissed,
@@ -466,64 +554,113 @@ fn notice_card(ui: &mut egui::Ui, notice: &Notice) -> CardResponse {
     }
 }
 
-/// Draw the progress card: the job's title, the line under it, and a bar when
-/// the job knows its own denominator. No ✕ — the job's own end takes it down.
+/// Draw the progress card: the job in the body, the stage line under it, and a
+/// bar when the job knows its own denominator. No ✕ — the job's own end takes it
+/// down.
 fn activity_card(ui: &mut egui::Ui, activity: &Activity) {
     card_frame(ui).show(ui, |ui| {
-        ui.set_width(size::NOTIFICATION_WIDTH);
-        ui.spacing_mut().item_spacing.y = size::NOTIFICATION_LINE_GAP;
-        title_row(ui, NoticeKind::Progress, &activity.title, false);
-        if !activity.detail.is_empty() {
-            ui.label(egui::RichText::new(&activity.detail).color(color::TEXT_MUTED));
-        }
-        if let Some(fraction) = activity.fraction {
-            progress_bar(ui, fraction);
-        }
+        ui.set_width(card_width(ui));
+        header(ui, NoticeKind::Progress, false);
+        body(ui, |ui| {
+            ui.label(egui::RichText::new(&activity.title).color(color::TEXT_BODY));
+            if !activity.detail.is_empty() {
+                ui.label(egui::RichText::new(&activity.detail).color(color::TEXT_MUTED));
+            }
+            if let Some(fraction) = activity.fraction {
+                progress_bar(ui, fraction);
+            }
+        });
     });
 }
 
-/// A card's header: the title in the heading style, tinted by kind, with the
-/// close glyph pinned to the right when the card is dismissible. Returns whether
-/// the ✕ was clicked.
+/// A card's header: what kind of thing this is, in that kind's colour, with the
+/// close glyph pinned to the right when the card is dismissible — then a
+/// hairline across the full width of the card. Returns whether the ✕ was
+/// clicked.
 ///
-/// Laid out right-to-left so the ✕ is placed first and the title takes whatever
-/// is left — the title truncates rather than wraps, since a second line would
-/// shift every body line under it.
+/// The header names the *kind* and nothing else. It used to carry the message,
+/// truncated to a single line, which is the one thing a notification cannot
+/// afford to lose; the message moved to [`body`], where it wraps.
 ///
 /// **The row is allocated at an explicit size, and that is what keeps the card
-/// the size of its text.** A bare `with_layout` inherits the parent's whole
+/// the size of its content.** A bare `with_layout` inherits the parent's whole
 /// available rect — `Ui::horizontal` exists precisely because it does *not*,
 /// capping the row to one interactive height first — and with the cross
 /// alignment centred, the row then grew to fill every point the Area had to
-/// give. The card frame grew with it, so one line of text was painted as a
-/// strip the height of the window, and the title had no finite width to
-/// truncate against so a long file name ran outside the frame. Worse, it
-/// latched: an `egui::Area` lays each frame out inside its *previous* measured
-/// size, so once a card had claimed the height it kept claiming it, and every
-/// load pumped it further.
-fn title_row(ui: &mut egui::Ui, kind: NoticeKind, title: &str, closable: bool) -> bool {
+/// give. The card frame grew with it, so a one-line notice was painted as a
+/// strip the height of the window. Worse, it latched: an `egui::Area` lays each
+/// frame out inside its *previous* measured size, so once a card had claimed
+/// the height it kept claiming it, and every load pumped it further.
+fn header(ui: &mut egui::Ui, kind: NoticeKind, closable: bool) -> bool {
     let mut dismissed = false;
-    // Tall enough for the heading and for the close glyph, which is sized from
-    // egui's own interact height — whichever of the two is taller.
-    let height = ui
-        .text_style_height(&egui::TextStyle::Heading)
-        .max(ui.spacing().interact_size.y);
-    let row = vec2(ui.available_width(), height);
-    ui.allocate_ui_with_layout(row, Layout::right_to_left(Align::Center), |ui| {
-        if closable {
+    egui::Frame::NONE.inner_margin(card_pad(ui)).show(ui, |ui| {
+        // Tall enough for the heading and for the close glyph, which is sized
+        // from egui's own interact height — whichever of the two is taller.
+        let height = ui
+            .text_style_height(&egui::TextStyle::Heading)
+            .max(ui.spacing().interact_size.y);
+        let row = vec2(ui.available_width(), height);
+        ui.allocate_ui_with_layout(row, Layout::right_to_left(Align::Center), |ui| {
+            if closable {
+                dismissed = close_button(ui).clicked();
+            }
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new(kind.label())
+                        .text_style(egui::TextStyle::Heading)
+                        .color(kind.color()),
+                );
+            });
+        });
+    });
+    // Edge to edge, which is why the card's own frame carries no margin. Painted
+    // in the frame's own stroke, so the divider reads as part of the border it
+    // meets rather than as a rule someone added.
+    let (rule, _) =
+        ui.allocate_exact_size(vec2(ui.available_width(), size::HAIRLINE), Sense::hover());
+    ui.painter()
+        .rect_filled(rule, 0.0, ui.visuals().window_stroke().color);
+    dismissed
+}
+
+/// A mode notice: one padded line, the message and its ✕, with no header and no
+/// divider over it. Returns whether the ✕ was clicked.
+///
+/// This is the shape every card used to have, kept for the one case it suits.
+/// A mode notice names the view you just switched into, in a word, because you
+/// pressed the key that switched it — so it has nothing to classify and nothing
+/// to explain, and a header saying `Info` over a rule over the word `Unlit`
+/// would be furniture around a label. The message truncates here rather than
+/// wrapping, which is safe for exactly this reason: the text is a mode name, not
+/// a sentence, and `app` is the only caller.
+fn compact_row(ui: &mut egui::Ui, notice: &Notice) -> bool {
+    let mut dismissed = false;
+    egui::Frame::NONE.inner_margin(card_pad(ui)).show(ui, |ui| {
+        let height = ui
+            .text_style_height(&egui::TextStyle::Body)
+            .max(ui.spacing().interact_size.y);
+        let row = vec2(ui.available_width(), height);
+        ui.allocate_ui_with_layout(row, Layout::right_to_left(Align::Center), |ui| {
             dismissed = close_button(ui).clicked();
-        }
-        // The title fills what the ✕ left, laid out from its own left edge.
-        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-            ui.style_mut().wrap_mode = Some(TextWrapMode::Truncate);
-            ui.label(
-                egui::RichText::new(title)
-                    .text_style(egui::TextStyle::Heading)
-                    .color(kind.color()),
-            );
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.style_mut().wrap_mode = Some(TextWrapMode::Truncate);
+                ui.label(egui::RichText::new(&notice.message).color(notice.kind.color()));
+            });
         });
     });
     dismissed
+}
+
+/// A card's body: the padded area under the divider that holds the message.
+fn body(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::NONE.inner_margin(card_pad(ui)).show(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = size::NOTIFICATION_LINE_GAP;
+        // Labels wrap by default in a width-constrained `Ui`; pin it anyway, so
+        // a future style that flips the default can't silently start truncating
+        // the one text the user is here to read.
+        ui.style_mut().wrap_mode = Some(TextWrapMode::Wrap);
+        add_contents(ui);
+    });
 }
 
 /// The card's ✕. Painted as egui's own window close button is — two line
@@ -606,11 +743,11 @@ mod tests {
 
         assert_eq!(notifications.notices.len(), size::NOTIFICATION_MAX_VISIBLE);
         assert_eq!(
-            notifications.notices.last().map(|n| n.title.as_str()),
+            notifications.notices.last().map(|n| n.message.as_str()),
             Some(format!("error {}", size::NOTIFICATION_MAX_VISIBLE + 2).as_str())
         );
         assert_eq!(
-            notifications.notices.first().map(|n| n.title.as_str()),
+            notifications.notices.first().map(|n| n.message.as_str()),
             Some("error 3")
         );
     }

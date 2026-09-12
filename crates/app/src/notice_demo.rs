@@ -17,7 +17,7 @@
 //! | `Primary+Shift+W` | a warning (sticky) |
 //! | `Primary+Shift+E` | an error (sticky) |
 //! | `Primary+Shift+R` | a grouped report with more lines than it will show |
-//! | `Primary+Shift+M` | a mode notice — press repeatedly, it rewrites in place |
+//! | `Primary+Shift+M` | a mode notice — bare single line; press repeatedly to watch it rewrite in place |
 //! | `Primary+Shift+L` | a very long title, to watch it truncate |
 //! | `Primary+Shift+P` | the next step of a fake background job |
 //!
