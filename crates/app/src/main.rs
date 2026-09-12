@@ -40,7 +40,7 @@ use review_model::{ModelData, SceneBvh};
 use review_render::{EguiRenderer, Gpu, GpuBringUp, Renderer, RendererConfig};
 use review_ui::{MsaaSamples, Notifications, Selection, UiState, init_style};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, WindowEvent};
+use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowAttributes, WindowId};
@@ -777,13 +777,6 @@ impl ApplicationHandler<UserEvent> for App {
                 self.modifiers = modifiers.state();
             }
             WindowEvent::KeyboardInput { event, .. } if !egui_consumed => {
-                // Any key press dismisses the startup help overlay (and still
-                // performs its shortcut). Request a redraw so it clears even for
-                // keys that aren't bound to a shortcut.
-                if event.state == ElementState::Pressed && self.ui.show_help_overlay {
-                    self.ui.show_help_overlay = false;
-                    self.redraw.requested = true;
-                }
                 self.handle_keyboard_shortcut(&event);
             }
             WindowEvent::DroppedFile(path) => self.handle_dropped_file(path),

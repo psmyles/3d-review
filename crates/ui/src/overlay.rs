@@ -11,7 +11,7 @@ use crate::state::{
     ChromeInsets, OptionPanel, ScopedStats, UiOutput, UiState, WorkspaceMode, sync_debug_state,
 };
 use crate::theme::{self, color, size};
-use crate::{dimensions, gizmo, help, panels, stats, status_bar, texture_view, toolbar};
+use crate::{dimensions, gizmo, panels, stats, status_bar, texture_view, toolbar};
 
 /// The Opt workspace's second view, as the overlay needs to see it. `app` supplies
 /// this whenever that workspace is active; every other workspace passes `None`.
@@ -176,12 +176,6 @@ pub fn draw_overlay(
         // chrome; this lays out the canvas + interaction + background fill only.
         texture_view::draw(root, state);
     }
-
-    // The startup cheat-sheet sits on top of all the chrome (drawn last). It
-    // consumes pointer input (so the chrome beneath stays inert while it's up);
-    // `app` owns dismissing it — on any key, a click, a file drop, or a model
-    // load — and double-clicking it opens the file picker.
-    help::draw_help_overlay(ctx, state);
 
     output
 }

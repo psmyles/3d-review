@@ -315,10 +315,6 @@ pub struct UiState {
     /// Most recent measured frames-per-second, fed by `app` from the render
     /// loop. Zero while idle (the viewer redraws on demand, not continuously).
     pub fps: f32,
-    /// Whether the startup help overlay (keyboard-shortcut cheat sheet) is shown.
-    /// Starts `true` so it greets the user on launch, and is cleared by a click
-    /// anywhere (see `help::draw_help_overlay`).
-    pub show_help_overlay: bool,
 }
 
 impl Default for UiState {
@@ -379,7 +375,6 @@ impl Default for UiState {
             clip_bounds: Vec::new(),
             caches: BoundsCaches::default(),
             fps: 0.0,
-            show_help_overlay: true,
         }
     }
 }

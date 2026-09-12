@@ -468,8 +468,6 @@ Review` on macOS.
 
 ## Keyboard and mouse
 
-A cheat-sheet of these is shown on launch and dismissed by any key or click.
-
 **Mouse (3D)** - left-drag orbits, right-drag looks around (and flies with
 `WASD`/`QE`; the wheel sets the fly speed while it is held), middle-drag pans, as
 does Shift+right-drag, Alt+right-drag zooms, wheel zooms. Double-clicking the

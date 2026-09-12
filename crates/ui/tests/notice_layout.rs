@@ -33,10 +33,7 @@ impl Harness {
     fn new() -> Self {
         let ctx = egui::Context::default();
         review_ui::init_style(&ctx);
-        let state = UiState {
-            show_help_overlay: false,
-            ..UiState::default()
-        };
+        let state = UiState::default();
         Self {
             ctx,
             state,
