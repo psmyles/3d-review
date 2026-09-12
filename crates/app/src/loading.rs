@@ -39,7 +39,8 @@ use review_render::Renderer;
 use review_ui::Selection;
 
 use crate::dialog::Dialog;
-use crate::{APP_NAME, App, TEXTURE_EXTENSIONS, UserEvent, file_label, prof};
+use crate::events::UserEvent;
+use crate::{APP_NAME, App, prof};
 
 /// The shortest gap between two progress reports reaching the event loop. The
 /// loading card rewrites itself in place, so this is only about not waking the
@@ -548,4 +549,18 @@ fn frame_camera_to_model(renderer: &mut Renderer, model: &ModelData, animate: bo
             renderer.snap_camera_to_bounds(bounds);
         }
     }
+}
+
+/// The image extensions the texture pool accepts (the picker filter + the
+/// drag-drop routing). Anything else dropped on the window is treated as a model.
+pub(crate) const TEXTURE_EXTENSIONS: [&str; 9] = [
+    "png", "jpg", "jpeg", "tga", "tif", "tiff", "psd", "bmp", "gif",
+];
+
+/// A short human label for a texture path — its file name, or the full path when
+/// it has no file-name component. Used in the notification toast captions.
+pub(crate) fn file_label(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
 }

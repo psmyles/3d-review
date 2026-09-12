@@ -63,6 +63,29 @@ impl<'a> HiddenFilter<'a> {
     }
 }
 
+/// A per-vertex visibility mask: `true` for every vertex referenced by a triangle
+/// whose owning node is *not* hidden. `None` when nothing is hidden or the model
+/// carries no per-triangle node info (so visibility can't be resolved and every
+/// vertex is drawn).
+pub(super) fn visible_vertex_mask(model: &ModelData, hidden_nodes: &[u32]) -> Option<Vec<bool>> {
+    let hidden = HiddenFilter::new(model, hidden_nodes);
+    if !hidden.is_active() {
+        return None;
+    }
+    let mut mask = vec![false; model.vertices.len()];
+    for (triangle_index, triangle) in model.indices.as_chunks::<3>().0.iter().enumerate() {
+        if hidden.is_hidden(triangle_index) {
+            continue;
+        }
+        for &corner in triangle {
+            if let Some(slot) = mask.get_mut(corner as usize) {
+                *slot = true;
+            }
+        }
+    }
+    Some(mask)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

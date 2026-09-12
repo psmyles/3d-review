@@ -1,3 +1,5 @@
 - Texture view in UV mode
 - quick open/hide outliner box on left edge of the viewport
 - object selection via direct viewport click
+- better notification system?
+- compression option at export time?

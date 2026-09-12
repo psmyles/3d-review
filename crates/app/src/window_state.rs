@@ -322,3 +322,26 @@ mod tests {
         assert_eq!(state_dir(), Some(expected));
     }
 }
+
+/// The window-placement tracker: the startup maximize hint plus the windowed
+/// bounds sampled for session persistence, grouped out of [`App`].
+#[derive(Default)]
+pub(crate) struct PlacementTracker {
+    /// The process was launched with a request to start maximized (e.g. a
+    /// shortcut set to **Run: Maximized**). Set in `resumed` and applied at
+    /// window creation, since winit doesn't honor the OS hint on its own.
+    pub(crate) start_maximized: bool,
+    /// The most recent *non-maximized* window placement (outer position + inner
+    /// size), tracked from `Moved`/`Resized` events so it's available to persist
+    /// on exit. Recorded only while the window isn't maximized, so un-maximizing
+    /// a restored session returns to a real window rather than a fullscreen rect.
+    pub(crate) last_windowed_bounds: Option<((i32, i32), (u32, u32))>,
+    /// Set when a `Moved`/`Resized` event arrives; the windowed bounds are then
+    /// sampled once in `about_to_wait`, after the event burst has settled. This
+    /// deferral matters for maximize: winit dispatches `Moved` (from
+    /// `WM_WINDOWPOSCHANGED`) *before* the `WM_SIZE` that sets its maximized flag,
+    /// so sampling eagerly in the `Moved` handler would record the maximized
+    /// geometry as if it were windowed. By `about_to_wait` the flag is set, so
+    /// `record_windowed_bounds`'s `is_maximized()` guard sees the real state.
+    pub(crate) bounds_dirty: bool,
+}

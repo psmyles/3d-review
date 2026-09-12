@@ -12,18 +12,15 @@
 
 #![cfg(has_meshopt)]
 
-use std::path::PathBuf;
-
 use review_model::ModelData;
 use review_optimize::{
-    AoQuality, AoTarget, BakeAoParams, LodLevel, LodParams, OpKind, OptStack, ProcessInput,
-    ProcessedResult, ReduceParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings, WeldParams,
-    process,
+    AoQuality, AoTarget, BakeAoParams, LodLevel, LodParams, OpKind, OptStack, ReduceParams,
+    SimplifyAlgorithm, SimplifyFlags, SimplifySettings, WeldParams,
 };
 
-/// Stand-in for the renderer's `SceneVertex` size (position, normal, uv, tangent,
-/// color). Only the overfetch figure depends on it.
-const VERTEX_SIZE: usize = 64;
+mod common;
+
+use common::{fixture, fixture_path, run};
 
 /// Every fixture the tests below load. Asserted to exist by
 /// [`every_fixture_the_suite_loads_exists`], so a rename cannot quietly turn the
@@ -35,43 +32,6 @@ const FIXTURES: [&str; 5] = [
     "monkey.fbx",
     "xyzrgb_dragon.fbx",
 ];
-
-fn fixture_path(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../assets/test_models")
-        .join(name)
-}
-
-fn fixture(name: &str) -> Option<ModelData> {
-    let path = fixture_path(name);
-    if !path.exists() {
-        eprintln!("skipping {name}: the fixture is not present");
-        return None;
-    }
-    match review_import::load_model(&path) {
-        Ok(model) => Some(model),
-        // A checkout without the vendored ufbx sources can't import *anything*;
-        // that is the same "this checkout can't run these" situation as a missing
-        // fixture. Any other error means the file is there and did not load,
-        // which the suite must report rather than skip past.
-        Err(review_import::ImportError::UfbxUnavailable) => {
-            eprintln!("skipping {name}: FBX import is unavailable in this build");
-            None
-        }
-        Err(error) => panic!("{name} is present but failed to load: {error}"),
-    }
-}
-
-fn run(model: &ModelData, stack: &OptStack) -> ProcessedResult {
-    process(ProcessInput {
-        model,
-        stack,
-        render_vertex_size: VERTEX_SIZE,
-        hidden_nodes: &[],
-        extras: None,
-    })
-    .expect("a real fixture always processes")
-}
 
 /// Assert the structural guarantees every processed mesh must satisfy, whatever
 /// the stack did to it.
@@ -126,7 +86,6 @@ const POSITION_WELD: WeldParams = WeldParams {
     compare_uvs: false,
     compare_colors: false,
 };
-
 /// The default weld only removes *exact* duplicates, so on a game asset — whose
 /// interior corners share a normal and a UV — it collapses the import's corner
 /// expansion down to something near the authored vertex count.
