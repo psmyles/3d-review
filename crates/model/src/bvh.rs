@@ -366,7 +366,12 @@ fn partition(slice: &mut [u32], pred: impl Fn(u32) -> bool) -> usize {
 /// The three world positions of triangle `tri`, falling back to the origin for
 /// any out-of-range index (a malformed mesh yields a degenerate, non-occluding
 /// triangle rather than a panic).
-fn triangle_positions(model: &ModelData, tri: u32) -> [Vec3; 3] {
+/// The three corner positions of a triangle, with a missing index or vertex
+/// reading as the origin rather than panicking.
+///
+/// Shared because `optimize`'s AO bake raycasts against the same buffers this
+/// BVH indexes, and had grown an identical copy.
+pub fn triangle_positions(model: &ModelData, tri: u32) -> [Vec3; 3] {
     let base = tri as usize * 3;
     let pos = |slot: usize| {
         model

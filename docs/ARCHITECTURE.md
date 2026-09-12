@@ -68,9 +68,11 @@ One `impl App` block per concern, one file each:
 
 | File | Concern |
 | --- | --- |
-| `main.rs` | `fn main`, the `ApplicationHandler` impl, window + GPU startup |
-| `frame.rs` | The per-frame render loop |
-| `input.rs` | Pointer / scroll / resize / pinch routing |
+| `main.rs` | `fn main`, the `App` struct, the `ApplicationHandler` impl, window + GPU startup — and nothing else |
+| `events.rs` | `UserEvent`: the cross-module message bus every worker posts back through |
+| `redraw.rs` | Redraw pacing — `RedrawScheduler` and the `about_to_wait` body that drives it |
+| `frame.rs` | The per-frame render loop, including the camera-animation tick |
+| `input.rs` | Pointer / scroll / resize / pinch routing, the drag mode, the zoom sensitivities, the framing safe area |
 | `shortcuts.rs` | Keyboard dispatch (the help tables in `ui` mirror it) |
 | `flycam.rs` | The RMB-held WASD/QE flycam: held-key direction bits, integrated once per frame |
 | `loading.rs` | The model-load funnel — drag-drop, Ctrl+O, double-click, CLI/file association |
@@ -149,8 +151,18 @@ is on screen and lives in `UiState::clip_bounds` — see
 FFI (`repr(C)` mirror structs, `checked_slice`, `model_from_bridge_scene`), the
 vendored ufbx C plus the bridge, and `build.rs` (`cc`, `cfg(has_ufbx)`).
 
-Files: `src/lib.rs`, `src/ufbx_bridge.c`, `src/ufbx_bridge.h`,
-`src/ufbx_extras.c`, `src/ufbx_extras.h`, `build.rs`.
+Files: `src/lib.rs` (the public API — errors, the progress and stage types,
+the four `load_model*` entry points, `measure_clip_bounds`), `src/startup.rs`
+(the Windows `STARTUPINFO` launch hint, which is FFI but not FBX), and the
+`#[cfg(has_ufbx)]` `src/ffi/`, layered so the `unsafe` is a leaf rather than a
+theme: `ffi/raw_scene.rs` and `ffi/raw_extras.rs` are the `#[repr(C)]` mirrors
+(data only), `ffi/bridge.rs` the one call into C and the free protocol around
+it, `ffi/raw.rs` the pointer-to-slice and pointer-to-string helpers (the last
+of the `unsafe`), and `ffi/marshal_model.rs` + `ffi/marshal_extras.rs` the
+majority of the crate by line count, which `deny(unsafe_code)` and read only
+checked slices. Plus `src/ufbx_bridge.c`, `src/ufbx_bridge.h`,
+`src/ufbx_extras.c`, `src/ufbx_extras.h`, `build.rs`. Fixture-driven checks of
+the public API live in `tests/fbx_fixtures.rs`.
 
 The bridge captures each node's rest local TRS; the skin cluster table (per
 mesh-bearing node: `geometry_to_bone × inverse(geometry_to_world)`) with a
@@ -286,7 +298,9 @@ between mismatched formats is a silent no-op.
   a sampler per distinct `TextureOptions`. `prepare` runs outside any pass,
   `paint` inside the swapchain pass, `free_textures` after the frame.
 - `geometry/` — CPU vertex generation, one file per category: `vertex`, `grid`,
-  `mesh`, `select`, `debug_lines`, `uv`, plus `deform.rs` (the per-model
+  `mesh`, `select`, `uv`, the debug views one file per view (`wireframe`,
+  `markers` for the pivot and bounding box, `normal_lines`, `uv_seams`), plus
+  `deform.rs` (the per-model
   `DeformLayout`: each corner's 16-byte `deform` lane and the influence / morph
   tables it indexes).
 - `material/` — the editable per-material table (cbuffer `b1`, `t5..t11`, aniso
@@ -471,6 +485,24 @@ without them; the dependent features report themselves unavailable.
 
 ---
 
+
+### File layout
+
+One file per concern, and a file that outgrows its concern gets split into a
+directory module rather than a longer file. The parent keeps the type or entry
+point the module is *for* and re-exports its children, so a split never changes a
+path outside the crate — `review_model::ModelData`, `review_ui::UiState`,
+`crate::process::ProcessedLod` all resolve exactly as they did when each was one
+file. Tests live beside the code they exercise, not beside the code they happen
+to have been written next to.
+
+Two files are deliberately long and stay that way. `optimize/src/export/write.rs`
+is one 650-line function because it is a strict lifetime chain — each `Vec` of
+bridge structs borrows the storage of the one above it, so every local has to
+live in one stack frame. The C bridges (`import/src/ufbx_bridge.c`,
+`optimize/src/export_bridge.c`) are one translation unit each because every
+helper in them is `static` and the crossing into C is meant to be one call.
+
 ## Invariants
 
 > **Lean on the existing system; don't hand-roll another.** Before building any
@@ -499,8 +531,10 @@ depend on `ui` or `app`.
 edges, face-normal lines, vertex-normal lines) is built when that view turns on
 and dropped when it turns off. The steady-state shaded view holds **zero** derived
 buffers. Implemented for the line views by `SceneGpu::sync_line_views` in
-`render/src/scene/resources.rs`, which is where every other `sync_*` / `release_*`
-pair lives too. A builder reached from only *one* viewport still needs its free
+`render/src/scene/line_views.rs`, which is where every other overlay's
+`sync_*` / `release_*` pair lives too (`scene/resources.rs` keeps the mesh
+upload, `scene/slot.rs` the per-model state and bake keys, `scene/draw_lists.rs`
+the selection and visibility index ordering). A builder reached from only *one* viewport still needs its free
 arm on the path that leaves that viewport: `sync_uv_view` is called from
 `render_uv` alone, so `release_uv_views` runs from the 3D path's `sync_frame`.
 
@@ -536,8 +570,9 @@ border width, radius, spacing, opacity and animation duration in `crates/ui` mus
 come from the central semantic theme, not an inline literal. The only exception is
 a value computed at runtime from state (a per-axis gizmo colour, say). Token names
 are **semantic** (`panel_bg`, `selection`, `gizmo_ball`), not `dark_grey_6`.
-Tokens live in `crates/ui/src/theme.rs` (`color`, `size`, `font`, `motion`
-submodules plus `apply_visuals`); add the token there first, then reference it.
+Tokens live in `crates/ui/src/theme/` — one file per group (`color.rs`,
+`size.rs`, `font.rs`, `motion.rs`) with `theme/mod.rs` holding `apply_visuals`
+and the conversions; add the token there first, then reference it.
 **`size` tokens are design pixels, not egui points** — convert at the use site
 with `theme::px(ctx, …)` or `theme::chrome_height`. Reading a `size` token raw
 against a value already in points silently over-reserves on any HiDPI display; the

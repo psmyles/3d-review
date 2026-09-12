@@ -194,7 +194,7 @@ pub(super) fn search_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::panels::outliner::fixture::{rows, scene};
+    use crate::panels::outliner::test_fixture::{rows, scene};
     use review_model::SceneNode;
 
     #[test]

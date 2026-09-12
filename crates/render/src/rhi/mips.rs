@@ -19,6 +19,7 @@
 //! D3D11's own non-power-of-two kernel is slightly wider than that; the difference is
 //! a fraction of a code in a minified mip.
 
+use review_model::color::linear_to_srgb;
 use sokol::gfx as sg;
 
 /// Levels in a full chain for a `width`×`height` texture: `floor(log2(max)) + 1`,
@@ -139,14 +140,6 @@ fn srgb_to_linear(value: f32) -> f32 {
         value / 12.92
     } else {
         ((value + 0.055) / 1.055).powf(2.4)
-    }
-}
-
-fn linear_to_srgb(value: f32) -> f32 {
-    if value <= 0.0031308 {
-        value * 12.92
-    } else {
-        1.055 * value.powf(1.0 / 2.4) - 0.055
     }
 }
 

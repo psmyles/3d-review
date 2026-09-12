@@ -37,7 +37,8 @@ use review_optimize::{
 use review_ui::{OptIntent, OptLevelView, OptResultView};
 
 use crate::dialog::Dialog;
-use crate::{App, UserEvent, prof};
+use crate::events::UserEvent;
+use crate::{App, prof};
 
 /// How long a run may take before the user is told it is still going. Below this
 /// the result usually lands within a frame or two and a toast would only flicker.
@@ -402,7 +403,7 @@ impl App {
                 let name = report
                     .files
                     .first()
-                    .map(|path| crate::file_label(path))
+                    .map(|path| crate::loading::file_label(path))
                     .unwrap_or_else(|| "the mesh".to_owned());
                 self.notifications.success(if files > 1 {
                     format!(
@@ -568,11 +569,13 @@ impl App {
         match std::fs::write(path, json) {
             Ok(()) => self
                 .notifications
-                .success(format!("Saved {}", crate::file_label(path))),
+                .success(format!("Saved {}", crate::loading::file_label(path))),
             Err(error) => {
                 prof::msg(&format!("preset save failed {}: {error}", path.display()));
-                self.notifications
-                    .error(format!("Couldn't save {}", crate::file_label(path)));
+                self.notifications.error(format!(
+                    "Couldn't save {}",
+                    crate::loading::file_label(path)
+                ));
             }
         }
     }
@@ -588,8 +591,10 @@ impl App {
             Ok(json) => json,
             Err(error) => {
                 prof::msg(&format!("preset read failed {}: {error}", path.display()));
-                self.notifications
-                    .error(format!("Couldn't read {}", crate::file_label(path)));
+                self.notifications.error(format!(
+                    "Couldn't read {}",
+                    crate::loading::file_label(path)
+                ));
                 return;
             }
         };
@@ -614,7 +619,7 @@ impl App {
         self.redraw.requested = true;
 
         self.notifications
-            .success(format!("Loaded {}", crate::file_label(path)));
+            .success(format!("Loaded {}", crate::loading::file_label(path)));
         if dropped > 0 {
             self.notifications.info(format!(
                 "{dropped} per-object override{} referenced objects this model \

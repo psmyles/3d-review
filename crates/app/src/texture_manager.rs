@@ -8,15 +8,19 @@
 //! (invariant 6). The subsystem Phases 4–7 (referenced/embedded textures, the Tex
 //! viewport) extend, kept apart from the window/event-loop glue.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use review_render::{ChannelSelect, DecodedImage, TextureSlot, decode_image, suggested_channel};
 use review_ui::{TexturePoolEntry, TextureSlotRef};
+use winit::event_loop::EventLoopProxy;
 
 use crate::dialog::Dialog;
-use crate::{App, UserEvent, file_label, prof};
+use crate::events::UserEvent;
+use crate::loading::file_label;
+use crate::{App, prof};
 
 /// A finished background texture decode, posted back to the event loop. Carries
 /// what the decode was *for* ([`TextureDecodeRequest`]) so the main thread knows
@@ -344,4 +348,33 @@ impl App {
         // Dropping the watcher unregisters every directory.
         self.textures.watcher = None;
     }
+}
+
+/// The scene texture pool + decode cache + disk-auto-reload subsystem's state,
+/// grouped out of [`App`]; the logic lives in `texture_manager.rs`.
+#[derive(Default)]
+pub(crate) struct TextureSubsystem {
+    /// Proxy used by the texture file-watcher thread to post reload events to the
+    /// event loop (set in `main` before the loop runs).
+    pub(crate) proxy: Option<EventLoopProxy<UserEvent>>,
+    /// The disk-auto-reload watcher, created lazily on the first texture
+    /// assignment. Dropping it stops watching (done on model load / reset).
+    pub(crate) watcher: Option<RecommendedWatcher>,
+    /// Directories the watcher is registered on (the parents of assigned textures),
+    /// so each directory is watched at most once.
+    pub(crate) watched_dirs: HashSet<PathBuf>,
+    /// Decoded-image cache keyed by source path, so a packed map assigned to
+    /// several slots / materials decodes once. Cleared on model load / reset.
+    pub(crate) cache: HashMap<PathBuf, Arc<DecodedImage>>,
+    /// The scene-wide texture pool: imported source paths in insertion order. The
+    /// decoded pixels live in [`Self::cache`]; this is just the ordered set the
+    /// Inspector's Texture files list + property dropdowns draw from (mirrored
+    /// into `UiState::texture_pool` by `App::refresh_texture_pool`). Cleared on
+    /// model load / reset.
+    pub(crate) pool: Vec<PathBuf>,
+    /// Monotonic change tag for the pool + cache, bumped on every mutation. Lets
+    /// `App::capture_edit_state` detect pool changes (and share the pool snapshot
+    /// `Arc` when unchanged) as cheaply as the renderer's `material_revision`
+    /// does for the material table.
+    pub(crate) revision: u64,
 }

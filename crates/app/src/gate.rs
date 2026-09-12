@@ -386,6 +386,8 @@ fn json_string(value: &str) -> String {
     out
 }
 
+/// How often the loop wakes during a gate run's idle hold, to notice the deadline.
+pub(crate) const GATE_POLL: Duration = Duration::from_millis(100);
 #[cfg(test)]
 mod tests {
     use super::{json_string, percentile, stats_json};

@@ -238,10 +238,110 @@ pub(super) fn apply_row_click(
     }
 }
 
+/// Primary+click on a mesh row's eye (`Ctrl` here, `Cmd` on macOS - egui's own
+/// `Modifiers::command`): hide every *other* mesh node, so only this one
+/// is left in the viewport.
+///
+/// Clicking it again on the mesh that is already alone shows everything back —
+/// the same toggle a DCC's isolate gives, so the gesture is its own way out and
+/// the user needn't hunt for the eye of each mesh they hid.
+///
+/// Note it works on the whole node, not its subtree: per-mesh visibility is a set
+/// of mesh nodes ([`UiState::hidden_meshes`], which the renderer's hidden filter
+/// matches per triangle), so isolating a group node would mean nothing.
+pub(super) fn isolate_mesh(state: &mut UiState, model: &ModelData, node: usize) {
+    let meshes: Vec<usize> = model
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, mesh)| mesh.mesh_part.is_some())
+        .map(|(index, _)| index)
+        .collect();
+    let already_isolated = meshes
+        .iter()
+        .all(|&mesh| state.hidden_meshes.contains(&mesh) != (mesh == node));
+
+    state.hidden_meshes.clear();
+    if !already_isolated {
+        state
+            .hidden_meshes
+            .extend(meshes.into_iter().filter(|&mesh| mesh != node));
+    }
+}
+
+#[cfg(test)]
+mod isolate_tests {
+    use super::*;
+    use review_model::SceneNode;
+
+    /// Three sibling meshes under one group node — the shape an isolate has to
+    /// work over (the group itself carries no mesh, so it is never hidden).
+    fn three_meshes() -> ModelData {
+        let node = |name: &str, mesh_part: Option<usize>| SceneNode {
+            name: name.to_owned(),
+            parent: (name != "group").then_some(0),
+            mesh_part,
+            source_vertex_count: 0,
+            transform: glam::Mat4::IDENTITY,
+            rest_local: Default::default(),
+            kind: if mesh_part.is_some() {
+                NodeKind::Mesh
+            } else {
+                NodeKind::Empty
+            },
+            bone: None,
+        };
+        ModelData {
+            nodes: vec![
+                node("group", None),
+                node("a", Some(0)),
+                node("b", Some(1)),
+                node("c", Some(2)),
+            ],
+            ..ModelData::default()
+        }
+    }
+
+    fn hidden(state: &UiState) -> Vec<usize> {
+        let mut hidden: Vec<usize> = state.hidden_meshes.iter().copied().collect();
+        hidden.sort_unstable();
+        hidden
+    }
+
+    #[test]
+    fn isolating_a_mesh_hides_every_other_mesh() {
+        let model = three_meshes();
+        let mut state = UiState::default();
+        isolate_mesh(&mut state, &model, 2);
+        // The two sibling meshes, and not the group node, which has none.
+        assert_eq!(hidden(&state), vec![1, 3]);
+    }
+
+    #[test]
+    fn isolating_the_already_isolated_mesh_shows_everything_again() {
+        let model = three_meshes();
+        let mut state = UiState::default();
+        isolate_mesh(&mut state, &model, 2);
+        isolate_mesh(&mut state, &model, 2);
+        assert!(hidden(&state).is_empty(), "the gesture is its own way out");
+    }
+
+    #[test]
+    fn isolating_from_a_partly_hidden_scene_still_leaves_one_mesh() {
+        let model = three_meshes();
+        let mut state = UiState::default();
+        // A different mesh already hidden by hand, and the target hidden too:
+        // isolating must show the target and hide the rest, not toggle.
+        state.hidden_meshes.insert(1);
+        state.hidden_meshes.insert(2);
+        isolate_mesh(&mut state, &model, 2);
+        assert_eq!(hidden(&state), vec![1, 3]);
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::panels::outliner::fixture::{rows, scene};
+    use crate::panels::outliner::test_fixture::{rows, scene};
     use crate::panels::outliner::tree::flat_rows;
 
     // ── resolve_nav ──────────────────────────────────────────────────────────

@@ -8,63 +8,16 @@
 
 #![cfg(all(has_meshopt, has_ufbxw))]
 
-use std::path::{Path, PathBuf};
-
 use review_model::ModelData;
 use review_optimize::{
     AoQuality, AoTarget, BakeAoParams, ExportOptions, FbxFormat, HierarchyMode, LodLevel,
-    LodPackaging, LodParams, OpKind, OptStack, ProcessInput, ProcessedResult, SimplifyAlgorithm,
-    SimplifySettings, WeldParams, export_fbx, process,
+    LodPackaging, LodParams, OpKind, OptStack, SimplifyAlgorithm, SimplifySettings, WeldParams,
+    export_fbx,
 };
 
-const VERTEX_SIZE: usize = 64;
+mod common;
 
-/// A per-test temporary directory under the target dir, removed and recreated so
-/// a rerun never sees the previous run's files.
-fn temp_dir(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create the temp directory");
-    dir
-}
-
-fn fixture(name: &str) -> Option<ModelData> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../assets/test_models")
-        .join(name);
-    if !path.exists() {
-        eprintln!("skipping {name}: the fixture is not present");
-        return None;
-    }
-    match review_import::load_model(&path) {
-        Ok(model) => Some(model),
-        // No vendored ufbx means nothing can be imported at all — the same "this
-        // checkout can't run these" situation as a missing fixture. Anything else
-        // is a file that is present and did not load, which must be reported.
-        Err(review_import::ImportError::UfbxUnavailable) => {
-            eprintln!("skipping {name}: FBX import is unavailable in this build");
-            None
-        }
-        Err(error) => panic!("{name} is present but failed to load: {error}"),
-    }
-}
-
-fn run(model: &ModelData, stack: &OptStack) -> ProcessedResult {
-    process(ProcessInput {
-        model,
-        stack,
-        render_vertex_size: VERTEX_SIZE,
-        hidden_nodes: &[],
-        extras: None,
-    })
-    .expect("processing succeeds")
-}
-
-/// Re-import a written file, failing with the reader's own message.
-fn reimport(path: &Path) -> ModelData {
-    review_import::load_model(path)
-        .unwrap_or_else(|error| panic!("could not read back {}: {error}", path.display()))
-}
+use common::{array_size, fixture, reimport, run, scene_property, temp_dir};
 
 /// The smallest stack that still produces a chain to export: a run with nothing
 /// enabled measures the source and produces no levels, so the export tests need
@@ -342,20 +295,6 @@ fn ascii_export(name: &str, dir_name: &str) -> Option<String> {
     Some(std::fs::read_to_string(&path).expect("ASCII output is text"))
 }
 
-/// The `P: "<name>", ...,<value>` scene-settings property, as written.
-fn scene_property(text: &str, name: &str) -> String {
-    let needle = format!("P: \"{name}\"");
-    let line = text
-        .lines()
-        .map(str::trim)
-        .find(|line| line.starts_with(&needle))
-        .unwrap_or_else(|| panic!("the file declares {name}"));
-    line.rsplit(',')
-        .next()
-        .expect("a property carries a value")
-        .to_owned()
-}
-
 #[test]
 fn the_written_file_declares_the_sources_own_unit() {
     // FBX declares its unit rather than fixing one, and import normalizes every
@@ -429,14 +368,6 @@ fn uv_and_color_layers_are_polygon_vertex_indexed() {
         checked >= 2,
         "the fixture should have contributed UV and color layers to check, saw {checked}"
     );
-}
-
-/// The count out of an ASCII FBX array header, e.g. `12888 {` -> 12888.
-fn array_size(rest: &str) -> usize {
-    rest.split_whitespace()
-        .next()
-        .and_then(|count| count.parse().ok())
-        .expect("an array header carries its length")
 }
 
 #[test]

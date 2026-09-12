@@ -15,7 +15,8 @@ use std::time::Instant;
 
 use glam::Vec3;
 
-use crate::{App, DragMode};
+use crate::App;
+use crate::input::DragMode;
 
 /// Largest slice of time one flight step advances by. The viewer redraws on
 /// demand, so the first frame after an idle gap carries the whole gap as its

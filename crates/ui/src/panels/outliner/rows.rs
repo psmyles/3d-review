@@ -2,11 +2,12 @@
 //! (band, guides, disclosure arrow, kind glyph, visibility eye, truncated name),
 //! and the indent-guide geometry that ties each row back to its parent.
 
-use review_model::ModelData;
+use review_model::{ModelData, NodeKind};
 use review_render::Selection;
 
-use super::{RowsOutput, TreeRow, display_name, kind_color, kind_icon};
+use super::{RowsOutput, TreeRow, display_name};
 use crate::assets;
+use crate::assets::AppIcon;
 use crate::state::UiState;
 use crate::theme::{color, size};
 
@@ -327,10 +328,33 @@ fn selected_path(rows: &[TreeRow], selected: Option<usize>) -> Vec<usize> {
     path
 }
 
+/// The per-kind row glyph.
+pub(super) fn kind_icon(kind: NodeKind) -> &'static AppIcon {
+    match kind {
+        NodeKind::Mesh => &assets::ICON_NODE_MESH,
+        NodeKind::Bone => &assets::ICON_NODE_BONE,
+        NodeKind::Light => &assets::ICON_NODE_LIGHT,
+        NodeKind::Camera => &assets::ICON_NODE_CAMERA,
+        NodeKind::Empty => &assets::ICON_NODE_EMPTY,
+        NodeKind::Other => &assets::ICON_NODE_OTHER,
+    }
+}
+
+/// The per-kind glyph tint, so a row's type reads by color before its name is.
+pub(super) fn kind_color(kind: NodeKind) -> egui::Color32 {
+    match kind {
+        NodeKind::Mesh => color::NODE_MESH,
+        NodeKind::Bone => color::NODE_BONE,
+        NodeKind::Light => color::NODE_LIGHT,
+        NodeKind::Camera => color::NODE_CAMERA,
+        NodeKind::Empty => color::NODE_EMPTY,
+        NodeKind::Other => color::NODE_OTHER,
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::panels::outliner::fixture::{rows, scene};
+    use crate::panels::outliner::test_fixture::{rows, scene};
     use review_model::NodeKind;
 
     // ── Selected-path guide highlighting ─────────────────────────────────────

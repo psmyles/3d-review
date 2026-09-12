@@ -7,6 +7,7 @@
 
 mod animation;
 mod dialog;
+mod events;
 mod flycam;
 mod frame;
 mod gate;
@@ -14,6 +15,7 @@ mod input;
 mod loading;
 mod opt;
 mod prof;
+mod redraw;
 mod selection_flash;
 mod shortcuts;
 mod texture_manager;
@@ -28,84 +30,31 @@ mod window_state;
 static GLOBAL: review_import::TracyAllocator<std::alloc::System> =
     review_import::TracyAllocator::new(std::alloc::System);
 
-use std::{
-    collections::{HashMap, HashSet},
-    path::{Path, PathBuf},
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Context;
 use glam::Vec2;
-use notify::RecommendedWatcher;
 use review_model::{ModelData, SceneBvh};
-use review_render::{DecodedImage, EguiRenderer, Gpu, GpuBringUp, Renderer, RendererConfig};
+use review_render::{EguiRenderer, Gpu, GpuBringUp, Renderer, RendererConfig};
 use review_ui::{MsaaSamples, Notifications, Selection, UiState, init_style};
-use winit::{
-    application::ApplicationHandler,
-    event::{ElementState, WindowEvent},
-    event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
-    keyboard::ModifiersState,
-    window::{Window, WindowAttributes, WindowId},
-};
-
-/// Custom event posted from a background thread to the winit event loop, so work
-/// done off the main thread is applied back on it (the redraw loop + all renderer
-/// state stay in `app` — invariant 6).
-///
-/// Deliberately not `Clone`: a variant carries a whole LOD chain of meshes, and
-/// an accidental clone would deep-copy every one of them (invariant 1).
-#[derive(Debug)]
-enum UserEvent {
-    /// A watched directory reported a change to this path; if it's a bound texture,
-    /// re-decode + re-upload it (posted by the file-watcher thread).
-    TextureChanged(PathBuf),
-    /// A background texture decode finished (posted by the decode thread). The
-    /// result is uploaded + the slot/binding updated here on the main thread.
-    TextureDecoded(TextureDecode),
-    /// A background Opt processing run finished (posted by the optimize thread).
-    /// Boxed because a `ProcessedResult` carries a mesh per LOD level, which
-    /// would otherwise make every variant of this enum that large.
-    OptProcessed(Box<opt::OptProcessed>),
-    /// A background FBX export finished (posted by the export thread).
-    OptExported(Box<Result<review_optimize::ExportReport, review_optimize::OptError>>),
-    /// A background model import produced a drawable model (posted by the import
-    /// thread). Boxed because it carries the whole parsed model.
-    ModelLoaded(Box<loading::ModelLoaded>),
-    /// A background model import reached a new stage, or moved within one
-    /// (posted by the import thread, already throttled there — see `loading.rs`).
-    /// Rewrites the loading card's stage line in place.
-    ModelLoadProgress(loading::ModelLoadProgress),
-    /// One of the measurements the import deferred until after the model was on
-    /// screen has landed (posted by the same thread, which keeps measuring once
-    /// it has published the mesh). Boxed because the draw-group table is one
-    /// entry per (node, material) pair.
-    ModelMeasured(Box<loading::ModelMeasured>),
-    /// The source-property capture of the model on screen has been marshaled
-    /// (posted by the import thread right after the mesh). Carried for the
-    /// exporter; nothing in the viewport reads it.
-    SourceExtrasReady(Box<loading::SourceExtrasReady>),
-    /// A native file dialog closed (posted by the thread that opened it —
-    /// `mac-port-plan.md` D9). `None` when the user cancelled. Boxed because the
-    /// export variant carries a whole LOD chain's worth of `Arc`s.
-    DialogDone(Option<Box<dialog::DialogAnswer>>),
-    /// The OS asked for a file to be opened (`mac-port-plan.md` D14): a Finder
-    /// double-click, an `open(1)`, or a drop on the Dock icon. macOS only —
-    /// Windows delivers the same intent as `argv[1]`, which `main` reads directly.
-    OpenPath(PathBuf),
-    /// A macOS menu item the viewer performs itself was chosen (D15). Routed
-    /// through the loop rather than acted on in muda's callback so it lands on the
-    /// main thread, in order with every other event, instead of racing the state
-    /// it is about to change.
-    MenuCommand(review_shell_macos::MenuCommand),
-}
+use winit::application::ApplicationHandler;
+use winit::event::{ElementState, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::keyboard::ModifiersState;
+use winit::window::{Window, WindowAttributes, WindowId};
 
 use animation::AnimationSubsystem;
+use events::UserEvent;
 use flycam::FlyCam;
 use gate::Gate;
+use input::{DragMode, framing_safe_area};
+use redraw::RedrawScheduler;
 use selection_flash::FlashProgress;
-use texture_manager::TextureDecode;
+use texture_manager::TextureSubsystem;
 use undo::UndoStack;
+use window_state::PlacementTracker;
 use window_state::{
     default_windowed_placement, monitor_refresh_interval, placement_fills_monitor,
     placement_is_visible,
@@ -360,97 +309,6 @@ struct App {
     gpu: Option<Gpu>,
 }
 
-/// The on-demand redraw scheduler (invariant 6): everything that decides *when*
-/// the next frame is drawn, grouped out of [`App`].
-struct RedrawScheduler {
-    last_render_instant: Option<Instant>,
-    /// When egui has asked to be repainted at a future time (e.g. a UI fade
-    /// animation). Drives `ControlFlow::WaitUntil` so the loop sleeps until then
-    /// instead of spinning. `None` = wait for the next input/redraw event.
-    repaint_at: Option<Instant>,
-    /// An interactive event (drag, hover, wheel, key) has requested a redraw.
-    /// Folded into the paced `repaint_at` schedule in `about_to_wait` rather than
-    /// triggering an immediate `request_redraw`, so a high-polling-rate mouse or
-    /// key auto-repeat can't drive rendering faster than the monitor refresh.
-    requested: bool,
-    /// Remaining startup "warmup" frames to pump (Phase B). The first frame builds
-    /// only the cheap core scene resources; the deferred scene pipelines + GTAO
-    /// pass then compile one stage per subsequent frame. While this is non-zero,
-    /// `render` keeps scheduling the next frame so the build drains behind the
-    /// already-shown grid, then stops. Seeded once in `resumed`; `app` can't see
-    /// the render-side build state (invariant 2), so it pumps a fixed count.
-    warmup_frames: u32,
-    /// Minimum spacing between continuously-rendered frames, derived from the
-    /// active monitor's refresh rate. Caps redraw to the display so animation
-    /// doesn't render faster than it can be shown. Defaults to 60 Hz until a
-    /// monitor is known.
-    refresh_interval: Duration,
-}
-
-impl Default for RedrawScheduler {
-    fn default() -> Self {
-        Self {
-            last_render_instant: None,
-            repaint_at: None,
-            requested: false,
-            warmup_frames: 0,
-            refresh_interval: Duration::from_secs_f64(1.0 / FALLBACK_REFRESH_HZ),
-        }
-    }
-}
-
-/// The window-placement tracker: the startup maximize hint plus the windowed
-/// bounds sampled for session persistence, grouped out of [`App`].
-#[derive(Default)]
-struct PlacementTracker {
-    /// The process was launched with a request to start maximized (e.g. a
-    /// shortcut set to **Run: Maximized**). Set in `resumed` and applied at
-    /// window creation, since winit doesn't honor the OS hint on its own.
-    start_maximized: bool,
-    /// The most recent *non-maximized* window placement (outer position + inner
-    /// size), tracked from `Moved`/`Resized` events so it's available to persist
-    /// on exit. Recorded only while the window isn't maximized, so un-maximizing
-    /// a restored session returns to a real window rather than a fullscreen rect.
-    last_windowed_bounds: Option<((i32, i32), (u32, u32))>,
-    /// Set when a `Moved`/`Resized` event arrives; the windowed bounds are then
-    /// sampled once in `about_to_wait`, after the event burst has settled. This
-    /// deferral matters for maximize: winit dispatches `Moved` (from
-    /// `WM_WINDOWPOSCHANGED`) *before* the `WM_SIZE` that sets its maximized flag,
-    /// so sampling eagerly in the `Moved` handler would record the maximized
-    /// geometry as if it were windowed. By `about_to_wait` the flag is set, so
-    /// `record_windowed_bounds`'s `is_maximized()` guard sees the real state.
-    bounds_dirty: bool,
-}
-
-/// The scene texture pool + decode cache + disk-auto-reload subsystem's state,
-/// grouped out of [`App`]; the logic lives in `texture_manager.rs`.
-#[derive(Default)]
-struct TextureSubsystem {
-    /// Proxy used by the texture file-watcher thread to post reload events to the
-    /// event loop (set in `main` before the loop runs).
-    proxy: Option<EventLoopProxy<UserEvent>>,
-    /// The disk-auto-reload watcher, created lazily on the first texture
-    /// assignment. Dropping it stops watching (done on model load / reset).
-    watcher: Option<RecommendedWatcher>,
-    /// Directories the watcher is registered on (the parents of assigned textures),
-    /// so each directory is watched at most once.
-    watched_dirs: HashSet<PathBuf>,
-    /// Decoded-image cache keyed by source path, so a packed map assigned to
-    /// several slots / materials decodes once. Cleared on model load / reset.
-    cache: HashMap<PathBuf, Arc<DecodedImage>>,
-    /// The scene-wide texture pool: imported source paths in insertion order. The
-    /// decoded pixels live in [`Self::cache`]; this is just the ordered set the
-    /// Inspector's Texture files list + property dropdowns draw from (mirrored
-    /// into `UiState::texture_pool` by `App::refresh_texture_pool`). Cleared on
-    /// model load / reset.
-    pool: Vec<PathBuf>,
-    /// Monotonic change tag for the pool + cache, bumped on every mutation. Lets
-    /// `App::capture_edit_state` detect pool changes (and share the pool snapshot
-    /// `Arc` when unchanged) as cheaply as the renderer's `material_revision`
-    /// does for the material table.
-    revision: u64,
-}
-
 /// Startup warmup frames to pump after the first (core-only) frame (Phase B), so
 /// the deferred GPU-resource build drains behind the already-shown grid. The
 /// build completes in two stages (scene pipelines, then GTAO) — i.e. by the
@@ -474,21 +332,6 @@ pub(crate) const APP_NAME: &str = env!("REVIEW_PRODUCT");
 /// Minimum window inner size (logical points), so the chrome never collapses.
 const MIN_WINDOW_WIDTH: f64 = 960.0;
 const MIN_WINDOW_HEIGHT: f64 = 640.0;
-
-/// Camera zoom per pixel of a right-button zoom-drag (pointer-down zooms in).
-const DRAG_ZOOM_SENSITIVITY: f32 = 0.01;
-
-/// Camera zoom per wheel notch for line-based scroll deltas (mice).
-const WHEEL_LINE_ZOOM_STEP: f32 = 0.5;
-
-/// Pixel-precise scroll (trackpads) divided by this to match one wheel notch.
-const WHEEL_PIXELS_PER_ZOOM_STEP: f32 = 120.0;
-
-/// Camera zoom per unit of trackpad pinch scale (`mac-port-plan.md` D16). A pinch
-/// delta is a scale *fraction* — a comfortable two-finger spread accumulates to
-/// roughly 1.0 over its length — so this is the zoom that whole gesture is worth,
-/// not a per-notch step like the wheel's.
-const PINCH_ZOOM_STEP: f32 = 4.0;
 
 impl Default for App {
     fn default() -> Self {
@@ -545,30 +388,6 @@ impl Default for App {
             gpu: None,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DragMode {
-    Orbit,
-    /// Turn the camera in place (the right-button drag Unity and Unreal bind).
-    /// Also what arms the WASD/QE flycam — see `flycam.rs`.
-    Look,
-    Pan,
-    Zoom,
-}
-
-/// The image extensions the texture pool accepts (the picker filter + the
-/// drag-drop routing). Anything else dropped on the window is treated as a model.
-const TEXTURE_EXTENSIONS: [&str; 9] = [
-    "png", "jpg", "jpeg", "tga", "tif", "tiff", "psd", "bmp", "gif",
-];
-
-/// A short human label for a texture path — its file name, or the full path when
-/// it has no file-name component. Used in the notification toast captions.
-fn file_label(path: &Path) -> String {
-    path.file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.display().to_string())
 }
 
 /// Decode the embedded application logo into a winit window icon — used for the
@@ -822,49 +641,6 @@ impl App {
         self.model_revision_counter = self.model_revision_counter.saturating_add(1);
         self.model_revision_counter
     }
-
-    fn update_camera_animation(&mut self) {
-        let now = Instant::now();
-        let delta_seconds = self
-            .redraw
-            .last_render_instant
-            .map_or(0.0, |last| now.duration_since(last).as_secs_f32());
-        self.redraw.last_render_instant = Some(now);
-
-        // The viewer redraws on demand, so FPS is only meaningful across
-        // consecutive frames (camera animation / interaction). Ignore the long
-        // gaps after an idle period and exponentially smooth the live rate.
-        if (0.0..0.25).contains(&delta_seconds) && delta_seconds > 0.0 {
-            let instant_fps = 1.0 / delta_seconds;
-            self.ui.fps = if self.ui.fps > 0.0 {
-                self.ui.fps * 0.9 + instant_fps * 0.1
-            } else {
-                instant_fps
-            };
-        }
-
-        // Tracy plots (no-op unless `--tracy`): the live smoothed frame rate plus
-        // the measured model stats, so they read alongside the timeline.
-        prof::plot!("FPS", self.ui.fps);
-        prof::plot!("Triangles", self.ui.stats.triangle_count as f64);
-        prof::plot!("Draw Calls", self.ui.stats.draw_count as f64);
-
-        // Advance any live camera transition. The follow-up redraw is scheduled
-        // by the paced `repaint_at` logic in `render` (which checks
-        // `is_camera_animating`), so we don't request one directly here — doing so
-        // would bypass the refresh-rate cap.
-        //
-        // Cap the step: the viewer redraws on demand, so after an idle period
-        // `last_render_instant` is stale and the first frame's delta is the whole
-        // idle gap. Advancing a transition by that would fast-forward it to the
-        // end in one frame (skipping the animation entirely) — most visible on the
-        // short 0.1 s WASD orbits, where almost any delta exceeds the duration.
-        // One ~30 Hz frame is plenty to keep motion smooth.
-        const MAX_ANIMATION_STEP: f32 = 1.0 / 30.0;
-        if let Some(renderer) = self.renderer.as_mut() {
-            renderer.update_camera_animation(delta_seconds.min(MAX_ANIMATION_STEP));
-        }
-    }
 }
 
 /// Startup phase 2: the renderer with its cameras seeded for the real window
@@ -1015,90 +791,8 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let now = Instant::now();
-
-        // A gate run drives itself: frames back to back until the stamp is written
-        // (the pacer below would cap it at the refresh rate, which is the thing
-        // being measured), then idle until the hold ends and the process exits.
-        if self.gate_active() {
-            if self.gate_should_exit() {
-                event_loop.exit();
-            } else if self.gate_wants_redraw() {
-                if let Some(window) = self.window.as_ref() {
-                    window.request_redraw();
-                }
-                event_loop.set_control_flow(ControlFlow::Poll);
-            } else {
-                event_loop.set_control_flow(ControlFlow::WaitUntil(now + GATE_POLL));
-            }
-            return;
-        }
-
-        // Sample windowed bounds once the event burst has settled, so a maximize
-        // (whose `Moved` arrives before the maximized flag is set) doesn't poison
-        // the saved placement with fullscreen geometry. `record_windowed_bounds`
-        // skips while maximized, so the pre-maximize bounds survive.
-        if self.placement.bounds_dirty {
-            self.placement.bounds_dirty = false;
-            self.record_windowed_bounds();
-        }
-
-        // Fold a pending interactive redraw (drag, hover, wheel, key) into the
-        // paced schedule. The earliest we'll draw is one refresh interval after
-        // the last frame, so a burst of high-frequency input events coalesces
-        // into a single redraw capped at the monitor refresh rate.
-        if self.redraw.requested {
-            self.redraw.requested = false;
-            let earliest = self
-                .redraw
-                .last_render_instant
-                .map_or(now, |last| last + self.redraw.refresh_interval);
-            self.redraw.repaint_at = Some(
-                self.redraw
-                    .repaint_at
-                    .map_or(earliest, |at| at.min(earliest)),
-            );
-        }
-
-        // Sleep until the next scheduled repaint (if any), otherwise block until
-        // the next input event. When the scheduled time arrives, fire one redraw
-        // and fall back to waiting.
-        match self.redraw.repaint_at {
-            Some(wake) if now >= wake => {
-                self.redraw.repaint_at = None;
-                if let Some(window) = self.window.as_ref() {
-                    window.request_redraw();
-                }
-                event_loop.set_control_flow(ControlFlow::Wait);
-            }
-            Some(wake) => event_loop.set_control_flow(ControlFlow::WaitUntil(wake)),
-            None => event_loop.set_control_flow(ControlFlow::Wait),
-        }
+        self.pace_next_frame(event_loop);
     }
-}
-
-/// How often the loop wakes during a gate run's idle hold, to notice the deadline.
-const GATE_POLL: Duration = Duration::from_millis(100);
-
-/// Fraction of the window framing should fill, leaving room for the chrome that
-/// overlays the full-window 3D scene (toolbar on top, status bar on the bottom)
-/// so a framed model doesn't hide under it. Width is left unconstrained — the
-/// option panel floats and is transient.
-///
-/// Both terms are egui points: the window height converted from physical pixels,
-/// and the bands' height from [`review_ui::theme::chrome_height`], which scales
-/// the design-pixel tokens exactly as the bands themselves are scaled when drawn.
-/// Reading those tokens raw against a height in points over-reserved the chrome
-/// on every scaled display — half again at 150%, twice over at 200%.
-fn framing_safe_area(height_px: u32, scale_factor: f32) -> (f32, f32) {
-    let logical_height = height_px as f32 / scale_factor.max(0.1);
-    let chrome = review_ui::theme::chrome_height(scale_factor);
-    let height_fraction = if logical_height > chrome {
-        (logical_height - chrome) / logical_height
-    } else {
-        1.0
-    };
-    (1.0, height_fraction.clamp(0.4, 1.0))
 }
 
 /// Report a failure that stopped the viewer from starting, in the only channel a
@@ -1119,32 +813,4 @@ fn report_startup_failure(error: &anyhow::Error) {
         .set_title(APP_NAME)
         .set_description(format!("{APP_NAME} couldn't start.\n\n{detail}"))
         .show();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::framing_safe_area;
-
-    /// The chrome tokens are design pixels, scaled to points exactly as the bands
-    /// that draw them are — so the band reserved for the chrome is the same slice
-    /// of the window at every display scale. Reading them raw against a height
-    /// already in points instead over-reserved 46 points at 150% and 69 at 200%,
-    /// framing every loaded model visibly small on a HiDPI display.
-    #[test]
-    fn the_framing_safe_area_holds_across_display_scales() {
-        let (width, unscaled) = framing_safe_area(1000, 1.0);
-        let (_, scaled) = framing_safe_area(1000, 2.0);
-        assert_eq!(width, 1.0);
-        assert!((unscaled - scaled).abs() < 1e-6, "{unscaled} vs {scaled}");
-        // 1000 physical pixels of window, less the 73 + 64 design pixels of bands.
-        assert!((scaled - 0.863).abs() < 1e-4, "{scaled}");
-    }
-
-    /// A window shorter than its own chrome has no band left to frame into, so it
-    /// frames against the whole window rather than a zero (or negative) fraction.
-    #[test]
-    fn a_window_shorter_than_the_chrome_frames_whole() {
-        assert_eq!(framing_safe_area(100, 1.0), (1.0, 1.0));
-        assert_eq!(framing_safe_area(100, 0.0), (1.0, 1.0));
-    }
 }

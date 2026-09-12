@@ -21,8 +21,9 @@ use crate::material::MaterialState;
 use crate::rhi::{Frame, GpuResult, IndexBuffer};
 use crate::{GhostStyle, OptSceneFrame, OptView, ProcessedModelRef, SceneFrame};
 
-use super::gpu::{BackbufferRect, SceneGpu};
-use super::resources::SlotId;
+use super::gpu::SceneGpu;
+use super::slot::SlotId;
+use super::targets::BackbufferRect;
 
 impl SceneGpu {
     /// Render the Opt workspace: the source and processed meshes side by side, or one
