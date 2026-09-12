@@ -206,14 +206,3 @@ pub const BOUNDING_BOX_SWATCHES: [Color32; 6] = [
     Color32::from_rgb(32, 224, 232),
     Color32::from_rgb(29, 255, 27),
 ];
-
-// ── Startup help overlay ────────────────────────────────────────────────
-/// Help-card surface (translucent, like the stats overlay — the viewport
-/// shows through faintly so the modal doesn't black out the scene) and border.
-pub const HELP_CARD_BG: Color32 = Color32::from_rgba_premultiplied(31, 32, 35, 214);
-pub const HELP_CARD_BORDER: Color32 = Color32::from_gray(70);
-/// Section dividers inside the help card.
-pub const HELP_DIVIDER: Color32 = Color32::from_gray(60);
-/// Key-cap tile fill and outline.
-pub const HELP_KEYCAP_BG: Color32 = Color32::from_rgb(24, 25, 28);
-pub const HELP_KEYCAP_BORDER: Color32 = Color32::from_gray(82);

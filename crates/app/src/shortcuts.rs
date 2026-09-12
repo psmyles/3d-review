@@ -23,8 +23,8 @@ use crate::flycam::FlyDirection;
 /// on either OS — and the `Alt`+RMB zoom drag in [`crate::input`] stays `Alt`
 /// (`Option` on a Mac), which is the DCC convention rather than an OS one.
 ///
-/// The user-facing names for this key live beside the shortcut tables that show
-/// them, in `review_ui`'s `primary_key!`.
+/// The user-facing name for this key in the chrome is `review_ui`'s
+/// `primary_key!`.
 fn primary_held(modifiers: ModifiersState) -> bool {
     if cfg!(target_os = "macos") {
         modifiers.super_key()
@@ -40,11 +40,6 @@ impl App {
     /// combination stays free). Everything here acts on key-down except the six
     /// flycam movement keys, which are *held* rather than pressed.
     /// Keyboard events egui has already consumed are filtered out by the caller.
-    ///
-    /// Adding/changing a binding here? Update the startup help card's tables in
-    /// `crates/ui/src/help.rs` (`LEFT_SHORTCUTS` / `RIGHT_SHORTCUTS` /
-    /// `CHORD_SHORTCUTS`) in the same change — they are the user-facing mirror
-    /// of this dispatch.
     pub(crate) fn handle_keyboard_shortcut(&mut self, event: &KeyEvent) {
         // Escape clears any Outliner selection (mesh part or material). It's a Named
         // key, so handle it before the Character extraction below.

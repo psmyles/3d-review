@@ -24,14 +24,3 @@ pub const PANEL_HEADING: f32 = 14.0;
 /// view's "No textures loaded…" prompt). Larger than panel body text so it
 /// reads clearly across the otherwise-empty canvas.
 pub const VIEWPORT_EMPTY_HINT: f32 = 13.0;
-
-// ── Startup help overlay (sized to match the app's other overlay text) ──
-pub const HELP_TITLE: f32 = 14.0;
-pub const HELP_META: f32 = 11.5;
-pub const HELP_SUBTITLE: f32 = 12.0;
-pub const HELP_BODY: f32 = 12.0;
-pub const HELP_KEYCAP: f32 = 11.0;
-/// Backtick key-cap glyph: bumped up because `` ` `` renders tiny and
-/// top-aligned at the regular key-cap size.
-pub const HELP_KEYCAP_BACKTICK: f32 = 18.0;
-pub const HELP_FOOTER: f32 = 11.0;

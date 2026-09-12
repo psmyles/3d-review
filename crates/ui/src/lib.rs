@@ -38,14 +38,9 @@ macro_rules! primary_key {
     };
 }
 
-/// The primary modifier's user-facing name for the places that build their label
-/// at run time: `Ctrl` on Windows and Linux, `Cmd` on macOS.
-pub(crate) const PRIMARY_MODIFIER: &str = primary_key!();
-
 mod assets;
 mod dimensions;
 mod gizmo;
-mod help;
 mod notifications;
 mod opt_state;
 mod overlay;

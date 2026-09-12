@@ -169,10 +169,6 @@ impl App {
     }
 
     pub(crate) fn open_model_from_path(&mut self, path: &Path) {
-        // Loading a model (drag-drop, file dialog, or CLI arg) dismisses the
-        // startup help overlay if it's still up.
-        self.ui.show_help_overlay = false;
-
         // Each request supersedes the last: only a result carrying the current
         // generation is applied, so a slow parse can never overwrite a newer one.
         self.model_load_generation = self.model_load_generation.saturating_add(1);

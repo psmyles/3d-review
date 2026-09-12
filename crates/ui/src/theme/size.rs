@@ -376,31 +376,3 @@ pub const ANIM_TRANSPORT_GROUP_GAP: f32 = 9.0;
 pub const ANIM_SCRUB_MIN_WIDTH: f32 = 53.0;
 /// Width of the playback-speed dropdown.
 pub const ANIM_SPEED_COMBO_WIDTH: f32 = 43.0;
-
-// ── Startup help overlay ──────────────────────────────────────────────
-/// Width of each of the two shortcut columns and the gap between them; the
-/// card content width is derived as `2 * COLUMN_WIDTH + COLUMN_GAP`.
-pub const HELP_COLUMN_WIDTH: f32 = 196.0;
-pub const HELP_COLUMN_GAP: f32 = 18.0;
-/// Card inner padding and rounding.
-pub const HELP_CARD_PAD_X: i8 = 18;
-pub const HELP_CARD_PAD_Y: i8 = 14;
-pub const HELP_CARD_CORNER_RADIUS: u8 = 7;
-/// Vertical breathing room on each side of a section divider.
-pub const HELP_SECTION_GAP: f32 = 8.0;
-/// Vertical gap between adjacent shortcut rows.
-pub const HELP_ROW_GAP: f32 = 5.0;
-/// Key-cap tile geometry: square single keys, wider caps for word labels
-/// ("Ctrl"), shared corner radius, and the gaps that flank them.
-/// `WIDE_WIDTH` is the *minimum* a word cap gets; a longer label ("Right
-/// drag + wheel") grows the tile to its measured glyph run plus `PAD_X` on
-/// each side, since a cap narrower than its legend paints the text outside
-/// itself and over the row's description.
-pub const HELP_KEYCAP_SIZE: f32 = 22.0;
-pub const HELP_KEYCAP_WIDE_WIDTH: f32 = 38.0;
-pub const HELP_KEYCAP_PAD_X: f32 = 8.0;
-pub const HELP_KEYCAP_CORNER_RADIUS: f32 = 4.0;
-/// Gap between two key-caps in one chord (Ctrl + N).
-pub const HELP_KEYCAP_GAP: f32 = 6.0;
-/// Gap between a row's key-cap(s) and its description text.
-pub const HELP_KEY_LABEL_GAP: f32 = 10.0;

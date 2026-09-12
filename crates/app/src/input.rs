@@ -50,8 +50,7 @@ impl App {
     }
 
     /// A mouse-button press/release: drag-mode selection (orbit/look/pan/zoom
-    /// depending on workspace and modifiers), startup-help dismissal, and
-    /// double-click-to-open.
+    /// depending on workspace and modifiers) and double-click-to-open.
     /// `egui_consumed` is whether egui claimed this event.
     pub(crate) fn handle_mouse_input(
         &mut self,
@@ -64,23 +63,6 @@ impl App {
             // A flight lives only as long as the drag that armed it: a movement
             // key still down when the button comes up must not arm the next one.
             self.flycam.release_all();
-            return;
-        }
-
-        // The startup help overlay is up: it swallows the click in egui (so the
-        // chrome beneath stays inert), but we still drive dismissal here. A plain
-        // click hides it; a double-click also opens the file picker — the same
-        // gesture as on the empty viewport, so it reuses the same double-click
-        // detection. The first click seeds `last_primary_click`; the second arrives
-        // after the overlay is gone and opens the dialog via the branch below.
-        if button == MouseButton::Left && self.ui.show_help_overlay {
-            if self.should_open_on_double_click() {
-                self.open_model_from_dialog();
-            } else if let Some(position) = self.last_pointer_position {
-                self.last_primary_click = Some((Instant::now(), position));
-            }
-            self.ui.show_help_overlay = false;
-            self.redraw.requested = true;
             return;
         }
 
