@@ -13,6 +13,7 @@ cbuffer scene_fs : register(b1)
 
 static float3 v_normal;
 static float4 frag_gbuffer;
+static float frag_depth;
 static float3 v_world_position;
 static float2 v_uv;
 static float4 v_color;
@@ -30,6 +31,7 @@ struct SPIRV_Cross_Input
 struct SPIRV_Cross_Output
 {
     float4 frag_gbuffer : SV_Target0;
+    float frag_depth : SV_Target1;
 };
 
 void frag_main()
@@ -37,9 +39,13 @@ void frag_main()
     if (dot(v_normal, v_normal) < 9.9999999747524270787835121154785e-07f)
     {
         frag_gbuffer = 0.0f.xxxx;
+        frag_depth = 1000000015047466219876688855040.0f;
         return;
     }
-    frag_gbuffer = float4(normalize(mul(float4(v_normal, 0.0f), sc_view).xyz), mul(float4(v_world_position, 1.0f), sc_view).z);
+    float4 _48 = mul(float4(v_world_position, 1.0f), sc_view);
+    float _65 = _48.z;
+    frag_gbuffer = float4(normalize(mul(float4(v_normal, 0.0f), sc_view).xyz), _65);
+    frag_depth = -_65;
 }
 
 SPIRV_Cross_Output main(SPIRV_Cross_Input stage_input)
@@ -52,5 +58,6 @@ SPIRV_Cross_Output main(SPIRV_Cross_Input stage_input)
     frag_main();
     SPIRV_Cross_Output stage_output;
     stage_output.frag_gbuffer = frag_gbuffer;
+    stage_output.frag_depth = frag_depth;
     return stage_output;
 }

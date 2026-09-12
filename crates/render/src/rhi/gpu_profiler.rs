@@ -58,8 +58,9 @@ pub(crate) fn note(text: &str) {
 pub(crate) enum Zone {
     Scene,
     GtaoGbuffer,
+    GtaoDepthMips,
     Gtao,
-    GtaoBlur,
+    GtaoDenoise,
     Composite,
     /// The frame as a whole — **written by the backend leaf, never by a pass.**
     ///
@@ -82,10 +83,11 @@ impl Zone {
         match self {
             Zone::Scene => 0,
             Zone::GtaoGbuffer => 2,
-            Zone::Gtao => 4,
-            Zone::GtaoBlur => 6,
-            Zone::Composite => 8,
-            Zone::Frame => 10,
+            Zone::GtaoDepthMips => 4,
+            Zone::Gtao => 6,
+            Zone::GtaoDenoise => 8,
+            Zone::Composite => 10,
+            Zone::Frame => 12,
         }
     }
 
@@ -94,8 +96,9 @@ impl Zone {
         match self {
             Zone::Scene => "Scene Geometry",
             Zone::GtaoGbuffer => "GTAO G-Buffer",
+            Zone::GtaoDepthMips => "GTAO Depth Mips",
             Zone::Gtao => "GTAO Occlusion",
-            Zone::GtaoBlur => "GTAO Blur",
+            Zone::GtaoDenoise => "GTAO Denoise",
             Zone::Composite => "Composite",
             Zone::Frame => "GPU Frame",
         }
@@ -110,11 +113,12 @@ impl Zone {
 }
 
 /// Encode order, used to walk a frame's timestamps when feeding Tracy.
-const ZONES: [Zone; 6] = [
+const ZONES: [Zone; 7] = [
     Zone::Scene,
     Zone::GtaoGbuffer,
+    Zone::GtaoDepthMips,
     Zone::Gtao,
-    Zone::GtaoBlur,
+    Zone::GtaoDenoise,
     Zone::Composite,
     Zone::Frame,
 ];
@@ -122,6 +126,15 @@ const ZONES: [Zone; 6] = [
 /// Number of timestamp slots a frame needs (zones × 2). The backend leaf sizes its
 /// per-frame storage from this.
 pub(crate) const TIMESTAMP_SLOTS: usize = ZONES.len() * 2;
+
+// Both backends track which slots a frame wrote in a `u16` bitmask, so the zone list
+// cannot outgrow 8 entries without widening that field. At 7 there is room for one
+// more; this is the check that turns the eighth into a compile error rather than a
+// zone that silently never reports.
+const _: () = assert!(
+    TIMESTAMP_SLOTS <= u16::BITS as usize,
+    "a zone's slot bits must fit the backends' `written` mask"
+);
 
 /// The GPU profiler: the backend's timer plus the Tracy GPU context its readbacks
 /// feed.

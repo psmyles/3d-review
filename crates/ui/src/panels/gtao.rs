@@ -4,10 +4,10 @@
 //!
 //! All write straight into [`UiState::gtao`], which the viewport callback reads
 //! each frame; there is no separate commit step. The on/off master toggle is the
-//! AO button in the status bar (see `status_bar.rs`), not a row here. `radius` is a
-//! fraction of the framed model's bounding-sphere radius, so the look stays
-//! consistent across model scales (the renderer scales it by the live scene
-//! radius).
+//! AO button in the status bar (see `status_bar.rs`), not a row here.
+//!
+//! `radius` is a **multiplier** over the radius the renderer derives from what the
+//! viewport is showing, so it carries taste rather than the scene's scale.
 
 use review_render::{GtaoQuality, GtaoSettings};
 

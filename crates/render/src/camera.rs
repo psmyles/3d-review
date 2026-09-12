@@ -406,6 +406,24 @@ impl OrbitCamera {
         (self.distance * (self.fov_y_radians * 0.5).tan()).max(MIN_ORTHO_HALF_HEIGHT)
     }
 
+    /// The world-space height of the viewport at the orbit target's depth — how
+    /// much of the world the user is actually looking at, in scene units.
+    ///
+    /// This is the scale-free anchor for anything that has to look the same on a
+    /// 10 cm prop and a 10 km landscape. A model's *bounding sphere* cannot play
+    /// that role: it says how big the thing is, not how closely it is being
+    /// examined, so a screen-space effect keyed to it changes meaning entirely
+    /// between a prop and an interior.
+    ///
+    /// One expression covers both projections, because
+    /// [`Self::orthographic_half_height`] is defined as the same
+    /// `distance * tan(fov/2)`: a perspective and an orthographic camera framing
+    /// the same content report the same extent, so nothing downstream needs a
+    /// projection branch.
+    pub fn view_extent(self) -> f32 {
+        (2.0 * self.distance * (self.fov_y_radians * 0.5).tan()).max(1e-6)
+    }
+
     fn rotation(self) -> Mat4 {
         Mat4::from_rotation_y(self.yaw) * Mat4::from_rotation_x(self.pitch)
     }

@@ -406,6 +406,19 @@ impl App {
                 faults.push(("Scene render failed", err.to_string()));
             }
 
+            // Ambient occlusion averages frames whenever the view holds still, and
+            // asks for one more until it has converged (~0.4 s at 60 Hz, then it
+            // stops on its own). This is a continuous-redraw source like a camera
+            // transition, but it cannot join the disjunction above: that runs before
+            // the render, so it would read the state from *before* this frame reset
+            // the average — and a one-off redraw, like the frame after a slider tick,
+            // would never schedule the follow-up that converges it. Requesting here
+            // routes it through the same coalescing path input events use, so it is
+            // paced to the refresh rate exactly as `camera_animating` is.
+            if renderer.is_ao_converging() {
+                self.redraw.requested = true;
+            }
+
             // Tessellate the chrome and upload its geometry + texture deltas. Outside
             // any pass on purpose: both are resource updates sokol forbids inside one.
             if let Err(err) = egui_renderer.prepare(

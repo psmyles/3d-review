@@ -237,6 +237,12 @@ pub(super) struct ModelSlot {
     /// filtered list instead of the full mesh.
     pub(super) visible_active: bool,
     pub(super) visibility_baked: Option<VisibilityBaked>,
+    /// Bumped whenever the visibility draw list is rebuilt, so the AO accumulation
+    /// can tell "the hidden set moved" from "it didn't" by comparing one integer.
+    /// The set itself is a `Vec` and the accumulation key is compared every frame,
+    /// so keying on the generation is what keeps that comparison allocation-free
+    /// and O(1).
+    pub(super) visibility_generation: u64,
     /// This model's wireframe edge indices as drawn when it is the *ghost* in the
     /// Opt workspace's overlay view — the same `LineList`-over-the-mesh form as
     /// `views.wireframe_index`, over *this* slot's vertex buffer. Kept separate
@@ -268,8 +274,15 @@ impl ModelSlot {
     /// Drop every cached buffer and bake key, so the next sync rebuilds from
     /// scratch. Used when a slot's model goes away — the GPU resources are
     /// released by the drop, no explicit teardown needed (invariant 3).
+    ///
+    /// The visibility generation is carried across rather than reset: it is a
+    /// change *detector*, so it has to keep moving forward. Resetting it to 0 could
+    /// hand the AO accumulation the number it already held and let a converged
+    /// result survive the model it was computed for.
     pub(super) fn release(&mut self) {
+        let generation = self.visibility_generation;
         *self = ModelSlot::new();
+        self.visibility_generation = generation.wrapping_add(1);
     }
 
     /// The per-corner deform lanes the mesh-derived builders copy (empty for a
