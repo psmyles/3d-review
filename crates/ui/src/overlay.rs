@@ -69,13 +69,6 @@ pub fn draw_overlay(
     // style is derived only from constant tokens, so there is nothing to re-apply
     // here each frame.
     sync_debug_state(state);
-    // The occlusion radius the renderer will use for this view, resolved here
-    // because this is where the camera is in scope, and shown by the Ambient
-    // Occlusion panel beside its multiplier. A displayed measurement like `fps`,
-    // not state the chrome owns — it is read straight back out of the settings.
-    state.gtao_world_radius = state
-        .gtao
-        .effective_radius(camera.view_extent(), camera.scene_radius);
     let mut output = UiOutput::default();
     // Zero unless a workspace docks panels below; the notice column reads this
     // back through `app`, and a stale value from a previous workspace would

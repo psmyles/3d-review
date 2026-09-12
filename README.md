@@ -184,7 +184,7 @@ right controls it: left-click toggles or cycles, right-click opens the options.
   depth buffer, with a prefiltered depth chain for distant samples and an edge-aware
   denoise. The radius follows what the viewport is showing rather than how big the
   file is, so it looks the same on a 10 cm prop and a 10 km landscape; the Radius
-  knob scales that automatic value and the panel shows the distance it works out to.
+  knob scales that automatic value.
   Whenever the view is still it keeps averaging frames and settles to a clean result
   in about half a second, then stops drawing entirely. Knobs are Radius, Intensity,
   Thickness and Quality (Low/Medium/High). It darkens only the ambient light, so

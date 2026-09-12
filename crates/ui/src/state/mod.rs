@@ -317,11 +317,6 @@ pub struct UiState {
     /// Most recent measured frames-per-second, fed by `app` from the render
     /// loop. Zero while idle (the viewer redraws on demand, not continuously).
     pub fps: f32,
-    /// The ambient-occlusion radius in scene units that the current view resolves
-    /// to, recomputed each frame in `draw_overlay` and shown beside the Radius
-    /// multiplier. A measurement the panel displays, like [`Self::fps`] — the
-    /// renderer derives its own from the same function, never from this.
-    pub gtao_world_radius: f32,
 }
 
 impl Default for UiState {
@@ -382,7 +377,6 @@ impl Default for UiState {
             clip_bounds: Vec::new(),
             caches: BoundsCaches::default(),
             fps: 0.0,
-            gtao_world_radius: 0.0,
         }
     }
 }

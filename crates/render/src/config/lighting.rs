@@ -116,8 +116,15 @@ impl Default for GtaoSettings {
         Self {
             enabled: true,
             radius: 1.0,
-            intensity: 1.0,
-            thickness: 0.25,
+            // Above ground truth on purpose: the composite darkens only the diffuse
+            // ambient, so a physically exact 1.0 reads weaker on screen than the
+            // occlusion actually is.
+            intensity: 1.5,
+            // Near zero, i.e. occluders are treated as solid. Letting the horizon
+            // fall back toward a thin occluder is the more correct model, but it
+            // lightens every contact shadow to buy back a case that game assets
+            // rarely hit; the knob is there when they do.
+            thickness: 0.01,
             quality: GtaoQuality::Medium,
         }
     }
