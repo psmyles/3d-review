@@ -9,7 +9,7 @@ use crate::assets::{
 };
 use crate::opt_state::OptLayout;
 use crate::state::{OptionPanel, TexViewRequest, TextureBackground, UiState, WorkspaceMode};
-use crate::theme::{self, color, font, size};
+use crate::theme::{color, font, size};
 use crate::widgets::{
     bar_group_rect, bar_group_rect_centered, bar_group_scope, compact_combo, icon_toggle_button,
     icon_toggle_button_with_options, option_toggle, segment_button, toolbar_group_shell,
@@ -26,11 +26,10 @@ fn status_bar_frame() -> egui::Frame {
 }
 
 pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState) {
-    let ctx = &root.ctx().clone();
-    let status_bar_height = theme::px(ctx, size::STATUS_BAR_HEIGHT);
-    let group_height = theme::px(ctx, size::TOOLBAR_GROUP_HEIGHT);
-    let single_icon_group_width = theme::px(ctx, size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH);
-    let quint_icon_group_width = theme::px(ctx, size::TOOLBAR_QUINT_ICON_GROUP_WIDTH);
+    let status_bar_height = size::STATUS_BAR_HEIGHT;
+    let group_height = size::TOOLBAR_GROUP_HEIGHT;
+    let single_icon_group_width = size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH;
+    let quint_icon_group_width = size::TOOLBAR_QUINT_ICON_GROUP_WIDTH;
 
     egui::Panel::bottom("status_bar")
         .exact_size(status_bar_height)
@@ -46,7 +45,7 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState) {
                 // rendering-quality controls, so it shares this bar unchanged.
                 WorkspaceMode::ThreeD | WorkspaceMode::Opt => {}
                 WorkspaceMode::Texture => {
-                    draw_texture_status_bar(ui, ctx, state, group_height);
+                    draw_texture_status_bar(ui, state, group_height);
                     return;
                 }
             }
@@ -66,9 +65,8 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState) {
                 group_height,
             );
             bar_group_scope(ui, left_rect, group_height, |ui| {
-                toolbar_group_shell(ui, ctx, single_icon_group_width, |ui| {
-                    if icon_toggle_button(ui, ctx, &ICON_INFO, state.show_stats, "Model Stats")
-                        .clicked()
+                toolbar_group_shell(ui, single_icon_group_width, |ui| {
+                    if icon_toggle_button(ui, &ICON_INFO, state.show_stats, "Model Stats").clicked()
                     {
                         state.show_stats = !state.show_stats;
                     }
@@ -88,14 +86,13 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState) {
                 group_height,
             );
             bar_group_scope(ui, right_rect, group_height, |ui| {
-                toolbar_group_shell(ui, ctx, quint_icon_group_width, |ui| {
+                toolbar_group_shell(ui, quint_icon_group_width, |ui| {
                     // Viewport background. Left-click cycles the presets (not a
                     // plain toggle, so it stays hand-wired), right-click opens the
                     // Background options panel; highlighted while a non-default
                     // (non-black) background is active.
                     let background = icon_toggle_button_with_options(
                         ui,
-                        ctx,
                         &ICON_BACKGROUND,
                         state.viewport_background != ViewportBackground::Black,
                         "Viewport background (right-click for options)",
@@ -115,7 +112,6 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState) {
                     ui.add_enabled_ui(state.capabilities.ibl, |ui| {
                         option_toggle(
                             ui,
-                            ctx,
                             &ICON_IBL,
                             &mut state.environment.ibl_enabled,
                             &mut state.panels_open,
@@ -132,7 +128,6 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState) {
                     ui.add_enabled_ui(state.capabilities.gtao, |ui| {
                         option_toggle(
                             ui,
-                            ctx,
                             &ICON_AO,
                             &mut state.gtao.enabled,
                             &mut state.panels_open,
@@ -144,7 +139,6 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState) {
                     // Tone mapping (off = linear → sRGB), then anti-aliasing.
                     option_toggle(
                         ui,
-                        ctx,
                         &ICON_TONEMAPPER,
                         &mut state.tonemap.enabled,
                         &mut state.panels_open,
@@ -153,7 +147,6 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState) {
                     );
                     option_toggle(
                         ui,
-                        ctx,
                         &ICON_ANTI_ALIASING,
                         &mut state.anti_aliasing.enabled,
                         &mut state.panels_open,
@@ -165,7 +158,7 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState) {
 
             // Opt's comparison controls, between the two mirrored groups.
             if state.mode == WorkspaceMode::Opt {
-                draw_opt_group(ui, ctx, state, bar_rect, group_height);
+                draw_opt_group(ui, state, bar_rect, group_height);
             }
         });
 }
@@ -183,18 +176,12 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState) {
 /// has two cameras to link, only the overlay draws one mesh over another — so
 /// showing both would always leave one inert. The group's width is the same
 /// either way, so swapping the third tile shifts nothing.
-fn draw_opt_group(
-    ui: &mut egui::Ui,
-    ctx: &egui::Context,
-    state: &mut UiState,
-    bar_rect: egui::Rect,
-    group_height: f32,
-) {
+fn draw_opt_group(ui: &mut egui::Ui, state: &mut UiState, bar_rect: egui::Rect, group_height: f32) {
     let has_result = state.opt.has_result();
     let level_count = state.opt.level_count();
-    let picker_width = theme::px(ctx, size::TOOLBAR_OPT_LOD_DROPDOWN_WIDTH);
-    let icons_width = theme::px(ctx, size::TOOLBAR_TRIPLE_ICON_GROUP_WIDTH);
-    let spacing = theme::px(ctx, size::TOOLBAR_GROUP_SPACING);
+    let picker_width = size::TOOLBAR_OPT_LOD_DROPDOWN_WIDTH;
+    let icons_width = size::TOOLBAR_TRIPLE_ICON_GROUP_WIDTH;
+    let spacing = size::TOOLBAR_GROUP_SPACING;
 
     // The picker appears only once the chain actually has levels to choose
     // between, so the centred width has to account for it either way.
@@ -225,10 +212,9 @@ fn draw_opt_group(
         }
 
         let split = state.opt.layout == OptLayout::Split;
-        toolbar_group_shell(ui, ctx, icons_width, |ui| {
+        toolbar_group_shell(ui, icons_width, |ui| {
             if icon_toggle_button(
                 ui,
-                ctx,
                 &ICON_OPT_SPLIT,
                 split,
                 "Split view - source and processed side by side",
@@ -239,7 +225,6 @@ fn draw_opt_group(
             }
             if icon_toggle_button(
                 ui,
-                ctx,
                 &ICON_OPT_OVERLAY,
                 !split,
                 "Overlay view - both in one view, one drawn as a ghost",
@@ -254,7 +239,6 @@ fn draw_opt_group(
                 let sync = state.opt.camera_sync;
                 if icon_toggle_button(
                     ui,
-                    ctx,
                     &ICON_OPT_SYNC,
                     sync,
                     "Move both views' cameras together",
@@ -271,7 +255,6 @@ fn draw_opt_group(
                     .add_enabled_ui(has_result, |ui| {
                         icon_toggle_button(
                             ui,
-                            ctx,
                             &ICON_OPT_SWAP,
                             false,
                             &format!(
@@ -306,15 +289,10 @@ fn lod_label(level: usize) -> String {
 /// (the Tex viewport's analogue of the model-stats info button) and the
 /// background-fill radio group (Black / White / Grey / Checker) mirrored to the
 /// right. Laid out with the same edge inset as the 3D bar.
-fn draw_texture_status_bar(
-    ui: &mut egui::Ui,
-    ctx: &egui::Context,
-    state: &mut UiState,
-    group_height: f32,
-) {
-    let single_icon_group_width = theme::px(ctx, size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH);
-    let bg_group_width = theme::px(ctx, size::TEXTURE_BG_GROUP_WIDTH);
-    let segment_w = theme::px(ctx, size::TEXTURE_BG_SEGMENT_WIDTH);
+fn draw_texture_status_bar(ui: &mut egui::Ui, state: &mut UiState, group_height: f32) {
+    let single_icon_group_width = size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH;
+    let bg_group_width = size::TEXTURE_BG_GROUP_WIDTH;
+    let segment_w = size::TEXTURE_BG_SEGMENT_WIDTH;
 
     let bar_rect = ui.max_rect();
     let edge_inset = (bar_rect.height() - group_height) * 0.5;
@@ -328,10 +306,9 @@ fn draw_texture_status_bar(
         group_height,
     );
     bar_group_scope(ui, left_rect, group_height, |ui| {
-        toolbar_group_shell(ui, ctx, single_icon_group_width, |ui| {
+        toolbar_group_shell(ui, single_icon_group_width, |ui| {
             if icon_toggle_button(
                 ui,
-                ctx,
                 &ICON_INFO,
                 state.texture_view.show_stats,
                 "Texture Info",
@@ -345,7 +322,7 @@ fn draw_texture_status_bar(
 
     // Zoom-level readout next to the texture-info button: the current zoom as an
     // integer percentage, clickable to reset to 100%.
-    let zoom_label_width = theme::px(ctx, size::TEXTURE_ZOOM_LABEL_WIDTH);
+    let zoom_label_width = size::TEXTURE_ZOOM_LABEL_WIDTH;
     let zoom_rect = egui::Rect::from_min_size(
         egui::pos2(
             left_rect.right() + edge_inset,
@@ -354,7 +331,7 @@ fn draw_texture_status_bar(
         egui::vec2(zoom_label_width, group_height),
     );
     bar_group_scope(ui, zoom_rect, group_height, |ui| {
-        if zoom_reset_label(ui, ctx, state.texture_view.zoom).clicked() {
+        if zoom_reset_label(ui, state.texture_view.zoom).clicked() {
             // Toggle on the readout the user sees: at 100% → fit, at any other
             // zoom → 100%. Both are emitted as a request `texture_view` eases
             // to over `TEXTURE_ZOOM_ANIM_SECS` on its next paint.
@@ -370,10 +347,10 @@ fn draw_texture_status_bar(
     // Background-fill radio group — mirrored to the right edge.
     let right_rect = bar_group_rect(bar_rect, true, edge_inset, bg_group_width, group_height);
     bar_group_scope(ui, right_rect, group_height, |ui| {
-        toolbar_group_shell(ui, ctx, bg_group_width, |ui| {
+        toolbar_group_shell(ui, bg_group_width, |ui| {
             for background in TextureBackground::ALL {
                 let selected = state.texture_view.background == background;
-                let response = segment_button(ui, ctx, background.label(), selected, segment_w)
+                let response = segment_button(ui, background.label(), selected, segment_w)
                     .on_hover_text(background_tooltip(background));
                 if response.clicked() {
                     state.texture_view.background = background;
@@ -386,7 +363,7 @@ fn draw_texture_status_bar(
 /// A clickable zoom-percentage readout for the Tex status bar: shows the current
 /// zoom rounded to the nearest integer percent (e.g. `120%`), brightening on
 /// hover; clicking it toggles between 100% and fit-to-view.
-fn zoom_reset_label(ui: &mut egui::Ui, ctx: &egui::Context, zoom: f32) -> egui::Response {
+fn zoom_reset_label(ui: &mut egui::Ui, zoom: f32) -> egui::Response {
     let percent = (zoom * 100.0).round() as i32;
     let (rect, response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::click());
     let text_color = if response.hovered() {
@@ -398,7 +375,7 @@ fn zoom_reset_label(ui: &mut egui::Ui, ctx: &egui::Context, zoom: f32) -> egui::
         rect.left_center(),
         egui::Align2::LEFT_CENTER,
         format!("{percent}%"),
-        egui::FontId::monospace(theme::px(ctx, font::STATUS_ZOOM)),
+        egui::FontId::monospace(font::STATUS_ZOOM),
         text_color,
     );
     response.on_hover_text("Zoom level - click to toggle 100% / fit to view")
