@@ -8,11 +8,20 @@
 //! that reads them), and [`opt`] is the Opt workspace's comparison layout over the
 //! same passes.
 
+mod deform_gpu;
+mod draw;
+mod draw_lists;
 mod gpu;
 mod gpu_types;
+mod gtao;
+mod line_views;
 mod opt;
 mod pipelines;
 mod resources;
+mod slot;
+mod targets;
+mod uniforms;
+mod uv;
 
 pub(crate) use gpu::SceneGpu;
 pub(crate) use gpu_types::{InfluenceEntry, MorphEntry, SceneVertex};
