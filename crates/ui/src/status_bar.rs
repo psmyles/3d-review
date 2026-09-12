@@ -1,7 +1,10 @@
 //! The bottom status bar: the Model Stats toggle inset on the left, a
 //! rendering-quality group (IBL / AO / Tonemapper / Anti aliasing) mirrored to the
-//! right, and — in the Opt workspace — its comparison controls centred between
-//! them, over the split's divider.
+//! right, and the centre span between them — which carries the Opt workspace's
+//! comparison controls, over the split's divider, or in the 3D workspace the
+//! animation transport while a clip is selected. The two never want the slot at
+//! once: the transport doesn't draw in Opt, and the comparison controls exist
+//! only there.
 
 use crate::assets::{
     ICON_ANTI_ALIASING, ICON_AO, ICON_BACKGROUND, ICON_IBL, ICON_INFO, ICON_OPT_OVERLAY,
@@ -10,10 +13,12 @@ use crate::assets::{
 use crate::opt_state::OptLayout;
 use crate::state::{OptionPanel, TexViewRequest, TextureBackground, UiState, WorkspaceMode};
 use crate::theme::{color, font, size};
+use crate::transport;
 use crate::widgets::{
     bar_group_rect, bar_group_rect_centered, bar_group_scope, compact_combo, icon_toggle_button,
     icon_toggle_button_with_options, option_toggle, segment_button, toolbar_group_shell,
 };
+use review_model::ModelData;
 use review_render::ViewportBackground;
 
 /// Background frame for the status bar: matches the toolbar fill with a top
@@ -25,7 +30,7 @@ fn status_bar_frame() -> egui::Frame {
         .inner_margin(egui::Margin::same(0))
 }
 
-pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState) {
+pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, model: &ModelData) {
     let status_bar_height = size::STATUS_BAR_HEIGHT;
     let group_height = size::TOOLBAR_GROUP_HEIGHT;
     let single_icon_group_width = size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH;
@@ -156,11 +161,57 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState) {
                 });
             });
 
-            // Opt's comparison controls, between the two mirrored groups.
+            // The centre span between the two mirrored groups: Opt's comparison
+            // controls, or the 3D workspace's animation transport.
             if state.mode == WorkspaceMode::Opt {
                 draw_opt_group(ui, state, bar_rect, group_height);
+            } else {
+                draw_transport(ui, state, model, left_rect, right_rect, group_height);
             }
         });
+}
+
+/// The animation transport, centred in the free span between the bar's two
+/// mirrored groups — drawn only while a clip is selected.
+///
+/// Centred in that **span**, not in the bar: the left group is one icon wide and
+/// the right one is five, so the bar's own centre sits left of the gap's and a
+/// full-width transport would reach the quality group before it reached the
+/// stats toggle. The span is also what caps the width, so the row degrades into
+/// the room it has (see [`transport::transport_row`]) instead of running under
+/// its neighbours the way the old floating card did.
+fn draw_transport(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    model: &ModelData,
+    left_rect: egui::Rect,
+    right_rect: egui::Rect,
+    group_height: f32,
+) {
+    let Some(clip) = state
+        .animation
+        .selected_clip
+        .and_then(|index| model.animations.get(index))
+    else {
+        return;
+    };
+    let spacing = size::TOOLBAR_GROUP_SPACING;
+    let span = right_rect.left() - left_rect.right() - spacing * 2.0;
+    let width = span.min(size::ANIM_TRANSPORT_WIDTH);
+    // A window narrow enough to leave no gap at all: the two icon groups are the
+    // controls that must survive, so the transport simply doesn't draw.
+    if width < size::ANIM_TRANSPORT_MIN_WIDTH {
+        return;
+    }
+    let centre = egui::pos2(
+        (left_rect.right() + right_rect.left()) * 0.5,
+        left_rect.center().y,
+    );
+    let rect = egui::Rect::from_center_size(centre, egui::vec2(width, group_height));
+    let fps = model.frame_rate_or_default();
+    bar_group_scope(ui, rect, group_height, |ui| {
+        transport::transport_row(ui, state, clip, fps);
+    });
 }
 
 /// The Opt comparison controls, centred in the status bar: which LOD level is

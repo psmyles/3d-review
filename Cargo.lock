@@ -733,15 +733,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "egui-notify"
-version = "0.23.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d9a4fdd9da87f468f8adce88cf35d40b6097467f7bd3f5798d8550479dd22fa"
-dependencies = [
- "egui",
-]
-
-[[package]]
 name = "egui-winit"
 version = "0.36.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2559,7 +2550,6 @@ name = "review-ui"
 version = "0.1.0"
 dependencies = [
  "egui",
- "egui-notify",
  "glam",
  "image",
  "review-model",

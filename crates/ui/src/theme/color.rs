@@ -10,9 +10,9 @@ pub const CHROME_BG: Color32 = Color32::from_rgb(40, 39, 38);
 pub const GROUP_BG: Color32 = Color32::from_rgb(18, 19, 22);
 /// Translucent fill behind the stats overlay.
 pub const STATS_OVERLAY_BG: Color32 = Color32::from_rgba_premultiplied(20, 22, 25, 130);
-/// Unfilled track of the activity card's progress bar; the filled part is
-/// [`ACCENT`], so the bar reads as the same accent every other control uses.
-pub const ACTIVITY_PROGRESS_TRACK: Color32 = Color32::from_gray(72);
+/// Unfilled track of a progress notice's bar; the filled part is [`ACCENT`],
+/// so the bar reads as the same accent every other control uses.
+pub const NOTICE_PROGRESS_TRACK: Color32 = Color32::from_gray(72);
 /// Translucent fill behind the axis gizmo while hovered / dragged.
 pub const GIZMO_BG: Color32 = Color32::from_rgba_premultiplied(8, 12, 16, 90);
 /// Translucent pill behind a bounding-box dimension label. The pill keeps the
@@ -60,6 +60,16 @@ pub const TEXT_MUTED: Color32 = Color32::from_gray(178);
 /// Desaturated enough to sit beside the value column without shouting.
 pub const STATS_DELTA_BETTER: Color32 = Color32::from_rgb(126, 202, 122);
 pub const STATS_DELTA_WORSE: Color32 = Color32::from_rgb(226, 122, 118);
+/// Notice-card title tints, one per [`crate::NoticeKind`]. The title line is
+/// the only coloured part of a card — the frame itself is the option windows'
+/// own, so the kind reads at a glance without a second surface style. Pitched
+/// to sit on the window fill at heading weight: bright enough to name the
+/// kind, not so saturated that a stack of them fights the viewport.
+pub const NOTICE_PROGRESS: Color32 = Color32::from_rgb(122, 168, 238);
+pub const NOTICE_INFO: Color32 = TEXT_PRIMARY;
+pub const NOTICE_SUCCESS: Color32 = Color32::from_rgb(126, 202, 122);
+pub const NOTICE_WARNING: Color32 = Color32::from_rgb(232, 178, 92);
+pub const NOTICE_ERROR: Color32 = Color32::from_rgb(226, 122, 118);
 /// A scene-tree row the type filter is hiding, kept visible only because a
 /// shown node lives beneath it. Dim enough to read as structure, not content.
 pub const OUTLINER_FILTERED: Color32 = Color32::from_gray(104);

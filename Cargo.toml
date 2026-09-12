@@ -42,12 +42,10 @@ cc = "1"
 dirs = "6"
 # egui renders through our own sokol_gfx renderer (`render/src/egui_sokol.rs`,
 # `mac-port-plan.md` D3), which is what lifted the 0.33 ceiling egui-directx11
-# 0.12.1 (`^0.33`) had pinned us to — that crate is gone (D6). egui-notify 0.23
-# tracks egui 0.36.
+# 0.12.1 (`^0.33`) had pinned us to — that crate is gone (D6).
 # `bytemuck` gives `epaint::Vertex` a `Pod` impl, so our egui renderer casts a
 # tessellated mesh straight to bytes for the GPU with no `unsafe` of its own.
 egui = { version = "0.36.1", features = ["bytemuck"] }
-egui-notify = "0.23"
 egui-winit = "0.36"
 glam = "0.30"
 half = "2"

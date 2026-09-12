@@ -29,6 +29,10 @@ use review_ui::{
 use crate::App;
 use crate::prof;
 
+/// The notice slot every GPU fault report shares, so a device that faults over
+/// and over rewrites one card instead of stacking a new one per frame.
+const GPU_FAULT_NOTICE: &str = "gpu-fault";
+
 impl App {
     pub(crate) fn render(&mut self) {
         let _frame = prof::zone!("Frame");
@@ -166,8 +170,11 @@ impl App {
                 if entered_buffers || cycled_buffer {
                     notifications.mode(format!("Buffer: {}", self.ui.debug.buffer_view.label()));
                 }
-                // Toasts paint on the egui Foreground layer, above the chrome.
-                notifications.show(ui.ctx());
+                // The notice column paints on the egui Foreground layer, above
+                // the chrome. It takes the side panels' widths — measured by
+                // `draw_overlay` a few lines up — so it centres on the free
+                // viewport rather than on the window.
+                notifications.show(ui.ctx(), self.ui.chrome_insets);
             });
 
             egui_state.handle_platform_output(&window, full_output.platform_output.clone());
@@ -436,17 +443,20 @@ impl App {
         prof::frame_mark();
     }
 
-    /// Report a GPU fault: always down the prof channel, and as a toast the first
+    /// Report a GPU fault: always down the prof channel, and on screen the first
     /// time one happens this session. A wedged device fails again on every frame,
-    /// so the `gpu_fault_notified` latch shows one toast instead of stacking them
-    /// forever — and that toast is the user's only sign, since the prof channel is
-    /// invisible without `--tracy` and a windowed release build has no console.
+    /// so the `gpu_fault_notified` latch reports the *first* fault and lets the
+    /// rest pass — which is the one that says what went wrong, the later ones
+    /// being its consequences. The notice is keyed as well, so even if that latch
+    /// is ever relaxed the viewport gets one card rather than a column of them.
+    /// It is the user's only sign, since the prof channel is invisible without
+    /// `--tracy` and a windowed release build has no console.
     pub(crate) fn report_gpu_fault(&mut self, context: &str, err: impl std::fmt::Display) {
         let message = format!("{context}: {err}");
         prof::msg(&message);
         if !self.gpu_fault_notified {
             self.gpu_fault_notified = true;
-            self.notifications.error(message);
+            self.notifications.error_keyed(GPU_FAULT_NOTICE, message);
         }
     }
 
