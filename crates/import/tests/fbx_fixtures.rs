@@ -701,3 +701,64 @@ fn rest_pose_skinning_matches_bind() {
         "rest {rest:?} vs bind {bind:?}"
     );
 }
+
+/// A classic Lambert/Phong declares no metalness at all, and its
+/// `ReflectionFactor` is not one: that slot is Phong reflectivity, which DCCs
+/// write with a non-zero default nobody authored (Maya 0.5, the FBX SDK 1.0).
+/// Reading it back as metalness made nearly every real game asset — stone,
+/// wood, bark, leaves, skin — import half or fully metal, which the IBL path
+/// draws as a mirror of the environment instead of a lit surface. So every
+/// classic material must arrive dielectric.
+///
+/// The sweep is only worth anything if some fixture really does declare a
+/// non-zero factor, so that is asserted too: without it the test would keep
+/// passing against a fixture set that simply never exercises the slot.
+#[test]
+fn a_classic_material_imports_as_a_dielectric() {
+    use review_model::extras::ShaderType;
+
+    let dir = fixture("");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        eprintln!("skipping: {} is not present", dir.display());
+        return;
+    };
+    let mut saw_a_reflection_factor = false;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("fbx"))
+        {
+            continue;
+        }
+        let (model, extras) = review_import::load_model_full(&path)
+            .unwrap_or_else(|error| panic!("{} must import: {error}", path.display()));
+        let Some(extras) = extras else { continue };
+        for (material, authored) in model.materials.iter().zip(&extras.materials) {
+            if !matches!(
+                authored.shader_type,
+                ShaderType::Unknown | ShaderType::FbxLambert | ShaderType::FbxPhong
+            ) {
+                continue;
+            }
+            let factor = authored
+                .props
+                .iter()
+                .find(|prop| prop.name == "ReflectionFactor")
+                .map_or(0.0, |prop| prop.value_real[0]);
+            saw_a_reflection_factor |= factor > 0.0;
+            assert_eq!(
+                material.metallic,
+                0.0,
+                "{} / {} is a classic material (ReflectionFactor {factor}) and must import \
+                 as a dielectric",
+                path.file_name().unwrap().to_string_lossy(),
+                material.name,
+            );
+        }
+    }
+    assert!(
+        saw_a_reflection_factor,
+        "no fixture declares a non-zero ReflectionFactor, so this test proves nothing",
+    );
+}
