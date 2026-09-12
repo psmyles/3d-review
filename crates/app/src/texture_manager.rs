@@ -290,7 +290,7 @@ impl App {
                 Err(error) => {
                     prof::msg(&format!("failed to create texture watcher: {error}"));
                     self.notifications
-                        .info("Texture auto-reload unavailable (file watcher failed)");
+                        .warning("Texture auto-reload unavailable (file watcher failed)");
                     return;
                 }
             }
@@ -306,9 +306,9 @@ impl App {
                         dir.display()
                     ));
                     self.notifications
-                        .info(format!("Auto-reload unavailable for {}", file_label(&dir)));
+                        .warning(format!("Auto-reload unavailable for {}", file_label(&dir)));
                     // Record the attempt so a failing directory isn't retried
-                    // (and re-toasted) on every texture it contains.
+                    // (and re-announced) on every texture it contains.
                     self.textures.watched_dirs.insert(dir);
                 }
             }

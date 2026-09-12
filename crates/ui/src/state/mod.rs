@@ -102,6 +102,19 @@ pub(crate) mod range {
     pub const AO_BAKE_INTENSITY_MAX: f32 = 4.0;
 }
 
+/// How much of the window the docked side panels are covering, in egui points.
+///
+/// The floating chrome that centres itself — the notice column, the stats and
+/// legend cards — has to centre on the area the user can actually see, not on
+/// the window: with the Outliner open, the window's centre is well right of the
+/// viewport's. Written by [`crate::overlay`] every frame (zero in the
+/// workspaces that dock no panels) and read back by `app`.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ChromeInsets {
+    pub left: f32,
+    pub right: f32,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct UiOutput {
     pub axis_gizmo_action: Option<AxisGizmoAction>,
@@ -177,6 +190,13 @@ pub struct UiState {
     /// until the chrome has been laid out once, which the renderer reads as
     /// "the whole backbuffer".
     pub scene_viewport: Option<egui::Rect>,
+    /// The open side panels' widths (egui points), written by [`crate::overlay`]
+    /// each frame and read by `app` to centre the notice column on the free
+    /// viewport rather than on the window. Not derivable from
+    /// [`UiState::scene_viewport`], which is written only in the scene
+    /// workspaces and left stale in UV / Tex — where the side panels don't draw
+    /// and the insets are genuinely zero.
+    pub chrome_insets: ChromeInsets,
     pub wireframe: WireframePanelState,
     pub bounding_box: BoundingBoxPanelState,
     pub face_normals: NormalPanelState,
@@ -320,6 +340,7 @@ impl Default for UiState {
             texture_view: TextureViewState::default(),
             texture_canvas: None,
             scene_viewport: None,
+            chrome_insets: ChromeInsets::default(),
             wireframe: WireframePanelState::default(),
             bounding_box: BoundingBoxPanelState::default(),
             face_normals: NormalPanelState {

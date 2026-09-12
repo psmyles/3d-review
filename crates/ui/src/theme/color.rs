@@ -10,9 +10,6 @@ pub const CHROME_BG: Color32 = Color32::from_rgb(40, 39, 38);
 pub const GROUP_BG: Color32 = Color32::from_rgb(18, 19, 22);
 /// Translucent fill behind the stats overlay.
 pub const STATS_OVERLAY_BG: Color32 = Color32::from_rgba_premultiplied(20, 22, 25, 130);
-/// Unfilled track of the activity card's progress bar; the filled part is
-/// [`ACCENT`], so the bar reads as the same accent every other control uses.
-pub const ACTIVITY_PROGRESS_TRACK: Color32 = Color32::from_gray(72);
 /// Translucent fill behind the axis gizmo while hovered / dragged.
 pub const GIZMO_BG: Color32 = Color32::from_rgba_premultiplied(8, 12, 16, 90);
 /// Translucent pill behind a bounding-box dimension label. The pill keeps the
@@ -60,6 +57,14 @@ pub const TEXT_MUTED: Color32 = Color32::from_gray(178);
 /// Desaturated enough to sit beside the value column without shouting.
 pub const STATS_DELTA_BETTER: Color32 = Color32::from_rgb(126, 202, 122);
 pub const STATS_DELTA_WORSE: Color32 = Color32::from_rgb(226, 122, 118);
+/// The one notice-card header tint that isn't already in egui's palette.
+///
+/// Every other kind takes a native colour — `error_fg_color`, `warn_fg_color`,
+/// `hyperlink_color`, `strong_text_color` — so it follows any restyle of the
+/// chrome. egui has no green, and "this worked" is the one thing a viewer says
+/// often enough to be worth a colour of its own. Pitched to match the weight of
+/// egui's own warn/error tints beside it.
+pub const NOTICE_SUCCESS: Color32 = Color32::from_rgb(126, 202, 122);
 /// A scene-tree row the type filter is hiding, kept visible only because a
 /// shown node lives beneath it. Dim enough to read as structure, not content.
 pub const OUTLINER_FILTERED: Color32 = Color32::from_gray(104);

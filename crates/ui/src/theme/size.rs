@@ -125,33 +125,38 @@ pub const TILE_CORNER_RADIUS: f32 = 4.0;
 pub const MODE_SEGMENT_WIDTH: f32 = 37.0;
 pub const MODE_SEGMENT_HEIGHT: f32 = 28.0;
 
-// ── Notifications (egui-notify toasts) ────────────────────────────────
-/// Horizontal inset of the toast stacks from the right screen edge.
-pub const NOTIFICATION_MARGIN_X: f32 = OVERLAY_MARGIN;
-/// Bottom inset of the transient *event* toast stack: the status bar's own
-/// height plus a margin, so the toasts sit clear of it.
-pub const NOTIFICATION_EVENT_MARGIN_Y: f32 = STATUS_BAR_HEIGHT + OVERLAY_MARGIN;
-/// Vertical gap between stacked toasts, and the height of one toast "row"
-/// (egui-notify's toast box plus that gap) — the offset that lifts the
-/// persistent activity toast above the event stack.
-pub const NOTIFICATION_SPACING: f32 = 8.0;
-pub const NOTIFICATION_ROW: f32 = 34.0 + NOTIFICATION_SPACING;
-
-// ── The activity card (drawn by us, not by egui-notify) ───────────────
-/// The activity card's fixed width. Fixed on purpose: it reports a job's
-/// progress by rewriting its own text every few frames, and a card sized to
-/// its content would shuffle its left edge on every one of them. Long titles
-/// truncate instead.
-pub const ACTIVITY_WIDTH: f32 = 232.0;
-/// Inset from the card's edge to its text.
-pub const ACTIVITY_PADDING: f32 = 10.0;
-/// Gap between the card's title line and the stage line under it.
-pub const ACTIVITY_LINE_GAP: f32 = 4.0;
-/// Corner radius of the card, matching egui-notify's own toast boxes so the
-/// two read as one system.
-pub const ACTIVITY_CORNER_RADIUS: u8 = 4;
-/// Thickness of the progress bar under the stage line.
-pub const ACTIVITY_PROGRESS_HEIGHT: f32 = 3.0;
+// ── Notifications ─────────────────────────────────────────────────────
+/// The width a notice card's text column wants. Fixed on purpose: a progress
+/// card reports a job by rewriting its own text every few frames, and a card
+/// sized to its content would shuffle its edges on every one of them.
+///
+/// Much wider than an option window's body, because a notice is a sentence
+/// rather than a two-column row and the point of the card is that the sentence
+/// can be read. It is a *want*, not a promise: a window too narrow for it
+/// clamps to what the free viewport has (see `NOTIFICATION_MIN_WIDTH`).
+pub const NOTIFICATION_WIDTH: f32 = 520.0;
+/// The narrowest a card's text column is allowed to get on a small window.
+/// Below this the wrapping breaks every sentence into stubs, at which point a
+/// card that overhangs its viewport is the lesser problem.
+pub const NOTIFICATION_MIN_WIDTH: f32 = 200.0;
+/// Vertical gap between stacked notice cards.
+pub const NOTIFICATION_CARD_GAP: f32 = 8.0;
+/// Bottom inset of the notice column: the status bar's own height plus a
+/// margin, so the cards sit clear of it.
+pub const NOTIFICATION_MARGIN_Y: f32 = STATUS_BAR_HEIGHT + OVERLAY_MARGIN;
+/// How many body lines a notice card shows before it summarises the rest as
+/// `+ n more`. The column grows *upward* from the status bar, so an uncapped
+/// card runs its own title off the top of the window — and an export report
+/// carries a note per mesh per LOD level, which reaches double figures on an
+/// ordinary game asset.
+pub const NOTIFICATION_MAX_LINES: usize = 6;
+/// How many notice cards the column shows at once, oldest dropped first. Same
+/// reason: sticky cards (warnings, errors, reports) wait for a click, so a user
+/// working through a run of failures would otherwise stack the column past the
+/// top of the window. The newest are the ones being read.
+pub const NOTIFICATION_MAX_VISIBLE: usize = 4;
+/// Thickness of a progress card's bar, and the radius its track is rounded to.
+pub const NOTIFICATION_PROGRESS_HEIGHT: f32 = 3.0;
 
 // ── Material inspector: texture mapping + files ───────────────────────
 /// Fixed label-column width for a Texture-mapping row (property name), so the
@@ -348,8 +353,16 @@ pub const ANIM_ROW_HEIGHT: f32 = 24.0;
 /// Width reserved at a clip row's right edge for its frame-count / duration
 /// readout.
 pub const ANIM_ROW_TRAILING_WIDTH: f32 = 104.0;
-/// Width of the transport card, like the legend card.
+/// The transport's preferred width in the status bar's centre span. A
+/// *maximum*, not a fixed size: a span wider than this leaves the row centred at
+/// this width rather than stretching the scrubber across the whole bar, and a
+/// narrower one shrinks it (see `transport::transport_row`).
 pub const ANIM_TRANSPORT_WIDTH: f32 = 610.0;
+/// The span below which the transport doesn't draw at all. Its fixed controls —
+/// five tiles, the speed picker and their gaps — plus a usable rail come to
+/// about this much, and a row squeezed under it would be buttons with no
+/// scrubber between them.
+pub const ANIM_TRANSPORT_MIN_WIDTH: f32 = 210.0;
 /// Gap between transport controls.
 pub const ANIM_TRANSPORT_GAP: f32 = 4.0;
 /// Extra breathing room reserved after the transport's frame readout, so the
@@ -357,9 +370,9 @@ pub const ANIM_TRANSPORT_GAP: f32 = 4.0;
 /// against it. Part of the readout's fixed block, which is why the
 /// group can't drift when the counter gains a digit.
 pub const ANIM_TRANSPORT_GROUP_GAP: f32 = 9.0;
-/// Floor on the transport scrubber's rail width. The rail is
-/// normally whatever the card has left over after the fixed groups; this is
-/// only what it degrades to if the card is ever narrowed past them.
+/// Floor on the transport scrubber's rail width. The rail is normally whatever
+/// the row has left over after the fixed groups; reaching this floor is what
+/// drops the frame readout and hands the rail its block.
 pub const ANIM_SCRUB_MIN_WIDTH: f32 = 53.0;
 /// Width of the playback-speed dropdown.
 pub const ANIM_SPEED_COMBO_WIDTH: f32 = 43.0;

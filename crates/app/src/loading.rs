@@ -340,7 +340,8 @@ impl App {
                 // export report will say so.
                 self.scene_extras = None;
                 prof::msg(&format!("source properties dropped: {error}"));
-                self.notifications.error(format!(
+                // A warning, not an error: the model loaded and is on screen.
+                self.notifications.warning(format!(
                     "Couldn't read the file's source properties: {error}"
                 ));
             }

@@ -281,17 +281,18 @@ struct App {
     /// from inside a winit callback (D9 again: on macOS a modal run loop entered
     /// from a callback aborts the process).
     startup_error: Option<anyhow::Error>,
-    /// The toast notification system (egui-notify). `app` owns it because it owns
-    /// the egui frame and triggers the notifications (texture decode start/finish);
-    /// the UI crate only provides the themed type. Shown once per frame in `render`.
+    /// The notification system. `app` owns it because it owns the egui frame and
+    /// triggers the notices (texture decode start/finish); the UI crate only
+    /// provides the themed type and draws it. Shown once per frame in `render`.
     notifications: Notifications,
     /// Whether `--tracy` was passed: arms the GPU profiler (via
     /// `review_render::enable_tracy_gpu`) in `resumed`, and turns on sokol's per-frame
     /// resource counters.
     tracy_enabled: bool,
     /// A GPU fault (scene/egui render failure, device lost) has already been
-    /// surfaced as a toast this session. Faults repeat every frame once the
-    /// device is wedged, so the toast fires once instead of stacking forever.
+    /// surfaced this session. Faults repeat every frame once the device is
+    /// wedged, so only the first — the one that says what actually went wrong —
+    /// is reported.
     gpu_fault_notified: bool,
     /// The live Tracy client handle, held for the whole process so the profiler
     /// session stays up (dropping the last handle disconnects). `None` on a normal
