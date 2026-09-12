@@ -84,15 +84,6 @@ impl App {
             if event.state != ElementState::Pressed {
                 return;
             }
-            // TEMPORARY (notice_demo): Primary+Shift+<key> posts one notification
-            // of each kind by hand. Tried before the file commands so it can
-            // claim chords they don't use; it declines anything it doesn't own,
-            // so Primary+Shift+Z still redoes. Delete with `notice_demo.rs`.
-            if self.modifiers.shift_key()
-                && self.handle_notice_demo_key(&character.to_ascii_lowercase())
-            {
-                return;
-            }
             if character.eq_ignore_ascii_case("n") {
                 self.reset_to_start_state();
             } else if character.eq_ignore_ascii_case("o") {

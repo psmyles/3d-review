@@ -13,8 +13,6 @@ mod frame;
 mod gate;
 mod input;
 mod loading;
-// TEMPORARY (notice_demo): manual notification triggers; delete with the file.
-mod notice_demo;
 mod opt;
 mod prof;
 mod redraw;
@@ -287,12 +285,6 @@ struct App {
     /// triggers the notices (texture decode start/finish); the UI crate only
     /// provides the themed type and draws it. Shown once per frame in `render`.
     notifications: Notifications,
-    /// TEMPORARY (notice_demo): where the manual notification triggers have got
-    /// to — the fake job's stage, and the mode notice's counter. Separate, so
-    /// posting a mode notice doesn't start the fake job halfway through. Delete
-    /// both with `notice_demo.rs`.
-    demo_job_step: usize,
-    demo_mode_step: usize,
     /// Whether `--tracy` was passed: arms the GPU profiler (via
     /// `review_render::enable_tracy_gpu`) in `resumed`, and turns on sokol's per-frame
     /// resource counters.
@@ -390,8 +382,6 @@ impl Default for App {
             dialog_open: false,
             startup_error: None,
             notifications: Notifications::new(),
-            demo_job_step: 0,
-            demo_mode_step: 0,
             tracy_enabled: false,
             gpu_fault_notified: false,
             _tracy: None,
