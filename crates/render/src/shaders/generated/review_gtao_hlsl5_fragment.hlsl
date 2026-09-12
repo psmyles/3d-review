@@ -139,8 +139,8 @@ void frag_main()
     float _404 = frac(_397.x + _57_temporal.x);
     float _411 = frac(_397.y + _57_temporal.y);
     float visibility = clamp((10.0f - _359) * 0.00999999977648258209228515625f, 0.0f, 1.0f) * 0.5f;
-    float _677;
-    float _694;
+    float _691;
+    float _708;
     for (uint s = 0u; s < _330; s++)
     {
         float _438 = ((float(s) + _404) * 3.1415927410125732421875f) / float(_330);
@@ -149,101 +149,118 @@ void frag_main()
         float2 _449 = float2(_441, -_444);
         float3 _453 = float3(_441, _444, 0.0f);
         float3 _461 = _453 - (_313 * dot(_453, _313));
-        float3 _466 = normalize(cross(_461, _313));
-        float3 _474 = _303 - (_466 * dot(_303, _466));
-        float _477 = length(_474);
-        float proj_len = _477;
-        if (_477 < 9.9999999747524270787835121154785e-07f)
+        float3 _465 = cross(_461, _313);
+        float _469 = dot(_465, _465);
+        if (_469 < 9.9999999600419720025001879548654e-13f)
         {
             continue;
         }
-        float _493 = proj_len;
-        float _495 = clamp(dot(_474, _313) / _493, 0.0f, 1.0f);
-        float _500 = sign(dot(_474, _461)) * acos(_495);
-        float _505 = cos(_500 + 1.57079637050628662109375f);
-        float _509 = cos(_500 - 1.57079637050628662109375f);
-        float horizon_cos0 = _505;
-        float horizon_cos1 = _509;
+        float3 _480 = _465 * rsqrt(_469);
+        float3 _488 = _303 - (_480 * dot(_303, _480));
+        float _491 = length(_488);
+        float proj_len = _491;
+        if (_491 < 9.9999999747524270787835121154785e-07f)
+        {
+            continue;
+        }
+        float _507 = proj_len;
+        float _509 = clamp(dot(_488, _313) / _507, 0.0f, 1.0f);
+        float _514 = sign(dot(_488, _461)) * acos(_509);
+        float _519 = cos(_514 + 1.57079637050628662109375f);
+        float _523 = cos(_514 - 1.57079637050628662109375f);
+        float horizon_cos0 = _519;
+        float horizon_cos1 = _523;
         for (uint t = 0u; t < _335; t++)
         {
-            float _542 = (float(t) + frac(_411 + (float(s + (t * _330)) * 0.61803400516510009765625f))) / float(_335);
-            float2 _553 = (_449 * ((_542 * _542) + _368)) * _359;
-            int _566 = int(clamp(log2(max(length(_553), 1.0f)) - 3.2999999523162841796875f, 0.0f, 4.0f) + 0.5f);
-            float2 _571 = round(_553) * _341;
-            float2 _575 = v_uv + _571;
-            float2 _579 = v_uv - _571;
-            float2 param_4 = _575;
-            int param_5 = _566;
-            float _585 = sample_depth_mip(param_4, param_5);
-            float2 param_6 = _579;
-            int param_7 = _566;
-            float _591 = sample_depth_mip(param_6, param_7);
-            float shc0 = _505;
-            float param_8 = _585;
+            float _556 = (float(t) + frac(_411 + (float(s + (t * _330)) * 0.61803400516510009765625f))) / float(_335);
+            float2 _567 = (_449 * ((_556 * _556) + _368)) * _359;
+            int _580 = int(clamp(log2(max(length(_567), 1.0f)) - 3.2999999523162841796875f, 0.0f, 4.0f) + 0.5f);
+            float2 _585 = round(_567) * _341;
+            float2 _589 = v_uv + _585;
+            float2 _593 = v_uv - _585;
+            float2 param_4 = _589;
+            int param_5 = _580;
+            float _599 = sample_depth_mip(param_4, param_5);
+            float2 param_6 = _593;
+            int param_7 = _580;
+            float _605 = sample_depth_mip(param_6, param_7);
+            float shc0 = _519;
+            float param_8 = _599;
             if (!is_background_depth(param_8))
             {
-                float2 param_9 = _575;
-                float param_10 = -_585;
-                float3 _608 = reconstruct_view_pos(param_9, param_10) - _309;
-                float _611 = length(_608);
-                if (_611 > 9.9999999747524270787835121154785e-07f)
+                float2 param_9 = _589;
+                float param_10 = -_599;
+                float3 _622 = reconstruct_view_pos(param_9, param_10) - _309;
+                float _625 = length(_622);
+                if (_625 > 9.9999999747524270787835121154785e-07f)
                 {
-                    shc0 = lerp(_505, dot(_608, _313) / _611, clamp((_611 * _380) + _385, 0.0f, 1.0f));
+                    shc0 = lerp(_519, dot(_622, _313) / _625, clamp((_625 * _380) + _385, 0.0f, 1.0f));
                 }
             }
-            float shc1 = _509;
-            float param_11 = _591;
+            float shc1 = _523;
+            float param_11 = _605;
             if (!is_background_depth(param_11))
             {
-                float2 param_12 = _579;
-                float param_13 = -_591;
-                float3 _647 = reconstruct_view_pos(param_12, param_13) - _309;
-                float _650 = length(_647);
-                if (_650 > 9.9999999747524270787835121154785e-07f)
+                float2 param_12 = _593;
+                float param_13 = -_605;
+                float3 _661 = reconstruct_view_pos(param_12, param_13) - _309;
+                float _664 = length(_661);
+                if (_664 > 9.9999999747524270787835121154785e-07f)
                 {
-                    shc1 = lerp(_509, dot(_647, _313) / _650, clamp((_650 * _380) + _385, 0.0f, 1.0f));
+                    shc1 = lerp(_523, dot(_661, _313) / _664, clamp((_664 * _380) + _385, 0.0f, 1.0f));
                 }
             }
-            float _673 = max(horizon_cos0, shc0);
+            float _687 = max(horizon_cos0, shc0);
             if (horizon_cos0 > shc0)
             {
-                _677 = lerp(_673, shc0, _325);
+                _691 = lerp(_687, shc0, _325);
             }
             else
             {
-                _677 = _673;
+                _691 = _687;
             }
-            horizon_cos0 = _677;
-            float _690 = max(horizon_cos1, shc1);
+            horizon_cos0 = _691;
+            float _704 = max(horizon_cos1, shc1);
             if (horizon_cos1 > shc1)
             {
-                _694 = lerp(_690, shc1, _325);
+                _708 = lerp(_704, shc1, _325);
             }
             else
             {
-                _694 = _690;
+                _708 = _704;
             }
-            horizon_cos1 = _694;
+            horizon_cos1 = _708;
         }
-        float _706 = proj_len;
-        float _708 = lerp(_706, 1.0f, 0.0500000007450580596923828125f);
-        proj_len = _708;
-        float _720 = sin(_500);
-        float _724 = acos(clamp(horizon_cos1, -1.0f, 1.0f)) * (-2.0f);
-        float _738 = 2.0f * acos(clamp(horizon_cos0, -1.0f, 1.0f));
-        visibility += (_708 * (0.25f * (((_495 + (_724 * _720)) - cos(_724 - _500)) + ((_495 + (_738 * _720)) - cos(_738 - _500)))));
+        float _720 = proj_len;
+        float _722 = lerp(_720, 1.0f, 0.0500000007450580596923828125f);
+        proj_len = _722;
+        float _734 = sin(_514);
+        float _738 = acos(clamp(horizon_cos1, -1.0f, 1.0f)) * (-2.0f);
+        float _752 = 2.0f * acos(clamp(horizon_cos0, -1.0f, 1.0f));
+        visibility += (_722 * (0.25f * (((_509 + (_738 * _734)) - cos(_738 - _514)) + ((_509 + (_752 * _734)) - cos(_752 - _514)))));
     }
-    float _758 = visibility;
-    float _762 = clamp(_758 / float(_330), 0.0f, 1.0f);
-    visibility = _762;
-    float _768 = pow(max(_762, 0.0f), max(_57_params.y, 0.0f));
+    float _772 = visibility;
+    float _776 = clamp(_772 / float(_330), 0.0f, 1.0f);
+    visibility = _776;
+    float _782 = pow(max(_776, 9.9999999747524270787835121154785e-07f), max(_57_params.y, 0.0f));
     if (_57_temporal.z >= 1.0f)
     {
-        frag_ao = _768;
+        frag_ao = _782;
     }
     else
     {
-        frag_ao = lerp(ao_history.SampleLevel(gtao_sampler, v_uv, 0.0f).x, _768, _57_temporal.z);
+        float4 _796 = ao_history.SampleLevel(gtao_sampler, v_uv, 0.0f);
+        float _797 = _796.x;
+        float _806;
+        if ((_797 >= 0.0f) && (_797 <= 1.0f))
+        {
+            _806 = lerp(_797, _782, _57_temporal.z);
+        }
+        else
+        {
+            _806 = _782;
+        }
+        frag_ao = _806;
     }
 }
 

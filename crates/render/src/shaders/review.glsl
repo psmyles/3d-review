@@ -1131,7 +1131,18 @@ void main() {
         // G-buffer neighbour 2 px away to get it, which at a silhouette is a different
         // surface (or background) and flipped the plane between adjacent pixels.
         vec3 ortho_direction = direction - dot(direction, v) * v;
-        vec3 axis = normalize(cross(ortho_direction, v));
+        // `normalize` of a zero vector is NaN, and one NaN here reaches the AO
+        // buffer — where the denoise kernel spreads it and the history blend makes
+        // it permanent. The cross product vanishes only when the slice direction is
+        // parallel to the view vector, which needs a point ~90° off axis, but the
+        // cost of the guard is one compare and the cost of being wrong is a viewport
+        // that goes black and stays black.
+        vec3 axis_raw = cross(ortho_direction, v);
+        float axis_len_sq = dot(axis_raw, axis_raw);
+        if (axis_len_sq < 1e-12) {
+            continue;
+        }
+        vec3 axis = axis_raw * inversesqrt(axis_len_sq);
         vec3 proj_n = n - axis * dot(n, axis);
         float proj_len = length(proj_n);
         if (proj_len < 1e-6) {
@@ -1211,7 +1222,17 @@ void main() {
 
     visibility = clamp(visibility / float(slice_count), 0.0, 1.0);
     // Intensity sharpens the falloff (1 = ground truth, >1 darkens, 0 disables).
-    float ao = pow(max(visibility, 0.0), max(intensity, 0.0));
+    //
+    // The floor on the base is not cosmetic. HLSL computes `pow(x, y)` as
+    // `exp2(y * log2(x))`, so `pow(0.0, 0.0)` is `0 * -inf` — NaN. Visibility is
+    // exactly 0 wherever every slice was skipped, and Intensity 0 is a documented
+    // setting the slider bottoms out at, so that pair is reachable by dragging one
+    // control to its end. The NaN would then spread through the denoise kernel and,
+    // because the history blend folds it back in every frame, never wash out: the
+    // viewport goes black and stays black. `1e-6` changes no other result — at any
+    // positive intensity it still darkens to ~0, and at intensity 0 it correctly
+    // gives 1.
+    float ao = pow(max(visibility, 1e-6), max(intensity, 0.0));
 
     // Blend into the running mean. The branch is load-bearing rather than tidiness:
     // a freshly created R16F target holds whatever was in that memory, and a `mix`
@@ -1221,7 +1242,12 @@ void main() {
         frag_ao = ao;
     } else {
         float history = textureLod(sampler2D(ao_history, gtao_sampler), v_uv, 0.0).r;
-        frag_ao = mix(history, ao, temporal.z);
+        // A visibility term outside [0,1] is not one, and NaN fails both compares.
+        // Falling back to this frame's estimate is what lets the buffer heal: an
+        // accumulating history has no other way to drop a bad value, since every
+        // later frame only ever blends *with* it.
+        bool usable = history >= 0.0 && history <= 1.0;
+        frag_ao = usable ? mix(history, ao, temporal.z) : ao;
     }
 }
 @end

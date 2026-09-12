@@ -139,8 +139,8 @@ fragment main0_out main0(main0_in in [[stage_in]], constant gtao_params& _57 [[b
     float _404 = fract(_397.x + _57.temporal.x);
     float _411 = fract(_397.y + _57.temporal.y);
     float visibility = fast::clamp((10.0 - _359) * 0.00999999977648258209228515625, 0.0, 1.0) * 0.5;
-    float _677;
-    float _694;
+    float _691;
+    float _708;
     for (uint s = 0u; s < _330; s++)
     {
         float _438 = ((float(s) + _404) * 3.1415927410125732421875) / float(_330);
@@ -149,101 +149,118 @@ fragment main0_out main0(main0_in in [[stage_in]], constant gtao_params& _57 [[b
         float2 _449 = float2(_441, -_444);
         float3 _453 = float3(_441, _444, 0.0);
         float3 _461 = _453 - (_313 * dot(_453, _313));
-        float3 _466 = fast::normalize(cross(_461, _313));
-        float3 _474 = _303 - (_466 * dot(_303, _466));
-        float _477 = length(_474);
-        float proj_len = _477;
-        if (_477 < 9.9999999747524270787835121154785e-07)
+        float3 _465 = cross(_461, _313);
+        float _469 = dot(_465, _465);
+        if (_469 < 9.9999999600419720025001879548654e-13)
         {
             continue;
         }
-        float _493 = proj_len;
-        float _495 = fast::clamp(dot(_474, _313) / _493, 0.0, 1.0);
-        float _500 = sign(dot(_474, _461)) * acos(_495);
-        float _505 = cos(_500 + 1.57079637050628662109375);
-        float _509 = cos(_500 - 1.57079637050628662109375);
-        float horizon_cos0 = _505;
-        float horizon_cos1 = _509;
+        float3 _480 = _465 * rsqrt(_469);
+        float3 _488 = _303 - (_480 * dot(_303, _480));
+        float _491 = length(_488);
+        float proj_len = _491;
+        if (_491 < 9.9999999747524270787835121154785e-07)
+        {
+            continue;
+        }
+        float _507 = proj_len;
+        float _509 = fast::clamp(dot(_488, _313) / _507, 0.0, 1.0);
+        float _514 = sign(dot(_488, _461)) * acos(_509);
+        float _519 = cos(_514 + 1.57079637050628662109375);
+        float _523 = cos(_514 - 1.57079637050628662109375);
+        float horizon_cos0 = _519;
+        float horizon_cos1 = _523;
         for (uint t = 0u; t < _335; t++)
         {
-            float _542 = (float(t) + fract(_411 + (float(s + (t * _330)) * 0.61803400516510009765625))) / float(_335);
-            float2 _553 = (_449 * ((_542 * _542) + _368)) * _359;
-            int _566 = int(fast::clamp(log2(fast::max(length(_553), 1.0)) - 3.2999999523162841796875, 0.0, 4.0) + 0.5);
-            float2 _571 = round(_553) * _341;
-            float2 _575 = in.v_uv + _571;
-            float2 _579 = in.v_uv - _571;
-            float2 param_4 = _575;
-            int param_5 = _566;
-            float _585 = sample_depth_mip(param_4, param_5, depth_mip0, gtao_sampler, depth_mip1, depth_mip2, depth_mip3, depth_mip4);
-            float2 param_6 = _579;
-            int param_7 = _566;
-            float _591 = sample_depth_mip(param_6, param_7, depth_mip0, gtao_sampler, depth_mip1, depth_mip2, depth_mip3, depth_mip4);
-            float shc0 = _505;
-            float param_8 = _585;
+            float _556 = (float(t) + fract(_411 + (float(s + (t * _330)) * 0.61803400516510009765625))) / float(_335);
+            float2 _567 = (_449 * ((_556 * _556) + _368)) * _359;
+            int _580 = int(fast::clamp(log2(fast::max(length(_567), 1.0)) - 3.2999999523162841796875, 0.0, 4.0) + 0.5);
+            float2 _585 = round(_567) * _341;
+            float2 _589 = in.v_uv + _585;
+            float2 _593 = in.v_uv - _585;
+            float2 param_4 = _589;
+            int param_5 = _580;
+            float _599 = sample_depth_mip(param_4, param_5, depth_mip0, gtao_sampler, depth_mip1, depth_mip2, depth_mip3, depth_mip4);
+            float2 param_6 = _593;
+            int param_7 = _580;
+            float _605 = sample_depth_mip(param_6, param_7, depth_mip0, gtao_sampler, depth_mip1, depth_mip2, depth_mip3, depth_mip4);
+            float shc0 = _519;
+            float param_8 = _599;
             if (!is_background_depth(param_8))
             {
-                float2 param_9 = _575;
-                float param_10 = -_585;
-                float3 _608 = reconstruct_view_pos(param_9, param_10, _57) - _309;
-                float _611 = length(_608);
-                if (_611 > 9.9999999747524270787835121154785e-07)
+                float2 param_9 = _589;
+                float param_10 = -_599;
+                float3 _622 = reconstruct_view_pos(param_9, param_10, _57) - _309;
+                float _625 = length(_622);
+                if (_625 > 9.9999999747524270787835121154785e-07)
                 {
-                    shc0 = mix(_505, dot(_608, _313) / _611, fast::clamp((_611 * _380) + _385, 0.0, 1.0));
+                    shc0 = mix(_519, dot(_622, _313) / _625, fast::clamp((_625 * _380) + _385, 0.0, 1.0));
                 }
             }
-            float shc1 = _509;
-            float param_11 = _591;
+            float shc1 = _523;
+            float param_11 = _605;
             if (!is_background_depth(param_11))
             {
-                float2 param_12 = _579;
-                float param_13 = -_591;
-                float3 _647 = reconstruct_view_pos(param_12, param_13, _57) - _309;
-                float _650 = length(_647);
-                if (_650 > 9.9999999747524270787835121154785e-07)
+                float2 param_12 = _593;
+                float param_13 = -_605;
+                float3 _661 = reconstruct_view_pos(param_12, param_13, _57) - _309;
+                float _664 = length(_661);
+                if (_664 > 9.9999999747524270787835121154785e-07)
                 {
-                    shc1 = mix(_509, dot(_647, _313) / _650, fast::clamp((_650 * _380) + _385, 0.0, 1.0));
+                    shc1 = mix(_523, dot(_661, _313) / _664, fast::clamp((_664 * _380) + _385, 0.0, 1.0));
                 }
             }
-            float _673 = fast::max(horizon_cos0, shc0);
+            float _687 = fast::max(horizon_cos0, shc0);
             if (horizon_cos0 > shc0)
             {
-                _677 = mix(_673, shc0, _325);
+                _691 = mix(_687, shc0, _325);
             }
             else
             {
-                _677 = _673;
+                _691 = _687;
             }
-            horizon_cos0 = _677;
-            float _690 = fast::max(horizon_cos1, shc1);
+            horizon_cos0 = _691;
+            float _704 = fast::max(horizon_cos1, shc1);
             if (horizon_cos1 > shc1)
             {
-                _694 = mix(_690, shc1, _325);
+                _708 = mix(_704, shc1, _325);
             }
             else
             {
-                _694 = _690;
+                _708 = _704;
             }
-            horizon_cos1 = _694;
+            horizon_cos1 = _708;
         }
-        float _706 = proj_len;
-        float _708 = mix(_706, 1.0, 0.0500000007450580596923828125);
-        proj_len = _708;
-        float _720 = sin(_500);
-        float _724 = acos(fast::clamp(horizon_cos1, -1.0, 1.0)) * (-2.0);
-        float _738 = 2.0 * acos(fast::clamp(horizon_cos0, -1.0, 1.0));
-        visibility += (_708 * (0.25 * (((_495 + (_724 * _720)) - cos(_724 - _500)) + ((_495 + (_738 * _720)) - cos(_738 - _500)))));
+        float _720 = proj_len;
+        float _722 = mix(_720, 1.0, 0.0500000007450580596923828125);
+        proj_len = _722;
+        float _734 = sin(_514);
+        float _738 = acos(fast::clamp(horizon_cos1, -1.0, 1.0)) * (-2.0);
+        float _752 = 2.0 * acos(fast::clamp(horizon_cos0, -1.0, 1.0));
+        visibility += (_722 * (0.25 * (((_509 + (_738 * _734)) - cos(_738 - _514)) + ((_509 + (_752 * _734)) - cos(_752 - _514)))));
     }
-    float _758 = visibility;
-    float _762 = fast::clamp(_758 / float(_330), 0.0, 1.0);
-    visibility = _762;
-    float _768 = powr(fast::max(_762, 0.0), fast::max(_57.params.y, 0.0));
+    float _772 = visibility;
+    float _776 = fast::clamp(_772 / float(_330), 0.0, 1.0);
+    visibility = _776;
+    float _782 = powr(fast::max(_776, 9.9999999747524270787835121154785e-07), fast::max(_57.params.y, 0.0));
     if (_57.temporal.z >= 1.0)
     {
-        out.frag_ao = _768;
+        out.frag_ao = _782;
     }
     else
     {
-        out.frag_ao = mix(ao_history.sample(gtao_sampler, in.v_uv, level(0.0)).x, _768, _57.temporal.z);
+        float4 _796 = ao_history.sample(gtao_sampler, in.v_uv, level(0.0));
+        float _797 = _796.x;
+        float _806;
+        if ((_797 >= 0.0) && (_797 <= 1.0))
+        {
+            _806 = mix(_797, _782, _57.temporal.z);
+        }
+        else
+        {
+            _806 = _782;
+        }
+        out.frag_ao = _806;
     }
     return out;
 }
