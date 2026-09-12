@@ -11,7 +11,7 @@
 //! - [`assets`] — embedded icons + fonts and lazy texture loading.
 //! - [`widgets`] — reusable theme-driven primitives.
 //! - [`overlay`] — per-frame orchestration (the public entry points).
-//! - `notifications` — the egui-notify toast system (`app`-owned, themed here).
+//! - `notifications` — the notice column (`app`-owned, drawn + themed here).
 //! - `toolbar` / `status_bar` / `stats` / `gizmo` / `panels` — the chrome.
 
 // The UI is plain values + intents (invariant 2) and fully safe (invariant 9):
@@ -63,7 +63,7 @@ mod widgets;
 
 // Root re-exports carry exactly what `app` (the sole consumer) uses; everything
 // else stays reachable under its own module path.
-pub use notifications::Notifications;
+pub use notifications::{NoticeKind, Notifications};
 pub use opt_state::{
     ComparisonSide, GhostStyle, OptIntent, OptLayout, OptLevelView, OptResultView, OptUiState,
     StackItem,
@@ -71,7 +71,8 @@ pub use opt_state::{
 pub use overlay::{OptOverlayLevel, OptOverlayView, draw_overlay};
 pub use review_render::{MsaaSamples, Selection};
 pub use state::{
-    AnimationUiState, AxisGizmoAction, PlaybackSpeed, TexViewRequest, TextureBackground,
-    TextureIntent, TexturePoolEntry, TextureSlotRef, UiOutput, UiState, WorkspaceMode,
+    AnimationUiState, AxisGizmoAction, ChromeInsets, PlaybackSpeed, TexViewRequest,
+    TextureBackground, TextureIntent, TexturePoolEntry, TextureSlotRef, UiOutput, UiState,
+    WorkspaceMode,
 };
 pub use theme::init_style;

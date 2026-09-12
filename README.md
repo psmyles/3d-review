@@ -65,8 +65,9 @@ There are multiple ways to open a file in 3D Review:
   Windows installer registers the file type, and on macOS the app bundle offers
   itself for `.fbx` in Finder's Open With.
 
-Import runs on a background worker thread with a progress toast. A newer request replaces one
-still in progress, so opening two files in a row never shows the wrong result.
+Import runs on a background worker thread with a progress card at the bottom of the
+viewport. A newer request replaces one still in progress, so opening two files in a
+row never shows the wrong result.
 `Ctrl/Cmd+N` returns the viewer to its launch state.
 
 ## Workspaces
@@ -275,9 +276,11 @@ vertex shader stage.
 Every FBX animation stack imports as a clip, baked at the file's own frame rate
 with no key reduction. Frame counts come from the stack's time range, not from key
 counts. Clicking a clip in the Outliner selects it, paused on its first frame, and
-raises the playback transport at the bottom of the viewport: go to start, step
+raises the playback transport in the status bar: go to start, step
 back, play/pause, step forward, a scrubber, a `frame / total   seconds` readout,
-looping (on by default) and a speed control. `Space` plays and pauses; `,` and `.`
+looping (on by default) and a speed control. On a narrow window the scrubber
+shrinks and then the readout moves to its tooltip, so the controls stay reachable
+instead of running under the buttons beside them. `Space` plays and pauses; `,` and `.`
 step single frames.
 
 While a clip is selected, `F` and the bounding box use that clip's full range of

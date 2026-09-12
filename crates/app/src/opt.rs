@@ -34,7 +34,7 @@ use review_optimize::{
     ExportOptions, ExportReport, OpKind, OptError, ProcessInput, ProcessedResult, export_fbx,
     preset, process,
 };
-use review_ui::{OptIntent, OptLevelView, OptResultView};
+use review_ui::{NoticeKind, OptIntent, OptLevelView, OptResultView};
 
 use crate::dialog::Dialog;
 use crate::events::UserEvent;
@@ -405,22 +405,24 @@ impl App {
                     .first()
                     .map(|path| crate::loading::file_label(path))
                     .unwrap_or_else(|| "the mesh".to_owned());
-                self.notifications.success(if files > 1 {
+                let title = if files > 1 {
                     format!(
                         "Exported {files} files ({} triangles)",
                         report.triangle_count
                     )
                 } else {
                     format!("Exported {name} ({} triangles)", report.triangle_count)
-                });
+                };
                 // The notes describe the genuine losses (a level written as
                 // triangles because a simplify rebuilt it, an animation target
                 // that has no element in the file, an export before the source
                 // capture landed), which the user should learn now rather than
-                // when the file reaches an engine.
-                for note in report.notes {
-                    self.notifications.info(note);
-                }
+                // when the file reaches an engine. They ride the success notice
+                // as its body rather than one notice each: a chain of several
+                // meshes has a note per mesh, and that used to bury the export's
+                // own result under a column of near-identical boxes.
+                self.notifications
+                    .report(NoticeKind::Success, title, report.notes);
             }
             Err(error) => {
                 prof::msg(&format!("FBX export failed: {error}"));
@@ -502,8 +504,17 @@ impl App {
         if let Some(opt) = self.opt.as_mut() {
             opt.announced_warnings = warnings;
         }
-        for warning in fresh {
-            self.notifications.info(warning);
+        if !fresh.is_empty() {
+            // One notice for the run, however many things it has to say.
+            self.notifications.report(
+                NoticeKind::Warning,
+                if fresh.len() == 1 {
+                    "Optimization warning".to_owned()
+                } else {
+                    format!("{} optimization warnings", fresh.len())
+                },
+                fresh,
+            );
         }
 
         self.redraw.requested = true;
@@ -621,7 +632,7 @@ impl App {
         self.notifications
             .success(format!("Loaded {}", crate::loading::file_label(path)));
         if dropped > 0 {
-            self.notifications.info(format!(
+            self.notifications.warning(format!(
                 "{dropped} per-object override{} referenced objects this model \
                  doesn't have, and {} dropped.",
                 if dropped == 1 { "" } else { "s" },

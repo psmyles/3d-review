@@ -7,9 +7,11 @@ use review_render::{OrbitCamera, Selection};
 
 use crate::dimensions::DimensionView;
 use crate::opt_state::{ComparisonSide, GhostStyle, OptIntent, OptLayout};
-use crate::state::{OptionPanel, ScopedStats, UiOutput, UiState, WorkspaceMode, sync_debug_state};
+use crate::state::{
+    ChromeInsets, OptionPanel, ScopedStats, UiOutput, UiState, WorkspaceMode, sync_debug_state,
+};
 use crate::theme::{self, color, size};
-use crate::{dimensions, gizmo, help, panels, stats, status_bar, texture_view, toolbar, transport};
+use crate::{dimensions, gizmo, help, panels, stats, status_bar, texture_view, toolbar};
 
 /// The Opt workspace's second view, as the overlay needs to see it. `app` supplies
 /// this whenever that workspace is active; every other workspace passes `None`.
@@ -68,6 +70,10 @@ pub fn draw_overlay(
     // here each frame.
     sync_debug_state(state);
     let mut output = UiOutput::default();
+    // Zero unless a workspace docks panels below; the notice column reads this
+    // back through `app`, and a stale value from a previous workspace would
+    // shove it off-centre in the ones that dock nothing.
+    state.chrome_insets = ChromeInsets::default();
 
     let toolbar_height = size::TOOLBAR_HEIGHT;
     let status_bar_height = size::STATUS_BAR_HEIGHT;
@@ -76,7 +82,7 @@ pub fn draw_overlay(
     // bands, then the dockable side panels fill the middle — declared in this order
     // so the side panels sit *between* the bars, not under them.
     toolbar::draw(root, state);
-    status_bar::draw(root, state);
+    status_bar::draw(root, state, model);
 
     // The side panels, option panels, axis gizmo and stats overlay are all 3D-scene
     // chrome; the UV / Texture workspaces keep a clean viewport (just the UV dropdown
@@ -88,6 +94,10 @@ pub fn draw_overlay(
         // the gizmo / stats never land on top of a panel. The Inspector emits
         // material-edit intents for `app` to apply (invariant 2).
         let side = draw_side_panels(root, state, model);
+        state.chrome_insets = ChromeInsets {
+            left: side.left_inset,
+            right: side.right_inset,
+        };
         output.material_edit = side.inspector.material_edit;
         output.texture = side.inspector.texture;
         output.material_edit_active = side.inspector.material_edit_active;
@@ -155,14 +165,6 @@ pub fn draw_overlay(
         draw_overlay_legend(
             ctx,
             state,
-            status_bar_height,
-            side.left_inset,
-            side.right_inset,
-        );
-        transport::draw_transport(
-            ctx,
-            state,
-            model,
             status_bar_height,
             side.left_inset,
             side.right_inset,

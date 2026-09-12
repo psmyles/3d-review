@@ -359,20 +359,38 @@ zoom, fit, background fill, channel pick) and hands the image to the renderer:
 
 Modules: `theme`, `state`, `assets`, `widgets`, `overlay`, `toolbar`,
 `status_bar`, `stats`, `texture_view`, `gizmo`, `dimensions`, `help`, `transport`
-(the bottom-centre playback card, drawn only while a clip is selected in the 3D
-workspace), `notifications`, plus `panels/` (one file per tool: `anti_aliasing`,
+(the playback controls, drawn in the status bar's centre span only while a clip
+is selected in the 3D workspace), `notifications`, plus `panels/` (one file per tool: `anti_aliasing`,
 `bounding_box`, `environment`, `normals`, `gtao`, `tonemap`, `uv_checker`,
 `vertex_colors`, `wireframe`, `material_mode`; plus `inspector`, `outliner`, and
 `opt_stack` / `opt_inspector`). The Outliner is itself a directory —
 `panels/outliner/{mod,tree,rows,nav,materials,animations}.rs`.
 
-**Notifications.** `notifications.rs` uses egui-notify for the transient result
-and mode toasts, but the persistent **activity card** is drawn here as a
-fixed-width `egui::Area`. A running job rewrites its line every few frames, and
-egui-notify cannot edit a live toast's caption — replacing one costs a slide-out
-and a slide-in, which reads as a flicker rather than as progress.
-`begin_activity` names the job; `update_activity` rewrites the stage line and the
-bar in place.
+**Notifications.** `notifications.rs` is ours, drawn on plain egui —
+`egui-notify` is gone, because it slid every toast in and out with no way to stop
+it, anchored only to the four screen corners, and turned a multi-part result into
+one box per line. One `egui::Area` anchored bottom-centre of the free viewport
+(offset by `UiState::chrome_insets`, the open side panels' widths) holds a column
+of cards. A card is a header over a body: the header carries only the kind —
+`Warning`, `Success`, `Error`, `Info`, or `Working` while a job runs — then a
+divider edge to edge, then the message wrapped beneath it. The message used to be
+the header, clipped to one line, which threw away the half of an error that said
+what went wrong. `mode` notices stay a bare single line (`Notice::compact`).
+
+The styling is egui's own throughout rather than a second look: `Frame::window`
+for the card, `spacing.window_margin` for the header's and body's padding (the
+card's own frame has none, which is what lets the divider span the full width),
+one `TextStyle::Heading` for the header row, `window_stroke` for the divider's
+colour and thickness, egui's two-stroke close glyph, `text_color` /
+`weak_text_color` for the body, `egui::ProgressBar` for the bar, and
+`error_fg_color` / `warn_fg_color` / `hyperlink_color` / `strong_text_color` for
+the kind tints. Only `NOTICE_SUCCESS` is ours, because egui has no green. `success`/`info`/`mode` expire
+after `motion::NOTIFICATION_EVENT`; `warning`/`error` and any `report(kind, title,
+lines)` with a body stay until dismissed. A keyed push (`mode`, `error_keyed`)
+rewrites its slot in place. Deadlines run on egui's clock and resolve on the first
+frame a card is shown, hovering pauses them, and one `request_repaint_after` per
+frame keeps a sticky card off the redraw loop. `begin_activity` names a background
+job; `update_activity` rewrites the stage line and the bar in place.
 
 **Opt state.** `opt_state.rs` holds the `OptStack` the chrome edits, the
 comparison-view settings and the last run's measured figures. Ownership follows

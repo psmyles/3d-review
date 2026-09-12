@@ -1,6 +1,5 @@
 - Texture view in UV mode
 - quick open/hide outliner box on left edge of the viewport
-- object selection via direct viewport click
-- better notification system?
+- object selection via direct viewport click - show hover overlay first
 - compression option at export time?
 - read FBX built in textures
