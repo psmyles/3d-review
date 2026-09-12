@@ -16,21 +16,16 @@ pub(crate) fn wide_button(label: &str, width: f32) -> egui::Button<'_> {
 /// A square icon toggle sized to the standard toolbar tile.
 pub(crate) fn icon_toggle_button(
     ui: &mut egui::Ui,
-    ctx: &egui::Context,
     icon: &AppIcon,
     selected: bool,
     tooltip: &str,
 ) -> egui::Response {
     icon_tile_button(
         ui,
-        ctx,
         icon,
         selected,
         tooltip,
-        egui::vec2(
-            theme::px(ctx, size::TOOLBAR_ICON_SIZE),
-            theme::px(ctx, size::TOOLBAR_ICON_SIZE),
-        ),
+        egui::vec2(size::TOOLBAR_ICON_SIZE, size::TOOLBAR_ICON_SIZE),
         false,
     )
 }
@@ -42,21 +37,16 @@ pub(crate) fn icon_toggle_button(
 /// it.
 pub(crate) fn icon_toggle_button_with_options(
     ui: &mut egui::Ui,
-    ctx: &egui::Context,
     icon: &AppIcon,
     selected: bool,
     tooltip: &str,
 ) -> egui::Response {
     icon_tile_button(
         ui,
-        ctx,
         icon,
         selected,
         tooltip,
-        egui::vec2(
-            theme::px(ctx, size::TOOLBAR_ICON_SIZE),
-            theme::px(ctx, size::TOOLBAR_ICON_SIZE),
-        ),
+        egui::vec2(size::TOOLBAR_ICON_SIZE, size::TOOLBAR_ICON_SIZE),
         true,
     )
 }
@@ -66,7 +56,6 @@ pub(crate) fn icon_toggle_button_with_options(
 /// `has_options` is set, a hover paints the green options-hint underline.
 pub(crate) fn icon_tile_button(
     ui: &mut egui::Ui,
-    ctx: &egui::Context,
     icon: &AppIcon,
     selected: bool,
     tooltip: &str,
@@ -89,7 +78,7 @@ pub(crate) fn icon_tile_button(
 
     ui.painter().rect(
         rect,
-        theme::px(ctx, size::TILE_CORNER_RADIUS),
+        size::TILE_CORNER_RADIUS,
         fill,
         egui::Stroke::new(size::HAIRLINE, egui::Color32::TRANSPARENT),
         egui::StrokeKind::Inside,
@@ -139,12 +128,11 @@ pub(crate) fn icon_tile_button(
 /// the caller drives selection on `clicked()`.
 pub(crate) fn segment_button(
     ui: &mut egui::Ui,
-    ctx: &egui::Context,
     label: &str,
     selected: bool,
     width: f32,
 ) -> egui::Response {
-    let desired = egui::vec2(width, theme::px(ctx, size::MODE_SEGMENT_HEIGHT));
+    let desired = egui::vec2(width, size::MODE_SEGMENT_HEIGHT);
     let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::click());
     let fill = if selected {
         color::ACCENT
@@ -161,7 +149,7 @@ pub(crate) fn segment_button(
 
     ui.painter().rect(
         rect,
-        theme::px(ctx, size::TILE_CORNER_RADIUS),
+        size::TILE_CORNER_RADIUS,
         fill,
         egui::Stroke::NONE,
         egui::StrokeKind::Inside,
@@ -170,7 +158,7 @@ pub(crate) fn segment_button(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         label,
-        egui::FontId::proportional(theme::px(ctx, font::MODE_SEGMENT)),
+        egui::FontId::proportional(font::MODE_SEGMENT),
         text_color,
     );
     response
@@ -183,9 +171,7 @@ pub(crate) fn segment_button(
 ///
 /// The label is drawn in the ambient `TextStyle::Button` font — the same one the
 /// stock `selectable_label` rows beneath the strip resolve — so the tabs and the
-/// list they head always read at one size. For the same reason every measurement
-/// here is in egui **points**, not DPI-scaled logical pixels: the strip has to
-/// track the surrounding stock widgets, not a fixed physical size.
+/// list they head always read at one size.
 ///
 /// This is the `egui_tabs` look, painted here rather than pulled in: that crate
 /// pins `egui 0.29`/`0.30` and this workspace is on 0.36, so linking it would fork a

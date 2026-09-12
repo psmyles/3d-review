@@ -573,10 +573,14 @@ are **semantic** (`panel_bg`, `selection`, `gizmo_ball`), not `dark_grey_6`.
 Tokens live in `crates/ui/src/theme/` — one file per group (`color.rs`,
 `size.rs`, `font.rs`, `motion.rs`) with `theme/mod.rs` holding `apply_visuals`
 and the conversions; add the token there first, then reference it.
-**`size` tokens are design pixels, not egui points** — convert at the use site
-with `theme::px(ctx, …)` or `theme::chrome_height`. Reading a `size` token raw
-against a value already in points silently over-reserves on any HiDPI display; the
-few tokens that genuinely *are* points say so in their doc comment.
+**Every `size` and `font` token is in egui points and is used raw** — a point is
+already the DPI-independent unit, since egui multiplies by `pixels_per_point` when
+it rasterizes, so there is nothing to convert. `theme::chrome_height()` is the one
+derived value, and it takes no scale. The tokens used to be "design pixels" divided
+by `pixels_per_point` at the use site; that is a second correction on top of egui's
+and cancels it, pinning the hand-painted chrome to physical pixels so it halved in
+apparent size on a 2× display while the native `Window`/`Panel` chrome beside it
+did not. Don't reintroduce a px-to-point conversion.
 
 **9. All unsafe and all C/FFI lives in `import`, `psd` and `optimize`** — plus the
 scoped GPU site below. No unsafe leaks into `model` or `ui`, nor into `render`'s

@@ -66,35 +66,16 @@ pub fn apply_visuals(ctx: &egui::Context) {
     ctx.all_styles_mut(|slot| *slot = style.clone());
 }
 
-/// Convert a design-pixel [`size`] / [`font`] token into egui points for the
-/// current DPI, so the overlay keeps the same physical size across display
-/// scales. This is the conversion the whole crate's chrome goes through.
-pub fn px(ctx: &egui::Context, value: f32) -> f32 {
-    px_at(ctx.pixels_per_point(), value)
-}
-
-/// [`px`] for a caller that knows the display scale but holds no context.
-fn px_at(pixels_per_point: f32, value: f32) -> f32 {
-    // A zero (or absurd) scale would divide the design value to infinity.
-    value / pixels_per_point.max(MIN_PIXELS_PER_POINT)
-}
-
-/// Floor on the display scale used for the design-pixel conversion, so a window
-/// that reports a degenerate scale factor can't produce an infinite size.
-const MIN_PIXELS_PER_POINT: f32 = 0.1;
-
-/// Combined height of the toolbar and status-bar bands in egui points at
-/// `pixels_per_point` — the chrome that overlays the full-window 3D scene, and so
-/// the band `app` keeps a framed model clear of.
+/// Combined height of the toolbar and status-bar bands in egui points — the
+/// chrome that overlays the full-window 3D scene, and so the band `app` keeps a
+/// framed model clear of.
 ///
-/// Takes the scale rather than an [`egui::Context`] because `app` frames the
-/// startup camera before egui has run a pass (a context reports 1.0 until then);
-/// the window's own scale factor is the truth at that point.
-pub fn chrome_height(pixels_per_point: f32) -> f32 {
-    px_at(
-        pixels_per_point,
-        size::TOOLBAR_HEIGHT + size::STATUS_BAR_HEIGHT,
-    )
+/// Scale-free, because every token is already in points: egui multiplies by
+/// `pixels_per_point` when it rasterizes, so a point is the DPI-independent unit
+/// and there is nothing left for us to convert. Ask this rather than adding
+/// [`size::TOOLBAR_HEIGHT`] and [`size::STATUS_BAR_HEIGHT`] up at the call site.
+pub fn chrome_height() -> f32 {
+    size::TOOLBAR_HEIGHT + size::STATUS_BAR_HEIGHT
 }
 
 /// `[r, g, b, a]` in 0..1 from an egui `Color32` — a plain `/255` scale of the

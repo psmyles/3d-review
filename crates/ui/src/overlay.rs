@@ -69,8 +69,8 @@ pub fn draw_overlay(
     sync_debug_state(state);
     let mut output = UiOutput::default();
 
-    let toolbar_height = theme::px(ctx, size::TOOLBAR_HEIGHT);
-    let status_bar_height = theme::px(ctx, size::STATUS_BAR_HEIGHT);
+    let toolbar_height = size::TOOLBAR_HEIGHT;
+    let status_bar_height = size::STATUS_BAR_HEIGHT;
 
     // Native chrome panels first: the top toolbar and bottom status bar carve their
     // bands, then the dockable side panels fill the middle — declared in this order
@@ -130,8 +130,8 @@ pub fn draw_overlay(
                 .anchor(
                     egui::Align2::RIGHT_TOP,
                     egui::vec2(
-                        -(theme::px(ctx, size::GIZMO_INSET) + side.right_inset),
-                        toolbar_height + theme::px(ctx, size::GIZMO_INSET),
+                        -(size::GIZMO_INSET + side.right_inset),
+                        toolbar_height + size::GIZMO_INSET,
                     ),
                 )
                 .show(ctx, |ui| {
@@ -352,7 +352,7 @@ fn draw_option_panels(ctx: &egui::Context, state: &mut UiState, viewport: egui::
         // the first time a given window id appears; afterwards the user's dragged
         // position (kept in egui memory) wins.
         let step = size::PANEL_CASCADE_STEP * slot as f32;
-        let margin = theme::px(ctx, size::OVERLAY_MARGIN);
+        let margin = size::OVERLAY_MARGIN;
         let default_pos = egui::pos2(
             viewport.left() + margin + step,
             viewport.top() + margin + step,

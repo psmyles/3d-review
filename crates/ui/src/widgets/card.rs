@@ -1,6 +1,6 @@
 //! The floating stats cards drawn over the viewport.
 
-use crate::theme::{self, color, size};
+use crate::theme::{color, size};
 
 /// A floating stats-style overlay card anchored bottom-left above the status
 /// bar: the shared `Area` + framed card (translucent fill, hairline border,
@@ -50,7 +50,7 @@ pub(crate) fn stats_overlay_card_at(
     width: f32,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) {
-    let margin = theme::px(ctx, size::STATS_OVERLAY_MARGIN);
+    let margin = size::STATS_OVERLAY_MARGIN;
     let (align, offset_x) = match side {
         StatsCardSide::Left => (egui::Align2::LEFT_BOTTOM, side_inset + margin),
         StatsCardSide::Right => (egui::Align2::RIGHT_BOTTOM, -(side_inset + margin)),

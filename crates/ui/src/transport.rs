@@ -11,7 +11,7 @@ use review_model::{AnimationClip, ModelData};
 
 use crate::assets::{self, AppIcon};
 use crate::state::{PlaybackSpeed, UiState, WorkspaceMode};
-use crate::theme::{self, color, font, size};
+use crate::theme::{color, font, size};
 use crate::widgets::{self, StatsCardSide};
 
 /// Draw the transport for the selected clip, if any. `left_inset` /
@@ -45,7 +45,7 @@ pub(crate) fn draw_transport(
         offset,
         status_bar_height,
         size::ANIM_TRANSPORT_WIDTH,
-        |ui| transport_row(ui, ctx, state, clip, fps),
+        |ui| transport_row(ui, state, clip, fps),
     );
 }
 
@@ -58,25 +58,18 @@ pub(crate) fn draw_transport(
 /// left. The readout between them is allocated at the width of the *widest*
 /// string this clip can produce (plus a trailing pad), so a frame counter or an
 /// elapsed time gaining a digit can't shove the right-hand controls sideways.
-fn transport_row(
-    ui: &mut egui::Ui,
-    ctx: &egui::Context,
-    state: &mut UiState,
-    clip: &AnimationClip,
-    fps: f64,
-) {
+fn transport_row(ui: &mut egui::Ui, state: &mut UiState, clip: &AnimationClip, fps: f64) {
     let anim = &mut state.animation;
     let last_frame = clip.frame_count(fps).saturating_sub(1);
     // Square tiles the height of the speed dropdown — `compact_combo` sizes its
     // button from `PANEL_ROW_H`, so every control in the row reads as one band.
-    // (An egui-point token, so no `theme::px` conversion.)
     let tile = egui::Vec2::splat(size::PANEL_ROW_H);
     let button = |ui: &mut egui::Ui, icon: &AppIcon, selected: bool, tooltip: &str| {
-        widgets::icon_tile_button(ui, ctx, icon, selected, tooltip, tile, false).clicked()
+        widgets::icon_tile_button(ui, icon, selected, tooltip, tile, false).clicked()
     };
 
     ui.horizontal(|ui| {
-        let gap = theme::px(ctx, size::ANIM_TRANSPORT_GAP);
+        let gap = size::ANIM_TRANSPORT_GAP;
         ui.spacing_mut().item_spacing.x = gap;
 
         let digits = last_frame.to_string().len();
@@ -88,19 +81,18 @@ fn transport_row(
         // The frame field is space-padded to a constant width already; the elapsed
         // seconds are not, so the block is measured at the clip's full duration.
         let widest = format!("{last_frame} / {last_frame}   {:.2} s", clip.duration());
-        let readout_width =
-            mono_width(ui, &widest) + theme::px(ctx, size::ANIM_TRANSPORT_GROUP_GAP);
+        let readout_width = mono_width(ui, &widest) + size::ANIM_TRANSPORT_GROUP_GAP;
 
         // Five tiles (four transport + loop), the combo (its `width` is the inner
         // content, so its frame padding counts too), the readout block, and the
         // seven gaps between the eight items. Whatever is left is the rail.
-        let combo_width = theme::px(ctx, size::ANIM_SPEED_COMBO_WIDTH);
+        let combo_width = size::ANIM_SPEED_COMBO_WIDTH;
         let fixed = tile.x * 5.0
             + combo_width
             + ui.spacing().button_padding.x * 2.0
             + readout_width
             + gap * 7.0;
-        let rail = (ui.available_width() - fixed).max(theme::px(ctx, size::ANIM_SCRUB_MIN_WIDTH));
+        let rail = (ui.available_width() - fixed).max(size::ANIM_SCRUB_MIN_WIDTH);
 
         if button(
             ui,

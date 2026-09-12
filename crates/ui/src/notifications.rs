@@ -25,17 +25,16 @@
 //! from the app's egui visuals (so toasts match the rest of the chrome).
 //!
 //! **Placement.** Toasts anchor to the bottom-right corner, clear of the status
-//! bar: the bottom margin is the bar's own height plus a margin, scaled to points
-//! by [`theme::px`] exactly as the bar itself is, and the activity card sits one
-//! toast row above the event stack so the two never overlap.
+//! bar: the bottom margin is the bar's own height plus a margin, in the same
+//! points the bar itself is drawn in, and the activity card sits one toast row
+//! above the event stack so the two never overlap.
 //!
 //! [`theme`]: crate::theme
-//! [`theme::px`]: crate::theme::px
 
 use egui::{Align2, Context, CornerRadius, Frame, Id, Order, Rect, TextWrapMode, vec2};
 use egui_notify::{Anchor, Toasts};
 
-use crate::theme::{self, color, motion, size};
+use crate::theme::{color, motion, size};
 
 /// The app-wide toast collector. Owned by `app`; shown once per frame.
 pub struct Notifications {
@@ -75,8 +74,8 @@ impl Default for Notifications {
 
 impl Notifications {
     /// Create the collector. All three stacks anchor `BottomRight`; their margins
-    /// are applied per-frame in [`Notifications::show`], which is where the
-    /// display scale the design-pixel insets need is known.
+    /// are applied in [`Notifications::show`], since egui-notify takes them per
+    /// frame rather than at construction.
     pub fn new() -> Self {
         let stack = || {
             Toasts::new()
@@ -176,7 +175,7 @@ impl Notifications {
     /// (invariant 6); the activity card is static paint and requests none, so a
     /// job that reports nothing new never spins the loop.
     pub fn show(&mut self, ctx: &Context) {
-        self.sync_margins(ctx);
+        self.sync_margins();
         self.show_activity(ctx);
         self.mode.show(ctx);
         self.events.show(ctx);
@@ -191,8 +190,8 @@ impl Notifications {
         };
         let visuals = ctx.global_style().visuals.widgets.noninteractive;
         let offset = vec2(
-            -theme::px(ctx, size::NOTIFICATION_MARGIN_X),
-            -(theme::px(ctx, size::NOTIFICATION_EVENT_MARGIN_Y) + size::NOTIFICATION_ROW),
+            -size::NOTIFICATION_MARGIN_X,
+            -(size::NOTIFICATION_EVENT_MARGIN_Y + size::NOTIFICATION_ROW),
         );
         egui::Area::new(Id::new("activity_card"))
             .anchor(Align2::RIGHT_BOTTOM, offset)
@@ -224,12 +223,11 @@ impl Notifications {
             });
     }
 
-    /// Re-derive the stacks' margins for the current display scale. The insets are
-    /// design pixels (invariant 8), so what clears the status bar depends on the
-    /// scale — which is known here and not at construction.
-    fn sync_margins(&mut self, ctx: &Context) {
-        let x = theme::px(ctx, size::NOTIFICATION_MARGIN_X);
-        let event_y = theme::px(ctx, size::NOTIFICATION_EVENT_MARGIN_Y);
+    /// Apply the stacks' margins. The insets come from the same tokens the status
+    /// bar they clear is drawn from, so the two stay in step by construction.
+    fn sync_margins(&mut self) {
+        let x = size::NOTIFICATION_MARGIN_X;
+        let event_y = size::NOTIFICATION_EVENT_MARGIN_Y;
         set_margin(&mut self.events, vec2(x, event_y));
         set_margin(&mut self.mode, vec2(x, event_y));
         // (The activity card rides one toast row higher, so the work indicator and

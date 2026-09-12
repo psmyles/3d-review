@@ -16,9 +16,9 @@ pub(crate) fn draw_axis_gizmo(
     camera: OrbitCamera,
     projection: CameraProjection,
 ) -> Option<AxisGizmoAction> {
-    let gizmo_size = theme::px(ctx, size::GIZMO_SIZE);
-    let reach = theme::px(ctx, size::GIZMO_REACH);
-    let ball_radius = theme::px(ctx, size::GIZMO_BALL_RADIUS);
+    let gizmo_size = size::GIZMO_SIZE;
+    let reach = size::GIZMO_REACH;
+    let ball_radius = size::GIZMO_BALL_RADIUS;
     let (rect, panel_response) = ui.allocate_exact_size(
         egui::vec2(gizmo_size, gizmo_size),
         egui::Sense::click_and_drag(),
@@ -32,11 +32,7 @@ pub(crate) fn draw_axis_gizmo(
         .map(|delta| AxisGizmoAction::Orbit(Vec2::new(delta.x, delta.y) * ctx.pixels_per_point()));
 
     if panel_response.hovered() || panel_response.dragged() {
-        painter.rect_filled(
-            rect,
-            theme::px(ctx, size::GIZMO_CORNER_RADIUS),
-            color::GIZMO_BG,
-        );
+        painter.rect_filled(rect, size::GIZMO_CORNER_RADIUS, color::GIZMO_BG);
     }
 
     let mut points = axis_gizmo_points(camera, projection, center, reach);
@@ -51,7 +47,7 @@ pub(crate) fn draw_axis_gizmo(
         painter.line_segment(
             [center, point.position],
             egui::Stroke::new(
-                theme::px(ctx, size::GIZMO_LINE_WIDTH),
+                size::GIZMO_LINE_WIDTH,
                 point.color.linear_multiply(alpha as f32 / 255.0),
             ),
         );
@@ -64,7 +60,7 @@ pub(crate) fn draw_axis_gizmo(
         );
         let response = ui
             .interact(
-                ball_rect.expand(theme::px(ctx, size::GIZMO_BALL_HIT_EXPAND)),
+                ball_rect.expand(size::GIZMO_BALL_HIT_EXPAND),
                 ui.make_persistent_id(("axis_gizmo_ball", point.axis)),
                 egui::Sense::click(),
             )
@@ -79,10 +75,9 @@ pub(crate) fn draw_axis_gizmo(
             painter.circle_filled(point.position, radius, point.color);
             bold_text(
                 painter,
-                ctx,
                 point.position,
                 point.label,
-                egui::FontId::proportional(theme::px(ctx, font::GIZMO_LABEL)),
+                egui::FontId::proportional(font::GIZMO_LABEL),
                 color::GIZMO_LABEL,
             );
         } else if projection == CameraProjection::Orthographic
@@ -94,10 +89,9 @@ pub(crate) fn draw_axis_gizmo(
             painter.circle_filled(point.position, radius, point.color);
             bold_text(
                 painter,
-                ctx,
                 point.position,
                 point.label,
-                egui::FontId::proportional(theme::px(ctx, font::GIZMO_LABEL_NEG)),
+                egui::FontId::proportional(font::GIZMO_LABEL_NEG),
                 color::GIZMO_LABEL,
             );
         } else if response.hovered() {
@@ -105,14 +99,13 @@ pub(crate) fn draw_axis_gizmo(
             painter.circle_stroke(
                 point.position,
                 radius,
-                egui::Stroke::new(theme::px(ctx, size::GIZMO_RING_WIDTH), point.color),
+                egui::Stroke::new(size::GIZMO_RING_WIDTH, point.color),
             );
             bold_text(
                 painter,
-                ctx,
                 point.position,
                 point.label,
-                egui::FontId::proportional(theme::px(ctx, font::GIZMO_LABEL_NEG)),
+                egui::FontId::proportional(font::GIZMO_LABEL_NEG),
                 point.color,
             );
         } else {
@@ -138,15 +131,15 @@ pub(crate) fn draw_axis_gizmo(
     // (`contains_pointer` rather than `hovered` so it stays lit while the pointer
     // moves onto the button itself.)
     if panel_response.contains_pointer() || panel_response.dragged() {
-        let reset_size = theme::px(ctx, size::GIZMO_RESET_ICON_SIZE);
-        let inset = theme::px(ctx, size::GIZMO_RESET_INSET);
+        let reset_size = size::GIZMO_RESET_ICON_SIZE;
+        let inset = size::GIZMO_RESET_INSET;
         let reset_rect = egui::Rect::from_center_size(
             egui::pos2(rect.left() + inset, rect.bottom() - inset),
             egui::vec2(reset_size, reset_size),
         );
         let response = ui
             .interact(
-                reset_rect.expand(theme::px(ctx, size::GIZMO_BALL_HIT_EXPAND)),
+                reset_rect.expand(size::GIZMO_BALL_HIT_EXPAND),
                 ui.make_persistent_id("axis_gizmo_reset"),
                 egui::Sense::click(),
             )

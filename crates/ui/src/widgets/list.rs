@@ -1,6 +1,6 @@
 //! List rows (the Outliner's and the Inspector's) and the text helpers they use.
 
-use crate::theme::{self, color, size};
+use crate::theme::{color, size};
 
 /// One row of a flat list (the Opt stack, the Animations tab): a full-width
 /// band that selects on click, painted like an Outliner row. Returns the row's
@@ -79,13 +79,12 @@ pub(crate) fn mono_label(text: &str, font_size: f32, color: egui::Color32) -> eg
 /// layering the glyphs with small sub-pixel offsets before the crisp center pass.
 pub(crate) fn bold_text(
     painter: &egui::Painter,
-    ctx: &egui::Context,
     pos: egui::Pos2,
     text: &str,
     font: egui::FontId,
     color: egui::Color32,
 ) {
-    let offset = theme::px(ctx, size::GIZMO_BOLD_OFFSET);
+    let offset = size::GIZMO_BOLD_OFFSET;
     for delta in [
         egui::vec2(-offset, 0.0),
         egui::vec2(offset, 0.0),

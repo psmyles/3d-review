@@ -1,32 +1,40 @@
-//! Pixel sizes, spacings and radii.
+//! Sizes, spacings and radii.
 //!
-//! **Every token here is a design pixel** — the size the value has on a
-//! 100%-scale display — and is turned into egui points at the use site by [`px`]
-//! (`value / pixels_per_point`), so the hand-painted chrome keeps one physical
-//! size across display scales. A value already in points must never be compared
-//! against a raw token: at 150% scaling that reserves the chrome half again over,
-//! at 200% twice. Anything needing the height of the toolbar + status-bar band
-//! asks [`chrome_height`] instead of adding [`TOOLBAR_HEIGHT`] and
-//! [`STATUS_BAR_HEIGHT`] up itself.
+//! **Every token here is in egui points, and is used raw.** A point is already
+//! the DPI-independent unit — egui multiplies by `pixels_per_point` when it
+//! rasterizes — so a token authored against a 100%-scale display needs no
+//! conversion to keep one apparent size on a HiDPI one. Anything needing the
+//! height of the toolbar + status-bar band asks [`chrome_height`] rather than
+//! adding [`TOOLBAR_HEIGHT`] and [`STATUS_BAR_HEIGHT`] up itself.
 //!
-//! The exception is the blocks marked **egui points** below — the option panels,
-//! the help card, the native window / side-panel sizes, and egui-notify's own
-//! toast metrics. Those are handed straight to egui builders, which already work
-//! in points, so they are *not* routed through [`px`].
+//! These used to be "design pixels" divided by `pixels_per_point` at the use
+//! site, which is a *second* correction on top of egui's and cancels it: a token
+//! resolved to a fixed count of physical pixels, so the hand-painted chrome kept
+//! one *pixel* size rather than one apparent size, shrinking against the native
+//! `Window`/`Panel` chrome beside it as the display scale rose.
+//!
+//! **The chrome tokens were retuned by 2/3 when that conversion came out, and
+//! that is not an arbitrary number.** They had been tuned by eye on a 150%
+//! display *through* the divide-by-1.5, so each one held its apparent size × 1.5
+//! — the toolbar's `73` was chosen to land 73 physical pixels on that screen, not
+//! 73 points. Dropping the conversion without rescaling made the whole hand-painted
+//! band render half again too large, while the option windows, side panels and
+//! stock text — which were always real points — stayed put. The group widths
+//! divide exactly (`4 + 28n + 2(n-1)`, where it was `6 + 42n + 3(n-1)`); the rest
+//! are rounded to whole points. Don't re-inflate them to "match" the old numbers.
 
 // ── Overlay layout ────────────────────────────────────────────────────
-pub const TOOLBAR_HEIGHT: f32 = 73.0;
-pub const STATUS_BAR_HEIGHT: f32 = 64.0;
-pub const OVERLAY_MARGIN: f32 = 12.0;
+pub const TOOLBAR_HEIGHT: f32 = 48.0;
+pub const STATUS_BAR_HEIGHT: f32 = 42.0;
+pub const OVERLAY_MARGIN: f32 = 8.0;
 /// Width of the dockable Outliner / Inspector side panels (their default /
 /// also reused for [`SIDE_PANEL_DEFAULT_WIDTH`]). A touch narrower than the
 /// option windows, since their content is lists / a compact property column.
 pub const TOOL_WINDOW_WIDTH: f32 = 300.0;
 /// Minimum height of an Outliner tab (Geometry / Materials), painted as text
-/// with an active-underline rather than a button. In egui **points**, not
-/// logical px: the strip sizes off the ambient button font (see
-/// [`OUTLINER_TAB_PAD_Y`]) so it tracks the stock rows below it, and this is
-/// only the floor that padding is measured against.
+/// with an active-underline rather than a button. The strip sizes off the
+/// ambient button font (see [`OUTLINER_TAB_PAD_Y`]) so it tracks the stock rows
+/// below it, and this is only the floor that padding is measured against.
 pub const OUTLINER_TAB_HEIGHT: f32 = 34.0;
 /// Breathing room above and below an Outliner tab's label, in points. The
 /// strip's height is the label's row height plus twice this.
@@ -66,71 +74,66 @@ pub const OUTLINER_EYE_ICON: f32 = 14.0;
 pub const OUTLINER_EYE_PAD: f32 = 6.0;
 
 // ── Toolbar groups ────────────────────────────────────────────────────
-pub const TOOLBAR_GROUP_SPACING: f32 = 14.0;
-pub const TOOLBAR_ICON_SIZE: f32 = 42.0;
-pub const TOOLBAR_ICON_GAP: f32 = 3.0;
+pub const TOOLBAR_GROUP_SPACING: f32 = 9.0;
+pub const TOOLBAR_ICON_SIZE: f32 = 28.0;
+pub const TOOLBAR_ICON_GAP: f32 = 2.0;
 /// Inset of an icon inside its tile, as a fraction of the tile's edge — a
 /// ratio rather than a length so a smaller tile (the animation transport's,
 /// sized to a dropdown) keeps the toolbar's icon-to-tile proportion. Matches
-/// the 8-of-42 design px the toolbar tiles were drawn with.
+/// the 8-of-42 proportion the toolbar tiles were originally drawn at.
 pub const TILE_ICON_INSET_RATIO: f32 = 8.0 / 42.0;
-pub const TOOLBAR_CENTER_WIDTH: f32 = 180.0;
-/// Right toolbar cluster (3D mode): view (183, four icons) + projection (48) +
-/// the side-panels toggle group (48), with two group spacings
-/// (183 + 14 + 48 + 14 + 48 = 307), plus a little slack. It grows leftward from
+pub const TOOLBAR_CENTER_WIDTH: f32 = 120.0;
+/// Right toolbar cluster (3D mode): view (122, four icons) + projection (32) +
+/// the side-panels toggle group (32), with two group spacings
+/// (122 + 9 + 32 + 9 + 32 = 204), plus a little slack. It grows leftward from
 /// the right edge, away from the centered mode segments.
-pub const TOOLBAR_RIGHT_WIDTH: f32 = 320.0;
+pub const TOOLBAR_RIGHT_WIDTH: f32 = 213.0;
 /// Left toolbar cluster: shading (5) + material (4) + geometry-debug (3)
-/// groups, with two group spacings between them (228 + 14 + 183 + 14 + 138).
-pub const TOOLBAR_LEFT_WIDTH: f32 = 577.0;
+/// groups, with two group spacings between them (152 + 9 + 122 + 9 + 92).
+pub const TOOLBAR_LEFT_WIDTH: f32 = 384.0;
 /// Five-icon shading group: show-wireframe, wireframe-only, unlit, shaded,
 /// backface-rendering.
-pub const TOOLBAR_SHADING_GROUP_WIDTH: f32 = 228.0;
+pub const TOOLBAR_SHADING_GROUP_WIDTH: f32 = 152.0;
 /// Four-icon active-material group: source material, UV checker, vertex colors,
-/// buffers (6 padding + 4×42 icons + 3×3 gaps).
-pub const TOOLBAR_MATERIAL_GROUP_WIDTH: f32 = 183.0;
-pub const TOOLBAR_SINGLE_ICON_GROUP_WIDTH: f32 = 48.0;
+/// buffers (4 padding + 4×28 icons + 3×2 gaps).
+pub const TOOLBAR_MATERIAL_GROUP_WIDTH: f32 = 122.0;
+pub const TOOLBAR_SINGLE_ICON_GROUP_WIDTH: f32 = 32.0;
 /// Width of a three-icon toolbar group (the geometry-debug face-normals /
 /// vertex-normals / UV-seams group, and the UV-shading wire / shaded / islands
-/// group): 6 padding + 3×42 icons + 2×3 gaps.
-pub const TOOLBAR_TRIPLE_ICON_GROUP_WIDTH: f32 = 138.0;
+/// group): 4 padding + 3×28 icons + 2×2 gaps.
+pub const TOOLBAR_TRIPLE_ICON_GROUP_WIDTH: f32 = 92.0;
 /// Width of a four-icon toolbar group (the toolbar's bounding box / pivot /
-/// gizmo / grid view group): 6 padding + 4×42 icons + 3×3 gaps.
-pub const TOOLBAR_QUAD_ICON_GROUP_WIDTH: f32 = 183.0;
+/// gizmo / grid view group): 4 padding + 4×28 icons + 3×2 gaps.
+pub const TOOLBAR_QUAD_ICON_GROUP_WIDTH: f32 = 122.0;
 /// Width of a five-icon toolbar group (the status bar's Background / IBL / AO /
-/// Tonemapper / Anti-aliasing rendering-quality cluster): 6 padding + 5×42 icons
-/// + 4×3 gaps.
-pub const TOOLBAR_QUINT_ICON_GROUP_WIDTH: f32 = 228.0;
-/// Width of the centered workspace-mode group: 6 padding + 4×56 segments
-/// (3D / UV / Tex / Opt) + 3×3 gaps.
-pub const TOOLBAR_MODE_GROUP_WIDTH: f32 = 239.0;
+/// Tonemapper / Anti-aliasing rendering-quality cluster): 4 padding + 5×28 icons
+/// + 4×2 gaps.
+pub const TOOLBAR_QUINT_ICON_GROUP_WIDTH: f32 = 152.0;
+/// Width of the centered workspace-mode group: 4 padding + 4×37 segments
+/// (3D / UV / Tex / Opt) + 3×2 gaps.
+pub const TOOLBAR_MODE_GROUP_WIDTH: f32 = 158.0;
 /// Width of the UV-set dropdown shown on the right of the toolbar in UV mode.
-pub const TOOLBAR_UV_DROPDOWN_WIDTH: f32 = 200.0;
+pub const TOOLBAR_UV_DROPDOWN_WIDTH: f32 = 133.0;
 /// Width of the LOD-level dropdown in the Opt workspace's status-bar group.
 /// Narrower than the UV one: its entries are "LOD 0 (full)" at longest.
-pub const TOOLBAR_OPT_LOD_DROPDOWN_WIDTH: f32 = 120.0;
-pub const TOOLBAR_GROUP_HEIGHT: f32 = 48.0;
-pub const TOOLBAR_GROUP_PADDING: f32 = 3.0;
+pub const TOOLBAR_OPT_LOD_DROPDOWN_WIDTH: f32 = 80.0;
+pub const TOOLBAR_GROUP_HEIGHT: f32 = 32.0;
+pub const TOOLBAR_GROUP_PADDING: f32 = 2.0;
 /// Corner radius shared by toolbar groups, icon tiles and mode segments.
-pub const TILE_CORNER_RADIUS: f32 = 6.0;
+pub const TILE_CORNER_RADIUS: f32 = 4.0;
 /// Mode-segment tile size.
-pub const MODE_SEGMENT_WIDTH: f32 = 56.0;
-pub const MODE_SEGMENT_HEIGHT: f32 = 42.0;
+pub const MODE_SEGMENT_WIDTH: f32 = 37.0;
+pub const MODE_SEGMENT_HEIGHT: f32 = 28.0;
 
 // ── Notifications (egui-notify toasts) ────────────────────────────────
 /// Horizontal inset of the toast stacks from the right screen edge.
 pub const NOTIFICATION_MARGIN_X: f32 = OVERLAY_MARGIN;
 /// Bottom inset of the transient *event* toast stack: the status bar's own
-/// height plus a margin, so the toasts sit clear of it. Design pixels like the
-/// bar they clear — `Notifications` scales both through [`px`].
+/// height plus a margin, so the toasts sit clear of it.
 pub const NOTIFICATION_EVENT_MARGIN_Y: f32 = STATUS_BAR_HEIGHT + OVERLAY_MARGIN;
 /// Vertical gap between stacked toasts, and the height of one toast "row"
 /// (egui-notify's toast box plus that gap) — the offset that lifts the
 /// persistent activity toast above the event stack.
-///
-/// **egui points**, not design pixels: a toast's box is sized from the text
-/// egui lays out inside it, so its height is already in points and does not
-/// track the display scale.
 pub const NOTIFICATION_SPACING: f32 = 8.0;
 pub const NOTIFICATION_ROW: f32 = 34.0 + NOTIFICATION_SPACING;
 
@@ -139,9 +142,6 @@ pub const NOTIFICATION_ROW: f32 = 34.0 + NOTIFICATION_SPACING;
 /// progress by rewriting its own text every few frames, and a card sized to
 /// its content would shuffle its left edge on every one of them. Long titles
 /// truncate instead.
-///
-/// **egui points**, like [`NOTIFICATION_SPACING`] and for the same reason —
-/// it is measured against text egui has already laid out.
 pub const ACTIVITY_WIDTH: f32 = 232.0;
 /// Inset from the card's edge to its text.
 pub const ACTIVITY_PADDING: f32 = 10.0;
@@ -173,20 +173,20 @@ pub const TEXTURE_COMBO_MIN_W: f32 = 60.0;
 /// One segment width of the channel radio group (RGB / R / G / B / A),
 /// top-left of the Tex toolbar. The group width is derived per-frame from the
 /// number of visible segments (the `A` segment is hidden for opaque images).
-pub const TEXTURE_CHANNEL_SEGMENT_WIDTH: f32 = 44.0;
+pub const TEXTURE_CHANNEL_SEGMENT_WIDTH: f32 = 29.0;
 /// Background-fill radio group (B / W / G / C), bottom-right of the Tex status
 /// bar: one segment width and the group width (4 segments + gaps + padding).
-pub const TEXTURE_BG_SEGMENT_WIDTH: f32 = 40.0;
-pub const TEXTURE_BG_GROUP_WIDTH: f32 = 175.0;
+pub const TEXTURE_BG_SEGMENT_WIDTH: f32 = 27.0;
+pub const TEXTURE_BG_GROUP_WIDTH: f32 = 118.0;
 /// Width of the texture-picker dropdown on the right of the Tex toolbar.
-pub const TOOLBAR_TEXTURE_DROPDOWN_WIDTH: f32 = 220.0;
+pub const TOOLBAR_TEXTURE_DROPDOWN_WIDTH: f32 = 147.0;
 /// Width of the Tex viewport's stats panel (wider than the model-stats panel so
 /// "Dimension  1024 × 1024" fits on one row).
 pub const TEXTURE_STATS_PANEL_WIDTH: f32 = 188.0;
 /// Width of the clickable zoom-percentage readout next to the texture-info
 /// button in the Tex status bar. Sized to hold the widest readout
 /// (`6400%` at the max zoom) without reflowing.
-pub const TEXTURE_ZOOM_LABEL_WIDTH: f32 = 60.0;
+pub const TEXTURE_ZOOM_LABEL_WIDTH: f32 = 40.0;
 /// Screen-point side of one checkerboard-background square.
 pub const TEXTURE_CHECKER_CELL: f32 = 12.0;
 /// Fraction of the viewport the image fills when first fit (a small margin so a
@@ -203,31 +203,27 @@ pub const STATS_PANEL_WIDTH: f32 = 260.0;
 /// Width of one scope column on the model-stats card (All / Sel / Vis).
 /// Fixed, so the three numeric columns line up down the card however wide
 /// the numbers in them are; wide enough for an eight-digit count in the
-/// monospace [`font::STATS`] face.
-///
-/// In egui **points**, not design pixels: it divides up
-/// [`STATS_PANEL_WIDTH`], which the card sets its width from raw, so the two
-/// have to be in the same unit.
+/// monospace [`font::STATS`] face. Divides up [`STATS_PANEL_WIDTH`].
 pub const STATS_VALUE_COLUMN: f32 = 56.0;
 pub const STATS_PANEL_PAD_X: i8 = 9;
 pub const STATS_PANEL_PAD_Y: i8 = 9;
 /// Inset of the stats overlay from the left and bottom viewport edges.
-pub const STATS_OVERLAY_MARGIN: f32 = 18.0;
+pub const STATS_OVERLAY_MARGIN: f32 = 12.0;
 pub const STATS_CORNER_RADIUS: f32 = 6.0;
 
 // ── Bounding-box dimension labels ─────────────────────────────────────
 /// Inner padding between a dimension label's pill edge and its text, and the
 /// pill's corner radius.
-pub const DIMENSION_LABEL_PAD_X: f32 = 7.0;
-pub const DIMENSION_LABEL_PAD_Y: f32 = 3.0;
-pub const DIMENSION_LABEL_CORNER_RADIUS: f32 = 5.0;
+pub const DIMENSION_LABEL_PAD_X: f32 = 5.0;
+pub const DIMENSION_LABEL_PAD_Y: f32 = 2.0;
+pub const DIMENSION_LABEL_CORNER_RADIUS: f32 = 3.0;
 
 // ── Axis gizmo ────────────────────────────────────────────────────────
-pub const GIZMO_SIZE: f32 = 156.0;
-pub const GIZMO_INSET: f32 = 26.0;
-pub const GIZMO_REACH: f32 = 52.0;
-pub const GIZMO_BALL_RADIUS: f32 = 13.0;
-pub const GIZMO_CORNER_RADIUS: f32 = 12.0;
+pub const GIZMO_SIZE: f32 = 104.0;
+pub const GIZMO_INSET: f32 = 17.0;
+pub const GIZMO_REACH: f32 = 35.0;
+pub const GIZMO_BALL_RADIUS: f32 = 9.0;
+pub const GIZMO_CORNER_RADIUS: f32 = 8.0;
 /// View-space depth above which an axis is treated as pointing at the viewer.
 pub const GIZMO_AXIS_ALIGNED_DEPTH: f32 = 0.99;
 pub const GIZMO_NEG_OPACITY: f32 = 0.05;
@@ -237,10 +233,10 @@ pub const GIZMO_DEPTH_FADE_FLOOR: f32 = 0.4;
 pub const GIZMO_DEPTH_FADE_RANGE: f32 = 0.6;
 /// Reset-view button: icon size and inset of its center from the gizmo's
 /// bottom-left corner.
-pub const GIZMO_RESET_ICON_SIZE: f32 = 20.0;
-pub const GIZMO_RESET_INSET: f32 = 17.0;
+pub const GIZMO_RESET_ICON_SIZE: f32 = 13.0;
+pub const GIZMO_RESET_INSET: f32 = 11.0;
 
-// ── Option panels (egui points, not DPI-scaled) ───────────────────────
+// ── Option panels ─────────────────────────────────────────────────────
 pub const PANEL_HEADER_HEIGHT: f32 = 34.0;
 pub const PANEL_HEADER_PAD_X: f32 = 16.0;
 pub const PANEL_CORNER_RADIUS: u8 = 6;
@@ -248,15 +244,14 @@ pub const PANEL_CONTENT_MARGIN: i8 = 14;
 pub const PANEL_BODY_TOP_MARGIN: i8 = 10;
 /// Compact control-row height used by panel combos (the dropdown button is
 /// shrunk to this so combo rows stay dense — combos keep their own styling).
-/// **Egui points, not design pixels**: it is handed straight to egui's
-/// `interact_size.y`, and the transport's tile buttons match it so a row of
-/// buttons and a dropdown are the same height.
+/// Handed straight to egui's `interact_size.y`, and the transport's tile
+/// buttons match it so a row of buttons and a dropdown are the same height.
 pub const PANEL_ROW_H: f32 = 22.0;
 pub const PANEL_ROW_GAP: f32 = 6.0;
 /// Gap between the label and control columns of the striped panel grid (the
 /// demo widget-gallery layout).
 pub const PANEL_GRID_COL_GAP: f32 = 12.0;
-/// Option-panel grid column widths (raw points). The label column is pinned
+/// Option-panel grid column widths. The label column is pinned
 /// (long labels truncate rather than widen it); the control column is
 /// *elastic* — controls fill all remaining row width so their right edge
 /// always sits flush with the panel's right edge (no trailing empty space),
@@ -308,18 +303,16 @@ pub const SELECTION_STROKE_WIDTH: f32 = 2.0;
 pub const OPTIONS_HINT_THICKNESS: f32 = 2.0;
 
 // ── Gizmo strokes / interaction ───────────────────────────────────────
-pub const GIZMO_LINE_WIDTH: f32 = 2.5;
-pub const GIZMO_RING_WIDTH: f32 = 2.0;
-pub const GIZMO_BOLD_OFFSET: f32 = 0.6;
+pub const GIZMO_LINE_WIDTH: f32 = 1.7;
+pub const GIZMO_RING_WIDTH: f32 = 1.3;
+pub const GIZMO_BOLD_OFFSET: f32 = 0.4;
 pub const GIZMO_BALL_HOVER_SCALE: f32 = 1.18;
-pub const GIZMO_BALL_HIT_EXPAND: f32 = 4.0;
+pub const GIZMO_BALL_HIT_EXPAND: f32 = 2.7;
 
 // ── Native window / panel chrome ──────────────────────────────────────
-// Values handed to native `egui::Window` / `egui::SidePanel` builders. These
-// are egui *points* (the builder sizes are scaled by DPI inside egui), so —
-// unlike the hand-painted overlays — they are NOT routed through `px()`.
+// Values handed to native `egui::Window` / `egui::SidePanel` builders.
 /// Default / minimum width of the dockable Outliner / Inspector side panels;
-/// the upper bound reuses [`OUTLINER_MAX_WIDTH`]. Raw points.
+/// the upper bound reuses [`OUTLINER_MAX_WIDTH`].
 pub const SIDE_PANEL_DEFAULT_WIDTH: f32 = TOOL_WINDOW_WIDTH;
 pub const SIDE_PANEL_MIN_WIDTH: f32 = 180.0;
 /// Down-right offset between successive option windows' first-open positions
@@ -329,7 +322,7 @@ pub const PANEL_CASCADE_STEP: f32 = 26.0;
 // ── Opt workspace ─────────────────────────────────────────────────────
 /// Starting height of the operation-stack pane docked under the Outliner
 /// tree. Deep enough for the preset row, the add button and a handful of
-/// operations before it needs scrolling. Raw points (a native panel size).
+/// operations before it needs scrolling. A native panel size.
 pub const OPT_STACK_DEFAULT_HEIGHT: f32 = 240.0;
 /// How far the stack pane can be dragged, so neither it nor the tree above
 /// can be collapsed to nothing.
@@ -349,30 +342,29 @@ pub const OPT_LEGEND_SWATCH: f32 = 9.0;
 pub const OPT_LEGEND_SWATCH_GAP: f32 = 7.0;
 
 // ── Animation ─────────────────────────────────────────────────────────
-/// Height of one clip row in the Outliner's Animations tab (egui points,
-/// like the Opt stack rows it shares its primitive with).
+/// Height of one clip row in the Outliner's Animations tab, matching the Opt
+/// stack rows it shares its primitive with.
 pub const ANIM_ROW_HEIGHT: f32 = 24.0;
 /// Width reserved at a clip row's right edge for its frame-count / duration
-/// readout (egui points).
+/// readout.
 pub const ANIM_ROW_TRAILING_WIDTH: f32 = 104.0;
-/// Width of the transport card (egui points — the card sets its width raw,
-/// like the legend card).
+/// Width of the transport card, like the legend card.
 pub const ANIM_TRANSPORT_WIDTH: f32 = 610.0;
-/// Gap between transport controls (design px).
-pub const ANIM_TRANSPORT_GAP: f32 = 6.0;
+/// Gap between transport controls.
+pub const ANIM_TRANSPORT_GAP: f32 = 4.0;
 /// Extra breathing room reserved after the transport's frame readout, so the
 /// loop / speed group is separated from the counter rather than butted
-/// against it (design px). Part of the readout's fixed block, which is why the
+/// against it. Part of the readout's fixed block, which is why the
 /// group can't drift when the counter gains a digit.
-pub const ANIM_TRANSPORT_GROUP_GAP: f32 = 14.0;
-/// Floor on the transport scrubber's rail width (design px). The rail is
+pub const ANIM_TRANSPORT_GROUP_GAP: f32 = 9.0;
+/// Floor on the transport scrubber's rail width. The rail is
 /// normally whatever the card has left over after the fixed groups; this is
 /// only what it degrades to if the card is ever narrowed past them.
-pub const ANIM_SCRUB_MIN_WIDTH: f32 = 80.0;
-/// Width of the playback-speed dropdown (design px).
-pub const ANIM_SPEED_COMBO_WIDTH: f32 = 64.0;
+pub const ANIM_SCRUB_MIN_WIDTH: f32 = 53.0;
+/// Width of the playback-speed dropdown.
+pub const ANIM_SPEED_COMBO_WIDTH: f32 = 43.0;
 
-// ── Startup help overlay (treated as egui points, like the option panels) ─
+// ── Startup help overlay ──────────────────────────────────────────────
 /// Width of each of the two shortcut columns and the gap between them; the
 /// card content width is derived as `2 * COLUMN_WIDTH + COLUMN_GAP`.
 pub const HELP_COLUMN_WIDTH: f32 = 196.0;

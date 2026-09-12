@@ -15,7 +15,7 @@ use review_model::{Bounds, ModelData, SceneBvh};
 use review_render::OrbitCamera;
 
 use crate::state::{UiState, ViewProjectionMode};
-use crate::theme::{self, color, font, size};
+use crate::theme::{color, font, size};
 use crate::units::match_known_unit;
 
 /// One labelled view: a mesh, the camera looking at it, and the two rects that
@@ -79,7 +79,7 @@ pub(crate) fn draw_dimension_labels(
     ));
 
     for view in views {
-        draw_view_labels(ctx, state, &painter, view, &hidden);
+        draw_view_labels(state, &painter, view, &hidden);
     }
 }
 
@@ -87,7 +87,6 @@ pub(crate) fn draw_dimension_labels(
 /// halves of the Opt split share one implementation rather than the caller
 /// duplicating the projection.
 fn draw_view_labels(
-    ctx: &egui::Context,
     state: &UiState,
     painter: &egui::Painter,
     view: &DimensionView<'_>,
@@ -133,14 +132,7 @@ fn draw_view_labels(
             continue;
         }
         if let Some(pos) = project(view_projection, midpoint, view.image) {
-            draw_label(
-                painter,
-                ctx,
-                pos,
-                &labels[axis],
-                axis_colors[axis],
-                view.clamp,
-            );
+            draw_label(painter, pos, &labels[axis], axis_colors[axis], view.clamp);
         }
     }
 }
@@ -193,25 +185,21 @@ fn project(view_projection: Mat4, world: Vec3, image: egui::Rect) -> Option<egui
 /// side panels.
 fn draw_label(
     painter: &egui::Painter,
-    ctx: &egui::Context,
     center: egui::Pos2,
     text: &str,
     text_color: egui::Color32,
     viewport: egui::Rect,
 ) {
-    let font_id = egui::FontId::monospace(theme::px(ctx, font::DIMENSION_LABEL));
+    let font_id = egui::FontId::monospace(font::DIMENSION_LABEL);
     let galley = painter.layout_no_wrap(text.to_owned(), font_id, text_color);
-    let pad = egui::vec2(
-        theme::px(ctx, size::DIMENSION_LABEL_PAD_X),
-        theme::px(ctx, size::DIMENSION_LABEL_PAD_Y),
-    );
+    let pad = egui::vec2(size::DIMENSION_LABEL_PAD_X, size::DIMENSION_LABEL_PAD_Y);
     let rect = clamp_to(
         egui::Rect::from_center_size(center, galley.size() + pad * 2.0),
         viewport,
     );
     painter.rect_filled(
         rect,
-        theme::px(ctx, size::DIMENSION_LABEL_CORNER_RADIUS),
+        size::DIMENSION_LABEL_CORNER_RADIUS,
         color::DIMENSION_LABEL_BG,
     );
     painter.galley(rect.min + pad, galley, text_color);

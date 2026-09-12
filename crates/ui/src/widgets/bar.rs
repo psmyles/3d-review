@@ -6,7 +6,7 @@
 
 use crate::assets::AppIcon;
 use crate::state::{OptionPanel, PanelsOpen};
-use crate::theme::{self, color, size};
+use crate::theme::{color, size};
 
 use super::*;
 
@@ -15,14 +15,13 @@ use super::*;
 /// across the toolbar and status bar; written once here.
 pub(crate) fn option_toggle(
     ui: &mut egui::Ui,
-    ctx: &egui::Context,
     icon: &AppIcon,
     flag: &mut bool,
     panels_open: &mut PanelsOpen,
     panel: OptionPanel,
     tooltip: &str,
 ) -> egui::Response {
-    let response = icon_toggle_button_with_options(ui, ctx, icon, *flag, tooltip);
+    let response = icon_toggle_button_with_options(ui, icon, *flag, tooltip);
     if response.clicked() {
         *flag = !*flag;
     }
@@ -83,28 +82,27 @@ pub(crate) fn bar_group_scope(
 /// left-to-right with the standard inter-icon gap.
 pub(crate) fn toolbar_group_shell(
     ui: &mut egui::Ui,
-    ctx: &egui::Context,
     width: f32,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) -> egui::Response {
-    let group_height = theme::px(ctx, size::TOOLBAR_GROUP_HEIGHT);
+    let group_height = size::TOOLBAR_GROUP_HEIGHT;
     let desired = egui::vec2(width, group_height);
     let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::hover());
     ui.painter().rect(
         rect,
-        theme::px(ctx, size::TILE_CORNER_RADIUS),
+        size::TILE_CORNER_RADIUS,
         color::GROUP_BG,
         egui::Stroke::NONE,
         egui::StrokeKind::Outside,
     );
-    let inner_padding = theme::px(ctx, size::TOOLBAR_GROUP_PADDING);
+    let inner_padding = size::TOOLBAR_GROUP_PADDING;
     let inner = rect.shrink2(egui::vec2(inner_padding, inner_padding));
     ui.scope_builder(
         egui::UiBuilder::new()
             .max_rect(inner)
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
         |ui| {
-            ui.spacing_mut().item_spacing.x = theme::px(ctx, size::TOOLBAR_ICON_GAP);
+            ui.spacing_mut().item_spacing.x = size::TOOLBAR_ICON_GAP;
             add_contents(ui);
         },
     );

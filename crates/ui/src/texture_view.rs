@@ -15,7 +15,7 @@ use crate::state::{
     TexViewRequest, TexViewTransition, TexturePoolEntry, TextureViewState, UiState,
 };
 use crate::stats;
-use crate::theme::{self, color, font, motion, size};
+use crate::theme::{color, font, motion, size};
 
 /// Draw the Tex viewport: the central image canvas behind the chrome, plus the
 /// floating texture-stats panel when toggled on. Called from the overlay only in
@@ -41,7 +41,7 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState) {
             let rect = ui.max_rect();
             match &entry {
                 Some(entry) => draw_canvas(ui, ctx, &mut state.texture_view, rect, entry),
-                None => draw_empty_hint(ui, ctx, rect),
+                None => draw_empty_hint(ui, rect),
             }
             rect
         })
@@ -221,12 +221,12 @@ fn advance_transition(view: &mut TextureViewState, ctx: &egui::Context) {
 }
 
 /// The centered hint shown when the texture pool is empty.
-fn draw_empty_hint(ui: &mut egui::Ui, ctx: &egui::Context, rect: egui::Rect) {
+fn draw_empty_hint(ui: &mut egui::Ui, rect: egui::Rect) {
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         "No textures loaded - drop image files here or add them in the Inspector",
-        egui::FontId::proportional(theme::px(ctx, font::VIEWPORT_EMPTY_HINT)),
+        egui::FontId::proportional(font::VIEWPORT_EMPTY_HINT),
         color::TEXT_MUTED,
     );
 }
@@ -234,7 +234,7 @@ fn draw_empty_hint(ui: &mut egui::Ui, ctx: &egui::Context, rect: egui::Rect) {
 /// The floating texture-stats panel, anchored bottom-left above the status bar —
 /// the Tex viewport's analogue of the model-stats overlay (matching frame + inset).
 fn draw_texture_stats_overlay(ctx: &egui::Context, entry: &TexturePoolEntry) {
-    let status_bar_height = theme::px(ctx, size::STATUS_BAR_HEIGHT);
+    let status_bar_height = size::STATUS_BAR_HEIGHT;
     crate::widgets::stats_overlay_card(
         ctx,
         "texture_stats_overlay",

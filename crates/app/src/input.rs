@@ -356,13 +356,21 @@ pub(crate) enum DragMode {
 /// option panel floats and is transient.
 ///
 /// Both terms are egui points: the window height converted from physical pixels,
-/// and the bands' height from [`review_ui::theme::chrome_height`], which scales
-/// the design-pixel tokens exactly as the bands themselves are scaled when drawn.
-/// Reading those tokens raw against a height in points over-reserved the chrome
-/// on every scaled display — half again at 150%, twice over at 200%.
+/// and the bands' height from [`review_ui::theme::chrome_height`], which is the
+/// sum of the two band tokens as drawn. `scale_factor` therefore enters only
+/// through the height conversion — the chrome is a fixed number of points, so it
+/// takes a *larger* share of a HiDPI window, which has fewer points for the same
+/// pixels. That is the whole point: the bands stay one apparent size on screen.
 pub(crate) fn framing_safe_area(height_px: u32, scale_factor: f32) -> (f32, f32) {
-    let logical_height = height_px as f32 / scale_factor.max(0.1);
-    let chrome = review_ui::theme::chrome_height(scale_factor);
+    // A degenerate scale (a window that reports 0, or worse) means "unknown", not
+    // "infinitely dense": fall back to 1:1 rather than dividing the height up.
+    let scale = if scale_factor > 0.0 {
+        scale_factor
+    } else {
+        1.0
+    };
+    let logical_height = height_px as f32 / scale;
+    let chrome = review_ui::theme::chrome_height();
     let height_fraction = if logical_height > chrome {
         (logical_height - chrome) / logical_height
     } else {
@@ -375,26 +383,39 @@ pub(crate) fn framing_safe_area(height_px: u32, scale_factor: f32) -> (f32, f32)
 mod tests {
     use super::framing_safe_area;
 
-    /// The chrome tokens are design pixels, scaled to points exactly as the bands
-    /// that draw them are — so the band reserved for the chrome is the same slice
-    /// of the window at every display scale. Reading them raw against a height
-    /// already in points instead over-reserved 46 points at 150% and 69 at 200%,
-    /// framing every loaded model visibly small on a HiDPI display.
+    /// The chrome is a fixed number of *points*, so it reserves a bigger fraction
+    /// of a HiDPI window: the same 1000 physical pixels are 1000 points at 100%
+    /// but only 500 at 200%, and a band that keeps one apparent size on screen has
+    /// to eat twice the share of them.
+    ///
+    /// Derived from [`review_ui::theme::chrome_height`] rather than written out,
+    /// so retuning a band's token can't silently invalidate the expectation — an
+    /// earlier revision of this test hardcoded the figures and went stale the first
+    /// time the toolbar was resized.
     #[test]
-    fn the_framing_safe_area_holds_across_display_scales() {
+    fn the_framing_safe_area_reserves_the_chrome_in_points() {
+        let chrome = review_ui::theme::chrome_height();
         let (width, unscaled) = framing_safe_area(1000, 1.0);
         let (_, scaled) = framing_safe_area(1000, 2.0);
         assert_eq!(width, 1.0);
-        assert!((unscaled - scaled).abs() < 1e-6, "{unscaled} vs {scaled}");
-        // 1000 physical pixels of window, less the 73 + 64 design pixels of bands.
-        assert!((scaled - 0.863).abs() < 1e-4, "{scaled}");
+        assert!(
+            (unscaled - (1000.0 - chrome) / 1000.0).abs() < 1e-6,
+            "{unscaled}"
+        );
+        assert!((scaled - (500.0 - chrome) / 500.0).abs() < 1e-6, "{scaled}");
+        assert!(
+            scaled < unscaled,
+            "{scaled} should reserve more than {unscaled}"
+        );
     }
 
     /// A window shorter than its own chrome has no band left to frame into, so it
     /// frames against the whole window rather than a zero (or negative) fraction.
+    /// A degenerate scale factor falls back to 1:1 rather than inflating the height.
     #[test]
     fn a_window_shorter_than_the_chrome_frames_whole() {
-        assert_eq!(framing_safe_area(100, 1.0), (1.0, 1.0));
-        assert_eq!(framing_safe_area(100, 0.0), (1.0, 1.0));
+        let short = review_ui::theme::chrome_height() as u32 - 1;
+        assert_eq!(framing_safe_area(short, 1.0), (1.0, 1.0));
+        assert_eq!(framing_safe_area(short, 0.0), (1.0, 1.0));
     }
 }
