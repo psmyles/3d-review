@@ -112,9 +112,9 @@ pub(super) fn scene_uniforms(
     }
 }
 
-/// Build the per-frame [`GtaoUniforms`]. The settings' `radius` is a fraction of the
-/// framed model's bounding-sphere radius, so it is scaled into view units by the live
-/// `scene_radius` here, keeping the AO look scale-invariant.
+/// Build the per-frame [`GtaoUniforms`]. The settings' `radius` is a multiplier over
+/// the radius derived for this view ([`gtao_view_radius`]), which is what keeps the
+/// occlusion looking the same on a 10 cm prop and a 10 km landscape.
 ///
 /// `dims` is the occlusion target's size in pixels, and it rides in the two `w` slots
 /// the D3D11 version left unused: sokol has no `GetDimensions`, so the shader cannot
@@ -150,11 +150,14 @@ pub(super) fn build_gtao_uniforms(
     }
 }
 
-/// The AO radius in view units: the setting is a fraction of the framed model's
-/// bounding-sphere radius, and this is the one place it is turned into a distance.
-/// Shared with the depth prefilter, whose falloff is scaled to the same radius.
+/// The AO radius in view units for this frame's camera. Shared with the depth
+/// prefilter, whose falloff is scaled to the same radius.
+///
+/// Derived from what the viewport is *showing* rather than from the model's size —
+/// see [`GtaoSettings::effective_radius`], which is where that choice is explained
+/// and which the Ambient Occlusion panel reads too so the two can never disagree.
 pub(super) fn gtao_view_radius(camera: OrbitCamera, gtao: GtaoSettings) -> f32 {
-    (gtao.radius * camera.scene_radius.max(1e-3)).max(1e-4)
+    gtao.effective_radius(camera.view_extent(), camera.scene_radius)
 }
 
 /// Build a depth-prefilter level's uniform: the size of the level being *read* (the

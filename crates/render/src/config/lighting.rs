@@ -83,14 +83,17 @@ impl Default for EnvironmentSettings {
 /// screen-space horizon per slice to estimate the cosine-weighted visible arc,
 /// denoises the result, and applies it only to the scene's ambient radiance in the
 /// composite — darkening contact creases and cavities without muting
-/// direct/specular light. The horizon search follows Intel's XeGTAO. `radius` is
-/// expressed as a **fraction of the framed model's bounding-sphere radius**, so the
-/// look is scale-invariant across models (the renderer multiplies it by the live
-/// scene radius). `enabled` is the toolbar toggle; the default is on but subtle.
+/// direct/specular light. The horizon search follows Intel's XeGTAO.
+///
+/// The radius is **derived from what the viewport is showing**, not stored here
+/// — see [`GtaoSettings::effective_radius`] for why, and note that [`Self::radius`]
+/// is only a multiplier over it. `enabled` is the toolbar toggle.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GtaoSettings {
     pub enabled: bool,
-    /// Sample radius, as a fraction of the scene bounding-sphere radius.
+    /// Scales the radius the viewer derives for the current view
+    /// ([`GtaoSettings::effective_radius`]). `1.0` is the automatic value; the
+    /// slider exists to taste it up or down, not to carry the scene's scale.
     pub radius: f32,
     /// Strength of the darkening: a power on the GTAO visibility (1 = ground
     /// truth, >1 darkens, 0 disables).
@@ -112,11 +115,61 @@ impl Default for GtaoSettings {
     fn default() -> Self {
         Self {
             enabled: true,
-            radius: 0.35,
+            radius: 1.0,
             intensity: 1.0,
             thickness: 0.25,
             quality: GtaoQuality::Medium,
         }
+    }
+}
+
+/// The share of the viewport's world-space height the automatic radius aims for.
+///
+/// Choosing it as a fraction of the *view* rather than of the model is what makes
+/// the occlusion scale-free, and it has a second property that matters more than it
+/// looks: the radius's size in **pixels** is then this fraction times the viewport
+/// height, whatever the scene's units and however far the camera has zoomed. The
+/// horizon march always spans the same number of pixels, so its fixed step count
+/// always resolves it — the failure mode where a large scene spread six samples over
+/// half the screen and found nothing cannot happen.
+///
+/// A tenth of the viewport height was picked by eye against the alternatives: 0.04
+/// and 0.06 read as too timid on real assets, and going much wider starts to spread
+/// the fixed step count thinly enough that near-field contact is undersampled again.
+/// At a 1400 px viewport this is ~140 px, which the squared step distribution covers
+/// from about 2 px out.
+const RADIUS_VIEW_FRACTION: f32 = 0.10;
+
+/// Ceiling on the automatic radius as a share of the model's bounding sphere.
+///
+/// Only binds when the camera is pulled well back from the content, where the view
+/// extent keeps growing but the model does not. Occlusion sampled over a distance
+/// larger than the object itself finds nothing but its own silhouette, so the
+/// ceiling is what stops a zoomed-out view paying for a radius that cannot report
+/// anything.
+const RADIUS_MODEL_CEILING: f32 = 0.5;
+
+impl GtaoSettings {
+    /// The occlusion radius in world units for the view described by
+    /// `view_extent` ([`crate::OrbitCamera::view_extent`]) and `scene_radius`.
+    ///
+    /// The whole scale problem lives in this function. Ambient occlusion is a
+    /// *local* effect — it shades the crease between two surfaces, the contact
+    /// under a chair leg — so its radius belongs to the scale of detail being
+    /// looked at, not to the extent of the scene. Deriving it from the model's
+    /// bounding sphere conflates those: a 10 cm prop and a 10 km landscape want
+    /// almost the same radius when you are examining a feature of the same
+    /// apparent size, and quite different ones when you are not.
+    ///
+    /// So the radius follows the viewport instead, with the model only as a
+    /// ceiling, and [`Self::radius`] left as a multiplier over the result.
+    pub fn effective_radius(&self, view_extent: f32, scene_radius: f32) -> f32 {
+        let from_view = RADIUS_VIEW_FRACTION * view_extent.max(1e-6);
+        let ceiling = RADIUS_MODEL_CEILING * scene_radius.max(1e-6);
+        // The multiplier is applied *after* the ceiling so that asking for a wider
+        // radius than the model is still possible — that is an explicit choice,
+        // while the ceiling exists to stop an automatic value drifting there.
+        (self.radius.max(0.0) * from_view.min(ceiling)).max(1e-6)
     }
 }
 
@@ -249,5 +302,107 @@ impl Default for TonemapSettings {
             enabled: true,
             operator: TonemapOperator::PbrNeutral,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::camera::OrbitCamera;
+    use review_model::Bounds;
+
+    /// A camera framing a cube `size` across, which is how the viewer actually
+    /// arrives at a view: the user loads a model and it is framed.
+    fn framed(size: f32) -> OrbitCamera {
+        let half = size * 0.5;
+        let mut camera = OrbitCamera {
+            aspect_ratio: 16.0 / 9.0,
+            ..OrbitCamera::default()
+        };
+        camera.frame_bounds(Bounds {
+            min: glam::Vec3::splat(-half),
+            max: glam::Vec3::splat(half),
+        });
+        camera
+    }
+
+    fn radius_at(size: f32) -> f32 {
+        let camera = framed(size);
+        GtaoSettings::default().effective_radius(camera.view_extent(), camera.scene_radius)
+    }
+
+    /// The point of the whole exercise: a model framed in the viewport gets an
+    /// occlusion radius proportional to its own size, across every scale the
+    /// viewer is expected to open — 10 cm to 10 km is five orders of magnitude.
+    ///
+    /// Proportional is what "looks the same" means here. The radius in *pixels* is
+    /// the ratio below times the viewport height, so holding the ratio constant is
+    /// exactly holding the on-screen size of the occlusion constant, which is what
+    /// the eye judges.
+    #[test]
+    fn a_framed_model_gets_the_same_relative_radius_at_every_scale() {
+        let sizes = [0.1_f32, 1.0, 100.0, 10_000.0];
+        let reference = radius_at(sizes[0]) / sizes[0];
+        for size in sizes {
+            let ratio = radius_at(size) / size;
+            assert!(
+                (ratio - reference).abs() < reference * 1e-3,
+                "a {size} m model resolved to {ratio} of its size, not {reference}"
+            );
+        }
+    }
+
+    /// And the absolute values are sane rather than merely consistent: a 10 cm prop
+    /// must not ask for a metre of occlusion, nor a 10 km landscape for a
+    /// millimetre.
+    #[test]
+    fn the_resolved_radius_is_a_believable_distance_at_each_scale() {
+        assert!(
+            (0.002..0.05).contains(&radius_at(0.1)),
+            "{}",
+            radius_at(0.1)
+        );
+        assert!((0.02..0.5).contains(&radius_at(1.0)), "{}", radius_at(1.0));
+        assert!(
+            (200.0..5000.0).contains(&radius_at(10_000.0)),
+            "{}",
+            radius_at(10_000.0)
+        );
+    }
+
+    /// Pulling back from the content keeps growing the view extent while the model
+    /// stays the same size, and occlusion sampled wider than the object itself
+    /// reports nothing. The ceiling is what stops that.
+    #[test]
+    fn the_model_ceiling_binds_once_the_camera_pulls_away() {
+        let mut camera = framed(1.0);
+        let framed_radius =
+            GtaoSettings::default().effective_radius(camera.view_extent(), camera.scene_radius);
+        camera.distance *= 50.0;
+        let pulled_back =
+            GtaoSettings::default().effective_radius(camera.view_extent(), camera.scene_radius);
+        assert!(
+            pulled_back > framed_radius,
+            "a wider view should still widen the radius somewhat"
+        );
+        assert!(
+            pulled_back <= RADIUS_MODEL_CEILING * camera.scene_radius + 1e-6,
+            "{pulled_back} exceeded the model ceiling"
+        );
+    }
+
+    /// The slider is a multiplier over the automatic value and nothing else, so
+    /// doubling it doubles the distance at any scale.
+    #[test]
+    fn the_slider_scales_the_automatic_radius() {
+        let camera = framed(3.0);
+        let auto = GtaoSettings::default();
+        let doubled = GtaoSettings {
+            radius: 2.0,
+            ..auto
+        };
+        let a = auto.effective_radius(camera.view_extent(), camera.scene_radius);
+        let b = doubled.effective_radius(camera.view_extent(), camera.scene_radius);
+        assert!((b - a * 2.0).abs() < a * 1e-5, "{a} -> {b}");
     }
 }

@@ -59,11 +59,13 @@ pub(crate) mod range {
     pub const SKELETON_SCALE_MIN: f32 = 0.2;
     pub const SKELETON_SCALE_MAX: f32 = 4.0;
 
-    /// Ambient occlusion. Radius is a fraction of the framed model's bounding
-    /// sphere; intensity is the power on the GTAO visibility; thickness is the
-    /// see-through heuristic.
-    pub const AO_RADIUS_MIN: f32 = 0.02;
-    pub const AO_RADIUS_MAX: f32 = 1.0;
+    /// Ambient occlusion. Radius is a *multiplier* over the radius the renderer
+    /// derives for the current view (1 = automatic), so the band is centred on 1
+    /// rather than running from nothing: the scene's scale is no longer this
+    /// slider's job. Intensity is the power on the GTAO visibility; thickness is
+    /// the see-through heuristic.
+    pub const AO_RADIUS_MIN: f32 = 0.25;
+    pub const AO_RADIUS_MAX: f32 = 4.0;
     pub const AO_INTENSITY_MIN: f32 = 0.0;
     pub const AO_INTENSITY_MAX: f32 = 2.0;
     pub const AO_THICKNESS_MIN: f32 = 0.0;
@@ -315,6 +317,11 @@ pub struct UiState {
     /// Most recent measured frames-per-second, fed by `app` from the render
     /// loop. Zero while idle (the viewer redraws on demand, not continuously).
     pub fps: f32,
+    /// The ambient-occlusion radius in scene units that the current view resolves
+    /// to, recomputed each frame in `draw_overlay` and shown beside the Radius
+    /// multiplier. A measurement the panel displays, like [`Self::fps`] — the
+    /// renderer derives its own from the same function, never from this.
+    pub gtao_world_radius: f32,
 }
 
 impl Default for UiState {
@@ -375,6 +382,7 @@ impl Default for UiState {
             clip_bounds: Vec::new(),
             caches: BoundsCaches::default(),
             fps: 0.0,
+            gtao_world_radius: 0.0,
         }
     }
 }

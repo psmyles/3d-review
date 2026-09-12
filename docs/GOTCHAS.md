@@ -153,6 +153,31 @@ is not: each IBL convolution pass reads a *different* image from the one it writ
 half-float's steps are ~8 mm at 10 m — enough to move a horizon test on a contact
 crease. The occlusion buffers it feeds are `R16F`, which is ample for a 0..1 term.
 
+### The AO radius comes from the view, never from the model's size
+
+Ambient occlusion shades a crease between two surfaces or the contact under a chair
+leg. That is a *local* effect, so its radius belongs to the scale of detail being
+looked at — which the model's bounding sphere does not describe. Keying it there
+meant a room interior asked for a four-metre radius: the fixed step count spread
+across half the screen, the near geometry that makes contact shadows was never
+sampled, and the effect all but vanished exactly on the scenes that need it.
+
+`GtaoSettings::effective_radius` takes a fraction of `OrbitCamera::view_extent`
+instead, capped at half the bounding sphere so a pulled-back camera cannot ask for
+more than the object. Two consequences worth knowing:
+
+- The radius in **pixels** is then the view fraction times the viewport height, at
+  any scene scale and any zoom. The march always spans the same screen distance, so
+  its step count always resolves it. Anything else scale-dependent should be
+  expressed in pixels or in `view_pixel_size` for the same reason.
+- The occlusion changes as the camera dollies, because the world radius does. That
+  is deliberate: it is what holds the *on-screen* size of the shading constant, which
+  is what the eye judges. The accumulation resets on any camera move anyway, so there
+  is no stale-history artifact.
+
+`OrbitCamera::view_extent` is one expression for both projections, because the
+orthographic half-height is defined as the same `distance * tan(fov/2)`.
+
 ### Ambient occlusion converges while the view is still, and the term that drives
 ### it must be read after the render
 
