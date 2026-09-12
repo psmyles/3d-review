@@ -20,10 +20,19 @@
 //! and read as a flicker. Now every card is drawn the same way, and nothing
 //! animates at all.
 //!
-//! **A card is framed like an option window** ([`egui::Frame::window`], which is
-//! the same builder `egui::Window` uses — minus its shadow and its padding, see
-//! [`card_frame`]), so the notices read as part of the same chrome rather than
-//! as a second surface style.
+//! **A card is built out of egui's own window styling, not a look of our own.**
+//! The frame is [`egui::Frame::window`], the same builder `egui::Window` uses
+//! (minus its shadow and its padding — see [`card_frame`]); the header and body
+//! pad themselves with `spacing.window_margin`, exactly as that window's title
+//! bar and content do; the header row is one `TextStyle::Heading` tall, which is
+//! what egui allocates for its own title bar; the divider takes both its colour
+//! and its thickness from `window_stroke`, the border it meets at either end;
+//! the ✕ is egui's own two-stroke glyph; the body text is `text_color` and
+//! `weak_text_color`; the progress bar is [`egui::ProgressBar`], slimmed. The
+//! kind tints are egui's `error_fg_color`, `warn_fg_color`, `hyperlink_color`
+//! and `strong_text_color` — every one but success, because egui's palette has
+//! no green. So a notice follows any restyle of the chrome for free, and there
+//! is almost nothing here for the two to drift apart on.
 //!
 //! **A card is a header over a body.** The header says what kind of thing this
 //! is and nothing more — `Warning`, `Success`, `Error`, `Info`, or `Working`
@@ -62,7 +71,7 @@
 
 use std::time::Duration;
 
-use egui::{Align, Align2, Color32, Context, Id, Layout, Order, Rect, Sense, TextWrapMode, vec2};
+use egui::{Align, Align2, Color32, Context, Id, Layout, Order, Sense, TextWrapMode, vec2};
 
 use crate::state::ChromeInsets;
 use crate::theme::{color, motion, size};
@@ -100,14 +109,25 @@ impl NoticeKind {
         }
     }
 
-    /// The header tint for this kind.
-    fn color(self) -> Color32 {
+    /// The header tint for this kind, taken from egui's own visuals wherever it
+    /// has a word for the thing.
+    ///
+    /// `error_fg_color` and `warn_fg_color` exist precisely for this and are
+    /// what egui tints its own error and warning text with, so a notice matches
+    /// the rest of the chrome for free and follows any restyle of it.
+    /// `hyperlink_color` is the one blue in the palette meant to be *read* as
+    /// text rather than filled behind it, which is what a running job wants,
+    /// and `strong_text_color` is the plain emphasis egui already has.
+    ///
+    /// Success is the single exception: egui's palette carries no green, so
+    /// that one word is ours ([`color::NOTICE_SUCCESS`]).
+    fn color(self, visuals: &egui::Visuals) -> Color32 {
         match self {
-            Self::Progress => color::NOTICE_PROGRESS,
-            Self::Info => color::NOTICE_INFO,
+            Self::Progress => visuals.hyperlink_color,
+            Self::Info => visuals.strong_text_color(),
             Self::Success => color::NOTICE_SUCCESS,
-            Self::Warning => color::NOTICE_WARNING,
-            Self::Error => color::NOTICE_ERROR,
+            Self::Warning => visuals.warn_fg_color,
+            Self::Error => visuals.error_fg_color,
         }
     }
 
@@ -388,6 +408,21 @@ impl Notifications {
             return;
         }
 
+        // A card wants `NOTIFICATION_WIDTH` for its text and settles for what
+        // the free viewport can give: the window, less the docked side panels,
+        // less the margin the column keeps from their edges, less the card's own
+        // padding. Measured here rather than inside the card because every card
+        // in the column must come out the same width.
+        let padding = ctx.global_style().spacing.window_margin.sum().x;
+        let free = ctx.content_rect().width()
+            - insets.left
+            - insets.right
+            - size::OVERLAY_MARGIN * 2.0
+            - padding;
+        let text_width = size::NOTIFICATION_WIDTH
+            .min(free)
+            .max(size::NOTIFICATION_MIN_WIDTH);
+
         let mut dismissed: Option<u64> = None;
         let mut hovered: Option<u64> = None;
         // Anchored, so this Area is not movable; left interactable (the default)
@@ -417,10 +452,10 @@ impl Notifications {
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing.y = size::NOTIFICATION_CARD_GAP;
                 if let Some(activity) = self.activity.as_ref() {
-                    activity_card(ui, activity);
+                    activity_card(ui, activity, text_width);
                 }
                 for notice in &self.notices {
-                    let card = notice_card(ui, notice);
+                    let card = notice_card(ui, notice, text_width);
                     if card.dismissed {
                         dismissed = Some(notice.id);
                     }
@@ -501,9 +536,18 @@ fn card_pad(ui: &egui::Ui) -> egui::Margin {
     ui.style().spacing.window_margin
 }
 
-/// The card's full outer width: the text column plus the padding either side.
-fn card_width(ui: &egui::Ui) -> f32 {
-    size::NOTIFICATION_WIDTH + card_pad(ui).sum().x
+/// Set a card's outer width from its text column, and butt its blocks together.
+///
+/// The zero spacing is the whole reason this is a helper. The column's `Area`
+/// sets `item_spacing.y` to the gap *between cards*, and a `Frame`'s content
+/// inherits the style it was shown into — so that gap was also being inserted
+/// between the header, the divider and the body, putting two card-gaps of dead
+/// space above every message. Each block already carries its own padding
+/// ([`card_pad`]), exactly as `egui::Window`'s title bar and body do, so the
+/// spacing between them must be none.
+fn begin_card(ui: &mut egui::Ui, text_width: f32) {
+    ui.set_width(text_width + card_pad(ui).sum().x);
+    ui.spacing_mut().item_spacing.y = 0.0;
 }
 
 /// What a drawn card reports back to [`Notifications::show`].
@@ -516,10 +560,10 @@ struct CardResponse {
 
 /// Draw one notice: the kind in the header, then the message and any detail
 /// lines in the body under it.
-fn notice_card(ui: &mut egui::Ui, notice: &Notice) -> CardResponse {
+fn notice_card(ui: &mut egui::Ui, notice: &Notice, text_width: f32) -> CardResponse {
     let mut dismissed = false;
     let frame = card_frame(ui).show(ui, |ui| {
-        ui.set_width(card_width(ui));
+        begin_card(ui, text_width);
         if notice.compact {
             dismissed = compact_row(ui, notice);
             return;
@@ -531,17 +575,18 @@ fn notice_card(ui: &mut egui::Ui, notice: &Notice) -> CardResponse {
             // *header* once, truncated to a single line, which showed half of
             // "Couldn't load pedestal.fbx: unexpected end of file" and cut the
             // half that says what went wrong.
-            ui.label(egui::RichText::new(&notice.message).color(color::TEXT_BODY));
+            ui.label(&notice.message);
             let shown = notice.lines.len().min(size::NOTIFICATION_MAX_LINES);
             for line in &notice.lines[..shown] {
-                ui.label(egui::RichText::new(line).color(color::TEXT_BODY));
+                ui.label(line);
             }
             // The column grows upward from the status bar, so a card long enough
             // to run its own header off the top of the window says how much it
             // is holding back instead.
             let hidden = notice.lines.len() - shown;
             if hidden > 0 {
-                ui.label(egui::RichText::new(format!("+ {hidden} more")).color(color::TEXT_MUTED));
+                let weak = ui.visuals().weak_text_color();
+                ui.label(egui::RichText::new(format!("+ {hidden} more")).color(weak));
             }
         });
     });
@@ -557,17 +602,24 @@ fn notice_card(ui: &mut egui::Ui, notice: &Notice) -> CardResponse {
 /// Draw the progress card: the job in the body, the stage line under it, and a
 /// bar when the job knows its own denominator. No ✕ — the job's own end takes it
 /// down.
-fn activity_card(ui: &mut egui::Ui, activity: &Activity) {
+fn activity_card(ui: &mut egui::Ui, activity: &Activity, text_width: f32) {
     card_frame(ui).show(ui, |ui| {
-        ui.set_width(card_width(ui));
+        begin_card(ui, text_width);
         header(ui, NoticeKind::Progress, false);
         body(ui, |ui| {
-            ui.label(egui::RichText::new(&activity.title).color(color::TEXT_BODY));
+            ui.label(&activity.title);
             if !activity.detail.is_empty() {
-                ui.label(egui::RichText::new(&activity.detail).color(color::TEXT_MUTED));
+                let weak = ui.visuals().weak_text_color();
+                ui.label(egui::RichText::new(&activity.detail).color(weak));
             }
             if let Some(fraction) = activity.fraction {
-                progress_bar(ui, fraction);
+                // egui's own progress bar, slimmed: its default height is a full
+                // interactive row, which is a lot of furniture inside a card. It
+                // brings its own fill and track from the visuals.
+                ui.add(
+                    egui::ProgressBar::new(fraction)
+                        .desired_height(size::NOTIFICATION_PROGRESS_HEIGHT),
+                );
             }
         });
     });
@@ -594,32 +646,38 @@ fn activity_card(ui: &mut egui::Ui, activity: &Activity) {
 fn header(ui: &mut egui::Ui, kind: NoticeKind, closable: bool) -> bool {
     let mut dismissed = false;
     egui::Frame::NONE.inner_margin(card_pad(ui)).show(ui, |ui| {
-        // Tall enough for the heading and for the close glyph, which is sized
-        // from egui's own interact height — whichever of the two is taller.
-        let height = ui
-            .text_style_height(&egui::TextStyle::Heading)
-            .max(ui.spacing().interact_size.y);
-        let row = vec2(ui.available_width(), height);
+        // One heading row, which is exactly what `egui::Window` allocates for
+        // its own title bar — it sizes the collapse and close buttons to the
+        // heading's row height and paints the smaller glyph inside. Taking the
+        // interact height instead (which is larger) made the header visibly
+        // deeper than the option window's beside it.
+        let row = vec2(
+            ui.available_width(),
+            ui.text_style_height(&egui::TextStyle::Heading),
+        );
         ui.allocate_ui_with_layout(row, Layout::right_to_left(Align::Center), |ui| {
             if closable {
                 dismissed = close_button(ui).clicked();
             }
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                let tint = kind.color(ui.visuals());
                 ui.label(
                     egui::RichText::new(kind.label())
                         .text_style(egui::TextStyle::Heading)
-                        .color(kind.color()),
+                        .color(tint),
                 );
             });
         });
     });
-    // Edge to edge, which is why the card's own frame carries no margin. Painted
-    // in the frame's own stroke, so the divider reads as part of the border it
-    // meets rather than as a rule someone added.
+    // Edge to edge, which is why the card's own frame carries no margin. Both
+    // the colour *and* the thickness come from the frame's own stroke — the same
+    // `window_stroke` that draws an option window's border — so the divider
+    // reads as part of the border it meets at either end rather than as a rule
+    // someone added on top of it.
+    let stroke = ui.visuals().window_stroke();
     let (rule, _) =
-        ui.allocate_exact_size(vec2(ui.available_width(), size::HAIRLINE), Sense::hover());
-    ui.painter()
-        .rect_filled(rule, 0.0, ui.visuals().window_stroke().color);
+        ui.allocate_exact_size(vec2(ui.available_width(), stroke.width), Sense::hover());
+    ui.painter().rect_filled(rule, 0.0, stroke.color);
     dismissed
 }
 
@@ -644,7 +702,8 @@ fn compact_row(ui: &mut egui::Ui, notice: &Notice) -> bool {
             dismissed = close_button(ui).clicked();
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 ui.style_mut().wrap_mode = Some(TextWrapMode::Truncate);
-                ui.label(egui::RichText::new(&notice.message).color(notice.kind.color()));
+                let tint = notice.kind.color(ui.visuals());
+                ui.label(egui::RichText::new(&notice.message).color(tint));
             });
         });
     });
@@ -654,7 +713,11 @@ fn compact_row(ui: &mut egui::Ui, notice: &Notice) -> bool {
 /// A card's body: the padded area under the divider that holds the message.
 fn body(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::NONE.inner_margin(card_pad(ui)).show(ui, |ui| {
-        ui.spacing_mut().item_spacing.y = size::NOTIFICATION_LINE_GAP;
+        // Restore the style's own row spacing, which `begin_card` zeroed for the
+        // card's outer stack. Taken from the style rather than from a token of
+        // our own, so a notice's lines breathe exactly like an option panel's
+        // rows do.
+        ui.spacing_mut().item_spacing.y = ui.ctx().global_style().spacing.item_spacing.y;
         // Labels wrap by default in a width-constrained `Ui`; pin it anyway, so
         // a future style that flips the default can't silently start truncating
         // the one text the user is here to read.
@@ -679,24 +742,6 @@ fn close_button(ui: &mut egui::Ui) -> egui::Response {
         painter.line_segment([rect.right_top(), rect.left_bottom()], stroke);
     }
     response.on_hover_text("Dismiss")
-}
-
-/// A slim filled track, the width of the card. Not `egui::ProgressBar`: that one
-/// sizes itself to the available width *and* reserves a text row, which would
-/// change the card's height the moment a fraction became known.
-fn progress_bar(ui: &mut egui::Ui, fraction: f32) {
-    let (track, _) = ui.allocate_exact_size(
-        vec2(ui.available_width(), size::NOTIFICATION_PROGRESS_HEIGHT),
-        Sense::hover(),
-    );
-    let radius = egui::CornerRadius::same(size::NOTIFICATION_PROGRESS_RADIUS);
-    ui.painter()
-        .rect_filled(track, radius, color::NOTICE_PROGRESS_TRACK);
-    let filled = Rect::from_min_size(
-        track.min,
-        vec2(track.width() * fraction.clamp(0.0, 1.0), track.height()),
-    );
-    ui.painter().rect_filled(filled, radius, color::ACCENT);
 }
 
 #[cfg(test)]

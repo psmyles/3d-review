@@ -200,6 +200,45 @@ fn a_mode_notice_stays_compact() {
     );
 }
 
+/// A one-line notice is exactly its parts: a padded header row, the divider, and
+/// a padded line of text. Nothing between them.
+///
+/// The card's blocks each carry their own padding, the way `egui::Window`'s
+/// title bar and body do — so the spacing *between* them must be zero. It was
+/// not: the column's `Area` sets `item_spacing.y` to the gap it wants between
+/// cards, a `Frame`'s content inherits the style it is shown into, and that gap
+/// was landing twice inside every card. The measurement below is built from the
+/// live style rather than from constants, so it keeps meaning whatever the
+/// theme does.
+#[test]
+fn a_card_is_its_parts_and_no_spacing_between_them() {
+    let mut harness = Harness::new();
+    harness.notifications.success("Loaded a.fbx");
+    for _ in 0..3 {
+        harness.pass(0.01);
+    }
+
+    let style = harness.ctx.global_style();
+    let pad = style.spacing.window_margin.sum().y;
+    let heading = harness
+        .ctx
+        .fonts_mut(|f| f.row_height(&egui::TextStyle::Heading.resolve(&style)));
+    let body = harness
+        .ctx
+        .fonts_mut(|f| f.row_height(&egui::TextStyle::Body.resolve(&style)));
+    let stroke = style.visuals.window_stroke().width;
+    // Header (padded heading row) + divider + body (padded text row), plus the
+    // frame's own stroke top and bottom.
+    let expected = (pad + heading) + stroke + (pad + body) + stroke * 2.0;
+
+    let measured = harness.column().height();
+    assert!(
+        measured <= expected + 2.0,
+        "the card is {measured}pt against {expected}pt of actual content — \
+         something is inserting space between the header, the rule and the body"
+    );
+}
+
 /// The real sequence a model load produces: the progress card goes up, reports
 /// stages against a bar, comes down, and the success notice replaces it in the
 /// same column — twice, because the second load is where the report came from.

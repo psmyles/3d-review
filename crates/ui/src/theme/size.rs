@@ -126,19 +126,24 @@ pub const MODE_SEGMENT_WIDTH: f32 = 37.0;
 pub const MODE_SEGMENT_HEIGHT: f32 = 28.0;
 
 // ── Notifications ─────────────────────────────────────────────────────
-/// The notice column's fixed card width. Fixed on purpose: a progress card
-/// reports a job by rewriting its own text every few frames, and a card sized
-/// to its content would shuffle its edges on every one of them. Long titles
-/// truncate instead. Wider than an option window's body, since a notice line
-/// is a sentence rather than a two-column row.
-pub const NOTIFICATION_WIDTH: f32 = 320.0;
+/// The width a notice card's text column wants. Fixed on purpose: a progress
+/// card reports a job by rewriting its own text every few frames, and a card
+/// sized to its content would shuffle its edges on every one of them.
+///
+/// Much wider than an option window's body, because a notice is a sentence
+/// rather than a two-column row and the point of the card is that the sentence
+/// can be read. It is a *want*, not a promise: a window too narrow for it
+/// clamps to what the free viewport has (see `NOTIFICATION_MIN_WIDTH`).
+pub const NOTIFICATION_WIDTH: f32 = 520.0;
+/// The narrowest a card's text column is allowed to get on a small window.
+/// Below this the wrapping breaks every sentence into stubs, at which point a
+/// card that overhangs its viewport is the lesser problem.
+pub const NOTIFICATION_MIN_WIDTH: f32 = 200.0;
 /// Vertical gap between stacked notice cards.
 pub const NOTIFICATION_CARD_GAP: f32 = 8.0;
 /// Bottom inset of the notice column: the status bar's own height plus a
 /// margin, so the cards sit clear of it.
 pub const NOTIFICATION_MARGIN_Y: f32 = STATUS_BAR_HEIGHT + OVERLAY_MARGIN;
-/// Gap between a notice card's title row and the body lines under it.
-pub const NOTIFICATION_LINE_GAP: f32 = 4.0;
 /// How many body lines a notice card shows before it summarises the rest as
 /// `+ n more`. The column grows *upward* from the status bar, so an uncapped
 /// card runs its own title off the top of the window — and an export report
@@ -152,7 +157,6 @@ pub const NOTIFICATION_MAX_LINES: usize = 6;
 pub const NOTIFICATION_MAX_VISIBLE: usize = 4;
 /// Thickness of a progress card's bar, and the radius its track is rounded to.
 pub const NOTIFICATION_PROGRESS_HEIGHT: f32 = 3.0;
-pub const NOTIFICATION_PROGRESS_RADIUS: u8 = 2;
 
 // ── Material inspector: texture mapping + files ───────────────────────
 /// Fixed label-column width for a Texture-mapping row (property name), so the

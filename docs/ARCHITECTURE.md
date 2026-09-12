@@ -371,16 +371,20 @@ is selected in the 3D workspace), `notifications`, plus `panels/` (one file per 
 it, anchored only to the four screen corners, and turned a multi-part result into
 one box per line. One `egui::Area` anchored bottom-centre of the free viewport
 (offset by `UiState::chrome_insets`, the open side panels' widths) holds a column
-of cards, each framed with `egui::Frame::window` so it matches an option window.
-A card is a header over a body: the header carries only the kind — `Warning`,
-`Success`, `Error`, `Info`, or `Working` while a job runs — tinted by
-`NoticeKind` (Progress blue, Info, Success green, Warning amber, Error red) with
-egui's own ✕ glyph, then a hairline edge to edge, then the message wrapped
-beneath it. The card's frame therefore carries no inner margin; the header and
-the body pad themselves, so the divider spans the full width. The message used to
-be the header, clipped to one line, which threw away the half of an error that
-said what went wrong. `mode` notices stay a bare single line
-(`Notice::compact`). `success`/`info`/`mode` expire
+of cards. A card is a header over a body: the header carries only the kind —
+`Warning`, `Success`, `Error`, `Info`, or `Working` while a job runs — then a
+divider edge to edge, then the message wrapped beneath it. The message used to be
+the header, clipped to one line, which threw away the half of an error that said
+what went wrong. `mode` notices stay a bare single line (`Notice::compact`).
+
+The styling is egui's own throughout rather than a second look: `Frame::window`
+for the card, `spacing.window_margin` for the header's and body's padding (the
+card's own frame has none, which is what lets the divider span the full width),
+one `TextStyle::Heading` for the header row, `window_stroke` for the divider's
+colour and thickness, egui's two-stroke close glyph, `text_color` /
+`weak_text_color` for the body, `egui::ProgressBar` for the bar, and
+`error_fg_color` / `warn_fg_color` / `hyperlink_color` / `strong_text_color` for
+the kind tints. Only `NOTICE_SUCCESS` is ours, because egui has no green. `success`/`info`/`mode` expire
 after `motion::NOTIFICATION_EVENT`; `warning`/`error` and any `report(kind, title,
 lines)` with a body stay until dismissed. A keyed push (`mode`, `error_keyed`)
 rewrites its slot in place. Deadlines run on egui's clock and resolve on the first
