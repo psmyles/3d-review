@@ -3,3 +3,5 @@
 - object selection via direct viewport click
 - better notification system?
 - compression option at export time?
+- adjust IBL reflectivity at start?
+- read FBX built in textures
