@@ -3,7 +3,7 @@
 
 use crate::GhostStyle;
 use crate::material::MaterialEntry;
-use crate::rhi::{Bindings, Frame, Pipeline, SwapchainJob, Texture, VertexBuffer};
+use crate::rhi::{Bindings, ColorTarget, Frame, Pipeline, SwapchainJob, Texture, VertexBuffer};
 use crate::shaders::generated;
 
 use super::deform_gpu::DeformGpu;
@@ -162,27 +162,21 @@ impl SceneGpu {
     /// tone map + sRGB encode over the viewport background, into `dest`.
     ///
     /// Deferred rather than drawn, because that pass has not opened yet and there is
-    /// only one of it per frame (`mac-port-plan.md` §3.2). With GTAO off, its slot is
-    /// bound with the ambient target as a harmless placeholder — the shader ignores it
-    /// while `gtao_enabled` is 0, but every declared view must still be bound.
+    /// only one of it per frame (`mac-port-plan.md` §3.2). With GTAO off, `ao` is
+    /// `None` and its slot is bound with the ambient target as a harmless placeholder
+    /// — the shader ignores it while `gtao_enabled` is 0, but every declared view must
+    /// still be bound.
     pub(super) fn queue_composite(
         &self,
         frame: &mut Frame<'_>,
         post: &PostUniforms,
         targets: &TargetSet,
-        gtao_active: bool,
+        ao: Option<&ColorTarget>,
         dest: BackbufferRect,
     ) {
         let mut bindings = Bindings::new();
         bindings.target(generated::VIEW_SCENE_COLOR, &targets.color);
-        bindings.target(
-            generated::VIEW_GTAO_TEXTURE,
-            if gtao_active {
-                &targets.gtao_blur
-            } else {
-                &targets.ambient
-            },
-        );
+        bindings.target(generated::VIEW_GTAO_TEXTURE, ao.unwrap_or(&targets.ambient));
         bindings.target(generated::VIEW_AMBIENT_TEXTURE, &targets.ambient);
         bindings.sampler(generated::SMP_SCENE_SAMPLER, &self.sampler);
         frame.queue(

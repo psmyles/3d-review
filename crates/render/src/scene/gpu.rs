@@ -52,9 +52,9 @@ use crate::geometry::{scene_lines, uv_grid_lines};
 use crate::ibl::IblMaps;
 use crate::material::{MaterialState, MaterialTable, effective_materials};
 use crate::rhi::{
-    Bindings, Cull, Depth, DepthBias, Format, Frame, GBUFFER_COLORS, GpuResult, IndexBuffer,
-    OCCLUSION_COLORS, Pipeline, PipelineDesc, Sampler, StorageBuffer, Texture, Topology,
-    VertexBuffer, Zone, shader,
+    Bindings, Cull, DEPTH_MIP_COLORS, Depth, DepthBias, Format, Frame, GBUFFER_COLORS, GpuResult,
+    IndexBuffer, OCCLUSION_COLORS, Pipeline, PipelineDesc, Sampler, StorageBuffer, Texture,
+    Topology, VertexBuffer, Zone, shader,
 };
 use crate::shaders::generated;
 use crate::{
@@ -65,7 +65,7 @@ use super::gpu_types::{InfluenceEntry, MorphEntry, PaletteEntry, SceneUniforms};
 use super::opt::ghost_tint;
 use super::pipelines::{SCENE_VERTEX_LAYOUT, ScenePipelineSet, build_scene_pipelines};
 use super::slot::{ModelSlot, SlotId};
-use super::targets::{BackbufferRect, TargetSet};
+use super::targets::{BackbufferRect, TargetSet, TargetSetId};
 use super::uniforms::{flat_display, post_uniforms, scene_uniforms};
 
 /// The greyscale + colour UV-checker PNGs (baked in; invariant: assets via
@@ -129,10 +129,12 @@ pub(crate) struct SceneGpu {
     pub(super) composite: Pipeline,
     /// Mesh-only single-sample view-normal/Z G-buffer pass.
     pub(super) gtao_gbuffer_pipeline: Pipeline,
+    /// One level of the depth prefilter chain, fullscreen.
+    pub(super) gtao_depth_mip_pipeline: Pipeline,
     /// Horizon-based occlusion, fullscreen.
     pub(super) gtao_pipeline: Pipeline,
-    /// 5×5 bilateral blur, fullscreen.
-    pub(super) gtao_blur_pipeline: Pipeline,
+    /// 5×5 edge-aware denoise, fullscreen, run once to three times.
+    pub(super) gtao_denoise_pipeline: Pipeline,
     /// Linear clamp — the composite's input sampler and the IBL sampler.
     pub(super) sampler: Sampler,
     /// Repeat sampler for the UV checker.
@@ -225,22 +227,32 @@ impl SceneGpu {
             OCCLUSION_COLORS,
             c"gtao",
         ))?;
-        let gtao_blur_pipeline = Pipeline::new(&PipelineDesc::offscreen(
+        let gtao_denoise_pipeline = Pipeline::new(&PipelineDesc::offscreen(
             shader::make(
-                generated::gtao_blur_shader_desc,
-                shader::bytecode!("gtao_blur"),
-                c"gtao blur",
+                generated::gtao_denoise_shader_desc,
+                shader::bytecode!("gtao_denoise"),
+                c"gtao denoise",
             )?,
             OCCLUSION_COLORS,
-            c"gtao blur",
+            c"gtao denoise",
+        ))?;
+        let gtao_depth_mip_pipeline = Pipeline::new(&PipelineDesc::offscreen(
+            shader::make(
+                generated::gtao_depth_mip_shader_desc,
+                shader::bytecode!("gtao_depth_mip"),
+                c"gtao depth mip",
+            )?,
+            DEPTH_MIP_COLORS,
+            c"gtao depth mip",
         ))?;
 
         Ok(Self {
             scene: build_scene_pipelines(sample_count)?,
             composite: Pipeline::new(&PipelineDesc::swapchain(composite_shader, c"composite"))?,
             gtao_gbuffer_pipeline,
+            gtao_depth_mip_pipeline,
             gtao_pipeline,
-            gtao_blur_pipeline,
+            gtao_denoise_pipeline,
             sampler: Sampler::linear_clamp()?,
             checker_sampler: Sampler::linear_repeat()?,
             gtao_sampler: Sampler::point_clamp()?,
@@ -283,6 +295,7 @@ impl SceneGpu {
 
         let size = frame.size();
         self.sync_frame(frame, scene, material_states, material_revision, size)?;
+        self.sync_ao_history(TargetSetId::Primary, camera, scene);
         self.record_view(
             frame,
             scene,
@@ -350,7 +363,11 @@ impl SceneGpu {
                 (style, ghost_uniforms)
             }),
         );
-        if gtao_active {
+        // The occlusion hands back the target it landed in, rather than the composite
+        // going looking for it: which of the denoise ping-pongs holds the result
+        // depends on the pass count, and on a converged frame on the pass count of the
+        // run that last actually happened.
+        let ao = gtao_active.then(|| {
             self.record_gtao(
                 frame,
                 camera,
@@ -358,8 +375,8 @@ impl SceneGpu {
                 scene.gtao,
                 targets,
                 &uniforms,
-            );
-        }
+            )
+        });
         self.queue_composite(
             frame,
             &post_uniforms(
@@ -369,7 +386,7 @@ impl SceneGpu {
                 flat_display(scene),
             ),
             targets,
-            gtao_active,
+            ao,
             dest,
         );
         Ok(())

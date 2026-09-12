@@ -229,10 +229,15 @@ const SWAPCHAIN_COLORS: &[Format] = &[Format::Swapchain];
 /// The scene pass's two linear-HDR attachments: location 0 radiance, location 1
 /// AO-eligible diffuse ambient.
 const SCENE_COLORS: &[Format] = &[SCENE_COLOR_FORMAT, SCENE_COLOR_FORMAT];
-/// The GTAO G-buffer's one attachment: view normal in `xyz`, view Z in `w`.
-pub(crate) const GBUFFER_COLORS: &[Format] = &[SCENE_COLOR_FORMAT];
-/// The occlusion and blur passes' one attachment.
-pub(crate) const OCCLUSION_COLORS: &[Format] = &[Format::R8];
+/// The GTAO G-buffer's two attachments: location 0 is the view normal in `xyz` +
+/// view Z in `w`, location 1 the positive linear view depth the prefilter chain
+/// reduces. The depth is written here rather than derived later because the mesh
+/// pass already has it and a second full-screen pass to copy it would be pure cost.
+pub(crate) const GBUFFER_COLORS: &[Format] = &[SCENE_COLOR_FORMAT, Format::R32F];
+/// The occlusion and denoise passes' one attachment.
+pub(crate) const OCCLUSION_COLORS: &[Format] = &[Format::R16F];
+/// One level of the GTAO depth prefilter chain.
+pub(crate) const DEPTH_MIP_COLORS: &[Format] = &[Format::R32F];
 
 impl<'a> PipelineDesc<'a> {
     /// A pipeline drawing into the frame's swapchain pass: one backbuffer-format

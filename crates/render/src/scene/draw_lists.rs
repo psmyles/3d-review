@@ -107,6 +107,9 @@ impl SceneGpu {
         if unchanged {
             return Ok(());
         }
+        // Past here the list is genuinely being rebuilt, so anything keyed on the
+        // visibility (the AO accumulation) has to start over.
+        self.active.visibility_generation = self.active.visibility_generation.wrapping_add(1);
         let geometry = if active {
             let key = self.grouping_key(mode);
             visible_geometry(model, hidden, key)

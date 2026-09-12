@@ -89,8 +89,8 @@ pub use format::Format;
 pub(crate) use format::{SCENE_COLOR_FORMAT, SCENE_DEPTH_FORMAT};
 pub(crate) use gpu_profiler::Zone;
 pub(crate) use pipeline::{
-    Blend, Cull, Depth, DepthBias, GBUFFER_COLORS, OCCLUSION_COLORS, Pipeline, PipelineDesc,
-    Topology, VertexFormat,
+    Blend, Cull, DEPTH_MIP_COLORS, Depth, DepthBias, GBUFFER_COLORS, OCCLUSION_COLORS, Pipeline,
+    PipelineDesc, Topology, VertexFormat,
 };
 pub use present::PresentStatus;
 pub(crate) use sampler::{Filter, Sampler, Wrap};

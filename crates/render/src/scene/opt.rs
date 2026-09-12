@@ -23,7 +23,7 @@ use crate::{GhostStyle, OptSceneFrame, OptView, ProcessedModelRef, SceneFrame};
 
 use super::gpu::SceneGpu;
 use super::slot::SlotId;
-use super::targets::BackbufferRect;
+use super::targets::{BackbufferRect, TargetSetId};
 
 impl SceneGpu {
     /// Render the Opt workspace: the source and processed meshes side by side, or one
@@ -115,6 +115,7 @@ impl SceneGpu {
 
         self.activate(SlotId::Source);
         self.sync_frame(frame, &opt.base, material_states, material_revision, target)?;
+        self.sync_ao_history(TargetSetId::Primary, source_camera, &opt.base);
         // The right half's set, sized to match — built here, after `sync_frame` has
         // settled the MSAA level both sets must share.
         self.sync_split_targets(target)?;
@@ -151,6 +152,7 @@ impl SceneGpu {
                     target,
                 )
                 .and_then(|()| {
+                    self.sync_ao_history(TargetSetId::Split, processed_camera, &processed_frame);
                     self.record_view(
                         frame,
                         &processed_frame,
@@ -162,13 +164,16 @@ impl SceneGpu {
             }
             // Nothing processed: the right half is the same scene again, drawn from the
             // slot already active — no swap, no second upload.
-            None => self.record_view(
-                frame,
-                &opt.base,
-                processed_camera,
-                self.split_targets(),
-                right_rect,
-            ),
+            None => {
+                self.sync_ao_history(TargetSetId::Split, processed_camera, &opt.base);
+                self.record_view(
+                    frame,
+                    &opt.base,
+                    processed_camera,
+                    self.split_targets(),
+                    right_rect,
+                )
+            }
         };
         left.and(right)
     }
@@ -221,6 +226,7 @@ impl SceneGpu {
         self.sync_frame(frame, solid_frame, material_states, material_revision, size)?;
         // One view, so one target set (invariant 3).
         self.release_split_targets();
+        self.sync_ao_history(TargetSetId::Primary, opt.source_camera, solid_frame);
         self.record_view_with_ghost(
             frame,
             solid_frame,

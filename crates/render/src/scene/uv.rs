@@ -84,7 +84,7 @@ impl SceneGpu {
         // 3D scene), no GTAO (the flat UV viewport has no depth to occlude), over the
         // chosen viewport background.
         let post = post_uniforms(background, false, TonemapSettings::default(), false);
-        self.queue_composite(frame, &post, targets, false, BackbufferRect::full(size));
+        self.queue_composite(frame, &post, targets, None, BackbufferRect::full(size));
         Ok(())
     }
 }

@@ -51,9 +51,24 @@ impl ColorTarget {
         Self::new(width, height, SCENE_COLOR_FORMAT, sample_count, label)
     }
 
-    /// A single-channel single-sample target — the raw and blurred GTAO occlusion.
-    pub(crate) fn r8(width: u32, height: u32, label: &CStr) -> GpuResult<Self> {
-        Self::new(width, height, Format::R8, 1, label)
+    /// A single-channel single-sample target — the GTAO occlusion buffers
+    /// ([`Format::R16F`]) and its depth prefilter chain ([`Format::R32F`]).
+    ///
+    /// The format is a parameter rather than fixed because those two want different
+    /// precision for the same *shape* of target: the occlusion is a 0..1 term that
+    /// half-float carries exactly well enough, while the depth chain holds view
+    /// depth in metres and needs full float (see [`Format::R32F`]).
+    pub(crate) fn single_channel(
+        width: u32,
+        height: u32,
+        format: Format,
+        label: &CStr,
+    ) -> GpuResult<Self> {
+        debug_assert!(
+            matches!(format, Format::R8 | Format::R16F | Format::R32F),
+            "single_channel is for the one-channel formats only"
+        );
+        Self::new(width, height, format, 1, label)
     }
 
     fn new(

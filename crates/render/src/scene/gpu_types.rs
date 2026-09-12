@@ -54,25 +54,49 @@ const _: () = assert!(
         == std::mem::size_of::<crate::shaders::generated::PostParams>()
 );
 
-/// GTAO-pass uniform (cbuffer `b2` in `gtao.hlsl`): a `float4x4` + two `float4`s,
-/// all 16-byte aligned. Uploaded each frame so the panel sliders stay live.
+/// GTAO-pass uniform (`gtao_params` in `review.glsl`): a `float4x4` + three
+/// `float4`s, all 16-byte aligned. Uploaded each frame so the panel sliders stay
+/// live, and shared by the occlusion and denoise passes.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub(crate) struct GtaoUniforms {
     /// View → clip projection (column-major), for reconstruction + sample projection.
     pub(crate) proj: [[f32; 4]; 4],
-    /// x = radius (view units), y = intensity, z = thickness, w unused.
+    /// x = radius (view units), y = intensity, z = thin-occluder compensation,
+    /// w = target width in pixels (sokol has no `GetDimensions`).
     pub(crate) params: [f32; 4],
-    /// x = is_ortho (1.0 / 0.0), y = slice count, z = steps per slice, w unused.
+    /// x = is_ortho (1.0 / 0.0), y = slice count, z = steps per slice,
+    /// w = target height in pixels.
     pub(crate) config: [f32; 4],
+    /// The accumulation's temporal state ([`super::ao_accum`]): x = this frame's
+    /// extra slice rotation, y = its extra step offset, z = the weight this frame's
+    /// estimate takes in the running mean (exactly 1.0 means "reset — do not read
+    /// the history"), w spare.
+    pub(crate) temporal: [f32; 4],
 }
 
-// Byte-size lock against `gtao.hlsl`'s cbuffer — see [`PostUniforms`] above for
+// Byte-size lock against the shader's block — see [`PostUniforms`] above for
 // why a silent size drift is invisible at runtime.
-const _: () = assert!(std::mem::size_of::<GtaoUniforms>() == 96);
+const _: () = assert!(std::mem::size_of::<GtaoUniforms>() == 112);
 const _: () = assert!(
     std::mem::size_of::<GtaoUniforms>()
         == std::mem::size_of::<crate::shaders::generated::GtaoParams>()
+);
+
+/// Depth-prefilter uniform (`gtao_mip_params` in `review.glsl`): the one row the
+/// 2×2 reduction needs.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub(crate) struct GtaoMipUniforms {
+    /// x = spare, y / z = the *source* level's size in pixels, w = the AO radius in
+    /// view units (the filter's falloff is scaled to it).
+    pub(crate) mip: [f32; 4],
+}
+
+const _: () = assert!(std::mem::size_of::<GtaoMipUniforms>() == 16);
+const _: () = assert!(
+    std::mem::size_of::<GtaoMipUniforms>()
+        == std::mem::size_of::<crate::shaders::generated::GtaoMipParams>()
 );
 
 #[repr(C)]

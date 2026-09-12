@@ -59,11 +59,13 @@ pub(crate) mod range {
     pub const SKELETON_SCALE_MIN: f32 = 0.2;
     pub const SKELETON_SCALE_MAX: f32 = 4.0;
 
-    /// Ambient occlusion. Radius is a fraction of the framed model's bounding
-    /// sphere; intensity is the power on the GTAO visibility; thickness is the
-    /// see-through heuristic.
-    pub const AO_RADIUS_MIN: f32 = 0.02;
-    pub const AO_RADIUS_MAX: f32 = 1.0;
+    /// Ambient occlusion. Radius is a *multiplier* over the radius the renderer
+    /// derives for the current view (1 = automatic), so the band is centred on 1
+    /// rather than running from nothing: the scene's scale is no longer this
+    /// slider's job. Intensity is the power on the GTAO visibility; thickness is
+    /// the see-through heuristic.
+    pub const AO_RADIUS_MIN: f32 = 0.25;
+    pub const AO_RADIUS_MAX: f32 = 4.0;
     pub const AO_INTENSITY_MIN: f32 = 0.0;
     pub const AO_INTENSITY_MAX: f32 = 2.0;
     pub const AO_THICKNESS_MIN: f32 = 0.0;
