@@ -334,22 +334,29 @@ static void review_import_material_base_color_linear(const ufbx_material *materi
     }
 }
 
-/* Resolve the material's metalness in [0,1], defaulting to 0 (dielectric) when
-   the material declares none. A classic Phong material has no metalness, but
-   the exporter writes the viewer's metallic figure to `ReflectionFactor` (the
-   closest slot the Phong model has), so that factor is read back as the
-   fallback: what this tool wrote, this tool reads. */
+/* Resolve the material's metalness in [0,1] from what the material actually
+   declares, defaulting to 0 (dielectric) when it declares none.
+
+   `pbr.metalness` is the only source. A classic Lambert/Phong has no metalness
+   at all, and its `ReflectionFactor` must NOT be read as one: that slot is
+   Phong reflectivity, which every DCC writes with a non-zero default nobody
+   authored (Maya 0.5, the FBX SDK 1.0). Reading it made virtually every real
+   game asset arrive half or fully metal -- stone, wood, bark, leaves, skin --
+   which in the IBL path kills the diffuse term and turns the surface into a
+   mirror of the environment: the "shiny metal" look no other viewer shows.
+   ufbx does map `ReflectionFactor` onto metalness, but only for
+   `UFBX_SHADER_BLENDER_PHONG`, where Blender genuinely writes it there; that
+   lands in `pbr.metalness` below, so the one file kind it means something in is
+   covered. Our exporter writes the viewer's metallic to `ReflectionFactor` too
+   when it falls back to Phong (`export/materials.rs`), and that figure
+   deliberately does not read back -- Phong cannot carry metalness, and guessing
+   costs every other asset far more than it returns. */
 static float review_import_material_metallic(const ufbx_material *material)
 {
     float metallic = 0.0f;
 
     if (material && material->pbr.metalness.has_value) {
         metallic = (float)material->pbr.metalness.value_real;
-    } else if (material && material->fbx.reflection_factor.has_value &&
-               (material->shader_type == UFBX_SHADER_FBX_PHONG ||
-                material->shader_type == UFBX_SHADER_FBX_LAMBERT ||
-                material->shader_type == UFBX_SHADER_UNKNOWN)) {
-        metallic = (float)material->fbx.reflection_factor.value_real;
     }
 
     if (metallic < 0.0f) {
