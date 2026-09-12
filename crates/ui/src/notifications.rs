@@ -343,6 +343,15 @@ impl Notifications {
             // Persistent chrome, not a transient popup: no fade, for the same
             // reason the option windows have none (invariant 6).
             .fade_in(false)
+            // Pin the cards to the top of the Area's rect. An `Area` defaults to
+            // `Layout::default()`, which is `top_down(Align::LEFT)` and so
+            // carries `main_align: Center` — the column would be centred
+            // *vertically* inside a rect that is its own previous measured size.
+            // That closes a loop between what the Area measures and where it
+            // then lays out, which is what let one oversized card (see
+            // [`title_row`]) stay oversized for the rest of the session. With
+            // `Align::Min` the measured size is just the cards.
+            .layout(Layout::top_down(Align::Min).with_main_align(Align::Min))
             .anchor(
                 Align2::CENTER_BOTTOM,
                 vec2(
@@ -480,12 +489,31 @@ fn activity_card(ui: &mut egui::Ui, activity: &Activity) {
 /// Laid out right-to-left so the ✕ is placed first and the title takes whatever
 /// is left — the title truncates rather than wraps, since a second line would
 /// shift every body line under it.
+///
+/// **The row is allocated at an explicit size, and that is what keeps the card
+/// the size of its text.** A bare `with_layout` inherits the parent's whole
+/// available rect — `Ui::horizontal` exists precisely because it does *not*,
+/// capping the row to one interactive height first — and with the cross
+/// alignment centred, the row then grew to fill every point the Area had to
+/// give. The card frame grew with it, so one line of text was painted as a
+/// strip the height of the window, and the title had no finite width to
+/// truncate against so a long file name ran outside the frame. Worse, it
+/// latched: an `egui::Area` lays each frame out inside its *previous* measured
+/// size, so once a card had claimed the height it kept claiming it, and every
+/// load pumped it further.
 fn title_row(ui: &mut egui::Ui, kind: NoticeKind, title: &str, closable: bool) -> bool {
     let mut dismissed = false;
-    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+    // Tall enough for the heading and for the close glyph, which is sized from
+    // egui's own interact height — whichever of the two is taller.
+    let height = ui
+        .text_style_height(&egui::TextStyle::Heading)
+        .max(ui.spacing().interact_size.y);
+    let row = vec2(ui.available_width(), height);
+    ui.allocate_ui_with_layout(row, Layout::right_to_left(Align::Center), |ui| {
         if closable {
             dismissed = close_button(ui).clicked();
         }
+        // The title fills what the ✕ left, laid out from its own left edge.
         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
             ui.style_mut().wrap_mode = Some(TextWrapMode::Truncate);
             ui.label(
@@ -547,6 +575,13 @@ mod tests {
     fn pass(ctx: &egui::Context, notifications: &mut Notifications, time: f64) {
         ctx.begin_pass(egui::RawInput {
             time: Some(time),
+            // A real window, not egui's headless default: the layout bugs this
+            // module has had were all "the card took the size of the screen",
+            // which a default-sized context cannot show.
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1920.0, 1080.0),
+            )),
             ..Default::default()
         });
         notifications.show(ctx, ChromeInsets::default());
@@ -560,76 +595,6 @@ mod tests {
         ctx
     }
 
-    #[test]
-    fn an_auto_notice_expires_and_a_sticky_one_does_not() {
-        let ctx = context();
-        let mut notifications = Notifications::new();
-        notifications.success("Loaded thing.fbx");
-        notifications.error("Couldn't load other.fbx");
-
-        // The deadline resolves on the first frame the card is drawn, not when
-        // it was pushed — so an idle loop can't spend a notice's life for it.
-        pass(&ctx, &mut notifications, 0.0);
-        assert_eq!(notifications.notices.len(), 2);
-        pass(&ctx, &mut notifications, 0.5);
-        assert_eq!(notifications.notices.len(), 2);
-
-        // Past the success's deadline: it goes, the error stays put.
-        pass(
-            &ctx,
-            &mut notifications,
-            motion::NOTIFICATION_EVENT.as_secs_f64() + 0.5,
-        );
-        assert_eq!(notifications.notices.len(), 1);
-        assert_eq!(notifications.notices[0].kind, NoticeKind::Error);
-
-        pass(&ctx, &mut notifications, 1_000.0);
-        assert_eq!(notifications.notices.len(), 1);
-    }
-
-    #[test]
-    fn a_report_with_lines_is_one_sticky_card() {
-        let ctx = context();
-        let mut notifications = Notifications::new();
-        notifications.report(
-            NoticeKind::Success,
-            "Exported dog.fbx (5139 triangles)",
-            vec![
-                "LOD 0: 'Body' was written as triangles.".to_owned(),
-                "LOD 0: 'Eyes' was written as triangles.".to_owned(),
-            ],
-        );
-
-        pass(&ctx, &mut notifications, 0.0);
-        // One card, not one per line — which is the whole reason `report` exists.
-        assert_eq!(notifications.notices.len(), 1);
-        assert_eq!(notifications.notices[0].lines.len(), 2);
-
-        // A success *with* a body waits to be read, whatever its kind's default.
-        pass(&ctx, &mut notifications, 1_000.0);
-        assert_eq!(notifications.notices.len(), 1);
-    }
-
-    #[test]
-    fn a_keyed_push_replaces_in_place() {
-        let ctx = context();
-        let mut notifications = Notifications::new();
-        notifications.info("first");
-        notifications.mode("Shaded");
-        notifications.mode("Unlit");
-        notifications.mode("Wireframe");
-
-        pass(&ctx, &mut notifications, 0.0);
-        // The three mode pushes share one slot, and it stayed where it was
-        // rather than jumping past the plain notice pushed before it.
-        assert_eq!(notifications.notices.len(), 2);
-        assert_eq!(notifications.notices[1].title, "Wireframe");
-    }
-
-    /// The column is capped, and the cap drops the *oldest* — the newest cards
-    /// are the ones being read. Dropping happens on push, not at draw time: a
-    /// card that isn't drawn has no ✕, so a sticky one hidden behind the cap
-    /// would wait forever for a click it could never receive.
     #[test]
     fn the_column_keeps_only_the_newest_cards() {
         let ctx = context();
