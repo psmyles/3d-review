@@ -1,0 +1,234 @@
+//! The per-view debug toggles the renderer reads each frame.
+
+use crate::selection::Selection;
+
+use super::*;
+
+/// Which geometry the bounding box (and its dimension labels) wraps: the whole
+/// model, only the currently-selected mesh part / material, or only the
+/// Outliner-visible meshes. Baked into the box line buffer so it rebuilds when
+/// the scope — or the inputs the scope depends on — change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BoundingBoxScope {
+    /// Wrap every mesh, regardless of selection or Outliner visibility.
+    #[default]
+    AllMeshes,
+    /// Wrap only the geometry the current Outliner selection covers (a node's
+    /// subtree or a material slot); empty when nothing is selected.
+    OnlySelection,
+    /// Wrap only the currently-visible meshes (Outliner-hidden meshes excluded).
+    VisibleOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SceneDebugOptions {
+    pub shading_mode: ShadingMode,
+    /// Draw the wireframe edges on top of the filled surface. Independent of
+    /// `shading_mode` (it is an overlay), so it combines with the unlit and
+    /// shaded modes; it is also implied when `shading_mode` is
+    /// [`ShadingMode::Wireframe`] (which draws the edges as the only geometry).
+    pub wireframe_overlay: bool,
+    /// Which material the filled faces show (source / UV checker / vertex colors /
+    /// buffer view). Mutually exclusive; applies in every filled-face mode.
+    pub active_material: ActiveMaterial,
+    /// Which single buffer the filled faces show when `active_material` is
+    /// [`ActiveMaterial::Buffers`] (ignored otherwise).
+    pub buffer_view: BufferView,
+    /// How the source material is shaded (imported / uniform standard / unique
+    /// per-part hue). Behind the Source Material button's options panel; replaces
+    /// the effective material table renderer-side, leaving the imported materials
+    /// untouched.
+    pub material_mode: MaterialMode,
+    pub uv_checker_texture: CheckerTexture,
+    /// Which vertex-color channels the view shows when `active_material` is
+    /// [`ActiveMaterial::VertexColors`].
+    pub vertex_color_mode: VertexColorMode,
+    /// Checker repeats across the 0..1 UV range; clamped to 1..=16 by the UI.
+    pub uv_checker_tiling: u32,
+    /// Which model UV set the checker view samples (0-based). Only meaningful
+    /// when the model carries more than one UV set.
+    pub uv_channel: u32,
+    pub show_grid: bool,
+    /// Whether the model's axis-aligned bounding box is drawn as a wireframe box.
+    pub show_bounding_box: bool,
+    /// Whether the object pivot marker — a 3-axis cross at the model's origin (the
+    /// root node's world-space pivot) — is drawn. A plain on/off overlay (no
+    /// options), independent of the bounding box.
+    pub show_pivot: bool,
+    /// Whether the skeleton overlay is drawn: one octahedral bone per parent ->
+    /// child joint pair, plus a marker at each leaf / root joint. Always drawn
+    /// on top of the mesh (X-ray) — a skeleton lives *inside* its character, so
+    /// depth-testing it would hide the whole thing.
+    pub show_skeleton: bool,
+    /// Multiplier on the skeleton overlay's computed bone thickness / marker size,
+    /// so a dense rig can be thinned out and a sparse one fattened up.
+    pub skeleton_joint_scale: f32,
+    /// Skeleton bone color (gamma space, alpha applies to the solid octahedron
+    /// fill; the outlines draw opaque).
+    pub skeleton_color: [f32; 4],
+    /// Color for the bones in [`SceneFrame::selected_bones`], so an Outliner
+    /// selection reads in the viewport. Unlike the selection *flash* this is
+    /// persistent — it lasts as long as the selection does.
+    pub skeleton_selected_color: [f32; 4],
+    pub face_normals: bool,
+    pub vertex_normals: bool,
+    pub face_normal_length: f32,
+    pub vertex_normal_length: f32,
+    pub face_normal_color: [f32; 4],
+    pub vertex_normal_color: [f32; 4],
+    /// Whether the UV-seam overlay is drawn: the mesh edges across which
+    /// [`uv_seam_channel`] is discontinuous, highlighted in [`uv_seam_color`] —
+    /// the read Maya gives with "texture border edges". An ordinary depth-tested
+    /// line view, so it composes with any shading mode.
+    ///
+    /// [`uv_seam_channel`]: SceneDebugOptions::uv_seam_channel
+    /// [`uv_seam_color`]: SceneDebugOptions::uv_seam_color
+    pub uv_seams: bool,
+    /// Color of the UV-seam edges, baked into that view's line buffer and
+    /// rebuilt when it changes. The line pipeline's width is fixed at 1px, so
+    /// this is the whole of what separates a seam from the wireframe under it.
+    pub uv_seam_color: [f32; 4],
+    /// Which model UV set the seam test reads (0-based). Deliberately its own
+    /// channel rather than [`uv_channel`]: the seams a lightmap set carries are
+    /// a different question from which set the checker is showing, and the two
+    /// are useful side by side.
+    ///
+    /// [`uv_channel`]: SceneDebugOptions::uv_channel
+    pub uv_seam_channel: u32,
+    /// Color of the model wireframe overlay, baked into the line vertex buffer
+    /// and rebuilt when it changes.
+    pub wireframe_color: [f32; 4],
+    /// Color of the bounding-box edges, baked into its line buffer and rebuilt
+    /// when it changes.
+    pub bounding_box_color: [f32; 4],
+    /// Which geometry the bounding box wraps (whole model / only the selection /
+    /// only the visible meshes). Baked into the box line buffer alongside the
+    /// inputs the chosen scope depends on, so it rebuilds when they change.
+    pub bounding_box_scope: BoundingBoxScope,
+    /// The Outliner selection the box wraps in [`BoundingBoxScope::OnlySelection`]
+    /// mode (ignored otherwise). Carried here so the box can be baked from the
+    /// scene callback without threading the selection through separately.
+    pub bounding_box_selection: Selection,
+    /// When `true` back-facing triangles are drawn (the mesh is double-sided);
+    /// when `false` (the default) they are culled, so only camera-facing surfaces
+    /// are rendered. The renderer keeps two mesh pipelines — culling vs.
+    /// double-sided — and picks one per frame from this flag, so toggling it
+    /// allocates nothing.
+    pub render_backfaces: bool,
+}
+
+impl Default for SceneDebugOptions {
+    fn default() -> Self {
+        Self {
+            shading_mode: ShadingMode::Shaded,
+            wireframe_overlay: false,
+            active_material: ActiveMaterial::Source,
+            buffer_view: BufferView::default(),
+            material_mode: MaterialMode::Source,
+            uv_checker_texture: CheckerTexture::Greyscale,
+            vertex_color_mode: VertexColorMode::Rgb,
+            uv_checker_tiling: 4,
+            uv_channel: 0,
+            show_grid: true,
+            show_bounding_box: false,
+            show_pivot: false,
+            show_skeleton: false,
+            skeleton_joint_scale: 1.0,
+            skeleton_color: [0.35, 0.72, 1.0, 1.0],
+            skeleton_selected_color: [1.0, 0.55, 0.14, 1.0],
+            face_normals: false,
+            vertex_normals: false,
+            face_normal_length: 0.03,
+            vertex_normal_length: 0.03,
+            face_normal_color: [1.0, 0.1, 0.1, 0.95],
+            vertex_normal_color: [0.14, 0.92, 0.96, 0.95],
+            uv_seams: false,
+            uv_seam_color: [0.11, 1.0, 0.11, 1.0],
+            uv_seam_channel: 0,
+            wireframe_color: [0.6, 0.6, 0.6, 1.0],
+            bounding_box_color: [1.0, 0.803_921_6, 0.250_980_4, 1.0],
+            bounding_box_scope: BoundingBoxScope::default(),
+            bounding_box_selection: Selection::None,
+            render_backfaces: false,
+        }
+    }
+}
+
+/// The viewport background fill drawn behind the 3D / UV scene. A preset that the
+/// composite pass paints (in display space, after tone mapping) wherever no
+/// geometry covers the pixel — so the chosen value is the exact displayed color,
+/// undistorted by the tone curve. The skybox (Environment → "show background")
+/// covers the whole viewport when on, so the IBL environment overrides this.
+///
+/// Flat presets paint one solid color; [`Gradient`] paints a vertical interpolation
+/// (top → bottom). The values are sRGB display levels (0..1), matching their
+/// labels (e.g. 50% grey reads as a mid-grey on screen).
+///
+/// [`Gradient`]: ViewportBackground::Gradient
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ViewportBackground {
+    /// Solid black — the default neutral backdrop.
+    #[default]
+    Black,
+    /// Solid 25% grey.
+    Grey25,
+    /// Solid 50% grey.
+    Grey50,
+    /// Solid 75% grey.
+    Grey75,
+    /// Solid white.
+    White,
+    /// Vertical gradient: 80% grey at the top fading to black at the bottom.
+    Gradient,
+}
+
+impl ViewportBackground {
+    /// Every preset in display / cycle order — Black (the default) first, then the
+    /// greys ascending to White, then the gradient. Drives both the status-bar
+    /// cycle button and the options-panel swatch row (left to right).
+    pub const ALL: [ViewportBackground; 6] = [
+        ViewportBackground::Black,
+        ViewportBackground::Grey25,
+        ViewportBackground::Grey50,
+        ViewportBackground::Grey75,
+        ViewportBackground::White,
+        ViewportBackground::Gradient,
+    ];
+
+    /// Human-readable label (tooltips / notifications).
+    pub fn label(self) -> &'static str {
+        match self {
+            ViewportBackground::Black => "Black",
+            ViewportBackground::Grey25 => "25% Grey",
+            ViewportBackground::Grey50 => "50% Grey",
+            ViewportBackground::Grey75 => "75% Grey",
+            ViewportBackground::White => "White",
+            ViewportBackground::Gradient => "Gradient",
+        }
+    }
+
+    /// The next preset in [`ViewportBackground::ALL`] order, wrapping after the
+    /// last — for cycling by left-clicking the status-bar background button.
+    pub fn next(self) -> ViewportBackground {
+        let all = ViewportBackground::ALL;
+        let index = all.iter().position(|&v| v == self).unwrap_or(0);
+        all[(index + 1) % all.len()]
+    }
+
+    /// The preset's top and bottom fill colors in **display (sRGB) space**, 0..1.
+    /// The composite interpolates vertically between them (top at the viewport's
+    /// top edge); a flat preset returns the same color for both. Handed to the post
+    /// pass directly so the painted background matches the label exactly, untouched
+    /// by tone mapping.
+    pub fn gradient_srgb(self) -> ([f32; 3], [f32; 3]) {
+        let grey = |v: f32| [v, v, v];
+        match self {
+            ViewportBackground::Black => (grey(0.0), grey(0.0)),
+            ViewportBackground::Grey25 => (grey(0.25), grey(0.25)),
+            ViewportBackground::Grey50 => (grey(0.5), grey(0.5)),
+            ViewportBackground::Grey75 => (grey(0.75), grey(0.75)),
+            ViewportBackground::White => (grey(1.0), grey(1.0)),
+            ViewportBackground::Gradient => (grey(0.8), grey(0.0)),
+        }
+    }
+}
