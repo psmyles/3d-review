@@ -7,6 +7,7 @@ use glam::{Vec2, Vec3};
 pub mod anim;
 mod bvh;
 mod clip;
+pub mod color;
 mod demo;
 pub mod extras;
 mod geometry;
@@ -18,7 +19,7 @@ mod stats;
 // The crate's whole surface is re-exported here, so every `review_model::X`
 // path other crates use resolves exactly as it did when this was one file.
 pub use anim::{AnimContext, DeformPose, Pose};
-pub use bvh::{Bvh, SceneBvh};
+pub use bvh::{Bvh, SceneBvh, triangle_positions};
 pub use clip::{
     AnimationClip, DEFAULT_FRAME_RATE, Key, MorphTrack, NodeTrack, frame_rate_or_default,
 };

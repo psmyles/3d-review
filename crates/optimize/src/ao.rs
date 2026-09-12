@@ -60,6 +60,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use glam::{Vec3, Vec4};
+use review_model::color::linear_to_srgb;
+use review_model::triangle_positions;
 use review_model::{Bounds, Bvh, ModelData, Vertex};
 
 use crate::process::{is_excluded, resolve_op};
@@ -182,22 +184,6 @@ fn position_key(position: Vec3) -> [u32; 3] {
         position.y.to_bits(),
         position.z.to_bits(),
     ]
-}
-
-/// The three positions of triangle `tri` in the occluder model, falling back
-/// to the origin for any out-of-range index (mirroring the BVH's own
-/// defensive read — a malformed mesh degrades, never panics).
-fn triangle_positions(occluders: &ModelData, tri: u32) -> [Vec3; 3] {
-    let base = tri as usize * 3;
-    let position = |slot: usize| {
-        occluders
-            .indices
-            .get(base + slot)
-            .and_then(|&index| occluders.vertices.get(index as usize))
-            .map(|vertex| vertex.position)
-            .unwrap_or(Vec3::ZERO)
-    };
-    [position(0), position(1), position(2)]
 }
 
 /// Bake AO into every non-excluded, non-hidden submesh's vertex colors, each
@@ -561,14 +547,6 @@ fn orthonormal_basis(n: Vec3) -> (Vec3, Vec3) {
         Vec3::new(1.0 + sign * n.x * n.x * a, sign * b, -sign * n.x),
         Vec3::new(b, sign + n.y * n.y * a, -n.y),
     )
-}
-
-fn linear_to_srgb(value: f32) -> f32 {
-    if value <= 0.003_130_8 {
-        value * 12.92
-    } else {
-        1.055 * value.powf(1.0 / 2.4) - 0.055
-    }
 }
 
 #[cfg(test)]
