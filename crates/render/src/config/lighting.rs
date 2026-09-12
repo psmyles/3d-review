@@ -75,18 +75,18 @@ impl Default for EnvironmentSettings {
 }
 
 /// Ground-Truth Ambient Occlusion configuration for the shaded view. Read by the
-/// scene renderer to drive the GTAO + blur passes and the composite multiply.
+/// scene renderer to drive the GTAO passes and the composite's ambient darkening.
 /// (User-facing UI calls this "Ambient Occlusion"; the internal implementation is
 /// GTAO.)
 ///
 /// GTAO samples a single-sample view-space normal + depth G-buffer, marches the
 /// screen-space horizon per slice to estimate the cosine-weighted visible arc,
-/// edge-aware blurs the result, and applies it only to the scene's ambient
-/// radiance in the composite — darkening contact creases and cavities without
-/// muting direct/specular light. `radius` is expressed as a **fraction of the
-/// framed model's bounding-sphere radius**, so the look is scale-invariant across
-/// models (the renderer multiplies it by the live scene radius). `enabled` is the
-/// toolbar toggle; the default is on but subtle.
+/// denoises the result, and applies it only to the scene's ambient radiance in the
+/// composite — darkening contact creases and cavities without muting
+/// direct/specular light. The horizon search follows Intel's XeGTAO. `radius` is
+/// expressed as a **fraction of the framed model's bounding-sphere radius**, so the
+/// look is scale-invariant across models (the renderer multiplies it by the live
+/// scene radius). `enabled` is the toolbar toggle; the default is on but subtle.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GtaoSettings {
     pub enabled: bool,
@@ -95,10 +95,16 @@ pub struct GtaoSettings {
     /// Strength of the darkening: a power on the GTAO visibility (1 = ground
     /// truth, >1 darkens, 0 disables).
     pub intensity: f32,
-    /// Thickness heuristic (0..1): how much an occluder past the near horizon is
-    /// "seen through", keeping thin geometry from over-occluding.
+    /// Thin-occluder compensation (0..1). A horizon search that only ever climbs
+    /// assumes every occluder is infinitely deep, so a railing or a chair leg
+    /// shadows everything behind it; at 1 the horizon follows the last sample back
+    /// down and thin geometry stops over-occluding, at 0 occluders are solid.
+    ///
+    /// Named "Thickness" in the UI, which reads the right way round: more of it
+    /// means the shader treats occluders as *less* thick.
     pub thickness: f32,
-    /// Sampling quality — the slice / step counts of the horizon search.
+    /// Sampling quality — the slice / step counts of the horizon search and the
+    /// number of denoise passes over the result.
     pub quality: GtaoQuality,
 }
 
@@ -115,15 +121,23 @@ impl Default for GtaoSettings {
 }
 
 /// GTAO sampling quality: the number of slice directions and horizon steps per
-/// slice. More of each means smoother, more accurate occlusion at higher cost.
+/// slice, and how many denoise passes run over the result. More of each means
+/// smoother, more accurate occlusion at higher cost.
+///
+/// The counts are lower than they look: the accumulation
+/// ([`crate::scene`]'s `ao_accum`) averages 24 frames whenever the view is still,
+/// so a settled image at Medium has seen 72 slice directions per pixel. These
+/// numbers therefore buy quality for the frames *during* an orbit, and the denoise
+/// pass count is what carries a moving frame.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum GtaoQuality {
-    /// 2 slices × 3 steps — cheapest, noisier (the blur cleans most of it up).
+    /// 2 slices × 3 steps, 1 denoise pass — cheapest.
     Low,
-    /// 3 slices × 5 steps — the balanced default.
+    /// 3 slices × 4 steps, 2 denoise passes — the balanced default.
     #[default]
     Medium,
-    /// 4 slices × 8 steps — smoothest, most expensive.
+    /// 4 slices × 6 steps, 3 denoise passes — smoothest while moving, most
+    /// expensive.
     High,
 }
 
@@ -144,8 +158,22 @@ impl GtaoQuality {
     pub fn slices_steps(self) -> (u32, u32) {
         match self {
             GtaoQuality::Low => (2, 3),
-            GtaoQuality::Medium => (3, 5),
-            GtaoQuality::High => (4, 8),
+            GtaoQuality::Medium => (3, 4),
+            GtaoQuality::High => (4, 6),
+        }
+    }
+
+    /// How many times the edge-aware denoise runs over the occlusion.
+    ///
+    /// Iterating a narrow kernel beats widening it once: each pass re-reads its
+    /// neighbours' *already smoothed* values, so support grows geometrically while
+    /// every tap keeps being rejected by the same edge test. A single wide kernel
+    /// would have to loosen that test to reach as far.
+    pub fn denoise_passes(self) -> u32 {
+        match self {
+            GtaoQuality::Low => 1,
+            GtaoQuality::Medium => 2,
+            GtaoQuality::High => 3,
         }
     }
 }

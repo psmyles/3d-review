@@ -93,6 +93,23 @@ vec2 fullscreen_corner(int index) {
 }
 @end
 
+// How the GTAO depth chain spells "nothing here". Shared by the G-buffer pass that
+// writes it, the prefilter that reduces it and the occlusion pass that marches it,
+// because all three have to agree or a horizon test finds an occluder in empty space.
+//
+// Two values mean background, which is why this is a predicate rather than a
+// comparison spelled out at each site: a pixel no mesh covered keeps the pass's
+// **clear**, which is 0, while an overlay or line fragment writes BACKGROUND_DEPTH
+// explicitly (it has to write something, and 0 would read as "on the near plane" —
+// an occluder in front of everything).
+@block gtao_depth_encoding
+const float BACKGROUND_DEPTH = 1e30;
+
+bool is_background_depth(float depth) {
+    return !(depth > 0.0 && depth < BACKGROUND_DEPTH);
+}
+@end
+
 // The scene uniform block, once per stage. Both are the same 272 bytes and are
 // filled from the same `SceneUniforms` value; they are two declarations only
 // because a sokol uniform block belongs to exactly one stage. The instance names
@@ -768,12 +785,20 @@ void main() {
 // A mesh-only pass writing the view-space normal (xyz) + the linear view-space Z
 // (w) into a single-sample target the GTAO occlusion pass reads. Single-sample (no
 // MSAA) so geometry-edge normals/depths aren't averaged by a resolve before the
-// occlusion + bilateral blur read them.
+// occlusion + denoiser read them.
+//
+// Location 1 is the same depth again as a *positive* distance in its own
+// single-channel target, which is what the prefilter chain reduces. It is written
+// here rather than copied out afterwards because this pass already has it, and a
+// second fullscreen pass to move it would cost a full-resolution read and write for
+// nothing.
 @fs fs_gtao_gbuffer
 @include_block scene_uniforms_fs
 @include_block scene_varyings_in
+@include_block gtao_depth_encoding
 
 layout(location=0) out vec4 frag_gbuffer;
+layout(location=1) out float frag_depth;
 
 void main() {
     float normal_length_sq = dot(v_normal, v_normal);
@@ -781,12 +806,14 @@ void main() {
     // as background and applies no occlusion there.
     if (normal_length_sq < 1e-6) {
         frag_gbuffer = vec4(0.0);
+        frag_depth = BACKGROUND_DEPTH;
         return;
     }
     // View Z is negative in front of the camera; GTAO treats zero as background.
     vec4 view_pos = sc.view * vec4(v_world_position, 1.0);
     vec3 view_normal = normalize((sc.view * vec4(v_normal, 0.0)).xyz);
     frag_gbuffer = vec4(view_normal, view_pos.z);
+    frag_depth = -view_pos.z;
 }
 @end
 
@@ -884,16 +911,25 @@ void main() {
 // For each slice direction the shader marches the screen-space horizon both ways,
 // then integrates the cosine-weighted visible arc, averaging over slices.
 @block gtao_common
+@include_block gtao_depth_encoding
 layout(binding=0) uniform gtao_params {
     // View → clip projection: projects sample points to screen, and its terms
     // reconstruct view-space position from depth.
     mat4 proj;
     // x = sample radius (view units), y = intensity (power on visibility),
-    // z = thickness heuristic (0..1), w = target width in pixels.
+    // z = thin-occluder compensation (0..1), w = target width in pixels.
     vec4 params;
     // x = 1.0 when the projection is orthographic, y = slice count,
     // z = steps per slice, w = target height in pixels.
     vec4 config;
+    // The temporal state of the accumulation (`scene/ao_accum.rs`). x = this
+    // frame's extra slice rotation and y = its extra step offset, both in [0,1);
+    // together they walk the 6×4 Jimenez pattern set so 24 accumulated frames cover
+    // every rotation/offset exactly once. z = the weight this frame's estimate gets
+    // when blended into the history — 1/(n+1) for a running mean, and exactly 1.0
+    // on the frame a reset happened, which is what tells the occlusion shader not to
+    // read the history at all. w is spare.
+    vec4 temporal;
 };
 
 layout(binding=0) uniform texture2D gbuffer;
@@ -903,8 +939,7 @@ const float PI = 3.14159265359;
 const float HALF_PI = 1.57079632679;
 
 // The G-buffer / AO target size in pixels. sokol has no `GetDimensions`, so the two
-// previously-unused `w` slots of the existing 96-byte block carry it — which is why
-// the block did not have to grow.
+// otherwise-unused `w` slots of the params/config rows carry it.
 vec2 target_dims() {
     return vec2(max(params.w, 1.0), max(config.w, 1.0));
 }
@@ -936,83 +971,101 @@ vec2 project_to_uv(vec3 view_pos) {
     return vec2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
 }
 
-// Reconstruct the view-space position at `uv` (xyz) + a foreground flag (w): 0 for
-// background (overlays / skybox / cleared frame, which wrote a zero normal / Z).
-vec4 sample_view_pos(vec2 uv) {
-    vec4 g = textureLod(sampler2D(gbuffer, gtao_sampler), uv, 0.0);
-    if (dot(g.xyz, g.xyz) < 0.25 || g.w >= -1e-4) {
-        return vec4(0.0);
-    }
-    return vec4(reconstruct_view_pos(uv, g.w), 1.0);
+// The size in view units of one pixel at `view_z`, which is what turns a screen-space
+// tolerance into a world-space one. Used by the denoiser so its edge stopping is the
+// same strictness on a close-up and on a distant object, rather than scaling with the
+// scene or the AO radius the way the old blur's depth sigma did.
+float view_pixel_size(float view_z) {
+    float height = max(config.w, 1.0);
+    // Perspective: the view-space height of the frustum at this depth is
+    // 2|z| / P11, spread over `height` pixels. Orthographic: the same without the
+    // depth term, since the frustum is a box.
+    float extent = (config.x > 0.5) ? 2.0 : 2.0 * abs(view_z);
+    return extent / (max(abs(proj[1][1]), 1e-6) * height);
 }
 @end
 
+// The horizon search, following Intel's XeGTAO (MIT). Three things distinguish it
+// from a textbook GTAO march, and each is one of the reasons the old pass was noisy:
+//
+//   * **Steps are distributed as the square of the fraction**, so the first tap sits
+//     ~1.3 px away and the last at the full radius. Linear spacing over a radius that
+//     is metres wide on a room interior put *every* tap tens of pixels out: contact
+//     occlusion was missed entirely, and the four step offsets of the dither block
+//     each found a different set of thin occluders, which is what drew the streaks.
+//   * **Far taps read a prefiltered depth level** instead of full-resolution depth,
+//     so a tap that stands for a 16-px neighbourhood is compared against that whole
+//     neighbourhood's depth rather than against one aliased texel of a chair leg.
+//   * **The horizon falls off smoothly** toward the slice's low horizon over the
+//     outer 61.5 % of the radius, rather than an occluder inside the radius counting
+//     fully and one just outside not at all.
 @fs fs_gtao
 @include_block gtao_common
+
+layout(binding=1) uniform texture2D depth_mip0;
+layout(binding=2) uniform texture2D depth_mip1;
+layout(binding=3) uniform texture2D depth_mip2;
+layout(binding=4) uniform texture2D depth_mip3;
+layout(binding=5) uniform texture2D depth_mip4;
+layout(binding=6) uniform texture2D ao_history;
 
 layout(location=0) in vec2 v_uv;
 layout(location=0) out float frag_ao;
 
+// Below this the sample is the centre pixel again and carries no information.
+const float PIXEL_TOO_CLOSE = 1.3;
+// XeGTAO's depth-MIP sampling offset: `log2(offset_px) - 3.3` picks the level, so a
+// tap ~10 px out reads level 0 and one ~160 px out reads level 4.
+const float DEPTH_MIP_OFFSET = 3.3;
+const float DEPTH_MIP_MAX = 4.0;
+// The outer fraction of the radius over which an occluder fades out.
+const float FALLOFF_RANGE_FRACTION = 0.615;
+// Golden ratio, for decorrelating each (slice, step) pair's offset from the others.
+const float GOLDEN = 0.6180339887498949;
+
 // Jimenez 2016 (Activision GTAO) structured 4x4 spatial dither. Returns the slice
 // rotation in x and the step offset in y, both in [0,1). Adjacent pixels get evenly
-// spread rotations/offsets, so the bilateral denoiser averages complementary slice
-// directions over a small block and resolves to a clean result at low sample counts
-// instead of leaving high-variance speckle.
+// spread rotations/offsets, so the denoiser averages complementary slice directions
+// over a small block and resolves to a clean result at low sample counts instead of
+// leaving high-variance speckle.
 vec2 spatial_dither(uvec2 pix) {
     float rot = (1.0 / 16.0) * float((((pix.x + pix.y) & 3u) << 2u) + (pix.x & 3u));
     float offset = (1.0 / 4.0) * float((pix.y - pix.x) & 3u);
     return vec2(rot, offset);
 }
 
-// March one side of a slice for the maximum horizon cosine (dot of the direction to
-// the closest occluder with the view vector). `dir_px` is the per-step screen offset
-// in pixels for that side; `inv_dims` converts pixels to uv.
-float horizon_cos(
-    vec2 origin_uv,
-    vec3 p,
-    vec3 v,
-    vec2 dir_px,
-    float radius_px,
-    float radius,
-    float thickness,
-    uint steps,
-    float jitter,
-    vec2 inv_dims
-) {
-    float cos_h = -1.0;
-    for (uint t = 1u; t <= steps; t++) {
-        float frac = (float(t) - jitter) / float(steps);
-        vec2 uv = origin_uv + dir_px * (radius_px * frac) * inv_dims;
-        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
-            break;
-        }
-        vec4 s = sample_view_pos(uv);
-        if (s.w < 0.5) {
-            continue;
-        }
-        vec3 d = s.xyz - p;
-        float len = length(d);
-        if (len < 1e-5) {
-            continue;
-        }
-        float c = dot(d, v) / len;
-        // Radius falloff: ignore occluders past the radius; far ones inside the
-        // radius are pulled back by the thickness heuristic so thin objects don't
-        // over-occlude.
-        float w = clamp(1.0 - len / radius, 0.0, 1.0);
-        if (w <= 0.0) {
-            continue;
-        }
-        cos_h = max(cos_h, c - (1.0 - w) * thickness);
+// One tap's depth, from the prefilter level that matches how far out it is.
+//
+// Five separate bindings selected by an integer compare, rather than one image with
+// five mips: sokol refuses to bind an image as a texture in the pass that attaches it
+// (`VALIDATE_ABND_TEXTURE_BINDING_VS_COLOR_ATTACHMENT`), so the chain cannot live in
+// one image that each prefilter pass writes a level of. It also keeps this portable —
+// a dynamically indexed texture array is the construct MSL is least happy with.
+// One assigned variable rather than a return per branch: fxc's flow analysis does not
+// see that a chain of early returns covers every path and rejects the function under
+// `/WX` as "potentially uninitialized".
+float sample_depth_mip(vec2 uv, int level) {
+    float depth = 0.0;
+    if (level <= 0) {
+        depth = textureLod(sampler2D(depth_mip0, gtao_sampler), uv, 0.0).r;
+    } else if (level == 1) {
+        depth = textureLod(sampler2D(depth_mip1, gtao_sampler), uv, 0.0).r;
+    } else if (level == 2) {
+        depth = textureLod(sampler2D(depth_mip2, gtao_sampler), uv, 0.0).r;
+    } else if (level == 3) {
+        depth = textureLod(sampler2D(depth_mip3, gtao_sampler), uv, 0.0).r;
+    } else {
+        depth = textureLod(sampler2D(depth_mip4, gtao_sampler), uv, 0.0).r;
     }
-    return cos_h;
+    return depth;
 }
 
 void main() {
     vec4 g = textureLod(sampler2D(gbuffer, gtao_sampler), v_uv, 0.0);
     vec3 raw_normal = g.xyz;
     float view_z = g.w;
-    // Background (overlays / skybox / cleared frame write 0): no occlusion.
+    // Background (overlays / skybox / cleared frame write 0): no occlusion, and no
+    // history blend either — an unoccluded pixel is unoccluded on every frame.
     if (dot(raw_normal, raw_normal) < 0.25 || view_z >= -1e-4) {
         frag_ao = 1.0;
         return;
@@ -1022,84 +1075,246 @@ void main() {
     vec3 p = reconstruct_view_pos(v_uv, view_z);
     vec3 v = normalize(-p);
 
-    float radius = params.x;
+    float radius = max(params.x, 1e-4);
     float intensity = params.y;
-    float thickness = clamp(params.z, 0.0, 1.0);
+    float thin_occluder = clamp(params.z, 0.0, 1.0);
     uint slice_count = max(uint(config.y), 1u);
     uint step_count = max(uint(config.z), 1u);
 
     vec2 dims = target_dims();
     vec2 inv_dims = 1.0 / dims;
-    // Screen radius (px): UV span of `radius` view units along view X at this depth.
+    // Screen radius (px): the UV span of `radius` view units along view X at this
+    // depth. Derived by projecting rather than from a depth ratio so the
+    // orthographic camera needs no separate case.
     vec2 edge_uv = project_to_uv(p + vec3(radius, 0.0, 0.0));
-    float radius_px = clamp(abs(edge_uv.x - v_uv.x) * dims.x, 1.0, max(dims.x, dims.y));
+    float radius_px = abs(edge_uv.x - v_uv.x) * dims.x;
 
-    // Structured per-pixel rotation + step offset so slices/steps decorrelate over a
-    // 4x4 block (the blur then resolves them to a clean result — see spatial_dither).
+    // Under a pixel of screen radius there is nothing to march: every tap would land
+    // back on the centre. The old code clamped to 1 px and marched anyway, which
+    // spent the full loop to produce noise.
+    if (radius_px < PIXEL_TOO_CLOSE) {
+        frag_ao = 1.0;
+        return;
+    }
+    float min_s = PIXEL_TOO_CLOSE / radius_px;
+
+    // Smooth radius falloff (XeGTAO): an occluder is counted in full up to
+    // `falloff_from` and fades to the slice's low horizon by `radius`.
+    float falloff_range = FALLOFF_RANGE_FRACTION * radius;
+    float falloff_from = radius * (1.0 - FALLOFF_RANGE_FRACTION);
+    float falloff_mul = -1.0 / falloff_range;
+    float falloff_add = falloff_from / falloff_range + 1.0;
+
+    // The 4x4 spatial pattern, rotated and offset by this frame's place in the
+    // temporal sequence. While the view moves the sequence sits at entry 0, so a
+    // moving frame carries the plain spatial pattern and nothing shimmers; while it
+    // is still, 24 frames walk every rotation/offset and average out.
     vec2 dither = spatial_dither(uvec2(uint(gl_FragCoord.x), uint(gl_FragCoord.y)));
-    float rot_noise = dither.x;
-    float offset_noise = dither.y;
+    float noise_slice = fract(dither.x + temporal.x);
+    float noise_sample = fract(dither.y + temporal.y);
 
-    float visibility = 0.0;
+    // A tiny lift at small screen radii, so AO fades out with distance rather than
+    // switching off at the early-out above.
+    float visibility = clamp((10.0 - radius_px) / 100.0, 0.0, 1.0) * 0.5;
+
     for (uint s = 0u; s < slice_count; s++) {
-        float phi = (float(s) + rot_noise) * PI / float(slice_count);
-        vec2 omega = vec2(cos(phi), sin(phi));
+        float phi = (float(s) + noise_slice) * PI / float(slice_count);
+        float cos_phi = cos(phi);
+        float sin_phi = sin(phi);
+        // Screen y points down while view y points up, so the screen direction takes
+        // the opposite sine of the view-space one it stands for.
+        vec2 omega_screen = vec2(cos_phi, -sin_phi);
+        vec3 direction = vec3(cos_phi, sin_phi, 0.0);
 
-        // View-space slice direction: reconstruct a neighbor a few px along omega.
-        vec4 neighbor = sample_view_pos(v_uv + omega * (2.0 * inv_dims));
-        vec3 slice_dir = normalize(vec3(omega.x, omega.y, 0.0));
-        if (neighbor.w > 0.5) {
-            vec3 d = neighbor.xyz - p;
-            if (dot(d, d) > 1e-12) {
-                slice_dir = normalize(d);
-            }
-        }
-
-        // Project the normal onto the slice plane (spanned by v and slice_dir).
-        vec3 plane_normal = normalize(cross(v, slice_dir));
-        vec3 proj_n = n - plane_normal * dot(n, plane_normal);
+        // The slice plane: spanned by the view vector and the part of `direction`
+        // perpendicular to it. Built from the slice angle alone — the old code read a
+        // G-buffer neighbour 2 px away to get it, which at a silhouette is a different
+        // surface (or background) and flipped the plane between adjacent pixels.
+        vec3 ortho_direction = direction - dot(direction, v) * v;
+        vec3 axis = normalize(cross(ortho_direction, v));
+        vec3 proj_n = n - axis * dot(n, axis);
         float proj_len = length(proj_n);
-        if (proj_len < 1e-4) {
+        if (proj_len < 1e-6) {
             continue;
         }
-        vec3 proj_n_dir = proj_n / proj_len;
-        // Signed angle of the projected normal from the view vector in the plane.
-        float sign_n = sign(dot(cross(slice_dir, proj_n_dir), plane_normal));
-        float gamma = sign_n * acos(clamp(dot(proj_n_dir, v), -1.0, 1.0));
+        float sign_n = sign(dot(proj_n, ortho_direction));
+        float cos_n = clamp(dot(proj_n, v) / proj_len, 0.0, 1.0);
+        float angle_n = sign_n * acos(cos_n);
 
-        // Search both horizons (positive omega and negative omega side).
-        float cos_pos = horizon_cos(
-            v_uv, p, v, omega, radius_px, radius, thickness, step_count, offset_noise, inv_dims);
-        float cos_neg = horizon_cos(
-            v_uv, p, v, -omega, radius_px, radius, thickness, step_count, offset_noise, inv_dims);
+        // The horizons start at the edges of the hemisphere around the normal, so a
+        // slice with no occluder integrates to full visibility.
+        float low_horizon_cos0 = cos(angle_n + HALF_PI);
+        float low_horizon_cos1 = cos(angle_n - HALF_PI);
+        float horizon_cos0 = low_horizon_cos0;
+        float horizon_cos1 = low_horizon_cos1;
 
-        // Clamp horizons into the hemisphere around the (projected) normal, then
-        // integrate the visible cosine-weighted arc (GTAO inner integral).
-        float h1 = gamma + max(-acos(clamp(cos_neg, -1.0, 1.0)) - gamma, -HALF_PI);
-        float h2 = gamma + min(acos(clamp(cos_pos, -1.0, 1.0)) - gamma, HALF_PI);
-        float cos_gamma = cos(gamma);
-        float sin_gamma = sin(gamma);
-        float arc = 0.25 * (
-            (-cos(2.0 * h1 - gamma) + cos_gamma + 2.0 * h1 * sin_gamma)
-            + (-cos(2.0 * h2 - gamma) + cos_gamma + 2.0 * h2 * sin_gamma));
-        visibility = visibility + proj_len * arc;
+        for (uint t = 0u; t < step_count; t++) {
+            // Decorrelate each (slice, step) from every other, so the step offsets
+            // don't line up into a pattern across the dither block.
+            float step_noise = fract(noise_sample + float(s + t * slice_count) * GOLDEN);
+            float f = (float(t) + step_noise) / float(step_count);
+            // Squared: dense near the pixel, sparse out at the radius.
+            f = f * f + min_s;
+
+            vec2 offset = f * omega_screen * radius_px;
+            float offset_px = length(offset);
+            int level = int(clamp(log2(max(offset_px, 1.0)) - DEPTH_MIP_OFFSET, 0.0, DEPTH_MIP_MAX) + 0.5);
+            // Snap to whole pixels so a tap reads one texel rather than straddling two.
+            vec2 offset_uv = round(offset) * inv_dims;
+
+            vec2 uv0 = v_uv + offset_uv;
+            vec2 uv1 = v_uv - offset_uv;
+            float depth0 = sample_depth_mip(uv0, level);
+            float depth1 = sample_depth_mip(uv1, level);
+
+            float shc0 = low_horizon_cos0;
+            if (!is_background_depth(depth0)) {
+                vec3 delta = reconstruct_view_pos(uv0, -depth0) - p;
+                float dist = length(delta);
+                if (dist > 1e-6) {
+                    float w = clamp(dist * falloff_mul + falloff_add, 0.0, 1.0);
+                    shc0 = mix(low_horizon_cos0, dot(delta, v) / dist, w);
+                }
+            }
+            float shc1 = low_horizon_cos1;
+            if (!is_background_depth(depth1)) {
+                vec3 delta = reconstruct_view_pos(uv1, -depth1) - p;
+                float dist = length(delta);
+                if (dist > 1e-6) {
+                    float w = clamp(dist * falloff_mul + falloff_add, 0.0, 1.0);
+                    shc1 = mix(low_horizon_cos1, dot(delta, v) / dist, w);
+                }
+            }
+
+            // Thin-occluder compensation (the `Thickness` knob). A horizon that only
+            // ever climbs assumes every occluder is infinitely deep, so a railing or a
+            // chair leg shadows everything behind it. At 1 the horizon follows the
+            // last sample back down; at 0 occluders are solid.
+            float raised0 = max(horizon_cos0, shc0);
+            horizon_cos0 = (horizon_cos0 > shc0) ? mix(raised0, shc0, thin_occluder) : raised0;
+            float raised1 = max(horizon_cos1, shc1);
+            horizon_cos1 = (horizon_cos1 > shc1) ? mix(raised1, shc1, thin_occluder) : raised1;
+        }
+
+        // A normal nearly edge-on to the slice contributes almost nothing, which
+        // makes its estimate pure noise; nudging the weight toward 1 trades a little
+        // bias for a lot of variance.
+        proj_len = mix(proj_len, 1.0, 0.05);
+
+        float h0 = -acos(clamp(horizon_cos1, -1.0, 1.0));
+        float h1 = acos(clamp(horizon_cos0, -1.0, 1.0));
+        float sin_n = sin(angle_n);
+        float arc0 = 0.25 * (cos_n + 2.0 * h0 * sin_n - cos(2.0 * h0 - angle_n));
+        float arc1 = 0.25 * (cos_n + 2.0 * h1 * sin_n - cos(2.0 * h1 - angle_n));
+        visibility += proj_len * (arc0 + arc1);
     }
 
     visibility = clamp(visibility / float(slice_count), 0.0, 1.0);
     // Intensity sharpens the falloff (1 = ground truth, >1 darkens, 0 disables).
-    frag_ao = pow(max(visibility, 0.0), max(intensity, 0.0));
+    float ao = pow(max(visibility, 0.0), max(intensity, 0.0));
+
+    // Blend into the running mean. The branch is load-bearing rather than tidiness:
+    // a freshly created R16F target holds whatever was in that memory, and a `mix`
+    // with weight 1 over a NaN is still NaN — so the reset frame must not read the
+    // history at all.
+    if (temporal.z >= 1.0) {
+        frag_ao = ao;
+    } else {
+        float history = textureLod(sampler2D(ao_history, gtao_sampler), v_uv, 0.0).r;
+        frag_ao = mix(history, ao, temporal.z);
+    }
 }
 @end
 
-// 5x5 bilateral blur over the raw AO. Depth and normal weights keep occlusion from
-// bleeding across silhouettes and hard creases.
-@fs fs_gtao_blur
+// One level of the GTAO depth prefilter chain: a 2x2 reduction of the level above.
+//
+// Not a box filter. A plain average across a silhouette invents a depth halfway
+// between the foreground and the background, and the occlusion pass then finds an
+// occluder floating in empty space — the speckle that used to ring thin geometry.
+// This is XeGTAO's weighted filter, biased toward the *farthest* of the four, so a
+// mixed neighbourhood resolves to the background it mostly is.
+@fs fs_gtao_depth_mip
+@include_block gtao_depth_encoding
+
+layout(binding=0) uniform gtao_mip_params {
+    // x = spare, y / z = the source level's size in pixels, w = the AO radius in
+    // view units (the filter's falloff is scaled to it, as the occlusion pass's is).
+    vec4 mip;
+};
+
+layout(binding=0) uniform texture2D depth_src;
+layout(binding=0) uniform sampler gtao_sampler;
+
+layout(location=0) out float frag_depth;
+
+void main() {
+    vec2 src_dims = max(mip.yz, vec2(1.0));
+    vec2 base = floor(gl_FragCoord.xy) * 2.0;
+
+    float depths[4];
+    for (int i = 0; i < 4; i++) {
+        vec2 texel = min(base + vec2(float(i & 1), float(i >> 1)), src_dims - vec2(1.0));
+        float d = textureLod(sampler2D(depth_src, gtao_sampler), (texel + vec2(0.5)) / src_dims, 0.0).r;
+        depths[i] = is_background_depth(d) ? BACKGROUND_DEPTH : d;
+    }
+
+    float farthest = max(max(depths[0], depths[1]), max(depths[2], depths[3]));
+    // All four background: stay background rather than averaging 1e30 four ways.
+    if (farthest >= BACKGROUND_DEPTH) {
+        frag_depth = BACKGROUND_DEPTH;
+        return;
+    }
+
+    // The same falloff shape the occlusion pass uses, at the scale one texel of this
+    // level stands for. A sample within `from` of the farthest counts in full and one
+    // a full `range` in front of it not at all, so the near surface of a silhouette
+    // drops out instead of dragging the average forward.
+    float radius = max(mip.w, 1e-4) * 0.75 * 1.457;
+    float range = 0.615 * radius;
+    float from = radius * (1.0 - 0.615);
+    float mul = -1.0 / range;
+    float add = from / range + 1.0;
+
+    float sum = 0.0;
+    float weight_sum = 0.0;
+    for (int i = 0; i < 4; i++) {
+        float d = min(depths[i], farthest);
+        // The farthest sample always weighs 1, so the sum can never be zero.
+        float w = clamp((farthest - d) * mul + add, 0.0, 1.0);
+        sum += d * w;
+        weight_sum += w;
+    }
+    frag_depth = sum / max(weight_sum, 1e-6);
+}
+@end
+
+// 5x5 edge-aware denoise over the AO, run once, twice or three times by quality.
+//
+// Two weights replace what the old blur got wrong. Its depth weight compared raw view
+// Z against a sigma scaled by the AO *radius*, so a small radius made the kernel
+// reject nearly every neighbour — exactly the setting whose input is noisiest — and a
+// surface seen at a glancing angle rejected its own neighbours because their Z
+// legitimately differs. This measures distance from the centre pixel's tangent
+// **plane** instead, which a flat surface satisfies at any angle, in a tolerance of a
+// couple of pixels' own view-space size, which is scale- and depth-independent. And
+// its normal weight cut off hard at dot < 0.75, throwing away most of the kernel on
+// any curved surface; this one falls off smoothly instead, so a curve keeps its
+// support and only a genuine crease loses it.
+@fs fs_gtao_denoise
 @include_block gtao_common
 
-layout(binding=1) uniform texture2D raw_ao;
+layout(binding=1) uniform texture2D ao_in;
 
 layout(location=0) in vec2 v_uv;
 layout(location=0) out float frag_ao;
+
+// The tangent-plane tolerance, in multiples of a pixel's own view-space size.
+const float PLANE_SIGMA_PX = 2.0;
+// Falloff of the spatial term, in pixels.
+const float SPATIAL_SIGMA = 1.5;
+// Sharpness of the normal term. 8 keeps a 30° difference at about half weight and a
+// 90° crease at none.
+const float NORMAL_POWER = 8.0;
 
 void main() {
     vec4 center_g = textureLod(sampler2D(gbuffer, gtao_sampler), v_uv, 0.0);
@@ -1112,8 +1327,8 @@ void main() {
 
     vec2 texel = 1.0 / target_dims();
     vec3 n0 = normalize(center_n);
-    float depth_sigma = max(params.x * 0.12, 1e-4);
-    float spatial_sigma = 2.0;
+    vec3 p0 = reconstruct_view_pos(v_uv, center_z);
+    float plane_sigma = max(PLANE_SIGMA_PX * view_pixel_size(center_z), 1e-6);
     float sum = 0.0;
     float weight_sum = 0.0;
     for (int x = -2; x <= 2; x++) {
@@ -1121,27 +1336,25 @@ void main() {
             vec2 pixel_offset = vec2(float(x), float(y));
             vec2 uv = v_uv + pixel_offset * texel;
             vec4 g = textureLod(sampler2D(gbuffer, gtao_sampler), uv, 0.0);
-            float n_len = dot(g.xyz, g.xyz);
-            if (n_len < 0.25 || g.w >= -1e-4) {
+            if (dot(g.xyz, g.xyz) < 0.25 || g.w >= -1e-4) {
                 continue;
             }
 
-            float normal_dot = dot(n0, normalize(g.xyz));
-            if (normal_dot < 0.75) {
-                continue;
-            }
-            float spatial_weight = exp(-dot(pixel_offset, pixel_offset) / (2.0 * spatial_sigma * spatial_sigma));
-            float dz = abs(g.w - center_z);
-            float depth_weight = exp(-(dz * dz) / (2.0 * depth_sigma * depth_sigma));
-            float normal_weight = smoothstep(0.75, 1.0, normal_dot);
-            float weight = spatial_weight * depth_weight * normal_weight;
-            float ao = textureLod(sampler2D(raw_ao, gtao_sampler), uv, 0.0).r;
-            sum = sum + ao * weight;
-            weight_sum = weight_sum + weight;
+            // Distance from the centre pixel's tangent plane: zero across a flat
+            // surface however steeply it is seen, large across a step.
+            float plane_distance = dot(n0, reconstruct_view_pos(uv, g.w) - p0);
+            float plane_weight =
+                exp(-(plane_distance * plane_distance) / (2.0 * plane_sigma * plane_sigma));
+            float normal_weight = pow(max(dot(n0, normalize(g.xyz)), 0.0), NORMAL_POWER);
+            float spatial_weight =
+                exp(-dot(pixel_offset, pixel_offset) / (2.0 * SPATIAL_SIGMA * SPATIAL_SIGMA));
+            float weight = spatial_weight * plane_weight * normal_weight;
+            sum += textureLod(sampler2D(ao_in, gtao_sampler), uv, 0.0).r * weight;
+            weight_sum += weight;
         }
     }
     if (weight_sum <= 1e-5) {
-        frag_ao = textureLod(sampler2D(raw_ao, gtao_sampler), v_uv, 0.0).r;
+        frag_ao = textureLod(sampler2D(ao_in, gtao_sampler), v_uv, 0.0).r;
         return;
     }
     frag_ao = sum / weight_sum;
@@ -1714,7 +1927,10 @@ void main() {
 @program skybox vs_skybox fs_skybox
 
 @program gtao vs_fullscreen fs_gtao
-@program gtao_blur vs_fullscreen fs_gtao_blur
+@program gtao_denoise vs_fullscreen fs_gtao_denoise
+// Works from `gl_FragCoord` rather than a uv: it reduces a level twice its own size,
+// so it addresses source *texels* directly instead of resampling a shared uv.
+@program gtao_depth_mip vs_fullscreen_bare fs_gtao_depth_mip
 @program post vs_fullscreen fs_post
 
 @program tex_image vs_fullscreen_bare fs_tex_image

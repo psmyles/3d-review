@@ -11,9 +11,10 @@ use crate::{
     SceneDebugOptions, SceneFrame, TonemapSettings, UvCamera, ViewportBackground,
 };
 
+use super::ao_accum::{AoPlan, temporal_pattern};
 use super::gpu_types::{
-    GtaoUniforms, PostUniforms, SceneUniforms, buffer_view_value, shading_mode_value,
-    skin_weight_value, vertex_color_value,
+    GtaoMipUniforms, GtaoUniforms, PostUniforms, SceneUniforms, buffer_view_value,
+    shading_mode_value, skin_weight_value, vertex_color_value,
 };
 
 /// Whether this frame is one of the flat data-inspection views, which emit final
@@ -124,13 +125,13 @@ pub(super) fn build_gtao_uniforms(
     projection: CameraProjection,
     gtao: GtaoSettings,
     dims: (u32, u32),
+    plan: AoPlan,
 ) -> GtaoUniforms {
-    let scene_radius = camera.scene_radius.max(1e-3);
-    let (slices, steps) = gtao.quality.slices_steps();
+    let (rotation, offset) = temporal_pattern(plan.temporal_index);
     GtaoUniforms {
         proj: camera.projection_matrix(projection).to_cols_array_2d(),
         params: [
-            (gtao.radius * scene_radius).max(1e-4),
+            gtao_view_radius(camera, gtao),
             gtao.intensity.max(0.0),
             gtao.thickness.clamp(0.0, 1.0),
             dims.0.max(1) as f32,
@@ -141,9 +142,31 @@ pub(super) fn build_gtao_uniforms(
             } else {
                 0.0
             },
-            slices.max(1) as f32,
-            steps.max(1) as f32,
+            gtao.quality.slices_steps().0.max(1) as f32,
+            gtao.quality.slices_steps().1.max(1) as f32,
             dims.1.max(1) as f32,
+        ],
+        temporal: [rotation, offset, plan.weight, 0.0],
+    }
+}
+
+/// The AO radius in view units: the setting is a fraction of the framed model's
+/// bounding-sphere radius, and this is the one place it is turned into a distance.
+/// Shared with the depth prefilter, whose falloff is scaled to the same radius.
+pub(super) fn gtao_view_radius(camera: OrbitCamera, gtao: GtaoSettings) -> f32 {
+    (gtao.radius * camera.scene_radius.max(1e-3)).max(1e-4)
+}
+
+/// Build a depth-prefilter level's uniform: the size of the level being *read* (the
+/// filter addresses its source's texels directly) and the AO radius its falloff is
+/// scaled to.
+pub(super) fn build_gtao_mip_uniforms(source_dims: (u32, u32), radius: f32) -> GtaoMipUniforms {
+    GtaoMipUniforms {
+        mip: [
+            0.0,
+            source_dims.0.max(1) as f32,
+            source_dims.1.max(1) as f32,
+            radius,
         ],
     }
 }

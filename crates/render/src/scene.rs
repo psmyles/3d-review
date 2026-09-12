@@ -8,6 +8,7 @@
 //! that reads them), and [`opt`] is the Opt workspace's comparison layout over the
 //! same passes.
 
+mod ao_accum;
 mod deform_gpu;
 mod draw;
 mod draw_lists;

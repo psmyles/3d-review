@@ -318,6 +318,23 @@ impl Renderer {
         )
     }
 
+    /// Whether the ambient occlusion is still averaging frames and would visibly
+    /// improve if given another one.
+    ///
+    /// GTAO's per-frame estimate is noisy at any affordable sample count, so whenever
+    /// nothing that affects it is changing, each frame is folded into a running mean
+    /// and the image converges (`scene/ao_accum.rs`). This is what lets `app` keep
+    /// pacing frames for the ~0.4 s that takes — a genuine animation that ends on its
+    /// own, which is the bar invariant 6 sets — and it must be read *after* the render
+    /// that advanced it, or a single-event redraw would report the state from before
+    /// its own reset and the average would stall at one sample.
+    ///
+    /// False whenever AO is off, the view is one of the flat data-inspection ones, or
+    /// the result has already converged.
+    pub fn is_ao_converging(&self) -> bool {
+        self.scene.as_ref().is_some_and(SceneGpu::ao_converging)
+    }
+
     /// Build the scene resources if this is the first frame that needs them, at the
     /// live MSAA level so the first frame needs no rebuild. A session that only ever
     /// looks at textures pays for none of it.

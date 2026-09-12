@@ -128,12 +128,53 @@ Both locations alpha-blend. Overlays (zero-normal verts) write 0 to location 1 s
 they are not AO-darkened.
 
 GTAO does **not** read location 1: it has its own single-sample mesh-only pass
-(`fs_gtao_gbuffer`, one `SV_Target0` output of view normal `xyz` plus view Z `w`)
-into a separate G-buffer target, which avoids MSAA edge averaging. GTAO is
-horizon-based, with a structured 4×4 spatial dither to decorrelate slices, and
-outputs a single scalar occlusion (`R8Unorm`). `post` darkens the diffuse ambient
-by that scalar — an *additive correction* over location 0, so MSAA stays correct
+(`fs_gtao_gbuffer`) into a separate G-buffer target, which avoids MSAA edge
+averaging. That pass is itself 2-MRT — location 0 the view normal `xyz` plus view
+Z `w`, location 1 the same depth again as a positive distance for the prefilter
+chain — so it is a third thing to keep in step. The occlusion is horizon-based
+(Intel's XeGTAO), outputs a single scalar (`R16F`), and `post` darkens the diffuse
+ambient by it — an *additive correction* over location 0, so MSAA stays correct
 and direct and emissive light are never darkened.
+
+### A GTAO depth chain cannot live in one image's mips
+
+sokol refuses to bind an image as a texture in the same pass that attaches it
+(`VALIDATE_ABND_TEXTURE_BINDING_VS_COLOR_ATTACHMENT`), and it compares **image
+ids**, not subresources. So a prefilter chain built a level at a time — pass *k*
+reading mip *k-1* and writing mip *k* of one image — fails validation in a debug
+build and silently unbinds the source in a release one, which reads as black.
+
+The chain is therefore five separate single-mip `R32F` targets
+(`TargetSet::gtao_depth_mips`), and `fs_gtao` binds all five and picks one per tap
+with an integer compare. The bake's `CubeTarget` looks like a counter-example but
+is not: each IBL convolution pass reads a *different* image from the one it writes.
+
+`R32F` rather than `R16F` because the chain holds view depth in metres, where a
+half-float's steps are ~8 mm at 10 m — enough to move a horizon test on a contact
+crease. The occlusion buffers it feeds are `R16F`, which is ample for a 0..1 term.
+
+### Ambient occlusion converges while the view is still, and the term that drives
+### it must be read after the render
+
+GTAO's single-frame estimate is noisy at any affordable sample count, so whenever
+nothing that affects it changes, each frame is folded into a running mean over 24
+frames and the passes then stop entirely (`scene/ao_accum.rs`). `Renderer::
+is_ao_converging` is what keeps `app` pacing those frames.
+
+It is deliberately **not** in the continuous-redraw disjunction in
+`app/src/frame.rs`, which is evaluated *before* the render: there it would read the
+state from before this frame reset the average, and a one-off redraw — the frame
+after a slider tick, say — would never schedule the follow-up that converges it.
+It sets `redraw.requested` after `render_scene` instead, which is the same
+coalescing path input events take and is paced identically.
+
+What is in the reset key matters as much as what is not. The selection flash colour
+moves every frame while a flash runs but never touches the G-buffer, so including it
+would restart the average for nothing; the MSAA level does not either, since the
+GTAO targets are single-sample by design and an AA change does not recreate them.
+The hidden-mesh set reaches the key as `ModelSlot::visibility_generation` — a
+counter bumped when the visibility list is rebuilt — because the key is compared
+every frame and must not walk a `Vec`.
 
 Tone mapping and sRGB encoding happen once in `post`, not in the scene shader.
 

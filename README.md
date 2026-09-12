@@ -180,10 +180,12 @@ right controls it: left-click toggles or cycles, right-click opens the options.
   and a live 0-360 degree environment rotation that is applied while sampling and
   never rebuilds the maps. The lighting maps are baked ahead of time and ship
   block-compressed, so startup does no precompute.
-- **Ambient Occlusion** - horizon-based occlusion with a smoothing blur, over its
-  own normal and depth buffer. Knobs are Radius, Intensity, Thickness and Quality
-  (Low/Medium/High). It darkens only the ambient light, so direct and emissive
-  light are never dimmed. On by default.
+- **Ambient Occlusion** - horizon-based occlusion (XeGTAO) over its own normal and
+  depth buffer, with a prefiltered depth chain for distant samples and an edge-aware
+  denoise. Whenever the view is still it keeps averaging frames and settles to a
+  clean result in about half a second, then stops drawing entirely. Knobs are
+  Radius, Intensity, Thickness and Quality (Low/Medium/High). It darkens only the
+  ambient light, so direct and emissive light are never dimmed. On by default.
 - **Tone mapping** - Khronos PBR Neutral, Linear, Reinhard, ACES or AgX, applied
   to the linear radiance before sRGB encoding. Turning it off is a straight
   pass-through. On by default.
