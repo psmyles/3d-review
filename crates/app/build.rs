@@ -21,6 +21,8 @@
 //! missing icon compiler (rc.exe / llvm-rc), is a warning and a fallback, so broken
 //! metadata never blocks a build of the viewer itself.
 
+use std::path::PathBuf;
+
 use serde_json::Value;
 
 const PRODUCT_JSON: &str = "../../product.json";
@@ -32,6 +34,7 @@ const PRODUCT_JSON: &str = "../../product.json";
 /// and splitting the struct per host would buy a `cfg` and no clarity.
 struct Product {
     name: String,
+    homepage: String,
     #[cfg_attr(not(windows), allow(dead_code))]
     description: String,
     #[cfg_attr(not(windows), allow(dead_code))]
@@ -41,6 +44,8 @@ struct Product {
 }
 
 fn main() {
+    generate_message_keys();
+
     println!("cargo:rerun-if-changed={PRODUCT_JSON}");
     let product = read_product();
 
@@ -61,7 +66,26 @@ fn main() {
         );
     }
 
+    // The homepage the Help window links to, so the one place it is written is
+    // `product.json` alongside the name and version.
+    println!("cargo:rustc-env=REVIEW_HOMEPAGE={}", product.homepage);
+
     embed_windows_resources(&product);
+}
+
+/// Turn the English Fluent catalog into this crate's typed message keys
+/// (invariant 12).
+///
+/// `app-` only: this crate raises notices, opens dialogs and sets the window
+/// title, and nothing else. Handing it `common-` as well would pull in every
+/// message the chrome shares — each of which the compiler would then report as
+/// dead code here, drowning the one warning that matters.
+fn generate_message_keys() {
+    let locales = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../localization/locales");
+    let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
+    if let Err(error) = review_localization_build::generate_keys(&locales, &["app-"], &out) {
+        panic!("localization catalog: {error}");
+    }
 }
 
 /// `product.json`, with a warned-about fallback for every way it can go wrong.
@@ -88,6 +112,7 @@ fn read_product() -> Product {
     };
     let name = field("productName").unwrap_or_else(|| "3D Review".to_owned());
     Product {
+        homepage: field("homepage").unwrap_or_default(),
         description: field("description").unwrap_or_else(|| name.clone()),
         author: field("author").unwrap_or_default(),
         copyright: field("copyright").unwrap_or_default(),

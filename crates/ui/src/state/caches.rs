@@ -123,12 +123,6 @@ pub struct Capabilities {
     /// guaranteed at feature level 11_0+), so the status-bar AO button is never
     /// disabled in practice; kept as a field for the capability seam.
     pub(crate) gtao: bool,
-    /// Friendly name of the graphics API sokol_gfx is running on (e.g. "DX11"),
-    /// shown in the help overlay title; set by `app`.
-    pub gpu_backend: String,
-    /// Application version shown in the help overlay title (e.g. "0.1.0"), set by
-    /// `app` from its `CARGO_PKG_VERSION`.
-    pub app_version: String,
 }
 
 impl Default for Capabilities {
@@ -139,8 +133,6 @@ impl Default for Capabilities {
             // once the device is known.
             ibl: true,
             gtao: true,
-            gpu_backend: String::new(),
-            app_version: String::new(),
         }
     }
 }

@@ -1,0 +1,22 @@
+[book]
+title = "3D Review Manual"
+description = "The user manual for 3D Review, a native FBX audit viewer and mesh optimizer."
+authors = ["Chandan Singh"]
+language = "en"
+# One directory per locale. `en` is the source of truth: `crates/ui/build.rs` walks
+# this same tree to embed the pages the in-app Help window shows, and a page that
+# a locale has not translated falls back to the English one. Building another
+# locale's site is the same command with `MDBOOK_BOOK__SRC=src/<lang>`; mdBook has
+# no native multi-language mode, and that override is its documented answer.
+src = "src/en"
+
+[output.html]
+site-url = "/3d-review/"
+git-repository-url = "https://github.com/psmyles/3d-review"
+edit-url-template = "https://github.com/psmyles/3d-review/edit/main/docs/book/{path}"
+default-theme = "navy"
+preferred-dark-theme = "navy"
+
+[output.html.fold]
+enable = true
+level = 1

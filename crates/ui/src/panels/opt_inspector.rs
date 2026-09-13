@@ -15,6 +15,9 @@ use review_optimize::{
 };
 use review_render::Selection;
 
+use crate::docs::Page;
+use crate::keys;
+use crate::labels;
 use crate::opt_state::{OptIntent, StackItem};
 use crate::state::{
     UiState,
@@ -25,9 +28,11 @@ use crate::state::{
         PRUNE_THRESHOLD_MIN, WELD_TOLERANCE_MAX, WELD_TOLERANCE_MIN,
     },
 };
+use crate::theme;
 use crate::theme::{color, size};
 use crate::widgets::{
-    labeled_checkbox, labeled_combo, labeled_slider_with_value, panel_grid, wide_button,
+    Tip, labeled_checkbox, labeled_combo, labeled_slider_with_value, panel_grid, tip, tip_body,
+    wide_button,
 };
 
 /// The most levels a LOD chain may hold. Past this the chain stops being a
@@ -68,12 +73,12 @@ pub(crate) fn body(
 /// Parameters for the selected operation.
 fn operation_body(ui: &mut egui::Ui, state: &mut UiState, id: u64) {
     let Some(op) = state.opt.stack.op(id) else {
-        ui.weak("This operation no longer exists.");
+        ui.weak(keys::ui_opt::OPERATION_GONE);
         return;
     };
     let kind = op.kind.clone();
 
-    ui.heading(kind.label());
+    ui.heading(egui::RichText::from(labels::op_kind(&kind)));
     ui.add_space(size::PANEL_ROW_GAP);
     ui.label(egui::RichText::new(kind.description()).color(color::TEXT_MUTED));
     ui.add_space(size::PANEL_ROW_GAP);
@@ -90,7 +95,7 @@ fn operation_body(ui: &mut egui::Ui, state: &mut UiState, id: u64) {
         // for them, and inventing some would be worse than an honest note.
         OpKind::FilterTriangles | OpKind::VertexCache | OpKind::VertexFetch => {
             ui.add_space(size::PANEL_ROW_GAP);
-            ui.weak("This operation has no settings.");
+            ui.weak(keys::ui_opt::NO_SETTINGS);
             None
         }
     };
@@ -110,26 +115,32 @@ fn weld_params(ui: &mut egui::Ui, params: WeldParams) -> Option<WeldParams> {
     panel_grid(ui, "opt_weld", |ui| {
         labeled_slider_with_value(
             ui,
-            "Tolerance",
+            Tip::new(keys::ui_opt::TOLERANCE)
+                .describe(keys::ui_opt::TOLERANCE_DESCRIPTION)
+                .page(Page::OptOperations),
             &mut edited.attribute_tolerance,
             WELD_TOLERANCE_MIN..=WELD_TOLERANCE_MAX,
             4,
         );
-        labeled_checkbox(ui, "Compare normals", &mut edited.compare_normals);
-        labeled_checkbox(ui, "Compare UVs", &mut edited.compare_uvs);
-        labeled_checkbox(ui, "Compare colors", &mut edited.compare_colors);
+        labeled_checkbox(
+            ui,
+            Tip::new(keys::ui_opt::COMPARE_NORMALS).page(Page::OptOperations),
+            &mut edited.compare_normals,
+        );
+        labeled_checkbox(
+            ui,
+            Tip::new(keys::ui_opt::COMPARE_UVS).page(Page::OptOperations),
+            &mut edited.compare_uvs,
+        );
+        labeled_checkbox(
+            ui,
+            Tip::new(keys::ui_opt::COMPARE_COLORS).page(Page::OptOperations),
+            &mut edited.compare_colors,
+        );
     });
 
     ui.add_space(size::PANEL_ROW_GAP);
-    ui.label(
-        egui::RichText::new(
-            "Positions must always match exactly; the tolerance applies to the \
-             compared attributes. Unchecking one merges across that kind of seam - \
-             unchecking normals, for instance, welds a flat-shaded mesh's hard edges \
-             and flattens their shading.",
-        )
-        .color(color::TEXT_MUTED),
-    );
+    ui.label(egui::RichText::from(keys::ui_opt::WELD_EXPLAINED).color(color::TEXT_MUTED));
 
     (edited != params).then_some(edited)
 }
@@ -139,20 +150,16 @@ fn prune_params(ui: &mut egui::Ui, error: f32) -> Option<OpKind> {
     panel_grid(ui, "opt_prune", |ui| {
         labeled_slider_with_value(
             ui,
-            "Size threshold",
+            Tip::new(keys::ui_opt::SIZE_THRESHOLD)
+                .describe(keys::ui_opt::SIZE_THRESHOLD_DESCRIPTION)
+                .page(Page::OptOperations),
             &mut edited,
             PRUNE_THRESHOLD_MIN..=PRUNE_THRESHOLD_MAX,
             3,
         );
     });
     ui.add_space(size::PANEL_ROW_GAP);
-    ui.label(
-        egui::RichText::new(
-            "A fraction of the mesh's overall size. Disconnected pieces smaller \
-             than this are removed.",
-        )
-        .color(color::TEXT_MUTED),
-    );
+    ui.label(egui::RichText::from(keys::ui_opt::PRUNE_EXPLAINED).color(color::TEXT_MUTED));
 
     (edited != error).then_some(OpKind::PruneComponents { error: edited })
 }
@@ -162,20 +169,16 @@ fn overdraw_params(ui: &mut egui::Ui, threshold: f32) -> Option<OpKind> {
     panel_grid(ui, "opt_overdraw", |ui| {
         labeled_slider_with_value(
             ui,
-            "Cache tolerance",
+            Tip::new(keys::ui_opt::CACHE_TOLERANCE)
+                .describe(keys::ui_opt::CACHE_TOLERANCE_DESCRIPTION)
+                .page(Page::OptOperations),
             &mut edited,
             OVERDRAW_THRESHOLD_MIN..=OVERDRAW_THRESHOLD_MAX,
             2,
         );
     });
     ui.add_space(size::PANEL_ROW_GAP);
-    ui.label(
-        egui::RichText::new(
-            "How much vertex-cache efficiency may be given up to reduce overdraw. \
-             1.05 allows a 5% regression; 1.0 forbids any.",
-        )
-        .color(color::TEXT_MUTED),
-    );
+    ui.label(egui::RichText::from(keys::ui_opt::OVERDRAW_EXPLAINED).color(color::TEXT_MUTED));
 
     (edited - threshold)
         .abs()
@@ -189,60 +192,61 @@ fn bake_ao_params(ui: &mut egui::Ui, params: BakeAoParams) -> Option<BakeAoParam
     panel_grid(ui, "opt_bake_ao", |ui| {
         labeled_combo(
             ui,
-            "Quality",
+            Tip::new(keys::ui_opt::AO_QUALITY)
+                .describe(keys::ui_opt::AO_QUALITY_DESCRIPTION)
+                .page(Page::OptOperations),
             "opt_bake_ao_quality",
-            edited.quality.label(),
+            labels::ao_quality(edited.quality),
             |ui| {
                 for quality in AoQuality::ALL {
-                    ui.selectable_value(&mut edited.quality, quality, quality.label());
+                    ui.selectable_value(&mut edited.quality, quality, labels::ao_quality(quality));
                 }
             },
         );
         labeled_slider_with_value(
             ui,
-            "Max distance",
+            Tip::new(keys::ui_opt::AO_MAX_DISTANCE)
+                .describe(keys::ui_opt::AO_MAX_DISTANCE_DESCRIPTION)
+                .page(Page::OptOperations),
             &mut edited.max_distance,
             AO_BAKE_DISTANCE_MIN..=AO_BAKE_DISTANCE_MAX,
             2,
         );
         labeled_slider_with_value(
             ui,
-            "Intensity",
+            Tip::new(keys::ui_opt::AO_INTENSITY)
+                .describe(keys::ui_opt::AO_INTENSITY_DESCRIPTION)
+                .page(Page::OptOperations),
             &mut edited.intensity,
             AO_BAKE_INTENSITY_MIN..=AO_BAKE_INTENSITY_MAX,
             2,
         );
         labeled_combo(
             ui,
-            "Write to",
+            Tip::new(keys::ui_opt::AO_WRITE_TO)
+                .describe(keys::ui_opt::AO_WRITE_TO_DESCRIPTION)
+                .page(Page::OptOperations),
             "opt_bake_ao_target",
-            edited.target.label(),
+            labels::ao_target(edited.target),
             |ui| {
                 for target in AoTarget::ALL {
-                    ui.selectable_value(&mut edited.target, target, target.label());
+                    ui.selectable_value(&mut edited.target, target, labels::ao_target(target));
                 }
             },
         );
         if edited.target.is_rgb() {
-            labeled_checkbox(ui, "sRGB encode", &mut edited.srgb);
+            labeled_checkbox(
+                ui,
+                Tip::new(keys::ui_opt::AO_SRGB)
+                    .describe(keys::ui_opt::AO_SRGB_DESCRIPTION)
+                    .page(Page::OptAo),
+                &mut edited.srgb,
+            );
         }
     });
 
     ui.add_space(size::PANEL_ROW_GAP);
-    ui.label(
-        egui::RichText::new(
-            "Objects named *_LOD<n> bake only against their own LOD's geometry \
-             (plus objects with no LOD suffix), so a whole visible LOD chain bakes \
-             in one run. Hidden objects neither occlude nor bake - hide collision \
-             shells in the Outliner first. Max distance is how far a surface can \
-             be and still occlude, in world meters; 0 is unlimited. Intensity is a \
-             power on the visibility - above 1 darkens. The alpha channel is \
-             always written linear. Preview via the Vertex Colors material. If a \
-             Preserve Attributes simplify runs after this bake, raise its Colors \
-             weight above zero or it will ignore the AO.",
-        )
-        .color(color::TEXT_MUTED),
-    );
+    ui.label(egui::RichText::from(keys::ui_opt::BAKE_AO_EXPLAINED).color(color::TEXT_MUTED));
 
     (edited != params).then_some(edited)
 }
@@ -257,12 +261,18 @@ fn simplify_settings(ui: &mut egui::Ui, id: &str, edited: &mut SimplifySettings)
     panel_grid(ui, &format!("{id}_algorithm"), |ui| {
         labeled_combo(
             ui,
-            "Algorithm",
+            Tip::new(keys::ui_opt::ALGORITHM)
+                .describe(keys::ui_opt::ALGORITHM_DESCRIPTION)
+                .page(Page::OptOperations),
             &format!("{id}_algo"),
-            edited.algorithm.label(),
+            labels::simplify_algorithm(edited.algorithm),
             |ui| {
                 for algorithm in SimplifyAlgorithm::ALL {
-                    ui.selectable_value(&mut edited.algorithm, algorithm, algorithm.label());
+                    ui.selectable_value(
+                        &mut edited.algorithm,
+                        algorithm,
+                        labels::simplify_algorithm(algorithm),
+                    );
                 }
             },
         );
@@ -270,7 +280,12 @@ fn simplify_settings(ui: &mut egui::Ui, id: &str, edited: &mut SimplifySettings)
 
     if edited.algorithm == SimplifyAlgorithm::WithAttributes {
         ui.add_space(size::PANEL_ROW_GAP);
-        ui.label("Attribute weights");
+        tip(
+            ui.label(keys::ui_opt::ATTRIBUTE_WEIGHTS),
+            Tip::new(keys::ui_opt::ATTRIBUTE_WEIGHTS)
+                .describe(keys::ui_opt::ATTRIBUTE_WEIGHTS_DESCRIPTION)
+                .page(Page::OptSimplify),
+        );
         panel_grid(ui, &format!("{id}_weights"), |ui| {
             let AttributeWeights {
                 normal,
@@ -279,32 +294,29 @@ fn simplify_settings(ui: &mut egui::Ui, id: &str, edited: &mut SimplifySettings)
             } = &mut edited.attribute_weights;
             labeled_slider_with_value(
                 ui,
-                "Normals",
+                Tip::new(keys::ui_opt::NORMALS).page(Page::OptOperations),
                 normal,
                 ATTRIBUTE_WEIGHT_MIN..=ATTRIBUTE_WEIGHT_MAX,
                 2,
             );
             labeled_slider_with_value(
                 ui,
-                "UVs",
+                Tip::new(keys::ui_opt::UVS).page(Page::OptOperations),
                 uv,
                 ATTRIBUTE_WEIGHT_MIN..=ATTRIBUTE_WEIGHT_MAX,
                 2,
             );
             labeled_slider_with_value(
                 ui,
-                "Colors",
+                Tip::new(keys::ui_opt::COLORS).page(Page::OptOperations),
                 vertex_color,
                 ATTRIBUTE_WEIGHT_MIN..=ATTRIBUTE_WEIGHT_MAX,
                 2,
             );
         });
         ui.label(
-            egui::RichText::new(
-                "Higher weights protect that attribute at the cost of geometric \
-                 accuracy. Zero ignores it entirely.",
-            )
-            .color(color::TEXT_MUTED),
+            egui::RichText::from(keys::ui_opt::ATTRIBUTE_WEIGHTS_EXPLAINED)
+                .color(color::TEXT_MUTED),
         );
     }
 
@@ -313,7 +325,7 @@ fn simplify_settings(ui: &mut egui::Ui, id: &str, edited: &mut SimplifySettings)
     // do not have.
     if edited.algorithm != SimplifyAlgorithm::Sloppy {
         ui.add_space(size::PANEL_ROW_GAP);
-        ui.collapsing("Simplifier options", |ui| {
+        ui.collapsing(keys::ui_opt::SIMPLIFIER_OPTIONS, |ui| {
             let SimplifyFlags {
                 lock_border,
                 error_absolute,
@@ -322,19 +334,18 @@ fn simplify_settings(ui: &mut egui::Ui, id: &str, edited: &mut SimplifySettings)
                 regularize_light,
                 permissive,
             } = &mut edited.flags;
-            ui.checkbox(lock_border, "Lock border")
-                .on_hover_text("Never move vertices on an open boundary");
-            ui.checkbox(error_absolute, "Absolute error").on_hover_text(
-                "Read the error limit in world units, not as a fraction of the mesh size",
-            );
-            ui.checkbox(prune, "Prune while simplifying")
-                .on_hover_text("Let the simplifier delete disconnected parts as it goes");
-            ui.checkbox(regularize, "Regularize")
-                .on_hover_text("Even out triangle size and shape, at some cost to accuracy");
-            ui.checkbox(regularize_light, "Regularize (light)")
-                .on_hover_text("A gentler regularization");
-            ui.checkbox(permissive, "Collapse across seams")
-                .on_hover_text("Allow collapses across UV and normal discontinuities");
+            ui.checkbox(lock_border, keys::ui_opt::LOCK_BORDER)
+                .on_hover_text(keys::ui_opt::LOCK_BORDER_DESCRIPTION);
+            ui.checkbox(error_absolute, keys::ui_opt::ABSOLUTE_ERROR)
+                .on_hover_text(keys::ui_opt::ABSOLUTE_ERROR_DESCRIPTION);
+            ui.checkbox(prune, keys::ui_opt::PRUNE_WHILE_SIMPLIFYING)
+                .on_hover_text(keys::ui_opt::PRUNE_WHILE_SIMPLIFYING_DESCRIPTION);
+            ui.checkbox(regularize, keys::ui_opt::REGULARIZE)
+                .on_hover_text(keys::ui_opt::REGULARIZE_DESCRIPTION);
+            ui.checkbox(regularize_light, keys::ui_opt::REGULARIZE_LIGHT)
+                .on_hover_text(keys::ui_opt::REGULARIZE_LIGHT_DESCRIPTION);
+            ui.checkbox(permissive, keys::ui_opt::COLLAPSE_ACROSS_SEAMS)
+                .on_hover_text(keys::ui_opt::COLLAPSE_ACROSS_SEAMS_DESCRIPTION);
         });
     }
 }
@@ -345,14 +356,18 @@ fn simplify_target(ui: &mut egui::Ui, id: &str, target: &mut LodLevel) {
     panel_grid(ui, id, |ui| {
         labeled_slider_with_value(
             ui,
-            "Triangles",
+            Tip::new(keys::ui_opt::TRIANGLES)
+                .describe(keys::ui_opt::TRIANGLES_DESCRIPTION)
+                .page(Page::OptOperations),
             &mut target.target_ratio,
             LOD_RATIO_MIN..=LOD_RATIO_MAX,
             3,
         );
         labeled_slider_with_value(
             ui,
-            "Error limit",
+            Tip::new(keys::ui_opt::ERROR_LIMIT)
+                .describe(keys::ui_opt::ERROR_LIMIT_DESCRIPTION)
+                .page(Page::OptOperations),
             &mut target.target_error,
             LOD_ERROR_MIN..=LOD_ERROR_MAX,
             4,
@@ -372,16 +387,7 @@ fn reduce_params(ui: &mut egui::Ui, params: ReduceParams) -> Option<ReduceParams
     simplify_target(ui, "opt_reduce_target", &mut edited.target);
 
     ui.add_space(size::PANEL_ROW_GAP);
-    ui.label(
-        egui::RichText::new(
-            "Triangles is a fraction of this object's count at this point in the \
-             stack; the simplifier stops short of it rather than exceed the error \
-             limit. Unlike Generate LODs this rewrites the mesh itself - every \
-             operation below it works on the reduced geometry, and an export with \
-             no LOD chain writes it in the source mesh's place.",
-        )
-        .color(color::TEXT_MUTED),
-    );
+    ui.label(egui::RichText::from(keys::ui_opt::REDUCE_EXPLAINED).color(color::TEXT_MUTED));
 
     (edited != params).then_some(edited)
 }
@@ -396,11 +402,11 @@ fn lod_params(ui: &mut egui::Ui, params: LodParams) -> Option<LodParams> {
     ui.add_space(size::PANEL_ROW_GAP);
     ui.separator();
     ui.horizontal(|ui| {
-        ui.label("Levels");
+        ui.label(keys::ui_opt::LEVELS);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
                 .add_enabled(edited.levels.len() < MAX_LOD_LEVELS, egui::Button::new("+"))
-                .on_hover_text("Add a level")
+                .on_hover_text(keys::ui_opt::ADD_LEVEL)
                 .clicked()
             {
                 // A new level continues the halving the defaults establish, so
@@ -419,9 +425,16 @@ fn lod_params(ui: &mut egui::Ui, params: LodParams) -> Option<LodParams> {
     for (index, level) in edited.levels.iter_mut().enumerate() {
         ui.add_space(size::PANEL_ROW_GAP);
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(format!("LOD {}", index + 1)).color(color::TEXT_MUTED));
+            ui.label(
+                egui::RichText::new(keys::ui_opt::lod_level((index + 1) as f64))
+                    .color(color::TEXT_MUTED),
+            );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("X").on_hover_text("Remove this level").clicked() {
+                if ui
+                    .button(theme::REMOVE_GLYPH)
+                    .on_hover_text(keys::ui_opt::REMOVE_LEVEL)
+                    .clicked()
+                {
                     remove = Some(index);
                 }
             });
@@ -433,33 +446,16 @@ fn lod_params(ui: &mut egui::Ui, params: LodParams) -> Option<LodParams> {
     }
 
     ui.add_space(size::PANEL_ROW_GAP);
-    ui.label(
-        egui::RichText::new(
-            "Triangles is a fraction of this object's count at this point in the \
-             stack. Every level is simplified from that same mesh, not from the \
-             level above, so one level's error never compounds into the next. The \
-             simplifier stops short of the target rather than exceed the error limit.",
-        )
-        .color(color::TEXT_MUTED),
-    );
+    ui.label(egui::RichText::from(keys::ui_opt::LOD_EXPLAINED).color(color::TEXT_MUTED));
 
     (edited != params).then_some(edited)
 }
 
 /// The export settings and the Export action.
 fn export_body(ui: &mut egui::Ui, state: &mut UiState) -> Option<OptIntent> {
-    ui.heading("Export settings");
+    ui.heading(keys::ui_opt::EXPORT_SETTINGS);
     ui.add_space(size::PANEL_ROW_GAP);
-    ui.label(
-        egui::RichText::new(
-            "Where and how the processed mesh - and its LOD chain, if the stack \
-             generates one - is written. Everything the stack did not change is \
-             written as authored: polygons, materials and textures, skins, blend \
-             shapes, animation curves and properties. Material edits made in the \
-             viewer stay previews.",
-        )
-        .color(color::TEXT_MUTED),
-    );
+    ui.label(egui::RichText::from(keys::ui_opt::EXPORT_EXPLAINED).color(color::TEXT_MUTED));
     ui.add_space(size::PANEL_ROW_GAP);
     ui.separator();
 
@@ -469,34 +465,42 @@ fn export_body(ui: &mut egui::Ui, state: &mut UiState) -> Option<OptIntent> {
     panel_grid(ui, "opt_export", |ui| {
         labeled_combo(
             ui,
-            "Packaging",
+            Tip::new(keys::ui_opt::EXPORT_PACKAGING).page(Page::OptOperations),
             "opt_export_packaging",
-            edited.packaging.label(),
+            labels::lod_packaging(edited.packaging),
             |ui| {
                 for packaging in LodPackaging::ALL {
-                    ui.selectable_value(&mut edited.packaging, packaging, packaging.label());
+                    ui.selectable_value(
+                        &mut edited.packaging,
+                        packaging,
+                        labels::lod_packaging(packaging),
+                    );
                 }
             },
         );
         labeled_combo(
             ui,
-            "Hierarchy",
+            Tip::new(keys::ui_opt::EXPORT_HIERARCHY).page(Page::OptOperations),
             "opt_export_hierarchy",
-            edited.hierarchy.label(),
+            labels::hierarchy_mode(edited.hierarchy),
             |ui| {
                 for hierarchy in HierarchyMode::ALL {
-                    ui.selectable_value(&mut edited.hierarchy, hierarchy, hierarchy.label());
+                    ui.selectable_value(
+                        &mut edited.hierarchy,
+                        hierarchy,
+                        labels::hierarchy_mode(hierarchy),
+                    );
                 }
             },
         );
         labeled_combo(
             ui,
-            "Format",
+            Tip::new(keys::ui_opt::EXPORT_FORMAT).page(Page::OptOperations),
             "opt_export_format",
-            edited.format.label(),
+            labels::fbx_format(edited.format),
             |ui| {
                 for format in FbxFormat::ALL {
-                    ui.selectable_value(&mut edited.format, format, format.label());
+                    ui.selectable_value(&mut edited.format, format, labels::fbx_format(format));
                 }
             },
         );
@@ -514,11 +518,20 @@ fn export_body(ui: &mut egui::Ui, state: &mut UiState) -> Option<OptIntent> {
     ui.add_space(size::PANEL_ROW_GAP);
 
     let ready = state.opt.has_result() && !state.opt.processing;
-    let response = ui.add_enabled(ready, wide_button("Export…", ui.available_width()));
+    let response = ui.add_enabled(
+        ready,
+        wide_button(keys::ui_opt::EXPORT_BUTTON, ui.available_width()),
+    );
     let response = if state.opt.processing {
-        response.on_disabled_hover_text("Waiting for the current run to finish")
+        response.on_disabled_hover_text(keys::ui_opt::EXPORT_WAITING)
     } else if !state.opt.has_result() {
-        response.on_disabled_hover_text("Nothing processed yet - add an operation first")
+        response.on_disabled_hover_ui(|ui| {
+            tip_body(
+                ui,
+                keys::ui_opt::EXPORT_NOTHING,
+                keys::ui_opt::EXPORT_NOTHING_DESCRIPTION,
+            );
+        })
     } else {
         response
     };
@@ -533,35 +546,27 @@ fn describe_export(ui: &mut egui::Ui, options: ExportOptions, levels: usize) {
     // source asset — so neither packaging has anything to suffix, and naming a
     // "_LOD0" would describe a file the export does not write.
     let packaging = match options.packaging {
-        _ if levels == 1 => "One file, with each mesh under its source name".to_owned(),
-        LodPackaging::SingleFileSuffixed => {
-            format!(
-                "One file, with each mesh repeated as MeshName_LOD0 … _LOD{}",
-                levels - 1
-            )
+        _ if levels == 1 => {
+            review_localization::tr(keys::ui_opt::PACKAGING_SINGLE_ONE_LEVEL).into_owned()
         }
-        LodPackaging::FilePerLod => format!("{levels} files, one per level (…_LOD0.fbx, …)"),
+        LodPackaging::SingleFileSuffixed => {
+            keys::ui_opt::packaging_single_explained((levels - 1) as f64)
+        }
+        LodPackaging::FilePerLod => keys::ui_opt::packaging_file_per_lod_explained(levels as f64),
     };
     let hierarchy = match options.hierarchy {
-        HierarchyMode::Rebuild => {
-            "The source node hierarchy is rebuilt, geometry moved back into each node's local space."
-        }
-        HierarchyMode::FlatBaked => {
-            "Each mesh becomes a root-level node with world-space geometry."
-        }
+        HierarchyMode::Rebuild => keys::ui_opt::HIERARCHY_REBUILD_EXPLAINED,
+        HierarchyMode::FlatBaked => keys::ui_opt::HIERARCHY_FLAT_EXPLAINED,
     };
     ui.label(egui::RichText::new(packaging).color(color::TEXT_MUTED));
-    ui.label(egui::RichText::new(hierarchy).color(color::TEXT_MUTED));
+    ui.label(egui::RichText::from(hierarchy).color(color::TEXT_MUTED));
 }
 
 /// With no stack row selected, the Inspector offers the selected object's
 /// per-object overrides — the other half of what Opt does with a selection.
 fn node_body(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData) {
     let Selection::Node(index) = state.selection else {
-        ui.weak(
-            "Select an operation in the stack to edit its settings, or a node in \
-             the Outliner to give it its own.",
-        );
+        ui.weak(keys::ui_opt::SELECT_SOMETHING);
         return;
     };
 
@@ -572,10 +577,7 @@ fn node_body(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData) {
         .unwrap_or_else(|| format!("Node {index}"));
     ui.heading(name);
     ui.add_space(size::PANEL_ROW_GAP);
-    ui.label(
-        egui::RichText::new("How this object deviates from the global stack.")
-            .color(color::TEXT_MUTED),
-    );
+    ui.label(egui::RichText::from(keys::ui_opt::OBJECT_OVERRIDES).color(color::TEXT_MUTED));
     ui.add_space(size::PANEL_ROW_GAP);
     ui.separator();
     ui.add_space(size::PANEL_ROW_GAP);
@@ -586,11 +588,8 @@ fn node_body(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData) {
         .node_override(index)
         .is_some_and(|entry| entry.exclude);
     if ui
-        .checkbox(&mut exclude, "Exclude from optimization")
-        .on_hover_text(
-            "Pass this object through untouched. It still appears in every LOD \
-             level, at full detail.",
-        )
+        .checkbox(&mut exclude, keys::ui_opt::EXCLUDE)
+        .on_hover_ui(|ui| tip_body(ui, keys::ui_opt::EXCLUDE, keys::ui_opt::EXCLUDE_DESCRIPTION))
         .changed()
     {
         state.opt.edit_stack(|stack| {

@@ -4,15 +4,21 @@
 
 use review_render::VertexColorMode;
 
+use crate::docs::Page;
+use crate::keys;
+use crate::labels;
 use crate::state::{UiState, VertexColorPanelState};
-use crate::widgets::{labeled_combo, panel_grid, reset_button};
+use crate::widgets::{Tip, labeled_combo, panel_footer, panel_grid};
+
+/// This panel's page in the manual, opened by its footer's `?`.
+const PAGE: Page = Page::PanelsVertexColors;
 
 pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
     panel_grid(ui, "vertex_colors", |ui| {
         color_mode_row(ui, &mut state.vertex_colors.mode);
     });
     ui.separator();
-    if reset_button(ui).clicked() {
+    if panel_footer(ui, PAGE).clicked() {
         state.vertex_colors = VertexColorPanelState::default();
     }
 }
@@ -20,13 +26,21 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
 /// "Color Mode" row: a dropdown choosing which vertex-color channels the view
 /// shows.
 fn color_mode_row(ui: &mut egui::Ui, mode: &mut VertexColorMode) {
-    labeled_combo(ui, "Color Mode", "vertex_color_mode", mode.label(), |ui| {
-        for choice in [
-            VertexColorMode::Rgb,
-            VertexColorMode::Alpha,
-            VertexColorMode::RgbAlpha,
-        ] {
-            ui.selectable_value(mode, choice, choice.label());
-        }
-    });
+    labeled_combo(
+        ui,
+        Tip::new(keys::ui_panels::COLOR_MODE)
+            .describe(keys::ui_panels::COLOR_MODE_DESCRIPTION)
+            .page(PAGE),
+        "vertex_color_mode",
+        labels::vertex_color_mode(*mode),
+        |ui| {
+            for choice in [
+                VertexColorMode::Rgb,
+                VertexColorMode::Alpha,
+                VertexColorMode::RgbAlpha,
+            ] {
+                ui.selectable_value(mode, choice, labels::vertex_color_mode(choice));
+            }
+        },
+    );
 }

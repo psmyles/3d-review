@@ -8,15 +8,21 @@
 
 use review_render::{AntiAliasing, MsaaSamples};
 
+use crate::docs::Page;
+use crate::keys;
+use crate::labels;
 use crate::state::UiState;
-use crate::widgets::{labeled_combo, panel_grid, reset_button};
+use crate::widgets::{Tip, labeled_combo, panel_footer, panel_grid};
+
+/// This panel's page in the manual, opened by its footer's `?`.
+const PAGE: Page = Page::PanelsAntiAliasing;
 
 pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
     panel_grid(ui, "anti_aliasing", |ui| {
         msaa_row(ui, state);
     });
     ui.separator();
-    if reset_button(ui).clicked() {
+    if panel_footer(ui, PAGE).clicked() {
         state.anti_aliasing = AntiAliasing::default();
     }
 }
@@ -27,9 +33,11 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
 fn msaa_row(ui: &mut egui::Ui, state: &mut UiState) {
     labeled_combo(
         ui,
-        "MSAA",
+        Tip::new(keys::ui_panels::MSAA)
+            .describe(keys::ui_panels::MSAA_DESCRIPTION)
+            .page(PAGE),
         "anti_aliasing_msaa",
-        state.anti_aliasing.msaa.label(),
+        labels::msaa(state.anti_aliasing.msaa),
         |ui| {
             for level in MsaaSamples::ALL {
                 // List the active level unconditionally (so the menu can't strand
@@ -39,7 +47,7 @@ fn msaa_row(ui: &mut egui::Ui, state: &mut UiState) {
                 let offered = level == state.anti_aliasing.msaa
                     || state.capabilities.msaa_levels.contains(&level);
                 if offered {
-                    ui.selectable_value(&mut state.anti_aliasing.msaa, level, level.label());
+                    ui.selectable_value(&mut state.anti_aliasing.msaa, level, labels::msaa(level));
                 }
             }
         },

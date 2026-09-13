@@ -70,6 +70,16 @@ impl App {
             return;
         }
 
+        // F1 opens the manual, at the page for whatever the pointer is over: an
+        // open options panel's own page, or the current workspace's. Named like
+        // Escape and Space, so it comes before the Character extraction.
+        if event.state == ElementState::Pressed
+            && matches!(&event.logical_key, Key::Named(NamedKey::F1))
+        {
+            self.open_context_help();
+            return;
+        }
+
         let Key::Character(character) = &event.logical_key else {
             return;
         };
@@ -221,5 +231,22 @@ impl App {
         if let (Some(renderer), Some(bounds)) = (self.renderer.as_mut(), target) {
             renderer.animate_camera_to_bounds(bounds);
         }
+    }
+
+    /// Open the manual at whatever the pointer is over.
+    ///
+    /// An open options panel wins: the pointer resting on one is a specific
+    /// question, and `OptionPanel::window_id` gives every panel window a stable
+    /// egui layer id to match against. Otherwise the workspace's own page, which
+    /// is the general question F1 is usually asking.
+    fn open_context_help(&mut self) {
+        let panel = self.egui_ctx.as_ref().and_then(|ctx| {
+            let pointer = ctx.input(|input| input.pointer.hover_pos())?;
+            let layer = ctx.layer_id_at(pointer)?;
+            review_ui::option_panel_at(layer)
+        });
+        let page = panel.unwrap_or_else(|| review_ui::workspace_help_page(self.ui.mode));
+        self.ui.help.open_page(page);
+        self.redraw.requested = true;
     }
 }

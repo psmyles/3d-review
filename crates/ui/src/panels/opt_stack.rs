@@ -17,10 +17,14 @@
 use review_optimize::{AoTarget, OpKind};
 use review_render::{ActiveMaterial, VertexColorMode};
 
+use crate::docs::Page;
+use crate::keys;
+use crate::labels;
 use crate::opt_state::{OptIntent, StackItem};
 use crate::state::UiState;
+use crate::theme;
 use crate::theme::{color, size};
-use crate::widgets::{self, wide_button};
+use crate::widgets::{self, Tip, tip, tip_body, wide_button};
 
 /// Draw the pane. Returns the preset/export intent raised this frame, if any.
 pub(crate) fn body(ui: &mut egui::Ui, state: &mut UiState) -> Option<OptIntent> {
@@ -33,15 +37,15 @@ pub(crate) fn body(ui: &mut egui::Ui, state: &mut UiState) -> Option<OptIntent> 
         let gap = ui.spacing().item_spacing.x;
         let width = ((ui.available_width() - gap) * 0.5).max(0.0);
         if ui
-            .add(wide_button("Save preset", width))
-            .on_hover_text("Write this operation stack to a JSON file")
+            .add(wide_button(keys::ui_opt::SAVE_PRESET, width))
+            .on_hover_text(keys::ui_opt::SAVE_PRESET_DESCRIPTION)
             .clicked()
         {
             intent = Some(OptIntent::SavePreset);
         }
         if ui
-            .add(wide_button("Load preset", width))
-            .on_hover_text("Replace this stack with one loaded from a JSON file")
+            .add(wide_button(keys::ui_opt::LOAD_PRESET, width))
+            .on_hover_text(keys::ui_opt::LOAD_PRESET_DESCRIPTION)
             .clicked()
         {
             intent = Some(OptIntent::LoadPreset);
@@ -59,8 +63,12 @@ pub(crate) fn body(ui: &mut egui::Ui, state: &mut UiState) -> Option<OptIntent> 
             if state.opt.stack.ops.is_empty() {
                 ui.add_space(size::PANEL_ROW_GAP);
                 ui.label(
-                    egui::RichText::new("No operations yet.\nAdd one above to start optimizing.")
-                        .color(color::TEXT_MUTED),
+                    egui::RichText::new(format!(
+                        "{}\n{}",
+                        review_localization::tr(keys::ui_opt::EMPTY),
+                        review_localization::tr(keys::ui_opt::EMPTY_DESCRIPTION),
+                    ))
+                    .color(color::TEXT_MUTED),
                 );
                 return;
             }
@@ -80,7 +88,7 @@ pub(crate) fn body(ui: &mut egui::Ui, state: &mut UiState) -> Option<OptIntent> 
 /// chain, which has no meaning.
 fn add_menu(ui: &mut egui::Ui, state: &mut UiState) {
     let has_lod = state.opt.stack.has_lod();
-    let button = wide_button("+ Add operation", ui.available_width());
+    let button = wide_button(keys::ui_opt::ADD_OPERATION_BUTTON, ui.available_width());
     // The full path: egui also carries a legacy top-level `menu` module, and it
     // is the one `egui::menu` resolves to.
     egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
@@ -89,11 +97,16 @@ fn add_menu(ui: &mut egui::Ui, state: &mut UiState) {
             let kind = make();
             let is_lod = matches!(kind, OpKind::SimplifyLod(_));
             let enabled = !(is_lod && has_lod);
-            let response = ui.add_enabled(enabled, egui::Button::new(kind.label()));
+            let response = ui.add_enabled(enabled, egui::Button::new(labels::op_kind(&kind)));
             let response = if enabled {
-                response.on_hover_text(kind.description())
+                tip(
+                    response,
+                    Tip::new(labels::op_kind(&kind))
+                        .describe(labels::op_description(&kind))
+                        .page(Page::OptOperations),
+                )
             } else {
-                response.on_disabled_hover_text("A stack can hold only one LOD operation")
+                response.on_disabled_hover_text(keys::ui_opt::ONE_LOD_ONLY)
             };
             if response.clicked() {
                 // A bake nobody can see helps nobody: adding one switches the
@@ -148,7 +161,12 @@ fn operation_rows(ui: &mut egui::Ui, state: &mut UiState) {
         if response.clicked() {
             selected = Some(op.id);
         }
-        response.on_hover_text(op.kind.description());
+        tip(
+            response,
+            Tip::new(labels::op_kind(&op.kind))
+                .describe(labels::op_description(&op.kind))
+                .page(Page::OptOperations),
+        );
 
         // Enable checkbox, then the name filling whatever is left.
         let mut enabled = op.enabled;
@@ -156,7 +174,13 @@ fn operation_rows(ui: &mut egui::Ui, state: &mut UiState) {
             egui::Rect::from_min_size(content.left_top(), egui::vec2(button, content.height()));
         if ui
             .put(check_rect, egui::Checkbox::without_text(&mut enabled))
-            .on_hover_text("Include this operation when processing")
+            .on_hover_ui(|ui| {
+                tip_body(
+                    ui,
+                    keys::ui_opt::ENABLE_OPERATION,
+                    keys::ui_opt::ENABLE_OPERATION_DESCRIPTION,
+                )
+            })
             .changed()
         {
             toggled = Some(op.id);
@@ -164,7 +188,7 @@ fn operation_rows(ui: &mut egui::Ui, state: &mut UiState) {
 
         // A disabled operation is dimmed so a stack that is half switched off
         // reads at a glance.
-        let text = egui::RichText::new(op.kind.label()).color(if !op.enabled {
+        let text = egui::RichText::from(labels::op_kind(&op.kind)).color(if !op.enabled {
             color::TEXT_MUTED
         } else if is_selected {
             color::TEXT_PRIMARY
@@ -190,7 +214,9 @@ fn operation_rows(ui: &mut egui::Ui, state: &mut UiState) {
         if ui
             .add_enabled_ui(index > 0, |ui| ui.put(tile(0), egui::Button::new("▲")))
             .inner
-            .on_hover_text("Move up (applied earlier)")
+            .on_hover_ui(|ui| {
+                tip_body(ui, keys::ui_opt::MOVE_UP, keys::ui_opt::MOVE_UP_DESCRIPTION)
+            })
             .clicked()
         {
             moved = Some((index, -1));
@@ -200,14 +226,20 @@ fn operation_rows(ui: &mut egui::Ui, state: &mut UiState) {
                 ui.put(tile(1), egui::Button::new("▼"))
             })
             .inner
-            .on_hover_text("Move down (applied later)")
+            .on_hover_ui(|ui| {
+                tip_body(
+                    ui,
+                    keys::ui_opt::MOVE_DOWN,
+                    keys::ui_opt::MOVE_DOWN_DESCRIPTION,
+                )
+            })
             .clicked()
         {
             moved = Some((index, 1));
         }
         if ui
-            .put(tile(2), egui::Button::new("X"))
-            .on_hover_text("Remove this operation")
+            .put(tile(2), egui::Button::new(theme::REMOVE_GLYPH))
+            .on_hover_text(keys::ui_opt::REMOVE_OPERATION)
             .clicked()
         {
             removed = Some(op.id);
@@ -252,9 +284,9 @@ fn export_row(ui: &mut egui::Ui, state: &mut UiState) {
     if response.clicked() {
         state.opt.selected = Some(StackItem::ExportSettings);
     }
-    response.on_hover_text("Where and how the processed mesh is written");
+    response.on_hover_text(keys::ui_opt::EXPORT_SETTINGS_DESCRIPTION);
 
-    let text = egui::RichText::new("Export settings").color(if is_selected {
+    let text = egui::RichText::from(keys::ui_opt::EXPORT_SETTINGS).color(if is_selected {
         color::TEXT_PRIMARY
     } else {
         color::TEXT_BODY

@@ -22,12 +22,12 @@ impl PlaybackSpeed {
         PlaybackSpeed::Double,
     ];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> review_localization::Key {
         match self {
-            PlaybackSpeed::Quarter => "0.25x",
-            PlaybackSpeed::Half => "0.5x",
-            PlaybackSpeed::Normal => "1x",
-            PlaybackSpeed::Double => "2x",
+            PlaybackSpeed::Quarter => crate::keys::ui_transport::SPEED_QUARTER,
+            PlaybackSpeed::Half => crate::keys::ui_transport::SPEED_HALF,
+            PlaybackSpeed::Normal => crate::keys::ui_transport::SPEED_NORMAL,
+            PlaybackSpeed::Double => crate::keys::ui_transport::SPEED_DOUBLE,
         }
     }
 

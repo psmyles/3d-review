@@ -2,14 +2,15 @@
 
 use crate::assets::{self, AppIcon};
 use crate::theme::{self, color, font, size};
+use crate::widgets::{Tip, tip};
 
 /// A button that fills the width it is given, with its label centred.
 ///
 /// egui left-aligns a button's label as soon as `min_size` widens the button past
 /// the text ("if there are no growable atoms then everything will be left-aligned")
 /// — growable spacers either side are what re-centre it.
-pub(crate) fn wide_button(label: &str, width: f32) -> egui::Button<'_> {
-    egui::Button::new((egui::Atom::grow(), label, egui::Atom::grow()))
+pub(crate) fn wide_button<'a>(label: impl Into<egui::WidgetText>, width: f32) -> egui::Button<'a> {
+    egui::Button::new((egui::Atom::grow(), label.into(), egui::Atom::grow()))
         .min_size(egui::vec2(width, 0.0))
 }
 
@@ -18,7 +19,7 @@ pub(crate) fn icon_toggle_button(
     ui: &mut egui::Ui,
     icon: &AppIcon,
     selected: bool,
-    tooltip: &str,
+    tooltip: Tip,
 ) -> egui::Response {
     icon_tile_button(
         ui,
@@ -39,7 +40,7 @@ pub(crate) fn icon_toggle_button_with_options(
     ui: &mut egui::Ui,
     icon: &AppIcon,
     selected: bool,
-    tooltip: &str,
+    tooltip: Tip,
 ) -> egui::Response {
     icon_tile_button(
         ui,
@@ -58,7 +59,7 @@ pub(crate) fn icon_tile_button(
     ui: &mut egui::Ui,
     icon: &AppIcon,
     selected: bool,
-    tooltip: &str,
+    tooltip: Tip,
     tile_size: egui::Vec2,
     has_options: bool,
 ) -> egui::Response {
@@ -118,7 +119,7 @@ pub(crate) fn icon_tile_button(
         ui.painter().add(egui::Shape::mesh(mesh));
     }
 
-    response.on_hover_text(tooltip)
+    tip(response, tooltip)
 }
 
 /// A custom-painted **text** segment tile (a labelled radio cell), sized to
@@ -181,7 +182,11 @@ pub(crate) fn segment_button(
 ///
 /// Returns the index of the tab clicked this frame, if any; the caller owns the
 /// selection.
-pub(crate) fn tab_bar(ui: &mut egui::Ui, labels: &[&str], selected: usize) -> Option<usize> {
+pub(crate) fn tab_bar(
+    ui: &mut egui::Ui,
+    labels: &[egui::WidgetText],
+    selected: usize,
+) -> Option<usize> {
     if labels.is_empty() {
         return None;
     }
@@ -232,7 +237,7 @@ pub(crate) fn tab_bar(ui: &mut egui::Ui, labels: &[&str], selected: usize) -> Op
         painter.text(
             egui::pos2(cell.center().x, (cell.top() + baseline) * 0.5),
             egui::Align2::CENTER_CENTER,
-            label,
+            label.text(),
             font.clone(),
             if active {
                 color::TEXT_PRIMARY
@@ -253,7 +258,32 @@ pub(crate) fn tab_bar(ui: &mut egui::Ui, labels: &[&str], selected: usize) -> Op
     clicked
 }
 
-/// A stock "Reset all" button (default egui button styling).
-pub(crate) fn reset_button(ui: &mut egui::Ui) -> egui::Response {
-    ui.button("Reset all")
+/// A panel's footer row: the stock "Reset all" button, and — pushed to the right
+/// edge — a `?` that opens this panel's page in the manual.
+///
+/// The reset button's [`egui::Response`] comes back, because each panel resets
+/// its own fields its own way (several deliberately keep their `enabled` flag).
+/// The `?` needs nothing back: it parks the page request the way a tooltip's link
+/// does, and [`crate::overlay`] applies it.
+pub(crate) fn panel_footer(ui: &mut egui::Ui, page: crate::docs::Page) -> egui::Response {
+    ui.horizontal(|ui| {
+        let reset = ui.button(crate::keys::common::RESET_ALL);
+        let reset = tip(
+            reset,
+            Tip::new(crate::keys::common::RESET_ALL)
+                .describe(crate::keys::common::RESET_ALL_DESCRIPTION),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let help = ui.small_button("?");
+            let help = tip(
+                help,
+                Tip::new(crate::keys::common::HELP).describe(crate::keys::common::HELP_OPEN),
+            );
+            if help.clicked() {
+                crate::help::request_page(ui.ctx(), page);
+            }
+        });
+        reset
+    })
+    .inner
 }

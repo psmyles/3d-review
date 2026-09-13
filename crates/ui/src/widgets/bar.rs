@@ -7,6 +7,7 @@
 use crate::assets::AppIcon;
 use crate::state::{OptionPanel, PanelsOpen};
 use crate::theme::{color, size};
+use crate::widgets::Tip;
 
 use super::*;
 
@@ -19,7 +20,7 @@ pub(crate) fn option_toggle(
     flag: &mut bool,
     panels_open: &mut PanelsOpen,
     panel: OptionPanel,
-    tooltip: &str,
+    tooltip: Tip,
 ) -> egui::Response {
     let response = icon_toggle_button_with_options(ui, icon, *flag, tooltip);
     if response.clicked() {

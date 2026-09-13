@@ -5,6 +5,11 @@
 
 use std::collections::HashSet;
 
+use review_localization::Key;
+
+use crate::docs::Page;
+use crate::keys;
+
 /// A tool's options panel. Each is shown as its own native `egui::Window`, so
 /// several can be open at once (see [`PanelsOpen`]); a panel is toggled by
 /// right-clicking its toolbar / status-bar button.
@@ -48,24 +53,50 @@ impl OptionPanel {
         OptionPanel::Tonemap,
     ];
 
-    /// Title shown in the panel's native window title bar.
-    pub(crate) fn title(self) -> &'static str {
+    /// Title shown in the panel's native window title bar, and beside the tool's
+    /// button in the toolbar and status bar.
+    pub(crate) fn title(self) -> Key {
         match self {
-            OptionPanel::Wireframe => "Wireframe",
-            OptionPanel::MaterialMode => "Material Mode",
-            OptionPanel::BufferView => "Buffers",
-            OptionPanel::BoundingBox => "Bounding Box",
-            OptionPanel::UvChecker => "UV Checker",
-            OptionPanel::FaceNormals => "Face Normals",
-            OptionPanel::VertexNormals => "Vertex Normals",
-            OptionPanel::UvSeams => "UV Seams",
-            OptionPanel::Skeleton => "Skeleton",
-            OptionPanel::VertexColors => "Vertex Colors",
-            OptionPanel::AntiAliasing => "Anti Aliasing",
-            OptionPanel::Background => "Background",
-            OptionPanel::Environment => "Environment",
-            OptionPanel::Gtao => "Ambient Occlusion",
-            OptionPanel::Tonemap => "Tonemapper",
+            OptionPanel::Wireframe => keys::ui_panel_titles::WIREFRAME,
+            OptionPanel::MaterialMode => keys::ui_panel_titles::MATERIAL_MODE,
+            OptionPanel::BufferView => keys::ui_panel_titles::BUFFER_VIEW,
+            OptionPanel::BoundingBox => keys::ui_panel_titles::BOUNDING_BOX,
+            OptionPanel::UvChecker => keys::ui_panel_titles::UV_CHECKER,
+            OptionPanel::FaceNormals => keys::ui_panel_titles::FACE_NORMALS,
+            OptionPanel::VertexNormals => keys::ui_panel_titles::VERTEX_NORMALS,
+            OptionPanel::UvSeams => keys::ui_panel_titles::UV_SEAMS,
+            OptionPanel::Skeleton => keys::ui_panel_titles::SKELETON,
+            OptionPanel::VertexColors => keys::ui_panel_titles::VERTEX_COLORS,
+            OptionPanel::AntiAliasing => keys::ui_panel_titles::ANTI_ALIASING,
+            OptionPanel::Background => keys::ui_panel_titles::BACKGROUND,
+            OptionPanel::Environment => keys::ui_panel_titles::ENVIRONMENT,
+            OptionPanel::Gtao => keys::ui_panel_titles::GTAO,
+            OptionPanel::Tonemap => keys::ui_panel_titles::TONEMAP,
+        }
+    }
+
+    /// The tool's page in the manual: what its footer's `?` opens, what `F1` over
+    /// its window opens, and where its toolbar button's tooltip links.
+    ///
+    /// Exhaustive on purpose — a panel whose page is renamed or removed is a
+    /// compile error here, not a dead link at run time (invariant 12).
+    pub(crate) fn help_page(self) -> Page {
+        match self {
+            OptionPanel::Wireframe => Page::PanelsWireframe,
+            OptionPanel::MaterialMode => Page::PanelsMaterialMode,
+            OptionPanel::BufferView => Page::PanelsBuffers,
+            OptionPanel::BoundingBox => Page::PanelsBoundingBox,
+            OptionPanel::UvChecker => Page::PanelsUvChecker,
+            OptionPanel::FaceNormals => Page::PanelsFaceNormals,
+            OptionPanel::VertexNormals => Page::PanelsVertexNormals,
+            OptionPanel::UvSeams => Page::PanelsUvSeams,
+            OptionPanel::Skeleton => Page::PanelsSkeleton,
+            OptionPanel::VertexColors => Page::PanelsVertexColors,
+            OptionPanel::AntiAliasing => Page::PanelsAntiAliasing,
+            OptionPanel::Background => Page::PanelsBackground,
+            OptionPanel::Environment => Page::PanelsEnvironment,
+            OptionPanel::Gtao => Page::PanelsAmbientOcclusion,
+            OptionPanel::Tonemap => Page::PanelsTonemapper,
         }
     }
 

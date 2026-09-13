@@ -1,0 +1,65 @@
+# Publishes the user manual to GitHub Pages.
+#
+# The manual is the mdBook under `docs/book/`, and it is the *same* markdown the
+# viewer embeds and shows in its Help window (invariant 12) — this job only builds
+# the web half of it. Nothing here compiles Rust: mdBook ships as a release
+# binary, so the job is a download and a build.
+#
+# One-time setup in the repository: Settings → Pages → Source → "GitHub Actions".
+name: Manual
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/book/**"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+# Pinned, so a mdBook release cannot change the published output without a commit
+# here saying so.
+env:
+  MDBOOK_VERSION: "0.4.40"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; a queued run supersedes a pending one rather than
+# racing it, but a run already publishing is left to finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mdBook
+        run: |
+          set -euo pipefail
+          url="https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL "$url" | tar -xz -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build the book
+        run: mdbook build docs/book
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/book/book
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

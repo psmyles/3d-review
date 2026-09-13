@@ -64,9 +64,15 @@ Name: "desktopicon"; GroupDescription: "Additional icons:"; \
   Description: "Create a desktop shortcut"; Flags: unchecked
 
 [Files]
-; The exe is self-contained — toolbar/window icons are include_bytes!-embedded,
-; so there is no separate asset payload to ship.
+; The exe carries almost everything: toolbar/window icons, the baked lighting
+; maps, the message catalogs and every manual page's *text* are all
+; include_bytes!-embedded.
 Source: "..\target\release\{#MyAppExe}"; DestDir: "{app}"; Flags: ignoreversion
+; The manual's images are the one exception (invariant 12): embedding
+; screenshots would put megabytes in a binary whose startup time is a feature.
+; An install without them still shows every page — each image renders as its
+; alt text — which is why this entry is allowed to find nothing.
+Source: "..\docs\book\src\en\images\*"; DestDir: "{app}\docs\en\images"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
 ; No external tools to ship: PSD is decoded in-process by the prebuilt psd_sdk FFI
 ; crate (review-psd), JPEG by zune, and the rest by the Rust `image` crate — the
 ; old bundled ImageMagick CLI is gone.

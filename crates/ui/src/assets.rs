@@ -118,6 +118,11 @@ pub(crate) const ICON_INFO: AppIcon = AppIcon {
     id: "icon_info",
     png_bytes: include_bytes!("../../../assets/icons/icon_info.png"),
 };
+/// "Help" — opens the in-app manual (toolbar, right).
+pub(crate) const ICON_HELP: AppIcon = AppIcon {
+    id: "icon_help",
+    png_bytes: include_bytes!("../../../assets/icons/icon_help.png"),
+};
 /// "Anti aliasing" — opens the MSAA options panel (status bar, right).
 pub(crate) const ICON_ANTI_ALIASING: AppIcon = AppIcon {
     id: "icon_anti_aliasing",

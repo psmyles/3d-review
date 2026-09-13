@@ -100,11 +100,11 @@ impl BoundsScope {
     ];
 
     /// The dropdown label for this scope.
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> review_localization::Key {
         match self {
-            BoundsScope::AllMeshes => "All Meshes",
-            BoundsScope::OnlySelection => "Only Selection",
-            BoundsScope::VisibleOnly => "Only Visible",
+            BoundsScope::AllMeshes => crate::keys::ui_enums::SCOPE_ALL_MESHES,
+            BoundsScope::OnlySelection => crate::keys::ui_enums::SCOPE_ONLY_SELECTION,
+            BoundsScope::VisibleOnly => crate::keys::ui_enums::SCOPE_VISIBLE_ONLY,
         }
     }
 }

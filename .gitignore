@@ -34,3 +34,7 @@ target
 .DS_Store
 
 CLAUDE.md
+
+# mdBook's rendered output. The manual's source is `docs/book/src`; the site is
+# built by CI and published to Pages, never committed.
+/docs/book/book/

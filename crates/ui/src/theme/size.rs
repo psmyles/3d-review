@@ -83,14 +83,23 @@ pub const TOOLBAR_ICON_GAP: f32 = 2.0;
 /// the 8-of-42 proportion the toolbar tiles were originally drawn at.
 pub const TILE_ICON_INSET_RATIO: f32 = 8.0 / 42.0;
 pub const TOOLBAR_CENTER_WIDTH: f32 = 120.0;
-/// Right toolbar cluster (3D mode): view (122, four icons) + projection (32) +
-/// the side-panels toggle group (32), with two group spacings
-/// (122 + 9 + 32 + 9 + 32 = 204), plus a little slack. It grows leftward from
-/// the right edge, away from the centered mode segments.
-pub const TOOLBAR_RIGHT_WIDTH: f32 = 213.0;
-/// Left toolbar cluster: shading (5) + material (4) + geometry-debug (3)
-/// groups, with two group spacings between them (152 + 9 + 122 + 9 + 92).
-pub const TOOLBAR_LEFT_WIDTH: f32 = 384.0;
+/// Right toolbar cluster (3D and Opt): Help (32) + the view group + projection
+/// (32) + the side-panels toggle (32), with three group spacings.
+///
+/// Sized for the **widest** case, which is a rigged model: the view group gains a
+/// tile for the skeleton toggle there (152 rather than 122), so
+/// 152 + 9 + 32 + 9 + 32 + 9 + 32 = 275, plus a little slack. Sizing it for the
+/// unrigged case instead left the outermost group hanging off the bar the moment
+/// a skinned mesh was opened - `tests/toolbar_layout.rs` is what now says so.
+/// It grows leftward from the right edge, away from the centered mode segments.
+pub const TOOLBAR_RIGHT_WIDTH: f32 = 284.0;
+/// Left toolbar cluster: shading (5) + material + geometry-debug (3) groups, with
+/// two group spacings between them.
+///
+/// Sized for the widest case like [`TOOLBAR_RIGHT_WIDTH`]: the material group
+/// gains a tile for the skin-weight view on a skinned mesh (152 rather than 122),
+/// so 152 + 9 + 152 + 9 + 92 = 414, plus a little slack.
+pub const TOOLBAR_LEFT_WIDTH: f32 = 420.0;
 /// Five-icon shading group: show-wireframe, wireframe-only, unlit, shaded,
 /// backface-rendering.
 pub const TOOLBAR_SHADING_GROUP_WIDTH: f32 = 152.0;
@@ -376,3 +385,42 @@ pub const ANIM_TRANSPORT_GROUP_GAP: f32 = 9.0;
 pub const ANIM_SCRUB_MIN_WIDTH: f32 = 53.0;
 /// Width of the playback-speed dropdown.
 pub const ANIM_SPEED_COMBO_WIDTH: f32 = 43.0;
+
+// ── Help and tooltips ─────────────────────────────────────────────────
+/// Width a rich tooltip wraps its description at. Without a bound egui lays a
+/// paragraph out on one line and runs it off the side of the window.
+pub const TOOLTIP_MAX_WIDTH: f32 = 280.0;
+/// Slack left between the Help window's reading pane and the width its text is
+/// wrapped at, in points.
+///
+/// Text is wrapped at a width, but the galley that comes back is *measured*, and
+/// egui rounds a measurement up to the display's pixel grid. So a paragraph
+/// wrapped at exactly the viewport's width reports back a shade wider than it,
+/// and egui raises a horizontal scrollbar on any overflow at all - a scrollbar
+/// with a fraction of a point to scroll, which is worse than useless. The
+/// rounding is per display scale, and at 125% a pixel is 0.8 points, so a couple
+/// of points covers the worst of it with room to spare.
+///
+/// Only reachable by leaving room: the wrap width and the measured width are
+/// rounded by egui at different moments, so they cannot be made to agree.
+pub const HELP_WRAP_SLACK: f32 = 3.0;
+/// Gap between the blocks under a tooltip's title - its description, its
+/// operating notes and its manual link. The title itself is separated from them
+/// by a rule rather than by this gap.
+pub const TOOLTIP_TITLE_GAP: f32 = 4.0;
+/// The Help window's default size. Wide enough for the contents list beside a
+/// comfortable measure of prose, and short enough to leave the model visible
+/// beside it on a laptop screen.
+pub const HELP_WINDOW_DEFAULT: [f32; 2] = [720.0, 520.0];
+/// Minimum the Help window may be dragged down to before its two panes stop
+/// being readable.
+pub const HELP_WINDOW_MIN: [f32; 2] = [420.0, 260.0];
+/// Width of the Help window's contents list.
+pub const HELP_TOC_WIDTH: f32 = 196.0;
+/// Indent per nesting level in the contents list.
+pub const HELP_TOC_INDENT: f32 = 12.0;
+/// Widest a manual page's image is drawn at. Screenshots are captured at window
+/// size, which is wider than the reading pane.
+pub const HELP_IMAGE_MAX_WIDTH: f32 = 640.0;
+/// Padding around the Help window's reading pane.
+pub const HELP_PAGE_MARGIN: f32 = 8.0;

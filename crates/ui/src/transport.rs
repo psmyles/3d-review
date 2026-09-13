@@ -20,9 +20,12 @@
 use review_model::AnimationClip;
 
 use crate::assets::{self, AppIcon};
+use crate::docs::Page;
+use crate::keys;
 use crate::state::{PlaybackSpeed, UiState};
 use crate::theme::{color, font, size};
 use crate::widgets;
+use crate::widgets::Tip;
 
 /// How the row's width is spent: what the scrubber gets, and whether the frame
 /// readout survives.
@@ -81,7 +84,7 @@ pub(crate) fn transport_row(
     // Square tiles the height of the speed dropdown — `compact_combo` sizes its
     // button from `PANEL_ROW_H`, so every control in the row reads as one band.
     let tile = egui::Vec2::splat(size::PANEL_ROW_H);
-    let button = |ui: &mut egui::Ui, icon: &AppIcon, selected: bool, tooltip: &str| {
+    let button = |ui: &mut egui::Ui, icon: &AppIcon, selected: bool, tooltip: Tip| {
         widgets::icon_tile_button(ui, icon, selected, tooltip, tile, false).clicked()
     };
 
@@ -114,7 +117,7 @@ pub(crate) fn transport_row(
             ui,
             &assets::ICON_ANIM_GO_TO_START,
             false,
-            "Go to first frame",
+            Tip::new(keys::ui_transport::FIRST_FRAME).page(Page::Animation),
         ) {
             anim.time = clip.time_begin;
         }
@@ -122,7 +125,9 @@ pub(crate) fn transport_row(
             ui,
             &assets::ICON_ANIM_STEP_BACK,
             false,
-            "Previous frame (,)",
+            Tip::new(keys::ui_transport::PREVIOUS_FRAME)
+                .describe(keys::ui_transport::PREVIOUS_FRAME_DESCRIPTION)
+                .page(Page::Animation),
         ) {
             anim.time = clip.step_frame_time(anim.time, -1, fps);
             anim.playing = false;
@@ -132,14 +137,28 @@ pub(crate) fn transport_row(
         } else {
             &assets::ICON_ANIM_PLAY
         };
-        if button(ui, play_icon, anim.playing, "Play / pause (Space)") {
+        if button(
+            ui,
+            play_icon,
+            anim.playing,
+            Tip::new(keys::ui_transport::PLAY_PAUSE)
+                .describe(keys::ui_transport::PLAY_PAUSE_DESCRIPTION)
+                .page(Page::Animation),
+        ) {
             // Playing again from the end of a non-looping clip starts over.
             if !anim.playing && !anim.looping && anim.time >= clip.time_end {
                 anim.time = clip.time_begin;
             }
             anim.playing = !anim.playing;
         }
-        if button(ui, &assets::ICON_ANIM_STEP_FORWARD, false, "Next frame (.)") {
+        if button(
+            ui,
+            &assets::ICON_ANIM_STEP_FORWARD,
+            false,
+            Tip::new(keys::ui_transport::NEXT_FRAME)
+                .describe(keys::ui_transport::NEXT_FRAME_DESCRIPTION)
+                .page(Page::Animation),
+        ) {
             anim.time = clip.step_frame_time(anim.time, 1, fps);
             anim.playing = false;
         }
@@ -177,7 +196,14 @@ pub(crate) fn transport_row(
             );
         }
 
-        if button(ui, &assets::ICON_ANIM_LOOP, anim.looping, "Loop playback") {
+        if button(
+            ui,
+            &assets::ICON_ANIM_LOOP,
+            anim.looping,
+            Tip::new(keys::ui_transport::LOOP)
+                .describe(keys::ui_transport::LOOP_DESCRIPTION)
+                .page(Page::Animation),
+        ) {
             anim.looping = !anim.looping;
         }
 

@@ -42,6 +42,7 @@ use review_ui::Selection;
 
 use crate::dialog::Dialog;
 use crate::events::UserEvent;
+use crate::keys;
 use crate::{APP_NAME, App, prof};
 
 /// The shortest gap between two progress reports reaching the event loop. The
@@ -129,13 +130,28 @@ pub(crate) struct ModelLoadProgress {
 /// the title, so this is just what the import is doing, plus a percentage for the
 /// one stage that has a real denominator ([`ImportStage`] says which).
 fn progress_message(progress: ImportProgress) -> String {
+    let stage = review_localization::tr(stage_name(progress.stage)).into_owned();
     match progress.fraction() {
-        Some(fraction) => format!(
-            "{}… {}%",
-            progress.stage.label(),
-            (fraction * 100.0).round() as u32
+        Some(fraction) => keys::app_notifications::stage_line_percent(
+            f64::from((fraction * 100.0).round() as u32),
+            stage,
         ),
-        None => format!("{}…", progress.stage.label()),
+        None => keys::app_notifications::stage_line(stage),
+    }
+}
+
+/// What the loading card calls an import stage.
+///
+/// `import` keeps its own `label()` — it goes down the profiling channel, where
+/// a translated string would make two captures harder to compare — so the map
+/// lives here, on the side that draws text (invariant 12).
+fn stage_name(stage: ImportStage) -> review_localization::Key {
+    match stage {
+        ImportStage::Reading => keys::app_notifications::STAGE_READING,
+        ImportStage::Building => keys::app_notifications::STAGE_BUILDING,
+        ImportStage::Extras => keys::app_notifications::STAGE_EXTRAS,
+        ImportStage::Measuring => keys::app_notifications::STAGE_MEASURING,
+        ImportStage::Finishing => keys::app_notifications::STAGE_FINISHING,
     }
 }
 
@@ -211,7 +227,7 @@ impl App {
         // thread via [`UserEvent::ModelLoaded`].
         if let Some(proxy) = self.textures.proxy.clone() {
             self.notifications
-                .begin_activity(format!("Loading {}…", file_label(path)));
+                .begin_activity(keys::app_notifications::loading(file_label(path)));
             self.redraw.requested = true;
             let path = path.to_path_buf();
             std::thread::spawn(move || {
@@ -391,9 +407,10 @@ impl App {
                 self.scene_extras = None;
                 prof::msg(&format!("source properties dropped: {error}"));
                 // A warning, not an error: the model loaded and is on screen.
-                self.notifications.warning(format!(
-                    "Couldn't read the file's source properties: {error}"
-                ));
+                self.notifications
+                    .warning(keys::app_notifications::couldnt_read_properties(
+                        error.to_string(),
+                    ));
             }
         }
     }
@@ -404,7 +421,9 @@ impl App {
     fn set_window_title(&self, model: Option<&str>) {
         if let Some(window) = self.window.as_ref() {
             match model {
-                Some(name) => window.set_title(&format!("{name} - {APP_NAME}")),
+                Some(name) => {
+                    window.set_title(&keys::app_window::title_with_model(name, APP_NAME));
+                }
                 None => window.set_title(APP_NAME),
             }
         }
@@ -490,8 +509,10 @@ impl App {
                 self.reset_opt_for_new_model();
                 let label = file_label(path);
                 self.set_window_title(Some(&label));
-                self.notifications
-                    .success(format!("Loaded {label} in {}", format_load_time(elapsed)));
+                self.notifications.success(keys::app_notifications::loaded(
+                    label.clone(),
+                    format_load_time(elapsed),
+                ));
                 prof::msg(&format!("model loaded: {}", path.display()));
                 // A gate run starts measuring from here — the first present with
                 // the model actually on screen (`gate.rs`); no-op otherwise.
@@ -501,7 +522,10 @@ impl App {
                 // Surface the cause, not just the file name — without `--tracy`
                 // the prof channel below is the user's only *hidden* diagnostic.
                 self.notifications
-                    .error(format!("Couldn't load {}: {error}", file_label(path)));
+                    .error(keys::app_notifications::couldnt_load(
+                        file_label(path),
+                        error.to_string(),
+                    ));
                 prof::msg(&format!("model load failed: {} ({error})", path.display()));
             }
         }

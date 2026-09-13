@@ -4,6 +4,7 @@
 //! which is the one styling exception the chrome keeps.
 
 use crate::theme::{color, size};
+use crate::widgets::{Tip, tip};
 
 /// Wrap a panel's label+control rows in a stock striped two-column
 /// `egui::Grid` — the same primitive (and default styling) egui's demo widget
@@ -25,16 +26,24 @@ pub(crate) fn panel_grid(ui: &mut egui::Ui, salt: &str, contents: impl FnOnce(&m
         .show(ui, contents);
 }
 
-/// The left (label) cell of a panel-grid row: a plain default-styled label
-/// pinned to the fixed [`size::PANEL_LABEL_COL_WIDTH`] (left-aligned; an
-/// over-long label truncates rather than widening the column, so every panel
-/// keeps the same label/control split). Leaves the cursor in the control column
-/// for the caller to drop the row's widget and then call `ui.end_row()`.
-pub(crate) fn grid_label(ui: &mut egui::Ui, label: &str) {
-    ui.scope(|ui| {
-        ui.set_width(size::PANEL_LABEL_COL_WIDTH);
-        ui.add(egui::Label::new(label).truncate());
-    });
+/// The left (label) cell of a panel-grid row: a plain default-styled label pinned
+/// to the fixed [`size::PANEL_LABEL_COL_WIDTH`] (left-aligned; an over-long label
+/// truncates rather than widening the column, so every panel keeps the same
+/// label/control split), carrying the row's explanation and a link to the manual.
+/// Leaves the cursor in the control column for the caller to drop the row's
+/// widget and then call `ui.end_row()`.
+///
+/// The label *is* the tooltip's title, taken from the same [`Tip`], so the two
+/// cannot drift apart the way two separate arguments would — and every row is
+/// obliged to say what it is for, rather than only what it is called.
+pub(crate) fn grid_label_tip(ui: &mut egui::Ui, row: Tip) {
+    let response = ui
+        .scope(|ui| {
+            ui.set_width(size::PANEL_LABEL_COL_WIDTH);
+            ui.add(egui::Label::new(row.title()).truncate())
+        })
+        .inner;
+    tip(response, row);
 }
 
 /// The right (control) cell of a panel-grid row: a cell spanning **all the
@@ -104,12 +113,12 @@ pub(crate) fn style_combo_popup(ui: &mut egui::Ui) {
 /// write straight into their own state can ignore it.
 pub(crate) fn labeled_slider_with_value<Num: egui::emath::Numeric>(
     ui: &mut egui::Ui,
-    label: &str,
+    label: Tip,
     value: &mut Num,
     range: std::ops::RangeInclusive<Num>,
     decimals: usize,
 ) -> bool {
-    grid_label(ui, label);
+    grid_label_tip(ui, label);
     // The slider's own inline readout auto-sizes to its digit count, so it
     // reflows as the number changes. Instead, hide it (`show_value(false)`) and
     // append a separate **fixed-width** `DragValue` box: the rail fills the row
@@ -153,10 +162,10 @@ pub(crate) fn labeled_slider_with_value<Num: egui::emath::Numeric>(
 /// button's [`egui::Response`] so the caller can react to an edit.
 pub(crate) fn labeled_color_button(
     ui: &mut egui::Ui,
-    label: &str,
+    label: Tip,
     rgb: &mut [f32; 3],
 ) -> egui::Response {
-    grid_label(ui, label);
+    grid_label_tip(ui, label);
     let response = grid_control(ui, |ui| ui.color_edit_button_rgb(rgb));
     ui.end_row();
     response
@@ -164,8 +173,8 @@ pub(crate) fn labeled_color_button(
 
 /// A label + checkbox grid row. The checkbox carries no inline text — the label
 /// cell is its label.
-pub(crate) fn labeled_checkbox(ui: &mut egui::Ui, label: &str, value: &mut bool) {
-    grid_label(ui, label);
+pub(crate) fn labeled_checkbox(ui: &mut egui::Ui, label: Tip, value: &mut bool) {
+    grid_label_tip(ui, label);
     grid_control(ui, |ui| ui.checkbox(value, ""));
     ui.end_row();
 }
@@ -174,12 +183,12 @@ pub(crate) fn labeled_checkbox(ui: &mut egui::Ui, label: &str, value: &mut bool)
 /// styling (the toolbar's compact-combo styling is *not* applied here).
 pub(crate) fn labeled_combo(
     ui: &mut egui::Ui,
-    label: &str,
+    label: Tip,
     id_salt: &str,
     selected_text: impl Into<egui::WidgetText>,
     contents: impl FnOnce(&mut egui::Ui),
 ) {
-    grid_label(ui, label);
+    grid_label_tip(ui, label);
     egui::ComboBox::from_id_salt(id_salt)
         .selected_text(selected_text)
         .width(ui.available_width())

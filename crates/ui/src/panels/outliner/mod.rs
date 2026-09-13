@@ -36,9 +36,13 @@ use review_model::{ModelData, NodeKind, SceneNode};
 use review_render::Selection;
 
 use crate::assets::{self, AppIcon};
+use crate::docs::Page;
+use crate::keys;
+use crate::labels;
 use crate::state::{OutlinerTab, OutlinerViewMode, UiState, WorkspaceMode};
 use crate::theme::{color, size};
 use crate::widgets;
+use crate::widgets::{Tip, tip};
 use nav::isolate_mesh;
 use rows::kind_icon;
 
@@ -83,12 +87,12 @@ pub(crate) fn body(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData) {
     if !tabs.contains(&state.outliner.tab) {
         state.outliner.tab = OutlinerTab::Scene;
     }
-    let labels: Vec<&str> = tabs
+    let labels: Vec<egui::WidgetText> = tabs
         .iter()
         .map(|tab| match tab {
-            OutlinerTab::Scene => "Scene",
-            OutlinerTab::Materials => "Materials",
-            OutlinerTab::Animations => "Animations",
+            OutlinerTab::Scene => keys::ui_outliner::TAB_SCENE.into(),
+            OutlinerTab::Materials => keys::ui_outliner::TAB_MATERIALS.into(),
+            OutlinerTab::Animations => keys::ui_outliner::TAB_ANIMATIONS.into(),
         })
         .collect();
     let active = tabs
@@ -126,12 +130,22 @@ fn header_controls(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData) {
     if state.outliner.tab == OutlinerTab::Scene {
         let tree_mode = state.outliner.view == OutlinerViewMode::SceneTree;
         ui.horizontal(|ui| {
-            let tooltip = if tree_mode {
-                "Showing the scene hierarchy - click for a flat list"
+            let view_tip = if tree_mode {
+                Tip::new(keys::ui_outliner::VIEW_TREE)
+                    .describe(keys::ui_outliner::VIEW_TREE_DESCRIPTION)
             } else {
-                "Showing a flat node list - click for the scene hierarchy"
+                Tip::new(keys::ui_outliner::VIEW_FLAT)
+                    .describe(keys::ui_outliner::VIEW_FLAT_DESCRIPTION)
             };
-            if icon_toggle(ui, &assets::ICON_TREE_VIEW, tree_mode, true, tooltip).clicked() {
+            if icon_toggle(
+                ui,
+                &assets::ICON_TREE_VIEW,
+                tree_mode,
+                true,
+                view_tip.page(Page::OutlinerInspector),
+            )
+            .clicked()
+            {
                 state.outliner.view = if tree_mode {
                     OutlinerViewMode::Flat
                 } else {
@@ -145,8 +159,12 @@ fn header_controls(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData) {
                     continue;
                 }
                 let shown = !state.outliner.hidden_kinds.contains(&kind);
-                let tooltip = format!("{} nodes", kind.label());
-                if icon_toggle(ui, kind_icon(kind), shown, false, &tooltip).clicked() {
+                let kind_tip = Tip::new(keys::ui_outliner::filter_kind(
+                    review_localization::tr(labels::node_kind(kind)).into_owned(),
+                ))
+                .describe(keys::ui_outliner::FILTER_KIND_DESCRIPTION)
+                .page(Page::OutlinerInspector);
+                if icon_toggle(ui, kind_icon(kind), shown, false, kind_tip).clicked() {
                     if shown {
                         state.outliner.hidden_kinds.insert(kind);
                     } else {
@@ -158,10 +176,16 @@ fn header_controls(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData) {
         ui.add_space(size::PANEL_ROW_GAP);
     }
 
-    ui.add(
+    let search = ui.add(
         egui::TextEdit::singleline(&mut state.outliner.search)
-            .hint_text("Search")
+            .hint_text(keys::ui_outliner::SEARCH_HINT)
             .desired_width(f32::INFINITY),
+    );
+    tip(
+        search,
+        Tip::new(keys::ui_outliner::SEARCH_HINT)
+            .describe(keys::ui_outliner::SEARCH_HINT_DESCRIPTION)
+            .page(Page::OutlinerInspector),
     );
     ui.add_space(size::PANEL_ROW_GAP);
 }
@@ -173,7 +197,7 @@ fn icon_toggle(
     icon: &AppIcon,
     active: bool,
     accent: bool,
-    tooltip: &str,
+    tooltip: Tip,
 ) -> egui::Response {
     let side = size::OUTLINER_TYPE_ICON + size::OUTLINER_ICON_PAD;
     let (rect, response) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::click());
@@ -202,14 +226,14 @@ fn icon_toggle(
             .tint(tint)
             .paint_at(ui, image_rect);
     }
-    response.on_hover_text(tooltip)
+    tip(response, tooltip)
 }
 
 /// The Scene tab: resolve the rows the current view/search calls for, draw them,
 /// then apply everything the draw and the keyboard asked for.
 fn scene_tab(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData) {
     if model.nodes.is_empty() {
-        ui.weak("No scene nodes.");
+        ui.weak(keys::ui_outliner::NO_NODES);
         return;
     }
     state.outliner.ensure_tree(model);
@@ -225,9 +249,9 @@ fn scene_tab(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData) {
         .show(ui, |ui| {
             if rows.is_empty() {
                 ui.weak(if searching {
-                    "No matches."
+                    keys::ui_outliner::NO_MATCHES
                 } else {
-                    "Every node type is filtered out."
+                    keys::ui_outliner::ALL_FILTERED
                 });
                 return RowsOutput::default();
             }
@@ -293,7 +317,7 @@ fn matches_search(name: &str, query: &str) -> bool {
 /// A node's display label: its source name, or a generated `Node N` fallback.
 fn display_name(node: &SceneNode, index: usize) -> String {
     if node.name.is_empty() {
-        format!("Node {index}")
+        keys::ui_outliner::unnamed_node(index as f64)
     } else {
         node.name.clone()
     }
