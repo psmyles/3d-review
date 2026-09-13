@@ -3,3 +3,4 @@
 - object selection via direct viewport click - show hover overlay first
 - compression option at export time?
 - read FBX built in textures
+- show read speed
