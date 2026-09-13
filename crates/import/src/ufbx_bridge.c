@@ -1811,10 +1811,14 @@ static ufbx_progress_result review_import_progress_cb(void *user, const ufbx_pro
 {
     review_import_progress_ctx *ctx = (review_import_progress_ctx*)user;
     if (ctx && ctx->fn && progress) {
-        ctx->fn(ctx->user, progress->bytes_read, progress->bytes_total);
+        /* The sink answers whether the load is still wanted. Dropping a
+           superseded result on arrival was never enough on its own: the parse
+           of a 100 MB file runs to completion either way, and the viewer's
+           whole point is that you can drop one model on it after another. */
+        if (!ctx->fn(ctx->user, progress->bytes_read, progress->bytes_total)) {
+            return UFBX_PROGRESS_CANCEL;
+        }
     }
-    /* The viewer never cancels a load: a superseded one is dropped by generation
-       on the Rust side (`loading.rs`), which costs nothing extra here. */
     return UFBX_PROGRESS_CONTINUE;
 }
 
@@ -1877,9 +1881,14 @@ int review_import_load_fbx(
     scene = ufbx_load_file(path, &load_opts, &error);
     if (!scene) {
         char buffer[256];
+        /* A cancelled parse is not a failure to report: the caller asked for it,
+           and its own generation check is what will discard this call. */
+        if (error.type == UFBX_ERROR_CANCELLED) {
+            return REVIEW_IMPORT_CANCELLED;
+        }
         ufbx_format_error(buffer, sizeof(buffer), &error);
         review_import_set_error(out_error, buffer);
-        return 0;
+        return REVIEW_IMPORT_FAILED;
     }
 
     /* Record what the file claimed its unit was, before our target_unit_meters

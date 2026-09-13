@@ -20,7 +20,10 @@ use std::os::raw::{c_char, c_int};
 use std::path::Path;
 use std::ptr::NonNull;
 
-use crate::{ImportError, PendingExtras, StagedImport};
+use crate::{CancelToken, ImportError, PendingExtras, StagedImport};
+
+/// `REVIEW_IMPORT_CANCELLED` from `ufbx_bridge.h`.
+const CANCELLED: c_int = -1;
 
 use super::marshal_model::model_from_bridge_scene;
 use super::raw::read_error_message;
@@ -73,8 +76,17 @@ impl Drop for ExtrasHandle {
     }
 }
 
-/// The bridge's progress hook: `user` is a `*const ProgressSink`.
-pub(super) type ReviewImportProgressFn = unsafe extern "C" fn(*mut c_void, u64, u64);
+/// The bridge's progress hook: `user` is a `*const ProgressCallback`. Returns
+/// non-zero to carry on, 0 to abandon the parse.
+pub(super) type ReviewImportProgressFn = unsafe extern "C" fn(*mut c_void, u64, u64) -> c_int;
+
+/// What the trampoline is handed: the caller's sink, and the token that says
+/// whether the load is still wanted. One struct so the bridge keeps a single
+/// `void *`.
+struct ProgressCallback<'a> {
+    sink: crate::ProgressSink<'a>,
+    cancel: Option<&'a CancelToken>,
+}
 
 unsafe extern "C" {
     fn review_import_load_fbx(
@@ -92,33 +104,43 @@ unsafe extern "C" {
 }
 
 /// The trampoline the bridge calls from inside the ufbx parse. `user` is the
-/// `&ProgressSink` handed to [`load_fbx`], which outlives the whole call.
+/// [`ProgressCallback`] handed to [`load_fbx`], which outlives the whole call.
+/// The return value is ufbx's continue/cancel answer.
 ///
 /// A panic here would unwind through C, so the sink is called inside
 /// `catch_unwind` and a panicking one is simply ignored — a broken progress
-/// indicator must not take the import down with it.
-unsafe extern "C" fn report_read_progress(user: *mut c_void, done: u64, total: u64) {
-    let Some(sink) = NonNull::new(user.cast::<crate::ProgressSink<'_>>()) else {
-        return;
+/// indicator must not take the import down with it, and it must not be read as a
+/// request to cancel either.
+unsafe extern "C" fn report_read_progress(user: *mut c_void, done: u64, total: u64) -> c_int {
+    const CONTINUE: c_int = 1;
+    const CANCEL: c_int = 0;
+
+    let Some(callback) = NonNull::new(user.cast::<ProgressCallback<'_>>()) else {
+        return CONTINUE;
     };
-    // SAFETY: `user` is the `&ProgressSink` `load_fbx` passed to the bridge,
+    // SAFETY: `user` is the `&ProgressCallback` `load_fbx` passed to the bridge,
     // which borrows it for no longer than the `review_import_load_fbx` call
     // this callback is made from; the pointer is therefore live and aligned,
     // and nothing else aliases it mutably.
-    let sink = unsafe { sink.as_ref() };
+    let callback = unsafe { callback.as_ref() };
+    if callback.cancel.is_some_and(|cancel| cancel.is_cancelled()) {
+        return CANCEL;
+    }
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        sink(crate::ImportProgress {
+        (callback.sink)(crate::ImportProgress {
             stage: crate::ImportStage::Reading,
             done,
             total,
         });
     }));
+    CONTINUE
 }
 
 pub(crate) fn load_fbx(
     path: &Path,
     progress: crate::ProgressSink<'_>,
     capture_extras: bool,
+    cancel: Option<&CancelToken>,
 ) -> Result<StagedImport, ImportError> {
     let _z = crate::prof::zone!("Load FBX");
     let path_string = path.to_string_lossy();
@@ -149,7 +171,10 @@ pub(crate) fn load_fbx(
         // sink, which the bridge only dereferences from within this call.
         // `extras` is either null (no capture) or a live boxed struct the
         // bridge fills and this call's handle then owns.
-        let mut sink = progress;
+        let mut callback = ProgressCallback {
+            sink: progress,
+            cancel,
+        };
         let extras_ptr = extras
             .as_deref_mut()
             .map_or(std::ptr::null_mut(), |extras| {
@@ -162,11 +187,17 @@ pub(crate) fn load_fbx(
                 extras_ptr,
                 &mut error,
                 Some(report_read_progress),
-                (&raw mut sink).cast::<c_void>(),
+                (&raw mut callback).cast::<c_void>(),
             )
         }
     };
 
+    // `REVIEW_IMPORT_CANCELLED`: the parse stopped because the trampoline said
+    // this load is superseded. Not an error — the caller asked for it, and its
+    // generation check would have discarded the result anyway.
+    if loaded == CANCELLED {
+        return Err(ImportError::Cancelled);
+    }
     if loaded == 0 {
         // The bridge freed both outputs on its failure path; the zeroed box
         // is dropped here without a free.

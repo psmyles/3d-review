@@ -800,3 +800,41 @@ fn a_panicking_progress_sink_unwinds_without_taking_the_importer_with_it() {
     let model = load_model(&path).expect("the importer still works");
     assert!(model.stats.triangle_count > 0);
 }
+
+/// An already-superseded load must stop rather than parse to completion.
+///
+/// Dropping a stale result on arrival keeps the wrong model off screen, but the
+/// parse behind it ran either way — seconds of work on a large file for something
+/// nobody will see. The check rides ufbx's own progress callback, so a token that
+/// is already stale stops the load at its first report.
+#[test]
+fn a_superseded_load_is_cancelled_rather_than_parsed() {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicU64;
+
+    let path = fixture("SM_Speaker_01a.fbx");
+    if !path.exists() {
+        eprintln!("skipping: the fixture is not present");
+        return;
+    }
+
+    // The token's generation is already behind the shared counter: this is the
+    // state a worker is in the moment the user opens another file.
+    let generation = Arc::new(AtomicU64::new(7));
+    let cancel = review_import::CancelToken::new(Arc::clone(&generation), 6);
+    assert!(cancel.is_cancelled());
+
+    let result = review_import::load_model_staged_cancellable(&path, &|_| {}, Some(&cancel));
+    assert!(
+        matches!(result, Err(ImportError::Cancelled)),
+        "a superseded load must report Cancelled, not a model or a LoadFailed"
+    );
+
+    // A live token loads normally — the cancel path must not be reachable by
+    // accident.
+    let live = review_import::CancelToken::new(Arc::clone(&generation), 7);
+    assert!(!live.is_cancelled());
+    let staged = review_import::load_model_staged_cancellable(&path, &|_| {}, Some(&live))
+        .expect("a current load still imports");
+    assert!(staged.model.stats.triangle_count > 0);
+}

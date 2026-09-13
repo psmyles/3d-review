@@ -33,6 +33,41 @@ pub enum ImportError {
     UnsupportedExtension(String),
     #[error("failed to load model: {0}")]
     LoadFailed(String),
+    #[error("the import was cancelled")]
+    Cancelled,
+}
+
+/// A shared "is this load still wanted?" flag, checked from inside the parse.
+///
+/// Dropping a superseded result when it arrives — which `app` has always done by
+/// generation — keeps the wrong model off screen but recovers none of the work.
+/// Parsing a 120 MB FBX is ~1.6 s and the measuring stages behind it another
+/// ~3 s, all of it spent producing something nobody will look at, and dropping
+/// one model on the viewer after another is an ordinary thing to do.
+///
+/// The counter is the caller's own request generation: the token is live while
+/// it still reads the value the token was made with. That makes cancellation a
+/// consequence of the check `app` already performs, rather than a second piece of
+/// state to keep in step with it.
+#[derive(Debug, Clone)]
+pub struct CancelToken {
+    current: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    mine: u64,
+}
+
+impl CancelToken {
+    /// A token for request `generation`, live until `current` moves past it.
+    pub fn new(current: std::sync::Arc<std::sync::atomic::AtomicU64>, generation: u64) -> Self {
+        Self {
+            current,
+            mine: generation,
+        }
+    }
+
+    /// Whether this request has been superseded.
+    pub fn is_cancelled(&self) -> bool {
+        self.current.load(std::sync::atomic::Ordering::Relaxed) != self.mine
+    }
 }
 
 /// The stage an import is in, as reported to [`load_model_with_progress`].
@@ -188,9 +223,25 @@ pub fn load_model_staged(
     path: impl AsRef<Path>,
     progress: ProgressSink<'_>,
 ) -> Result<StagedImport, ImportError> {
+    load_model_staged_cancellable(path, progress, None)
+}
+
+/// [`load_model_staged`] that abandons the parse when `cancel` says the request
+/// has been superseded, reporting [`ImportError::Cancelled`].
+///
+/// The check rides the progress callback, which ufbx already calls every 512 KB,
+/// so a cancelled load stops within a fraction of a second rather than running to
+/// completion for a result that will be thrown away.
+pub fn load_model_staged_cancellable(
+    path: impl AsRef<Path>,
+    progress: ProgressSink<'_>,
+    cancel: Option<&CancelToken>,
+) -> Result<StagedImport, ImportError> {
     let path = path.as_ref();
     match path.extension().and_then(|extension| extension.to_str()) {
-        Some(extension) if extension.eq_ignore_ascii_case("fbx") => load_fbx_staged(path, progress),
+        Some(extension) if extension.eq_ignore_ascii_case("fbx") => {
+            load_fbx_staged(path, progress, cancel)
+        }
         Some(extension) => Err(ImportError::UnsupportedExtension(extension.to_owned())),
         None => Err(ImportError::UnsupportedExtension("<none>".to_owned())),
     }
@@ -230,7 +281,7 @@ pub fn load_model_with_progress(
 pub fn load_fbx(_path: &Path, _progress: ProgressSink<'_>) -> Result<ModelData, ImportError> {
     #[cfg(has_ufbx)]
     {
-        ffi::load_fbx(_path, _progress, false).map(|staged| staged.model)
+        ffi::load_fbx(_path, _progress, false, None).map(|staged| staged.model)
     }
 
     #[cfg(not(has_ufbx))]
@@ -239,10 +290,14 @@ pub fn load_fbx(_path: &Path, _progress: ProgressSink<'_>) -> Result<ModelData, 
     }
 }
 
-fn load_fbx_staged(_path: &Path, _progress: ProgressSink<'_>) -> Result<StagedImport, ImportError> {
+fn load_fbx_staged(
+    _path: &Path,
+    _progress: ProgressSink<'_>,
+    _cancel: Option<&CancelToken>,
+) -> Result<StagedImport, ImportError> {
     #[cfg(has_ufbx)]
     {
-        ffi::load_fbx(_path, _progress, true)
+        ffi::load_fbx(_path, _progress, true, _cancel)
     }
 
     #[cfg(not(has_ufbx))]
