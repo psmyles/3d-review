@@ -9,8 +9,9 @@ use std::ffi::CStr;
 
 use sokol::gfx as sg;
 
-use super::error::{GpuError, GpuResult, ResourceKind, require_valid};
+use super::error::{GpuError, GpuResult, ResourceKind};
 use super::format::Format;
+use super::make;
 use super::mips;
 
 /// An immutable 2D texture and its sampling view.
@@ -168,20 +169,20 @@ impl Texture {
     /// both if either came back invalid.
     fn from_desc(desc: &sg::ImageDesc, label: &CStr) -> GpuResult<Self> {
         let name = label.to_str().unwrap_or("texture");
-        let image = sg::make_image(desc);
+        let image = make::image(desc, name)?;
 
         let mut view_desc = sg::ViewDesc::new();
         view_desc.texture.image = image;
         view_desc.label = desc.label;
-        let view = sg::make_view(&view_desc);
-
-        let made = require_valid(sg::query_image_state(image), ResourceKind::Texture, name)
-            .and_then(|()| require_valid(sg::query_view_state(view), ResourceKind::Texture, name));
-        if let Err(err) = made {
-            sg::destroy_view(view);
-            sg::destroy_image(image);
-            return Err(err);
-        }
+        // The image is this constructor's own, so a failed view has to take it
+        // with it.
+        let view = match make::view(&view_desc, ResourceKind::Texture, name) {
+            Ok(view) => view,
+            Err(error) => {
+                sg::destroy_image(image);
+                return Err(error);
+            }
+        };
         Ok(Self { image, view })
     }
 

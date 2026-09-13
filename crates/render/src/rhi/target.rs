@@ -18,6 +18,7 @@ use sokol::gfx as sg;
 
 use super::error::{GpuResult, ResourceKind, require_valid};
 use super::format::{Format, SCENE_COLOR_FORMAT, SCENE_DEPTH_FORMAT};
+use super::make;
 
 /// An offscreen colour attachment: a pass draws into it, a later pass samples it.
 ///
@@ -221,22 +222,20 @@ impl DepthTarget {
         desc.sample_count = sample_count.max(1) as i32;
         desc.pixel_format = SCENE_DEPTH_FORMAT.sg();
         desc.label = label.as_ptr();
-        let image = sg::make_image(&desc);
+        let image = make::image(&desc, name)?;
 
         let mut attachment_desc = sg::ViewDesc::new();
         attachment_desc.depth_stencil_attachment.image = image;
         attachment_desc.label = label.as_ptr();
-        let attachment = sg::make_view(&attachment_desc);
-
-        let made = require_valid(sg::query_image_state(image), ResourceKind::Target, name)
-            .and_then(|()| {
-                require_valid(sg::query_view_state(attachment), ResourceKind::Target, name)
-            });
-        if let Err(err) = made {
-            sg::destroy_view(attachment);
-            sg::destroy_image(image);
-            return Err(err);
-        }
+        // The image is this constructor's own, so a failed view has to take it
+        // with it.
+        let attachment = match make::view(&attachment_desc, ResourceKind::Target, name) {
+            Ok(attachment) => attachment,
+            Err(error) => {
+                sg::destroy_image(image);
+                return Err(error);
+            }
+        };
         Ok(Self { image, attachment })
     }
 

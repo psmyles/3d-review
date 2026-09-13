@@ -9,7 +9,8 @@ use std::ffi::CStr;
 
 use sokol::gfx as sg;
 
-use super::error::{GpuResult, ResourceKind, require_valid};
+use super::error::GpuResult;
+use super::make;
 
 /// How a texture is filtered when it is not sampled 1:1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -86,12 +87,7 @@ impl Sampler {
         desc.wrap_v = wrap.sg();
         desc.wrap_w = wrap.sg();
         desc.label = label.as_ptr();
-        let sampler = sg::make_sampler(&desc);
-        require_valid(
-            sg::query_sampler_state(sampler),
-            ResourceKind::Sampler,
-            label.to_str().unwrap_or("sampler"),
-        )?;
+        let sampler = make::sampler(&desc, label.to_str().unwrap_or("sampler"))?;
         Ok(Self(sampler))
     }
 
