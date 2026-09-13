@@ -73,6 +73,19 @@ impl App {
             return;
         }
 
+        // A minimized window has a zero-sized backbuffer, and there is nothing to
+        // draw into until it is restored. `begin_frame` skips such a frame too, but
+        // the bail belongs *here*: everything between the two — the egui pass, the
+        // chrome layout, the scene rect the viewport is derived from — would
+        // otherwise run against a zero-sized screen, which is not a size any of it
+        // is meaningful at. Restoring the window resizes the swapchain and requests
+        // the redraw that resumes drawing.
+        let (backbuffer_width, backbuffer_height) =
+            self.gpu.as_ref().map_or((0, 0), review_render::Gpu::size);
+        if backbuffer_width == 0 || backbuffer_height == 0 {
+            return;
+        }
+
         // The bounding-box dimension labels occlude against the mesh through a
         // triangle BVH. Build it lazily the first frame the labels are shown for a
         // given model (and rebuild after a new model loads); reused across frames,
@@ -279,7 +292,7 @@ impl App {
         // pixels. The UI measures it in points during the pass above; without it
         // (the first frame, before the chrome has been laid out) the whole
         // backbuffer stands in.
-        let gpu_size = self.gpu.as_ref().map_or((1, 1), review_render::Gpu::size);
+        let gpu_size = (backbuffer_width, backbuffer_height);
         let opt_viewport = self
             .ui
             .scene_viewport
@@ -524,6 +537,18 @@ impl App {
 /// rasterizer a viewport reaching past the backbuffer.
 fn scene_viewport_px(rect: egui::Rect, ppp: f32, size: (u32, u32)) -> SceneViewport {
     let (width, height) = size;
+    // A degenerate backbuffer — a minimized window — has no rect to clamp into, and
+    // the clamps below would have no room to place even a single pixel in. `render`
+    // skips those frames before reaching here; this keeps the conversion total
+    // rather than a panic waiting for the next caller.
+    if width == 0 || height == 0 {
+        return SceneViewport {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        };
+    }
     let left = (rect.left() * ppp).round().max(0.0) as u32;
     let top = (rect.top() * ppp).round().max(0.0) as u32;
     let right = (rect.right() * ppp).round().max(0.0) as u32;
@@ -594,6 +619,17 @@ mod tests {
         let view = scene_viewport_px(rect, 2.0, (1200, 800));
         assert_eq!((view.x, view.y), (200, 40));
         assert_eq!((view.width, view.height), (800, 560));
+    }
+
+    /// A minimized window's backbuffer is zero-sized, which is not a rect the
+    /// clamps can place a pixel in: the conversion answers with an empty viewport
+    /// rather than panicking. `render` skips those frames before they get here.
+    #[test]
+    fn a_zero_sized_backbuffer_yields_an_empty_viewport() {
+        let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1280.0, 720.0));
+        let view = scene_viewport_px(rect, 1.0, (0, 0));
+        assert_eq!((view.x, view.y), (0, 0));
+        assert_eq!((view.width, view.height), (0, 0));
     }
 
     /// A rect measured before a shrinking resize must not reach past the
