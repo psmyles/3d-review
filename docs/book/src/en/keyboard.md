@@ -22,24 +22,31 @@ panel.
 
 ## Keys
 
-| Key | What it does |
-| --- | --- |
-| `` ` `` | Show or hide the wireframe on top of the model |
-| `1` / `2` / `3` | Wireframe only / Unlit / Shaded |
-| `I` | Show or hide the stats card |
-| `G` | Show or hide the grid |
-| `F` | Frame the model, or the selected part |
-| `R` | Put the camera back where it started (in UV and Tex, refit the image) |
-| `W` `A` `S` `D` `Q` `E` | Fly the camera (while the right mouse button is held) |
-| `Space` | Play or pause the selected animation |
-| `,` / `.` | Step one frame back or forward |
-| `X` | In the Opt overlay, swap which model is solid |
-| `F1` | Open this manual, at the page for whatever is under the pointer |
-| `Esc` | Clear the selection |
-| Primary + `N` | Start over with an empty viewer |
-| Primary + `O` | Open a model |
-| Primary + `Z` | Undo |
-| Primary + `Y`, or Primary + Shift + `Z` | Redo |
+### The view
+
+- `` ` `` - show or hide the wireframe on top of the model.
+- `1` / `2` / `3` - wireframe only, unlit, or shaded.
+- `I` - show or hide the stats card.
+- `G` - show or hide the grid.
+- `F` - frame the model, or the selected part.
+- `R` - put the camera back where it started. In UV and Tex, refit the image.
+- `W` `A` `S` `D` `Q` `E` - fly the camera, while the right mouse button is
+  held.
+
+### Animation
+
+- `Space` - play or pause the selected animation.
+- `,` / `.` - step one frame back or forward.
+
+### Everything else
+
+- `X` - in the Opt overlay, swap which model is solid.
+- `F1` - open this manual, at the page for whatever is under the pointer.
+- `Esc` - clear the selection.
+- Primary + `N` - start over with an empty viewer.
+- Primary + `O` - open a model.
+- Primary + `Z` - undo.
+- Primary + `Y`, or Primary + Shift + `Z` - redo.
 
 ## What undo covers
 

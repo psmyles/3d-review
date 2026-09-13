@@ -5,6 +5,3 @@
 ui-help-title = Help
 ui-help-back = Back to the previous page
 
-# The line under the contents list, which is what a bug report should quote.
-ui-help-version-line = Version { $version } - { $backend }
-

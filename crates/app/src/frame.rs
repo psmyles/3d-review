@@ -197,6 +197,12 @@ impl App {
             (full_output, ui_output)
         };
 
+        // The pass above is what decides whether egui took the last press — a
+        // panel divider or a window's resize edge grabs it here, a frame after
+        // `egui_winit` had to guess. Resolve the proposal before anything reads
+        // `drag_mode`.
+        self.settle_pending_drag(&egui_ctx);
+
         {
             let _z = prof::zone!("Apply UI Output");
             self.apply_ui_output(ui_output);

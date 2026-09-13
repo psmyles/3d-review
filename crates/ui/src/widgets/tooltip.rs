@@ -88,8 +88,24 @@ impl Tip {
         // off the side of the window; with one, egui wraps it.
         ui.set_max_width(size::TOOLTIP_MAX_WIDTH);
         ui.label(self.title.strong());
+
+        // A rule under the title, separating the control's *name* from its
+        // explanation — the same header-over-body shape a notification card has.
+        // Only drawn when there is something under it, so a name-only tooltip
+        // ([`Tip::new`]) stays the single line it was.
+        //
+        // egui's `Separator` fills the width available to it, which inside a
+        // tooltip is `TOOLTIP_MAX_WIDTH`, so every tooltip that has a body is now
+        // that wide rather than shrinking to its longest line. That is the read
+        // we want: a description is a wrapped paragraph and already measures near
+        // the maximum, and a rule stopping short of the text beside it would look
+        // like a mistake rather than a choice.
+        let has_body = self.description.is_some() || !self.notes.is_empty() || self.page.is_some();
+        if has_body {
+            ui.separator();
+        }
+
         if let Some(description) = self.description {
-            ui.add_space(size::TOOLTIP_TITLE_GAP);
             ui.label(description);
         }
         for note in self.notes {
@@ -122,6 +138,8 @@ pub(crate) fn tip(response: egui::Response, tip: Tip) -> egui::Response {
 pub(crate) fn tip_body(ui: &mut egui::Ui, title: Key, description: Key) {
     ui.set_max_width(size::TOOLTIP_MAX_WIDTH);
     ui.label(egui::RichText::from(title).strong());
-    ui.add_space(size::TOOLTIP_TITLE_GAP);
+    // Same rule under the title as [`Tip::show`] draws, so the two tooltip
+    // shapes do not read as two different kinds of thing.
+    ui.separator();
     ui.label(description);
 }

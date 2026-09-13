@@ -1,5 +1,6 @@
 //! The top toolbar: shading-mode group, debug-view group, the 3D/UV/Tex mode
-//! segments, and the gizmo/grid/projection group. Emits panel-open intents by
+//! segments, and the gizmo/grid/projection group, with the side-panels toggle
+//! and then Help closing out the right-hand end. Emits panel-open intents by
 //! mutating [`UiState`] in place.
 
 use review_render::{ActiveMaterial, ShadingMode, UvShadingMode};
@@ -44,7 +45,6 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState) {
     let shading_group_width = size::TOOLBAR_SHADING_GROUP_WIDTH;
     let material_group_width = size::TOOLBAR_MATERIAL_GROUP_WIDTH;
     let single_icon_group_width = size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH;
-    let windows_group_width = size::TOOLBAR_DOUBLE_ICON_GROUP_WIDTH;
     let triple_icon_group_width = size::TOOLBAR_TRIPLE_ICON_GROUP_WIDTH;
     let quad_icon_group_width = size::TOOLBAR_QUAD_ICON_GROUP_WIDTH;
     let quint_icon_group_width = size::TOOLBAR_QUINT_ICON_GROUP_WIDTH;
@@ -166,9 +166,12 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState) {
                             } else {
                                 quad_icon_group_width
                             };
+                            // Laid out right to left, so the first call is the
+                            // rightmost tile: Help anchors the end of the bar.
+                            draw_help_group(ui, state, single_icon_group_width);
                             draw_view_group(ui, state, view_group_width);
                             draw_projection_group(ui, state, single_icon_group_width);
-                            draw_windows_group(ui, state, windows_group_width);
+                            draw_side_panels_group(ui, state, single_icon_group_width);
                         }
                         WorkspaceMode::Uv => draw_uv_set_picker(ui, state),
                         WorkspaceMode::Texture => draw_texture_picker(ui, state),
@@ -531,7 +534,7 @@ fn draw_view_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
 /// the Inspector (right) together. They are two halves of one workflow — the
 /// Outliner picks a row, the Inspector describes it — so they share a toggle, and
 /// it shows highlighted while they're open.
-fn draw_windows_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
+fn draw_side_panels_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
     toolbar_group_shell(ui, width, |ui| {
         if icon_toggle_button(
             ui,
@@ -545,9 +548,21 @@ fn draw_windows_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
         {
             state.side_panels_open = !state.side_panels_open;
         }
-        // Help sits beside the side panels because both are about what is on
-        // screen rather than about the model. Left-click only: F1 and each
-        // panel's own `?` are the context-sensitive ways in.
+    });
+}
+
+/// Help, alone in a group at the far right of the bar.
+///
+/// Its own group rather than sharing the side panels' one: every other tile on
+/// the bar changes what you are looking at, and Help changes nothing - it is the
+/// way *out* of the viewer, so it reads better as the thing past the end of the
+/// tools than as one of them. Being last also gives it a fixed home, which is
+/// what a control you reach for when you are lost needs most.
+///
+/// Left-click only: `F1` and each panel's own `?` are the context-sensitive ways
+/// in, so there is nothing for a right-click to open here.
+fn draw_help_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
+    toolbar_group_shell(ui, width, |ui| {
         if icon_toggle_button(
             ui,
             &ICON_HELP,

@@ -196,6 +196,13 @@ struct App {
     /// swapchain pass the scene composited into (`mac-port-plan.md` D3).
     egui_renderer: Option<EguiRenderer>,
     drag_mode: Option<DragMode>,
+    /// A press that has not yet been confirmed as the viewer's to act on.
+    ///
+    /// `egui_winit` answers "did egui claim this press?" from the layout of the
+    /// *previous* frame, and a resize handle is precisely where that answer is
+    /// wrong — see [`App::settle_pending_drag`], which turns one of these into
+    /// [`App::drag_mode`] a frame later, or drops it.
+    pending_drag: Option<DragMode>,
     /// Whether the in-progress drag started in the *right* half of the Opt
     /// workspace's split view. Fixed at press time so a drag that wanders across
     /// the divider keeps moving the camera it began with.
@@ -370,7 +377,6 @@ impl Default for App {
             stats: scene_model.stats,
             ..UiState::default()
         };
-        ui.capabilities.app_version = env!("CARGO_PKG_VERSION").to_string();
         // The manual's images, if this install has them. `None` renders each
         // image as its alt text and changes nothing else (invariant 12), so this
         // is resolved once here rather than checked on every page turn.
@@ -383,6 +389,7 @@ impl Default for App {
             egui_state: None,
             egui_renderer: None,
             drag_mode: None,
+            pending_drag: None,
             drag_in_opt_right_view: false,
             flycam: FlyCam::default(),
             last_pointer_position: None,
@@ -628,8 +635,6 @@ impl App {
         gpu: Gpu,
         egui_renderer: EguiRenderer,
     ) {
-        // The viewer draws through sokol_gfx; the backend underneath it is the OS's.
-        self.ui.capabilities.gpu_backend = if cfg!(windows) { "DX11" } else { "Metal" }.to_string();
         // Gate the Anti-Aliasing menu on the adapter's real MSAA support (the backend
         // leaf's `supported_sample_counts`, since sokol only reports MSAA as a yes/no
         // per format). IBL + AO stay enabled — every target the renderer supports has
@@ -800,6 +805,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::CursorLeft { .. } => {
                 self.drag_mode = None;
+                self.pending_drag = None;
                 self.flycam.release_all();
                 self.last_pointer_position = None;
             }

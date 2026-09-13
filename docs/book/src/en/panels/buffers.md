@@ -10,19 +10,24 @@ lets you pick one directly.
 
 ## What each buffer shows
 
-| Buffer | What it is |
-| --- | --- |
-| Base Color | The plain surface color, after any texture and tint. |
-| Normal (World) | The final direction the surface faces at each pixel, after the normal map has been applied. This is what the lighting uses. |
-| Normal Map (Tangent) | The raw normal map picture, exactly as painted, before it is applied. |
-| Geometric Normal | The direction the model's own surface faces, with no normal map at all. |
-| Tangent | The helper directions the normal map is applied through. |
-| Roughness | How rough the surface is; shown as Smoothness on a material that uses that instead. |
-| Metallic | How metal-like the surface is. |
-| Ambient Occlusion | The material's own baked shadow map, not the live effect in the viewport. |
-| Emission | How much the surface glows. |
-| Opacity | How see-through the surface is, which the transparency mode reads. |
-| UV | The texture layout coordinates shown as color, so you can see wrapping and mirroring. |
+- **Base Color** - the plain surface color, after any texture and tint.
+- **Normal (World)** - the final direction the surface faces at each pixel,
+  after the normal map has been applied. This is what the lighting uses.
+- **Normal Map (Tangent)** - the raw normal map picture, exactly as painted,
+  before it is applied.
+- **Geometric Normal** - the direction the model's own surface faces, with no
+  normal map at all.
+- **Tangent** - the helper directions the normal map is applied through.
+- **Roughness** - how rough the surface is; shown as Smoothness on a material
+  that uses that instead.
+- **Metallic** - how metal-like the surface is.
+- **Ambient Occlusion** - the material's own baked shadow map, not the live
+  effect in the viewport.
+- **Emission** - how much the surface glows.
+- **Opacity** - how see-through the surface is, which the transparency mode
+  reads.
+- **UV** - the texture layout coordinates shown as color, so you can see
+  wrapping and mirroring.
 
 ## Tracking down a bad normal map
 

@@ -12,20 +12,24 @@ read FBX files. There is no web browser hidden inside it.
 
 The viewer is built with the help of these open source projects:
 
-| Component | What it does |
-| --- | --- |
-| [ufbx](https://github.com/ufbx/ufbx) | Reads FBX files |
-| [ufbx_write](https://github.com/ufbx/ufbx-write) | Writes FBX files, for the Opt export |
-| [meshoptimizer](https://github.com/zeux/meshoptimizer) | The operations in the Opt workspace |
-| [psd_sdk](https://github.com/MolecularMatters/psd_sdk) | Reads Photoshop PSD files |
-| [sokol](https://github.com/floooh/sokol) | Talks to the graphics card |
-| [egui](https://github.com/emilk/egui) | Draws the buttons and panels |
+- [ufbx](https://github.com/ufbx/ufbx) - reads FBX files.
+- [ufbx_write](https://github.com/ufbx/ufbx-write) - writes FBX files, for the
+  Opt export.
+- [meshoptimizer](https://github.com/zeux/meshoptimizer) - the operations in
+  the Opt workspace.
+- [psd_sdk](https://github.com/MolecularMatters/psd_sdk) - reads Photoshop PSD
+  files.
+- [sokol](https://github.com/floooh/sokol) - talks to the graphics card.
+- [egui](https://github.com/emilk/egui) - draws the buttons and panels.
 
 The bundled typefaces are Inter and JetBrains Mono.
 
 ## Reporting a problem
 
-The version number and the graphics system this build is using are shown at
-the bottom of this window. If something goes wrong, please quote both, along
-with the exact text of any error message. That is what lets us find and fix the
-problem.
+If something goes wrong, please tell us the exact text of any error message,
+what you were doing at the time, and which version you are running. That is
+what lets us find and fix the problem.
+
+To find the version: on macOS, open the app menu and choose About 3D Review.
+On Windows, right-click `3d-review.exe`, choose Properties, and look at the
+Details tab.

@@ -5,17 +5,31 @@ they run from top to bottom. You can drag them into a different order, and you
 can switch one off without removing it, which is handy for comparing the result
 with and without it.
 
-| Operation | What it does |
-| --- | --- |
-| **Weld Vertices** | Joins points that sit in the same place. Every run already joins points that match in every way; this operation goes further, by ignoring the shading direction, the texture layout or the colors when comparing, or by allowing a small gap. This one *does* change the model. |
-| **Filter Triangles** | Removes broken triangles (ones squashed into a line) and exact copies of other triangles. Copies that face the other way are kept, because that is how double-sided surfaces are made. |
-| **Prune Components** | Removes small loose pieces below a size you choose: stray shells, and single faces left floating around by mistake. |
-| **Reduce** | [Simplifies](simplify.md) the model **in place**. Every operation below it works on the simplified model, LOD levels start from it, and the export saves it in place of the original. |
-| **Generate LODs** | Makes a chain of simpler copies of the model (levels of detail) for a game to show at a distance. Operations above it run once on the base model; operations below it run on every level. You can only have one in the list. The starting chain is three levels at 50%, 25% and 12.5%. |
-| **Bake AO to Vertex Colors** | Works out [soft shadows](ao.md) for each point and stores them as colors on the points. Does not change the shape. |
-| **Optimize Vertex Cache** | Reorders the triangles so the graphics card can reuse work it has just done. Watch the ACMR and ATVR numbers. |
-| **Optimize Overdraw** | Reorders the triangles so nearer ones tend to be drawn first, and the graphics card wastes less effort on parts that end up hidden. |
-| **Optimize Vertex Fetch** | Reorders the points into the order they are read, and removes any point nothing uses. |
+- **Weld Vertices** - joins points that sit in the same place. Every run
+  already joins points that match in every way; this operation goes further, by
+  ignoring the shading direction, the texture layout or the colors when
+  comparing, or by allowing a small gap. This one *does* change the model.
+- **Filter Triangles** - removes broken triangles (ones squashed into a line)
+  and exact copies of other triangles. Copies that face the other way are kept,
+  because that is how double-sided surfaces are made.
+- **Prune Components** - removes small loose pieces below a size you choose:
+  stray shells, and single faces left floating around by mistake.
+- **Reduce** - [simplifies](simplify.md) the model **in place**. Every
+  operation below it works on the simplified model, LOD levels start from it,
+  and the export saves it in place of the original.
+- **Generate LODs** - makes a chain of simpler copies of the model (levels of
+  detail) for a game to show at a distance. Operations above it run once on the
+  base model; operations below it run on every level. You can only have one in
+  the list. The starting chain is three levels at 50%, 25% and 12.5%.
+- **Bake AO to Vertex Colors** - works out [soft shadows](ao.md) for each point
+  and stores them as colors on the points. Does not change the shape.
+- **Optimize Vertex Cache** - reorders the triangles so the graphics card can
+  reuse work it has just done. Watch the ACMR and ATVR numbers.
+- **Optimize Overdraw** - reorders the triangles so nearer ones tend to be
+  drawn first, and the graphics card wastes less effort on parts that end up
+  hidden.
+- **Optimize Vertex Fetch** - reorders the points into the order they are read,
+  and removes any point nothing uses.
 
 ## The three reorder operations
 

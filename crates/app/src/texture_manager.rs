@@ -366,7 +366,9 @@ impl App {
                     self.notifications.warning(format!(
                         "{}\n{}",
                         review_localization::tr(keys::app_notifications::WATCHER_UNAVAILABLE),
-                        review_localization::tr(keys::app_notifications::WATCHER_UNAVAILABLE_DESCRIPTION),
+                        review_localization::tr(
+                            keys::app_notifications::WATCHER_UNAVAILABLE_DESCRIPTION
+                        ),
                     ));
                     return;
                 }

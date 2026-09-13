@@ -450,7 +450,10 @@ fn cells_row(ui: &mut egui::Ui, row: StatRow, cells: [Cell; 3]) {
         .iter()
         .zip(&cells)
         .filter_map(|(scope, cell)| match cell {
-            Cell::Value(value) => Some(format!("{} {value}", review_localization::tr(scope.heading()))),
+            Cell::Value(value) => Some(format!(
+                "{} {value}",
+                review_localization::tr(scope.heading())
+            )),
             Cell::Unmeasured | Cell::NotScoped => None,
         })
         .collect();

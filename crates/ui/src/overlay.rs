@@ -140,7 +140,7 @@ pub fn draw_overlay(
         if let Some(page) = crate::help::take_requested(ctx) {
             state.help.open_page(page);
         }
-        crate::help::draw(ctx, &mut state.help, &state.capabilities, viewport);
+        crate::help::draw(ctx, &mut state.help, viewport);
 
         if state.show_axis_gizmo {
             let gizmo_response = egui::Area::new(egui::Id::new("axis_gizmo"))
@@ -560,7 +560,9 @@ fn draw_overlay_legend(
             legend_row(
                 ui,
                 color::TEXT_VALUE,
-                &crate::keys::ui_opt::legend_solid(review_localization::tr(solid.label()).into_owned()),
+                &crate::keys::ui_opt::legend_solid(
+                    review_localization::tr(solid.label()).into_owned(),
+                ),
             );
             legend_row(
                 ui,

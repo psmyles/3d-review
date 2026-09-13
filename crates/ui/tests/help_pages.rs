@@ -142,6 +142,41 @@ fn every_page_is_typeable_ascii() {
     );
 }
 
+/// The manual is written without markdown tables, and that is a constraint the
+/// in-app reader imposes rather than a matter of taste.
+///
+/// `egui_commonmark` lays a table out as an `egui::Grid` whose every cell is a
+/// plain horizontal row, which in egui means `TextWrapMode::Extend`: a cell is
+/// one unbroken line however long its sentence is. So a table is the only thing
+/// in the manual that cannot be made to fit the reading pane. The widest one
+/// here came out four times the width of the window and dragged a horizontal
+/// scrollbar under the page.
+///
+/// Forcing the wrap mode on instead is not the way out. A `Grid` sizes its
+/// columns from what they measured last frame, so wrapping feeds back on itself
+/// and collapses the first column until its words break mid-word.
+///
+/// Every table this manual had was a two-column "name - what it is" list, which
+/// a bullet says just as well and which wraps. Write one of those instead.
+#[test]
+fn no_page_uses_a_markdown_table() {
+    let mut offenders = Vec::new();
+    for page in Page::ALL {
+        for (number, line) in page.text("en").markdown.lines().enumerate() {
+            if line.trim_start().starts_with('|') {
+                offenders.push(format!("{}.md:{}", page.id(), number + 1));
+                break;
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "the in-app reader cannot wrap a table cell, so these pages would be \
+         drawn with a horizontal scrollbar - use a bullet list instead: \
+         {offenders:#?}"
+    );
+}
+
 /// mdBook's anchor for a heading: lowercased, spaces to hyphens, punctuation
 /// dropped.
 fn heading_anchors(markdown: &str) -> HashSet<String> {

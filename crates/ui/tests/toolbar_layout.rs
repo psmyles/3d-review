@@ -1,17 +1,19 @@
 //! The toolbar's three groups must fit the bar they are laid out in.
 //!
-//! Each group is a fixed width, and the right-hand cluster is the sum of three of
-//! them plus their spacings. Adding a tile to one — the Help button was the last —
-//! means widening the cluster that holds it, and forgetting to leave the new tile
-//! drawn outside the bar with nothing to say it had happened.
+//! Each group is a fixed width, and a cluster is the sum of its groups plus the
+//! spacings between them. Adding a tile to one, or splitting one group into two
+//! as the Help button was, means widening the cluster that holds it - and
+//! forgetting to leaves the outermost group drawn off the end of the bar with
+//! nothing to say it had happened.
 //!
 //! The layout is pure arithmetic over the `size` tokens, so this checks the
 //! arithmetic rather than the pixels: it is the tokens that have to agree.
 
 use review_ui::theme::size;
 
-/// The right-hand cluster in the 3D and Opt workspaces: the view group, the
-/// projection toggle, and the windows group (side panels plus Help).
+/// The right-hand cluster in the 3D and Opt workspaces: Help, the view group,
+/// the projection toggle, and the side-panels toggle - four groups, each of
+/// which used to be three until Help was given a group of its own.
 #[test]
 fn the_right_cluster_fits_its_reserved_width() {
     let spacing = size::TOOLBAR_GROUP_SPACING;
@@ -22,11 +24,13 @@ fn the_right_cluster_fits_its_reserved_width() {
         size::TOOLBAR_QUAD_ICON_GROUP_WIDTH,
         size::TOOLBAR_QUINT_ICON_GROUP_WIDTH,
     ] {
-        let needed = view_group
+        let needed = size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH
+            + spacing
+            + view_group
             + spacing
             + size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH
             + spacing
-            + size::TOOLBAR_DOUBLE_ICON_GROUP_WIDTH;
+            + size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH;
         assert!(
             needed <= size::TOOLBAR_RIGHT_WIDTH,
             "the right toolbar cluster needs {needed}pt but TOOLBAR_RIGHT_WIDTH \
@@ -69,7 +73,6 @@ fn every_icon_group_width_holds_its_tiles() {
 
     let cases = [
         (1, size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH),
-        (2, size::TOOLBAR_DOUBLE_ICON_GROUP_WIDTH),
         (3, size::TOOLBAR_TRIPLE_ICON_GROUP_WIDTH),
         (4, size::TOOLBAR_QUAD_ICON_GROUP_WIDTH),
         (5, size::TOOLBAR_QUINT_ICON_GROUP_WIDTH),

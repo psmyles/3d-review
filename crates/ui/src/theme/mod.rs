@@ -60,6 +60,9 @@ pub fn apply_visuals(ctx: &egui::Context) {
     style.visuals.handle_shape = egui::style::HandleShape::Rect {
         aspect_ratio: size::SLIDER_HANDLE_ASPECT_RATIO,
     };
+    // A tooltip here is where a control explains itself (`widgets::tooltip`), so
+    // it is worth reaching sooner than egui's stock half-second.
+    style.interaction.tooltip_delay = motion::TOOLTIP_DELAY_SECS;
     // `all_styles_mut` rather than a single-theme setter: the viewer is dark-only,
     // but installing the style under both themes keeps it correct if the OS theme
     // flips mid-session.

@@ -283,7 +283,9 @@ fn axis_gizmo_points(
                 // A positive ball is painted with the bare letter — the axis
                 // name's `+` is for the tooltip, where it distinguishes the two
                 // directions.
-                label: review_localization::tr(label).trim_start_matches('+').to_owned(),
+                label: review_localization::tr(label)
+                    .trim_start_matches('+')
+                    .to_owned(),
                 axis_name: label,
                 positive,
             }

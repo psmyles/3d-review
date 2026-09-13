@@ -21,8 +21,7 @@ use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 
 use crate::docs::{Page, PageText, TOC};
 use crate::keys;
-use crate::state::Capabilities;
-use crate::theme::{color, font, size};
+use crate::theme::size;
 
 /// Where the Help window is and what it is showing.
 ///
@@ -53,6 +52,15 @@ pub struct HelpState {
     /// next frame. Keeping the old offset lands the reader in the middle of a page
     /// they have not seen.
     scroll_to_top: Option<()>,
+    /// How far the last-drawn page overhung its reading pane, in points, or zero
+    /// if it fitted. A *measurement* written by [`draw`] each frame, in the same
+    /// spirit as `UiState::chrome_insets`, and read by nothing at run time.
+    ///
+    /// It exists because the one thing that goes wrong here cannot be seen from
+    /// outside: an overhang of a few points raises a horizontal scrollbar under
+    /// the whole manual, and egui keeps the fact private. `tests/help_window_
+    /// layout.rs` reads this to hold every prose page at zero.
+    pub page_overflow: f32,
 }
 
 /// The deepest chain of links Back will walk before the reader is better served
@@ -141,12 +149,7 @@ fn request_id() -> egui::Id {
 /// A native `egui::Window` with the contents list in a nested side panel and the
 /// page in the middle, so it is dragged, resized, collapsed and closed like every
 /// other window in the chrome.
-pub(crate) fn draw(
-    ctx: &egui::Context,
-    state: &mut HelpState,
-    capabilities: &Capabilities,
-    viewport: egui::Rect,
-) {
+pub(crate) fn draw(ctx: &egui::Context, state: &mut HelpState, viewport: egui::Rect) {
     if !state.open {
         return;
     }
@@ -170,6 +173,7 @@ pub(crate) fn draw(
     let markdown = resolved.as_ref().map_or("", |(_, text)| text.as_str());
     let mut open = state.open;
     let mut navigate_to = None;
+    let mut page_overflow = 0.0;
 
     // Register this page's own links so the viewer reports a click instead of
     // handing the href to the browser. Cleared and re-registered per page:
@@ -200,21 +204,11 @@ pub(crate) fn draw(
                 .exact_size(size::HELP_TOC_WIDTH)
                 .show(ui, |ui| {
                     navigate_to = draw_contents(ui, state.page);
-                    draw_about(ui, capabilities);
                 });
 
             egui::CentralPanel::default().show(ui, |ui| {
                 draw_page_header(ui, state);
                 ui.separator();
-                // The width prose wraps at. Measured out here because the scroll
-                // area below hands its content an *infinite* width — see the
-                // comment on the scroll area itself — so `available_width` inside
-                // it is no longer an answer. The scrollbar's own lane comes off
-                // it, or every page would sit a few points over the edge and
-                // raise a horizontal scrollbar it does not need.
-                let page_width =
-                    (ui.available_width() - ui.spacing().scroll.allocated_width()).max(0.0);
-
                 // Our own `ScrollArea` around the stock `show`, rather than
                 // egui_commonmark's `show_scrollable`: that one is `#[doc(hidden)]`
                 // and its own docs call it buggy beyond the example app. This also
@@ -222,7 +216,7 @@ pub(crate) fn draw(
                 // navigation start the new page at the top.
                 //
                 // **Both** directions scroll, and that is load-bearing rather than
-                // a convenience. `Resize` — what makes a `Window` resizable — grows
+                // a convenience. `Resize` - what makes a `Window` resizable - grows
                 // `desired_size` to the content's measured size every frame it is
                 // not being dragged, and a `ScrollArea` with a direction *disabled*
                 // reports the overflow in that direction as its own size rather
@@ -240,27 +234,61 @@ pub(crate) fn draw(
                     Some(()) => scroll.vertical_scroll_offset(0.0),
                     None => scroll,
                 };
-                scroll.show(ui, |ui| {
-                    // Enabling horizontal scrolling is what tells egui the content
-                    // may be as wide as it likes, so the wrap width has to be put
-                    // back by hand — otherwise every paragraph lays out on one
-                    // line and the whole manual scrolls sideways. A table or a
-                    // long code line still overflows this and gets the scrollbar,
-                    // which is the one thing that genuinely cannot wrap.
-                    ui.set_max_width(page_width);
-                    egui::Frame::new()
-                        .inner_margin(size::HELP_PAGE_MARGIN)
-                        .show(ui, |ui| {
-                            // Whichever is smaller: a screenshot must not be
-                            // blown up past the size it was taken at, and it
-                            // must not be the thing that puts a horizontal
-                            // scrollbar under every page either.
+
+                // **The page's margin goes outside the scroll area, not inside
+                // it.** It used to be a `Frame` around the markdown *within* the
+                // viewport, and that put a horizontal scrollbar under every page
+                // in the manual - the prose ones by a hair, the ones with a table
+                // by a mile. This is the first of the two reasons; the wrap mode
+                // set on the content below is the other.
+                //
+                // The reason is that `CommonMarkViewer` does not wrap against the
+                // `Ui` it is handed. It wraps against the scroll viewport, so an
+                // inner margin buys the text nothing: a paragraph still ran the
+                // full width of the viewport, and the frame then added its two
+                // margins around that, leaving the content exactly `2 x margin`
+                // wider than the space it had. Every page overflowed by the same
+                // sixteen points and every page got the bar.
+                //
+                // With the margin outside, the viewport *is* the wrap width and
+                // prose fits it exactly. Horizontal scrolling stays enabled all
+                // the same: it is what absorbs anything that still cannot wrap,
+                // and absorbing it is what keeps it from stretching the window.
+                //
+                // **And the wrap width comes from the scroll area itself, not
+                // from a measurement taken beside it.** egui rounds a `Ui`'s rect
+                // to the display's *pixel* grid, so at any scale but 1.0 a point
+                // is not a whole pixel and `available_width` out here and the
+                // viewport in there disagree by a fraction of one. A fraction is
+                // enough: egui raises the bar on any overflow at all, so the
+                // manual came up with a scrollbar that had almost nothing to
+                // scroll - on a 150% display, on the first frame, until a resize
+                // happened to round the two the same way. `show_viewport` hands
+                // over the width the scroll area actually laid out, which cannot
+                // disagree with itself.
+                let pane = egui::Frame::new()
+                    .inner_margin(size::HELP_PAGE_MARGIN)
+                    .show(ui, |ui| {
+                        scroll.show_viewport(ui, |ui, viewport| {
+                            let page_width = (viewport.width() - size::HELP_WRAP_SLACK).max(0.0);
+                            // Enabling horizontal scrolling is what tells egui the
+                            // content may be as wide as it likes, so the wrap width
+                            // has to be put back by hand - otherwise every paragraph
+                            // lays out on one line and the whole manual scrolls
+                            // sideways.
+                            ui.set_max_width(page_width);
+                            // Whichever is smaller: a screenshot must not be blown
+                            // up past the size it was taken at, and it must not be
+                            // the thing that puts a horizontal scrollbar under a
+                            // page either.
                             let image_width = size::HELP_IMAGE_MAX_WIDTH.min(page_width).max(1.0);
                             CommonMarkViewer::new()
                                 .max_image_width(Some(image_width as usize))
                                 .show(ui, &mut cache, markdown);
-                        });
-                });
+                        })
+                    });
+                let pane = pane.inner;
+                page_overflow = (pane.content_size.x - pane.inner_rect.width()).max(0.0);
             });
         });
 
@@ -273,6 +301,7 @@ pub(crate) fn draw(
 
     state.resolved = resolved;
     state.open = open;
+    state.page_overflow = page_overflow;
     if let Some(page) = navigate_to {
         state.navigate(page);
     }
@@ -284,7 +313,6 @@ fn draw_contents(ui: &mut egui::Ui, current: Page) -> Option<Page> {
     egui::ScrollArea::vertical()
         .id_salt("help_toc_scroll")
         .auto_shrink([false, false])
-        .max_height(ui.available_height() - ui.text_style_height(&egui::TextStyle::Small) * 2.5)
         .show(ui, |ui| {
             for (depth, page) in TOC {
                 // The indent is a left margin rather than an `add_space` inside a
@@ -300,32 +328,27 @@ fn draw_contents(ui: &mut egui::Ui, current: Page) -> Option<Page> {
                         ..egui::Margin::ZERO
                     })
                     .show(ui, |ui| {
-                        if ui.selectable_label(page == current, page.title()).clicked() {
-                            clicked = Some(page);
-                        }
+                        // A row spans the column rather than hugging its title,
+                        // so its hover and selection fill read as a list rather
+                        // than as a row of loose labels - and so the whole width
+                        // is clickable, which is what a reader aims at.
+                        //
+                        // `top_down_justified` and not `add_sized`: the latter
+                        // lays the widget out centred, which would put every
+                        // title in the middle of its row. This keeps the label
+                        // left and stretches only the button behind it, and it
+                        // stays a *vertical* layout, which is what lets a title
+                        // too long for the column wrap instead of running past
+                        // it - see the note above.
+                        ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
+                            if ui.selectable_label(page == current, page.title()).clicked() {
+                                clicked = Some(page);
+                            }
+                        });
                     });
             }
         });
     clicked
-}
-
-/// The version and graphics backend, under the contents list.
-///
-/// This is the line a bug report quotes, which is why it sits in the manual's
-/// own window rather than behind another menu — and it is what
-/// `Capabilities::app_version` / `gpu_backend` were always collected for.
-fn draw_about(ui: &mut egui::Ui, capabilities: &Capabilities) {
-    ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-        let text = keys::ui_help::version_line(
-            capabilities.app_version.as_str(),
-            capabilities.gpu_backend.as_str(),
-        );
-        ui.label(
-            egui::RichText::new(text)
-                .size(font::HELP_ABOUT)
-                .color(color::TEXT_MUTED),
-        );
-    });
 }
 
 /// Back button and page title above the reading pane.

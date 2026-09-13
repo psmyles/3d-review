@@ -83,16 +83,16 @@ pub const TOOLBAR_ICON_GAP: f32 = 2.0;
 /// the 8-of-42 proportion the toolbar tiles were originally drawn at.
 pub const TILE_ICON_INSET_RATIO: f32 = 8.0 / 42.0;
 pub const TOOLBAR_CENTER_WIDTH: f32 = 120.0;
-/// Right toolbar cluster (3D and Opt): the view group + projection (32) + the
-/// windows group (62: the side-panels toggle and Help), with two group spacings.
+/// Right toolbar cluster (3D and Opt): Help (32) + the view group + projection
+/// (32) + the side-panels toggle (32), with three group spacings.
 ///
 /// Sized for the **widest** case, which is a rigged model: the view group gains a
 /// tile for the skeleton toggle there (152 rather than 122), so
-/// 152 + 9 + 32 + 9 + 62 = 264, plus a little slack. Sizing it for the unrigged
-/// case instead left the outermost group hanging off the bar the moment a skinned
-/// mesh was opened — `tests/toolbar_layout.rs` is what now says so.
+/// 152 + 9 + 32 + 9 + 32 + 9 + 32 = 275, plus a little slack. Sizing it for the
+/// unrigged case instead left the outermost group hanging off the bar the moment
+/// a skinned mesh was opened - `tests/toolbar_layout.rs` is what now says so.
 /// It grows leftward from the right edge, away from the centered mode segments.
-pub const TOOLBAR_RIGHT_WIDTH: f32 = 272.0;
+pub const TOOLBAR_RIGHT_WIDTH: f32 = 284.0;
 /// Left toolbar cluster: shading (5) + material + geometry-debug (3) groups, with
 /// two group spacings between them.
 ///
@@ -107,9 +107,6 @@ pub const TOOLBAR_SHADING_GROUP_WIDTH: f32 = 152.0;
 /// buffers (4 padding + 4×28 icons + 3×2 gaps).
 pub const TOOLBAR_MATERIAL_GROUP_WIDTH: f32 = 122.0;
 pub const TOOLBAR_SINGLE_ICON_GROUP_WIDTH: f32 = 32.0;
-/// Width of a two-icon toolbar group (the side-panels toggle beside the Help
-/// button): 4 padding + 2×28 icons + 1×2 gap.
-pub const TOOLBAR_DOUBLE_ICON_GROUP_WIDTH: f32 = 62.0;
 /// Width of a three-icon toolbar group (the geometry-debug face-normals /
 /// vertex-normals / UV-seams group, and the UV-shading wire / shaded / islands
 /// group): 4 padding + 3×28 icons + 2×2 gaps.
@@ -393,7 +390,23 @@ pub const ANIM_SPEED_COMBO_WIDTH: f32 = 43.0;
 /// Width a rich tooltip wraps its description at. Without a bound egui lays a
 /// paragraph out on one line and runs it off the side of the window.
 pub const TOOLTIP_MAX_WIDTH: f32 = 280.0;
-/// Gap between a tooltip's title, its description and its manual link.
+/// Slack left between the Help window's reading pane and the width its text is
+/// wrapped at, in points.
+///
+/// Text is wrapped at a width, but the galley that comes back is *measured*, and
+/// egui rounds a measurement up to the display's pixel grid. So a paragraph
+/// wrapped at exactly the viewport's width reports back a shade wider than it,
+/// and egui raises a horizontal scrollbar on any overflow at all - a scrollbar
+/// with a fraction of a point to scroll, which is worse than useless. The
+/// rounding is per display scale, and at 125% a pixel is 0.8 points, so a couple
+/// of points covers the worst of it with room to spare.
+///
+/// Only reachable by leaving room: the wrap width and the measured width are
+/// rounded by egui at different moments, so they cannot be made to agree.
+pub const HELP_WRAP_SLACK: f32 = 3.0;
+/// Gap between the blocks under a tooltip's title - its description, its
+/// operating notes and its manual link. The title itself is separated from them
+/// by a rule rather than by this gap.
 pub const TOOLTIP_TITLE_GAP: f32 = 4.0;
 /// The Help window's default size. Wide enough for the contents list beside a
 /// comfortable measure of prose, and short enough to leave the model visible

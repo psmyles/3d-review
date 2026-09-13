@@ -59,7 +59,9 @@ pub(crate) fn install(
             &PredefinedMenuItem::services(Some(&review_localization::tr(keys::menu::SERVICES))),
             &PredefinedMenuItem::separator(),
             &PredefinedMenuItem::hide(Some(&keys::menu::hide(product))),
-            &PredefinedMenuItem::hide_others(Some(&review_localization::tr(keys::menu::HIDE_OTHERS))),
+            &PredefinedMenuItem::hide_others(Some(&review_localization::tr(
+                keys::menu::HIDE_OTHERS,
+            ))),
             &PredefinedMenuItem::show_all(Some(&review_localization::tr(keys::menu::SHOW_ALL))),
             &PredefinedMenuItem::separator(),
             &PredefinedMenuItem::quit(Some(&keys::menu::quit(product))),

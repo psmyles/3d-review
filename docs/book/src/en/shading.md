@@ -26,13 +26,23 @@ Two extra switches sit either side of those and work with all three:
 A second choice decides what the surface *shows*. It works in every shading
 mode. See [Material Mode](panels/material-mode.md) for its options panel.
 
-| Mode | What it shows |
-| --- | --- |
-| **Source Material** | The materials that came with the file, plus any changes you made in the Inspector. Clicking the button again steps through Source, Standard and Unique: Standard paints every part the same plain grey, like clay, and Unique gives each part its own random color so you can tell the pieces apart. The file itself is never changed. |
-| **UV Checker** | A checkerboard painted over the model, in grey or in color, with a choice of how big the squares are. This is the quickest way to spot stretched, mirrored or uneven texturing. See [UV Checker](panels/uv-checker.md). |
-| **Vertex Colors** | The colors stored on the model's own points, rather than a material. You can see the color, the alpha (see-through) value as grey, or both together. See [Vertex Colors](panels/vertex-colors.md). |
-| **Buffers** | One ingredient of the shading at a time, with no lighting. See below. |
-| **Skin Weights** | A heat map, from blue through green to red, of how strongly the bones you have selected pull on each part of the model. Drawn flat with no lighting, so the color you see *is* the number. Only offered for models that have bones. |
+- **Source Material** - the materials that came with the file, plus any changes
+  you made in the Inspector. Clicking the button again steps through Source,
+  Standard and Unique: Standard paints every part the same plain grey, like
+  clay, and Unique gives each part its own random color so you can tell the
+  pieces apart. The file itself is never changed.
+- **UV Checker** - a checkerboard painted over the model, in grey or in color,
+  with a choice of how big the squares are. This is the quickest way to spot
+  stretched, mirrored or uneven texturing. See [UV Checker](panels/uv-checker.md).
+- **Vertex Colors** - the colors stored on the model's own points, rather than
+  a material. You can see the color, the alpha (see-through) value as grey, or
+  both together. See [Vertex Colors](panels/vertex-colors.md).
+- **Buffers** - one ingredient of the shading at a time, with no lighting. See
+  below.
+- **Skin Weights** - a heat map, from blue through green to red, of how
+  strongly the bones you have selected pull on each part of the model. Drawn
+  flat with no lighting, so the color you see *is* the number. Only offered for
+  models that have bones.
 
 ## Buffer inspection
 
