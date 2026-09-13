@@ -141,10 +141,7 @@ fn main() -> anyhow::Result<()> {
         gpu_bring_up: Some(gpu_bring_up),
         initial_model,
         gate: gate_out.map(Gate::new),
-        textures: TextureSubsystem {
-            proxy: Some(texture_proxy),
-            ..TextureSubsystem::default()
-        },
+        textures: TextureSubsystem::with_proxy(texture_proxy),
         tracy_enabled,
         _tracy: tracy,
         ..App::default()
