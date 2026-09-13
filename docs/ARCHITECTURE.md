@@ -156,11 +156,13 @@ the four `load_model*` entry points, `measure_clip_bounds`), `src/startup.rs`
 (the Windows `STARTUPINFO` launch hint, which is FFI but not FBX), and the
 `#[cfg(has_ufbx)]` `src/ffi/`, layered so the `unsafe` is a leaf rather than a
 theme: `ffi/raw_scene.rs` and `ffi/raw_extras.rs` are the `#[repr(C)]` mirrors
-(data only), `ffi/bridge.rs` the one call into C and the free protocol around
-it, `ffi/raw.rs` the pointer-to-slice and pointer-to-string helpers (the last
-of the `unsafe`), and `ffi/marshal_model.rs` + `ffi/marshal_extras.rs` the
+(data only), `ffi/bridge.rs` the one call into C plus the `Drop` handles that
+own the scene and the capture, `ffi/raw.rs` the unsafe pointer-to-slice and
+pointer-to-string helpers and the safe accessor built on each — one method per
+bridge array, returning a slice that borrows the struct owning it, which is the
+last of the `unsafe` — and `ffi/marshal_model.rs` + `ffi/marshal_extras.rs` the
 majority of the crate by line count, which `deny(unsafe_code)` and read only
-checked slices. Plus `src/ufbx_bridge.c`, `src/ufbx_bridge.h`,
+through those accessors, so no raw pointer reaches them at all. Plus `src/ufbx_bridge.c`, `src/ufbx_bridge.h`,
 `src/ufbx_extras.c`, `src/ufbx_extras.h`, `build.rs`. Fixture-driven checks of
 the public API live in `tests/fbx_fixtures.rs`.
 

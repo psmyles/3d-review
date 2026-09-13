@@ -762,3 +762,41 @@ fn a_classic_material_imports_as_a_dielectric() {
         "no fixture declares a non-zero ReflectionFactor, so this test proves nothing",
     );
 }
+
+/// A panicking progress sink must not strand the bridge's C-side scene.
+///
+/// The scene used to be freed by a statement after the marshal, which every
+/// `Result` path reaches but an unwind does not — and the sink is caller code
+/// called from inside the marshal. `SceneHandle`'s `Drop` is what covers it now.
+/// Only a test build can reach this: the release profile is `panic = "abort"`.
+///
+/// The leak is not directly observable from here, so what this pins is the pair
+/// of properties that make the fix work: the panic propagates as an ordinary
+/// unwind (rather than being swallowed or aborting), and the importer is still
+/// usable afterwards.
+#[test]
+fn a_panicking_progress_sink_unwinds_without_taking_the_importer_with_it() {
+    let path = fixture("SM_Speaker_01a.fbx");
+    if !path.exists() {
+        eprintln!("skipping: the fixture is not present");
+        return;
+    }
+
+    let panicked = std::panic::catch_unwind(|| {
+        // The stages after Reading are reported from the marshal, with the C
+        // scene live and every borrowed slice still in flight.
+        let sink = |_progress: review_import::ImportProgress| {
+            panic!("a progress sink of the caller's that goes wrong");
+        };
+        review_import::load_model_staged(&path, &sink)
+    });
+    assert!(
+        panicked.is_err(),
+        "the sink's panic must unwind, not be swallowed"
+    );
+
+    // The scene the unwind passed through was freed on the way out, so a normal
+    // load still works.
+    let model = load_model(&path).expect("the importer still works");
+    assert!(model.stats.triangle_count > 0);
+}

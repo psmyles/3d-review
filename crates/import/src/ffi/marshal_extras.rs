@@ -1,10 +1,13 @@
 //! The capture -> `review_model::SourceExtras`.
 //!
 //! Everything the viewer never reads but the exporter must give back. Like
-//! [`super::marshal_model`] this is safe code over checked slices, and it runs as
-//! an import stage of its own, after the mesh is already on screen.
+//! [`super::marshal_model`] this is safe code over slices borrowed from the
+//! capture, and it runs as an import stage of its own, after the mesh is already
+//! on screen.
 
-// Safe code over the checked slices `raw` hands back: no pointer reaches here.
+// Safe code over borrowed slices: a raw pointer genuinely never reaches here,
+// since [`super::raw`]'s accessors take the capture rather than a pointer out of
+// it.
 #![deny(unsafe_code)]
 
 use glam::{DMat4, Mat4, Quat, Vec3, Vec4};
@@ -14,7 +17,6 @@ use crate::ImportError;
 
 use super::bridge::ExtrasHandle;
 use super::marshal_model::skinning_method_from_code;
-use super::raw::checked_slice;
 use super::raw_extras::*;
 
 // ---- Marshaling the capture into `SourceExtras` ----
@@ -105,9 +107,9 @@ pub(super) fn v3(v: [f64; 3]) -> Vec3 {
 /// views and the range checks in [`ExtrasView`].
 pub(super) fn marshal_extras(raw: &ReviewImportExtras) -> Result<SourceExtras, ImportError> {
     let view = ExtrasView {
-        strings: checked_slice(raw.strings.cast::<u8>(), raw.string_count, "strings")?,
-        bytes: checked_slice(raw.bytes, raw.byte_count, "bytes")?,
-        props: checked_slice(raw.props, raw.prop_count, "props")?,
+        strings: raw.strings()?,
+        bytes: raw.bytes()?,
+        props: raw.props()?,
     };
     let (anim_layers, animations) = marshal_animation_extras(&view, raw)?;
     Ok(SourceExtras {
@@ -175,12 +177,13 @@ pub(super) fn marshal_node_extras(
     view: &ExtrasView<'_>,
     raw: &ReviewImportExtras,
 ) -> Result<Vec<extras::NodeExtras>, ImportError> {
-    let lights = checked_slice(raw.lights, raw.light_count, "lights")?;
-    let cameras = checked_slice(raw.cameras, raw.camera_count, "cameras")?;
-    let lod_groups = checked_slice(raw.lod_groups, raw.lod_group_count, "lod_groups")?;
-    let lod_levels = checked_slice(raw.lod_levels, raw.lod_level_count, "lod_levels")?;
+    let lights = raw.lights()?;
+    let cameras = raw.cameras()?;
+    let lod_groups = raw.lod_groups()?;
+    let lod_levels = raw.lod_levels()?;
 
-    let nodes = checked_slice(raw.nodes, raw.node_count, "nodes")?
+    let nodes = raw
+        .nodes()?
         .iter()
         .map(|node| {
             let kind = extras::AttributeKind::from_code(node.attribute_kind);
@@ -299,12 +302,9 @@ pub(super) fn marshal_material_extras(
     view: &ExtrasView<'_>,
     raw: &ReviewImportExtras,
 ) -> Result<Vec<extras::MaterialExtras>, ImportError> {
-    let material_textures = checked_slice(
-        raw.material_textures,
-        raw.material_texture_count,
-        "material_textures",
-    )?;
-    let materials = checked_slice(raw.materials, raw.material_count, "materials")?
+    let material_textures = raw.material_textures()?;
+    let materials = raw
+        .materials()?
         .iter()
         .map(|material| {
             Ok(extras::MaterialExtras {
@@ -335,12 +335,9 @@ pub(super) fn marshal_texture_extras(
     view: &ExtrasView<'_>,
     raw: &ReviewImportExtras,
 ) -> Result<Vec<extras::TextureExtras>, ImportError> {
-    let texture_layers = checked_slice(
-        raw.texture_layers,
-        raw.texture_layer_count,
-        "texture_layers",
-    )?;
-    let textures = checked_slice(raw.textures, raw.texture_count, "textures")?
+    let texture_layers = raw.texture_layers()?;
+    let textures = raw
+        .textures()?
         .iter()
         .map(|texture| {
             Ok(extras::TextureExtras {
@@ -392,7 +389,8 @@ pub(super) fn marshal_video_extras(
     view: &ExtrasView<'_>,
     raw: &ReviewImportExtras,
 ) -> Result<Vec<extras::VideoExtras>, ImportError> {
-    let videos = checked_slice(raw.videos, raw.video_count, "videos")?
+    let videos = raw
+        .videos()?
         .iter()
         .map(|video| {
             Ok(extras::VideoExtras {
@@ -415,36 +413,25 @@ pub(super) fn marshal_mesh_extras(
     view: &ExtrasView<'_>,
     raw: &ReviewImportExtras,
 ) -> Result<Vec<extras::MeshExtras>, ImportError> {
-    let color_sets = checked_slice(raw.color_sets, raw.color_set_count, "color_sets")?;
-    let color_values = checked_slice(raw.color_values, raw.color_value_count, "color_values")?;
-    let edges = checked_slice(raw.edges, raw.edge_count.saturating_mul(2), "edges")?;
-    let edge_smoothing = checked_slice(raw.edge_smoothing, raw.edge_count, "edge_smoothing")?;
-    let edge_crease = checked_slice(raw.edge_crease, raw.edge_count, "edge_crease")?;
-    let edge_visibility = checked_slice(raw.edge_visibility, raw.edge_count, "edge_visibility")?;
-    let face_smoothing = checked_slice(raw.face_smoothing, raw.face_count, "face_smoothing")?;
-    let face_hole = checked_slice(raw.face_hole, raw.face_count, "face_hole")?;
-    let face_group = checked_slice(raw.face_group, raw.face_count, "face_group")?;
-    let vertex_crease = checked_slice(raw.vertex_crease, raw.vertex_crease_count, "vertex_crease")?;
-    let face_groups = checked_slice(raw.face_groups, raw.face_group_count, "face_groups")?;
-    let extra_skins = checked_slice(raw.extra_skins, raw.extra_skin_count, "extra_skins")?;
-    let extra_clusters = checked_slice(
-        raw.extra_clusters,
-        raw.extra_cluster_count,
-        "extra_clusters",
-    )?;
-    let extra_skin_offsets = checked_slice(
-        raw.extra_skin_offsets,
-        raw.extra_skin_offset_count,
-        "extra_skin_offsets",
-    )?;
-    let extra_influences = checked_slice(
-        raw.extra_influences,
-        raw.extra_influence_count,
-        "extra_influences",
-    )?;
-    let dq_weights = checked_slice(raw.dq_weights, raw.dq_weight_count, "dq_weights")?;
+    let color_sets = raw.color_sets()?;
+    let color_values = raw.color_values()?;
+    let edges = raw.edges()?;
+    let edge_smoothing = raw.edge_smoothing()?;
+    let edge_crease = raw.edge_crease()?;
+    let edge_visibility = raw.edge_visibility()?;
+    let face_smoothing = raw.face_smoothing()?;
+    let face_hole = raw.face_hole()?;
+    let face_group = raw.face_group()?;
+    let vertex_crease = raw.vertex_crease()?;
+    let face_groups = raw.face_groups()?;
+    let extra_skins = raw.extra_skins()?;
+    let extra_clusters = raw.extra_clusters()?;
+    let extra_skin_offsets = raw.extra_skin_offsets()?;
+    let extra_influences = raw.extra_influences()?;
+    let dq_weights = raw.dq_weights()?;
 
-    let meshes = checked_slice(raw.meshes, raw.mesh_count, "meshes")?
+    let meshes = raw
+        .meshes()?
         .iter()
         .map(|mesh| {
             let corners = mesh.corner_count as usize;
@@ -664,8 +651,9 @@ pub(super) fn marshal_pose_extras(
     view: &ExtrasView<'_>,
     raw: &ReviewImportExtras,
 ) -> Result<Vec<extras::PoseExtras>, ImportError> {
-    let pose_entries = checked_slice(raw.pose_entries, raw.pose_entry_count, "pose_entries")?;
-    let poses = checked_slice(raw.poses, raw.pose_count, "poses")?
+    let pose_entries = raw.pose_entries()?;
+    let poses = raw
+        .poses()?
         .iter()
         .map(|pose| {
             Ok(extras::PoseExtras {
@@ -695,30 +683,27 @@ pub(super) fn marshal_display_layers(
     view: &ExtrasView<'_>,
     raw: &ReviewImportExtras,
 ) -> Result<Vec<extras::DisplayLayerExtras>, ImportError> {
-    let layer_nodes = checked_slice(raw.layer_nodes, raw.layer_node_count, "layer_nodes")?;
-    let display_layers = checked_slice(
-        raw.display_layers,
-        raw.display_layer_count,
-        "display_layers",
-    )?
-    .iter()
-    .map(|layer| {
-        Ok(extras::DisplayLayerExtras {
-            name: view.str(layer.name),
-            visible: layer.visible != 0,
-            frozen: layer.frozen != 0,
-            ui_color: v3(layer.ui_color),
-            nodes: slice_range(
-                layer_nodes,
-                layer.node_first,
-                layer.node_count,
-                "display layer nodes",
-            )?
-            .to_vec(),
-            props: view.props(layer.props)?,
+    let layer_nodes = raw.layer_nodes()?;
+    let display_layers = raw
+        .display_layers()?
+        .iter()
+        .map(|layer| {
+            Ok(extras::DisplayLayerExtras {
+                name: view.str(layer.name),
+                visible: layer.visible != 0,
+                frozen: layer.frozen != 0,
+                ui_color: v3(layer.ui_color),
+                nodes: slice_range(
+                    layer_nodes,
+                    layer.node_first,
+                    layer.node_count,
+                    "display layer nodes",
+                )?
+                .to_vec(),
+                props: view.props(layer.props)?,
+            })
         })
-    })
-    .collect::<Result<Vec<_>, ImportError>>()?;
+        .collect::<Result<Vec<_>, ImportError>>()?;
     Ok(display_layers)
 }
 
@@ -727,64 +712,53 @@ pub(super) fn marshal_selection_sets(
     view: &ExtrasView<'_>,
     raw: &ReviewImportExtras,
 ) -> Result<Vec<extras::SelectionSetExtras>, ImportError> {
-    let selection_nodes = checked_slice(
-        raw.selection_nodes,
-        raw.selection_node_count,
-        "selection_nodes",
-    )?;
-    let selection_indices = checked_slice(
-        raw.selection_indices,
-        raw.selection_index_count,
-        "selection_indices",
-    )?;
-    let selection_sets = checked_slice(
-        raw.selection_sets,
-        raw.selection_set_count,
-        "selection_sets",
-    )?
-    .iter()
-    .map(|set| {
-        Ok(extras::SelectionSetExtras {
-            name: view.str(set.name),
-            props: view.props(set.props)?,
-            nodes: slice_range(
-                selection_nodes,
-                set.node_first,
-                set.node_count,
-                "selection nodes",
-            )?
-            .iter()
-            .map(|node| {
-                Ok(extras::SelectionNodeExtras {
-                    node: u32::try_from(node.node).ok(),
-                    include_node: node.include_node != 0,
-                    vertices: slice_range(
-                        selection_indices,
-                        node.vertex_first,
-                        node.vertex_count,
-                        "selection vertices",
-                    )?
-                    .to_vec(),
-                    edges: slice_range(
-                        selection_indices,
-                        node.edge_first,
-                        node.edge_count,
-                        "selection edges",
-                    )?
-                    .to_vec(),
-                    faces: slice_range(
-                        selection_indices,
-                        node.face_first,
-                        node.face_count,
-                        "selection faces",
-                    )?
-                    .to_vec(),
+    let selection_nodes = raw.selection_nodes()?;
+    let selection_indices = raw.selection_indices()?;
+    let selection_sets = raw
+        .selection_sets()?
+        .iter()
+        .map(|set| {
+            Ok(extras::SelectionSetExtras {
+                name: view.str(set.name),
+                props: view.props(set.props)?,
+                nodes: slice_range(
+                    selection_nodes,
+                    set.node_first,
+                    set.node_count,
+                    "selection nodes",
+                )?
+                .iter()
+                .map(|node| {
+                    Ok(extras::SelectionNodeExtras {
+                        node: u32::try_from(node.node).ok(),
+                        include_node: node.include_node != 0,
+                        vertices: slice_range(
+                            selection_indices,
+                            node.vertex_first,
+                            node.vertex_count,
+                            "selection vertices",
+                        )?
+                        .to_vec(),
+                        edges: slice_range(
+                            selection_indices,
+                            node.edge_first,
+                            node.edge_count,
+                            "selection edges",
+                        )?
+                        .to_vec(),
+                        faces: slice_range(
+                            selection_indices,
+                            node.face_first,
+                            node.face_count,
+                            "selection faces",
+                        )?
+                        .to_vec(),
+                    })
                 })
+                .collect::<Result<Vec<_>, ImportError>>()?,
             })
-            .collect::<Result<Vec<_>, ImportError>>()?,
         })
-    })
-    .collect::<Result<Vec<_>, ImportError>>()?;
+        .collect::<Result<Vec<_>, ImportError>>()?;
     Ok(selection_sets)
 }
 
@@ -798,9 +772,9 @@ pub(super) fn marshal_animation_extras(
     view: &ExtrasView<'_>,
     raw: &ReviewImportExtras,
 ) -> Result<(Vec<extras::LayerCurves>, Vec<extras::ClipCurves>), ImportError> {
-    let anim_keys = checked_slice(raw.anim_keys, raw.anim_key_count, "anim_keys")?;
-    let anim_curves = checked_slice(raw.anim_curves, raw.anim_curve_count, "anim_curves")?;
-    let anim_props = checked_slice(raw.anim_props, raw.anim_prop_count, "anim_props")?;
+    let anim_keys = raw.anim_keys()?;
+    let anim_curves = raw.anim_curves()?;
+    let anim_props = raw.anim_props()?;
     let curve_of = |index: i32| -> Result<Option<extras::Curve>, ImportError> {
         let Ok(index) = usize::try_from(index) else {
             return Ok(None);
@@ -829,7 +803,8 @@ pub(super) fn marshal_animation_extras(
             },
         }))
     };
-    let anim_layers = checked_slice(raw.anim_layers, raw.anim_layer_count, "anim_layers")?
+    let anim_layers = raw
+        .anim_layers()?
         .iter()
         .map(|layer| {
             Ok(extras::LayerCurves {
@@ -879,8 +854,9 @@ pub(super) fn marshal_animation_extras(
         })
         .collect::<Result<Vec<_>, ImportError>>()?;
 
-    let stack_layers = checked_slice(raw.stack_layers, raw.stack_layer_count, "stack_layers")?;
-    let animations = checked_slice(raw.anim_stacks, raw.anim_stack_count, "anim_stacks")?
+    let stack_layers = raw.stack_layers()?;
+    let animations = raw
+        .anim_stacks()?
         .iter()
         .map(|stack| {
             Ok(extras::ClipCurves {

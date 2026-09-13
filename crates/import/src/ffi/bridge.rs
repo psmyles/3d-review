@@ -1,9 +1,18 @@
 //! The call into the C bridge, and the ownership protocol around it.
 //!
 //! Everything that talks to C lives here: the `extern "C"` declarations, the
-//! progress trampoline, and [`load_fbx`] itself. The scene is freed on **both**
-//! the success and the error path (invariant 9), and the capture is handed to an
-//! [`ExtrasHandle`] that frees it on drop.
+//! progress trampoline, and [`load_fbx`] itself. Both C allocations are handed to
+//! a handle that frees them on drop — [`SceneHandle`] for the geometry,
+//! [`ExtrasHandle`] for the source-property capture — so they are released on the
+//! success path, on every error path, and on an unwind (invariant 9).
+//!
+//! ## Panics from a progress sink
+//!
+//! The sink is the caller's code, and it is called from two places. The C
+//! trampoline catches its panics, because unwinding through C is undefined; the
+//! Rust-side call in the marshal does not, because there the panic unwinds
+//! through ordinary Rust and the handles above free everything on the way out.
+//! One policy, two mechanisms, because the two sites genuinely differ.
 
 use std::ffi::{CString, c_void};
 use std::mem::MaybeUninit;
@@ -17,6 +26,30 @@ use super::marshal_model::model_from_bridge_scene;
 use super::raw::read_error_message;
 use super::raw_extras::ReviewImportExtras;
 use super::raw_scene::{ReviewImportError, ReviewImportScene};
+
+/// The bridge's geometry scene, owned for as long as anything reads it.
+///
+/// The free used to be a statement after the marshal. That is correct for every
+/// `Result` path — the marshal's error is deliberately deferred past it — but not
+/// for an unwind: a progress sink that panics during the Building stage would
+/// skip it and strand the whole C-side scene. [`ExtrasHandle`] below already had
+/// this shape, as does `review-psd`'s document handle; the scene was the one
+/// bridge resource still freed by hand.
+struct SceneHandle {
+    raw: ReviewImportScene,
+}
+
+impl Drop for SceneHandle {
+    fn drop(&mut self) {
+        // SAFETY: `raw` was filled by a successful `review_import_load_fbx` and
+        // is freed exactly once, here. The bridge tolerates the zeroed fields a
+        // partial parse may leave, and nothing reads the scene afterwards —
+        // every slice taken from it borrows this handle.
+        unsafe {
+            review_import_free_scene(&mut self.raw);
+        }
+    }
+}
 
 /// The C-side capture, owned until marshaled. It holds only heap buffers
 /// the bridge allocated for this call — nothing borrowed from ufbx, whose
@@ -144,19 +177,19 @@ pub(crate) fn load_fbx(
 
     // SAFETY: `loaded != 0` means the bridge fully initialized `scene`, so the
     // `MaybeUninit` now holds a valid `ReviewImportScene`.
-    let mut scene = unsafe { scene.assume_init() };
+    // From here the scene is owned by a handle that frees it on drop — including
+    // on an unwind out of the marshal below, which the old manual free could not
+    // cover.
+    let scene = SceneHandle {
+        raw: unsafe { scene.assume_init() },
+    };
     let model = {
         // Walk the flat bridge arrays into our `ModelData` (slices, bounds, BVH).
         let _z = crate::prof::zone!("Build ModelData");
-        model_from_bridge_scene(path, &scene, progress)
+        model_from_bridge_scene(path, &scene.raw, progress)
     };
-    // SAFETY: `scene` is the bridge-allocated scene we own; this frees its C-side
-    // buffers exactly once, on both the success and error paths of the extraction
-    // above (we still return `model` afterwards). The bridge tolerates the zeroed
-    // fields a partial parse may leave. No further access to `scene` follows.
-    unsafe {
-        review_import_free_scene(&mut scene);
-    }
+    // The scene's buffers are freed when `scene` drops at the end of this
+    // function — after the marshal has finished reading them, on every path.
     Ok(StagedImport {
         model: model?,
         extras: PendingExtras { handle: extras },
