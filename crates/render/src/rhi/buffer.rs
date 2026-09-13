@@ -11,7 +11,8 @@ use std::marker::PhantomData;
 use bytemuck::Pod;
 use sokol::gfx as sg;
 
-use super::error::{GpuError, GpuResult, ResourceKind, require_valid};
+use super::error::{GpuError, GpuResult, ResourceKind};
+use super::make;
 
 /// A buffer written from the CPU once per frame and consumed by the GPU in that same
 /// frame — the egui chrome's vertices and indices, which are re-tessellated every
@@ -52,12 +53,7 @@ impl TransientBuffer {
         desc.usage.index_buffer = index;
         desc.usage.vertex_buffer = !index;
         desc.label = label.as_ptr();
-        let buffer = sg::make_buffer(&desc);
-        require_valid(
-            sg::query_buffer_state(buffer),
-            ResourceKind::Buffer,
-            label.to_str().unwrap_or("buffer"),
-        )?;
+        let buffer = make::buffer(&desc, label.to_str().unwrap_or("buffer"))?;
         Ok(Self {
             buffer,
             capacity,
@@ -254,28 +250,21 @@ impl<T: Pod> StorageBuffer<T> {
             desc.size = bytes.len();
             desc.usage = usage;
             desc.label = label.as_ptr();
-            let buffer = sg::make_buffer(&desc);
-            require_valid(
-                sg::query_buffer_state(buffer),
-                ResourceKind::Buffer,
-                name(label),
-            )?;
-            buffer
+            make::buffer(&desc, name(label))?
         };
 
         let mut view_desc = sg::ViewDesc::new();
         view_desc.storage_buffer.buffer = buffer;
         view_desc.label = label.as_ptr();
-        let view = sg::make_view(&view_desc);
-        if let Err(err) = require_valid(
-            sg::query_view_state(view),
-            ResourceKind::Buffer,
-            name(label),
-        ) {
-            sg::destroy_view(view);
-            sg::destroy_buffer(buffer);
-            return Err(err);
-        }
+        // The buffer above is this constructor's own: a failed view has already
+        // freed its handle, but the buffer it was to be a view of is still live.
+        let view = match make::view(&view_desc, ResourceKind::Buffer, name(label)) {
+            Ok(view) => view,
+            Err(error) => {
+                sg::destroy_buffer(buffer);
+                return Err(error);
+            }
+        };
         Ok(Self {
             buffer,
             view,
@@ -338,13 +327,7 @@ fn make(bytes: &[u8], usage: sg::BufferUsage, label: &CStr) -> GpuResult<sg::Buf
     desc.usage = usage;
     desc.data = sg::slice_as_range(bytes);
     desc.label = label.as_ptr();
-    let buffer = sg::make_buffer(&desc);
-    require_valid(
-        sg::query_buffer_state(buffer),
-        ResourceKind::Buffer,
-        name(label),
-    )?;
-    Ok(buffer)
+    make::buffer(&desc, name(label))
 }
 
 fn name(label: &CStr) -> &str {

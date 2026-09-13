@@ -22,8 +22,9 @@ use std::ffi::CStr;
 use sokol::gfx as sg;
 
 use super::backend;
-use super::error::{GpuError, GpuResult, ResourceKind, require_valid};
+use super::error::{GpuError, GpuResult, ResourceKind};
 use super::format::Format;
+use super::make;
 
 /// One bake pass's destination: a cube face at a mip, or the LUT target.
 ///
@@ -174,36 +175,39 @@ impl CubeTarget {
         desc.num_mipmaps = mips as i32;
         desc.pixel_format = format.sg();
         desc.label = label.as_ptr();
-        let image = sg::make_image(&desc);
-        require_valid(sg::query_image_state(image), ResourceKind::Texture, name)?;
+        // Built into `self` before anything else is created, so a failure part
+        // way through the attachment loop frees the image and every view made so
+        // far through one `Drop` — the pattern `ColorTarget` uses. An early
+        // return past `mips * 6` allocated views was the largest of the leaks
+        // this shape removes; a zero view id destroys as a no-op, so the texture
+        // view being unset until the end is fine.
+        let mut target = Self {
+            image: make::image(&desc, name)?,
+            attachments: Vec::with_capacity((mips * 6) as usize),
+            texture: sg::View::new(),
+        };
 
-        let mut attachments = Vec::with_capacity((mips * 6) as usize);
         for mip in 0..mips {
             for face in 0..6u32 {
                 let mut view_desc = sg::ViewDesc::new();
                 view_desc.color_attachment = sg::ImageViewDesc {
-                    image,
+                    image: target.image,
                     mip_level: mip as i32,
                     slice: face as i32,
                 };
                 view_desc.label = label.as_ptr();
-                let view = sg::make_view(&view_desc);
-                require_valid(sg::query_view_state(view), ResourceKind::Texture, name)?;
-                attachments.push(view);
+                target
+                    .attachments
+                    .push(make::view(&view_desc, ResourceKind::Texture, name)?);
             }
         }
 
         let mut view_desc = sg::ViewDesc::new();
-        view_desc.texture.image = image;
+        view_desc.texture.image = target.image;
         view_desc.label = label.as_ptr();
-        let texture = sg::make_view(&view_desc);
-        require_valid(sg::query_view_state(texture), ResourceKind::Texture, name)?;
+        target.texture = make::view(&view_desc, ResourceKind::Texture, name)?;
 
-        Ok(Self {
-            image,
-            attachments,
-            texture,
-        })
+        Ok(target)
     }
 
     /// The attachment for `face` (0..6) at `mip`.
@@ -259,20 +263,19 @@ impl Target2D {
         desc.num_mipmaps = 1;
         desc.pixel_format = format.sg();
         desc.label = label.as_ptr();
-        let image = sg::make_image(&desc);
-        require_valid(sg::query_image_state(image), ResourceKind::Texture, name)?;
+        // Guard first, as `CubeTarget` above: a failed attachment view then frees
+        // the image through `Drop` rather than stranding its pool slot.
+        let mut target = Self {
+            image: make::image(&desc, name)?,
+            attachment: sg::View::new(),
+        };
 
         let mut view_desc = sg::ViewDesc::new();
-        view_desc.color_attachment.image = image;
+        view_desc.color_attachment.image = target.image;
         view_desc.label = label.as_ptr();
-        let attachment = sg::make_view(&view_desc);
-        require_valid(
-            sg::query_view_state(attachment),
-            ResourceKind::Texture,
-            name,
-        )?;
+        target.attachment = make::view(&view_desc, ResourceKind::Texture, name)?;
 
-        Ok(Self { image, attachment })
+        Ok(target)
     }
 
     pub(crate) fn attachment(&self) -> BakeAttachment {

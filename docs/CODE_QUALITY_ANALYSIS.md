@@ -4,6 +4,38 @@ Reviewed: 12 September 2026
 Project: 3D Review, Rust workspace  
 Revision: `07e5678` (working tree)
 
+## Status — actioned September 2026
+
+Every finding below was re-verified against the tree eight commits later and all
+of them still applied; none of the intervening work had touched them. F1–F8 and
+the documentation item are now addressed, on `feature/code-cleanup`:
+
+| Finding | Commit | Note |
+| --- | --- | --- |
+| F1 overrides survive a model change | `cd4c17b` | `NodeOverride` carries the object's name; presets rebind by it, a model swap clears them outright. |
+| F2 export writes over destinations | `631a387` | `replace_file`: write to a sibling, rename on success. A LOD chain stages every level before committing any. |
+| F3 texture decodes have no generation | `9aa1d65` | Scene generation plus one decode per path, with a dirty flag — the Opt workspace's coalescing, keyed by path. |
+| F4 failed GPU handles leak their slot | `17756b5` | `rhi::make` wraps creation and validation. **Broader than reported**: 10 sites, not 3 — the bake's `CubeTarget` loop stranded an image plus up to `mips × 6` views. |
+| F5 scene ownership across an unwind | `62515f2` | `SceneHandle`, the `Drop` owner `ExtrasHandle` and `review-psd` already had. |
+| F6 `checked_slice` overstates its guarantees | `62515f2` | Now `unsafe`, behind 95 safe accessors whose slices borrow the owning struct. The marshal modules' "no pointer reaches here" is true rather than aspirational. |
+| F7 superseded background work accumulates | `3dcf9d0` | ufbx's progress callback answers continue/cancel from the app's own load generation; each post-publish stage is checked too. |
+| F8 gates documented, not enforced | `0b486af` | `scripts/check.{ps1,sh}` runs all four; `REVIEW_REQUIRE_FIXTURES=1` turns a skip into a failure. No CI workflow — a deliberate choice, see below. |
+| Stale documentation | this commit | `scene.hlsl` / `tex_d3d.rs` / `super::d3d` were stale in 5 files, not 1; the "~200-line platform leaf" is 781 and 578 lines. |
+
+Two things the review asked for went further than written. The layout checks it
+called for ("equal total size does not prove equal field offsets") are now
+`assert_same_layout!`, a per-field `offset_of` pair against shdc's generated
+struct for all ten GPU structs — verified by swapping two `vec4`s, which every
+previous check passed. And F7's "bound worker concurrency" was met by
+cancellation instead: a superseded worker now exits within one 512 KB read or one
+stage boundary, which bounds the cost without a pool.
+
+**Deliberately not done.** No CI workflow, at the maintainer's decision — the
+gate is a script, run by hand. Memory-byte budgets for the undo stack and texture
+caches are deferred: the review is right that 128 snapshots do not bound bytes,
+but the measurement it also asks for has to come first. ABI size/alignment probes
+for the hand-maintained C/Rust bridge structs are deferred with them.
+
 ## Overall assessment
 
 This is a thoughtfully structured native application with strong separation between model data, import/export, rendering, UI, and application coordination. Its best qualities are explicit architectural constraints, careful preservation of source asset data, meaningful regression tests, and performance-conscious resource sharing. The current workspace passes its lint and test gates.

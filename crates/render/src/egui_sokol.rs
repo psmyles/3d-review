@@ -67,6 +67,10 @@ struct EguiUniforms {
 const _: () = assert!(std::mem::size_of::<EguiUniforms>() == 16);
 const _: () =
     assert!(std::mem::size_of::<EguiUniforms>() == std::mem::size_of::<generated::EguiParams>());
+crate::shaders::assert_same_layout!(EguiUniforms => generated::EguiParams, {
+    screen_size => screen_size,
+    _pad => egui_pad,
+});
 
 /// One egui texture: the GPU image and the CPU shadow it is rebuilt from.
 struct EguiTexture {

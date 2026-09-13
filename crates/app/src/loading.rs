@@ -29,10 +29,12 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use review_import::{
-    ImportError, ImportProgress, ImportStage, StagedImport, load_model_staged, measure_clip_bounds,
+    CancelToken, ImportError, ImportProgress, ImportStage, StagedImport,
+    load_model_staged_cancellable, measure_clip_bounds,
 };
 use review_model::{Bounds, MeshGroupStats, ModelData, SourceExtras};
 use review_render::Renderer;
@@ -88,6 +90,10 @@ pub(crate) enum ModelMeasurement {
     /// The per-(node, material) table behind the `GPU Verts` row and the stats
     /// card's scoped columns.
     MeshGroups(Vec<MeshGroupStats>),
+    /// The worker stopped because its load was superseded. Carries nothing to
+    /// apply; it exists so the last-message flag still reaches the event loop and
+    /// closes the loading card that this import's request opened.
+    Cancelled,
 }
 
 /// A measurement arriving from the import worker.
@@ -168,11 +174,28 @@ impl App {
         self.ask(Dialog::OpenModel);
     }
 
+    /// The newest model-load request's generation.
+    pub(crate) fn model_load_generation(&self) -> u64 {
+        self.model_load_generation.load(Ordering::Relaxed)
+    }
+
+    /// Supersede every load in flight, and return the new request's generation.
+    ///
+    /// One store does both jobs: a result carrying an older generation is dropped
+    /// when it lands, and a worker reading the same counter through its
+    /// [`CancelToken`] sees that it has been superseded and stops.
+    fn supersede_loads(&mut self) -> u64 {
+        let next = self.model_load_generation().saturating_add(1);
+        self.model_load_generation.store(next, Ordering::Relaxed);
+        next
+    }
+
     pub(crate) fn open_model_from_path(&mut self, path: &Path) {
         // Each request supersedes the last: only a result carrying the current
-        // generation is applied, so a slow parse can never overwrite a newer one.
-        self.model_load_generation = self.model_load_generation.saturating_add(1);
-        let generation = self.model_load_generation;
+        // generation is applied, so a slow parse can never overwrite a newer one
+        // — and the worker running it stops rather than finishing for nothing.
+        let generation = self.supersede_loads();
+        let cancel = CancelToken::new(Arc::clone(&self.model_load_generation), generation);
 
         // Parse on a worker thread so a large FBX can't hold the event loop —
         // at startup the window would otherwise stay blank until the model was
@@ -212,7 +235,7 @@ impl App {
                 };
                 let staged = {
                     let _z = prof::zone!("Import Model");
-                    load_model_staged(&path, &report)
+                    load_model_staged_cancellable(&path, &report, Some(&cancel))
                 };
                 let (result, pending) = match staged {
                     Ok(StagedImport { model, extras }) => (Ok(Arc::new(model)), Some(extras)),
@@ -233,6 +256,24 @@ impl App {
                 let Some(model) = measure else {
                     return;
                 };
+                let send = |measurement, last| {
+                    let _ = proxy.send_event(UserEvent::ModelMeasured(Box::new(ModelMeasured {
+                        generation,
+                        measurement,
+                        last,
+                    })));
+                };
+                // Each of the three stages below is checked first. They are the
+                // majority of a large load — on a 2.8M-triangle scene the mesh
+                // groups alone are ~2.6 s — and none of it is worth doing once
+                // the user has opened something else. The last-message flag is
+                // what ends the loading card, so a worker that stops early still
+                // has to send it: `handle_model_measured` balances the activity
+                // before it looks at the generation.
+                if cancel.is_cancelled() {
+                    send(ModelMeasurement::Cancelled, true);
+                    return;
+                }
                 if let Some(pending) = pending {
                     let _z = prof::zone!("Marshal Extras");
                     report(ImportProgress::stage(ImportStage::Extras));
@@ -241,13 +282,10 @@ impl App {
                         SourceExtrasReady { generation, extras },
                     )));
                 }
-                let send = |measurement, last| {
-                    let _ = proxy.send_event(UserEvent::ModelMeasured(Box::new(ModelMeasured {
-                        generation,
-                        measurement,
-                        last,
-                    })));
-                };
+                if cancel.is_cancelled() {
+                    send(ModelMeasurement::Cancelled, true);
+                    return;
+                }
                 {
                     let _z = prof::zone!("Measure Clip Bounds");
                     report(ImportProgress::stage(ImportStage::Measuring));
@@ -255,6 +293,10 @@ impl App {
                         ModelMeasurement::ClipBounds(measure_clip_bounds(&model)),
                         false,
                     );
+                }
+                if cancel.is_cancelled() {
+                    send(ModelMeasurement::Cancelled, true);
+                    return;
                 }
                 {
                     let _z = prof::zone!("Measure Mesh Groups");
@@ -266,7 +308,7 @@ impl App {
             // No proxy to post back through (never the case once `main` has
             // built the event loop) — load in place, measurements and all, so the
             // file still opens fully.
-            match load_model_staged(path, &|_| {}) {
+            match load_model_staged_cancellable(path, &|_| {}, None) {
                 Ok(StagedImport { model, extras }) => {
                     let model = Arc::new(model);
                     let clip_bounds = measure_clip_bounds(&model);
@@ -289,7 +331,7 @@ impl App {
     /// Rewrite the loading card's stage line from a worker's progress report. A
     /// report from a superseded load is dropped, exactly as its result would be.
     pub(crate) fn handle_model_load_progress(&mut self, message: ModelLoadProgress) {
-        if message.generation != self.model_load_generation {
+        if message.generation != self.model_load_generation() {
             return;
         }
         self.notifications
@@ -304,7 +346,7 @@ impl App {
         if message.last {
             self.notifications.end_activity();
         }
-        if message.generation != self.model_load_generation {
+        if message.generation != self.model_load_generation() {
             return;
         }
         match message.measurement {
@@ -314,6 +356,9 @@ impl App {
             // Fills in the `GPU Verts` row and the scoped stats columns, and
             // spares the main thread building the same table itself.
             ModelMeasurement::MeshGroups(groups) => self.ui.set_mesh_group_stats(groups),
+            // Only ever sent by a worker that has already been superseded, so
+            // the generation check above has returned by now.
+            ModelMeasurement::Cancelled => {}
         }
         self.request_redraw();
     }
@@ -322,7 +367,7 @@ impl App {
     /// generation has been superseded describes a model no longer shown and is
     /// dropped.
     pub(crate) fn handle_source_extras_ready(&mut self, message: SourceExtrasReady) {
-        if message.generation != self.model_load_generation {
+        if message.generation != self.model_load_generation() {
             return;
         }
         self.apply_source_extras(message.extras);
@@ -374,7 +419,15 @@ impl App {
             self.notifications.end_activity();
         }
 
-        if message.generation == self.model_load_generation {
+        // A cancelled import is not a failed one: the parse stopped because a
+        // newer load superseded it, which is the same case as the generation
+        // mismatch below and says nothing the user needs to hear.
+        if matches!(message.result, Err(ImportError::Cancelled)) {
+            prof::msg(&format!(
+                "model load cancelled mid-parse: {}",
+                message.path.display()
+            ));
+        } else if message.generation == self.model_load_generation() {
             self.apply_loaded_model(&message.path, message.result);
         } else {
             prof::msg(&format!(
@@ -418,8 +471,8 @@ impl App {
                 // moment later; the previous model's must not stand in for it.
                 self.scene_extras = None;
                 self.scene_revision = self.next_model_revision();
-                // Any Opt result (and any node override) describes the previous
-                // model, so drop both before the new one is drawn.
+                // Any Opt result (and every per-object override) describes the
+                // previous model, so drop both before the new one is drawn.
                 self.reset_opt_for_new_model();
                 let label = file_label(path);
                 self.set_window_title(Some(&label));
@@ -446,9 +499,10 @@ impl App {
     /// previously-uploaded GPU geometry on the next paint.
     pub(crate) fn reset_to_start_state(&mut self) {
         // A load still on the worker describes a model the user has just
-        // dismissed; bumping the generation drops its result when it lands
-        // (its "Loading…" toast ends there, where its refcount is balanced).
-        self.model_load_generation = self.model_load_generation.saturating_add(1);
+        // dismissed; superseding it both drops its result when it lands (its
+        // "Loading…" toast ends there, where its refcount is balanced) and stops
+        // the worker at its next progress report or stage boundary.
+        self.supersede_loads();
 
         let empty = Arc::new(ModelData::default());
 

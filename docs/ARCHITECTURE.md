@@ -156,11 +156,13 @@ the four `load_model*` entry points, `measure_clip_bounds`), `src/startup.rs`
 (the Windows `STARTUPINFO` launch hint, which is FFI but not FBX), and the
 `#[cfg(has_ufbx)]` `src/ffi/`, layered so the `unsafe` is a leaf rather than a
 theme: `ffi/raw_scene.rs` and `ffi/raw_extras.rs` are the `#[repr(C)]` mirrors
-(data only), `ffi/bridge.rs` the one call into C and the free protocol around
-it, `ffi/raw.rs` the pointer-to-slice and pointer-to-string helpers (the last
-of the `unsafe`), and `ffi/marshal_model.rs` + `ffi/marshal_extras.rs` the
+(data only), `ffi/bridge.rs` the one call into C plus the `Drop` handles that
+own the scene and the capture, `ffi/raw.rs` the unsafe pointer-to-slice and
+pointer-to-string helpers and the safe accessor built on each — one method per
+bridge array, returning a slice that borrows the struct owning it, which is the
+last of the `unsafe` — and `ffi/marshal_model.rs` + `ffi/marshal_extras.rs` the
 majority of the crate by line count, which `deny(unsafe_code)` and read only
-checked slices. Plus `src/ufbx_bridge.c`, `src/ufbx_bridge.h`,
+through those accessors, so no raw pointer reaches them at all. Plus `src/ufbx_bridge.c`, `src/ufbx_bridge.h`,
 `src/ufbx_extras.c`, `src/ufbx_extras.h`, `build.rs`. Fixture-driven checks of
 the public API live in `tests/fbx_fixtures.rs`.
 
@@ -175,6 +177,24 @@ discipline. The Rust side sorts the morph entries into a CSR, validates through
 
 The scene loads with `UFBX_INHERIT_MODE_HANDLING_HELPER_NODES` so `parent ×
 local` recomposes `node_to_world` exactly.
+
+#### Cancelling a load
+
+A superseded load stops rather than parsing to completion: `app` shares its
+load-generation counter with the import worker as a `CancelToken`, the bridge's
+progress callback answers ufbx's continue/cancel, and the worker checks the same
+token before each post-publish measuring stage. Dropping the result on arrival
+was never enough on its own — the parse and the measuring ran either way, which
+on a large file is several seconds of work for something nobody will see.
+
+**ufbx reports a cancelled parse two different ways, and only one of them says
+"cancelled".** Stopping the plain read path fails with `UFBX_ERROR_CANCELLED`,
+but the progress check inside the bit stream (`ufbxi_bit_refill`) only sets an
+internal flag and feeds the inflater zeroes, so it surfaces as `Bad DEFLATE data`
+— indistinguishable from a genuinely corrupt file. Most binary FBX is
+deflate-compressed, so that is the common path, and reading `error.type` alone
+turned a load the user had superseded into an error toast. The bridge's progress
+context records our own answer and checks that first.
 
 #### The staged import
 
@@ -628,7 +648,7 @@ The sanctioned exceptions:
   the crate `forbid`s `unsafe_code` outright when neither vendored tree is
   present.
 - **The platform GPU leaf** (`crates/render/src/rhi/backend/`) is the only place
-  the renderer's unsafe lives, and it is roughly 200 lines per OS. Everything
+  the renderer's unsafe lives, and it is a few hundred lines per OS. Everything
   sokol_gfx draws with — pipelines, buffers, targets, textures, samplers — is safe
   Rust over its C API, so what used to be ~2000 lines of pervasive COM unsafe is
   now that leaf plus the one `extern "C"` logger callback in `rhi/mod.rs`.
@@ -674,7 +694,7 @@ offline with no startup precompute, and the BC6H cubes use the encoder's slowest
 only sharpens what runs.
 
 **Native stack: direct winit plus sokol_gfx as the one drawing API on both
-Windows and macOS** (Direct3D 11 and Metal underneath), with one ~200-line device
+Windows and macOS** (Direct3D 11 and Metal underneath), with one small device
 and swapchain leaf per OS. Not `eframe`, not wgpu, and not a second native shell
 per platform. `egui` is an overlay drawn by our own sokol renderer.
 

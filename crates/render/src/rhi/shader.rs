@@ -14,7 +14,8 @@
 
 use sokol::gfx as sg;
 
-use super::error::{GpuResult, ResourceKind, require_valid};
+use super::error::GpuResult;
+use super::make;
 
 /// One program's bytecode for this host, as `build.rs` produced it.
 ///
@@ -41,13 +42,7 @@ pub(crate) fn make(
     desc.vertex_func.bytecode = sg::slice_as_range(bytecode.vertex);
     desc.fragment_func.source = std::ptr::null();
     desc.fragment_func.bytecode = sg::slice_as_range(bytecode.fragment);
-    let shader = sg::make_shader(&desc);
-    require_valid(
-        sg::query_shader_state(shader),
-        ResourceKind::Pipeline,
-        label.to_str().unwrap_or("shader"),
-    )?;
-    Ok(shader)
+    make::shader(&desc, label.to_str().unwrap_or("shader"))
 }
 
 /// The `.dxbc` / `.metallib` pair `build.rs` wrote for one program, by its shdc

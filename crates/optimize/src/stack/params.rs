@@ -237,6 +237,12 @@ impl SimplifyFlags {
 pub struct NodeOverride {
     /// Index into `ModelData::nodes`.
     pub node: usize,
+    /// The node's name as the model carried it when the preset was written —
+    /// what [`super::OptStack::rebind_to_model`] matches on when the preset is
+    /// loaded against another file, since an index alone says nothing about
+    /// *which* object it meant. Empty at runtime and in presets written before
+    /// this field existed, which is why those load by position instead.
+    pub name: String,
     /// Pass this object through untouched. It still appears in every output
     /// level, at full detail — the way to keep a hero prop or a collision shell
     /// out of the optimization.

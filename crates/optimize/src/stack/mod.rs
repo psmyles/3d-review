@@ -12,6 +12,7 @@
 //! options. Everything is `serde`-derived, so a move changes no preset: the
 //! names on the wire are per type, not per module.
 
+use review_model::SceneNode;
 use serde::{Deserialize, Serialize};
 
 mod ao;
@@ -21,6 +22,18 @@ mod params;
 pub use ao::*;
 pub use export::*;
 pub use params::*;
+
+/// What [`OptStack::rebind_to_model`] did with a loaded preset's per-object
+/// overrides — three counts the caller reports, since each means something
+/// different to the user: `rebound` found the object elsewhere, `by_position`
+/// could only trust the index (a preset older than node names), and `dropped`
+/// had nothing to attach to.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RebindReport {
+    pub rebound: usize,
+    pub by_position: usize,
+    pub dropped: usize,
+}
 
 /// A whole optimization setup: the ordered operations, any per-object
 /// deviations from them, and the settings the export step will use.
@@ -139,6 +152,10 @@ impl OptStack {
         }
         self.overrides.push(NodeOverride {
             node,
+            // Stamped only on the way into a preset: at runtime the index is the
+            // identity, and carrying a name here would have to be kept in step
+            // with every model swap.
+            name: String::new(),
             exclude: false,
             ops: Vec::new(),
         });
@@ -153,11 +170,79 @@ impl OptStack {
             .retain(|entry| entry.exclude || !entry.ops.is_empty());
     }
 
-    /// Discard overrides pointing past `node_count`. Called when a preset is
-    /// loaded against a different model than the one it was authored on —
-    /// stale node indices would otherwise silently apply to the wrong objects.
-    pub fn clamp_to_model(&mut self, node_count: usize) {
-        self.overrides.retain(|entry| entry.node < node_count);
+    /// Drop every per-object override. Called when the model is replaced: an
+    /// override names one object of the *old* model, and no amount of bounds
+    /// checking makes index 2 of another file the same thing. The operations
+    /// themselves describe the setup, not the asset, so they stay.
+    pub fn clear_overrides(&mut self) {
+        self.overrides.clear();
+    }
+
+    /// Record each override's node name from `nodes`, so a preset written from
+    /// this stack can be rebound to whatever model it is loaded against.
+    ///
+    /// Called on a clone on the way into a preset, never on the live stack: the
+    /// index is the runtime identity and the name would only be one more thing
+    /// to keep in step.
+    pub fn stamp_node_names(&mut self, nodes: &[SceneNode]) {
+        for entry in &mut self.overrides {
+            entry.name = nodes
+                .get(entry.node)
+                .map(|node| node.name.clone())
+                .unwrap_or_default();
+        }
+    }
+
+    /// Re-point every override at the node of `nodes` that it actually names,
+    /// dropping the ones this model has no unambiguous answer for.
+    ///
+    /// Called when a preset is loaded. An override carries both an index and the
+    /// name the node had when it was written, and the name is what decides:
+    ///
+    /// * the index still holds that name — kept as is;
+    /// * exactly one node elsewhere has it — rebound to that index;
+    /// * the name is empty (a preset written before names were recorded) and the
+    ///   index is in range — kept by position, which is all such a preset can
+    ///   say;
+    /// * no match, or several — dropped, since applying it would exclude or
+    ///   re-parameterize an object the user never chose.
+    pub fn rebind_to_model(&mut self, nodes: &[SceneNode]) -> RebindReport {
+        let mut report = RebindReport::default();
+        self.overrides.retain_mut(|entry| {
+            if entry.name.is_empty() {
+                // Legacy preset: position is the only identity it carries.
+                if entry.node < nodes.len() {
+                    report.by_position += 1;
+                    return true;
+                }
+                report.dropped += 1;
+                return false;
+            }
+            if nodes
+                .get(entry.node)
+                .is_some_and(|node| node.name == entry.name)
+            {
+                return true;
+            }
+            let mut matches = nodes
+                .iter()
+                .enumerate()
+                .filter(|(_, node)| node.name == entry.name);
+            match (matches.next(), matches.next()) {
+                (Some((index, _)), None) => {
+                    entry.node = index;
+                    report.rebound += 1;
+                    true
+                }
+                // Nothing named that, or several things are — either way this
+                // model gives no answer to which object was meant.
+                _ => {
+                    report.dropped += 1;
+                    false
+                }
+            }
+        });
+        report
     }
 
     /// Re-key every operation id from a fresh sequence. Applied after loading a
@@ -446,13 +531,111 @@ mod tests {
         );
     }
 
+    /// A scene of `names`, which is all the rebind reads.
+    fn nodes(names: &[&str]) -> Vec<SceneNode> {
+        names
+            .iter()
+            .map(|name| SceneNode {
+                name: (*name).to_owned(),
+                ..SceneNode::default()
+            })
+            .collect()
+    }
+
     #[test]
-    fn clamp_to_model_drops_stale_node_overrides() {
+    fn clearing_overrides_keeps_the_operations() {
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::VertexCache);
+        stack.node_override_mut(1).exclude = true;
+
+        stack.clear_overrides();
+        assert!(stack.overrides.is_empty());
+        assert_eq!(stack.ops.len(), 1, "the setup is not the asset");
+    }
+
+    #[test]
+    fn a_preset_records_the_names_of_the_objects_it_excludes() {
+        let mut stack = OptStack::default();
+        stack.node_override_mut(1).exclude = true;
+        // Out of range at save time (nothing should produce this, but a preset
+        // must not carry a name it invented).
+        stack.node_override_mut(7).exclude = true;
+
+        stack.stamp_node_names(&nodes(&["root", "hero_prop"]));
+        assert_eq!(stack.overrides[0].name, "hero_prop");
+        assert_eq!(stack.overrides[1].name, "");
+    }
+
+    #[test]
+    fn an_override_follows_its_object_to_a_new_index() {
+        let mut stack = OptStack::default();
+        stack.node_override_mut(1).exclude = true;
+        stack.stamp_node_names(&nodes(&["root", "hero_prop"]));
+
+        // The same object, two positions later.
+        let report = stack.rebind_to_model(&nodes(&["root", "wall", "floor", "hero_prop"]));
+        assert_eq!(
+            report,
+            RebindReport {
+                rebound: 1,
+                by_position: 0,
+                dropped: 0
+            }
+        );
+        assert_eq!(stack.overrides[0].node, 3);
+    }
+
+    #[test]
+    fn an_override_stays_put_when_its_index_still_names_it() {
+        let mut stack = OptStack::default();
+        stack.node_override_mut(1).exclude = true;
+        stack.stamp_node_names(&nodes(&["root", "hero_prop"]));
+
+        let report = stack.rebind_to_model(&nodes(&["root", "hero_prop", "extra"]));
+        assert_eq!(report, RebindReport::default(), "nothing to report");
+        assert_eq!(stack.overrides[0].node, 1);
+    }
+
+    #[test]
+    fn an_override_is_dropped_rather_than_applied_to_a_different_object() {
+        let mut stack = OptStack::default();
+        stack.node_override_mut(1).exclude = true;
+        stack.stamp_node_names(&nodes(&["root", "hero_prop"]));
+
+        // Same node count, different objects: the old bounds check kept this.
+        let report = stack.rebind_to_model(&nodes(&["head", "torso"]));
+        assert_eq!(report.dropped, 1);
+        assert!(stack.overrides.is_empty());
+    }
+
+    #[test]
+    fn an_ambiguous_name_is_dropped() {
+        let mut stack = OptStack::default();
+        stack.node_override_mut(1).exclude = true;
+        stack.stamp_node_names(&nodes(&["root", "leaf"]));
+
+        let report = stack.rebind_to_model(&nodes(&["trunk", "branch", "leaf", "leaf"]));
+        assert_eq!(report.dropped, 1, "which of the two leaves was meant?");
+        assert!(stack.overrides.is_empty());
+    }
+
+    #[test]
+    fn a_preset_without_names_still_loads_by_position() {
         let mut stack = OptStack::default();
         stack.node_override_mut(1).exclude = true;
         stack.node_override_mut(9).exclude = true;
+        // No `stamp_node_names`: this is what a preset written before the name
+        // field deserializes to.
 
-        stack.clamp_to_model(4);
+        let report = stack.rebind_to_model(&nodes(&["root", "a", "b", "c"]));
+        assert_eq!(
+            report,
+            RebindReport {
+                rebound: 0,
+                by_position: 1,
+                dropped: 1
+            }
+        );
         assert_eq!(stack.overrides.len(), 1);
         assert_eq!(stack.overrides[0].node, 1);
     }
