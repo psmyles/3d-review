@@ -823,20 +823,18 @@ fn a_panicking_progress_sink_unwinds_without_taking_the_importer_with_it() {
 /// nobody will see. The check rides ufbx's own progress callback, so a token that
 /// is already stale stops the load at its first report.
 ///
-/// Deliberately the largest fixture in the tree. Cancellation is *bounded by* the
-/// progress callback rather than instant, so a file small enough to be parsed
-/// between two reports would legitimately come back loaded; asking the question
-/// of a 26 MB file (~1600 reports) is what makes the answer deterministic.
+/// Two fixtures, because ufbx has two cancel paths and they do not report alike.
+/// Stopping the plain read fails with `UFBX_ERROR_CANCELLED`, but stopping inside
+/// the bit stream only feeds the inflater zeroes, so it surfaces as "Bad DEFLATE
+/// data" — an ordinary parse error. Which path a file takes depends on where its
+/// first progress report lands: the 326 KB fixture cancels on the read, the 26 MB
+/// one inside the deflate stream. The bridge records its own answer rather than
+/// reading `error.type`, and this is what holds it to that — the deflate case is
+/// the common one, since most binary FBX is compressed.
 #[test]
 fn a_superseded_load_is_cancelled_rather_than_parsed() {
     use std::sync::Arc;
     use std::sync::atomic::AtomicU64;
-
-    let path = fixture("stylized_tree_branch_01.fbx");
-    if !path.exists() {
-        skipping("the fixture is not present");
-        return;
-    }
 
     // The token's generation is already behind the shared counter: this is the
     // state a worker is in the moment the user opens another file.
@@ -844,11 +842,22 @@ fn a_superseded_load_is_cancelled_rather_than_parsed() {
     let cancel = review_import::CancelToken::new(Arc::clone(&generation), 6);
     assert!(cancel.is_cancelled());
 
-    let result = review_import::load_model_staged_cancellable(&path, &|_| {}, Some(&cancel));
-    assert!(
-        matches!(result, Err(ImportError::Cancelled)),
-        "a superseded load must report Cancelled, not a model or a LoadFailed"
-    );
+    for name in ["SM_Speaker_01a.fbx", "stylized_tree_branch_01.fbx"] {
+        let path = fixture(name);
+        if !path.exists() {
+            skipping(format!("{name} is not present"));
+            continue;
+        }
+        let result = review_import::load_model_staged_cancellable(&path, &|_| {}, Some(&cancel));
+        assert!(
+            matches!(result, Err(ImportError::Cancelled)),
+            "{name}: a superseded load must report Cancelled, not a model or a parse error              (got {:?})",
+            result
+                .as_ref()
+                .map(|staged| staged.model.stats.triangle_count)
+                .map_err(|error| error.to_string())
+        );
+    }
 
     // A live token loads normally — the cancel path must not be reachable by
     // accident. A small fixture, since what is being checked is the token, not

@@ -13,6 +13,13 @@
 //! hand-typed number; that catches a field added on one side of the Rust/HLSL
 //! boundary, but not a number typed wrong in the first place. Pinning against
 //! generated text closes that.
+//!
+//! [`assert_same_layout`] closes the other half. Equal totals do not mean equal
+//! offsets: swap two `vec4`s, or turn a `vec4` into a `float` beside a `vec3`,
+//! and the size is unchanged while every field after the first reads the wrong
+//! bytes. Nothing catches that at run time — a uniform upload is sized from the
+//! Rust struct and rejects only a payload *larger* than the block — so the
+//! assertion is the whole mechanism.
 
 // The generated file carries its own inner attributes, so it is included as a
 // module file rather than `include!`d.
@@ -27,6 +34,37 @@
 #[allow(clippy::all)]
 #[path = "generated/review.rs"]
 pub(crate) mod generated;
+
+/// Assert that a hand-written `#[repr(C)]` GPU struct and shdc's generated struct
+/// for the same uniform block put every field at the same byte offset.
+///
+/// Fields are named in pairs, `ours => theirs`, because the two names are not
+/// always the same: `review.glsl` prefixes the material block's members (`mat_`)
+/// to keep them distinct in a shared GLSL namespace, which is a fact about the
+/// shader source rather than something the Rust should carry. Writing both names
+/// also makes the pairing the assertion is *about* visible at the call site.
+///
+/// Use it beside the two `size_of` assertions, never instead of them: offsets
+/// alone would not catch a field appended past the last one either side.
+macro_rules! assert_same_layout {
+    ($ours:ty => $theirs:ty, { $( $ours_field:ident => $theirs_field:ident ),+ $(,)? }) => {
+        $(
+            const _: () = assert!(
+                std::mem::offset_of!($ours, $ours_field)
+                    == std::mem::offset_of!($theirs, $theirs_field),
+                concat!(
+                    "GPU layout drift: `",
+                    stringify!($ours), ".", stringify!($ours_field),
+                    "` is not at the offset `review.glsl` puts `",
+                    stringify!($theirs_field),
+                    "` at. Re-run scripts/gen-shaders and reconcile the two."
+                )
+            );
+        )+
+    };
+}
+
+pub(crate) use assert_same_layout;
 
 #[cfg(test)]
 mod tests {
