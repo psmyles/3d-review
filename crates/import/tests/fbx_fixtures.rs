@@ -17,6 +17,21 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
+/// Report why this run is skipping — or refuse to.
+///
+/// A skip that passes is right for a fresh checkout and wrong for the run that
+/// decides whether the tree is good: a green suite would otherwise mean "nothing
+/// was found to run" just as readily as "everything passed". `scripts/check` sets
+/// `REVIEW_REQUIRE_FIXTURES=1`, which turns every one of these into a failure
+/// naming what was missing.
+fn skipping(reason: impl std::fmt::Display) {
+    assert!(
+        !std::env::var_os("REVIEW_REQUIRE_FIXTURES").is_some_and(|value| value != "0"),
+        "REVIEW_REQUIRE_FIXTURES is set, so this run may not skip: {reason}"
+    );
+    eprintln!("skipping: {reason}");
+}
+
 /// Write `bytes` to a temp file with an `.fbx` extension and return its path.
 ///
 /// The directory is cargo's own, not the system temp dir: a fixed name under
@@ -164,7 +179,7 @@ fn import_carries_nodes_and_per_triangle_material() {
 fn import_carries_skeleton_and_skin() {
     let path = fixture("SK_Player_01.fbx");
     if !path.exists() {
-        eprintln!("skipping: {} is not present", path.display());
+        skipping(format!("{} is not present", path.display()));
         return;
     }
     let model = load_model(&path).expect("the skeletal fixture must import");
@@ -341,7 +356,7 @@ fn import_carries_skeleton_and_skin() {
 fn unskinned_import_carries_no_skeleton() {
     let path = fixture("meter_cube.fbx");
     if !path.exists() {
-        eprintln!("skipping: {} is not present", path.display());
+        skipping(format!("{} is not present", path.display()));
         return;
     }
     let model = load_model(&path).expect("the cube fixture must import");
@@ -376,7 +391,7 @@ fn assert_rest_locals_recompose(model: &review_model::ModelData) {
 fn import_carries_animation_clips() {
     let path = fixture("AN_ZombiedogLocomotion.fbx");
     if !path.exists() {
-        eprintln!("skipping: {} is not present", path.display());
+        skipping(format!("{} is not present", path.display()));
         return;
     }
     let model = load_model(&path).expect("the locomotion fixture must import");
@@ -418,7 +433,7 @@ fn import_carries_animation_clips() {
 fn rigid_clip_moves_nodes() {
     let path = fixture("SM_Wall_Break_4x3m.fbx");
     if !path.exists() {
-        eprintln!("skipping: {} is not present", path.display());
+        skipping(format!("{} is not present", path.display()));
         return;
     }
     let model = load_model(&path).expect("the wall-break fixture must import");
@@ -455,7 +470,7 @@ fn measured_clip_bounds_match_walking_every_corner() {
     ] {
         let path = fixture(name);
         if !path.exists() {
-            eprintln!("skipping: {} is not present", path.display());
+            skipping(format!("{} is not present", path.display()));
             continue;
         }
         let model = load_model(&path).unwrap_or_else(|error| panic!("{name}: {error}"));
@@ -505,7 +520,7 @@ fn measured_clip_bounds_match_walking_every_corner() {
 fn a_staged_import_is_drawable_but_unmeasured() {
     let path = fixture("SM_Wall_Break_4x3m.fbx");
     if !path.exists() {
-        eprintln!("skipping: {} is not present", path.display());
+        skipping(format!("{} is not present", path.display()));
         return;
     }
     let staged =
@@ -542,7 +557,7 @@ fn a_staged_import_is_drawable_but_unmeasured() {
 fn every_fixture_captures_valid_extras() {
     let dir = fixture("");
     let Ok(entries) = std::fs::read_dir(&dir) else {
-        eprintln!("skipping: {} is not present", dir.display());
+        skipping(format!("{} is not present", dir.display()));
         return;
     };
     let mut checked = 0;
@@ -614,7 +629,7 @@ fn every_fixture_captures_valid_extras() {
 fn skin_clusters_carry_authored_matrices() {
     let path = fixture("SK_Player_01.fbx");
     if !path.exists() {
-        eprintln!("skipping: {} is not present", path.display());
+        skipping(format!("{} is not present", path.display()));
         return;
     }
     let model = load_model(&path).expect("the fixture must import");
@@ -640,7 +655,7 @@ fn skin_clusters_carry_authored_matrices() {
 fn rest_pose_skinning_matches_bind() {
     let path = fixture("SK_Player_01.fbx");
     if !path.exists() {
-        eprintln!("skipping: {} is not present", path.display());
+        skipping(format!("{} is not present", path.display()));
         return;
     }
     let model = load_model(&path).expect("the player fixture must import");
@@ -719,7 +734,7 @@ fn a_classic_material_imports_as_a_dielectric() {
 
     let dir = fixture("");
     let Ok(entries) = std::fs::read_dir(&dir) else {
-        eprintln!("skipping: {} is not present", dir.display());
+        skipping(format!("{} is not present", dir.display()));
         return;
     };
     let mut saw_a_reflection_factor = false;
@@ -778,7 +793,7 @@ fn a_classic_material_imports_as_a_dielectric() {
 fn a_panicking_progress_sink_unwinds_without_taking_the_importer_with_it() {
     let path = fixture("SM_Speaker_01a.fbx");
     if !path.exists() {
-        eprintln!("skipping: the fixture is not present");
+        skipping("the fixture is not present");
         return;
     }
 
@@ -807,14 +822,19 @@ fn a_panicking_progress_sink_unwinds_without_taking_the_importer_with_it() {
 /// parse behind it ran either way — seconds of work on a large file for something
 /// nobody will see. The check rides ufbx's own progress callback, so a token that
 /// is already stale stops the load at its first report.
+///
+/// Deliberately the largest fixture in the tree. Cancellation is *bounded by* the
+/// progress callback rather than instant, so a file small enough to be parsed
+/// between two reports would legitimately come back loaded; asking the question
+/// of a 26 MB file (~1600 reports) is what makes the answer deterministic.
 #[test]
 fn a_superseded_load_is_cancelled_rather_than_parsed() {
     use std::sync::Arc;
     use std::sync::atomic::AtomicU64;
 
-    let path = fixture("SM_Speaker_01a.fbx");
+    let path = fixture("stylized_tree_branch_01.fbx");
     if !path.exists() {
-        eprintln!("skipping: the fixture is not present");
+        skipping("the fixture is not present");
         return;
     }
 
@@ -831,10 +851,16 @@ fn a_superseded_load_is_cancelled_rather_than_parsed() {
     );
 
     // A live token loads normally — the cancel path must not be reachable by
-    // accident.
+    // accident. A small fixture, since what is being checked is the token, not
+    // the parse.
+    let small = fixture("SM_Speaker_01a.fbx");
+    if !small.exists() {
+        skipping("SM_Speaker_01a.fbx is not present");
+        return;
+    }
     let live = review_import::CancelToken::new(Arc::clone(&generation), 7);
     assert!(!live.is_cancelled());
-    let staged = review_import::load_model_staged_cancellable(&path, &|_| {}, Some(&live))
+    let staged = review_import::load_model_staged_cancellable(&small, &|_| {}, Some(&live))
         .expect("a current load still imports");
     assert!(staged.model.stats.triangle_count > 0);
 }

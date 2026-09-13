@@ -549,6 +549,12 @@ cargo test --workspace             # model / import / render / optimize tests
 cargo build --release
 ```
 
+`scripts/check.ps1` (or `check.sh`) runs the gate — format, clippy, tests and the
+shader-bytecode freshness check — in one command. It sets
+`REVIEW_REQUIRE_FIXTURES=1`, so a suite that cannot find its fixture or its
+vendored dependency fails instead of skipping: pass `-AllowSkips` /
+`--allow-skips` on a checkout that genuinely lacks them.
+
 Rust 1.88 or newer, edition 2024.
 
 On macOS, `scripts/dev-app.sh [--debug] [model.fbx]` wraps the built binary in an

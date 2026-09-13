@@ -4,7 +4,9 @@
 //! this one is the only check that the vendored psd_sdk actually built and decodes —
 //! the property that mattered when the crate moved off a prebuilt static lib to
 //! `cc`-compiled source. Skips itself when the fixture is absent, as `review-optimize`'s
-//! fixture suites do.
+//! fixture suites do — and, as there, `REVIEW_REQUIRE_FIXTURES=1` turns that skip
+//! into a failure, so the run that decides whether the tree is good cannot pass by
+//! finding nothing to do.
 
 use std::path::PathBuf;
 
@@ -17,7 +19,12 @@ fn fixture() -> Option<PathBuf> {
 #[test]
 fn decodes_the_merged_composite() {
     let Some(path) = fixture() else {
-        eprintln!("skipping: assets/test_textures/T_Sides_D.psd not present");
+        let reason = "assets/test_textures/T_Sides_D.psd is not present";
+        assert!(
+            !std::env::var_os("REVIEW_REQUIRE_FIXTURES").is_some_and(|value| value != "0"),
+            "REVIEW_REQUIRE_FIXTURES is set, so this run may not skip: {reason}"
+        );
+        eprintln!("skipping: {reason}");
         return;
     };
     let bytes = std::fs::read(&path).expect("read the PSD fixture");

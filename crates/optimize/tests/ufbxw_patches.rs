@@ -18,7 +18,7 @@ use review_optimize::probe::write_patch_probe;
 
 mod common;
 
-use common::{line_with, line_with_all, temp_dir};
+use common::{line_with, line_with_all, skip, temp_dir};
 
 /// Write the probe scene and read it back, or `None` when this checkout cannot
 /// import FBX at all.
@@ -32,7 +32,7 @@ fn probe(dir: &Path, ascii: bool) -> Option<(PathBuf, ModelData)> {
     match review_import::load_model(&path) {
         Ok(model) => Some((path, model)),
         Err(review_import::ImportError::UfbxUnavailable) => {
-            eprintln!("skipping: FBX import is unavailable in this build");
+            skip("FBX import is unavailable in this build")?;
             None
         }
         Err(error) => panic!("could not read back {}: {error}", path.display()),
