@@ -1,27 +1,31 @@
 # Face Normals
 
-Draws one line per face, from the face centre along its normal.
+Every face of a model has a front. The face normal is an imaginary arrow
+pointing straight out of that front. This overlay draws one short line from
+the middle of each face along its normal, so you can see which way every face
+is pointing.
 
 ## Settings
 
-**Length** - how far each line extends, in meters. Updates live.
+**Length** - how long each line is, in meters. The change shows right away.
 
-**Color** - the line color. Also live.
+**Color** - the color of the lines. This changes right away too.
 
 ## What it is for
 
-Face normals are the fastest way to find flipped faces: a face whose normal
-points into the model instead of out of it shows its line going the wrong way,
-and its surface goes dark or invisible with backface culling on (the default).
+Face normals are the fastest way to find a face that is flipped inside out.
+Such a face has its line pointing into the model instead of out of it, and the
+face itself looks dark or vanishes entirely when backface rendering is off
+(which it is to begin with).
 
-For a per-vertex read, which is what smoothing actually uses, see
-[Vertex Normals](vertex-normals.md).
+To see the directions used for smooth shading, which are stored on the points
+rather than the faces, see [Vertex Normals](vertex-normals.md).
 
 ## Notes
 
-The line buffer is built when the overlay turns on and freed when it turns off,
-so the plain shaded view carries none of it. Changing the length or color rebuilds
-it live.
+The lines are built when you switch the overlay on and thrown away when you
+switch it off, so the plain view stays light. Changing the length or color
+rebuilds them on the spot.
 
-On a skinned model the lines deform with the mesh, so they stay attached through
-an animation rather than sitting on the bind pose.
+On a model with bones, the lines move with the model, so they stay attached
+during an animation instead of being left behind in the resting pose.

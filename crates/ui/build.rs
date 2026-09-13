@@ -22,8 +22,8 @@ fn main() {
     // `common-` and `ui-`: the chrome's own strings plus the ones it shares with
     // `app`. Anything else in the catalog belongs to another crate and would only
     // show up here as an unused key.
-    let locales = workspace.join("crates/l10n/locales");
-    if let Err(error) = review_l10n_build::generate_keys(&locales, &["common-", "ui-"], &out) {
+    let locales = workspace.join("crates/localization/locales");
+    if let Err(error) = review_localization_build::generate_keys(&locales, &["common-", "ui-"], &out) {
         panic!("localization catalog: {error}");
     }
 

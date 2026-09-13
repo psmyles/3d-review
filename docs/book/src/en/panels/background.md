@@ -1,21 +1,23 @@
 # Background
 
-The viewport's background fill.
+What fills the empty space behind the model.
 
 ## Settings
 
-**Fill** - black, 25% grey, 50% grey, 75% grey, white, or a vertical gradient.
+**Fill** - black, 25% grey, 50% grey, 75% grey, white, or a soft top-to-bottom
+gradient.
 
 ## What it is for
 
-Judging a silhouette needs contrast against the background, and judging a
-material's value needs a neutral one. Mid-grey is the usual default for the
-second; black or white make an outline or a stray thin face obvious.
+To judge a model's outline you want a background that contrasts with it. To
+judge how light or dark a material really is, you want a plain, neutral one.
+Mid-grey is the usual choice for the second; black or white make an outline,
+or a stray thin face, stand out.
 
 ## Notes
 
-When the [skybox](environment.md) is on, it replaces this fill in the 3D
-workspace. Turning the skybox off brings the fill back.
+When the [skybox](environment.md) is on, the environment is drawn behind the
+model instead of this fill. Turn the skybox off and the fill comes back.
 
-The [Texture workspace](../tex.md) has its own background control, including a
-checker for judging alpha.
+The [Texture workspace](../tex.md) has its own background choice, including a
+checkerboard for judging see-through parts.

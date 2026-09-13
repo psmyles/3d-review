@@ -422,7 +422,7 @@ fn resolved_markdown(text: &PageText, locale: &str, docs_dir: Option<&Path>) -> 
 /// locale. A regional tag reads the language's pages: `de-AT` and `de` are one
 /// manual, even where they would be two catalogs.
 fn doc_locale() -> String {
-    review_l10n::locale().language.as_str().to_owned()
+    review_localization::locale().language.as_str().to_owned()
 }
 
 #[cfg(test)]

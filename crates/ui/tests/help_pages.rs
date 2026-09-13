@@ -116,7 +116,7 @@ fn every_fragment_link_names_a_heading() {
 
 /// The manual, like the catalog, is written in characters a keyboard can type.
 ///
-/// Same reasoning as `l10n/tests/typeable_characters.rs`, and the same trap: a
+/// Same reasoning as `localization/tests/typeable_characters.rs`, and the same trap: a
 /// page edited by hand comes back with a hyphen next to the em dash above it, and
 /// the in-app reader depends on the bundled fonts having whatever mark was used.
 /// This checks the text as it is *compiled in*, which is what Help shows.

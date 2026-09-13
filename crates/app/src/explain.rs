@@ -20,7 +20,7 @@ use crate::keys;
 pub(crate) fn explain_opt_error(error: &OptError) -> String {
     match error {
         OptError::Unavailable => {
-            review_l10n::tr(keys::app_notifications::OPT_UNAVAILABLE).into_owned()
+            review_localization::tr(keys::app_notifications::OPT_UNAVAILABLE).into_owned()
         }
         OptError::PresetVersion { found, supported } => {
             keys::app_notifications::preset_newer(f64::from(*found), f64::from(*supported))

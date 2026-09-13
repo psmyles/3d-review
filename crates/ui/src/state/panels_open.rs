@@ -5,7 +5,7 @@
 
 use std::collections::HashSet;
 
-use review_l10n::Key;
+use review_localization::Key;
 
 use crate::docs::Page;
 use crate::keys;

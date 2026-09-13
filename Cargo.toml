@@ -2,8 +2,8 @@
 members = [
     "crates/app",
     "crates/import",
-    "crates/l10n",
-    "crates/l10n-build",
+    "crates/localization",
+    "crates/localization-build",
     "crates/model",
     "crates/optimize",
     "crates/prof",
@@ -94,11 +94,11 @@ pulldown-cmark = { version = "0.13", default-features = false }
 # has to catch. Both are already in the graph via the serde/thiserror derives.
 proc-macro2 = { version = "1", features = ["span-locations"] }
 # The generated typed message keys, and the `tr`/`tr_args` they resolve through.
-review-l10n = { path = "crates/l10n" }
-# Build-dependency twin of `review-l10n`: turns the English catalog into a `keys.rs`
+review-localization = { path = "crates/localization" }
+# Build-dependency twin of `review-localization`: turns the English catalog into a `keys.rs`
 # in each consumer's OUT_DIR. Separate crate so a build script compiles only the
 # `.ftl` parser, not the whole Fluent runtime.
-review-l10n-build = { path = "crates/l10n-build" }
+review-localization-build = { path = "crates/localization-build" }
 # The guarded Tracy zone/plot/message helpers, in one place: `tracy_client`'s own
 # macros panic when no client is running, so every crate that instruments itself
 # needs the same `Client::running()` guard around them.
@@ -126,7 +126,7 @@ serde_json = "1"
 # in the user's language with no platform code of ours.
 sys-locale = "0.3"
 # See `proc-macro2`: the no-inline-strings gate parses each source file rather than
-# grepping it. Dev-dependency of `review-l10n` only.
+# grepping it. Dev-dependency of `review-localization` only.
 syn = { version = "2", features = ["full", "visit"] }
 thiserror = "2"
 # Fluent's own locale identifier — what `fluent-bundle` keys a bundle on.

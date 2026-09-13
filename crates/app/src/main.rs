@@ -26,7 +26,7 @@ mod ui_intents;
 mod undo;
 mod window_state;
 
-/// The typed message keys, generated from `crates/l10n/locales/en/*.ftl` by this
+/// The typed message keys, generated from `crates/localization/locales/en/*.ftl` by this
 /// crate's build script (invariant 12). Private on purpose: a `pub` const that
 /// nothing uses warns about nothing, a private one is `dead_code`.
 mod keys {
@@ -105,7 +105,7 @@ fn main() -> anyhow::Result<()> {
     // both can happen before the first frame. An explicit `--locale` wins, then a
     // saved setting, then the OS; an unknown tag negotiates down to English rather
     // than failing (invariant 12).
-    review_l10n::init(
+    review_localization::init(
         locale
             .or_else(settings::locale)
             .or_else(sys_locale::get_locale)

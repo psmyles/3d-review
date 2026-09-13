@@ -101,11 +101,11 @@ impl NoticeKind {
     /// is happening, not what the variant is called.
     fn label(self) -> std::borrow::Cow<'static, str> {
         match self {
-            Self::Progress => review_l10n::tr(crate::keys::ui_notices::WORKING),
-            Self::Info => review_l10n::tr(crate::keys::ui_notices::INFO),
-            Self::Success => review_l10n::tr(crate::keys::ui_notices::SUCCESS),
-            Self::Warning => review_l10n::tr(crate::keys::ui_notices::WARNING),
-            Self::Error => review_l10n::tr(crate::keys::ui_notices::ERROR),
+            Self::Progress => review_localization::tr(crate::keys::ui_notices::WORKING),
+            Self::Info => review_localization::tr(crate::keys::ui_notices::INFO),
+            Self::Success => review_localization::tr(crate::keys::ui_notices::SUCCESS),
+            Self::Warning => review_localization::tr(crate::keys::ui_notices::WARNING),
+            Self::Error => review_localization::tr(crate::keys::ui_notices::ERROR),
         }
     }
 

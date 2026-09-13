@@ -2,9 +2,10 @@
 ### camera to look down it.
 
 ui-gizmo-reset-view = Reset view
-    .description = Return to the launch framing. The R key does the same.
+    .description = Puts the camera back where it was when the model first opened. The R
+        key does the same thing.
 ui-gizmo-view-axis = View { $axis }
-    .description = Snap the camera to look down this axis.
+    .description = Turns the camera to look straight down this axis.
 
 # The negative axes' own labels, painted on the gizmo balls.
 ui-gizmo-axis-neg-x = -X

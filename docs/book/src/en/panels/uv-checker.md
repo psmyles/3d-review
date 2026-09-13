@@ -1,26 +1,30 @@
 # UV Checker
 
-Replaces the surface with a checker pattern, which is the fast read on
-stretching, mirroring and texel density.
+Paints a checkerboard over the model instead of its material. This is the
+quickest way to see whether a texture would look stretched, mirrored, or
+blurrier in some places than in others.
 
 ## Settings
 
-**Pattern** - greyscale or color. The color checker makes mirrored shells obvious
-because the hue sequence runs backwards on them.
+**Pattern** - a grey checkerboard, or a colored one. The colored one makes a
+mirrored part easy to spot, because its colors run in the opposite order.
 
-**Density** - how many checker squares per UV unit. Raise it to judge texel
-density on a small prop, lower it on a large one.
+**Density** - how many squares fit across the texture. Use more squares on a
+small object and fewer on a big one, so the squares stay a useful size.
 
-**UV set** - which channel to apply it to, on a model that carries more than one.
-A second set is usually a lightmap or a detail-texture layout, and checking it is
-how you find out which.
+**UV set** - which texture layout to use, if the model has more than one. A
+second layout is often used for baked lighting or for fine detail, and
+looking at it here is how you find out which.
 
 ## Reading the result
 
-- Squares that are *rectangles* mean the UVs are stretched on that axis.
-- Squares of visibly different sizes across parts mean inconsistent texel
-  density; the parts with smaller squares get more texture resolution.
-- A shell where the color sequence runs the other way is mirrored.
+- Squares that come out as *rectangles* mean the texture is stretched in that
+  direction.
+- Squares that are clearly bigger on some parts than others mean the texture
+  is spread unevenly; the parts with smaller squares get more of the picture's
+  detail.
+- A part where the colors run the other way round is mirrored.
 
-For the layout itself rather than its effect on the surface, use the
-[UV workspace](../uv.md); for where the layout is cut, [UV Seams](uv-seams.md).
+To look at the flat layout itself rather than how it lands on the surface,
+use the [UV workspace](../uv.md). To see where the layout is cut, use
+[UV Seams](uv-seams.md).

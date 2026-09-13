@@ -78,7 +78,7 @@ fn material_inspector(ui: &mut egui::Ui, state: &UiState, index: usize) -> Inspe
     let mut out = InspectorOutput::default();
 
     let title = if snapshot.name.is_empty() {
-        review_l10n::tr(keys::ui_inspector::MATERIAL).into_owned()
+        review_localization::tr(keys::ui_inspector::MATERIAL).into_owned()
     } else {
         snapshot.name.clone()
     };
@@ -451,7 +451,7 @@ fn pool_name(path: &Path) -> String {
     path.file_name()
         .and_then(|name| name.to_str())
         .map(str::to_owned)
-        .unwrap_or_else(|| review_l10n::tr(keys::ui_inspector::NO_TEXTURE).into_owned())
+        .unwrap_or_else(|| review_localization::tr(keys::ui_inspector::NO_TEXTURE).into_owned())
 }
 
 /// Lazily build + cache a small egui texture thumbnail for a pooled image. Cached

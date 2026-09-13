@@ -81,9 +81,9 @@ fn main() {
 /// message the chrome shares — each of which the compiler would then report as
 /// dead code here, drowning the one warning that matters.
 fn generate_message_keys() {
-    let locales = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../l10n/locales");
+    let locales = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../localization/locales");
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
-    if let Err(error) = review_l10n_build::generate_keys(&locales, &["app-"], &out) {
+    if let Err(error) = review_localization_build::generate_keys(&locales, &["app-"], &out) {
         panic!("localization catalog: {error}");
     }
 }

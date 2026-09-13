@@ -1,38 +1,41 @@
 # Operations
 
-The stack is ordered and can be reordered; operations apply top to bottom, and
-each can be switched off without deleting it.
+An operation is one step that changes the model. You build a list of them, and
+they run from top to bottom. You can drag them into a different order, and you
+can switch one off without removing it, which is handy for comparing the result
+with and without it.
 
 | Operation | What it does |
 | --- | --- |
-| **Weld Vertices** | Widens what counts as a match beyond the exact merge every run already does, by dropping normals, UVs or colors from the comparison, or allowing a small tolerance. This one *does* change the mesh. |
-| **Filter Triangles** | Removes broken triangles (two corners at one position) and exact duplicates. Duplicates wound the other way are kept, for double-sided geometry. |
-| **Prune Components** | Removes disconnected pieces below a size threshold: stray shells and orphaned faces. |
-| **Reduce** | [Simplifies](simplify.md) the mesh **in place**. Its output is what every later operation sees, what LOD levels start from, and what the export writes in the source mesh's place. |
-| **Generate LODs** | Fans out into a LOD chain. Operations above it run once on the base mesh; operations below it run on every generated level. At most one per stack. The default chain is three levels at 50%, 25% and 12.5%. |
-| **Bake AO to Vertex Colors** | [Raycast ambient occlusion](ao.md) baked into the vertex-color set. Changes no geometry. |
-| **Optimize Vertex Cache** | Reorders triangles for the GPU's vertex cache. Watch ACMR and ATVR. |
-| **Optimize Overdraw** | Reorders triangles front to back within cache-friendly clusters, so the GPU shades fewer hidden pixels. |
-| **Optimize Vertex Fetch** | Reorders vertices into the order the index buffer reads them, and drops anything unreferenced. |
+| **Weld Vertices** | Joins points that sit in the same place. Every run already joins points that match in every way; this operation goes further, by ignoring the shading direction, the texture layout or the colors when comparing, or by allowing a small gap. This one *does* change the model. |
+| **Filter Triangles** | Removes broken triangles (ones squashed into a line) and exact copies of other triangles. Copies that face the other way are kept, because that is how double-sided surfaces are made. |
+| **Prune Components** | Removes small loose pieces below a size you choose: stray shells, and single faces left floating around by mistake. |
+| **Reduce** | [Simplifies](simplify.md) the model **in place**. Every operation below it works on the simplified model, LOD levels start from it, and the export saves it in place of the original. |
+| **Generate LODs** | Makes a chain of simpler copies of the model (levels of detail) for a game to show at a distance. Operations above it run once on the base model; operations below it run on every level. You can only have one in the list. The starting chain is three levels at 50%, 25% and 12.5%. |
+| **Bake AO to Vertex Colors** | Works out [soft shadows](ao.md) for each point and stores them as colors on the points. Does not change the shape. |
+| **Optimize Vertex Cache** | Reorders the triangles so the graphics card can reuse work it has just done. Watch the ACMR and ATVR numbers. |
+| **Optimize Overdraw** | Reorders the triangles so nearer ones tend to be drawn first, and the graphics card wastes less effort on parts that end up hidden. |
+| **Optimize Vertex Fetch** | Reorders the points into the order they are read, and removes any point nothing uses. |
 
 ## The three reorder operations
 
-Optimize Vertex Cache, Optimize Overdraw and Optimize Vertex Fetch change nothing
-you can see in the viewport. What they change is on the second stats card: ACMR
-and ATVR for the cache, overdraw for the pixel cost, overfetch for the vertex
-buffer read pattern. Reading those figures is the only way to judge them, which is
-why the card is up before you add anything.
+Optimize Vertex Cache, Optimize Overdraw and Optimize Vertex Fetch change
+nothing you can see. What they change shows up on the second stats card: ACMR
+and ATVR for how well the graphics card reuses its work, Overdraw for wasted
+painting, and Overfetch for how tidily the model's data is read. Reading those
+numbers is the only way to judge them, which is why the card is there before
+you add anything.
 
-A reorder that moved nothing is a reorder worth removing.
+A reorder that did not move any of those numbers is one you can remove.
 
 ## What survives an operation
 
-Everything the stack did not change is carried through: the source's faces and
-edges with their smoothing, crease, hole, group and visibility layers, extra
-color sets, vertex creases, skin weights and extra skin layers, and blend-shape
-offsets.
+Everything an operation does not change is carried through: the original
+faces and edges with their smoothing, crease, hole, group and visibility
+settings, extra color sets, vertex creases, bone weights, and blend shape data.
 
-Operations keep them by class. One that keeps triangles whole (filter, prune, the
-reorders) reconciles the polygon data by triangle content and drops faces that
-lost a triangle. A simplify clears it, and the [export](export.md) writes that
-level as triangles with a note naming the operation that did it.
+Each kind of operation handles that in its own way. One that keeps triangles
+whole (filter, prune, the reorders) keeps the original faces and simply drops
+any face that lost a triangle. A simplify throws the original faces away,
+because it rebuilds the surface, and the [export](export.md) saves that level
+as triangles with a note saying which operation was responsible.

@@ -1,18 +1,23 @@
 # The Texture workspace
 
-A 2D image viewer over the scene texture pool, drawn through its own small GPU
-path outside the scene's HDR and tone-mapping work, so the pixel on screen equals
-the pixel in the file.
+This is a simple picture viewer for the textures in your scene. It shows each
+image exactly as it is stored in the file, with none of the lighting or color
+processing the 3D view applies, so what you see on screen is what is really in
+the file.
 
-- A texture picker for the pool.
-- **RGB / R / G / B / A** channel isolation. It is a shader swizzle, so switching
-  is instant. The alpha segment hides itself for an opaque image.
-- Mipmapped, with pan (left-drag), zoom (wheel or right-drag), and `F` to fit.
-- Background fill: black, white, grey or checker.
-- A stats panel reporting the file's real properties: format, pixel dimensions,
-  channel layout, bit depth and size on disk.
+- A picker to choose any texture in the pool.
+- **RGB / R / G / B / A** buttons to look at all the colors together, or just
+  one channel at a time. Switching is instant. The A (alpha) button hides
+  itself when the image has no see-through channel.
+- Left-drag slides the image, the wheel or right-drag zooms, and `F` fits it to
+  the window.
+- A background choice: black, white, grey, or a checkerboard. The checkerboard
+  shows through any see-through parts, which is the easiest way to see what the
+  alpha channel is doing.
+- A stats card with the real facts about the file: its type, its size in
+  pixels, which channels it has, its bit depth, and how big it is on disk.
 
-Because the displayed texel equals the stored texel, this is the view to use when
-checking whether a normal map's blue channel is what you expect, whether an
-alpha channel is actually populated, or whether a mask ended up in the channel
-the material is reading.
+Because nothing is changed on the way to the screen, this is the place to
+check things like: is the blue channel of a normal map what you expect? Is the
+alpha channel actually filled in? Did a mask end up in the channel the material
+is reading from?

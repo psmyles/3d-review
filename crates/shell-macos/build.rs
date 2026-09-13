@@ -8,10 +8,10 @@
 fn main() {
     #[cfg(target_os = "macos")]
     {
-        let locales = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../l10n/locales");
+        let locales = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../localization/locales");
         let out =
             std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
-        if let Err(error) = review_l10n_build::generate_keys(&locales, &["menu-"], &out) {
+        if let Err(error) = review_localization_build::generate_keys(&locales, &["menu-"], &out) {
             panic!("localization catalog: {error}");
         }
     }

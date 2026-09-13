@@ -6,7 +6,7 @@
 //! variant, or a function reference Fluent does not know, parses fine and fails
 //! only when someone opens the screen that shows it.
 
-use review_l10n::{FluentArgs, FluentValue, catalog};
+use review_localization::{FluentArgs, FluentValue, catalog};
 
 /// Format every message once with string arguments and once with numbers.
 ///
@@ -16,7 +16,7 @@ use review_l10n::{FluentArgs, FluentValue, catalog};
 /// silently choosing the wrong branch.
 #[test]
 fn every_message_formats_in_every_locale() {
-    for locale in review_l10n::available_locales() {
+    for locale in review_localization::available_locales() {
         // `init` is a `OnceLock`, so a test binary gets one locale. The
         // negotiation is exercised in the unit tests; here English is enough,
         // because a message that fails to format fails in every locale.
@@ -35,8 +35,8 @@ fn every_message_formats_in_every_locale() {
                 args.set(*variable, value);
             }
 
-            let key = review_l10n::Key::new(message.id, message.attr);
-            let text = review_l10n::tr_args(key, &args);
+            let key = review_localization::Key::new(message.id, message.attr);
+            let text = review_localization::tr_args(key, &args);
 
             assert_ne!(
                 text,

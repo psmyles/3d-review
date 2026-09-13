@@ -1,39 +1,42 @@
 # Buffers
 
-Draws a single material or geometry input straight to the screen, skipping
-lighting and tone mapping so the pixel you see is the value itself.
+A shaded pixel is made from several ingredients, such as the base color, the
+normal map and the roughness. The Buffers view shows one of those ingredients
+on its own, with no lighting and no color processing, so the value you see on
+screen is the raw value.
 
-Clicking the toolbar button again cycles through the buffers; this panel picks
-one directly.
+Clicking the toolbar button again moves to the next ingredient. This panel
+lets you pick one directly.
 
 ## What each buffer shows
 
 | Buffer | What it is |
 | --- | --- |
-| Base Color | The albedo the material feeds the shader, after any texture and tint. |
-| Normal (World) | The final shading normal, after the normal map. |
-| Normal Map (Tangent) | The raw authored normal map, before it is applied. |
-| Geometric Normal | The interpolated mesh normal, with no map applied. |
-| Tangent | The tangent basis the normal map is applied through. |
-| Roughness | The roughness the shader uses; labelled Smoothness on a material set to that workflow. |
-| Metallic | The metalness value. |
-| Ambient Occlusion | The material's own AO map, not the screen-space effect. |
-| Emission | The emissive contribution. |
-| Opacity | The alpha the transparency mode reads. |
-| UV | The UV coordinates as color, so wrapping and mirroring are visible. |
+| Base Color | The plain surface color, after any texture and tint. |
+| Normal (World) | The final direction the surface faces at each pixel, after the normal map has been applied. This is what the lighting uses. |
+| Normal Map (Tangent) | The raw normal map picture, exactly as painted, before it is applied. |
+| Geometric Normal | The direction the model's own surface faces, with no normal map at all. |
+| Tangent | The helper directions the normal map is applied through. |
+| Roughness | How rough the surface is; shown as Smoothness on a material that uses that instead. |
+| Metallic | How metal-like the surface is. |
+| Ambient Occlusion | The material's own baked shadow map, not the live effect in the viewport. |
+| Emission | How much the surface glows. |
+| Opacity | How see-through the surface is, which the transparency mode reads. |
+| UV | The texture layout coordinates shown as color, so you can see wrapping and mirroring. |
 
-## Diagnosing a normal map
+## Tracking down a bad normal map
 
-Offering the final shading normal, the raw map, the geometric normal and the
-tangent side by side is what lets a misbehaving normal map be pinned down.
+A normal map is a picture that fakes small bumps and dents in a surface. When
+one looks wrong, seeing the final normal, the raw map, the geometric normal
+and the tangent side by side is what lets you find out why:
 
-- If Geometric Normal looks right and Normal (World) does not, the map or the
+- If Geometric Normal looks right but Normal (World) does not, the map or the
   tangents are the problem.
-- If Normal Map (Tangent) is mostly flat blue where you expect detail, the wrong
-  file or the wrong channel is bound.
-- If the lighting looks inverted along one axis only, it is the green-channel
-  convention (DirectX against OpenGL).
-- If Tangent is black or noisy, the mesh arrived without usable tangents.
+- If Normal Map (Tangent) is mostly a flat blue where you expect detail, the
+  wrong file or the wrong channel is plugged in.
+- If the lighting looks inside-out along one direction only, the green channel
+  is the other way round (DirectX style against OpenGL style).
+- If Tangent is black or noisy, the model came in without usable tangents.
 
-Color buffers are sRGB-encoded for display; the rest are written raw, so a 0.5
-scalar reads as mid-grey.
+Colors are shown the way a picture would be; plain numbers are shown as-is,
+so a value of 0.5 comes out as mid-grey.

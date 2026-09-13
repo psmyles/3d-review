@@ -1,43 +1,52 @@
 # Rendering quality
 
-The renderer works in linear HDR with reversed-Z depth, drawing into offscreen
-buffers that a fullscreen composite pass resolves. The status-bar group on the
-right controls it: left-click toggles or cycles, right-click opens the options.
+These are the settings that decide how nice the picture looks: the lighting,
+the soft shadows, how bright colors are handled, and how jagged edges are
+smoothed. They live in the group of buttons on the right of the status bar.
+Left-click a button to turn it on or off, or to step through its choices.
+Right-click it to open its options.
 
 ## Image-based lighting
 
-Six baked HDR environments, each with a preview thumbnail in the dropdown.
-Optional skybox background, an intensity multiplier, and a live 0-360 degree
-environment rotation that is applied while sampling and never rebuilds the maps.
-The lighting maps are baked ahead of time and ship block-compressed, so startup
-does no precompute. See [Environment](panels/environment.md).
+The model is lit by a photo of a real place wrapped all around it, which is
+what gives it natural-looking soft light and reflections. There are six of
+these environments to choose from, each with a small preview picture in the
+dropdown. You can show the environment behind the model as a backdrop, make it
+brighter or dimmer, and spin it around the model. Spinning is instant, so it is
+a nice way to see the model lit from different sides. See
+[Environment](panels/environment.md).
 
 ## Ambient occlusion
 
-Horizon-based occlusion over its own normal and depth buffer, with a prefiltered
-depth chain for distant samples and an edge-aware denoise. The radius follows
-what the viewport is showing rather than how big the file is, so it looks the
-same on a 10 cm prop and a 10 km landscape.
+Ambient occlusion adds the soft shadows you see in corners, creases and
+anywhere light has trouble reaching. It makes a model look grounded and solid.
 
-Whenever the view is still it keeps averaging frames and settles to a clean
-result in about half a second, then stops drawing entirely - so an idle viewer
-showing ambient occlusion costs less than one without it, not more. It darkens
-only the ambient light, so direct and emissive light are never dimmed. On by
-default. See [Ambient Occlusion](panels/ambient-occlusion.md).
+The size of the effect follows what you are looking at rather than how big the
+file is, so it looks right on a tiny prop and on a huge landscape alike.
+
+While the view is still, the viewer keeps refining the shadows and settles on a
+clean result in about half a second, then stops working on them entirely. So a
+viewer sitting idle with this on costs less than one without it, not more. It
+only darkens the soft surrounding light, never direct light or glowing parts.
+It is on to begin with. See [Ambient Occlusion](panels/ambient-occlusion.md).
 
 ## Tone mapping
 
-Khronos PBR Neutral, Linear, Reinhard, ACES or AgX, applied to the linear
-radiance before sRGB encoding. Turning it off is a straight pass-through. On by
-default. See [Tonemapper](panels/tonemapper.md).
+Real light has a far wider range of brightness than a screen can show. Tone
+mapping is the recipe that squeezes that range into what your screen can
+display. You can choose between several recipes: Khronos PBR Neutral, Linear,
+Reinhard, ACES and AgX. Turning it off shows the raw values. It is on to begin
+with. See [Tonemapper](panels/tonemapper.md).
 
 ## Anti-aliasing
 
-Scene MSAA at 2x, 4x, 8x or 16x. Levels the current GPU cannot render are left
-out of the menu rather than offered and failing, so Apple silicon shows up to 4x
-and a Windows GPU usually shows all of them. See
+Anti-aliasing smooths the jagged, stair-step look of edges. You can pick 2x,
+4x, 8x or 16x; higher is smoother but costs more. Only the levels your
+graphics card can handle are listed, so a Mac with Apple silicon shows up to 4x
+and a Windows PC usually shows all of them. See
 [Anti Aliasing](panels/anti-aliasing.md).
 
 ## Viewport background
 
-Black, three greys, white, or a gradient. See [Background](panels/background.md).
+Black, three shades of grey, white, or a soft gradient. See
+[Background](panels/background.md).

@@ -59,7 +59,7 @@ fn view_row(ui: &mut egui::Ui, view: &mut BufferView, smoothness: bool) {
 
 /// The buffer's menu label, with the Roughness entry shown as "Smoothness" when the
 /// Smoothness workflow is in effect (see [`shows_smoothness`]).
-fn buffer_label(option: BufferView, smoothness: bool) -> review_l10n::Key {
+fn buffer_label(option: BufferView, smoothness: bool) -> review_localization::Key {
     let workflow = if smoothness {
         RoughnessWorkflow::Smoothness
     } else {

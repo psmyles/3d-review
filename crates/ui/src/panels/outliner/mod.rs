@@ -160,7 +160,7 @@ fn header_controls(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData) {
                 }
                 let shown = !state.outliner.hidden_kinds.contains(&kind);
                 let kind_tip = Tip::new(keys::ui_outliner::filter_kind(
-                    review_l10n::tr(labels::node_kind(kind)).into_owned(),
+                    review_localization::tr(labels::node_kind(kind)).into_owned(),
                 ))
                 .describe(keys::ui_outliner::FILTER_KIND_DESCRIPTION)
                 .page(Page::OutlinerInspector);

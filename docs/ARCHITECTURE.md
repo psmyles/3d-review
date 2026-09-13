@@ -494,14 +494,14 @@ unit (`UnitScale`), since import normalizes every file to meters.
 test-only scene exercising every writer patch; `tests/ufbxw_patches.rs` reads it
 back through ufbx.
 
-### `l10n` — `review-l10n` and `l10n-build` — `review-l10n-build`
+### `localization` — `review-localization` and `localization-build` — `review-localization-build`
 
 The localization system behind invariant 12, split in two because the typed
 message keys have to be generated *inside* each consuming crate: an unused `pub
 const` in a library warns about nothing, but an unused private one is `dead_code`,
 and that is what stops the catalog filling up with messages no screen shows.
 
-`review-l10n` is the runtime — `Key`, `tr`, `tr_args`, `init`, the negotiated
+`review-localization` is the runtime — `Key`, `tr`, `tr_args`, `init`, the negotiated
 bundle chain, and the embedded catalogs. Its `build.rs` embeds every locale's
 `.ftl` files and cross-checks each translation against English: an id English does
 not define, or a message whose variables differ from the English ones, fails the
@@ -510,14 +510,14 @@ is off, because the isolation marks Fluent brackets variables in have no glyph i
 either bundled font, and the bundle is built with `new_concurrent`, because the
 default one memoizes in a `RefCell` and a `OnceLock` cannot hold a `!Sync` value.
 
-`review-l10n-build` is the parser, used by every consumer's `build.rs`. It depends
+`review-localization-build` is the parser, used by every consumer's `build.rs`. It depends
 on `fluent-syntax` alone — a build script should compile the parser and nothing
 else — and it is the same parser the runtime loads through, so "it built" means
 "it loads". `generate_keys` writes a `Key` const per message and attribute, plus a
 typed formatter for every message that takes variables, so a missing argument is a
 compile error rather than a `{$name}` left in the text.
 
-The English catalog is `crates/l10n/locales/en/*.ftl`, one file per area. Every
+The English catalog is `crates/localization/locales/en/*.ftl`, one file per area. Every
 id is prefixed with its file's stem: that is what keeps ids unique inside the one
 flat bundle, what the generated const name drops, and what lets one catalog serve
 three crates without handing each of them the others' keys (`ui` takes `common-`
@@ -718,16 +718,16 @@ never means two different structs.
 **12. No inline user-visible strings; one documentation source.** Every string a
 user can read — a label, a tooltip, a panel title, a notice, a dialog title or
 filter, the window title, a menu item — is a Fluent message in
-`crates/l10n/locales/<lang>/*.ftl`, reached through a **generated typed key**
+`crates/localization/locales/<lang>/*.ftl`, reached through a **generated typed key**
 (`keys::<file>::NAME`, or the typed formatter for a message that takes variables),
 never a literal at the call site.
 
-`review-l10n-build` turns the English catalog into those keys inside each
+`review-localization-build` turns the English catalog into those keys inside each
 consuming crate at build time, so a key that does not exist is a compile error and
 one that nothing names is a `dead_code` warning that `-D warnings` turns into a
-failed build. `crates/l10n/tests/no_inline_strings.rs` parses `ui`, `app` and
+failed build. `crates/localization/tests/no_inline_strings.rs` parses `ui`, `app` and
 `shell-macos` and fails on a literal handed to any text sink; a literal that
-genuinely is not user-visible is marked `// l10n: exempt <reason>`.
+genuinely is not user-visible is marked `// localization: exempt <reason>`.
 
 Widgets take `impl Into<egui::WidgetText>`, into which a `Key` converts, and a
 runtime value — a file name, a count — is formatted *through* a message with a
@@ -735,7 +735,7 @@ variable rather than concatenated beside one. A control's tooltip is a `Tip`: a
 title, a paragraph saying what the control is for, and a link to its manual page.
 
 **Catalog and manual are written in characters a keyboard can type**, and two
-tests keep them that way (`l10n/tests/typeable_characters.rs`,
+tests keep them that way (`localization/tests/typeable_characters.rs`,
 `help_pages.rs::every_page_is_typeable_ascii`): a hyphen for every dash, three
 dots for an ellipsis, `x` for a multiplication sign. Typographic punctuation
 cannot be typed by whoever edits the line next, so it comes back mixed with the
@@ -748,7 +748,7 @@ they stand in for icons and have no ASCII form that does not look broken.
 **A catalog is wrapped for reading, and the runtime unwraps it.** Fluent keeps
 every newline a multiline value was written with, so a description wrapped at the
 file's margin arrived as hard lines and broke a tooltip a third of the way across
-its width. `review_l10n`'s `unwrap_source_wrapping` applies markdown's rule
+its width. `review_localization`'s `unwrap_source_wrapping` applies markdown's rule
 instead: a single newline is the source's wrapping and becomes a space, a blank
 line is a deliberate paragraph break and survives. Text reaches a widget as one
 run and the widget breaks it where it actually runs out of room.

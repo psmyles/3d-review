@@ -56,11 +56,11 @@ pub(crate) fn install(
         &[
             &PredefinedMenuItem::about(Some(&keys::menu::about(product)), Some(metadata)),
             &PredefinedMenuItem::separator(),
-            &PredefinedMenuItem::services(Some(&review_l10n::tr(keys::menu::SERVICES))),
+            &PredefinedMenuItem::services(Some(&review_localization::tr(keys::menu::SERVICES))),
             &PredefinedMenuItem::separator(),
             &PredefinedMenuItem::hide(Some(&keys::menu::hide(product))),
-            &PredefinedMenuItem::hide_others(Some(&review_l10n::tr(keys::menu::HIDE_OTHERS))),
-            &PredefinedMenuItem::show_all(Some(&review_l10n::tr(keys::menu::SHOW_ALL))),
+            &PredefinedMenuItem::hide_others(Some(&review_localization::tr(keys::menu::HIDE_OTHERS))),
+            &PredefinedMenuItem::show_all(Some(&review_localization::tr(keys::menu::SHOW_ALL))),
             &PredefinedMenuItem::separator(),
             &PredefinedMenuItem::quit(Some(&keys::menu::quit(product))),
         ],
@@ -68,18 +68,18 @@ pub(crate) fn install(
     .ok()?;
 
     let file_menu = Submenu::with_items(
-        review_l10n::tr(keys::menu::FILE).as_ref(),
+        review_localization::tr(keys::menu::FILE).as_ref(),
         true,
         &[
             &MenuItem::with_id(
                 ID_NEW,
-                review_l10n::tr(keys::menu::NEW),
+                review_localization::tr(keys::menu::NEW),
                 true,
                 accelerator(Code::KeyN),
             ),
             &MenuItem::with_id(
                 ID_OPEN,
-                review_l10n::tr(keys::menu::OPEN),
+                review_localization::tr(keys::menu::OPEN),
                 true,
                 accelerator(Code::KeyO),
             ),
@@ -92,11 +92,11 @@ pub(crate) fn install(
     // would be inventing a feature rather than porting one. Minimize and Zoom are
     // both pure AppKit.
     let window_menu = Submenu::with_items(
-        review_l10n::tr(keys::menu::WINDOW).as_ref(),
+        review_localization::tr(keys::menu::WINDOW).as_ref(),
         true,
         &[
-            &PredefinedMenuItem::minimize(Some(&review_l10n::tr(keys::menu::MINIMIZE))),
-            &PredefinedMenuItem::maximize(Some(&review_l10n::tr(keys::menu::ZOOM))),
+            &PredefinedMenuItem::minimize(Some(&review_localization::tr(keys::menu::MINIMIZE))),
+            &PredefinedMenuItem::maximize(Some(&review_localization::tr(keys::menu::ZOOM))),
         ],
     )
     .ok()?;

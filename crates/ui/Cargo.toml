@@ -19,7 +19,7 @@ review-model = { path = "../model" }
 review-optimize = { path = "../optimize" }
 # `Key` and `tr`; the `egui` feature is what lets a key be handed straight to a
 # widget as an `impl Into<WidgetText>`.
-review-l10n = { workspace = true, features = ["egui"] }
+review-localization = { workspace = true, features = ["egui"] }
 # The shared guarded Tracy helpers, for the per-frame UI CPU zones (Draw Viewport
 # Scene / Draw Overlay); carries `tracy-client` itself, so this crate needs no
 # direct dependency on it.
@@ -28,7 +28,7 @@ review-render = { path = "../render" }
 
 [build-dependencies]
 # Generates `keys.rs` (the typed message keys) into this crate's OUT_DIR.
-review-l10n-build.workspace = true
+review-localization-build.workspace = true
 # Records where each manual page's images and intra-book links sit, so the Help
 # window resolves them without parsing markdown per frame.
 pulldown-cmark.workspace = true

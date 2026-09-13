@@ -1,28 +1,29 @@
 # Bounding Box
 
-Draws the axis-aligned bounding box with live dimension labels along its edges.
-The labels are correctly hidden when the mesh is in front of them, so they stay
-readable from any angle.
+Draws a box that just fits around the model, with its width, height and depth
+written along the edges. The labels hide behind the model when it is in front
+of them, so they stay easy to read from any angle.
 
 ## Settings
 
-**Scope** - which meshes the box encloses:
+**Scope** - which parts the box wraps around:
 
-- *All Meshes* - every mesh in the file.
-- *Only Selection* - the current Outliner selection.
-- *Only Visible* - everything the Outliner is still showing.
+- *All Meshes* - everything in the file.
+- *Only Selection* - just what you have selected in the Outliner.
+- *Only Visible* - everything that is still showing.
 
-**Color** - the box's edge color.
+**Color** - the color of the box's lines.
 
 ## Notes
 
-The dimensions are in meters. Import normalizes every file to meters regardless
-of what the source declared; the [stats panel](../stats.md) reports the unit the
-file itself claimed, which is where scale mismatches come from.
+The sizes are in meters. The viewer converts every file to meters no matter
+what unit the file says it uses. The [stats card](../stats.md) tells you what
+the file claimed, which is where a model that comes in a hundred times too big
+or too small usually gets its problem.
 
-While an animation clip is selected the box covers that clip's whole range of
-motion rather than the current frame, matching what `F` frames. See
+While an animation is selected, the box wraps the whole area the animation
+moves through, not just the current pose, to match what `F` frames. See
 [Skinning and animation](../animation.md).
 
-In the Opt workspace's split layout each half gets its own box, measured on the
-mesh that half is showing.
+In the Opt workspace's split view each half gets its own box, measured on the
+model that half is showing.

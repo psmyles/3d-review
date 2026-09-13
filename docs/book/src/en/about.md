@@ -1,28 +1,31 @@
 # About
 
-3D Review is a native FBX audit viewer and mesh optimizer for game assets.
+3D Review is a viewer for FBX models made for games, with a built-in tool for
+making them lighter to draw.
 
-It is written in Rust on `winit` for the window, `sokol_gfx` for the GPU work
-(Direct3D 11 on Windows, Metal on macOS), `egui` for the overlay interface, and
-vendored `ufbx` for FBX reading. There is no web layer and no Electron.
+It is written in the Rust programming language. It uses `winit` for the
+window, `sokol_gfx` to talk to the graphics card (through Direct3D 11 on
+Windows and Metal on macOS), `egui` for the buttons and panels, and `ufbx` to
+read FBX files. There is no web browser hidden inside it.
 
 ## Open source components
 
-The viewer builds several third-party libraries from vendored source:
+The viewer is built with the help of these open source projects:
 
 | Component | What it does |
 | --- | --- |
-| [ufbx](https://github.com/ufbx/ufbx) | FBX reading |
-| [ufbx_write](https://github.com/ufbx/ufbx-write) | FBX writing, for the Opt export |
-| [meshoptimizer](https://github.com/zeux/meshoptimizer) | The Opt operations |
-| [psd_sdk](https://github.com/MolecularMatters/psd_sdk) | PSD decoding |
-| [sokol](https://github.com/floooh/sokol) | The graphics API layer |
-| [egui](https://github.com/emilk/egui) | The user interface |
+| [ufbx](https://github.com/ufbx/ufbx) | Reads FBX files |
+| [ufbx_write](https://github.com/ufbx/ufbx-write) | Writes FBX files, for the Opt export |
+| [meshoptimizer](https://github.com/zeux/meshoptimizer) | The operations in the Opt workspace |
+| [psd_sdk](https://github.com/MolecularMatters/psd_sdk) | Reads Photoshop PSD files |
+| [sokol](https://github.com/floooh/sokol) | Talks to the graphics card |
+| [egui](https://github.com/emilk/egui) | Draws the buttons and panels |
 
 The bundled typefaces are Inter and JetBrains Mono.
 
 ## Reporting a problem
 
-The version and graphics backend this build is running are shown at the bottom of
-this window. Quoting both, along with the exact text of any error message, is
-what makes a report actionable.
+The version number and the graphics system this build is using are shown at
+the bottom of this window. If something goes wrong, please quote both, along
+with the exact text of any error message. That is what lets us find and fix the
+problem.

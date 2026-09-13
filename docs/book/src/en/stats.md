@@ -1,32 +1,37 @@
 # Model statistics
 
-A panel of measured counts that can be toggled on and off. Every figure is a real
-measured value: there are no placeholder rows, and the counts the DCC package
-recorded are reported rather than post-triangulation render counts.
+The stats card is a small panel of numbers about the model. You can show or
+hide it from the status bar. Every number on it is really measured: there are
+no placeholders, and the counts come from the file as the artist made it, not
+from what the viewer does to draw it.
 
-Draws, Polys, Tris, Verts, GPU Verts, Vtx Splits, UV Sets, Bones, Clips, Unit,
-FPS.
+The rows are: Draws, Polys, Tris, Verts, GPU Verts, Vtx Splits, UV Sets,
+Bones, Clips, Unit, FPS.
 
-Hovering a row explains what it measures. Clicking one copies it to the
-clipboard.
+Hover over a row to see what it means. Click a row to copy it.
 
 ## Verts against GPU Verts
 
-`Verts` is the file's own vertex count - the number your DCC's stats show. It
-ignores the extra vertices that hard edges and UV seams force the GPU to store.
+`Verts` is the number of points in the model, counted the way your modelling
+program counts them.
 
-`GPU Verts` is the engine cost: unique vertices per draw group, one per distinct
-combination of position, normal, UVs and color.
+`GPU Verts` is the number of points a game would really have to store. Where
+two faces meet at a sharp edge, or where the texture layout is cut, the
+graphics card needs a separate copy of the point for each side. So this number
+is usually bigger.
 
-`Vtx Splits` is the gap between them, as a percentage. This is the figure an
-audit exists to surface. A healthy game asset reads a few percent; a scan with
-per-face normals reads several hundred.
+`Vtx Splits` is the gap between the two, as a percentage. This is one of the
+most useful numbers on the card. A well-made game model reads a few percent. A
+model where every face has its own shading, such as a 3D scan, can read
+several hundred percent, which means it is far heavier for a game than its
+Verts count suggests.
 
 ## Scopes
 
-The three columns are the whole file, the current selection, and whatever is
-still visible. A row with nothing to say for a scope shows a hyphen, never a
-zero.
+The card has three columns: the whole file, whatever you have selected, and
+whatever is still visible. When a row has nothing to say for a column, it
+shows a dash rather than a zero.
 
 The [Opt workspace](opt/comparison.md) adds a second card with the processed
-mesh's counts and the GPU-behaviour figures beside them.
+model's numbers, and some extra figures about how efficiently a graphics card
+can draw it.

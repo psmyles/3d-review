@@ -546,7 +546,7 @@ fn describe_export(ui: &mut egui::Ui, options: ExportOptions, levels: usize) {
     // source asset — so neither packaging has anything to suffix, and naming a
     // "_LOD0" would describe a file the export does not write.
     let packaging = match options.packaging {
-        _ if levels == 1 => review_l10n::tr(keys::ui_opt::PACKAGING_SINGLE_ONE_LEVEL).into_owned(),
+        _ if levels == 1 => review_localization::tr(keys::ui_opt::PACKAGING_SINGLE_ONE_LEVEL).into_owned(),
         LodPackaging::SingleFileSuffixed => {
             keys::ui_opt::packaging_single_explained((levels - 1) as f64)
         }

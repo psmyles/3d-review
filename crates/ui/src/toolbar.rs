@@ -632,7 +632,7 @@ fn segmented_mode_control(ui: &mut egui::Ui, mode: &mut WorkspaceMode) {
 
 fn mode_segment(ui: &mut egui::Ui, mode: &mut WorkspaceMode, value: WorkspaceMode) {
     let width = size::MODE_SEGMENT_WIDTH;
-    let label = review_l10n::tr(labels::workspace(value));
+    let label = review_localization::tr(labels::workspace(value));
     if segment_button(ui, label.as_ref(), *mode == value, width).clicked() {
         *mode = value;
     }
@@ -669,7 +669,7 @@ fn draw_texture_channel_group(ui: &mut egui::Ui, state: &mut UiState) {
                 continue;
             }
             let selected = state.texture_view.channel == channel;
-            let label = review_l10n::tr(channel.label());
+            let label = review_localization::tr(channel.label());
             if segment_button(ui, label.as_ref(), selected, segment_w).clicked() {
                 state.texture_view.channel = channel;
             }

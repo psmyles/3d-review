@@ -13,7 +13,7 @@
 //! so the link is genuinely reachable rather than vanishing as the pointer
 //! leaves the button.
 
-use review_l10n::Key;
+use review_localization::Key;
 
 use crate::docs::Page;
 use crate::help;
@@ -22,7 +22,7 @@ use crate::theme::{color, size};
 
 /// What a control's tooltip says.
 ///
-/// Built from [`review_l10n::Key`]s in the common case, but the title and body
+/// Built from [`review_localization::Key`]s in the common case, but the title and body
 /// take anything that converts into an `egui::WidgetText`, so a tooltip that has
 /// to name a file or fold in the platform's modifier passes the formatted string
 /// a typed message formatter gave it.

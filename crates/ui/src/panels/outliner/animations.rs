@@ -81,7 +81,7 @@ pub(super) fn animations_tab(ui: &mut egui::Ui, state: &mut UiState, model: &Mod
                         format!("{fps:.0}"),
                         format!("{duration:.2}"),
                     ),
-                    review_l10n::tr(keys::ui_outliner::CLIP_TOOLTIP_DESCRIPTION),
+                    review_localization::tr(keys::ui_outliner::CLIP_TOOLTIP_DESCRIPTION),
                 ))
                 .page(Page::Animation),
         );

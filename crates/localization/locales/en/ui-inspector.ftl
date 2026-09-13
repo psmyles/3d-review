@@ -21,45 +21,51 @@ ui-inspector-relative-length = Relative length
 ## Skinning
 
 ui-inspector-skinning = Skinning
-    .description = The deformer method the file declared. Dual-quaternion skins are
-        evaluated as linear blends here, which is why they are named as such.
+    .description = The method the file asks for when bending the model around its bones.
+        The viewer shows every method as the simple linear kind, which is why some are
+        labelled that way.
 ui-inspector-max-influences = Max influences
-    .description = The most bones any one vertex is weighted to. Engines cap this - four
-        is the common limit, eight the generous one - and a mesh over the cap has its
-        smallest weights dropped on import.
+    .description = The largest number of bones that pull on any single point. Game engines
+        set a limit on this - four is common, eight is generous. If a model goes over
+        the limit, the weakest bones are dropped when it is loaded.
 ui-inspector-influenced-verts = Influenced verts
-    .description = How many vertices this bone moves at all.
+    .description = How many points this bone moves at all.
 ui-inspector-share-of-mesh = Share of mesh
-    .description = What fraction of the mesh's vertices this bone influences.
+    .description = What portion of the whole model this bone has some pull on.
 
 ## Material
 
 ui-inspector-material = Material
 ui-inspector-workflow = Workflow
-    .description = Native metallic-roughness, or Unity-style smoothness, where the slider
-        and any bound map read as smoothness and the shader flips them.
+    .description = Whether this material thinks in terms of roughness or smoothness. They
+        are opposites of each other. Some engines, like Unity, use smoothness, so you can
+        match that here and the viewer flips the values for you.
 ui-inspector-transparency = Transparency
-    .description = Opaque, alpha-blended, or alpha-clipped at a cutoff.
+    .description = Solid, softly see-through, or cut out sharply below a certain alpha
+        value.
 ui-inspector-cutoff = Cutoff
-    .description = The alpha below which a clipped material discards the pixel entirely.
+    .description = For the cut-out kind of transparency: any pixel whose alpha is below
+        this value is not drawn at all.
 ui-inspector-base-color = Base color
 ui-inspector-roughness = Roughness
 ui-inspector-smoothness = Smoothness
 ui-inspector-metallic = Metallic
-    .description = Read from the file's own metalness alone. A classic Lambert or Phong
-        material declares none, and its reflectivity slot is deliberately not read as
-        metalness - doing so made most real game assets arrive as mirrors.
+    .description = Read only from the file's own metalness value. Older material types
+        do not have one, and the viewer deliberately does not guess it from their
+        reflection setting - doing that made most real game models show up looking
+        like mirrors.
 ui-inspector-emissive = Emissive
 
 ## Textures
 
 ui-inspector-texture-mapping = Texture mapping
-    .description = Bind a pooled image and a channel to each PBR slot. Single-value slots
-        pick one channel, so an ORM-packed map can feed three slots from one file.
+    .description = Choose which image, and which color channel of it, feeds each part of
+        the material. Parts that need a single value take one channel, so one packed
+        image can feed three parts at once.
 ui-inspector-texture-files = Texture files
-    .description = The scene-wide pool. Each image is decoded once and shared by every
-        material that references it, and watched on disk so a save in your paint package
-        shows up here.
+    .description = All the images loaded for this scene. Each one is read once and shared
+        by every material that uses it. The viewer also watches them on disk, so when you
+        save a change in your paint program it shows up here.
 ui-inspector-add-textures = Add textures...
 ui-inspector-remove-texture = Remove texture
 ui-inspector-no-textures = No textures imported.

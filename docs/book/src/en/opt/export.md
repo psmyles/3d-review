@@ -1,40 +1,42 @@
 # Exporting
 
-An explicit export writes the chain to FBX through vendored `ufbx_write`.
+Nothing is saved until you ask. Exporting writes the processed model, and its
+chain of levels if there is one, to a new FBX file.
 
 ## Settings
 
-**Packaging** - one file holding `MeshName_LOD0` through `MeshName_LODn` as
-sibling nodes (the naming most engines detect automatically), or one file per
-level.
+**Packaging** - one file holding every level as parts named `MeshName_LOD0`
+through `MeshName_LODn` (the naming most game engines recognise on their
+own), or a separate file for each level.
 
-**Hierarchy** - rebuild the original node hierarchy so the export round-trips
-like the source asset, or write flat meshes with identity transforms.
+**Hierarchy** - rebuild the original tree of parts, so the exported file
+behaves just like the original, or write every part flat at the top level,
+placed where it sits in the world.
 
-**Format** - binary or ASCII FBX.
+**Format** - binary or text (ASCII) FBX.
 
-Files are written as FBX 7.7, in the source file's own unit.
+Files are written as FBX version 7.7, in the same unit the original file used.
 
 ## What the export keeps
 
-Everything the stack did not change:
+Everything the operations did not change:
 
-- **Geometry** - quads and n-gons survive wherever no operation rebuilt the
-  buffer. A simplified level is written as triangles, and the report says which
-  operation did it.
-- **Materials** - as authored, with their texture paths, embedded images and
-  layered textures.
-- **Hierarchy** - pivots, rotation orders, user properties, lights, cameras,
-  nulls and LOD groups.
-- **Deformation** - skins, bind poses, blend shapes and the original animation
+- **Shape** - four-sided and many-sided faces survive wherever no operation
+  rebuilt the surface. A simplified level is written as triangles, and the
+  report tells you which operation did it.
+- **Materials** - just as they were, with their texture paths, embedded images
+  and layered textures.
+- **Structure** - pivots, rotation orders, custom properties, lights, cameras,
+  empties and LOD groups.
+- **Rigging** - skeletons, bind poses, blend shapes and the original animation
   curves.
-- **Layers and metadata** - color sets, smoothing, creases, holes, polygon
-  groups, display layers, selection sets, and the scene's own settings.
+- **Extra data** - color sets, smoothing, creases, holes, polygon groups,
+  display layers, selection sets, and the scene's own settings.
 
-The export report lists only genuine losses.
+The export report lists only things that were genuinely lost.
 
 ## Presets
 
-An Opt stack saves and loads as a versioned JSON preset, carrying its operations,
-per-object overrides and export settings. That is what makes a stack shareable
-across a team and reusable across an asset class.
+A list of operations, with its per-object overrides and export settings, can
+be saved as a small preset file and loaded again later. That is what lets a
+team share one setup and reuse it across many models of the same kind.

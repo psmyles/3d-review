@@ -1,24 +1,27 @@
 # Wireframe
 
-Controls the edge overlay drawn on top of the filled surface. Toggle it from the
-toolbar or with the `` ` `` key; right-click the toolbar button for this panel.
+The wireframe is the set of lines that make up the model, drawn on top of the
+filled surface. Turn it on and off from the toolbar or with the `` ` `` key.
+Right-click the toolbar button to open this panel.
 
-The wireframe is a real depth-tested line draw inside the scene pass, not a
-post-process. Two things follow from that: edges on faces pointing away from you
-are correctly hidden by the mesh in front of them, and the scene's
-[antialiasing](anti-aliasing.md) smooths them along with everything else. The
-trade-off is that the line width is fixed at one hardware pixel.
+The lines are drawn as part of the model itself, not painted on afterwards.
+That has two nice results: lines on the far side of the model are hidden by
+the surface in front of them, just as they should be, and the edge smoothing
+from [Anti Aliasing](anti-aliasing.md) applies to them too. The one thing you
+give up is that the lines are always one pixel thick.
 
 ## Settings
 
-**Color** - the edge color. Changing it rebuilds nothing: the color is a shader
-uniform, so the drag is immediate even on a very heavy mesh.
+**Color** - the color of the lines. Changing it is instant, even on a very big
+model, so feel free to drag the color around until it stands out well against
+your surface.
 
 ## Notes
 
-The edge list is the one derived view the viewer keeps after you switch it off,
-because toggling the wireframe is a per-second gesture on exactly the models
-where rebuilding it costs most. It is stored as an index buffer over the mesh's
-own vertices, so a 250k-triangle asset holds about 6 MB for it.
+Most overlays are thrown away the moment you switch them off. The wireframe
+is the one exception: the viewer keeps its edge list, because people flip the
+wireframe on and off constantly, and rebuilding it costs the most on exactly
+the big models where you do that. It is stored compactly, so a model of a
+quarter of a million triangles keeps about 6 MB for it.
 
 See also [Shading and review modes](../shading.md).

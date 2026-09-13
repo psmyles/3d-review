@@ -3,7 +3,7 @@
 //! Every value shown is a real measured number carried through import in
 //! [`review_model::ModelStats`] (invariant 5) — never a placeholder.
 
-use review_l10n::Key;
+use review_localization::Key;
 use review_model::ScopeStats;
 
 use crate::docs::Page;
@@ -237,14 +237,14 @@ fn channel_label(channels: u8) -> String {
         4 => keys::ui_stats::CHANNELS_RGBA,
         _ => keys::ui_stats::UNMEASURED,
     };
-    review_l10n::tr(key).into_owned()
+    review_localization::tr(key).into_owned()
 }
 
 /// Format a byte count as a compact human-readable size (B / KB / MB / GB), the
 /// binary (1024) step the file managers use. `0` reads as "-" (size unknown).
 fn human_size(bytes: u64) -> String {
     if bytes == 0 {
-        return review_l10n::tr(keys::ui_stats::UNMEASURED).into_owned();
+        return review_localization::tr(keys::ui_stats::UNMEASURED).into_owned();
     }
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;
@@ -361,7 +361,7 @@ fn scope_heading_row(ui: &mut egui::Ui) {
                 paint_cell(
                     ui,
                     rect,
-                    &review_l10n::tr(scope.heading()),
+                    &review_localization::tr(scope.heading()),
                     color::TEXT_MUTED,
                 );
                 tip(
@@ -443,14 +443,14 @@ fn whole_model_row(ui: &mut egui::Ui, row: StatRow, value: &str) {
 /// The whole strip is one click target that copies the row — every column of it
 /// — to the clipboard, and the widget that carries the row's explanation.
 fn cells_row(ui: &mut egui::Ui, row: StatRow, cells: [Cell; 3]) {
-    let label = review_l10n::tr(row.label());
+    let label = review_localization::tr(row.label());
     // Only the columns that actually carry a value; a row with one is copied as
     // plainly as it reads on screen.
     let measured: Vec<String> = StatScope::ALL
         .iter()
         .zip(&cells)
         .filter_map(|(scope, cell)| match cell {
-            Cell::Value(value) => Some(format!("{} {value}", review_l10n::tr(scope.heading()))),
+            Cell::Value(value) => Some(format!("{} {value}", review_localization::tr(scope.heading()))),
             Cell::Unmeasured | Cell::NotScoped => None,
         })
         .collect();
@@ -540,9 +540,9 @@ pub(crate) fn processed_stats_grid(ui: &mut egui::Ui, state: &UiState) {
     // to be on: "Processed" alone leaves the reader to guess whether they are
     // looking at the simplified mesh or the level it was simplified from.
     let heading = match (level, result.levels.len()) {
-        (None, _) => review_l10n::tr(keys::ui_stats::SOURCE_NOTHING_APPLIED).into_owned(),
+        (None, _) => review_localization::tr(keys::ui_stats::SOURCE_NOTHING_APPLIED).into_owned(),
         (Some(_), count) if count > 1 => keys::ui_stats::processed_lod(state.opt.active_lod as f64),
-        (Some(_), _) => review_l10n::tr(keys::ui_stats::PROCESSED).into_owned(),
+        (Some(_), _) => review_localization::tr(keys::ui_stats::PROCESSED).into_owned(),
     };
     ui.label(mono_label(&heading, font::STATS, color::TEXT_PRIMARY));
     ui.add_space(size::STATS_ROW_SPACING);
@@ -619,7 +619,7 @@ fn delta_row(ui: &mut egui::Ui, row: StatRow, value: usize, source: Option<usize
         ui,
         row.id(),
         Some(row),
-        &review_l10n::tr(row.label()),
+        &review_localization::tr(row.label()),
         &value.to_string(),
         change(value as f32, source.map(|source| source as f32)),
     );
@@ -631,7 +631,7 @@ fn metric_row(ui: &mut egui::Ui, row: StatRow, value: f32, source: Option<f32>) 
         ui,
         row.id(),
         Some(row),
-        &review_l10n::tr(row.label()),
+        &review_localization::tr(row.label()),
         &format!("{value:.2}"),
         change(value, source),
     );
@@ -756,7 +756,7 @@ fn source_unit_label(meters_per_unit: f32) -> String {
         None if meters_per_unit.is_finite() && meters_per_unit > 0.0 => {
             format!("{meters_per_unit:.4} m")
         }
-        None => review_l10n::tr(keys::ui_stats::UNMEASURED).into_owned(),
+        None => review_localization::tr(keys::ui_stats::UNMEASURED).into_owned(),
     }
 }
 
@@ -767,7 +767,7 @@ fn stat_row(ui: &mut egui::Ui, row: StatRow, value: &str) {
         ui,
         row.id(),
         Some(row),
-        &review_l10n::tr(row.label()),
+        &review_localization::tr(row.label()),
         value,
         None,
     );
@@ -776,7 +776,7 @@ fn stat_row(ui: &mut egui::Ui, row: StatRow, value: &str) {
 /// One row of the Tex viewport's card. Its rows have no scope columns and no
 /// change against a source, so they share `value_row` rather than `cells_row`.
 fn tex_row(ui: &mut egui::Ui, row: TexStatRow, value: &str) {
-    let label = review_l10n::tr(row.label());
+    let label = review_localization::tr(row.label());
     value_row(ui, row.id(), None, &label, value, None);
     // `value_row` attaches a `StatRow`'s tooltip; a Tex row's is its own, and
     // pointing at the texture-workspace page rather than the stats one.

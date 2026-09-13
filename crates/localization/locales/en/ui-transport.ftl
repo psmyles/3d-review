@@ -3,13 +3,14 @@
 
 ui-transport-first-frame = Go to first frame
 ui-transport-previous-frame = Previous frame
-    .description = Or press the comma key.
+    .description = Steps back one frame. You can also press the comma key.
 ui-transport-play-pause = Play / pause
-    .description = Or press Space.
+    .description = Starts or pauses the animation. You can also press Space.
 ui-transport-next-frame = Next frame
-    .description = Or press the full-stop key.
+    .description = Steps forward one frame. You can also press the full-stop key.
 ui-transport-loop = Loop playback
-    .description = On by default. With it off, playback stops at the last frame.
+    .description = Plays the animation over and over. This is on to begin with. With it
+        off, the animation stops when it reaches the last frame.
 
 # The frame counter beside the scrubber: current frame, last frame, and the time
 # in seconds. On a narrow window this moves into the scrubber's tooltip.

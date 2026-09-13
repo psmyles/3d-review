@@ -19,7 +19,7 @@
 // no `unsafe` may ever land in this crate.
 #![forbid(unsafe_code)]
 
-/// The typed message keys, generated from `crates/l10n/locales/en/*.ftl` by this
+/// The typed message keys, generated from `crates/localization/locales/en/*.ftl` by this
 /// crate's build script (invariant 12).
 ///
 /// Private on purpose: consts in a library crate that nothing uses warn about
@@ -49,9 +49,9 @@ pub mod docs {
 /// under `#[cfg]` the unused one would be `dead_code` and fail the build.
 pub(crate) fn primary_modifier() -> std::borrow::Cow<'static, str> {
     if cfg!(target_os = "macos") {
-        review_l10n::tr(keys::common::MODIFIER_CMD)
+        review_localization::tr(keys::common::MODIFIER_CMD)
     } else {
-        review_l10n::tr(keys::common::MODIFIER_CTRL)
+        review_localization::tr(keys::common::MODIFIER_CTRL)
     }
 }
 

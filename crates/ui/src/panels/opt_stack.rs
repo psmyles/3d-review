@@ -65,8 +65,8 @@ pub(crate) fn body(ui: &mut egui::Ui, state: &mut UiState) -> Option<OptIntent> 
                 ui.label(
                     egui::RichText::new(format!(
                         "{}\n{}",
-                        review_l10n::tr(keys::ui_opt::EMPTY),
-                        review_l10n::tr(keys::ui_opt::EMPTY_DESCRIPTION),
+                        review_localization::tr(keys::ui_opt::EMPTY),
+                        review_localization::tr(keys::ui_opt::EMPTY_DESCRIPTION),
                     ))
                     .color(color::TEXT_MUTED),
                 );

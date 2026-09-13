@@ -11,7 +11,7 @@
 //! Finnish routinely run half again as long as English. This is the test that
 //! reports it as a failure rather than as a screenshot someone notices later.
 
-use review_l10n::catalog;
+use review_localization::catalog;
 use review_ui::theme::{font, size};
 
 /// Lay text out the way the chrome will and report its width in points.
@@ -52,8 +52,8 @@ fn messages_from(file: &str) -> Vec<(&'static str, String)> {
         .iter()
         .filter(|message| message.file == file && message.attr.is_none() && message.vars.is_empty())
         .map(|message| {
-            let key = review_l10n::Key::new(message.id, None);
-            (message.id, review_l10n::tr(key).into_owned())
+            let key = review_localization::Key::new(message.id, None);
+            (message.id, review_localization::tr(key).into_owned())
         })
         .collect()
 }

@@ -130,7 +130,7 @@ pub(crate) struct ModelLoadProgress {
 /// the title, so this is just what the import is doing, plus a percentage for the
 /// one stage that has a real denominator ([`ImportStage`] says which).
 fn progress_message(progress: ImportProgress) -> String {
-    let stage = review_l10n::tr(stage_name(progress.stage)).into_owned();
+    let stage = review_localization::tr(stage_name(progress.stage)).into_owned();
     match progress.fraction() {
         Some(fraction) => keys::app_notifications::stage_line_percent(
             f64::from((fraction * 100.0).round() as u32),
@@ -145,7 +145,7 @@ fn progress_message(progress: ImportProgress) -> String {
 /// `import` keeps its own `label()` — it goes down the profiling channel, where
 /// a translated string would make two captures harder to compare — so the map
 /// lives here, on the side that draws text (invariant 12).
-fn stage_name(stage: ImportStage) -> review_l10n::Key {
+fn stage_name(stage: ImportStage) -> review_localization::Key {
     match stage {
         ImportStage::Reading => keys::app_notifications::STAGE_READING,
         ImportStage::Building => keys::app_notifications::STAGE_BUILDING,

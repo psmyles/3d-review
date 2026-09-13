@@ -2647,8 +2647,8 @@ dependencies = [
  "image",
  "notify",
  "review-import",
- "review-l10n",
- "review-l10n-build",
+ "review-localization",
+ "review-localization-build",
  "review-model",
  "review-optimize",
  "review-prof",
@@ -2677,7 +2677,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "review-l10n"
+name = "review-localization"
 version = "0.1.0"
 dependencies = [
  "egui",
@@ -2685,13 +2685,13 @@ dependencies = [
  "fluent-langneg",
  "proc-macro2",
  "quote",
- "review-l10n-build",
+ "review-localization-build",
  "syn",
  "unic-langid",
 ]
 
 [[package]]
-name = "review-l10n-build"
+name = "review-localization-build"
 version = "0.1.0"
 dependencies = [
  "fluent-syntax",
@@ -2768,8 +2768,8 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
- "review-l10n",
- "review-l10n-build",
+ "review-localization",
+ "review-localization-build",
 ]
 
 [[package]]
@@ -2781,8 +2781,8 @@ dependencies = [
  "glam",
  "image",
  "pulldown-cmark",
- "review-l10n",
- "review-l10n-build",
+ "review-localization",
+ "review-localization-build",
  "review-model",
  "review-optimize",
  "review-prof",

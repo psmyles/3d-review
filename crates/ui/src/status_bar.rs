@@ -340,7 +340,7 @@ fn draw_opt_group(ui: &mut egui::Ui, state: &mut UiState, bar_rect: egui::Rect, 
                             &ICON_OPT_SWAP,
                             false,
                             Tip::new(keys::ui_status_bar::swap_sides(
-                                review_l10n::tr(labels::comparison_side(state.opt.side))
+                                review_localization::tr(labels::comparison_side(state.opt.side))
                                     .into_owned(),
                             ))
                             .describe(keys::ui_status_bar::SWAP_SIDES_DESCRIPTION)
@@ -366,7 +366,7 @@ fn draw_opt_group(ui: &mut egui::Ui, state: &mut UiState, bar_rect: egui::Rect, 
 /// processed meshes and the export carry.
 fn lod_label(level: usize) -> String {
     if level == 0 {
-        review_l10n::tr(keys::ui_status_bar::LOD_FULL).into_owned()
+        review_localization::tr(keys::ui_status_bar::LOD_FULL).into_owned()
     } else {
         keys::ui_status_bar::lod_level(level as f64)
     }
@@ -442,7 +442,7 @@ fn draw_texture_status_bar(ui: &mut egui::Ui, state: &mut UiState, group_height:
                 let response = tip(
                     segment_button(
                         ui,
-                        review_l10n::tr(labels::texture_background(background)).as_ref(),
+                        review_localization::tr(labels::texture_background(background)).as_ref(),
                         selected,
                         segment_w,
                     ),

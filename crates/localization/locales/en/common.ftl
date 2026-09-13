@@ -12,7 +12,7 @@ common-modifier-ctrl = Ctrl
 common-modifier-cmd = Cmd
 
 common-reset-all = Reset all
-    .description = Put every setting in this panel back to its default.
+    .description = Puts every setting in this panel back to how it started.
 
 common-help = Help
 common-help-open = Open the manual page for this tool.

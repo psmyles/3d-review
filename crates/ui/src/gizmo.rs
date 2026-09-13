@@ -6,7 +6,7 @@ use glam::{Vec2, Vec3};
 use review_render::{CameraProjection, OrbitCamera};
 
 use crate::assets::{self, ICON_RESET};
-use review_l10n::Key;
+use review_localization::Key;
 
 use crate::keys;
 use crate::state::{AxisGizmoAction, ViewAxis};
@@ -71,7 +71,7 @@ pub(crate) fn draw_axis_gizmo(
                 ui.set_max_width(size::TOOLTIP_MAX_WIDTH);
                 ui.label(
                     egui::RichText::new(keys::ui_gizmo::view_axis(
-                        review_l10n::tr(point.axis_name).into_owned(),
+                        review_localization::tr(point.axis_name).into_owned(),
                     ))
                     .strong(),
                 );
@@ -283,7 +283,7 @@ fn axis_gizmo_points(
                 // A positive ball is painted with the bare letter — the axis
                 // name's `+` is for the tooltip, where it distinguishes the two
                 // directions.
-                label: review_l10n::tr(label).trim_start_matches('+').to_owned(),
+                label: review_localization::tr(label).trim_start_matches('+').to_owned(),
                 axis_name: label,
                 positive,
             }

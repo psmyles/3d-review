@@ -18,7 +18,7 @@ review-import = { path = "../import" }
 # `Key`, `tr` and the generated keys for this crate's notices, dialogs and window
 # title. No `egui` feature: `app` never hands a key to a widget - it formats the
 # text and passes a `String` through the notification API.
-review-l10n.workspace = true
+review-localization.workspace = true
 review-model = { path = "../model" }
 # The Opt workspace's mesh processing (vendored meshoptimizer behind a safe API).
 review-optimize = { path = "../optimize" }
@@ -42,7 +42,7 @@ winit.workspace = true
 # the things that reads them.
 [build-dependencies]
 # Generates `keys.rs` (the typed message keys) into this crate's OUT_DIR.
-review-l10n-build.workspace = true
+review-localization-build.workspace = true
 serde_json.workspace = true
 
 [target.'cfg(windows)'.build-dependencies]

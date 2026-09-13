@@ -1,29 +1,31 @@
 # Environment
 
-The image-based lighting that the Shaded mode uses, and the optional skybox.
+The Shaded view lights the model with a photo of a real place wrapped all
+around it. That is what gives it natural soft light and reflections. This panel
+chooses that place and how it is used.
 
 ## Settings
 
-**Environment** - one of six baked HDR environments, each with a preview
-thumbnail in the dropdown.
+**Environment** - one of six ready-made environments, each with a small preview
+picture in the dropdown.
 
-**Show skybox** - draw the environment as the viewport background instead of the
-flat [background fill](background.md).
+**Show skybox** - draw the environment behind the model, instead of the plain
+[background fill](background.md).
 
-**Intensity** - a multiplier on the environment's brightness.
+**Intensity** - how bright the light is.
 
-**Rotation** - 0 to 360 degrees. Applied while sampling, so it never rebuilds the
-lighting maps and the drag is immediate.
+**Rotation** - spins the environment around the model, from 0 to 360 degrees.
+Dragging it is instant.
 
 ## What it is for
 
-Rotating the environment is the quickest way to check a material under different
-light without changing the material: a surface that only looks right from one
-angle usually has a normal-map or roughness problem.
+Spinning the environment is the quickest way to see a material under different
+light without changing the material. A surface that only looks right from one
+angle usually has a problem with its normal map or its roughness.
 
 ## Notes
 
-The lighting maps (the environment cube, its irradiance and prefiltered
-convolutions, and the shared BRDF lookup table) are baked ahead of time and ship
-block-compressed, so startup does no precompute and the intensity and rotation
-controls cost nothing to drag.
+All the lighting information for each environment is worked out ahead of time
+and shipped with the viewer in a compact form, so nothing has to be computed
+when the viewer starts, and the intensity and rotation sliders cost nothing to
+drag.

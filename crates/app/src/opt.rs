@@ -209,7 +209,7 @@ impl App {
         {
             opt.activity_shown = true;
             self.notifications
-                .begin_activity(review_l10n::tr(keys::app_notifications::OPTIMIZING).into_owned());
+                .begin_activity(review_localization::tr(keys::app_notifications::OPTIMIZING).into_owned());
         }
 
         let running = self.opt.as_ref().is_some_and(OptSubsystem::is_running);
@@ -273,7 +273,7 @@ impl App {
         let Some(proxy) = self.textures.proxy.clone() else {
             prof::msg("no event-loop proxy; cannot optimize off-thread");
             self.notifications
-                .error(review_l10n::tr(keys::app_notifications::OPT_START_FAILED).into_owned());
+                .error(review_localization::tr(keys::app_notifications::OPT_START_FAILED).into_owned());
             // Mark the revision covered even though nothing ran: the failure has
             // been reported once, and leaving it uncovered would re-report it on
             // every frame.
@@ -372,7 +372,7 @@ impl App {
     fn export_opt_result(&mut self) {
         let Some(result) = self.opt.as_ref().and_then(|opt| opt.processed.clone()) else {
             self.notifications
-                .error(review_l10n::tr(keys::app_notifications::NOTHING_TO_EXPORT).into_owned());
+                .error(review_localization::tr(keys::app_notifications::NOTHING_TO_EXPORT).into_owned());
             return;
         };
 
@@ -408,12 +408,12 @@ impl App {
         let Some(proxy) = self.textures.proxy.clone() else {
             prof::msg("no event-loop proxy; cannot export off-thread");
             self.notifications
-                .error(review_l10n::tr(keys::app_notifications::EXPORT_START_FAILED).into_owned());
+                .error(review_localization::tr(keys::app_notifications::EXPORT_START_FAILED).into_owned());
             return;
         };
 
         self.notifications
-            .begin_activity(review_l10n::tr(keys::app_notifications::EXPORTING).into_owned());
+            .begin_activity(review_localization::tr(keys::app_notifications::EXPORTING).into_owned());
 
         std::thread::spawn(move || {
             prof::thread_name("mesh-export");
@@ -436,7 +436,7 @@ impl App {
                     .first()
                     .map(|path| crate::loading::file_label(path))
                     .unwrap_or_else(|| {
-                        review_l10n::tr(keys::app_notifications::EXPORTED_FALLBACK).into_owned()
+                        review_localization::tr(keys::app_notifications::EXPORTED_FALLBACK).into_owned()
                     });
                 let title = if files > 1 {
                     keys::app_notifications::exported_many(
@@ -476,18 +476,18 @@ impl App {
                 )];
                 if replaced.is_empty() {
                     lines.push(
-                        review_l10n::tr(keys::app_notifications::EXPORT_NOTHING_CHANGED)
+                        review_localization::tr(keys::app_notifications::EXPORT_NOTHING_CHANGED)
                             .into_owned(),
                     );
                 } else {
                     lines.push(
-                        review_l10n::tr(keys::app_notifications::EXPORT_REPLACED).into_owned(),
+                        review_localization::tr(keys::app_notifications::EXPORT_REPLACED).into_owned(),
                     );
                     lines.extend(replaced.iter().map(|path| crate::loading::file_label(path)));
                 }
                 self.notifications.report(
                     NoticeKind::Error,
-                    review_l10n::tr(keys::app_notifications::EXPORT_INCOMPLETE).into_owned(),
+                    review_localization::tr(keys::app_notifications::EXPORT_INCOMPLETE).into_owned(),
                     lines,
                 );
             }
@@ -579,7 +579,7 @@ impl App {
             self.notifications.report(
                 NoticeKind::Warning,
                 if fresh.len() == 1 {
-                    review_l10n::tr(keys::app_notifications::OPTIMIZATION_WARNING).into_owned()
+                    review_localization::tr(keys::app_notifications::OPTIMIZATION_WARNING).into_owned()
                 } else {
                     keys::app_notifications::optimization_warnings(fresh.len() as f64)
                 },

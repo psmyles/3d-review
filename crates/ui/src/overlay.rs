@@ -543,7 +543,7 @@ fn draw_overlay_legend(
     let ghost = solid.swapped();
     // The legend names the ghost's style with the same words the status-bar
     // control uses, so the two read as the same setting.
-    let ghost_style = review_l10n::tr(crate::labels::ghost_style(state.opt.ghost_style));
+    let ghost_style = review_localization::tr(crate::labels::ghost_style(state.opt.ghost_style));
 
     // The card is centred in the free viewport, so the panels' insets shift it by
     // half their difference rather than by either one.
@@ -560,13 +560,13 @@ fn draw_overlay_legend(
             legend_row(
                 ui,
                 color::TEXT_VALUE,
-                &crate::keys::ui_opt::legend_solid(review_l10n::tr(solid.label()).into_owned()),
+                &crate::keys::ui_opt::legend_solid(review_localization::tr(solid.label()).into_owned()),
             );
             legend_row(
                 ui,
                 color::GHOST_XRAY,
                 &crate::keys::ui_opt::legend_ghost(
-                    review_l10n::tr(ghost.label()).into_owned(),
+                    review_localization::tr(ghost.label()).into_owned(),
                     ghost_style.into_owned(),
                 ),
             );
@@ -644,13 +644,13 @@ mod tests {
             assert!(
                 width >= body,
                 "{}: window {width} is narrower than its {body}pt body",
-                review_l10n::tr(panel.title())
+                review_localization::tr(panel.title())
             );
             assert!(
                 width - body <= MAX_FRAME,
                 "{}: window {width} is {:.0}pt wider than its {body}pt body — \
                  dead space on the right (is `auto_sized` still set?)",
-                review_l10n::tr(panel.title()),
+                review_localization::tr(panel.title()),
                 width - body,
             );
             widths.push(width);

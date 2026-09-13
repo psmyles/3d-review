@@ -1,19 +1,19 @@
 # Workspaces
 
-Four modes, switched from the segmented control in the middle of the toolbar. The
-toolbar swaps its tool groups to match the active workspace.
+A workspace is a way of looking at your model. There are four of them, and you
+switch between them with the buttons in the middle of the toolbar. The toolbar
+changes its tools to match the workspace you are in.
 
-| Workspace | What it is |
+| Workspace | What it is for |
 | --- | --- |
-| **3D** | The scene viewport: shading modes, debug overlays, materials, animation. |
-| **UV** | A 2D [UV-layout viewer](uv.md) with its own pan and zoom camera. |
-| **Tex** | A 2D [image viewer](tex.md) over the scene texture pool. |
-| **Opt** | [Mesh optimization](opt/index.md), with a side-by-side or ghosted comparison against the source. |
+| **3D** | Looking at the model itself: turning it around, changing how it is lit and drawn, checking materials, playing animations. |
+| **UV** | Looking at the [texture layout](uv.md), the flat map that says which part of a picture goes on which part of the model. |
+| **Tex** | Looking at the [texture images](tex.md) themselves, one at a time, up close. |
+| **Opt** | [Making the model lighter](opt/index.md) for a game to draw, with a side-by-side view of before and after. |
 
-The 3D workspace is where most review happens; the other three are focused views
-of one aspect of the same asset. Selection, visibility and the loaded model are
-shared across all four, so hiding a mesh in the Outliner hides it everywhere it
-can be hidden.
+Most of your time will be spent in the 3D workspace. The other three are
+close-ups of one part of the same model. Whatever you select or hide is shared
+across all four, so hiding a part in the Outliner hides it everywhere.
 
-Nothing for Opt is built until that workspace is first opened, so a session that
-never uses it pays nothing for it.
+The Opt workspace does not do any work until you open it for the first time, so
+if you never use it, it costs you nothing.

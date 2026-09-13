@@ -37,7 +37,7 @@ pub enum GhostStyle {
 impl GhostStyle {
     pub const ALL: [GhostStyle; 2] = [GhostStyle::Xray, GhostStyle::Wireframe];
 
-    pub fn label(self) -> review_l10n::Key {
+    pub fn label(self) -> review_localization::Key {
         match self {
             GhostStyle::Xray => crate::keys::ui_enums::GHOST_XRAY,
             GhostStyle::Wireframe => crate::keys::ui_enums::GHOST_WIREFRAME,
@@ -70,7 +70,7 @@ impl ComparisonSide {
         }
     }
 
-    pub fn label(self) -> review_l10n::Key {
+    pub fn label(self) -> review_localization::Key {
         match self {
             ComparisonSide::Source => crate::keys::ui_enums::SIDE_SOURCE,
             ComparisonSide::Processed => crate::keys::ui_enums::SIDE_PROCESSED,

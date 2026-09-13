@@ -1,43 +1,50 @@
 # Simplification settings
 
-**Reduce** and **Generate LODs** share one simplifier setup.
+Simplifying means removing triangles while keeping the shape as close to the
+original as possible. **Reduce** and **Generate LODs** both do this, and they
+share the same settings.
 
 ## Algorithm
 
-- **Standard** - keeps topology, measuring position error only.
-- **Preserve Attributes** - also penalizes normal, UV and color drift, with
-  per-attribute weights.
-- **Sloppy** - ignores topology. Much faster and hits the target far more
-  reliably, but can close holes and merge nearby shells, so it suits the smallest
-  levels.
+- **Standard** - keeps the surface connected the way it was, and only watches
+  how far the surface moves.
+- **Preserve Attributes** - also tries to keep the shading directions, the
+  texture layout and the colors from drifting. You can say how much each one
+  matters.
+- **Sloppy** - does not bother keeping the surface connected. It is much
+  faster and nearly always reaches the target, but it can close up holes and
+  merge nearby pieces, so it suits the smallest, most distant levels.
 
 ## Target
 
-A triangle ratio plus an error limit the simplifier may not exceed. It stops
-short of the ratio rather than going past the error, so a mesh that cannot be
-reduced that far without visible damage comes back larger than you asked for
-rather than wrong.
+You give a share of triangles to keep, and a limit on how far the surface may
+move. The simplifier stops early rather than go past that limit. So if a model
+cannot be reduced that far without visible damage, you get back a model with
+more triangles than you asked for, rather than a damaged one.
 
 ## Flags
 
-Lock the border, absolute error units, prune disconnected parts, regularize (and
-a lighter variant), and permissive collapses across attribute seams.
+Lock the border (never move points on an open edge), measure the error as a
+real distance instead of a fraction, remove loose pieces as it goes,
+regularize (keep triangles evenly shaped, with a lighter version), and allow
+collapses across seams.
 
 ## When a simplify barely removes anything
 
-This is usually attribute seams, not a bug.
+This is usually seams, not a bug.
 
-Import splits every face corner into its own vertex, so a mesh whose normals or
-UVs differ at every corner - a scan with generated per-face normals, for
-instance - presents *every* edge as a discontinuity, and a topology-preserving
-collapse cannot cross one.
+Remember that every face corner arrives as its own point. On a model whose
+shading directions or texture layout differ at every corner, such as a 3D scan
+that was saved with a separate normal per face, *every* edge looks like a
+seam, and a simplifier that keeps the surface connected is not allowed to fold
+across one.
 
-Measured: a real game asset welds 369k vertices down to 108k and hits its LOD
-targets with the default settings, while such a scan stalls at 249,882 triangles
-going to 249,880 until either a position-only weld (normals excluded) or the
-permissive flag unblocks it.
+To give you an idea: a real game model joins up from 369,000 points to 108,000
+and hits its targets with the normal settings, while such a scan goes from
+249,882 triangles to 249,880 until either a Weld Vertices operation that
+ignores normals, or the "collapse across seams" flag, frees it.
 
-The run detects the stall and says so. The default weld comparing normals is
-*correct* for static game meshes, which is what this tool targets, so the fix is
-to add a [Weld Vertices](operations.md) operation or set the permissive flag -
-not to loosen the defaults.
+The run notices when this happens and tells you. The normal settings are right
+for ordinary game models, which is what this tool is for, so the fix is to add
+a [Weld Vertices](operations.md) operation or tick the flag, not to loosen the
+defaults.

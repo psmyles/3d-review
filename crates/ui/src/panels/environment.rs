@@ -90,7 +90,7 @@ fn environment_row(ui: &mut egui::Ui, state: &mut UiState) {
 /// combo's `CloseOnClick` default then dismisses the popup.
 fn environment_option(ui: &mut egui::Ui, current: &mut EnvironmentMap, map: EnvironmentMap) {
     let selected = *current == map;
-    let label = review_l10n::tr(labels::environment(map)).into_owned();
+    let label = review_localization::tr(labels::environment(map)).into_owned();
     let button = match assets::load_icon_texture(ui, thumbnail_icon(map)) {
         Some(texture) => {
             let image = egui::Image::from_texture(texture)

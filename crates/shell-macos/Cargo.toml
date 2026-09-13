@@ -30,11 +30,11 @@ objc2-foundation = { workspace = true, features = [
 # would otherwise be compiled for a crate that only ever builds on macOS.
 muda = { workspace = true, default-features = false }
 # The menu's own labels (invariant 12). macOS-only, like everything else here.
-review-l10n.workspace = true
+review-localization.workspace = true
 
 [target.'cfg(target_os = "macos")'.build-dependencies]
 # Generates `keys.rs` for the `menu-` messages into this crate's OUT_DIR.
-review-l10n-build.workspace = true
+review-localization-build.workspace = true
 
 [lints]
 workspace = true

@@ -1,38 +1,50 @@
 # How a run works
 
-## Every run begins by merging identical vertices
+A run is what happens every time you change the list of operations: the
+viewer takes the original model, puts it through each operation in turn, and
+shows you the result.
 
-This is what makes the rest work at all.
+## Every run begins by joining identical points
 
-FBX import splits each face corner into its own vertex, so a mesh reaches the
-optimizer with no shared vertices whatsoever: a real 10,006-triangle asset arrives
-as 30,018 vertices. Every meshoptimizer operation works through the index buffer,
-so on that mesh they would all be no-ops - nothing for the vertex cache to reuse,
-no edge a collapse may cross, a LOD chain that removes nothing.
+This first step is what makes everything else work, so it is worth
+understanding.
 
-The merge pass joins vertices that are identical in *every* attribute, byte for
-byte, before any operation runs. Nothing visible changes. On that asset it is
-30,018 down to 5,284, after which a 50% LOD target is hit exactly.
+When an FBX file is read, every corner of every face becomes its own separate
+point, even when several corners sit in exactly the same spot. A real model
+with about 10,000 triangles arrives with about 30,000 points and no sharing at
+all. Every operation in the list works by looking at which triangles share
+which points, so on a model like that they would all do nothing: there is
+nothing for the graphics card to reuse, no edge a simplifier can fold, and a
+LOD chain that removes nothing.
 
-It is deliberately not a stack operation, because skipping it is never useful.
-The [Weld Vertices](operations.md) operation is for the *lossy* merges.
+So before any operation runs, the viewer joins up points that are identical in
+every way, down to the last bit. Nothing you can see changes. On that same
+model it takes the 30,000 points down to about 5,000, after which a "keep 50%
+of the triangles" target is hit exactly.
 
-## The baseline is measured after that pass
+This step is not something you add to the list, because there is never a
+reason to skip it. The [Weld Vertices](operations.md) operation is for the
+kind of joining that *does* change the model.
 
-The run's baseline figures - what every change on the second stats card is
-measured against - come from the merged mesh, not the corner-split buffer import
-handed over.
+## The starting numbers are measured after that step
 
-Quoting against the corner-split buffer credited your operations with a large
-free win that any engine cooker also gets, and made the baseline cache figure a
-meaningless 3.0. The indexed baseline also equals the
-[stats panel](../stats.md)'s `GPU Verts` row, so the two cards agree.
+The "before" numbers on the second stats card, the ones every change is
+compared against, come from the model after that joining step, not from the
+raw file.
 
-## Runs are coalesced
+If they came from the raw file, your operations would get credit for a huge
+"improvement" that every game engine's import step gets for free anyway, and
+the starting cache figure would be a meaningless 3.0. Measuring after the join
+also makes the "before" number match the `GPU Verts` row on the
+[stats card](../stats.md), so the two cards agree with each other.
 
-Every edit reprocesses on a worker thread. Only one run is ever in flight: edits
-arriving mid-run mark it out of date and it restarts once with the latest stack,
-so dragging a slider settles on its own without a debounce timer, and a result
-that has been overtaken is dropped rather than shown.
+## Runs do not pile up
 
-A notice appears only if a run takes a while.
+Every change you make starts a run on a background thread. Only one run happens
+at a time. If you change something while a run is going, the viewer notes that
+the run is out of date and starts a fresh one with your latest settings as soon
+as the current one finishes. So you can drag a slider freely: the result
+settles on its own, and a result that is already out of date is thrown away
+rather than shown to you.
+
+A notice appears only if a run is taking a while.

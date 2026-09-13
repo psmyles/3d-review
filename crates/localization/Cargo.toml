@@ -1,5 +1,5 @@
 [package]
-name = "review-l10n"
+name = "review-localization"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -19,7 +19,7 @@ fluent-langneg.workspace = true
 unic-langid.workspace = true
 
 [build-dependencies]
-review-l10n-build.workspace = true
+review-localization-build.workspace = true
 
 [dev-dependencies]
 proc-macro2.workspace = true

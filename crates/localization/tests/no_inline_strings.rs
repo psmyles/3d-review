@@ -11,7 +11,7 @@
 //! first argument is the English and whose second is a path, a `concat!` of two
 //! halves of a sentence. `syn` sees all three as the same thing.
 //!
-//! Escape hatch: `// l10n: exempt <reason>` on the offending line. The reason is
+//! Escape hatch: `// localization: exempt <reason>` on the offending line. The reason is
 //! required — an exemption without one is how this rots.
 
 use std::collections::HashSet;
@@ -132,7 +132,7 @@ const FUNCTION_SINKS: &[(&str, &[usize])] = &[
 ];
 
 /// Marks a line as deliberately exempt. The trailing reason is required.
-const EXEMPT: &str = "// l10n: exempt";
+const EXEMPT: &str = "// localization: exempt";
 
 struct Finding {
     file: PathBuf,
@@ -163,7 +163,7 @@ fn no_user_visible_string_is_written_at_a_call_site() {
     if !findings.is_empty() {
         let mut report = format!(
             "{} user-visible string literal(s) written at a call site.\n\n\
-             Every one of these belongs in crates/l10n/locales/en/*.ftl, reached \
+             Every one of these belongs in crates/localization/locales/en/*.ftl, reached \
              through its generated key (invariant 12). If a literal genuinely is \
              not user-visible, mark its line `{EXEMPT} <reason>`.\n\n",
             findings.len()

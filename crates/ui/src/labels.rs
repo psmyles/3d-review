@@ -12,7 +12,7 @@
 //! compile error here rather than an English word appearing in a translated
 //! screen.
 
-use review_l10n::Key;
+use review_localization::Key;
 use review_model::{NodeKind, SkinningMethod};
 use review_optimize::{
     AoQuality, AoTarget, FbxFormat, HierarchyMode, LodPackaging, OpKind, SimplifyAlgorithm,
@@ -316,13 +316,13 @@ pub(crate) fn comparison_side(side: ComparisonSide) -> Key {
 /// Two functions rather than exposing the whole map, because these are the only
 /// two names anything outside this crate needs.
 pub fn material_mode_name(mode: MaterialMode) -> String {
-    review_l10n::tr(material_mode(mode)).into_owned()
+    review_localization::tr(material_mode(mode)).into_owned()
 }
 
 /// A buffer view's display name, for `app`'s mode notice. See
 /// [`material_mode_name`].
 pub fn buffer_view_name(view: BufferView) -> String {
-    review_l10n::tr(buffer_view(view)).into_owned()
+    review_localization::tr(buffer_view(view)).into_owned()
 }
 
 #[cfg(test)]
@@ -334,7 +334,7 @@ mod tests {
     /// message that was never written.
     fn assert_resolves(key: Key) {
         assert_ne!(
-            review_l10n::tr(key),
+            review_localization::tr(key),
             key.id(),
             "`{}` has no message in the catalog",
             key.id()

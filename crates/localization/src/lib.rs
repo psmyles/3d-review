@@ -1,15 +1,15 @@
-//! review-l10n: the localization runtime behind invariant 12.
+//! review-localization: the localization runtime behind invariant 12.
 //!
 //! Every string a user can read is a Fluent message in `locales/<lang>/*.ftl`,
 //! reached through a **generated typed key** rather than a literal at the call
 //! site. This crate is the runtime half: it negotiates a locale once at startup,
 //! holds the bundles, and resolves a [`Key`] to text. The build half —
-//! `review-l10n-build` — turns the English catalog into those keys inside each
+//! `review-localization-build` — turns the English catalog into those keys inside each
 //! consuming crate, so a key that does not exist is a compile error and one that
 //! nothing uses is a `dead_code` warning.
 //!
 //! ```ignore
-//! l10n::init(Some("de-AT"));              // once, at the top of `main`
+//! localization::init(Some("de-AT"));              // once, at the top of `main`
 //! ui.label(keys::ui_stats::DRAWS);        // `Key: Into<egui::WidgetText>`
 //! keys::ui_stats::scope_vis_description(primary_modifier());  // typed formatter
 //! ```

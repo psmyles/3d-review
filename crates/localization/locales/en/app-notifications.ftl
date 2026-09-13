@@ -14,9 +14,10 @@ app-notifications-couldnt-load = Couldn't load { $file }: { $detail }
 # exporter writes back, so the notice has to say that rather than read as a load
 # failure.
 app-notifications-couldnt-read-properties =
-    Couldn't read the file's source properties: { $detail }
-    The model is fine, but an export of it would lose the properties the viewer
-    does not itself read.
+    Couldn't read the file's extra properties: { $detail }
+    The model itself is fine and you can keep working with it. But if you export it,
+    the extra settings the viewer does not show (such as custom properties) would be
+    lost.
 
 # Import stages, shown on the loading card as the worker moves through them.
 # `import` keeps its own English `label()` for the profiling channel; these are
@@ -53,18 +54,18 @@ app-notifications-preset-loaded = Loaded { $file }
 
 # Per-object overrides that could not be reattached when a preset was loaded.
 app-notifications-overrides-dropped = { $count ->
-        [one] One per-object override named an object this model doesn't have, and was dropped.
-       *[other] { $count } per-object overrides named objects this model doesn't have, and were dropped.
+        [one] One per-object setting in the preset referred to an object this model doesn't have, so it was left out.
+       *[other] { $count } per-object settings in the preset referred to objects this model doesn't have, so they were left out.
     }
 app-notifications-overrides-by-position = { $count ->
-        [one] One per-object override came from a preset that predates object names, so it was matched by position - check it landed on the object you meant.
-       *[other] { $count } per-object overrides came from a preset that predates object names, so they were matched by position - check they landed on the objects you meant.
+        [one] One per-object setting came from an older preset that did not store object names, so it was matched by its place in the list - please check it landed on the object you meant.
+       *[other] { $count } per-object settings came from an older preset that did not store object names, so they were matched by their place in the list - please check they landed on the objects you meant.
     }
 
 ## The graphics device
 
 app-notifications-gpu-fault = { $context }: { $detail }
-app-notifications-device-lost-startup = Graphics device lost ({ $reason }) while starting up - the viewport may stay blank; restart the viewer
+app-notifications-device-lost-startup = The graphics card stopped responding while starting up ({ $reason }). The view may stay blank, so please restart the viewer.
 
 ## Mode notices
 
@@ -75,12 +76,12 @@ app-notifications-buffer-mode = Buffer: { $buffer }
 
 # Everything else keeps its library diagnostic verbatim; these three tell the
 # reader what to *do*, which a diagnostic written for a bug report does not.
-app-notifications-opt-unavailable = Mesh optimization is unavailable in this build.
-    It was compiled without the vendored meshoptimizer source, so the Opt workspace
-    can measure a mesh but not change one.
-app-notifications-preset-newer = This preset was written by a newer build.
-    It declares version { $found }, and this build reads up to { $supported }. Open it
-    with the build that wrote it, or rebuild the stack here.
+app-notifications-opt-unavailable = Mesh optimization is not available in this build.
+    It was built without the optimizer library, so the Opt workspace can measure a
+    model but cannot change one.
+app-notifications-preset-newer = This preset was saved by a newer version of the viewer.
+    It is version { $found }, and this build understands up to version { $supported }.
+    Open it with the version that saved it, or set the operations up again here.
 ## The export's own report
 
 app-notifications-exported-one = Exported { $file } ({ $triangles } triangles)
@@ -98,12 +99,12 @@ app-notifications-export-replaced = These files were replaced by this export:
 app-notifications-dialog-failed = Couldn't open the file dialog
 app-notifications-opt-start-failed = Couldn't start mesh optimization
 app-notifications-optimization-failed = Optimization failed: { $detail }
-app-notifications-nothing-to-export = Nothing to export yet - add an operation to the stack.
+app-notifications-nothing-to-export = Nothing to export yet - add an operation to the list first.
 app-notifications-export-start-failed = Couldn't start the export
 app-notifications-preset-build-failed = Couldn't build the preset: { $detail }
 app-notifications-preset-saved = Saved { $file }
 app-notifications-preset-load-failed = Couldn't load that preset: { $detail }
-app-notifications-watcher-unavailable = Texture auto-reload unavailable (file watcher failed)
-    .description = A bound texture will not refresh when you save it; reopen the file to
-        pick up a change.
-app-notifications-watch-failed = Auto-reload unavailable for { $file }
+app-notifications-watcher-unavailable = Textures will not reload on their own (the file watcher could not start)
+    .description = Normally a texture refreshes by itself when you save it in your paint
+        program. That will not happen this time; reopen the model to pick up a change.
+app-notifications-watch-failed = { $file } will not reload on its own when it changes

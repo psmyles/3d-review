@@ -1,42 +1,44 @@
 # Ambient Occlusion
 
-Screen-space horizon-based occlusion, following Intel's XeGTAO. On by default.
+Ambient occlusion adds the soft shadows you see in corners, creases, and
+anywhere light has trouble reaching. It makes a model look grounded and solid
+instead of floating and flat. It is on to begin with.
 
-It darkens only the ambient light, so direct and emissive light are never dimmed -
-the effect adds contact shadow without flattening the lighting.
+It only darkens the soft, surrounding light. Direct light and glowing parts are
+never dimmed, so the effect adds depth without making the lighting look muddy.
 
 ## Settings
 
-**Radius** - a multiplier on the automatic radius. 1 is automatic.
+**Radius** - how far the shadow reaches into a crease. The viewer works out a
+good size on its own; 1 means "use that", 2 doubles it, 0.5 halves it.
 
-**Intensity** - how strongly the occlusion darkens the ambient term.
+**Intensity** - how dark the shadows get.
 
-**Thickness** - compensation for thin occluders. Raise it when a thin surface
-casts far more occlusion than it should.
+**Thickness** - helps with very thin surfaces, like a leaf or a sheet of paper.
+Raise it if a thin surface is casting a much bigger shadow than it should.
 
-**Quality** - Low, Medium or High. This controls the sample count and how many
-times the edge-aware denoise runs.
+**Quality** - Low, Medium or High. This decides how much work goes into each
+frame and how many times the result is cleaned up.
 
-## The radius is derived from the view
+## Why the size follows the view
 
-The radius is a fraction of the world-space height the viewport covers at the
-orbit target, capped at half the model's bounding sphere. That is what lets the
-same settings look right on a 10 cm prop and a 10 km landscape.
+The shadow size is based on how much of the scene is on screen, not on how big
+the model is. That is what lets the same settings look right on a tiny prop
+and on a huge landscape.
 
-Keying it to the model's size instead - which is what this used to do - made a
-room interior ask for a four-metre radius, spreading the fixed number of samples
-so thinly that contact occlusion was never found and the effect all but
-vanished. Deriving it from the view also pins the radius's size in *pixels*, so
-the search always spans the same screen distance and the sample count always
-resolves it.
+An earlier version based it on the model's size instead. A whole room interior
+then asked for a shadow several meters wide, which spread the work so thinly
+that the small shadows in corners were never found and the effect all but
+disappeared. Following the view also means the shadow always covers about the
+same distance on your screen, so there is always enough detail to find it.
 
-The Radius knob is a multiplier over that derived value, not an absolute.
+The Radius setting scales that automatic size; it is not a distance on its own.
 
-## It converges while the view is still
+## It cleans itself up while the view is still
 
-Each still frame is folded into a running average over 24 frames, each with a
-distinct sample pattern, and then every occlusion pass is skipped entirely. The
-result settles in about half a second, after which an idle viewer showing
-ambient occlusion costs *less* than one without it.
+Every frame while the camera is still, the viewer adds a little more detail
+to the shadows and averages it in, for 24 frames. After that it stops working
+on them entirely. The result settles in about half a second, and from then on
+a viewer sitting idle with this on costs *less* than one without it.
 
-Moving the camera, changing a setting, or changing the pose starts it again.
+Moving the camera, changing a setting, or changing the pose starts it over.

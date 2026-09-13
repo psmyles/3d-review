@@ -22,7 +22,7 @@ impl PlaybackSpeed {
         PlaybackSpeed::Double,
     ];
 
-    pub fn label(self) -> review_l10n::Key {
+    pub fn label(self) -> review_localization::Key {
         match self {
             PlaybackSpeed::Quarter => crate::keys::ui_transport::SPEED_QUARTER,
             PlaybackSpeed::Half => crate::keys::ui_transport::SPEED_HALF,

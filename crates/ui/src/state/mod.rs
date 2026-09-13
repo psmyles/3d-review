@@ -708,7 +708,7 @@ mod tests {
     fn channel_view_all_is_distinct_and_display_ordered() {
         let labels: Vec<String> = TextureChannelView::ALL
             .into_iter()
-            .map(|channel| review_l10n::tr(channel.label()).into_owned())
+            .map(|channel| review_localization::tr(channel.label()).into_owned())
             .collect();
         assert_eq!(labels, ["RGB", "R", "G", "B", "A"]);
     }

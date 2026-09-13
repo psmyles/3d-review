@@ -1,24 +1,27 @@
 # Vertex Normals
 
-Draws one line per vertex, along that vertex's shading normal.
+Each point of a model stores a direction, called its normal, that tells the
+lighting which way the surface faces at that spot. This overlay draws one
+short line at every point along that direction.
 
 ## Settings
 
-**Length** - how far each line extends, in meters. Updates live.
+**Length** - how long each line is, in meters. The change shows right away.
 
-**Color** - the line color. Also live.
+**Color** - the color of the lines. This changes right away too.
 
 ## What it is for
 
-Vertex normals are what smoothing actually uses, so this is the view that
-explains a shading artifact the geometry does not account for. A hard edge shows
-as two lines diverging at one corner; a smoothed edge shows one averaged line.
+Smooth shading is built from these directions, so this is the overlay that
+explains a shading oddity the shape itself does not account for. At a sharp
+edge you will see two lines fanning apart from the same corner. At a smoothed
+edge you will see a single, averaged line.
 
-Where a model was exported with per-face normals, every corner carries its own,
-and the [stats panel](../stats.md)'s `Vtx Splits` row will read several hundred
-percent.
+If a model was saved with a separate normal for every face, every corner
+carries its own line, and the `Vtx Splits` row on the
+[stats card](../stats.md) will read several hundred percent.
 
 ## Notes
 
-Like the other line overlays, the buffer exists only while the overlay is on, and
-it deforms with a skinned mesh.
+Like the other line overlays, the lines only exist while the overlay is on,
+and they move with a model that has bones.

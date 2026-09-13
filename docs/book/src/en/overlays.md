@@ -1,28 +1,32 @@
 # Debug overlays
 
-Independent toggles, each with its own options panel. Every extra buffer an
-overlay needs is built when the overlay turns on and freed when it turns off, so
-the plain shaded view carries none of them.
+An overlay is a helper drawn on top of the model, such as lines showing which
+way each face points. Each one is a separate switch with its own options panel.
+The viewer only builds what an overlay needs while it is switched on, and lets
+it go when you switch it off, so the plain view stays light.
 
-- **[Face normals](panels/face-normals.md)** - one line per face, adjustable
-  length and color.
-- **[Vertex normals](panels/vertex-normals.md)** - one line per vertex,
-  adjustable length and color.
-- **[Bounding box](panels/bounding-box.md)** - with live dimension labels that
-  are correctly hidden behind the mesh. Scope is selectable: all meshes, only the
-  selection, or only the visible meshes.
-- **[UV seams](panels/uv-seams.md)** - every edge across which the chosen UV set
-  is cut.
-- **Pivot marker** - the object's origin.
-- **[Skeleton](panels/skeleton.md)** - octahedral bones with joint markers for a
-  rigged model.
+- **[Face normals](panels/face-normals.md)** - one line sticking out of each
+  face, showing which way the face points. You can change the length and color.
+- **[Vertex normals](panels/vertex-normals.md)** - one line at each point of
+  the model, showing the direction used for smooth shading. Length and color
+  can be changed too.
+- **[Bounding box](panels/bounding-box.md)** - a box drawn tightly around the
+  model with its size written on the edges. The labels hide behind the model
+  when they should. You can choose whether the box wraps everything, only the
+  selection, or only what is visible.
+- **[UV seams](panels/uv-seams.md)** - every edge where the texture layout is
+  cut.
+- **Pivot marker** - the model's own center point.
+- **[Skeleton](panels/skeleton.md)** - the bones of a rigged model, with
+  markers at the joints.
 - **Axis gizmo** and **grid**, both in the toolbar's display group.
 
-Every overlay built from the mesh deforms with it, so overlays stay attached to a
-skinned, animated model instead of sitting on the bind pose.
+Every overlay that is built from the model moves with it, so if the model is
+animated, the overlays stay attached instead of being left behind in the
+resting pose.
 
 ## Opening an overlay's options
 
-Right-click any tool button to open that tool's options panel. Panels are native
-windows that can be collapsed and closed, and several can be open at once. Each
-one carries a `?` that opens its page in this manual.
+Right-click any tool button to open that tool's options panel. Panels are small
+windows that can be folded up or closed, and you can have several open at once.
+Each one has a `?` that opens its page in this manual.

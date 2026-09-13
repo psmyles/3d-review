@@ -81,7 +81,7 @@ impl TextureChannelView {
     ];
 
     /// Toolbar segment label.
-    pub fn label(self) -> review_l10n::Key {
+    pub fn label(self) -> review_localization::Key {
         match self {
             TextureChannelView::Rgb => crate::keys::ui_enums::CHANNEL_RGB,
             TextureChannelView::R => crate::keys::ui_enums::CHANNEL_R,
