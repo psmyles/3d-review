@@ -64,6 +64,11 @@ pub(crate) struct ModelLoaded {
     /// is stale and dropped rather than shown.
     generation: u64,
     path: PathBuf,
+    /// When the request was made, so the success notice can say how long the
+    /// user waited for the model to appear. Started on the main thread at the
+    /// top of [`App::open_model_from_path`] — the worker spawn, the parse and
+    /// the hop back are all part of the wait.
+    started: Instant,
     /// Already an `Arc`: the worker keeps a handle so it can go on measuring the
     /// model it has just published, and `app` would have made one anyway.
     result: Result<Arc<ModelData>, ImportError>,
@@ -191,6 +196,9 @@ impl App {
     }
 
     pub(crate) fn open_model_from_path(&mut self, path: &Path) {
+        // The clock the success notice reports runs from here — what the user
+        // waited, not what the parse cost.
+        let started = Instant::now();
         // Each request supersedes the last: only a result carrying the current
         // generation is applied, so a slow parse can never overwrite a newer one
         // — and the worker running it stops rather than finishing for nothing.
@@ -246,6 +254,7 @@ impl App {
                 let _ = proxy.send_event(UserEvent::ModelLoaded(Box::new(ModelLoaded {
                     generation,
                     path,
+                    started,
                     result,
                 })));
 
@@ -314,12 +323,12 @@ impl App {
                     let clip_bounds = measure_clip_bounds(&model);
                     let groups = model.mesh_group_stats();
                     let extras = extras.marshal(&model).map(|extras| extras.map(Arc::new));
-                    self.apply_loaded_model(path, Ok(Arc::clone(&model)));
+                    self.apply_loaded_model(path, Ok(Arc::clone(&model)), started.elapsed());
                     self.apply_source_extras(extras);
                     self.ui.clip_bounds = clip_bounds;
                     self.ui.set_mesh_group_stats(groups);
                 }
-                Err(error) => self.apply_loaded_model(path, Err(error)),
+                Err(error) => self.apply_loaded_model(path, Err(error), started.elapsed()),
             }
         }
 
@@ -428,7 +437,7 @@ impl App {
                 message.path.display()
             ));
         } else if message.generation == self.model_load_generation() {
-            self.apply_loaded_model(&message.path, message.result);
+            self.apply_loaded_model(&message.path, message.result, message.started.elapsed());
         } else {
             prof::msg(&format!(
                 "model load superseded, dropped: {}",
@@ -444,7 +453,12 @@ impl App {
     /// Show a completed import — the loaded model, or its error toast — and
     /// re-point every piece of dependent state (framing, stats, materials, undo)
     /// at it. The one place both the worker path and the no-proxy fallback land.
-    fn apply_loaded_model(&mut self, path: &Path, result: Result<Arc<ModelData>, ImportError>) {
+    fn apply_loaded_model(
+        &mut self,
+        path: &Path,
+        result: Result<Arc<ModelData>, ImportError>,
+        elapsed: Duration,
+    ) {
         // Loading into the empty viewport (first load, or after Ctrl+N) shows
         // the model already framed — a fly-in from the home view would only
         // delay it. Replacing an already-loaded model keeps the animated
@@ -476,7 +490,8 @@ impl App {
                 self.reset_opt_for_new_model();
                 let label = file_label(path);
                 self.set_window_title(Some(&label));
-                self.notifications.success(format!("Loaded {label}"));
+                self.notifications
+                    .success(format!("Loaded {label} in {}", format_load_time(elapsed)));
                 prof::msg(&format!("model loaded: {}", path.display()));
                 // A gate run starts measuring from here — the first present with
                 // the model actually on screen (`gate.rs`); no-op otherwise.
@@ -614,4 +629,29 @@ pub(crate) fn file_label(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string())
+}
+
+/// How long a load took, for the success notice: `2.3s`. Under a second a
+/// tenth is most of the figure, so those get two decimals (`0.42s`) — long
+/// enough to read as a real measurement rather than a rounded `0.4s`.
+fn format_load_time(elapsed: Duration) -> String {
+    let seconds = elapsed.as_secs_f64();
+    if seconds < 1.0 {
+        format!("{seconds:.2}s")
+    } else {
+        format!("{seconds:.1}s")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_time_reads_as_seconds() {
+        assert_eq!(format_load_time(Duration::from_millis(2340)), "2.3s");
+        assert_eq!(format_load_time(Duration::from_millis(420)), "0.42s");
+        assert_eq!(format_load_time(Duration::from_millis(1000)), "1.0s");
+        assert_eq!(format_load_time(Duration::from_secs(125)), "125.0s");
+    }
 }
