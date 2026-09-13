@@ -51,7 +51,7 @@ pose on purpose) passes no pose.
 
 ### Every mesh-derived overlay must copy its source corner's `deform` lane
 
-The wireframe, normal lines, heat map and selection flash deform only because
+The wireframe, normal lines, heat map and selection highlight deform only because
 their builders take the slot's lanes (`geometry::deform::corner_deform`). A
 builder that pushes `NO_DEFORM` for mesh geometry silently draws the bind pose
 over the skinned mesh.
@@ -193,9 +193,9 @@ after a slider tick, say — would never schedule the follow-up that converges i
 It sets `redraw.requested` after `render_scene` instead, which is the same
 coalescing path input events take and is paced identically.
 
-What is in the reset key matters as much as what is not. The selection flash colour
-moves every frame while a flash runs but never touches the G-buffer, so including it
-would restart the average for nothing; the MSAA level does not either, since the
+What is in the reset key matters as much as what is not. The selection highlight
+colour never touches the G-buffer, so including it would restart the average for
+nothing; the MSAA level does not either, since the
 GTAO targets are single-sample by design and an AA change does not recreate them.
 The hidden-mesh set reaches the key as `ModelSlot::visibility_generation` — a
 counter bumped when the visibility list is rebuilt — because the key is compared

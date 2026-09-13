@@ -8,9 +8,9 @@ joint.
 **Size** - makes the drawn bones thicker or thinner. The starting size already
 matches the model, so this is just a nudge.
 
-**Color** - the color of the bones. A bone you have selected in the Outliner is
-drawn in the highlight color instead, no matter what you set here, so you can
-always find it.
+**Color** - the color of the bones. A bone you have selected is drawn in the
+highlight color instead, no matter what you set here, so you can always find it,
+and the bone under the pointer is drawn in a paler one while you are picking.
 
 ## What it is for
 
@@ -19,8 +19,12 @@ the model: a bone that stops short of the end of a limb, a chain of bones that
 does not follow the way the surface bends, or a stray bone left sitting at the
 center of the world.
 
-Selecting bones in the Outliner also drives the **Skin Weights** heat map,
-which is the other half of checking a rig. See [Material Mode](material-mode.md).
+While this overlay is on, [clicking in the viewport](../selection.md) picks
+**bones** rather than parts of the mesh - which is the point of having the
+skeleton drawn at all. Turn the overlay off and clicking goes back to the mesh.
+
+Selecting bones also drives the **Skin Weights** heat map, which is the other
+half of checking a rig. See [Material Mode](material-mode.md).
 
 ## Notes
 

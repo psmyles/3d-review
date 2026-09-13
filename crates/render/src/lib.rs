@@ -37,6 +37,7 @@ use camera::CameraTransition;
 pub use camera::{OrbitCamera, UvCamera, ease_in_out_cubic};
 pub use config::*;
 pub use egui_sokol::EguiRenderer;
+pub use geometry::{BONE_PICK_TOLERANCE_POINTS, pick_bone_shape, posed_joint_positions};
 #[cfg(feature = "bake")]
 pub use ibl::bake_ibl_assets;
 pub use material::{
@@ -154,6 +155,18 @@ pub struct SceneFrame<'a> {
     /// Drives the skeleton overlay's persistent highlight and the skin-weight heat
     /// map; empty when no bone is selected.
     pub selected_bones: &'a [u32],
+    /// Every selected mesh/group node (sorted, deduplicated), of which
+    /// `selection` names the primary. Empty falls back to that scalar, which is
+    /// how a caller with no multi-selection of its own (the Opt workspace) keeps
+    /// single-select behaviour.
+    pub selected_nodes: &'a [u32],
+    /// The node the pointer is over while the Select tool is active, tinted as a
+    /// preview of what a click would pick. `None` outside Select mode, over empty
+    /// space, and over a node that is already selected (which is already tinted).
+    pub hover: Option<u32>,
+    /// The bone the pointer is over, when the skeleton overlay has made bones the
+    /// pick target instead of the mesh. Mutually exclusive with `hover`.
+    pub hover_bone: Option<u32>,
     pub background: ViewportBackground,
     /// The pose to deform the model with — the rest pose or a clip's frame, as a
     /// ready palette + blend-shape weights built by `review_model::anim`. `None`

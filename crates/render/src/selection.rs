@@ -39,14 +39,22 @@ impl Selection {
     }
 }
 
-/// Axis-aligned bounds over exactly the geometry `selection` covers — a node's
-/// subtree, or every triangle of a material slot — matching the triangles the
+/// Axis-aligned bounds over exactly the geometry the selection covers — each
+/// selected node's subtree, or every triangle of a material slot — matching the
+/// triangles the
 /// viewport highlight isolates (so the "only selection" bounding box and the
 /// frame-on-selection camera wrap precisely what's highlighted). `None` when
 /// nothing is selected, the model lacks the per-triangle arrays the selection
 /// needs, or the selection resolves to no geometry (e.g. an empty group node).
-pub fn selection_bounds(model: &ModelData, selection: Selection) -> Option<Bounds> {
-    let mask = selected_triangle_mask(model, selection)?;
+///
+/// `selected_nodes` carries the whole selected set; pass `&[]` to measure the
+/// `selection` scalar alone.
+pub fn selection_bounds(
+    model: &ModelData,
+    selection: Selection,
+    selected_nodes: &[u32],
+) -> Option<Bounds> {
+    let mask = selected_triangle_mask(model, selection, selected_nodes)?;
     let mut bounds = Bounds::EMPTY;
     for (triangle, &included) in mask.iter().enumerate() {
         if !included {
@@ -63,22 +71,24 @@ pub fn selection_bounds(model: &ModelData, selection: Selection) -> Option<Bound
 }
 
 /// The selection view carried into the scene callback each frame: what is
-/// selected, whether to isolate it (solo), the highlight color the UI sources
-/// from its theme (gamma-space RGB), and the flash fade.
+/// selected, whether to isolate it (solo), and the highlight color the UI
+/// sources from its theme (gamma-space RGB + the fill's opacity).
 ///
-/// The viewport highlight is a flat color *fill* over the selected geometry that
-/// flashes on selection and fades out: `fade` runs 1→0 over the flash (driven by
-/// `app`'s redraw loop, invariant 6), modulating the fill alpha. At `fade == 0`
-/// the selection is still active (the Inspector stays populated, solo still
-/// isolates) — only the flash overlay is gone.
+/// The viewport highlight is a flat color *fill* over the selected geometry, and
+/// it **persists** for as long as the selection does — `highlight_color`'s own
+/// alpha is the level it holds, which is what lets a user look away and still
+/// see what they picked.
+///
+/// It is deliberately not animated. An earlier revision opened every selection
+/// with a half-second flash that faded to this level; once the highlight stayed
+/// up, that blink was a delay before the answer rather than a part of it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SelectionView {
     pub selection: Selection,
     pub solo: bool,
+    /// Gamma-space RGB, with alpha the fill's opacity (the UI sources both from
+    /// its theme).
     pub highlight_color: [f32; 4],
-    /// Flash fade factor, 1 at the start of a selection flash down to 0 when it
-    /// finishes. Multiplies the highlight fill's alpha each frame.
-    pub fade: f32,
 }
 
 impl Default for SelectionView {
@@ -87,7 +97,6 @@ impl Default for SelectionView {
             selection: Selection::None,
             solo: false,
             highlight_color: [1.0, 1.0, 1.0, 1.0],
-            fade: 0.0,
         }
     }
 }

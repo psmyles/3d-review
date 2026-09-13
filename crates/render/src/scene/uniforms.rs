@@ -49,9 +49,9 @@ pub(super) fn post_uniforms(
 }
 
 /// Build the per-frame [`SceneUniforms`] from the camera, projection, environment,
-/// selection and debug options. The selection flash rides in `selection_color`
-/// (gamma-space rgb + the flash fade in alpha, zero while nothing is
-/// selected/flashing), read only by `fs_selection`.
+/// selection and debug options. The selection highlight rides in `selection_color`
+/// (gamma-space rgb + the fill's opacity, zero while nothing is selected), read
+/// only by `fs_selection`.
 pub(super) fn scene_uniforms(
     camera: OrbitCamera,
     projection: CameraProjection,
@@ -62,8 +62,7 @@ pub(super) fn scene_uniforms(
 ) -> SceneUniforms {
     let view_projection = camera.view_projection(projection);
     let selection_color = if selection.selection.is_active() {
-        let [r, g, b, _] = selection.highlight_color;
-        [r, g, b, selection.fade.clamp(0.0, 1.0)]
+        selection.highlight_color
     } else {
         [0.0; 4]
     };

@@ -11,6 +11,7 @@
 - [Debug overlays](overlays.md)
 - [Rendering quality](rendering-quality.md)
 - [Outliner and Inspector](outliner-inspector.md)
+- [Selecting in the viewport](selection.md)
 - [Materials and textures](materials.md)
 - [The UV workspace](uv.md)
 - [The Texture workspace](tex.md)

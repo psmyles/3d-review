@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use review_model::ModelData;
+use review_model::{ModelData, SceneBvh};
 use review_optimize::{
     ExportOptions, ExportReport, OpKind, OptError, OptStack, ProcessInput, ProcessedResult,
     RebindReport, export_fbx, preset, process,
@@ -78,6 +78,15 @@ pub(crate) struct OptProcessed {
     /// longer the current one is stale and dropped.
     pub(crate) generation: u64,
     pub(crate) result: Result<ProcessedResult, OptError>,
+    /// One triangle BVH per produced level, parallel to `result`'s `lods` — what
+    /// a pick in the split's processed half queries, and what occludes that
+    /// half's dimension labels.
+    ///
+    /// Built on the same worker as the run itself: a processed level is a whole
+    /// new mesh, so its index is as expensive to build as the source's and just
+    /// as unwelcome on the main thread (invariant 6). Empty when the run failed
+    /// or produced no mesh.
+    pub(crate) level_bvhs: Vec<Arc<SceneBvh>>,
 }
 
 /// Everything the Opt workspace needs on the app side. Created on first entry
@@ -87,6 +96,10 @@ pub(crate) struct OptSubsystem {
     /// The most recent completed run, shared by `Arc` so the render path can
     /// borrow a level's mesh without copying it.
     pub(crate) processed: Option<Arc<ProcessedResult>>,
+    /// One triangle BVH per level of [`Self::processed`], in the same order.
+    /// Replaced wholesale with each run, so it can never describe a mesh that is
+    /// no longer on screen.
+    pub(crate) level_bvhs: Vec<Arc<SceneBvh>>,
     /// Model revision for the level currently being drawn. Drawn from the app's
     /// shared revision counter so it can never collide with a source model's.
     pub(crate) processed_revision: u64,
@@ -124,6 +137,7 @@ impl Default for OptSubsystem {
     fn default() -> Self {
         Self {
             processed: None,
+            level_bvhs: Vec::new(),
             processed_revision: 0,
             revision_level: usize::MAX,
             covers_revision: u64::MAX,
@@ -259,6 +273,7 @@ impl App {
             };
             opt.dirty = false;
             opt.processed = None;
+            opt.level_bvhs.clear();
             opt.covers_revision = stack_revision;
             self.ui.opt.result = None;
             self.ui.opt.active_lod = 0;
@@ -314,10 +329,24 @@ impl App {
                     extras: extras.as_deref(),
                 })
             };
+            // Indexed here rather than on the main thread, for the same reason
+            // the source mesh's is built on the import worker.
+            let level_bvhs = match &result {
+                Ok(processed) => {
+                    let _z = prof::zone!("Build Level BVHs");
+                    processed
+                        .lods
+                        .iter()
+                        .map(|lod| Arc::new(SceneBvh::build(&lod.model)))
+                        .collect()
+                }
+                Err(_) => Vec::new(),
+            };
             // A send failure only means the event loop has exited.
             let _ = proxy.send_event(UserEvent::OptProcessed(Box::new(OptProcessed {
                 generation,
                 result,
+                level_bvhs,
             })));
         });
     }
@@ -342,7 +371,7 @@ impl App {
         let current = message.generation == opt.generation;
         if current {
             match message.result {
-                Ok(result) => self.accept_opt_result(result),
+                Ok(result) => self.accept_opt_result(result, message.level_bvhs),
                 Err(error) => {
                     prof::msg(&format!("mesh optimization failed: {error}"));
                     self.notifications
@@ -513,7 +542,7 @@ impl App {
     }
 
     /// Store a successful run and mirror its measured figures into the UI.
-    fn accept_opt_result(&mut self, result: ProcessedResult) {
+    fn accept_opt_result(&mut self, result: ProcessedResult, level_bvhs: Vec<Arc<SceneBvh>>) {
         let warnings = result.warnings.clone();
         let levels: Vec<OptLevelView> = result
             .lods
@@ -558,6 +587,7 @@ impl App {
         let level = self.ui.opt.active_lod;
         if let Some(opt) = self.opt.as_mut() {
             opt.processed = Some(Arc::new(result));
+            opt.level_bvhs = level_bvhs;
             opt.processed_revision = revision;
             opt.revision_level = level;
             opt.covers_revision = stack_revision;

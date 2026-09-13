@@ -55,10 +55,14 @@ pub(crate) fn body(ui: &mut egui::Ui, state: &UiState, model: &ModelData) -> Ins
                 .inner
         }
         Selection::Node(index) => {
-            // A multi-bone selection is a set, not a node, so it gets its own
-            // summary rather than an arbitrary member's detail view.
+            // A multi-selection is a set, not a node, so it gets its own summary
+            // rather than an arbitrary member's detail view. Bones and parts get
+            // different ones: a bone set is described by what it *moves*, a part
+            // set by what it *is*.
             if state.selected_bones.len() > 1 {
                 bone_selection_inspector(ui, state, model);
+            } else if state.selected_nodes.len() > 1 {
+                node_selection_inspector(ui, state, model);
             } else {
                 node_inspector(ui, state, model, index);
             }
@@ -647,6 +651,54 @@ fn node_inspector(ui: &mut egui::Ui, state: &UiState, model: &ModelData, index: 
     });
 }
 
+/// The summary shown when several parts are selected at once: how many, what
+/// they add up to, and which ones they are.
+///
+/// The counts come from the stats card's own scoped sums, already measured this
+/// frame against exactly this selection — so the panel states the same figures
+/// the card does rather than walking the mesh a second time (invariant 6). They
+/// are absent only until the model's measured table lands, which is the same
+/// moment the card's own columns fill in.
+fn node_selection_inspector(ui: &mut egui::Ui, state: &UiState, model: &ModelData) {
+    let count = state.selected_nodes.len();
+    ui.heading(keys::ui_inspector::parts_selected(count as f64));
+
+    panel_grid(ui, "inspector_node_selection", |ui| {
+        crate::widgets::value_row(
+            ui,
+            Tip::new(keys::ui_inspector::PARTS).page(Page::Selection),
+            count.to_string(),
+        );
+        if let Some(scoped) = state.caches.scoped_stats.and_then(|stats| stats.selected) {
+            crate::widgets::value_row(
+                ui,
+                Tip::new(keys::ui_inspector::SELECTED_TRIS)
+                    .describe(keys::ui_inspector::SELECTED_TRIS_DESCRIPTION)
+                    .page(Page::Selection),
+                scoped.triangle_count.to_string(),
+            );
+        }
+    });
+
+    ui.add_space(size::PANEL_ROW_GAP);
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        // Click order, not sorted order: the list should read the way the user
+        // built it, with the primary (last-clicked) selection at the bottom.
+        for &node in &state.selected_nodes {
+            ui.label(node_label(model, node));
+        }
+    });
+}
+
+/// A node's name for a selection list, or a positional fallback for the
+/// unnamed ones a rebuilt mesh can carry.
+fn node_label(model: &ModelData, node: usize) -> String {
+    match model.nodes.get(node) {
+        Some(scene_node) if !scene_node.name.is_empty() => scene_node.name.clone(),
+        _ => keys::ui_outliner::unnamed_node(node as f64),
+    }
+}
+
 /// The summary shown when several bones are selected at once: what is selected,
 /// how much of the mesh it moves, and which bones they are.
 fn bone_selection_inspector(ui: &mut egui::Ui, state: &UiState, model: &ModelData) {
@@ -687,11 +739,7 @@ fn bone_selection_inspector(ui: &mut egui::Ui, state: &UiState, model: &ModelDat
         // Click order, not sorted order: the list should read the way the user
         // built it, with the primary (last-clicked) selection at the bottom.
         for &node in &state.selected_bones {
-            let label = match model.nodes.get(node) {
-                Some(bone) if !bone.name.is_empty() => bone.name.clone(),
-                _ => format!("Node {node}"),
-            };
-            ui.label(label);
+            ui.label(node_label(model, node));
         }
     });
 }

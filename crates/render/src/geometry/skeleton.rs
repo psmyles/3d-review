@@ -14,8 +14,8 @@
 //! fragment is returned flat in its vertex color, contributes no ambient, and is
 //! skipped by the GTAO G-buffer. Nothing here needs a new shader.
 
-use glam::Vec3;
-use review_model::{ModelData, NodeKind};
+use glam::{Vec2, Vec3};
+use review_model::{DeformPose, ModelData, NodeKind, ray_triangle_t};
 
 use crate::scene::SceneVertex;
 
@@ -52,9 +52,28 @@ pub(crate) struct BoneSegment {
     pub(crate) tail: Vec3,
 }
 
-/// World position of a node, from its `node_to_world` translation.
+/// World position of a node at rest, from its `node_to_world` translation.
 fn joint_position(model: &ModelData, node: usize) -> Vec3 {
     model.nodes[node].transform.w_axis.truncate()
+}
+
+/// Every node's world position under `deform`, or at rest when there is none.
+///
+/// The CPU mirror of what the vertex shader does to the overlay's own vertices:
+/// they carry `node_deform(node)`, so the GPU moves each by palette entry
+/// `node` — and this applies the same matrix to the same rest position. That is
+/// what lets a pick hit the bones where they are *drawn* on an animated model
+/// rather than where the bind pose left them.
+pub fn posed_joint_positions(model: &ModelData, deform: Option<&DeformPose>) -> Vec<Vec3> {
+    (0..model.nodes.len())
+        .map(|node| {
+            let rest = joint_position(model, node);
+            match deform.and_then(|deform| deform.palette.get(node)) {
+                Some(matrix) => matrix.transform_point3(rest),
+                None => rest,
+            }
+        })
+        .collect()
 }
 
 /// Every parent→child pair where **both** ends are bones.
@@ -64,6 +83,13 @@ fn joint_position(model: &ModelData, node: usize) -> Vec3 {
 /// draw toward. A bone with several bone children yields one octahedron per child,
 /// which is how a shoulder or a hand fans out.
 pub(crate) fn bone_segments(model: &ModelData) -> Vec<BoneSegment> {
+    let joints = posed_joint_positions(model, None);
+    bone_segments_from(model, &joints)
+}
+
+/// [`bone_segments`] over caller-supplied joint positions — the posed ones, for
+/// a pick that has to match the drawn skeleton rather than the rest one.
+fn bone_segments_from(model: &ModelData, joints: &[Vec3]) -> Vec<BoneSegment> {
     let mut segments = Vec::new();
     for (index, node) in model.nodes.iter().enumerate() {
         if node.kind != NodeKind::Bone {
@@ -76,11 +102,14 @@ pub(crate) fn bone_segments(model: &ModelData) -> Vec<BoneSegment> {
         if parent_node.kind != NodeKind::Bone {
             continue;
         }
+        let (Some(&head), Some(&tail)) = (joints.get(parent), joints.get(index)) else {
+            continue;
+        };
         segments.push(BoneSegment {
             node: parent,
             child: index,
-            head: joint_position(model, parent),
-            tail: joint_position(model, index),
+            head,
+            tail,
         });
     }
     segments
@@ -193,19 +222,167 @@ const OCTAHEDRON_EDGES: [[usize; 2]; 12] = [
     [1, 5],
 ];
 
-/// Whether `node` is in the (sorted) selected-bone set.
-fn is_selected(node: usize, selected: &[u32]) -> bool {
-    selected.binary_search(&(node as u32)).is_ok()
+/// How a bone is coloured: the base colour, the selected one, and the hover
+/// preview — bundled because every builder needs all of them and threading five
+/// loose arguments through each was already at the limit.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BoneTint<'a> {
+    /// Sorted selected-bone set.
+    pub(crate) selected: &'a [u32],
+    /// The bone under the pointer, previewing what a click would select.
+    pub(crate) hovered: Option<u32>,
+    pub(crate) color: [f32; 4],
+    pub(crate) selected_color: [f32; 4],
+    pub(crate) hover_color: [f32; 4],
+}
+
+impl BoneTint<'_> {
+    /// The colour bone `node` is drawn in. Selection wins over hover: a selected
+    /// bone the pointer happens to rest on must not stop looking selected.
+    fn color_for(&self, node: usize) -> [f32; 4] {
+        if self.selected.binary_search(&(node as u32)).is_ok() {
+            self.selected_color
+        } else if self.hovered == Some(node as u32) {
+            self.hover_color
+        } else {
+            self.color
+        }
+    }
+}
+
+/// How far from a bone's drawn outline a click still counts as hitting it, in
+/// egui points. A bone is often a sliver two or three pixels wide — a finger
+/// joint, or any bone seen end-on — and requiring the pointer to land inside
+/// that would make exactly the rigs worth inspecting unclickable.
+pub const BONE_PICK_TOLERANCE_POINTS: f32 = 6.0;
+
+/// Which bone the pointer is on, given a ray through it and a way to project
+/// world points back to the viewport.
+///
+/// Two tests, in priority order:
+///
+/// 1. The ray against the octahedra themselves, nearest hit first. This is what
+///    picking a thick bone feels like — the shape is solid and the pointer is
+///    inside it.
+/// 2. Failing that, the screen distance from the pointer to each bone's drawn
+///    edges, within [`BONE_PICK_TOLERANCE_POINTS`] scaled into `tolerance`.
+///    This is what makes a sliver clickable, and it is measured against the
+///    *drawn* edges so what is picked is what can be seen.
+///
+/// Shapes come from the same builders the overlay draws with, over `joints` —
+/// pass the posed positions and the pick follows the animation. Returns the
+/// segment's head node, the same node the Outliner selects for that bone.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a ray, a projection and the overlay's own sizing, all needed to \
+              hit-test what was drawn"
+)]
+pub fn pick_bone_shape(
+    model: &ModelData,
+    joints: &[Vec3],
+    scale: f32,
+    origin: Vec3,
+    dir: Vec3,
+    project: &dyn Fn(Vec3) -> Option<Vec2>,
+    pointer: Vec2,
+    tolerance: f32,
+) -> Option<usize> {
+    let extent = model_extent(model);
+    let segments = bone_segments_from(model, joints);
+
+    // ── 1. Solid hits ───────────────────────────────────────────────────────
+    let mut nearest: Option<(f32, usize)> = None;
+    for segment in &segments {
+        let Some(points) = octahedron_points(segment.head, segment.tail, extent, scale) else {
+            continue;
+        };
+        for [a, b, c] in OCTAHEDRON_TRIANGLES {
+            if let Some(t) = ray_triangle_t(origin, dir, points[a], points[b], points[c])
+                && t > 0.0
+                && nearest.is_none_or(|(best, _)| t < best)
+            {
+                nearest = Some((t, segment.node));
+            }
+        }
+    }
+    if let Some((_, node)) = nearest {
+        return Some(node);
+    }
+
+    // ── 2. Near misses, by screen distance to the drawn edges ───────────────
+    // Ranked by distance rather than depth: within a few pixels of two bones,
+    // the one the pointer is actually nearer to is the one being aimed at.
+    let mut closest: Option<(f32, usize)> = None;
+    let mut consider = |distance: f32, node: usize| {
+        if distance <= tolerance && closest.is_none_or(|(best, _)| distance < best) {
+            closest = Some((distance, node));
+        }
+    };
+
+    for segment in &segments {
+        let Some(points) = octahedron_points(segment.head, segment.tail, extent, scale) else {
+            continue;
+        };
+        for [a, b] in OCTAHEDRON_EDGES {
+            let (Some(from), Some(to)) = (project(points[a]), project(points[b])) else {
+                continue;
+            };
+            consider(point_to_segment_distance(pointer, from, to), segment.node);
+        }
+    }
+
+    // A chain's last joint has no segment leaving it, only its axis marker — and
+    // it is as legitimate a thing to click as any bone.
+    for joint in terminal_joints(model) {
+        let Some(&position) = joints.get(joint) else {
+            continue;
+        };
+        let half = joint_marker_half(model, joint, extent, scale);
+        for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
+            let (Some(from), Some(to)) = (
+                project(position - axis * half),
+                project(position + axis * half),
+            ) else {
+                continue;
+            };
+            consider(point_to_segment_distance(pointer, from, to), joint);
+        }
+    }
+
+    closest.map(|(_, node)| node)
+}
+
+/// Shortest distance from `point` to the line segment `from`-`to`, in the same
+/// units they are given in.
+fn point_to_segment_distance(point: Vec2, from: Vec2, to: Vec2) -> f32 {
+    let along = to - from;
+    let length_squared = along.length_squared();
+    if length_squared <= f32::MIN_POSITIVE {
+        return point.distance(from);
+    }
+    let t = ((point - from).dot(along) / length_squared).clamp(0.0, 1.0);
+    point.distance(from + along * t)
+}
+
+/// Half-length of a terminal joint's axis marker: what the rig authored, or a
+/// model-relative size when it declared nothing usable.
+fn joint_marker_half(model: &ModelData, joint: usize, extent: f32, scale: f32) -> f32 {
+    let bone = model.nodes[joint].bone.unwrap_or_default();
+    let authored = bone.radius * bone.relative_length;
+    let base = if authored > 0.0 {
+        authored * extent * JOINT_MARKER_FRACTION
+    } else {
+        extent * JOINT_MARKER_FRACTION
+    };
+    base * scale.max(0.01)
 }
 
 /// The solid octahedron fills, one per bone segment. Drawn with the always-on-top
 /// `fill_overlay` pipeline; the color's alpha keeps the mesh readable underneath.
 pub(crate) fn skeleton_fill_triangles(
     model: &ModelData,
-    selected: &[u32],
+    tint: BoneTint<'_>,
     scale: f32,
-    color: [f32; 4],
-    selected_color: [f32; 4],
     fill_alpha: f32,
 ) -> Vec<SceneVertex> {
     let extent = model_extent(model);
@@ -214,11 +391,7 @@ pub(crate) fn skeleton_fill_triangles(
         let Some(points) = octahedron_points(segment.head, segment.tail, extent, scale) else {
             continue;
         };
-        let base = if is_selected(segment.node, selected) {
-            selected_color
-        } else {
-            color
-        };
+        let base = tint.color_for(segment.node);
         let fill = [base[0], base[1], base[2], base[3] * fill_alpha];
         for [a, b, c] in OCTAHEDRON_TRIANGLES {
             for corner in [a, b, c] {
@@ -249,10 +422,8 @@ fn octahedron_deform(segment: &BoneSegment, point: usize) -> [u32; 4] {
 /// so a bone stays legible against a busy mesh even where the fill is thin.
 pub(crate) fn skeleton_lines(
     model: &ModelData,
-    selected: &[u32],
+    tint: BoneTint<'_>,
     scale: f32,
-    color: [f32; 4],
-    selected_color: [f32; 4],
 ) -> Vec<SceneVertex> {
     let extent = model_extent(model);
     let mut vertices = Vec::new();
@@ -261,11 +432,7 @@ pub(crate) fn skeleton_lines(
         let Some(points) = octahedron_points(segment.head, segment.tail, extent, scale) else {
             continue;
         };
-        let line_color = if is_selected(segment.node, selected) {
-            selected_color
-        } else {
-            color
-        };
+        let line_color = tint.color_for(segment.node);
         for [a, b] in OCTAHEDRON_EDGES {
             push_line_deformed(
                 &mut vertices,
@@ -280,20 +447,8 @@ pub(crate) fn skeleton_lines(
 
     for joint in terminal_joints(model) {
         let position = joint_position(model, joint);
-        let bone = model.nodes[joint].bone.unwrap_or_default();
-        // Prefer what the rig authored; fall back to a model-relative size when it
-        // declared nothing usable.
-        let authored = bone.radius * bone.relative_length;
-        let half = if authored > 0.0 {
-            authored * extent * JOINT_MARKER_FRACTION
-        } else {
-            extent * JOINT_MARKER_FRACTION
-        } * scale.max(0.01);
-        let line_color = if is_selected(joint, selected) {
-            selected_color
-        } else {
-            color
-        };
+        let half = joint_marker_half(model, joint, extent, scale);
+        let line_color = tint.color_for(joint);
         for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
             push_line(
                 &mut vertices,
@@ -310,6 +465,19 @@ pub(crate) fn skeleton_lines(
 
 #[cfg(test)]
 mod tests {
+    /// A tint with no hover, which is what every case below but the hover one
+    /// wants: the builders' colour arguments used to be loose and are now
+    /// bundled.
+    fn tint<'a>(selected: &'a [u32], color: [f32; 4], selected_color: [f32; 4]) -> BoneTint<'a> {
+        BoneTint {
+            selected,
+            hovered: None,
+            color,
+            selected_color,
+            hover_color: [0.0; 4],
+        }
+    }
+
     use super::*;
     use glam::Mat4;
     use review_model::{BoneInfo, SceneNode};
@@ -403,8 +571,8 @@ mod tests {
     #[test]
     fn vertex_counts_match_the_octahedron_and_marker_geometry() {
         let model = chain();
-        let fill = skeleton_fill_triangles(&model, &[], 1.0, [1.0; 4], [1.0; 4], 0.35);
-        let lines = skeleton_lines(&model, &[], 1.0, [1.0; 4], [1.0; 4]);
+        let fill = skeleton_fill_triangles(&model, tint(&[], [1.0; 4], [1.0; 4]), 1.0, 0.35);
+        let lines = skeleton_lines(&model, tint(&[], [1.0; 4], [1.0; 4]), 1.0);
         // 2 segments x 8 triangles x 3 corners.
         assert_eq!(fill.len(), 2 * 8 * 3);
         // 2 segments x 12 edges x 2 ends, plus 1 terminal joint x 3 axes x 2 ends.
@@ -414,8 +582,8 @@ mod tests {
     #[test]
     fn overlay_vertices_carry_the_zero_normal_sentinel() {
         let model = chain();
-        let fill = skeleton_fill_triangles(&model, &[], 1.0, [1.0; 4], [1.0; 4], 0.35);
-        let lines = skeleton_lines(&model, &[], 1.0, [1.0; 4], [1.0; 4]);
+        let fill = skeleton_fill_triangles(&model, tint(&[], [1.0; 4], [1.0; 4]), 1.0, 0.35);
+        let lines = skeleton_lines(&model, tint(&[], [1.0; 4], [1.0; 4]), 1.0);
         // Without this the shader would light the bones and they'd feed GTAO.
         assert!(
             fill.iter()
@@ -430,7 +598,7 @@ mod tests {
         let plain = [0.0, 0.0, 1.0, 1.0];
         let selected = [1.0, 0.0, 0.0, 1.0];
         // Bone 1 (hips) selected: its segment recolors, bone 2's does not.
-        let lines = skeleton_lines(&model, &[1], 1.0, plain, selected);
+        let lines = skeleton_lines(&model, tint(&[1], plain, selected), 1.0);
         let recolored = lines.iter().filter(|v| v.vertex_color == selected).count();
         assert_eq!(recolored, 12 * 2, "exactly one octahedron's outline");
         assert!(lines.iter().any(|v| v.vertex_color == plain));
@@ -440,10 +608,10 @@ mod tests {
     fn the_fill_alpha_scales_only_the_alpha_channel() {
         let model = chain();
         let color = [0.2, 0.4, 0.6, 0.8];
-        let fill = skeleton_fill_triangles(&model, &[], 1.0, color, color, 0.5);
+        let fill = skeleton_fill_triangles(&model, tint(&[], color, color), 1.0, 0.5);
         assert_eq!(fill[0].vertex_color, [0.2, 0.4, 0.6, 0.4]);
         // The outlines stay fully opaque at the authored alpha.
-        let lines = skeleton_lines(&model, &[], 1.0, color, color);
+        let lines = skeleton_lines(&model, tint(&[], color, color), 1.0);
         assert_eq!(lines[0].vertex_color, color);
     }
 
@@ -471,7 +639,7 @@ mod tests {
         let mut model = chain();
         // Put the spine exactly on the hips.
         model.nodes[2].transform = Mat4::from_translation(Vec3::ZERO);
-        let fill = skeleton_fill_triangles(&model, &[], 1.0, [1.0; 4], [1.0; 4], 0.35);
+        let fill = skeleton_fill_triangles(&model, tint(&[], [1.0; 4], [1.0; 4]), 1.0, 0.35);
         // hips->spine is degenerate and drops out; spine->head still draws.
         assert_eq!(fill.len(), 8 * 3);
     }
@@ -487,5 +655,139 @@ mod tests {
             let other_span = (points[3] - points[5]).length();
             assert!(other_span > 1e-6, "{axis:?} collapsed the second ring axis");
         }
+    }
+
+    #[test]
+    fn a_hovered_bone_takes_the_hover_color() {
+        let model = chain();
+        let plain = [0.0, 0.0, 1.0, 1.0];
+        let selected = [1.0, 0.0, 0.0, 1.0];
+        let hover = [0.0, 1.0, 0.0, 1.0];
+        let hovered = |selected_set: &[u32], node: Option<u32>| {
+            skeleton_lines(
+                &model,
+                BoneTint {
+                    selected: selected_set,
+                    hovered: node,
+                    color: plain,
+                    selected_color: selected,
+                    hover_color: hover,
+                },
+                1.0,
+            )
+        };
+
+        // Bone 1 (hips) hovered: its segment takes the hover colour.
+        let lines = hovered(&[], Some(1));
+        assert_eq!(
+            lines.iter().filter(|v| v.vertex_color == hover).count(),
+            12 * 2,
+            "exactly one octahedron's outline"
+        );
+
+        // Selection wins over hover, so a selected bone under the pointer does
+        // not stop looking selected.
+        let lines = hovered(&[1], Some(1));
+        assert_eq!(lines.iter().filter(|v| v.vertex_color == hover).count(), 0);
+        assert_eq!(
+            lines.iter().filter(|v| v.vertex_color == selected).count(),
+            12 * 2
+        );
+    }
+
+    /// The pick must hit the bone the ray passes through, and report the head
+    /// joint - the node the Outliner selects for that bone.
+    #[test]
+    fn pick_bone_shape_hits_the_octahedron_it_passes_through() {
+        let model = chain();
+        let joints = posed_joint_positions(&model, None);
+        // `chain` puts hips at y = 0, spine at y = 1 and head at y = 2, so the
+        // *spine* bone is the one spanning y = 1..2. Aim across its middle.
+        let origin = Vec3::new(5.0, 1.5, 0.0);
+        let dir = Vec3::NEG_X;
+        let hit = pick_bone_shape(
+            &model,
+            &joints,
+            1.0,
+            origin,
+            dir,
+            &|_| None,
+            Vec2::ZERO,
+            0.0,
+        );
+        assert_eq!(hit, Some(2), "the head joint of the bone crossed");
+
+        // A ray well clear of the skeleton hits nothing, and with no projection
+        // and no tolerance there is no near-miss fallback either.
+        let miss = pick_bone_shape(
+            &model,
+            &joints,
+            1.0,
+            Vec3::new(5.0, 50.0, 0.0),
+            dir,
+            &|_| None,
+            Vec2::ZERO,
+            0.0,
+        );
+        assert_eq!(miss, None);
+    }
+
+    /// A bone too thin to hit directly is still clickable, through the
+    /// screen-space tolerance - which is the whole reason that second test
+    /// exists.
+    #[test]
+    fn pick_bone_shape_catches_a_near_miss_within_the_tolerance() {
+        let model = chain();
+        let joints = posed_joint_positions(&model, None);
+        // Project along the x axis: y becomes the screen x, z the screen y.
+        let project = |world: Vec3| Some(Vec2::new(world.y, world.z));
+        // A ray that misses every octahedron entirely, with the pointer a
+        // little to the side of the bone's drawn line rather than on it.
+        let origin = Vec3::new(5.0, 1.5, 20.0);
+        let pointer = Vec2::new(1.5, 0.5);
+
+        let far = pick_bone_shape(
+            &model,
+            &joints,
+            1.0,
+            origin,
+            Vec3::NEG_X,
+            &project,
+            pointer,
+            0.0,
+        );
+        assert_eq!(far, None, "nothing is within a zero tolerance");
+
+        let near = pick_bone_shape(
+            &model,
+            &joints,
+            1.0,
+            origin,
+            Vec3::NEG_X,
+            &project,
+            pointer,
+            1.0,
+        );
+        assert_eq!(near, Some(2), "the bone the pointer is nearest to");
+    }
+
+    /// Under a pose the joints move, and the pick has to follow them.
+    #[test]
+    fn posed_joint_positions_follow_the_palette() {
+        let model = chain();
+        let rest = posed_joint_positions(&model, None);
+        let mut palette = vec![Mat4::IDENTITY; model.nodes.len()];
+        palette[1] = Mat4::from_translation(Vec3::new(3.0, 0.0, 0.0));
+        let deform = review_model::DeformPose {
+            palette,
+            ..Default::default()
+        };
+        let posed = posed_joint_positions(&model, Some(&deform));
+
+        assert_eq!(
+            posed[0], rest[0],
+            "an identity entry leaves the joint alone"
+        );
+        assert_eq!(posed[1], rest[1] + Vec3::new(3.0, 0.0, 0.0));
     }
 }

@@ -60,6 +60,15 @@ impl Default for AnimationSubsystem {
     }
 }
 
+impl AnimationSubsystem {
+    /// The per-model evaluation context the pose was built against, or `None`
+    /// before one exists. Handed out for the CPU deform the viewport pick runs,
+    /// which has to mirror exactly what the shader was given.
+    pub(crate) fn context(&self) -> Option<&AnimContext> {
+        self.context.as_ref()
+    }
+}
+
 impl App {
     /// Whether a clip is playing in the 3D workspace — the redraw loop keeps
     /// pacing frames while it is.

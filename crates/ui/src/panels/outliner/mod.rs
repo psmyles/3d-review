@@ -48,7 +48,7 @@ use rows::kind_icon;
 
 use animations::animations_tab;
 use materials::materials_tab;
-use nav::{apply_row_click, handle_nav};
+use nav::{apply_row_click, handle_nav, row_refs};
 use rows::draw_rows;
 use tree::{TreeRow, flat_rows, search_rows, visible_tree_rows};
 
@@ -303,7 +303,7 @@ fn apply_rows_output(state: &mut UiState, model: &ModelData, rows: &[TreeRow], o
         // Clicking a row is also how the Outliner claims the arrow keys.
         state.outliner.nav_focus = true;
         let kind = model.nodes[node].kind;
-        let order: Vec<usize> = rows.iter().map(|row| row.node).collect();
+        let order = row_refs(model, rows);
         apply_row_click(state, node, kind, modifiers, &order);
     }
 }

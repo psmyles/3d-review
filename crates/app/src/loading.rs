@@ -36,7 +36,7 @@ use review_import::{
     CancelToken, ImportError, ImportProgress, ImportStage, StagedImport,
     load_model_staged_cancellable, measure_clip_bounds,
 };
-use review_model::{Bounds, MeshGroupStats, ModelData, SourceExtras};
+use review_model::{Bounds, MeshGroupStats, ModelData, SceneBvh, SourceExtras};
 use review_render::Renderer;
 use review_ui::Selection;
 
@@ -96,6 +96,8 @@ pub(crate) enum ModelMeasurement {
     /// The per-(node, material) table behind the `GPU Verts` row and the stats
     /// card's scoped columns.
     MeshGroups(Vec<MeshGroupStats>),
+    /// The triangle BVH the viewport pick and the dimension labels query.
+    SceneBvh(Arc<SceneBvh>),
     /// The worker stopped because its load was superseded. Carries nothing to
     /// apply; it exists so the last-message flag still reaches the event loop and
     /// closes the loading card that this import's request opened.
@@ -312,6 +314,21 @@ impl App {
                     return;
                 }
                 {
+                    // Before the clip envelopes, because this is what the pointer
+                    // needs: a user reaching for a part of the model the moment
+                    // it appears should be able to click it.
+                    let _z = prof::zone!("Build Scene BVH");
+                    report(ImportProgress::stage(ImportStage::Measuring));
+                    send(
+                        ModelMeasurement::SceneBvh(Arc::new(SceneBvh::build(&model))),
+                        false,
+                    );
+                }
+                if cancel.is_cancelled() {
+                    send(ModelMeasurement::Cancelled, true);
+                    return;
+                }
+                {
                     let _z = prof::zone!("Measure Clip Bounds");
                     report(ImportProgress::stage(ImportStage::Measuring));
                     send(
@@ -336,6 +353,7 @@ impl App {
             match load_model_staged_cancellable(path, &|_| {}, None) {
                 Ok(StagedImport { model, extras }) => {
                     let model = Arc::new(model);
+                    let bvh = Arc::new(SceneBvh::build(&model));
                     let clip_bounds = measure_clip_bounds(&model);
                     let groups = model.mesh_group_stats();
                     let extras = extras.marshal(&model).map(|extras| extras.map(Arc::new));
@@ -343,6 +361,7 @@ impl App {
                     self.apply_source_extras(extras);
                     self.ui.clip_bounds = clip_bounds;
                     self.ui.set_mesh_group_stats(groups);
+                    self.scene_bvh = Some(bvh);
                 }
                 Err(error) => self.apply_loaded_model(path, Err(error), started.elapsed()),
             }
@@ -381,6 +400,9 @@ impl App {
             // Fills in the `GPU Verts` row and the scoped stats columns, and
             // spares the main thread building the same table itself.
             ModelMeasurement::MeshGroups(groups) => self.ui.set_mesh_group_stats(groups),
+            // Until this lands the viewport cannot be picked and the dimension
+            // labels do not occlude; both simply start working when it does.
+            ModelMeasurement::SceneBvh(bvh) => self.scene_bvh = Some(bvh),
             // Only ever sent by a worker that has already been superseded, so
             // the generation check above has returned by now.
             ModelMeasurement::Cancelled => {}
@@ -579,6 +601,15 @@ impl App {
     ///
     /// [`UiState::materials_snapshot`]: review_ui::UiState::materials_snapshot
     fn reset_ui_for_new_model(&mut self, model: &ModelData) {
+        // Indexes the outgoing model's triangles; the worker rebuilds it for the
+        // incoming one a moment after it is drawn.
+        self.scene_bvh = None;
+        self.posed_pick = None;
+        // Picking is a tool, not a document edit: a new file starts in View, so
+        // opening one can never leave a stray click selecting something.
+        self.ui.tool = review_ui::ViewportTool::View;
+        self.announced_tool = review_ui::ViewportTool::View;
+        self.ui.hover = None;
         // The Outliner selection, solo and hidden sets are node / material indices
         // into the old model; the skeleton state likewise.
         self.ui.selection = Selection::None;

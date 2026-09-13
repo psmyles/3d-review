@@ -88,11 +88,12 @@ pub const TOOLBAR_CENTER_WIDTH: f32 = 120.0;
 ///
 /// Sized for the **widest** case, which is a rigged model: the view group gains a
 /// tile for the skeleton toggle there (152 rather than 122), so
-/// 152 + 9 + 32 + 9 + 32 + 9 + 32 = 275, plus a little slack. Sizing it for the
-/// unrigged case instead left the outermost group hanging off the bar the moment
-/// a skinned mesh was opened - `tests/toolbar_layout.rs` is what now says so.
-/// It grows leftward from the right edge, away from the centered mode segments.
-pub const TOOLBAR_RIGHT_WIDTH: f32 = 284.0;
+/// 152 + 9 + 32 + 9 + 32 + 9 + 32 + 9 + 32 = 316, plus a little slack. Sizing it
+/// for the unrigged case instead left the outermost group hanging off the bar the
+/// moment a skinned mesh was opened - `tests/toolbar_layout.rs` is what now says
+/// so. It grows leftward from the right edge, away from the centered mode
+/// segments.
+pub const TOOLBAR_RIGHT_WIDTH: f32 = 325.0;
 /// Left toolbar cluster: shading (5) + material + geometry-debug (3) groups, with
 /// two group spacings between them.
 ///

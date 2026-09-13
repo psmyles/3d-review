@@ -59,11 +59,34 @@ impl App {
         egui_consumed: bool,
     ) {
         if state == ElementState::Released {
+            // A press that never moved is a click, and in Select mode a click
+            // picks. Read before the drag state is cleared: `pending_drag` (or a
+            // settled `drag_mode`) is what says egui did *not* take the press —
+            // a press it grabbed leaves both `None`, and must not also select
+            // something under the panel the user was actually dragging.
+            let unclaimed = self.pending_drag.is_some() || self.drag_mode.is_some();
+            let click = (button == MouseButton::Left)
+                .then(|| self.click_press.take())
+                .flatten();
+
             self.drag_mode = None;
             self.pending_drag = None;
             // A flight lives only as long as the drag that armed it: a movement
             // key still down when the button comes up must not arm the next one.
             self.flycam.release_all();
+
+            if let Some(position) = click
+                && unclaimed
+            {
+                // The primary modifier is Cmd on macOS, which is `app`'s own
+                // distinction to make (`primary_held`) rather than one to read
+                // back out of egui.
+                let mode = review_ui::SelectMode::new(
+                    crate::shortcuts::primary_held(self.modifiers),
+                    self.modifiers.shift_key(),
+                );
+                self.pick_click(position, mode);
+            }
             return;
         }
 
@@ -99,6 +122,9 @@ impl App {
                     });
                     if let Some(position) = self.last_pointer_position {
                         self.last_primary_click = Some((Instant::now(), position));
+                        // Where a click would land, if this press turns out not
+                        // to be the start of a drag.
+                        self.click_press = self.picking_enabled().then_some(position);
                     }
                 }
             }
@@ -159,6 +185,22 @@ impl App {
     /// record the new pointer position for the next delta.
     pub(crate) fn handle_cursor_moved(&mut self, position: PhysicalPosition<f64>, window: &Window) {
         let current = Vec2::new(position.x as f32, position.y as f32);
+
+        // Past a few pixels the press is a drag, not a click: the camera keeps
+        // it and nothing will be selected when the button comes up. The
+        // threshold is what lets one button do both jobs without a modifier.
+        if self
+            .click_press
+            .is_some_and(|press| !crate::pick::is_click(press, current))
+        {
+            self.click_press = None;
+        }
+        // Hovering previews what a click would pick. Not while a drag is live —
+        // the pointer is driving the camera then, and whatever it sweeps over is
+        // not being pointed at.
+        if self.picking_enabled() && self.drag_mode.is_none() && self.pending_drag.is_none() {
+            self.hover_pending = Some(current);
+        }
 
         // Read before the renderer borrow below.
         let synced = self.opt_cameras_synced();
@@ -337,6 +379,11 @@ impl App {
         self.redraw.requested = true;
     }
 }
+
+/// How far the pointer may move between press and release and still count as a
+/// click rather than a drag. Generous enough to absorb the shake of clicking a
+/// mouse, tight enough that a deliberate orbit never selects anything.
+pub(crate) const CLICK_MAX_DISTANCE_PX: f32 = 4.0;
 
 /// Camera zoom per pixel of a right-button zoom-drag (pointer-down zooms in).
 pub(crate) const DRAG_ZOOM_SENSITIVITY: f32 = 0.01;

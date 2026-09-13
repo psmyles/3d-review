@@ -7,16 +7,17 @@ use review_render::{ActiveMaterial, ShadingMode, UvShadingMode};
 
 use crate::assets::{
     ICON_AXIS_GIZMO, ICON_BACKFACE, ICON_BBOX, ICON_BUFFERS, ICON_GRID, ICON_HELP, ICON_NODE_BONE,
-    ICON_NORMALS_FACE, ICON_NORMALS_VERTEX, ICON_OUTLINER, ICON_PIVOT, ICON_SHADING_SHADED,
-    ICON_SHADING_TEXTURE, ICON_SHADING_UNLIT, ICON_SHADING_WIRE, ICON_SHADING_WIRE_ONLY,
-    ICON_SKIN_WEIGHTS, ICON_UV, ICON_UV_ISLANDS, ICON_UV_SEAM, ICON_UV_SHADED, ICON_UV_WIRE,
-    ICON_VERTEX_COLORS, ICON_VIEW_ORTHO, ICON_VIEW_PERSPECTIVE,
+    ICON_NORMALS_FACE, ICON_NORMALS_VERTEX, ICON_OUTLINER, ICON_PIVOT, ICON_SELECT,
+    ICON_SHADING_SHADED, ICON_SHADING_TEXTURE, ICON_SHADING_UNLIT, ICON_SHADING_WIRE,
+    ICON_SHADING_WIRE_ONLY, ICON_SKIN_WEIGHTS, ICON_UV, ICON_UV_ISLANDS, ICON_UV_SEAM,
+    ICON_UV_SHADED, ICON_UV_WIRE, ICON_VERTEX_COLORS, ICON_VIEW_ORTHO, ICON_VIEW_PERSPECTIVE,
 };
 use crate::docs::Page;
 use crate::keys;
 use crate::labels;
 use crate::state::{
-    OptionPanel, TextureChannelView, TexturePoolEntry, UiState, ViewProjectionMode, WorkspaceMode,
+    OptionPanel, TextureChannelView, TexturePoolEntry, UiState, ViewProjectionMode, ViewportTool,
+    WorkspaceMode,
 };
 use crate::theme::{color, size};
 use crate::widgets::{
@@ -172,6 +173,7 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState) {
                             draw_view_group(ui, state, view_group_width);
                             draw_projection_group(ui, state, single_icon_group_width);
                             draw_side_panels_group(ui, state, single_icon_group_width);
+                            draw_tool_group(ui, state, single_icon_group_width);
                         }
                         WorkspaceMode::Uv => draw_uv_set_picker(ui, state),
                         WorkspaceMode::Texture => draw_texture_picker(ui, state),
@@ -547,6 +549,31 @@ fn draw_side_panels_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
         .clicked()
         {
             state.side_panels_open = !state.side_panels_open;
+        }
+    });
+}
+
+/// The viewport tool toggle: View (camera only) or Select (clicking picks).
+///
+/// Innermost of the right-hand cluster, nearest the centre, because it is the
+/// one tile there that changes what the *mouse* does rather than what is drawn -
+/// and it is reached often enough to want the shorter travel. `Q` toggles the
+/// same thing.
+fn draw_tool_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
+    toolbar_group_shell(ui, width, |ui| {
+        if icon_toggle_button(
+            ui,
+            &ICON_SELECT,
+            state.tool == ViewportTool::Select,
+            Tip::new(keys::ui_toolbar::SELECT_TOOL)
+                .describe(keys::ui_toolbar::select_tool_description(
+                    review_localization::tr(keys::ui_toolbar::SELECT_TOOL_KEY).into_owned(),
+                ))
+                .page(Page::Selection),
+        )
+        .clicked()
+        {
+            state.tool = state.tool.toggled();
         }
     });
 }

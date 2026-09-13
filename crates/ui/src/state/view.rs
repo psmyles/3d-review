@@ -24,6 +24,47 @@ impl WorkspaceMode {
     }
 }
 
+/// What the left mouse button does in the 3D viewport.
+///
+/// An explicit mode rather than a modifier, because the two jobs want the same
+/// gesture: reviewing a model is mostly camera work, and a viewer that selected
+/// something every time a drag ended would fight the user. In
+/// [`ViewportTool::Select`] a *click* (a press and release that does not move)
+/// picks, while a drag still orbits exactly as it always did — so the camera is
+/// never taken away.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ViewportTool {
+    /// Camera only: the viewer's long-standing behaviour.
+    #[default]
+    View,
+    /// Clicking picks what is under the pointer, and hovering previews it.
+    Select,
+}
+
+impl ViewportTool {
+    /// The other tool — what the toolbar button and `Q` switch to.
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::View => Self::Select,
+            Self::Select => Self::View,
+        }
+    }
+}
+
+/// What the pointer is over in the viewport, resolved by `app`'s pick each time
+/// the pointer moves and read back by the renderer as a highlight (data flows
+/// app→UI, invariant 2).
+///
+/// A bone and a mesh part are never both hovered: the skeleton overlay decides
+/// which of the two is pickable at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoverTarget {
+    /// A mesh or group node (an index into `ModelData::nodes`).
+    Node(usize),
+    /// A bone node, while the skeleton overlay is up.
+    Bone(usize),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewProjectionMode {
     Perspective,

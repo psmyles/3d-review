@@ -62,8 +62,11 @@ pub(super) fn draw_rows(
         );
 
         // ── Backgrounds ─────────────────────────────────────────────────────
+        // Either set lights a row: the primary is only ever the last member of
+        // whichever one is live, and the rest must read as selected too.
         let selected = state.selection == Selection::Node(row.node)
-            || state.selected_bones.contains(&row.node);
+            || state.selected_bones.contains(&row.node)
+            || state.selected_nodes.contains(&row.node);
         if index % 2 == 1 {
             painter.rect_filled(row_rect, 0.0, color::OUTLINER_ROW_ALT_BG);
         }

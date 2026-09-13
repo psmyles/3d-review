@@ -80,3 +80,10 @@ ui-inspector-bones-selected = { $count ->
         [one] One bone selected
        *[other] { $count } bones selected
     }
+ui-inspector-parts-selected = { $count ->
+        [one] One part selected
+       *[other] { $count } parts selected
+    }
+ui-inspector-parts = Parts
+ui-inspector-selected-tris = Triangles
+    .description = How many triangles the selected parts come to in total.

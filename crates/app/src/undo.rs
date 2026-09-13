@@ -60,6 +60,11 @@ pub(crate) struct EditSnapshot {
     /// skin-weight heat map paints — undoing a selection should restore all of it,
     /// not just the primary node.
     selected_bones: Vec<usize>,
+    /// The mesh/group multi-selection, in click order — the twin of
+    /// `selected_bones` for everything that is not a bone, and document state
+    /// for the same reason: undoing a selection should restore all of it, not
+    /// just the primary node the scalar names.
+    selected_nodes: Vec<usize>,
     solo: bool,
     hidden_meshes: HashSet<usize>,
     /// The renderer's editable material table (scalar params + texture slot
@@ -85,6 +90,7 @@ impl EditSnapshot {
         Self {
             selection: Selection::None,
             selected_bones: Vec::new(),
+            selected_nodes: Vec::new(),
             solo: false,
             hidden_meshes: HashSet::new(),
             materials: Arc::new(Vec::new()),
@@ -103,6 +109,7 @@ impl EditSnapshot {
     fn differs(&self, other: &EditSnapshot) -> bool {
         self.selection != other.selection
             || self.selected_bones != other.selected_bones
+            || self.selected_nodes != other.selected_nodes
             || self.solo != other.solo
             || self.hidden_meshes != other.hidden_meshes
             || self.material_revision != other.material_revision
@@ -248,6 +255,7 @@ impl App {
         EditSnapshot {
             selection: self.ui.selection,
             selected_bones: self.ui.selected_bones.clone(),
+            selected_nodes: self.ui.selected_nodes.clone(),
             solo: self.ui.solo,
             hidden_meshes: self.ui.hidden_meshes.clone(),
             materials,
@@ -270,9 +278,10 @@ impl App {
     fn restore_edit_state(&mut self, snapshot: &EditSnapshot) {
         self.ui.selection = snapshot.selection;
         self.ui.selected_bones = snapshot.selected_bones.clone();
+        self.ui.selected_nodes = snapshot.selected_nodes.clone();
         // The anchor is interaction state, not document state: a restored set has
         // no meaningful "last clicked row", so the next Shift-click starts fresh.
-        self.ui.bone_anchor = None;
+        self.ui.row_anchor = None;
         self.ui.solo = snapshot.solo;
         self.ui.hidden_meshes = snapshot.hidden_meshes.clone();
         // Any restored selection should frame the part first on the next `F`.
@@ -382,6 +391,7 @@ mod tests {
         EditSnapshot {
             selection,
             selected_bones: Vec::new(),
+            selected_nodes: Vec::new(),
             solo: false,
             hidden_meshes: HashSet::new(),
             materials: Arc::new(Vec::new()),

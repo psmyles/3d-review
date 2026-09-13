@@ -151,9 +151,9 @@ pub(crate) struct SceneUniforms {
     /// View matrix (world → view), for writing the view-space normal + depth into
     /// the GTAO G-buffer.
     pub(crate) view: [[f32; 4]; 4],
-    /// Selection-flash highlight: `rgb` = gamma-space highlight color, `w` = flash
-    /// fade (1 at flash start → 0 when done). Read only by `fs_selection`; zero
-    /// while nothing is flashing.
+    /// Selection / hover highlight: `rgb` = gamma-space highlight color, `w` = the
+    /// fill's opacity. Read only by `fs_selection`; zero when there is nothing to
+    /// draw.
     pub(crate) selection_color: [f32; 4],
 }
 

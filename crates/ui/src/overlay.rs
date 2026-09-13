@@ -88,6 +88,13 @@ pub fn draw_overlay(
     // chrome; the UV / Texture workspaces keep a clean viewport (just the UV dropdown
     // in the toolbar), so they draw only in the scene workspaces (3D and Opt).
     if state.mode.is_scene() {
+        // Re-scoped before the panels rather than after: the Inspector's
+        // multi-part summary states these same sums, and measuring them after it
+        // had drawn would leave it one frame behind the selection it describes.
+        // The call is cached against the selection + hidden set, so the second
+        // one below is a lookup (invariant 6 — nothing O(mesh) per frame).
+        let scoped = state.scoped_stats(model);
+
         // Outliner (left) + Inspector (right) dockable side panels. They paint over
         // the full-window background scene (exactly as the toolbar / status bar
         // already do); their live widths inset the floating viewport chrome below so
@@ -123,6 +130,15 @@ pub fn draw_overlay(
         // `app` reads this back to lay the Opt split out inside the area the user
         // can actually see (the renderer's `SceneViewport`).
         state.scene_viewport = Some(viewport);
+
+        // A pointing hand over anything the Select tool could pick, so the
+        // viewport says it is clickable the way every other control does. Only
+        // over the free viewport: egui owns the cursor wherever its own chrome
+        // is under the pointer, and overriding that would fight a panel's
+        // resize handle for it.
+        if state.hover.is_some() && !ctx.is_pointer_over_egui() {
+            ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
         draw_split_divider(ctx, state, viewport);
 
         // Bounding-box dimension labels sit on the viewport (under the chrome).
@@ -158,10 +174,6 @@ pub fn draw_overlay(
             output.axis_gizmo_action = gizmo_response.inner;
         }
 
-        // Re-scoped here rather than inside the card, which holds only `&UiState`:
-        // the sums are cached against the selection + hidden set and rebuilt only
-        // when one of them moves (invariant 6 — nothing O(mesh) per frame).
-        let scoped = state.scoped_stats(model);
         draw_stats_overlay(
             ctx,
             state,

@@ -30,6 +30,24 @@ pub const SELECTION_STROKE: Color32 = Color32::from_rgb(88, 135, 217);
 /// node / material in the 3D scene. A punchy orange so it reads against an
 /// arbitrary model surface and the grey wireframe (Phase 2).
 pub const SELECTION_OUTLINE: Color32 = Color32::from_rgb(255, 140, 35);
+/// How opaque the viewport's selection fill is once its flash has settled. The
+/// highlight persists for as long as something is selected, so this is the level
+/// it holds: enough to read the selection at a glance across a busy scene,
+/// little enough that the surface's own shading, textures and wireframe are
+/// still legible through it.
+pub const SELECTION_FILL_OPACITY: f32 = 0.22;
+/// Viewport hover highlight: the tint over whatever a click would select while
+/// the Select tool is active. A paler, warmer wash than [`SELECTION_OUTLINE`],
+/// and fainter, so "would be selected" is never mistaken for "is selected" —
+/// the two are told apart at a glance even when one sits beside the other.
+///
+/// Its alpha is the fill opacity, stated the same way [`SELECTION_FILL_OPACITY`]
+/// is — the renderer reads straight RGBA, so this is written premultiplied-free
+/// as an RGB constant plus its own opacity below.
+pub const HOVER_HIGHLIGHT: Color32 = Color32::from_rgb(255, 196, 120);
+/// How opaque the hover tint is. Well under [`SELECTION_FILL_OPACITY`]: a
+/// preview should be the quieter of the two.
+pub const HOVER_FILL_OPACITY: f32 = 0.14;
 /// Hover fill for custom-painted tiles (icon tiles, mode segments).
 pub const HOVER_BG: Color32 = Color32::from_rgb(54, 56, 61);
 /// Gradient line drawn along the top of a hovered toolbar/status-bar icon tile

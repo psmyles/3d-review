@@ -40,6 +40,16 @@ struct Node {
     count: u32,
 }
 
+/// The nearest triangle a ray crossed, and where along the ray it did.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Hit {
+    /// Hit parameter along the query direction: the world hit is
+    /// `origin + t * dir`.
+    pub t: f32,
+    /// Global triangle index (`indices[3*t .. 3*t + 3]`).
+    pub triangle: u32,
+}
+
 impl Node {
     const EMPTY: Self = Self {
         min: Vec3::ZERO,
@@ -161,6 +171,148 @@ impl Bvh {
         }
         false
     }
+
+    /// The *nearest* triangle crossed by the ray `origin + t * dir` within
+    /// `t` between `t_min` and `t_max`, or `None` when nothing is hit.
+    ///
+    /// Unlike the occlusion queries this cannot stop at the first hit, so it
+    /// descends nearest-child-first and skips any node whose slab entry is
+    /// already behind the best hit so far — which recovers most of the early
+    /// exit an any-hit traversal gets for free.
+    pub fn closest_hit(
+        &self,
+        model: &ModelData,
+        origin: Vec3,
+        dir: Vec3,
+        t_min: f32,
+        t_max: f32,
+    ) -> Option<Hit> {
+        self.closest_hit_with(origin, dir, t_min, t_max, None, |t| {
+            triangle_positions(model, t)
+        })
+    }
+
+    /// [`Self::closest_hit`] over caller-supplied geometry: `positions` answers
+    /// for a global triangle index, and `bounds` (when given) replaces the
+    /// stored per-node boxes. Both exist for the posed pick, which tests
+    /// CPU-deformed corners against boxes [`Self::refit`] recomputed for the
+    /// same pose — the tree's *topology* survives a deform, only its bounds and
+    /// positions move.
+    pub(crate) fn closest_hit_with(
+        &self,
+        origin: Vec3,
+        dir: Vec3,
+        t_min: f32,
+        t_max: f32,
+        bounds: Option<&[(Vec3, Vec3)]>,
+        positions: impl Fn(u32) -> [Vec3; 3],
+    ) -> Option<Hit> {
+        let inv_dir = dir.recip();
+        let mut best: Option<Hit> = None;
+        let mut far = t_max;
+
+        let box_of = |index: u32| -> (Vec3, Vec3) {
+            match bounds {
+                Some(refit) => refit[index as usize],
+                None => {
+                    let node = self.nodes[index as usize];
+                    (node.min, node.max)
+                }
+            }
+        };
+
+        let mut stack = [0u32; MAX_STACK];
+        let mut sp = 1usize; // node 0 (root) seeded below
+        stack[0] = 0;
+        while sp > 0 {
+            sp -= 1;
+            let index = stack[sp];
+            let node = self.nodes[index as usize];
+            let (lo, hi) = box_of(index);
+            // The box may have been pushed while a nearer hit was still to come.
+            if !segment_hits_aabb(origin, inv_dir, lo, hi, t_min, far) {
+                continue;
+            }
+            if node.count > 0 {
+                let leaf =
+                    &self.tris[node.left_first as usize..(node.left_first + node.count) as usize];
+                for &t in leaf {
+                    let [a, b, c] = positions(t);
+                    if let Some(hit) = ray_triangle_t(origin, dir, a, b, c)
+                        && hit > t_min
+                        && hit < far
+                    {
+                        far = hit;
+                        best = Some(Hit {
+                            t: hit,
+                            triangle: t,
+                        });
+                    }
+                }
+            } else if sp + 2 <= MAX_STACK {
+                // Nearest child last, so it pops first and tightens `far` before
+                // the sibling is tested.
+                let left = node.left_first;
+                let right = left + 1;
+                let entry = |child: u32| {
+                    let (lo, hi) = box_of(child);
+                    slab_entry(origin, inv_dir, lo, hi, t_min)
+                };
+                let (first, second) = if entry(left) <= entry(right) {
+                    (right, left)
+                } else {
+                    (left, right)
+                };
+                stack[sp] = first;
+                stack[sp + 1] = second;
+                sp += 2;
+            }
+        }
+        best
+    }
+
+    /// Per-node bounds recomputed from `positions`, in this tree's own node
+    /// order, for querying a deformed copy of the geometry it was built over.
+    ///
+    /// A node's children are always pushed *after* it during the build, so
+    /// walking the node list in reverse sees every child before its parent and
+    /// one linear pass suffices.
+    pub(crate) fn refit(&self, positions: impl Fn(u32) -> [Vec3; 3]) -> Vec<(Vec3, Vec3)> {
+        let mut bounds =
+            vec![(Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)); self.nodes.len()];
+        for index in (0..self.nodes.len()).rev() {
+            let node = self.nodes[index];
+            let (mut lo, mut hi) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
+            if node.count > 0 {
+                let leaf =
+                    &self.tris[node.left_first as usize..(node.left_first + node.count) as usize];
+                for &t in leaf {
+                    for corner in positions(t) {
+                        lo = lo.min(corner);
+                        hi = hi.max(corner);
+                    }
+                }
+            } else {
+                for child in [node.left_first as usize, node.left_first as usize + 1] {
+                    // An empty tree's single node is a zero-count "leaf" with no
+                    // children, so this only runs for real internal nodes.
+                    if let Some(&(clo, chi)) = bounds.get(child) {
+                        lo = lo.min(clo);
+                        hi = hi.max(chi);
+                    }
+                }
+            }
+            bounds[index] = (lo, hi);
+        }
+        bounds
+    }
+
+    /// The triangle permutation this tree indexes — the global triangle indices
+    /// it covers, in leaf order. Read by the posed pick to know which corners
+    /// need deforming.
+    pub(crate) fn triangles(&self) -> &[u32] {
+        &self.tris
+    }
 }
 
 /// Sentinel owning-node id for a model with no per-triangle node info — never
@@ -183,11 +335,24 @@ pub struct SceneBvh {
 }
 
 #[derive(Debug, Clone)]
-struct ScenePart {
+pub(crate) struct ScenePart {
     /// The scene node these triangles belong to (matches [`crate::TriangleData::node`]),
     /// or [`NO_NODE`] when the model carries no per-triangle node info.
-    node: u32,
-    bvh: Bvh,
+    pub(crate) node: u32,
+    pub(crate) bvh: Bvh,
+}
+
+/// The nearest mesh part a pick ray hit: which scene node owns it, which
+/// triangle was crossed, and where along the ray.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SceneHit {
+    /// Owning scene node (an index into [`ModelData::nodes`]), or [`u32::MAX`]
+    /// for a model that carries no per-triangle node info.
+    pub node: u32,
+    /// Global triangle index.
+    pub triangle: u32,
+    /// Hit parameter along the query direction.
+    pub t: f32,
 }
 
 impl SceneBvh {
@@ -243,6 +408,47 @@ impl SceneBvh {
         self.parts.iter().any(|part| {
             !hidden_nodes.contains(&part.node) && part.bvh.segment_occluded(model, origin, target)
         })
+    }
+
+    /// The nearest triangle the ray `origin + t * dir` hits within `t_max`,
+    /// across every part `allow` accepts — the viewport pick.
+    ///
+    /// `allow` takes the part's owning node, so a caller filters by whatever it
+    /// means by "pickable" (hidden meshes are out, and in solo only the isolated
+    /// set is in) without materialising a complement list. Each part's search is
+    /// bounded by the best hit so far, so the parts behind the front one cost
+    /// little more than their root box test.
+    pub fn pick(
+        &self,
+        model: &ModelData,
+        origin: Vec3,
+        dir: Vec3,
+        t_min: f32,
+        t_max: f32,
+        allow: impl Fn(u32) -> bool,
+    ) -> Option<SceneHit> {
+        let mut best: Option<SceneHit> = None;
+        let mut far = t_max;
+        for part in &self.parts {
+            if !allow(part.node) {
+                continue;
+            }
+            if let Some(hit) = part.bvh.closest_hit(model, origin, dir, t_min, far) {
+                far = hit.t;
+                best = Some(SceneHit {
+                    node: part.node,
+                    triangle: hit.triangle,
+                    t: hit.t,
+                });
+            }
+        }
+        best
+    }
+
+    /// The parts, for a caller that queries them itself (the posed pick, which
+    /// deforms each part's corners before testing it).
+    pub(crate) fn parts(&self) -> &[ScenePart] {
+        &self.parts
     }
 }
 
@@ -403,11 +609,23 @@ fn segment_hits_aabb(
     enter <= exit
 }
 
+/// The `t` at which the segment enters the AABB `[lo, hi]` (clamped below by
+/// `t_min`), for ordering a nearest-first descent. Meaningless when the box is
+/// missed — the caller's own slab test rejects those.
+fn slab_entry(origin: Vec3, inv_dir: Vec3, lo: Vec3, hi: Vec3, t_min: f32) -> f32 {
+    let t0 = (lo - origin) * inv_dir;
+    let t1 = (hi - origin) * inv_dir;
+    t0.min(t1).max_element().max(t_min)
+}
+
 /// Möller–Trumbore ray/triangle intersection. Returns the hit parameter `t`
 /// along `dir` (so the world hit is `origin + t * dir`), or `None` when the ray
 /// misses or runs parallel to the triangle. Hits from either side count — the
 /// model's facing is irrelevant to whether it blocks the line of sight.
-fn ray_triangle_t(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
+///
+/// Public because the skeleton overlay's bone pick tests the same maths against
+/// octahedra it builds itself, which are geometry no BVH indexes.
+pub fn ray_triangle_t(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
     const EPS: f32 = 1.0e-8;
     let edge1 = b - a;
     let edge2 = c - a;
@@ -433,7 +651,7 @@ fn ray_triangle_t(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::demo_cube_model;
+    use crate::{Vertex, demo_cube_model};
 
     /// Brute-force reference: scan every triangle, matching the BVH's slack rule.
     /// The BVH must agree with this on every query — it only changes the *cost*.
@@ -445,6 +663,155 @@ mod tests {
             let [a, b, c] = triangle_positions(model, t as u32);
             ray_triangle_t(origin, dir, a, b, c).is_some_and(|t| t > t_min && t < t_max)
         })
+    }
+
+    /// Brute-force reference for the nearest hit: scan every triangle and keep
+    /// the smallest `t`. The BVH must agree on both the distance and which
+    /// triangle won — it only changes the *cost*.
+    fn closest_brute_force(
+        model: &ModelData,
+        origin: Vec3,
+        dir: Vec3,
+        t_min: f32,
+        t_max: f32,
+    ) -> Option<Hit> {
+        let mut best: Option<Hit> = None;
+        for t in 0..model.indices.len() as u32 / 3 {
+            let [a, b, c] = triangle_positions(model, t);
+            if let Some(hit) = ray_triangle_t(origin, dir, a, b, c)
+                && hit > t_min
+                && hit < t_max
+                && best.is_none_or(|b| hit < b.t)
+            {
+                best = Some(Hit {
+                    t: hit,
+                    triangle: t,
+                });
+            }
+        }
+        best
+    }
+
+    #[test]
+    fn closest_hit_matches_brute_force_over_a_grid() {
+        let model = demo_cube_model();
+        let bvh = Bvh::build(&model);
+        let eyes = [
+            Vec3::new(0.0, 0.5, 6.0),
+            Vec3::new(6.0, 0.5, 0.0),
+            Vec3::new(0.0, 6.0, 0.0),
+            Vec3::new(4.0, 4.0, 4.0),
+            Vec3::new(-4.0, 0.5, -4.0),
+        ];
+        for eye in eyes {
+            for ix in -3..=3 {
+                for iy in -3..=3 {
+                    // Jittered off the cube's face planes, for the same reason
+                    // `unbounded_ray_matches_a_long_segment` jitters: a ray
+                    // exactly grazing a box edge is a measure-zero case where
+                    // the AABB and triangle tests can disagree by an ulp.
+                    let target =
+                        Vec3::new(ix as f32 * 0.26 + 0.005, 0.53 + iy as f32 * 0.26, 0.007);
+                    let dir = (target - eye).normalize();
+                    let mine = bvh.closest_hit(&model, eye, dir, 0.0, f32::INFINITY);
+                    let reference = closest_brute_force(&model, eye, dir, 0.0, f32::INFINITY);
+                    match (mine, reference) {
+                        (None, None) => {}
+                        (Some(mine), Some(reference)) => assert!(
+                            (mine.t - reference.t).abs() < 1e-4,
+                            "eye {eye:?} dir {dir:?}: {mine:?} vs {reference:?}"
+                        ),
+                        (mine, reference) => {
+                            panic!("eye {eye:?} dir {dir:?}: {mine:?} vs {reference:?}")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn closest_hit_takes_the_near_face_not_the_far_one() {
+        let model = demo_cube_model();
+        let bvh = Bvh::build(&model);
+        // The cube spans z in [-0.5, 0.5]; from 5 out the near face is 4.5 away
+        // and the far one 5.5. An any-hit traversal is free to report either.
+        let hit = bvh
+            .closest_hit(
+                &model,
+                Vec3::new(0.0, 0.5, 5.0),
+                Vec3::NEG_Z,
+                0.0,
+                f32::INFINITY,
+            )
+            .expect("the ray crosses the cube");
+        assert!((hit.t - 4.5).abs() < 1e-4, "{}", hit.t);
+    }
+
+    #[test]
+    fn closest_hit_respects_its_bounds() {
+        let model = demo_cube_model();
+        let bvh = Bvh::build(&model);
+        let origin = Vec3::new(0.0, 0.5, 5.0);
+        assert!(
+            bvh.closest_hit(&model, origin, Vec3::NEG_Z, 0.0, 4.0)
+                .is_none(),
+            "a ray stopping short of the near face must not hit"
+        );
+        assert!(
+            bvh.closest_hit(&model, origin, Vec3::NEG_Z, 5.0, f32::INFINITY)
+                .is_some_and(|hit| hit.t > 5.0),
+            "starting past the near face must find the far one"
+        );
+    }
+
+    #[test]
+    fn pick_returns_the_nearest_part_and_its_node() {
+        // Two cubes on the z axis, each its own node, the second further away.
+        let mut model = demo_cube_model();
+        let corners = model.vertices.len() as u32;
+        let triangles = model.indices.len() as u32 / 3;
+        model.nodes.push(model.nodes[0].clone());
+        let far: Vec<Vertex> = model
+            .vertices
+            .iter()
+            .map(|v| Vertex {
+                position: v.position + Vec3::new(0.0, 0.0, -4.0),
+                ..*v
+            })
+            .collect();
+        model.vertices.extend(far);
+        let shifted: Vec<u32> = (0..model.indices.len())
+            .map(|i| model.indices[i] + corners)
+            .collect();
+        model.indices.extend(shifted);
+        model.triangles.node = (0..triangles)
+            .map(|_| 0u32)
+            .chain((0..triangles).map(|_| 1u32))
+            .collect();
+
+        let bvh = SceneBvh::build(&model);
+        let origin = Vec3::new(0.0, 0.5, 6.0);
+        let hit = bvh
+            .pick(&model, origin, Vec3::NEG_Z, 0.0, f32::INFINITY, |_| true)
+            .expect("the ray crosses both cubes");
+        assert_eq!(hit.node, 0, "the near cube owns the hit");
+        assert!((hit.t - 5.5).abs() < 1e-4, "{}", hit.t);
+
+        // Rejecting the near part must fall through to the far one, not miss.
+        let behind = bvh
+            .pick(&model, origin, Vec3::NEG_Z, 0.0, f32::INFINITY, |node| {
+                node != 0
+            })
+            .expect("the far cube is still there");
+        assert_eq!(behind.node, 1);
+        assert!(behind.t > hit.t);
+
+        // Rejecting everything picks nothing.
+        assert!(
+            bvh.pick(&model, origin, Vec3::NEG_Z, 0.0, f32::INFINITY, |_| false)
+                .is_none()
+        );
     }
 
     #[test]

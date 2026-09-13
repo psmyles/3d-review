@@ -75,6 +75,15 @@ ui-toolbar-axis-gizmo = Axis Gizmo
 ui-toolbar-pivot = Pivot
     .description = Shows a marker at the model's own center point, the spot it rotates
         around.
+ui-toolbar-select-tool = Select
+    .description = Switches the left mouse button between turning the camera and
+        picking what it is over. Dragging still turns the camera either way - only
+        a click that does not move selects. Press { $key } to switch.
+# The key that toggles the Select tool, named inside the tooltip above. Its own
+# message so a keyboard layout that needs a different letter can say so without
+# the sentence having to be rebuilt around it.
+ui-toolbar-select-tool-key = Q
+
 ui-toolbar-side-panels = Outliner & Inspector
     .description = Shows or hides the two side panels: the list of parts on the left and
         the details on the right.

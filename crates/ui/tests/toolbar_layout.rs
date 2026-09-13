@@ -12,8 +12,9 @@
 use review_ui::theme::size;
 
 /// The right-hand cluster in the 3D and Opt workspaces: Help, the view group,
-/// the projection toggle, and the side-panels toggle - four groups, each of
-/// which used to be three until Help was given a group of its own.
+/// the projection toggle, the side-panels toggle and the viewport-tool toggle -
+/// five groups, each of which used to be three until Help was given a group of
+/// its own and the Select tool was added.
 #[test]
 fn the_right_cluster_fits_its_reserved_width() {
     let spacing = size::TOOLBAR_GROUP_SPACING;
@@ -27,6 +28,8 @@ fn the_right_cluster_fits_its_reserved_width() {
         let needed = size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH
             + spacing
             + view_group
+            + spacing
+            + size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH
             + spacing
             + size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH
             + spacing
