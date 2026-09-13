@@ -99,13 +99,13 @@ impl NoticeKind {
     /// word has to carry the whole classification on its own — which is why a
     /// running job reads "Working" rather than "Progress": the header names what
     /// is happening, not what the variant is called.
-    fn label(self) -> &'static str {
+    fn label(self) -> std::borrow::Cow<'static, str> {
         match self {
-            Self::Progress => "Working",
-            Self::Info => "Info",
-            Self::Success => "Success",
-            Self::Warning => "Warning",
-            Self::Error => "Error",
+            Self::Progress => review_l10n::tr(crate::keys::ui_notices::WORKING),
+            Self::Info => review_l10n::tr(crate::keys::ui_notices::INFO),
+            Self::Success => review_l10n::tr(crate::keys::ui_notices::SUCCESS),
+            Self::Warning => review_l10n::tr(crate::keys::ui_notices::WARNING),
+            Self::Error => review_l10n::tr(crate::keys::ui_notices::ERROR),
         }
     }
 
@@ -586,7 +586,9 @@ fn notice_card(ui: &mut egui::Ui, notice: &Notice, text_width: f32) -> CardRespo
             let hidden = notice.lines.len() - shown;
             if hidden > 0 {
                 let weak = ui.visuals().weak_text_color();
-                ui.label(egui::RichText::new(format!("+ {hidden} more")).color(weak));
+                ui.label(
+                    egui::RichText::new(crate::keys::ui_notices::more(hidden as f64)).color(weak),
+                );
             }
         });
     });
@@ -741,7 +743,7 @@ fn close_button(ui: &mut egui::Ui) -> egui::Response {
         painter.line_segment([rect.left_top(), rect.right_bottom()], stroke);
         painter.line_segment([rect.right_top(), rect.left_bottom()], stroke);
     }
-    response.on_hover_text("Dismiss")
+    response.on_hover_text(crate::keys::ui_notices::DISMISS)
 }
 
 #[cfg(test)]

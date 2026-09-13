@@ -38,6 +38,7 @@ use review_ui::{NoticeKind, OptIntent, OptLevelView, OptResultView};
 
 use crate::dialog::Dialog;
 use crate::events::UserEvent;
+use crate::keys;
 use crate::{App, prof};
 
 /// How long a run may take before the user is told it is still going. Below this
@@ -52,22 +53,19 @@ const ACTIVITY_NOTICE_AFTER: Duration = Duration::from_millis(300);
 /// position is a setting that *may* have landed on the wrong object — only an
 /// old preset can produce it, and only the user can tell whether it is right.
 fn rebind_notes(report: RebindReport) -> Vec<String> {
+    // Both notes read differently for one override than for several. That is a
+    // plural rule, so it belongs in the catalog's own `{ $count -> }` selector
+    // rather than in hand-picked `if count == 1` fragments here — English needs
+    // two forms, and other languages need more or fewer.
     let mut notes = Vec::new();
     if report.dropped > 0 {
-        let count = report.dropped;
-        notes.push(format!(
-            "{count} per-object override{} named objects this model doesn't have, and {} dropped.",
-            if count == 1 { "" } else { "s" },
-            if count == 1 { "was" } else { "were" },
+        notes.push(keys::app_notifications::overrides_dropped(
+            report.dropped as f64,
         ));
     }
     if report.by_position > 0 {
-        let count = report.by_position;
-        notes.push(format!(
-            "{count} per-object override{} from a preset that predates object names, so {} \
-             matched by position — check they landed on the objects you meant.",
-            if count == 1 { "" } else { "s" },
-            if count == 1 { "it was" } else { "they were" },
+        notes.push(keys::app_notifications::overrides_by_position(
+            report.by_position as f64,
         ));
     }
     notes
@@ -210,7 +208,8 @@ impl App {
             && started.elapsed() >= ACTIVITY_NOTICE_AFTER
         {
             opt.activity_shown = true;
-            self.notifications.begin_activity("Optimizing mesh…");
+            self.notifications
+                .begin_activity(review_l10n::tr(keys::app_notifications::OPTIMIZING).into_owned());
         }
 
         let running = self.opt.as_ref().is_some_and(OptSubsystem::is_running);
@@ -274,7 +273,7 @@ impl App {
         let Some(proxy) = self.textures.proxy.clone() else {
             prof::msg("no event-loop proxy; cannot optimize off-thread");
             self.notifications
-                .error("Couldn't start mesh optimization".to_owned());
+                .error(review_l10n::tr(keys::app_notifications::OPT_START_FAILED).into_owned());
             // Mark the revision covered even though nothing ran: the failure has
             // been reported once, and leaving it uncovered would re-report it on
             // every frame.
@@ -345,7 +344,9 @@ impl App {
                 Err(error) => {
                     prof::msg(&format!("mesh optimization failed: {error}"));
                     self.notifications
-                        .error(format!("Optimization failed: {error}"));
+                        .error(keys::app_notifications::optimization_failed(
+                            crate::explain::explain_opt_error(&error),
+                        ));
                 }
             }
         }
@@ -371,7 +372,7 @@ impl App {
     fn export_opt_result(&mut self) {
         let Some(result) = self.opt.as_ref().and_then(|opt| opt.processed.clone()) else {
             self.notifications
-                .error("Nothing to export yet - add an operation to the stack.".to_owned());
+                .error(review_l10n::tr(keys::app_notifications::NOTHING_TO_EXPORT).into_owned());
             return;
         };
 
@@ -407,11 +408,12 @@ impl App {
         let Some(proxy) = self.textures.proxy.clone() else {
             prof::msg("no event-loop proxy; cannot export off-thread");
             self.notifications
-                .error("Couldn't start the export".to_owned());
+                .error(review_l10n::tr(keys::app_notifications::EXPORT_START_FAILED).into_owned());
             return;
         };
 
-        self.notifications.begin_activity("Exporting FBX…");
+        self.notifications
+            .begin_activity(review_l10n::tr(keys::app_notifications::EXPORTING).into_owned());
 
         std::thread::spawn(move || {
             prof::thread_name("mesh-export");
@@ -433,14 +435,16 @@ impl App {
                     .files
                     .first()
                     .map(|path| crate::loading::file_label(path))
-                    .unwrap_or_else(|| "the mesh".to_owned());
+                    .unwrap_or_else(|| {
+                        review_l10n::tr(keys::app_notifications::EXPORTED_FALLBACK).into_owned()
+                    });
                 let title = if files > 1 {
-                    format!(
-                        "Exported {files} files ({} triangles)",
-                        report.triangle_count
+                    keys::app_notifications::exported_many(
+                        files as f64,
+                        report.triangle_count as f64,
                     )
                 } else {
-                    format!("Exported {name} ({} triangles)", report.triangle_count)
+                    keys::app_notifications::exported_one(name, report.triangle_count as f64)
                 };
                 // The notes describe the genuine losses (a level written as
                 // triangles because a simplify rebuilt it, an animation target
@@ -466,22 +470,33 @@ impl App {
                     "FBX export incomplete at {}: {reason}",
                     failed.display()
                 ));
-                let mut lines = vec![format!(
-                    "{} could not be replaced: {reason}",
-                    crate::loading::file_label(&failed)
+                let mut lines = vec![keys::app_notifications::export_incomplete_file(
+                    crate::loading::file_label(&failed),
+                    reason.clone(),
                 )];
                 if replaced.is_empty() {
-                    lines.push("Nothing on disk was changed.".to_owned());
+                    lines.push(
+                        review_l10n::tr(keys::app_notifications::EXPORT_NOTHING_CHANGED)
+                            .into_owned(),
+                    );
                 } else {
-                    lines.push("These files were replaced by this export:".to_owned());
+                    lines.push(
+                        review_l10n::tr(keys::app_notifications::EXPORT_REPLACED).into_owned(),
+                    );
                     lines.extend(replaced.iter().map(|path| crate::loading::file_label(path)));
                 }
-                self.notifications
-                    .report(NoticeKind::Error, "Export incomplete", lines);
+                self.notifications.report(
+                    NoticeKind::Error,
+                    review_l10n::tr(keys::app_notifications::EXPORT_INCOMPLETE).into_owned(),
+                    lines,
+                );
             }
             Err(error) => {
                 prof::msg(&format!("FBX export failed: {error}"));
-                self.notifications.error(format!("Export failed: {error}"));
+                self.notifications
+                    .error(keys::app_notifications::export_failed(
+                        crate::explain::explain_opt_error(&error),
+                    ));
             }
         }
         if let Some(window) = self.window.as_ref() {
@@ -564,9 +579,9 @@ impl App {
             self.notifications.report(
                 NoticeKind::Warning,
                 if fresh.len() == 1 {
-                    "Optimization warning".to_owned()
+                    review_l10n::tr(keys::app_notifications::OPTIMIZATION_WARNING).into_owned()
                 } else {
-                    format!("{} optimization warnings", fresh.len())
+                    keys::app_notifications::optimization_warnings(fresh.len() as f64)
                 },
                 fresh,
             );
@@ -629,7 +644,9 @@ impl App {
             Ok(json) => json,
             Err(error) => {
                 self.notifications
-                    .error(format!("Couldn't build the preset: {error}"));
+                    .error(keys::app_notifications::preset_build_failed(
+                        crate::explain::explain_opt_error(&error),
+                    ));
                 return;
             }
         };
@@ -646,13 +663,15 @@ impl App {
         match review_optimize::write_bytes_replacing(path, json) {
             Ok(()) => self
                 .notifications
-                .success(format!("Saved {}", crate::loading::file_label(path))),
+                .success(keys::app_notifications::preset_saved(
+                    crate::loading::file_label(path),
+                )),
             Err(error) => {
                 prof::msg(&format!("preset save failed {}: {error}", path.display()));
-                self.notifications.error(format!(
-                    "Couldn't save {}",
-                    crate::loading::file_label(path)
-                ));
+                self.notifications
+                    .error(keys::app_notifications::couldnt_save(
+                        crate::loading::file_label(path),
+                    ));
             }
         }
     }
@@ -668,10 +687,10 @@ impl App {
             Ok(json) => json,
             Err(error) => {
                 prof::msg(&format!("preset read failed {}: {error}", path.display()));
-                self.notifications.error(format!(
-                    "Couldn't read {}",
-                    crate::loading::file_label(path)
-                ));
+                self.notifications
+                    .error(keys::app_notifications::couldnt_read(
+                        crate::loading::file_label(path),
+                    ));
                 return;
             }
         };
@@ -679,7 +698,9 @@ impl App {
             Ok(stack) => stack,
             Err(error) => {
                 self.notifications
-                    .error(format!("Couldn't load that preset: {error}"));
+                    .error(keys::app_notifications::preset_load_failed(
+                        crate::explain::explain_opt_error(&error),
+                    ));
                 return;
             }
         };
@@ -695,7 +716,9 @@ impl App {
         self.redraw.requested = true;
 
         self.notifications
-            .success(format!("Loaded {}", crate::loading::file_label(path)));
+            .success(keys::app_notifications::preset_loaded(
+                crate::loading::file_label(path),
+            ));
         for line in rebind_notes(report) {
             self.notifications.warning(line);
         }

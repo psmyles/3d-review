@@ -24,3 +24,6 @@ pub const PANEL_HEADING: f32 = 14.0;
 /// view's "No textures loaded…" prompt). Larger than panel body text so it
 /// reads clearly across the otherwise-empty canvas.
 pub const VIEWPORT_EMPTY_HINT: f32 = 13.0;
+/// The Help window's version-and-backend line, under the contents list. Smaller
+/// than body text: it is there to be quoted in a bug report, not read.
+pub const HELP_ABOUT: f32 = 11.0;

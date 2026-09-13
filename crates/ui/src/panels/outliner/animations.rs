@@ -6,13 +6,16 @@
 use review_model::ModelData;
 
 use super::matches_search;
+use crate::docs::Page;
+use crate::keys;
 use crate::state::UiState;
 use crate::theme::{color, font, size};
 use crate::widgets;
+use crate::widgets::{Tip, tip};
 
 pub(super) fn animations_tab(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData) {
     if model.animations.is_empty() {
-        ui.weak("No animation clips.");
+        ui.weak(keys::ui_outliner::NO_CLIPS);
         return;
     }
 
@@ -27,7 +30,7 @@ pub(super) fn animations_tab(ui: &mut egui::Ui, state: &mut UiState, model: &Mod
 
     for (index, clip) in model.animations.iter().enumerate() {
         let name = if clip.name.is_empty() {
-            format!("Clip {index}")
+            keys::ui_outliner::unnamed_clip(index as f64)
         } else {
             clip.name.clone()
         };
@@ -60,20 +63,32 @@ pub(super) fn animations_tab(ui: &mut egui::Ui, state: &mut UiState, model: &Mod
         ui.painter().text(
             trailing.right_center(),
             egui::Align2::RIGHT_CENTER,
-            format!("{frames} f · {duration:.2} s"),
+            keys::ui_outliner::clip_summary(frames as f64, format!("{duration:.2}")),
             egui::FontId::monospace(font::STATS),
             color::TEXT_MUTED,
         );
         if response.clicked() {
             clicked = Some(if is_selected { None } else { Some(index) });
         }
-        response.on_hover_text(format!(
-            "{name}\n{frames} frames at {fps:.0} fps · {duration:.2} s"
-        ));
+        tip(
+            response,
+            Tip::new(name.clone())
+                .describe(format!(
+                    "{}
+{}",
+                    keys::ui_outliner::clip_tooltip(
+                        frames as f64,
+                        format!("{fps:.0}"),
+                        format!("{duration:.2}"),
+                    ),
+                    review_l10n::tr(keys::ui_outliner::CLIP_TOOLTIP_DESCRIPTION),
+                ))
+                .page(Page::Animation),
+        );
     }
 
     if !matched {
-        ui.weak("No matches.");
+        ui.weak(keys::ui_outliner::NO_MATCHES);
     }
 
     if let Some(clip) = clicked {

@@ -263,6 +263,10 @@ pub struct UiState {
     pub outliner: OutlinerState,
     /// Animation clip selection + playback — see [`AnimationUiState`].
     pub animation: AnimationUiState,
+    /// The in-app manual: whether its window is up, which page it is on, and
+    /// where its images live. Chrome state like the panel set, edited in place
+    /// rather than travelling as an intent — see [`crate::HelpState`].
+    pub help: crate::HelpState,
     /// Bone nodes selected in the Outliner, in click order (the last entry is the
     /// primary, mirrored into [`UiState::selection`]). Drives the skeleton
     /// overlay's highlight and the skin-weight heat map. Primary-click toggles a
@@ -322,6 +326,7 @@ pub struct UiState {
 impl Default for UiState {
     fn default() -> Self {
         Self {
+            help: crate::HelpState::default(),
             mode: WorkspaceMode::ThreeD,
             debug: SceneDebugOptions::default(),
             shading_mode: ShadingMode::Shaded,
@@ -701,9 +706,9 @@ mod tests {
 
     #[test]
     fn channel_view_all_is_distinct_and_display_ordered() {
-        let labels: Vec<&str> = TextureChannelView::ALL
+        let labels: Vec<String> = TextureChannelView::ALL
             .into_iter()
-            .map(|channel| channel.label())
+            .map(|channel| review_l10n::tr(channel.label()).into_owned())
             .collect();
         assert_eq!(labels, ["RGB", "R", "G", "B", "A"]);
     }

@@ -24,15 +24,6 @@ pub enum OptLayout {
     Overlay,
 }
 
-impl OptLayout {
-    pub fn label(self) -> &'static str {
-        match self {
-            OptLayout::Split => "Split",
-            OptLayout::Overlay => "Overlay",
-        }
-    }
-}
-
 /// How the source mesh is drawn in [`OptLayout::Overlay`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum GhostStyle {
@@ -46,10 +37,10 @@ pub enum GhostStyle {
 impl GhostStyle {
     pub const ALL: [GhostStyle; 2] = [GhostStyle::Xray, GhostStyle::Wireframe];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> review_l10n::Key {
         match self {
-            GhostStyle::Xray => "X-ray",
-            GhostStyle::Wireframe => "Wireframe",
+            GhostStyle::Xray => crate::keys::ui_enums::GHOST_XRAY,
+            GhostStyle::Wireframe => crate::keys::ui_enums::GHOST_WIREFRAME,
         }
     }
 }
@@ -79,10 +70,10 @@ impl ComparisonSide {
         }
     }
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> review_l10n::Key {
         match self {
-            ComparisonSide::Source => "Source",
-            ComparisonSide::Processed => "Processed",
+            ComparisonSide::Source => crate::keys::ui_enums::SIDE_SOURCE,
+            ComparisonSide::Processed => crate::keys::ui_enums::SIDE_PROCESSED,
         }
     }
 }

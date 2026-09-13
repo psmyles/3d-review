@@ -419,6 +419,14 @@ it, the chrome edits it in place, and bumping `stack_revision` is what tells `ap
 to reprocess and what undo compares. Only the file-dialog actions (export, preset
 load/save) travel as an `OptIntent`.
 
+Three modules exist for invariant 12: `labels.rs` maps every foreign enum variant
+to a catalog message, `widgets/tooltip.rs` is the one tooltip shape (title,
+paragraph, manual link), and `help.rs` is the in-app manual — a native
+`egui::Window` over `docs::Page`, the page table this crate's `build.rs` generates
+from `docs/book/src`. Page *text* is compiled in, so Help works on a broken
+install; only images are read from disk, and one that is not there renders as its
+alt text.
+
 ### `optimize` — `review-optimize`
 
 Mesh optimization over vendored meshoptimizer. Depends on `review-model` only —
@@ -485,6 +493,35 @@ unit (`UnitScale`), since import normalizes every file to meters.
 `ufbxw_probe.c` (non-release profiles only, `cfg(has_ufbxw_probe)`) writes a
 test-only scene exercising every writer patch; `tests/ufbxw_patches.rs` reads it
 back through ufbx.
+
+### `l10n` — `review-l10n` and `l10n-build` — `review-l10n-build`
+
+The localization system behind invariant 12, split in two because the typed
+message keys have to be generated *inside* each consuming crate: an unused `pub
+const` in a library warns about nothing, but an unused private one is `dead_code`,
+and that is what stops the catalog filling up with messages no screen shows.
+
+`review-l10n` is the runtime — `Key`, `tr`, `tr_args`, `init`, the negotiated
+bundle chain, and the embedded catalogs. Its `build.rs` embeds every locale's
+`.ftl` files and cross-checks each translation against English: an id English does
+not define, or a message whose variables differ from the English ones, fails the
+build. Two Fluent defaults are overridden and both matter — `set_use_isolating`
+is off, because the isolation marks Fluent brackets variables in have no glyph in
+either bundled font, and the bundle is built with `new_concurrent`, because the
+default one memoizes in a `RefCell` and a `OnceLock` cannot hold a `!Sync` value.
+
+`review-l10n-build` is the parser, used by every consumer's `build.rs`. It depends
+on `fluent-syntax` alone — a build script should compile the parser and nothing
+else — and it is the same parser the runtime loads through, so "it built" means
+"it loads". `generate_keys` writes a `Key` const per message and attribute, plus a
+typed formatter for every message that takes variables, so a missing argument is a
+compile error rather than a `{$name}` left in the text.
+
+The English catalog is `crates/l10n/locales/en/*.ftl`, one file per area. Every
+id is prefixed with its file's stem: that is what keeps ids unique inside the one
+flat bundle, what the generated const name drops, and what lets one catalog serve
+three crates without handing each of them the others' keys (`ui` takes `common-`
+and `ui-`, `app` takes `app-`, `shell-macos` takes `menu-`).
 
 ### `psd` — `review-psd`
 
@@ -677,6 +714,63 @@ pinned the same way, by a test asserting the generated `ATTR_*` constants agains
 the layout every program sharing `vs_main` expects. Each uniform block also gets
 its own slot across all programs (scene VS 0, scene FS 1, material 2), so a slot
 never means two different structs.
+
+**12. No inline user-visible strings; one documentation source.** Every string a
+user can read — a label, a tooltip, a panel title, a notice, a dialog title or
+filter, the window title, a menu item — is a Fluent message in
+`crates/l10n/locales/<lang>/*.ftl`, reached through a **generated typed key**
+(`keys::<file>::NAME`, or the typed formatter for a message that takes variables),
+never a literal at the call site.
+
+`review-l10n-build` turns the English catalog into those keys inside each
+consuming crate at build time, so a key that does not exist is a compile error and
+one that nothing names is a `dead_code` warning that `-D warnings` turns into a
+failed build. `crates/l10n/tests/no_inline_strings.rs` parses `ui`, `app` and
+`shell-macos` and fails on a literal handed to any text sink; a literal that
+genuinely is not user-visible is marked `// l10n: exempt <reason>`.
+
+Widgets take `impl Into<egui::WidgetText>`, into which a `Key` converts, and a
+runtime value — a file name, a count — is formatted *through* a message with a
+variable rather than concatenated beside one. A control's tooltip is a `Tip`: a
+title, a paragraph saying what the control is for, and a link to its manual page.
+
+**Catalog and manual are written in characters a keyboard can type**, and two
+tests keep them that way (`l10n/tests/typeable_characters.rs`,
+`help_pages.rs::every_page_is_typeable_ascii`): a hyphen for every dash, three
+dots for an ellipsis, `x` for a multiplication sign. Typographic punctuation
+cannot be typed by whoever edits the line next, so it comes back mixed with the
+ASCII equivalent one line up; it is invisible in a diff; and it depends on the
+bundled fonts having the glyph, which is exactly what made Fluent's own isolation
+marks render as tofu. Icon glyphs are not catalog text and are exempt — the Opt
+stack's reorder arrows, the remove mark, the Help window's Back arrow — because
+they stand in for icons and have no ASCII form that does not look broken.
+
+**A catalog is wrapped for reading, and the runtime unwraps it.** Fluent keeps
+every newline a multiline value was written with, so a description wrapped at the
+file's margin arrived as hard lines and broke a tooltip a third of the way across
+its width. `review_l10n`'s `unwrap_source_wrapping` applies markdown's rule
+instead: a single newline is the source's wrapping and becomes a space, a blank
+line is a deliberate paragraph break and survives. Text reaches a widget as one
+run and the widget breaks it where it actually runs out of room.
+
+**Errors are the one deliberate exception.** `ImportError`, `OptError`,
+`GpuError` and `PsdError` keep their English `Display`: they are diagnostics, they
+are what a bug report quotes, and their crates must not learn about catalogs to
+say them. `app` localizes the *lead* line and passes the diagnostic through as
+`{ $detail }`; the three optimizer errors a user can act on get their own text in
+`app/src/explain.rs`. Enums in `render` / `optimize` / `model` / `import` keep
+`label()` as a stable English identifier for logs and reports, and get their
+display name through `ui`'s `labels.rs` map — which is exhaustive, so a variant
+added upstream is a compile error rather than an English word on a translated
+screen.
+
+**The manual is written once.** It is the mdBook under `docs/book/src/<lang>/`,
+and that same markdown is embedded into `ui` at build time and shown by the Help
+window, by every panel's `?`, and by `F1`. A page is addressed by its file path
+(`Page::PanelsAmbientOcclusion`), so a panel naming a page that does not exist, or
+a page linking to one, is a build error rather than a 404 on the published site.
+Only images ship on disk (`docs/<lang>/images/`, found by `app`'s `docs_dir()`);
+the text never depends on the install being intact.
 
 ---
 

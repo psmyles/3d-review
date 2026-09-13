@@ -97,3 +97,10 @@ pub fn with_opacity(color: Color32, opacity: f32) -> Color32 {
     let alpha = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
     Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
 }
+
+/// The "remove this" mark, on the Opt stack's row buttons and the LOD list's.
+///
+/// A multiplication sign, not the letter X: it is a mark, so it reads the same
+/// in every language and needs no catalog entry. Written once here so the two
+/// buttons cannot end up with different glyphs.
+pub const REMOVE_GLYPH: &str = "✕";

@@ -8,8 +8,11 @@ use review_render::Selection;
 use super::{RowsOutput, TreeRow, display_name};
 use crate::assets;
 use crate::assets::AppIcon;
+use crate::docs::Page;
+use crate::keys;
 use crate::state::UiState;
 use crate::theme::{color, size};
+use crate::widgets::{Tip, tip};
 
 /// Draw one flattened list as full-width rows. Reads state only; everything it
 /// wants changed comes back in the [`RowsOutput`].
@@ -145,11 +148,15 @@ pub(super) fn draw_rows(
             if hovered {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
-            eye.on_hover_text(if hidden {
-                concat!("Show mesh\n", primary_key!(), "+click: show only this mesh")
+            let modifier = crate::primary_modifier().into_owned();
+            let eye_tip = if hidden {
+                Tip::new(keys::ui_outliner::SHOW_MESH)
+                    .describe(keys::ui_outliner::show_mesh_description(modifier))
             } else {
-                concat!("Hide mesh\n", primary_key!(), "+click: show only this mesh")
-            });
+                Tip::new(keys::ui_outliner::HIDE_MESH)
+                    .describe(keys::ui_outliner::hide_mesh_description(modifier))
+            };
+            tip(eye, eye_tip.page(Page::OutlinerInspector));
 
             let icon = if hidden {
                 &assets::ICON_EYE_CLOSED

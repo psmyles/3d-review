@@ -7,6 +7,9 @@ rust-version.workspace = true
 
 [dependencies]
 egui.workspace = true
+# The in-app manual: the same markdown `docs/book/` publishes, rendered with
+# egui's own widgets. See the workspace manifest for why only `load-images`.
+egui_commonmark.workspace = true
 glam.workspace = true
 image.workspace = true
 review-model = { path = "../model" }
@@ -14,11 +17,21 @@ review-model = { path = "../model" }
 # chrome needs those types. Commands still flow ui -> app (invariant 2): this
 # crate reads and edits the stack value, never runs an operation.
 review-optimize = { path = "../optimize" }
+# `Key` and `tr`; the `egui` feature is what lets a key be handed straight to a
+# widget as an `impl Into<WidgetText>`.
+review-l10n = { workspace = true, features = ["egui"] }
 # The shared guarded Tracy helpers, for the per-frame UI CPU zones (Draw Viewport
 # Scene / Draw Overlay); carries `tracy-client` itself, so this crate needs no
 # direct dependency on it.
 review-prof.workspace = true
 review-render = { path = "../render" }
+
+[build-dependencies]
+# Generates `keys.rs` (the typed message keys) into this crate's OUT_DIR.
+review-l10n-build.workspace = true
+# Records where each manual page's images and intra-book links sit, so the Help
+# window resolves them without parsing markdown per frame.
+pulldown-cmark.workspace = true
 
 [lints]
 workspace = true

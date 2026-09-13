@@ -5,18 +5,21 @@
 use review_render::{ActiveMaterial, ShadingMode, UvShadingMode};
 
 use crate::assets::{
-    ICON_AXIS_GIZMO, ICON_BACKFACE, ICON_BBOX, ICON_BUFFERS, ICON_GRID, ICON_NODE_BONE,
+    ICON_AXIS_GIZMO, ICON_BACKFACE, ICON_BBOX, ICON_BUFFERS, ICON_GRID, ICON_HELP, ICON_NODE_BONE,
     ICON_NORMALS_FACE, ICON_NORMALS_VERTEX, ICON_OUTLINER, ICON_PIVOT, ICON_SHADING_SHADED,
     ICON_SHADING_TEXTURE, ICON_SHADING_UNLIT, ICON_SHADING_WIRE, ICON_SHADING_WIRE_ONLY,
     ICON_SKIN_WEIGHTS, ICON_UV, ICON_UV_ISLANDS, ICON_UV_SEAM, ICON_UV_SHADED, ICON_UV_WIRE,
     ICON_VERTEX_COLORS, ICON_VIEW_ORTHO, ICON_VIEW_PERSPECTIVE,
 };
+use crate::docs::Page;
+use crate::keys;
+use crate::labels;
 use crate::state::{
     OptionPanel, TextureChannelView, TexturePoolEntry, UiState, ViewProjectionMode, WorkspaceMode,
 };
 use crate::theme::{color, size};
 use crate::widgets::{
-    compact_combo, icon_toggle_button, icon_toggle_button_with_options, option_toggle,
+    Tip, compact_combo, icon_toggle_button, icon_toggle_button_with_options, option_toggle,
     segment_button, toolbar_group_shell,
 };
 
@@ -41,6 +44,7 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState) {
     let shading_group_width = size::TOOLBAR_SHADING_GROUP_WIDTH;
     let material_group_width = size::TOOLBAR_MATERIAL_GROUP_WIDTH;
     let single_icon_group_width = size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH;
+    let windows_group_width = size::TOOLBAR_DOUBLE_ICON_GROUP_WIDTH;
     let triple_icon_group_width = size::TOOLBAR_TRIPLE_ICON_GROUP_WIDTH;
     let quad_icon_group_width = size::TOOLBAR_QUAD_ICON_GROUP_WIDTH;
     let quint_icon_group_width = size::TOOLBAR_QUINT_ICON_GROUP_WIDTH;
@@ -164,7 +168,7 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState) {
                             };
                             draw_view_group(ui, state, view_group_width);
                             draw_projection_group(ui, state, single_icon_group_width);
-                            draw_windows_group(ui, state, single_icon_group_width);
+                            draw_windows_group(ui, state, windows_group_width);
                         }
                         WorkspaceMode::Uv => draw_uv_set_picker(ui, state),
                         WorkspaceMode::Texture => draw_texture_picker(ui, state),
@@ -187,7 +191,10 @@ fn draw_shading_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
             &mut state.debug.wireframe_overlay,
             &mut state.panels_open,
             OptionPanel::Wireframe,
-            "Show Wireframe (right-click for options)",
+            Tip::new(keys::ui_toolbar::SHOW_WIREFRAME)
+                .describe(keys::ui_toolbar::SHOW_WIREFRAME_DESCRIPTION)
+                .with_options()
+                .page(Page::Shading),
         );
 
         // 2-4. Shading mode — radio selection; exactly one is active.
@@ -195,15 +202,42 @@ fn draw_shading_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
         let unlit = matches!(state.shading_mode, ShadingMode::Unlit);
         let shaded = matches!(state.shading_mode, ShadingMode::Shaded);
 
-        if icon_toggle_button(ui, &ICON_SHADING_WIRE_ONLY, wire_only, "Wireframe Only").clicked() {
+        if icon_toggle_button(
+            ui,
+            &ICON_SHADING_WIRE_ONLY,
+            wire_only,
+            Tip::new(keys::ui_toolbar::WIREFRAME_ONLY)
+                .describe(keys::ui_toolbar::WIREFRAME_ONLY_DESCRIPTION)
+                .page(Page::Shading),
+        )
+        .clicked()
+        {
             state.shading_mode = ShadingMode::Wireframe;
         }
-        if icon_toggle_button(ui, &ICON_SHADING_UNLIT, unlit, "Unlit").clicked() {
+        if icon_toggle_button(
+            ui,
+            &ICON_SHADING_UNLIT,
+            unlit,
+            Tip::new(keys::ui_toolbar::UNLIT)
+                .describe(keys::ui_toolbar::UNLIT_DESCRIPTION)
+                .page(Page::Shading),
+        )
+        .clicked()
+        {
             state.shading_mode = ShadingMode::Unlit;
         }
         // Shaded mode is environment-lit PBR; its IBL on/off + environment
         // options live on the dedicated IBL button in the status bar.
-        if icon_toggle_button(ui, &ICON_SHADING_SHADED, shaded, "Shaded").clicked() {
+        if icon_toggle_button(
+            ui,
+            &ICON_SHADING_SHADED,
+            shaded,
+            Tip::new(keys::ui_toolbar::SHADED)
+                .describe(keys::ui_toolbar::SHADED_DESCRIPTION)
+                .page(Page::Shading),
+        )
+        .clicked()
+        {
             state.shading_mode = ShadingMode::Shaded;
         }
 
@@ -213,7 +247,9 @@ fn draw_shading_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
             ui,
             &ICON_BACKFACE,
             state.debug.render_backfaces,
-            "Backface Rendering",
+            Tip::new(keys::ui_toolbar::BACKFACE_RENDERING)
+                .describe(keys::ui_toolbar::BACKFACE_RENDERING_DESCRIPTION)
+                .page(Page::Shading),
         )
         .clicked()
         {
@@ -231,13 +267,40 @@ fn draw_uv_shading_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
         let shaded = state.uv_shading_mode == UvShadingMode::Shaded;
         let islands = state.uv_shading_mode == UvShadingMode::Islands;
 
-        if icon_toggle_button(ui, &ICON_UV_WIRE, wire, "UV Wire").clicked() {
+        if icon_toggle_button(
+            ui,
+            &ICON_UV_WIRE,
+            wire,
+            Tip::new(keys::ui_toolbar::UV_WIRE)
+                .describe(keys::ui_toolbar::UV_WIRE_DESCRIPTION)
+                .page(Page::Uv),
+        )
+        .clicked()
+        {
             state.uv_shading_mode = UvShadingMode::Wire;
         }
-        if icon_toggle_button(ui, &ICON_UV_SHADED, shaded, "UV Shaded").clicked() {
+        if icon_toggle_button(
+            ui,
+            &ICON_UV_SHADED,
+            shaded,
+            Tip::new(keys::ui_toolbar::UV_SHADED)
+                .describe(keys::ui_toolbar::UV_SHADED_DESCRIPTION)
+                .page(Page::Uv),
+        )
+        .clicked()
+        {
             state.uv_shading_mode = UvShadingMode::Shaded;
         }
-        if icon_toggle_button(ui, &ICON_UV_ISLANDS, islands, "UV Islands").clicked() {
+        if icon_toggle_button(
+            ui,
+            &ICON_UV_ISLANDS,
+            islands,
+            Tip::new(keys::ui_toolbar::UV_ISLANDS)
+                .describe(keys::ui_toolbar::UV_ISLANDS_DESCRIPTION)
+                .page(Page::Uv),
+        )
+        .clicked()
+        {
             state.uv_shading_mode = UvShadingMode::Islands;
         }
     });
@@ -258,7 +321,11 @@ fn draw_material_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
             ui,
             &ICON_SHADING_TEXTURE,
             source,
-            "Source Material (click to cycle modes, right-click for options)",
+            Tip::new(keys::ui_toolbar::SOURCE_MATERIAL)
+                .describe(keys::ui_toolbar::SOURCE_MATERIAL_DESCRIPTION)
+                .cycles()
+                .with_options()
+                .page(Page::PanelsMaterialMode),
         );
         if source_material.clicked() {
             // First click activates the source-material shading; clicking again
@@ -277,7 +344,10 @@ fn draw_material_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
             ui,
             &ICON_UV,
             uv_active,
-            "UV Checker (right-click for options)",
+            Tip::new(keys::ui_toolbar::UV_CHECKER)
+                .describe(keys::ui_toolbar::UV_CHECKER_DESCRIPTION)
+                .with_options()
+                .page(Page::PanelsUvChecker),
         );
         if uv.clicked() {
             state.debug.active_material = ActiveMaterial::UvChecker;
@@ -290,7 +360,10 @@ fn draw_material_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
             ui,
             &ICON_VERTEX_COLORS,
             vertex_colors_active,
-            "Vertex Colors (right-click for options)",
+            Tip::new(keys::ui_toolbar::VERTEX_COLORS)
+                .describe(keys::ui_toolbar::VERTEX_COLORS_DESCRIPTION)
+                .with_options()
+                .page(Page::PanelsVertexColors),
         );
         if vertex_colors.clicked() {
             state.debug.active_material = ActiveMaterial::VertexColors;
@@ -303,7 +376,11 @@ fn draw_material_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
             ui,
             &ICON_BUFFERS,
             buffers_active,
-            "Buffers (click to cycle buffers, right-click for options)",
+            Tip::new(keys::ui_toolbar::BUFFERS)
+                .describe(keys::ui_toolbar::BUFFERS_DESCRIPTION)
+                .cycles()
+                .with_options()
+                .page(Page::PanelsBuffers),
         );
         if buffers.clicked() {
             // First click activates the buffer-inspection view; clicking again
@@ -327,7 +404,9 @@ fn draw_material_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
                 ui,
                 &ICON_SKIN_WEIGHTS,
                 weights_active,
-                "Skin Weights (select bones in the Outliner)",
+                Tip::new(keys::ui_toolbar::SKIN_WEIGHTS)
+                    .describe(keys::ui_toolbar::SKIN_WEIGHTS_DESCRIPTION)
+                    .page(Page::PanelsMaterialMode),
             )
             .clicked()
             {
@@ -348,7 +427,10 @@ fn draw_geometry_debug_group(ui: &mut egui::Ui, state: &mut UiState, width: f32)
             &mut state.debug.face_normals,
             &mut state.panels_open,
             OptionPanel::FaceNormals,
-            "Face Normal (right-click for options)",
+            Tip::new(keys::ui_toolbar::FACE_NORMALS)
+                .describe(keys::ui_toolbar::FACE_NORMALS_DESCRIPTION)
+                .with_options()
+                .page(Page::PanelsFaceNormals),
         );
         option_toggle(
             ui,
@@ -356,7 +438,10 @@ fn draw_geometry_debug_group(ui: &mut egui::Ui, state: &mut UiState, width: f32)
             &mut state.debug.vertex_normals,
             &mut state.panels_open,
             OptionPanel::VertexNormals,
-            "Vertex Normal (right-click for options)",
+            Tip::new(keys::ui_toolbar::VERTEX_NORMALS)
+                .describe(keys::ui_toolbar::VERTEX_NORMALS_DESCRIPTION)
+                .with_options()
+                .page(Page::PanelsVertexNormals),
         );
         option_toggle(
             ui,
@@ -364,7 +449,10 @@ fn draw_geometry_debug_group(ui: &mut egui::Ui, state: &mut UiState, width: f32)
             &mut state.debug.uv_seams,
             &mut state.panels_open,
             OptionPanel::UvSeams,
-            "UV Seams (right-click for options)",
+            Tip::new(keys::ui_toolbar::UV_SEAMS)
+                .describe(keys::ui_toolbar::UV_SEAMS_DESCRIPTION)
+                .with_options()
+                .page(Page::PanelsUvSeams),
         );
     });
 }
@@ -380,7 +468,10 @@ fn draw_view_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
             &mut state.debug.show_bounding_box,
             &mut state.panels_open,
             OptionPanel::BoundingBox,
-            "Bounding Box (right-click for options)",
+            Tip::new(keys::ui_toolbar::BOUNDING_BOX)
+                .describe(keys::ui_toolbar::BOUNDING_BOX_DESCRIPTION)
+                .with_options()
+                .page(Page::PanelsBoundingBox),
         );
 
         // Skeleton overlay — hidden entirely for a model with no bones, rather
@@ -392,23 +483,47 @@ fn draw_view_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
                 &mut state.debug.show_skeleton,
                 &mut state.panels_open,
                 OptionPanel::Skeleton,
-                "Skeleton (right-click for options)",
+                Tip::new(keys::ui_toolbar::SKELETON)
+                    .describe(keys::ui_toolbar::SKELETON_DESCRIPTION)
+                    .with_options()
+                    .page(Page::PanelsSkeleton),
             );
         }
 
         // Pivot marker — a plain on/off toggle (no options), sitting between the
         // bounding box and the axis gizmo.
-        icon_toggle_button(ui, &ICON_PIVOT, state.debug.show_pivot, "Pivot")
-            .clicked()
-            .then(|| state.debug.show_pivot = !state.debug.show_pivot);
+        icon_toggle_button(
+            ui,
+            &ICON_PIVOT,
+            state.debug.show_pivot,
+            Tip::new(keys::ui_toolbar::PIVOT)
+                .describe(keys::ui_toolbar::PIVOT_DESCRIPTION)
+                .page(Page::Overlays),
+        )
+        .clicked()
+        .then(|| state.debug.show_pivot = !state.debug.show_pivot);
 
-        icon_toggle_button(ui, &ICON_AXIS_GIZMO, state.show_axis_gizmo, "Axis Gizmo")
-            .clicked()
-            .then(|| state.show_axis_gizmo = !state.show_axis_gizmo);
+        icon_toggle_button(
+            ui,
+            &ICON_AXIS_GIZMO,
+            state.show_axis_gizmo,
+            Tip::new(keys::ui_toolbar::AXIS_GIZMO)
+                .describe(keys::ui_toolbar::AXIS_GIZMO_DESCRIPTION)
+                .page(Page::Viewport),
+        )
+        .clicked()
+        .then(|| state.show_axis_gizmo = !state.show_axis_gizmo);
 
-        icon_toggle_button(ui, &ICON_GRID, state.show_grid, "Grid")
-            .clicked()
-            .then(|| state.show_grid = !state.show_grid);
+        icon_toggle_button(
+            ui,
+            &ICON_GRID,
+            state.show_grid,
+            Tip::new(keys::ui_toolbar::GRID)
+                .describe(keys::ui_toolbar::GRID_DESCRIPTION)
+                .page(Page::Viewport),
+        )
+        .clicked()
+        .then(|| state.show_grid = !state.show_grid);
     });
 }
 
@@ -422,11 +537,32 @@ fn draw_windows_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
             ui,
             &ICON_OUTLINER,
             state.side_panels_open,
-            "Outliner & Inspector",
+            Tip::new(keys::ui_toolbar::SIDE_PANELS)
+                .describe(keys::ui_toolbar::SIDE_PANELS_DESCRIPTION)
+                .page(Page::OutlinerInspector),
         )
         .clicked()
         {
             state.side_panels_open = !state.side_panels_open;
+        }
+        // Help sits beside the side panels because both are about what is on
+        // screen rather than about the model. Left-click only: F1 and each
+        // panel's own `?` are the context-sensitive ways in.
+        if icon_toggle_button(
+            ui,
+            &ICON_HELP,
+            state.help.open,
+            Tip::new(keys::ui_toolbar::HELP)
+                .describe(keys::ui_toolbar::HELP_DESCRIPTION)
+                .page(Page::Index),
+        )
+        .clicked()
+        {
+            if state.help.open {
+                state.help.open = false;
+            } else {
+                state.help.open_page(Page::Index);
+            }
         }
     });
 }
@@ -436,11 +572,15 @@ fn draw_projection_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
         let (icon, tooltip) = match state.projection_mode {
             ViewProjectionMode::Perspective => (
                 &ICON_VIEW_PERSPECTIVE,
-                "Perspective camera (click for orthographic)",
+                Tip::new(keys::ui_toolbar::PERSPECTIVE)
+                    .describe(keys::ui_toolbar::PERSPECTIVE_DESCRIPTION)
+                    .page(Page::Viewport),
             ),
             ViewProjectionMode::Orthographic => (
                 &ICON_VIEW_ORTHO,
-                "Orthographic camera (click for perspective)",
+                Tip::new(keys::ui_toolbar::ORTHOGRAPHIC)
+                    .describe(keys::ui_toolbar::ORTHOGRAPHIC_DESCRIPTION)
+                    .page(Page::Viewport),
             ),
         };
 
@@ -480,15 +620,20 @@ fn draw_uv_set_picker(ui: &mut egui::Ui, state: &mut UiState) {
 }
 
 fn segmented_mode_control(ui: &mut egui::Ui, mode: &mut WorkspaceMode) {
-    mode_segment(ui, mode, WorkspaceMode::ThreeD, "3D");
-    mode_segment(ui, mode, WorkspaceMode::Uv, "UV");
-    mode_segment(ui, mode, WorkspaceMode::Texture, "Tex");
-    mode_segment(ui, mode, WorkspaceMode::Opt, "Opt");
+    for workspace in [
+        WorkspaceMode::ThreeD,
+        WorkspaceMode::Uv,
+        WorkspaceMode::Texture,
+        WorkspaceMode::Opt,
+    ] {
+        mode_segment(ui, mode, workspace);
+    }
 }
 
-fn mode_segment(ui: &mut egui::Ui, mode: &mut WorkspaceMode, value: WorkspaceMode, label: &str) {
+fn mode_segment(ui: &mut egui::Ui, mode: &mut WorkspaceMode, value: WorkspaceMode) {
     let width = size::MODE_SEGMENT_WIDTH;
-    if segment_button(ui, label, *mode == value, width).clicked() {
+    let label = review_l10n::tr(labels::workspace(value));
+    if segment_button(ui, label.as_ref(), *mode == value, width).clicked() {
         *mode = value;
     }
 }
@@ -524,7 +669,8 @@ fn draw_texture_channel_group(ui: &mut egui::Ui, state: &mut UiState) {
                 continue;
             }
             let selected = state.texture_view.channel == channel;
-            if segment_button(ui, channel.label(), selected, segment_w).clicked() {
+            let label = review_l10n::tr(channel.label());
+            if segment_button(ui, label.as_ref(), selected, segment_w).clicked() {
                 state.texture_view.channel = channel;
             }
         }

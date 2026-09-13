@@ -28,6 +28,12 @@ use crate::{About, MenuCommand};
 
 /// Menu-item ids. Only the items the viewer performs itself need one; the predefined
 /// items are AppKit's.
+/// The menu's typed message keys, generated from the `menu-` half of the English
+/// catalog by this crate's build script (invariant 12).
+mod keys {
+    include!(concat!(env!("OUT_DIR"), "/keys.rs"));
+}
+
 const ID_OPEN: &str = "review.open";
 const ID_NEW: &str = "review.new";
 
@@ -48,25 +54,35 @@ pub(crate) fn install(
         product,
         true,
         &[
-            &PredefinedMenuItem::about(Some(&format!("About {product}")), Some(metadata)),
+            &PredefinedMenuItem::about(Some(&keys::menu::about(product)), Some(metadata)),
             &PredefinedMenuItem::separator(),
-            &PredefinedMenuItem::services(None),
+            &PredefinedMenuItem::services(Some(&review_l10n::tr(keys::menu::SERVICES))),
             &PredefinedMenuItem::separator(),
-            &PredefinedMenuItem::hide(Some(&format!("Hide {product}"))),
-            &PredefinedMenuItem::hide_others(None),
-            &PredefinedMenuItem::show_all(None),
+            &PredefinedMenuItem::hide(Some(&keys::menu::hide(product))),
+            &PredefinedMenuItem::hide_others(Some(&review_l10n::tr(keys::menu::HIDE_OTHERS))),
+            &PredefinedMenuItem::show_all(Some(&review_l10n::tr(keys::menu::SHOW_ALL))),
             &PredefinedMenuItem::separator(),
-            &PredefinedMenuItem::quit(Some(&format!("Quit {product}"))),
+            &PredefinedMenuItem::quit(Some(&keys::menu::quit(product))),
         ],
     )
     .ok()?;
 
     let file_menu = Submenu::with_items(
-        "File",
+        review_l10n::tr(keys::menu::FILE).as_ref(),
         true,
         &[
-            &MenuItem::with_id(ID_NEW, "New", true, accelerator(Code::KeyN)),
-            &MenuItem::with_id(ID_OPEN, "Open…", true, accelerator(Code::KeyO)),
+            &MenuItem::with_id(
+                ID_NEW,
+                review_l10n::tr(keys::menu::NEW),
+                true,
+                accelerator(Code::KeyN),
+            ),
+            &MenuItem::with_id(
+                ID_OPEN,
+                review_l10n::tr(keys::menu::OPEN),
+                true,
+                accelerator(Code::KeyO),
+            ),
         ],
     )
     .ok()?;
@@ -76,11 +92,11 @@ pub(crate) fn install(
     // would be inventing a feature rather than porting one. Minimize and Zoom are
     // both pure AppKit.
     let window_menu = Submenu::with_items(
-        "Window",
+        review_l10n::tr(keys::menu::WINDOW).as_ref(),
         true,
         &[
-            &PredefinedMenuItem::minimize(None),
-            &PredefinedMenuItem::maximize(None),
+            &PredefinedMenuItem::minimize(Some(&review_l10n::tr(keys::menu::MINIMIZE))),
+            &PredefinedMenuItem::maximize(Some(&review_l10n::tr(keys::menu::ZOOM))),
         ],
     )
     .ok()?;

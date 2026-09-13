@@ -15,6 +15,10 @@ glam.workspace = true
 image.workspace = true
 notify.workspace = true
 review-import = { path = "../import" }
+# `Key`, `tr` and the generated keys for this crate's notices, dialogs and window
+# title. No `egui` feature: `app` never hands a key to a widget - it formats the
+# text and passes a `String` through the notification API.
+review-l10n.workspace = true
 review-model = { path = "../model" }
 # The Opt workspace's mesh processing (vendored meshoptimizer behind a safe API).
 review-optimize = { path = "../optimize" }
@@ -28,6 +32,8 @@ review-render = { path = "../render" }
 review-shell-macos = { path = "../shell-macos" }
 review-ui = { path = "../ui" }
 rfd.workspace = true
+# The OS locale, negotiated against the embedded catalogs at startup.
+sys-locale.workspace = true
 tracy-client.workspace = true
 winit.workspace = true
 
@@ -35,6 +41,8 @@ winit.workspace = true
 # binary as compile-time environment variables, and the macOS About panel is one of
 # the things that reads them.
 [build-dependencies]
+# Generates `keys.rs` (the typed message keys) into this crate's OUT_DIR.
+review-l10n-build.workspace = true
 serde_json.workspace = true
 
 [target.'cfg(windows)'.build-dependencies]

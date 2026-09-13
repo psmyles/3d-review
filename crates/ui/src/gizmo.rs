@@ -6,6 +6,9 @@ use glam::{Vec2, Vec3};
 use review_render::{CameraProjection, OrbitCamera};
 
 use crate::assets::{self, ICON_RESET};
+use review_l10n::Key;
+
+use crate::keys;
 use crate::state::{AxisGizmoAction, ViewAxis};
 use crate::theme::{self, color, font, size};
 use crate::widgets::bold_text;
@@ -64,7 +67,17 @@ pub(crate) fn draw_axis_gizmo(
                 ui.make_persistent_id(("axis_gizmo_ball", point.axis)),
                 egui::Sense::click(),
             )
-            .on_hover_text(point.tooltip);
+            .on_hover_ui(|ui| {
+                ui.set_max_width(size::TOOLTIP_MAX_WIDTH);
+                ui.label(
+                    egui::RichText::new(keys::ui_gizmo::view_axis(
+                        review_l10n::tr(point.axis_name).into_owned(),
+                    ))
+                    .strong(),
+                );
+                ui.add_space(size::TOOLTIP_TITLE_GAP);
+                ui.label(keys::ui_gizmo::VIEW_AXIS_DESCRIPTION);
+            });
         let radius = if response.hovered() {
             ball_radius * size::GIZMO_BALL_HOVER_SCALE
         } else {
@@ -76,7 +89,7 @@ pub(crate) fn draw_axis_gizmo(
             bold_text(
                 painter,
                 point.position,
-                point.label,
+                &point.label,
                 egui::FontId::proportional(font::GIZMO_LABEL),
                 color::GIZMO_LABEL,
             );
@@ -90,7 +103,7 @@ pub(crate) fn draw_axis_gizmo(
             bold_text(
                 painter,
                 point.position,
-                point.label,
+                &point.label,
                 egui::FontId::proportional(font::GIZMO_LABEL_NEG),
                 color::GIZMO_LABEL,
             );
@@ -104,7 +117,7 @@ pub(crate) fn draw_axis_gizmo(
             bold_text(
                 painter,
                 point.position,
-                point.label,
+                &point.label,
                 egui::FontId::proportional(font::GIZMO_LABEL_NEG),
                 point.color,
             );
@@ -143,7 +156,12 @@ pub(crate) fn draw_axis_gizmo(
                 ui.make_persistent_id("axis_gizmo_reset"),
                 egui::Sense::click(),
             )
-            .on_hover_text("Reset view");
+            .on_hover_ui(|ui| {
+                ui.set_max_width(size::TOOLTIP_MAX_WIDTH);
+                ui.label(egui::RichText::from(keys::ui_gizmo::RESET_VIEW).strong());
+                ui.add_space(size::TOOLTIP_TITLE_GAP);
+                ui.label(keys::ui_gizmo::RESET_VIEW_DESCRIPTION);
+            });
         if response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
@@ -166,14 +184,18 @@ pub(crate) fn draw_axis_gizmo(
     action
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct AxisGizmoPoint {
     axis: ViewAxis,
     position: egui::Pos2,
     depth: f32,
     color: egui::Color32,
-    label: &'static str,
-    tooltip: &'static str,
+    /// The ball's own painted label, resolved once per frame. The positive balls
+    /// are painted `X`/`Y`/`Z` bare while the tooltip names `+X`, so the label
+    /// and the tooltip's axis name are two different strings even in English.
+    label: String,
+    /// The axis name the tooltip reads.
+    axis_name: Key,
     positive: bool,
 }
 
@@ -183,53 +205,50 @@ fn axis_gizmo_points(
     center: egui::Pos2,
     reach: f32,
 ) -> Vec<AxisGizmoPoint> {
-    const AXES: [(ViewAxis, Vec3, egui::Color32, &str, &str, bool); 6] = [
+    // The ball's own painted label and the axis it looks down. Both come from the
+    // catalog: the positive balls are painted "X"/"Y"/"Z" bare, so the label and
+    // the tooltip's axis name are two different strings even in English.
+    const AXES: [(ViewAxis, Vec3, egui::Color32, Key, bool); 6] = [
         (
             ViewAxis::PositiveX,
             Vec3::X,
             color::GIZMO_AXIS_X,
-            "X",
-            "View +X",
+            keys::ui_gizmo::AXIS_POS_X,
             true,
         ),
         (
             ViewAxis::NegativeX,
             Vec3::NEG_X,
             color::GIZMO_AXIS_X,
-            "-X",
-            "View -X",
+            keys::ui_gizmo::AXIS_NEG_X,
             false,
         ),
         (
             ViewAxis::PositiveY,
             Vec3::Y,
             color::GIZMO_AXIS_Y,
-            "Y",
-            "View +Y",
+            keys::ui_gizmo::AXIS_POS_Y,
             true,
         ),
         (
             ViewAxis::NegativeY,
             Vec3::NEG_Y,
             color::GIZMO_AXIS_Y,
-            "-Y",
-            "View -Y",
+            keys::ui_gizmo::AXIS_NEG_Y,
             false,
         ),
         (
             ViewAxis::PositiveZ,
             Vec3::Z,
             color::GIZMO_AXIS_Z,
-            "Z",
-            "View +Z",
+            keys::ui_gizmo::AXIS_POS_Z,
             true,
         ),
         (
             ViewAxis::NegativeZ,
             Vec3::NEG_Z,
             color::GIZMO_AXIS_Z,
-            "-Z",
-            "View -Z",
+            keys::ui_gizmo::AXIS_NEG_Z,
             false,
         ),
     ];
@@ -246,7 +265,7 @@ fn axis_gizmo_points(
     };
 
     AXES.into_iter()
-        .map(|(axis, world, color, label, tooltip, positive)| {
+        .map(|(axis, world, color, label, positive)| {
             let view = camera.view_space_direction(world);
             // +Z in view space points toward the viewer: tips facing the camera
             // are magnified, tips behind the center shrink.
@@ -261,8 +280,11 @@ fn axis_gizmo_points(
                 ),
                 depth: view.z,
                 color,
-                label,
-                tooltip,
+                // A positive ball is painted with the bare letter — the axis
+                // name's `+` is for the tooltip, where it distinguishes the two
+                // directions.
+                label: review_l10n::tr(label).trim_start_matches('+').to_owned(),
+                axis_name: label,
                 positive,
             }
         })

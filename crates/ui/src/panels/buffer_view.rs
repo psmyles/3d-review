@@ -6,8 +6,14 @@
 
 use review_render::{BufferView, RoughnessWorkflow};
 
+use crate::docs::Page;
+use crate::keys;
+use crate::labels;
 use crate::state::UiState;
-use crate::widgets::{labeled_combo, panel_grid, reset_button};
+use crate::widgets::{Tip, labeled_combo, panel_footer, panel_grid};
+
+/// This panel's page in the manual, opened by its footer's `?`.
+const PAGE: Page = Page::PanelsBuffers;
 
 pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
     // Under the Smoothness workflow the Roughness buffer shows (and is labelled)
@@ -17,7 +23,7 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
         view_row(ui, &mut state.debug.buffer_view, smoothness);
     });
     ui.separator();
-    if reset_button(ui).clicked() {
+    if panel_footer(ui, PAGE).clicked() {
         state.debug.buffer_view = BufferView::default();
     }
 }
@@ -38,7 +44,9 @@ fn shows_smoothness(state: &UiState) -> bool {
 fn view_row(ui: &mut egui::Ui, view: &mut BufferView, smoothness: bool) {
     labeled_combo(
         ui,
-        "Buffer",
+        Tip::new(keys::ui_panels::BUFFER)
+            .describe(keys::ui_panels::BUFFER_DESCRIPTION)
+            .page(PAGE),
         "buffer_view_combo",
         buffer_label(*view, smoothness),
         |ui| {
@@ -51,10 +59,11 @@ fn view_row(ui: &mut egui::Ui, view: &mut BufferView, smoothness: bool) {
 
 /// The buffer's menu label, with the Roughness entry shown as "Smoothness" when the
 /// Smoothness workflow is in effect (see [`shows_smoothness`]).
-fn buffer_label(option: BufferView, smoothness: bool) -> &'static str {
-    if smoothness && option == BufferView::Roughness {
-        "Smoothness"
+fn buffer_label(option: BufferView, smoothness: bool) -> review_l10n::Key {
+    let workflow = if smoothness {
+        RoughnessWorkflow::Smoothness
     } else {
-        option.label()
-    }
+        RoughnessWorkflow::Roughness
+    };
+    labels::buffer_view_for(option, workflow)
 }

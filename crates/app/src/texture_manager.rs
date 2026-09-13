@@ -19,6 +19,7 @@ use winit::event_loop::EventLoopProxy;
 
 use crate::dialog::Dialog;
 use crate::events::UserEvent;
+use crate::keys;
 use crate::loading::file_label;
 use crate::{App, prof};
 
@@ -138,7 +139,9 @@ impl App {
             return;
         }
         self.notifications
-            .begin_activity(format!("Decoding {}…", file_label(request.path())));
+            .begin_activity(keys::app_notifications::decoding(file_label(
+                request.path(),
+            )));
         self.redraw.requested = true;
         self.spawn_decode(request);
     }
@@ -220,7 +223,9 @@ impl App {
                 .finish_decode(self.textures.generation, request.path());
             self.notifications.end_activity();
             self.notifications
-                .error(format!("Couldn't load {}", file_label(request.path())));
+                .error(keys::app_notifications::texture_failed(file_label(
+                    request.path(),
+                )));
             return;
         };
         let generation = self.textures.generation;
@@ -265,7 +270,7 @@ impl App {
             // mid-save: that read fails or reads a fragment, and this is the
             // read of the finished file.
             self.notifications
-                .begin_activity(format!("Reloading {name}…"));
+                .begin_activity(keys::app_notifications::reloading(name.clone()));
             self.spawn_decode(TextureDecodeRequest::Reload { path: path.clone() });
         }
         if !outcome.apply {
@@ -291,7 +296,8 @@ impl App {
                         self.watch_texture(&path);
                         self.refresh_texture_pool();
                         self.redraw.requested = true;
-                        self.notifications.success(format!("Loaded {name}"));
+                        self.notifications
+                            .success(keys::app_notifications::texture_loaded(name.clone()));
                     }
                     TextureDecodeRequest::Reload { .. } => {
                         let updated = self
@@ -304,7 +310,8 @@ impl App {
                         if updated {
                             self.refresh_materials();
                             self.redraw.requested = true;
-                            self.notifications.info(format!("Reloaded {name}"));
+                            self.notifications
+                                .info(keys::app_notifications::texture_reloaded(name.clone()));
                         }
                     }
                 }
@@ -314,7 +321,8 @@ impl App {
                     "texture decode failed {}: {error}",
                     path.display()
                 ));
-                self.notifications.error(format!("Couldn't load {name}"));
+                self.notifications
+                    .error(keys::app_notifications::texture_failed(name.clone()));
             }
         }
         if let Some(window) = self.window.as_ref() {
@@ -355,8 +363,11 @@ impl App {
                 Ok(watcher) => self.textures.watcher = Some(watcher),
                 Err(error) => {
                     prof::msg(&format!("failed to create texture watcher: {error}"));
-                    self.notifications
-                        .warning("Texture auto-reload unavailable (file watcher failed)");
+                    self.notifications.warning(format!(
+                        "{}\n{}",
+                        review_l10n::tr(keys::app_notifications::WATCHER_UNAVAILABLE),
+                        review_l10n::tr(keys::app_notifications::WATCHER_UNAVAILABLE_DESCRIPTION),
+                    ));
                     return;
                 }
             }
@@ -372,7 +383,7 @@ impl App {
                         dir.display()
                     ));
                     self.notifications
-                        .warning(format!("Auto-reload unavailable for {}", file_label(&dir)));
+                        .warning(keys::app_notifications::watch_failed(file_label(&dir)));
                     // Record the attempt so a failing directory isn't retried
                     // (and re-announced) on every texture it contains.
                     self.textures.watched_dirs.insert(dir);
@@ -406,7 +417,9 @@ impl App {
             return;
         }
         self.notifications
-            .begin_activity(format!("Reloading {}…", file_label(request.path())));
+            .begin_activity(keys::app_notifications::reloading(file_label(
+                request.path(),
+            )));
         self.spawn_decode(request);
     }
 

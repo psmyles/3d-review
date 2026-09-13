@@ -6,7 +6,7 @@ use review_model::{ModelData, SceneBvh};
 use review_render::{OrbitCamera, Selection};
 
 use crate::dimensions::DimensionView;
-use crate::opt_state::{ComparisonSide, GhostStyle, OptIntent, OptLayout};
+use crate::opt_state::{ComparisonSide, OptIntent, OptLayout};
 use crate::state::{
     ChromeInsets, OptionPanel, ScopedStats, UiOutput, UiState, WorkspaceMode, sync_debug_state,
 };
@@ -133,6 +133,14 @@ pub fn draw_overlay(
         dimensions::draw_dimension_labels(ctx, state, &views);
 
         draw_option_panels(ctx, state, viewport);
+
+        // A `?`, a tooltip's "Learn more" link, or F1 parks its request in egui's
+        // own store rather than reaching into `HelpState` from deep inside a
+        // widget; this is where it is collected and applied, one frame later.
+        if let Some(page) = crate::help::take_requested(ctx) {
+            state.help.open_page(page);
+        }
+        crate::help::draw(ctx, &mut state.help, &state.capabilities, viewport);
 
         if state.show_axis_gizmo {
             let gizmo_response = egui::Area::new(egui::Id::new("axis_gizmo"))
@@ -533,10 +541,9 @@ fn draw_overlay_legend(
     // The solid mesh is the one the A/B swap is *not* showing as the ghost.
     let solid = state.opt.side;
     let ghost = solid.swapped();
-    let ghost_style = match state.opt.ghost_style {
-        GhostStyle::Xray => "x-ray",
-        GhostStyle::Wireframe => "wireframe",
-    };
+    // The legend names the ghost's style with the same words the status-bar
+    // control uses, so the two read as the same setting.
+    let ghost_style = review_l10n::tr(crate::labels::ghost_style(state.opt.ghost_style));
 
     // The card is centred in the free viewport, so the panels' insets shift it by
     // half their difference rather than by either one.
@@ -553,12 +560,15 @@ fn draw_overlay_legend(
             legend_row(
                 ui,
                 color::TEXT_VALUE,
-                &format!("{} · shaded", solid.label()),
+                &crate::keys::ui_opt::legend_solid(review_l10n::tr(solid.label()).into_owned()),
             );
             legend_row(
                 ui,
                 color::GHOST_XRAY,
-                &format!("{} · {ghost_style}", ghost.label()),
+                &crate::keys::ui_opt::legend_ghost(
+                    review_l10n::tr(ghost.label()).into_owned(),
+                    ghost_style.into_owned(),
+                ),
             );
         },
     );
@@ -634,13 +644,13 @@ mod tests {
             assert!(
                 width >= body,
                 "{}: window {width} is narrower than its {body}pt body",
-                panel.title()
+                review_l10n::tr(panel.title())
             );
             assert!(
                 width - body <= MAX_FRAME,
                 "{}: window {width} is {:.0}pt wider than its {body}pt body — \
                  dead space on the right (is `auto_sized` still set?)",
-                panel.title(),
+                review_l10n::tr(panel.title()),
                 width - body,
             );
             widths.push(width);

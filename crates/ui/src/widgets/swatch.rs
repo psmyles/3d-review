@@ -7,11 +7,12 @@ use review_render::ViewportBackground;
 
 use crate::theme::{color, size};
 
-use super::form::{grid_control, grid_label};
+use super::form::{grid_control, grid_label_tip};
+use super::tooltip::Tip;
 
 /// A label + read-only value grid row (Inspector node stats / stubbed slots).
-pub(crate) fn value_row(ui: &mut egui::Ui, label: &str, value: &str) {
-    grid_label(ui, label);
+pub(crate) fn value_row(ui: &mut egui::Ui, label: Tip, value: impl Into<egui::WidgetText>) {
+    grid_label_tip(ui, label);
     grid_control(ui, |ui| ui.label(value));
     ui.end_row();
 }
@@ -33,11 +34,11 @@ pub(crate) fn value_row(ui: &mut egui::Ui, label: &str, value: &str) {
 /// egui rounds a hovered widget more than an idle one.
 pub(crate) fn color_swatch_row(
     ui: &mut egui::Ui,
-    label: &str,
+    label: Tip,
     selected: &mut egui::Color32,
     colors: &[egui::Color32],
 ) {
-    grid_label(ui, label);
+    grid_label_tip(ui, label);
     grid_control(ui, |ui| {
         // Right-align the whole swatch run while keeping the swatches themselves
         // in left-to-right order (a plain `ui.horizontal` group, placed at the
@@ -74,10 +75,10 @@ pub(crate) fn color_swatch_row(
 /// not theme tokens.
 pub(crate) fn background_swatch_row(
     ui: &mut egui::Ui,
-    label: &str,
+    label: Tip,
     selected: &mut ViewportBackground,
 ) {
-    grid_label(ui, label);
+    grid_label_tip(ui, label);
     grid_control(ui, |ui| {
         // The control cell is right-aligned (a `right_to_left` layout), and
         // `ui.horizontal` inherits that preference — so children are placed
@@ -91,7 +92,10 @@ pub(crate) fn background_swatch_row(
                 let (rect, response) =
                     ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::click());
                 paint_background_swatch(ui, rect, preset, *selected == preset);
-                if response.on_hover_text(preset.label()).clicked() {
+                if response
+                    .on_hover_text(crate::labels::viewport_background(preset))
+                    .clicked()
+                {
                     *selected = preset;
                 }
             }
@@ -228,7 +232,12 @@ mod tests {
                 let before = ui.cursor().top();
                 panel_grid(ui, "swatch_test", |ui| {
                     let mut selected = selected;
-                    color_swatch_row(ui, "Color", &mut selected, &COLORS);
+                    color_swatch_row(
+                        ui,
+                        Tip::new(crate::keys::ui_panels::LINE_COLOR),
+                        &mut selected,
+                        &COLORS,
+                    );
                 });
                 height = ui.min_rect().bottom() - before;
             });
