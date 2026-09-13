@@ -42,6 +42,7 @@ use review_model::{ModelData, SourceExtras};
 
 use crate::OptError;
 use crate::process::ProcessedLod;
+use crate::replace_file::Staged;
 use crate::stack::{ExportOptions, LodPackaging};
 
 mod anim;
@@ -124,11 +125,18 @@ pub fn export_fbx(
         );
     }
 
+    // Every file is written to a temporary sibling first and the whole set is
+    // committed only once all of it is on disk. Two things would otherwise go
+    // wrong on a failure: ufbx_write opens the destination with `fopen(…, "wb")`,
+    // which truncates the user's previous export before writing a byte, and a
+    // chain whose third level failed would already have replaced the first two.
+    let mut staged: Vec<Staged> = Vec::with_capacity(lods.len());
     match options.packaging {
         LodPackaging::SingleFileSuffixed => {
             let scene = build_scene(lods, source, extras, options, &mut report)?;
-            write_scene(&scene, path, options.format)?;
-            report.files.push(path.to_path_buf());
+            staged.push(Staged::write(path, |staging| {
+                write_scene(&scene, staging, options.format)
+            })?);
         }
         LodPackaging::FilePerLod => {
             // A lone level is not a chain: there is nothing for a `_LOD0` suffix to
@@ -151,8 +159,28 @@ pub fn export_fbx(
                 } else {
                     path.to_path_buf()
                 };
-                write_scene(&scene, &level_path, options.format)?;
-                report.files.push(level_path);
+                staged.push(Staged::write(&level_path, |staging| {
+                    write_scene(&scene, staging, options.format)
+                })?);
+            }
+        }
+    }
+
+    // Everything is written; put each file in its place. A rename this late is
+    // rare — the directory is known writable, since the staging files are in it
+    // — but if one does fail the user still has to be told which of their assets
+    // were already replaced, so the report travels with the error.
+    for entry in staged {
+        let destination = entry.destination().to_path_buf();
+        match entry.commit() {
+            Ok(committed) => report.files.push(committed),
+            Err(error) => {
+                report.notes.dedup();
+                return Err(OptError::ExportIncomplete {
+                    replaced: report.files,
+                    failed: destination,
+                    reason: error.to_string(),
+                });
             }
         }
     }

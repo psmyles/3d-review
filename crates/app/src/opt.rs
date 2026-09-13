@@ -453,6 +453,32 @@ impl App {
                 self.notifications
                     .report(NoticeKind::Success, title, report.notes);
             }
+            // A partial replacement is the one failure the user has to act on:
+            // some of their assets on disk are now from this run and some are
+            // not, so name them rather than leaving it to be discovered in an
+            // engine.
+            Err(OptError::ExportIncomplete {
+                replaced,
+                failed,
+                reason,
+            }) => {
+                prof::msg(&format!(
+                    "FBX export incomplete at {}: {reason}",
+                    failed.display()
+                ));
+                let mut lines = vec![format!(
+                    "{} could not be replaced: {reason}",
+                    crate::loading::file_label(&failed)
+                )];
+                if replaced.is_empty() {
+                    lines.push("Nothing on disk was changed.".to_owned());
+                } else {
+                    lines.push("These files were replaced by this export:".to_owned());
+                    lines.extend(replaced.iter().map(|path| crate::loading::file_label(path)));
+                }
+                self.notifications
+                    .report(NoticeKind::Error, "Export incomplete", lines);
+            }
             Err(error) => {
                 prof::msg(&format!("FBX export failed: {error}"));
                 self.notifications.error(format!("Export failed: {error}"));
@@ -611,8 +637,13 @@ impl App {
     }
 
     /// Write a serialized preset to the chosen path.
+    ///
+    /// Replaced rather than overwritten (`write_bytes_replacing`): saving over an
+    /// existing preset truncates it before the first byte lands, so a failure
+    /// halfway through would cost the user the setup they were replacing as well
+    /// as the one they were saving.
     pub(crate) fn write_opt_preset(&mut self, path: &Path, json: &str) {
-        match std::fs::write(path, json) {
+        match review_optimize::write_bytes_replacing(path, json) {
             Ok(()) => self
                 .notifications
                 .success(format!("Saved {}", crate::loading::file_label(path))),

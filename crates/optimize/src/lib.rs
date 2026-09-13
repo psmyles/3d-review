@@ -48,6 +48,7 @@ pub mod meshopt;
 pub mod ops;
 pub mod preset;
 pub mod process;
+pub mod replace_file;
 pub mod stack;
 pub mod submesh;
 
@@ -55,6 +56,7 @@ pub use export::{ExportReport, export_fbx};
 pub use process::{
     AnalysisMetrics, MeshCounts, ProcessInput, ProcessedLod, ProcessedResult, process,
 };
+pub use replace_file::{Staged, write_bytes_replacing, write_replacing};
 pub use stack::{
     AoQuality, AoTarget, AttributeWeights, BakeAoParams, ExportOptions, FbxFormat, HierarchyMode,
     LodLevel, LodPackaging, LodParams, NodeOverride, OpInstance, OpKind, OptStack, RebindReport,
@@ -99,6 +101,25 @@ pub enum OptError {
 
     #[error("FBX export failed: {0}")]
     Export(String),
+
+    /// A multi-file export that wrote everything but could not put all of it in
+    /// place. Carries what *was* replaced, because the user needs to know which
+    /// of their assets on disk are now from this run and which are not — an
+    /// error that only says "export failed" leaves them to guess.
+    #[error("the export replaced {} file(s) but could not replace {}: {reason}", replaced.len(), failed.display())]
+    ExportIncomplete {
+        replaced: Vec<std::path::PathBuf>,
+        failed: std::path::PathBuf,
+        reason: String,
+    },
+}
+
+/// Filesystem failures reach the user as export failures: every one of them in
+/// this crate happens while writing a file out.
+impl From<std::io::Error> for OptError {
+    fn from(error: std::io::Error) -> Self {
+        OptError::Export(error.to_string())
+    }
 }
 
 /// A de-duplicating warning collector.

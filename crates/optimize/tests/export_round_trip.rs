@@ -538,3 +538,82 @@ fn exporting_nothing_is_an_error_rather_than_an_empty_file() {
     );
     assert!(!path.exists(), "no file is left behind");
 }
+
+#[test]
+fn a_successful_export_leaves_no_staging_file_behind() {
+    let Some(model) = fixture("monkey.fbx") else {
+        return;
+    };
+    let result = run(&model, &passthrough());
+
+    let dir = temp_dir("round_trip_replaces");
+    let path = dir.join("asset.fbx");
+    // A previous export, which this one replaces.
+    std::fs::write(&path, b"the previous export").expect("seed the destination");
+
+    export_fbx(&result.lods, &model, None, &path, &ExportOptions::default())
+        .expect("export succeeds");
+
+    assert!(
+        reimport(&path).indices.len() > 3,
+        "the destination holds the new export"
+    );
+    let leftovers: Vec<String> = std::fs::read_dir(&dir)
+        .expect("read the export directory")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains(".partial-"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "staging files left behind: {leftovers:?}"
+    );
+}
+
+#[test]
+fn a_chain_that_cannot_replace_a_later_file_reports_what_it_did_replace() {
+    let Some(model) = fixture("monkey.fbx") else {
+        return;
+    };
+    let result = run(&model, &weld_and_halve());
+
+    let dir = temp_dir("round_trip_incomplete");
+    let path = dir.join("asset.fbx");
+    // LOD 1's destination is a directory, so its rename fails while LOD 0's has
+    // already gone through — the partial-replacement case the user has to be
+    // told about by name.
+    std::fs::create_dir(dir.join("asset_LOD1.fbx")).expect("block the second destination");
+
+    let error = export_fbx(
+        &result.lods,
+        &model,
+        None,
+        &path,
+        &ExportOptions {
+            packaging: LodPackaging::FilePerLod,
+            ..ExportOptions::default()
+        },
+    )
+    .expect_err("the second level cannot be put in place");
+
+    match error {
+        review_optimize::OptError::ExportIncomplete {
+            replaced, failed, ..
+        } => {
+            assert_eq!(replaced, vec![dir.join("asset_LOD0.fbx")]);
+            assert_eq!(failed, dir.join("asset_LOD1.fbx"));
+        }
+        other => panic!("expected ExportIncomplete, got {other:?}"),
+    }
+
+    let leftovers: Vec<String> = std::fs::read_dir(&dir)
+        .expect("read the export directory")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains(".partial-"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "an abandoned level's staging file must not survive: {leftovers:?}"
+    );
+}
