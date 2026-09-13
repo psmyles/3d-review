@@ -418,8 +418,8 @@ impl App {
                 // moment later; the previous model's must not stand in for it.
                 self.scene_extras = None;
                 self.scene_revision = self.next_model_revision();
-                // Any Opt result (and any node override) describes the previous
-                // model, so drop both before the new one is drawn.
+                // Any Opt result (and every per-object override) describes the
+                // previous model, so drop both before the new one is drawn.
                 self.reset_opt_for_new_model();
                 let label = file_label(path);
                 self.set_window_title(Some(&label));

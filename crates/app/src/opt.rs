@@ -31,8 +31,8 @@ use std::time::{Duration, Instant};
 
 use review_model::ModelData;
 use review_optimize::{
-    ExportOptions, ExportReport, OpKind, OptError, ProcessInput, ProcessedResult, export_fbx,
-    preset, process,
+    ExportOptions, ExportReport, OpKind, OptError, OptStack, ProcessInput, ProcessedResult,
+    RebindReport, export_fbx, preset, process,
 };
 use review_ui::{NoticeKind, OptIntent, OptLevelView, OptResultView};
 
@@ -43,6 +43,35 @@ use crate::{App, prof};
 /// How long a run may take before the user is told it is still going. Below this
 /// the result usually lands within a frame or two and a toast would only flicker.
 const ACTIVITY_NOTICE_AFTER: Duration = Duration::from_millis(300);
+
+/// What to tell the user about a loaded preset's per-object overrides, one line
+/// per thing that happened. A preset that landed cleanly produces nothing.
+///
+/// The two halves are separate warnings because they mean different things: a
+/// dropped override is a setting the user has lost, while one matched by
+/// position is a setting that *may* have landed on the wrong object — only an
+/// old preset can produce it, and only the user can tell whether it is right.
+fn rebind_notes(report: RebindReport) -> Vec<String> {
+    let mut notes = Vec::new();
+    if report.dropped > 0 {
+        let count = report.dropped;
+        notes.push(format!(
+            "{count} per-object override{} named objects this model doesn't have, and {} dropped.",
+            if count == 1 { "" } else { "s" },
+            if count == 1 { "was" } else { "were" },
+        ));
+    }
+    if report.by_position > 0 {
+        let count = report.by_position;
+        notes.push(format!(
+            "{count} per-object override{} from a preset that predates object names, so {} \
+             matched by position — check they landed on the objects you meant.",
+            if count == 1 { "" } else { "s" },
+            if count == 1 { "it was" } else { "they were" },
+        ));
+    }
+    notes
+}
 
 /// A finished run, posted from the worker thread back to the event loop.
 #[derive(Debug)]
@@ -564,7 +593,13 @@ impl App {
     /// the stack the user was looking at when they clicked Save is the one that
     /// gets written, not whatever it has become by the time they choose a name.
     fn save_opt_preset(&mut self) {
-        let json = match preset::to_json(&self.ui.opt.stack) {
+        // Per-object overrides address node *indices*, which mean nothing in
+        // another file. Record the name of each one's object on the way out so
+        // the preset can be rebound wherever it is loaded; the live stack keeps
+        // addressing by index.
+        let mut stack = (*self.ui.opt.stack).clone();
+        stack.stamp_node_names(&self.scene_model.nodes);
+        let json = match preset::to_json(&stack) {
             Ok(json) => json,
             Err(error) => {
                 self.notifications
@@ -619,11 +654,10 @@ impl App {
         };
 
         // A preset authored against another asset carries that asset's node
-        // indices; keeping them would apply its exclusions to whatever now
-        // occupies those positions.
-        let dropped = stack.overrides.len();
-        stack.clamp_to_model(self.scene_model.nodes.len());
-        let dropped = dropped - stack.overrides.len();
+        // indices, which say nothing about *which* object was meant here. Each
+        // override names its object, so match on that and drop what this model
+        // has no unambiguous answer for.
+        let report = stack.rebind_to_model(&self.scene_model.nodes);
 
         self.ui.opt.set_stack(Arc::new(stack));
         self.schedule_reprocess();
@@ -631,25 +665,19 @@ impl App {
 
         self.notifications
             .success(format!("Loaded {}", crate::loading::file_label(path)));
-        if dropped > 0 {
-            self.notifications.warning(format!(
-                "{dropped} per-object override{} referenced objects this model \
-                 doesn't have, and {} dropped.",
-                if dropped == 1 { "" } else { "s" },
-                if dropped == 1 { "was" } else { "were" },
-            ));
+        for line in rebind_notes(report) {
+            self.notifications.warning(line);
         }
     }
 
     /// Drop every Opt result and queue a fresh run — called when the model is
     /// replaced, since the stored meshes and node overrides describe the old one.
     pub(crate) fn reset_opt_for_new_model(&mut self) {
-        let node_count = self.scene_model.nodes.len();
-        // Node overrides address the previous model's node indices; keeping them
-        // would silently apply to whatever now sits at those positions.
-        self.ui
-            .opt
-            .edit_stack(|stack| stack.clamp_to_model(node_count));
+        // Node overrides address the previous model's node indices. Keeping the
+        // in-range ones would silently apply to whatever now sits at those
+        // positions — a same-sized scene of unrelated objects passes every
+        // bounds check there is. The operations describe the setup and stay.
+        self.ui.opt.edit_stack(OptStack::clear_overrides);
         self.ui.opt.result = None;
         self.ui.opt.active_lod = 0;
         // A new model is a fresh comparison: the level the user pinned was a
