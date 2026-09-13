@@ -4,7 +4,7 @@
 making them lighter to draw.
 
 It is written in the Rust programming language. It uses `winit` for the
-window, `sokol_gfx` to talk to the graphics card (through Direct3D 11 on
+window, `sokol_gfx` to talk to the GPU (through Direct3D 11 on
 Windows and Metal on macOS), `egui` for the buttons and panels, and `ufbx` to
 read FBX files. There is no web browser hidden inside it.
 
@@ -19,7 +19,7 @@ The viewer is built with the help of these open source projects:
   the Opt workspace.
 - [psd_sdk](https://github.com/MolecularMatters/psd_sdk) - reads Photoshop PSD
   files.
-- [sokol](https://github.com/floooh/sokol) - talks to the graphics card.
+- [sokol](https://github.com/floooh/sokol) - talks to the GPU.
 - [egui](https://github.com/emilk/egui) - draws the buttons and panels.
 
 The bundled typefaces are Inter and JetBrains Mono.

@@ -8,7 +8,7 @@ with and without it.
 - **Weld Vertices** - joins points that sit in the same place. Every run
   already joins points that match in every way; this operation goes further, by
   ignoring the shading direction, the texture layout or the colors when
-  comparing, or by allowing a small gap. This one *does* change the model.
+  comparing, or by allowing a small gap. This one _does_ change the model.
 - **Filter Triangles** - removes broken triangles (ones squashed into a line)
   and exact copies of other triangles. Copies that face the other way are kept,
   because that is how double-sided surfaces are made.
@@ -23,10 +23,10 @@ with and without it.
   the list. The starting chain is three levels at 50%, 25% and 12.5%.
 - **Bake AO to Vertex Colors** - works out [soft shadows](ao.md) for each point
   and stores them as colors on the points. Does not change the shape.
-- **Optimize Vertex Cache** - reorders the triangles so the graphics card can
+- **Optimize Vertex Cache** - reorders the triangles so the GPU can
   reuse work it has just done. Watch the ACMR and ATVR numbers.
 - **Optimize Overdraw** - reorders the triangles so nearer ones tend to be
-  drawn first, and the graphics card wastes less effort on parts that end up
+  drawn first, and the GPU wastes less effort on parts that end up
   hidden.
 - **Optimize Vertex Fetch** - reorders the points into the order they are read,
   and removes any point nothing uses.
@@ -35,7 +35,7 @@ with and without it.
 
 Optimize Vertex Cache, Optimize Overdraw and Optimize Vertex Fetch change
 nothing you can see. What they change shows up on the second stats card: ACMR
-and ATVR for how well the graphics card reuses its work, Overdraw for wasted
+and ATVR for how well the GPU reuses its work, Overdraw for wasted
 painting, and Overfetch for how tidily the model's data is read. Reading those
 numbers is the only way to judge them, which is why the card is there before
 you add anything.

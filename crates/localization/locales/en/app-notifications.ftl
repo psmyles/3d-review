@@ -65,7 +65,7 @@ app-notifications-overrides-by-position = { $count ->
 ## The graphics device
 
 app-notifications-gpu-fault = { $context }: { $detail }
-app-notifications-device-lost-startup = The graphics card stopped responding while starting up ({ $reason }). The view may stay blank, so please restart the viewer.
+app-notifications-device-lost-startup = The GPU stopped responding while starting up ({ $reason }). The view may stay blank, so please restart the viewer.
 
 ## Mode notices
 

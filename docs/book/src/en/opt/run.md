@@ -14,7 +14,7 @@ point, even when several corners sit in exactly the same spot. A real model
 with about 10,000 triangles arrives with about 30,000 points and no sharing at
 all. Every operation in the list works by looking at which triangles share
 which points, so on a model like that they would all do nothing: there is
-nothing for the graphics card to reuse, no edge a simplifier can fold, and a
+nothing for the GPU to reuse, no edge a simplifier can fold, and a
 LOD chain that removes nothing.
 
 So before any operation runs, the viewer joins up points that are identical in
@@ -24,7 +24,7 @@ of the triangles" target is hit exactly.
 
 This step is not something you add to the list, because there is never a
 reason to skip it. The [Weld Vertices](operations.md) operation is for the
-kind of joining that *does* change the model.
+kind of joining that _does_ change the model.
 
 ## The starting numbers are measured after that step
 

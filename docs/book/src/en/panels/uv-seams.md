@@ -15,7 +15,7 @@ both are one pixel wide, so color is the only thing that tells them apart.
 
 ## What it is for
 
-At every seam the graphics card has to store the points twice, once for each
+At every seam the GPU has to store the points twice, once for each
 side, so the number of seams is a direct part of the `GPU Verts` figure on the
 [stats card](../stats.md). A seam is also where a texture can show a visible
 line if the two sides do not match up.

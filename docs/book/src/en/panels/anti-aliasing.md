@@ -7,10 +7,10 @@ the line overlays.
 ## Settings
 
 **Samples** - Off, 2x, 4x, 8x or 16x. Higher is smoother but asks more of your
-graphics card.
+GPU.
 
-Only the levels your graphics card can actually draw are listed. A Mac with
-Apple silicon usually shows up to 4x; a Windows graphics card usually shows all
+Only the levels your GPU can actually draw are listed. A Mac with
+Apple silicon usually shows up to 4x; a Windows GPU usually shows all
 of them.
 
 ## Notes

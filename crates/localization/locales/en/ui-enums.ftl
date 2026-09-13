@@ -157,12 +157,12 @@ ui-enums-op-bake-ao = Bake AO to Vertex Colors
         only by their own level, so a whole set of levels can bake in one go. Hidden
         objects are left out, so hide collision shapes first. Does not change the shape.
 ui-enums-op-vertex-cache = Optimize Vertex Cache
-    .description = Reorders the triangles so the graphics card can reuse work it has just
+    .description = Reorders the triangles so the GPU can reuse work it has just
         done. Does not change the shape; watch the ACMR and ATVR numbers on the stats
         card to see the effect.
 ui-enums-op-overdraw = Optimize Overdraw
     .description = Reorders the triangles so nearer ones tend to be drawn first, and the
-        graphics card wastes less effort on parts that end up hidden. Does not change the
+        GPU wastes less effort on parts that end up hidden. Does not change the
         shape.
 ui-enums-op-vertex-fetch = Optimize Vertex Fetch
     .description = Reorders the points into the order they are read, and removes any point

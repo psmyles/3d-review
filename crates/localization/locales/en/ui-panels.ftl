@@ -70,7 +70,7 @@ ui-panels-color-mode = Color Mode
 
 ui-panels-msaa = MSAA
     .description = Smooths jagged edges across the whole view, including the wireframe
-        and the overlay lines. Only the levels your graphics card can handle are listed.
+        and the overlay lines. Only the levels your GPU can handle are listed.
 
 ## Background
 

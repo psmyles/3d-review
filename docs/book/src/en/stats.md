@@ -17,7 +17,7 @@ program counts them.
 
 `GPU Verts` is the number of points a game would really have to store. Where
 two faces meet at a sharp edge, or where the texture layout is cut, the
-graphics card needs a separate copy of the point for each side. So this number
+GPU needs a separate copy of the point for each side. So this number
 is usually bigger.
 
 `Vtx Splits` is the gap between the two, as a percentage. This is one of the
@@ -33,5 +33,5 @@ whatever is still visible. When a row has nothing to say for a column, it
 shows a dash rather than a zero.
 
 The [Opt workspace](opt/comparison.md) adds a second card with the processed
-model's numbers, and some extra figures about how efficiently a graphics card
+model's numbers, and some extra figures about how efficiently a GPU
 can draw it.

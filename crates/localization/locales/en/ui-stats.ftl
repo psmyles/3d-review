@@ -20,7 +20,7 @@ ui-stats-scope-vis = Vis
 ## Model rows
 
 ui-stats-draws = Draws
-    .description = How many separate drawing instructions the graphics card needs for this
+    .description = How many separate drawing instructions the GPU needs for this
         model - one for each different material. Fewer is cheaper. Combining materials is
         what brings this number down.
 
@@ -30,12 +30,12 @@ ui-stats-polys = Polys
 
 ui-stats-tris = Tris
     .description = The number of triangles once every face is cut into triangles. This is
-        what the graphics card actually draws, and what a game's triangle budget counts.
+        what the GPU actually draws, and what a game's triangle budget counts.
 
 ui-stats-verts = Verts
     .description = The number of points, counted the way your modelling program counts
         them. It does not include the extra copies that hard edges and texture seams force
-        the graphics card to keep.
+        the GPU to keep.
 
 ui-stats-gpu-verts = GPU Verts
     .description = The number of points a game would really have to store. A point sitting
@@ -76,7 +76,7 @@ ui-stats-mesh-verts = Mesh Verts
         GPU Verts on the other card, so the two numbers can be compared fairly.
 
 ui-stats-acmr = ACMR
-    .description = A measure of how well the graphics card can reuse points it has already
+    .description = A measure of how well the GPU can reuse points it has already
         worked on. 3.0 means it never reuses any; about 0.5 is the best a closed shape can
         reach. Lower is cheaper. The Optimize Vertex Cache operation is what improves it.
 
@@ -87,12 +87,12 @@ ui-stats-atvr = ATVR
         triangles, so it is the fairer one to watch for a single model.
 
 ui-stats-overdraw = Overdraw
-    .description = How often the graphics card paints a spot on screen and then paints over
+    .description = How often the GPU paints a spot on screen and then paints over
         it again. 1.0 means every spot is painted once; higher means wasted work on parts
         that end up hidden. The Optimize Overdraw operation lowers this.
 
 ui-stats-overfetch = Overfetch
-    .description = How much the graphics card has to re-read the same memory while drawing
+    .description = How much the GPU has to re-read the same memory while drawing
         the model. 1.0 means it reads everything once; higher means the drawing order jumps
         around. The Optimize Vertex Fetch operation lowers this.
 

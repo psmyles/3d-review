@@ -42,7 +42,7 @@ with. See [Tonemapper](panels/tonemapper.md).
 
 Anti-aliasing smooths the jagged, stair-step look of edges. You can pick 2x,
 4x, 8x or 16x; higher is smoother but costs more. Only the levels your
-graphics card can handle are listed, so a Mac with Apple silicon shows up to 4x
+GPU can handle are listed, so a Mac with Apple silicon shows up to 4x
 and a Windows PC usually shows all of them. See
 [Anti Aliasing](panels/anti-aliasing.md).
 

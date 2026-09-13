@@ -15,7 +15,7 @@ ui-status-bar-tonemap = Tone mapping
         your screen can show. Turn it off to see the raw values, which is a good way to
         check whether a bright spot is really too bright.
 ui-status-bar-anti-aliasing = Anti aliasing
-    .description = Smooths jagged edges. Only the levels your graphics card can handle are
+    .description = Smooths jagged edges. Only the levels your GPU can handle are
         listed.
 ui-status-bar-viewport-background = Viewport background
     .description = Click to step through black, three greys, white and a soft gradient.

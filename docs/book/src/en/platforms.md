@@ -4,7 +4,7 @@
 the same on both for the models we have checked. Only a few small things
 differ:
 
-- **Anti-aliasing levels.** A Windows graphics card usually offers 1x up to
+- **Anti-aliasing levels.** A Windows GPU usually offers 1x up to
   16x. A Mac with Apple silicon offers 1x, 2x and 4x. The menu only lists what
   your card can actually do.
 - **The Mac menu bar.** On macOS there is a menu bar (the app menu, File with
