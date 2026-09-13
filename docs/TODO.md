@@ -4,3 +4,9 @@
 - compression option at export time?
 - read FBX built in textures
 - show read speed
+
+Headless batch mode (preset × files → export + report)
+Automated validation / audit report
+Import and export formats beyond FBX
+Viewport click-to-select and hover
+Embedded FBX textures for display
