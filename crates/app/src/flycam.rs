@@ -99,6 +99,16 @@ impl FlyKeys {
     }
 }
 
+/// Whether a movement-key event belongs to the flycam, given whether it is a
+/// press and whether the look drag that arms flight is live.
+///
+/// Pure so the four cases can be stated outright: `Q` in particular has to reach
+/// the flycam while flying and the Select tool the rest of the time, and getting
+/// that backwards silently costs one of the two.
+fn fly_key_applies(pressed: bool, look_armed: bool) -> bool {
+    !pressed || look_armed
+}
+
 /// One of the six flycam directions, as named by the key that drives it.
 #[derive(Clone, Copy)]
 pub(crate) enum FlyDirection {
@@ -130,6 +140,30 @@ impl FlyDirection {
 }
 
 impl App {
+    /// Whether a movement key press belongs to the flycam right now.
+    ///
+    /// Only while the right-button look drag is live — which is the gesture that
+    /// arms flight in the first place, so an unarmed press was inert anyway.
+    /// Saying so *before* the key is swallowed is what lets `Q` carry a second
+    /// meaning (the Select tool) without taking anything away from flying: with
+    /// the right button down it flies, and the rest of the time it toggles.
+    ///
+    /// A **release** always belongs to the flycam, whatever the buttons are
+    /// doing by then: a key still down when the drag ends would otherwise leave
+    /// its direction stuck on with nothing left to clear it.
+    pub(crate) fn fly_key_applies(&self, pressed: bool) -> bool {
+        fly_key_applies(pressed, self.flycam_look_armed())
+    }
+
+    /// Whether the right-button look drag that arms flight is live. The proposal
+    /// counts as well as the settled drag: a press is only promoted a frame
+    /// later (`settle_pending_drag`), and a key pressed inside that frame is
+    /// still part of the same gesture.
+    fn flycam_look_armed(&self) -> bool {
+        matches!(self.drag_mode, Some(DragMode::Look))
+            || matches!(self.pending_drag, Some(DragMode::Look))
+    }
+
     /// Set or clear one direction's held flag (`shortcuts.rs` calls this on key
     /// down / up).
     pub(crate) fn set_fly_key(&mut self, direction: FlyDirection, held: bool) {
@@ -217,6 +251,21 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Q` means two things, and which one it means is decided here.
+    #[test]
+    fn a_movement_key_reaches_the_flycam_only_while_the_look_drag_is_live() {
+        // Pressed with the right button down: flying.
+        assert!(fly_key_applies(true, true));
+        // Pressed with no drag: free for whatever else the key is bound to,
+        // which for `Q` is the Select tool.
+        assert!(!fly_key_applies(true, false));
+        // A release always reaches the flycam, whatever the buttons are doing by
+        // then — otherwise a key still down when the drag ends leaves its
+        // direction stuck on with nothing left to clear it.
+        assert!(fly_key_applies(false, true));
+        assert!(fly_key_applies(false, false));
+    }
 
     #[test]
     fn opposed_keys_cancel_and_diagonals_stay_unit_length() {

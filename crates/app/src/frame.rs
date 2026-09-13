@@ -16,7 +16,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use review_model::{ModelData, SceneBvh};
+use review_model::ModelData;
 use review_render::{
     ActiveMaterial, CameraProjection, OptSceneFrame, OptView, ProcessedModelRef, Renderer,
     SceneFrame, SceneViewport, TexBackground, TexImage,
@@ -57,11 +57,6 @@ impl App {
             // other thing that moves the camera without an input event of its own.
             self.step_flycam();
         }
-        // Advance the selection-highlight flash and feed this frame's fade into the
-        // UI snapshot the scene callback reads. Done before the egui run below so the
-        // viewport reflects the current fade; a change of selection (set by the
-        // Outliner last frame) restarts it here.
-        self.update_selection_flash();
         // Advance the animation clock and re-evaluate the pose when the clip or
         // time moved (the palette upload is keyed by its revision).
         self.tick_animation();
@@ -87,15 +82,6 @@ impl App {
             return;
         }
 
-        // The bounding-box dimension labels occlude against the mesh through a
-        // triangle BVH. Build it lazily the first frame the labels are shown for a
-        // given model (and rebuild after a new model loads); reused across frames,
-        // so orbiting pays no per-frame triangle cost.
-        if self.ui.debug.show_bounding_box && self.occlusion_bvh_revision != self.scene_revision {
-            self.occlusion_bvh = Some(SceneBvh::build(&self.scene_model));
-            self.occlusion_bvh_revision = self.scene_revision;
-        }
-
         // The Opt workspace's processed level, resolved *before* the egui pass so its
         // half of the split can be labelled with its own box and its own camera. Like
         // every other input the chrome reads, this is the state as of the start of the
@@ -112,15 +98,6 @@ impl App {
                 .lod(self.ui.opt.active_lod)
                 .map(|lod| (&lod.model, *revision))
         });
-        // Occlusion for those labels, on the same terms as the source's above.
-        if let Some((model, revision)) = opt_level_model
-            && self.ui.debug.show_bounding_box
-            && self.opt_occlusion_bvh_revision != revision
-        {
-            self.opt_occlusion_bvh = Some(SceneBvh::build(model));
-            self.opt_occlusion_bvh_revision = revision;
-        }
-
         let (full_output, ui_output) = {
             let Some(egui_state) = self.egui_state.as_mut() else {
                 return;
@@ -132,7 +109,9 @@ impl App {
             let raw_input = egui_state.take_egui_input(&window);
             let camera = renderer.camera;
             let scene_model = self.scene_model.clone();
-            let occlusion_bvh = self.occlusion_bvh.as_ref();
+            // Both the dimension labels' occlusion and the viewport pick read
+            // this one index, built on the import worker; `None` until it lands.
+            let occlusion_bvh = self.scene_bvh.as_deref();
             // Supplied for the whole Opt workspace, not only once a level exists:
             // the split lays out two halves either way, drawing the source into both
             // until a run lands, so its labels need that half's camera regardless.
@@ -140,7 +119,11 @@ impl App {
                 camera: renderer.opt_camera,
                 level: opt_level_model.map(|(model, revision)| OptOverlayLevel {
                     model,
-                    bvh: self.opt_occlusion_bvh.as_ref(),
+                    bvh: self
+                        .opt
+                        .as_ref()
+                        .and_then(|opt| opt.level_bvhs.get(self.ui.opt.active_lod))
+                        .map(Arc::as_ref),
                     revision,
                 }),
             });
@@ -156,6 +139,7 @@ impl App {
             // Buffers button's cycle (and entering the Buffers view) announces the
             // current buffer.
             let prev_material_mode = self.ui.debug.material_mode;
+            let announced_tool = &mut self.announced_tool;
             let prev_active_material = self.ui.debug.active_material;
             let prev_buffer_view = self.ui.debug.buffer_view;
             let _z = prof::zone!("egui Run");
@@ -173,6 +157,14 @@ impl App {
                 );
                 if self.ui.debug.material_mode != prev_material_mode {
                     notifications.mode(review_ui::material_mode_name(self.ui.debug.material_mode));
+                }
+                // Both ways of switching land here: the toolbar button was
+                // clicked during this pass, and a `Q` press between frames
+                // changed the field before it. Comparing against what was last
+                // *announced* catches either.
+                if self.ui.tool != *announced_tool {
+                    *announced_tool = self.ui.tool;
+                    notifications.mode(review_ui::viewport_tool_name(self.ui.tool));
                 }
                 // Announce the buffer being viewed when the user switches *into* the
                 // Buffers view or cycles to the next buffer (mirrors the material-
@@ -232,9 +224,6 @@ impl App {
             .renderer
             .as_ref()
             .is_some_and(Renderer::is_camera_animating);
-        // The selection flash animates over ~0.5s; keep pacing frames until it
-        // finishes so the highlight fades smoothly rather than freezing partway.
-        let flash_active = self.selection_flash.is_some();
         // A playing clip keeps pacing frames until it pauses or stops.
         let anim_playing = self.animation_playing();
         // A held flycam key is a live interaction (invariant 6): keep pacing
@@ -247,7 +236,6 @@ impl App {
         self.redraw.warmup_frames = self.redraw.warmup_frames.saturating_sub(1);
         self.redraw.repaint_at = if repaint_delay.is_zero()
             || camera_animating
-            || flash_active
             || anim_playing
             || flying
             || warming_up
@@ -274,6 +262,15 @@ impl App {
         let selection = self.ui.selection_view();
         let hidden_meshes = self.ui.hidden_mesh_nodes();
         let selected_bones = self.ui.selected_bone_nodes();
+        let selected_nodes = self.ui.selected_node_set();
+        // The pick's preview, split by what it targets: the skeleton overlay
+        // decides whether a click would take a bone or a mesh part, so only one
+        // of the two is ever `Some`.
+        let (hover, hover_bone) = match self.ui.hover {
+            Some(review_ui::HoverTarget::Node(node)) => (Some(node as u32), None),
+            Some(review_ui::HoverTarget::Bone(bone)) => (None, Some(bone as u32)),
+            None => (None, None),
+        };
         let workspace = self.ui.mode;
         let uv_channel = self.ui.uv_view_channel;
         let uv_shading = self.ui.uv_shading_mode;
@@ -383,6 +380,9 @@ impl App {
                         selection,
                         hidden_meshes: &hidden_meshes,
                         selected_bones: &selected_bones,
+                        selected_nodes: &selected_nodes,
+                        hover,
+                        hover_bone,
                         background,
                         pose,
                         pose_revision,

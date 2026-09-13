@@ -66,6 +66,15 @@ pub struct SceneDebugOptions {
     /// Skeleton bone color (gamma space, alpha applies to the solid octahedron
     /// fill; the outlines draw opaque).
     pub skeleton_color: [f32; 4],
+    /// Color the hovered object is tinted while the Select tool is active — the
+    /// preview of what a click would pick. A translucent fill in its own colour,
+    /// distinct from the selection's, so "would be selected" never reads as
+    /// "is selected". Alpha is the fill opacity, as the selection highlight's is.
+    pub hover_color: [f32; 4],
+    /// The same, for a hovered *bone*: with the skeleton overlay up the pick
+    /// targets bones, and the tint is baked into the overlay's vertices rather
+    /// than applied from a uniform, so it needs its own entry here.
+    pub skeleton_hover_color: [f32; 4],
     /// Color for the bones in [`SceneFrame::selected_bones`], so an Outliner
     /// selection reads in the viewport. Unlike the selection *flash* this is
     /// persistent — it lasts as long as the selection does.
@@ -136,6 +145,10 @@ impl Default for SceneDebugOptions {
             skeleton_joint_scale: 1.0,
             skeleton_color: [0.35, 0.72, 1.0, 1.0],
             skeleton_selected_color: [1.0, 0.55, 0.14, 1.0],
+            // Overwritten from the theme every frame; these keep a renderer
+            // built without a UI (the tests) drawing something sane.
+            hover_color: [1.0, 0.77, 0.47, 0.18],
+            skeleton_hover_color: [1.0, 0.77, 0.47, 1.0],
             face_normals: false,
             vertex_normals: false,
             face_normal_length: 0.03,

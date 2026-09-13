@@ -7,8 +7,18 @@ use std::collections::HashSet;
 use review_model::{ModelData, NodeKind};
 use review_render::Selection;
 
-use super::{TreeRow, toggle};
-use crate::state::UiState;
+use super::TreeRow;
+use crate::state::{SelectMode, SelectionKind, UiState};
+
+/// One drawn row as a Shift-range sees it: which node it is, and whether it is a
+/// bone. The kind is here because a range must not cross the two selection sets
+/// — dragging Shift down a hand's bones should not sweep up the mesh row sitting
+/// between two of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct RowRef {
+    pub(super) node: usize,
+    pub(super) bone: bool,
+}
 
 /// An arrow key, as [`resolve_nav`] understands it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,7 +91,7 @@ pub(super) fn handle_nav(ui: &egui::Ui, state: &mut UiState, model: &ModelData, 
         // the equality guard keeps the plain-click "re-click clears" out of it.
         NavAction::Select(node) if state.selection != Selection::Node(node) => {
             let kind = model.nodes[node].kind;
-            let order: Vec<usize> = rows.iter().map(|row| row.node).collect();
+            let order = row_refs(model, rows);
             apply_row_click(state, node, kind, egui::Modifiers::NONE, &order);
             true
         }
@@ -170,17 +180,21 @@ pub(super) fn resolve_nav(
 
 /// Resolve a scene-tree row click into the new selection state.
 ///
-/// * Plain click — select this node alone. On a bone that also becomes the whole
-///   bone set and the range anchor; re-clicking the selected row clears both,
-///   preserving the flat list's long-standing toggle behavior.
-/// * Primary-click on a bone — toggle its membership. The primary [`Selection`]
+/// * Plain click — select this row alone, and make it the range anchor.
+///   Re-clicking a row that is already the *only* selection clears it, which is
+///   the flat list's long-standing toggle behaviour and the one way to empty the
+///   selection without leaving the panel.
+/// * Primary-click — toggle this row's membership. The primary [`Selection`]
 ///   follows the set's last member, or clears when the set empties.
-/// * Shift-click on a bone — take every row between the anchor and this one, in
-///   the order the rows are currently drawn, so the range matches what the user
-///   sees rather than the model's internal node ordering.
+/// * Shift-click — take every row between the anchor and this one, in the order
+///   the rows are currently drawn, so the range matches what the user sees
+///   rather than the model's internal node ordering.
 ///
-/// Clicking any non-bone row clears the bone set: the skeleton highlight and the
-/// weight heat map should never outlive the bone selection that produced them.
+/// Mesh and bone rows behave identically, over their own sets: a bone click
+/// builds [`UiState::selected_bones`] (what the skeleton highlight and the
+/// weight heat map read), anything else builds [`UiState::selected_nodes`]. A
+/// click on either kind clears the other set, so the skeleton highlight can
+/// never outlive the bone selection that produced it.
 ///
 /// Pure (given `state`), so the modifier matrix is unit-testable.
 pub(super) fn apply_row_click(
@@ -188,54 +202,75 @@ pub(super) fn apply_row_click(
     node: usize,
     kind: NodeKind,
     modifiers: egui::Modifiers,
-    visible_order: &[usize],
+    rows: &[RowRef],
 ) {
-    if kind != NodeKind::Bone {
-        let selected = state.selection == Selection::Node(node);
-        state.selection = toggle(selected, Selection::Node(node));
-        state.selected_bones.clear();
-        state.bone_anchor = None;
-        return;
-    }
-
-    if modifiers.command || modifiers.ctrl {
-        if let Some(at) = state.selected_bones.iter().position(|&bone| bone == node) {
-            state.selected_bones.remove(at);
-        } else {
-            state.selected_bones.push(node);
-        }
-        state.bone_anchor = Some(node);
-        state.selection = match state.selected_bones.last() {
-            Some(&last) => Selection::Node(last),
-            None => Selection::None,
-        };
-        return;
-    }
-
-    // No usable anchor (or a stale one no longer on screen) falls through to a
-    // plain selection rather than doing nothing.
-    if modifiers.shift
-        && let Some(anchor) = state.bone_anchor
-        && let Some(from) = visible_order.iter().position(|&row| row == anchor)
-        && let Some(to) = visible_order.iter().position(|&row| row == node)
-    {
-        let (from, to) = if from <= to { (from, to) } else { (to, from) };
-        state.selected_bones = visible_order[from..=to].to_vec();
-        // The clicked row is the primary regardless of range direction.
-        state.selection = Selection::Node(node);
-        return;
-    }
-
-    let already = state.selection == Selection::Node(node) && state.selected_bones.len() == 1;
-    if already {
-        state.selection = Selection::None;
-        state.selected_bones.clear();
-        state.bone_anchor = None;
+    let bone = kind == NodeKind::Bone;
+    let set_kind = if bone {
+        SelectionKind::Bone
     } else {
+        SelectionKind::Node
+    };
+    let mode = SelectMode::from_modifiers(modifiers);
+
+    // Shift takes a range here rather than adding one row (which is what it does
+    // in the viewport, where there is no row order to sweep along).
+    if mode.add
+        && !mode.toggle
+        && let Some(range) = row_range(rows, state.row_anchor, node, bone)
+    {
+        state.select_only(node, set_kind);
+        *state.selection_set_for(set_kind) = range;
+        // The clicked row is the primary regardless of which way the range ran.
         state.selection = Selection::Node(node);
-        state.selected_bones = vec![node];
-        state.bone_anchor = Some(node);
+        return;
     }
+
+    if state.apply_select_mode(node, set_kind, mode) {
+        return;
+    }
+
+    // A plain click on the row that is already the whole selection clears it.
+    let alone =
+        state.selection == Selection::Node(node) && state.selection_set_for(set_kind).len() <= 1;
+    if alone {
+        state.clear_selection();
+    } else {
+        state.select_only(node, set_kind);
+    }
+}
+
+/// The drawn rows as a Shift-range sees them, reading each node's kind from the
+/// model — the one place the two are joined, so a caller never has to.
+pub(super) fn row_refs(model: &ModelData, rows: &[TreeRow]) -> Vec<RowRef> {
+    rows.iter()
+        .map(|row| RowRef {
+            node: row.node,
+            bone: model.nodes[row.node].kind == NodeKind::Bone,
+        })
+        .collect()
+}
+
+/// The nodes of the same kind between the anchor row and `node`, in drawn order
+/// and inclusive of both ends. `None` when there is no anchor, or it has scrolled
+/// out of the filtered rows — in which case the caller falls back to a plain
+/// click rather than doing nothing.
+fn row_range(
+    rows: &[RowRef],
+    anchor: Option<usize>,
+    node: usize,
+    bone: bool,
+) -> Option<Vec<usize>> {
+    let anchor = anchor?;
+    let from = rows.iter().position(|row| row.node == anchor)?;
+    let to = rows.iter().position(|row| row.node == node)?;
+    let (from, to) = if from <= to { (from, to) } else { (to, from) };
+    Some(
+        rows[from..=to]
+            .iter()
+            .filter(|row| row.bone == bone)
+            .map(|row| row.node)
+            .collect(),
+    )
 }
 
 /// Primary+click on a mesh row's eye (`Ctrl` here, `Cmd` on macOS - egui's own
@@ -466,33 +501,81 @@ mod tests {
     }
 
     /// The visible row order the scene tree draws for `scene()` with nothing
-    /// filtered or collapsed.
-    const ORDER: [usize; 5] = [0, 1, 2, 3, 4];
+    /// filtered or collapsed, with every row a bone — the shape the bone-range
+    /// cases below need. [`mesh_rows`] is its non-bone twin.
+    fn rows_of(bones: [bool; 5]) -> Vec<RowRef> {
+        (0..5)
+            .map(|node| RowRef {
+                node,
+                bone: bones[node],
+            })
+            .collect()
+    }
+
+    /// Every row a bone.
+    fn bone_rows() -> Vec<RowRef> {
+        rows_of([true; 5])
+    }
+
+    /// Every row a mesh.
+    fn mesh_rows() -> Vec<RowRef> {
+        rows_of([false; 5])
+    }
 
     #[test]
     fn plain_click_on_a_bone_selects_just_it() {
         let mut state = UiState::default();
-        apply_row_click(&mut state, 2, NodeKind::Bone, mods(false, false), &ORDER);
+        apply_row_click(
+            &mut state,
+            2,
+            NodeKind::Bone,
+            mods(false, false),
+            &bone_rows(),
+        );
         assert_eq!(state.selection, Selection::Node(2));
         assert_eq!(state.selected_bones, vec![2]);
-        assert_eq!(state.bone_anchor, Some(2));
+        assert_eq!(state.row_anchor, Some(2));
     }
 
     #[test]
     fn re_clicking_the_only_selected_bone_clears_it() {
         let mut state = UiState::default();
-        apply_row_click(&mut state, 2, NodeKind::Bone, mods(false, false), &ORDER);
-        apply_row_click(&mut state, 2, NodeKind::Bone, mods(false, false), &ORDER);
+        apply_row_click(
+            &mut state,
+            2,
+            NodeKind::Bone,
+            mods(false, false),
+            &bone_rows(),
+        );
+        apply_row_click(
+            &mut state,
+            2,
+            NodeKind::Bone,
+            mods(false, false),
+            &bone_rows(),
+        );
         assert_eq!(state.selection, Selection::None);
         assert!(state.selected_bones.is_empty());
-        assert_eq!(state.bone_anchor, None);
+        assert_eq!(state.row_anchor, None);
     }
 
     #[test]
     fn ctrl_click_toggles_membership_and_tracks_the_primary() {
         let mut state = UiState::default();
-        apply_row_click(&mut state, 2, NodeKind::Bone, mods(false, false), &ORDER);
-        apply_row_click(&mut state, 3, NodeKind::Bone, mods(true, false), &ORDER);
+        apply_row_click(
+            &mut state,
+            2,
+            NodeKind::Bone,
+            mods(false, false),
+            &bone_rows(),
+        );
+        apply_row_click(
+            &mut state,
+            3,
+            NodeKind::Bone,
+            mods(true, false),
+            &bone_rows(),
+        );
         assert_eq!(state.selected_bones, vec![2, 3]);
         assert_eq!(
             state.selection,
@@ -501,12 +584,24 @@ mod tests {
         );
 
         // Primary-clicking a member again removes it; the primary falls back.
-        apply_row_click(&mut state, 3, NodeKind::Bone, mods(true, false), &ORDER);
+        apply_row_click(
+            &mut state,
+            3,
+            NodeKind::Bone,
+            mods(true, false),
+            &bone_rows(),
+        );
         assert_eq!(state.selected_bones, vec![2]);
         assert_eq!(state.selection, Selection::Node(2));
 
         // Emptying the set clears the selection rather than leaving a stale node.
-        apply_row_click(&mut state, 2, NodeKind::Bone, mods(true, false), &ORDER);
+        apply_row_click(
+            &mut state,
+            2,
+            NodeKind::Bone,
+            mods(true, false),
+            &bone_rows(),
+        );
         assert!(state.selected_bones.is_empty());
         assert_eq!(state.selection, Selection::None);
     }
@@ -514,8 +609,20 @@ mod tests {
     #[test]
     fn shift_click_takes_the_range_in_visible_row_order() {
         let mut state = UiState::default();
-        apply_row_click(&mut state, 1, NodeKind::Bone, mods(false, false), &ORDER);
-        apply_row_click(&mut state, 4, NodeKind::Bone, mods(false, true), &ORDER);
+        apply_row_click(
+            &mut state,
+            1,
+            NodeKind::Bone,
+            mods(false, false),
+            &bone_rows(),
+        );
+        apply_row_click(
+            &mut state,
+            4,
+            NodeKind::Bone,
+            mods(false, true),
+            &bone_rows(),
+        );
         assert_eq!(state.selected_bones, vec![1, 2, 3, 4]);
         assert_eq!(state.selection, Selection::Node(4));
     }
@@ -523,8 +630,20 @@ mod tests {
     #[test]
     fn shift_click_works_upward_too() {
         let mut state = UiState::default();
-        apply_row_click(&mut state, 4, NodeKind::Bone, mods(false, false), &ORDER);
-        apply_row_click(&mut state, 2, NodeKind::Bone, mods(false, true), &ORDER);
+        apply_row_click(
+            &mut state,
+            4,
+            NodeKind::Bone,
+            mods(false, false),
+            &bone_rows(),
+        );
+        apply_row_click(
+            &mut state,
+            2,
+            NodeKind::Bone,
+            mods(false, true),
+            &bone_rows(),
+        );
         assert_eq!(state.selected_bones, vec![2, 3, 4]);
         // The clicked row is the primary regardless of which way the range ran.
         assert_eq!(state.selection, Selection::Node(2));
@@ -533,7 +652,13 @@ mod tests {
     #[test]
     fn shift_click_without_an_anchor_falls_back_to_a_plain_click() {
         let mut state = UiState::default();
-        apply_row_click(&mut state, 3, NodeKind::Bone, mods(false, true), &ORDER);
+        apply_row_click(
+            &mut state,
+            3,
+            NodeKind::Bone,
+            mods(false, true),
+            &bone_rows(),
+        );
         assert_eq!(state.selected_bones, vec![3]);
         assert_eq!(state.selection, Selection::Node(3));
     }
@@ -541,24 +666,204 @@ mod tests {
     #[test]
     fn clicking_a_non_bone_row_clears_the_bone_selection() {
         let mut state = UiState::default();
-        apply_row_click(&mut state, 2, NodeKind::Bone, mods(false, false), &ORDER);
-        apply_row_click(&mut state, 3, NodeKind::Bone, mods(true, false), &ORDER);
+        apply_row_click(
+            &mut state,
+            2,
+            NodeKind::Bone,
+            mods(false, false),
+            &bone_rows(),
+        );
+        apply_row_click(
+            &mut state,
+            3,
+            NodeKind::Bone,
+            mods(true, false),
+            &bone_rows(),
+        );
         assert_eq!(state.selected_bones.len(), 2);
 
-        // A mesh row is an ordinary single selection — the skeleton highlight and
-        // the weight heat map must not outlive the bone selection.
-        apply_row_click(&mut state, 1, NodeKind::Mesh, mods(false, false), &ORDER);
+        // The skeleton highlight and the weight heat map must not outlive the
+        // bone selection; the mesh row becomes the new selection and the new
+        // anchor, so a Shift-click can range from it.
+        apply_row_click(
+            &mut state,
+            1,
+            NodeKind::Mesh,
+            mods(false, false),
+            &bone_rows(),
+        );
         assert_eq!(state.selection, Selection::Node(1));
+        assert_eq!(state.selected_nodes, vec![1]);
         assert!(state.selected_bones.is_empty());
-        assert_eq!(state.bone_anchor, None);
+        assert_eq!(state.row_anchor, Some(1));
     }
 
     #[test]
-    fn ctrl_click_on_a_non_bone_is_still_a_plain_selection() {
+    fn ctrl_click_on_a_mesh_toggles_membership_and_tracks_the_primary() {
         let mut state = UiState::default();
-        apply_row_click(&mut state, 1, NodeKind::Mesh, mods(true, false), &ORDER);
+        apply_row_click(
+            &mut state,
+            1,
+            NodeKind::Mesh,
+            mods(false, false),
+            &mesh_rows(),
+        );
+        apply_row_click(
+            &mut state,
+            3,
+            NodeKind::Mesh,
+            mods(true, false),
+            &mesh_rows(),
+        );
+        assert_eq!(state.selected_nodes, vec![1, 3]);
+        assert_eq!(
+            state.selection,
+            Selection::Node(3),
+            "primary follows the last member"
+        );
+
+        // Clicking a member again removes it; the primary falls back.
+        apply_row_click(
+            &mut state,
+            3,
+            NodeKind::Mesh,
+            mods(true, false),
+            &mesh_rows(),
+        );
+        assert_eq!(state.selected_nodes, vec![1]);
         assert_eq!(state.selection, Selection::Node(1));
+
+        // Emptying the set clears the selection rather than leaving a stale node.
+        apply_row_click(
+            &mut state,
+            1,
+            NodeKind::Mesh,
+            mods(true, false),
+            &mesh_rows(),
+        );
+        assert!(state.selected_nodes.is_empty());
+        assert_eq!(state.selection, Selection::None);
+    }
+
+    #[test]
+    fn shift_click_on_meshes_takes_the_visible_range() {
+        let mut state = UiState::default();
+        apply_row_click(
+            &mut state,
+            1,
+            NodeKind::Mesh,
+            mods(false, false),
+            &mesh_rows(),
+        );
+        apply_row_click(
+            &mut state,
+            4,
+            NodeKind::Mesh,
+            mods(false, true),
+            &mesh_rows(),
+        );
+        assert_eq!(state.selected_nodes, vec![1, 2, 3, 4]);
+        assert_eq!(state.selection, Selection::Node(4));
         assert!(state.selected_bones.is_empty());
+    }
+
+    /// A range must not cross the two sets: sweeping down a run of bones skips
+    /// the mesh row sitting between them, and vice versa.
+    #[test]
+    fn a_range_takes_only_rows_of_its_own_kind() {
+        // Rows 0-4, with row 2 a mesh among bones.
+        let mixed = rows_of([true, true, false, true, true]);
+        let mut state = UiState::default();
+        apply_row_click(&mut state, 1, NodeKind::Bone, mods(false, false), &mixed);
+        apply_row_click(&mut state, 4, NodeKind::Bone, mods(false, true), &mixed);
+        assert_eq!(
+            state.selected_bones,
+            vec![1, 3, 4],
+            "the mesh row is skipped"
+        );
+
+        let mut state = UiState::default();
+        apply_row_click(&mut state, 2, NodeKind::Mesh, mods(false, false), &mixed);
+        apply_row_click(&mut state, 4, NodeKind::Mesh, mods(false, true), &mixed);
+        assert_eq!(
+            state.selected_nodes,
+            vec![2],
+            "no other mesh row in the range"
+        );
+    }
+
+    #[test]
+    fn re_clicking_the_only_selected_mesh_clears_it() {
+        let mut state = UiState::default();
+        apply_row_click(
+            &mut state,
+            1,
+            NodeKind::Mesh,
+            mods(false, false),
+            &mesh_rows(),
+        );
+        apply_row_click(
+            &mut state,
+            1,
+            NodeKind::Mesh,
+            mods(false, false),
+            &mesh_rows(),
+        );
+        assert_eq!(state.selection, Selection::None);
+        assert!(state.selected_nodes.is_empty());
+        assert_eq!(state.row_anchor, None);
+    }
+
+    /// Plain-clicking the primary of a *multi* selection collapses to it rather
+    /// than clearing — the click still says something, so it must not read as
+    /// "deselect everything".
+    #[test]
+    fn plain_clicking_the_primary_of_a_multi_selection_collapses_to_it() {
+        let mut state = UiState::default();
+        apply_row_click(
+            &mut state,
+            1,
+            NodeKind::Mesh,
+            mods(false, false),
+            &mesh_rows(),
+        );
+        apply_row_click(
+            &mut state,
+            3,
+            NodeKind::Mesh,
+            mods(true, false),
+            &mesh_rows(),
+        );
+        apply_row_click(
+            &mut state,
+            3,
+            NodeKind::Mesh,
+            mods(false, false),
+            &mesh_rows(),
+        );
+        assert_eq!(state.selected_nodes, vec![3]);
+        assert_eq!(state.selection, Selection::Node(3));
+    }
+
+    #[test]
+    fn selected_node_set_is_sorted_and_deduped() {
+        let mut state = UiState::default();
+        apply_row_click(
+            &mut state,
+            3,
+            NodeKind::Mesh,
+            mods(false, false),
+            &mesh_rows(),
+        );
+        apply_row_click(
+            &mut state,
+            1,
+            NodeKind::Mesh,
+            mods(true, false),
+            &mesh_rows(),
+        );
+        assert_eq!(state.selected_nodes, vec![3, 1], "click order is preserved");
+        assert_eq!(state.selected_node_set(), vec![1, 3]);
     }
 
     #[test]
@@ -566,8 +871,20 @@ mod tests {
         let mut state = UiState::default();
         // Click order is 3 then 2, but the renderer wants a sorted set it can
         // binary-search.
-        apply_row_click(&mut state, 3, NodeKind::Bone, mods(false, false), &ORDER);
-        apply_row_click(&mut state, 2, NodeKind::Bone, mods(true, false), &ORDER);
+        apply_row_click(
+            &mut state,
+            3,
+            NodeKind::Bone,
+            mods(false, false),
+            &bone_rows(),
+        );
+        apply_row_click(
+            &mut state,
+            2,
+            NodeKind::Bone,
+            mods(true, false),
+            &bone_rows(),
+        );
         assert_eq!(state.selected_bones, vec![3, 2], "click order is preserved");
         assert_eq!(state.selected_bone_nodes(), vec![2, 3]);
     }

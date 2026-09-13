@@ -406,6 +406,83 @@ impl OrbitCamera {
         (self.distance * (self.fov_y_radians * 0.5).tan()).max(MIN_ORTHO_HALF_HEIGHT)
     }
 
+    /// The world ray under a point of the viewport, as `(origin, direction)`
+    /// with a unit direction — so a hit parameter `t` along it reads as a world
+    /// distance, directly comparable with [`Self::near_far`].
+    ///
+    /// `ndc` is normalised device coordinates: `-1..1` across the viewport with
+    /// **y up**, which is what [`Self::project`] hands back and the inverse of
+    /// what a pointer position in pixels gives.
+    ///
+    /// Built from the camera basis rather than by inverting the view-projection
+    /// matrix, because both projections here are unusual enough that the inverse
+    /// is the harder thing to get right: perspective is reversed-Z with an
+    /// *infinite* far plane, and orthographic passes its near and far swapped.
+    /// The basis says the same thing without a depth convention to trip over.
+    pub fn screen_ray(self, ndc: Vec2, projection_mode: CameraProjection) -> (Vec3, Vec3) {
+        let rotation = self.rotation();
+        let right = rotation.transform_vector3(Vec3::X);
+        let up = rotation.transform_vector3(Vec3::Y);
+        let forward = self.forward_dir();
+        let aspect = self.aspect_ratio.max(0.1);
+        match projection_mode {
+            CameraProjection::Perspective => {
+                // Every ray leaves the eye; the pixel picks the direction.
+                let tan_up = (self.fov_y_radians * 0.5).tan();
+                let tan_right = tan_up * aspect;
+                let direction =
+                    (forward + right * (ndc.x * tan_right) + up * (ndc.y * tan_up)).normalize();
+                (self.eye_position(), direction)
+            }
+            CameraProjection::Orthographic => {
+                // Every ray runs along the view axis; the pixel picks the origin.
+                let half_height = self.orthographic_half_height();
+                let half_width = half_height * aspect;
+                let origin =
+                    self.eye_position() + right * (ndc.x * half_width) + up * (ndc.y * half_height);
+                (origin, forward)
+            }
+        }
+    }
+
+    /// Where `world` lands in the viewport, in pixels from its top-left corner
+    /// (y **down**, as a pointer position is), or `None` when it is behind the
+    /// camera.
+    ///
+    /// The inverse of [`Self::screen_ray`], and the mapping the bounding-box
+    /// dimension labels already place themselves with — shared here so the bone
+    /// pick, which needs a screen-space distance to a drawn edge, measures
+    /// against exactly the pixels the edge was drawn at.
+    pub fn project(
+        self,
+        world: Vec3,
+        projection_mode: CameraProjection,
+        viewport_size: Vec2,
+    ) -> Option<Vec2> {
+        let clip = self.view_projection(projection_mode) * world.extend(1.0);
+        // Reversed-Z leaves `w` as the view depth in perspective and 1 in
+        // orthographic, so this is the "behind the camera" test in both.
+        if clip.w <= 0.0 {
+            return None;
+        }
+        let ndc = clip.truncate() / clip.w;
+        Some(Vec2::new(
+            (ndc.x * 0.5 + 0.5) * viewport_size.x,
+            (0.5 - ndc.y * 0.5) * viewport_size.y,
+        ))
+    }
+
+    /// The `ndc` for a pointer position in pixels from the viewport's top-left
+    /// corner — [`Self::project`]'s mapping run backwards, and what feeds
+    /// [`Self::screen_ray`].
+    pub fn ndc_from_viewport(position: Vec2, viewport_size: Vec2) -> Vec2 {
+        let size = viewport_size.max(Vec2::splat(1.0));
+        Vec2::new(
+            (position.x / size.x) * 2.0 - 1.0,
+            1.0 - (position.y / size.y) * 2.0,
+        )
+    }
+
     /// The world-space height of the viewport at the orbit target's depth — how
     /// much of the world the user is actually looking at, in scene units.
     ///
@@ -642,5 +719,145 @@ mod tests {
 
         assert!((ndc_z(projection, -near) - 1.0).abs() < 1e-5);
         assert!(ndc_z(projection, -far).abs() < 1e-5);
+    }
+
+    /// A camera at each of a spread of orientations and framings, so a test
+    /// failure names the case rather than one lucky angle passing for all.
+    fn sample_cameras() -> Vec<OrbitCamera> {
+        let mut cameras = Vec::new();
+        for (yaw, pitch) in [(0.0, 0.0), (0.7, -0.4), (-2.1, 0.9), (3.0, 0.2)] {
+            for (distance, aspect) in [(3.0, 16.0 / 9.0), (40.0, 1.0), (0.8, 0.5)] {
+                cameras.push(OrbitCamera {
+                    target: Vec3::new(0.3, 1.2, -0.7),
+                    yaw,
+                    pitch,
+                    distance,
+                    aspect_ratio: aspect,
+                    scene_radius: distance,
+                    ..OrbitCamera::default()
+                });
+            }
+        }
+        cameras
+    }
+
+    /// The pick ray under a pixel must pass through every world point that
+    /// projects to that pixel — the property the whole viewport pick rests on.
+    #[test]
+    fn screen_ray_round_trips_project() {
+        let viewport = Vec2::new(1280.0, 720.0);
+        for camera in sample_cameras() {
+            for projection in [
+                CameraProjection::Perspective,
+                CameraProjection::Orthographic,
+            ] {
+                // Points spread through the volume the camera is looking at.
+                for ix in -2..=2 {
+                    for iy in -2..=2 {
+                        for iz in -1..=1 {
+                            let spread = camera.view_extent() * 0.3;
+                            let world = camera.target
+                                + camera.rotation().transform_vector3(Vec3::new(
+                                    ix as f32 * spread,
+                                    iy as f32 * spread,
+                                    iz as f32 * spread,
+                                ));
+                            let Some(pixel) = camera.project(world, projection, viewport) else {
+                                continue;
+                            };
+                            let ndc = OrbitCamera::ndc_from_viewport(pixel, viewport);
+                            let (origin, dir) = camera.screen_ray(ndc, projection);
+                            let offset = world - origin;
+                            // The point lies on the ray: its offset from the
+                            // origin is parallel to the direction.
+                            let perpendicular = offset.cross(dir).length();
+                            assert!(
+                                perpendicular < 1e-3 * offset.length().max(1.0),
+                                "{projection:?} yaw {} pitch {} distance {}: {world:?} is \
+                                 {perpendicular} off the ray under its own pixel {pixel:?}",
+                                camera.yaw,
+                                camera.pitch,
+                                camera.distance,
+                            );
+                            // And in front of it, which is what makes `t` a
+                            // usable distance.
+                            assert!(
+                                offset.dot(dir) > 0.0,
+                                "{projection:?}: point behind the ray"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A unit direction is what lets a hit parameter read as a world distance
+    /// and be compared against the near/far planes.
+    #[test]
+    fn screen_rays_have_unit_directions() {
+        for camera in sample_cameras() {
+            for projection in [
+                CameraProjection::Perspective,
+                CameraProjection::Orthographic,
+            ] {
+                for ndc in [
+                    Vec2::ZERO,
+                    Vec2::new(-1.0, -1.0),
+                    Vec2::new(1.0, 1.0),
+                    Vec2::new(0.37, -0.82),
+                ] {
+                    let (_, dir) = camera.screen_ray(ndc, projection);
+                    assert!((dir.length() - 1.0).abs() < 1e-5, "{projection:?} {ndc:?}");
+                }
+            }
+        }
+    }
+
+    /// Orthographic rays are parallel and perspective ones are not — the whole
+    /// reason the two projections need separate arms.
+    #[test]
+    fn ortho_rays_are_parallel_and_perspective_rays_share_an_origin() {
+        let camera = OrbitCamera {
+            distance: 5.0,
+            aspect_ratio: 1.5,
+            ..OrbitCamera::default()
+        };
+        let corners = [Vec2::new(-1.0, -1.0), Vec2::new(1.0, 1.0)];
+
+        let ortho: Vec<_> = corners
+            .iter()
+            .map(|&ndc| camera.screen_ray(ndc, CameraProjection::Orthographic))
+            .collect();
+        assert!(
+            ortho[0].1.abs_diff_eq(ortho[1].1, 1e-6),
+            "directions differ"
+        );
+        assert!(
+            ortho[0].0.distance(ortho[1].0) > 1.0,
+            "origins should span the viewport"
+        );
+
+        let perspective: Vec<_> = corners
+            .iter()
+            .map(|&ndc| camera.screen_ray(ndc, CameraProjection::Perspective))
+            .collect();
+        assert!(perspective[0].0.abs_diff_eq(perspective[1].0, 1e-6));
+        assert!(!perspective[0].1.abs_diff_eq(perspective[1].1, 1e-3));
+    }
+
+    /// The centre pixel looks straight down the view axis in both projections.
+    #[test]
+    fn the_centre_pixel_looks_along_the_view_axis() {
+        for camera in sample_cameras() {
+            for projection in [
+                CameraProjection::Perspective,
+                CameraProjection::Orthographic,
+            ] {
+                let (origin, dir) = camera.screen_ray(Vec2::ZERO, projection);
+                assert!(dir.abs_diff_eq(camera.forward_dir(), 1e-5));
+                assert!(origin.abs_diff_eq(camera.eye_position(), 1e-4));
+            }
+        }
     }
 }

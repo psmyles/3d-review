@@ -3,7 +3,9 @@
 
 use crate::GhostStyle;
 use crate::material::MaterialEntry;
-use crate::rhi::{Bindings, ColorTarget, Frame, Pipeline, SwapchainJob, Texture, VertexBuffer};
+use crate::rhi::{
+    Bindings, ColorTarget, Frame, IndexBuffer, Pipeline, SwapchainJob, Texture, VertexBuffer,
+};
 use crate::shaders::generated;
 
 use super::deform_gpu::DeformGpu;
@@ -103,6 +105,36 @@ impl SceneGpu {
                 }
             }
         }
+    }
+
+    /// Draw a flat tinted fill over a set of the mesh's own triangles — the
+    /// selection highlight and the hover preview, which differ only in which
+    /// index list and which colour they are given.
+    ///
+    /// Runs `fs_selection` through the depth-tested, non-depth-writing selection
+    /// pipeline, so the fill is occluded by geometry in front of it and reads as
+    /// lying *on* the surface rather than floating over the whole model. The
+    /// colour comes from the `selection_color` uniform (the vertices carry the
+    /// mesh's own), exactly as [`SceneGpu::draw_wireframe`] does; uniforms are
+    /// applied per draw, so the next draw's own call is the restore.
+    pub(super) fn draw_highlight(
+        &self,
+        frame: &mut Frame<'_>,
+        indices: &IndexBuffer,
+        vertices: &VertexBuffer,
+        uniforms: &SceneUniforms,
+        color: [f32; 4],
+    ) {
+        let mut fill_uniforms = *uniforms;
+        fill_uniforms.selection_color = color;
+        let mut bindings = self.line_bindings();
+        bindings.mesh_vertices(vertices);
+        bindings.mesh_indices(indices);
+        frame.apply_pipeline(&self.scene.selection);
+        frame.apply_bindings(&bindings);
+        frame.apply_uniforms(generated::UB_SCENE_VS, &fill_uniforms);
+        frame.apply_uniforms(generated::UB_SCENE_FS, &fill_uniforms);
+        frame.draw(0, indices.count());
     }
 
     /// Draw the model wireframe: a `LineList` over the mesh's *own* vertex buffer,

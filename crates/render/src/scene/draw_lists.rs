@@ -8,10 +8,10 @@ use review_model::ModelData;
 use crate::MaterialMode;
 use crate::geometry::{selection_geometry, visible_geometry};
 use crate::rhi::{GpuResult, IndexBuffer};
-use crate::selection::SelectionView;
+use crate::selection::{Selection, SelectionView};
 
 use super::gpu::SceneGpu;
-use super::slot::{SelectionBaked, VisibilityBaked};
+use super::slot::{HoverBaked, SelectionBaked, VisibilityBaked};
 
 impl SceneGpu {
     /// The per-triangle grouping key for `mode`: the cached mesh-part key in Unique
@@ -35,6 +35,7 @@ impl SceneGpu {
         model: &ModelData,
         model_revision: u64,
         view: SelectionView,
+        selected_nodes: &[u32],
         hidden: &[u32],
         mode: MaterialMode,
     ) -> GpuResult<()> {
@@ -45,6 +46,7 @@ impl SceneGpu {
             (Some(baked), true) => {
                 baked.model_revision == model_revision
                     && baked.selection == view.selection
+                    && baked.selected_nodes == selected_nodes
                     && baked.hidden == hidden
                     && baked.mode == mode
             }
@@ -58,7 +60,7 @@ impl SceneGpu {
         // geometry) or an empty list both clear to a no-draw selection.
         let geometry = if active {
             let key = self.grouping_key(mode);
-            selection_geometry(model, view.selection, hidden, key)
+            selection_geometry(model, view.selection, selected_nodes, hidden, key)
         } else {
             None
         };
@@ -75,6 +77,57 @@ impl SceneGpu {
         self.active.selection_baked = active.then(|| SelectionBaked {
             model_revision,
             selection: view.selection,
+            selected_nodes: selected_nodes.to_vec(),
+            hidden: hidden.to_vec(),
+            mode,
+        });
+        Ok(())
+    }
+
+    /// Build (or free) the hovered node's draw list — the fill that previews what
+    /// a click would select (invariant 3: it exists only while something is
+    /// hovered).
+    ///
+    /// The same geometry the selection uses, over one node: hovering is exactly
+    /// "what would be selected", so sharing [`selection_geometry`] is what keeps
+    /// the preview and the result the same shape. The tint rides in the uniform,
+    /// so only a change of *which* node is under the pointer costs an index
+    /// upload — moving within one node costs nothing at all.
+    pub(super) fn sync_hover(
+        &mut self,
+        model: &ModelData,
+        model_revision: u64,
+        hover: Option<u32>,
+        hidden: &[u32],
+        mode: MaterialMode,
+    ) -> GpuResult<()> {
+        // Drift check against the borrowed inputs — no per-frame key allocation.
+        let unchanged = match (&self.active.hover_baked, hover) {
+            (None, None) => true,
+            (Some(baked), Some(node)) => {
+                baked.model_revision == model_revision
+                    && baked.node == node
+                    && baked.hidden == hidden
+                    && baked.mode == mode
+            }
+            _ => false,
+        };
+        if unchanged {
+            return Ok(());
+        }
+        let geometry = hover.and_then(|node| {
+            let key = self.grouping_key(mode);
+            selection_geometry(model, Selection::Node(node as usize), &[], hidden, key)
+        });
+        match geometry {
+            Some((indices, _)) if !indices.is_empty() => {
+                self.active.hover_index = Some(IndexBuffer::new(&indices, c"hover")?);
+            }
+            _ => self.active.hover_index = None,
+        }
+        self.active.hover_baked = hover.map(|node| HoverBaked {
+            model_revision,
+            node,
             hidden: hidden.to_vec(),
             mode,
         });

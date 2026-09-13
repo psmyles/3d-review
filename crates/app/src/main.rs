@@ -16,9 +16,9 @@ mod gate;
 mod input;
 mod loading;
 mod opt;
+mod pick;
 mod prof;
 mod redraw;
-mod selection_flash;
 mod settings;
 mod shortcuts;
 mod texture_manager;
@@ -47,9 +47,9 @@ use std::time::Instant;
 
 use anyhow::Context;
 use glam::Vec2;
-use review_model::{ModelData, SceneBvh};
+use review_model::{ModelData, PosedScene, SceneBvh};
 use review_render::{EguiRenderer, Gpu, GpuBringUp, Renderer, RendererConfig};
-use review_ui::{MsaaSamples, Notifications, Selection, UiState, init_style};
+use review_ui::{MsaaSamples, Notifications, UiState, ViewportTool, init_style};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -62,7 +62,6 @@ use flycam::FlyCam;
 use gate::Gate;
 use input::{DragMode, framing_safe_area};
 use redraw::RedrawScheduler;
-use selection_flash::FlashProgress;
 use texture_manager::TextureSubsystem;
 use undo::UndoStack;
 use window_state::PlacementTracker;
@@ -248,22 +247,45 @@ struct App {
     /// The Opt workspace's processing state. `None` until the user first opens
     /// the workspace — a session that never does pays nothing for it.
     opt: Option<opt::OptSubsystem>,
-    /// Per-mesh-part triangle BVH over [`Self::scene_model`], used to occlude the
-    /// bounding-box dimension labels against the *visible* mesh. Built lazily the
-    /// first frame the labels need it (the bounding-box view is on) and reused
-    /// across frames; a heavy per-model structure we don't pay for unless the
-    /// feature is used. `None` until built; [`Self::occlusion_bvh_revision`] tracks
-    /// which model it covers so it rebuilds when a new model loads.
-    occlusion_bvh: Option<SceneBvh>,
-    occlusion_bvh_revision: u64,
-    /// The same structure over the Opt workspace's *processed* level, for the right
-    /// half of the split's dimension labels. Its own slot rather than a share of
-    /// [`Self::occlusion_bvh`]: both meshes are on screen in the same frame, so one
-    /// slot would rebuild both of them every frame. Built under the same conditions
-    /// — only while the bounding-box view is on — and rebuilt when a reprocess bumps
-    /// [`Self::opt_occlusion_bvh_revision`].
-    opt_occlusion_bvh: Option<SceneBvh>,
-    opt_occlusion_bvh_revision: u64,
+    /// Per-mesh-part triangle BVH over [`Self::scene_model`]: the spatial index
+    /// behind both the viewport pick and the bounding-box dimension labels'
+    /// occlusion.
+    ///
+    /// Built on the **import worker**, once, after the model is already on
+    /// screen, and posted back as its own measurement — the build is
+    /// `O(n log n)` over every triangle, which on a multi-million-triangle scene
+    /// is far too long to spend on the main thread (invariant 6). It used to be
+    /// built lazily on the first frame the labels asked for it, which was
+    /// affordable only because that view is rarely on; a pick has to answer the
+    /// first time the pointer moves.
+    ///
+    /// `None` until it lands, which every reader treats as "not ready": the
+    /// labels draw unoccluded and a pick finds nothing, for the moment between
+    /// the mesh appearing and this arriving.
+    scene_bvh: Option<Arc<SceneBvh>>,
+    /// [`Self::scene_bvh`] projected onto the pose currently drawn, so a pick on
+    /// an animated model hits the mesh where it is rather than where its bind
+    /// pose sits. Keyed on `(scene revision, pose revision)`, so a paused clip is
+    /// indexed once however long it is looked at, and a static model never builds
+    /// one at all.
+    posed_pick: Option<((u64, u64), PosedScene)>,
+    /// Where the left button went down, while a click could still come of it.
+    /// Dropped as soon as the pointer moves far enough to be a drag, which is
+    /// what lets the same button orbit and select without either taking the
+    /// other's gesture.
+    click_press: Option<Vec2>,
+    /// A pointer position whose hover has not been resolved yet. `CursorMoved`
+    /// can fire many times between frames and only the last position matters, so
+    /// the cast is deferred to once per event batch.
+    hover_pending: Option<Vec2>,
+    /// The viewport tool the mode notice last announced.
+    ///
+    /// Held across frames rather than snapshotted inside one, because the tool
+    /// has two ways to change and only one of them happens during the egui pass:
+    /// the toolbar button is clicked inside it, but `Q` is handled between
+    /// frames, and a within-frame comparison would see it already changed and
+    /// say nothing.
+    announced_tool: ViewportTool,
     /// The animation clock + the pose it evaluates for the renderer; its logic
     /// lives in `animation.rs`.
     animation: AnimationSubsystem,
@@ -278,15 +300,6 @@ struct App {
     /// The window-placement tracker: startup maximize + the windowed bounds
     /// persisted on exit.
     placement: PlacementTracker,
-    /// Live selection-highlight flash, or `None` when none is playing. Started when
-    /// [`Self::flashed_selection`] no longer matches the UI's current selection, and
-    /// advanced each frame by [`Self::update_selection_flash`], which writes the
-    /// fade into [`UiState::selection_fade`] for the scene callback.
-    selection_flash: Option<FlashProgress>,
-    /// The selection the flash is currently animating (or last animated), so a
-    /// change to a *different* node/material restarts the flash and selecting
-    /// nothing ends it.
-    flashed_selection: Selection,
     /// The unified undo/redo history for all document edits (selection, hide/
     /// unhide, material params, texture slot bindings, and the texture pool). Fed
     /// once per frame by [`Self::observe_edit_state`]; `Ctrl+Z` / `Ctrl+Y` restore
@@ -402,19 +415,16 @@ impl Default for App {
             model_revision_counter: 0,
             model_load_generation: Arc::new(AtomicU64::new(0)),
             opt: None,
-            occlusion_bvh: None,
-            opt_occlusion_bvh: None,
+            scene_bvh: None,
+            posed_pick: None,
+            click_press: None,
+            hover_pending: None,
+            announced_tool: ViewportTool::default(),
             animation: AnimationSubsystem::default(),
-            // A sentinel distinct from the initial `scene_revision` (0) so the BVH
-            // is treated as stale until first built.
-            occlusion_bvh_revision: u64::MAX,
-            opt_occlusion_bvh_revision: u64::MAX,
             ui,
             initial_model: None,
             gate: None,
             placement: PlacementTracker::default(),
-            selection_flash: None,
-            flashed_selection: Selection::None,
             undo: UndoStack::new(),
             drag_in_progress: false,
             frame_showing_selection: false,
@@ -808,6 +818,12 @@ impl ApplicationHandler<UserEvent> for App {
                 self.pending_drag = None;
                 self.flycam.release_all();
                 self.last_pointer_position = None;
+                // A press the pointer carried out of the window is not a click,
+                // and nothing is hovered once there is no pointer over the
+                // viewport to hover with.
+                self.click_press = None;
+                self.hover_pending = None;
+                self.set_hover(None);
             }
             WindowEvent::MouseWheel { delta, .. } => self.handle_mouse_wheel(delta, egui_consumed),
             WindowEvent::PinchGesture { delta, .. } => {

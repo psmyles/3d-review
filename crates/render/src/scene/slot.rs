@@ -26,6 +26,7 @@ pub(super) struct BoundingBoxParams {
     pub(super) scope: BoundingBoxScope,
     pub(super) hidden: Vec<u32>,
     pub(super) selection: Selection,
+    pub(super) selected_nodes: Vec<u32>,
     /// The frame-supplied bounds the All Meshes scope draws (a clip's envelope
     /// while one is selected), so selecting a clip rebuilds the box.
     pub(super) bounds: Option<Bounds>,
@@ -71,9 +72,16 @@ pub(super) const SKELETON_FILL_ALPHA: f32 = 0.35;
 pub(super) struct SkeletonParams {
     pub(super) model_revision: u64,
     pub(super) selected: Vec<u32>,
+    /// The hovered bone, which tints like a selected one. In the key because the
+    /// tint is baked per bone into the vertex colour — so moving the pointer from
+    /// one bone to the next does rebuild these buffers, which is the same trade
+    /// the selected set already makes and just as cheap at a few thousand
+    /// vertices.
+    pub(super) hovered: Option<u32>,
     pub(super) scale: f32,
     pub(super) color: [f32; 4],
     pub(super) selected_color: [f32; 4],
+    pub(super) hover_color: [f32; 4],
 }
 
 /// Bake key for the skin-weight heat map. Only the model and the selected bone
@@ -85,12 +93,25 @@ pub(super) struct SkinWeightParams {
     pub(super) selected: Vec<u32>,
 }
 
-/// Bake key for the selection draw list — the hidden set because hiding a selected
-/// mesh drops it, the mode because Unique re-groups the solo list by part.
+/// Bake key for the hover draw list. The same inputs as the selection's, over one
+/// node — the tint itself rides in the uniform, so only a change of *which* node is
+/// hovered rebuilds anything.
+#[derive(PartialEq)]
+pub(super) struct HoverBaked {
+    pub(super) model_revision: u64,
+    pub(super) node: u32,
+    pub(super) hidden: Vec<u32>,
+    pub(super) mode: MaterialMode,
+}
+
+/// Bake key for the selection draw list — the hidden set because hiding a
+/// selected mesh drops it, the mode because Unique re-groups the solo list by
+/// part.
 #[derive(PartialEq)]
 pub(super) struct SelectionBaked {
     pub(super) model_revision: u64,
     pub(super) selection: Selection,
+    pub(super) selected_nodes: Vec<u32>,
     pub(super) hidden: Vec<u32>,
     pub(super) mode: MaterialMode,
 }
@@ -226,6 +247,11 @@ pub(super) struct ModelSlot {
     pub(super) selection_index: Option<IndexBuffer>,
     pub(super) selection_ranges: Vec<MaterialDrawRange>,
     pub(super) selection_baked: Option<SelectionBaked>,
+    /// The hovered node's triangles, over the shared mesh vertex buffer. Built
+    /// when the pointer enters a node and freed when it leaves (invariant 3), so
+    /// a viewer not in Select mode holds nothing.
+    pub(super) hover_index: Option<IndexBuffer>,
+    pub(super) hover_baked: Option<HoverBaked>,
     /// The visible (non-hidden) triangles reordered per-material over a fresh index
     /// buffer sharing the mesh vertex buffer; drawn instead of the full mesh while
     /// `visible_active`. `None` when nothing is hidden (full mesh), or when every

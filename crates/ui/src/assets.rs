@@ -152,6 +152,13 @@ pub(crate) const ICON_TONEMAPPER: AppIcon = AppIcon {
     id: "icon_tonemapper",
     png_bytes: include_bytes!("../../../assets/icons/icon_tonemapper.png"),
 };
+/// "Select" — a mouse pointer: the viewport tool toggle. Switches the left
+/// mouse button between turning the camera and picking what it is over.
+pub(crate) const ICON_SELECT: AppIcon = AppIcon {
+    id: "icon_select_mouse",
+    png_bytes: include_bytes!("../../../assets/icons/icon_select_mouse.png"),
+};
+
 /// "Outliner" — the single side-panels toggle: the Outliner (left) and the
 /// Inspector (right) open and close together, so one button drives both.
 pub(crate) const ICON_OUTLINER: AppIcon = AppIcon {

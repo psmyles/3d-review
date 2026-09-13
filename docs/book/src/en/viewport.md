@@ -21,6 +21,12 @@ move you forward, left, back and right, `Q` and `E` move you down and up, and
 the wheel changes how fast you fly. The speed matches the size of what you are
 looking at, so a tiny prop and a huge level both feel the same to fly through.
 
+## Selecting
+
+The mouse button on the right of the toolbar, and the `Q` key, switch the left
+mouse button between turning the camera and picking what it is over. See
+[Selecting in the viewport](selection.md).
+
 ## Framing
 
 Framing means moving the camera so the thing you care about fills the view.

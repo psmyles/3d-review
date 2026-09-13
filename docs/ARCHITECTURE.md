@@ -77,7 +77,7 @@ One `impl App` block per concern, one file each:
 | `flycam.rs` | The RMB-held WASD/QE flycam: held-key direction bits, integrated once per frame |
 | `loading.rs` | The model-load funnel — drag-drop, Ctrl+O, double-click, CLI/file association |
 | `ui_intents.rs` | Applying `UiOutput` intents to the renderer (invariant 2, made concrete) |
-| `selection_flash.rs` | The selection-flash animation |
+| `pick.rs` | The viewport pick: the ray, the per-view geometry, the posed-pick cache |
 | `gate.rs` | The performance gate stamp (`--gate-out <file>`) |
 | `dialog.rs` | Every native file dialog |
 | `texture_manager.rs` | Scene texture pool, off-thread decode, disk auto-reload |

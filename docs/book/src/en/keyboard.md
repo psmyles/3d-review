@@ -12,6 +12,10 @@ looks around, and while you hold it you can fly with `W` `A` `S` `D` and `Q`
 does Shift with right-drag. The wheel zooms, and so does Alt with right-drag.
 Double-clicking the empty view opens a file.
 
+In [Select mode](selection.md) a left **click** - a press and release that does
+not move - picks whatever is under the pointer, while left-**drag** still turns
+the camera. Ctrl-click adds or removes a part, and Shift-click adds one.
+
 **UV and Texture viewports** - left-drag slides, right-drag zooms, and the
 wheel zooms.
 
@@ -29,6 +33,9 @@ panel.
 - `I` - show or hide the stats card.
 - `G` - show or hide the grid.
 - `F` - frame the model, or the selected part.
+- `Q` - switch between turning the camera and
+  [selecting by clicking](selection.md). While the right mouse button is held it
+  keeps its flying meaning instead, and moves you down.
 - `R` - put the camera back where it started. In UV and Tex, refit the image.
 - `W` `A` `S` `D` `Q` `E` - fly the camera, while the right mouse button is
   held.
@@ -42,7 +49,7 @@ panel.
 
 - `X` - in the Opt overlay, swap which model is solid.
 - `F1` - open this manual, at the page for whatever is under the pointer.
-- `Esc` - clear the selection.
+- `Esc` - clear the selection, in the viewport or the Outliner.
 - Primary + `N` - start over with an empty viewer.
 - Primary + `O` - open a model.
 - Primary + `Z` - undo.
@@ -50,11 +57,13 @@ panel.
 
 ## What undo covers
 
-Undo covers the things you *edit*: what is selected in the Outliner, which
-parts are hidden, material settings, which texture is in which slot, the
-texture pool, and the list of operations in Opt. Dragging a slider or a color
-picker counts as one step, however long you drag.
+Undo covers the things you *edit*: what is selected - in the Outliner or by
+clicking in the viewport, including selections of several parts at once - which
+parts are hidden, material settings, which texture is in which slot, the texture
+pool, and the list of operations in Opt. Dragging a slider or a color picker
+counts as one step, however long you drag.
 
 Undo does not touch how you are *looking* at the model: the camera, the grid,
 the shading mode, anti-aliasing, ambient occlusion, tone mapping, the
-environment, the UV and Tex views, and animation playback.
+environment, the UV and Tex views, animation playback, and whether clicking
+selects.

@@ -23,10 +23,11 @@ use super::hidden::HiddenFilter;
 pub(crate) fn selection_geometry(
     model: &ModelData,
     selection: Selection,
+    selected_nodes: &[u32],
     hidden_nodes: &[u32],
     tri_key: Option<&[u32]>,
 ) -> Option<(Vec<u32>, Vec<MaterialDrawRange>)> {
-    let mut mask = selected_triangle_mask(model, selection)?;
+    let mut mask = selected_triangle_mask(model, selection, selected_nodes)?;
     // A hidden mesh isn't drawn, so its triangles must drop out of both the solo
     // list and the highlight flash — otherwise the flash floats in empty space
     // where the mesh would be. Clear the selected triangles owned by a hidden node.
@@ -62,11 +63,21 @@ pub(crate) fn visible_geometry(
     Some(selection_mesh(model, &mask, tri_key))
 }
 
-/// A per-triangle boolean mask of the triangles `selection` covers, or `None` when
-/// nothing is selected (or the model lacks the parallel arrays the selection
-/// needs). A node selection includes the node's subtree; a material selection
+/// A per-triangle boolean mask of the triangles the selection covers, or `None`
+/// when nothing is selected (or the model lacks the parallel arrays the selection
+/// needs). A node selection includes each node's subtree; a material selection
 /// every triangle of that slot.
-pub(crate) fn selected_triangle_mask(model: &ModelData, selection: Selection) -> Option<Vec<bool>> {
+///
+/// `selected_nodes` is the whole selected *set* (sorted node indices) and is what
+/// a node selection actually resolves against; `selection` names its primary, and
+/// carries the selection on its own when the set is empty — which is how every
+/// caller that has no set of its own (the Opt workspace, a material selection)
+/// keeps single-select behaviour unchanged.
+pub(crate) fn selected_triangle_mask(
+    model: &ModelData,
+    selection: Selection,
+    selected_nodes: &[u32],
+) -> Option<Vec<bool>> {
     let triangle_count = model.indices.len() / 3;
     if triangle_count == 0 {
         return None;
@@ -91,7 +102,26 @@ pub(crate) fn selected_triangle_mask(model: &ModelData, selection: Selection) ->
             if model.triangles.node.len() != triangle_count {
                 return None;
             }
-            let subtree = model.node_subtree_mask(node);
+            // One pass per selected node, OR-ed together: a multi-selection is
+            // the union of the subtrees, so a parent and one of its children
+            // selected together cover exactly what the parent alone would.
+            let mut subtree = vec![false; model.nodes.len()];
+            let mut any = false;
+            for &selected in selected_nodes {
+                for (slot, covered) in model
+                    .node_subtree_mask(selected as usize)
+                    .iter()
+                    .enumerate()
+                {
+                    if *covered && let Some(entry) = subtree.get_mut(slot) {
+                        *entry = true;
+                        any = true;
+                    }
+                }
+            }
+            if !any {
+                subtree = model.node_subtree_mask(node);
+            }
             Some(
                 model
                     .triangles
@@ -192,7 +222,8 @@ mod tests {
             ..Default::default()
         };
 
-        let (_, ranges) = selection_geometry(&model, Selection::Material(2), &[], None).unwrap();
+        let (_, ranges) =
+            selection_geometry(&model, Selection::Material(2), &[], &[], None).unwrap();
         // Material 2 owns triangles {2, 4}: one range, six indices.
         assert_eq!(ranges.len(), 1);
         assert_eq!(ranges[0].material, 2);
@@ -200,7 +231,7 @@ mod tests {
         assert_eq!(ranges[0].first_index, 0);
 
         // Nothing selected -> no geometry.
-        assert!(selection_geometry(&model, Selection::None, &[], None).is_none());
+        assert!(selection_geometry(&model, Selection::None, &[], &[], None).is_none());
     }
 
     /// A node selection covers the node's subtree: selecting a parent isolates the
@@ -248,13 +279,16 @@ mod tests {
         };
 
         // Root subtree = both nodes -> all three triangles (9 indices).
-        let (root_indices, _) = selection_geometry(&model, Selection::Node(0), &[], None).unwrap();
+        let (root_indices, _) =
+            selection_geometry(&model, Selection::Node(0), &[], &[], None).unwrap();
         assert_eq!(root_indices.len(), 9);
         // Child only -> just triangle 2 (3 indices).
-        let (child_indices, _) = selection_geometry(&model, Selection::Node(1), &[], None).unwrap();
+        let (child_indices, _) =
+            selection_geometry(&model, Selection::Node(1), &[], &[], None).unwrap();
         assert_eq!(child_indices.len(), 3);
         // Hiding the child drops its triangle from the parent's selection list.
-        let (root_visible, _) = selection_geometry(&model, Selection::Node(0), &[1], None).unwrap();
+        let (root_visible, _) =
+            selection_geometry(&model, Selection::Node(0), &[], &[1], None).unwrap();
         assert_eq!(root_visible.len(), 6);
     }
 

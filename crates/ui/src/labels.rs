@@ -25,7 +25,7 @@ use review_render::{
 
 use crate::keys;
 use crate::opt_state::{ComparisonSide, GhostStyle};
-use crate::state::{TextureBackground, WorkspaceMode};
+use crate::state::{TextureBackground, ViewportTool, WorkspaceMode};
 
 pub(crate) fn material_mode(mode: MaterialMode) -> Key {
     match mode {
@@ -323,6 +323,19 @@ pub fn material_mode_name(mode: MaterialMode) -> String {
 /// [`material_mode_name`].
 pub fn buffer_view_name(view: BufferView) -> String {
     review_localization::tr(buffer_view(view)).into_owned()
+}
+
+pub(crate) fn viewport_tool(tool: ViewportTool) -> Key {
+    match tool {
+        ViewportTool::View => keys::ui_enums::TOOL_VIEW,
+        ViewportTool::Select => keys::ui_enums::TOOL_SELECT,
+    }
+}
+
+/// The viewport tool's display name, for `app`'s mode notice. See
+/// [`material_mode_name`].
+pub fn viewport_tool_name(tool: ViewportTool) -> String {
+    review_localization::tr(viewport_tool(tool)).into_owned()
 }
 
 #[cfg(test)]

@@ -193,6 +193,15 @@ ui-enums-hierarchy-flat = Flat, world-baked meshes
 ui-enums-fbx-binary = Binary
 ui-enums-fbx-ascii = ASCII
 
+## Viewport tool
+#
+# Shown by the mode notice when the tool is switched, so each of these is a
+# whole phrase rather than a bare noun - "Select" alone reads as a command
+# being issued rather than a state being reported.
+
+ui-enums-tool-view = View mode
+ui-enums-tool-select = Select mode
+
 ## Opt comparison
 
 ui-enums-ghost-xray = X-ray

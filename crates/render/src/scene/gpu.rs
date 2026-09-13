@@ -461,6 +461,7 @@ impl SceneGpu {
             scene.model_revision,
             scene.debug,
             scene.hidden_meshes,
+            scene.selected_nodes,
             scene.scene_bounds,
         )?;
         self.sync_skeleton(
@@ -468,6 +469,7 @@ impl SceneGpu {
             scene.model_revision,
             scene.debug,
             scene.selected_bones,
+            scene.hover_bone,
         )?;
         self.sync_skin_weights(
             scene.model,
@@ -479,6 +481,14 @@ impl SceneGpu {
             scene.model,
             scene.model_revision,
             scene.selection,
+            scene.selected_nodes,
+            scene.hidden_meshes,
+            scene.debug.material_mode,
+        )?;
+        self.sync_hover(
+            scene.model,
+            scene.model_revision,
+            scene.hover,
             scene.hidden_meshes,
             scene.debug.material_mode,
         )?;
@@ -648,23 +658,29 @@ impl SceneGpu {
         }
         self.draw_lines(frame, &self.scene.line_overlay, &overlay_lines, uniforms);
 
-        // Selection highlight flash: a flat bright-colour fill redrawing the selected
-        // triangles over the mesh, fading out after a selection change. Drawn last so
-        // it sits on top; reuses the selection index buffer over the shared mesh
-        // vertex buffer, and `fs_selection` tints it with the uniform highlight colour
-        // × the flash fade. Skipped once faded, so the steady state pays nothing.
-        let flash = selection.selection.is_active() && selection.fade > 0.0;
-        if flash
+        // Hover preview, then the selection highlight over it: two flat-colour
+        // fills redrawing those triangles on top of the mesh, each through
+        // `fs_selection` with its own tint in the uniform. Selection goes last so
+        // it wins where the two meet.
+        //
+        // The highlight *persists* for as long as something is selected, so
+        // unlike the flash it used to be this is not skipped once any animation
+        // ends — only an alpha of zero skips it, which is the case where there
+        // would be nothing to see.
+        if let (Some(mesh), Some(index)) = (&self.active.mesh, &self.active.hover_index) {
+            self.draw_highlight(frame, index, &mesh.vertices, uniforms, debug.hover_color);
+        }
+        if selection.selection.is_active()
+            && uniforms.selection_color[3] > 0.0
             && let (Some(mesh), Some(index)) = (&self.active.mesh, &self.active.selection_index)
         {
-            let mut bindings = self.line_bindings();
-            bindings.mesh_vertices(&mesh.vertices);
-            bindings.mesh_indices(index);
-            frame.apply_pipeline(&self.scene.selection);
-            frame.apply_bindings(&bindings);
-            frame.apply_uniforms(generated::UB_SCENE_VS, uniforms);
-            frame.apply_uniforms(generated::UB_SCENE_FS, uniforms);
-            frame.draw(0, index.count());
+            self.draw_highlight(
+                frame,
+                index,
+                &mesh.vertices,
+                uniforms,
+                uniforms.selection_color,
+            );
         }
 
         if let Some((style, ghost_uniforms)) = &ghost {

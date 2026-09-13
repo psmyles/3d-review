@@ -9,7 +9,7 @@
 use review_model::{Bounds, ModelData};
 
 use crate::geometry::{
-    bounding_box_lines, face_normal_lines, model_pivot, pivot_half_extent, pivot_lines,
+    BoneTint, bounding_box_lines, face_normal_lines, model_pivot, pivot_half_extent, pivot_lines,
     skeleton_fill_triangles, skeleton_lines, skin_weight_vertices, uv_seam_lines,
     vertex_normal_lines, wireframe_edge_indices,
 };
@@ -104,6 +104,7 @@ impl SceneGpu {
         model_revision: u64,
         debug: SceneDebugOptions,
         hidden_meshes: &[u32],
+        selected_nodes: &[u32],
         scene_bounds: Option<Bounds>,
     ) -> GpuResult<()> {
         // A different mesh invalidates every view derived from it, whatever the
@@ -145,6 +146,10 @@ impl SceneGpu {
             BoundingBoxScope::OnlySelection => debug.bounding_box_selection,
             _ => Selection::None,
         };
+        let scope_nodes: &[u32] = match scope {
+            BoundingBoxScope::OnlySelection => selected_nodes,
+            _ => &[],
+        };
         let scope_bounds = match scope {
             BoundingBoxScope::AllMeshes => scene_bounds,
             _ => None,
@@ -159,6 +164,7 @@ impl SceneGpu {
                     && params.scope == scope
                     && params.hidden == scope_hidden
                     && params.selection == scope_selection
+                    && params.selected_nodes == scope_nodes
                     && params.bounds == scope_bounds
             }
             _ => false,
@@ -167,7 +173,9 @@ impl SceneGpu {
             self.active.views.bounding_box_buf = if debug.show_bounding_box {
                 let bounds = match scope {
                     BoundingBoxScope::AllMeshes => scope_bounds.or(model.bounds),
-                    BoundingBoxScope::OnlySelection => selection_bounds(model, scope_selection),
+                    BoundingBoxScope::OnlySelection => {
+                        selection_bounds(model, scope_selection, scope_nodes)
+                    }
                     BoundingBoxScope::VisibleOnly => model.visible_bounds(scope_hidden),
                 };
                 match bounds {
@@ -186,6 +194,7 @@ impl SceneGpu {
                     scope,
                     hidden: scope_hidden.to_vec(),
                     selection: scope_selection,
+                    selected_nodes: scope_nodes.to_vec(),
                     bounds: scope_bounds,
                 });
         }
@@ -335,6 +344,7 @@ impl SceneGpu {
         model_revision: u64,
         debug: SceneDebugOptions,
         selected_bones: &[u32],
+        hovered_bone: Option<u32>,
     ) -> GpuResult<()> {
         let on = debug.show_skeleton;
         // Drift check against the borrowed inputs — no per-frame key allocation.
@@ -343,9 +353,11 @@ impl SceneGpu {
             (Some(params), true) => {
                 params.model_revision == model_revision
                     && params.selected == selected_bones
+                    && params.hovered == hovered_bone
                     && params.scale == debug.skeleton_joint_scale
                     && params.color == debug.skeleton_color
                     && params.selected_color == debug.skeleton_selected_color
+                    && params.hover_color == debug.skeleton_hover_color
             }
             _ => false,
         };
@@ -353,22 +365,22 @@ impl SceneGpu {
             return Ok(());
         }
         if on {
+            let tint = BoneTint {
+                selected: selected_bones,
+                hovered: hovered_bone,
+                color: debug.skeleton_color,
+                selected_color: debug.skeleton_selected_color,
+                hover_color: debug.skeleton_hover_color,
+            };
             self.active.views.skeleton_fill_buf =
                 optional_vertex_buffer(&skeleton_fill_triangles(
                     model,
-                    selected_bones,
+                    tint,
                     debug.skeleton_joint_scale,
-                    debug.skeleton_color,
-                    debug.skeleton_selected_color,
                     SKELETON_FILL_ALPHA,
                 ))?;
-            self.active.views.skeleton_line_buf = optional_vertex_buffer(&skeleton_lines(
-                model,
-                selected_bones,
-                debug.skeleton_joint_scale,
-                debug.skeleton_color,
-                debug.skeleton_selected_color,
-            ))?;
+            self.active.views.skeleton_line_buf =
+                optional_vertex_buffer(&skeleton_lines(model, tint, debug.skeleton_joint_scale))?;
         } else {
             self.active.views.skeleton_fill_buf = None;
             self.active.views.skeleton_line_buf = None;
@@ -376,9 +388,11 @@ impl SceneGpu {
         self.active.views.skeleton_baked = on.then(|| SkeletonParams {
             model_revision,
             selected: selected_bones.to_vec(),
+            hovered: hovered_bone,
             scale: debug.skeleton_joint_scale,
             color: debug.skeleton_color,
             selected_color: debug.skeleton_selected_color,
+            hover_color: debug.skeleton_hover_color,
         });
         Ok(())
     }

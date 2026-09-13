@@ -25,7 +25,7 @@ use crate::flycam::FlyDirection;
 ///
 /// The user-facing name for this key in the chrome is `review_ui`'s
 /// `primary_key!`.
-fn primary_held(modifiers: ModifiersState) -> bool {
+pub(crate) fn primary_held(modifiers: ModifiersState) -> bool {
     if cfg!(target_os = "macos") {
         modifiers.super_key()
     } else {
@@ -41,13 +41,15 @@ impl App {
     /// flycam movement keys, which are *held* rather than pressed.
     /// Keyboard events egui has already consumed are filtered out by the caller.
     pub(crate) fn handle_keyboard_shortcut(&mut self, event: &KeyEvent) {
-        // Escape clears any Outliner selection (mesh part or material). It's a Named
-        // key, so handle it before the Character extraction below.
+        // Escape clears the whole selection — the primary, both multi-selection
+        // sets and the range anchor — whether it was made in the Outliner or by
+        // clicking the viewport. It's a Named key, so handle it before the
+        // Character extraction below.
         if event.state == ElementState::Pressed
             && matches!(&event.logical_key, Key::Named(NamedKey::Escape))
         {
-            if self.ui.selection.is_active() {
-                self.ui.selection = Selection::None;
+            if self.ui.has_selection() {
+                self.ui.clear_selection();
                 self.redraw.requested = true;
             }
             return;
@@ -121,7 +123,9 @@ impl App {
         // A release is honoured whatever modifiers are down and whatever
         // workspace is up: pressing a modifier (or switching view) mid-flight
         // must not leave a direction stuck on with no key left to clear it.
-        if let Some(direction) = FlyDirection::from_key(&key) {
+        if let Some(direction) = FlyDirection::from_key(&key)
+            && self.fly_key_applies(event.state == ElementState::Pressed)
+        {
             let pressed = event.state == ElementState::Pressed;
             if pressed && (!self.modifiers.is_empty() || !self.ui.mode.is_scene()) {
                 return;
@@ -183,6 +187,20 @@ impl App {
                 }
                 self.ui.opt.side = self.ui.opt.side.swapped();
             }
+            // Switches the left button between turning the camera and picking.
+            // `Q` is also the flycam's "down", but only while the right button
+            // is held, which is what `fly_key_applies` above separates.
+            "q" => {
+                if !self.ui.mode.is_scene() {
+                    return;
+                }
+                self.ui.tool = self.ui.tool.toggled();
+                // Nothing is under the pointer as far as View mode is
+                // concerned, and a stale highlight would outlive the tool.
+                if self.ui.tool == review_ui::ViewportTool::View {
+                    self.set_hover(None);
+                }
+            }
             "f" => self.frame_camera_on_key(),
             // Single-frame stepping through the selected clip (pauses playback).
             "," | "." => {
@@ -211,7 +229,13 @@ impl App {
         // Resolve the selected part's bounds first, before the renderer is borrowed
         // mutably (both borrow `self`). Only a node counts as a "mesh part" here.
         let part_bounds = match self.ui.selection {
-            Selection::Node(_) => selection_bounds(&self.scene_model, self.ui.selection),
+            // The whole selected set, so framing wraps everything highlighted
+            // rather than only the last part clicked.
+            Selection::Node(_) => selection_bounds(
+                &self.scene_model,
+                self.ui.selection,
+                &self.ui.selected_node_set(),
+            ),
             _ => None,
         };
         let target = match part_bounds {

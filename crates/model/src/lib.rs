@@ -12,6 +12,7 @@ mod demo;
 pub mod extras;
 mod geometry;
 mod morph;
+pub mod pick;
 mod scene;
 mod skin;
 mod stats;
@@ -19,7 +20,7 @@ mod stats;
 // The crate's whole surface is re-exported here, so every `review_model::X`
 // path other crates use resolves exactly as it did when this was one file.
 pub use anim::{AnimContext, DeformPose, Pose};
-pub use bvh::{Bvh, SceneBvh, triangle_positions};
+pub use bvh::{Bvh, Hit, SceneBvh, SceneHit, ray_triangle_t, triangle_positions};
 pub use clip::{
     AnimationClip, DEFAULT_FRAME_RATE, Key, MorphTrack, NodeTrack, frame_rate_or_default,
 };
@@ -27,6 +28,7 @@ pub use demo::demo_cube_model;
 pub use extras::{ExtrasCounts, SourceExtras};
 pub use geometry::{Bounds, TopologyFace, TriangleData, Vertex};
 pub use morph::{MorphChannel, MorphData, MorphKeyframe, MorphShape};
+pub use pick::PosedScene;
 pub use scene::{BoneInfo, LocalTransform, MaterialImportDefaults, NodeKind, SceneNode};
 pub use skin::{SkinCluster, SkinData, SkinDeformerInfo, SkinningMethod};
 pub use stats::{MeshGroupStats, ModelStats, ScopeStats, StatsScope};

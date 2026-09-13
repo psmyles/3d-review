@@ -35,7 +35,8 @@ pub(crate) use markers::{bounding_box_lines, model_pivot, pivot_half_extent, piv
 pub(crate) use mesh::model_mesh;
 pub(crate) use normal_lines::{face_normal_lines, vertex_normal_lines};
 pub(crate) use select::{selected_triangle_mask, selection_geometry, visible_geometry};
-pub(crate) use skeleton::{skeleton_fill_triangles, skeleton_lines};
+pub use skeleton::{BONE_PICK_TOLERANCE_POINTS, pick_bone_shape, posed_joint_positions};
+pub(crate) use skeleton::{BoneTint, skeleton_fill_triangles, skeleton_lines};
 pub(crate) use skin::skin_weight_vertices;
 pub(crate) use uv::{uv_fill_triangles, uv_wireframe_lines};
 pub(crate) use uv_seams::uv_seam_lines;

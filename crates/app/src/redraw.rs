@@ -55,6 +55,14 @@ impl App {
     pub(crate) fn pace_next_frame(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
 
+        // Resolve what the pointer is over, once for the whole burst of
+        // `CursorMoved` events that has just landed. Here rather than in the
+        // handler because the pointer has only one position that matters, and
+        // casting a ray for each of the dozens it passed through between frames
+        // would be waste; here rather than in the frame because a hover that
+        // changes nothing must not schedule a frame at all (invariant 6).
+        self.resolve_hover();
+
         // A gate run drives itself: frames back to back until the stamp is written
         // (the pacer below would cap it at the refresh rate, which is the thing
         // being measured), then idle until the hold ends and the process exits.

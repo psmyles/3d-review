@@ -21,11 +21,16 @@ Clicking a row selects that part. The part lights up in the view, the
 Inspector shows its details, and the bounding box and `F` framing follow it.
 The arrow keys move up and down the rows.
 
+Hold the primary modifier (`Ctrl` on Windows, `Cmd` on macOS) while clicking to
+add a row to the selection or take it back out, and Shift to take every row
+between the last one you clicked and this one. You can build the same selection
+by [clicking in the viewport](selection.md), and mix the two freely.
+
 Parts that have a shape carry an eye icon that shows or hides them. Hold the
-primary modifier (`Ctrl` on Windows, `Cmd` on macOS) while clicking the eye to
-show only that one part and hide all the others. On bone rows, that modifier
-adds the bone to your selection and Shift selects a whole run of bones, which
-is how you feed the skin-weight heat map.
+primary modifier while clicking the eye to show only that one part and hide all
+the others. Bones select the same way parts do, which is how you feed the
+skin-weight heat map; a bone and a part are never selected at the same time, so
+picking either kind clears the other.
 
 **Materials** lists the materials, with duplicates merged into one entry.
 Selecting one highlights every face that uses it and opens it in the Inspector.
@@ -37,10 +42,12 @@ the file has animations, and never in the Opt workspace. See
 ## The Inspector
 
 The Inspector is the panel on the right. For a selected part it shows facts
-about it that you can read but not change. For several selected bones, it shows
-a summary. For a material it shows the three editable sections described in
-[Materials and textures](materials.md).
+about it that you can read but not change. For several selected parts, or
+several bones, it shows a summary instead: how many there are, what they come to
+in total, and their names. For a material it shows the three editable sections
+described in [Materials and textures](materials.md).
 
 In the Opt workspace the Inspector changes job: it shows the settings of the
 operation you have selected, the export settings, or the per-object settings of
-the part you have selected.
+the part you have selected. Per-object settings apply to one part, so with
+several selected they follow the last one you clicked.

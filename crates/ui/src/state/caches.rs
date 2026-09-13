@@ -50,9 +50,11 @@ pub struct BoundsCaches {
     /// "only selection" box (same O(triangles) caching as the visible-only box,
     /// keyed by the selection it was computed for).
     pub(crate) selection_bounds: Option<Bounds>,
-    /// The selection [`BoundsCaches::selection_bounds`] was built for; a mismatch
-    /// with the live selection invalidates the cache.
-    pub(crate) selection_bounds_key: Selection,
+    /// The selection [`BoundsCaches::selection_bounds`] was built for — the
+    /// primary *and* the whole selected set, since adding a part to a
+    /// multi-selection grows the box without moving the primary. A mismatch with
+    /// the live selection invalidates the cache.
+    pub(crate) selection_bounds_key: (Selection, Vec<u32>),
     /// How many logical source vertices the current bone selection influences,
     /// shown by the Inspector. The scan is O(influences) — 168k on a game
     /// character — so it must not run per frame; it is recomputed only when
@@ -70,7 +72,7 @@ pub struct BoundsCaches {
     /// [`Selection::None`] plus an empty hidden set cannot express on its own,
     /// since that is also a perfectly ordinary live state.
     pub(crate) scoped_stats: Option<ScopedStats>,
-    pub(crate) scoped_stats_key: (Selection, Vec<u32>),
+    pub(crate) scoped_stats_key: (Selection, Vec<u32>, Vec<u32>),
     /// The Opt workspace's *processed* level measured under the active bounding-box
     /// scope, for the split's right-hand dimension labels. Its own slot rather than
     /// a share of the two above: both meshes are measured in the same frame, so one
@@ -81,8 +83,13 @@ pub struct BoundsCaches {
     /// follow, exactly as for the source's two scoped caches. `None` until measured
     /// — which no key value can express on its own, since a level legitimately
     /// measures to `None` when the scope selects no geometry.
-    pub(crate) processed_bounds_key: Option<(u64, BoundsScope, Selection, Vec<u32>)>,
+    pub(crate) processed_bounds_key: Option<ProcessedBoundsKey>,
 }
+
+/// What a processed level's bounds were measured for: the level's revision, the
+/// scope, and the two inputs a scope can read — the hidden set and the selected
+/// node set.
+pub(crate) type ProcessedBoundsKey = (u64, BoundsScope, Selection, Vec<u32>, Vec<u32>);
 
 impl BoundsCaches {
     /// Drop every cached measurement, so the next frame that needs one rebuilds

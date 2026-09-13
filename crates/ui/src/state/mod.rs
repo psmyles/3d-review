@@ -28,6 +28,7 @@ mod caches;
 mod outliner;
 mod panels;
 mod panels_open;
+mod selection;
 mod texture_view;
 mod view;
 
@@ -36,6 +37,8 @@ pub use caches::*;
 pub use outliner::*;
 pub use panels::*;
 pub use panels_open::*;
+pub(crate) use selection::SelectionKind;
+pub use selection::{SelectMode, apply_pick};
 pub use texture_view::*;
 pub use view::*;
 
@@ -246,17 +249,21 @@ pub struct UiState {
     /// the renderer. Carried into the scene callback so the GPU table re-uploads
     /// only when an edit (or a new model) bumps it.
     pub material_revision: u64,
+    /// What the left mouse button does in the viewport: turn the camera, or
+    /// pick what it is over. View state — a tool, not an edit — so it is not
+    /// undone, and a new model resets it.
+    pub tool: ViewportTool,
+    /// What the pointer is over in the viewport, or `None` outside Select mode
+    /// and over empty space. Written by `app` from its pick, read by the
+    /// renderer's hover highlight and by the pointer cursor.
+    pub hover: Option<HoverTarget>,
     /// The Outliner selection (a node, a material, or nothing). Set by clicking a
-    /// row in the Outliner; drives the viewport highlight + solo and the Inspector.
+    /// row in the Outliner or by picking in the viewport; drives the viewport
+    /// highlight + solo and the Inspector.
     pub selection: Selection,
     /// Whether the selection is isolated (solo): only the selected geometry is
     /// drawn. A no-op while nothing is selected.
     pub solo: bool,
-    /// Selection-flash fade, set by `app` each frame (data flows app→UI, invariant
-    /// 2; the redraw animation lives in `app`, invariant 6). Runs 1→0 over ~0.5s
-    /// after a selection change, modulating the viewport highlight fill's alpha so
-    /// the flash blinks then fades. 0 when no flash is playing.
-    pub selection_fade: f32,
     /// The Outliner side panel's own state: tab, view mode, search, type filter,
     /// scene-tree cache and keyboard-navigation flags. Grouped by lifecycle —
     /// see [`OutlinerState`].
@@ -276,9 +283,19 @@ pub struct UiState {
     /// [`Selection`] is `Copy` and threaded through renderer bake keys and undo
     /// snapshots, where a growable set would be the wrong shape.
     pub selected_bones: Vec<usize>,
+    /// Mesh and group nodes selected together, in click order (the last entry is
+    /// the primary, mirrored into [`UiState::selection`]). The twin of
+    /// [`UiState::selected_bones`] for everything that is not a bone: the two are
+    /// never both populated, since a click on either kind clears the other.
+    ///
+    /// Empty while nothing is selected *and* while a material is — a scalar
+    /// [`Selection`] still says everything in that case, and every consumer falls
+    /// back to it when this is empty.
+    pub selected_nodes: Vec<usize>,
     /// Anchor row for Shift-click range selection: the last plainly-clicked or
-    /// Primary-clicked bone. `None` until a bone is clicked.
-    pub bone_anchor: Option<usize>,
+    /// Primary-clicked row. `None` until a row is clicked. Shared by both sets,
+    /// because only one of them is ever live.
+    pub row_anchor: Option<usize>,
     /// Whether the loaded model carries any bone node. Gates the skeleton toolbar
     /// button (hidden entirely for an unrigged model). Set by `app` on load.
     pub has_bones: bool,
@@ -369,11 +386,13 @@ impl Default for UiState {
             material_revision: 0,
             selection: Selection::None,
             solo: false,
-            selection_fade: 0.0,
             outliner: OutlinerState::default(),
             animation: AnimationUiState::default(),
             selected_bones: Vec::new(),
-            bone_anchor: None,
+            tool: ViewportTool::default(),
+            hover: None,
+            selected_nodes: Vec::new(),
+            row_anchor: None,
             has_bones: false,
             has_skin: false,
             hidden_meshes: HashSet::new(),
@@ -401,9 +420,10 @@ impl UiState {
                 // cache it and rebuild only when the selection changes — never
                 // per-frame. (Model loads reset the cache, so it is never served
                 // across a model swap — see [`BoundsCaches::reset`].)
-                if self.caches.selection_bounds_key != self.selection {
-                    self.caches.selection_bounds = selection_bounds(model, self.selection);
-                    self.caches.selection_bounds_key = self.selection;
+                let key = (self.selection, self.selected_node_set());
+                if self.caches.selection_bounds_key != key {
+                    self.caches.selection_bounds = selection_bounds(model, key.0, &key.1);
+                    self.caches.selection_bounds_key = key;
                 }
                 self.caches.selection_bounds
             }
@@ -453,11 +473,15 @@ impl UiState {
         };
         hidden.sort_unstable();
 
-        let key = (revision, scope, selection, hidden);
+        let nodes = match scope {
+            BoundsScope::OnlySelection => self.selected_node_set(),
+            _ => Vec::new(),
+        };
+        let key = (revision, scope, selection, hidden, nodes);
         if self.caches.processed_bounds_key.as_ref() != Some(&key) {
             self.caches.processed_bounds = match scope {
                 BoundsScope::AllMeshes => model.bounds,
-                BoundsScope::OnlySelection => selection_bounds(model, selection),
+                BoundsScope::OnlySelection => selection_bounds(model, selection, &key.4),
                 // An empty hidden set makes `visible_bounds` the whole-model box.
                 BoundsScope::VisibleOnly if key.3.is_empty() => model.bounds,
                 BoundsScope::VisibleOnly => model.visible_bounds(&key.3),
@@ -468,14 +492,18 @@ impl UiState {
     }
 
     /// The selection view the renderer reads each frame (invariant 2: a plain
-    /// value): what is selected, whether it is isolated (solo), the gamma-space
-    /// highlight color sourced from the theme, and the live flash fade.
+    /// value): what is selected, whether it is isolated (solo), and the
+    /// gamma-space highlight color sourced from the theme.
     pub fn selection_view(&self) -> review_render::SelectionView {
         review_render::SelectionView {
             selection: self.selection,
             solo: self.solo,
-            highlight_color: theme::color32_to_rgba(theme::color::SELECTION_OUTLINE),
-            fade: self.selection_fade,
+            // Alpha is the fill's opacity, held for as long as the selection
+            // lasts.
+            highlight_color: {
+                let [r, g, b, _] = theme::color32_to_rgba(theme::color::SELECTION_OUTLINE);
+                [r, g, b, theme::color::SELECTION_FILL_OPACITY]
+            },
         }
     }
 
@@ -505,13 +533,56 @@ impl UiState {
         bones
     }
 
+    /// The selected mesh/group nodes as a sorted, deduplicated `u32` set — the
+    /// shape the renderer's bake keys compare and its subtree union walks.
+    /// Mirrors [`UiState::selected_bone_nodes`].
+    ///
+    /// A lone [`Selection::Node`] with no set behind it (an Opt-workspace click,
+    /// a restored undo snapshot) still reports that one node, so every caller can
+    /// treat this as *the* selection rather than having to check both.
+    pub fn selected_node_set(&self) -> Vec<u32> {
+        if self.selected_nodes.is_empty() {
+            return match self.selection {
+                Selection::Node(node) => vec![node as u32],
+                _ => Vec::new(),
+            };
+        }
+        let mut nodes: Vec<u32> = self
+            .selected_nodes
+            .iter()
+            .map(|&index| index as u32)
+            .collect();
+        nodes.sort_unstable();
+        nodes.dedup();
+        nodes
+    }
+
+    /// Drop every selection — both sets, the primary and the range anchor.
+    /// `Esc` and a click on empty viewport both land here, so neither can leave
+    /// half a selection behind (a cleared primary with the skeleton still lit).
+    pub fn clear_selection(&mut self) {
+        self.selection = Selection::None;
+        self.selected_nodes.clear();
+        self.selected_bones.clear();
+        self.row_anchor = None;
+    }
+
+    /// Whether anything at all is selected — what `Esc` asks before it bothers
+    /// clearing, so a stray set with no primary is still noticed.
+    pub fn has_selection(&self) -> bool {
+        self.selection.is_active()
+            || !self.selected_nodes.is_empty()
+            || !self.selected_bones.is_empty()
+    }
+
     /// Re-point every piece of skeleton/skin UI state at a freshly loaded `model`:
     /// drop selections and caches keyed by the old model's node indices, and
     /// re-derive the capability flags that gate the skeleton toolbar button and the
     /// Skin Weights material mode.
     pub fn reset_skeletal_state(&mut self, model: &ModelData) {
         self.selected_bones.clear();
-        self.bone_anchor = None;
+        self.selected_nodes.clear();
+        self.row_anchor = None;
         self.outliner.collapsed.clear();
         self.outliner.hidden_kinds.clear();
         self.outliner.search.clear();
@@ -576,17 +647,36 @@ impl UiState {
             return ScopedStats::default();
         };
 
-        let key = (self.selection, self.hidden_mesh_nodes());
+        let key = (
+            self.selection,
+            self.hidden_mesh_nodes(),
+            self.selected_node_set(),
+        );
         if self.caches.scoped_stats.is_none() || self.caches.scoped_stats_key != key {
-            // The selection covers a node's whole subtree, matching the geometry
-            // the viewport highlights and the "only selection" box wraps.
+            // The selection covers each selected node's whole subtree, matching
+            // the geometry the viewport highlights and the "only selection" box
+            // wraps.
             let selected = match key.0 {
                 Selection::None => None,
                 Selection::Material(slot) => {
                     Some(model.scope_stats(groups, StatsScope::Material(slot as u32)))
                 }
                 Selection::Node(node) => {
-                    let mask = model.node_subtree_mask(node);
+                    let mut mask = vec![false; model.nodes.len()];
+                    for &selected in &key.2 {
+                        for (slot, covered) in model
+                            .node_subtree_mask(selected as usize)
+                            .iter()
+                            .enumerate()
+                        {
+                            if *covered && let Some(entry) = mask.get_mut(slot) {
+                                *entry = true;
+                            }
+                        }
+                    }
+                    if key.2.is_empty() {
+                        mask = model.node_subtree_mask(node);
+                    }
                     Some(model.scope_stats(groups, StatsScope::Nodes(&mask)))
                 }
             };
@@ -674,6 +764,16 @@ pub(crate) fn sync_debug_state(state: &mut UiState) {
         BoundsScope::VisibleOnly => BoundingBoxScope::VisibleOnly,
     };
     state.debug.bounding_box_selection = state.selection;
+    state.debug.hover_color = {
+        let [r, g, b, _] = theme::color32_to_rgba(theme::color::HOVER_HIGHLIGHT);
+        [r, g, b, theme::color::HOVER_FILL_OPACITY]
+    };
+    // The skeleton bakes its tints into vertex colours, so the hover one goes
+    // over opaque — the overlay's own fill alpha is applied on top of it.
+    state.debug.skeleton_hover_color = {
+        let [r, g, b, _] = theme::color32_to_rgba(theme::color::HOVER_HIGHLIGHT);
+        [r, g, b, 1.0]
+    };
     state.debug.skeleton_joint_scale = state.skeleton.scale;
     state.debug.skeleton_color = theme::color32_to_rgba(state.skeleton.color);
     // The selected-bone tint reuses the viewport's selection color, so a bone
