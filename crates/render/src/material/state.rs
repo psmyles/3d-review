@@ -2,7 +2,8 @@
 //! import defaults, edited via [`MaterialEdit`] intents), its alpha / workflow
 //! modes and texture bindings, the app→UI [`MaterialSnapshot`], the per-material
 //! [`MaterialDrawRange`], and the `#[repr(C)]` [`MaterialUniform`] that must match
-//! the HLSL per-material cbuffer (`b1`) in `scene.hlsl` exactly (invariant 11).
+//! the shader's per-material uniform block (slot 2) in `review.glsl` exactly
+//! (invariant 11).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -170,7 +171,8 @@ pub struct MaterialEdit {
     pub change: MaterialChange,
 }
 
-/// GPU-side per-material uniform (cbuffer `b1` in `scene.hlsl`). `#[repr(C)]` +
+/// GPU-side per-material uniform (the `material` block in `review.glsl`).
+/// `#[repr(C)]` +
 /// `Pod` to match that HLSL cbuffer layout exactly (invariant 11).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
@@ -189,7 +191,7 @@ pub(crate) struct MaterialUniform {
     pub flags: [f32; 4],
 }
 
-// Byte-size lock against `scene.hlsl`'s `b1` (invariant 11). The cbuffer is sized
+// Byte-size lock against `review.glsl`'s `material` block (invariant 11). It is sized
 // from `size_of::<T>()` and an upload is rejected only when it is *larger* than
 // the buffer, so a field added on one side alone grows both and uploads happily
 // while the shader keeps reading the old offsets — wrong pixels, not an error.

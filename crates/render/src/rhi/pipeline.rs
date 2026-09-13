@@ -19,8 +19,9 @@ use std::ffi::CStr;
 
 use sokol::gfx as sg;
 
-use super::error::{GpuResult, ResourceKind, require_valid};
+use super::error::GpuResult;
 use super::format::{Format, SCENE_COLOR_FORMAT, SCENE_DEPTH_FORMAT};
+use super::make;
 
 /// How one vertex attribute's bytes are read. Sequential in the vertex, so the
 /// stride and each offset follow from the list.
@@ -339,16 +340,15 @@ impl Pipeline {
         pd.face_winding = sg::FaceWinding::Ccw;
         pd.sample_count = desc.sample_count.max(1) as i32;
 
-        let pipeline = sg::make_pipeline(&pd);
-        if let Err(err) = require_valid(
-            sg::query_pipeline_state(pipeline),
-            ResourceKind::Pipeline,
-            desc.label.to_str().unwrap_or("pipeline"),
-        ) {
-            sg::destroy_pipeline(pipeline);
-            sg::destroy_shader(desc.shader);
-            return Err(err);
-        }
+        // A pipeline owns its shader here, so a failure has to take the shader
+        // with it; `make::pipeline` has already freed the pipeline's own handle.
+        let pipeline = match make::pipeline(&pd, desc.label.to_str().unwrap_or("pipeline")) {
+            Ok(pipeline) => pipeline,
+            Err(error) => {
+                sg::destroy_shader(desc.shader);
+                return Err(error);
+            }
+        };
         Ok(Self {
             pipeline,
             shader: desc.shader,

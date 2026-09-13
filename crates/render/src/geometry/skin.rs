@@ -10,7 +10,7 @@
 //! dark matte base and tints the ramp over it — a flat heat map would lose the
 //! silhouette entirely against a dark background, since an uninfluenced region is
 //! near-black. The ramp color rides in `vertex_color.rgb` and the influence
-//! fraction in `vertex_color.a`; `scene.hlsl` does the blend and the shading, keyed
+//! fraction in `vertex_color.a`; `review.glsl` does the blend and the shading, keyed
 //! off `projection_params.w`.
 //!
 //! [`model_mesh`]: super::mesh::model_mesh

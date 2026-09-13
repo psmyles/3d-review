@@ -2,10 +2,13 @@
 //!
 //! This is the funnel invariant 7 names: every FBX the viewer opens comes through
 //! here, and any future caller of the C core must produce an identical
-//! `ModelData`. No `unsafe` of its own — it reads the checked slices
-//! [`super::raw`] hands back and owns nothing the C side allocated.
+//! `ModelData`. No `unsafe` of its own — it reads the scene through
+//! [`super::raw`]'s accessors, each of which hands back a slice borrowing the
+//! scene, and owns nothing the C side allocated.
 
-// Safe code over the checked slices `raw` hands back: no pointer reaches here.
+// Safe code over borrowed slices: a raw pointer genuinely never reaches here,
+// since the accessors take the scene rather than a pointer out of it. (The
+// `#[cfg(test)]` fixtures below build zeroed scenes, under a scoped allow.)
 #![deny(unsafe_code)]
 
 use std::path::Path;
@@ -20,7 +23,6 @@ use review_model::{
 
 use crate::ImportError;
 
-use super::raw::{checked_slice, read_optional_c_string};
 use super::raw_scene::*;
 
 /// The bridge's flat geometry arrays, marshaled into owned Rust buffers.
@@ -36,7 +38,8 @@ pub(super) struct MarshaledGeometry {
 pub(super) fn marshal_geometry(
     scene: &ReviewImportScene,
 ) -> Result<MarshaledGeometry, ImportError> {
-    let vertices = checked_slice(scene.vertices, scene.vertex_count, "vertices")?
+    let vertices = scene
+        .vertices()?
         .iter()
         .map(|vertex| Vertex {
             position: Vec3::from_array(vertex.position),
@@ -46,8 +49,9 @@ pub(super) fn marshal_geometry(
             vertex_color: Vec4::from_array(vertex.vertex_color),
         })
         .collect::<Vec<_>>();
-    let indices = checked_slice(scene.indices, scene.index_count, "indices")?.to_vec();
-    let faces = checked_slice(scene.faces, scene.face_count, "faces")?
+    let indices = scene.indices()?.to_vec();
+    let faces = scene
+        .faces()?
         .iter()
         .map(|face| TopologyFace {
             first_index: face.first_index,
@@ -55,10 +59,9 @@ pub(super) fn marshal_geometry(
         })
         .collect::<Vec<_>>();
     let triangles = TriangleData {
-        to_face: checked_slice(scene.tri_to_face, scene.tri_to_face_count, "tri_to_face")?.to_vec(),
-        material: checked_slice(scene.tri_material, scene.tri_material_count, "tri_material")?
-            .to_vec(),
-        node: checked_slice(scene.tri_node, scene.tri_node_count, "tri_node")?.to_vec(),
+        to_face: scene.tri_to_face()?.to_vec(),
+        material: scene.tri_material()?.to_vec(),
+        node: scene.tri_node()?.to_vec(),
     };
     Ok(MarshaledGeometry {
         vertices,
@@ -84,12 +87,13 @@ pub(super) fn node_kind_from_code(code: u32) -> NodeKind {
 
 /// Marshal the bridge's scene-graph node table for the Outliner.
 pub(super) fn marshal_nodes(scene: &ReviewImportScene) -> Result<Vec<SceneNode>, ImportError> {
-    Ok(checked_slice(scene.nodes, scene.node_count, "nodes")?
+    Ok(scene
+        .nodes()?
         .iter()
         .map(|node| {
             let kind = node_kind_from_code(node.kind);
             SceneNode {
-                name: read_optional_c_string(node.name).unwrap_or_default(),
+                name: node.name().unwrap_or_default(),
                 parent: (node.parent >= 0).then_some(node.parent as usize),
                 mesh_part: (node.mesh_part_index >= 0).then_some(node.mesh_part_index as usize),
                 source_vertex_count: node.source_vertex_count as usize,
@@ -124,12 +128,7 @@ pub(super) fn skinning_method_from_code(code: u32) -> SkinningMethod {
 /// The per-corner logical-vertex map, marshaled for every model (skinned or
 /// not) since blend shapes need it as well as skin weights.
 pub(super) fn marshal_corner_map(scene: &ReviewImportScene) -> Result<Vec<u32>, ImportError> {
-    Ok(checked_slice(
-        scene.corner_source_vertex,
-        scene.corner_source_vertex_count,
-        "corner_source_vertex",
-    )?
-    .to_vec())
+    Ok(scene.corner_source_vertex()?.to_vec())
 }
 
 /// Marshal the bridge's CSR skin table + cluster table. Returns `None` for
@@ -140,49 +139,32 @@ pub(super) fn marshal_skin(scene: &ReviewImportScene) -> Result<Option<SkinData>
     if scene.skin_influence_count == 0 {
         return Ok(None);
     }
-    let clusters = checked_slice(
-        scene.skin_clusters,
-        scene.skin_cluster_count,
-        "skin_clusters",
-    )?
-    .iter()
-    .map(|cluster| SkinCluster {
-        bone: cluster.bone,
-        mesh_node: cluster.mesh_node,
-        world_to_bone_bind: Mat4::from_cols_array(&cluster.world_to_bone_bind),
-        mesh_node_to_bone: DMat4::from_cols_array(&cluster.mesh_node_to_bone).as_mat4(),
-        bind_to_world: DMat4::from_cols_array(&cluster.bind_to_world).as_mat4(),
-        name: read_optional_c_string(cluster.name).unwrap_or_default(),
-    })
-    .collect();
-    let deformers = checked_slice(
-        scene.skin_deformers,
-        scene.skin_deformer_count,
-        "skin_deformers",
-    )?
-    .iter()
-    .map(|deformer| SkinDeformerInfo {
-        mesh_node: deformer.mesh_node,
-        method: skinning_method_from_code(deformer.method),
-        max_weights_per_vertex: deformer.max_weights_per_vertex,
-    })
-    .collect();
+    let clusters = scene
+        .skin_clusters()?
+        .iter()
+        .map(|cluster| SkinCluster {
+            bone: cluster.bone,
+            mesh_node: cluster.mesh_node,
+            world_to_bone_bind: Mat4::from_cols_array(&cluster.world_to_bone_bind),
+            mesh_node_to_bone: DMat4::from_cols_array(&cluster.mesh_node_to_bone).as_mat4(),
+            bind_to_world: DMat4::from_cols_array(&cluster.bind_to_world).as_mat4(),
+            name: cluster.name().unwrap_or_default(),
+        })
+        .collect();
+    let deformers = scene
+        .skin_deformers()?
+        .iter()
+        .map(|deformer| SkinDeformerInfo {
+            mesh_node: deformer.mesh_node,
+            method: skinning_method_from_code(deformer.method),
+            max_weights_per_vertex: deformer.max_weights_per_vertex,
+        })
+        .collect();
     Ok(Some(SkinData {
-        offsets: checked_slice(scene.skin_offsets, scene.skin_offset_count, "skin_offsets")?
-            .to_vec(),
-        bones: checked_slice(scene.skin_bones, scene.skin_influence_count, "skin_bones")?.to_vec(),
-        weights: checked_slice(
-            scene.skin_weights,
-            scene.skin_influence_count,
-            "skin_weights",
-        )?
-        .to_vec(),
-        influence_cluster: checked_slice(
-            scene.skin_influence_cluster,
-            scene.skin_influence_count,
-            "skin_influence_cluster",
-        )?
-        .to_vec(),
+        offsets: scene.skin_offsets()?.to_vec(),
+        bones: scene.skin_bones()?.to_vec(),
+        weights: scene.skin_weights()?.to_vec(),
+        influence_cluster: scene.skin_influence_cluster()?.to_vec(),
         clusters,
         deformers,
     }))
@@ -198,51 +180,41 @@ pub(super) fn marshal_morph(
     if scene.morph_channel_count == 0 {
         return Ok(None);
     }
-    let keyframes = checked_slice(
-        scene.morph_keyframes,
-        scene.morph_keyframe_count,
-        "morph_keyframes",
-    )?;
-    let channels = checked_slice(
-        scene.morph_channels,
-        scene.morph_channel_count,
-        "morph_channels",
-    )?
-    .iter()
-    .map(|channel| {
-        let first = channel.keyframe_first as usize;
-        let end = first.saturating_add(channel.keyframe_count as usize);
-        let range = keyframes.get(first..end).ok_or_else(|| {
-            ImportError::LoadFailed(format!(
-                "FBX bridge morph channel keyframes {first}..{end} exceed {}",
-                keyframes.len()
-            ))
-        })?;
-        Ok(MorphChannel {
-            name: read_optional_c_string(channel.name).unwrap_or_default(),
-            mesh_node: channel.mesh_node,
-            rest_weight: channel.rest_weight,
-            keyframes: range
-                .iter()
-                .map(|key| MorphKeyframe {
-                    shape: key.shape,
-                    target_weight: key.target_weight,
-                })
-                .collect(),
+    let keyframes = scene.morph_keyframes()?;
+    let channels = scene
+        .morph_channels()?
+        .iter()
+        .map(|channel| {
+            let first = channel.keyframe_first as usize;
+            let end = first.saturating_add(channel.keyframe_count as usize);
+            let range = keyframes.get(first..end).ok_or_else(|| {
+                ImportError::LoadFailed(format!(
+                    "FBX bridge morph channel keyframes {first}..{end} exceed {}",
+                    keyframes.len()
+                ))
+            })?;
+            Ok(MorphChannel {
+                name: channel.name().unwrap_or_default(),
+                mesh_node: channel.mesh_node,
+                rest_weight: channel.rest_weight,
+                keyframes: range
+                    .iter()
+                    .map(|key| MorphKeyframe {
+                        shape: key.shape,
+                        target_weight: key.target_weight,
+                    })
+                    .collect(),
+            })
         })
-    })
-    .collect::<Result<Vec<_>, ImportError>>()?;
-    let shapes = checked_slice(scene.morph_shapes, scene.morph_shape_count, "morph_shapes")?
+        .collect::<Result<Vec<_>, ImportError>>()?;
+    let shapes = scene
+        .morph_shapes()?
         .iter()
         .map(|shape| MorphShape {
-            name: read_optional_c_string(shape.name).unwrap_or_default(),
+            name: shape.name().unwrap_or_default(),
         })
         .collect();
-    let entries = checked_slice(
-        scene.morph_entries,
-        scene.morph_entry_count,
-        "morph_entries",
-    )?;
+    let entries = scene.morph_entries()?;
 
     // Counting sort into CSR rows by logical vertex, preserving the bridge's
     // emit order within a row. An entry naming a vertex past the logical
@@ -290,31 +262,11 @@ pub(super) fn marshal_animations(
     if scene.anim_stack_count == 0 {
         return Ok(Vec::new());
     }
-    let node_tracks = checked_slice(
-        scene.anim_node_tracks,
-        scene.anim_node_track_count,
-        "anim_node_tracks",
-    )?;
-    let vec3_keys = checked_slice(
-        scene.anim_vec3_keys,
-        scene.anim_vec3_key_count,
-        "anim_vec3_keys",
-    )?;
-    let quat_keys = checked_slice(
-        scene.anim_quat_keys,
-        scene.anim_quat_key_count,
-        "anim_quat_keys",
-    )?;
-    let morph_tracks = checked_slice(
-        scene.anim_morph_tracks,
-        scene.anim_morph_track_count,
-        "anim_morph_tracks",
-    )?;
-    let scalar_keys = checked_slice(
-        scene.anim_scalar_keys,
-        scene.anim_scalar_key_count,
-        "anim_scalar_keys",
-    )?;
+    let node_tracks = scene.anim_node_tracks()?;
+    let vec3_keys = scene.anim_vec3_keys()?;
+    let quat_keys = scene.anim_quat_keys()?;
+    let morph_tracks = scene.anim_morph_tracks()?;
+    let scalar_keys = scene.anim_scalar_keys()?;
 
     fn range<'a, T>(
         items: &'a [T],
@@ -341,7 +293,8 @@ pub(super) fn marshal_animations(
             .collect())
     };
 
-    checked_slice(scene.anim_stacks, scene.anim_stack_count, "anim_stacks")?
+    scene
+        .anim_stacks()?
         .iter()
         .map(|stack| {
             let tracks = range(
@@ -392,7 +345,7 @@ pub(super) fn marshal_animations(
             })
             .collect::<Result<Vec<_>, ImportError>>()?;
             Ok(AnimationClip {
-                name: read_optional_c_string(stack.name).unwrap_or_default(),
+                name: stack.name().unwrap_or_default(),
                 time_begin: stack.time_begin,
                 time_end: stack.time_end,
                 tracks,
@@ -407,18 +360,17 @@ pub(super) fn marshal_animations(
 pub(super) fn marshal_materials(
     scene: &ReviewImportScene,
 ) -> Result<Vec<MaterialImportDefaults>, ImportError> {
-    Ok(
-        checked_slice(scene.materials, scene.material_count, "materials")?
-            .iter()
-            .map(|material| MaterialImportDefaults {
-                name: read_optional_c_string(material.name).unwrap_or_else(|| "Default".to_owned()),
-                base_color: Vec3::from_array(material.base_color),
-                smoothness: material.smoothness,
-                metallic: material.metallic,
-                emissive: Vec3::from_array(material.emissive),
-            })
-            .collect(),
-    )
+    Ok(scene
+        .materials()?
+        .iter()
+        .map(|material| MaterialImportDefaults {
+            name: material.name().unwrap_or_else(|| "Default".to_owned()),
+            base_color: Vec3::from_array(material.base_color),
+            smoothness: material.smoothness,
+            metallic: material.metallic,
+            emissive: Vec3::from_array(material.emissive),
+        })
+        .collect())
 }
 
 pub(super) fn model_from_bridge_scene(
@@ -444,9 +396,10 @@ pub(super) fn model_from_bridge_scene(
         .count();
     let clip_count = animations.len();
     let uv_channels = build_uv_channels(scene)?;
-    let uv_set_names = checked_slice(scene.uv_set_names, scene.uv_set_name_count, "uv_set_names")?
-        .iter()
-        .map(|&name| read_optional_c_string(name).unwrap_or_default())
+    // A pointer table rather than an array of values, so each entry is read
+    // through the scene it belongs to.
+    let uv_set_names = (0..scene.uv_set_names()?.len())
+        .map(|index| scene.uv_set_name(index).unwrap_or_default())
         .collect::<Vec<_>>();
     let materials = marshal_materials(scene)?;
 
@@ -589,7 +542,7 @@ pub(super) fn build_uv_channels(scene: &ReviewImportScene) -> Result<Vec<Vec<Vec
         )));
     }
 
-    let values = checked_slice(scene.uvs, scene.uv_value_count, "uvs")?;
+    let values = scene.uvs()?;
     let channels = (0..channel_count)
         .map(|channel| {
             (0..vertex_count)

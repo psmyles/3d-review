@@ -32,6 +32,7 @@ static GLOBAL: review_import::TracyAllocator<std::alloc::System> =
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::Instant;
 
 use anyhow::Context;
@@ -141,10 +142,7 @@ fn main() -> anyhow::Result<()> {
         gpu_bring_up: Some(gpu_bring_up),
         initial_model,
         gate: gate_out.map(Gate::new),
-        textures: TextureSubsystem {
-            proxy: Some(texture_proxy),
-            ..TextureSubsystem::default()
-        },
+        textures: TextureSubsystem::with_proxy(texture_proxy),
         tracy_enabled,
         _tracy: tracy,
         ..App::default()
@@ -208,7 +206,13 @@ struct App {
     /// thread — see `loading.rs`). A finished import carrying an older
     /// generation was superseded by a newer open or a Ctrl+N and is dropped,
     /// so a slow parse can never overwrite what the user asked for since.
-    model_load_generation: u64,
+    ///
+    /// Shared with the workers rather than kept as a plain `u64`, so each one can
+    /// also *read* it: dropping a stale result keeps the wrong model off screen,
+    /// but the parse and the measuring behind it run to completion either way,
+    /// and on a large FBX that is several seconds of work for something nobody
+    /// will see. A worker whose generation has moved on stops instead.
+    model_load_generation: Arc<AtomicU64>,
     /// The Opt workspace's processing state. `None` until the user first opens
     /// the workspace — a session that never does pays nothing for it.
     opt: Option<opt::OptSubsystem>,
@@ -360,7 +364,7 @@ impl Default for App {
             scene_extras: None,
             scene_revision: 0,
             model_revision_counter: 0,
-            model_load_generation: 0,
+            model_load_generation: Arc::new(AtomicU64::new(0)),
             opt: None,
             occlusion_bvh: None,
             opt_occlusion_bvh: None,

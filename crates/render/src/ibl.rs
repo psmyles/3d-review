@@ -224,6 +224,23 @@ const _: () = assert!(size_of::<FaceUniform>() == 64);
 const _: () = assert!(size_of::<FaceUniform>() == size_of::<generated::FaceParams>());
 #[cfg(feature = "bake")]
 const _: () = assert!(size_of::<FaceUniform>() == size_of::<generated::FaceParamsFs>());
+// ...and field by field, since equal totals do not mean equal offsets: these four
+// `vec4`s are interchangeable by size, and swapping two would tilt every baked
+// face rather than fail anything.
+#[cfg(feature = "bake")]
+crate::shaders::assert_same_layout!(FaceUniform => generated::FaceParams, {
+    forward => forward,
+    right => right,
+    up => up,
+    params => params,
+});
+#[cfg(feature = "bake")]
+crate::shaders::assert_same_layout!(FaceUniform => generated::FaceParamsFs, {
+    forward => forward,
+    right => right,
+    up => up,
+    params => params,
+});
 
 /// World-space basis (forward, right, up) per cube face, in layer order
 /// `+X −X +Y −Y +Z −Z`. A fullscreen-triangle clip position `(x, y)` maps to the

@@ -118,7 +118,10 @@ pub fn save(placement: WindowPlacement) {
         placement.x, placement.y, placement.width, placement.height, placement.maximized,
     );
 
-    if let Err(error) = std::fs::write(&path, contents) {
+    // Replaced rather than overwritten: a process killed mid-write would
+    // otherwise leave a half-written config, and the next launch reads it back
+    // as a window with no size.
+    if let Err(error) = review_optimize::write_bytes_replacing(&path, &contents) {
         prof::msg(&format!(
             "failed to write window state {}: {error}",
             path.display()

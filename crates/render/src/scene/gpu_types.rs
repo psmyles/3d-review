@@ -1,20 +1,29 @@
-//! GPU-facing scene data that must stay in lockstep with the HLSL (invariant
-//! 11): the per-vertex [`SceneVertex`] layout + [`SceneUniforms`] (`scene.hlsl`),
-//! the composite [`PostUniforms`] (`post.hlsl`), the [`GtaoUniforms`]
-//! (`gtao.hlsl`), and the small render-option encoders. The `#[repr(C)]` structs
-//! below match their HLSL `cbuffer`/`VsInput` byte-for-byte; the matching
-//! input-element list lives beside the pipeline builders in [`super::d3d`].
+//! GPU-facing scene data that must stay in lockstep with the shader (invariant
+//! 11): the per-vertex [`SceneVertex`] layout + [`SceneUniforms`] (the `mesh`
+//! program), the composite [`PostUniforms`] (`post`), the [`GtaoUniforms`]
+//! (`gtao`), and the small render-option encoders. Every program is generated
+//! from the one source, `crates/render/src/shaders/review.glsl`; the vertex
+//! layout each pipeline declares lives in [`super::pipelines`].
+//!
+//! Each struct below is pinned two ways: a literal `size_of` and a `size_of`
+//! against **shdc's generated struct** for the same block. The second is what
+//! makes the invariant about the shader rather than a hand-typed number, and the
+//! per-field `offset_of` assertions beside it are what make it about the
+//! *layout* rather than the total — two fields swapped keep the size and change
+//! every value the shader reads.
 //!
 //! Audit index — the remaining invariant-11 structs live with their subsystems:
-//! `MaterialUniform` (`material/state.rs` ↔ `scene.hlsl` `b1`), `TexUniforms`
-//! (`tex_d3d.rs` ↔ `tex.hlsl`), and the bake-only `FaceUniform` (`ibl.rs` ↔
-//! `ibl.hlsl`).
+//! `MaterialUniform` (`material/state.rs` ↔ the `material` block), `TexUniforms`
+//! (`tex/gpu.rs` ↔ `tex_params`), and the bake-only `FaceUniform` (`ibl.rs` ↔
+//! `face_params`).
 
 use bytemuck::{Pod, Zeroable};
 
+use crate::shaders::assert_same_layout;
+
 use crate::{ActiveMaterial, SceneDebugOptions, ShadingMode, VertexColorMode};
 
-/// Composite-pass uniform (cbuffer `b3` in `post.hlsl`): the GTAO enable flag, the
+/// Composite-pass uniform (the `post` program's block): the GTAO enable flag, the
 /// tone-map enable + operator, and a raw-passthrough flag, all driven from the
 /// live settings each frame.
 #[repr(C)]
@@ -22,7 +31,7 @@ use crate::{ActiveMaterial, SceneDebugOptions, ShadingMode, VertexColorMode};
 pub(crate) struct PostUniforms {
     // The four scalars below fill exactly one 16-byte cbuffer register — HLSL
     // packs them implicitly, so adding/removing any one silently shifts `bg_top`
-    // unless `post.hlsl` moves in lockstep. Keep the count a multiple of four.
+    // unless the `post` program moves in lockstep. Keep the count a multiple of four.
     pub(crate) gtao_enabled: u32,
     pub(crate) tonemap_enabled: u32,
     pub(crate) tonemap_op: u32,
@@ -39,7 +48,7 @@ pub(crate) struct PostUniforms {
     pub(crate) bg_bottom: [f32; 4],
 }
 
-// Byte-size lock against `post.hlsl`'s `b3`. The cbuffer is sized from
+// Byte-size lock against the `post` program's block. It is sized from
 // `size_of::<T>()` and an upload is rejected only when it is *larger* than the
 // buffer, so a field added on one side alone grows both and uploads happily while
 // the shader keeps reading the old offsets — wrong pixels, not an error. Changing
@@ -53,6 +62,15 @@ const _: () = assert!(
     std::mem::size_of::<PostUniforms>()
         == std::mem::size_of::<crate::shaders::generated::PostParams>()
 );
+// ...and field by field, since equal totals do not mean equal offsets.
+assert_same_layout!(PostUniforms => crate::shaders::generated::PostParams, {
+    gtao_enabled => gtao_enabled,
+    tonemap_enabled => tonemap_enabled,
+    tonemap_op => tonemap_op,
+    passthrough => passthrough,
+    bg_top => bg_top,
+    bg_bottom => bg_bottom,
+});
 
 /// GTAO-pass uniform (`gtao_params` in `review.glsl`): a `float4x4` + three
 /// `float4`s, all 16-byte aligned. Uploaded each frame so the panel sliders stay
@@ -82,6 +100,12 @@ const _: () = assert!(
     std::mem::size_of::<GtaoUniforms>()
         == std::mem::size_of::<crate::shaders::generated::GtaoParams>()
 );
+assert_same_layout!(GtaoUniforms => crate::shaders::generated::GtaoParams, {
+    proj => proj,
+    params => params,
+    config => config,
+    temporal => temporal,
+});
 
 /// Depth-prefilter uniform (`gtao_mip_params` in `review.glsl`): the one row the
 /// 2×2 reduction needs.
@@ -98,6 +122,9 @@ const _: () = assert!(
     std::mem::size_of::<GtaoMipUniforms>()
         == std::mem::size_of::<crate::shaders::generated::GtaoMipParams>()
 );
+assert_same_layout!(GtaoMipUniforms => crate::shaders::generated::GtaoMipParams, {
+    mip => mip,
+});
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -130,7 +157,7 @@ pub(crate) struct SceneUniforms {
     pub(crate) selection_color: [f32; 4],
 }
 
-// Byte-size lock against `scene.hlsl`'s `b0` — see [`PostUniforms`] above.
+// Byte-size lock against the `mesh` program's scene block — see [`PostUniforms`] above.
 const _: () = assert!(std::mem::size_of::<SceneUniforms>() == 272);
 // One value, uploaded to both stages, so it is pinned against *both* generated
 // blocks — `scene_vs` and `scene_fs` are the same bytes declared twice because a
@@ -143,6 +170,27 @@ const _: () = assert!(
     std::mem::size_of::<SceneUniforms>()
         == std::mem::size_of::<crate::shaders::generated::SceneFs>()
 );
+// One value uploaded to both stages, so both blocks are pinned field by field.
+assert_same_layout!(SceneUniforms => crate::shaders::generated::SceneVs, {
+    view_projection => view_projection,
+    inv_view_projection => inv_view_projection,
+    render_options => render_options,
+    camera_position => camera_position,
+    env_params => env_params,
+    projection_params => projection_params,
+    view => view,
+    selection_color => selection_color,
+});
+assert_same_layout!(SceneUniforms => crate::shaders::generated::SceneFs, {
+    view_projection => view_projection,
+    inv_view_projection => inv_view_projection,
+    render_options => render_options,
+    camera_position => camera_position,
+    env_params => env_params,
+    projection_params => projection_params,
+    view => view,
+    selection_color => selection_color,
+});
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -168,7 +216,7 @@ pub(crate) struct SceneVertex {
     pub(crate) deform: [u32; 4],
 }
 
-// Byte-size lock against `scene.hlsl`'s `VsInput` + `SCENE_VERTEX_LAYOUT` — the
+// Byte-size lock against the shader's vertex input + `SCENE_VERTEX_LAYOUT` — the
 // per-field pins live in the layout test beside the pipelines.
 const _: () = assert!(std::mem::size_of::<SceneVertex>() == 80);
 
@@ -187,6 +235,10 @@ const _: () = assert!(
     std::mem::size_of::<InfluenceEntry>()
         == std::mem::size_of::<crate::shaders::generated::Influenceentry>()
 );
+assert_same_layout!(InfluenceEntry => crate::shaders::generated::Influenceentry, {
+    entry => entry,
+    weight => weight,
+});
 
 /// One palette entry (`StructuredBuffer<PaletteEntry>` at VS `t13`): the three
 /// rows of an affine 3×4 matrix, spelled as rows rather than an HLSL matrix type
@@ -206,6 +258,11 @@ const _: () = assert!(
     std::mem::size_of::<PaletteEntry>()
         == std::mem::size_of::<crate::shaders::generated::Paletteentry>()
 );
+assert_same_layout!(PaletteEntry => crate::shaders::generated::Paletteentry, {
+    r0 => r0,
+    r1 => r1,
+    r2 => r2,
+});
 
 impl PaletteEntry {
     /// The affine rows of `matrix` (column-major on the Rust side, so the rows
@@ -240,6 +297,14 @@ const _: () = assert!(
     std::mem::size_of::<MorphEntry>()
         == std::mem::size_of::<crate::shaders::generated::Morphentry>()
 );
+// The shader spells the two vectors out as scalars (see above), so each Rust
+// array is pinned against the first of its three — which is the offset that
+// matters: a `vec3` member here would pad the entry and shift every one after it.
+assert_same_layout!(MorphEntry => crate::shaders::generated::Morphentry, {
+    shape => shape,
+    position => px,
+    normal => nx,
+});
 
 pub(super) fn shading_mode_value(mode: ShadingMode) -> f32 {
     match mode {

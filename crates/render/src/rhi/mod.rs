@@ -73,6 +73,7 @@ mod format;
 pub(crate) mod gpu_profiler;
 mod job;
 mod log;
+mod make;
 mod mips;
 mod pipeline;
 mod present;

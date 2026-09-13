@@ -164,7 +164,7 @@ impl BufferView {
     }
 
     /// The index the scene shader's buffer-view switch reads from
-    /// `projection_params.z`. Must match the `idx` arms in `scene.hlsl`'s
+    /// `projection_params.z`. Must match the `idx` arms in `review.glsl`'s
     /// `fs_main` buffer-view block (invariant 11).
     pub fn shader_index(self) -> f32 {
         match self {

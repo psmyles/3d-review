@@ -15,6 +15,16 @@ use std::path::PathBuf;
 
 use review_model::{ModelData, StatsScope};
 
+/// Report why this run is skipping — or refuse to, when
+/// `REVIEW_REQUIRE_FIXTURES` is set. See `crates/optimize/tests/common`.
+fn skipping(reason: impl std::fmt::Display) {
+    assert!(
+        !std::env::var_os("REVIEW_REQUIRE_FIXTURES").is_some_and(|value| value != "0"),
+        "REVIEW_REQUIRE_FIXTURES is set, so this run may not skip: {reason}"
+    );
+    eprintln!("skipping: {reason}");
+}
+
 /// Every fixture the tests below load. Asserted to exist by
 /// [`every_fixture_the_suite_loads_exists`], so a rename cannot quietly turn the
 /// whole suite green.
@@ -34,7 +44,7 @@ fn fixture_path(name: &str) -> PathBuf {
 fn fixture(name: &str) -> Option<ModelData> {
     let path = fixture_path(name);
     if !path.exists() {
-        eprintln!("skipping {name}: the fixture is not present");
+        skipping(format!("{name}: the fixture is not present"));
         return None;
     }
     match review_import::load_model(&path) {
@@ -44,7 +54,7 @@ fn fixture(name: &str) -> Option<ModelData> {
         // fixture. Any other error means the file is there and did not load,
         // which the suite must report rather than skip past.
         Err(review_import::ImportError::UfbxUnavailable) => {
-            eprintln!("skipping {name}: FBX import is unavailable in this build");
+            skipping(format!("{name}: FBX import is unavailable in this build"));
             None
         }
         Err(error) => panic!("{name} is present but failed to load: {error}"),

@@ -69,6 +69,16 @@ struct TexUniforms {
 // pack into one 16-byte row.
 const _: () = assert!(size_of::<TexUniforms>() == 64);
 const _: () = assert!(size_of::<TexUniforms>() == size_of::<generated::TexParams>());
+crate::shaders::assert_same_layout!(TexUniforms => generated::TexParams, {
+    img_min => img_min,
+    img_size => img_size,
+    channel => channel,
+    target_srgb => target_srgb,
+    checker_cell => checker_cell,
+    pad => pad,
+    bg_light => bg_light,
+    bg_dark => bg_dark,
+});
 
 /// An uploaded Tex texture: the mip-mapped GPU texture, the decoded image it was
 /// built from (an identity check — a disk reload swaps the `Arc`, forcing a

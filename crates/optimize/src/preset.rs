@@ -214,6 +214,37 @@ mod tests {
     }
 
     #[test]
+    fn an_overrides_object_name_survives_the_round_trip() {
+        let mut stack = OptStack::default();
+        stack.node_override_mut(2).exclude = true;
+        stack.stamp_node_names(&[
+            review_model::SceneNode::default(),
+            review_model::SceneNode::default(),
+            review_model::SceneNode {
+                name: "hero_prop".to_owned(),
+                ..review_model::SceneNode::default()
+            },
+        ]);
+
+        let loaded = from_json(&to_json(&stack).expect("serializes")).expect("parses");
+        assert_eq!(
+            loaded.overrides[0].name, "hero_prop",
+            "the name is what rebinds the override to another model"
+        );
+    }
+
+    #[test]
+    fn an_override_written_before_object_names_still_loads() {
+        // Exactly what a preset from an older build deserializes to: a `node`
+        // index and no `name`. `#[serde(default)]` is what keeps it readable.
+        let json = r#"{"version": 1, "stack": {"overrides": [{"node": 3, "exclude": true}]}}"#;
+        let stack = from_json(json).expect("parses");
+        assert_eq!(stack.overrides.len(), 1);
+        assert_eq!(stack.overrides[0].node, 3);
+        assert!(stack.overrides[0].name.is_empty());
+    }
+
+    #[test]
     fn a_minimal_document_loads_as_an_empty_stack() {
         // Every stack field carries `#[serde(default)]`, so a hand-written
         // preset need only name the version.

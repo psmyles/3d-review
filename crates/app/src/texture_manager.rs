@@ -28,6 +28,10 @@ use crate::{App, prof};
 #[derive(Debug, Clone)]
 pub(crate) struct TextureDecode {
     request: TextureDecodeRequest,
+    /// The scene generation this decode was started for. A result from a scene
+    /// that has since been replaced describes textures nothing references any
+    /// more, and is dropped exactly as a superseded model load is.
+    generation: u64,
     /// Decoded pixels, or a human-readable error (shown as an error toast).
     result: Result<DecodedImage, String>,
 }
@@ -35,7 +39,7 @@ pub(crate) struct TextureDecode {
 /// Why a texture was being decoded off-thread — determines how the result is
 /// applied once it returns.
 #[derive(Debug, Clone)]
-enum TextureDecodeRequest {
+pub(crate) enum TextureDecodeRequest {
     /// The user imported `path` into the scene texture pool; on completion it
     /// joins the pool (and the disk watcher) so material properties can bind it.
     Import { path: PathBuf },
@@ -50,6 +54,28 @@ impl TextureDecodeRequest {
             TextureDecodeRequest::Import { path } | TextureDecodeRequest::Reload { path } => path,
         }
     }
+}
+
+/// What to do with a request for a path a decode is already running for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Admission {
+    /// Nothing is running for this path: start a worker.
+    Spawn,
+    /// A worker is already reading this path. Folded into it — either because
+    /// the running decode will produce what was asked for (a second import), or
+    /// by marking it dirty so one more decode follows it (the file changed
+    /// again while it was being read).
+    Coalesced,
+}
+
+/// What [`TextureSubsystem::finish_decode`] decided about a landed result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DecodeOutcome {
+    /// Whether the pixels belong to the scene on screen.
+    pub(crate) apply: bool,
+    /// Whether the file changed again while this decode was running, so one more
+    /// is owed.
+    pub(crate) respawn: bool,
 }
 
 fn same_path(a: &Path, b: &Path) -> bool {
@@ -105,10 +131,16 @@ impl App {
             self.redraw.requested = true;
             return;
         }
+        let request = TextureDecodeRequest::Import { path };
+        if self.textures.admit_decode(&request) == Admission::Coalesced {
+            // Already being read — the running decode produces exactly what this
+            // import wants, and it pools the file when it lands.
+            return;
+        }
         self.notifications
-            .begin_activity(format!("Decoding {}…", file_label(&path)));
+            .begin_activity(format!("Decoding {}…", file_label(request.path())));
         self.redraw.requested = true;
-        self.spawn_decode(TextureDecodeRequest::Import { path });
+        self.spawn_decode(request);
     }
 
     /// Bind an already-pooled texture to a material slot, auto-detecting the
@@ -184,11 +216,14 @@ impl App {
             // "Decoding…" / "Reloading…" activity toast (it would otherwise hang
             // forever) and surface the failure instead of silently dropping it.
             prof::msg("no event-loop proxy; cannot decode texture off-thread");
+            self.textures
+                .finish_decode(self.textures.generation, request.path());
             self.notifications.end_activity();
             self.notifications
                 .error(format!("Couldn't load {}", file_label(request.path())));
             return;
         };
+        let generation = self.textures.generation;
         std::thread::spawn(move || {
             // Name the decode thread + time the decode in Tracy (both no-op unless
             // `--tracy`).
@@ -198,7 +233,11 @@ impl App {
                 decode_image(request.path())
             };
             // A send failure only means the event loop has exited; nothing to do.
-            let _ = proxy.send_event(UserEvent::TextureDecoded(TextureDecode { request, result }));
+            let _ = proxy.send_event(UserEvent::TextureDecoded(TextureDecode {
+                request,
+                generation,
+                result,
+            }));
         });
     }
 
@@ -206,10 +245,37 @@ impl App {
     /// pixels and update the slot/binding, or report the failure. Always clears the
     /// activity toast it was paired with (in `import_texture_path` / `reload_texture_file`).
     pub(crate) fn handle_texture_decoded(&mut self, decode: TextureDecode) {
+        // Balanced first and unconditionally: the activity counter is paired with
+        // the *request*, so a result this scene no longer wants still has to
+        // close the toast its request opened.
         self.notifications.end_activity();
-        let TextureDecode { request, result } = decode;
+        let TextureDecode {
+            request,
+            generation,
+            result,
+        } = decode;
         let path = request.path().to_path_buf();
         let name = file_label(&path);
+
+        let outcome = self.textures.finish_decode(generation, &path);
+        if outcome.respawn {
+            // The file was written again while this decode was reading it, so
+            // what just landed is already out of date. One more, which also
+            // rescues the common case of an editor's first event arriving
+            // mid-save: that read fails or reads a fragment, and this is the
+            // read of the finished file.
+            self.notifications
+                .begin_activity(format!("Reloading {name}…"));
+            self.spawn_decode(TextureDecodeRequest::Reload { path: path.clone() });
+        }
+        if !outcome.apply {
+            prof::msg(&format!(
+                "texture decode superseded, dropped: {}",
+                path.display()
+            ));
+            return;
+        }
+
         match result {
             Ok(image) => {
                 let image = Arc::new(image);
@@ -331,9 +397,17 @@ impl App {
         else {
             return;
         };
+        let request = TextureDecodeRequest::Reload { path: bound };
+        if self.textures.admit_decode(&request) == Admission::Coalesced {
+            // A decode of this file is already running; it is now marked dirty,
+            // so one more follows it. A single editor save emits several change
+            // events, and each used to start its own full decode of the same
+            // file.
+            return;
+        }
         self.notifications
-            .begin_activity(format!("Reloading {}…", file_label(&bound)));
-        self.spawn_decode(TextureDecodeRequest::Reload { path: bound });
+            .begin_activity(format!("Reloading {}…", file_label(request.path())));
+        self.spawn_decode(request);
     }
 
     /// Drop all texture-watching + decode state (model load / reset): the new
@@ -343,6 +417,12 @@ impl App {
         self.textures.cache.clear();
         self.textures.pool.clear();
         self.textures.revision = self.textures.revision.wrapping_add(1);
+        // Anything still on a decode worker was started for the scene being
+        // replaced: bumping the generation is what drops its result when it
+        // lands, and forgetting the in-flight set lets the new scene ask for the
+        // same files without being coalesced into those workers.
+        self.textures.generation = self.textures.generation.wrapping_add(1);
+        self.textures.forget_in_flight();
         self.ui.texture_pool = Vec::new();
         self.textures.watched_dirs.clear();
         // Dropping the watcher unregisters every directory.
@@ -377,4 +457,201 @@ pub(crate) struct TextureSubsystem {
     /// `Arc` when unchanged) as cheaply as the renderer's `material_revision`
     /// does for the material table.
     pub(crate) revision: u64,
+    /// Which scene the pool and cache describe, bumped whenever they are cleared
+    /// for a new model. A decode carries the generation it was started for and is
+    /// dropped when that no longer matches — the same guard `loading.rs` puts on
+    /// a model load, and for the same reason: a slow PSD finishing after the user
+    /// has opened another file would otherwise pool itself into the new scene.
+    pub(crate) generation: u64,
+    /// The paths a decode worker is currently reading, and whether the file has
+    /// changed again since that worker started. One decode per path at a time:
+    /// an editor's save emits several change events and a large PSD takes long
+    /// enough that every one of them used to start its own full decode.
+    in_flight: HashMap<PathBuf, bool>,
+}
+
+impl TextureSubsystem {
+    /// The subsystem as `main` builds it: everything default except the proxy
+    /// its workers post results back through.
+    pub(crate) fn with_proxy(proxy: EventLoopProxy<UserEvent>) -> Self {
+        Self {
+            proxy: Some(proxy),
+            ..Self::default()
+        }
+    }
+
+    /// Decide whether a request needs a worker of its own.
+    ///
+    /// This *is* the debounce, exactly as the Opt workspace's in-flight
+    /// coalescing is (`crate::opt`): a second request for a path already being
+    /// read folds into the running decode instead of starting a second one, and
+    /// a reload marks it dirty so one more follows. No timer, and no guess at how
+    /// long an editor takes to finish writing.
+    pub(crate) fn admit_decode(&mut self, request: &TextureDecodeRequest) -> Admission {
+        let path = request.path().to_path_buf();
+        match self.in_flight.get_mut(&path) {
+            Some(dirty) => {
+                // An import is satisfied by whatever the running decode produces;
+                // a reload means the bytes it is reading are already out of date.
+                if matches!(request, TextureDecodeRequest::Reload { .. }) {
+                    *dirty = true;
+                }
+                Admission::Coalesced
+            }
+            None => {
+                self.in_flight.insert(path, false);
+                Admission::Spawn
+            }
+        }
+    }
+
+    /// Retire a landed decode: whether to apply it, and whether the file changed
+    /// again while it was being read.
+    ///
+    /// A result from a superseded scene leaves `in_flight` alone — the entry
+    /// there belongs to whatever decode the *current* scene started for that
+    /// path, and clearing it would let a second worker run beside it.
+    pub(crate) fn finish_decode(&mut self, generation: u64, path: &Path) -> DecodeOutcome {
+        if generation != self.generation {
+            return DecodeOutcome {
+                apply: false,
+                respawn: false,
+            };
+        }
+        let respawn = self.in_flight.remove(path).unwrap_or(false);
+        DecodeOutcome {
+            apply: true,
+            respawn,
+        }
+    }
+
+    /// Forget every in-flight decode, so the new scene's requests are not
+    /// coalesced into workers reading for the old one. Their results are dropped
+    /// by generation when they land.
+    fn forget_in_flight(&mut self) {
+        self.in_flight.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reload(path: &str) -> TextureDecodeRequest {
+        TextureDecodeRequest::Reload {
+            path: PathBuf::from(path),
+        }
+    }
+
+    fn import(path: &str) -> TextureDecodeRequest {
+        TextureDecodeRequest::Import {
+            path: PathBuf::from(path),
+        }
+    }
+
+    #[test]
+    fn a_burst_of_change_events_starts_one_decode() {
+        let mut textures = TextureSubsystem::default();
+        // What one editor save looks like from the watcher: several modify
+        // events for the same file.
+        assert_eq!(textures.admit_decode(&reload("a.psd")), Admission::Spawn);
+        assert_eq!(
+            textures.admit_decode(&reload("a.psd")),
+            Admission::Coalesced
+        );
+        assert_eq!(
+            textures.admit_decode(&reload("a.psd")),
+            Admission::Coalesced
+        );
+
+        // One more decode is owed, since the later writes landed after the
+        // running one started reading.
+        let outcome = textures.finish_decode(0, Path::new("a.psd"));
+        assert_eq!(
+            outcome,
+            DecodeOutcome {
+                apply: true,
+                respawn: true
+            }
+        );
+    }
+
+    #[test]
+    fn a_quiet_decode_owes_nothing_further() {
+        let mut textures = TextureSubsystem::default();
+        assert_eq!(textures.admit_decode(&reload("a.psd")), Admission::Spawn);
+
+        let outcome = textures.finish_decode(0, Path::new("a.psd"));
+        assert_eq!(
+            outcome,
+            DecodeOutcome {
+                apply: true,
+                respawn: false
+            }
+        );
+        // And the path is free again.
+        assert_eq!(textures.admit_decode(&reload("a.psd")), Admission::Spawn);
+    }
+
+    #[test]
+    fn a_second_import_of_one_path_does_not_mark_it_dirty() {
+        let mut textures = TextureSubsystem::default();
+        assert_eq!(textures.admit_decode(&import("a.png")), Admission::Spawn);
+        assert_eq!(
+            textures.admit_decode(&import("a.png")),
+            Admission::Coalesced
+        );
+
+        let outcome = textures.finish_decode(0, Path::new("a.png"));
+        assert!(
+            !outcome.respawn,
+            "the running decode already produces what the second import asked for"
+        );
+    }
+
+    #[test]
+    fn decodes_of_different_paths_run_side_by_side() {
+        let mut textures = TextureSubsystem::default();
+        assert_eq!(textures.admit_decode(&import("a.png")), Admission::Spawn);
+        assert_eq!(textures.admit_decode(&import("b.png")), Admission::Spawn);
+    }
+
+    #[test]
+    fn a_decode_from_a_replaced_scene_is_dropped() {
+        let mut textures = TextureSubsystem::default();
+        textures.admit_decode(&import("a.png"));
+        let started_at = textures.generation;
+
+        // The user opens another model while the decode is running.
+        textures.generation = textures.generation.wrapping_add(1);
+        textures.forget_in_flight();
+
+        let outcome = textures.finish_decode(started_at, Path::new("a.png"));
+        assert_eq!(
+            outcome,
+            DecodeOutcome {
+                apply: false,
+                respawn: false
+            }
+        );
+    }
+
+    #[test]
+    fn a_stale_result_does_not_retire_the_new_scenes_decode() {
+        let mut textures = TextureSubsystem::default();
+        textures.admit_decode(&import("a.png"));
+        let started_at = textures.generation;
+        textures.generation = textures.generation.wrapping_add(1);
+        textures.forget_in_flight();
+
+        // The new scene asks for the same file, and *then* the old decode lands.
+        assert_eq!(textures.admit_decode(&reload("a.png")), Admission::Spawn);
+        textures.finish_decode(started_at, Path::new("a.png"));
+
+        assert_eq!(
+            textures.admit_decode(&reload("a.png")),
+            Admission::Coalesced,
+            "the current scene's decode is still running and must stay tracked"
+        );
+    }
 }

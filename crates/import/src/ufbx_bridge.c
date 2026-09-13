@@ -1805,16 +1805,29 @@ static int review_import_capture_nodes(
 typedef struct review_import_progress_ctx {
     review_import_progress_fn fn;
     void *user;
+    /* Set when we answered "stop". ufbx has two cancel paths and only one of
+       them says so: the plain read path fails with UFBX_ERROR_CANCELLED, but a
+       cancel inside the bit stream (`ufbxi_bit_refill`) merely feeds the
+       inflater zeroes, so it surfaces as "Bad DEFLATE data" — an ordinary parse
+       error, indistinguishable from a genuinely corrupt file. Most binary FBX is
+       deflate-compressed, so that is the *common* path. Recording our own answer
+       is the only reliable signal. */
+    int cancelled;
 } review_import_progress_ctx;
 
 static ufbx_progress_result review_import_progress_cb(void *user, const ufbx_progress *progress)
 {
     review_import_progress_ctx *ctx = (review_import_progress_ctx*)user;
     if (ctx && ctx->fn && progress) {
-        ctx->fn(ctx->user, progress->bytes_read, progress->bytes_total);
+        /* The sink answers whether the load is still wanted. Dropping a
+           superseded result on arrival was never enough on its own: the parse
+           of a 100 MB file runs to completion either way, and the viewer's
+           whole point is that you can drop one model on it after another. */
+        if (!ctx->fn(ctx->user, progress->bytes_read, progress->bytes_total)) {
+            ctx->cancelled = 1;
+            return UFBX_PROGRESS_CANCEL;
+        }
     }
-    /* The viewer never cancels a load: a superseded one is dropped by generation
-       on the Rust side (`loading.rs`), which costs nothing extra here. */
     return UFBX_PROGRESS_CONTINUE;
 }
 
@@ -1828,7 +1841,7 @@ int review_import_load_fbx(
 )
 {
     ufbx_load_opts load_opts = { 0 };
-    review_import_progress_ctx progress_ctx;
+    review_import_progress_ctx progress_ctx = { 0 };
     ufbx_error error;
     ufbx_scene *scene = NULL;
     review_import_totals totals = { 0 };
@@ -1867,6 +1880,7 @@ int review_import_load_fbx(
     if (progress) {
         progress_ctx.fn = progress;
         progress_ctx.user = progress_user;
+        progress_ctx.cancelled = 0;
         load_opts.progress_cb.fn = &review_import_progress_cb;
         load_opts.progress_cb.user = &progress_ctx;
         /* Roughly 0.5% of a 100 MB file per report: often enough that the bar
@@ -1877,9 +1891,17 @@ int review_import_load_fbx(
     scene = ufbx_load_file(path, &load_opts, &error);
     if (!scene) {
         char buffer[256];
+        /* A cancelled parse is not a failure to report: the caller asked for it,
+           and its own generation check is what will discard this call. Our own
+           flag decides, not `error.type` — see the note on the context struct:
+           a cancel inside the bit stream is reported as a DEFLATE error, which
+           is the path most binary FBX takes. */
+        if ((progress && progress_ctx.cancelled) || error.type == UFBX_ERROR_CANCELLED) {
+            return REVIEW_IMPORT_CANCELLED;
+        }
         ufbx_format_error(buffer, sizeof(buffer), &error);
         review_import_set_error(out_error, buffer);
-        return 0;
+        return REVIEW_IMPORT_FAILED;
     }
 
     /* Record what the file claimed its unit was, before our target_unit_meters

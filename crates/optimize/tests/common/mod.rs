@@ -9,6 +9,12 @@
 //!
 //! Each suite uses a subset of what is here, so unused items are expected: a
 //! `tests/common` module is compiled into every test binary that declares it.
+//!
+//! Set `REVIEW_REQUIRE_FIXTURES=1` to turn every skip into a failure. A skip that
+//! passes is right for a fresh checkout and wrong for the run that decides
+//! whether the tree is good: without it a green suite means "nothing was found to
+//! run" just as readily as "everything passed", and the two are indistinguishable
+//! from the outside. `scripts/check` sets it.
 
 #![allow(dead_code)]
 
@@ -32,6 +38,18 @@ pub fn temp_dir(name: &str) -> PathBuf {
     dir
 }
 
+/// Refuse to skip, or say why this run is skipping.
+///
+/// Returns `None` so a caller can `let Some(..) = .. else { return }`; panics
+/// instead when `REVIEW_REQUIRE_FIXTURES` is set, naming the same reason.
+pub fn skip(reason: &str) -> Option<std::convert::Infallible> {
+    if std::env::var_os("REVIEW_REQUIRE_FIXTURES").is_some_and(|value| value != "0") {
+        panic!("REVIEW_REQUIRE_FIXTURES is set, so this run may not skip: {reason}");
+    }
+    eprintln!("skipping: {reason}");
+    None
+}
+
 /// Where a named fixture lives, whether or not it is present.
 pub fn fixture_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -48,13 +66,13 @@ pub fn fixture_path(name: &str) -> PathBuf {
 pub fn fixture(name: &str) -> Option<ModelData> {
     let path = fixture_path(name);
     if !path.exists() {
-        eprintln!("skipping {name}: the fixture is not present");
+        skip(&format!("{name} is not present"))?;
         return None;
     }
     match review_import::load_model(&path) {
         Ok(model) => Some(model),
         Err(review_import::ImportError::UfbxUnavailable) => {
-            eprintln!("skipping {name}: FBX import is unavailable in this build");
+            skip(&format!("{name}: FBX import is unavailable in this build"))?;
             None
         }
         Err(error) => panic!("{name} is present but failed to load: {error}"),
@@ -66,7 +84,7 @@ pub fn fixture(name: &str) -> Option<ModelData> {
 pub fn fixture_full(name: &str) -> Option<(ModelData, SourceExtras)> {
     let path = fixture_path(name);
     if !path.exists() {
-        eprintln!("skipping {name}: the fixture is not present");
+        skip(&format!("{name} is not present"))?;
         return None;
     }
     load_full(&path)
@@ -77,11 +95,11 @@ pub fn load_full(path: &Path) -> Option<(ModelData, SourceExtras)> {
     match review_import::load_model_full(path) {
         Ok((model, Some(extras))) => Some((model, extras)),
         Ok((_, None)) => {
-            eprintln!("skipping {}: no capture in this build", path.display());
+            skip(&format!("{}: no capture in this build", path.display()))?;
             None
         }
         Err(review_import::ImportError::UfbxUnavailable) => {
-            eprintln!("skipping {}: FBX import is unavailable", path.display());
+            skip(&format!("{}: FBX import is unavailable", path.display()))?;
             None
         }
         Err(error) => panic!("{} is present but failed to load: {error}", path.display()),

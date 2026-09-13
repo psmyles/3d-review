@@ -311,12 +311,21 @@ typedef struct review_import_error {
 /* Called from inside the ufbx parse with the bytes read so far, so a large file
    can drive a progress indicator instead of a silent wait. `user` is passed
    through untouched; `bytes_total` is 0 when the size isn't known. Invoked on
-   the calling thread only, never after `review_import_load_fbx` returns. */
-typedef void (*review_import_progress_fn)(
+   the calling thread only, never after `review_import_load_fbx` returns.
+
+   Returns non-zero to carry on, or 0 to abandon the parse — which the viewer
+   answers when the load has been superseded by a newer one. A cancelled load
+   returns REVIEW_IMPORT_CANCELLED rather than an error, since nothing went
+   wrong and the caller asked for it. */
+typedef int (*review_import_progress_fn)(
     void *user,
     uint64_t bytes_read,
     uint64_t bytes_total
 );
+
+/* `review_import_load_fbx` return codes: any other non-zero value is success. */
+#define REVIEW_IMPORT_FAILED 0
+#define REVIEW_IMPORT_CANCELLED (-1)
 
 /* `progress` may be NULL, in which case no progress is reported. `out_extras`
    may be NULL to skip the source-property capture; when given it is filled from
