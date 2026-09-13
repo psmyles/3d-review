@@ -5,24 +5,38 @@
 
 use review_render::MaterialMode;
 
+use crate::docs::Page;
+use crate::keys;
+use crate::labels;
 use crate::state::UiState;
-use crate::widgets::{labeled_combo, panel_grid, reset_button};
+use crate::widgets::{Tip, labeled_combo, panel_footer, panel_grid};
+
+/// This panel's page in the manual, opened by its footer's `?`.
+const PAGE: Page = Page::PanelsMaterialMode;
 
 pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
     panel_grid(ui, "material_mode", |ui| {
         mode_row(ui, &mut state.debug.material_mode);
     });
     ui.separator();
-    if reset_button(ui).clicked() {
+    if panel_footer(ui, PAGE).clicked() {
         state.debug.material_mode = MaterialMode::default();
     }
 }
 
 /// "Mode" row: a dropdown choosing how the source-material faces are shaded.
 fn mode_row(ui: &mut egui::Ui, mode: &mut MaterialMode) {
-    labeled_combo(ui, "Mode", "material_mode_combo", mode.label(), |ui| {
-        for option in MaterialMode::ALL {
-            ui.selectable_value(mode, option, option.label());
-        }
-    });
+    labeled_combo(
+        ui,
+        Tip::new(keys::ui_panels::MATERIAL_MODE)
+            .describe(keys::ui_panels::MATERIAL_MODE_DESCRIPTION)
+            .page(PAGE),
+        "material_mode_combo",
+        labels::material_mode(*mode),
+        |ui| {
+            for option in MaterialMode::ALL {
+                ui.selectable_value(mode, option, labels::material_mode(option));
+            }
+        },
+    );
 }

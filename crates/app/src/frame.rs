@@ -27,6 +27,7 @@ use review_ui::{
 };
 
 use crate::App;
+use crate::keys;
 use crate::prof;
 
 /// The notice slot every GPU fault report shares, so a device that faults over
@@ -171,7 +172,7 @@ impl App {
                     opt_overlay,
                 );
                 if self.ui.debug.material_mode != prev_material_mode {
-                    notifications.mode(self.ui.debug.material_mode.label());
+                    notifications.mode(review_ui::material_mode_name(self.ui.debug.material_mode));
                 }
                 // Announce the buffer being viewed when the user switches *into* the
                 // Buffers view or cycles to the next buffer (mirrors the material-
@@ -181,7 +182,9 @@ impl App {
                     buffers_now && prev_active_material != ActiveMaterial::Buffers;
                 let cycled_buffer = buffers_now && self.ui.debug.buffer_view != prev_buffer_view;
                 if entered_buffers || cycled_buffer {
-                    notifications.mode(format!("Buffer: {}", self.ui.debug.buffer_view.label()));
+                    notifications.mode(keys::app_notifications::buffer_mode(
+                        review_ui::buffer_view_name(self.ui.debug.buffer_view),
+                    ));
                 }
                 // The notice column paints on the egui Foreground layer, above
                 // the chrome. It takes the side panels' widths — measured by
@@ -193,6 +196,12 @@ impl App {
             egui_state.handle_platform_output(&window, full_output.platform_output.clone());
             (full_output, ui_output)
         };
+
+        // The pass above is what decides whether egui took the last press — a
+        // panel divider or a window's resize edge grabs it here, a frame after
+        // `egui_winit` had to guess. Resolve the proposal before anything reads
+        // `drag_mode`.
+        self.settle_pending_drag(&egui_ctx);
 
         {
             let _z = prof::zone!("Apply UI Output");
@@ -478,7 +487,7 @@ impl App {
     /// It is the user's only sign, since the prof channel is invisible without
     /// `--tracy` and a windowed release build has no console.
     pub(crate) fn report_gpu_fault(&mut self, context: &str, err: impl std::fmt::Display) {
-        let message = format!("{context}: {err}");
+        let message = keys::app_notifications::gpu_fault(context, err.to_string());
         prof::msg(&message);
         if !self.gpu_fault_notified {
             self.gpu_fault_notified = true;

@@ -29,6 +29,12 @@ objc2-foundation = { workspace = true, features = [
 # The menu bar. `default-features = false` drops its GTK/Windows halves, which
 # would otherwise be compiled for a crate that only ever builds on macOS.
 muda = { workspace = true, default-features = false }
+# The menu's own labels (invariant 12). macOS-only, like everything else here.
+review-localization.workspace = true
+
+[target.'cfg(target_os = "macos")'.build-dependencies]
+# Generates `keys.rs` for the `menu-` messages into this crate's OUT_DIR.
+review-localization-build.workspace = true
 
 [lints]
 workspace = true

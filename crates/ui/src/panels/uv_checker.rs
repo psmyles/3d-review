@@ -3,11 +3,17 @@
 
 use review_render::CheckerTexture;
 
+use crate::docs::Page;
+use crate::keys;
+use crate::labels;
 use crate::state::{
     UiState, UvCheckerPanelState,
     range::{CHECKER_TILING_MAX, CHECKER_TILING_MIN},
 };
-use crate::widgets::{labeled_combo, labeled_slider_with_value, panel_grid, reset_button};
+use crate::widgets::{Tip, labeled_combo, labeled_slider_with_value, panel_footer, panel_grid};
+
+/// This panel's page in the manual, opened by its footer's `?`.
+const PAGE: Page = Page::PanelsUvChecker;
 
 pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
     let uv_set_count = state.stats.uv_set_count;
@@ -16,7 +22,9 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
         // Integer tiling on the standard slider (0 decimals → integer readout).
         labeled_slider_with_value(
             ui,
-            "Checker Tiling",
+            Tip::new(keys::ui_panels::CHECKER_TILING)
+                .describe(keys::ui_panels::CHECKER_TILING_DESCRIPTION)
+                .page(PAGE),
             &mut state.uv_checker.tiling,
             CHECKER_TILING_MIN..=CHECKER_TILING_MAX,
             0,
@@ -28,7 +36,7 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
         }
     });
     ui.separator();
-    if reset_button(ui).clicked() {
+    if panel_footer(ui, PAGE).clicked() {
         state.uv_checker = UvCheckerPanelState::default();
     }
 }
@@ -38,12 +46,14 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
 fn checker_texture_row(ui: &mut egui::Ui, texture: &mut CheckerTexture) {
     labeled_combo(
         ui,
-        "Checker Texture",
+        Tip::new(keys::ui_panels::CHECKER_TEXTURE)
+            .describe(keys::ui_panels::CHECKER_TEXTURE_DESCRIPTION)
+            .page(PAGE),
         "uv_checker_texture",
-        texture.label(),
+        labels::checker(*texture),
         |ui| {
             for choice in [CheckerTexture::Greyscale, CheckerTexture::Color] {
-                ui.selectable_value(texture, choice, choice.label());
+                ui.selectable_value(texture, choice, labels::checker(choice));
             }
         },
     );
@@ -54,12 +64,18 @@ fn checker_texture_row(ui: &mut egui::Ui, texture: &mut CheckerTexture) {
 fn checker_channel_row(ui: &mut egui::Ui, uv_channel: &mut u32, uv_set_count: usize) {
     labeled_combo(
         ui,
-        "Model UV channel",
+        Tip::new(keys::ui_panels::UV_CHANNEL)
+            .describe(keys::ui_panels::UV_CHANNEL_DESCRIPTION)
+            .page(PAGE),
         "uv_checker_channel",
-        format!("Channel {uv_channel}"),
+        keys::ui_panels::uv_channel_numbered(f64::from(*uv_channel)),
         |ui| {
             for channel in 0..uv_set_count as u32 {
-                ui.selectable_value(uv_channel, channel, format!("Channel {channel}"));
+                ui.selectable_value(
+                    uv_channel,
+                    channel,
+                    keys::ui_panels::uv_channel_numbered(f64::from(channel)),
+                );
             }
         },
     );

@@ -10,13 +10,17 @@ use crate::assets::{
     ICON_ANTI_ALIASING, ICON_AO, ICON_BACKGROUND, ICON_IBL, ICON_INFO, ICON_OPT_OVERLAY,
     ICON_OPT_SPLIT, ICON_OPT_SWAP, ICON_OPT_SYNC, ICON_TONEMAPPER,
 };
+use crate::docs::Page;
+use crate::keys;
+use crate::labels;
 use crate::opt_state::OptLayout;
 use crate::state::{OptionPanel, TexViewRequest, TextureBackground, UiState, WorkspaceMode};
 use crate::theme::{color, font, size};
 use crate::transport;
 use crate::widgets::{
-    bar_group_rect, bar_group_rect_centered, bar_group_scope, compact_combo, icon_toggle_button,
-    icon_toggle_button_with_options, option_toggle, segment_button, toolbar_group_shell,
+    Tip, bar_group_rect, bar_group_rect_centered, bar_group_scope, compact_combo,
+    icon_toggle_button, icon_toggle_button_with_options, option_toggle, segment_button, tip,
+    toolbar_group_shell,
 };
 use review_model::ModelData;
 use review_render::ViewportBackground;
@@ -71,7 +75,15 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, model: &ModelData) 
             );
             bar_group_scope(ui, left_rect, group_height, |ui| {
                 toolbar_group_shell(ui, single_icon_group_width, |ui| {
-                    if icon_toggle_button(ui, &ICON_INFO, state.show_stats, "Model Stats").clicked()
+                    if icon_toggle_button(
+                        ui,
+                        &ICON_INFO,
+                        state.show_stats,
+                        Tip::new(keys::ui_status_bar::MODEL_STATS)
+                            .describe(keys::ui_status_bar::MODEL_STATS_DESCRIPTION)
+                            .page(Page::Stats),
+                    )
+                    .clicked()
                     {
                         state.show_stats = !state.show_stats;
                     }
@@ -100,7 +112,10 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, model: &ModelData) 
                         ui,
                         &ICON_BACKGROUND,
                         state.viewport_background != ViewportBackground::Black,
-                        "Viewport background (right-click for options)",
+                        Tip::new(keys::ui_status_bar::VIEWPORT_BACKGROUND)
+                            .describe(keys::ui_status_bar::VIEWPORT_BACKGROUND_DESCRIPTION)
+                            .with_options()
+                            .page(Page::PanelsBackground),
                     );
                     if background.clicked() {
                         state.viewport_background = state.viewport_background.next();
@@ -121,7 +136,10 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, model: &ModelData) 
                             &mut state.environment.ibl_enabled,
                             &mut state.panels_open,
                             OptionPanel::Environment,
-                            "Image-based lighting (right-click for options)",
+                            Tip::new(keys::ui_status_bar::IBL)
+                                .describe(keys::ui_status_bar::IBL_DESCRIPTION)
+                                .with_options()
+                                .page(Page::PanelsEnvironment),
                         );
                     });
 
@@ -137,7 +155,10 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, model: &ModelData) 
                             &mut state.gtao.enabled,
                             &mut state.panels_open,
                             OptionPanel::Gtao,
-                            "Ambient occlusion (right-click for options)",
+                            Tip::new(keys::ui_status_bar::AO)
+                                .describe(keys::ui_status_bar::AO_DESCRIPTION)
+                                .with_options()
+                                .page(Page::PanelsAmbientOcclusion),
                         );
                     });
 
@@ -148,7 +169,10 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, model: &ModelData) 
                         &mut state.tonemap.enabled,
                         &mut state.panels_open,
                         OptionPanel::Tonemap,
-                        "Tone mapping (right-click for options)",
+                        Tip::new(keys::ui_status_bar::TONEMAP)
+                            .describe(keys::ui_status_bar::TONEMAP_DESCRIPTION)
+                            .with_options()
+                            .page(Page::PanelsTonemapper),
                     );
                     option_toggle(
                         ui,
@@ -156,7 +180,10 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, model: &ModelData) 
                         &mut state.anti_aliasing.enabled,
                         &mut state.panels_open,
                         OptionPanel::AntiAliasing,
-                        "Anti aliasing (right-click for options)",
+                        Tip::new(keys::ui_status_bar::ANTI_ALIASING)
+                            .describe(keys::ui_status_bar::ANTI_ALIASING_DESCRIPTION)
+                            .with_options()
+                            .page(Page::PanelsAntiAliasing),
                     );
                 });
             });
@@ -268,7 +295,9 @@ fn draw_opt_group(ui: &mut egui::Ui, state: &mut UiState, bar_rect: egui::Rect, 
                 ui,
                 &ICON_OPT_SPLIT,
                 split,
-                "Split view - source and processed side by side",
+                Tip::new(keys::ui_status_bar::SPLIT_VIEW)
+                    .describe(keys::ui_status_bar::SPLIT_VIEW_DESCRIPTION)
+                    .page(Page::OptComparison),
             )
             .clicked()
             {
@@ -278,7 +307,9 @@ fn draw_opt_group(ui: &mut egui::Ui, state: &mut UiState, bar_rect: egui::Rect, 
                 ui,
                 &ICON_OPT_OVERLAY,
                 !split,
-                "Overlay view - both in one view, one drawn as a ghost",
+                Tip::new(keys::ui_status_bar::OVERLAY_VIEW)
+                    .describe(keys::ui_status_bar::OVERLAY_VIEW_DESCRIPTION)
+                    .page(Page::OptComparison),
             )
             .clicked()
             {
@@ -292,7 +323,7 @@ fn draw_opt_group(ui: &mut egui::Ui, state: &mut UiState, bar_rect: egui::Rect, 
                     ui,
                     &ICON_OPT_SYNC,
                     sync,
-                    "Move both views' cameras together",
+                    Tip::new(keys::ui_status_bar::SYNC_CAMERAS).page(Page::OptComparison),
                 )
                 .clicked()
                 {
@@ -308,18 +339,23 @@ fn draw_opt_group(ui: &mut egui::Ui, state: &mut UiState, bar_rect: egui::Rect, 
                             ui,
                             &ICON_OPT_SWAP,
                             false,
-                            &format!(
-                                "Showing {} solid - click to swap (X)",
-                                state.opt.side.label()
-                            ),
+                            Tip::new(keys::ui_status_bar::swap_sides(
+                                review_localization::tr(labels::comparison_side(state.opt.side))
+                                    .into_owned(),
+                            ))
+                            .describe(keys::ui_status_bar::SWAP_SIDES_DESCRIPTION)
+                            .page(Page::OptComparison),
                         )
                     })
                     .inner;
                 if response.clicked() {
                     state.opt.side = state.opt.side.swapped();
                 }
-                response.on_disabled_hover_text(
-                    "Nothing processed yet - add an operation to the stack",
+                tip(
+                    response,
+                    Tip::new(keys::ui_status_bar::NOTHING_PROCESSED)
+                        .describe(keys::ui_status_bar::NOTHING_PROCESSED_DESCRIPTION)
+                        .page(Page::OptRun),
                 );
             }
         });
@@ -330,9 +366,9 @@ fn draw_opt_group(ui: &mut egui::Ui, state: &mut UiState, bar_rect: egui::Rect, 
 /// processed meshes and the export carry.
 fn lod_label(level: usize) -> String {
     if level == 0 {
-        "LOD 0 (full)".to_owned()
+        review_localization::tr(keys::ui_status_bar::LOD_FULL).into_owned()
     } else {
-        format!("LOD {level}")
+        keys::ui_status_bar::lod_level(level as f64)
     }
 }
 
@@ -362,7 +398,9 @@ fn draw_texture_status_bar(ui: &mut egui::Ui, state: &mut UiState, group_height:
                 ui,
                 &ICON_INFO,
                 state.texture_view.show_stats,
-                "Texture Info",
+                Tip::new(keys::ui_status_bar::TEXTURE_INFO)
+                    .describe(keys::ui_status_bar::TEXTURE_INFO_DESCRIPTION)
+                    .page(Page::Tex),
             )
             .clicked()
             {
@@ -401,8 +439,15 @@ fn draw_texture_status_bar(ui: &mut egui::Ui, state: &mut UiState, group_height:
         toolbar_group_shell(ui, bg_group_width, |ui| {
             for background in TextureBackground::ALL {
                 let selected = state.texture_view.background == background;
-                let response = segment_button(ui, background.label(), selected, segment_w)
-                    .on_hover_text(background_tooltip(background));
+                let response = tip(
+                    segment_button(
+                        ui,
+                        review_localization::tr(labels::texture_background(background)).as_ref(),
+                        selected,
+                        segment_w,
+                    ),
+                    background_tooltip(background),
+                );
                 if response.clicked() {
                     state.texture_view.background = background;
                 }
@@ -425,19 +470,33 @@ fn zoom_reset_label(ui: &mut egui::Ui, zoom: f32) -> egui::Response {
     ui.painter().text(
         rect.left_center(),
         egui::Align2::LEFT_CENTER,
-        format!("{percent}%"),
+        keys::ui_status_bar::zoom_percent(f64::from(percent)),
         egui::FontId::monospace(font::STATUS_ZOOM),
         text_color,
     );
-    response.on_hover_text("Zoom level - click to toggle 100% / fit to view")
+    tip(
+        response,
+        Tip::new(keys::ui_status_bar::ZOOM)
+            .describe(keys::ui_status_bar::ZOOM_DESCRIPTION)
+            .page(Page::Tex),
+    )
 }
 
 /// Hover tooltip spelling out a background-fill segment's single-letter label.
-fn background_tooltip(background: TextureBackground) -> &'static str {
+fn background_tooltip(background: TextureBackground) -> Tip {
+    let title = match background {
+        TextureBackground::Black => keys::ui_status_bar::BACKGROUND_BLACK,
+        TextureBackground::White => keys::ui_status_bar::BACKGROUND_WHITE,
+        TextureBackground::Grey => keys::ui_status_bar::BACKGROUND_GREY,
+        TextureBackground::Checker => keys::ui_status_bar::BACKGROUND_CHECKER,
+    };
+    let tip = Tip::new(title).page(Page::Tex);
+    // Only the checker has anything to add: the other three are what their names
+    // say, and a paragraph restating "this makes the background black" is noise.
     match background {
-        TextureBackground::Black => "Black background",
-        TextureBackground::White => "White background",
-        TextureBackground::Grey => "Grey background",
-        TextureBackground::Checker => "Checker background",
+        TextureBackground::Checker => {
+            tip.describe(keys::ui_status_bar::BACKGROUND_CHECKER_DESCRIPTION)
+        }
+        _ => tip,
     }
 }

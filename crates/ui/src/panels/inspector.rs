@@ -21,9 +21,14 @@ use review_render::{
     RoughnessWorkflow, Selection, TextureSlot,
 };
 
+use crate::docs::Page;
+use crate::keys;
+use crate::labels;
 use crate::state::{TextureAssign, TextureIntent, TexturePoolEntry, TextureSlotRef, UiState};
 use crate::theme::size;
-use crate::widgets::{labeled_color_button, labeled_combo, labeled_slider_with_value, panel_grid};
+use crate::widgets::{
+    Tip, labeled_color_button, labeled_combo, labeled_slider_with_value, panel_grid, tip,
+};
 
 /// What the Inspector emitted this frame, forwarded by the overlay into the
 /// [`crate::state::UiOutput`].
@@ -41,7 +46,7 @@ pub(crate) struct InspectorOutput {
 pub(crate) fn body(ui: &mut egui::Ui, state: &UiState, model: &ModelData) -> InspectorOutput {
     match state.selection {
         Selection::None => {
-            ui.weak("Select a node or material in the Outliner.");
+            ui.weak(keys::ui_inspector::EMPTY);
             InspectorOutput::default()
         }
         Selection::Material(index) => {
@@ -65,7 +70,7 @@ pub(crate) fn body(ui: &mut egui::Ui, state: &UiState, model: &ModelData) -> Ins
 /// The selected material's three collapsible sections.
 fn material_inspector(ui: &mut egui::Ui, state: &UiState, index: usize) -> InspectorOutput {
     let Some(snapshot) = state.materials_snapshot.get(index) else {
-        ui.weak("Material no longer exists.");
+        ui.weak(keys::ui_inspector::MATERIAL_GONE);
         return InspectorOutput::default();
     };
 
@@ -73,7 +78,7 @@ fn material_inspector(ui: &mut egui::Ui, state: &UiState, index: usize) -> Inspe
     let mut out = InspectorOutput::default();
 
     let title = if snapshot.name.is_empty() {
-        "Material".to_owned()
+        review_localization::tr(keys::ui_inspector::MATERIAL).into_owned()
     } else {
         snapshot.name.clone()
     };
@@ -83,7 +88,7 @@ fn material_inspector(ui: &mut egui::Ui, state: &UiState, index: usize) -> Inspe
         .default_open(true)
         .show(ui, |ui| material_section(ui, current, index, &mut out));
 
-    egui::CollapsingHeader::new("Texture mapping")
+    let mapping = egui::CollapsingHeader::new(keys::ui_inspector::TEXTURE_MAPPING)
         .id_salt(("inspector_texture_mapping", index))
         .default_open(true)
         .show(ui, |ui| {
@@ -92,12 +97,27 @@ fn material_inspector(ui: &mut egui::Ui, state: &UiState, index: usize) -> Inspe
             }
         });
 
-    egui::CollapsingHeader::new("Texture files")
+    // A collapsing header's own header response is what carries the section's
+    // explanation: the header is the only part of it always on screen.
+    tip(
+        mapping.header_response,
+        Tip::new(keys::ui_inspector::TEXTURE_MAPPING)
+            .describe(keys::ui_inspector::TEXTURE_MAPPING_DESCRIPTION)
+            .page(Page::Materials),
+    );
+
+    let files = egui::CollapsingHeader::new(keys::ui_inspector::TEXTURE_FILES)
         .id_salt("inspector_texture_files")
         .default_open(true)
         .show(ui, |ui| {
             texture_files_section(ui, &state.texture_pool, &mut out)
         });
+    tip(
+        files.header_response,
+        Tip::new(keys::ui_inspector::TEXTURE_FILES)
+            .describe(keys::ui_inspector::TEXTURE_FILES_DESCRIPTION)
+            .page(Page::Materials),
+    );
 
     // A material slider handle / color-picker being dragged keeps egui's pointer
     // captured (the background 3D viewport isn't an egui widget, so camera orbit
@@ -127,13 +147,15 @@ fn material_section(
         // map row and inverts a bound map in the shader (Unity-style).
         labeled_combo(
             ui,
-            "Workflow",
+            Tip::new(keys::ui_inspector::WORKFLOW)
+                .describe(keys::ui_inspector::WORKFLOW_DESCRIPTION)
+                .page(Page::Materials),
             "inspector_workflow",
-            state.workflow.label(),
+            labels::workflow(state.workflow),
             |ui| {
                 for workflow in RoughnessWorkflow::ALL {
                     if ui
-                        .selectable_label(workflow == state.workflow, workflow.label())
+                        .selectable_label(workflow == state.workflow, labels::workflow(workflow))
                         .clicked()
                         && workflow != state.workflow
                     {
@@ -149,13 +171,15 @@ fn material_section(
         // Transparency mode = the material's alpha-compositing mode.
         labeled_combo(
             ui,
-            "Transparency",
+            Tip::new(keys::ui_inspector::TRANSPARENCY)
+                .describe(keys::ui_inspector::TRANSPARENCY_DESCRIPTION)
+                .page(Page::Materials),
             "inspector_alpha_mode",
-            state.alpha_mode.label(),
+            labels::alpha_mode(state.alpha_mode),
             |ui| {
                 for mode in AlphaMode::ALL {
                     if ui
-                        .selectable_label(mode == state.alpha_mode, mode.label())
+                        .selectable_label(mode == state.alpha_mode, labels::alpha_mode(mode))
                         .clicked()
                         && mode != state.alpha_mode
                     {
@@ -168,7 +192,15 @@ fn material_section(
             },
         );
         if state.alpha_mode == AlphaMode::Clip
-            && labeled_slider_with_value(ui, "Cutoff", &mut cutoff, 0.0..=1.0, 3)
+            && labeled_slider_with_value(
+                ui,
+                Tip::new(keys::ui_inspector::CUTOFF)
+                    .describe(keys::ui_inspector::CUTOFF_DESCRIPTION)
+                    .page(Page::Materials),
+                &mut cutoff,
+                0.0..=1.0,
+                3,
+            )
         {
             out.material_edit = Some(MaterialEdit {
                 index,
@@ -176,7 +208,13 @@ fn material_section(
             });
         }
 
-        if labeled_color_button(ui, "Base color", &mut base).changed() {
+        if labeled_color_button(
+            ui,
+            Tip::new(keys::ui_inspector::BASE_COLOR).page(Page::Materials),
+            &mut base,
+        )
+        .changed()
+        {
             out.material_edit = Some(MaterialEdit {
                 index,
                 change: MaterialChange::BaseColor(base),
@@ -186,7 +224,13 @@ fn material_section(
         // complement and writes it back inverted (a smoothness slider).
         match state.workflow {
             RoughnessWorkflow::Roughness => {
-                if labeled_slider_with_value(ui, "Roughness", &mut roughness, 0.0..=1.0, 3) {
+                if labeled_slider_with_value(
+                    ui,
+                    Tip::new(keys::ui_inspector::ROUGHNESS).page(Page::Materials),
+                    &mut roughness,
+                    0.0..=1.0,
+                    3,
+                ) {
                     out.material_edit = Some(MaterialEdit {
                         index,
                         change: MaterialChange::Roughness(roughness),
@@ -195,7 +239,13 @@ fn material_section(
             }
             RoughnessWorkflow::Smoothness => {
                 let mut smoothness = 1.0 - roughness;
-                if labeled_slider_with_value(ui, "Smoothness", &mut smoothness, 0.0..=1.0, 3) {
+                if labeled_slider_with_value(
+                    ui,
+                    Tip::new(keys::ui_inspector::SMOOTHNESS).page(Page::Materials),
+                    &mut smoothness,
+                    0.0..=1.0,
+                    3,
+                ) {
                     out.material_edit = Some(MaterialEdit {
                         index,
                         change: MaterialChange::Roughness(1.0 - smoothness),
@@ -203,13 +253,27 @@ fn material_section(
                 }
             }
         }
-        if labeled_slider_with_value(ui, "Metallic", &mut metallic, 0.0..=1.0, 3) {
+        if labeled_slider_with_value(
+            ui,
+            Tip::new(keys::ui_inspector::METALLIC)
+                .describe(keys::ui_inspector::METALLIC_DESCRIPTION)
+                .page(Page::Materials),
+            &mut metallic,
+            0.0..=1.0,
+            3,
+        ) {
             out.material_edit = Some(MaterialEdit {
                 index,
                 change: MaterialChange::Metallic(metallic),
             });
         }
-        if labeled_color_button(ui, "Emissive", &mut emissive).changed() {
+        if labeled_color_button(
+            ui,
+            Tip::new(keys::ui_inspector::EMISSIVE).page(Page::Materials),
+            &mut emissive,
+        )
+        .changed()
+        {
             out.material_edit = Some(MaterialEdit {
                 index,
                 change: MaterialChange::Emissive(emissive),
@@ -238,12 +302,10 @@ fn texture_mapping_row(
         slot: slot.index(),
     };
     let binding = state.textures[slot.index()].as_ref();
-    let slot_label =
-        if slot == TextureSlot::Roughness && state.workflow == RoughnessWorkflow::Smoothness {
-            "Smoothness"
-        } else {
-            slot.label()
-        };
+    // The roughness slot follows the material's workflow: on a smoothness
+    // material the shader inverts what the map holds, so labelling the row
+    // "Roughness" would name the opposite of what it feeds.
+    let slot_label = labels::texture_slot_for(slot, state.workflow);
     // Every slot carries a channel dropdown: scalar slots route a single channel,
     // color slots (base color / emissive) offer RGB or a single channel, and Normal
     // shows a disabled "RGB" combo (it always reads full RGB).
@@ -267,7 +329,7 @@ fn texture_mapping_row(
             .width(texture_w)
             .show_ui(ui, |ui| {
                 if ui
-                    .selectable_label(binding.is_none(), "select texture")
+                    .selectable_label(binding.is_none(), keys::ui_inspector::SELECT_TEXTURE)
                     .clicked()
                     && binding.is_some()
                 {
@@ -308,12 +370,12 @@ fn texture_mapping_row(
         };
         ui.add_enabled_ui(binding.is_some() && !is_normal, |ui| {
             egui::ComboBox::from_id_salt(("inspector_ch", index, slot.index()))
-                .selected_text(current_channel.label())
+                .selected_text(labels::channel(current_channel))
                 .width(channel_w)
                 .show_ui(ui, |ui| {
                     for &choice in choices {
                         if ui
-                            .selectable_label(choice == current_channel, choice.label())
+                            .selectable_label(choice == current_channel, labels::channel(choice))
                             .clicked()
                             && choice != current_channel
                         {
@@ -329,10 +391,10 @@ fn texture_mapping_row(
 }
 
 /// Section 3 — the scene texture pool: each imported file as a thumbnail + name +
-/// remove (✕), then an "Add textures…" button and the drop-to-add hint.
+/// remove (✕), then an "Add textures" button and the drop-to-add hint.
 fn texture_files_section(ui: &mut egui::Ui, pool: &[TexturePoolEntry], out: &mut InspectorOutput) {
     if pool.is_empty() {
-        ui.weak("No textures imported.");
+        ui.weak(keys::ui_inspector::NO_TEXTURES);
     } else {
         for entry in pool {
             texture_file_row(ui, entry, out);
@@ -340,10 +402,10 @@ fn texture_files_section(ui: &mut egui::Ui, pool: &[TexturePoolEntry], out: &mut
     }
 
     ui.add_space(ui.spacing().item_spacing.y);
-    if ui.button("Add textures\u{2026}").clicked() {
+    if ui.button(keys::ui_inspector::ADD_TEXTURES).clicked() {
         out.texture = Some(TextureIntent::Import);
     }
-    ui.weak("Drop texture files here to add");
+    ui.weak(keys::ui_inspector::DROP_TEXTURES);
 }
 
 /// One Texture files row: thumbnail (left), name (fills, truncating), remove
@@ -376,7 +438,7 @@ fn texture_file_row(ui: &mut egui::Ui, entry: &TexturePoolEntry, out: &mut Inspe
         });
         if ui
             .button("\u{2715}")
-            .on_hover_text("Remove texture")
+            .on_hover_text(keys::ui_inspector::REMOVE_TEXTURE)
             .clicked()
         {
             out.texture = Some(TextureIntent::Remove(entry.path.clone()));
@@ -388,8 +450,8 @@ fn texture_file_row(ui: &mut egui::Ui, entry: &TexturePoolEntry, out: &mut Inspe
 fn pool_name(path: &Path) -> String {
     path.file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or("<texture>")
-        .to_owned()
+        .map(str::to_owned)
+        .unwrap_or_else(|| review_localization::tr(keys::ui_inspector::NO_TEXTURE).into_owned())
 }
 
 /// Lazily build + cache a small egui texture thumbnail for a pooled image. Cached
@@ -447,7 +509,7 @@ fn thumbnail_color_image(image: &DecodedImage) -> Option<egui::ColorImage> {
 /// and world position (display metadata only — invariant 1).
 fn node_inspector(ui: &mut egui::Ui, state: &UiState, model: &ModelData, index: usize) {
     let Some(node) = model.nodes.get(index) else {
-        ui.weak("Node no longer exists.");
+        ui.weak(keys::ui_inspector::NODE_GONE);
         return;
     };
 
@@ -456,14 +518,14 @@ fn node_inspector(ui: &mut egui::Ui, state: &UiState, model: &ModelData, index: 
     } else {
         node.name.clone()
     };
-    ui.heading(format!("Node - {name}"));
+    ui.heading(keys::ui_inspector::node_heading(name));
 
     // "Mesh part" is more informative than the bare kind for a node that actually
     // carries geometry; every other node reports what the importer classified it as.
     let kind = if node.mesh_part.is_some() {
-        "Mesh part"
+        keys::ui_inspector::MESH_PART
     } else {
-        node.kind.label()
+        labels::node_kind(node.kind)
     };
     let child_count = model
         .nodes
@@ -481,13 +543,25 @@ fn node_inspector(ui: &mut egui::Ui, state: &UiState, model: &ModelData, index: 
     let position = node.transform.w_axis.truncate();
 
     panel_grid(ui, "inspector_node", |ui| {
-        crate::widgets::value_row(ui, "Type", kind);
-        crate::widgets::value_row(ui, "Children", &child_count.to_string());
-        crate::widgets::value_row(ui, "Triangles", &triangle_count.to_string());
         crate::widgets::value_row(
             ui,
-            "Position",
-            &format!("{:.3}, {:.3}, {:.3}", position.x, position.y, position.z),
+            Tip::new(keys::ui_inspector::TYPE).page(Page::OutlinerInspector),
+            kind,
+        );
+        crate::widgets::value_row(
+            ui,
+            Tip::new(keys::ui_inspector::CHILDREN).page(Page::OutlinerInspector),
+            child_count.to_string(),
+        );
+        crate::widgets::value_row(
+            ui,
+            Tip::new(keys::ui_inspector::TRIANGLES).page(Page::OutlinerInspector),
+            triangle_count.to_string(),
+        );
+        crate::widgets::value_row(
+            ui,
+            Tip::new(keys::ui_inspector::POSITION).page(Page::OutlinerInspector),
+            format!("{:.3}, {:.3}, {:.3}", position.x, position.y, position.z),
         );
 
         // Skinned-mesh rows: the skinning method the file declared (the viewer
@@ -499,11 +573,19 @@ fn node_inspector(ui: &mut egui::Ui, state: &UiState, model: &ModelData, index: 
                 .iter()
                 .find(|deformer| deformer.mesh_node as usize == index)
         }) {
-            crate::widgets::value_row(ui, "Skinning", deformer.method.label());
             crate::widgets::value_row(
                 ui,
-                "Max influences",
-                &deformer.max_weights_per_vertex.to_string(),
+                Tip::new(keys::ui_inspector::SKINNING)
+                    .describe(keys::ui_inspector::SKINNING_DESCRIPTION)
+                    .page(Page::OutlinerInspector),
+                labels::skinning_method(deformer.method),
+            );
+            crate::widgets::value_row(
+                ui,
+                Tip::new(keys::ui_inspector::MAX_INFLUENCES)
+                    .describe(keys::ui_inspector::MAX_INFLUENCES_DESCRIPTION)
+                    .page(Page::OutlinerInspector),
+                deformer.max_weights_per_vertex.to_string(),
             );
         }
         let blend_channels = model.morph.as_ref().map_or(0, |morph| {
@@ -514,7 +596,11 @@ fn node_inspector(ui: &mut egui::Ui, state: &UiState, model: &ModelData, index: 
                 .count()
         });
         if blend_channels > 0 {
-            crate::widgets::value_row(ui, "Blend shapes", &blend_channels.to_string());
+            crate::widgets::value_row(
+                ui,
+                Tip::new(keys::ui_inspector::BLEND_SHAPES).page(Page::OutlinerInspector),
+                blend_channels.to_string(),
+            );
         }
 
         // Bone-only rows: what the rig authored, and how much of the mesh this
@@ -522,27 +608,39 @@ fn node_inspector(ui: &mut egui::Ui, state: &UiState, model: &ModelData, index: 
         if let Some(bone) = node.bone {
             // A file that declared neither would only add two zero rows of noise.
             if bone.radius > 0.0 {
-                crate::widgets::value_row(ui, "Radius", &format!("{:.3}", bone.radius));
+                crate::widgets::value_row(
+                    ui,
+                    Tip::new(keys::ui_inspector::RADIUS).page(Page::OutlinerInspector),
+                    format!("{:.3}", bone.radius),
+                );
             }
             if bone.relative_length > 0.0 {
                 crate::widgets::value_row(
                     ui,
-                    "Relative length",
-                    &format!("{:.3}", bone.relative_length),
+                    Tip::new(keys::ui_inspector::RELATIVE_LENGTH).page(Page::OutlinerInspector),
+                    format!("{:.3}", bone.relative_length),
                 );
             }
             if model.skin.is_some() {
                 // Measured once per selection change by `sync_bone_influence`.
                 crate::widgets::value_row(
                     ui,
-                    "Influenced verts",
-                    &state.caches.bone_influence.to_string(),
+                    Tip::new(keys::ui_inspector::INFLUENCED_VERTS)
+                        .describe(keys::ui_inspector::INFLUENCED_VERTS_DESCRIPTION)
+                        .page(Page::OutlinerInspector),
+                    state.caches.bone_influence.to_string(),
                 );
                 if model.stats.vertex_count > 0 {
                     let share = state.caches.bone_influence as f32
                         / model.stats.vertex_count as f32
                         * 100.0;
-                    crate::widgets::value_row(ui, "Share of mesh", &format!("{share:.1}%"));
+                    crate::widgets::value_row(
+                        ui,
+                        Tip::new(keys::ui_inspector::SHARE_OF_MESH)
+                            .describe(keys::ui_inspector::SHARE_OF_MESH_DESCRIPTION)
+                            .page(Page::OutlinerInspector),
+                        format!("{share:.1}%"),
+                    );
                 }
             }
         }
@@ -553,17 +651,33 @@ fn node_inspector(ui: &mut egui::Ui, state: &UiState, model: &ModelData, index: 
 /// how much of the mesh it moves, and which bones they are.
 fn bone_selection_inspector(ui: &mut egui::Ui, state: &UiState, model: &ModelData) {
     let count = state.selected_bones.len();
-    ui.heading(format!("{count} bones selected"));
+    ui.heading(keys::ui_inspector::bones_selected(count as f64));
 
     // The union count, measured once per selection change by `sync_bone_influence`.
     let influenced = state.caches.bone_influence;
     panel_grid(ui, "inspector_bone_selection", |ui| {
-        crate::widgets::value_row(ui, "Bones", &count.to_string());
+        crate::widgets::value_row(
+            ui,
+            Tip::new(keys::ui_inspector::BONES).page(Page::OutlinerInspector),
+            count.to_string(),
+        );
         if model.skin.is_some() {
-            crate::widgets::value_row(ui, "Influenced verts", &influenced.to_string());
+            crate::widgets::value_row(
+                ui,
+                Tip::new(keys::ui_inspector::INFLUENCED_VERTS)
+                    .describe(keys::ui_inspector::INFLUENCED_VERTS_DESCRIPTION)
+                    .page(Page::OutlinerInspector),
+                influenced.to_string(),
+            );
             if model.stats.vertex_count > 0 {
                 let share = influenced as f32 / model.stats.vertex_count as f32 * 100.0;
-                crate::widgets::value_row(ui, "Share of mesh", &format!("{share:.1}%"));
+                crate::widgets::value_row(
+                    ui,
+                    Tip::new(keys::ui_inspector::SHARE_OF_MESH)
+                        .describe(keys::ui_inspector::SHARE_OF_MESH_DESCRIPTION)
+                        .page(Page::OutlinerInspector),
+                    format!("{share:.1}%"),
+                );
             }
         }
     });

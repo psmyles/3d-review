@@ -3,7 +3,8 @@
 //! One file per family: [`bar`] the chrome bands, [`card`] the floating stats
 //! cards, [`buttons`] buttons and tab strips, [`form`] the panel form rows,
 //! [`swatch`] the color swatches (the only ones that paint rather than delegate),
-//! and [`list`] the list rows.
+//! [`list`] the list rows, and [`tooltip`] the one tooltip shape every control
+//! uses.
 
 mod bar;
 mod buttons;
@@ -11,6 +12,7 @@ mod card;
 mod form;
 mod list;
 mod swatch;
+mod tooltip;
 
 pub(crate) use bar::*;
 pub(crate) use buttons::*;
@@ -18,3 +20,4 @@ pub(crate) use card::*;
 pub(crate) use form::*;
 pub(crate) use list::*;
 pub(crate) use swatch::*;
+pub(crate) use tooltip::*;

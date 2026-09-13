@@ -37,6 +37,7 @@ use review_model::{ModelData, SourceExtras};
 use review_optimize::{ExportOptions, ProcessedResult, preset};
 
 use crate::events::UserEvent;
+use crate::keys;
 use crate::loading::TEXTURE_EXTENSIONS;
 use crate::{App, prof};
 
@@ -112,13 +113,19 @@ impl Dialog {
     fn ask(self) -> Option<DialogAnswer> {
         match self {
             Dialog::OpenModel => rfd::FileDialog::new()
-                .add_filter("FBX", &["fbx"])
-                .set_title("Open Model")
+                .add_filter(
+                    review_localization::tr(keys::app_dialogs::FILTER_FBX),
+                    &["fbx"],
+                )
+                .set_title(review_localization::tr(keys::app_dialogs::OPEN_MODEL))
                 .pick_file()
                 .map(DialogAnswer::OpenModel),
             Dialog::ImportTextures => rfd::FileDialog::new()
-                .add_filter("Image", &TEXTURE_EXTENSIONS)
-                .set_title("Import Textures")
+                .add_filter(
+                    review_localization::tr(keys::app_dialogs::FILTER_IMAGE),
+                    &TEXTURE_EXTENSIONS,
+                )
+                .set_title(review_localization::tr(keys::app_dialogs::IMPORT_TEXTURES))
                 .pick_files()
                 .map(DialogAnswer::ImportTextures),
             Dialog::ExportOpt {
@@ -128,9 +135,12 @@ impl Dialog {
                 options,
                 stem,
             } => rfd::FileDialog::new()
-                .set_title("Export optimized mesh")
-                .add_filter("FBX", &["fbx"])
-                .set_file_name(format!("{stem}.fbx"))
+                .set_title(review_localization::tr(keys::app_dialogs::EXPORT_MESH))
+                .add_filter(
+                    review_localization::tr(keys::app_dialogs::FILTER_FBX),
+                    &["fbx"],
+                )
+                .set_file_name(format!("{stem}.fbx")) // localization: exempt a file name and its extension, not prose
                 .save_file()
                 .map(|path| DialogAnswer::ExportOpt {
                     path,
@@ -140,14 +150,20 @@ impl Dialog {
                     options,
                 }),
             Dialog::SavePreset { json } => rfd::FileDialog::new()
-                .set_title("Save optimization preset")
-                .add_filter("Optimization preset", &[preset::PRESET_EXTENSION])
-                .set_file_name("optimization-preset.json")
+                .set_title(review_localization::tr(keys::app_dialogs::SAVE_PRESET))
+                .add_filter(
+                    review_localization::tr(keys::app_dialogs::FILTER_PRESET),
+                    &[preset::PRESET_EXTENSION],
+                )
+                .set_file_name(review_localization::tr(keys::app_dialogs::PRESET_FILE_NAME))
                 .save_file()
                 .map(|path| DialogAnswer::SavePreset { path, json }),
             Dialog::LoadPreset => rfd::FileDialog::new()
-                .set_title("Load optimization preset")
-                .add_filter("Optimization preset", &[preset::PRESET_EXTENSION])
+                .set_title(review_localization::tr(keys::app_dialogs::LOAD_PRESET))
+                .add_filter(
+                    review_localization::tr(keys::app_dialogs::FILTER_PRESET),
+                    &[preset::PRESET_EXTENSION],
+                )
                 .pick_file()
                 .map(DialogAnswer::LoadPreset),
         }
@@ -171,8 +187,9 @@ impl App {
         // this module exists to stop doing.
         let Some(proxy) = self.textures.proxy.clone() else {
             prof::msg("no event-loop proxy; cannot open a file dialog");
-            self.notifications
-                .error("Couldn't open the file dialog".to_owned());
+            self.notifications.error(
+                review_localization::tr(keys::app_notifications::DIALOG_FAILED).into_owned(),
+            );
             return;
         };
 

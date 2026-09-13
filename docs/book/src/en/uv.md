@@ -1,0 +1,32 @@
+# The UV workspace
+
+Every textured model has a UV layout. Imagine peeling the model's surface off
+and flattening it out onto a square sheet of paper: that flat sheet is the UV
+layout, and it tells the computer which part of a picture goes on which part of
+the model. The pieces of the flattened surface are called islands.
+
+The UV workspace shows that flat sheet. It has its own camera: left-drag slides
+the view around, right-drag or the mouse wheel zooms, and `R` fits the whole
+layout back into view.
+
+The outlines of the layout are always drawn. The toolbar choice decides what
+fills them:
+
+- **Wire** - just the outlines.
+- **Shaded** - each island filled in as a solid shape.
+- **Islands** - each island in its own color, so ones that overlap, or ones
+  that wandered off the sheet, stand out right away.
+
+If the model has more than one UV layout, a picker in the toolbar switches
+between them.
+
+## Reading a layout
+
+The island coloring is the quickest way to spot a piece that was left outside
+the square, or one that sits on top of another. To judge whether the texture
+will look stretched or blurry, the [UV Checker](panels/uv-checker.md) in the
+3D workspace is the better tool, because it shows the checkerboard on the
+actual surface.
+
+To see where the layout was *cut* to flatten it, the
+[UV Seams](panels/uv-seams.md) overlay marks every edge it was cut along.

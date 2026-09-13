@@ -323,6 +323,15 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin" "$app/Contents/MacOS/$name"
 cp "$icns" "$app/Contents/Resources/$name.icns"
+
+# The manual's images. Its page *text* is compiled into the binary (invariant 12),
+# so this is the only docs payload — and an bundle without it still shows every
+# page, each image rendering as its alt text. `app`'s `docs_dir()` looks here,
+# beside the binary's own directory.
+if [[ -d "$repo/docs/book/src/en/images" ]]; then
+  mkdir -p "$app/Contents/Resources/docs/en"
+  cp -R "$repo/docs/book/src/en/images" "$app/Contents/Resources/docs/en/"
+fi
 # The four-byte type/creator file. Vestigial, but its absence still confuses some tools.
 printf 'APPL????' > "$app/Contents/PkgInfo"
 

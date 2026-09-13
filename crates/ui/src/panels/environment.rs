@@ -11,29 +11,45 @@
 use review_render::{EnvironmentMap, EnvironmentSettings};
 
 use crate::assets::{self, AppIcon};
+use crate::docs::Page;
+use crate::keys;
+use crate::labels;
 use crate::state::{
     UiState,
     range::{ENV_INTENSITY_MAX, ENV_INTENSITY_MIN, ENV_ROTATION_MAX, ENV_ROTATION_MIN},
 };
 use crate::theme::size;
 use crate::widgets::{
-    labeled_checkbox, labeled_combo, labeled_slider_with_value, panel_grid, reset_button,
+    Tip, labeled_checkbox, labeled_combo, labeled_slider_with_value, panel_footer, panel_grid,
 };
+
+/// This panel's page in the manual, opened by its footer's `?`.
+const PAGE: Page = Page::PanelsEnvironment;
 
 pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
     panel_grid(ui, "environment", |ui| {
         environment_row(ui, state);
-        labeled_checkbox(ui, "Background", &mut state.environment.show_background);
+        labeled_checkbox(
+            ui,
+            Tip::new(keys::ui_panels::ENVIRONMENT_BACKGROUND)
+                .describe(keys::ui_panels::ENVIRONMENT_BACKGROUND_DESCRIPTION)
+                .page(PAGE),
+            &mut state.environment.show_background,
+        );
         labeled_slider_with_value(
             ui,
-            "Intensity",
+            Tip::new(keys::ui_panels::ENVIRONMENT_INTENSITY)
+                .describe(keys::ui_panels::ENVIRONMENT_INTENSITY_DESCRIPTION)
+                .page(PAGE),
             &mut state.environment.intensity,
             ENV_INTENSITY_MIN..=ENV_INTENSITY_MAX,
             2,
         );
         labeled_slider_with_value(
             ui,
-            "Rotation",
+            Tip::new(keys::ui_panels::ENVIRONMENT_ROTATION)
+                .describe(keys::ui_panels::ENVIRONMENT_ROTATION_DESCRIPTION)
+                .page(PAGE),
             &mut state.environment.rotation_degrees,
             ENV_ROTATION_MIN..=ENV_ROTATION_MAX,
             0,
@@ -41,7 +57,7 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
     });
 
     ui.separator();
-    if reset_button(ui).clicked() {
+    if panel_footer(ui, PAGE).clicked() {
         // The IBL on/off state is owned by the status-bar toggle, so reset only
         // the panel's own options and leave `ibl_enabled` untouched.
         state.environment = EnvironmentSettings {
@@ -56,9 +72,11 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
 fn environment_row(ui: &mut egui::Ui, state: &mut UiState) {
     labeled_combo(
         ui,
-        "Environment",
+        Tip::new(keys::ui_panels::ENVIRONMENT)
+            .describe(keys::ui_panels::ENVIRONMENT_DESCRIPTION)
+            .page(PAGE),
         "environment_map",
-        state.environment.map.label(),
+        labels::environment(state.environment.map),
         |ui| {
             for map in EnvironmentMap::ALL {
                 environment_option(ui, &mut state.environment.map, map);
@@ -72,7 +90,7 @@ fn environment_row(ui: &mut egui::Ui, state: &mut UiState) {
 /// combo's `CloseOnClick` default then dismisses the popup.
 fn environment_option(ui: &mut egui::Ui, current: &mut EnvironmentMap, map: EnvironmentMap) {
     let selected = *current == map;
-    let label = map.label();
+    let label = review_localization::tr(labels::environment(map)).into_owned();
     let button = match assets::load_icon_texture(ui, thumbnail_icon(map)) {
         Some(texture) => {
             let image = egui::Image::from_texture(texture)

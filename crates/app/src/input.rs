@@ -60,6 +60,7 @@ impl App {
     ) {
         if state == ElementState::Released {
             self.drag_mode = None;
+            self.pending_drag = None;
             // A flight lives only as long as the drag that armed it: a movement
             // key still down when the button comes up must not arm the next one.
             self.flycam.release_all();
@@ -89,8 +90,9 @@ impl App {
                 if self.should_open_on_double_click() {
                     self.open_model_from_dialog();
                     self.drag_mode = None;
+                    self.pending_drag = None;
                 } else {
-                    self.drag_mode = Some(if uv_mode {
+                    self.pending_drag = Some(if uv_mode {
                         DragMode::Pan
                     } else {
                         DragMode::Orbit
@@ -109,7 +111,7 @@ impl App {
                 // Shift+RMB is there because pan lost its plain-RMB binding to the
                 // look drag and the middle button it moved to is not a button every
                 // pointing device has (a Mac trackpad has none).
-                self.drag_mode = Some(if uv_mode || self.modifiers.alt_key() {
+                self.pending_drag = Some(if uv_mode || self.modifiers.alt_key() {
                     DragMode::Zoom
                 } else if self.modifiers.shift_key() {
                     DragMode::Pan
@@ -118,9 +120,38 @@ impl App {
                 });
             }
             MouseButton::Middle => {
-                self.drag_mode = Some(DragMode::Pan);
+                self.pending_drag = Some(DragMode::Pan);
             }
             _ => {}
+        }
+    }
+
+    /// Turn the press a frame ago into a live camera drag, unless egui took it.
+    ///
+    /// A press cannot be judged as it arrives. `egui_winit` answers "did egui
+    /// claim this?" out of the *previous* frame's layout, and a resize handle is
+    /// exactly where that answer is wrong: egui straddles a panel's or a window's
+    /// grab zone across its edge, so the outer half of it sits over what the last
+    /// frame still considered free viewport. The press came back unclaimed, armed
+    /// an orbit, and the scene then spun under the reader for the whole of the
+    /// resize - the drag itself going to egui, its motion going to the camera as
+    /// well.
+    ///
+    /// So a press only *proposes* a drag ([`App::pending_drag`]), and this runs
+    /// once the egui pass that resolves it has: if egui grabbed a widget with it,
+    /// the proposal is dropped, otherwise it becomes the live drag. The cost is a
+    /// frame of latency on starting an orbit, which is inside the redraw pacing
+    /// interval and so not something a hand can feel.
+    ///
+    /// `egui_is_using_pointer` and not `egui_wants_pointer_input`: the question
+    /// here is only whether egui *grabbed* something - merely hovering an area was
+    /// already answered - correctly - when the press arrived.
+    pub(crate) fn settle_pending_drag(&mut self, egui_ctx: &egui::Context) {
+        let Some(mode) = self.pending_drag.take() else {
+            return;
+        };
+        if !egui_ctx.egui_is_using_pointer() {
+            self.drag_mode = Some(mode);
         }
     }
 

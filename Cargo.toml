@@ -2,6 +2,8 @@
 members = [
     "crates/app",
     "crates/import",
+    "crates/localization",
+    "crates/localization-build",
     "crates/model",
     "crates/optimize",
     "crates/prof",
@@ -46,7 +48,32 @@ dirs = "6"
 # `bytemuck` gives `epaint::Vertex` a `Pod` impl, so our egui renderer casts a
 # tessellated mesh straight to bytes for the GPU with no `unsafe` of its own.
 egui = { version = "0.36.1", features = ["bytemuck"] }
+# The in-app manual renderer (invariant 12): the same markdown the mdBook site is
+# built from, drawn with egui's own widgets. `load-images` is what installs
+# egui_extras' `file` + `image` loaders, which resolve the shipped PNGs — the viewer
+# does that itself on first show, so nothing here calls `install_image_loaders`.
+# Everything else is off: the book has no code blocks to highlight
+# (`better_syntax_highlighting` → syntect), no remote images (`fetch`), no SVG, and
+# we build the page table ourselves rather than through its `macros`.
+egui_commonmark = { version = "0.25", default-features = false, features = [
+    "load-images",
+    "pulldown_cmark",
+] }
 egui-winit = "0.36"
+# Locale negotiation (`de-AT` → `de` → `en`) by BCP 47's own rules rather than a
+# hand-rolled prefix match. Pinned to 0.13, which is the copy `fluent-bundle` already
+# pulls — so this adds no crate to the graph at all. (0.14 is not an upgrade to reach
+# for: it swapped `unic-langid` for `icu_locid`, whose `LanguageIdentifier` is a
+# different type from the one `fluent-bundle` keys its bundles on.)
+fluent-langneg = "0.13"
+# The Fluent runtime behind invariant 12: plural/select rules and argument
+# formatting we would otherwise hand-roll per language. `FluentBundle::new_concurrent`
+# is what makes the process-wide catalog `Send + Sync`.
+fluent-bundle = "0.16"
+# The reference `.ftl` parser, used at *build* time to generate the typed keys and
+# to check every locale against `en` — the same parser the runtime loads with, so
+# "it built" means "it loads".
+fluent-syntax = "0.12"
 glam = "0.30"
 half = "2"
 image = { version = "0.25", default-features = false, features = [
@@ -58,6 +85,20 @@ image = { version = "0.25", default-features = false, features = [
     "pnm",
 ] }
 notify = "8"
+# Build-script only: records where each manual page's images and intra-book links
+# sit, so the runtime splices in resolved image paths without parsing markdown per
+# frame. Pinned to the version `egui_commonmark` uses, so the graph holds one copy.
+pulldown-cmark = { version = "0.13", default-features = false }
+# The no-inline-strings gate (invariant 12) needs an AST, not a regex: a literal
+# three lines into a wrapped call, or nested inside a `format!`, is exactly what it
+# has to catch. Both are already in the graph via the serde/thiserror derives.
+proc-macro2 = { version = "1", features = ["span-locations"] }
+# The generated typed message keys, and the `tr`/`tr_args` they resolve through.
+review-localization = { path = "crates/localization" }
+# Build-dependency twin of `review-localization`: turns the English catalog into a `keys.rs`
+# in each consumer's OUT_DIR. Separate crate so a build script compiles only the
+# `.ftl` parser, not the whole Fluent runtime.
+review-localization-build = { path = "crates/localization-build" }
 # The guarded Tracy zone/plot/message helpers, in one place: `tracy_client`'s own
 # macros panic when no client is running, so every crate that instruments itself
 # needs the same `Client::running()` guard around them.
@@ -81,7 +122,15 @@ sokol = { path = "vendor/sokol-rust" }
 # that crate stays glam-only (invariant 10).
 serde = "1"
 serde_json = "1"
+# The OS's own locale (`GetUserDefaultLocaleName` / `NSLocale`), so the viewer starts
+# in the user's language with no platform code of ours.
+sys-locale = "0.3"
+# See `proc-macro2`: the no-inline-strings gate parses each source file rather than
+# grepping it. Dev-dependency of `review-localization` only.
+syn = { version = "2", features = ["full", "visit"] }
 thiserror = "2"
+# Fluent's own locale identifier — what `fluent-bundle` keys a bundle on.
+unic-langid = "0.9"
 # zune is the fast decode path for JPEG textures (platform intrinsics + unsafe
 # fast paths via `DecoderOptions::new_fast`). The `image` crate stays primary for
 # PNG/TGA/TIFF/HDR (measured faster/correct there); PSD goes through `review-psd`.

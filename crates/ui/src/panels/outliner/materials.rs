@@ -4,6 +4,7 @@
 use review_render::Selection;
 
 use super::{matches_search, toggle};
+use crate::keys;
 use crate::state::UiState;
 
 /// The materials tab: a flat, deduplicated list of the model's editable materials,
@@ -11,7 +12,7 @@ use crate::state::UiState;
 /// stay the snapshot's own, so filtering never re-points a [`Selection::Material`].
 pub(super) fn materials_tab(ui: &mut egui::Ui, state: &mut UiState) {
     if state.materials_snapshot.is_empty() {
-        ui.weak("No materials.");
+        ui.weak(keys::ui_outliner::NO_MATERIALS);
         return;
     }
 
@@ -30,7 +31,7 @@ pub(super) fn materials_tab(ui: &mut egui::Ui, state: &mut UiState) {
         }
     }
     if !matched {
-        ui.weak("No matches.");
+        ui.weak(keys::ui_outliner::NO_MATCHES);
     }
 
     if let Some(new_selection) = clicked {

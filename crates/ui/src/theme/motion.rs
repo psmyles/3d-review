@@ -8,6 +8,14 @@ use std::time::Duration;
 /// How long a transient result toast stays up before it dismisses itself.
 pub const NOTIFICATION_EVENT: Duration = Duration::from_secs(2);
 
+/// How long (seconds) the pointer must rest on a control before its tooltip
+/// appears. egui's own default is 0.5 s, which is tuned for tooltips that repeat
+/// a label; ours carry the answer to "what is this for", so waiting half a second
+/// for one reads as the chrome being slow rather than as restraint. Short of
+/// zero, which would flash a tooltip at every control the pointer crosses on its
+/// way somewhere else.
+pub const TOOLTIP_DELAY_SECS: f32 = 0.25;
+
 /// How long (seconds) a stats row acknowledges a copy. Long enough to read,
 /// short enough that the row's explanation is back by the time the pointer
 /// returns to it.

@@ -8,8 +8,14 @@
 
 use review_render::{TonemapOperator, TonemapSettings};
 
+use crate::docs::Page;
+use crate::keys;
+use crate::labels;
 use crate::state::UiState;
-use crate::widgets::{labeled_combo, panel_grid, reset_button};
+use crate::widgets::{Tip, labeled_combo, panel_footer, panel_grid};
+
+/// This panel's page in the manual, opened by its footer's `?`.
+const PAGE: Page = Page::PanelsTonemapper;
 
 pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
     panel_grid(ui, "tonemap", |ui| {
@@ -17,7 +23,7 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
     });
 
     ui.separator();
-    if reset_button(ui).clicked() {
+    if panel_footer(ui, PAGE).clicked() {
         // The on/off state is owned by the status-bar toggle, so reset only the
         // operator and leave `enabled` untouched.
         state.tonemap = TonemapSettings {
@@ -31,12 +37,18 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
 fn operator_row(ui: &mut egui::Ui, state: &mut UiState) {
     labeled_combo(
         ui,
-        "Method",
+        Tip::new(keys::ui_panels::TONEMAP_METHOD)
+            .describe(keys::ui_panels::TONEMAP_METHOD_DESCRIPTION)
+            .page(PAGE),
         "tonemap_operator",
-        state.tonemap.operator.label(),
+        labels::tonemap(state.tonemap.operator),
         |ui| {
             for operator in TonemapOperator::ALL {
-                ui.selectable_value(&mut state.tonemap.operator, operator, operator.label());
+                ui.selectable_value(
+                    &mut state.tonemap.operator,
+                    operator,
+                    labels::tonemap(operator),
+                );
             }
         },
     );

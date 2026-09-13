@@ -7,7 +7,9 @@
 
 mod animation;
 mod dialog;
+mod docs_dir;
 mod events;
+mod explain;
 mod flycam;
 mod frame;
 mod gate;
@@ -17,11 +19,19 @@ mod opt;
 mod prof;
 mod redraw;
 mod selection_flash;
+mod settings;
 mod shortcuts;
 mod texture_manager;
 mod ui_intents;
 mod undo;
 mod window_state;
+
+/// The typed message keys, generated from `crates/localization/locales/en/*.ftl` by this
+/// crate's build script (invariant 12). Private on purpose: a `pub` const that
+/// nothing uses warns about nothing, a private one is `dead_code`.
+mod keys {
+    include!(concat!(env!("OUT_DIR"), "/keys.rs"));
+}
 
 /// Stream allocations to Tracy, but only while the client is running (started by
 /// `--tracy`). On a normal launch this never starts the client and costs one
@@ -76,16 +86,31 @@ fn main() -> anyhow::Result<()> {
     let mut tracy_enabled = false;
     let mut initial_model: Option<PathBuf> = None;
     let mut gate_out: Option<PathBuf> = None;
+    let mut locale: Option<String> = None;
     let mut args = std::env::args_os().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--tracy" {
             tracy_enabled = true;
         } else if arg == "--gate-out" {
             gate_out = args.next().map(PathBuf::from);
+        } else if arg == "--locale" {
+            locale = args.next().map(|tag| tag.to_string_lossy().into_owned());
         } else if initial_model.is_none() && !arg.to_string_lossy().starts_with("--") {
             initial_model = Some(PathBuf::from(arg));
         }
     }
+
+    // Settle the interface language before anything can format a message: the
+    // window title and the startup-failure dialog both come from the catalog, and
+    // both can happen before the first frame. An explicit `--locale` wins, then a
+    // saved setting, then the OS; an unknown tag negotiates down to English rather
+    // than failing (invariant 12).
+    review_localization::init(
+        locale
+            .or_else(settings::locale)
+            .or_else(sys_locale::get_locale)
+            .as_deref(),
+    );
 
     // Start the Tracy client only when asked, and keep the handle alive for the
     // whole process (dropping the last handle disconnects). With `manual-lifetime`
@@ -171,6 +196,13 @@ struct App {
     /// swapchain pass the scene composited into (`mac-port-plan.md` D3).
     egui_renderer: Option<EguiRenderer>,
     drag_mode: Option<DragMode>,
+    /// A press that has not yet been confirmed as the viewer's to act on.
+    ///
+    /// `egui_winit` answers "did egui claim this press?" from the layout of the
+    /// *previous* frame, and a resize handle is precisely where that answer is
+    /// wrong — see [`App::settle_pending_drag`], which turns one of these into
+    /// [`App::drag_mode`] a frame later, or drops it.
+    pending_drag: Option<DragMode>,
     /// Whether the in-progress drag started in the *right* half of the Opt
     /// workspace's split view. Fixed at press time so a drag that wanders across
     /// the divider keeps moving the camera it began with.
@@ -345,7 +377,10 @@ impl Default for App {
             stats: scene_model.stats,
             ..UiState::default()
         };
-        ui.capabilities.app_version = env!("CARGO_PKG_VERSION").to_string();
+        // The manual's images, if this install has them. `None` renders each
+        // image as its alt text and changes nothing else (invariant 12), so this
+        // is resolved once here rather than checked on every page turn.
+        ui.help.docs_dir = docs_dir::docs_dir();
 
         Self {
             window: None,
@@ -354,6 +389,7 @@ impl Default for App {
             egui_state: None,
             egui_renderer: None,
             drag_mode: None,
+            pending_drag: None,
             drag_in_opt_right_view: false,
             flycam: FlyCam::default(),
             last_pointer_position: None,
@@ -578,9 +614,10 @@ impl App {
                 prof::msg(&format!(
                     "startup present failed: device lost ({reason:#x})"
                 ));
-                self.notifications.error(format!(
-                    "Graphics device lost ({reason:#x}) while starting up - the viewport may stay blank; restart the viewer"
-                ));
+                self.notifications
+                    .error(keys::app_notifications::device_lost_startup(format!(
+                        "{reason:#x}"
+                    )));
             }
         }
         let egui_renderer = EguiRenderer::new().context("failed to create the egui renderer")?;
@@ -598,8 +635,6 @@ impl App {
         gpu: Gpu,
         egui_renderer: EguiRenderer,
     ) {
-        // The viewer draws through sokol_gfx; the backend underneath it is the OS's.
-        self.ui.capabilities.gpu_backend = if cfg!(windows) { "DX11" } else { "Metal" }.to_string();
         // Gate the Anti-Aliasing menu on the adapter's real MSAA support (the backend
         // leaf's `supported_sample_counts`, since sokol only reports MSAA as a yes/no
         // per format). IBL + AO stay enabled — every target the renderer supports has
@@ -770,6 +805,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::CursorLeft { .. } => {
                 self.drag_mode = None;
+                self.pending_drag = None;
                 self.flycam.release_all();
                 self.last_pointer_position = None;
             }
@@ -808,7 +844,10 @@ fn report_startup_failure(error: &anyhow::Error) {
     prof::msg(&format!("startup failed: {detail}"));
     rfd::MessageDialog::new()
         .set_level(rfd::MessageLevel::Error)
-        .set_title(APP_NAME)
-        .set_description(format!("{APP_NAME} couldn't start.\n\n{detail}"))
+        .set_title(keys::app_window::startup_failed_title(APP_NAME))
+        .set_description(format!(
+            "{}\n\n{detail}",
+            keys::app_window::startup_failed(APP_NAME)
+        ))
         .show();
 }

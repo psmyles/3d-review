@@ -60,6 +60,9 @@ pub fn apply_visuals(ctx: &egui::Context) {
     style.visuals.handle_shape = egui::style::HandleShape::Rect {
         aspect_ratio: size::SLIDER_HANDLE_ASPECT_RATIO,
     };
+    // A tooltip here is where a control explains itself (`widgets::tooltip`), so
+    // it is worth reaching sooner than egui's stock half-second.
+    style.interaction.tooltip_delay = motion::TOOLTIP_DELAY_SECS;
     // `all_styles_mut` rather than a single-theme setter: the viewer is dark-only,
     // but installing the style under both themes keeps it correct if the OS theme
     // flips mid-session.
@@ -97,3 +100,10 @@ pub fn with_opacity(color: Color32, opacity: f32) -> Color32 {
     let alpha = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
     Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
 }
+
+/// The "remove this" mark, on the Opt stack's row buttons and the LOD list's.
+///
+/// A multiplication sign, not the letter X: it is a mark, so it reads the same
+/// in every language and needs no catalog entry. Written once here so the two
+/// buttons cannot end up with different glyphs.
+pub const REMOVE_GLYPH: &str = "✕";
