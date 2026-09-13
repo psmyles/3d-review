@@ -10,7 +10,7 @@ matches the model, so this is just a nudge.
 
 **Color** - the color of the bones. A bone you have selected is drawn in the
 highlight color instead, no matter what you set here, so you can always find it,
-and the bone under the pointer is drawn in a paler one while you are picking.
+and the bone under the pointer is drawn in a soft red while you are picking.
 
 ## What it is for
 
