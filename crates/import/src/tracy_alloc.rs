@@ -33,8 +33,10 @@ impl<A> TracyAllocator<A> {
 // SAFETY: every method forwards to the inner allocator with identical arguments
 // and return values; the only added work is emitting a Tracy memory event for the
 // exact pointer/size the inner allocator just (de)allocated, gated on a running
-// client. The `secure = 1` argument matches `tracy_client::ProfiledAllocator`
-// (serialized memory events, safe for a multi-threaded global allocator).
+// client. Memory events no longer take a `secure` flag: Tracy 0.14 dropped the
+// unserialized variant, so `Profiler::MemAlloc`/`MemFree` always take the serial
+// lock — which is the property a multi-threaded global allocator needs, and the
+// one the old `secure = 1` argument used to ask for.
 unsafe impl<A: GlobalAlloc> GlobalAlloc for TracyAllocator<A> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         // SAFETY: forwards the caller's `layout` to the inner allocator unchanged;
@@ -43,7 +45,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for TracyAllocator<A> {
         if !ptr.is_null() && Client::running().is_some() {
             // SAFETY: `ptr` is the non-null block just returned and `layout.size()`
             // is its size; the Tracy C call only records the event for that block.
-            unsafe { sys::___tracy_emit_memory_alloc(ptr.cast(), layout.size(), 1) };
+            unsafe { sys::___tracy_emit_memory_alloc(ptr.cast(), layout.size()) };
         }
         ptr
     }
@@ -52,7 +54,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for TracyAllocator<A> {
         if !ptr.is_null() && Client::running().is_some() {
             // SAFETY: `ptr` is non-null and is the block being freed; the Tracy C
             // call only records the free, matching the alloc event for `ptr`.
-            unsafe { sys::___tracy_emit_memory_free(ptr.cast(), 1) };
+            unsafe { sys::___tracy_emit_memory_free(ptr.cast()) };
         }
         // SAFETY: `ptr`/`layout` are the same pointer and layout the caller obtained
         // from this allocator, as required by `GlobalAlloc::dealloc`.
@@ -64,7 +66,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for TracyAllocator<A> {
         let ptr = unsafe { self.inner.alloc_zeroed(layout) };
         if !ptr.is_null() && Client::running().is_some() {
             // SAFETY: as in `alloc` — records the event for the block just returned.
-            unsafe { sys::___tracy_emit_memory_alloc(ptr.cast(), layout.size(), 1) };
+            unsafe { sys::___tracy_emit_memory_alloc(ptr.cast(), layout.size()) };
         }
         ptr
     }
@@ -76,7 +78,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for TracyAllocator<A> {
         if !ptr.is_null() && running {
             // SAFETY: `ptr` is the non-null block about to be reallocated; records
             // the free of the old block before the reallocation.
-            unsafe { sys::___tracy_emit_memory_free(ptr.cast(), 1) };
+            unsafe { sys::___tracy_emit_memory_free(ptr.cast()) };
         }
         // SAFETY: `ptr`/`layout`/`new_size` satisfy `GlobalAlloc::realloc`'s contract
         // — they are the original pointer and layout the caller got from this
@@ -84,7 +86,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for TracyAllocator<A> {
         let new_ptr = unsafe { self.inner.realloc(ptr, layout, new_size) };
         if !new_ptr.is_null() && running {
             // SAFETY: `new_ptr` is the non-null reallocated block of `new_size` bytes.
-            unsafe { sys::___tracy_emit_memory_alloc(new_ptr.cast(), new_size, 1) };
+            unsafe { sys::___tracy_emit_memory_alloc(new_ptr.cast(), new_size) };
         }
         new_ptr
     }

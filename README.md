@@ -165,7 +165,9 @@ the lighting maps. It needs a real GPU.
 
 Optional Tracy profiling is compiled in but stays off unless you ask for it:
 pass `--tracy` to start the client. A normal run opens no network socket and
-costs essentially nothing.
+costs essentially nothing. The bundled client is **Tracy 0.14.1**, and Tracy
+checks that the two ends match: an older profiler GUI refuses the connection
+instead of showing partial data, so download that version of the server.
 
 ## Architecture
 
