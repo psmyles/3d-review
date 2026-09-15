@@ -2,3 +2,4 @@
 - quick open/hide outliner box on left edge of the viewport
 - compression option at export time?
 - read FBX built in textures
+- save settings

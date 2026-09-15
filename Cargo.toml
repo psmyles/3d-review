@@ -149,7 +149,14 @@ zune-image = { version = "0.5", default-features = false, features = ["jpeg", "s
 # calls to `tracy_client::span!`, which *panics* when no client is running — it would
 # crash every non-`--tracy` launch. Our own D3D11 GPU + CPU zones cover the
 # app/render structure instead.) See `Tracy profiling.md`.
-tracy-client = { version = "0.18", features = ["manual-lifetime", "ondemand"] }
+#
+# **The bundled client and the Tracy server GUI must be the same version.** This
+# pin carries Tracy **0.14.1** (via `tracy-client-sys` 0.30); a mismatched server
+# refuses the connection outright rather than degrading, so bump the profiler
+# download alongside this line. That coupling is also why this is a workspace dep
+# rather than a per-crate one — two versions in the graph would link two copies of
+# the C client.
+tracy-client = { version = "0.19", features = ["manual-lifetime", "ondemand"] }
 windows = "0.62.2"
 windows-sys = "0.52"
 
