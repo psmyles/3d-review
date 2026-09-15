@@ -134,28 +134,48 @@ pub(crate) fn labeled_slider_with_value<Num: egui::emath::Numeric>(
                     .clamping(egui::SliderClamping::Always),
             );
             let box_height = ui.spacing().interact_size.y;
-            // Place the value box in a fixed-size cell whose layout is justified
-            // (the box fills `value_w`, so its width never reflows) but
-            // left-aligned (`main_align = Min`) — egui's `DragValue` positions
-            // its text via the current layout, so this left-aligns both the
-            // displayed value and the edit-mode caret. (`ui.add_sized` would
-            // center it via a `centered_and_justified` layout.)
-            let cell_layout = egui::Layout::centered_and_justified(egui::Direction::LeftToRight)
-                .with_main_align(egui::Align::Min);
-            response |= ui
-                .allocate_ui_with_layout(egui::vec2(value_w, box_height), cell_layout, |ui| {
-                    ui.add(
-                        egui::DragValue::new(value)
-                            .range(range)
-                            .max_decimals(decimals),
-                    )
-                })
-                .inner;
+            response |= value_box(ui, egui::vec2(value_w, box_height), |ui| {
+                ui.add(
+                    egui::DragValue::new(value)
+                        .range(range)
+                        .max_decimals(decimals),
+                )
+            });
             response.changed()
         })
         .inner;
     ui.end_row();
     changed
+}
+
+/// Draw a value box in a cell of exactly `size` that its contents can never
+/// widen: the cell's space is allocated up front and the box goes into a child
+/// `Ui` built over that rect and **clipped to it**, so a box that measures wider
+/// than the cell is cut off at the cell's edge instead of reporting its width
+/// back to the row.
+///
+/// The cell's layout is justified (the box fills the cell, so its width never
+/// reflows with the digit count) but left-aligned (`main_align = Min`) — egui's
+/// `DragValue` positions its text via the current layout, so this left-aligns
+/// both the displayed value and the edit-mode caret. (`ui.add_sized` would centre
+/// it, and would not bound the width.)
+///
+/// Bounding it is the point: an `egui::DragValue` has no width of its own. Idle
+/// it is a `Button` with `TextWrapMode::Extend`; focused it is a `TextEdit` with
+/// `clip_text(false)`. Both size themselves to their text, and a plain
+/// `allocate_ui_with_layout` cell does not stop them — it advances its parent by
+/// the *child's* `min_rect`, so an overflowing box widened the grid's control
+/// column, and with it the auto-sized option window and the Inspector panel:
+/// typing a long number grew the whole window around it, and (`egui::Resize`
+/// never shrinking back) left it grown.
+fn value_box<R>(ui: &mut egui::Ui, size: egui::Vec2, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let clip = ui.clip_rect();
+    let (_id, rect) = ui.allocate_space(size);
+    let layout = egui::Layout::centered_and_justified(egui::Direction::LeftToRight)
+        .with_main_align(egui::Align::Min);
+    let mut cell = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(layout));
+    cell.set_clip_rect(rect.intersect(clip));
+    add(&mut cell)
 }
 
 /// A label + color-button grid row (the stock egui color-edit button). Returns the
@@ -195,4 +215,69 @@ pub(crate) fn labeled_combo(
         .height(size::LABELED_COMBO_POPUP_MAX_H)
         .show_ui(ui, contents);
     ui.end_row();
+}
+
+#[cfg(test)]
+mod tests {
+    //! The value cell is a hard boundary. Every numeric readout in the chrome —
+    //! every option panel's, every Inspector row's — sits in one, and a row that
+    //! can be widened by what is typed into it widens the auto-sized window
+    //! around it too.
+
+    use super::*;
+
+    /// One layout pass with the chrome's real fonts and style installed: the
+    /// measurement is only as good as the face it is taken in, and egui's own
+    /// test helper loads no fonts at all (every string would measure zero).
+    fn run(add: impl FnOnce(&mut egui::Ui)) {
+        let ctx = egui::Context::default();
+        crate::theme::init_style(&ctx);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let mut add = Some(add);
+        let output = ctx.run_ui(input, |ui| add.take().expect("one pass")(ui));
+        // No renderer here, so the font-atlas deltas are deliberately dropped.
+        output.drop_without_applying_deltas();
+    }
+
+    /// A value far too long for the box — what a user typing digits into it
+    /// produces before the range clamps them back on commit.
+    #[test]
+    fn a_long_value_cannot_widen_the_row_it_sits_in() {
+        run(|ui| {
+            let cell = egui::vec2(size::PANEL_SLIDER_VALUE_W, ui.spacing().interact_size.y);
+            let mut value = 16_000_000_000_000.0_f64;
+            let response = value_box(ui, cell, |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut value)
+                        .range(0.0..=1e15)
+                        .max_decimals(0),
+                )
+            });
+
+            // The box really did measure wider than its cell: without this the
+            // assertion below would pass on a value that simply fit, and stop
+            // saying anything.
+            assert!(
+                response.rect.width() > cell.x,
+                "the test value fits the box ({:.0}pt in a {:.0}pt cell), so it \
+                 no longer exercises an overflow",
+                response.rect.width(),
+                cell.x,
+            );
+            assert!(
+                ui.min_rect().width() <= cell.x + 0.5,
+                "the value box widened its row to {:.0}pt from the {:.0}pt cell \
+                 it was given - an option window auto-sizes to this, and \
+                 `egui::Resize` never gives the width back",
+                ui.min_rect().width(),
+                cell.x,
+            );
+        });
+    }
 }
