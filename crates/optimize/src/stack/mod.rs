@@ -18,10 +18,12 @@ use serde::{Deserialize, Serialize};
 mod ao;
 mod export;
 mod params;
+mod remesh;
 
 pub use ao::*;
 pub use export::*;
 pub use params::*;
+pub use remesh::*;
 
 /// What [`OptStack::rebind_to_model`] did with a loaded preset's per-object
 /// overrides — three counts the caller reports, since each means something
@@ -304,6 +306,9 @@ pub enum OpKind {
     /// [`OpKind::SimplifyLod`] runs, applied as an ordinary stack step rather
     /// than as a fan-out.
     Reduce(ReduceParams),
+    /// Regenerate each object's surface as evenly sized, curvature-aligned
+    /// triangles or quads, with the materials, UVs and colors projected back on.
+    Remesh(RemeshParams),
     /// Generate the LOD chain. At most one per stack.
     SimplifyLod(LodParams),
     /// Bake raycast ambient occlusion into the vertex-color set.
@@ -320,11 +325,12 @@ impl OpKind {
     /// Every operation the "Add" menu offers, in menu order — cleanup first
     /// (what you almost always want before anything else), then the LOD
     /// generator, then the GPU reorder passes that belong at the end.
-    pub const ALL: [fn() -> OpKind; 9] = [
+    pub const ALL: [fn() -> OpKind; 10] = [
         || OpKind::Weld(WeldParams::default()),
         || OpKind::FilterTriangles,
         || OpKind::PruneComponents { error: 0.01 },
         || OpKind::Reduce(ReduceParams::default()),
+        || OpKind::Remesh(RemeshParams::default()),
         || OpKind::SimplifyLod(LodParams::default()),
         || OpKind::BakeAo(BakeAoParams::default()),
         || OpKind::VertexCache,
@@ -339,6 +345,7 @@ impl OpKind {
             OpKind::FilterTriangles => "Filter Triangles",
             OpKind::PruneComponents { .. } => "Prune Components",
             OpKind::Reduce(_) => "Reduce",
+            OpKind::Remesh(_) => "Remesh",
             OpKind::SimplifyLod(_) => "Generate LODs",
             OpKind::BakeAo(_) => "Bake AO to Vertex Colors",
             OpKind::VertexCache => "Optimize Vertex Cache",
@@ -367,6 +374,13 @@ impl OpKind {
             }
             OpKind::Reduce(_) => {
                 "Simplify the mesh in place. The same simplifier the LOD chain uses,                  but it replaces the mesh instead of generating extra ones - so the                  reduced geometry is what the rest of the stack works on and what the                  export writes in the source mesh's place."
+            }
+            OpKind::Remesh(_) => {
+                "Rebuild each object's surface as evenly sized, curvature-aligned \
+                 triangles or quads. Unlike a simplifier it does not remove what is \
+                 there — it regenerates the surface from scratch and projects the \
+                 materials, UVs and colors back on, which is what turns a scan or a \
+                 CAD import into geometry an engine can use. Static meshes only."
             }
             OpKind::SimplifyLod(_) => {
                 "Generate the LOD chain. Each level is simplified independently from \
@@ -404,6 +418,7 @@ impl OpKind {
             | OpKind::FilterTriangles
             | OpKind::PruneComponents { .. }
             | OpKind::Reduce(_)
+            | OpKind::Remesh(_)
             | OpKind::SimplifyLod(_) => true,
             OpKind::BakeAo(_)
             | OpKind::VertexCache
@@ -512,9 +527,9 @@ mod tests {
     }
 
     #[test]
-    fn the_add_menu_offers_nine_distinct_operations() {
+    fn the_add_menu_offers_ten_distinct_operations() {
         let labels: Vec<&str> = OpKind::ALL.iter().map(|build| build().label()).collect();
-        assert_eq!(labels.len(), 9);
+        assert_eq!(labels.len(), 10);
         for (index, label) in labels.iter().enumerate() {
             assert!(
                 !labels[index + 1..].contains(label),

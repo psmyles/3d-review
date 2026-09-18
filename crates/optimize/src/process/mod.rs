@@ -267,7 +267,7 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
     }
 
     let mut lods = Vec::with_capacity(levels.len());
-    for (index, level) in levels.into_iter().enumerate() {
+    for (index, level) in levels.iter().enumerate() {
         let (model, carry) = assemble(
             &level.submeshes,
             input.model,
@@ -289,8 +289,14 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
                  lower its error limit so the simplifier stops sooner."
             ));
         }
-        let metrics = measure(
-            &model,
+        // Measured off the submeshes rather than the assembled model: they are
+        // what the GPU draws, and — unlike the assembled model, which a rebuilt
+        // polygon carry puts into the corner-run layout — they are always the
+        // indexed mesh. Re-partitioning the assembled model gives the same
+        // figures outside that layout and the corner-split ones inside it, which
+        // would describe the viewer's internal buffer rather than the asset.
+        let metrics = measure_submeshes(
+            &level.submeshes,
             input.render_vertex_size,
             level.simplify_error,
             &mut warnings,

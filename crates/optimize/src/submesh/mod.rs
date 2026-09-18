@@ -165,6 +165,7 @@ mod tests {
                 edge_smoothing: Vec::new(),
                 edge_crease: vec![0.0, 0.5, 0.0, 0.5],
                 edge_visibility: Vec::new(),
+                rebuilt: false,
             }),
         }
     }

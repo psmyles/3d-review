@@ -50,6 +50,21 @@ pub struct Hit {
     pub triangle: u32,
 }
 
+/// The nearest point on the mesh to a query, and which triangle carries it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClosestPoint {
+    /// Global triangle index (`indices[3*t .. 3*t + 3]`).
+    pub triangle: u32,
+    /// The point itself, in the model's own space.
+    pub point: Vec3,
+    /// Distance from the query to [`Self::point`], squared — comparable without
+    /// a square root, which is how the traversal prunes.
+    pub distance_squared: f32,
+    /// Barycentric coordinates of [`Self::point`] within [`Self::triangle`],
+    /// summing to 1. Attributes interpolate straight through these.
+    pub barycentric: Vec3,
+}
+
 impl Node {
     const EMPTY: Self = Self {
         min: Vec3::ZERO,
@@ -259,6 +274,81 @@ impl Bvh {
                     slab_entry(origin, inv_dir, lo, hi, t_min)
                 };
                 let (first, second) = if entry(left) <= entry(right) {
+                    (right, left)
+                } else {
+                    (left, right)
+                };
+                stack[sp] = first;
+                stack[sp + 1] = second;
+                sp += 2;
+            }
+        }
+        best
+    }
+
+    /// The nearest point on any indexed triangle to `query`, or `None` when the
+    /// tree is empty or nothing lies within `max_distance`.
+    ///
+    /// This is the projection half of the retopology pipeline: a regenerated
+    /// surface has no correspondence at all to the source, so every attribute
+    /// it carries — material, UVs, colors, normals — is read off the source
+    /// surface at the nearest point to each new vertex.
+    ///
+    /// Descends nearest-child-first by box distance and skips any box already
+    /// farther than the best point so far, which is the closest-point analogue
+    /// of [`Self::closest_hit`]'s early exit.
+    pub fn closest_point(
+        &self,
+        model: &ModelData,
+        query: Vec3,
+        max_distance: f32,
+    ) -> Option<ClosestPoint> {
+        if self.tris.is_empty() || !(max_distance >= 0.0) {
+            return None;
+        }
+        let mut best: Option<ClosestPoint> = None;
+        let mut far = max_distance * max_distance;
+
+        let mut stack = [0u32; MAX_STACK];
+        let mut sp = 1usize; // node 0 (root) seeded below
+        stack[0] = 0;
+        while sp > 0 {
+            sp -= 1;
+            let index = stack[sp];
+            let node = self.nodes[index as usize];
+            // The box may have been pushed while a nearer point was still to
+            // come, so re-test against the current best rather than the one in
+            // force when it was queued.
+            if aabb_distance_squared(query, node.min, node.max) > far {
+                continue;
+            }
+            if node.count > 0 {
+                let leaf =
+                    &self.tris[node.left_first as usize..(node.left_first + node.count) as usize];
+                for &t in leaf {
+                    let [a, b, c] = triangle_positions(model, t);
+                    let (point, barycentric) = closest_point_on_triangle(query, a, b, c);
+                    let distance_squared = (point - query).length_squared();
+                    if distance_squared <= far {
+                        far = distance_squared;
+                        best = Some(ClosestPoint {
+                            triangle: t,
+                            point,
+                            distance_squared,
+                            barycentric,
+                        });
+                    }
+                }
+            } else if sp + 2 <= MAX_STACK {
+                // Nearest child last, so it pops first and tightens `far`
+                // before the sibling is tested.
+                let left = node.left_first;
+                let right = left + 1;
+                let distance = |child: u32| {
+                    let node = self.nodes[child as usize];
+                    aabb_distance_squared(query, node.min, node.max)
+                };
+                let (first, second) = if distance(left) <= distance(right) {
                     (right, left)
                 } else {
                     (left, right)
@@ -616,6 +706,84 @@ fn slab_entry(origin: Vec3, inv_dir: Vec3, lo: Vec3, hi: Vec3, t_min: f32) -> f3
     let t0 = (lo - origin) * inv_dir;
     let t1 = (hi - origin) * inv_dir;
     t0.min(t1).max_element().max(t_min)
+}
+
+/// Squared distance from `point` to the AABB `[lo, hi]`; zero inside it. The
+/// pruning test behind [`Bvh::closest_point`].
+fn aabb_distance_squared(point: Vec3, lo: Vec3, hi: Vec3) -> f32 {
+    let outside = (lo - point).max(point - hi).max(Vec3::ZERO);
+    outside.length_squared()
+}
+
+/// The point of triangle `abc` nearest to `p`, with its barycentric
+/// coordinates `(u, v, w)` — `p ≈ u*a + v*b + w*c`, summing to 1.
+///
+/// Ericson's *Real-Time Collision Detection* §5.1.5: classify `p` against the
+/// triangle's seven Voronoi regions (three vertices, three edges, the face) and
+/// answer in closed form. A degenerate triangle falls through to its first
+/// corner rather than dividing by zero.
+///
+/// Public for the same reason [`ray_triangle_t`] is: `optimize` projects onto
+/// geometry of its own as well as through a [`Bvh`], and a second copy of this
+/// would be a second chance to get it subtly wrong.
+pub fn closest_point_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> (Vec3, Vec3) {
+    let ab = b - a;
+    let ac = c - a;
+    let ap = p - a;
+    let d1 = ab.dot(ap);
+    let d2 = ac.dot(ap);
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return (a, Vec3::X); // vertex region A
+    }
+
+    let bp = p - b;
+    let d3 = ab.dot(bp);
+    let d4 = ac.dot(bp);
+    if d3 >= 0.0 && d4 <= d3 {
+        return (b, Vec3::Y); // vertex region B
+    }
+
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        let denominator = d1 - d3;
+        let v = if denominator != 0.0 { d1 / denominator } else { 0.0 };
+        return (a + ab * v, Vec3::new(1.0 - v, v, 0.0)); // edge region AB
+    }
+
+    let cp = p - c;
+    let d5 = ab.dot(cp);
+    let d6 = ac.dot(cp);
+    if d6 >= 0.0 && d5 <= d6 {
+        return (c, Vec3::Z); // vertex region C
+    }
+
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        let denominator = d2 - d6;
+        let w = if denominator != 0.0 { d2 / denominator } else { 0.0 };
+        return (a + ac * w, Vec3::new(1.0 - w, 0.0, w)); // edge region AC
+    }
+
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
+        let denominator = (d4 - d3) + (d5 - d6);
+        let w = if denominator != 0.0 {
+            (d4 - d3) / denominator
+        } else {
+            0.0
+        };
+        return (b + (c - b) * w, Vec3::new(0.0, 1.0 - w, w)); // edge region BC
+    }
+
+    // Face region: the barycentric coordinates are the normalized sub-areas.
+    let denominator = va + vb + vc;
+    if denominator == 0.0 {
+        return (a, Vec3::X); // degenerate triangle
+    }
+    let inverse = 1.0 / denominator;
+    let v = vb * inverse;
+    let w = vc * inverse;
+    (a + ab * v + ac * w, Vec3::new(1.0 - v - w, v, w))
 }
 
 /// Möller–Trumbore ray/triangle intersection. Returns the hit parameter `t`

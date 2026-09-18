@@ -31,11 +31,15 @@
 
 // Everything outside the FFI modules is ordinary safe Rust. Those modules opt in
 // individually rather than the crate opting out globally.
-#![cfg_attr(not(any(has_meshopt, has_ufbxw)), forbid(unsafe_code))]
+#![cfg_attr(
+    not(any(has_meshopt, has_ufbxw, has_instant_meshes)),
+    forbid(unsafe_code)
+)]
 
 mod export_ffi;
 mod ffi;
 mod prof;
+mod remesh_ffi;
 
 #[cfg(has_ufbxw_probe)]
 #[doc(hidden)]
@@ -48,6 +52,7 @@ pub mod meshopt;
 pub mod ops;
 pub mod preset;
 pub mod process;
+pub mod remesh;
 pub mod replace_file;
 pub mod stack;
 pub mod submesh;
@@ -60,7 +65,8 @@ pub use replace_file::{Staged, write_bytes_replacing, write_replacing};
 pub use stack::{
     AoQuality, AoTarget, AttributeWeights, BakeAoParams, ExportOptions, FbxFormat, HierarchyMode,
     LodLevel, LodPackaging, LodParams, NodeOverride, OpInstance, OpKind, OptStack, RebindReport,
-    ReduceParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings, WeldParams,
+    ReduceParams, RemeshDensity, RemeshParams, RemeshTopology, SimplifyAlgorithm, SimplifyFlags,
+    SimplifySettings, WeldParams,
 };
 
 /// Everything that can go wrong in this crate.
@@ -71,6 +77,15 @@ pub enum OptError {
          (third_party/meshoptimizer)"
     )]
     Unavailable,
+
+    #[error(
+        "remeshing is unavailable: this build has no vendored retopologizer \
+         (third_party/instant-meshes)"
+    )]
+    RemeshUnavailable,
+
+    #[error("the remesher could not rebuild this object: {0}")]
+    Remesh(String),
 
     #[error("the mesh has no triangles to process")]
     EmptyMesh,
@@ -165,5 +180,6 @@ mod tests {
     #[test]
     fn availability_matches_the_vendored_tree() {
         assert_eq!(meshopt::available(), cfg!(has_meshopt));
+        assert_eq!(remesh::available(), cfg!(has_instant_meshes));
     }
 }
