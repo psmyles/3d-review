@@ -35,11 +35,6 @@ pub(super) fn materials_tab(ui: &mut egui::Ui, state: &mut UiState) {
     }
 
     if let Some(new_selection) = clicked {
-        state.selection = new_selection;
-        // A material covers triangles across any number of nodes, so neither
-        // node set describes it; both go, along with the range anchor.
-        state.selected_nodes.clear();
-        state.selected_bones.clear();
-        state.row_anchor = None;
+        state.select_material(new_selection);
     }
 }

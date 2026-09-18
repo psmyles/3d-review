@@ -122,7 +122,7 @@ fn add_menu(ui: &mut egui::Ui, state: &mut UiState) {
                     };
                 }
                 let id = state.opt.edit_stack_with(|stack| stack.push_op(kind));
-                state.opt.selected = Some(StackItem::Op(id));
+                state.select_stack_item(StackItem::Op(id));
                 ui.close();
             }
         }
@@ -265,7 +265,7 @@ fn operation_rows(ui: &mut egui::Ui, state: &mut UiState) {
         }
     }
     if let Some(id) = selected {
-        state.opt.selected = Some(StackItem::Op(id));
+        state.select_stack_item(StackItem::Op(id));
     }
 }
 
@@ -282,7 +282,7 @@ fn export_row(ui: &mut egui::Ui, state: &mut UiState) {
         size::OPT_STACK_ROW_HEIGHT,
     );
     if response.clicked() {
-        state.opt.selected = Some(StackItem::ExportSettings);
+        state.select_stack_item(StackItem::ExportSettings);
     }
     response.on_hover_text(keys::ui_opt::EXPORT_SETTINGS_DESCRIPTION);
 

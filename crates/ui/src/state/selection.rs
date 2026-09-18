@@ -10,6 +10,7 @@
 use review_render::Selection;
 
 use super::{HoverTarget, UiState};
+use crate::opt_state::StackItem;
 
 /// Which set a click is editing. The two behave identically; they differ only in
 /// which list they write and which one they clear.
@@ -84,8 +85,40 @@ impl UiState {
         };
     }
 
+    /// Hand the Inspector over to the scene: whatever the Opt stack pane had
+    /// selected gives it up.
+    ///
+    /// The Inspector shows one thing, and in the Opt workspace two surfaces can
+    /// fill it — the stack pane's rows and the Outliner's. They are therefore
+    /// exclusive in both directions: every scene selection comes through here,
+    /// and [`UiState::select_stack_item`] clears the scene selection the same
+    /// way. Without it a selected operation simply outranked the Outliner and
+    /// kept the panel however much the user clicked around the tree.
+    fn release_stack_selection(&mut self) {
+        self.opt.selected = None;
+    }
+
+    /// Select a stack row (an operation or the export settings), taking the
+    /// Inspector from whatever the Outliner had selected.
+    pub(crate) fn select_stack_item(&mut self, item: StackItem) {
+        self.clear_selection();
+        self.opt.selected = Some(item);
+    }
+
+    /// Select `material` (or [`Selection::None`]) as the whole selection. A
+    /// material covers triangles across any number of nodes, so neither node set
+    /// describes it; both go, along with the range anchor.
+    pub(crate) fn select_material(&mut self, material: Selection) {
+        self.release_stack_selection();
+        self.selection = material;
+        self.selected_nodes.clear();
+        self.selected_bones.clear();
+        self.row_anchor = None;
+    }
+
     /// Select `node` alone, as the whole set and the range anchor.
     pub(crate) fn select_only(&mut self, node: usize, kind: SelectionKind) {
+        self.release_stack_selection();
         self.clear_other_set(kind);
         let set = self.selection_set_for(kind);
         set.clear();
@@ -113,6 +146,7 @@ impl UiState {
         if !mode.is_editing() {
             return false;
         }
+        self.release_stack_selection();
         self.clear_other_set(kind);
         let set = self.selection_set_for(kind);
         let at = set.iter().position(|&member| member == node);
@@ -236,6 +270,30 @@ mod tests {
         state.apply_select_mode(3, SelectionKind::Node, mode(true, false));
         assert!(state.selected_bones.is_empty());
         assert_eq!(state.selected_nodes, vec![3]);
+    }
+
+    /// The Inspector shows one thing, so the Outliner and the Opt stack pane
+    /// cannot both hold a selection — in either direction.
+    #[test]
+    fn the_scene_and_the_stack_never_hold_a_selection_at_once() {
+        let mut state = UiState::default();
+
+        state.select_stack_item(StackItem::Op(7));
+        assert_eq!(state.opt.selected, Some(StackItem::Op(7)));
+
+        state.select_only(4, SelectionKind::Node);
+        assert_eq!(state.opt.selected, None, "a node click takes the Inspector");
+
+        state.select_stack_item(StackItem::ExportSettings);
+        assert!(!state.has_selection(), "the stack row takes it back");
+
+        state.apply_select_mode(4, SelectionKind::Bone, mode(true, false));
+        assert_eq!(state.opt.selected, None, "so does a modified click");
+
+        state.select_stack_item(StackItem::Op(7));
+        state.select_material(Selection::Material(2));
+        assert_eq!(state.opt.selected, None, "and a material click");
+        assert_eq!(state.selection, Selection::Material(2));
     }
 
     #[test]
