@@ -11,8 +11,7 @@ What is vendored
 ----------------
 `src/` holds the field solve and the mesh extraction — the half of upstream
 that computes — **plus this project's patches**, recorded as `review.patch`
-(a unified diff against the pristine upstream files, three hunks across three
-files).
+(a unified diff against the pristine upstream files, 41 hunks across six).
 
 The viewer, the command-line front end and the mesh I/O are **not** vendored:
 `main.cpp`, `batch.cpp`, `viewer.cpp`, `widgets.cpp`, `glutil.cpp`,
@@ -43,7 +42,11 @@ submodules, so this tree needs none:
                          on the include path *ahead* of everything else, so the
                          vendored `#include <tbb/...>` lines resolve to it and
                          not one vendored line changes. Its own header explains
-                         the determinism and threading contract.
+                         the determinism and threading contract — including
+                         `shim::SerialScope`, which is what makes upstream's
+                         `deterministic` flag true rather than nearly true: that
+                         flag never reached the field solve, and the field solve
+                         is not reproducible across thread counts.
   review_quiet.h         the sink `cout`/`cerr` the one `common.h` hunk names.
 
 `ext/pss` (Intel's parallel stable sort) is deliberately absent: it is used at
@@ -64,11 +67,65 @@ P2  `hierarchy.cpp` — `pss::parallel_stable_sort` becomes `std::stable_sort`.
 
 P3  `extract.cpp` — the same substitution.
 
+P4  `hierarchy.h` / `hierarchy.cpp` — a **per-vertex scale field**
+    (`MultiResolutionHierarchy::mS`, `scaleAt`, `setScaleField`). Upstream
+    carries one face size for the whole object, `mScale`, which spends the same
+    budget on a flat panel as on a tight fillet; `mS` optionally multiplies it
+    per vertex so the solve can put small faces where the surface turns. The
+    field is supplied for level 0 and averaged down the hierarchy exactly as
+    every other per-vertex quantity is.
+
+    It is *optional* on purpose. `scaleAt` answers `mScale` when the field is
+    empty, and every site that reads it goes through `scaleAt`, so a run that
+    does not ask for a varying face size takes the same arithmetic it always did
+    — not an equivalent expression, the same one. `crates/optimize`'s
+    `remesh::RemeshParams::adaptive_strength` at 0 is what leaves it empty, and
+    `src/remesh_density.cpp` is what fills it otherwise.
+
+P5  `field.h` / `field.cpp` — the eight `compat_position_*` functions take one
+    scale per *endpoint* (`scale0, inv_scale0, scale1, inv_scale1`) instead of
+    one for the pair, and the four sites that call them — the position solve,
+    its error measure, the position singularities and the integer-variable
+    freeze — read each vertex's own. This is the change P4 exists for: without
+    it the hierarchy could carry a field nothing would consult. It is the same
+    shape QuadriFlow's fork of this code took for the same reason, which is
+    where the treatment of the anchored lattice in the intrinsic variants comes
+    from.
+
+    With equal scales every one of these reduces to upstream's arithmetic term
+    for term. The single exception is the frozen branch of the position solve,
+    where `scale * (a - b)` becomes `scale_j * a - scale_i * b`: algebraically
+    the same, not bit-identical, and unreachable from this project — the
+    integer variables are frozen after the solve, never during it.
+
+P6  `extract.cpp` — the extraction honours the scale field where it decides
+    *geometry*, and is bounded where it loops.
+
+    `extract_graph` gives each extracted vertex the face size it came out of
+    (`scale_new`, averaged over the same cluster as its position), and the edge
+    classification measures each endpoint against its own. The snapping pass
+    then uses that per-vertex size rather than one for the object. That is not a
+    refinement: with a single threshold, a region the field made fine has *every*
+    edge under it, and the pass — whose exit condition is "nothing moved", and
+    one of whose branches moves a vertex without removing anything — flattens
+    that region a step at a time without ever settling. Measured, before this: a
+    sculpted pedestal at half strength never came back. The same loop also gains
+    a pass ceiling, because a loop with no other bound is one bad mesh away from
+    hanging the viewer.
+
+    The two thresholds that are *heuristics over the whole object* rather than
+    lattice arithmetic — the vertex-snapping weight's falloff and the ray length
+    in the hole-filling check — stay on the uniform scale.
+
 Refreshing this directory is therefore: copy the newer upstream `src/` files
 in, update the commit above, re-apply `review.patch` (`git apply
 third_party/instant-meshes/review.patch`, resolving any drift by hand),
 regenerate the patch from the result, then re-run `crates/optimize`'s `remesh`
-and `export_round_trip` suites. If the refresh reaches for a TBB facility the
+and `export_round_trip` suites. P4–P6 are a fork of the solver rather than a
+substitution, so a refresh has to be read rather than applied: the three tests
+that pin them are `varying_face_size_spends_the_budget_on_the_curved_parts`,
+`the_face_count_is_the_one_that_was_asked_for` and
+`a_varied_rebuild_is_reproducible`. If the refresh reaches for a TBB facility the
 shim has no entry for, that is a compile error naming it — never a silent
 behaviour change.
 

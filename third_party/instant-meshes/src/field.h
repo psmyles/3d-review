@@ -88,45 +88,61 @@ compat_orientation_intrinsic_index_6(const Vector3f &q0, const Vector3f &n0,
 extern std::pair<Vector3f, Vector3f> compat_position_extrinsic_3(
     const Vector3f &p0, const Vector3f &n0, const Vector3f &q0,
     const Vector3f &o0, const Vector3f &p1, const Vector3f &n1,
-    const Vector3f &q1, const Vector3f &o1, Float scale, Float inv_scale);
+    const Vector3f &q1, const Vector3f &o1,
+    /* review: one scale per endpoint, so the object can vary face size */
+    Float scale0, Float inv_scale0, Float scale1, Float inv_scale1);
 
 extern std::pair<Vector3f, Vector3f> compat_position_extrinsic_4(
     const Vector3f &p0, const Vector3f &n0, const Vector3f &q0,
     const Vector3f &o0, const Vector3f &p1, const Vector3f &n1,
-    const Vector3f &q1, const Vector3f &o1, Float scale, Float inv_scale);
+    const Vector3f &q1, const Vector3f &o1,
+    /* review: one scale per endpoint, so the object can vary face size */
+    Float scale0, Float inv_scale0, Float scale1, Float inv_scale1);
 
 extern std::pair<Vector2i, Vector2i> compat_position_extrinsic_index_3(
     const Vector3f &p0, const Vector3f &n0, const Vector3f &q0,
     const Vector3f &o0, const Vector3f &p1, const Vector3f &n1,
-    const Vector3f &q1, const Vector3f &o1, Float scale, Float inv_scale,
+    const Vector3f &q1, const Vector3f &o1,
+    /* review: one scale per endpoint, so the object can vary face size */
+    Float scale0, Float inv_scale0, Float scale1, Float inv_scale1,
     Float *error = nullptr);
 
 extern std::pair<Vector2i, Vector2i> compat_position_extrinsic_index_4(
     const Vector3f &p0, const Vector3f &n0, const Vector3f &q0,
     const Vector3f &o0, const Vector3f &p1, const Vector3f &n1,
-    const Vector3f &q1, const Vector3f &o1, Float scale, Float inv_scale,
+    const Vector3f &q1, const Vector3f &o1,
+    /* review: one scale per endpoint, so the object can vary face size */
+    Float scale0, Float inv_scale0, Float scale1, Float inv_scale1,
     Float *error = nullptr);
 
 extern std::pair<Vector3f, Vector3f> compat_position_intrinsic_3(
     const Vector3f &p0, const Vector3f &n0, const Vector3f &q0,
     const Vector3f &o0, const Vector3f &p1, const Vector3f &n1,
-    const Vector3f &q1, const Vector3f &o1, Float scale, Float inv_scale);
+    const Vector3f &q1, const Vector3f &o1,
+    /* review: one scale per endpoint, so the object can vary face size */
+    Float scale0, Float inv_scale0, Float scale1, Float inv_scale1);
 
 extern std::pair<Vector3f, Vector3f> compat_position_intrinsic_4(
     const Vector3f &p0, const Vector3f &n0, const Vector3f &q0,
     const Vector3f &o0, const Vector3f &p1, const Vector3f &n1,
-    const Vector3f &q1, const Vector3f &o1, Float scale, Float inv_scale);
+    const Vector3f &q1, const Vector3f &o1,
+    /* review: one scale per endpoint, so the object can vary face size */
+    Float scale0, Float inv_scale0, Float scale1, Float inv_scale1);
 
 extern std::pair<Vector2i, Vector2i> compat_position_intrinsic_index_3(
     const Vector3f &p0, const Vector3f &n0, const Vector3f &q0,
     const Vector3f &o0, const Vector3f &p1, const Vector3f &n1,
-    const Vector3f &q1, const Vector3f &o1, Float scale, Float inv_scale,
+    const Vector3f &q1, const Vector3f &o1,
+    /* review: one scale per endpoint, so the object can vary face size */
+    Float scale0, Float inv_scale0, Float scale1, Float inv_scale1,
     Float *error = nullptr);
 
 extern std::pair<Vector2i, Vector2i> compat_position_intrinsic_index_4(
     const Vector3f &p0, const Vector3f &n0, const Vector3f &q0,
     const Vector3f &o0, const Vector3f &p1, const Vector3f &n1,
-    const Vector3f &q1, const Vector3f &o1, Float scale, Float inv_scale,
+    const Vector3f &q1, const Vector3f &o1,
+    /* review: one scale per endpoint, so the object can vary face size */
+    Float scale0, Float inv_scale0, Float scale1, Float inv_scale1,
     Float *error = nullptr);
 
 /* Optimization kernels */

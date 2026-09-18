@@ -51,7 +51,7 @@ struct RvoRemeshOptions {
     smooth_iterations: u32,
     pure_quad: i32,
     deterministic: i32,
-    adaptive_scale: i32,
+    adaptive_strength: f32,
     min_cost_flow: i32,
 }
 
@@ -173,7 +173,7 @@ pub(crate) fn run(
         smooth_iterations: options.smooth_iterations,
         pure_quad: options.pure_quad as i32,
         deterministic: options.deterministic as i32,
-        adaptive_scale: options.adaptive_scale as i32,
+        adaptive_strength: options.adaptive_strength,
         min_cost_flow: options.min_cost_flow as i32,
     };
 

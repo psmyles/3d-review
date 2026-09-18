@@ -26,9 +26,9 @@ use crate::state::{
         AO_BAKE_DISTANCE_MAX, AO_BAKE_DISTANCE_MIN, AO_BAKE_INTENSITY_MAX, AO_BAKE_INTENSITY_MIN,
         ATTRIBUTE_WEIGHT_MAX, ATTRIBUTE_WEIGHT_MIN, LOD_ERROR_MAX, LOD_ERROR_MIN, LOD_RATIO_MAX,
         LOD_RATIO_MIN, OVERDRAW_THRESHOLD_MAX, OVERDRAW_THRESHOLD_MIN, PRUNE_THRESHOLD_MAX,
-        PRUNE_THRESHOLD_MIN, REMESH_CREASE_MAX, REMESH_CREASE_MIN, REMESH_FACES_MAX,
-        REMESH_FACES_MIN, REMESH_RATIO_MAX, REMESH_RATIO_MIN, REMESH_SMOOTH_MAX,
-        SHRINKWRAP_OFFSET_MAX, SHRINKWRAP_OFFSET_MIN, SHRINKWRAP_RESOLUTION_MAX,
+        PRUNE_THRESHOLD_MIN, REMESH_ADAPTIVE_MAX, REMESH_ADAPTIVE_MIN, REMESH_CREASE_MAX,
+        REMESH_CREASE_MIN, REMESH_FACES_MAX, REMESH_FACES_MIN, REMESH_RATIO_MAX, REMESH_RATIO_MIN,
+        REMESH_SMOOTH_MAX, SHRINKWRAP_OFFSET_MAX, SHRINKWRAP_OFFSET_MIN, SHRINKWRAP_RESOLUTION_MAX,
         SHRINKWRAP_RESOLUTION_MIN, WELD_TOLERANCE_MAX, WELD_TOLERANCE_MIN,
     },
 };
@@ -331,17 +331,19 @@ fn remesh_params(ui: &mut egui::Ui, params: RemeshParams) -> Option<RemeshParams
             0..=REMESH_SMOOTH_MAX,
             0,
         );
-        // The quad solver's own two knobs. Shown only for the topology that
-        // runs it, because they read as settings of the rebuild in general and
-        // the other two topologies ignore them entirely.
+        labeled_slider_with_value(
+            ui,
+            Tip::new(keys::ui_opt::REMESH_ADAPTIVE)
+                .describe(keys::ui_opt::REMESH_ADAPTIVE_DESCRIPTION)
+                .page(Page::OptRemesh),
+            &mut edited.adaptive_strength,
+            REMESH_ADAPTIVE_MIN..=REMESH_ADAPTIVE_MAX,
+            2,
+        );
+        // The quad solver's own knob. Shown only for the topology that runs it,
+        // because it reads as a setting of the rebuild in general and the other
+        // two topologies ignore it entirely.
         if edited.topology == RemeshTopology::PureQuads {
-            labeled_checkbox(
-                ui,
-                Tip::new(keys::ui_opt::REMESH_ADAPTIVE_SCALE)
-                    .describe(keys::ui_opt::REMESH_ADAPTIVE_SCALE_DESCRIPTION)
-                    .page(Page::OptRemesh),
-                &mut edited.adaptive_scale,
-            );
             labeled_checkbox(
                 ui,
                 Tip::new(keys::ui_opt::REMESH_MIN_COST_FLOW)

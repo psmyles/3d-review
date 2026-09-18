@@ -21,9 +21,10 @@ with and without it.
 - **Reduce** - [simplifies](simplify.md) the model **in place**. Every
   operation below it works on the simplified model, LOD levels start from it,
   and the export saves it in place of the original.
-- **Remesh** - [rebuilds](remesh.md) each object's surface out of evenly sized
-  four-sided faces (or triangles) that follow the shape's own curves. Unlike
-  Reduce it keeps nothing of what was there - it lays down a new surface and
+- **Remesh** - [rebuilds](remesh.md) each object's surface out of four-sided
+  faces (or triangles) that follow the shape's own curves, sized by how much the
+  surface turns - small over a rounded edge, large over a flat panel. Unlike
+  Reduce it keeps nothing of what was there: it lays down a new surface and
   copies the materials, texture layout and colors across. Still objects only.
   Its **Only quads** setting uses a second solver that produces no triangles at
   all, on objects that are one closed shell.

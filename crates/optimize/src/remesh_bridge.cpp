@@ -19,6 +19,8 @@
 
 #include "remesh_bridge.h"
 
+#include "remesh_density.h"
+
 #ifdef REVIEW_HAS_QUADRIFLOW
 #include "remesh_quadriflow.h"
 #endif
@@ -42,6 +44,7 @@
 #include "normal.h"
 #include "subdivide.h"
 #include "bvh.h"
+#include <tbb/tbb.h>
 
 /* Defined in `field.cpp` but declared in no header. */
 extern void freeze_ivars_orientations(MultiResolutionHierarchy &mRes, int level,
@@ -252,7 +255,7 @@ extern "C" int review_remesh_run(const rvo_remesh_input *input,
         request.face_count = options->face_count < 4u ? 4u : options->face_count;
         request.preserve_sharp = options->crease_angle_deg >= 0.0f;
         request.preserve_boundary = options->align_to_boundaries;
-        request.adaptive_scale = options->adaptive_scale;
+        request.adaptive_strength = options->adaptive_strength;
         request.min_cost_flow = options->min_cost_flow;
 
         rvo_quadriflow_output solved;
@@ -273,6 +276,16 @@ extern "C" int review_remesh_run(const rvo_remesh_input *input,
         const int posy = (int) options->posy;
         const bool deterministic = options->deterministic != 0;
         const bool extrinsic = options->extrinsic != 0;
+
+        /* Instant Meshes' own `deterministic` flag reaches the extraction and
+         * the graph colouring but not the field solve, which runs in parallel
+         * either way on the assumption that the colouring makes each phase's
+         * writes disjoint — and it does not. Measured on one mesh: 1848 faces
+         * at one thread, 1550 at two, and two runs in one process disagreeing
+         * at eight. So when the caller asks for a reproducible result, the
+         * shim is told to run this thread's parallel work in order; that, and
+         * not the vendored flag, is what makes the setting true. */
+        const tbb::shim::SerialScope ordered(deterministic);
 
         /* Instant Meshes lays vertices out column-major: three rows, one column
          * per vertex. */
@@ -349,6 +362,31 @@ extern "C" int review_remesh_run(const rvo_remesh_input *input,
         mRes.setScale(scale);
         mRes.build(deterministic);
         mRes.resetSolution();
+
+        /* Vary face size by curvature, when asked. The hierarchy carries an
+         * optional per-vertex multiplier on `scale` (a change to the vendored
+         * tree — see its review.patch), and `review::density_field` is what
+         * decides where the small faces go; the QuadriFlow driver steers by the
+         * same field, so the two engines behave alike. With nothing installed
+         * every site in the solve reads the uniform scale exactly as before. */
+        {
+            review::DensityInput request;
+            request.positions = mRes.V().data();
+            request.normals = mRes.N().data();
+            request.areas = mRes.A().data();
+            request.vertex_count = (size_t) mRes.V().cols();
+            request.indices = mRes.F().data();
+            request.index_count = (size_t) mRes.F().size();
+
+            std::vector<float> spacing;
+            if (review::density_field(request, options->adaptive_strength, scale, spacing)) {
+                VectorXf field(spacing.size());
+                for (size_t vertex = 0; vertex < spacing.size(); ++vertex) {
+                    field[(Eigen::Index) vertex] = spacing[vertex];
+                }
+                mRes.setScaleField(field);
+            }
+        }
 
         /* Pin the field to open borders so a boundary comes back as one straight
          * edge loop rather than a ragged fringe. */

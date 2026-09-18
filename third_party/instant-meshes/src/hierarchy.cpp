@@ -518,6 +518,7 @@ void MultiResolutionHierarchy::free() {
     }
     mAdj.clear(); mV.clear(); mQ.clear();
     mO.clear(); mN.clear(); mA.clear();
+    mS.clear(); /* review: the optional scale field */
     mCQ.clear(); mCO.clear();
     mCQw.clear(); mCOw.clear();
     mToUpper.clear(); mToLower.clear();
@@ -658,6 +659,29 @@ void MultiResolutionHierarchy::load(const Serializer &serializer) {
     }
 }
 
+/* review: install a per-vertex scale field and average it down the hierarchy.
+ *
+ * The averaging is `DownsampleGraph`'s own rule for a per-vertex quantity: a
+ * coarse vertex covers one or two fine ones, and takes their mean. Anything
+ * finer would be false precision — the coarse levels exist to carry a trend. */
+void MultiResolutionHierarchy::setScaleField(const VectorXf &field) {
+    mS.clear();
+    if (field.size() != mV[0].cols())
+        return;
+    mS.resize(mV.size());
+    mS[0] = field;
+    for (size_t l = 0; l + 1 < mV.size(); ++l) {
+        mS[l + 1].resize(mV[l + 1].cols());
+        for (uint32_t i = 0; i < (uint32_t) mV[l + 1].cols(); ++i) {
+            Vector2u upper = mToUpper[l].col(i);
+            Float value = mS[l][upper[0]];
+            if (upper[1] != INVALID)
+                value = 0.5f * (value + mS[l][upper[1]]);
+            mS[l + 1][i] = value;
+        }
+    }
+}
+
 void MultiResolutionHierarchy::clearConstraints() {
     if (levels() == 0)
         return;
@@ -748,7 +772,6 @@ void MultiResolutionHierarchy::propagateConstraints(int rosy, int posy) {
     else
         throw std::runtime_error("Unsupported symmetry!");
 
-    Float scale = mScale, inv_scale = 1/mScale;
 
     for (int l=0; l<levels()-1; ++l)  {
         const MatrixXf &N = mN[l];
@@ -805,7 +828,9 @@ void MultiResolutionHierarchy::propagateConstraints(int rosy, int posy) {
                         auto result = compat_pos(
                             V.col(upper[0]), N.col(upper[0]), CQ.col(upper[0]), CO.col(upper[0]), 
                             V.col(upper[1]), N.col(upper[1]), CQ.col(upper[1]), CO.col(upper[1]),
-                            scale, inv_scale
+                            /* review: per-vertex scales */
+                            scaleAt(l, upper[0]), 1 / scaleAt(l, upper[0]),
+                            scaleAt(l, upper[1]), 1 / scaleAt(l, upper[1])
                         );
                         cow = COw[upper[0]] + COw[upper[1]];
                         co = (result.first * COw[upper[0]] + result.second * COw[upper[1]]) / cow;

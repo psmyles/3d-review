@@ -69,10 +69,8 @@ divides into more evenly often goes through.
 Only quads stays in the list either way, so a preset that asks for it still means
 what it says, but a build without it always falls back.
 
-The two settings below Only quads belong to it alone. **Vary face size** lets the
-faces get smaller where the shape is detailed and larger where it is flat,
-instead of holding one size everywhere. **Thorough layout** is the slower solver
-mentioned above.
+**Thorough layout**, below Only quads, is that slower solver, and it belongs to
+Only quads alone.
 
 ## How dense
 
@@ -89,10 +87,45 @@ Two ways to say it:
   own [override](overrides.md) takes exactly the count it asks for and leaves the
   shared pool, so pinning one object does not quietly re-weight the rest.
 
-Either way the number is a target, not a promise: the rebuild works from a face
-*size* rather than a count, and it typically lands a fifth or so above what you
-asked for. Very small objects are left alone - below about sixteen triangles
-there is no surface to work from, and you are told which objects were skipped.
+The number is what you get, within a few percent. It is not free, though: the
+rebuild works from a face *size* rather than a count, so how many faces that
+turns into is measured and the size corrected, which means an object that lands
+wide of the mark is rebuilt more than once. Very small objects are left alone -
+below about sixteen triangles there is no surface to work from, and you are told
+which objects were skipped.
+
+## Vary face size
+
+Left at 0, every face comes out the same size, and a broad flat panel gets as
+many of them as a tight rounded edge. That is rarely what you want: the flat part
+needs four faces and the curve needs forty.
+
+**Vary face size** moves the budget instead of raising it. The surface is
+measured for how much it *turns* over the distance one face spans, and faces are
+made smaller where it turns and larger where it does not - so the count stays put
+and the detail moves to where it does something. On a stone pedestal at the
+default setting the flat top goes from an even grid of twelve-millimetre quads to
+a coarse one, and the rounded rim gains the faces it gave up, for the same total.
+
+Two things it is careful about, both of which matter on real assets:
+
+- **Bumps smaller than a face are not detail.** A sculpt or a scan is rough
+  everywhere at the scale of one source triangle; if that counted, the whole
+  object would read as detailed and nothing would be gained. What is measured is
+  the turn across a whole face, so roughness finer than that - which no face size
+  could have captured anyway - is ignored, while a fillet or a rim is not.
+- **A face is never asked to be finer than the triangles underneath it.** The
+  rebuild has to follow the surface it is given, and it cannot resolve something
+  the original does not.
+
+Higher settings vary it more. Past about three-quarters the quad pattern starts
+to resolve the change in face size with singularities rather than a gradient, and
+a rim can come back faceted - worth checking the result at the top of the range
+rather than assuming more is better.
+
+It applies to every topology. Only quads varies the least of the three, because
+an integer layout has fewer ways to change face size across a surface than a
+pattern read off a field does.
 
 ## Sharp edges and open borders
 
@@ -108,10 +141,15 @@ edge, so a border comes back as one clean loop rather than a ragged fringe.
 **Smoothing** is how many rounds of evening-out to run over the result. Two is a
 good default: a little makes the faces more uniform, a lot rounds off detail.
 
-**Reproducible** is on by default and takes the slower path through the stages
-whose result would otherwise depend on how the work happened to be shared out
-between processor cores. Leave it on: a preview that shifts under you while you
-drag a slider is worse than one that takes a moment longer.
+**Reproducible** is on by default and runs the rebuild on one core, because
+spreading it across several changes the answer: the same model rebuilt at one
+thread, at two and at eight gives three different meshes, and none of them is
+wrong - the solver simply settles differently depending on the order the work
+lands in. Leave it on. A preview that shifts under you while you drag a slider is
+worse than one that takes a moment longer, and "a moment" is what it costs: about
+twice as long on a large object, and no difference at all on a scene of small
+ones. Turn it off only for a one-off rebuild of something big where you do not
+care about matching it again.
 
 ## Materials, UVs and colors come back by projection
 

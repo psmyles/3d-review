@@ -28,7 +28,9 @@ struct rvo_quadriflow_request {
     std::uint32_t face_count;
     int preserve_sharp;
     int preserve_boundary;
-    int adaptive_scale;
+    /// How far face size may follow curvature, 0 (never) to 1 (as far as the
+    /// layout will take it). See `remesh_density.h`.
+    float adaptive_strength;
     int min_cost_flow;
 };
 

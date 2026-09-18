@@ -94,6 +94,35 @@ const MIN_FACES: u32 = 4;
 /// worse than what is already there.
 const MIN_INPUT_TRIANGLES: usize = 16;
 
+/// How far the face count may land from what was asked for before it is worth
+/// asking the engine again.
+///
+/// Neither engine is *told* a face count — the number becomes a target edge
+/// length, and how many faces that turns into is whatever the extraction makes
+/// of it. Two things make the answer miss. A varying face size
+/// ([`RemeshParams::adaptive_strength`]) pins the count only in prediction: a
+/// region the field made fine comes back with more faces than its area bought,
+/// because the extraction snaps and collapses at that size too. And "Mostly
+/// quads" converts the count as though every face were a quad, while what it
+/// emits is quads *and* the triangles at the singularities — measured at 16%
+/// over on a sculpted pedestal, uniform field and all.
+///
+/// So the answer is measured and the request corrected. It is what makes the
+/// number in the box the number you get.
+const BUDGET_TOLERANCE: f64 = 0.05;
+
+/// How many times a node's solve may be repeated to land inside
+/// [`BUDGET_TOLERANCE`]. Most nodes take one or two; the fourth is what the
+/// bracketing in [`solve_to_budget`] needs to close on an engine that answers
+/// in steps. The best attempt is kept, so stopping early never returns a worse
+/// mesh than a shorter budget would have.
+///
+/// This is the operation's worst case, and it is worth it: a face count 16% out
+/// is one the user has to guess around on every slider drag, and guessing costs
+/// them more runs than this costs the machine. It is also the *worst* case, not
+/// the usual one — a node already inside the tolerance is solved once.
+const BUDGET_ATTEMPTS: u32 = 4;
+
 /// How far from a new corner the source surface may be and still be projected
 /// from, as a multiple of the proxy's bounding-sphere radius. Generous on
 /// purpose: the retopologized surface sits within a fraction of an edge length
@@ -140,7 +169,7 @@ pub(crate) struct RemeshOptions {
     pub smooth_iterations: u32,
     pub pure_quad: bool,
     pub deterministic: bool,
-    pub adaptive_scale: bool,
+    pub adaptive_strength: f32,
     pub min_cost_flow: bool,
 }
 
@@ -468,7 +497,7 @@ fn remesh_node(
         positions: &proxy.positions,
         indices: &proxy.indices,
     };
-    let mut output = match run_engine(&input, &engine_options(topology, faces, params)) {
+    let mut output = match solve_to_budget(&input, topology, faces, params) {
         Ok(output) => output,
         Err(error) if topology == RemeshTopology::PureQuads => {
             // The solve can fail on geometry that passed the manifold check —
@@ -480,10 +509,7 @@ fn remesh_node(
                  to 'Mostly quads'.",
                 engine_reason(&error)
             ));
-            match run_engine(
-                &input,
-                &engine_options(RemeshTopology::QuadDominant, faces, params),
-            ) {
+            match solve_to_budget(&input, RemeshTopology::QuadDominant, faces, params) {
                 Ok(output) => output,
                 Err(error) => {
                     warnings.push(&format!("Remesh: '{name}' was left as it is — {error}"));
@@ -512,6 +538,78 @@ fn remesh_node(
         CarryPolygons::Yes,
         project::Winding::FromSource,
     ))
+}
+
+/// Run the engine, and keep running it until the face count is the one that was
+/// asked for.
+///
+/// The engine's own arithmetic decides how many faces a target edge length ends
+/// up producing, and nothing on this side can do better than measure the miss
+/// and ask again. See [`BUDGET_TOLERANCE`] for why there is a miss at all.
+///
+/// Asking again is not a matter of scaling the request by the miss, though —
+/// that assumes the engine answers proportionally, and the quad solver does
+/// not. Measured on one object: 1817 asked gave 1338, so a proportional
+/// correction asked 2467 and got 3544, and the next correction landed back
+/// under. An integer quad layout moves in steps, and a request between two of
+/// them resolves whichever way the solve goes.
+///
+/// So the correction is damped, and as soon as one attempt has come back short
+/// and another long the search **brackets**: every later ask is the midpoint
+/// between them, which cannot oscillate. The closest attempt is what comes
+/// back, not the last one.
+fn solve_to_budget(
+    input: &RemeshInput,
+    topology: RemeshTopology,
+    faces: u32,
+    params: &RemeshParams,
+) -> Result<RemeshOutput, OptError> {
+    let target = faces.max(MIN_FACES) as f64;
+    let mut asked = faces.max(MIN_FACES) as f64;
+    let mut best: Option<(RemeshOutput, f64)> = None;
+    // The largest ask that came back short, and the smallest that came back
+    // long. Once both exist the answer is between them.
+    let mut short: Option<f64> = None;
+    let mut long: Option<f64> = None;
+
+    for attempt in 0..BUDGET_ATTEMPTS {
+        let requested = asked.clamp(MIN_FACES as f64, u32::MAX as f64).round();
+        let output = run_engine(input, &engine_options(topology, requested as u32, params))?;
+        let produced = output.face_count();
+        if produced == 0 {
+            // Nothing to correct against, and the caller reports an empty result
+            // in words the user can act on.
+            return Ok(output);
+        }
+        let produced = produced as f64;
+        let miss = (produced - target).abs() / target;
+        if best.as_ref().is_none_or(|(_, previous)| miss < *previous) {
+            best = Some((output, miss));
+        }
+        if miss <= BUDGET_TOLERANCE || attempt + 1 == BUDGET_ATTEMPTS {
+            break;
+        }
+
+        if produced < target {
+            short = Some(short.map_or(requested, |previous: f64| previous.max(requested)));
+        } else {
+            long = Some(long.map_or(requested, |previous: f64| previous.min(requested)));
+        }
+        let next = match (short, long) {
+            (Some(low), Some(high)) => 0.5 * (low + high),
+            // Not bracketed yet: move toward the target, but only half as far
+            // in logs as a proportional correction would, so an engine that
+            // answers in steps is not chased past the step it is on.
+            _ => requested * (target / produced).sqrt(),
+        };
+        if (next - requested).abs() < 1.0 {
+            break;
+        }
+        asked = next;
+    }
+
+    best.map(|(output, _)| output)
+        .ok_or_else(|| OptError::Remesh("the remesher was never asked for a face count".to_owned()))
 }
 
 /// Whether the rebuilt pieces publish a polygon table.
@@ -563,7 +661,7 @@ fn engine_options(topology: RemeshTopology, faces: u32, params: &RemeshParams) -
         // "Only quads" is the solver's job, not its.
         pure_quad: false,
         deterministic: params.deterministic,
-        adaptive_scale: params.adaptive_scale,
+        adaptive_strength: params.adaptive_strength.clamp(0.0, 1.0),
         min_cost_flow: params.min_cost_flow,
     }
 }

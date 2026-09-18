@@ -110,6 +110,12 @@ pub(crate) mod range {
     pub const REMESH_CREASE_MIN: f32 = 5.0;
     pub const REMESH_CREASE_MAX: f32 = 90.0;
     pub const REMESH_SMOOTH_MAX: u32 = 10;
+    /// Remesh: how far face size follows curvature. The top of the range is 1
+    /// rather than something larger because past it the quad layout resolves
+    /// the transition with singularities instead of a gradient — the engines
+    /// clamp there anyway, so a slider that went further would be a lie.
+    pub const REMESH_ADAPTIVE_MIN: f32 = 0.0;
+    pub const REMESH_ADAPTIVE_MAX: f32 = 1.0;
     /// Shrinkwrap: grid steps across the object's longest side, and how far the
     /// shell is pushed out (or, negative, pulled in) in world meters. The offset
     /// range is deliberately symmetric — a shell *inside* the object is a

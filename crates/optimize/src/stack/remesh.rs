@@ -119,9 +119,16 @@ pub struct RemeshParams {
     /// preview that changes under you while you drag a slider is worse than a
     /// slightly slower one.
     pub deterministic: bool,
-    /// [`RemeshTopology::PureQuads`] only: let the quad size follow curvature
-    /// instead of holding one edge length over the whole surface.
-    pub adaptive_scale: bool,
+    /// How far face size may follow curvature, 0 (one face size everywhere) to
+    /// 1 (as far as the layout will carry it). What it buys is where the budget
+    /// goes: a flat panel gets large faces and a tight fillet small ones, for
+    /// the same count. Honoured by every topology — both engines were given a
+    /// per-vertex scale field for it.
+    ///
+    /// At 0 no field is built at all and each engine takes its original,
+    /// uniform arithmetic rather than a field of ones — the two are the same
+    /// answer, but only the first is the same *code*.
+    pub adaptive_strength: f32,
     /// [`RemeshTopology::PureQuads`] only: solve the quad layout with the
     /// minimum-cost-flow formulation. Slower, and resolves layouts the default
     /// solver leaves degenerate.
@@ -143,7 +150,12 @@ impl Default for RemeshParams {
             align_to_boundaries: true,
             smooth_iterations: 2,
             deterministic: true,
-            adaptive_scale: false,
+            // Measured rather than chosen. At 0.5 a sculpted pedestal's flat
+            // top drops from 1818 quads to about 1200 and its rounded rim
+            // gains them, with the silhouette intact; past about 0.75 the
+            // layout starts resolving the transition with singularities
+            // instead of a gradient and the rim goes faceted.
+            adaptive_strength: 0.5,
             min_cost_flow: false,
         }
     }

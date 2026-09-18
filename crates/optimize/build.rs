@@ -139,11 +139,15 @@ fn build_instant_meshes() {
     let eigen = Path::new("../../third_party/eigen");
     let bridge_cpp = Path::new("src/remesh_bridge.cpp");
     let bridge_h = Path::new("src/remesh_bridge.h");
+    let density_cpp = Path::new("src/remesh_density.cpp");
+    let density_h = Path::new("src/remesh_density.h");
 
     println!("cargo:rerun-if-changed={}", dir.display());
     println!("cargo:rerun-if-changed={}", eigen.display());
     println!("cargo:rerun-if-changed={}", bridge_cpp.display());
     println!("cargo:rerun-if-changed={}", bridge_h.display());
+    println!("cargo:rerun-if-changed={}", density_cpp.display());
+    println!("cargo:rerun-if-changed={}", density_h.display());
 
     let sources_dir = dir.join("src");
     if !sources_dir.join("field.cpp").exists() || !eigen.join("Eigen").join("Core").exists() {
@@ -212,6 +216,18 @@ fn build_instant_meshes() {
     configure(&mut vendored);
     vendored.files(&sources).warnings(false);
     vendored.compile("instant_meshes");
+
+    // The density field is this project's own C++ and touches neither engine's
+    // headers — it takes flat arrays, which is the whole reason it can be
+    // shared. Compiled last because both drivers call into it and a linker that
+    // resolves in command-line order wants the callee after its callers.
+    let mut density = cc::Build::new();
+    density.cpp(true).warnings(true).opt_level(2);
+    density.flag_if_supported("/std:c++17");
+    density.flag_if_supported("/EHsc");
+    density.flag_if_supported("-std=c++17");
+    density.file(density_cpp).include("src");
+    density.compile("remesh_density");
 
     println!("cargo:rustc-cfg=has_instant_meshes");
     if quadriflow {

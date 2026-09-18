@@ -20,12 +20,24 @@
     promises and what this project needs, since a remesh must produce the same
     bytes on every machine. `parallel_reduce` is implemented identically rather
     than more loosely: the looser version would buy nothing and cost
-    reproducibility. `parallel_for` bodies write disjoint output, so their
-    chunking is free to differ.
+    reproducibility.
 
-    The vendored code's own `deterministic` flag is what serializes the passes
-    whose *order* matters (the edge classification and collapse in `extract.cpp`,
-    the graph colouring in `hierarchy.cpp`); this file does not second-guess it.
+    `parallel_for` is a different matter, and the vendored code's own
+    `deterministic` flag does **not** cover it. That flag serializes the passes
+    upstream knew were order-sensitive — the edge classification and collapse in
+    `extract.cpp`, the graph colouring in `hierarchy.cpp` — but the field solve
+    itself (`optimize_orientations` / `optimize_positions` in `field.cpp`) runs
+    in parallel either way, on the assumption that the graph colouring makes each
+    phase's writes disjoint. Measured: it does not. The same mesh solved at one
+    thread, at two and at eight gives three different meshes, and at high thread
+    counts two runs in one process can disagree.
+
+    So a caller that needs the same bytes twice opens a [`shim::SerialScope`],
+    which makes every `parallel_*` on that thread run in order on that thread.
+    `review_remesh_run` opens one for the whole solve whenever the caller asked
+    for a reproducible result, which is what makes that setting true rather than
+    nearly true. Nothing here second-guesses the vendored flag; this is the
+    parallelism the vendored flag never reached.
 
     ## Threads
 
@@ -106,6 +118,40 @@ inline std::vector<blocked_range<Value>> chunks_of(const blocked_range<Value> &r
     return chunks;
 }
 
+/// Whether this thread has asked for its parallel work to run in order.
+///
+/// Thread-local rather than global: the Opt workspace runs its stack on a worker
+/// of its own, and one node asking for reproducibility must not quietly
+/// serialize anything else the process happens to be doing.
+inline bool &serial_here() {
+    thread_local bool serial = false;
+    return serial;
+}
+
+/// Makes every `parallel_*` reached from this thread run in order, for as long
+/// as it is alive. Nests: an inner scope that asks for order does not undo it on
+/// the way out.
+class SerialScope {
+public:
+    explicit SerialScope(bool enabled)
+        : enabled_(enabled), previous_(serial_here()) {
+        if (enabled_) {
+            serial_here() = true;
+        }
+    }
+    ~SerialScope() {
+        if (enabled_) {
+            serial_here() = previous_;
+        }
+    }
+    SerialScope(const SerialScope &) = delete;
+    SerialScope &operator=(const SerialScope &) = delete;
+
+private:
+    bool enabled_;
+    bool previous_;
+};
+
 /// The worker pool. One instance for the process, built on first use and torn
 /// down at exit.
 class ThreadPool {
@@ -120,13 +166,15 @@ public:
 
     /// Run `body(i)` for every `i` in `[0, count)` and return once all of them
     /// have finished. Falls back to running them in order on the calling thread
-    /// when the pool is unavailable, already busy, or the caller *is* a worker —
-    /// a nested `parallel_for` must not wait on the pool it is running inside.
+    /// when this thread asked for order ([`SerialScope`]), or when the pool is
+    /// unavailable, already busy, or the caller *is* a worker — a nested
+    /// `parallel_for` must not wait on the pool it is running inside.
     void run(std::size_t count, const std::function<void(std::size_t)> &body) {
         if (count == 0) {
             return;
         }
-        if (count == 1 || workers_.empty() || is_worker() || !busy_.try_lock()) {
+        if (serial_here() || count == 1 || workers_.empty() || is_worker() ||
+            !busy_.try_lock()) {
             for (std::size_t index = 0; index < count; ++index) {
                 body(index);
             }

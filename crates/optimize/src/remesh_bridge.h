@@ -79,8 +79,11 @@ typedef struct rvo_remesh_options {
     int32_t pure_quad;
     /* Take the reproducible path through every order-sensitive stage. */
     int32_t deterministic;
-    /* QuadriFlow only (phase B); ignored by Instant Meshes. */
-    int32_t adaptive_scale;
+    /* How far face size may follow curvature: 0 leaves the object at one face
+     * size everywhere (and takes each engine's original code path), 1 varies it
+     * as far as the layout will carry. Both engines honour it. */
+    float adaptive_strength;
+    /* QuadriFlow only; ignored by Instant Meshes. */
     int32_t min_cost_flow;
 } rvo_remesh_options;
 

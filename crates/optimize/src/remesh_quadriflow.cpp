@@ -16,7 +16,11 @@
 
 #include "remesh_quadriflow.h"
 
+#include "remesh_density.h"
+
+#include <algorithm>
 #include <cmath>
+#include <vector>
 #include <cstring>
 #include <exception>
 #include <string>
@@ -45,6 +49,88 @@ void set_error(char *error, std::size_t error_length, const char *message) {
 /// different arbitrary layout of the same mesh is not a thing anyone wants.
 const int FIXED_RNG_SEED = 0;
 
+/// Put a curvature-driven spacing multiplier into the solver's own scale field.
+///
+/// QuadriFlow carries a per-vertex multiplier (`Hierarchy::mS`) that every later
+/// stage honours — the position solve, the edge-difference subdivision and the
+/// index map all read it — but nothing upstream ever fills it with anything
+/// meaningful. Its data term is `rho`, and `Parametrizer::Initialize` leaves
+/// `rho` at 1 with the `ComputeCurvature` call beside it commented out, so
+/// upstream's "adaptive" path solves a conformal-smoothness system over a
+/// uniform field and comes back uniform. That is why a flat slab and a tight
+/// fillet used to come out at the same face size.
+///
+/// What goes in instead is [`review::density_field`], which the Instant Meshes
+/// driver steers by too — so the two engines vary face size by one rule. The
+/// solve upstream would have run is skipped rather than overwritten: it is a
+/// *conformal* field, which asks where faces should stay square rather than
+/// where they are needed, and running it first would only cost time.
+///
+/// Returns false when there is no field to apply, in which case the caller must
+/// run the uniform path.
+bool apply_density_field(qflow::Parametrizer &field, float strength) {
+    qflow::Hierarchy &mRes = field.hierarchy;
+    const Eigen::Index count = mRes.mV[0].cols();
+    if (count == 0) {
+        return false;
+    }
+
+    /* The shared field works in floats over flat arrays, and QuadriFlow works in
+     * doubles over Eigen columns; this is the one copy between them. */
+    std::vector<float> positions((std::size_t)count * 3);
+    std::vector<float> normals((std::size_t)count * 3);
+    std::vector<float> areas((std::size_t)count);
+    for (Eigen::Index vertex = 0; vertex < count; ++vertex) {
+        for (int axis = 0; axis < 3; ++axis) {
+            positions[(std::size_t)vertex * 3 + axis] = (float)mRes.mV[0](axis, vertex);
+            normals[(std::size_t)vertex * 3 + axis] = (float)mRes.mN[0](axis, vertex);
+        }
+        areas[(std::size_t)vertex] = (float)mRes.mA[0][vertex];
+    }
+    std::vector<std::uint32_t> indices((std::size_t)mRes.mF.cols() * 3);
+    for (Eigen::Index face = 0; face < mRes.mF.cols(); ++face) {
+        for (int corner = 0; corner < 3; ++corner) {
+            indices[(std::size_t)face * 3 + corner] = (std::uint32_t)mRes.mF(corner, face);
+        }
+    }
+
+    review::DensityInput request;
+    request.positions = positions.data();
+    request.normals = normals.data();
+    request.areas = areas.data();
+    request.vertex_count = (std::size_t)count;
+    request.indices = indices.data();
+    request.index_count = indices.size();
+
+    std::vector<float> spacing;
+    if (!review::density_field(request, strength, (float)mRes.mScale, spacing)) {
+        return false;
+    }
+
+    Eigen::MatrixXd &S = mRes.mS[0];
+    for (Eigen::Index vertex = 0; vertex < count; ++vertex) {
+        S(0, vertex) = S(1, vertex) = (double)spacing[(std::size_t)vertex];
+    }
+
+    /* The tail of `Optimizer::optimize_scale`: every coarser level of the
+     * hierarchy needs the field too, since the position solve starts there. */
+    for (std::size_t level = 0; level + 1 < mRes.mS.size(); ++level) {
+        const Eigen::MatrixXd &fine = mRes.mS[level];
+        Eigen::MatrixXd &coarse = mRes.mS[level + 1];
+        const Eigen::MatrixXi &toUpper = mRes.mToUpper[level];
+        for (Eigen::Index vertex = 0; vertex < toUpper.cols(); ++vertex) {
+            const Eigen::Vector2i upper = toUpper.col(vertex);
+            qflow::Vector2d value = fine.col(upper[0]);
+            if (upper[1] != -1) {
+                value = 0.5 * (value + fine.col(upper[1]));
+            }
+            coarse.col(vertex) = value;
+        }
+    }
+    return true;
+}
+
+
 } // namespace
 
 bool review_quadriflow_solve(const rvo_quadriflow_request &request,
@@ -54,7 +140,7 @@ bool review_quadriflow_solve(const rvo_quadriflow_request &request,
         qflow::Parametrizer field;
         field.flag_preserve_sharp = request.preserve_sharp ? 1 : 0;
         field.flag_preserve_boundary = request.preserve_boundary ? 1 : 0;
-        field.flag_adaptive_scale = request.adaptive_scale ? 1 : 0;
+        field.flag_adaptive_scale = 1;
         field.flag_minimum_cost_flow = request.min_cost_flow ? 1 : 0;
         field.hierarchy.rng_seed = FIXED_RNG_SEED;
 
@@ -107,10 +193,11 @@ bool review_quadriflow_solve(const rvo_quadriflow_request &request,
         qflow::Optimizer::optimize_orientations(field.hierarchy);
         field.ComputeOrientationSingularities();
 
-        if (field.flag_adaptive_scale == 1) {
-            field.EstimateSlope();
-        }
-        qflow::Optimizer::optimize_scale(field.hierarchy, field.rho, field.flag_adaptive_scale);
+        /* `optimize_scale` with the flag clear fills the field with ones, which
+         * is what every stage below expects when nothing varies. The adaptive
+         * field then replaces it outright — see `apply_density_field`. */
+        qflow::Optimizer::optimize_scale(field.hierarchy, field.rho, 0);
+        apply_density_field(field, request.adaptive_strength);
         /* Upstream sets this *after* the scale solve whether or not it was asked
          * for: the position solve below reads it as "a scale field exists now",
          * which it does either way. */

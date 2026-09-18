@@ -193,12 +193,31 @@ pub fn geometry_digest(level: &review_optimize::ProcessedLod) -> u64 {
 /// first is not defined, and does not need to be. When only one of them runs —
 /// a filtered `cargo test`, or a build with no retopologizer — nothing is
 /// compared, which is the honest outcome rather than a failure.
+///
+/// A recording older than this executable was is **ignored**, not compared
+/// against. The file lives in the target directory and outlives any number of
+/// rebuilds, so without that rule the first legitimate change to the remesher
+/// fails this test against a mesh that no longer exists — a failure that says
+/// "the result depends on scheduling" when it does not, and that a reader can
+/// only clear by guessing at `cargo clean`.
 pub fn compare_digest_across_binaries(name: &str, digest: u64) {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("shared_digests");
     std::fs::create_dir_all(&dir).expect("create the shared digest directory");
     let path = dir.join(name);
+    let fresh = |path: &Path| -> bool {
+        let built = std::env::current_exe()
+            .and_then(|exe| exe.metadata())
+            .and_then(|meta| meta.modified());
+        let recorded = path.metadata().and_then(|meta| meta.modified());
+        match (built, recorded) {
+            (Ok(built), Ok(recorded)) => recorded >= built,
+            // No clock to compare with: treat it as fresh and compare, which
+            // fails loudly rather than passing silently.
+            _ => true,
+        }
+    };
     match std::fs::read_to_string(&path) {
-        Ok(recorded) => {
+        Ok(recorded) if fresh(&path) => {
             let recorded: u64 = recorded.trim().parse().expect("a recorded digest");
             assert_eq!(
                 recorded, digest,
@@ -206,7 +225,7 @@ pub fn compare_digest_across_binaries(name: &str, digest: u64) {
                  suite recorded, so the result depends on how the work was scheduled"
             );
         }
-        Err(_) => std::fs::write(&path, digest.to_string()).expect("record the digest"),
+        _ => std::fs::write(&path, digest.to_string()).expect("record the digest"),
     }
 }
 

@@ -135,9 +135,10 @@ ui-opt-remesh-align-boundaries = Follow open borders
 ui-opt-remesh-smoothing = Smoothing
     .description = How many rounds of evening-out to run over the rebuilt surface. A little
         makes the faces more uniform; a lot rounds off detail.
-ui-opt-remesh-adaptive-scale = Vary face size
-    .description = Only quads: let the faces get smaller where the shape is detailed and
-        larger where it is flat, instead of holding one size everywhere.
+ui-opt-remesh-adaptive = Vary face size
+    .description = How much smaller the faces get where the shape is detailed, and larger
+        where it is flat. At 0 every face is the same size. Raising it does not add faces,
+        it moves them: the flat parts give up what the curved parts take.
 ui-opt-remesh-min-cost-flow = Thorough layout
     .description = Only quads: solve the quad layout the slower, more careful way. Worth
         trying when the result comes back with folded or twisted faces.

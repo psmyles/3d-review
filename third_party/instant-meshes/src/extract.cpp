@@ -37,6 +37,24 @@ extract_graph(const MultiResolutionHierarchy &mRes, bool extrinsic, int rosy, in
 
     Float scale = mRes.scale(), inv_scale = 1 / scale;
 
+    /* review: the face size each *extracted* vertex came out of.
+     *
+     * Empty unless the hierarchy carries a scale field, and every read goes
+     * through `face_size`, which then answers the uniform `scale` — so a run
+     * without a field takes the original arithmetic rather than an equivalent
+     * one.
+     *
+     * Step 5 is why this has to exist. It snaps together anything closer than a
+     * fraction of the face size and loops until a pass changes nothing; one
+     * threshold for the whole object means that wherever the field asked for
+     * fine faces, *every* edge is under it, and the loop flattens that region a
+     * step at a time without ever settling. Measured, before this: a sculpted
+     * pedestal at half strength never came back. */
+    VectorXf scale_new;
+    auto face_size = [&](uint32_t vertex) -> Float {
+        return scale_new.size() != 0 ? scale_new[vertex] : scale;
+    };
+
     auto compat_orientation = rosy == 2 ? compat_orientation_extrinsic_2 :
         (rosy == 4 ? compat_orientation_extrinsic_4 : compat_orientation_extrinsic_6);
     auto compat_position = posy == 4 ? compat_position_extrinsic_index_4 : compat_position_extrinsic_index_3;
@@ -71,10 +89,15 @@ extract_graph(const MultiResolutionHierarchy &mRes, bool extrinsic, int rosy, in
                             Q.col(i), N.col(i), Q.col(j), N.col(j));
 
                     Float error = 0;
+                    /* review: each endpoint's own face size. `scale` stays the
+                     * uniform one for the thresholds further down, which are
+                     * heuristics over the whole object rather than lattice
+                     * arithmetic. */
+                    const Float scale_i = mRes.scaleAt(0, i), scale_j = mRes.scaleAt(0, j);
                     std::pair<Vector2i, Vector2i> shift = compat_position(
                             V.col(i), N.col(i), Q_rot.first, O.col(i),
                             V.col(j), N.col(j), Q_rot.second, O.col(j),
-                            scale, inv_scale, &error);
+                            scale_i, 1 / scale_i, scale_j, 1 / scale_j, &error);
 
                     Vector2i absDiff = (shift.first-shift.second).cwiseAbs();
 
@@ -256,6 +279,10 @@ extract_graph(const MultiResolutionHierarchy &mRes, bool extrinsic, int rosy, in
         N_new.resize(3, nVertices);
         O_new.setZero();
         N_new.setZero();
+        if (mRes.hasScaleField()) { /* review */
+            scale_new.resize(nVertices);
+            scale_new.setZero();
+        }
 
         crease_out.clear();
         for (auto i : crease_in) {
@@ -279,7 +306,10 @@ extract_graph(const MultiResolutionHierarchy &mRes, bool extrinsic, int rosy, in
                         continue;
                     uint32_t j = it->second;
 
-                    Float weight = std::exp(-(O.col(i)-V.col(i)).squaredNorm() * inv_scale * inv_scale * 9);
+                    /* review: measured against this vertex's own face size */
+                    const Float inv_scale_i =
+                        mRes.hasScaleField() ? 1 / mRes.scaleAt(0, i) : inv_scale;
+                    Float weight = std::exp(-(O.col(i)-V.col(i)).squaredNorm() * inv_scale_i * inv_scale_i * 9);
                     if (COw.size() != 0 && COw[i] != 0) {
                         tbb::spin_mutex::scoped_lock lock(mutex);
                         crease_out.insert(j);
@@ -289,6 +319,8 @@ extract_graph(const MultiResolutionHierarchy &mRes, bool extrinsic, int rosy, in
                         atomicAdd(&O_new.coeffRef(k, j), O(k, i)*weight);
                         atomicAdd(&N_new.coeffRef(k, j), N(k, i)*weight);
                     }
+                    if (scale_new.size() != 0) /* review */
+                        atomicAdd(&scale_new[j], mRes.scaleAt(0, i)*weight);
                     atomicAdd(&cluster_weight[j], weight);
                 }
             };
@@ -305,6 +337,8 @@ extract_graph(const MultiResolutionHierarchy &mRes, bool extrinsic, int rosy, in
                 }
                 O_new.col(i) /= cluster_weight[i];
                 N_new.col(i).normalize();
+                if (scale_new.size() != 0) /* review */
+                    scale_new[i] /= cluster_weight[i];
             }
 
             cout << "done. (took " << timeString(timer.reset()) << ")" << endl;
@@ -316,20 +350,31 @@ extract_graph(const MultiResolutionHierarchy &mRes, bool extrinsic, int rosy, in
         cout.flush();
         bool changed;
         uint32_t nRemoved = 0, nSnapped = 0;
+        /* review: a bound on a loop that has no other one. Its exit condition is
+         * "a pass changed nothing", which assumes every change is progress; the
+         * branch that moves a vertex to the midpoint of two others removes
+         * nothing, so one pass can undo the last. Upstream settles in a handful
+         * of passes on every mesh tried, so this only fires on the pathological
+         * case, and stopping early leaves a correct mesh with a few more thin
+         * faces than it might have had. */
+        uint32_t passes = 0;
         do {
             changed = false;
+            if (++passes > 64)
+                break;
             cout << ".";
             cout.flush();
 
             bool changed_inner;
             do {
                 changed_inner = false;
-                Float thresh = 0.3f * scale;
+                /* review: `thresh` is per vertex now — see `face_size` */
 
                 std::vector<std::tuple<Float, uint32_t, uint32_t, uint32_t>> candidates;
                 for (uint32_t i_id=0; i_id<adj_new.size(); ++i_id) {
                     auto const &adj_i = adj_new[i_id];
                     const Vector3f p_i = O_new.col(i_id);
+                    const Float thresh = 0.3f * face_size(i_id); /* review */
                     for (uint32_t j=0; j<adj_i.size(); ++j) {
                         uint32_t j_id = adj_i[j].id;
                         const Vector3f p_j = O_new.col(j_id);
@@ -374,8 +419,11 @@ extract_graph(const MultiResolutionHierarchy &mRes, bool extrinsic, int rosy, in
                     Float height = 2*std::sqrt(s*(s-a)*(s-b)*(s-c))/a;
                     if (height != std::get<0>(t))
                         continue;
-                    if ((p_i-p_j).norm() < thresh || (p_i-p_k).norm() < thresh) {
-                        uint32_t merge_id = (p_i-p_j).norm() < thresh ? j : k;
+                    /* review: against the smaller of the two vertices' face sizes */
+                    const Float thresh_j = 0.3f * std::min(face_size(i), face_size(j));
+                    const Float thresh_k = 0.3f * std::min(face_size(i), face_size(k));
+                    if ((p_i-p_j).norm() < thresh_j || (p_i-p_k).norm() < thresh_k) {
+                        uint32_t merge_id = (p_i-p_j).norm() < thresh_j ? j : k;
                         O_new.col(i) = (O_new.col(i) + O_new.col(merge_id)) * 0.5f;
                         N_new.col(i) = (N_new.col(i) + N_new.col(merge_id)) * 0.5f;
                         std::set<uint32_t> adj_updated;

@@ -404,7 +404,8 @@ inline Vector2i position_floor_index_3(const Vector3f &o, const Vector3f &q,
 std::pair<Vector3f, Vector3f> compat_position_intrinsic_4(
         const Vector3f &p0, const Vector3f &n0, const Vector3f &q0, const Vector3f &o0,
         const Vector3f &p1, const Vector3f &n1, const Vector3f &_q1, const Vector3f &_o1,
-        Float scale, Float inv_scale) {
+        /* review: one scale per endpoint */
+        Float /* scale0 */, Float /* inv_scale0 */, Float scale1, Float inv_scale1) {
     Float cosTheta = n1.dot(n0);
     Vector3f q1 = _q1, o1 = _o1;
 
@@ -418,14 +419,16 @@ std::pair<Vector3f, Vector3f> compat_position_intrinsic_4(
     }
 
     return std::make_pair(
-        o0, position_round_4(o1, q1, n0, o0, scale, inv_scale)
+        o0, position_round_4(o1, q1, n0, o0, scale1, inv_scale1)
     );
 }
 
 std::pair<Vector2i, Vector2i> compat_position_intrinsic_index_4(
         const Vector3f &p0, const Vector3f &n0, const Vector3f &q0, const Vector3f &o0,
         const Vector3f &p1, const Vector3f &n1, const Vector3f &_q1, const Vector3f &_o1,
-        Float scale, Float inv_scale, Float *error) {
+        /* review: one scale per endpoint */
+        Float /* scale0 */, Float /* inv_scale0 */, Float scale1, Float inv_scale1,
+        Float *error) {
     Vector3f q1 = _q1, o1 = _o1;
     Float cosTheta = n1.dot(n0);
 
@@ -439,17 +442,18 @@ std::pair<Vector2i, Vector2i> compat_position_intrinsic_index_4(
     }
 
     if (error)
-        *error = (o0 - position_round_4(o1, q1, n0, o0, scale, inv_scale)).squaredNorm();
+        *error = (o0 - position_round_4(o1, q1, n0, o0, scale1, inv_scale1)).squaredNorm();
 
     return std::make_pair(
-        Vector2i::Zero(), position_round_index_4(o1, q1, n0, o0, scale, inv_scale)
+        Vector2i::Zero(), position_round_index_4(o1, q1, n0, o0, scale1, inv_scale1)
     );
 }
 
 std::pair<Vector3f, Vector3f> compat_position_intrinsic_3(
         const Vector3f &p0, const Vector3f &n0, const Vector3f &q0, const Vector3f &o0,
         const Vector3f &p1, const Vector3f &n1, const Vector3f &_q1, const Vector3f &_o1,
-        Float scale, Float inv_scale) {
+        /* review: one scale per endpoint */
+        Float /* scale0 */, Float /* inv_scale0 */, Float scale1, Float inv_scale1) {
     Float cosTheta = n1.dot(n0);
     Vector3f q1 = _q1, o1 = _o1;
 
@@ -463,14 +467,16 @@ std::pair<Vector3f, Vector3f> compat_position_intrinsic_3(
     }
 
     return std::make_pair(
-        o0, position_round_3(o1, q1, n0, o0, scale, inv_scale)
+        o0, position_round_3(o1, q1, n0, o0, scale1, inv_scale1)
     );
 }
 
 std::pair<Vector2i, Vector2i> compat_position_intrinsic_index_3(
         const Vector3f &p0, const Vector3f &n0, const Vector3f &q0, const Vector3f &o0,
         const Vector3f &p1, const Vector3f &n1, const Vector3f &_q1, const Vector3f &_o1,
-        Float scale, Float inv_scale, Float *error) {
+        /* review: one scale per endpoint */
+        Float /* scale0 */, Float /* inv_scale0 */, Float scale1, Float inv_scale1,
+        Float *error) {
     Vector3f q1 = _q1, o1 = _o1;
     Float cosTheta = n1.dot(n0);
 
@@ -484,10 +490,10 @@ std::pair<Vector2i, Vector2i> compat_position_intrinsic_index_3(
     }
 
     if (error)
-        *error = (o0 - position_round_3(o1, q1, n0, o0, scale, inv_scale)).squaredNorm();
+        *error = (o0 - position_round_3(o1, q1, n0, o0, scale1, inv_scale1)).squaredNorm();
 
     return std::make_pair(
-        Vector2i::Zero(), position_round_index_3(o1, q1, n0, o0, scale, inv_scale)
+        Vector2i::Zero(), position_round_index_3(o1, q1, n0, o0, scale1, inv_scale1)
     );
 }
 
@@ -495,20 +501,21 @@ std::pair<Vector2i, Vector2i> compat_position_intrinsic_index_3(
 inline std::pair<Vector3f, Vector3f> compat_position_extrinsic_4(
         const Vector3f &p0, const Vector3f &n0, const Vector3f &q0, const Vector3f &o0,
         const Vector3f &p1, const Vector3f &n1, const Vector3f &q1, const Vector3f &o1,
-        Float scale, Float inv_scale) {
+        /* review: one scale per endpoint */
+        Float scale0, Float inv_scale0, Float scale1, Float inv_scale1) {
 
     Vector3f t0 = n0.cross(q0), t1 = n1.cross(q1);
     Vector3f middle = middle_point(p0, n0, p1, n1);
-    Vector3f o0p = position_floor_4(o0, q0, n0, middle, scale, inv_scale);
-    Vector3f o1p = position_floor_4(o1, q1, n1, middle, scale, inv_scale);
+    Vector3f o0p = position_floor_4(o0, q0, n0, middle, scale0, inv_scale0);
+    Vector3f o1p = position_floor_4(o1, q1, n1, middle, scale1, inv_scale1);
 
     Float best_cost = std::numeric_limits<Float>::infinity();
     int best_i = -1, best_j = -1;
 
     for (int i=0; i<4; ++i) {
-        Vector3f o0t = o0p + (q0 * (i&1) + t0 * ((i&2) >> 1)) * scale;
+        Vector3f o0t = o0p + (q0 * (i&1) + t0 * ((i&2) >> 1)) * scale0;
         for (int j=0; j<4; ++j) {
-            Vector3f o1t = o1p + (q1 * (j&1) + t1 * ((j&2) >> 1)) * scale;
+            Vector3f o1t = o1p + (q1 * (j&1) + t1 * ((j&2) >> 1)) * scale1;
             Float cost = (o0t-o1t).squaredNorm();
 
             if (cost < best_cost) {
@@ -520,26 +527,28 @@ inline std::pair<Vector3f, Vector3f> compat_position_extrinsic_4(
     }
 
     return std::make_pair(
-        o0p + (q0 * (best_i & 1) + t0 * ((best_i & 2) >> 1)) * scale,
-        o1p + (q1 * (best_j & 1) + t1 * ((best_j & 2) >> 1)) * scale);
+        o0p + (q0 * (best_i & 1) + t0 * ((best_i & 2) >> 1)) * scale0,
+        o1p + (q1 * (best_j & 1) + t1 * ((best_j & 2) >> 1)) * scale1);
 }
 
 std::pair<Vector2i, Vector2i> compat_position_extrinsic_index_4(
         const Vector3f &p0, const Vector3f &n0, const Vector3f &q0, const Vector3f &o0,
         const Vector3f &p1, const Vector3f &n1, const Vector3f &q1, const Vector3f &o1,
-        Float scale, Float inv_scale, Float *error) {
+        /* review: one scale per endpoint */
+        Float scale0, Float inv_scale0, Float scale1, Float inv_scale1,
+        Float *error) {
     Vector3f t0 = n0.cross(q0), t1 = n1.cross(q1);
     Vector3f middle = middle_point(p0, n0, p1, n1);
-    Vector2i o0p = position_floor_index_4(o0, q0, n0, middle, scale, inv_scale);
-    Vector2i o1p = position_floor_index_4(o1, q1, n1, middle, scale, inv_scale);
+    Vector2i o0p = position_floor_index_4(o0, q0, n0, middle, scale0, inv_scale0);
+    Vector2i o1p = position_floor_index_4(o1, q1, n1, middle, scale1, inv_scale1);
 
     Float best_cost = std::numeric_limits<Float>::infinity();
     int best_i = -1, best_j = -1;
 
     for (int i=0; i<4; ++i) {
-        Vector3f o0t = o0 + (q0 * ((i&1)+o0p[0]) + t0 * (((i&2) >> 1) + o0p[1])) * scale;
+        Vector3f o0t = o0 + (q0 * ((i&1)+o0p[0]) + t0 * (((i&2) >> 1) + o0p[1])) * scale0;
         for (int j=0; j<4; ++j) {
-            Vector3f o1t = o1 + (q1 * ((j&1)+o1p[0]) + t1 * (((j&2) >> 1) + o1p[1])) * scale;
+            Vector3f o1t = o1 + (q1 * ((j&1)+o1p[0]) + t1 * (((j&2) >> 1) + o1p[1])) * scale1;
             Float cost = (o0t-o1t).squaredNorm();
 
             if (cost < best_cost) {
@@ -560,18 +569,19 @@ std::pair<Vector2i, Vector2i> compat_position_extrinsic_index_4(
 std::pair<Vector3f, Vector3f> compat_position_extrinsic_3(
         const Vector3f &p0, const Vector3f &n0, const Vector3f &q0, const Vector3f &_o0,
         const Vector3f &p1, const Vector3f &n1, const Vector3f &q1, const Vector3f &_o1,
-        Float scale, Float inv_scale) {
+        /* review: one scale per endpoint */
+        Float scale0, Float inv_scale0, Float scale1, Float inv_scale1) {
     Vector3f middle = middle_point(p0, n0, p1, n1);
-    Vector3f o0 = position_floor_3(_o0, q0, n0, middle, scale, inv_scale);
-    Vector3f o1 = position_floor_3(_o1, q1, n1, middle, scale, inv_scale);
+    Vector3f o0 = position_floor_3(_o0, q0, n0, middle, scale0, inv_scale0);
+    Vector3f o1 = position_floor_3(_o1, q1, n1, middle, scale1, inv_scale1);
 
     Vector3f t0 = rotate60(q0, n0), t1 = rotate60(q1, n1);
     Float best_cost = std::numeric_limits<Float>::infinity();
     int best_i = -1, best_j = -1;
     for (int i=0; i<4; ++i) {
-        Vector3f o0t = o0 + (q0*(i&1) + t0*((i&2)>>1)) * scale;
+        Vector3f o0t = o0 + (q0*(i&1) + t0*((i&2)>>1)) * scale0;
         for (int j=0; j<4; ++j) {
-            Vector3f o1t = o1 + (q1*(j&1) + t1*((j&2)>>1)) * scale;
+            Vector3f o1t = o1 + (q1*(j&1) + t1*((j&2)>>1)) * scale1;
             Float cost = (o0t-o1t).squaredNorm();
 
             if (cost < best_cost) {
@@ -583,26 +593,28 @@ std::pair<Vector3f, Vector3f> compat_position_extrinsic_3(
     }
 
     return std::make_pair(
-        o0 + (q0*(best_i&1) + t0*((best_i&2)>>1)) * scale,
-        o1 + (q1*(best_j&1) + t1*((best_j&2)>>1)) * scale
+        o0 + (q0*(best_i&1) + t0*((best_i&2)>>1)) * scale0,
+        o1 + (q1*(best_j&1) + t1*((best_j&2)>>1)) * scale1
     );
 }
 
 std::pair<Vector2i, Vector2i> compat_position_extrinsic_index_3(
         const Vector3f &p0, const Vector3f &n0, const Vector3f &q0, const Vector3f &o0,
         const Vector3f &p1, const Vector3f &n1, const Vector3f &q1, const Vector3f &o1,
-        Float scale, Float inv_scale, Float *error) {
+        /* review: one scale per endpoint */
+        Float scale0, Float inv_scale0, Float scale1, Float inv_scale1,
+        Float *error) {
     Vector3f t0 = rotate60(q0, n0), t1 = rotate60(q1, n1);
     Vector3f middle = middle_point(p0, n0, p1, n1);
-    Vector2i o0i = position_floor_index_3(o0, q0, n0, middle, scale, inv_scale);
-    Vector2i o1i = position_floor_index_3(o1, q1, n1, middle, scale, inv_scale);
+    Vector2i o0i = position_floor_index_3(o0, q0, n0, middle, scale0, inv_scale0);
+    Vector2i o1i = position_floor_index_3(o1, q1, n1, middle, scale1, inv_scale1);
 
     Float best_cost = std::numeric_limits<Float>::infinity();
     int best_i = -1, best_j = -1;
     for (int i=0; i<4; ++i) {
-        Vector3f o0t = o0 + (q0*(o0i.x() + (i&1)) + t0*(o0i.y() + ((i&2)>>1))) * scale;
+        Vector3f o0t = o0 + (q0*(o0i.x() + (i&1)) + t0*(o0i.y() + ((i&2)>>1))) * scale0;
         for (int j=0; j<4; ++j) {
-            Vector3f o1t = o1 + (q1*(o1i.x() + (j&1)) + t1*(o1i.y() + ((j&2)>>1))) * scale;
+            Vector3f o1t = o1 + (q1*(o1i.x() + (j&1)) + t1*(o1i.y() + ((j&2)>>1))) * scale1;
             Float cost = (o0t-o1t).squaredNorm();
 
             if (cost < best_cost) {
@@ -900,7 +912,6 @@ template <typename CompatFunctor, typename RoundFunctor> static inline Float opt
     const std::vector<std::vector<uint32_t>> &phases = mRes.phases(level);
     const AdjacencyMatrix &adj = mRes.adj(level);
     const MatrixXf &N = mRes.N(level), &Q = mRes.Q(level), &V = mRes.V(level);
-    const Float scale = mRes.scale(), inv_scale = 1.0f / scale;
     const std::vector<uint32_t> *phase = nullptr;
     const MatrixXf &CQ = mRes.CQ(level);
     const MatrixXf &CO = mRes.CO(level);
@@ -910,6 +921,9 @@ template <typename CompatFunctor, typename RoundFunctor> static inline Float opt
     auto solve_normal = [&](const tbb::blocked_range<uint32_t> &range) {
         for (uint32_t phaseIdx = range.begin(); phaseIdx<range.end(); ++phaseIdx) {
             const uint32_t i = (*phase)[phaseIdx];
+            /* review: this vertex's own face size, which is the uniform one
+             * unless a scale field was installed. */
+            const Float scale_i = mRes.scaleAt(level, i), inv_scale_i = 1.0f / scale_i;
             const Vector3f n_i = N.col(i), v_i = V.col(i);
             Vector3f q_i = Q.col(i);
 
@@ -933,8 +947,10 @@ template <typename CompatFunctor, typename RoundFunctor> static inline Float opt
                     q_j.normalize();
                 #endif
 
+                const Float scale_j = mRes.scaleAt(level, j), inv_scale_j = 1.0f / scale_j;
                 std::pair<Vector3f, Vector3f> value = compat_functor(
-                    v_i, n_i, q_i, sum, v_j, n_j, q_j, o_j, scale, inv_scale);
+                    v_i, n_i, q_i, sum, v_j, n_j, q_j, o_j,
+                    scale_i, inv_scale_i, scale_j, inv_scale_j);
 
                 sum = value.first*weight_sum + value.second*weight;
                 weight_sum += weight;
@@ -955,13 +971,14 @@ template <typename CompatFunctor, typename RoundFunctor> static inline Float opt
             }
 
             if (weight_sum > 0)
-                O.col(i) = round_functor(sum, q_i, n_i, v_i, scale, inv_scale);
+                O.col(i) = round_functor(sum, q_i, n_i, v_i, scale_i, inv_scale_i);
         }
     };
 
     auto solve_frozen = [&](const tbb::blocked_range<uint32_t> &range) {
         for (uint32_t phaseIdx = range.begin(); phaseIdx<range.end(); ++phaseIdx) {
             const uint32_t i = (*phase)[phaseIdx];
+            const Float scale_i = mRes.scaleAt(level, i); /* review */
             const Vector3f n_i = N.col(i), v_i = V.col(i);
             Vector3f q_i = Q.col(i);
 
@@ -986,11 +1003,14 @@ template <typename CompatFunctor, typename RoundFunctor> static inline Float opt
                 #endif
                 const Vector3f t_j = n_j.cross(q_j);
 
-                sum += o_j + scale * (
+                /* review: each endpoint steps along its own lattice */
+                const Float scale_j = mRes.scaleAt(level, j);
+                sum += o_j + scale_j * (
                       q_j * link->ivar[1].translate_u
-                    + t_j * link->ivar[1].translate_v
-                    - q_i * link->ivar[0].translate_u
-                    - t_i * link->ivar[0].translate_v);
+                    + t_j * link->ivar[1].translate_v)
+                    - scale_i * (
+                      q_i * link->ivar[0].translate_u
+                    + t_i * link->ivar[0].translate_v);
 
                 weight_sum += weight;
             }
@@ -1022,10 +1042,10 @@ static inline Float error_positions_impl(const MultiResolutionHierarchy &mRes,
     const AdjacencyMatrix &adj = mRes.adj(level);
     const MatrixXf &N = mRes.N(level), &Q = mRes.Q(level);
     const MatrixXf &O = mRes.O(level), &V = mRes.V(level);
-    const Float scale = mRes.scale(), inv_scale = 1.0f / scale;
 
     auto map = [&](const tbb::blocked_range<uint32_t> &range, Float error) -> Float {
         for (uint32_t i = range.begin(); i<range.end(); ++i) {
+            const Float scale_i = mRes.scaleAt(level, i), inv_scale_i = 1.0f / scale_i; /* review */
             const Vector3f &n_i = N.col(i), &v_i = V.col(i), &o_i = O.col(i);
             Vector3f q_i = Q.col(i);
             #if 1
@@ -1040,8 +1060,10 @@ static inline Float error_positions_impl(const MultiResolutionHierarchy &mRes,
                     q_j.normalize();
                 #endif
 
+                const Float scale_j = mRes.scaleAt(level, j), inv_scale_j = 1.0f / scale_j;
                 std::pair<Vector3f, Vector3f> value = functor(
-                    v_i, n_i, q_i, o_i, v_j, n_j, q_j, o_j, scale, inv_scale);
+                    v_i, n_i, q_i, o_i, v_j, n_j, q_j, o_j,
+                    scale_i, inv_scale_i, scale_j, inv_scale_j);
 
                 error += (value.first-value.second).cast<double>().squaredNorm();
             }
@@ -1109,8 +1131,6 @@ void compute_position_singularities(
     tbb::spin_mutex mutex;
     pos_sing.clear();
 
-    const Float scale = mRes.scale(), inv_scale = 1.0f / scale;
-
     tbb::parallel_for(
         tbb::blocked_range<uint32_t>(0u, (uint32_t) F.cols(), GRAIN_SIZE),
         [&](const tbb::blocked_range<uint32_t> &range) {
@@ -1124,6 +1144,8 @@ void compute_position_singularities(
                 Vector3f n[3] = { N.col(i0), N.col(i1), N.col(i2) };
                 Vector3f o[3] = { O.col(i0), O.col(i1), O.col(i2) };
                 Vector3f v[3] = { V.col(i0), V.col(i1), V.col(i2) };
+                /* review: one face size per corner */
+                Float s[3] = { mRes.scaleAt(0, i0), mRes.scaleAt(0, i1), mRes.scaleAt(0, i2) };
 
                 int best[3];
                 Float best_dp = -std::numeric_limits<double>::infinity();
@@ -1151,7 +1173,7 @@ void compute_position_singularities(
                         compatPositionIndex(
                             v[k],  n[k],  q[k],  o[k],
                             v[kn], n[kn], q[kn], o[kn],
-                            scale, inv_scale, nullptr);
+                            s[k], 1.0f / s[k], s[kn], 1.0f / s[kn], nullptr);
 
                     index += value.first - value.second;
                 }
@@ -1170,10 +1192,10 @@ static inline void freeze_ivars_positions_impl(MultiResolutionHierarchy &mRes,
                                                int level, Functor functor) {
     const AdjacencyMatrix &adj = mRes.adj(level);
     const MatrixXf &N = mRes.N(level), &Q = mRes.Q(level), &V = mRes.V(level), &O = mRes.O(level);
-    const Float scale = mRes.scale(), inv_scale = 1.0f / scale;
 
     auto map = [&](const tbb::blocked_range<uint32_t> &range) {
         for (uint32_t i = range.begin(); i<range.end(); ++i) {
+            const Float scale_i = mRes.scaleAt(level, i), inv_scale_i = 1.0f / scale_i; /* review */
             const Vector3f n_i = N.col(i), v_i = V.col(i), o_i = O.col(i);
             Vector3f q_i = Q.col(i);
             #if 1
@@ -1189,10 +1211,11 @@ static inline void freeze_ivars_positions_impl(MultiResolutionHierarchy &mRes,
                     q_j.normalize();
                 #endif
 
+                const Float scale_j = mRes.scaleAt(level, j), inv_scale_j = 1.0f / scale_j;
                 std::pair<Vector2i, Vector2i> value = functor(
                     v_i, n_i, q_i, o_i,
                     v_j, n_j, q_j, o_j,
-                    scale, inv_scale, nullptr);
+                    scale_i, inv_scale_i, scale_j, inv_scale_j, nullptr);
 
                 link->ivar[0].translate_u = value.first.x();
                 link->ivar[0].translate_v = value.first.y();

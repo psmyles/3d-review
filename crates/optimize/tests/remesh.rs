@@ -22,7 +22,12 @@ mod common;
 use common::{compare_digest_across_binaries, fixture, geometry_digest, run};
 
 /// Every fixture this suite loads.
-const FIXTURES: [&str; 3] = ["monkey.fbx", "SM_column04.fbx", "SM_Ammo_Crate_01a.fbx"];
+const FIXTURES: [&str; 4] = [
+    "monkey.fbx",
+    "SM_column04.fbx",
+    "SM_Ammo_Crate_01a.fbx",
+    "cpg_pedestal_pebbles.fbx",
+];
 
 fn remesh_stack(params: RemeshParams) -> OptStack {
     let mut stack = OptStack::default();
@@ -337,10 +342,14 @@ fn a_remesh_reports_fewer_vertices_than_its_corner_run_holds() {
         level.model.stats.vertex_count > 0,
         "the indexed count is a real measurement"
     );
-    // Rough sanity: a quad mesh has about as many vertices as quads.
+    // Rough sanity: a quad mesh has about as many vertices as quads. The ceiling
+    // is generous because the ratio climbs as the rebuild gets coarser — the
+    // attribute seams the projection splits at are a property of the *source*,
+    // so their vertices stay while the interior's shrink. Measured on this
+    // fixture, which is all seams: 2.1.
     let ratio = level.model.stats.vertex_count as f32 / level.model.stats.polygon_count as f32;
     assert!(
-        (0.5..2.0).contains(&ratio),
+        (0.5..2.5).contains(&ratio),
         "{} vertices for {} polygons is not a quad mesh",
         level.model.stats.vertex_count,
         level.model.stats.polygon_count
@@ -467,4 +476,161 @@ fn two_quad_solves_produce_the_same_mesh() {
     assert_eq!(a.model.vertices, b.model.vertices, "vertices differ");
     assert_eq!(a.model.indices, b.model.indices, "index buffers differ");
     assert_eq!(a.model.faces, b.model.faces, "face tables differ");
+}
+
+/// The ratio between the largest and smallest face on one object, measured
+/// across the middle of the distribution so a handful of degenerates at either
+/// end cannot answer for it.
+///
+/// In *edge* length rather than area, which is the thing you see: a face twice
+/// as long either way is four times the area.
+fn face_size_spread(level: &ProcessedLod, node: u32) -> f32 {
+    let mut edges: Vec<f32> = Vec::new();
+    for (index, face) in level.model.faces.iter().enumerate() {
+        let corners = face.index_count as usize;
+        if corners < 3 {
+            continue;
+        }
+        let triangle = level
+            .model
+            .triangles
+            .to_face
+            .iter()
+            .position(|&face| face as usize == index);
+        let owner = triangle
+            .and_then(|triangle| level.model.triangles.node.get(triangle).copied())
+            .unwrap_or(u32::MAX);
+        if owner != node {
+            continue;
+        }
+        let corner = |at: usize| level.model.vertices[face.first_index as usize + at].position;
+        let mut area = 0.0;
+        for at in 1..corners - 1 {
+            area += 0.5
+                * (corner(at) - corner(0))
+                    .cross(corner(at + 1) - corner(0))
+                    .length();
+        }
+        edges.push(area.sqrt());
+    }
+    assert!(!edges.is_empty(), "node {node} has no faces to measure");
+    edges.sort_by(|a, b| a.partial_cmp(b).expect("finite face areas"));
+    let at = |share: f32| edges[((edges.len() - 1) as f32 * share) as usize];
+    at(0.9) / at(0.1).max(f32::MIN_POSITIVE)
+}
+
+/// The node with the most surface area, which on a pedestal-and-pebbles asset is
+/// the pedestal: one broad flat face with a rounded rim, i.e. the thing "vary
+/// face size" exists for.
+fn widest_node(model: &ModelData) -> u32 {
+    let mut area: std::collections::BTreeMap<u32, f32> = Default::default();
+    for triangle in 0..model.indices.len() / 3 {
+        let corner = |at: usize| model.vertices[model.indices[triangle * 3 + at] as usize].position;
+        let node = model
+            .triangles
+            .node
+            .get(triangle)
+            .copied()
+            .unwrap_or_default();
+        *area.entry(node).or_default() += 0.5
+            * (corner(1) - corner(0))
+                .cross(corner(2) - corner(0))
+                .length();
+    }
+    area.into_iter()
+        .max_by(|a, b| a.1.partial_cmp(&b.1).expect("finite areas"))
+        .map(|(node, _)| node)
+        .expect("the fixture has geometry")
+}
+
+/// The operation this whole parameter exists for: the same budget, spent where
+/// the surface needs it.
+#[test]
+fn varying_face_size_spends_the_budget_on_the_curved_parts() {
+    let Some(model) = fixture("cpg_pedestal_pebbles.fbx") else {
+        return;
+    };
+    let node = widest_node(&model);
+    let params = |strength: f32| RemeshParams {
+        topology: RemeshTopology::QuadDominant,
+        density: RemeshDensity::Ratio,
+        ratio: 0.25,
+        adaptive_strength: strength,
+        ..RemeshParams::default()
+    };
+
+    let even = run(&model, &remesh_stack(params(0.0)));
+    let varied = run(&model, &remesh_stack(params(1.0)));
+    let even = even.lod(0).expect("a level");
+    let varied = varied.lod(0).expect("a level");
+
+    // A uniform field puts one face size on the whole object, rim and flat
+    // alike — the spread is whatever the extraction's own jitter is.
+    let flat = face_size_spread(even, node);
+    assert!(
+        flat < 1.5,
+        "a uniform rebuild should be uniform, and this one spreads {flat:.2}x"
+    );
+    // A varied one has to be visibly different, not marginally.
+    let spread = face_size_spread(varied, node);
+    assert!(
+        spread > 2.0,
+        "varying face size barely varied it: {spread:.2}x against {flat:.2}x even"
+    );
+}
+
+/// Whatever the field does, the count is the one that was asked for. Every
+/// topology, because each reaches it through a different engine or a different
+/// symmetry.
+#[test]
+fn the_face_count_is_the_one_that_was_asked_for() {
+    let Some(model) = fixture("cpg_pedestal_pebbles.fbx") else {
+        return;
+    };
+    let wanted = 3_000;
+    for topology in RemeshTopology::ALL {
+        for strength in [0.0, 1.0] {
+            let result = run(
+                &model,
+                &remesh_stack(RemeshParams {
+                    topology,
+                    density: RemeshDensity::Absolute,
+                    faces: wanted,
+                    adaptive_strength: strength,
+                    ..RemeshParams::default()
+                }),
+            );
+            let level = result.lod(0).expect("a level");
+            let produced = level.model.faces.len() as f32;
+            let miss = (produced - wanted as f32).abs() / wanted as f32;
+            assert!(
+                miss < 0.12,
+                "{topology:?} at strength {strength} produced {produced} faces for a \
+                 budget of {wanted}, which is {:.0}% out. Warnings: {:?}",
+                miss * 100.0,
+                result.warnings
+            );
+        }
+    }
+}
+
+/// The reproducible path has to stay reproducible *with* a field, which is where
+/// it is hardest: the field decides how fine each region is, and the extraction
+/// then snaps and collapses at that size.
+#[test]
+fn a_varied_rebuild_is_reproducible() {
+    let Some(model) = fixture("monkey.fbx") else {
+        return;
+    };
+    let stack = remesh_stack(RemeshParams {
+        adaptive_strength: 1.0,
+        ..quad_params(1_500)
+    });
+
+    let first = run(&model, &stack);
+    let second = run(&model, &stack);
+    let a = first.lod(0).expect("a level");
+    let b = second.lod(0).expect("a level");
+    assert_eq!(a.model.vertices, b.model.vertices, "vertices differ");
+    assert_eq!(a.model.indices, b.model.indices, "index buffers differ");
 }

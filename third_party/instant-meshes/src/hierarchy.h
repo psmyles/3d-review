@@ -77,6 +77,26 @@ public:
 
     inline Float scale() const { return mScale; }
     inline void setScale(Float scale) { mScale = scale; }
+
+    /* --- review: per-vertex scale field ------------------------------------
+     * `mScale` is one face size for the whole object, which spends the same
+     * budget on a flat panel as on a tight fillet. `mS` optionally multiplies
+     * it per vertex, so the field solve and the extraction can place small
+     * faces where the surface turns and large ones where it does not.
+     *
+     * It is *optional* on purpose: when it is empty every site below reads
+     * `mScale` exactly as it did before, so a run that does not ask for a
+     * varying field takes the original arithmetic and produces the original
+     * bytes. `scaleAt` is the one accessor those sites go through.
+     *
+     * The field is supplied for level 0 and averaged down the hierarchy the
+     * same way every other quantity is. */
+    inline bool hasScaleField() const { return !mS.empty(); }
+    inline Float scaleAt(int level, uint32_t index) const {
+        return mS.empty() ? mScale : mScale * mS[level][index];
+    }
+    void setScaleField(const VectorXf &field);
+    /* --- end review ------------------------------------------------------ */
     inline int iterationsQ() const { return mIterationsQ; }
     inline void setIterationsQ(int iterationsQ) { mIterationsQ = iterationsQ; }
     inline int iterationsO() const { return mIterationsO; }
@@ -114,6 +134,8 @@ public:
     std::vector<MatrixXf> mV;
     std::vector<MatrixXf> mN;
     std::vector<VectorXf> mA;
+    /* review: the optional per-vertex scale field, one entry per level. */
+    std::vector<VectorXf> mS;
     std::vector<VectorXu> mToLower;
     std::vector<MatrixXu> mToUpper;
     std::vector<MatrixXf> mO;
