@@ -107,6 +107,36 @@ ui-opt-ao-write-to = Write to
     .description = Which part of each point's color the baked shadow goes in. The alpha
         channel is always stored as-is; the color channels can be stored in sRGB.
 
+## Remesh
+
+ui-opt-remesh-topology = Faces
+    .description = What the rebuilt surface is made of. Mostly quads is what an artist
+        would build by hand and works on anything; Triangles gives an even triangle mesh.
+ui-opt-remesh-density = Density
+    .description = How the target number of faces for each object is worked out - as a
+        share of what it has now, or as one budget shared out across the objects by size.
+ui-opt-remesh-ratio = Amount
+    .description = The share of each object's current triangle count to aim for. 100% keeps
+        about the same level of detail; lower numbers rebuild it coarser.
+ui-opt-remesh-faces = Faces
+    .description = How many faces to produce in total, shared out between the objects by
+        surface area. The result lands near this number rather than exactly on it.
+ui-opt-remesh-sharp-edges = Keep sharp edges
+    .description = Lay the new edges along the model's own creases instead of running the
+        pattern straight over them. Worth turning on for hard-surface and CAD parts; on
+        organic shapes it only breaks the flow up.
+ui-opt-remesh-crease-angle = Sharp above
+    .description = How sharp a fold has to be, in degrees, before it counts as a crease.
+ui-opt-remesh-align-boundaries = Follow open borders
+    .description = Hold the new edges against any open border, so it comes back as one
+        clean edge loop rather than a ragged fringe.
+ui-opt-remesh-smoothing = Smoothing
+    .description = How many rounds of evening-out to run over the rebuilt surface. A little
+        makes the faces more uniform; a lot rounds off detail.
+ui-opt-remesh-deterministic = Reproducible
+    .description = Take the slower path that gives exactly the same result every time. On
+        by default, so a preview does not shift under you while you drag a slider.
+
 ## Export
 
 ui-opt-export-settings = Export settings
@@ -147,6 +177,10 @@ ui-opt-prune-explained = A fraction of the model's overall size. Loose pieces sm
     this are removed.
 ui-opt-overdraw-explained = How much vertex-cache benefit may be traded away to reduce
     overdraw. 1.05 allows a 5% loss; 1.0 allows none.
+ui-opt-remesh-explained = The surface is rebuilt from scratch, so the materials, texture
+    layout and colors are read back off the original and copied across. Anything tied to
+    the old points is not: bones, shape keys and per-point creases. Objects that bend are
+    skipped and left as they are.
 ui-opt-bake-ao-explained = Objects whose names end in _LOD and a number are shaded only by
     objects in their own level (plus objects with no such ending), so you can bake a whole
     set of levels in one go. Hidden objects neither cast shadows nor receive them, so hide

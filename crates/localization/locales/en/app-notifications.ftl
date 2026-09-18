@@ -72,16 +72,20 @@ app-notifications-device-lost-startup = The GPU stopped responding while startin
 # Named after the key that switched the view, so it is one word and always fits.
 app-notifications-buffer-mode = Buffer: { $buffer }
 
-## The three errors a user can act on
+## The errors a user can act on
 
-# Everything else keeps its library diagnostic verbatim; these three tell the
-# reader what to *do*, which a diagnostic written for a bug report does not.
+# Everything else keeps its library diagnostic verbatim; these tell the reader
+# what to *do*, which a diagnostic written for a bug report does not.
 app-notifications-opt-unavailable = Mesh optimization is not available in this build.
     It was built without the optimizer library, so the Opt workspace can measure a
     model but cannot change one.
+app-notifications-remesh-unavailable = Remeshing is not available in this build.
+    It was built without the retopology library, so every other operation still runs
+    but Remesh is skipped.
 app-notifications-preset-newer = This preset was saved by a newer version of the viewer.
     It is version { $found }, and this build understands up to version { $supported }.
     Open it with the version that saved it, or set the operations up again here.
+
 ## The export's own report
 
 app-notifications-exported-one = Exported { $file } ({ $triangles } triangles)

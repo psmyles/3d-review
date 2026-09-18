@@ -19,7 +19,7 @@ use review_optimize::{
 
 mod common;
 
-use common::{fixture, run};
+use common::{compare_digest_across_binaries, fixture, geometry_digest, run};
 
 /// Every fixture this suite loads.
 const FIXTURES: [&str; 2] = ["monkey.fbx", "SM_column04.fbx"];
@@ -91,7 +91,10 @@ fn assert_consistent(model: &ModelData, label: &str) {
     // Corner runs: every face owns a contiguous, in-range slice of the vertex
     // array, and every triangle's corners lie inside its own face's run.
     for (index, face) in model.faces.iter().enumerate() {
-        assert!(face.index_count >= 3, "{label}: face {index} has no corners");
+        assert!(
+            face.index_count >= 3,
+            "{label}: face {index} has no corners"
+        );
         let end = face.first_index as usize + face.index_count as usize;
         assert!(
             end <= model.vertices.len(),
@@ -154,7 +157,10 @@ fn mostly_quads_hits_its_face_budget_and_is_mostly_quads() {
 
     let polygons = level.model.stats.polygon_count;
     let (triangles, quads, other) = face_degrees(level);
-    assert_eq!(other, 0, "a field extraction emits only triangles and quads");
+    assert_eq!(
+        other, 0,
+        "a field extraction emits only triangles and quads"
+    );
     assert_eq!(
         triangles + quads,
         polygons,
@@ -253,6 +259,12 @@ fn two_deterministic_runs_produce_the_same_mesh() {
     assert_eq!(a.model.indices, b.model.indices, "index buffers differ");
     assert_eq!(a.model.faces, b.model.faces, "face tables differ");
     assert_eq!(a.model.triangles, b.model.triangles, "triangle tags differ");
+
+    // The same mesh has to come out at any thread count, which one process
+    // cannot check on its own: `tests/remesh_single_thread.rs` runs this exact
+    // stack with the pool forced to one thread, and whichever binary gets here
+    // second compares the two.
+    compare_digest_across_binaries("remesh_monkey_quads_1500", geometry_digest(a));
 }
 
 #[test]

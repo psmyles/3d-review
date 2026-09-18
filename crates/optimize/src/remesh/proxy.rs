@@ -81,7 +81,7 @@ pub(super) fn build(pieces: &[&Submesh]) -> Proxy {
             bounds.include_point(vertex.position);
         }
 
-        for triangle in piece.indices.chunks_exact(3) {
+        for triangle in piece.indices.as_chunks::<3>().0 {
             let corners = [
                 local.get(triangle[0] as usize).copied(),
                 local.get(triangle[1] as usize).copied(),
@@ -102,7 +102,9 @@ pub(super) fn build(pieces: &[&Submesh]) -> Proxy {
             let (pa, pb, pc) = (positions_of(a), positions_of(b), positions_of(c));
             let cross = (pb - pa).cross(pc - pa);
             let triangle_area = cross.length() * 0.5;
-            if !(triangle_area > 0.0) {
+            // A zero or NaN area is no surface; spelled out rather than left to
+            // a negated comparison, which reads as the opposite of what it does.
+            if triangle_area.is_nan() || triangle_area <= 0.0 {
                 continue;
             }
             area += triangle_area as f64;

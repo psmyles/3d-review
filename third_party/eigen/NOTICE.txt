@@ -1,0 +1,35 @@
+Eigen — vendored headers
+========================
+
+Upstream:  https://gitlab.com/libeigen/eigen
+Release:   3.4.0
+License:   MPL-2.0 (see COPYING.MPL2), with some files under BSD-3-Clause
+           (COPYING.BSD)
+
+What is vendored
+----------------
+`Eigen/`, the header tree, verbatim from the 3.4.0 release tarball. Nothing is
+patched, and this project has no `review.patch` for it.
+
+`unsupported/`, `doc/`, `test/`, `demos/`, `bench/` and the build system are not
+vendored: none of them is a header the compiler would reach.
+
+The whole of `Eigen/` is here rather than a pruned subset for the same reason
+`third_party/meshoptimizer` keeps its whole `src/`: the include closure is not
+obvious from the outside. `Eigen/Geometry` alone pulls in SVD, LU, QR,
+Householder and Cholesky, and a subset that compiles today breaks the next time
+upstream reorganizes an include.
+
+`EIGEN_MPL2_ONLY`
+-----------------
+Every build that includes these headers defines it (see
+`crates/optimize/build.rs`). It makes Eigen refuse, at compile time, to
+instantiate the few components that are not MPL-2.0 — so the licence of what
+actually ends up in the binary is MPL-2.0 and BSD-3-Clause, and cannot silently
+become anything else.
+
+Who uses it
+-----------
+Only `third_party/instant-meshes` and the bridge that drives it
+(`crates/optimize/src/remesh_bridge.cpp`). Nothing in the Rust workspace names
+an Eigen type; the retopology output crosses into Rust as flat arrays.

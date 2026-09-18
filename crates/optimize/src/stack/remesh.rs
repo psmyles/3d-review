@@ -24,8 +24,7 @@ pub enum RemeshTopology {
 }
 
 impl RemeshTopology {
-    pub const ALL: [RemeshTopology; 2] =
-        [RemeshTopology::Triangles, RemeshTopology::QuadDominant];
+    pub const ALL: [RemeshTopology; 2] = [RemeshTopology::Triangles, RemeshTopology::QuadDominant];
 
     pub fn label(self) -> &'static str {
         match self {

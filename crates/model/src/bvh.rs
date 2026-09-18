@@ -303,7 +303,9 @@ impl Bvh {
         query: Vec3,
         max_distance: f32,
     ) -> Option<ClosestPoint> {
-        if self.tris.is_empty() || !(max_distance >= 0.0) {
+        // NaN spelled out rather than left to a negated comparison: a NaN range
+        // would otherwise square to NaN and reject every box silently.
+        if self.tris.is_empty() || max_distance.is_nan() || max_distance < 0.0 {
             return None;
         }
         let mut best: Option<ClosestPoint> = None;
@@ -746,7 +748,11 @@ pub fn closest_point_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> (Vec3, V
     let vc = d1 * d4 - d3 * d2;
     if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
         let denominator = d1 - d3;
-        let v = if denominator != 0.0 { d1 / denominator } else { 0.0 };
+        let v = if denominator != 0.0 {
+            d1 / denominator
+        } else {
+            0.0
+        };
         return (a + ab * v, Vec3::new(1.0 - v, v, 0.0)); // edge region AB
     }
 
@@ -760,7 +766,11 @@ pub fn closest_point_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> (Vec3, V
     let vb = d5 * d2 - d1 * d6;
     if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
         let denominator = d2 - d6;
-        let w = if denominator != 0.0 { d2 / denominator } else { 0.0 };
+        let w = if denominator != 0.0 {
+            d2 / denominator
+        } else {
+            0.0
+        };
         return (a + ac * w, Vec3::new(1.0 - w, 0.0, w)); // edge region AC
     }
 
@@ -820,6 +830,106 @@ pub fn ray_triangle_t(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Opt
 mod tests {
     use super::*;
     use crate::{Vertex, demo_cube_model};
+
+    /// Brute-force reference for the closest-point query: scan every triangle.
+    /// The BVH must agree with this everywhere — it only changes the *cost*.
+    /// The squared distance alone, not the point: where two faces are
+    /// equidistant — a query on the cube's axis is as close to one side as to
+    /// the other — the *point* is a legitimate choice between them and the two
+    /// implementations need not agree on it.
+    fn nearest_point_brute_force(model: &ModelData, query: Vec3) -> Option<f32> {
+        (0..(model.indices.len() / 3) as u32)
+            .map(|triangle| {
+                let [a, b, c] = triangle_positions(model, triangle);
+                let (point, _) = closest_point_on_triangle(query, a, b, c);
+                (point - query).length_squared()
+            })
+            .min_by(f32::total_cmp)
+    }
+
+    #[test]
+    fn closest_point_matches_a_brute_force_scan_around_the_cube() {
+        let model = demo_cube_model();
+        let bvh = Bvh::build(&model);
+
+        // A grid straddling the cube: inside it, on its faces, and well outside.
+        for x in -3..=3 {
+            for y in -3..=3 {
+                for z in -3..=3 {
+                    let query =
+                        Vec3::new(x as f32, y as f32, z as f32) * 0.4 + Vec3::new(0.0, 0.53, 0.0);
+                    let expected =
+                        nearest_point_brute_force(&model, query).expect("the cube has faces");
+                    let hit = bvh
+                        .closest_point(&model, query, f32::INFINITY)
+                        .expect("the hierarchy must find what the scan found");
+                    assert!(
+                        (hit.distance_squared - expected).abs() <= 1.0e-6,
+                        "at {query:?} the hierarchy found {} and the scan {expected}",
+                        hit.distance_squared
+                    );
+                    assert!(
+                        ((hit.point - query).length_squared() - hit.distance_squared).abs()
+                            <= 1.0e-6,
+                        "at {query:?} the reported point and distance disagree"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_query_on_the_surface_lands_on_it_with_interior_barycentrics() {
+        let model = demo_cube_model();
+        let bvh = Bvh::build(&model);
+        // Inside the +Z face, away from its edges and its diagonal.
+        let query = Vec3::new(0.2, 0.3, 0.5);
+
+        let hit = bvh
+            .closest_point(&model, query, 1.0)
+            .expect("the cube is within range");
+
+        assert!(
+            hit.distance_squared <= 1.0e-8,
+            "the query is on the surface"
+        );
+        assert!((hit.point - query).length() <= 1.0e-5);
+        let sum = hit.barycentric.x + hit.barycentric.y + hit.barycentric.z;
+        assert!((sum - 1.0).abs() <= 1.0e-5, "barycentrics sum to one");
+        assert!(
+            hit.barycentric.min_element() > 0.0,
+            "a point inside a triangle has no zero coordinate: {:?}",
+            hit.barycentric
+        );
+        // The barycentrics must actually reconstruct the point.
+        let [a, b, c] = triangle_positions(&model, hit.triangle);
+        let rebuilt = a * hit.barycentric.x + b * hit.barycentric.y + c * hit.barycentric.z;
+        assert!((rebuilt - hit.point).length() <= 1.0e-5);
+    }
+
+    #[test]
+    fn a_query_beyond_the_maximum_distance_finds_nothing() {
+        let model = demo_cube_model();
+        let bvh = Bvh::build(&model);
+        let far = Vec3::new(0.0, 0.53, 20.0);
+
+        assert!(bvh.closest_point(&model, far, 1.0).is_none());
+        assert!(
+            bvh.closest_point(&model, far, 25.0).is_some(),
+            "the same query inside the range does find the cube"
+        );
+    }
+
+    #[test]
+    fn closest_point_on_an_empty_model_finds_nothing() {
+        let model = ModelData::default();
+        let bvh = Bvh::build(&model);
+
+        assert!(
+            bvh.closest_point(&model, Vec3::ZERO, f32::INFINITY)
+                .is_none()
+        );
+    }
 
     /// Brute-force reference: scan every triangle, matching the BVH's slack rule.
     /// The BVH must agree with this on every query — it only changes the *cost*.

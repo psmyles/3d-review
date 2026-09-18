@@ -15,7 +15,8 @@
 use review_localization::Key;
 use review_model::{NodeKind, SkinningMethod};
 use review_optimize::{
-    AoQuality, AoTarget, FbxFormat, HierarchyMode, LodPackaging, OpKind, SimplifyAlgorithm,
+    AoQuality, AoTarget, FbxFormat, HierarchyMode, LodPackaging, OpKind, RemeshDensity,
+    RemeshTopology, SimplifyAlgorithm,
 };
 use review_render::{
     AlphaMode, BufferView, ChannelSelect, CheckerTexture, EnvironmentMap, GtaoQuality,
@@ -220,6 +221,7 @@ pub(crate) fn op_kind(kind: &OpKind) -> Key {
         OpKind::FilterTriangles => keys::ui_enums::OP_FILTER_TRIANGLES,
         OpKind::PruneComponents { .. } => keys::ui_enums::OP_PRUNE_COMPONENTS,
         OpKind::Reduce(_) => keys::ui_enums::OP_REDUCE,
+        OpKind::Remesh(_) => keys::ui_enums::OP_REMESH,
         OpKind::SimplifyLod(_) => keys::ui_enums::OP_SIMPLIFY_LOD,
         OpKind::BakeAo(_) => keys::ui_enums::OP_BAKE_AO,
         OpKind::VertexCache => keys::ui_enums::OP_VERTEX_CACHE,
@@ -237,11 +239,26 @@ pub(crate) fn op_description(kind: &OpKind) -> Key {
         OpKind::FilterTriangles => keys::ui_enums::OP_FILTER_TRIANGLES_DESCRIPTION,
         OpKind::PruneComponents { .. } => keys::ui_enums::OP_PRUNE_COMPONENTS_DESCRIPTION,
         OpKind::Reduce(_) => keys::ui_enums::OP_REDUCE_DESCRIPTION,
+        OpKind::Remesh(_) => keys::ui_enums::OP_REMESH_DESCRIPTION,
         OpKind::SimplifyLod(_) => keys::ui_enums::OP_SIMPLIFY_LOD_DESCRIPTION,
         OpKind::BakeAo(_) => keys::ui_enums::OP_BAKE_AO_DESCRIPTION,
         OpKind::VertexCache => keys::ui_enums::OP_VERTEX_CACHE_DESCRIPTION,
         OpKind::Overdraw { .. } => keys::ui_enums::OP_OVERDRAW_DESCRIPTION,
         OpKind::VertexFetch => keys::ui_enums::OP_VERTEX_FETCH_DESCRIPTION,
+    }
+}
+
+pub(crate) fn remesh_topology(topology: RemeshTopology) -> Key {
+    match topology {
+        RemeshTopology::Triangles => keys::ui_enums::REMESH_TRIANGLES,
+        RemeshTopology::QuadDominant => keys::ui_enums::REMESH_QUAD_DOMINANT,
+    }
+}
+
+pub(crate) fn remesh_density(density: RemeshDensity) -> Key {
+    match density {
+        RemeshDensity::Ratio => keys::ui_enums::REMESH_DENSITY_RATIO,
+        RemeshDensity::Absolute => keys::ui_enums::REMESH_DENSITY_ABSOLUTE,
     }
 }
 
@@ -398,6 +415,12 @@ mod tests {
         }
         for value in SimplifyAlgorithm::ALL {
             assert_resolves(simplify_algorithm(value));
+        }
+        for value in RemeshTopology::ALL {
+            assert_resolves(remesh_topology(value));
+        }
+        for value in RemeshDensity::ALL {
+            assert_resolves(remesh_density(value));
         }
         for value in LodPackaging::ALL {
             assert_resolves(lod_packaging(value));

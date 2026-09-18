@@ -134,9 +134,11 @@ pub(crate) fn assemble(
         indices.extend(piece_indices.iter().map(|&index| index + base));
 
         if let Some(run) = &run {
-            carry
-                .control_point
-                .extend(run.control_point.iter().map(|&vertex| vertex + indexed_base));
+            carry.control_point.extend(
+                run.control_point
+                    .iter()
+                    .map(|&vertex| vertex + indexed_base),
+            );
             faces.extend(run.faces.iter().map(|face| TopologyFace {
                 first_index: face.first_index + base,
                 index_count: face.index_count,
@@ -154,11 +156,10 @@ pub(crate) fn assemble(
         }
 
         for (channel, destination) in carry.color_channels.iter_mut().enumerate() {
-            let colors = run
-                .as_ref()
-                .map_or_else(|| piece.color_channels.get(channel), |run| {
-                    run.color_channels.get(channel)
-                });
+            let colors = run.as_ref().map_or_else(
+                || piece.color_channels.get(channel),
+                |run| run.color_channels.get(channel),
+            );
             match colors {
                 Some(colors) if colors.len() == piece_vertices.len() => {
                     destination.extend_from_slice(colors)
@@ -209,8 +210,8 @@ pub(crate) fn assemble(
         // be written to each of its corners. Both are rare (a second skin
         // deformer, a dual-quaternion blend weight), so the corner table is built
         // only when one is present rather than on every piece.
-        let needs_corners = piece.extra_skins.iter().any(|layer| !layer.is_empty())
-            || !piece.dq_weight.is_empty();
+        let needs_corners =
+            piece.extra_skins.iter().any(|layer| !layer.is_empty()) || !piece.dq_weight.is_empty();
         let corner_table: Vec<Vec<u32>> = match (&run, needs_corners) {
             (Some(run), true) => {
                 let mut table = vec![Vec::new(); piece.vertices.len()];
@@ -389,11 +390,10 @@ pub(crate) fn assemble(
         }
 
         for (channel, destination) in uv_channels.iter_mut().enumerate() {
-            let uvs = run
-                .as_ref()
-                .map_or_else(|| piece.uv_channels.get(channel), |run| {
-                    run.uv_channels.get(channel)
-                });
+            let uvs = run.as_ref().map_or_else(
+                || piece.uv_channels.get(channel),
+                |run| run.uv_channels.get(channel),
+            );
             match uvs {
                 Some(source_uvs) if source_uvs.len() == piece_vertices.len() => {
                     destination.extend_from_slice(source_uvs)

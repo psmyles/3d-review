@@ -81,6 +81,66 @@ fn a_written_file_reads_back_with_the_same_geometry() {
     );
 }
 
+/// Quads are the one thing this crate produces that the file format can express
+/// and a triangle mesh cannot, so the round trip has to prove they survive as
+/// quads rather than as pairs of triangles.
+#[cfg(has_instant_meshes)]
+#[test]
+fn remeshed_quads_read_back_as_quads() {
+    use review_optimize::{RemeshDensity, RemeshParams, RemeshTopology};
+
+    let Some(model) = fixture("monkey.fbx") else {
+        return;
+    };
+    let mut stack = OptStack::default();
+    stack.push_op(OpKind::Remesh(RemeshParams {
+        topology: RemeshTopology::QuadDominant,
+        density: RemeshDensity::Absolute,
+        faces: 1_500,
+        ..RemeshParams::default()
+    }));
+    let result = run(&model, &stack);
+    let level = &result.lods[0];
+    assert!(
+        level.model.stats.polygon_count < level.model.stats.triangle_count,
+        "the level under test has to be quads for this to mean anything"
+    );
+
+    let dir = temp_dir("round_trip_quads");
+    let path = dir.join("remeshed.fbx");
+    export_fbx(&result.lods, &model, None, &path, &ExportOptions::default())
+        .expect("export succeeds");
+
+    let loaded = reimport(&path);
+    assert_eq!(
+        loaded.stats.polygon_count, level.model.stats.polygon_count,
+        "every polygon the level carried was written as one polygon"
+    );
+    assert!(
+        loaded.stats.polygon_count < loaded.stats.triangle_count,
+        "the file holds quads, not a triangulated copy of them"
+    );
+    // The reader's own DCC vertex count is the control-point count, which is
+    // what `LevelCarry::control_point` exists to keep down: one point per
+    // indexed vertex, not one per face corner.
+    assert_eq!(
+        loaded.stats.vertex_count, level.model.stats.vertex_count,
+        "the file holds one control point per indexed vertex"
+    );
+
+    let (Some(before), Some(after)) = (level.model.bounds, loaded.bounds) else {
+        panic!("both meshes should have bounds");
+    };
+    // A remesh moves the surface by a fraction of an edge length, so the bounds
+    // shift a little — but only a little.
+    let tolerance = before.size().max_element() * 0.02;
+    assert!(
+        before.min.abs_diff_eq(after.min, tolerance)
+            && before.max.abs_diff_eq(after.max, tolerance),
+        "bounds drifted: {before:?} -> {after:?}"
+    );
+}
+
 #[test]
 fn a_lod_chain_writes_suffixed_sibling_nodes_into_one_file() {
     let Some(model) = fixture("monkey.fbx") else {

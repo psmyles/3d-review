@@ -255,7 +255,7 @@ pub(crate) fn corner_run(piece: &Submesh) -> CornerRun {
         }
     }
 
-    for (triangle, corners) in piece.indices.chunks_exact(3).enumerate() {
+    for (triangle, corners) in piece.indices.as_chunks::<3>().0.iter().enumerate() {
         let face = piece
             .polygons
             .as_ref()
@@ -361,7 +361,7 @@ mod tests {
 
         // Every run triangle addresses the run, and every triangle's corners sit
         // inside its own face's run.
-        for (triangle, corners) in run.indices.chunks_exact(3).enumerate() {
+        for (triangle, corners) in run.indices.as_chunks::<3>().0.iter().enumerate() {
             let face = run.faces[run.to_face[triangle] as usize];
             for &corner in corners {
                 assert!((corner as usize) < run.vertices.len());

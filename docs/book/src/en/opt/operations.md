@@ -17,6 +17,10 @@ with and without it.
 - **Reduce** - [simplifies](simplify.md) the model **in place**. Every
   operation below it works on the simplified model, LOD levels start from it,
   and the export saves it in place of the original.
+- **Remesh** - [rebuilds](remesh.md) each object's surface out of evenly sized
+  four-sided faces (or triangles) that follow the shape's own curves. Unlike
+  Reduce it keeps nothing of what was there - it lays down a new surface and
+  copies the materials, texture layout and colors across. Still objects only.
 - **Generate LODs** - makes a chain of simpler copies of the model (levels of
   detail) for a game to show at a distance. Operations above it run once on the
   base model; operations below it run on every level. You can only have one in
@@ -53,3 +57,11 @@ whole (filter, prune, the reorders) keeps the original faces and simply drops
 any face that lost a triangle. A simplify throws the original faces away,
 because it rebuilds the surface, and the [export](export.md) saves that level
 as triangles with a note saying which operation was responsible.
+
+[Remesh](remesh.md) is the one operation that builds faces of its own rather
+than carrying the original ones. Its quads are real everywhere the others'
+faces are: the wireframe draws four edges around each, the stats card counts
+them under Polys, and the file gets quads. What it cannot carry is anything
+tied to the old points - bone weights, blend shapes and per-point creases -
+because it keeps none of them; an object that bends is skipped and left as it
+is.

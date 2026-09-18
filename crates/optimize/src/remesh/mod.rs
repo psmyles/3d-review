@@ -87,6 +87,11 @@ const MIN_INPUT_TRIANGLES: usize = 16;
 /// impossible.
 const PROJECTION_RANGE: f32 = 0.25;
 
+/// Nothing reaches the engine's input and output types in a build with no
+/// vendored retopologizer — but they still have to exist, because the stub in
+/// [`unavailable`] must have the same signature as the real call. The same
+/// "declared on both paths, reached on one" shape `meshopt::unavailable` has.
+#[cfg_attr(not(has_instant_meshes), allow(dead_code))]
 /// The proxy mesh handed to the engine: positions and a triangle index buffer,
 /// and nothing else.
 pub(crate) struct RemeshInput<'a> {
@@ -95,12 +100,18 @@ pub(crate) struct RemeshInput<'a> {
     pub indices: &'a [u32],
 }
 
+#[cfg_attr(not(has_instant_meshes), allow(dead_code))]
 impl RemeshInput<'_> {
     pub(crate) fn vertex_count(&self) -> usize {
         self.positions.len() / 3
     }
 }
 
+/// Nothing reaches the engine's input and output types in a build with no
+/// vendored retopologizer — but they still have to exist, because the stub in
+/// [`unavailable`] must have the same signature as the real call. The same
+/// "declared on both paths, reached on one" shape `meshopt::unavailable` has.
+#[cfg_attr(not(has_instant_meshes), allow(dead_code))]
 /// What to ask the engine for. Mirrors `rvo_remesh_options` in
 /// `remesh_bridge.h`; [`crate::remesh_ffi`] is what converts between them.
 pub(crate) struct RemeshOptions {
@@ -119,6 +130,11 @@ pub(crate) struct RemeshOptions {
     pub min_cost_flow: bool,
 }
 
+/// Nothing reaches the engine's input and output types in a build with no
+/// vendored retopologizer — but they still have to exist, because the stub in
+/// [`unavailable`] must have the same signature as the real call. The same
+/// "declared on both paths, reached on one" shape `meshopt::unavailable` has.
+#[cfg_attr(not(has_instant_meshes), allow(dead_code))]
 /// What the engine produced: a polygon soup over its own vertices.
 pub(crate) struct RemeshOutput {
     pub positions: Vec<Vec3>,
@@ -127,6 +143,7 @@ pub(crate) struct RemeshOutput {
     pub corners: Vec<u32>,
 }
 
+#[cfg_attr(not(has_instant_meshes), allow(dead_code))]
 impl RemeshOutput {
     pub(crate) fn face_count(&self) -> usize {
         self.face_offsets.len().saturating_sub(1)
@@ -277,7 +294,11 @@ pub(crate) fn remesh_submeshes(
         return;
     };
     if !available() {
-        warnings.push(&format!("{}: {}", op.kind.label(), OptError::RemeshUnavailable));
+        warnings.push(&format!(
+            "{}: {}",
+            op.kind.label(),
+            OptError::RemeshUnavailable
+        ));
         return;
     }
 
@@ -353,7 +374,8 @@ pub(crate) fn remesh_submeshes(
             .filter(|piece| piece.node == input.node && !piece.is_empty())
             .collect();
         let name = node_name(model, input.node);
-        if let Some(rebuilt) = remesh_node(&pieces, proxy, budget.faces, &input.params, &name, warnings)
+        if let Some(rebuilt) =
+            remesh_node(&pieces, proxy, budget.faces, &input.params, &name, warnings)
         {
             replacements.insert(input.node, rebuilt);
         }
@@ -434,9 +456,7 @@ fn remesh_node(
     let mut output = match run_engine(&input, &options) {
         Ok(output) => output,
         Err(error) => {
-            warnings.push(&format!(
-                "Remesh: '{name}' was left as it is — {error}"
-            ));
+            warnings.push(&format!("Remesh: '{name}' was left as it is — {error}"));
             return None;
         }
     };
@@ -473,13 +493,8 @@ fn build_pieces(
         .unwrap_or(0);
     let range = proxy.radius() * PROJECTION_RANGE;
 
-    let samples = project::project_faces(
-        output,
-        source,
-        range,
-        uv_channel_count,
-        color_channel_count,
-    );
+    let samples =
+        project::project_faces(output, source, range, uv_channel_count, color_channel_count);
 
     // One piece per material actually used, in first-seen face order so the
     // output is a deterministic function of the canonicalized soup.
@@ -617,11 +632,15 @@ mod tests {
 
     #[test]
     fn a_ratio_budget_reads_against_the_node_s_own_triangles() {
-        let mut quads = RemeshParams::default();
-        quads.topology = RemeshTopology::QuadDominant;
-        quads.ratio = 1.0;
-        let mut triangles = quads;
-        triangles.topology = RemeshTopology::Triangles;
+        let quads = RemeshParams {
+            topology: RemeshTopology::QuadDominant,
+            ratio: 1.0,
+            ..RemeshParams::default()
+        };
+        let triangles = RemeshParams {
+            topology: RemeshTopology::Triangles,
+            ..quads
+        };
 
         let budgets = resolve_budgets(&[
             input(0, 10_000, 1.0, quads),
@@ -636,14 +655,13 @@ mod tests {
 
     #[test]
     fn an_absolute_budget_splits_by_area() {
-        let mut params = RemeshParams::default();
-        params.density = RemeshDensity::Absolute;
-        params.faces = 4_000;
+        let params = RemeshParams {
+            density: RemeshDensity::Absolute,
+            faces: 4_000,
+            ..RemeshParams::default()
+        };
 
-        let budgets = resolve_budgets(&[
-            input(0, 100, 1.0, params),
-            input(1, 100, 3.0, params),
-        ]);
+        let budgets = resolve_budgets(&[input(0, 100, 1.0, params), input(1, 100, 3.0, params)]);
 
         assert_eq!(budgets[0].faces, 1_000);
         assert_eq!(budgets[1].faces, 3_000);
@@ -651,11 +669,15 @@ mod tests {
 
     #[test]
     fn an_overridden_node_takes_its_count_and_leaves_the_pool() {
-        let mut shared = RemeshParams::default();
-        shared.density = RemeshDensity::Absolute;
-        shared.faces = 4_000;
-        let mut pinned = shared;
-        pinned.faces = 999;
+        let shared = RemeshParams {
+            density: RemeshDensity::Absolute,
+            faces: 4_000,
+            ..RemeshParams::default()
+        };
+        let pinned = RemeshParams {
+            faces: 999,
+            ..shared
+        };
 
         let mut inputs = vec![
             input(0, 100, 1.0, shared),
@@ -673,8 +695,10 @@ mod tests {
 
     #[test]
     fn a_budget_never_falls_below_the_floor() {
-        let mut params = RemeshParams::default();
-        params.ratio = 0.0;
+        let params = RemeshParams {
+            ratio: 0.0,
+            ..RemeshParams::default()
+        };
 
         let budgets = resolve_budgets(&[input(0, 10_000, 1.0, params)]);
 

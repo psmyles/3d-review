@@ -98,6 +98,18 @@ pub(crate) mod range {
     pub const LOD_RATIO_MAX: f32 = 1.0;
     pub const LOD_ERROR_MIN: f32 = 0.0;
     pub const LOD_ERROR_MAX: f32 = 1.0;
+    /// Remesh: the density given either as a share of the object's current
+    /// triangles or as an absolute face budget, the crease angle in degrees, and
+    /// the smoothing pass count. The ratio's ceiling is deliberately above 1.0 —
+    /// a retopology that *adds* faces is a normal thing to ask of a coarse CAD
+    /// part.
+    pub const REMESH_RATIO_MIN: f32 = 0.05;
+    pub const REMESH_RATIO_MAX: f32 = 2.0;
+    pub const REMESH_FACES_MIN: u32 = 100;
+    pub const REMESH_FACES_MAX: u32 = 200_000;
+    pub const REMESH_CREASE_MIN: f32 = 5.0;
+    pub const REMESH_CREASE_MAX: f32 = 90.0;
+    pub const REMESH_SMOOTH_MAX: u32 = 10;
     /// Bake AO: the max ray distance in world meters (0 = unlimited) and the
     /// power on visibility (matching the viewport AO panel's Intensity, whose
     /// range is deliberately wider here — a bake is worth over-driving).

@@ -1,0 +1,56 @@
+--- a/third_party/instant-meshes/src/common.h
++++ b/third_party/instant-meshes/src/common.h
+@@ -66,8 +66,13 @@
+ typedef Eigen::Matrix<Float, 3, 3>                              Matrix3f;
+ typedef Eigen::Matrix<Float, 4, 4>                              Matrix4f;
+ 
+-using std::cout;
+-using std::cerr;
++/* review: the viewer has no console and the remesh runs on a worker thread, so
++   every `cout << ...` in this tree writes to a sink instead of stdout. Naming
++   the streams here rather than macro-defining `cout` keeps `std::cout` meaning
++   `std::cout` in any header included after this one. */
++#include <review_quiet.h>
++static std::ostream &cout = review_quiet::stream();
++static std::ostream &cerr = review_quiet::stream();
+ using std::endl;
+ using namespace std::placeholders;
+ 
+--- a/third_party/instant-meshes/src/hierarchy.cpp
++++ b/third_party/instant-meshes/src/hierarchy.cpp
+@@ -16,7 +16,6 @@
+ #include "serializer.h"
+ #include "dedge.h"
+ #include "field.h"
+-#include <parallel_stable_sort.h>
+ #include <pcg32.h>
+ 
+ AdjacencyMatrix downsample_graph(const AdjacencyMatrix adj, const MatrixXf &V,
+@@ -60,7 +59,7 @@
+         progress("Downsampling graph (2/6)", 0.0f);
+ 
+     if (deterministic)
+-        pss::parallel_stable_sort(entries, entries + nLinks, std::less<Entry>());
++        std::stable_sort(entries, entries + nLinks, std::less<Entry>());
+     else
+         tbb::parallel_sort(entries, entries + nLinks, std::less<Entry>());
+ 
+--- a/third_party/instant-meshes/src/extract.cpp
++++ b/third_party/instant-meshes/src/extract.cpp
+@@ -19,7 +19,6 @@
+ #include "bvh.h"
+ #include "cleanup.h"
+ #include <tbb/concurrent_vector.h>
+-#include <parallel_stable_sort.h>
+ #include <unordered_set>
+ #include <tuple>
+ #include <set>
+@@ -181,7 +180,7 @@
+         };
+ 
+         if (deterministic)
+-            pss::parallel_stable_sort(collapse_edge_vec.begin(), collapse_edge_vec.end(), WeightedEdgeComparator());
++            std::stable_sort(collapse_edge_vec.begin(), collapse_edge_vec.end(), WeightedEdgeComparator());
+         else
+             tbb::parallel_sort(collapse_edge_vec.begin(), collapse_edge_vec.end(), WeightedEdgeComparator());
+ 

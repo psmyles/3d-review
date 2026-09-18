@@ -266,6 +266,25 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
         );
     }
 
+    // A simplifier rebuilds triangles with no correspondence to what it was
+    // given, so it clears the polygon carry — which for a remeshed piece means
+    // throwing away the quads that were the point of running it. The result is
+    // still a correct mesh, so this is advice rather than a reorder.
+    let last_remesh = input
+        .stack
+        .ops
+        .iter()
+        .rposition(|op| op.enabled && matches!(op.kind, OpKind::Remesh(_)));
+    if let (Some(remesh), Some(simplify)) = (last_remesh, last_simplify)
+        && remesh < simplify
+    {
+        warnings.push(
+            "A simplifier runs after Remesh and rebuilds its faces as triangles, so \
+             the quads it produced are lost. Move Remesh below the simplifier to keep \
+             them.",
+        );
+    }
+
     let mut lods = Vec::with_capacity(levels.len());
     for (index, level) in levels.iter().enumerate() {
         let (model, carry) = assemble(
@@ -374,6 +393,9 @@ mod tests {
         );
     }
 
+    /// The control: a level whose carry came from the source keeps that carry
+    /// for the export and publishes **no** face table, because the corner runs it
+    /// describes are in the source's vertex array and the weld destroyed them.
     #[test]
     fn an_operation_produces_a_mesh_carrying_no_polygon_topology() {
         let mut stack = OptStack::default();
@@ -385,6 +407,96 @@ mod tests {
             output.faces.is_empty() && output.triangles.to_face.is_empty(),
             "processed meshes carry no polygon topology"
         );
+    }
+
+    /// The exception: one piece with a **rebuilt** carry puts the whole level
+    /// into the import's corner-run layout, and the quads reach the viewport.
+    ///
+    /// Built by hand rather than by running a Remesh, so it holds whether or not
+    /// a retopologizer is vendored — and so the assertion is about `assemble`'s
+    /// layout rather than about what the engine happened to produce.
+    #[test]
+    fn a_level_with_a_rebuilt_carry_emits_corner_run_faces() {
+        let model = demo_cube_model();
+        let (mut submeshes, tags) = crate::submesh::partition(&model, None);
+        // Weld to the cube's eight real corners, so the indexed mesh and the
+        // corner run it expands into are different sizes and the stats have
+        // something to choose between.
+        crate::ops::weld(
+            &mut submeshes[0],
+            &WeldParams {
+                attribute_tolerance: 0.0,
+                compare_normals: false,
+                compare_uvs: false,
+                compare_colors: false,
+            },
+        )
+        .expect("the demo cube welds");
+
+        // A rebuilt carry over the welded mesh: the cube's triangles come in
+        // pairs cut from one quad — `(a, b, c)` then `(a, c, d)` — so each pair
+        // names the face `[a, b, c, d]`. Built here rather than by running a
+        // Remesh so the test does not need a vendored retopologizer, and so what
+        // it asserts is `assemble`'s layout rather than the engine's output.
+        let piece = &mut submeshes[0];
+        let mut carry = crate::submesh::PolygonCarry {
+            face_offsets: vec![0],
+            rebuilt: true,
+            ..crate::submesh::PolygonCarry::default()
+        };
+        for (face, pair) in piece.indices.as_chunks::<6>().0.iter().enumerate() {
+            carry
+                .corners
+                .extend_from_slice(&[pair[0], pair[1], pair[2], pair[5]]);
+            carry.face_offsets.push(carry.corners.len() as u32);
+            carry.source_face.push(crate::submesh::NO_FACE);
+            carry.triangle_face.extend_from_slice(&[face as u32; 2]);
+        }
+        piece.polygons = Some(carry);
+
+        let mut warnings = Warnings::default();
+        let (level, carry) = assemble(
+            &submeshes,
+            &model,
+            tags,
+            0,
+            Rebuild {
+                normals: false,
+                tangents: false,
+            },
+            &mut warnings,
+        );
+
+        assert_eq!(level.faces.len(), 6, "the cube's six quads are published");
+        assert!(level.faces.iter().all(|face| face.index_count == 4));
+        for (index, face) in level.faces.iter().enumerate() {
+            assert_eq!(
+                face.first_index,
+                index as u32 * 4,
+                "faces own contiguous runs, in face order"
+            );
+        }
+        assert_eq!(level.vertices.len(), 24, "one vertex per face corner");
+        assert_eq!(
+            level.triangles.to_face,
+            vec![0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5]
+        );
+        level
+            .triangles
+            .validate(12, 6, level.materials.len(), level.nodes.len())
+            .expect("the per-triangle tags address the published faces");
+
+        assert_eq!(carry.control_point.len(), 24);
+        assert!(
+            carry.control_point.iter().all(|&point| point < 8),
+            "every corner names one of the eight indexed vertices"
+        );
+        assert_eq!(
+            level.stats.vertex_count, 8,
+            "the panel shows the indexed count, never the corner run (invariant 5)"
+        );
+        assert_eq!(level.stats.polygon_count, 6);
+        assert_eq!(level.stats.triangle_count, 12);
     }
 
     #[test]

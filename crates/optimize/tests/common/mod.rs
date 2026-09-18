@@ -146,6 +146,70 @@ pub fn run_with_extras(
     .expect("processing succeeds")
 }
 
+/// A digest of one processed level's geometry, for comparing a mesh produced by
+/// one test binary against the same mesh produced by another.
+///
+/// FNV-1a over the bytes that define the mesh. A hash rather than the arrays
+/// themselves because the point is to compare *across processes* through a file,
+/// and a mismatch is a mismatch whichever byte moved.
+pub fn geometry_digest(level: &review_optimize::ProcessedLod) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    let mut eat = |bytes: &[u8]| {
+        for &byte in bytes {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    for vertex in &level.model.vertices {
+        for value in vertex
+            .position
+            .to_array()
+            .into_iter()
+            .chain(vertex.normal.to_array())
+            .chain(vertex.uv.to_array())
+            .chain(vertex.vertex_color.to_array())
+        {
+            eat(&value.to_bits().to_le_bytes());
+        }
+    }
+    for &index in &level.model.indices {
+        eat(&index.to_le_bytes());
+    }
+    for face in &level.model.faces {
+        eat(&face.first_index.to_le_bytes());
+        eat(&face.index_count.to_le_bytes());
+    }
+    for &face in &level.model.triangles.to_face {
+        eat(&face.to_le_bytes());
+    }
+    hash
+}
+
+/// Compare `digest` against whatever another test binary recorded under `name`,
+/// recording it instead when this is the first one to get there.
+///
+/// The two suites that use this run the *same* stack over the same fixture at
+/// different thread counts, so the mesh must be identical; which of them runs
+/// first is not defined, and does not need to be. When only one of them runs —
+/// a filtered `cargo test`, or a build with no retopologizer — nothing is
+/// compared, which is the honest outcome rather than a failure.
+pub fn compare_digest_across_binaries(name: &str, digest: u64) {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("shared_digests");
+    std::fs::create_dir_all(&dir).expect("create the shared digest directory");
+    let path = dir.join(name);
+    match std::fs::read_to_string(&path) {
+        Ok(recorded) => {
+            let recorded: u64 = recorded.trim().parse().expect("a recorded digest");
+            assert_eq!(
+                recorded, digest,
+                "{name}: this run produced a different mesh from the one the sibling \
+                 suite recorded, so the result depends on how the work was scheduled"
+            );
+        }
+        Err(_) => std::fs::write(&path, digest.to_string()).expect("record the digest"),
+    }
+}
+
 /// The first line containing `needle`, or a panic naming it.
 pub fn line_with<'a>(text: &'a str, needle: &str) -> &'a str {
     text.lines()

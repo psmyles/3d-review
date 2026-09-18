@@ -113,10 +113,7 @@ impl ProjectionSource {
             let base = vertices.len() as u32;
             vertices.extend_from_slice(&piece.vertices);
             indices.extend(piece.indices.iter().map(|&index| index + base));
-            triangle_material.extend(std::iter::repeat_n(
-                piece.material,
-                piece.triangle_count(),
-            ));
+            triangle_material.extend(std::iter::repeat_n(piece.material, piece.triangle_count()));
             for (channel, destination) in uv_channels.iter_mut().enumerate() {
                 match piece.uv_channels.get(channel) {
                     Some(source) => destination.extend_from_slice(source),
@@ -180,7 +177,11 @@ impl ProjectionSource {
     /// the nearest triangle the walk below reaches without leaving the region,
     /// so a corner beside a seam reads its own side of it.
     fn sample_triangle(&self, anchor: u32, query: Vec3, range: f32) -> u32 {
-        let region = self.region.get(anchor as usize).copied().unwrap_or(u32::MAX);
+        let region = self
+            .region
+            .get(anchor as usize)
+            .copied()
+            .unwrap_or(u32::MAX);
         if let Some(hit) = self.bvh.closest_point(&self.model, query, range)
             && self.region.get(hit.triangle as usize).copied() == Some(region)
         {
@@ -425,10 +426,9 @@ fn project_face(
     // it was built from would draw back-to-front. Newell's formula rather than
     // one corner's cross product, so a slightly non-planar quad still answers.
     let mut ordered = positions;
-    if let (Some(face_normal), Some(source_normal)) = (
-        newell_normal(&ordered),
-        source.face_normal(anchor.triangle),
-    ) && face_normal.dot(source_normal) < 0.0
+    if let (Some(face_normal), Some(source_normal)) =
+        (newell_normal(&ordered), source.face_normal(anchor.triangle))
+        && face_normal.dot(source_normal) < 0.0
     {
         ordered.reverse();
     }
@@ -549,7 +549,10 @@ fn build_regions(adjacency: &[[u32; 3]]) -> Vec<u32> {
             if neighbour == u32::MAX {
                 continue;
             }
-            let (mut a, mut b) = (find(&mut parent, triangle as u32), find(&mut parent, neighbour));
+            let (mut a, mut b) = (
+                find(&mut parent, triangle as u32),
+                find(&mut parent, neighbour),
+            );
             if a == b {
                 continue;
             }
@@ -658,7 +661,10 @@ mod tests {
         let from_x = source.sample_triangle(plus_x, on_edge, 1.0);
 
         assert_eq!(source.region[from_z as usize], source.region[0]);
-        assert_eq!(source.region[from_x as usize], source.region[plus_x as usize]);
+        assert_eq!(
+            source.region[from_x as usize],
+            source.region[plus_x as usize]
+        );
         assert_ne!(
             source.sample(from_z, on_edge, 0, 0).normal,
             source.sample(from_x, on_edge, 0, 0).normal,

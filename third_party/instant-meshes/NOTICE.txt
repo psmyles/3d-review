@@ -1,0 +1,89 @@
+Instant Meshes — vendored source (compute half only)
+====================================================
+
+Upstream:  https://github.com/wjakob/instant-meshes
+Commit:    7b3160864a2e1025af498c84cfed91cbfb613698
+License:   BSD-3-Clause — see LICENSE.txt
+Paper:     Jakob, Tarini, Panozzo, Sorkine-Hornung,
+           "Instant Field-Aligned Meshes", SIGGRAPH Asia 2015
+
+What is vendored
+----------------
+`src/` holds the field solve and the mesh extraction — the half of upstream
+that computes — **plus this project's patches**, recorded as `review.patch`
+(a unified diff against the pristine upstream files, three hunks across three
+files).
+
+The viewer, the command-line front end and the mesh I/O are **not** vendored:
+`main.cpp`, `batch.cpp`, `viewer.cpp`, `widgets.cpp`, `glutil.cpp`,
+`meshio.cpp`, `diff.cpp` and `serializer.cpp` are all absent, and with them the
+dependencies on nanogui, OpenGL and rply. `serializer.h` stays because
+`MultiResolutionHierarchy` and `Optimizer` declare `save`/`load` against it and
+every one of its `set`/`get` overloads is defined inline in the header; nothing
+here ever constructs one.
+
+`src/review_support.cpp` is added by this project, not upstream. It defines the
+one symbol the trimmed tree references and `main.cpp` used to supply
+(`int nprocs`).
+
+`ext/` carries the two single-header dependencies upstream pulls in as git
+submodules, so this tree needs none:
+
+  dset.h   https://github.com/wjakob/dset  — lock-free disjoint set
+                                             (Zlib; LICENSE.dset.txt)
+  pcg32.h  https://github.com/wjakob/pcg32 — PCG random number generator
+                                             (Apache-2.0, stated in its own
+                                             header; upstream carries no
+                                             separate licence file)
+
+`shim/` is entirely this project's:
+
+  tbb/tbb.h              the slice of Intel TBB the compute set uses,
+  tbb/concurrent_vector.h  reimplemented over the C++ standard library. It goes
+                         on the include path *ahead* of everything else, so the
+                         vendored `#include <tbb/...>` lines resolve to it and
+                         not one vendored line changes. Its own header explains
+                         the determinism and threading contract.
+  review_quiet.h         the sink `cout`/`cerr` the one `common.h` hunk names.
+
+`ext/pss` (Intel's parallel stable sort) is deliberately absent: it is used at
+two call sites, both on upstream's own `deterministic` path, and both are
+patched to `std::stable_sort`. That is what removes the last TBB-shaped
+dependency the shim would otherwise have to grow a task scheduler for.
+
+The patches
+-----------
+P1  `common.h` — `using std::cout` / `using std::cerr` become references to a
+    sink stream (`shim/review_quiet.h`). Instant Meshes narrates every stage to
+    the console; the viewer has none, and the remesh runs on a worker thread
+    whose stdout would interleave with everything else. Written as two `static`
+    references rather than a `#define cout`, so `std::cout` still means
+    `std::cout` in any header included after this one.
+
+P2  `hierarchy.cpp` — `pss::parallel_stable_sort` becomes `std::stable_sort`.
+
+P3  `extract.cpp` — the same substitution.
+
+Refreshing this directory is therefore: copy the newer upstream `src/` files
+in, update the commit above, re-apply `review.patch` (`git apply
+third_party/instant-meshes/review.patch`, resolving any drift by hand),
+regenerate the patch from the result, then re-run `crates/optimize`'s `remesh`
+and `export_round_trip` suites. If the refresh reaches for a TBB facility the
+shim has no entry for, that is a compile error naming it — never a silent
+behaviour change.
+
+How it is built
+---------------
+`crates/optimize/build.rs` compiles this alongside `src/remesh_bridge.cpp` with
+`cc`, gated on **both** this directory and `third_party/eigen`, and sets
+`cfg(has_instant_meshes)` only when both are present — the same
+optional-vendoring contract `crates/import` has for ufbx. Delete either and the
+workspace still builds; the Remesh operation then reports
+`OptError::RemeshUnavailable` as a per-operation warning and every other
+operation still runs.
+
+It is compiled at `opt_level(2)` in **every** profile, with `NDEBUG` and
+`EIGEN_NO_DEBUG`. Eigen's expression templates collapse to nothing at `-O2` and
+to a tower of tiny calls at `-O0`; an unoptimized build turns a
+hundred-thousand-triangle remesh from seconds into minutes, which `cargo test`
+would pay on every run.

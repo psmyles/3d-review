@@ -30,7 +30,7 @@ pub(super) struct ManifoldReport {
 /// one entry here.
 pub(super) fn report(indices: &[u32]) -> ManifoldReport {
     let mut uses: HashMap<(u32, u32), u32> = HashMap::new();
-    for triangle in indices.chunks_exact(3) {
+    for triangle in indices.as_chunks::<3>().0 {
         for corner in 0..3 {
             let a = triangle[corner];
             let b = triangle[(corner + 1) % 3];

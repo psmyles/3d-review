@@ -149,7 +149,7 @@ pub(crate) fn run(
             expected: input.vertex_count() * 3,
         });
     }
-    if input.indices.len() % 3 != 0 {
+    if !input.indices.len().is_multiple_of(3) {
         return Err(OptError::IndexCount(input.indices.len()));
     }
     if input.indices.is_empty() || input.positions.is_empty() {
@@ -201,17 +201,20 @@ pub(crate) fn run(
         return Err(OptError::Remesh(error_text(&message)));
     }
 
-    let positions = handle.copy(review_remesh_positions, |vertices| vertices.saturating_mul(3));
+    let positions = handle.copy(review_remesh_positions, |vertices| {
+        vertices.saturating_mul(3)
+    });
     let corners = handle.copy(review_remesh_corners, |corners| corners);
     // The offset accessor reports the face *count*; the table it points at holds
     // the trailing end offset too, so it is one longer.
-    let mut face_offsets =
-        handle.copy(review_remesh_face_offsets, |faces| faces.saturating_add(1));
+    let mut face_offsets = handle.copy(review_remesh_face_offsets, |faces| faces.saturating_add(1));
     drop(handle);
 
     let vertices: Vec<Vec3> = positions
-        .chunks_exact(3)
-        .map(|values| Vec3::new(values[0], values[1], values[2]))
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|&[x, y, z]| Vec3::new(x, y, z))
         .collect();
     if face_offsets.is_empty() {
         face_offsets.push(0);
