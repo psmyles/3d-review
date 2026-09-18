@@ -103,7 +103,8 @@ pub fn with_opacity(color: Color32, opacity: f32) -> Color32 {
 
 /// The "remove this" mark, on the Opt stack's row buttons and the LOD list's.
 ///
-/// A multiplication sign, not the letter X: it is a mark, so it reads the same
-/// in every language and needs no catalog entry. Written once here so the two
-/// buttons cannot end up with different glyphs.
-pub const REMOVE_GLYPH: &str = "✕";
+/// A capital X, not a multiplication sign: it is a mark either way, so it reads
+/// the same in every language and needs no catalog entry, but the bundled Inter
+/// has no glyph for U+2715 and it came out as a tofu box. Written once here so
+/// the two buttons cannot end up with different glyphs.
+pub const REMOVE_GLYPH: &str = "X";
