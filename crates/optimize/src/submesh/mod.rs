@@ -24,7 +24,7 @@
 //! sets and vertex creases (per vertex, remapped with the vertices), and the
 //! polygon topology — the faces the triangles were cut from, the edge list and
 //! the per-face / per-edge layers — as a [`PolygonCarry`]. The carry follows
-//! three rules, one per class of operation:
+//! four rules, one per class of operation:
 //!
 //! * a **vertex remap** (weld, vertex fetch, compaction) renumbers its corners
 //!   and edge endpoints, dropping a face that collapses below three distinct
@@ -35,7 +35,13 @@
 //!   did ([`Submesh::reconcile_triangles`]);
 //! * a **simplify** produces triangles with no correspondence to the input, so
 //!   the carry is cleared ([`Submesh::clear_polygons`]) and that piece goes out
-//!   as triangles.//!
+//!   as triangles;
+//! * a **rebuild** ([`crate::remesh`]) replaces the surface outright and writes
+//!   a carry of its own, flagged [`PolygonCarry::rebuilt`]. That is the one kind
+//!   the *renderer* can be shown — the others describe corner runs in a vertex
+//!   array welding has destroyed — so it is what puts real quads on screen and
+//!   in the exported file. The first three rules still apply to it afterwards: a
+//!   Weld below a Remesh renumbers its corners like any other carry's.//!
 //! ## Layout
 //!
 //! [`mesh`] is the `Submesh` itself, [`rows`] the per-vertex rows a remap must

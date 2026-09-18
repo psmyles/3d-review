@@ -42,15 +42,17 @@ use std::collections::HashMap;
 use glam::{Vec3, Vec4};
 use review_model::{ModelData, Vertex};
 
-use crate::stack::{OpInstance, OpKind, RemeshDensity, RemeshParams, WeldParams};
+use crate::stack::{OpInstance, OpKind, RemeshDensity, RemeshParams, RemeshTopology, WeldParams};
 use crate::submesh::{NO_FACE, PolygonCarry, Submesh};
 use crate::{OptError, Warnings, ops};
 
 pub(crate) mod layout;
-mod manifold;
-mod project;
-mod proxy;
+pub(crate) mod manifold;
+pub(crate) mod project;
+pub(crate) mod proxy;
 mod unavailable;
+
+pub(crate) use project::Winding;
 
 /// The engine entry point: the real one when a retopologizer is vendored, the
 /// `RemeshUnavailable` stub otherwise. Selected here rather than at each call
@@ -70,6 +72,18 @@ pub fn available() -> bool {
 /// `RVO_REMESH_ENGINE_INSTANT_MESHES` in `remesh_bridge.h`. Here rather than in
 /// [`crate::remesh_ffi`], which does not exist in a build with no vendored tree.
 const ENGINE_INSTANT_MESHES: u32 = 0;
+
+/// `RVO_REMESH_ENGINE_QUADRIFLOW`.
+const ENGINE_QUADRIFLOW: u32 = 1;
+
+/// Whether this build carries the quad solver behind
+/// [`RemeshTopology::PureQuads`]. `third_party/quadriflow` is optional on top of
+/// the retopologizer itself, so "Only quads" falls back to "Mostly quads" with a
+/// warning rather than disappearing from the menu — which would make a preset
+/// that names it silently mean something else.
+pub fn pure_quads_available() -> bool {
+    cfg!(has_quadriflow)
+}
 
 /// Fewest faces a node may be asked for. Below about this the field has no room
 /// to align to anything and the result is noise rather than a low-poly mesh.
@@ -413,12 +427,36 @@ fn remesh_node(
     name: &str,
     warnings: &mut Warnings,
 ) -> Option<Vec<Submesh>> {
-    let source = project::ProjectionSource::build(pieces);
-
-    // Advisory, not a gate: Instant Meshes completes on a non-manifold input,
-    // it just cannot guarantee the result closes where the input did not.
     let report = manifold::report(&proxy.indices);
-    if report.nonmanifold_edges > 0 {
+
+    // "Only quads" is a solver over a half-edge structure, so a surface that
+    // branches or pinches is not something it can decline politely — it is
+    // something it cannot represent. Checked here rather than left to the
+    // engine, so the user gets a reason and a mesh instead of a failure.
+    let mut topology = params.topology;
+    if topology == RemeshTopology::PureQuads {
+        if !pure_quads_available() {
+            warnings.push(&format!(
+                "Remesh: this build has no quad solver, so 'Only quads' fell back to \
+                 'Mostly quads' on '{name}'."
+            ));
+            topology = RemeshTopology::QuadDominant;
+        } else if !report.is_manifold() {
+            warnings.push(&format!(
+                "Remesh: '{name}' is not a manifold mesh ({} edges shared by more than two \
+                 faces, {} pinched vertices), so 'Only quads' fell back to 'Mostly quads'. \
+                 Add a Shrinkwrap above the Remesh to fuse it into one closed shell first.",
+                report.nonmanifold_edges, report.nonmanifold_vertices
+            ));
+            topology = RemeshTopology::QuadDominant;
+        }
+    }
+
+    // Advisory for the field extraction, not a gate: Instant Meshes completes on
+    // a non-manifold input, it just cannot guarantee the result closes where the
+    // input did not. Skipped when a fall-back above already said the same thing
+    // in more useful words.
+    if params.topology != RemeshTopology::PureQuads && report.nonmanifold_edges > 0 {
         warnings.push(&format!(
             "Remesh: '{name}' is not a manifold mesh ({} edges are shared by more than two \
              faces), so the rebuilt surface may leave holes there.",
@@ -426,35 +464,33 @@ fn remesh_node(
         ));
     }
 
-    let (rosy, posy) = params.topology.rosy_posy();
-    let options = RemeshOptions {
-        engine: ENGINE_INSTANT_MESHES,
-        rosy,
-        posy,
-        face_count: faces.max(MIN_FACES),
-        crease_angle_deg: if params.sharp_edges {
-            params.crease_angle.clamp(0.0, 180.0)
-        } else {
-            -1.0
-        },
-        extrinsic: true,
-        align_to_boundaries: params.align_to_boundaries,
-        smooth_iterations: params.smooth_iterations,
-        // Instant Meshes' own pure-quad pass subdivides everything, which
-        // quadruples the face count against the budget the user asked for.
-        // "Only quads" is QuadriFlow's job.
-        pure_quad: false,
-        deterministic: params.deterministic,
-        adaptive_scale: false,
-        min_cost_flow: false,
-    };
-
     let input = RemeshInput {
         positions: &proxy.positions,
         indices: &proxy.indices,
     };
-    let mut output = match run_engine(&input, &options) {
+    let mut output = match run_engine(&input, &engine_options(topology, faces, params)) {
         Ok(output) => output,
+        Err(error) if topology == RemeshTopology::PureQuads => {
+            // The solve can fail on geometry that passed the manifold check —
+            // `ComputeIndexMap` gives up on layouts it cannot make consistent.
+            // One retry through the field extraction, which has no such failure
+            // mode, rather than handing back nothing.
+            warnings.push(&format!(
+                "Remesh: the quad solver could not lay out '{name}' ({}), so it fell back \
+                 to 'Mostly quads'.",
+                engine_reason(&error)
+            ));
+            match run_engine(
+                &input,
+                &engine_options(RemeshTopology::QuadDominant, faces, params),
+            ) {
+                Ok(output) => output,
+                Err(error) => {
+                    warnings.push(&format!("Remesh: '{name}' was left as it is — {error}"));
+                    return None;
+                }
+            }
+        }
         Err(error) => {
             warnings.push(&format!("Remesh: '{name}' was left as it is — {error}"));
             return None;
@@ -469,17 +505,83 @@ fn remesh_node(
     }
 
     layout::canonicalize(&mut output);
-    Some(build_pieces(&output, &source, proxy, pieces))
+    Some(build_pieces_from(
+        &output,
+        pieces,
+        proxy,
+        CarryPolygons::Yes,
+        project::Winding::FromSource,
+    ))
 }
 
-/// Turn the engine's polygon soup into one corner-run [`Submesh`] per material,
-/// with every attribute projected from the source surface.
-fn build_pieces(
+/// Whether the rebuilt pieces publish a polygon table.
+///
+/// A field extraction's quads have to: they are the point of the operation, and
+/// a `PolygonCarry` marked `rebuilt` is what carries them to the viewport and
+/// the export. A [`crate::shrinkwrap`] shell's triangles must not: a face table
+/// over triangles says nothing, and publishing one would put the whole level
+/// into the corner-run layout for no gain (see `process::assemble`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CarryPolygons {
+    Yes,
+    No,
+}
+
+/// An engine failure in the engine's own words.
+///
+/// [`OptError::Remesh`]'s `Display` prefixes "the remesher could not rebuild
+/// this object", which reads as a contradiction inside a sentence that goes on
+/// to say what it did instead.
+fn engine_reason(error: &OptError) -> String {
+    match error {
+        OptError::Remesh(reason) => reason.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// What to ask the engine for, for one topology.
+fn engine_options(topology: RemeshTopology, faces: u32, params: &RemeshParams) -> RemeshOptions {
+    let (rosy, posy) = topology.rosy_posy();
+    RemeshOptions {
+        engine: match topology {
+            RemeshTopology::PureQuads => ENGINE_QUADRIFLOW,
+            _ => ENGINE_INSTANT_MESHES,
+        },
+        rosy,
+        posy,
+        face_count: faces.max(MIN_FACES),
+        crease_angle_deg: if params.sharp_edges {
+            params.crease_angle.clamp(0.0, 180.0)
+        } else {
+            -1.0
+        },
+        extrinsic: true,
+        align_to_boundaries: params.align_to_boundaries,
+        smooth_iterations: params.smooth_iterations,
+        // Instant Meshes' own pure-quad pass subdivides everything, which
+        // quadruples the face count against the budget the user asked for.
+        // "Only quads" is the solver's job, not its.
+        pure_quad: false,
+        deterministic: params.deterministic,
+        adaptive_scale: params.adaptive_scale,
+        min_cost_flow: params.min_cost_flow,
+    }
+}
+
+/// Turn a polygon soup into one [`Submesh`] per material, with every attribute
+/// projected from the source surface.
+///
+/// Shared with [`crate::shrinkwrap`], which produces a soup of its own and needs
+/// exactly this: the projection, the per-material split and the weld that turns
+/// the corner stream back into an indexed mesh.
+pub(crate) fn build_pieces_from(
     output: &RemeshOutput,
-    source: &project::ProjectionSource,
-    proxy: &proxy::Proxy,
     pieces: &[&Submesh],
+    proxy: &proxy::Proxy,
+    carry_polygons: CarryPolygons,
+    winding: project::Winding,
 ) -> Vec<Submesh> {
+    let source = &project::ProjectionSource::build(pieces);
     let node = pieces.first().map_or(0, |piece| piece.node);
     let uv_channel_count = pieces
         .iter()
@@ -493,8 +595,14 @@ fn build_pieces(
         .unwrap_or(0);
     let range = proxy.radius() * PROJECTION_RANGE;
 
-    let samples =
-        project::project_faces(output, source, range, uv_channel_count, color_channel_count);
+    let samples = project::project_faces(
+        output,
+        source,
+        range,
+        uv_channel_count,
+        color_channel_count,
+        winding,
+    );
 
     // One piece per material actually used, in first-seen face order so the
     // output is a deterministic function of the canonicalized soup.
@@ -573,8 +681,13 @@ fn build_pieces(
             // still draws and exports correctly — only larger.
             debug_assert!(false, "welding a rebuilt piece failed: {error}");
         }
-        if let Some(carry) = &mut piece.polygons {
-            carry.rebuilt = true;
+        match carry_polygons {
+            CarryPolygons::Yes => {
+                if let Some(carry) = &mut piece.polygons {
+                    carry.rebuilt = true;
+                }
+            }
+            CarryPolygons::No => piece.polygons = None,
         }
         built.push(piece);
     }
@@ -606,7 +719,7 @@ fn fan(corners: &[project::CornerSample], base: u32) -> Vec<[u32; 3]> {
 }
 
 /// A node's display name for a warning, falling back to its index.
-fn node_name(model: &ModelData, node: u32) -> String {
+pub(crate) fn node_name(model: &ModelData, node: u32) -> String {
     model
         .nodes
         .get(node as usize)

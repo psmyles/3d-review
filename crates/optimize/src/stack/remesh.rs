@@ -9,9 +9,12 @@ use serde::{Deserialize, Serialize};
 
 /// What the regenerated surface is made of.
 ///
-/// Both map onto the engine's symmetry settings: a 6-RoSy / 3-PoSy field gives
-/// evenly sized triangles, and a 4/4 field gives quads wherever the field admits
-/// them and triangles where it does not.
+/// The first two map onto one engine's symmetry settings: a 6-RoSy / 3-PoSy
+/// field gives evenly sized triangles, and a 4/4 field gives quads wherever the
+/// field admits them and triangles where it does not. The third is a different
+/// engine entirely — QuadriFlow *solves* for an integer quad layout rather than
+/// extracting one from a field, which is what lets it promise every face is a
+/// quad and why it needs a closed manifold to run on.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RemeshTopology {
     /// Evenly sized, curvature-aligned triangles.
@@ -21,23 +24,34 @@ pub enum RemeshTopology {
     /// works on any input.
     #[default]
     QuadDominant,
+    /// Nothing but quads. Needs a closed manifold — run Shrinkwrap first if the
+    /// object is a kitbash — and falls back to [`Self::QuadDominant`] with a
+    /// warning when it cannot run.
+    PureQuads,
 }
 
 impl RemeshTopology {
-    pub const ALL: [RemeshTopology; 2] = [RemeshTopology::Triangles, RemeshTopology::QuadDominant];
+    pub const ALL: [RemeshTopology; 3] = [
+        RemeshTopology::Triangles,
+        RemeshTopology::QuadDominant,
+        RemeshTopology::PureQuads,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             RemeshTopology::Triangles => "Triangles",
             RemeshTopology::QuadDominant => "Mostly quads",
+            RemeshTopology::PureQuads => "Only quads",
         }
     }
 
-    /// The `(rosy, posy)` symmetry pair the field is solved with.
+    /// The `(rosy, posy)` symmetry pair the field is solved with. `PureQuads`
+    /// shares the quad pair: it is what the fall-back path needs, and
+    /// QuadriFlow reads neither.
     pub(crate) fn rosy_posy(self) -> (u32, u32) {
         match self {
             RemeshTopology::Triangles => (6, 3),
-            RemeshTopology::QuadDominant => (4, 4),
+            RemeshTopology::QuadDominant | RemeshTopology::PureQuads => (4, 4),
         }
     }
 
@@ -47,7 +61,7 @@ impl RemeshTopology {
     pub(crate) fn faces_per_triangle(self) -> f32 {
         match self {
             RemeshTopology::Triangles => 1.0,
-            RemeshTopology::QuadDominant => 0.5,
+            RemeshTopology::QuadDominant | RemeshTopology::PureQuads => 0.5,
         }
     }
 }
@@ -105,6 +119,13 @@ pub struct RemeshParams {
     /// preview that changes under you while you drag a slider is worse than a
     /// slightly slower one.
     pub deterministic: bool,
+    /// [`RemeshTopology::PureQuads`] only: let the quad size follow curvature
+    /// instead of holding one edge length over the whole surface.
+    pub adaptive_scale: bool,
+    /// [`RemeshTopology::PureQuads`] only: solve the quad layout with the
+    /// minimum-cost-flow formulation. Slower, and resolves layouts the default
+    /// solver leaves degenerate.
+    pub min_cost_flow: bool,
 }
 
 impl Default for RemeshParams {
@@ -122,6 +143,8 @@ impl Default for RemeshParams {
             align_to_boundaries: true,
             smooth_iterations: 2,
             deterministic: true,
+            adaptive_scale: false,
+            min_cost_flow: false,
         }
     }
 }

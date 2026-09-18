@@ -19,6 +19,10 @@
 
 #include "remesh_bridge.h"
 
+#ifdef REVIEW_HAS_QUADRIFLOW
+#include "remesh_quadriflow.h"
+#endif
+
 #include <cmath>
 #include <cstring>
 #include <exception>
@@ -212,11 +216,18 @@ extern "C" int review_remesh_run(const rvo_remesh_input *input,
         set_error(error, error_length, "unsupported rotational symmetry");
         return 0;
     }
-    if (options->engine != RVO_REMESH_ENGINE_INSTANT_MESHES) {
+    if (options->engine != RVO_REMESH_ENGINE_INSTANT_MESHES &&
+        options->engine != RVO_REMESH_ENGINE_QUADRIFLOW) {
+        set_error(error, error_length, "unknown remesh engine");
+        return 0;
+    }
+#ifndef REVIEW_HAS_QUADRIFLOW
+    if (options->engine == RVO_REMESH_ENGINE_QUADRIFLOW) {
         set_error(error, error_length,
                   "this build has no vendored QuadriFlow (third_party/quadriflow)");
         return 0;
     }
+#endif
 
     for (size_t corner = 0; corner < input->index_count; ++corner) {
         if (input->indices[corner] >= input->vertex_count) {
@@ -230,6 +241,32 @@ extern "C" int review_remesh_run(const rvo_remesh_input *input,
             return 0;
         }
     }
+
+#ifdef REVIEW_HAS_QUADRIFLOW
+    if (options->engine == RVO_REMESH_ENGINE_QUADRIFLOW) {
+        rvo_quadriflow_request request;
+        request.positions = input->positions;
+        request.vertex_count = input->vertex_count;
+        request.indices = input->indices;
+        request.index_count = input->index_count;
+        request.face_count = options->face_count < 4u ? 4u : options->face_count;
+        request.preserve_sharp = options->crease_angle_deg >= 0.0f;
+        request.preserve_boundary = options->align_to_boundaries;
+        request.adaptive_scale = options->adaptive_scale;
+        request.min_cost_flow = options->min_cost_flow;
+
+        rvo_quadriflow_output solved;
+        if (!review_quadriflow_solve(request, solved, error, error_length)) {
+            return 0;
+        }
+        std::unique_ptr<rvo_remesh_result> result(new rvo_remesh_result());
+        result->positions = std::move(solved.positions);
+        result->corners = std::move(solved.corners);
+        result->face_offsets = std::move(solved.face_offsets);
+        *out = result.release();
+        return 1;
+    }
+#endif
 
     try {
         const int rosy = (int) options->rosy;

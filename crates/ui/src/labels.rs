@@ -222,6 +222,7 @@ pub(crate) fn op_kind(kind: &OpKind) -> Key {
         OpKind::PruneComponents { .. } => keys::ui_enums::OP_PRUNE_COMPONENTS,
         OpKind::Reduce(_) => keys::ui_enums::OP_REDUCE,
         OpKind::Remesh(_) => keys::ui_enums::OP_REMESH,
+        OpKind::Shrinkwrap(_) => keys::ui_enums::OP_SHRINKWRAP,
         OpKind::SimplifyLod(_) => keys::ui_enums::OP_SIMPLIFY_LOD,
         OpKind::BakeAo(_) => keys::ui_enums::OP_BAKE_AO,
         OpKind::VertexCache => keys::ui_enums::OP_VERTEX_CACHE,
@@ -240,6 +241,7 @@ pub(crate) fn op_description(kind: &OpKind) -> Key {
         OpKind::PruneComponents { .. } => keys::ui_enums::OP_PRUNE_COMPONENTS_DESCRIPTION,
         OpKind::Reduce(_) => keys::ui_enums::OP_REDUCE_DESCRIPTION,
         OpKind::Remesh(_) => keys::ui_enums::OP_REMESH_DESCRIPTION,
+        OpKind::Shrinkwrap(_) => keys::ui_enums::OP_SHRINKWRAP_DESCRIPTION,
         OpKind::SimplifyLod(_) => keys::ui_enums::OP_SIMPLIFY_LOD_DESCRIPTION,
         OpKind::BakeAo(_) => keys::ui_enums::OP_BAKE_AO_DESCRIPTION,
         OpKind::VertexCache => keys::ui_enums::OP_VERTEX_CACHE_DESCRIPTION,
@@ -252,6 +254,7 @@ pub(crate) fn remesh_topology(topology: RemeshTopology) -> Key {
     match topology {
         RemeshTopology::Triangles => keys::ui_enums::REMESH_TRIANGLES,
         RemeshTopology::QuadDominant => keys::ui_enums::REMESH_QUAD_DOMINANT,
+        RemeshTopology::PureQuads => keys::ui_enums::REMESH_PURE_QUADS,
     }
 }
 

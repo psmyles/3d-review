@@ -111,7 +111,9 @@ ui-opt-ao-write-to = Write to
 
 ui-opt-remesh-topology = Faces
     .description = What the rebuilt surface is made of. Mostly quads is what an artist
-        would build by hand and works on anything; Triangles gives an even triangle mesh.
+        would build by hand and works on anything; Triangles gives an even triangle mesh;
+        Only quads uses a different solver that needs one closed shell, and falls back to
+        Mostly quads when it cannot run.
 ui-opt-remesh-density = Density
     .description = How the target number of faces for each object is worked out - as a
         share of what it has now, or as one budget shared out across the objects by size.
@@ -133,9 +135,28 @@ ui-opt-remesh-align-boundaries = Follow open borders
 ui-opt-remesh-smoothing = Smoothing
     .description = How many rounds of evening-out to run over the rebuilt surface. A little
         makes the faces more uniform; a lot rounds off detail.
+ui-opt-remesh-adaptive-scale = Vary face size
+    .description = Only quads: let the faces get smaller where the shape is detailed and
+        larger where it is flat, instead of holding one size everywhere.
+ui-opt-remesh-min-cost-flow = Thorough layout
+    .description = Only quads: solve the quad layout the slower, more careful way. Worth
+        trying when the result comes back with folded or twisted faces.
 ui-opt-remesh-deterministic = Reproducible
     .description = Take the slower path that gives exactly the same result every time. On
         by default, so a preview does not shift under you while you drag a slider.
+
+## Shrinkwrap
+
+ui-opt-shrinkwrap-resolution = Detail
+    .description = How many grid steps across the object's longest side. Higher keeps more
+        of the shape and takes longer; lower rounds it off and bridges wider gaps.
+ui-opt-shrinkwrap-offset = Offset
+    .description = How far to push the skin out from the object, in meters. A small push
+        closes gaps a tight wrap leaves open; a negative one pulls the skin inside, for a
+        collision shape.
+ui-opt-shrinkwrap-largest-shell = Keep largest piece only
+    .description = Throw away every closed piece but the biggest. Wrapping a messy object
+        leaves small blobs around stray specks of geometry, and none of them is wanted.
 
 ## Export
 
@@ -178,6 +199,10 @@ ui-opt-prune-explained = A fraction of the model's overall size. Loose pieces sm
 ui-opt-overdraw-explained = How much vertex-cache benefit may be traded away to reduce
     overdraw. 1.05 allows a 5% loss; 1.0 allows none.
 ui-opt-remesh-explained = The surface is rebuilt from scratch, so the materials, texture
+    layout and colors are read back off the original and copied across. Anything tied to
+    the old points is not: bones, shape keys and per-point creases. Objects that bend are
+    skipped and left as they are.
+ui-opt-shrinkwrap-explained = The new skin is a fresh surface, so the materials, texture
     layout and colors are read back off the original and copied across. Anything tied to
     the old points is not: bones, shape keys and per-point creases. Objects that bend are
     skipped and left as they are.

@@ -153,6 +153,12 @@ ui-enums-op-remesh = Remesh
         what is there - it lays down a new surface and copies the materials, texture
         layout and colors across, which is what turns a scan or a CAD part into something
         a game can use. Works on still objects only.
+ui-enums-op-shrinkwrap = Shrinkwrap
+    .description = Replaces each object with a single closed skin that hugs it. The shape is
+        measured onto a grid and a new surface pulled back out of it, which fuses a pile of
+        overlapping parts into one solid, seals holes, and is what lets Remesh's Only quads
+        run on an object it otherwise refuses. Materials, texture layout and colors are
+        copied across. Works on still objects only.
 ui-enums-op-simplify-lod = Generate LODs
     .description = Makes a set of simpler copies of the model (levels of detail) for a game
         to show at a distance. Each level is made from the model as it stands at this
@@ -176,6 +182,7 @@ ui-enums-op-vertex-fetch = Optimize Vertex Fetch
 
 ui-enums-remesh-triangles = Triangles
 ui-enums-remesh-quad-dominant = Mostly quads
+ui-enums-remesh-pure-quads = Only quads
 
 ui-enums-remesh-density-ratio = Ratio of current
 ui-enums-remesh-density-absolute = Face count

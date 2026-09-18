@@ -43,6 +43,7 @@
   - [Operations](opt/operations.md)
   - [Simplification settings](opt/simplify.md)
   - [Remeshing a model](opt/remesh.md)
+  - [Wrapping a model in one skin](opt/shrinkwrap.md)
   - [Baking ambient occlusion](opt/ao.md)
   - [Per-object overrides](opt/overrides.md)
   - [Comparing the result](opt/comparison.md)

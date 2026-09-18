@@ -285,6 +285,27 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
         );
     }
 
+    // A wrap replaces the object outright, so everything above it was work on
+    // geometry that no longer exists. Worth saying once: the pairing the two
+    // operations exist for is Shrinkwrap *then* Remesh, and the other order is
+    // the mistake that looks most like it should work.
+    let first_shrinkwrap = input
+        .stack
+        .ops
+        .iter()
+        .position(|op| op.enabled && matches!(op.kind, OpKind::Shrinkwrap(_)));
+    if let Some(shrinkwrap) = first_shrinkwrap
+        && input.stack.ops[..shrinkwrap]
+            .iter()
+            .any(|op| op.enabled && op.kind.alters_geometry())
+    {
+        warnings.push(
+            "Shrinkwrap runs below an operation that changes the shape, and it \
+             replaces the whole object — so that operation's work is thrown away. \
+             Move Shrinkwrap to the top of the list.",
+        );
+    }
+
     let mut lods = Vec::with_capacity(levels.len());
     for (index, level) in levels.iter().enumerate() {
         let (model, carry) = assemble(

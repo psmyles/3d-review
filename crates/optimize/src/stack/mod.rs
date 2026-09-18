@@ -19,11 +19,13 @@ mod ao;
 mod export;
 mod params;
 mod remesh;
+mod shrinkwrap;
 
 pub use ao::*;
 pub use export::*;
 pub use params::*;
 pub use remesh::*;
+pub use shrinkwrap::*;
 
 /// What [`OptStack::rebind_to_model`] did with a loaded preset's per-object
 /// overrides — three counts the caller reports, since each means something
@@ -309,6 +311,9 @@ pub enum OpKind {
     /// Regenerate each object's surface as evenly sized, curvature-aligned
     /// triangles or quads, with the materials, UVs and colors projected back on.
     Remesh(RemeshParams),
+    /// Replace each object with one closed shell that hugs it, fusing
+    /// interpenetrating parts into a single watertight surface.
+    Shrinkwrap(ShrinkwrapParams),
     /// Generate the LOD chain. At most one per stack.
     SimplifyLod(LodParams),
     /// Bake raycast ambient occlusion into the vertex-color set.
@@ -325,10 +330,11 @@ impl OpKind {
     /// Every operation the "Add" menu offers, in menu order — cleanup first
     /// (what you almost always want before anything else), then the LOD
     /// generator, then the GPU reorder passes that belong at the end.
-    pub const ALL: [fn() -> OpKind; 10] = [
+    pub const ALL: [fn() -> OpKind; 11] = [
         || OpKind::Weld(WeldParams::default()),
         || OpKind::FilterTriangles,
         || OpKind::PruneComponents { error: 0.01 },
+        || OpKind::Shrinkwrap(ShrinkwrapParams::default()),
         || OpKind::Reduce(ReduceParams::default()),
         || OpKind::Remesh(RemeshParams::default()),
         || OpKind::SimplifyLod(LodParams::default()),
@@ -346,6 +352,7 @@ impl OpKind {
             OpKind::PruneComponents { .. } => "Prune Components",
             OpKind::Reduce(_) => "Reduce",
             OpKind::Remesh(_) => "Remesh",
+            OpKind::Shrinkwrap(_) => "Shrinkwrap",
             OpKind::SimplifyLod(_) => "Generate LODs",
             OpKind::BakeAo(_) => "Bake AO to Vertex Colors",
             OpKind::VertexCache => "Optimize Vertex Cache",
@@ -381,6 +388,13 @@ impl OpKind {
                  there — it regenerates the surface from scratch and projects the \
                  materials, UVs and colors back on, which is what turns a scan or a \
                  CAD import into geometry an engine can use. Static meshes only."
+            }
+            OpKind::Shrinkwrap(_) => {
+                "Replace each object with one closed shell that hugs it. The surface is \
+                 voxelized into a distance field and re-extracted, which fuses a kitbash \
+                 of interpenetrating parts into a single watertight mesh — and is what \
+                 makes Remesh's 'Only quads' able to run on one. Materials, UVs and \
+                 colors are projected back on. Static meshes only."
             }
             OpKind::SimplifyLod(_) => {
                 "Generate the LOD chain. Each level is simplified independently from \
@@ -419,6 +433,7 @@ impl OpKind {
             | OpKind::PruneComponents { .. }
             | OpKind::Reduce(_)
             | OpKind::Remesh(_)
+            | OpKind::Shrinkwrap(_)
             | OpKind::SimplifyLod(_) => true,
             OpKind::BakeAo(_)
             | OpKind::VertexCache
@@ -527,9 +542,9 @@ mod tests {
     }
 
     #[test]
-    fn the_add_menu_offers_ten_distinct_operations() {
+    fn the_add_menu_offers_eleven_distinct_operations() {
         let labels: Vec<&str> = OpKind::ALL.iter().map(|build| build().label()).collect();
-        assert_eq!(labels.len(), 10);
+        assert_eq!(labels.len(), 11);
         for (index, label) in labels.iter().enumerate() {
             assert!(
                 !labels[index + 1..].contains(label),

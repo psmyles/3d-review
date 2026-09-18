@@ -58,7 +58,7 @@ const EXTRAPOLATION_LIMIT: f32 = 0.5;
 /// The source surface, indexed for projection: the node's pieces concatenated
 /// **without** welding (so every attribute discontinuity import authored is
 /// still a vertex split), plus the adjacency and the hierarchy a query needs.
-pub(super) struct ProjectionSource {
+pub(crate) struct ProjectionSource {
     /// A scratch model carrying only what a projection reads: positions,
     /// normals, UVs and colors per vertex, and a triangle index buffer.
     model: ModelData,
@@ -89,7 +89,7 @@ pub(super) struct ProjectionSource {
 const REGION_WALK_LIMIT: usize = 256;
 
 impl ProjectionSource {
-    pub(super) fn build(pieces: &[&Submesh]) -> Self {
+    pub(crate) fn build(pieces: &[&Submesh]) -> Self {
         let _z = crate::prof::zone!("Remesh Projection Source");
 
         let uv_channel_count = pieces
@@ -150,7 +150,7 @@ impl ProjectionSource {
         }
     }
 
-    pub(super) fn triangle_count(&self) -> usize {
+    pub(crate) fn triangle_count(&self) -> usize {
         self.model.indices.len() / 3
     }
 
@@ -322,7 +322,7 @@ impl ProjectionSource {
 
 /// One corner of a rebuilt face, with everything it needs to become a [`Vertex`].
 #[derive(Debug, Clone, Default, PartialEq)]
-pub(super) struct CornerSample {
+pub(crate) struct CornerSample {
     pub position: Vec3,
     pub normal: Vec3,
     /// UV set 0, which always lives on [`Vertex::uv`].
@@ -338,9 +338,26 @@ pub(super) struct CornerSample {
 /// One rebuilt face: which material it belongs to, and its corners in winding
 /// order.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub(super) struct FaceSample {
+pub(crate) struct FaceSample {
     pub material: u32,
     pub corners: Vec<CornerSample>,
+}
+
+/// Where a rebuilt face's winding comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Winding {
+    /// Take it from the source surface: flip a face whose normal opposes the
+    /// source's at the point under its centroid. A field extraction's winding is
+    /// its own business and carries no relation to which way the object faces,
+    /// so it has to be re-derived.
+    FromSource,
+    /// Leave it exactly as the soup has it. A [`crate::shrinkwrap`] shell's
+    /// winding is derived from the distance field's sign and is *more* reliable
+    /// than the source's — the source being a kitbash whose parts face whichever
+    /// way they were modelled. Re-deriving it there would flip individual faces
+    /// of a consistently oriented shell, which is the one thing that turns a
+    /// closed manifold back into a broken one.
+    Keep,
 }
 
 /// Project every face of `output` onto `source`.
@@ -349,12 +366,13 @@ pub(super) struct FaceSample {
 /// threads start — the same static partition the AO bake uses, and for the same
 /// reason: each face is a pure function of its own corners and the immutable
 /// source, so scheduling cannot reach the result.
-pub(super) fn project_faces(
+pub(crate) fn project_faces(
     output: &RemeshOutput,
     source: &ProjectionSource,
     range: f32,
     uv_channel_count: usize,
     color_channel_count: usize,
+    winding: Winding,
 ) -> Vec<FaceSample> {
     let _z = crate::prof::zone!("Remesh Projection");
 
@@ -390,6 +408,7 @@ pub(super) fn project_faces(
                             range,
                             uv_channel_count,
                             color_channel_count,
+                            winding,
                         );
                     }
                 }
@@ -402,6 +421,7 @@ pub(super) fn project_faces(
 
 /// Project one face. An unreachable source surface yields an empty face, which
 /// the caller drops.
+#[allow(clippy::too_many_arguments)]
 fn project_face(
     output: &RemeshOutput,
     source: &ProjectionSource,
@@ -409,6 +429,7 @@ fn project_face(
     range: f32,
     uv_channel_count: usize,
     color_channel_count: usize,
+    winding: Winding,
 ) -> FaceSample {
     let corners = output.face(face);
     let positions: Vec<Vec3> = corners
@@ -422,12 +443,14 @@ fn project_face(
     };
     let material = source.material_of(anchor.triangle);
 
-    // The engine's winding is its own; a face whose normal opposes the surface
-    // it was built from would draw back-to-front. Newell's formula rather than
-    // one corner's cross product, so a slightly non-planar quad still answers.
+    // A field extraction's winding is its own; a face whose normal opposes the
+    // surface it was built from would draw back-to-front. Newell's formula
+    // rather than one corner's cross product, so a slightly non-planar quad
+    // still answers. See [`Winding`] for why a wrapped shell opts out.
     let mut ordered = positions;
-    if let (Some(face_normal), Some(source_normal)) =
-        (newell_normal(&ordered), source.face_normal(anchor.triangle))
+    if winding == Winding::FromSource
+        && let (Some(face_normal), Some(source_normal)) =
+            (newell_normal(&ordered), source.face_normal(anchor.triangle))
         && face_normal.dot(source_normal) < 0.0
     {
         ordered.reverse();

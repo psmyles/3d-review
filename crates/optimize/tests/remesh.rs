@@ -22,7 +22,7 @@ mod common;
 use common::{compare_digest_across_binaries, fixture, geometry_digest, run};
 
 /// Every fixture this suite loads.
-const FIXTURES: [&str; 2] = ["monkey.fbx", "SM_column04.fbx"];
+const FIXTURES: [&str; 3] = ["monkey.fbx", "SM_column04.fbx", "SM_Ammo_Crate_01a.fbx"];
 
 fn remesh_stack(params: RemeshParams) -> OptStack {
     let mut stack = OptStack::default();
@@ -345,4 +345,126 @@ fn a_remesh_reports_fewer_vertices_than_its_corner_run_holds() {
         level.model.stats.vertex_count,
         level.model.stats.polygon_count
     );
+}
+
+/// A closed single-shell asset: the quad solver runs and every face is a quad.
+#[cfg(has_quadriflow)]
+#[test]
+fn only_quads_produces_nothing_but_quads_on_a_closed_shell() {
+    let Some(model) = fixture("SM_column04.fbx") else {
+        return;
+    };
+    let target = 1_500u32;
+    let params = RemeshParams {
+        topology: RemeshTopology::PureQuads,
+        ..quad_params(target)
+    };
+    let result = run(&model, &remesh_stack(params));
+    for warning in &result.warnings {
+        assert!(
+            !warning.contains("fell back"),
+            "this fixture is a closed shell, so the solver should run: {warning}"
+        );
+    }
+
+    let level = result.lod(0).expect("the stack produced a level");
+    assert_consistent(&level.model, "column, only quads");
+    let (triangles, quads, other) = face_degrees(level);
+    assert_eq!(
+        (triangles, other),
+        (0, 0),
+        "'Only quads' means only quads: {quads} quads beside {triangles} triangles"
+    );
+    // The solver targets a count rather than a face size, so it lands much
+    // closer than the field extraction does; measured at 1404 for 1500.
+    let error = (quads as f32 - target as f32).abs() / target as f32;
+    assert!(error <= 0.2, "asked for {target} quads and got {quads}");
+}
+
+/// An asset the solver cannot lay out has to come back as a mesh and a warning.
+///
+/// This one is the regression test for a **crash**: `Eigen::SparseLU`, which
+/// `EIGEN_MPL2_ONLY` selects, reports a failed factorization through `info()`
+/// and leaves nothing to solve with, and upstream's unchecked `solve()` on that
+/// state segfaulted on exactly this fixture (see `third_party/quadriflow`'s
+/// NOTICE). A passing run is one that *returns*.
+#[cfg(has_quadriflow)]
+#[test]
+fn an_object_the_quad_solver_gives_up_on_falls_back_rather_than_failing() {
+    let Some(model) = fixture("SM_Ammo_Crate_01a.fbx") else {
+        return;
+    };
+    let params = RemeshParams {
+        topology: RemeshTopology::PureQuads,
+        ..quad_params(1_500)
+    };
+    let result = run(&model, &remesh_stack(params));
+
+    let level = result.lod(0).expect("the stack produced a level");
+    assert_consistent(&level.model, "ammo crate, only quads");
+    assert!(
+        level.model.stats.polygon_count > 0,
+        "the fall back still produces a mesh"
+    );
+    assert!(
+        result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("fell back")),
+        "the user has to be told the topology they asked for was not used: {:?}",
+        result.warnings
+    );
+    let (_, quads, other) = face_degrees(level);
+    assert_eq!(other, 0);
+    assert!(quads > 0, "the fall back is still a quad-dominant mesh");
+}
+
+/// Without the vendored solver, "Only quads" stays in the menu and falls back —
+/// so a preset naming it does not silently mean something else.
+#[cfg(not(has_quadriflow))]
+#[test]
+fn only_quads_falls_back_when_the_solver_is_not_vendored() {
+    let Some(model) = fixture("SM_column04.fbx") else {
+        return;
+    };
+    let params = RemeshParams {
+        topology: RemeshTopology::PureQuads,
+        ..quad_params(1_500)
+    };
+    let result = run(&model, &remesh_stack(params));
+
+    let level = result.lod(0).expect("the stack produced a level");
+    assert_consistent(&level.model, "column, only quads unavailable");
+    assert!(
+        result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("no quad solver")),
+        "{:?}",
+        result.warnings
+    );
+}
+
+/// The solver's own seed is pinned, and the tree is compiled serially, so two
+/// runs have to agree byte for byte.
+#[cfg(has_quadriflow)]
+#[test]
+fn two_quad_solves_produce_the_same_mesh() {
+    let Some(model) = fixture("SM_column04.fbx") else {
+        return;
+    };
+    let params = RemeshParams {
+        topology: RemeshTopology::PureQuads,
+        ..quad_params(1_200)
+    };
+    let stack = remesh_stack(params);
+
+    let first = run(&model, &stack);
+    let second = run(&model, &stack);
+
+    let a = first.lod(0).expect("a level");
+    let b = second.lod(0).expect("a level");
+    assert_eq!(a.model.vertices, b.model.vertices, "vertices differ");
+    assert_eq!(a.model.indices, b.model.indices, "index buffers differ");
+    assert_eq!(a.model.faces, b.model.faces, "face tables differ");
 }

@@ -34,6 +34,11 @@ everywhere - wherever the flow has to split or merge, the rebuilt surface leaves
 a triangle. On a typical game model four faces in five come back as quads; on a
 model with a lot of creases and open borders it is nearer three in four.
 
+**Only quads** is a different tool: instead of reading a pattern off a field it
+*solves* for one, as an integer layout over the whole surface, which is what lets
+it promise there is not a single triangle in the result. The price is that it
+needs one closed shell to work on - see below.
+
 **Triangles** gives an even triangle mesh instead, with no quads at all. Use it
 when whatever consumes the model triangulates anyway and you would rather see
 the real triangle count.
@@ -41,6 +46,33 @@ the real triangle count.
 The quads are real. The viewport's wireframe draws four edges around each one,
 the stats card counts them under Polys, and the export writes them to the file
 as quads.
+
+## Why Only quads sometimes falls back
+
+When Only quads cannot run, it quietly becomes Mostly quads and tells you why.
+There are three reasons, and each has a different answer.
+
+**The object is not one closed shell.** The solver walks the surface as a set of
+faces that each border exactly two others; a kitbash of interpenetrating parts,
+or a surface that pinches to a point, is not that. Nothing can be done to the
+settings to fix it - the fix is geometric, and it is what
+[Shrinkwrap](shrinkwrap.md) is for: put one above the Remesh and it fuses the
+object into a single closed shell first, after which Only quads runs.
+
+**The layout could not be solved.** Some closed shells still defeat it: the
+system it builds comes out singular and there is no layout to return. The
+message names the stage that gave up. Try **Thorough layout**, which solves it a
+slower and more careful way, or a different face count - a target the surface
+divides into more evenly often goes through.
+
+**This build has no solver.** The quad solver is an optional vendored library.
+Only quads stays in the list either way, so a preset that asks for it still means
+what it says, but a build without it always falls back.
+
+The two settings below Only quads belong to it alone. **Vary face size** lets the
+faces get smaller where the shape is detailed and larger where it is flat,
+instead of holding one size everywhere. **Thorough layout** is the slower solver
+mentioned above.
 
 ## How dense
 

@@ -196,6 +196,13 @@ pub(crate) fn apply_op(
         return 0.0;
     }
 
+    // Shrinkwrap replaces a node's pieces the same way, and for the same reason:
+    // a wrap of one material's half of an object is not a shell of anything.
+    if matches!(op.kind, OpKind::Shrinkwrap(_)) {
+        crate::shrinkwrap::shrinkwrap_submeshes(submeshes, op, stack, model, warnings);
+        return 0.0;
+    }
+
     for piece in submeshes.iter_mut() {
         if is_excluded(stack, piece.node) {
             continue;
@@ -211,9 +218,11 @@ pub(crate) fn apply_op(
             // The LOD operation is the pipeline's fan-out point, handled by the
             // caller; Reduce, the AO bake and Remesh are handled above. None
             // reaches this path.
-            OpKind::Reduce(_) | OpKind::SimplifyLod(_) | OpKind::BakeAo(_) | OpKind::Remesh(_) => {
-                Ok(())
-            }
+            OpKind::Reduce(_)
+            | OpKind::SimplifyLod(_)
+            | OpKind::BakeAo(_)
+            | OpKind::Remesh(_)
+            | OpKind::Shrinkwrap(_) => Ok(()),
         };
         if let Err(error) = outcome {
             warnings.push(&format!("{}: {error}", kind.label()));

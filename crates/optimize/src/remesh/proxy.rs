@@ -20,7 +20,7 @@ use review_model::Bounds;
 use crate::submesh::Submesh;
 
 /// One node's surface as the engine sees it.
-pub(super) struct Proxy {
+pub(crate) struct Proxy {
     /// Three floats per vertex, welded across the node's materials.
     pub positions: Vec<f32>,
     pub indices: Vec<u32>,
@@ -36,13 +36,13 @@ pub(super) struct Proxy {
 }
 
 impl Proxy {
-    pub(super) fn triangle_count(&self) -> usize {
+    pub(crate) fn triangle_count(&self) -> usize {
         self.indices.len() / 3
     }
 
     /// Bounding-sphere radius, which is what the projection range is a fraction
     /// of. Zero for an empty proxy.
-    pub(super) fn radius(&self) -> f32 {
+    pub(crate) fn radius(&self) -> f32 {
         if self.bounds.is_empty() {
             0.0
         } else {
@@ -51,7 +51,7 @@ impl Proxy {
     }
 }
 
-pub(super) fn build(pieces: &[&Submesh]) -> Proxy {
+pub(crate) fn build(pieces: &[&Submesh]) -> Proxy {
     let _z = crate::prof::zone!("Remesh Proxy");
 
     let mut slot_of: HashMap<[u32; 3], u32> = HashMap::new();

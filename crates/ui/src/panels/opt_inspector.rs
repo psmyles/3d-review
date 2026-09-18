@@ -11,7 +11,8 @@ use review_model::ModelData;
 use review_optimize::{
     AoQuality, AoTarget, AttributeWeights, BakeAoParams, ExportOptions, FbxFormat, HierarchyMode,
     LodLevel, LodPackaging, LodParams, OpKind, ReduceParams, RemeshDensity, RemeshParams,
-    RemeshTopology, SimplifyAlgorithm, SimplifyFlags, SimplifySettings, WeldParams,
+    RemeshTopology, ShrinkwrapParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings,
+    WeldParams,
 };
 use review_render::Selection;
 
@@ -27,7 +28,8 @@ use crate::state::{
         LOD_RATIO_MIN, OVERDRAW_THRESHOLD_MAX, OVERDRAW_THRESHOLD_MIN, PRUNE_THRESHOLD_MAX,
         PRUNE_THRESHOLD_MIN, REMESH_CREASE_MAX, REMESH_CREASE_MIN, REMESH_FACES_MAX,
         REMESH_FACES_MIN, REMESH_RATIO_MAX, REMESH_RATIO_MIN, REMESH_SMOOTH_MAX,
-        WELD_TOLERANCE_MAX, WELD_TOLERANCE_MIN,
+        SHRINKWRAP_OFFSET_MAX, SHRINKWRAP_OFFSET_MIN, SHRINKWRAP_RESOLUTION_MAX,
+        SHRINKWRAP_RESOLUTION_MIN, WELD_TOLERANCE_MAX, WELD_TOLERANCE_MIN,
     },
 };
 use crate::theme;
@@ -92,6 +94,7 @@ fn operation_body(ui: &mut egui::Ui, state: &mut UiState, id: u64) {
         OpKind::Overdraw { threshold } => overdraw_params(ui, threshold),
         OpKind::Reduce(params) => reduce_params(ui, params).map(OpKind::Reduce),
         OpKind::Remesh(params) => remesh_params(ui, params).map(OpKind::Remesh),
+        OpKind::Shrinkwrap(params) => shrinkwrap_params(ui, params).map(OpKind::Shrinkwrap),
         OpKind::SimplifyLod(params) => lod_params(ui, params).map(OpKind::SimplifyLod),
         OpKind::BakeAo(params) => bake_ao_params(ui, params).map(OpKind::BakeAo),
         // These three have nothing to configure — meshoptimizer exposes no knobs
@@ -190,6 +193,43 @@ fn overdraw_params(ui: &mut egui::Ui, threshold: f32) -> Option<OpKind> {
 }
 
 /// The AO bake editor.
+/// Returns the edited parameters only when they actually changed.
+fn shrinkwrap_params(ui: &mut egui::Ui, params: ShrinkwrapParams) -> Option<ShrinkwrapParams> {
+    let mut edited = params;
+    panel_grid(ui, "opt_shrinkwrap", |ui| {
+        labeled_slider_with_value(
+            ui,
+            Tip::new(keys::ui_opt::SHRINKWRAP_RESOLUTION)
+                .describe(keys::ui_opt::SHRINKWRAP_RESOLUTION_DESCRIPTION)
+                .page(Page::OptShrinkwrap),
+            &mut edited.resolution,
+            SHRINKWRAP_RESOLUTION_MIN..=SHRINKWRAP_RESOLUTION_MAX,
+            0,
+        );
+        labeled_slider_with_value(
+            ui,
+            Tip::new(keys::ui_opt::SHRINKWRAP_OFFSET)
+                .describe(keys::ui_opt::SHRINKWRAP_OFFSET_DESCRIPTION)
+                .page(Page::OptShrinkwrap),
+            &mut edited.offset,
+            SHRINKWRAP_OFFSET_MIN..=SHRINKWRAP_OFFSET_MAX,
+            3,
+        );
+        labeled_checkbox(
+            ui,
+            Tip::new(keys::ui_opt::SHRINKWRAP_LARGEST_SHELL)
+                .describe(keys::ui_opt::SHRINKWRAP_LARGEST_SHELL_DESCRIPTION)
+                .page(Page::OptShrinkwrap),
+            &mut edited.keep_largest_shell,
+        );
+    });
+
+    ui.add_space(size::PANEL_ROW_GAP);
+    ui.label(egui::RichText::from(keys::ui_opt::SHRINKWRAP_EXPLAINED).color(color::TEXT_MUTED));
+
+    (edited != params).then_some(edited)
+}
+
 /// Returns the edited parameters only when they actually changed.
 ///
 /// Two rows are conditional rather than always present: the density row shows a
@@ -291,6 +331,25 @@ fn remesh_params(ui: &mut egui::Ui, params: RemeshParams) -> Option<RemeshParams
             0..=REMESH_SMOOTH_MAX,
             0,
         );
+        // The quad solver's own two knobs. Shown only for the topology that
+        // runs it, because they read as settings of the rebuild in general and
+        // the other two topologies ignore them entirely.
+        if edited.topology == RemeshTopology::PureQuads {
+            labeled_checkbox(
+                ui,
+                Tip::new(keys::ui_opt::REMESH_ADAPTIVE_SCALE)
+                    .describe(keys::ui_opt::REMESH_ADAPTIVE_SCALE_DESCRIPTION)
+                    .page(Page::OptRemesh),
+                &mut edited.adaptive_scale,
+            );
+            labeled_checkbox(
+                ui,
+                Tip::new(keys::ui_opt::REMESH_MIN_COST_FLOW)
+                    .describe(keys::ui_opt::REMESH_MIN_COST_FLOW_DESCRIPTION)
+                    .page(Page::OptRemesh),
+                &mut edited.min_cost_flow,
+            );
+        }
         labeled_checkbox(
             ui,
             Tip::new(keys::ui_opt::REMESH_DETERMINISTIC)

@@ -110,6 +110,14 @@ pub(crate) mod range {
     pub const REMESH_CREASE_MIN: f32 = 5.0;
     pub const REMESH_CREASE_MAX: f32 = 90.0;
     pub const REMESH_SMOOTH_MAX: u32 = 10;
+    /// Shrinkwrap: grid steps across the object's longest side, and how far the
+    /// shell is pushed out (or, negative, pulled in) in world meters. The offset
+    /// range is deliberately symmetric — a shell *inside* the object is a
+    /// collision proxy, which is as normal a thing to ask for as one outside it.
+    pub const SHRINKWRAP_RESOLUTION_MIN: u32 = 16;
+    pub const SHRINKWRAP_RESOLUTION_MAX: u32 = 512;
+    pub const SHRINKWRAP_OFFSET_MIN: f32 = -0.5;
+    pub const SHRINKWRAP_OFFSET_MAX: f32 = 0.5;
     /// Bake AO: the max ray distance in world meters (0 = unlimited) and the
     /// power on visibility (matching the viewport AO panel's Intensity, whose
     /// range is deliberately wider here — a bake is worth over-driving).
