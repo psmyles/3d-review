@@ -619,8 +619,15 @@ fn place_survivor(
 /// Vertices are renumbered in input order, so the output's numbering is a
 /// function of the mesh rather than of the order the regions happened to be
 /// collapsed in.
-pub(crate) fn into_output(state: &Collapsed) -> RemeshOutput {
+///
+/// `features` comes back with it as a per-output-vertex flag: a vertex that sat
+/// on a border, a crease or a fold in the source is *where the shape is*, and
+/// the tidying that follows must leave it alone. The output's own topology
+/// cannot answer that — a rim is an ordinary interior edge once the shell is
+/// closed — so it has to be carried from here.
+pub(crate) fn into_output(state: &Collapsed, features: &Features) -> (RemeshOutput, Vec<bool>) {
     let mut slot_of = vec![u32::MAX; state.alive.len()];
+    let mut pinned: Vec<bool> = Vec::new();
     let mut output = RemeshOutput {
         positions: Vec::new(),
         face_offsets: vec![0],
@@ -647,6 +654,13 @@ pub(crate) fn into_output(state: &Collapsed) -> RemeshOutput {
                 output
                     .positions
                     .push(Vec3::new(at[0] as f32, at[1] as f32, at[2] as f32));
+                pinned.push(
+                    features
+                        .on_feature
+                        .get(corner as usize)
+                        .copied()
+                        .unwrap_or(false),
+                );
             }
             output.corners.push(slot_of[corner as usize]);
         }
@@ -654,7 +668,7 @@ pub(crate) fn into_output(state: &Collapsed) -> RemeshOutput {
             .face_offsets
             .push(output.corners.len().try_into().unwrap_or(u32::MAX));
     }
-    output
+    (output, pinned)
 }
 
 /// One quadric per vertex, from the faces around it plus a plane along every
@@ -820,7 +834,7 @@ mod tests {
         let state = run(surface, &features, &seeds, &partition, &quadrics, None);
         Run {
             stubborn: state.stubborn,
-            output: into_output(&state),
+            output: into_output(&state, &features).0,
         }
     }
 

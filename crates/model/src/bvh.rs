@@ -537,6 +537,36 @@ impl SceneBvh {
         best
     }
 
+    /// The nearest point on any part `allow` accepts, and which node owns it.
+    ///
+    /// The closest-point twin of [`Self::pick`], and filtered the same way, so a
+    /// caller measuring one object against another asks for that object's node
+    /// rather than having to carve a mesh out first. Each part's search is
+    /// bounded by the best point so far, so the parts farther away than the
+    /// nearest cost little more than their root box test.
+    pub fn closest_point(
+        &self,
+        model: &ModelData,
+        query: Vec3,
+        max_distance: f32,
+        allow: impl Fn(u32) -> bool,
+    ) -> Option<(u32, ClosestPoint)> {
+        let mut best: Option<(u32, ClosestPoint)> = None;
+        let mut far = max_distance;
+        for part in &self.parts {
+            if !allow(part.node) {
+                continue;
+            }
+            if let Some(hit) = part.bvh.closest_point(model, query, far) {
+                // Tightened to the distance itself, not its square: the bound
+                // this takes is a distance.
+                far = hit.distance_squared.sqrt();
+                best = Some((part.node, hit));
+            }
+        }
+        best
+    }
+
     /// The parts, for a caller that queries them itself (the posed pick, which
     /// deforms each part's corners before testing it).
     pub(crate) fn parts(&self) -> &[ScenePart] {

@@ -11,6 +11,7 @@
 //! 5. [`partition`](super::partition) + [`lloyd`](super::lloyd) — grow the seeds
 //!    into even regions.
 //! 6. [`collapse`](super::collapse) — merge each region down to its one vertex.
+//! 7. [`cleanup`](super::cleanup) — even the faces out.
 //!
 //! Between every stage, and inside the ones that sweep, the run can be
 //! abandoned. That is the difference the user actually feels: the engines this
@@ -154,11 +155,11 @@ pub(crate) fn rebuild(
     if cancelled(cancel) {
         return Err(OptError::Cancelled);
     }
-    let mut output = collapse::into_output(&state);
+    let (mut output, pinned) = collapse::into_output(&state, &features);
     // What the collapse leaves is correct but lumpy — a region's vertex lands
     // wherever its last valid collapse put it. This is what makes the faces
     // even, which is most of what "retopology" means to look at.
-    cleanup::run(&mut output, params.smooth_iterations, cancel);
+    cleanup::run(&mut output, &pinned, params.smooth_iterations, cancel);
     output.validate()?;
 
     let report = Report {
@@ -257,7 +258,6 @@ mod tests {
         for asked in [200u32, 600, 1500] {
             let (output, _) =
                 rebuild(&proxy, asked, &params(), 1, None, |_| true).expect("a sphere rebuilds");
-
             let produced = output.face_count() as f64;
             let miss = (produced - asked as f64).abs() / asked as f64;
             assert!(
@@ -289,7 +289,7 @@ mod tests {
         let proxy = sphere(18, 24);
 
         let mut previews = 0;
-        let (output, _) = rebuild(&proxy, 400, &params(), 1, None, |preview| {
+        let (output, _) = rebuild(&proxy, 400, &params(), 1, None, |preview: RemeshOutput| {
             assert!(preview.validate().is_ok(), "a preview is a valid soup");
             previews += 1;
             true

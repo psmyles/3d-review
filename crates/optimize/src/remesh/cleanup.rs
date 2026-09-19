@@ -21,13 +21,31 @@
 //!   other two, so a pass of flips that reduce the total deviation from those
 //!   targets straightens out the worst of it.
 //!
+//! ## Snapping back to the source, and why this does not
+//!
+//! The obvious third pass is to put every vertex back on the source surface —
+//! it is what a synthesis-based remesher ends with, since the surface it built
+//! is genuinely somewhere else. Measured here it makes every fixture *worse*
+//! (a plant 96.8 % of its area to 96.1 %, a column 86.1 % to 84.0 %, a set of
+//! stones 99.7 % to 98.0 %), and the reason is that this rebuild does not
+//! synthesize anything. Its vertices are source vertices, or the optimum of a
+//! quadric built from the source's own planes — and on a convex patch that
+//! optimum sits a little *outside* the surface, where the tangent planes meet,
+//! which is exactly where a coarse mesh has to be to keep the area. Snapping
+//! them down trades a circumscribing approximation for an inscribing one.
+//!
 //! ## What is never touched
 //!
 //! Border vertices do not move and border edges are never flipped. The outline
 //! is the thing the whole rebuild is most careful about, and a relaxation that
 //! slid vertices along it would undo the even spacing the seeding gave it. A
 //! border vertex is recognised from the *output's* own topology — an edge with
-//! one face — so nothing has to be carried here from earlier stages.
+//! one face.
+//!
+//! `pinned` carries what the output's topology *cannot* say. A rim — where a
+//! thin shell folds back on itself — is an ordinary interior edge here, two
+//! faces like any other, and yet it is exactly where the silhouette is. The
+//! collapse knows (it was a feature vertex in the source) and says so.
 
 use crate::cancel::{CancelToken, cancelled};
 
@@ -50,7 +68,12 @@ const BORDER_VALENCE: i32 = 4;
 /// One round is a flip pass and then a relaxation pass — in that order, because
 /// flipping changes who a vertex's neighbours are and the relaxation should see
 /// the result.
-pub(crate) fn run(output: &mut RemeshOutput, rounds: u32, cancel: Option<&CancelToken>) {
+pub(crate) fn run(
+    output: &mut RemeshOutput,
+    pinned: &[bool],
+    rounds: u32,
+    cancel: Option<&CancelToken>,
+) {
     if rounds == 0 || output.positions.is_empty() {
         return;
     }
@@ -66,8 +89,16 @@ pub(crate) fn run(output: &mut RemeshOutput, rounds: u32, cancel: Option<&Cancel
         flip_pass(output, &topology);
 
         let topology = Topology::build(&output.corners, output.positions.len(), 1, cancel);
-        relax_pass(output, &topology);
+        relax_pass(output, &topology, pinned);
     }
+}
+
+/// Whether `vertex` is one this module may not move: an outline of the output's
+/// own, or one the collapse marked as carrying the source's shape.
+fn is_held(topology: &Topology, pinned: &[bool], vertex: u32) -> bool {
+    topology.boundary[vertex as usize]
+        || topology.nonmanifold[vertex as usize]
+        || pinned.get(vertex as usize).copied().unwrap_or(false)
 }
 
 /// Flip the shared edge of two triangles wherever it brings the four vertices
@@ -217,6 +248,16 @@ fn flip_is_safe(output: &RemeshOutput, topology: &Topology, quad: &Quad) -> bool
         return false;
     }
 
+    // A fold is the silhouette of a thin shell, and flipping across one swaps a
+    // pair of triangles that lie on opposite sides of the surface for a pair
+    // that span it — a fin through the middle of a leaf.
+    let faces = quad.faces().map(|corners| normal_of(output, corners));
+    if let [Some(one), Some(other)] = faces
+        && one[0] * other[0] + one[1] * other[1] + one[2] * other[2] <= 0.0
+    {
+        return false;
+    }
+
     // Both sides are read from the mesh now, which is what makes this guard
     // mean anything: a fold shows up as the new normal opposing the old one.
     let before = quad.faces().map(|corners| normal_of(output, corners));
@@ -239,7 +280,7 @@ fn flip_is_safe(output: &RemeshOutput, topology: &Topology, quad: &Quad) -> bool
 
 /// Move every interior vertex toward the middle of its neighbours, along the
 /// surface.
-fn relax_pass(output: &mut RemeshOutput, topology: &Topology) {
+fn relax_pass(output: &mut RemeshOutput, topology: &Topology, pinned: &[bool]) {
     let count = output.positions.len();
     let mut moved: Vec<[f64; 3]> = output
         .positions
@@ -250,8 +291,10 @@ fn relax_pass(output: &mut RemeshOutput, topology: &Topology) {
     let mut scratch = Vec::new();
 
     for vertex in 0..count as u32 {
-        // A border vertex holds the outline; the seeding already spaced it.
-        if topology.boundary[vertex as usize] || topology.nonmanifold[vertex as usize] {
+        // A border vertex holds the outline; the seeding already spaced it. A
+        // pinned one holds a rim or a crease, which the output's topology has no
+        // way of recognising.
+        if is_held(topology, pinned, vertex) {
             continue;
         }
         topology.edges_at(&output.corners, vertex, &mut scratch);
@@ -551,7 +594,7 @@ mod tests {
             fold_count(&output, &topology, 0, &points, None)
         };
 
-        run(&mut output, 4, None);
+        run(&mut output, &[], 4, None);
 
         let topology = Topology::build(&output.corners, output.positions.len(), 1, None);
         let points: Vec<[f64; 3]> = output

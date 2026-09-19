@@ -12,9 +12,29 @@
 //!   rebuilt surface that rounds a 90-degree corner is useless; left off for
 //!   organic shapes, where it only breaks up the flow.
 //!
+//! * **Folds** — an edge whose two faces turn back past a right angle. Unlike
+//!   the two above this is **not a setting**, because it is not a matter of
+//!   taste: a surface that doubles back on itself has a *silhouette* there, and
+//!   the silhouette is the shape. A leaf, a strip of bark, a piece of cloth —
+//!   each is two sheets meeting at a rim, and a rebuild that treats that rim as
+//!   ordinary surface merges a vertex from one sheet with one from the other
+//!   and the object comes back narrower. Measured on a plant's bark at a
+//!   quarter density: 87 % of its surface area survived without this and 96 %
+//!   with it.
+//!
 //! Non-manifold edges are always features, whatever the settings say. The
 //! surface branches there and no rebuild can describe it, so the least wrong
 //! thing is to keep a vertex exactly where it was.
+//!
+//! ## Why a fold is not just a sharp crease
+//!
+//! It is the same test with a different threshold, and the threshold is what
+//! makes it safe to leave on. **Keep sharp edges** is off for organic work
+//! because creasing every thirty-degree bend breaks up the flow — and on a real
+//! plant 96 % of edges do turn less than forty degrees. Past ninety they are
+//! 1.3 %, and those are not bends in a surface, they are its edge. A box
+//! modelled at exactly ninety degrees is deliberately left out by a hair of
+//! margin, so a hard-surface part with creases off still rebuilds smooth.
 //!
 //! ## Why chains rather than a set of edges
 //!
@@ -37,6 +57,21 @@ use crate::cancel::{CancelToken, cancelled};
 use super::surface::Surface;
 use super::topology::EdgeAt;
 
+/// Cosine of the angle past which two faces count as folded back rather than
+/// bent, whatever **Keep sharp edges** says.
+///
+/// A right angle is a cosine of zero; the margin is what keeps a box modelled at
+/// exactly ninety degrees out, since that is a shape a rebuild can round off
+/// without losing what it is. Chosen by measurement rather than taste — on the
+/// plant that prompted it, every threshold from thirty degrees to a hundred held
+/// the bark's area within a point or two of each other, and it fell away past
+/// a hundred and ten.
+const FOLD_COSINE: f64 = -0.02;
+
+/// Least area, against the longest edge squared, for a face's normal to be
+/// trusted. See [`is_sliver`].
+const SLIVER_QUALITY: f64 = 1.0e-4;
+
 /// A chain of feature edges.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Polyline {
@@ -54,6 +89,8 @@ pub(crate) struct Polyline {
 pub(crate) enum FeatureKind {
     Boundary,
     Crease,
+    /// The surface turns back on itself: the rim of a thin shell.
+    Fold,
 }
 
 /// The feature curves of a mesh, and the per-vertex flag that goes with them.
@@ -249,11 +286,7 @@ fn push_line(
     // together because a border that turns a corner is still one curve, but the
     // vertex budget has to know which of them the output's own border comes
     // from.
-    let kind = if chain_is_boundary(surface, &vertices, borders, crease_cosine) {
-        FeatureKind::Boundary
-    } else {
-        FeatureKind::Crease
-    };
+    let kind = chain_kind(surface, &vertices, borders, crease_cosine);
     features.polylines.push(Polyline {
         vertices,
         closed,
@@ -262,22 +295,33 @@ fn push_line(
 }
 
 /// Whether the first edge of a chain is an open border.
-fn chain_is_boundary(
+fn chain_kind(
     surface: Surface<'_>,
     vertices: &[u32],
     borders: bool,
     crease_cosine: Option<f32>,
-) -> bool {
+) -> FeatureKind {
     let mut scratch = Vec::new();
     surface
         .topology
         .edges_at(surface.indices, vertices[0], &mut scratch);
-    scratch
-        .iter()
-        .find(|edge| edge.other == vertices[1])
-        .is_some_and(|edge| {
-            edge.is_boundary() && is_feature(surface, *edge, borders, crease_cosine)
-        })
+    let Some(edge) = scratch.iter().find(|edge| edge.other == vertices[1]) else {
+        return FeatureKind::Crease;
+    };
+    if edge.is_boundary() {
+        return if borders {
+            FeatureKind::Boundary
+        } else {
+            FeatureKind::Crease
+        };
+    }
+    let _ = crease_cosine;
+    // A chain that turns back on itself is a rim; one that merely bends sharply
+    // is a crease. Read from the first edge, as the whole chain is.
+    match dihedral_cosine(surface, *edge) {
+        Some(dot) if dot < FOLD_COSINE => FeatureKind::Fold,
+        _ => FeatureKind::Crease,
+    }
 }
 
 /// Whether one edge is a feature.
@@ -295,18 +339,51 @@ fn is_feature(
     if edge.is_boundary() {
         return borders;
     }
-    let Some(cosine) = crease_cosine else {
+    let Some(dot) = dihedral_cosine(surface, edge) else {
         return false;
     };
+    // Turning through a *larger* angle means a *smaller* cosine. A fold is
+    // always a feature; a crease is one only when asked for.
+    dot < FOLD_COSINE || crease_cosine.is_some_and(|cosine| dot < f64::from(cosine))
+}
+
+/// How much an edge's two faces turn, as a cosine, or `None` when either has no
+/// usable normal or the edge has no two faces.
+fn dihedral_cosine(surface: Surface<'_>, edge: EdgeAt) -> Option<f64> {
     let [first, second] = edge.faces;
     if first == u32::MAX || second == u32::MAX {
-        return false;
+        return None;
     }
-    match (surface.face_normal(first), surface.face_normal(second)) {
-        // Turning through *more* than the crease angle means a *smaller* cosine.
-        (Some(a), Some(b)) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2] < cosine as f64,
-        _ => false,
+    if is_sliver(surface, first) || is_sliver(surface, second) {
+        return None;
     }
+    let (a, b) = (surface.face_normal(first)?, surface.face_normal(second)?);
+    Some(a[0] * b[0] + a[1] * b[1] + a[2] * b[2])
+}
+
+/// Whether a face is too thin for its normal to mean anything.
+///
+/// A normal is a cross product, and a cross product of two nearly parallel
+/// edges is mostly rounding error — it can point anywhere, and a pair of them
+/// will happily read as a hundred and eighty degrees apart. Real assets are full
+/// of these: a fan of triangles meeting at a pole, a strip welded to itself, a
+/// zero-area face an exporter left behind. They must not be allowed to invent
+/// features, because a feature costs a seed and the seeds are the vertex budget:
+/// a sphere whose poles each read as a ring of folds spent nearly its whole
+/// budget on them and came back 42 % denser than it was asked for.
+///
+/// Measured against the longest edge squared, which is the only scale-free thing
+/// to compare an area to. A well-shaped triangle scores about 0.43; the cut-off
+/// here is four orders of magnitude below anything an artist would author.
+fn is_sliver(surface: Surface<'_>, face: u32) -> bool {
+    let corners = surface.face(face);
+    let longest = (0..3)
+        .map(|corner| surface.distance(corners[corner], corners[(corner + 1) % 3]))
+        .fold(0.0f64, f64::max);
+    if longest <= 0.0 {
+        return true;
+    }
+    surface.face_area(face) < SLIVER_QUALITY * longest * longest
 }
 
 #[cfg(test)]

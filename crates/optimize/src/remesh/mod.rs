@@ -93,7 +93,7 @@ pub(crate) mod surface;
 pub(crate) mod size_field;
 pub(crate) mod topology;
 
-pub(crate) use project::Winding;
+pub(crate) use project::{ProjectionSource, Winding};
 
 /// Whether this build can remesh at all.
 ///
@@ -556,12 +556,22 @@ fn rebuild_node(
     // The projection is done for a preview exactly as for the result, because
     // a preview whose materials were missing would read as a bug rather than
     // as progress.
+    //
+    // Built once, here, rather than inside `build_pieces_from`: the solve needs
+    // it too, to put its vertices back on the surface, and a preview would
+    // otherwise rebuild the whole index — a BVH and an adjacency over the source
+    // — every time it published.
+    if crate::cancel::cancelled(cancel) {
+        return None;
+    }
+    let source = project::ProjectionSource::build(&job.pieces);
     let on_pass = |soup: RemeshOutput| {
         if !soup.is_empty() {
             let mut soup = soup;
             layout::canonicalize(&mut soup);
             emit(build_pieces_from(
                 &soup,
+                &source,
                 &job.pieces,
                 job.proxy,
                 project::Winding::Keep,
@@ -618,6 +628,7 @@ fn rebuild_node(
     layout::canonicalize(&mut output);
     Some(build_pieces_from(
         &output,
+        &source,
         &job.pieces,
         job.proxy,
         project::Winding::Keep,
@@ -632,11 +643,11 @@ fn rebuild_node(
 /// the corner stream back into an indexed mesh.
 pub(crate) fn build_pieces_from(
     output: &RemeshOutput,
+    source: &project::ProjectionSource,
     pieces: &[&Submesh],
     proxy: &proxy::Proxy,
     winding: project::Winding,
 ) -> Vec<Submesh> {
-    let source = &project::ProjectionSource::build(pieces);
     let node = pieces.first().map_or(0, |piece| piece.node);
     let uv_channel_count = pieces
         .iter()

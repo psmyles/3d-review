@@ -283,8 +283,10 @@ fn wrap_node(
         face_offsets,
         corners: surface.indices,
     };
+    let source = remesh::ProjectionSource::build(pieces);
     Some(remesh::build_pieces_from(
         &output,
+        &source,
         pieces,
         &proxy,
         remesh::Winding::Keep,
