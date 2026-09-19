@@ -91,7 +91,6 @@ app-notifications-buffer-mode = Buffer: { $buffer }
 app-notifications-opt-unavailable = Mesh optimization is not available in this build.
     It was built without the optimizer library, so the Opt workspace can measure a
     model but cannot change one.
-app-notifications-remesh-unavailable = Remeshing is not available in this build.
     It was built without the retopology library, so every other operation still runs
     but Remesh is skipped.
 app-notifications-preset-newer = This preset was saved by a newer version of the viewer.

@@ -11,8 +11,7 @@ use review_model::ModelData;
 use review_optimize::{
     AoQuality, AoTarget, AttributeWeights, BakeAoParams, ExportOptions, FbxFormat, HierarchyMode,
     LodLevel, LodPackaging, LodParams, OpKind, ReduceParams, RemeshDensity, RemeshParams,
-    RemeshTopology, ShrinkwrapParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings,
-    WeldParams,
+    ShrinkwrapParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings, WeldParams,
 };
 use review_render::Selection;
 
@@ -241,23 +240,6 @@ fn remesh_params(ui: &mut egui::Ui, params: RemeshParams) -> Option<RemeshParams
     panel_grid(ui, "opt_remesh", |ui| {
         labeled_combo(
             ui,
-            Tip::new(keys::ui_opt::REMESH_TOPOLOGY)
-                .describe(keys::ui_opt::REMESH_TOPOLOGY_DESCRIPTION)
-                .page(Page::OptRemesh),
-            "opt_remesh_topology",
-            labels::remesh_topology(edited.topology),
-            |ui| {
-                for topology in RemeshTopology::ALL {
-                    ui.selectable_value(
-                        &mut edited.topology,
-                        topology,
-                        labels::remesh_topology(topology),
-                    );
-                }
-            },
-        );
-        labeled_combo(
-            ui,
             Tip::new(keys::ui_opt::REMESH_DENSITY)
                 .describe(keys::ui_opt::REMESH_DENSITY_DESCRIPTION)
                 .page(Page::OptRemesh),
@@ -339,25 +321,6 @@ fn remesh_params(ui: &mut egui::Ui, params: RemeshParams) -> Option<RemeshParams
             &mut edited.adaptive_strength,
             REMESH_ADAPTIVE_MIN..=REMESH_ADAPTIVE_MAX,
             2,
-        );
-        // The quad solver's own knob. Shown only for the topology that runs it,
-        // because it reads as a setting of the rebuild in general and the other
-        // two topologies ignore it entirely.
-        if edited.topology == RemeshTopology::PureQuads {
-            labeled_checkbox(
-                ui,
-                Tip::new(keys::ui_opt::REMESH_MIN_COST_FLOW)
-                    .describe(keys::ui_opt::REMESH_MIN_COST_FLOW_DESCRIPTION)
-                    .page(Page::OptRemesh),
-                &mut edited.min_cost_flow,
-            );
-        }
-        labeled_checkbox(
-            ui,
-            Tip::new(keys::ui_opt::REMESH_DETERMINISTIC)
-                .describe(keys::ui_opt::REMESH_DETERMINISTIC_DESCRIPTION)
-                .page(Page::OptRemesh),
-            &mut edited.deterministic,
         );
     });
 

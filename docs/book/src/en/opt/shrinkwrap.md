@@ -12,9 +12,10 @@ What comes out is one watertight piece, whatever went in.
 - **A kitbash.** Most game props are a pile of overlapping parts: a crate is six
   planks, four corner brackets and eight nails, each a closed box of its own,
   all pushed into each other. A wrap fuses them into one solid.
-- **Before Only quads.** [Remesh](remesh.md)'s Only quads needs one closed skin
-  and refuses a kitbash. A Shrinkwrap above the Remesh is the fix: wrap first,
-  then rebuild the wrapped skin out of quads.
+- **Before a Remesh.** What a wrap produces is one skin, but a dense and
+  irregular one - it is a grid pulled out of a measurement, not a layout. A
+  [Remesh](remesh.md) below it turns that into evenly sized triangles at the
+  density you asked for.
 - **A collision shape.** A wrap with a negative offset sits just inside the
   original, which is what a physics shape wants.
 - **A distant LOD.** At a low detail setting the wrap keeps the silhouette and
@@ -37,8 +38,8 @@ how wide a gap gets bridged, and how long the wrap takes.
 Cost is the thing to watch. The number of grid steps cubes, and the new surface
 comes out at roughly six triangles per step it crosses - so a real prop wrapped
 at 48 is about 170,000 triangles, at 64 about 300,000, and at 128 about 1.3
-**million**. Past that the shell is dense and irregular enough that Only quads
-gives up on it, which is the pairing failing rather than improving.
+**million**. Past that you are paying for detail the Remesh below is about to
+throw away again, which is the pairing failing rather than improving.
 
 Wrapping is not the finished result, which is why the count matters less than it
 sounds: the step below it replaces every triangle the wrap emits. If a wrap needs
@@ -94,7 +95,7 @@ First, or near it. Everything else in the list works better on a closed object
 than on a kitbash, and the wrap throws away the fine detail that an operation
 running before it would have spent its time on.
 
-The one order worth spelling out is **Shrinkwrap, then Remesh with Only quads**.
-That pair is the reason both operations exist in the same tool: the wrap turns an
-object no quad solver will touch into one it will, and the remesh turns the
-wrap's grid of triangles into the quad layout you actually wanted.
+The one order worth spelling out is **Shrinkwrap, then Remesh**. That pair is the
+reason both operations exist in the same tool: the wrap turns a pile of
+overlapping parts into a single skin, and the remesh turns that skin's dense,
+irregular grid into the even surface you actually wanted.

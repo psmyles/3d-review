@@ -7,30 +7,17 @@
 //! nodes share nothing and can be solved at the same time. Every other
 //! operation edits a buffer in place and is already fast.
 //!
-//! Left serial they were the slowest thing in the workspace by a wide margin.
-//! A field solve is seconds to minutes on a dense object; "Only quads" is
-//! slower again (QuadriFlow is entirely serial as vendored) and may be run up
-//! to four times on one node (`remesh::BUDGET_ATTEMPTS`) to land the face
-//! count. Measured on a stylized palm: thirteen objects, one core busy, the
-//! other twenty-three idle, minutes end to end.
+//! Left serial they were the slowest thing in the workspace by a wide margin: a
+//! rebuild is seconds on a dense object, and a scene of a dozen of them ran one
+//! at a time while the rest of the machine sat idle. Measured on a stylized
+//! palm: thirteen objects, one core busy, the other twenty-three not.
 //!
-//! ## Why it is safe, and why the result does not move
+//! ## Why it changes no output
 //!
-//! Instant Meshes reaches a process-wide pool through the vendored TBB shim,
-//! and the shim is already built for concurrent callers: `serial_here` is
-//! `thread_local`, so one node's `SerialScope` cannot silence another's, and
-//! `ThreadPool::run` takes the batch lock with `try_lock` and runs the body in
-//! order on the calling thread when it cannot get it. So the first node to
-//! reach a `parallel_for` takes the pool and the rest run serially — never a
-//! race, never a deadlock. QuadriFlow has no shared state at all.
-//!
-//! That also means the intra-solve pool stops mattering once several nodes are
-//! in flight, and **that is the better trade**: the pool parallelized phases
-//! within one solve, where the shim's own notes record that thread count
-//! changes the answer. Node-level work does not — a node's bytes are a function
-//! of its own input — so with `Reproducible` on (the default), where every node
-//! opens a `SerialScope` and solves in order on its own thread, this is exactly
-//! as reproducible as the serial loop was, and faster by the number of objects.
+//! An object's rebuild reads its own surface and writes its own mesh; nothing
+//! is shared with the object beside it. And each stage inside one is itself
+//! independent of how it was scheduled (see [`sweep`]), so the whole thing is a
+//! pure function of its input and the parallelism is invisible in the result.
 //!
 //! ## Shape
 //!

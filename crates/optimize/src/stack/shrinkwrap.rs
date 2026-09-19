@@ -36,7 +36,7 @@ impl Default for ShrinkwrapParams {
         Self {
             // Measured rather than chosen: at 64 a prop keeps its silhouette,
             // the wrap takes half a second, and — the part that matters — the
-            // shell is clean enough that Remesh's "Only quads" runs on it. At
+            // shell is clean enough for a Remesh below it to even out. At
             // 128 the same prop's shell is four times the triangles and the
             // solver gives up on it, which is the whole pairing failing.
             resolution: 64,

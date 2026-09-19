@@ -1,13 +1,13 @@
 # Remeshing a model
 
-**Remesh** throws away the model's topology and lays down a new surface in its
-place: evenly sized faces that follow the shape's own curves, the way an artist
-retopologizing by hand would lay them.
+**Remesh** replaces a model's topology with a new one: evenly sized triangles,
+sized to follow the shape's own curves, the way an artist retopologizing by hand
+would lay them.
 
 That makes it the opposite of [Reduce](operations.md), which takes the triangles
-you have and removes some of them. Remesh keeps nothing: not one point, not one
-edge. What comes back is a new surface sitting on top of the old one, with the
-materials, texture layout and colors copied across.
+you have and removes some of them. Remesh keeps none of the original layout.
+What comes back is a surface of its own, with the materials, texture layout and
+colors copied across from the old one.
 
 ## When to remesh
 
@@ -25,52 +25,43 @@ If the triangles are already sensible and you only want fewer of them, Reduce or
 Generate LODs is the better tool: they are faster and they keep the texture
 layout exactly.
 
-## Triangles or quads
+## What it gives you
 
-**Mostly quads** is the default and is what you almost always want. Four-sided
-faces are what modelling packages and subdivision surfaces are built around, and
-they are what makes edge loops readable. The pattern cannot be all quads
-everywhere - wherever the flow has to split or merge, the rebuilt surface leaves
-a triangle. On a typical game model four faces in five come back as quads; on a
-model with a lot of creases and open borders it is nearer three in four.
+Triangles. An even spread of them, at a density that follows how tightly the
+shape turns, with your borders and creases kept where they were.
 
-**Only quads** is a different tool: instead of reading a pattern off a field it
-*solves* for one, as an integer layout over the whole surface, which is what lets
-it promise there is not a single triangle in the result. The price is that it
-needs one closed shell to work on - see below.
+Quads are a planned addition rather than a missing feature: the machinery that
+would lay them out is the same machinery that would make the triangles line up
+into rows, and neither is here yet. What you get today is even in *density* and
+unstructured in *layout* - the faces are the right size everywhere, but they do
+not form the tidy grid a by-hand retopology has.
 
-**Triangles** gives an even triangle mesh instead, with no quads at all. Use it
-when whatever consumes the model triangulates anyway and you would rather see
-the real triangle count.
+## How it works
 
-The quads are real. The viewport's wireframe draws four edges around each one,
-the stats card counts them under Polys, and the export writes them to the file
-as quads.
+Worth knowing, because it explains what the settings do and what the operation
+will and will not do to a model.
 
-## Why Only quads sometimes falls back
+1. It measures how tightly the surface turns at every point, and from that works
+   out how big a face should be there. That is the [face size
+   field](#vary-face-size).
+2. It finds the edges that have to survive - open borders, and creases if you
+   asked for them - and walks them into chains, then puts points along each
+   chain at the spacing the field asked for. **Borders are decided first**,
+   before anything else gets a point, which is why an outline comes back as one
+   clean loop.
+3. It scatters the remaining points over the surface at that same density, then
+   shuffles them until each sits in the middle of its own patch.
+4. It **merges the original mesh down** so that each patch becomes one point.
 
-When Only quads cannot run, it quietly becomes Mostly quads and tells you why.
-There are three reasons, and each has a different answer.
+The fourth step is the one that matters most. The new surface is the old one
+with edges taken out of it - never a fresh surface laid over the top. A merge
+can only ever *remove* an edge from a mesh that was already whole, so it cannot
+punch a hole, drop a border, or tear a thin part off. A leaf one quad wide comes
+back as a leaf.
 
-**The object is not one closed shell.** The solver walks the surface as a set of
-faces that each border exactly two others; a kitbash of interpenetrating parts,
-or a surface that pinches to a point, is not that. Nothing can be done to the
-settings to fix it - the fix is geometric, and it is what
-[Shrinkwrap](shrinkwrap.md) is for: put one above the Remesh and it fuses the
-object into a single closed shell first, after which Only quads runs.
-
-**The layout could not be solved.** Some closed shells still defeat it: the
-system it builds comes out singular and there is no layout to return. The
-message names the stage that gave up. Try **Thorough layout**, which solves it a
-slower and more careful way, or a different face count - a target the surface
-divides into more evenly often goes through.
-
-**This build has no solver.** The quad solver is an optional vendored library.
-Only quads stays in the list either way, so a preset that asks for it still means
-what it says, but a build without it always falls back.
-
-**Thorough layout**, below Only quads, is that slower solver, and it belongs to
-Only quads alone.
+Where merging a patch all the way down would break the surface, the operation
+stops and leaves the extra points in place. The result is very slightly denser
+there than you asked for, which is the trade being made on purpose.
 
 ## How dense
 
@@ -79,23 +70,30 @@ Two ways to say it:
 - **Ratio of current** - a share of each object's *current* triangle count. This
   is per object, so every object keeps its relative level of detail, which is
   what you want when you are rebuilding a whole asset in one go. The share is
-  read against triangles, so it matches the Tris figure on the stats card; one
-  quad counts as two.
+  read against triangles, so it matches the Tris figure on the stats card.
 - **Face count** - one budget for the whole selection, shared out between the
   objects by surface area. That is the only split that gives the same face size
   everywhere, which is what "3000 faces for this asset" means. An object with its
   own [override](overrides.md) takes exactly the count it asks for and leaves the
   shared pool, so pinning one object does not quietly re-weight the rest.
 
-The number is what you get, within a few percent. It is not free, though: the
-rebuild works from a face *size* rather than a count, so how many faces that
-turns into is measured and the size corrected, which means an object that lands
-wide of the mark is rebuilt more than once. The one case that can still land
-further out is Only quads with a strong [face-size variation](#vary-face-size):
-its layout answers in steps rather than smoothly, and a step can be large enough
-that no face size lands on the number - expect up to a sixth out there. Very
-small objects are left alone - below about sixteen triangles there is no surface
-to work from, and you are told which objects were skipped.
+**The number is the number you get**, within a few percent, and it is worked out
+rather than searched for: the face count you ask for is turned into a point count
+by a piece of arithmetic that holds for any surface, and that many points are
+placed. Nothing is rebuilt twice to creep up on it.
+
+The few percent is the one thing that can move it. Where merging a patch all the
+way down would break the surface the operation leaves the extra points in place,
+so a model with a lot of awkward geometry comes back slightly denser than asked.
+It is reported when it is more than a fraction of the model.
+
+**A rebuild can only ever make a model simpler.** It works by merging the mesh
+you gave it, so asking for more faces than the object already has will not add
+any - it comes back at about its current density, and says so. If you need more
+detail than the source holds, that is a subdivision, which this is not.
+
+Very small objects are left alone - below about sixteen triangles there is no
+surface to work from, and you are told which objects were skipped.
 
 ## Vary face size
 
@@ -107,7 +105,7 @@ needs four faces and the curve needs forty.
 measured for how much it *turns* over the distance one face spans, and faces are
 made smaller where it turns and larger where it does not - so the count stays put
 and the detail moves to where it does something. On a stone pedestal at the
-default setting the flat top goes from an even grid of twelve-millimetre quads to
+default setting the flat top goes from an even grid of twelve-millimetre faces to
 a coarse one, and the rounded rim gains the faces it gave up, for the same total.
 
 Three things it is careful about, all of which matter on real assets:
@@ -135,19 +133,10 @@ every face turns through the same angle. That is what a hand retopology looks
 like, and it is much stronger: a branch of half the thickness gets faces of half
 the size rather than of seven tenths.
 
-Strength is not free above the default. The quad pattern has to resolve a change
-in face size somewhere, and it resolves a steep one with singularities rather
-than with a gradient - so a stronger setting comes back with more triangles mixed
-into Mostly quads (measured on a sculpted head at the same count: 73% quads at 0,
-64% at the default, 56% at 1), and Only quads can miss its face count by more
-than it usually does. Both are worth paying on a silhouette-critical object and
-neither is worth paying by default.
-
-It applies to every topology, and which one varies most depends on the shape. On
-a stone pedestal - a broad flat top with a rounded rim - Only quads varies the
-most, spreading face sizes seven-fold where Mostly quads manages a bit over two.
-On a driftwood branch, where the change is a gradual thinning rather than an
-edge, it is the other way round and Only quads varies the least.
+How much it varies depends on the shape, not only on the setting. On a stone
+pedestal - a broad flat top with a rounded rim - there is a lot for it to find;
+on something evenly curved all over, a sphere say, there is nothing to move and
+the setting does nothing at all. That is the field working, not failing.
 
 ## Sharp edges and open borders
 
@@ -159,51 +148,38 @@ above** is how sharp a fold has to be before it counts.
 
 **Follow open borders** is on by default and holds the new edges against any open
 edge, so a border comes back as one clean loop rather than a ragged fringe.
+Leave it on unless you have a reason not to: it is what keeps a leaf, a sheet of
+cloth or a wall with no thickness looking like itself.
 
 **Smoothing** is how many rounds of evening-out to run over the result. Two is a
-good default: a little makes the faces more uniform, a lot rounds off detail.
-
-**Reproducible** is on by default and solves each object on one core, because
-spreading a *single* object's solve across several changes the answer: the same model rebuilt at one
-thread, at two and at eight gives three different meshes, and none of them is
-wrong - the solver simply settles differently depending on the order the work
-lands in. Leave it on. A preview that shifts under you while you drag a slider is
-worse than one that takes a moment longer, and "a moment" is what it costs: about
-twice as long on a single large object, and nothing at all on a scene of several,
-which already rebuild side by side (see [How long it takes](#how-long-it-takes)). Turn it off only for a one-off rebuild of something big where you do not
-care about matching it again.
+good default: a little makes the faces more uniform, a lot rounds off detail. It
+never moves a point on a border, so no amount of it will soften an outline.
 
 ## How long it takes
 
 Objects are rebuilt **on every core at once** - one object per core, claimed as
-each core comes free, so the long ones are not stuck behind each other. A scene
-of a dozen objects on a machine with a dozen cores costs about what its slowest
-single object costs.
+each core comes free, so the long ones are not stuck behind each other. Inside
+one object the work is spread across cores too, so a single large model is not
+left on one.
 
-What it cannot spread is one object on its own. Each is solved from scratch, and
-the face count you asked for is measured and the size corrected, so an object
-that lands wide of the mark is solved again - up to four times before the closest
-attempt is kept. **Only quads** is the slow end of that: its solver is
-single-core whatever else is going on, and **Thorough layout** is slower again by
-design. So a scene of many objects is quick, and one dense object at Only quads
-is still a wait.
+The rebuild is **the same every time**, at any core count, on any machine. That
+is a property of how it is built rather than a setting you can lose: every stage
+either has no order to it or breaks ties by a fixed rule, so there is nothing for
+the scheduling to change. There used to be a **Reproducible** switch here,
+trading speed for repeatability. It is gone because there is no longer anything
+to trade.
 
-Either way it is not stuck. The notice at the bottom of the window names the step
-the run is on, and for a rebuild it names each object as it finishes and how many
-are done (`Remesh: leaf_012_mesh (3 of 13)`). If that line is moving, so is the
-run. To make it finish sooner, turn **Thorough layout** off, ask for fewer faces,
-or [exclude](overrides.md) the objects you do not need rebuilt.
+Nothing is rebuilt twice to land on the face count, either - it is worked out in
+advance. A run costs what it costs once.
 
-**Changing a setting while a rebuild is going stops it.** You do not wait for the
-run you have already moved past: the objects it has not started are abandoned and
-the new settings go in straight away. What it cannot cut short is the object
-already in the solver - the retopologizers have no way to be interrupted
-mid-object - so a change lands after about one object, not after the whole
-scene.
+The notice at the bottom of the window names the step the run is on, and for a
+rebuild it names each object as it finishes and how many are done
+(`Remesh: leaf_012_mesh (3 of 13)`). If that line is moving, so is the run. To
+make it finish sooner, ask for fewer faces or [exclude](overrides.md) the objects
+you do not need rebuilt.
 
-Rebuilding several objects at once does not change any of them: an object's
-result depends on its own surface and settings, never on what is being solved
-beside it, so **Reproducible** means exactly what it did before.
+**Changing a setting while a rebuild is going stops it**, and the new settings go
+in straight away. You do not wait out a result you have already moved past.
 
 ## Materials, UVs and colors come back by projection
 
@@ -221,9 +197,9 @@ stay crisp.
 
 The same is true of texture seams and hard edges: a corner reads from its own
 side of a seam, never across it, so an island boundary lands on a new edge rather
-than smearing across a face. That is why a rebuilt model has slightly more points
-than it has quads - the extra ones are the seam corners, exactly as they were in
-the original.
+than smearing across a face. That is why a rebuilt model can carry a few more
+points than its face count implies - the extra ones are the seam corners, exactly
+as they were in the original.
 
 ## What is lost
 
@@ -239,11 +215,15 @@ changes the shape.
 
 ## Where it goes in the list
 
-Above the reorder operations, and **below** any simplifier you want to keep. A
-Reduce or a Generate LODs running after a Remesh rebuilds its faces as triangles
-and undoes the quads; the run tells you when the list is in that order. Remesh
-*after* a simplify is fine, and so is a Weld Vertices or an Optimize Vertex Fetch
-below it - those keep the quads.
+Above the reorder operations, and **below** any simplifier whose result you want
+to rebuild. A Reduce or a Generate LODs running after a Remesh takes the even
+surface it just made and thins it out again, which is rarely what you meant.
+Remesh *after* a simplify is the usual order, and a Weld Vertices or an Optimize
+Vertex Fetch below it changes nothing about the layout.
+
+A [Shrinkwrap](shrinkwrap.md) above a Remesh is the pairing both operations exist
+for: the wrap fuses a pile of overlapping parts into one skin, and what it
+produces is dense and irregular, so the Remesh is what makes it even.
 
 Baking ambient occlusion works in either order, though below the Remesh is
 usually what you mean, so the bake describes the surface you are keeping.

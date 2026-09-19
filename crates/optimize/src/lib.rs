@@ -31,15 +31,11 @@
 
 // Everything outside the FFI modules is ordinary safe Rust. Those modules opt in
 // individually rather than the crate opting out globally.
-#![cfg_attr(
-    not(any(has_meshopt, has_ufbxw, has_instant_meshes)),
-    forbid(unsafe_code)
-)]
+#![cfg_attr(not(any(has_meshopt, has_ufbxw)), forbid(unsafe_code))]
 
 mod export_ffi;
 mod ffi;
 mod prof;
-mod remesh_ffi;
 
 #[cfg(has_ufbxw_probe)]
 #[doc(hidden)]
@@ -83,12 +79,6 @@ pub enum OptError {
          (third_party/meshoptimizer)"
     )]
     Unavailable,
-
-    #[error(
-        "remeshing is unavailable: this build has no vendored retopologizer \
-         (third_party/instant-meshes)"
-    )]
-    RemeshUnavailable,
 
     #[error("the remesher could not rebuild this object: {0}")]
     Remesh(String),
@@ -192,7 +182,9 @@ mod tests {
     #[test]
     fn availability_matches_the_vendored_tree() {
         assert_eq!(meshopt::available(), cfg!(has_meshopt));
-        assert_eq!(remesh::available(), cfg!(has_instant_meshes));
-        assert_eq!(remesh::pure_quads_available(), cfg!(has_quadriflow));
+        // The rebuild is ordinary Rust with nothing vendored behind it, so it
+        // is always there - which is itself worth pinning, since it used to
+        // depend on two C++ trees being present.
+        assert!(remesh::available());
     }
 }

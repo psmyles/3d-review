@@ -22,9 +22,6 @@ pub(crate) fn explain_opt_error(error: &OptError) -> String {
         OptError::Unavailable => {
             review_localization::tr(keys::app_notifications::OPT_UNAVAILABLE).into_owned()
         }
-        OptError::RemeshUnavailable => {
-            review_localization::tr(keys::app_notifications::REMESH_UNAVAILABLE).into_owned()
-        }
         OptError::PresetVersion { found, supported } => {
             keys::app_notifications::preset_newer(f64::from(*found), f64::from(*supported))
         }
@@ -47,9 +44,6 @@ mod tests {
     fn only_the_actionable_variants_are_rewritten() {
         let unavailable = explain_opt_error(&OptError::Unavailable);
         assert_ne!(unavailable, OptError::Unavailable.to_string());
-
-        let no_remesh = explain_opt_error(&OptError::RemeshUnavailable);
-        assert_ne!(no_remesh, OptError::RemeshUnavailable.to_string());
 
         let versioned = OptError::PresetVersion {
             found: 4,

@@ -16,18 +16,17 @@ with and without it.
   stray shells, and single faces left floating around by mistake.
 - **Shrinkwrap** - [replaces](shrinkwrap.md) each object with a single closed
   skin that hugs it, fusing a pile of overlapping parts into one solid and
-  sealing holes. Usually first in the list, and what lets Remesh's Only quads
-  run on an object that would otherwise refuse. Still objects only.
+  sealing holes. Usually first in the list, with a Remesh below it to make the
+  skin it produces even. Still objects only.
 - **Reduce** - [simplifies](simplify.md) the model **in place**. Every
   operation below it works on the simplified model, LOD levels start from it,
   and the export saves it in place of the original.
-- **Remesh** - [rebuilds](remesh.md) each object's surface out of four-sided
-  faces (or triangles) that follow the shape's own curves, sized by how much the
-  surface turns - small over a rounded edge, large over a flat panel. Unlike
-  Reduce it keeps nothing of what was there: it lays down a new surface and
-  copies the materials, texture layout and colors across. Still objects only.
-  Its **Only quads** setting uses a second solver that produces no triangles at
-  all, on objects that are one closed shell.
+- **Remesh** - [rebuilds](remesh.md) each object's surface out of evenly sized
+  triangles, sized by how much the surface turns - small over a rounded edge,
+  large over a flat panel. Unlike Reduce it keeps nothing of the original
+  layout: it lays down a surface of its own and copies the materials, texture
+  layout and colors across, keeping open borders and sharp edges where they
+  were. Still objects only.
 - **Generate LODs** - makes a chain of simpler copies of the model (levels of
   detail) for a game to show at a distance. Operations above it run once on the
   base model; operations below it run on every level. You can only have one in

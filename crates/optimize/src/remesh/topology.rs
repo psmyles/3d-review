@@ -34,8 +34,6 @@
 use crate::cancel::{CancelToken, cancelled};
 use crate::parallel;
 
-use super::manifold::ManifoldReport;
-
 /// One undirected edge as seen from a vertex.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EdgeAt {
@@ -218,15 +216,6 @@ impl Topology {
             if other != vertex {
                 scratch.push(EdgeAt { other, uses, faces });
             }
-        }
-    }
-
-    /// The manifold report, from the flags already computed.
-    pub(crate) fn report(&self) -> ManifoldReport {
-        ManifoldReport {
-            boundary_edges: self.boundary_edges,
-            nonmanifold_edges: self.nonmanifold_edges,
-            nonmanifold_vertices: self.nonmanifold_vertices,
         }
     }
 

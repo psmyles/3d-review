@@ -42,7 +42,7 @@ use std::collections::HashMap;
 use glam::{Vec3, Vec4};
 use review_model::{ModelData, Vertex};
 
-use crate::stack::{OpInstance, OpKind, RemeshDensity, RemeshParams, RemeshTopology, WeldParams};
+use crate::stack::{OpInstance, OpKind, RemeshDensity, RemeshParams, WeldParams};
 use crate::submesh::{NO_FACE, PolygonCarry, Submesh};
 use crate::{OptError, Warnings, ops};
 
@@ -63,7 +63,6 @@ pub(crate) mod layout;
     reason = "the rebuild that relaxes the seeds is the next stage"
 )]
 pub(crate) mod lloyd;
-pub(crate) mod manifold;
 #[allow(
     dead_code,
     reason = "the rebuild that reads the regions is the next stage"
@@ -93,39 +92,17 @@ pub(crate) mod surface;
 )]
 pub(crate) mod size_field;
 pub(crate) mod topology;
-mod unavailable;
 
 pub(crate) use project::Winding;
 
-/// The engine entry point: the real one when a retopologizer is vendored, the
-/// `RemeshUnavailable` stub otherwise. Selected here rather than at each call
-/// site so there is exactly one `cfg` for it.
-#[cfg(has_instant_meshes)]
-use crate::remesh_ffi::run as run_engine;
-#[cfg(not(has_instant_meshes))]
-use unavailable::run as run_engine;
-
-/// Whether this build can remesh at all — false without
-/// `third_party/instant-meshes`, exactly as [`crate::meshopt::available`] is
-/// false without meshoptimizer.
+/// Whether this build can remesh at all.
+///
+/// Always, now: the rebuild is ordinary safe Rust over the same `glam` the rest
+/// of the crate uses, with nothing vendored behind it to be missing. Kept as a
+/// function because callers ask, and because `meshopt::available` beside it is
+/// genuinely conditional.
 pub fn available() -> bool {
-    cfg!(has_instant_meshes)
-}
-
-/// `RVO_REMESH_ENGINE_INSTANT_MESHES` in `remesh_bridge.h`. Here rather than in
-/// [`crate::remesh_ffi`], which does not exist in a build with no vendored tree.
-const ENGINE_INSTANT_MESHES: u32 = 0;
-
-/// `RVO_REMESH_ENGINE_QUADRIFLOW`.
-const ENGINE_QUADRIFLOW: u32 = 1;
-
-/// Whether this build carries the quad solver behind
-/// [`RemeshTopology::PureQuads`]. `third_party/quadriflow` is optional on top of
-/// the retopologizer itself, so "Only quads" falls back to "Mostly quads" with a
-/// warning rather than disappearing from the menu — which would make a preset
-/// that names it silently mean something else.
-pub fn pure_quads_available() -> bool {
-    cfg!(has_quadriflow)
+    true
 }
 
 /// Fewest faces a node may be asked for. Below about this the field has no room
@@ -137,43 +114,6 @@ const MIN_FACES: u32 = 4;
 /// worse than what is already there.
 const MIN_INPUT_TRIANGLES: usize = 16;
 
-/// How far the face count may land from what was asked for before it is worth
-/// asking the engine again.
-///
-/// Neither engine is *told* a face count — the number becomes a target edge
-/// length, and how many faces that turns into is whatever the extraction makes
-/// of it. Two things make the answer miss. A varying face size
-/// ([`RemeshParams::adaptive_strength`]) pins the count only in prediction: a
-/// region the field made fine comes back with more faces than its area bought,
-/// because the extraction snaps and collapses at that size too. And "Mostly
-/// quads" converts the count as though every face were a quad, while what it
-/// emits is quads *and* the triangles at the singularities — measured at 16%
-/// over on a sculpted pedestal, uniform field and all.
-///
-/// So the answer is measured and the request corrected. It is what makes the
-/// number in the box the number you get.
-const BUDGET_TOLERANCE: f64 = 0.05;
-
-/// How many times a node's solve may be repeated to land inside
-/// [`BUDGET_TOLERANCE`]. Most nodes take one or two; the fourth is what the
-/// bracketing in [`solve_to_budget`] needs to close on an engine that answers
-/// in steps. The best attempt is kept, so stopping early never returns a worse
-/// mesh than a shorter budget would have.
-///
-/// This is the operation's worst case, and it is worth it: a face count 16% out
-/// is one the user has to guess around on every slider drag, and guessing costs
-/// them more runs than this costs the machine. It is also the *worst* case, not
-/// the usual one — a node already inside the tolerance is solved once.
-///
-/// Four rather than more because the fourth is where it stops paying. "Only
-/// quads" with a strong field is the one case that still misses, and it misses
-/// because its response has a *step* in it rather than because the search is
-/// short: measured on a sculpted pedestal's slab at full strength, asking for
-/// 2366 gave 1462 faces and asking for 2542 gave 3575, with nothing in between,
-/// so no amount of bisection finds the 1817 that was wanted. Six attempts took
-/// that node's whole-object miss from 13% to 12% for a third more solve time.
-const BUDGET_ATTEMPTS: u32 = 4;
-
 /// How far from a new corner the source surface may be and still be projected
 /// from, as a multiple of the proxy's bounding-sphere radius. Generous on
 /// purpose: the retopologized surface sits within a fraction of an edge length
@@ -181,55 +121,10 @@ const BUDGET_ATTEMPTS: u32 = 4;
 /// impossible.
 const PROJECTION_RANGE: f32 = 0.25;
 
-/// Nothing reaches the engine's input and output types in a build with no
-/// vendored retopologizer — but they still have to exist, because the stub in
-/// [`unavailable`] must have the same signature as the real call. The same
-/// "declared on both paths, reached on one" shape `meshopt::unavailable` has.
-#[cfg_attr(not(has_instant_meshes), allow(dead_code))]
-/// The proxy mesh handed to the engine: positions and a triangle index buffer,
-/// and nothing else.
-pub(crate) struct RemeshInput<'a> {
-    /// Three floats per vertex.
-    pub positions: &'a [f32],
-    pub indices: &'a [u32],
-}
-
-#[cfg_attr(not(has_instant_meshes), allow(dead_code))]
-impl RemeshInput<'_> {
-    pub(crate) fn vertex_count(&self) -> usize {
-        self.positions.len() / 3
-    }
-}
-
-/// Nothing reaches the engine's input and output types in a build with no
-/// vendored retopologizer — but they still have to exist, because the stub in
-/// [`unavailable`] must have the same signature as the real call. The same
-/// "declared on both paths, reached on one" shape `meshopt::unavailable` has.
-#[cfg_attr(not(has_instant_meshes), allow(dead_code))]
-/// What to ask the engine for. Mirrors `rvo_remesh_options` in
-/// `remesh_bridge.h`; [`crate::remesh_ffi`] is what converts between them.
-pub(crate) struct RemeshOptions {
-    pub engine: u32,
-    pub rosy: u32,
-    pub posy: u32,
-    pub face_count: u32,
-    /// Negative disables crease detection.
-    pub crease_angle_deg: f32,
-    pub extrinsic: bool,
-    pub align_to_boundaries: bool,
-    pub smooth_iterations: u32,
-    pub pure_quad: bool,
-    pub deterministic: bool,
-    pub adaptive_strength: f32,
-    pub min_cost_flow: bool,
-}
-
-/// Nothing reaches the engine's input and output types in a build with no
-/// vendored retopologizer — but they still have to exist, because the stub in
-/// [`unavailable`] must have the same signature as the real call. The same
-/// "declared on both paths, reached on one" shape `meshopt::unavailable` has.
-#[cfg_attr(not(has_instant_meshes), allow(dead_code))]
-/// What the engine produced: a polygon soup over its own vertices.
+/// What one rebuild produced: a polygon soup over its own vertices.
+///
+/// Triangles today; the offsets table is what lets a quad-dominant topology
+/// hand back n-gons later without changing anything that reads this.
 pub(crate) struct RemeshOutput {
     pub positions: Vec<Vec3>,
     /// `face_count + 1` starts into `corners`.
@@ -237,7 +132,6 @@ pub(crate) struct RemeshOutput {
     pub corners: Vec<u32>,
 }
 
-#[cfg_attr(not(has_instant_meshes), allow(dead_code))]
 impl RemeshOutput {
     pub(crate) fn face_count(&self) -> usize {
         self.face_offsets.len().saturating_sub(1)
@@ -388,15 +282,6 @@ pub(crate) fn remesh_submeshes(
     let OpKind::Remesh(global) = &op.kind else {
         return;
     };
-    if !available() {
-        warnings.push(&format!(
-            "{}: {}",
-            op.kind.label(),
-            OptError::RemeshUnavailable
-        ));
-        return;
-    }
-
     // Nodes in first-seen order, so the output's piece order follows the input's
     // and two runs over the same stack produce the same buffer layout.
     let mut nodes: Vec<u32> = Vec::new();
@@ -502,7 +387,7 @@ pub(crate) fn remesh_submeshes(
         token,
         |job| {
             let mut notes = Warnings::default();
-            let rebuilt = remesh_node(job, &mut notes, token, threads);
+            let rebuilt = rebuild_node(job, &mut notes, token, threads);
             NodeOutcome {
                 rebuilt,
                 notes: notes.into_vec(),
@@ -588,11 +473,11 @@ struct NodeOutcome {
 /// number in the box is produced once rather than converged on.
 fn rebuild_node(
     job: &NodeJob<'_>,
-    pieces: &[&Submesh],
     warnings: &mut Warnings,
     cancel: Option<&crate::CancelToken>,
     threads: usize,
 ) -> Option<Vec<Submesh>> {
+    let _z = crate::prof::zone!("Remesh Node");
     let (output, report) =
         match solve::rebuild(job.proxy, job.faces, &job.params, threads, cancel, |_| true) {
             Ok(result) => result,
@@ -607,6 +492,18 @@ fn rebuild_node(
                 return None;
             }
         };
+    // A rebuild works by merging the mesh it was given, so it can never hand
+    // back more faces than went in. Asking for more is a reasonable thing to
+    // try - the engines this replaced *could*, because they built a surface
+    // instead of reducing one - so it is worth saying plainly rather than
+    // quietly handing back the input.
+    if job.faces as usize > job.proxy.source_triangles {
+        warnings.push(&format!(
+            "Remesh: '{}' already has fewer faces ({}) than the {} asked for, and a rebuild              only ever merges - it cannot add detail that is not there. It came back at              about its current density.",
+            job.name, job.proxy.source_triangles, job.faces
+        ));
+    }
+
     if output.is_empty() {
         warnings.push(&format!(
             "Remesh: '{}' came back empty. Ask for more faces, or check that the object is              not a handful of disconnected slivers.",
@@ -630,259 +527,10 @@ fn rebuild_node(
     layout::canonicalize(&mut output);
     Some(build_pieces_from(
         &output,
-        pieces,
+        &job.pieces,
         job.proxy,
-        CarryPolygons::No,
         project::Winding::Keep,
     ))
-}
-
-/// Rebuild one node's surface, or `None` when it was left as it is (with a
-/// warning already recorded).
-fn remesh_node(
-    job: &NodeJob<'_>,
-    warnings: &mut Warnings,
-    cancel: Option<&crate::CancelToken>,
-    threads: usize,
-) -> Option<Vec<Submesh>> {
-    let _z = crate::prof::zone!("Remesh Node");
-    let NodeJob {
-        pieces,
-        proxy,
-        faces,
-        params,
-        name,
-        ..
-    } = job;
-    let (pieces, faces, params, name) = (pieces.as_slice(), *faces, params, name.as_str());
-
-    // The in-house rebuild, which is what `Triangles` now means. The two quad
-    // topologies still go to the vendored engines below until those are cut.
-    if params.topology == RemeshTopology::Triangles {
-        return rebuild_node(job, pieces, warnings, cancel, threads);
-    }
-
-    // Named `connectivity` because `topology` is already this operation's word
-    // for the *kind of face* the user asked for, two lines below.
-    let connectivity =
-        topology::Topology::build(&proxy.indices, proxy.positions.len() / 3, threads, cancel);
-    let report = connectivity.report();
-
-    // "Only quads" is a solver over a half-edge structure, so a surface that
-    // branches or pinches is not something it can decline politely — it is
-    // something it cannot represent. Checked here rather than left to the
-    // engine, so the user gets a reason and a mesh instead of a failure.
-    let mut topology = params.topology;
-    if topology == RemeshTopology::PureQuads {
-        if !pure_quads_available() {
-            warnings.push(&format!(
-                "Remesh: this build has no quad solver, so 'Only quads' fell back to \
-                 'Mostly quads' on '{name}'."
-            ));
-            topology = RemeshTopology::QuadDominant;
-        } else if !report.is_manifold() {
-            warnings.push(&format!(
-                "Remesh: '{name}' is not a manifold mesh ({} edges shared by more than two \
-                 faces, {} pinched vertices), so 'Only quads' fell back to 'Mostly quads'. \
-                 Add a Shrinkwrap above the Remesh to fuse it into one closed shell first.",
-                report.nonmanifold_edges, report.nonmanifold_vertices
-            ));
-            topology = RemeshTopology::QuadDominant;
-        }
-    }
-
-    // Advisory for the field extraction, not a gate: Instant Meshes completes on
-    // a non-manifold input, it just cannot guarantee the result closes where the
-    // input did not. Skipped when a fall-back above already said the same thing
-    // in more useful words.
-    if params.topology != RemeshTopology::PureQuads && report.nonmanifold_edges > 0 {
-        warnings.push(&format!(
-            "Remesh: '{name}' is not a manifold mesh ({} edges are shared by more than two \
-             faces), so the rebuilt surface may leave holes there.",
-            report.nonmanifold_edges
-        ));
-    }
-
-    let input = RemeshInput {
-        positions: &proxy.positions,
-        indices: &proxy.indices,
-    };
-    let mut output = match solve_to_budget(&input, topology, faces, params, cancel) {
-        Ok(output) => output,
-        Err(error) if topology == RemeshTopology::PureQuads => {
-            // The solve can fail on geometry that passed the manifold check —
-            // `ComputeIndexMap` gives up on layouts it cannot make consistent.
-            // One retry through the field extraction, which has no such failure
-            // mode, rather than handing back nothing.
-            warnings.push(&format!(
-                "Remesh: the quad solver could not lay out '{name}' ({}), so it fell back \
-                 to 'Mostly quads'.",
-                engine_reason(&error)
-            ));
-            match solve_to_budget(&input, RemeshTopology::QuadDominant, faces, params, cancel) {
-                Ok(output) => output,
-                Err(error) => {
-                    warnings.push(&format!("Remesh: '{name}' was left as it is — {error}"));
-                    return None;
-                }
-            }
-        }
-        Err(error) => {
-            warnings.push(&format!("Remesh: '{name}' was left as it is — {error}"));
-            return None;
-        }
-    };
-    if output.is_empty() {
-        warnings.push(&format!(
-            "Remesh: '{name}' came back empty. Ask for more faces, or check that the \
-             object is not a handful of disconnected slivers."
-        ));
-        return None;
-    }
-
-    layout::canonicalize(&mut output);
-    Some(build_pieces_from(
-        &output,
-        pieces,
-        proxy,
-        CarryPolygons::Yes,
-        project::Winding::FromSource,
-    ))
-}
-
-/// Run the engine, and keep running it until the face count is the one that was
-/// asked for.
-///
-/// The engine's own arithmetic decides how many faces a target edge length ends
-/// up producing, and nothing on this side can do better than measure the miss
-/// and ask again. See [`BUDGET_TOLERANCE`] for why there is a miss at all.
-///
-/// Asking again is not a matter of scaling the request by the miss, though —
-/// that assumes the engine answers proportionally, and the quad solver does
-/// not. Measured on one object: 1817 asked gave 1338, so a proportional
-/// correction asked 2467 and got 3544, and the next correction landed back
-/// under. An integer quad layout moves in steps, and a request between two of
-/// them resolves whichever way the solve goes.
-///
-/// So the correction is damped, and as soon as one attempt has come back short
-/// and another long the search **brackets**: every later ask is the midpoint
-/// between them, which cannot oscillate. The closest attempt is what comes
-/// back, not the last one.
-fn solve_to_budget(
-    input: &RemeshInput,
-    topology: RemeshTopology,
-    faces: u32,
-    params: &RemeshParams,
-    cancel: Option<&crate::CancelToken>,
-) -> Result<RemeshOutput, OptError> {
-    let target = faces.max(MIN_FACES) as f64;
-    let mut asked = faces.max(MIN_FACES) as f64;
-    let mut best: Option<(RemeshOutput, f64)> = None;
-    // The largest ask that came back short, and the smallest that came back
-    // long. Once both exist the answer is between them.
-    let mut short: Option<f64> = None;
-    let mut long: Option<f64> = None;
-
-    for attempt in 0..BUDGET_ATTEMPTS {
-        let requested = asked.clamp(MIN_FACES as f64, u32::MAX as f64).round();
-        let output = run_engine(input, &engine_options(topology, requested as u32, params))?;
-        let produced = output.face_count();
-        if produced == 0 {
-            // Nothing to correct against, and the caller reports an empty result
-            // in words the user can act on.
-            return Ok(output);
-        }
-        let produced = produced as f64;
-        let miss = (produced - target).abs() / target;
-        if best.as_ref().is_none_or(|(_, previous)| miss < *previous) {
-            best = Some((output, miss));
-        }
-        // Each attempt is a whole engine call, and the engine takes no cancel
-        // hook - so this is the finest this search can be interrupted, and it
-        // is what keeps a superseded "Only quads" from paying for three more
-        // solves of a result nobody wants. The best attempt so far is returned,
-        // exactly as a short budget would have returned it.
-        if miss <= BUDGET_TOLERANCE
-            || attempt + 1 == BUDGET_ATTEMPTS
-            || crate::cancel::cancelled(cancel)
-        {
-            break;
-        }
-
-        if produced < target {
-            short = Some(short.map_or(requested, |previous: f64| previous.max(requested)));
-        } else {
-            long = Some(long.map_or(requested, |previous: f64| previous.min(requested)));
-        }
-        let next = match (short, long) {
-            (Some(low), Some(high)) => 0.5 * (low + high),
-            // Not bracketed yet: move toward the target, but only half as far
-            // in logs as a proportional correction would, so an engine that
-            // answers in steps is not chased past the step it is on.
-            _ => requested * (target / produced).sqrt(),
-        };
-        if (next - requested).abs() < 1.0 {
-            break;
-        }
-        asked = next;
-    }
-
-    best.map(|(output, _)| output)
-        .ok_or_else(|| OptError::Remesh("the remesher was never asked for a face count".to_owned()))
-}
-
-/// Whether the rebuilt pieces publish a polygon table.
-///
-/// A field extraction's quads have to: they are the point of the operation, and
-/// a `PolygonCarry` marked `rebuilt` is what carries them to the viewport and
-/// the export. A [`crate::shrinkwrap`] shell's triangles must not: a face table
-/// over triangles says nothing, and publishing one would put the whole level
-/// into the corner-run layout for no gain (see `process::assemble`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CarryPolygons {
-    Yes,
-    No,
-}
-
-/// An engine failure in the engine's own words.
-///
-/// [`OptError::Remesh`]'s `Display` prefixes "the remesher could not rebuild
-/// this object", which reads as a contradiction inside a sentence that goes on
-/// to say what it did instead.
-fn engine_reason(error: &OptError) -> String {
-    match error {
-        OptError::Remesh(reason) => reason.clone(),
-        other => other.to_string(),
-    }
-}
-
-/// What to ask the engine for, for one topology.
-fn engine_options(topology: RemeshTopology, faces: u32, params: &RemeshParams) -> RemeshOptions {
-    let (rosy, posy) = topology.rosy_posy();
-    RemeshOptions {
-        engine: match topology {
-            RemeshTopology::PureQuads => ENGINE_QUADRIFLOW,
-            _ => ENGINE_INSTANT_MESHES,
-        },
-        rosy,
-        posy,
-        face_count: faces.max(MIN_FACES),
-        crease_angle_deg: if params.sharp_edges {
-            params.crease_angle.clamp(0.0, 180.0)
-        } else {
-            -1.0
-        },
-        extrinsic: true,
-        align_to_boundaries: params.align_to_boundaries,
-        smooth_iterations: params.smooth_iterations,
-        // Instant Meshes' own pure-quad pass subdivides everything, which
-        // quadruples the face count against the budget the user asked for.
-        // "Only quads" is the solver's job, not its.
-        pure_quad: false,
-        deterministic: params.deterministic,
-        adaptive_strength: params.adaptive_strength.clamp(0.0, 1.0),
-        min_cost_flow: params.min_cost_flow,
-    }
 }
 
 /// Turn a polygon soup into one [`Submesh`] per material, with every attribute
@@ -895,7 +543,6 @@ pub(crate) fn build_pieces_from(
     output: &RemeshOutput,
     pieces: &[&Submesh],
     proxy: &proxy::Proxy,
-    carry_polygons: CarryPolygons,
     winding: project::Winding,
 ) -> Vec<Submesh> {
     let source = &project::ProjectionSource::build(pieces);
@@ -998,14 +645,12 @@ pub(crate) fn build_pieces_from(
             // still draws and exports correctly — only larger.
             debug_assert!(false, "welding a rebuilt piece failed: {error}");
         }
-        match carry_polygons {
-            CarryPolygons::Yes => {
-                if let Some(carry) = &mut piece.polygons {
-                    carry.rebuilt = true;
-                }
-            }
-            CarryPolygons::No => piece.polygons = None,
-        }
+        // A triangle mesh publishes no polygon table: a face table over
+        // triangles says nothing the index buffer does not, and carrying one
+        // would put the whole level into the corner-run layout for no gain. A
+        // quad-dominant topology would want the other answer, and `assemble`
+        // still knows how to take it - see `PolygonCarry::rebuilt`.
+        piece.polygons = None;
         built.push(piece);
     }
     built
@@ -1062,25 +707,24 @@ mod tests {
 
     #[test]
     fn a_ratio_budget_reads_against_the_node_s_own_triangles() {
-        let quads = RemeshParams {
-            topology: RemeshTopology::QuadDominant,
+        let triangles = RemeshParams {
+            topology: RemeshTopology::Triangles,
             ratio: 1.0,
             ..RemeshParams::default()
         };
-        let triangles = RemeshParams {
-            topology: RemeshTopology::Triangles,
-            ..quads
+        let half = RemeshParams {
+            ratio: 0.5,
+            ..triangles
         };
 
         let budgets = resolve_budgets(&[
-            input(0, 10_000, 1.0, quads),
-            input(1, 10_000, 9.0, triangles),
+            input(0, 10_000, 1.0, triangles),
+            // Nine times the area, to show a ratio does not read it.
+            input(1, 10_000, 9.0, half),
         ]);
 
-        // A quad is worth two triangles, so "100%" of 10 000 triangles is 5 000
-        // quads — and area is irrelevant to a ratio.
-        assert_eq!(budgets[0].faces, 5_000);
-        assert_eq!(budgets[1].faces, 10_000);
+        assert_eq!(budgets[0].faces, 10_000, "a triangle is worth a triangle");
+        assert_eq!(budgets[1].faces, 5_000, "and area is irrelevant to a ratio");
     }
 
     #[test]

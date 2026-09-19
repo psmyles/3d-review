@@ -7,7 +7,8 @@
 //! artist's mesh has inverted shells in the places nobody ever looks. None of
 //! that stops a *renderer*, and none of it stops [`crate::remesh`]'s field
 //! extraction either — but it stops every algorithm that needs to walk the
-//! surface as a surface, starting with the quad solver behind "Only quads".
+//! surface as a surface, and for a rebuild that wants one even shell rather
+//! than a pile of overlapping parts.
 //!
 //! Shrinkwrap is the operation that makes such an object into one: sample a
 //! signed distance field around it, extract the zero crossing, and hand back a
@@ -283,7 +284,6 @@ fn wrap_node(
         &output,
         pieces,
         &proxy,
-        remesh::CarryPolygons::No,
         remesh::Winding::Keep,
     ))
 }

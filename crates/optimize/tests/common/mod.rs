@@ -146,45 +146,6 @@ pub fn run_with_extras(
     .expect("processing succeeds")
 }
 
-/// A digest of one processed level's geometry, for comparing a mesh produced by
-/// one test binary against the same mesh produced by another.
-///
-/// FNV-1a over the bytes that define the mesh. A hash rather than the arrays
-/// themselves because the point is to compare *across processes* through a file,
-/// and a mismatch is a mismatch whichever byte moved.
-pub fn geometry_digest(level: &review_optimize::ProcessedLod) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325u64;
-    let mut eat = |bytes: &[u8]| {
-        for &byte in bytes {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    };
-    for vertex in &level.model.vertices {
-        for value in vertex
-            .position
-            .to_array()
-            .into_iter()
-            .chain(vertex.normal.to_array())
-            .chain(vertex.uv.to_array())
-            .chain(vertex.vertex_color.to_array())
-        {
-            eat(&value.to_bits().to_le_bytes());
-        }
-    }
-    for &index in &level.model.indices {
-        eat(&index.to_le_bytes());
-    }
-    for face in &level.model.faces {
-        eat(&face.first_index.to_le_bytes());
-        eat(&face.index_count.to_le_bytes());
-    }
-    for &face in &level.model.triangles.to_face {
-        eat(&face.to_le_bytes());
-    }
-    hash
-}
-
 /// Compare `digest` against whatever another test binary recorded under `name`,
 /// recording it instead when this is the first one to get there.
 ///

@@ -75,25 +75,6 @@ fn assert_closed_per_node(model: &ModelData, label: &str) {
     }
 }
 
-/// Only the wrap-then-quads test reads this, and that test only exists when the
-/// quad solver is vendored.
-#[cfg(has_quadriflow)]
-fn face_degrees(level: &review_optimize::ProcessedLod) -> (usize, usize) {
-    let triangles = level
-        .model
-        .faces
-        .iter()
-        .filter(|face| face.index_count == 3)
-        .count();
-    let quads = level
-        .model
-        .faces
-        .iter()
-        .filter(|face| face.index_count == 4)
-        .count();
-    (triangles, quads)
-}
-
 #[test]
 fn every_fixture_the_suite_loads_exists() {
     for name in FIXTURES {
@@ -146,50 +127,6 @@ fn a_kitbashed_prop_comes_back_as_closed_shells() {
         before.min.abs_diff_eq(after.min, slack) && before.max.abs_diff_eq(after.max, slack),
         "the shell is not where the object is: {before:?} -> {after:?}"
     );
-}
-
-/// The pairing both operations exist for.
-#[cfg(has_quadriflow)]
-#[test]
-fn a_wrap_lets_only_quads_run_on_an_object_that_refused_it() {
-    let Some(model) = fixture("SM_Ammo_Crate_01a.fbx") else {
-        return;
-    };
-    let quads = RemeshParams {
-        topology: review_optimize::RemeshTopology::PureQuads,
-        density: RemeshDensity::Absolute,
-        faces: 1_500,
-        ..RemeshParams::default()
-    };
-
-    // Without the wrap this fixture falls back — `tests/remesh.rs` pins that.
-    let mut stack = OptStack::default();
-    stack.push_op(OpKind::Shrinkwrap(ShrinkwrapParams {
-        resolution: 64,
-        ..ShrinkwrapParams::default()
-    }));
-    stack.push_op(OpKind::Remesh(quads));
-    let result = run(&model, &stack);
-
-    let level = result.lod(0).expect("the stack produced a level");
-    let (triangles, quad_faces) = face_degrees(level);
-    assert!(quad_faces > 0, "the remesh produced quads");
-    // Not *exactly* zero triangles: the solver leaves the odd degenerate quad,
-    // whose repeated corner comes back as a triangle. What matters is that it
-    // ran at all — on this fixture without the wrap it refuses outright, which
-    // `tests/remesh.rs` pins.
-    assert!(
-        triangles * 50 < quad_faces,
-        "'Only quads' did not really run on the wrapped object: {triangles} triangles \
-         beside {quad_faces} quads. Warnings: {:?}",
-        result.warnings
-    );
-    for warning in &result.warnings {
-        assert!(
-            !warning.contains("not a manifold mesh"),
-            "the wrap was supposed to fix exactly this: {warning}"
-        );
-    }
 }
 
 #[test]

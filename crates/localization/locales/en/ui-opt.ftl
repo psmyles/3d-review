@@ -109,11 +109,6 @@ ui-opt-ao-write-to = Write to
 
 ## Remesh
 
-ui-opt-remesh-topology = Faces
-    .description = What the rebuilt surface is made of. Mostly quads is what an artist
-        would build by hand and works on anything; Triangles gives an even triangle mesh;
-        Only quads uses a different solver that needs one closed shell, and falls back to
-        Mostly quads when it cannot run.
 ui-opt-remesh-density = Density
     .description = How the target number of faces for each object is worked out - as a
         share of what it has now, or as one budget shared out across the objects by size.
@@ -139,14 +134,8 @@ ui-opt-remesh-adaptive = Vary face size
     .description = How much smaller the faces get where the shape is detailed, and larger
         where it is flat. At 0 every face is the same size. Raising it does not add faces,
         it moves them: the flat parts give up what the curved parts take. 0.5 spends the
-        same error everywhere; 1 gives every face the same turn, which is stronger but
-        mixes more triangles into the quad pattern.
-ui-opt-remesh-min-cost-flow = Thorough layout
-    .description = Only quads: solve the quad layout the slower, more careful way. Worth
-        trying when the result comes back with folded or twisted faces.
-ui-opt-remesh-deterministic = Reproducible
-    .description = Take the slower path that gives exactly the same result every time. On
-        by default, so a preview does not shift under you while you drag a slider.
+        same error everywhere; 1 gives every face the same turn, which is stronger and is
+        what a hand retopology looks like.
 
 ## Shrinkwrap
 

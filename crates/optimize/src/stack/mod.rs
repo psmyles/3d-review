@@ -393,7 +393,7 @@ impl OpKind {
                 "Replace each object with one closed shell that hugs it. The surface is \
                  voxelized into a distance field and re-extracted, which fuses a kitbash \
                  of interpenetrating parts into a single watertight mesh — and is what \
-                 makes Remesh's 'Only quads' able to run on one. Materials, UVs and \
+                 a Remesh below it can even out. Materials, UVs and \
                  colors are projected back on. Static meshes only."
             }
             OpKind::SimplifyLod(_) => {

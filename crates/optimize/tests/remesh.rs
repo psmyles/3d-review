@@ -9,7 +9,7 @@
 //! checkout without them still passes. `REVIEW_REQUIRE_FIXTURES=1` turns every
 //! skip into a failure.
 
-#![cfg(all(has_meshopt, has_instant_meshes))]
+#![cfg(has_meshopt)]
 
 use review_model::ModelData;
 use review_optimize::{
@@ -19,7 +19,7 @@ use review_optimize::{
 
 mod common;
 
-use common::{compare_digest_across_binaries, fixture, geometry_digest, run};
+use common::{fixture, run};
 
 /// Every fixture this suite loads.
 const FIXTURES: [&str; 5] = [
@@ -36,35 +36,13 @@ fn remesh_stack(params: RemeshParams) -> OptStack {
     stack
 }
 
-fn quad_params(faces: u32) -> RemeshParams {
+fn absolute_params(faces: u32) -> RemeshParams {
     RemeshParams {
-        topology: RemeshTopology::QuadDominant,
+        topology: RemeshTopology::Triangles,
         density: RemeshDensity::Absolute,
         faces,
         ..RemeshParams::default()
     }
-}
-
-/// How many of a level's polygons have each corner count.
-///
-/// A level the in-house rebuild produced carries **no** polygon table: it is a
-/// triangle mesh, and a face table over triangles says nothing that the index
-/// buffer does not, while publishing one would put the whole level into the
-/// corner-run layout for no gain. So this is only meaningful on a level the
-/// vendored engines produced; [`face_count`] is what reads the rest.
-#[cfg_attr(not(has_quadriflow), allow(dead_code))]
-fn face_degrees(level: &ProcessedLod) -> (usize, usize, usize) {
-    let mut triangles = 0;
-    let mut quads = 0;
-    let mut other = 0;
-    for face in &level.model.faces {
-        match face.index_count {
-            3 => triangles += 1,
-            4 => quads += 1,
-            _ => other += 1,
-        }
-    }
-    (triangles, quads, other)
 }
 
 /// The faces a level actually has — its polygons where it carries them, and its
@@ -169,71 +147,67 @@ fn every_fixture_the_suite_loads_exists() {
     }
 }
 
+/// The budget is the budget. Unlike the engines this replaced, the count is
+/// worked out from the requested faces rather than searched for, so the
+/// tolerance is what stubborn patches of geometry cost rather than what a
+/// face-size-to-count conversion happens to overshoot by.
 #[test]
-fn mostly_quads_hits_its_face_budget_and_is_mostly_quads() {
+fn a_rebuild_hits_its_face_budget() {
     let Some(model) = fixture("monkey.fbx") else {
         return;
     };
-    let target = 2_000u32;
-    let result = run(&model, &remesh_stack(quad_params(target)));
+    // Below the fixture's own 968 triangles, because a rebuild merges and
+    // cannot add - see `a_budget_above_the_input_says_so`.
+    let target = 500u32;
+    let result = run(&model, &remesh_stack(absolute_params(target)));
     assert_no_skip_warning(&result);
 
     let level = result.lod(0).expect("the stack produced a level");
-    assert_consistent(&level.model, "monkey, mostly quads");
+    assert_consistent(&level.model, "monkey, triangles");
 
-    let polygons = level.model.stats.polygon_count;
-    let (triangles, quads, other) = face_degrees(level);
+    let produced = face_count(level) as f32;
+    let miss = (produced - target as f32).abs() / target as f32;
+    assert!(
+        miss < 0.12,
+        "asked {target}, produced {produced}: {:.0}% out",
+        miss * 100.0
+    );
     assert_eq!(
-        other, 0,
-        "a field extraction emits only triangles and quads"
+        level.model.stats.polygon_count, level.model.stats.triangle_count,
+        "an all-triangle mesh counts one polygon per triangle"
     );
-    assert_eq!(
-        triangles + quads,
-        polygons,
-        "the stats' polygon count is the face table's length"
-    );
-    // The engine targets a face *area* rather than a count, and overshoots it
-    // by a consistent fifth or so; measured here at 2460 for a 2000 target.
-    let error = (polygons as f32 - target as f32).abs() / target as f32;
+}
+
+/// A rebuild merges the mesh it is given, so it cannot hand back more faces
+/// than went in.
+///
+/// That is a real change from the field extraction this replaced, which built a
+/// surface from scratch and could happily return more detail than the input
+/// had. Asking for more is a reasonable thing to try, so it is reported rather
+/// than quietly under-delivered.
+#[test]
+fn a_budget_above_the_input_says_so() {
+    let Some(model) = fixture("monkey.fbx") else {
+        return;
+    };
+    let source_triangles = model.indices.len() / 3;
+    let target = (source_triangles * 4) as u32;
+
+    let result = run(&model, &remesh_stack(absolute_params(target)));
+
+    let level = result.lod(0).expect("the stack produced a level");
     assert!(
-        error <= 0.3,
-        "asked for {target} faces and got {polygons}, which is {:.0}% off",
-        error * 100.0
-    );
-    // Quad share rises with density and falls as face size is allowed to vary —
-    // the triangles are the field's singularities, and a field that varies needs
-    // more of them to turn one face size into another. Measured on this fixture
-    // at 2000 faces: 73% with a uniform field, 64% at the default strength, 56%
-    // at full. Suzanne is a hard case (creases, open eyes, one non-manifold
-    // edge); the game-asset fixtures sit higher.
-    //
-    // Both arms are checked, because they fail for different reasons: the
-    // uniform one is the engine itself regressing, the varied one is the field
-    // costing more grid than it is worth.
-    let quad_share = quads as f32 / polygons as f32;
-    assert!(
-        quad_share >= 0.6,
-        "only {:.0}% of the faces are quads at the default face-size variation",
-        quad_share * 100.0
-    );
-    let uniform = run(
-        &model,
-        &remesh_stack(RemeshParams {
-            adaptive_strength: 0.0,
-            ..quad_params(target)
-        }),
-    );
-    let uniform = uniform.lod(0).expect("the uniform stack produced a level");
-    let (_, uniform_quads, _) = face_degrees(uniform);
-    let uniform_share = uniform_quads as f32 / uniform.model.stats.polygon_count as f32;
-    assert!(
-        uniform_share >= 0.7,
-        "only {:.0}% of the faces are quads with one face size everywhere",
-        uniform_share * 100.0
+        face_count(level) <= source_triangles,
+        "a merge cannot invent faces: {} out of {source_triangles} in",
+        face_count(level)
     );
     assert!(
-        level.model.stats.triangle_count > polygons,
-        "a quad mesh has more triangles than polygons"
+        result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("cannot add detail")),
+        "asking for more than the input holds should be reported: {:?}",
+        result.warnings
     );
 }
 
@@ -244,7 +218,7 @@ fn triangles_topology_produces_no_polygons_beyond_triangles() {
     };
     let params = RemeshParams {
         topology: RemeshTopology::Triangles,
-        ..quad_params(2_000)
+        ..absolute_params(2_000)
     };
     let result = run(&model, &remesh_stack(params));
     assert_no_skip_warning(&result);
@@ -364,7 +338,7 @@ fn every_rebuilt_face_carries_a_material_the_source_authored() {
     let Some(model) = fixture("SM_column04.fbx") else {
         return;
     };
-    let result = run(&model, &remesh_stack(quad_params(3_000)));
+    let result = run(&model, &remesh_stack(absolute_params(3_000)));
     let level = result.lod(0).expect("the stack produced a level");
     assert_consistent(&level.model, "column, mostly quads");
 
@@ -394,7 +368,7 @@ fn two_deterministic_runs_produce_the_same_mesh() {
     let Some(model) = fixture("monkey.fbx") else {
         return;
     };
-    let stack = remesh_stack(quad_params(1_500));
+    let stack = remesh_stack(absolute_params(1_500));
 
     let first = run(&model, &stack);
     let second = run(&model, &stack);
@@ -406,11 +380,11 @@ fn two_deterministic_runs_produce_the_same_mesh() {
     assert_eq!(a.model.faces, b.model.faces, "face tables differ");
     assert_eq!(a.model.triangles, b.model.triangles, "triangle tags differ");
 
-    // The same mesh has to come out at any thread count, which one process
-    // cannot check on its own: `tests/remesh_single_thread.rs` runs this exact
-    // stack with the pool forced to one thread, and whichever binary gets here
-    // second compares the two.
-    compare_digest_across_binaries("remesh_monkey_quads_1500", geometry_digest(a));
+    // Thread count is pinned a stage at a time rather than here, because a
+    // whole-run comparison cannot say *which* stage drifted: `topology`,
+    // `size_field`, `partition`, `lloyd` and `solve` each assert the same
+    // bytes at one thread and at eight. The rebuild used to need a second test
+    // binary for this, since the engine sized its pool once per process.
 }
 
 #[test]
@@ -420,7 +394,7 @@ fn an_excluded_object_is_left_exactly_as_it_was() {
     };
     // Exclude every node: the whole mesh must come back untouched, which is the
     // only exclusion assertion that does not depend on which node is which.
-    let mut stack = remesh_stack(quad_params(500));
+    let mut stack = remesh_stack(absolute_params(500));
     stack.overrides = (0..model.nodes.len())
         .map(|node| NodeOverride {
             node,
@@ -444,11 +418,11 @@ fn an_excluded_object_is_left_exactly_as_it_was() {
 }
 
 #[test]
-fn a_weld_below_a_remesh_keeps_the_quads() {
+fn a_weld_below_a_remesh_leaves_its_faces_alone() {
     let Some(model) = fixture("monkey.fbx") else {
         return;
     };
-    let mut stack = remesh_stack(quad_params(1_500));
+    let mut stack = remesh_stack(absolute_params(1_500));
     stack.push_op(OpKind::Weld(WeldParams::default()));
     stack.push_op(OpKind::VertexFetch);
 
@@ -457,172 +431,42 @@ fn a_weld_below_a_remesh_keeps_the_quads() {
     let level = result.lod(0).expect("the stack produced a level");
     assert_consistent(&level.model, "monkey, remesh + weld + fetch");
 
-    let (_, quads, other) = face_degrees(level);
-    assert_eq!(other, 0);
-    // Against the same remesh on its own rather than against a fixed share: what
-    // is being tested is that the two operations below it change nothing, and a
-    // bare threshold would drift with every change to the field.
-    let alone = run(&model, &remesh_stack(quad_params(1_500)));
+    // Against the same remesh on its own rather than against a fixed count:
+    // what is being tested is that the two operations below it change the
+    // *shape* of nothing, and a bare threshold would drift with every change
+    // to the rebuild.
+    let alone = run(&model, &remesh_stack(absolute_params(1_500)));
     let alone = alone.lod(0).expect("the bare remesh produced a level");
-    let (_, alone_quads, _) = face_degrees(alone);
     assert_eq!(
-        quads, alone_quads,
-        "a weld and a vertex-fetch reorder below the remesh lost its quads"
+        face_count(level),
+        face_count(alone),
+        "a weld and a vertex-fetch reorder below the remesh changed its faces"
     );
 }
 
+/// Invariant 5: the stats panel reports the indexed mesh the export writes.
+///
+/// This used to check the opposite inequality — a rebuild that carried quads
+/// put the whole level into the corner-run layout, where the vertex *buffer* is
+/// much larger than the mesh it holds. A triangle rebuild publishes no polygon
+/// table, so the buffer and the mesh are the same thing again.
 #[test]
-fn a_remesh_reports_fewer_vertices_than_its_corner_run_holds() {
+fn a_rebuild_reports_the_mesh_it_actually_wrote() {
     let Some(model) = fixture("monkey.fbx") else {
         return;
     };
-    let result = run(&model, &remesh_stack(quad_params(1_500)));
+    let result = run(&model, &remesh_stack(absolute_params(1_500)));
     let level = result.lod(0).expect("the stack produced a level");
 
-    // Invariant 5: the panel shows the indexed count the export writes, never
-    // the corner-run buffer's own length.
-    assert!(
-        level.model.stats.vertex_count < level.model.vertices.len(),
-        "the corner-run buffer should be larger than the indexed mesh it holds"
+    assert_eq!(
+        level.model.stats.vertex_count,
+        level.model.vertices.len(),
+        "a triangle rebuild's buffer is the mesh, with no corner runs over it"
     );
     assert!(
         level.model.stats.vertex_count > 0,
         "the indexed count is a real measurement"
     );
-    // Rough sanity: a quad mesh has about as many vertices as quads. The ceiling
-    // is generous because the ratio climbs as the rebuild gets coarser — the
-    // attribute seams the projection splits at are a property of the *source*,
-    // so their vertices stay while the interior's shrink. Measured on this
-    // fixture, which is all seams: 2.1.
-    let ratio = level.model.stats.vertex_count as f32 / level.model.stats.polygon_count as f32;
-    assert!(
-        (0.5..2.5).contains(&ratio),
-        "{} vertices for {} polygons is not a quad mesh",
-        level.model.stats.vertex_count,
-        level.model.stats.polygon_count
-    );
-}
-
-/// A closed single-shell asset: the quad solver runs and every face is a quad.
-#[cfg(has_quadriflow)]
-#[test]
-fn only_quads_produces_nothing_but_quads_on_a_closed_shell() {
-    let Some(model) = fixture("SM_column04.fbx") else {
-        return;
-    };
-    let target = 1_500u32;
-    let params = RemeshParams {
-        topology: RemeshTopology::PureQuads,
-        ..quad_params(target)
-    };
-    let result = run(&model, &remesh_stack(params));
-    for warning in &result.warnings {
-        assert!(
-            !warning.contains("fell back"),
-            "this fixture is a closed shell, so the solver should run: {warning}"
-        );
-    }
-
-    let level = result.lod(0).expect("the stack produced a level");
-    assert_consistent(&level.model, "column, only quads");
-    let (triangles, quads, other) = face_degrees(level);
-    assert_eq!(
-        (triangles, other),
-        (0, 0),
-        "'Only quads' means only quads: {quads} quads beside {triangles} triangles"
-    );
-    // The solver targets a count rather than a face size, so it lands much
-    // closer than the field extraction does; measured at 1404 for 1500.
-    let error = (quads as f32 - target as f32).abs() / target as f32;
-    assert!(error <= 0.2, "asked for {target} quads and got {quads}");
-}
-
-/// An asset the solver cannot lay out has to come back as a mesh and a warning.
-///
-/// This one is the regression test for a **crash**: `Eigen::SparseLU`, which
-/// `EIGEN_MPL2_ONLY` selects, reports a failed factorization through `info()`
-/// and leaves nothing to solve with, and upstream's unchecked `solve()` on that
-/// state segfaulted on exactly this fixture (see `third_party/quadriflow`'s
-/// NOTICE). A passing run is one that *returns*.
-#[cfg(has_quadriflow)]
-#[test]
-fn an_object_the_quad_solver_gives_up_on_falls_back_rather_than_failing() {
-    let Some(model) = fixture("SM_Ammo_Crate_01a.fbx") else {
-        return;
-    };
-    let params = RemeshParams {
-        topology: RemeshTopology::PureQuads,
-        ..quad_params(1_500)
-    };
-    let result = run(&model, &remesh_stack(params));
-
-    let level = result.lod(0).expect("the stack produced a level");
-    assert_consistent(&level.model, "ammo crate, only quads");
-    assert!(
-        level.model.stats.polygon_count > 0,
-        "the fall back still produces a mesh"
-    );
-    assert!(
-        result
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("fell back")),
-        "the user has to be told the topology they asked for was not used: {:?}",
-        result.warnings
-    );
-    let (_, quads, other) = face_degrees(level);
-    assert_eq!(other, 0);
-    assert!(quads > 0, "the fall back is still a quad-dominant mesh");
-}
-
-/// Without the vendored solver, "Only quads" stays in the menu and falls back —
-/// so a preset naming it does not silently mean something else.
-#[cfg(not(has_quadriflow))]
-#[test]
-fn only_quads_falls_back_when_the_solver_is_not_vendored() {
-    let Some(model) = fixture("SM_column04.fbx") else {
-        return;
-    };
-    let params = RemeshParams {
-        topology: RemeshTopology::PureQuads,
-        ..quad_params(1_500)
-    };
-    let result = run(&model, &remesh_stack(params));
-
-    let level = result.lod(0).expect("the stack produced a level");
-    assert_consistent(&level.model, "column, only quads unavailable");
-    assert!(
-        result
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("no quad solver")),
-        "{:?}",
-        result.warnings
-    );
-}
-
-/// The solver's own seed is pinned, and the tree is compiled serially, so two
-/// runs have to agree byte for byte.
-#[cfg(has_quadriflow)]
-#[test]
-fn two_quad_solves_produce_the_same_mesh() {
-    let Some(model) = fixture("SM_column04.fbx") else {
-        return;
-    };
-    let params = RemeshParams {
-        topology: RemeshTopology::PureQuads,
-        ..quad_params(1_200)
-    };
-    let stack = remesh_stack(params);
-
-    let first = run(&model, &stack);
-    let second = run(&model, &stack);
-
-    let a = first.lod(0).expect("a level");
-    let b = second.lod(0).expect("a level");
-    assert_eq!(a.model.vertices, b.model.vertices, "vertices differ");
-    assert_eq!(a.model.indices, b.model.indices, "index buffers differ");
-    assert_eq!(a.model.faces, b.model.faces, "face tables differ");
 }
 
 /// The ratio between the largest and smallest face on one object, measured
@@ -722,18 +566,11 @@ fn varying_face_size_spends_the_budget_on_the_curved_parts() {
         ..RemeshParams::default()
     };
 
-    // Every topology, because each carries the field through a different engine
-    // and each has broken separately. The floor is per topology because how far
-    // a layout will carry a field is a property of the layout: measured on this
-    // slab at full strength, Triangles reaches 1.8x, Mostly quads 2.4x and Only
-    // quads 7.2x. The last is the highest floor on purpose — it is the one that
-    // silently collapses to 1.5x if QuadriFlow's index map is not told a scale
-    // field exists (see `remesh_quadriflow.cpp`).
-    for (topology, floor) in [
-        (RemeshTopology::Triangles, 1.5),
-        (RemeshTopology::QuadDominant, 2.0),
-        (RemeshTopology::PureQuads, 3.0),
-    ] {
+    // One topology today; a quad-dominant one would want its own floor and
+    // ceiling here, since how far a layout carries a field is a property of the
+    // layout.
+    {
+        let (topology, floor) = (RemeshTopology::Triangles, 1.5);
         let even = run(&model, &remesh_stack(params(topology, 0.0)));
         let varied = run(&model, &remesh_stack(params(topology, 1.0)));
         let even = even.lod(0).expect("a level");
@@ -758,10 +595,7 @@ fn varying_face_size_spends_the_budget_on_the_curved_parts() {
         // do, which is the same machinery the quad topologies will need and is
         // deliberately not in this change.
         let flat = face_size_spread(even, node);
-        let ceiling = match topology {
-            RemeshTopology::Triangles => 2.6,
-            _ => 1.5,
-        };
+        let ceiling = 2.6;
         assert!(
             flat < ceiling,
             "{topology:?}: a uniform rebuild should be uniform, and this one \
@@ -777,14 +611,12 @@ fn varying_face_size_spends_the_budget_on_the_curved_parts() {
     }
 }
 
-/// Whatever the field does, the count is the one that was asked for. Every
-/// topology, because each reaches it through a different engine or a different
-/// symmetry.
+/// Whatever the field does, the count is the one that was asked for.
 ///
-/// "Only quads" at full strength is allowed more room, and the reason is a
-/// property of the engine rather than of the search: an integer quad layout
-/// answers in steps, and a strong field makes the steps large enough to jump
-/// over the target. See [`remesh::BUDGET_ATTEMPTS`] for the measurement.
+/// Exactly, not approximately: the budget turns the requested faces into a
+/// vertex count by Euler's formula and the seeds are placed to match, so
+/// nothing here is searching for it.
+///
 #[test]
 fn the_face_count_is_the_one_that_was_asked_for() {
     let Some(model) = fixture("cpg_pedestal_pebbles.fbx") else {
@@ -806,10 +638,7 @@ fn the_face_count_is_the_one_that_was_asked_for() {
             let level = result.lod(0).expect("a level");
             let produced = face_count(level) as f32;
             let miss = (produced - wanted as f32).abs() / wanted as f32;
-            let allowed = match (topology, strength) {
-                (RemeshTopology::PureQuads, s) if s > 0.0 => 0.18,
-                _ => 0.12,
-            };
+            let allowed = 0.12;
             assert!(
                 miss < allowed,
                 "{topology:?} at strength {strength} produced {produced} faces for a \
@@ -831,7 +660,7 @@ fn a_varied_rebuild_is_reproducible() {
     };
     let stack = remesh_stack(RemeshParams {
         adaptive_strength: 1.0,
-        ..quad_params(1_500)
+        ..absolute_params(1_500)
     });
 
     let first = run(&model, &stack);

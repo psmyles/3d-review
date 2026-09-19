@@ -1,67 +1,45 @@
 //! The retopology operation's settings.
 //!
 //! Unlike every other operation in the stack, Remesh does not *edit* the mesh it
-//! is given — it regenerates the surface from a field solved over it and brings
-//! the materials, UVs and colors back by projection. So its parameters describe
-//! the mesh to produce (what topology, how dense) rather than what to remove.
+//! is given — it lays a new surface over the old one and brings the materials,
+//! UVs and colors back by projection. So its parameters describe the mesh to
+//! produce (what it is made of, how dense) rather than what to remove.
 
 use serde::{Deserialize, Serialize};
 
-/// What the regenerated surface is made of.
+/// What the rebuilt surface is made of.
 ///
-/// The first two map onto one engine's symmetry settings: a 6-RoSy / 3-PoSy
-/// field gives evenly sized triangles, and a 4/4 field gives quads wherever the
-/// field admits them and triangles where it does not. The third is a different
-/// engine entirely — QuadriFlow *solves* for an integer quad layout rather than
-/// extracting one from a field, which is what lets it promise every face is a
-/// quad and why it needs a closed manifold to run on.
+/// One variant, and an enum anyway: a quad-dominant topology is the planned
+/// follow-on, and adding a variant to this is a change no saved preset notices
+/// — where replacing the field with a boolean now and an enum again later is
+/// two wire formats.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RemeshTopology {
     /// Evenly sized, curvature-aligned triangles.
-    Triangles,
-    /// Quads wherever the field allows, triangles at the singularities. The
-    /// default: it is what an artist retopologizing by hand produces, and it
-    /// works on any input.
+    ///
+    /// The only kind for now. A preset written when there were three loads as
+    /// this one and says so, rather than silently meaning something else.
     #[default]
-    QuadDominant,
-    /// Nothing but quads. Needs a closed manifold — run Shrinkwrap first if the
-    /// object is a kitbash — and falls back to [`Self::QuadDominant`] with a
-    /// warning when it cannot run.
-    PureQuads,
+    #[serde(alias = "QuadDominant", alias = "PureQuads")]
+    Triangles,
 }
 
 impl RemeshTopology {
-    pub const ALL: [RemeshTopology; 3] = [
-        RemeshTopology::Triangles,
-        RemeshTopology::QuadDominant,
-        RemeshTopology::PureQuads,
-    ];
+    pub const ALL: [RemeshTopology; 1] = [RemeshTopology::Triangles];
 
     pub fn label(self) -> &'static str {
         match self {
             RemeshTopology::Triangles => "Triangles",
-            RemeshTopology::QuadDominant => "Mostly quads",
-            RemeshTopology::PureQuads => "Only quads",
-        }
-    }
-
-    /// The `(rosy, posy)` symmetry pair the field is solved with. `PureQuads`
-    /// shares the quad pair: it is what the fall-back path needs, and
-    /// QuadriFlow reads neither.
-    pub(crate) fn rosy_posy(self) -> (u32, u32) {
-        match self {
-            RemeshTopology::Triangles => (6, 3),
-            RemeshTopology::QuadDominant | RemeshTopology::PureQuads => (4, 4),
         }
     }
 
     /// How many output *faces* one source triangle is worth when the density is
-    /// given as a ratio: a quad covers roughly two triangles' worth of surface,
-    /// so "100%" of a 10 000-triangle mesh is 5 000 quads, not 10 000.
+    /// given as a ratio. One, while triangles are all this produces; a
+    /// quad-dominant topology would be about a half, since a quad covers
+    /// roughly two triangles' worth of surface.
     pub(crate) fn faces_per_triangle(self) -> f32 {
         match self {
             RemeshTopology::Triangles => 1.0,
-            RemeshTopology::QuadDominant | RemeshTopology::PureQuads => 0.5,
         }
     }
 }
@@ -111,19 +89,14 @@ pub struct RemeshParams {
     /// Pin the field to open borders, so a boundary comes back as one straight
     /// edge loop rather than a ragged fringe.
     pub align_to_boundaries: bool,
-    /// Laplacian passes over the extracted mesh, each re-projected onto the
-    /// source surface. Evens out face sizes; too many round off detail.
+    /// Rounds of tidying over the rebuilt mesh — a valence-improving flip pass
+    /// and a relaxation along the surface. Evens out face sizes; too many round
+    /// off detail.
     pub smooth_iterations: u32,
-    /// Take the reproducible path through every order-sensitive stage, so the
-    /// same input gives the same bytes on any machine. On by default: a
-    /// preview that changes under you while you drag a slider is worse than a
-    /// slightly slower one.
-    pub deterministic: bool,
     /// How far face size may follow curvature, 0 (one face size everywhere) to
     /// 1 (as far as the layout will carry it). What it buys is where the budget
     /// goes: a flat panel gets large faces and a tight fillet small ones, for
-    /// the same count. Honoured by every topology — both engines were given a
-    /// per-vertex scale field for it.
+    /// the same count.
     ///
     /// It is read as an exponent, and the two ends of it are named rules rather
     /// than arbitrary settings. At 0.5 face size goes as `1 / sqrt(curvature)`,
@@ -132,16 +105,11 @@ pub struct RemeshParams {
     /// every face turns through the same angle; that is what a hand retopology
     /// looks like and it is much more aggressive. Measured on a driftwood
     /// branch, the spread of output face sizes across the object runs 1.7x /
-    /// 4.2x / 6.1x at 0 / 0.5 / 1 for Mostly quads.
+    /// 4.2x / 6.1x at 0 / 0.5 / 1.
     ///
-    /// At 0 no field is built at all and each engine takes its original,
-    /// uniform arithmetic rather than a field of ones — the two are the same
-    /// answer, but only the first is the same *code*.
+    /// At 0 no field is built at all and one size is used everywhere — the same
+    /// answer as a field of ones, by a shorter road.
     pub adaptive_strength: f32,
-    /// [`RemeshTopology::PureQuads`] only: solve the quad layout with the
-    /// minimum-cost-flow formulation. Slower, and resolves layouts the default
-    /// solver leaves degenerate.
-    pub min_cost_flow: bool,
 }
 
 impl Default for RemeshParams {
@@ -149,25 +117,18 @@ impl Default for RemeshParams {
         Self {
             topology: RemeshTopology::default(),
             density: RemeshDensity::default(),
-            // Same face *area* as the source, which for quads is half its
-            // triangle count — a like-for-like retopology rather than a
-            // reduction. Reducing is what the ratio is for.
+            // The same face count as the source: a like-for-like retopology
+            // rather than a reduction. Reducing is what the ratio is for.
             ratio: 1.0,
             faces: 5_000,
             sharp_edges: false,
             crease_angle: 30.0,
             align_to_boundaries: true,
             smooth_iterations: 2,
-            deterministic: true,
             // The geometric rule (see the field doc above), which is the
-            // strongest setting that costs nothing. Past it the contrast keeps
-            // rising but the quad grid pays for it: on a driftwood branch
-            // Mostly quads goes from 26% triangles at 0.5 to 36% at 1, because
-            // an integer layout resolves a steep transition with singularities
-            // rather than with a gradient. Full strength is worth reaching for
-            // on a silhouette-critical object, not by default.
+            // strongest setting that costs nothing. Full strength is worth
+            // reaching for on a silhouette-critical object, not by default.
             adaptive_strength: 0.5,
-            min_cost_flow: false,
         }
     }
 }
