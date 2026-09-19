@@ -50,6 +50,7 @@ use crate::{OptError, Warnings, ops};
     dead_code,
     reason = "the solver that drives the collapse is the next stage"
 )]
+pub(crate) mod cleanup;
 pub(crate) mod collapse;
 #[allow(
     dead_code,
@@ -82,6 +83,7 @@ pub(crate) mod quadric;
     reason = "the rebuild that reads the seeds is the next stage"
 )]
 pub(crate) mod seeds;
+pub(crate) mod solve;
 pub(crate) mod surface;
 // Built and proven against the C++ it was ported from in this step; the solver
 // that calls it lands in the next, and takes this allow with it.
@@ -579,6 +581,62 @@ struct NodeOutcome {
     notes: Vec<String>,
 }
 
+/// One node through the in-house rebuild.
+///
+/// Unlike the engine path there is no budget search: the face count becomes a
+/// vertex count by Euler's formula and the seeds are placed to match, so the
+/// number in the box is produced once rather than converged on.
+fn rebuild_node(
+    job: &NodeJob<'_>,
+    pieces: &[&Submesh],
+    warnings: &mut Warnings,
+    cancel: Option<&crate::CancelToken>,
+    threads: usize,
+) -> Option<Vec<Submesh>> {
+    let (output, report) =
+        match solve::rebuild(job.proxy, job.faces, &job.params, threads, cancel, |_| true) {
+            Ok(result) => result,
+            // A cancelled rebuild is the user having moved on, and the run it
+            // belongs to is discarded whole — so it is not worth a warning.
+            Err(OptError::Cancelled) => return None,
+            Err(error) => {
+                warnings.push(&format!(
+                    "Remesh: '{}' was left as it is — {error}",
+                    job.name
+                ));
+                return None;
+            }
+        };
+    if output.is_empty() {
+        warnings.push(&format!(
+            "Remesh: '{}' came back empty. Ask for more faces, or check that the object is              not a handful of disconnected slivers.",
+            job.name
+        ));
+        return None;
+    }
+
+    // A region that would not come down to one vertex kept the ones it had, so
+    // the result is denser than asked for rather than broken. Worth saying when
+    // it is a large share, since the face count is otherwise exact.
+    let regions = report.vertices.max(1);
+    if report.stubborn * 20 > regions {
+        warnings.push(&format!(
+            "Remesh: {} parts of '{}' could not be simplified as far as asked without              breaking the surface, so it came back denser there.",
+            report.stubborn, job.name
+        ));
+    }
+
+    let mut output = output;
+    layout::canonicalize(&mut output);
+    Some(build_pieces_from(
+        &output,
+        pieces,
+        job.proxy,
+        CarryPolygons::No,
+        project::Winding::Keep,
+    ))
+}
+
 /// Rebuild one node's surface, or `None` when it was left as it is (with a
 /// warning already recorded).
 fn remesh_node(
@@ -597,6 +655,13 @@ fn remesh_node(
         ..
     } = job;
     let (pieces, faces, params, name) = (pieces.as_slice(), *faces, params, name.as_str());
+
+    // The in-house rebuild, which is what `Triangles` now means. The two quad
+    // topologies still go to the vendored engines below until those are cut.
+    if params.topology == RemeshTopology::Triangles {
+        return rebuild_node(job, pieces, warnings, cancel, threads);
+    }
+
     // Named `connectivity` because `topology` is already this operation's word
     // for the *kind of face* the user asked for, two lines below.
     let connectivity =

@@ -84,14 +84,6 @@ impl Partition {
         let end = self.starts[region as usize + 1] as usize;
         &self.members[start..end]
     }
-
-    /// Regions that reached no vertex at all. A seed whose neighbours all went
-    /// to someone else is one of these, and it simply produces no output vertex.
-    pub(crate) fn empty_regions(&self) -> usize {
-        (0..self.regions as u32)
-            .filter(|&region| self.members_of(region).is_empty())
-            .count()
-    }
 }
 
 /// One vertex's standing claim: which seed holds it, and at what cost.

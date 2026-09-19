@@ -179,44 +179,44 @@ fn collapse_region(
         return;
     }
 
-    // Every edge inside the region, shortest first. Lengths never change while
-    // a region is collapsing (a survivor keeps its position), so one sort is
-    // the whole ordering — and ties break on the vertex numbers so two runs
-    // agree.
-    let mut edges: Vec<(f64, u32, u32)> = Vec::new();
-    let mut scratch = Vec::new();
-    for &vertex in members {
-        surface
-            .topology
-            .edges_at(surface.indices, vertex, &mut scratch);
-        for edge in &scratch {
-            if edge.other > vertex && partition.label[edge.other as usize] == region {
-                edges.push((surface.distance(vertex, edge.other), vertex, edge.other));
-            }
-        }
-    }
-    edges.sort_unstable_by(|a, b| {
-        a.0.partial_cmp(&b.0)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then((a.1, a.2).cmp(&(b.1, b.2)))
-    });
-
+    // Collapsing *creates* adjacencies. A region shaped like a hub with spokes
+    // has edges from the hub to each spoke and none between the spokes — so
+    // once the hub is merged away, the spokes are neighbours that no list built
+    // beforehand knows about, and the region stops half collapsed. (Measured on
+    // a sphere: 446 faces where 200 were asked for.)
+    //
+    // So the edges are re-read from the live mesh each round, and a round that
+    // collapses nothing is the end. Each round removes at least one vertex, so
+    // this is bounded by the size of the region.
     let mut left = Vec::new();
     let mut right = Vec::new();
-    for (_, a, b) in edges {
-        if !state.alive[a as usize] || !state.alive[b as usize] {
-            continue;
+    let mut edges: Vec<(f64, u32, u32)> = Vec::new();
+    for _ in 0..members.len() {
+        live_edges(state, incidence, partition, members, region, &mut edges);
+        if edges.is_empty() {
+            break;
         }
-        let Some((dying, survivor)) = survivor_of(surface, features, seeds, a, b) else {
-            continue;
-        };
-        if !link_condition(state, incidence, dying, survivor, &mut left, &mut right) {
-            continue;
+        let mut collapsed = false;
+        for &(_, a, b) in &edges {
+            if !state.alive[a as usize] || !state.alive[b as usize] {
+                continue;
+            }
+            let Some((dying, survivor)) = survivor_of(features, seeds, a, b) else {
+                continue;
+            };
+            if !link_condition(state, incidence, dying, survivor, &mut left, &mut right) {
+                continue;
+            }
+            let Some(at) = placement(state, incidence, quadrics, features, dying, survivor) else {
+                continue;
+            };
+            state.positions[survivor as usize] = at;
+            apply(state, incidence, dying, survivor);
+            collapsed = true;
         }
-        if flips_a_normal(state, incidence, dying, survivor) {
-            continue;
+        if !collapsed {
+            break;
         }
-        apply(state, incidence, dying, survivor);
     }
 
     // Where a region came down to one vertex, that vertex takes the position
@@ -237,30 +237,70 @@ fn collapse_region(
     }
 }
 
+/// The edges inside a region as the mesh stands *now*, shortest first.
+///
+/// Read from the live faces rather than from the input's index, because a
+/// collapse rewrites what is adjacent to what. Ties break on the vertex numbers
+/// so two runs agree.
+fn live_edges(
+    state: &Collapsed,
+    incidence: &[Vec<u32>],
+    partition: &Partition,
+    members: &[u32],
+    region: u32,
+    out: &mut Vec<(f64, u32, u32)>,
+) {
+    out.clear();
+    for &vertex in members {
+        if !state.alive[vertex as usize] {
+            continue;
+        }
+        for &face in &incidence[vertex as usize] {
+            if state.is_dead(face) {
+                continue;
+            }
+            for other in state.face(face) {
+                if other > vertex
+                    && state.alive[other as usize]
+                    && partition.label[other as usize] == region
+                {
+                    out.push((distance_between(state, vertex, other), vertex, other));
+                }
+            }
+        }
+    }
+    out.sort_unstable_by(|a, b| {
+        a.0.partial_cmp(&b.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then((a.1, a.2).cmp(&(b.1, b.2)))
+    });
+    out.dedup_by(|a, b| (a.1, a.2) == (b.1, b.2));
+}
+
+fn distance_between(state: &Collapsed, a: u32, b: u32) -> f64 {
+    let (a, b) = (state.positions[a as usize], state.positions[b as usize]);
+    let (x, y, z) = (a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+    (x * x + y * y + z * z).sqrt()
+}
+
 /// Which of the two endpoints dies, or `None` when the edge may not collapse at
 /// all.
-fn survivor_of(
-    surface: Surface<'_>,
-    features: &Features,
-    seeds: &Seeds,
-    a: u32,
-    b: u32,
-) -> Option<(u32, u32)> {
+fn survivor_of(features: &Features, seeds: &Seeds, a: u32, b: u32) -> Option<(u32, u32)> {
     let feature_a = features.on_feature[a as usize];
     let feature_b = features.on_feature[b as usize];
     if feature_a && feature_b {
-        // Both on a feature: only legal along one, and never across. Merging
-        // two chains, or pinching a border shut across a thin strip, both look
-        // like this.
-        let mut edges = Vec::new();
-        surface.topology.edges_at(surface.indices, a, &mut edges);
-        let along = edges.iter().any(|edge| {
-            edge.other == b
-                && (edge.is_boundary()
-                    || edge.is_nonmanifold()
-                    || features.polyline_of[a as usize] == features.polyline_of[b as usize])
-        });
-        if !along {
+        // Both on a feature: legal along one chain, never between two. Merging
+        // separate chains is what would round off a corner or join two holes.
+        //
+        // Decided from which chain each vertex belongs to, and deliberately not
+        // by looking the edge up in the input's topology: a collapse *creates*
+        // adjacencies, so by the time two chain vertices become neighbours the
+        // edge between them need never have existed in the input. Asking the
+        // input refused those collapses and left the result a fifth denser than
+        // it was asked for (measured on a nine-stone pedestal: 3586 faces for a
+        // budget of 3000).
+        let chain = features.polyline_of[a as usize];
+        if chain == u32::MAX || chain != features.polyline_of[b as usize] {
             return None;
         }
         // A junction outranks a plain feature vertex; it is a corner.
@@ -329,28 +369,106 @@ fn link_condition(
     shared == thirds
 }
 
-/// Whether any face that survives the collapse would turn inside out.
-fn flips_a_normal(state: &Collapsed, incidence: &[Vec<u32>], dying: u32, survivor: u32) -> bool {
-    for &face in &incidence[dying as usize] {
+/// Where to put the survivor, or `None` when nowhere works.
+///
+/// Tried in order of how much error each costs, and the first that turns no
+/// face inside out wins. Letting the survivor *move* is what makes a region
+/// collapse at all: pinned to its own position, the last merges in a region
+/// drag a vertex across the whole of it and flip every sliver on the way.
+/// Measured on a nine-stone pedestal, that refused 1489 collapses against 102
+/// for every other reason put together, and left the result a fifth denser than
+/// it was asked for.
+///
+/// A feature vertex is the exception and does not move: it is on an outline,
+/// and the outline is where it is.
+fn placement(
+    state: &Collapsed,
+    incidence: &[Vec<u32>],
+    quadrics: &[Quadric],
+    features: &Features,
+    dying: u32,
+    survivor: u32,
+) -> Option<[f64; 3]> {
+    let here = state.positions[survivor as usize];
+    if features.on_feature[survivor as usize] {
+        return (!flips_a_normal(state, incidence, dying, survivor, here)).then_some(here);
+    }
+
+    let there = state.positions[dying as usize];
+    let mut sum = quadrics[dying as usize];
+    sum.add(&quadrics[survivor as usize]);
+
+    let mut candidates = vec![
+        here,
+        [
+            (here[0] + there[0]) * 0.5,
+            (here[1] + there[1]) * 0.5,
+            (here[2] + there[2]) * 0.5,
+        ],
+        there,
+    ];
+    // The quadric's own answer, when it has one and it is not somewhere absurd.
+    if let Some(best) = sum.optimal_point() {
+        let (x, y, z) = (best[0] - here[0], best[1] - here[1], best[2] - here[2]);
+        let reach = (there[0] - here[0]).powi(2)
+            + (there[1] - here[1]).powi(2)
+            + (there[2] - here[2]).powi(2);
+        if x * x + y * y + z * z <= reach * OPTIMUM_REACH * OPTIMUM_REACH {
+            candidates.push(best);
+        }
+    }
+
+    // Cheapest first, ties on the order above so two runs agree.
+    let mut ranked: Vec<(usize, f64)> = candidates
+        .iter()
+        .enumerate()
+        .map(|(at, point)| (at, sum.error_at(*point)))
+        .collect();
+    ranked.sort_by(|a, b| {
+        a.1.partial_cmp(&b.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0.cmp(&b.0))
+    });
+    ranked
+        .into_iter()
+        .map(|(at, _)| candidates[at])
+        .find(|&point| !flips_a_normal(state, incidence, dying, survivor, point))
+}
+
+/// Whether any face that survives the collapse would turn inside out, with the
+/// survivor at `at`.
+///
+/// Both vertices' faces are checked, not just the dying one's: the survivor is
+/// moving too, so the faces around it are just as able to fold over.
+fn flips_a_normal(
+    state: &Collapsed,
+    incidence: &[Vec<u32>],
+    dying: u32,
+    survivor: u32,
+    at: [f64; 3],
+) -> bool {
+    for &face in incidence[dying as usize]
+        .iter()
+        .chain(&incidence[survivor as usize])
+    {
         if state.is_dead(face) {
             continue;
         }
         let corners = state.face(face);
         // A face along the edge disappears, so it cannot flip.
-        if corners.contains(&survivor) {
+        if corners.contains(&dying) && corners.contains(&survivor) {
             continue;
         }
         let before = normal_of(state, corners);
-        let after = normal_of(
+        let after = normal_with(
             state,
             corners.map(|corner| if corner == dying { survivor } else { corner }),
+            survivor,
+            at,
         );
         match (before, after) {
             // The face had area and now has none, or has turned over.
-            (Some(before), None) => {
-                let _ = before;
-                return true;
-            }
+            (Some(_), None) => return true,
             (Some(before), Some(after)) => {
                 let dot = before[0] * after[0] + before[1] * after[1] + before[2] * after[2];
                 if dot <= 0.0 {
@@ -365,10 +483,22 @@ fn flips_a_normal(state: &Collapsed, incidence: &[Vec<u32>], dying: u32, survivo
 }
 
 fn normal_of(state: &Collapsed, corners: [u32; 3]) -> Option<[f64; 3]> {
+    normal_with(state, corners, u32::MAX, [0.0; 3])
+}
+
+/// [`normal_of`], with `moved` taken to be at `at` instead of where it is.
+fn normal_with(state: &Collapsed, corners: [u32; 3], moved: u32, at: [f64; 3]) -> Option<[f64; 3]> {
+    let position = |corner: u32| {
+        if corner == moved {
+            at
+        } else {
+            state.positions[corner as usize]
+        }
+    };
     let (a, b, c) = (
-        state.positions[corners[0] as usize],
-        state.positions[corners[1] as usize],
-        state.positions[corners[2] as usize],
+        position(corners[0]),
+        position(corners[1]),
+        position(corners[2]),
     );
     let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
     let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
