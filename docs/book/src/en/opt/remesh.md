@@ -151,9 +151,43 @@ edge, so a border comes back as one clean loop rather than a ragged fringe.
 Leave it on unless you have a reason not to: it is what keeps a leaf, a sheet of
 cloth or a wall with no thickness looking like itself.
 
+A **rim** is held whatever either of those is set to. Where a surface folds right
+back on itself - the edge of a leaf, a strip of bark, a piece of cloth modelled
+with two sides - that fold is the object's outline, and it is kept whether or not
+you asked for sharp edges, because it is not a matter of taste. A bend of less
+than a right angle is; a fold past one is where the shape ends. A box modelled at
+exactly 90 degrees is deliberately left out of this, so hard-surface parts still
+rebuild smooth with **Keep sharp edges** off.
+
+The **corners** of an outline are held the same way. A leaf's tip is a point in
+the middle of a border that runs unbroken all the way round, so there is nothing
+about it to count; it is found by how far the outline turns over the distance one
+new edge will span, and a seed is put exactly on it. Without that, the two new
+points land either side of the tip and it comes back blunt.
+
 **Smoothing** is how many rounds of evening-out to run over the result. Two is a
 good default: a little makes the faces more uniform, a lot rounds off detail. It
-never moves a point on a border, so no amount of it will soften an outline.
+never moves a point on a border or a rim, so no amount of it will soften an
+outline.
+
+## How closely it follows the original
+
+A rebuild is a different surface, so it is never exactly the old one, and the
+question is by how much. Two things are measured on every release, per object:
+how much of the original's **surface area** comes back, and how far the
+original's **outline** sits from the rebuilt surface, in units of one new face.
+
+On a stylized plant at a quarter density - thin leaves, a trunk with bark peeling
+off it, the hardest thing here - every object keeps **97 % or more** of its area
+with two rounds of smoothing, and its outlines sit within **0.15** of a face size.
+On closed, chunky shapes with no outline at all, such as a set of stones, it is
+**99.9 %**.
+
+Where it does lose shape, it is for a reason you can act on. A moulding that
+turns through less than a right angle is a bend, not a rim, and with **Keep sharp
+edges** off a rebuild is entitled to cut across it - turn that on for a
+hard-surface part. And detail finer than one new face cannot survive at any
+setting: ask for more faces.
 
 ## How long it takes
 
