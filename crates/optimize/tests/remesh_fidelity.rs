@@ -787,6 +787,102 @@ fn no_rebuilt_vertex_is_lit_from_behind() {
     }
 }
 
+/// Total length of the edges where a mesh folds by more than `degrees`, welded
+/// by position, and how many such edges there are.
+fn crease_length(model: &ModelData, node: u32, degrees: f32) -> (f32, usize) {
+    use std::collections::HashMap;
+    let mut slot: HashMap<[u32; 3], u32> = HashMap::new();
+    let mut at: HashMap<(u32, u32), (Vec<glam::Vec3>, f32)> = HashMap::new();
+    for (triangle, corners) in model.indices.as_chunks::<3>().0.iter().enumerate() {
+        if model.triangles.node.get(triangle).copied() != Some(node) {
+            continue;
+        }
+        let p = corners.map(|c| model.vertices[c as usize].position);
+        let Some(normal) = (p[1] - p[0]).cross(p[2] - p[0]).try_normalize() else {
+            continue;
+        };
+        let w = p.map(|point| {
+            let key = [point.x.to_bits(), point.y.to_bits(), point.z.to_bits()];
+            let next = slot.len() as u32;
+            *slot.entry(key).or_insert(next)
+        });
+        for corner in 0..3 {
+            let (a, b) = (w[corner], w[(corner + 1) % 3]);
+            if a == b {
+                continue;
+            }
+            let key = if a < b { (a, b) } else { (b, a) };
+            let entry = at.entry(key).or_insert_with(|| (Vec::new(), 0.0));
+            entry.0.push(normal);
+            entry.1 = p[corner].distance(p[(corner + 1) % 3]);
+        }
+    }
+    let limit = degrees.to_radians().cos();
+    let mut length = 0.0;
+    let mut count = 0;
+    for (normals, span) in at.values() {
+        if normals.len() == 2 && normals[0].dot(normals[1]) < limit {
+            length += span;
+            count += 1;
+        }
+    }
+    (length, count)
+}
+
+/// Does a rebuild put its edges on the source's creases, or across them?
+#[test]
+#[ignore = "a measurement, not a check"]
+fn does_a_rebuild_land_on_the_creases() {
+    for (name, ratio) in [("rock_pillar_03.fbx", 0.6f32), ("SM_column04.fbx", 0.5)] {
+        let Some(model) = fixture(name) else {
+            continue;
+        };
+        println!(
+            "
+=== {name} @ {ratio} ==="
+        );
+        let (_, plain) = matched_pair(ratio, 2);
+        let mut creased = OptStack::default();
+        creased.push_op(OpKind::Remesh(RemeshParams {
+            topology: RemeshTopology::Triangles,
+            density: RemeshDensity::Ratio,
+            ratio,
+            smooth_iterations: 2,
+            sharp_edges: true,
+            crease_angle: 30.0,
+            align_to_boundaries: true,
+            adaptive_strength: 1.0,
+            ..RemeshParams::default()
+        }));
+        for (label, stack) in [("remesh", &plain), ("remesh sharp", &creased)] {
+            let Ok(result) = process(ProcessInput {
+                model: &model,
+                stack,
+                render_vertex_size: VERTEX_SIZE,
+                hidden_nodes: &[],
+                extras: None,
+            }) else {
+                continue;
+            };
+            let Some(level) = result.lod(0) else { continue };
+            let (mut src, mut out) = (0.0f32, 0.0f32);
+            let (mut src_n, mut out_n) = (0usize, 0usize);
+            for node in 0..model.nodes.len() as u32 {
+                let (a, an) = crease_length(&model, node, 30.0);
+                let (b, bn) = crease_length(&level.model, node, 30.0);
+                src += a;
+                out += b;
+                src_n += an;
+                out_n += bn;
+            }
+            println!(
+                "  {label:<14} source creases {src:.3} ({src_n} edges) -> rebuilt {out:.3}                  ({out_n} edges) = {:.0}% of the length kept",
+                100.0 * out / src.max(f32::MIN_POSITIVE)
+            );
+        }
+    }
+}
+
 /// Where the shading normals of a rebuild go wrong, against a simplify's.
 #[test]
 #[ignore = "a measurement, not a check"]

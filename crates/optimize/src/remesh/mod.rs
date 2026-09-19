@@ -52,6 +52,7 @@ use crate::{OptError, Warnings, ops};
 )]
 pub(crate) mod cleanup;
 pub(crate) mod collapse;
+mod cross_field;
 #[allow(
     dead_code,
     reason = "the rebuild that reads the chains is the next stage"
