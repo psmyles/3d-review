@@ -383,3 +383,36 @@ bool density_field(const DensityInput &input, float strength, float target_edge,
 }
 
 } // namespace review
+
+/* ------------------------------------------------------------------------- *
+ * Parity probe: the reference answer, for the Rust port to be checked against.
+ *
+ * `remesh/size_field.rs` reimplements everything above, and this operation is
+ * about to stop compiling any C++ at all - so the one moment the two can be
+ * compared is now. Test-only: declared in `remesh_ffi.rs`, exercised by
+ * `tests/size_field_parity.rs`, and deleted with the rest of this file when the
+ * vendored engines go.
+ * ------------------------------------------------------------------------- */
+extern "C" int review_density_field_probe(const float *positions, const float *normals,
+                                          const float *areas, std::size_t vertex_count,
+                                          const std::uint32_t *indices, std::size_t index_count,
+                                          float strength, float target_edge, float *out) {
+    review::DensityInput input;
+    input.positions = positions;
+    input.normals = normals;
+    input.areas = areas;
+    input.vertex_count = vertex_count;
+    input.indices = indices;
+    input.index_count = index_count;
+
+    std::vector<float> field;
+    if (!review::density_field(input, strength, target_edge, field)) {
+        return 0;
+    }
+    /* The caller sizes `out` from the same vertex count it passed in, and
+     * `density_field` fills exactly that many. */
+    for (std::size_t vertex = 0; vertex < field.size() && vertex < vertex_count; ++vertex) {
+        out[vertex] = field[vertex];
+    }
+    return 1;
+}

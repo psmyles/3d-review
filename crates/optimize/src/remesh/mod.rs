@@ -50,6 +50,14 @@ pub(crate) mod layout;
 pub(crate) mod manifold;
 pub(crate) mod project;
 pub(crate) mod proxy;
+// Built and proven against the C++ it was ported from in this step; the solver
+// that calls it lands in the next, and takes this allow with it.
+#[allow(
+    dead_code,
+    reason = "the rebuild that reads the field is the next stage"
+)]
+pub(crate) mod size_field;
+pub(crate) mod topology;
 mod unavailable;
 
 pub(crate) use project::Winding;
@@ -447,20 +455,19 @@ pub(crate) fn remesh_submeshes(
     // is still wanted, but the progress sink posts to the event loop and stays
     // on the thread that owns the scope.
     let token = run.token();
+    // What each object may spend inside its own rebuild, so the per-object
+    // parallelism and the parallelism *within* an object do not oversubscribe
+    // each other: N objects across N cores get one thread each, one object gets
+    // the machine.
+    let cores = crate::parallel::default_threads();
+    let workers = cores.min(jobs.len().max(1));
+    let threads = (cores / workers).max(1);
     crate::parallel::solve_nodes(
         &jobs,
         token,
         |job| {
             let mut notes = Warnings::default();
-            let rebuilt = remesh_node(
-                &job.pieces,
-                job.proxy,
-                job.faces,
-                &job.params,
-                &job.name,
-                &mut notes,
-                token,
-            );
+            let rebuilt = remesh_node(job, &mut notes, token, threads);
             NodeOutcome {
                 rebuilt,
                 notes: notes.into_vec(),
@@ -542,16 +549,26 @@ struct NodeOutcome {
 /// Rebuild one node's surface, or `None` when it was left as it is (with a
 /// warning already recorded).
 fn remesh_node(
-    pieces: &[&Submesh],
-    proxy: &proxy::Proxy,
-    faces: u32,
-    params: &RemeshParams,
-    name: &str,
+    job: &NodeJob<'_>,
     warnings: &mut Warnings,
     cancel: Option<&crate::CancelToken>,
+    threads: usize,
 ) -> Option<Vec<Submesh>> {
     let _z = crate::prof::zone!("Remesh Node");
-    let report = manifold::report(&proxy.indices);
+    let NodeJob {
+        pieces,
+        proxy,
+        faces,
+        params,
+        name,
+        ..
+    } = job;
+    let (pieces, faces, params, name) = (pieces.as_slice(), *faces, params, name.as_str());
+    // Named `connectivity` because `topology` is already this operation's word
+    // for the *kind of face* the user asked for, two lines below.
+    let connectivity =
+        topology::Topology::build(&proxy.indices, proxy.positions.len() / 3, threads, cancel);
+    let report = connectivity.report();
 
     // "Only quads" is a solver over a half-edge structure, so a surface that
     // branches or pinches is not something it can decline politely — it is

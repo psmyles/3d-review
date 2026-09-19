@@ -127,6 +127,114 @@ pub(crate) fn solve_nodes<J, R>(
     });
 }
 
+/// How many elements one worker claims at a time in a [`sweep`].
+///
+/// **Fixed, never derived from the thread count.** Every reduction below folds
+/// per chunk and merges in chunk order, so the arithmetic a sweep performs is a
+/// function of this constant alone — change the thread count and the answer is
+/// bit-for-bit the same, change this and it may not be. That is the whole
+/// determinism argument for the stages built on it, and it is why a "tune the
+/// chunk to the core count" optimization must never be added here.
+pub(crate) const CHUNK: usize = 65_536;
+
+/// Threads to use when nothing has budgeted them. The per-object budget
+/// (`solve_nodes`) is the real source; this is for a lone call.
+pub(crate) fn default_threads() -> usize {
+    std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
+}
+
+/// Fill `out` in parallel, one [`CHUNK`] at a time: `body(base, chunk)` writes
+/// `chunk[i]` for the element whose global index is `base + i`.
+///
+/// The Jacobi shape every field pass in [`crate::remesh`] takes — read the
+/// previous buffer, write this one — so the chunks are disjoint `&mut` slices
+/// and the borrow checker is the proof that the parallelism is sound. Since a
+/// chunk's contents depend only on its own indices and on immutable input,
+/// scheduling cannot reach the result.
+pub(crate) fn sweep<T, F>(out: &mut [T], threads: usize, body: F)
+where
+    T: Send,
+    F: Fn(usize, &mut [T]) + Sync,
+{
+    if out.is_empty() {
+        return;
+    }
+    let chunks = out.len().div_ceil(CHUNK);
+    let workers = threads.max(1).min(chunks);
+    if workers <= 1 {
+        for (index, chunk) in out.chunks_mut(CHUNK).enumerate() {
+            body(index * CHUNK, chunk);
+        }
+        return;
+    }
+
+    // Dealt round-robin before the threads start, as `ao.rs` does: the chunks
+    // are a fixed size, so a static split is already balanced and needs no
+    // shared counter.
+    let mut buckets: Vec<Vec<(usize, &mut [T])>> = (0..workers).map(|_| Vec::new()).collect();
+    for (index, chunk) in out.chunks_mut(CHUNK).enumerate() {
+        buckets[index % workers].push((index * CHUNK, chunk));
+    }
+    std::thread::scope(|scope| {
+        for bucket in buckets {
+            let body = &body;
+            scope.spawn(move || {
+                for (base, chunk) in bucket {
+                    body(base, chunk);
+                }
+            });
+        }
+    });
+}
+
+/// Fold `[0, len)` one [`CHUNK`] at a time, returning one partial per chunk
+/// **in chunk order**.
+///
+/// The caller merges them itself, in that order, which is what keeps a
+/// floating-point reduction independent of the thread count: the partials are
+/// always the same values combined in always the same sequence.
+#[allow(
+    dead_code,
+    reason = "read by the size field, which the next stage wires in"
+)]
+pub(crate) fn sweep_reduce<A, F>(len: usize, threads: usize, fold: F) -> Vec<A>
+where
+    A: Send,
+    F: Fn(std::ops::Range<usize>) -> A + Sync,
+{
+    if len == 0 {
+        return Vec::new();
+    }
+    let chunks = len.div_ceil(CHUNK);
+    let range_of = |chunk: usize| {
+        let start = chunk * CHUNK;
+        start..((start + CHUNK).min(len))
+    };
+    let workers = threads.max(1).min(chunks);
+    if workers <= 1 {
+        return (0..chunks).map(|chunk| fold(range_of(chunk))).collect();
+    }
+
+    let mut out: Vec<Option<A>> = (0..chunks).map(|_| None).collect();
+    let mut buckets: Vec<Vec<(usize, &mut Option<A>)>> = (0..workers).map(|_| Vec::new()).collect();
+    for (index, slot) in out.iter_mut().enumerate() {
+        buckets[index % workers].push((index, slot));
+    }
+    std::thread::scope(|scope| {
+        for bucket in buckets {
+            let fold = &fold;
+            scope.spawn(move || {
+                for (index, slot) in bucket {
+                    *slot = Some(fold(range_of(index)));
+                }
+            });
+        }
+    });
+    out.into_iter()
+        .map(|partial| partial.expect("every chunk is folded exactly once"))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,5 +288,53 @@ mod tests {
     fn no_jobs_is_not_an_error() {
         let jobs: [usize; 0] = [];
         solve_nodes(&jobs, None, |job| *job, |_, _| panic!("nothing to land"));
+    }
+
+    /// The property every field stage rests on: a sweep writes the same bytes
+    /// however many threads ran it.
+    #[test]
+    fn a_sweep_writes_the_same_bytes_at_every_thread_count() {
+        let len = CHUNK * 3 + 17;
+        let fill = |threads: usize| {
+            let mut out = vec![0u64; len];
+            sweep(&mut out, threads, |base, chunk| {
+                for (offset, slot) in chunk.iter_mut().enumerate() {
+                    *slot = ((base + offset) as u64).wrapping_mul(2_654_435_761);
+                }
+            });
+            out
+        };
+
+        let one = fill(1);
+        assert_eq!(one, fill(2));
+        assert_eq!(one, fill(7));
+        assert_eq!(one[len - 1], ((len - 1) as u64).wrapping_mul(2_654_435_761));
+    }
+
+    /// A float reduction is order-sensitive, so the partials must come back in
+    /// chunk order regardless of which worker produced them.
+    #[test]
+    fn sweep_reduce_partials_are_in_chunk_order_at_every_thread_count() {
+        let len = CHUNK * 4 + 3;
+        let fold = |threads: usize| {
+            sweep_reduce(len, threads, |range| {
+                range.map(|index| 1.0 / (index as f64 + 1.0)).sum::<f64>()
+            })
+        };
+
+        let one = fold(1);
+        assert_eq!(one.len(), len.div_ceil(CHUNK));
+        assert_eq!(one, fold(3));
+        assert_eq!(one, fold(8));
+        // And the merged total, which is what a caller actually uses.
+        let total: f64 = one.iter().sum();
+        assert_eq!(total, fold(5).iter().sum::<f64>());
+    }
+
+    #[test]
+    fn an_empty_sweep_is_not_an_error() {
+        let mut out: Vec<u32> = Vec::new();
+        sweep(&mut out, 4, |_, _| panic!("nothing to fill"));
+        assert!(sweep_reduce(0, 4, |_| 1u32).is_empty());
     }
 }

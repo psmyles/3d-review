@@ -229,6 +229,64 @@ pub(crate) fn run(
     Ok(output)
 }
 
+/// The reference density field, for the Rust port to be checked against.
+///
+/// `remesh/size_field.rs` reimplements `remesh_density.cpp`, and the vendored
+/// C++ is about to be deleted — so the one moment the two answers can be
+/// compared is while both exist. Test-only, and it goes with the C++ it calls.
+///
+/// Returns the field, or `None` where the reference reports there is nothing to
+/// do (which the port spells as `None` too).
+#[cfg(test)]
+pub(crate) fn density_field_reference(
+    positions: &[f32],
+    normals: &[f32],
+    areas: Option<&[f32]>,
+    indices: &[u32],
+    vertex_count: usize,
+    strength: f32,
+    target_edge: f32,
+) -> Option<Vec<f32>> {
+    unsafe extern "C" {
+        fn review_density_field_probe(
+            positions: *const f32,
+            normals: *const f32,
+            areas: *const f32,
+            vertex_count: usize,
+            indices: *const u32,
+            index_count: usize,
+            strength: f32,
+            target_edge: f32,
+            out: *mut f32,
+        ) -> c_int;
+    }
+
+    assert!(positions.len() >= vertex_count * 3);
+    assert!(normals.len() >= vertex_count * 3);
+    if let Some(areas) = areas {
+        assert!(areas.len() >= vertex_count);
+    }
+    let mut out = vec![0.0f32; vertex_count];
+    // SAFETY: every pointer is taken from a slice checked above to hold at
+    // least what `vertex_count` and `indices.len()` promise, and `out` is
+    // exactly `vertex_count` long, which is what the probe fills. The areas
+    // pointer is null only when there are no areas, which the C side tests for.
+    let varies = unsafe {
+        review_density_field_probe(
+            positions.as_ptr(),
+            normals.as_ptr(),
+            areas.map_or(std::ptr::null(), <[f32]>::as_ptr),
+            vertex_count,
+            indices.as_ptr(),
+            indices.len(),
+            strength,
+            target_edge,
+            out.as_mut_ptr(),
+        )
+    };
+    (varies != 0).then_some(out)
+}
+
 /// The bridge's NUL-terminated message as a `String`, or a stand-in when it
 /// wrote none.
 fn error_text(message: &[c_char; ERROR_LENGTH]) -> String {
