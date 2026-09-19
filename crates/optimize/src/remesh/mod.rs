@@ -46,10 +46,36 @@ use crate::stack::{OpInstance, OpKind, RemeshDensity, RemeshParams, RemeshTopolo
 use crate::submesh::{NO_FACE, PolygonCarry, Submesh};
 use crate::{OptError, Warnings, ops};
 
+#[allow(
+    dead_code,
+    reason = "the rebuild that reads the chains is the next stage"
+)]
+pub(crate) mod features;
 pub(crate) mod layout;
+#[allow(
+    dead_code,
+    reason = "the rebuild that relaxes the seeds is the next stage"
+)]
+pub(crate) mod lloyd;
 pub(crate) mod manifold;
+#[allow(
+    dead_code,
+    reason = "the rebuild that reads the regions is the next stage"
+)]
+pub(crate) mod partition;
+#[allow(
+    dead_code,
+    reason = "the progressive display that shows these lands in step 4"
+)]
+pub(crate) mod preview;
 pub(crate) mod project;
 pub(crate) mod proxy;
+#[allow(
+    dead_code,
+    reason = "the rebuild that reads the seeds is the next stage"
+)]
+pub(crate) mod seeds;
+pub(crate) mod surface;
 // Built and proven against the C++ it was ported from in this step; the solver
 // that calls it lands in the next, and takes this allow with it.
 #[allow(
