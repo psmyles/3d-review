@@ -303,6 +303,27 @@ impl Bvh {
         query: Vec3,
         max_distance: f32,
     ) -> Option<ClosestPoint> {
+        self.closest_point_where(model, query, max_distance, |_| true)
+    }
+
+    /// The nearest point on a triangle `allow` accepts.
+    ///
+    /// The filter is applied to the triangles themselves, not to the answer, so
+    /// the search returns the nearest *acceptable* point rather than nothing
+    /// when the nearest point happens to be on a rejected triangle. A caller
+    /// asking "where is the surface, on the side I am facing" needs that: on a
+    /// sheet with two sides a hair apart the nearest triangle of all is very
+    /// often the one on the other side.
+    ///
+    /// Box pruning is unchanged - `allow` cannot be consulted for a box - so a
+    /// filter that rejects almost everything costs close to a full traversal.
+    pub fn closest_point_where(
+        &self,
+        model: &ModelData,
+        query: Vec3,
+        max_distance: f32,
+        allow: impl Fn(u32) -> bool,
+    ) -> Option<ClosestPoint> {
         // NaN spelled out rather than left to a negated comparison: a NaN range
         // would otherwise square to NaN and reject every box silently.
         if self.tris.is_empty() || max_distance.is_nan() || max_distance < 0.0 {
@@ -328,6 +349,9 @@ impl Bvh {
                 let leaf =
                     &self.tris[node.left_first as usize..(node.left_first + node.count) as usize];
                 for &t in leaf {
+                    if !allow(t) {
+                        continue;
+                    }
                     let [a, b, c] = triangle_positions(model, t);
                     let (point, barycentric) = closest_point_on_triangle(query, a, b, c);
                     let distance_squared = (point - query).length_squared();

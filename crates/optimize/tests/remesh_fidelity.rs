@@ -615,6 +615,245 @@ fn how_a_rebuild_compares_with_a_simplify() {
     }
 }
 
+/// How badly a mesh's stored shading normals disagree with the surface they sit
+/// on.
+///
+/// A coarse mesh's normals are *meant* to differ from its own flat faces - that
+/// is what makes it shade smooth - so a difference is not a fault by itself.
+/// What is a fault is a normal pointing into the surface rather than out of it,
+/// which is what a projection that picked the wrong side of a thin shell gives,
+/// and it reads as a black or inside-out patch.
+///
+/// Returns (share facing backwards, share past 90 degrees from the local
+/// geometry, worst angle in degrees).
+fn shading_error(model: &ModelData) -> (f32, f32, f32) {
+    let mut geometric = vec![glam::Vec3::ZERO; model.vertices.len()];
+    let mut total_area = vec![0.0f32; model.vertices.len()];
+    for corners in model.indices.as_chunks::<3>().0 {
+        let p = corners.map(|c| model.vertices[c as usize].position);
+        let weighted = (p[1] - p[0]).cross(p[2] - p[0]);
+        for &corner in corners {
+            geometric[corner as usize] += weighted;
+            total_area[corner as usize] += weighted.length();
+        }
+    }
+
+    let mut backwards = 0usize;
+    let mut steep = 0usize;
+    let mut counted = 0usize;
+    let mut worst = 0.0f32;
+    for (at, vertex) in model.vertices.iter().enumerate() {
+        // Where the faces around a vertex do not agree on a direction - a rim,
+        // where the surface folds back on itself - their weighted sum is very
+        // nearly zero and points nowhere in particular. Comparing anything
+        // against that measures the noise, not the shading.
+        if geometric[at].length() < total_area[at] * 0.5 {
+            continue;
+        }
+        let Some(surface) = geometric[at].try_normalize() else {
+            continue;
+        };
+        let Some(stored) = vertex.normal.try_normalize() else {
+            continue;
+        };
+        counted += 1;
+        let dot = stored.dot(surface).clamp(-1.0, 1.0);
+        worst = worst.max(dot.acos().to_degrees());
+        if dot < 0.0 {
+            backwards += 1;
+        } else if dot < 0.5 {
+            steep += 1;
+        }
+    }
+    let measurable = counted as f32 / model.vertices.len().max(1) as f32;
+    let _ = measurable;
+    let counted = counted.max(1) as f32;
+    (backwards as f32 / counted, steep as f32 / counted, worst)
+}
+
+/// The share of faces whose own three corner normals disagree sharply.
+///
+/// A face like that spans a discontinuity in the source's shading, a hard edge,
+/// so it is drawn as a gradient across something that should be a crease. That
+/// is what "broken shading along an edge" looks like, and a simplify cannot
+/// produce one: it never makes a face that was not already there.
+fn faces_spanning_a_crease(model: &ModelData) -> f32 {
+    let mut spanning = 0usize;
+    let mut total = 0usize;
+    for corners in model.indices.as_chunks::<3>().0 {
+        let n = corners.map(|c| model.vertices[c as usize].normal);
+        total += 1;
+        let worst = (0..3)
+            .map(|at| n[at].dot(n[(at + 1) % 3]))
+            .fold(1.0f32, f32::min);
+        if worst < 0.5 {
+            spanning += 1;
+        }
+    }
+    spanning as f32 / total.max(1) as f32
+}
+
+/// How far each output normal is from the source's own shading there, in
+/// degrees at the 90th percentile.
+///
+/// The counter-measure to deriving normals from the rebuilt geometry: doing
+/// that makes them agree with the new surface by construction, so any metric
+/// against the new surface is circular. This one asks the opposite question -
+/// how much of the original's smooth shading was thrown away.
+fn normal_drift_from_source(source: &ModelData, level: &ModelData, bvh: &SceneBvh) -> f32 {
+    // Which object each output vertex belongs to. Without this a leaf of a plant
+    // matches the nearest point on a *different* leaf, and the figure is noise.
+    let mut owner = vec![u32::MAX; level.vertices.len()];
+    for (triangle, corners) in level.indices.as_chunks::<3>().0.iter().enumerate() {
+        let node = level
+            .triangles
+            .node
+            .get(triangle)
+            .copied()
+            .unwrap_or(u32::MAX);
+        for &corner in corners {
+            owner[corner as usize] = node;
+        }
+    }
+
+    let mut angles = Vec::new();
+    for (at, vertex) in level.vertices.iter().enumerate() {
+        let node = owner[at];
+        let Some((_, hit)) =
+            bvh.closest_point(source, vertex.position, f32::MAX, |which| which == node)
+        else {
+            continue;
+        };
+        let base = hit.triangle as usize * 3;
+        let mut blended = glam::Vec3::ZERO;
+        for corner in 0..3 {
+            let index = source.indices[base + corner] as usize;
+            blended += source.vertices[index].normal * hit.barycentric[corner];
+        }
+        let (Some(blended), Some(stored)) =
+            (blended.try_normalize(), vertex.normal.try_normalize())
+        else {
+            continue;
+        };
+        angles.push(blended.dot(stored).clamp(-1.0, 1.0).acos().to_degrees());
+    }
+    if angles.is_empty() {
+        return 0.0;
+    }
+    angles.sort_by(f32::total_cmp);
+    angles[(angles.len() - 1) * 9 / 10]
+}
+
+/// No rebuilt vertex is lit from behind its own surface.
+///
+/// A rebuilt mesh takes its shading normals from the *source* surface, which is
+/// what carries an artist's smoothing across - but the surface they came from is
+/// not the one they end up on. Where the source folds inside a single new face,
+/// the nearest point to a vertex on one sheet is on the other one, and the
+/// normal read from there faces into the mesh. It is not a slightly wrong
+/// normal; it is a black patch, and it is what "broken shading" looks like.
+///
+/// A normal that merely differs from its own face is doing its job - that is the
+/// smooth shading - so the line is a right angle, and only past it is a fault.
+#[test]
+fn no_rebuilt_vertex_is_lit_from_behind() {
+    for (name, ratio) in [
+        ("stylized_palm_plant_04.fbx", 0.5f32),
+        ("rock_pillar_03.fbx", 0.6),
+    ] {
+        let Some(model) = fixture(name) else {
+            continue;
+        };
+        for smoothing in [0, 2] {
+            let (_, remesh) = matched_pair(ratio, smoothing);
+            let Ok(result) = process(ProcessInput {
+                model: &model,
+                stack: &remesh,
+                render_vertex_size: VERTEX_SIZE,
+                hidden_nodes: &[],
+                extras: None,
+            }) else {
+                continue;
+            };
+            let level = result.lod(0).expect("the stack produced a level");
+            let (backwards, _, _) = shading_error(&level.model);
+            assert_eq!(
+                backwards,
+                0.0,
+                "{name} at {smoothing} rounds of tidying: {:.2}% of vertices carry a                  normal facing into the surface they sit on",
+                backwards * 100.0
+            );
+        }
+    }
+}
+
+/// Where the shading normals of a rebuild go wrong, against a simplify's.
+#[test]
+#[ignore = "a measurement, not a check"]
+fn how_well_a_rebuild_shades() {
+    for (name, ratio) in [
+        ("rock_pillar_03.fbx", 0.6f32),
+        ("stylized_palm_plant_04.fbx", 0.5),
+        ("SM_column04.fbx", 0.5),
+    ] {
+        let Some(model) = fixture(name) else {
+            continue;
+        };
+        println!("\n=== {name} @ {ratio} ===");
+        let (backwards, steep, worst) = shading_error(&model);
+        println!(
+            "  {:<12} {:>6.2}% backwards {:>6.2}% past 90, worst {worst:>5.1} deg |              {:>6.2}% of faces span a crease",
+            "source",
+            backwards * 100.0,
+            steep * 100.0,
+            faces_spanning_a_crease(&model) * 100.0
+        );
+
+        let (reduce, remesh) = matched_pair(ratio, 0);
+        let (_, smoothed) = matched_pair(ratio, 2);
+        let mut creased = OptStack::default();
+        creased.push_op(OpKind::Remesh(RemeshParams {
+            topology: RemeshTopology::Triangles,
+            density: RemeshDensity::Ratio,
+            ratio,
+            smooth_iterations: 2,
+            sharp_edges: true,
+            crease_angle: 30.0,
+            align_to_boundaries: true,
+            adaptive_strength: 1.0,
+            ..RemeshParams::default()
+        }));
+        for (label, stack) in [
+            ("reduce", &reduce),
+            ("remesh s0", &remesh),
+            ("remesh s2", &smoothed),
+            ("remesh sharp", &creased),
+        ] {
+            let Ok(result) = process(ProcessInput {
+                model: &model,
+                stack,
+                render_vertex_size: VERTEX_SIZE,
+                hidden_nodes: &[],
+                extras: None,
+            }) else {
+                continue;
+            };
+            let Some(level) = result.lod(0) else { continue };
+            let (backwards, steep, worst) = shading_error(&level.model);
+            println!(
+                "  {label:<12} {:>6.2}% backwards {:>6.2}% past 90, worst {worst:>5.1} deg |                  {:>6.2}% of faces span a crease",
+                backwards * 100.0,
+                steep * 100.0,
+                faces_spanning_a_crease(&level.model) * 100.0
+            );
+            println!(
+                "               {:>6.1} deg p90 away from the source's own shading",
+                normal_drift_from_source(&model, &level.model, &SceneBvh::build(&model))
+            );
+        }
+    }
+}
+
 /// What the rebuild currently costs in shape, object by object.
 #[test]
 #[ignore = "a measurement, not a check"]

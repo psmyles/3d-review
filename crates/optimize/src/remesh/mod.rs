@@ -121,6 +121,11 @@ const MIN_INPUT_TRIANGLES: usize = 16;
 /// impossible.
 const PROJECTION_RANGE: f32 = 0.25;
 
+/// How much the faces around a vertex must agree on a direction before that
+/// direction may overrule a projected shading normal. See
+/// [`turn_back_inverted_normals`].
+const NORMAL_AGREEMENT: f32 = 0.5;
+
 /// What one rebuild produced: a polygon soup over its own vertices.
 ///
 /// Triangles today; the offsets table is what lets a quad-dominant topology
@@ -751,6 +756,7 @@ pub(crate) fn build_pieces_from(
             // still draws and exports correctly — only larger.
             debug_assert!(false, "welding a rebuilt piece failed: {error}");
         }
+        turn_back_inverted_normals(&mut piece);
         // A triangle mesh publishes no polygon table: a face table over
         // triangles says nothing the index buffer does not, and carrying one
         // would put the whole level into the corner-run layout for no gain. A
@@ -760,6 +766,65 @@ pub(crate) fn build_pieces_from(
         built.push(piece);
     }
     built
+}
+
+/// Replace any shading normal that points into the surface it sits on.
+///
+/// The normals on a rebuilt piece are read off the *source* surface, which is
+/// the right thing to do - it is what carries an artist's smoothing across to
+/// the new mesh, and it is why a coarse rebuild still shades like the fine model
+/// it came from. But the surface they are read from is not the surface they end
+/// up on, and where the two disagree badly enough the normal ends up facing into
+/// the mesh. That is not a slightly-off normal, it is a black patch: a lit
+/// surface facing away from its own geometry.
+///
+/// It happens where the source folds within one new face. The nearest source
+/// point to a vertex on the top sheet of a leaf is very often on the bottom
+/// sheet, a fraction of a millimetre below, and its normal points the other way.
+/// Measured before this: between 3 % and 6 % of a rebuilt object's vertices, and
+/// up to 179 degrees out, against 0.5 % to 1.2 % for a simplify of the same mesh
+/// (a simplify keeps original vertices, so it can hardly have the problem).
+///
+/// Only the indefensible ones are touched. A normal that merely differs from the
+/// face it is on is doing its job - that difference is the smooth shading - so
+/// the test is whether it has gone past a right angle from the surface, and the
+/// replacement is the surface's own direction. Anything else is left exactly as
+/// the projection found it.
+fn turn_back_inverted_normals(piece: &mut Submesh) {
+    let mut geometric = vec![Vec3::ZERO; piece.vertices.len()];
+    let mut fan_area = vec![0.0f32; piece.vertices.len()];
+    for corners in piece.indices.as_chunks::<3>().0 {
+        let Some([a, b, c]) = corners
+            .iter()
+            .map(|&corner| piece.vertices.get(corner as usize).map(|v| v.position))
+            .collect::<Option<Vec<_>>>()
+            .and_then(|points| <[Vec3; 3]>::try_from(points).ok())
+        else {
+            continue;
+        };
+        // Unnormalized, so the sum is area weighted.
+        let weighted = (b - a).cross(c - a);
+        for &corner in corners {
+            geometric[corner as usize] += weighted;
+            fan_area[corner as usize] += weighted.length();
+        }
+    }
+
+    for ((vertex, accumulated), area) in piece.vertices.iter_mut().zip(&geometric).zip(&fan_area) {
+        // Where the faces around a vertex disagree about which way is out - a
+        // rim, where the surface folds back on itself - their weighted sum is
+        // very nearly zero and points nowhere in particular. That is no basis
+        // for overruling a normal the source actually authored.
+        if *area <= 0.0 || accumulated.length() < NORMAL_AGREEMENT * *area {
+            continue;
+        }
+        let Some(surface) = accumulated.try_normalize() else {
+            continue;
+        };
+        if vertex.normal.dot(surface) < 0.0 {
+            vertex.normal = surface;
+        }
+    }
 }
 
 /// A polygon's fan triangulation over corners numbered from `base`.
