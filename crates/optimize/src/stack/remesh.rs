@@ -8,38 +8,42 @@
 use serde::{Deserialize, Serialize};
 
 /// What the rebuilt surface is made of.
-///
-/// One variant, and an enum anyway: a quad-dominant topology is the planned
-/// follow-on, and adding a variant to this is a change no saved preset notices
-/// — where replacing the field with a boolean now and an enum again later is
-/// two wire formats.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RemeshTopology {
     /// Evenly sized, curvature-aligned triangles.
-    ///
-    /// The only kind for now. A preset written when there were three loads as
-    /// this one and says so, rather than silently meaning something else.
     #[default]
-    #[serde(alias = "QuadDominant", alias = "PureQuads")]
     Triangles,
+    /// The same surface with its triangles paired into quads wherever a quad
+    /// describes it honestly, and left as triangles where one would not.
+    ///
+    /// Quad *dominant*, not pure. A closed surface cannot be all quads without
+    /// either moving the vertices somewhere they fit better — which would cost
+    /// the shape this rebuild is careful about — or flattening the creases the
+    /// odd faces sit on.
+    #[serde(alias = "QuadDominant", alias = "PureQuads")]
+    Quads,
 }
 
 impl RemeshTopology {
-    pub const ALL: [RemeshTopology; 1] = [RemeshTopology::Triangles];
+    pub const ALL: [RemeshTopology; 2] = [RemeshTopology::Triangles, RemeshTopology::Quads];
 
     pub fn label(self) -> &'static str {
         match self {
             RemeshTopology::Triangles => "Triangles",
+            RemeshTopology::Quads => "Quads",
         }
     }
 
     /// How many output *faces* one source triangle is worth when the density is
-    /// given as a ratio. One, while triangles are all this produces; a
-    /// quad-dominant topology would be about a half, since a quad covers
-    /// roughly two triangles' worth of surface.
+    /// given as a ratio.
+    ///
+    /// One for triangles. A half for quads, since a quad covers roughly two
+    /// triangles' worth of surface — so the same ratio asks for the same amount
+    /// of surface detail either way, which is what a ratio is for.
     pub(crate) fn faces_per_triangle(self) -> f32 {
         match self {
             RemeshTopology::Triangles => 1.0,
+            RemeshTopology::Quads => 0.5,
         }
     }
 }

@@ -42,7 +42,7 @@ use std::collections::HashMap;
 use glam::{Vec3, Vec4};
 use review_model::{ModelData, Vertex};
 
-use crate::stack::{OpInstance, OpKind, RemeshDensity, RemeshParams, WeldParams};
+use crate::stack::{OpInstance, OpKind, RemeshDensity, RemeshParams, RemeshTopology, WeldParams};
 use crate::submesh::{NO_FACE, PolygonCarry, Submesh};
 use crate::{OptError, Warnings, ops};
 
@@ -78,6 +78,7 @@ pub(crate) mod project;
 pub(crate) mod proxy;
 #[allow(dead_code, reason = "the collapse that reads these is the next stage")]
 pub(crate) mod quadric;
+mod quads;
 #[allow(
     dead_code,
     reason = "the rebuild that reads the seeds is the next stage"
@@ -634,6 +635,23 @@ fn rebuild_node(
         ));
     }
 
+    // Quads were asked for and most of the surface would not take them. The
+    // cause is nearly always the density rather than the model: a hard-surface
+    // object rebuilt at a low face count is almost all creases, and a quad laid
+    // across a crease would flatten it - so the merge leaves those as the pairs
+    // of triangles they are. Worth saying, because the face count comes back
+    // high when it happens and the reason is not visible in the viewport.
+    if job.params.topology == RemeshTopology::Quads && report.quads * 2 < output.face_count() {
+        warnings.push(&format!(
+            "Remesh: only {} of '{}' came back as quads ({} faces) - the rebuilt surface \
+             folds too sharply at this density for the rest to pair up. Ask for more faces, \
+             or rebuild it as triangles.",
+            report.quads,
+            job.name,
+            output.face_count()
+        ));
+    }
+
     let mut output = output;
     layout::canonicalize(&mut output);
     Some(build_pieces_from(
@@ -758,12 +776,18 @@ pub(crate) fn build_pieces_from(
             debug_assert!(false, "welding a rebuilt piece failed: {error}");
         }
         turn_back_inverted_normals(&mut piece);
-        // A triangle mesh publishes no polygon table: a face table over
+        // A pure triangle mesh publishes no polygon table: a face table over
         // triangles says nothing the index buffer does not, and carrying one
-        // would put the whole level into the corner-run layout for no gain. A
-        // quad-dominant topology would want the other answer, and `assemble`
-        // still knows how to take it - see `PolygonCarry::rebuilt`.
-        piece.polygons = None;
+        // would put the whole level into the corner-run layout for no gain.
+        // Quads are the other case, and the only reason `PolygonCarry::rebuilt`
+        // exists: they reach the viewport, the stats card and the export as
+        // quads, and a Weld or a reorder below the Remesh keeps them.
+        let carry = piece.polygons.as_mut().expect("just built");
+        carry.rebuilt = true;
+        let quads = (0..carry.face_count()).any(|face| carry.face(face).len() > 3);
+        if !quads {
+            piece.polygons = None;
+        }
         built.push(piece);
     }
     built
@@ -830,22 +854,20 @@ fn turn_back_inverted_normals(piece: &mut Submesh) {
 
 /// A polygon's fan triangulation over corners numbered from `base`.
 ///
-/// A quad is split on its shorter diagonal by the caller's corner order — the
-/// canonicalization rotates each face to its lowest vertex, so the split is a
-/// deterministic function of the face rather than of how the engine emitted it.
+/// **A quad is split on its own `0..2` diagonal**, which is the pair of
+/// triangles the [merge](quads) made it out of and checked. Choosing instead by
+/// a rule of this function's own — the shorter diagonal, say — would mean
+/// the viewport drew a different surface from the one that was measured, since
+/// re-splitting a quad is an edge flip: not a large change, but a change to
+/// geometry by a function whose job is to renumber it.
+///
+/// [`layout::canonicalize`] is the other half of that. It rotates a quad by an
+/// even number of places only, so the diagonal is still where the merge left it
+/// by the time this reads it.
 fn fan(corners: &[project::CornerSample], base: u32) -> Vec<[u32; 3]> {
     let degree = corners.len();
     if degree < 3 {
         return Vec::new();
-    }
-    if degree == 4 {
-        // Split on the shorter diagonal: the longer one is the more likely to
-        // cut outside a concave quad.
-        let d02 = corners[0].position.distance_squared(corners[2].position);
-        let d13 = corners[1].position.distance_squared(corners[3].position);
-        if d13 < d02 {
-            return vec![[base + 1, base + 2, base + 3], [base + 1, base + 3, base]];
-        }
     }
     (1..degree - 1)
         .map(|corner| [base, base + corner as u32, base + corner as u32 + 1])

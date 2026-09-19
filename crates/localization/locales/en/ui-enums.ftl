@@ -148,8 +148,8 @@ ui-enums-op-reduce = Reduce
         below it in the list works on the simplified version, and the export saves it in
         place of the original.
 ui-enums-op-remesh = Remesh
-    .description = Rebuilds each object's surface out of evenly sized triangles, sized to
-        follow the shape's own curves. Unlike Reduce it does not take away what is there -
+    .description = Rebuilds each object's surface out of evenly sized faces, triangles or
+        quads, sized to follow the shape's own curves. Unlike Reduce it does not take away what is there -
         it lays down a new surface and copies the materials, texture layout and colors
         across, which is what turns a scan or a CAD part into something a game can use.
         Open borders and sharp edges are kept where they were. Works on still objects
@@ -180,6 +180,9 @@ ui-enums-op-overdraw = Optimize Overdraw
 ui-enums-op-vertex-fetch = Optimize Vertex Fetch
     .description = Reorders the points into the order they are read, and removes any point
         nothing uses. Does not change the shape.
+
+ui-enums-remesh-topology-triangles = Triangles
+ui-enums-remesh-topology-quads = Quads
 
 ui-enums-remesh-density-ratio = Ratio of current
 ui-enums-remesh-density-absolute = Face count

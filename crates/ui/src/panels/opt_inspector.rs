@@ -11,7 +11,8 @@ use review_model::ModelData;
 use review_optimize::{
     AoQuality, AoTarget, AttributeWeights, BakeAoParams, ExportOptions, FbxFormat, HierarchyMode,
     LodLevel, LodPackaging, LodParams, OpKind, ReduceParams, RemeshDensity, RemeshParams,
-    ShrinkwrapParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings, WeldParams,
+    RemeshTopology, ShrinkwrapParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings,
+    WeldParams,
 };
 use review_render::Selection;
 
@@ -238,6 +239,23 @@ fn shrinkwrap_params(ui: &mut egui::Ui, params: ShrinkwrapParams) -> Option<Shri
 fn remesh_params(ui: &mut egui::Ui, params: RemeshParams) -> Option<RemeshParams> {
     let mut edited = params;
     panel_grid(ui, "opt_remesh", |ui| {
+        labeled_combo(
+            ui,
+            Tip::new(keys::ui_opt::REMESH_TOPOLOGY)
+                .describe(keys::ui_opt::REMESH_TOPOLOGY_DESCRIPTION)
+                .page(Page::OptRemesh),
+            "opt_remesh_topology",
+            labels::remesh_topology(edited.topology),
+            |ui| {
+                for topology in RemeshTopology::ALL {
+                    ui.selectable_value(
+                        &mut edited.topology,
+                        topology,
+                        labels::remesh_topology(topology),
+                    );
+                }
+            },
+        );
         labeled_combo(
             ui,
             Tip::new(keys::ui_opt::REMESH_DENSITY)

@@ -56,13 +56,8 @@ pub(super) fn canonicalize(output: &mut RemeshOutput) {
     let rotated: Vec<Vec<u32>> = (0..face_count)
         .map(|face| {
             let mut corners = output.face(face).to_vec();
-            if let Some(lowest) = corners
-                .iter()
-                .enumerate()
-                .min_by_key(|&(_, &corner)| position_key(output.positions[corner as usize]))
-                .map(|(index, _)| index)
-            {
-                corners.rotate_left(lowest);
+            if let Some(lead) = lead_corner(output, &corners) {
+                corners.rotate_left(lead);
             }
             corners
         })
@@ -100,6 +95,26 @@ pub(super) fn canonicalize(output: &mut RemeshOutput) {
     output.positions = positions;
     output.corners = corners;
     output.face_offsets = face_offsets;
+}
+
+/// Which corner a face is rotated to lead with.
+///
+/// The lowest-positioned one, which is a function of the geometry and so the
+/// same however the face was emitted — except on a **quad**, where the choice
+/// is between the two corners of one diagonal only.
+///
+/// A quad carries more than an outline: which of its two diagonals it is split
+/// on is part of what it says, and [`super::fan`] reads that off the corner
+/// order. Rotating by an odd number of places swaps the two, which would hand
+/// the viewport and the export a different surface from the one the merge
+/// checked — so the rotation is restricted to the even ones, and the tie
+/// between them is broken the same way as for any other face.
+fn lead_corner(output: &RemeshOutput, corners: &[u32]) -> Option<usize> {
+    let key = |corner: usize| position_key(output.positions[corners[corner] as usize]);
+    if corners.len() == 4 {
+        return Some(if key(2) < key(0) { 2 } else { 0 });
+    }
+    (0..corners.len()).min_by_key(|&corner| key(corner))
 }
 
 fn position_key(position: Vec3) -> [u32; 3] {

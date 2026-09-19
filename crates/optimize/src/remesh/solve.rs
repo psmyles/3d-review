@@ -12,6 +12,8 @@
 //!    into even regions.
 //! 6. [`collapse`](super::collapse) — merge each region down to its one vertex.
 //! 7. [`cleanup`](super::cleanup) — even the faces out.
+//! 8. [`quads`](super::quads) — pair the triangles up, when quads were asked
+//!    for, guided by a [`cross_field`](super::cross_field) built here for it.
 //!
 //! Between every stage, and inside the ones that sweep, the run can be
 //! abandoned. That is the difference the user actually feels: the engines this
@@ -34,9 +36,14 @@ use super::proxy::Proxy;
 use super::surface::Surface;
 use super::topology::Topology;
 use super::{
-    RemeshOutput, cleanup, collapse, features, lloyd, partition, preview, seeds, size_field,
+    RemeshOutput, cleanup, collapse, cross_field, features, lloyd, partition, preview, quads,
+    seeds, size_field,
 };
-use crate::stack::RemeshParams;
+use crate::stack::{RemeshParams, RemeshTopology};
+
+/// Triangles to aim for per quad asked for. See [`triangle_target`]; the value
+/// is measured rather than derived, and `tests/remesh_quads.rs` is what pins it.
+const QUAD_TRIANGLE_BUDGET: f64 = 1.85;
 
 /// What a rebuild produced, beside the mesh.
 #[derive(Debug, Default, Clone, Copy)]
@@ -46,6 +53,8 @@ pub(crate) struct Report {
     pub(crate) stubborn: usize,
     /// Vertices the rebuild actually produced.
     pub(crate) vertices: usize,
+    /// Faces that came out with four corners. Zero unless quads were asked for.
+    pub(crate) quads: usize,
 }
 
 /// Rebuild one object's surface.
@@ -74,7 +83,11 @@ pub(crate) fn rebuild(
 
     let normals = size_field::vertex_normals(&proxy.positions, &proxy.indices, &topology, threads);
     let areas = size_field::dual_areas(&proxy.positions, &proxy.indices, &topology, threads);
-    let target_edge = target_edge(proxy.area as f64, faces);
+    // The whole rebuild produces triangles; quads are pairs of them, made at the
+    // very end. So a quad budget is twice as many triangles to begin with - see
+    // [`triangle_target`], which is where the leftovers are accounted for too.
+    let triangles = triangle_target(faces, params.topology);
+    let target_edge = target_edge(proxy.area as f64, triangles);
     if target_edge <= 0.0 {
         return Err(OptError::EmptyMesh);
     }
@@ -101,7 +114,10 @@ pub(crate) fn rebuild(
             .collect(),
         None => vec![target_edge; vertices],
     };
-    drop(normals);
+    // Released here unless the cross field will read them: at ten million
+    // vertices this is a hundred and twenty megabytes, and nothing else wants
+    // them.
+    let normals = (params.topology == RemeshTopology::Quads).then_some(normals);
     if cancelled(cancel) {
         return Err(OptError::Cancelled);
     }
@@ -118,7 +134,7 @@ pub(crate) fn rebuild(
         .sharp_edges
         .then(|| params.crease_angle.clamp(0.0, 180.0).to_radians().cos());
     let features = features::build(surface, params.align_to_boundaries, crease_cosine, cancel);
-    let mut seeds = seeds::place(surface, &features, faces, cancel);
+    let mut seeds = seeds::place(surface, &features, triangles, cancel);
     if seeds.is_empty() {
         return Err(OptError::EmptyMesh);
     }
@@ -155,18 +171,63 @@ pub(crate) fn rebuild(
     if cancelled(cancel) {
         return Err(OptError::Cancelled);
     }
-    let (mut output, pinned) = collapse::into_output(&state, &features);
+    let carried = collapse::into_output(&state, &features);
+    let collapse::Carried {
+        mut output,
+        pinned,
+        source,
+    } = carried;
     // What the collapse leaves is correct but lumpy — a region's vertex lands
     // wherever its last valid collapse put it. This is what makes the faces
     // even, which is most of what "retopology" means to look at.
     cleanup::run(&mut output, &pinned, params.smooth_iterations, cancel);
+
+    // Quads last, and only then. The field costs about a third of a rebuild to
+    // build, and until this moment there is nothing that can spend it: every
+    // stage before this one is choosing *where* vertices go, and a cross field
+    // describes a square lattice that a triangulation cannot take (four
+    // measurements of trying are in `cross_field`'s module doc). The merge is
+    // the one consumer whose output is four-sided.
+    let quads = match normals {
+        Some(normals) => {
+            let field = cross_field::build(surface, &normals, &features, threads, cancel);
+            if cancelled(cancel) {
+                return Err(OptError::Cancelled);
+            }
+            // The field is over the *input*, and every output vertex is an input
+            // vertex - which is the one thing a collapse guarantees and an
+            // extraction could not.
+            let directions: Vec<[f32; 3]> = source
+                .iter()
+                .map(|&vertex| field.at(vertex).unwrap_or([0.0; 3]))
+                .collect();
+            quads::merge(&mut output, &directions, cancel).quads
+        }
+        None => 0,
+    };
     output.validate()?;
 
     let report = Report {
         stubborn: state.stubborn,
         vertices: output.positions.len(),
+        quads,
     };
     Ok((output, report))
+}
+
+/// How many *triangles* the rebuild must produce for `faces` finished faces.
+///
+/// A quad is two triangles, so a quad budget starts as twice the triangles -
+/// except that the merge never pairs quite everything up, and each leftover
+/// triangle is one more face than the arithmetic allowed for. The factor is
+/// below two by the share the merge is measured to leave behind, which keeps the
+/// finished count on the number in the box rather than ten per cent above it.
+fn triangle_target(faces: u32, topology: RemeshTopology) -> u32 {
+    let scale = match topology {
+        RemeshTopology::Triangles => 1.0,
+        RemeshTopology::Quads => QUAD_TRIANGLE_BUDGET,
+    };
+    ((faces as f64 * scale).round() as u32).max(1)
 }
 
 /// The uniform edge length `faces` triangles come to over `area`.

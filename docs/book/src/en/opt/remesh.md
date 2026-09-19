@@ -1,8 +1,8 @@
 # Remeshing a model
 
-**Remesh** replaces a model's topology with a new one: evenly sized triangles,
-sized to follow the shape's own curves, the way an artist retopologizing by hand
-would lay them.
+**Remesh** replaces a model's topology with a new one: evenly sized faces,
+triangles or quads, sized to follow the shape's own curves, the way an artist
+retopologizing by hand would lay them.
 
 That makes it the opposite of [Reduce](operations.md), which takes the triangles
 you have and removes some of them. Remesh keeps none of the original layout.
@@ -63,14 +63,60 @@ still look uneven.
 
 ## What it gives you
 
-Triangles. An even spread of them, at a density that follows how tightly the
-shape turns, with your borders and creases kept where they were.
+An even spread of faces, at a density that follows how tightly the shape turns,
+with your borders and creases kept where they were.
 
-Quads are a planned addition rather than a missing feature: the machinery that
-would lay them out is the same machinery that would make the triangles line up
-into rows, and neither is here yet. What you get today is even in *density* and
-unstructured in *layout* - the faces are the right size everywhere, but they do
-not form the tidy grid a by-hand retopology has.
+They are even in *density* and unstructured in *layout*: the faces are the right
+size everywhere, but they do not line up into the tidy rows a by-hand retopology
+has. That part is still to come.
+
+## Triangles or quads
+
+**Made of** picks between them, and what the choice does is worth understanding,
+because it is smaller than it sounds.
+
+A quad here is two of the triangles with the edge between them rubbed out. The
+rebuild produces triangles either way; asking for quads adds a last step that
+goes over every interior edge and asks whether it is a real edge of the shape, or
+only the line someone had to draw to cut a four-sided face in half. Where it is
+the second, the edge goes.
+
+So **the surface is identical**. Every corner is in the same place, the
+silhouette is the same, the shading is the same, and a quad in the viewport is
+drawn as exactly the two triangles it was made from. What changes is what the
+file says - and that is the point of it, because a modelling package expects
+quads. They subdivide cleanly, they carry edge loops you can select and slide,
+and a rig deforms them without the pinching a fan of triangles gives.
+
+**It is quad dominant, not all quads.** Two things stop a pair merging, and both
+are the answer you want:
+
+- **The four corners have to be flat enough to be one face.** A quad is a flat
+  thing; two triangles meeting at a real angle are not. Merging them would throw
+  the angle away, and whichever tool opened the file next would put it back
+  wherever its own triangulation happened to fall. A crease, a fold, the rim of a
+  leaf - those stay as the two triangles they are.
+- **Nothing can be in two quads at once.** Pairing faces up is a matching
+  problem, and a patch with an odd number of faces in it has to leave one out.
+
+How much comes back as quads depends on the model and on how many faces you asked
+for, because between them those decide how faceted the rebuilt surface is.
+Measured at half the original triangle count: a stylized plant 81 per cent, a
+rock pillar 74, a pedestal of stones 87 - and a hard-surface stone column only 47,
+because at that density nearly every edge on it is a genuine crease. Ask for more
+faces and the share rises on all of them; at full density the same column is 58
+per cent and the pedestal 92. If fewer than half the faces come back as quads you
+are told, because it means the density is fighting you rather than the model.
+
+**A quad counts as two triangles when the density is worked out**, so the same
+ratio asks for the same amount of detail whichever you pick. The count lands
+close, but less exactly than the triangle path's does: how many triangles are
+left unpaired is not known until the pairing is done, and each one is a face the
+arithmetic could not allow for.
+
+Quads take roughly half again as long. They are the only thing that builds the
+direction field the pairing is guided by, and that is measured over the whole
+original mesh rather than over the new one.
 
 ## How it works
 

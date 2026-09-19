@@ -693,10 +693,21 @@ fn varying_face_size_spends_the_budget_on_the_curved_parts() {
         // problem).
         //
         // Closing that is what aligning the partition to a cross field would
-        // do, which is the same machinery the quad topologies will need and is
-        // deliberately not in this change.
+        // do, and the field is built now - but it buys a *quad* layout, not a
+        // triangle one: `remesh::cross_field`'s module doc has the four
+        // measurements of trying it here.
+        //
+        // The ceiling was 2.6 and is 3.0 for one reason, which is a trade taken
+        // knowingly. The seeding used to give up on a station whose face was
+        // already seeded solid, which quietly left the rebuild short of its
+        // budget - as much as 18 % at a ratio of 1, hidden on these fixtures
+        // because the regions that will not collapse were adding about as many
+        // faces back. Handing those stations out again (`seeds::place_interior`)
+        // fixed the count on every fixture and ratio measured, and cost this:
+        // the extra seeds land where there was room for them, which is by
+        // definition not where the sampling first asked.
         let flat = face_size_spread(even, node);
-        let ceiling = 2.6;
+        let ceiling = 3.0;
         assert!(
             flat < ceiling,
             "{topology:?}: a uniform rebuild should be uniform, and this one \

@@ -387,11 +387,12 @@ impl OpKind {
             }
             OpKind::Remesh(_) => {
                 "Rebuild each object's surface as evenly sized, curvature-aligned \
-                 triangles. Unlike a simplifier it does not remove what is there - it \
-                 regenerates the surface from scratch and projects the materials, UVs \
-                 and colors back on, which is what turns a scan or a CAD import into \
-                 geometry an engine can use. For fewer triangles with the silhouette \
-                 kept, a Reduce does better at the same count. Static meshes only."
+                 triangles or quads. Unlike a simplifier it does not remove what is \
+                 there - it regenerates the surface from scratch and projects the \
+                 materials, UVs and colors back on, which is what turns a scan or a \
+                 CAD import into geometry an engine can use. For fewer triangles with \
+                 the silhouette kept, a Reduce does better at the same count. Static \
+                 meshes only."
             }
             OpKind::Shrinkwrap(_) => {
                 "Replace each object with one closed shell that hugs it. The surface is \

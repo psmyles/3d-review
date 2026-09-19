@@ -229,8 +229,32 @@ fn nearest_station(lengths: &[f64], along: f64, vertices: usize) -> usize {
     best
 }
 
+/// How many times the stations that found nowhere to go are handed out again.
+///
+/// Three is enough on every fixture measured; the shortfall falls by roughly an
+/// order of magnitude a round, because each one only has to find room for what
+/// the one before it could not place.
+const REFILL_ROUNDS: u32 = 3;
+
 /// Spread `wanted` seeds over the surface in proportion to `area / h^2`, which
 /// is how many faces each piece of surface has been asked for.
+///
+/// **Handing out the stations once is not enough**, and that is not a rounding
+/// matter. A station is a point on the surface; a seed has to be an input
+/// vertex. Where the input is barely denser than the mesh being asked for, a
+/// patch of it fills up solid and every station that lands there afterwards has
+/// nowhere to go - so the budget is quietly not spent, and the rebuild comes
+/// back short. Measured on a pedestal asked for 3361 faces at one face size
+/// everywhere: 1231 seeds placed where the budget called for 1690, and a count
+/// 14 % under.
+///
+/// So the stations that found nowhere are handed out *again*, over the surface
+/// that still has room - the weights are recomputed each round with the full
+/// faces left out, so the second round distributes by area exactly as the first
+/// did, over what is left. That is what keeps the result even: the alternative,
+/// taking the seed from wherever in the mesh there happened to be a free vertex,
+/// meets the count and spreads the face sizes 4.9x where 2.8x is what this
+/// operation is for.
 fn place_interior(
     surface: Surface<'_>,
     features: &Features,
@@ -238,18 +262,48 @@ fn place_interior(
     taken: &mut [bool],
     seeds: &mut Seeds,
 ) {
+    let mut remaining = wanted;
+    for _ in 0..REFILL_ROUNDS {
+        if remaining == 0 {
+            break;
+        }
+        let placed = scatter(surface, features, remaining, taken, seeds);
+        if placed == 0 {
+            break;
+        }
+        remaining -= placed;
+    }
+}
+
+/// One round of [`place_interior`]: `wanted` stations over whatever surface
+/// still has a vertex free. How many found one.
+fn scatter(
+    surface: Surface<'_>,
+    features: &Features,
+    wanted: usize,
+    taken: &mut [bool],
+    seeds: &mut Seeds,
+) -> usize {
     let faces = surface.indices.as_chunks::<3>().0;
     // Prefix sum in face order, so a station's face is a function of the mesh.
     let mut weights = Vec::with_capacity(faces.len() + 1);
     weights.push(0.0f64);
     for (face, corners) in faces.iter().enumerate() {
+        // A face with every corner already spoken for takes no weight, so the
+        // next round's stations go where there is still room rather than piling
+        // up against the same full patch again.
+        let room = corners.iter().any(|&corner| {
+            !taken[corner as usize]
+                && !features.on_feature[corner as usize]
+                && surface.topology.is_referenced(corner)
+        });
         let area = surface.face_area(face as u32);
         let size = corners
             .iter()
             .map(|&corner| surface.sizes[corner as usize] as f64)
             .sum::<f64>()
             / 3.0;
-        let weight = if size > 0.0 {
+        let weight = if room && size > 0.0 {
             area / (size * size)
         } else {
             0.0
@@ -258,9 +312,10 @@ fn place_interior(
     }
     let total = *weights.last().unwrap_or(&0.0);
     if total <= 0.0 {
-        return;
+        return 0;
     }
 
+    let mut placed = 0usize;
     for station in 0..wanted {
         let along = total * (station as f64 + 0.5) / wanted as f64;
         let face = match weights.binary_search_by(|value| {
@@ -271,34 +326,62 @@ fn place_interior(
             Ok(at) => at.min(faces.len().saturating_sub(1)),
             Err(at) => at.saturating_sub(1).min(faces.len().saturating_sub(1)),
         };
-        // The corner that has been asked for the smallest faces, since that is
-        // where the budget is most needed; if it is already a seed, the other
-        // two in turn, and otherwise this station is simply spent — the count
-        // is a target, and forcing it would put two seeds on one vertex.
-        let mut corners = faces[face];
-        corners.sort_unstable_by(|&a, &b| {
-            surface.sizes[a as usize]
-                .partial_cmp(&surface.sizes[b as usize])
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.cmp(&b))
-        });
-        for corner in corners {
-            // Never onto a feature: the chains above already decided how
-            // densely the border and the creases are seeded, and an interior
-            // station landing on one would both crowd it unevenly and
-            // undercount the border edges the budget was worked out from.
-            if !taken[corner as usize]
-                && !features.on_feature[corner as usize]
-                && surface.topology.is_referenced(corner)
-            {
-                taken[corner as usize] = true;
-                seeds.vertices.push(corner);
-                seeds.polyline.push(u32::MAX);
-                seeds.pinned.push(false);
-                break;
-            }
+        // Where in the face's own share of the weight this station fell, which
+        // is what the corners are tried in the order of. A tiebreak on the
+        // vertex number instead picks the lowest-numbered corner of every face,
+        // and neighbouring faces share exactly that one.
+        let span = weights[face + 1] - weights[face];
+        let across = if span > 0.0 {
+            ((along - weights[face]) / span * 3.0) as usize % 3
+        } else {
+            station % 3
+        };
+        if let Some(vertex) = free_vertex_in(surface, features, taken, face as u32, across) {
+            taken[vertex as usize] = true;
+            seeds.vertices.push(vertex);
+            seeds.polyline.push(u32::MAX);
+            seeds.pinned.push(false);
+            placed += 1;
         }
     }
+    placed
+}
+
+/// A corner of `face` that nothing has claimed, or `None` if all three are
+/// spoken for - in which case the station is handed out again next round, over
+/// surface that still has room. See [`place_interior`].
+///
+/// Corners are tried in the order `across` gives, so the answer is a function of
+/// the mesh and of nothing else.
+fn free_vertex_in(
+    surface: Surface<'_>,
+    features: &Features,
+    taken: &[bool],
+    face: u32,
+    across: usize,
+) -> Option<u32> {
+    // Never onto a feature: the chains above already decided how densely the
+    // border and the creases are seeded, and an interior station landing on one
+    // would both crowd it unevenly and undercount the border edges the budget
+    // was worked out from.
+    let usable = |corner: u32| {
+        !taken[corner as usize]
+            && !features.on_feature[corner as usize]
+            && surface.topology.is_referenced(corner)
+    };
+    // The corner that has been asked for the smallest faces first, since that is
+    // where the budget is most needed. A stable sort, so equal sizes - which is
+    // every corner of every face when the size field is flat - keep the order
+    // `across` put them in.
+    let mut corners = surface.face(face).to_owned();
+    let places = corners.len().max(1);
+    corners.rotate_left(across % places);
+    corners.sort_by(|&a, &b| {
+        surface.sizes[a as usize]
+            .partial_cmp(&surface.sizes[b as usize])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    corners.into_iter().find(|&corner| usable(corner))
 }
 
 /// Give every connected component a handful of seeds, so a piece of the mesh

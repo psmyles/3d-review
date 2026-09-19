@@ -16,7 +16,7 @@ use review_localization::Key;
 use review_model::{NodeKind, SkinningMethod};
 use review_optimize::{
     AoQuality, AoTarget, FbxFormat, HierarchyMode, LodPackaging, OpKind, RemeshDensity,
-    SimplifyAlgorithm,
+    RemeshTopology, SimplifyAlgorithm,
 };
 use review_render::{
     AlphaMode, BufferView, ChannelSelect, CheckerTexture, EnvironmentMap, GtaoQuality,
@@ -257,6 +257,13 @@ pub(crate) fn op_description(kind: &OpKind) -> Key {
     }
 }
 
+pub(crate) fn remesh_topology(topology: RemeshTopology) -> Key {
+    match topology {
+        RemeshTopology::Triangles => keys::ui_enums::REMESH_TOPOLOGY_TRIANGLES,
+        RemeshTopology::Quads => keys::ui_enums::REMESH_TOPOLOGY_QUADS,
+    }
+}
+
 pub(crate) fn remesh_density(density: RemeshDensity) -> Key {
     match density {
         RemeshDensity::Ratio => keys::ui_enums::REMESH_DENSITY_RATIO,
@@ -420,6 +427,9 @@ mod tests {
         }
         for value in RemeshDensity::ALL {
             assert_resolves(remesh_density(value));
+        }
+        for value in RemeshTopology::ALL {
+            assert_resolves(remesh_topology(value));
         }
         for value in LodPackaging::ALL {
             assert_resolves(lod_packaging(value));

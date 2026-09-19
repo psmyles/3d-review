@@ -35,38 +35,44 @@ fn how_long_a_rebuild_takes() {
         };
         let triangles = model.indices.len() / 3;
 
-        let mut stack = OptStack::default();
-        stack.push_op(OpKind::Remesh(RemeshParams {
-            topology: RemeshTopology::Triangles,
-            density: RemeshDensity::Ratio,
-            ratio: 0.25,
-            ..RemeshParams::default()
-        }));
+        // Both topologies, because quads are not free: they are the only thing
+        // that builds the cross field, which is a smoothing sweep over the whole
+        // *input* mesh and so scales with the model rather than the budget.
+        for topology in RemeshTopology::ALL {
+            let mut stack = OptStack::default();
+            stack.push_op(OpKind::Remesh(RemeshParams {
+                topology,
+                density: RemeshDensity::Ratio,
+                ratio: 0.25,
+                ..RemeshParams::default()
+            }));
 
-        let started = Instant::now();
-        let result = process(ProcessInput {
-            model: &model,
-            stack: &stack,
-            render_vertex_size: VERTEX_SIZE,
-            hidden_nodes: &[],
-            extras: None,
-        });
-        let elapsed = started.elapsed();
+            let started = Instant::now();
+            let result = process(ProcessInput {
+                model: &model,
+                stack: &stack,
+                render_vertex_size: VERTEX_SIZE,
+                hidden_nodes: &[],
+                extras: None,
+            });
+            let elapsed = started.elapsed();
 
-        match result {
-            Ok(result) => {
-                let faces = result
-                    .lod(0)
-                    .map_or(0, |level| level.model.indices.len() / 3);
-                println!(
-                    "{name}: {triangles} tris -> {faces} in {:.2}s",
-                    elapsed.as_secs_f64()
-                );
-                for warning in result.warnings.iter().take(2) {
-                    println!("    {warning}");
+            match result {
+                Ok(result) => {
+                    let drawn = result
+                        .lod(0)
+                        .map_or(0, |level| level.model.indices.len() / 3);
+                    println!(
+                        "{name}: {triangles} tris -> {drawn} drawn as {} in {:.2}s",
+                        topology.label(),
+                        elapsed.as_secs_f64()
+                    );
+                    for warning in result.warnings.iter().take(2) {
+                        println!("    {warning}");
+                    }
                 }
+                Err(error) => println!("{name}: {triangles} tris -> {error}"),
             }
-            Err(error) => println!("{name}: {triangles} tris -> {error}"),
         }
     }
 }

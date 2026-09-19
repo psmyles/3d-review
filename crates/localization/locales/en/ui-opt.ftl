@@ -109,6 +109,11 @@ ui-opt-ao-write-to = Write to
 
 ## Remesh
 
+ui-opt-remesh-topology = Made of
+    .description = What the rebuilt surface is made of. Quads are what a modelling package
+        expects to be handed - they subdivide, they carry edge loops, and they are what a
+        rig deforms well. Where the surface folds too sharply for a flat quad to describe
+        it, that part stays as triangles.
 ui-opt-remesh-density = Density
     .description = How the target number of faces for each object is worked out - as a
         share of what it has now, or as one budget shared out across the objects by size.

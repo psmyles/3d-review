@@ -620,14 +620,22 @@ fn place_survivor(
 /// function of the mesh rather than of the order the regions happened to be
 /// collapsed in.
 ///
-/// `features` comes back with it as a per-output-vertex flag: a vertex that sat
-/// on a border, a crease or a fold in the source is *where the shape is*, and
-/// the tidying that follows must leave it alone. The output's own topology
-/// cannot answer that — a rim is an ordinary interior edge once the shell is
-/// closed — so it has to be carried from here.
-pub(crate) fn into_output(state: &Collapsed, features: &Features) -> (RemeshOutput, Vec<bool>) {
+/// Two things come back with it, and both are things only this stage knows.
+///
+/// [`Carried::pinned`] says a vertex sat on a border, a crease or a fold in the
+/// source: it is *where the shape is*, and the tidying that follows must leave
+/// it alone. The output's own topology cannot answer that — a rim is an
+/// ordinary interior edge once the shell is closed.
+///
+/// [`Carried::source`] says which input vertex each output vertex *is*. Every
+/// output vertex is one — a collapse merges vertices, it never invents one —
+/// and this is the last moment that is known, because the renumbering below is
+/// what throws the input's numbering away. The [quad merge](super::quads) reads
+/// it to find the direction field, which is over the input.
+pub(crate) fn into_output(state: &Collapsed, features: &Features) -> Carried {
     let mut slot_of = vec![u32::MAX; state.alive.len()];
     let mut pinned: Vec<bool> = Vec::new();
+    let mut source: Vec<u32> = Vec::new();
     let mut output = RemeshOutput {
         positions: Vec::new(),
         face_offsets: vec![0],
@@ -661,6 +669,7 @@ pub(crate) fn into_output(state: &Collapsed, features: &Features) -> (RemeshOutp
                         .copied()
                         .unwrap_or(false),
                 );
+                source.push(corner);
             }
             output.corners.push(slot_of[corner as usize]);
         }
@@ -668,7 +677,21 @@ pub(crate) fn into_output(state: &Collapsed, features: &Features) -> (RemeshOutp
             .face_offsets
             .push(output.corners.len().try_into().unwrap_or(u32::MAX));
     }
-    (output, pinned)
+    Carried {
+        output,
+        pinned,
+        source,
+    }
+}
+
+/// A collapsed mesh, and what only the collapse knows about it. See
+/// [`into_output`].
+pub(crate) struct Carried {
+    pub(crate) output: RemeshOutput,
+    /// Per output vertex: it sat on a feature of the source.
+    pub(crate) pinned: Vec<bool>,
+    /// Per output vertex: the input vertex it is.
+    pub(crate) source: Vec<u32>,
 }
 
 /// One quadric per vertex, from the faces around it plus a plane along every
@@ -834,7 +857,7 @@ mod tests {
         let state = run(surface, &features, &seeds, &partition, &quadrics, None);
         Run {
             stubborn: state.stubborn,
-            output: into_output(&state, &features).0,
+            output: into_output(&state, &features).output,
         }
     }
 

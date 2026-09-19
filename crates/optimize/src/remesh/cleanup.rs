@@ -183,7 +183,13 @@ fn flip_pass(output: &mut RemeshOutput, topology: &Topology) {
 /// out on every flip whenever the convention is the wrong way round — and an
 /// inverted triangle reads as a *hole* on screen, because a surface lit from
 /// behind is black.
-struct Quad {
+/// Two triangles sharing an edge, read as the quad they make.
+///
+/// Shared with the [quad merge](super::quads), which has the same question to
+/// ask and must not answer it a second way: the corner order the pair is
+/// actually in is a property of the mesh, and assuming it rather than reading it
+/// is what turned triangles inside out here before.
+pub(super) struct Quad {
     /// The face traversing `a -> b`, and the corner of it opposite that edge.
     forward: u32,
     forward_apex: u32,
@@ -196,7 +202,13 @@ struct Quad {
 
 impl Quad {
     /// Read the pair, or `None` if the two do not form an orientable quad.
-    fn read(output: &RemeshOutput, first: u32, second: u32, a: u32, b: u32) -> Option<Self> {
+    pub(super) fn read(
+        output: &RemeshOutput,
+        first: u32,
+        second: u32,
+        a: u32,
+        b: u32,
+    ) -> Option<Self> {
         let (first_apex, first_forward) = apex_and_direction(output, first, a, b)?;
         let (second_apex, second_forward) = apex_and_direction(output, second, a, b)?;
         // Both running the same way means the two faces disagree about which
@@ -226,6 +238,16 @@ impl Quad {
             [self.a, self.b, self.forward_apex],
             [self.b, self.a, self.backward_apex],
         ]
+    }
+
+    /// The pair as one quad, wound to match.
+    ///
+    /// The shared edge is the `0..2` diagonal, so the two triangles this stands
+    /// for are `0,1,2` and `0,2,3` — the pair that exists now, in the order
+    /// it exists in. Anything that splits the quad back on that diagonal gets
+    /// the surface it started with.
+    pub(super) fn merged(&self) -> [u32; 4] {
+        [self.a, self.backward_apex, self.b, self.forward_apex]
     }
 
     /// The pair split across the other diagonal, wound to match.
