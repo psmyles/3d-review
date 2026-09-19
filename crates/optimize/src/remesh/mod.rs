@@ -48,6 +48,11 @@ use crate::{OptError, Warnings, ops};
 
 #[allow(
     dead_code,
+    reason = "the solver that drives the collapse is the next stage"
+)]
+pub(crate) mod collapse;
+#[allow(
+    dead_code,
     reason = "the rebuild that reads the chains is the next stage"
 )]
 pub(crate) mod features;
@@ -70,6 +75,8 @@ pub(crate) mod partition;
 pub(crate) mod preview;
 pub(crate) mod project;
 pub(crate) mod proxy;
+#[allow(dead_code, reason = "the collapse that reads these is the next stage")]
+pub(crate) mod quadric;
 #[allow(
     dead_code,
     reason = "the rebuild that reads the seeds is the next stage"
