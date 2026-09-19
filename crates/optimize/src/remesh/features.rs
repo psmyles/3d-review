@@ -72,6 +72,14 @@ const FOLD_COSINE: f64 = -0.02;
 /// trusted. See [`is_sliver`].
 const SLIVER_QUALITY: f64 = 1.0e-4;
 
+/// How sharply a chain must turn, in radians, for the vertex at the bend to be
+/// treated as a corner that a seed has to land on exactly.
+///
+/// Sixty degrees. Below that a chain is bending, and a rebuild is entitled to
+/// cut the bend; past it the chain has a point on it, and cutting the point off
+/// is how a leaf comes back with a blunt end.
+const CORNER_ANGLE: f64 = std::f64::consts::FRAC_PI_3;
+
 /// A chain of feature edges.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Polyline {
@@ -272,7 +280,170 @@ pub(crate) fn build(
             }
         }
     }
+    mark_corners(surface, &mut features);
     features
+}
+
+/// Flag the vertices where a chain turns a corner, so a seed lands on each.
+///
+/// A junction — an end, or a meeting of three chains — is already treated this
+/// way, and this is the case that is not one: a point in the *middle* of a
+/// smooth degree-two chain. The tip of a leaf is exactly that. Its rim runs
+/// unbroken all the way round, so nothing about the graph marks the tip, and
+/// stations spaced by arc length land either side of it and cut it to a chord.
+///
+/// ## Why the angle is measured across a window rather than at the vertex
+///
+/// On a dense input the turn between one edge and the next is a degree or two
+/// of nothing much, and noise besides. What matters is how far the chain has
+/// turned over the distance a *rebuilt* edge will span, so the two chords are
+/// taken to the vertices half a target edge away along the chain. A rounded tip
+/// finer than that reads as its whole turn, which is what it looks like once
+/// rebuilt, and a bumpy stretch of an otherwise straight rim cancels.
+fn mark_corners(surface: Surface<'_>, features: &mut Features) {
+    let mut corners: Vec<u32> = Vec::new();
+    for line in &features.polylines {
+        let count = line.vertices.len();
+        if count < 3 {
+            continue;
+        }
+        // Cumulative arc length, with the closing edge for a loop.
+        let steps = if line.closed { count } else { count - 1 };
+        let mut lengths = Vec::with_capacity(steps + 1);
+        lengths.push(0.0f64);
+        for step in 0..steps {
+            let a = line.vertices[step];
+            let b = line.vertices[(step + 1) % count];
+            lengths.push(lengths[step] + surface.distance(a, b));
+        }
+        let total = lengths[steps];
+        if total <= 0.0 {
+            continue;
+        }
+
+        let mut angles = vec![0.0f64; count];
+        for (at, slot) in angles.iter_mut().enumerate() {
+            let vertex = line.vertices[at];
+            let window = f64::from(surface.sizes[vertex as usize]) * 0.5;
+            if window <= 0.0 {
+                continue;
+            }
+            let back = station_at(line, &lengths, at, window, false);
+            let ahead = station_at(line, &lengths, at, window, true);
+            if back == at || ahead == at {
+                continue;
+            }
+            let here = surface.position(vertex);
+            let from = surface.position(line.vertices[back]);
+            let to = surface.position(line.vertices[ahead]);
+            let (Some(incoming), Some(outgoing)) = (direction(from, here), direction(here, to))
+            else {
+                continue;
+            };
+            let dot =
+                (incoming[0] * outgoing[0] + incoming[1] * outgoing[1] + incoming[2] * outgoing[2])
+                    .clamp(-1.0, 1.0);
+            *slot = dot.acos();
+        }
+
+        // Only the sharpest vertex of each bend. A tip rounded over several
+        // input vertices would otherwise flag all of them, and two adjacent
+        // corners cannot collapse into one another — they would sit there as a
+        // stubborn pair, spending budget and evening nothing out.
+        for at in 0..count {
+            if angles[at] < CORNER_ANGLE {
+                continue;
+            }
+            let window = f64::from(surface.sizes[line.vertices[at] as usize]) * 0.5;
+            if is_sharpest(line, &lengths, &angles, at, window) {
+                corners.push(line.vertices[at]);
+            }
+        }
+    }
+    for vertex in corners {
+        features.junction[vertex as usize] = true;
+    }
+}
+
+/// The chain slot furthest from `at` but still within `window` of arc length,
+/// walking forwards when `ahead` and backwards otherwise.
+///
+/// Walked outward from `at` rather than searched for, so the work is the number
+/// of input vertices a rebuilt edge spans — the square root of the reduction,
+/// a handful — and never the length of the chain. A rim of a ten-million
+/// triangle object is a long chain, and anything per-vertex that scans it is
+/// quadratic in disguise.
+fn station_at(line: &Polyline, lengths: &[f64], at: usize, window: f64, ahead: bool) -> usize {
+    let count = line.vertices.len();
+    let mut best = at;
+    for step in 1..count {
+        let Some(other) = neighbour(line, at, step, ahead) else {
+            break;
+        };
+        if arc_gap(line, lengths, at, other) > window {
+            break;
+        }
+        best = other;
+    }
+    best
+}
+
+/// Whether `at` carries the largest turn within `window` of arc length.
+fn is_sharpest(line: &Polyline, lengths: &[f64], angles: &[f64], at: usize, window: f64) -> bool {
+    let count = line.vertices.len();
+    for ahead in [true, false] {
+        for step in 1..count {
+            let Some(other) = neighbour(line, at, step, ahead) else {
+                break;
+            };
+            if arc_gap(line, lengths, at, other) > window {
+                break;
+            }
+            // Ties to the lower index, so two equal bends pick the same one on
+            // every run.
+            if angles[other] > angles[at] || (angles[other] == angles[at] && other < at) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// The slot `step` along the chain from `at`, or `None` past the end of an open
+/// one. A closed chain wraps.
+fn neighbour(line: &Polyline, at: usize, step: usize, ahead: bool) -> Option<usize> {
+    let count = line.vertices.len();
+    if line.closed {
+        return Some(if ahead {
+            (at + step) % count
+        } else {
+            (at + count - step % count) % count
+        });
+    }
+    if ahead {
+        (at + step < count).then(|| at + step)
+    } else {
+        at.checked_sub(step)
+    }
+}
+
+/// How far apart two slots are along the chain, the short way round a loop.
+fn arc_gap(line: &Polyline, lengths: &[f64], at: usize, other: usize) -> f64 {
+    let last = lengths.len().saturating_sub(1);
+    let total = lengths[last];
+    let gap = (lengths[other.min(last)] - lengths[at.min(last)]).abs();
+    if line.closed {
+        gap.min(total - gap)
+    } else {
+        gap
+    }
+}
+
+/// The unit direction from `from` to `to`, or `None` if they coincide.
+fn direction(from: [f64; 3], to: [f64; 3]) -> Option<[f64; 3]> {
+    let step = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+    let length = (step[0] * step[0] + step[1] * step[1] + step[2] * step[2]).sqrt();
+    (length > 0.0).then(|| [step[0] / length, step[1] / length, step[2] / length])
 }
 
 /// Walk from `start` along unused feature edges, always taking the lowest
@@ -507,6 +678,98 @@ mod tests {
             crease_degrees.map(|degrees| degrees.to_radians().cos()),
             None,
         )
+    }
+
+    /// A flat diamond: four sharp corners on one unbroken border loop, each
+    /// side divided so no corner is anywhere near an end of a chain.
+    ///
+    /// ```text
+    ///        (0, 1)
+    ///       /      \
+    ///  (-1, 0)     (1, 0)
+    ///       \      /
+    ///        (0, -1)
+    /// ```
+    fn diamond(per_side: u32) -> (Vec<f32>, Vec<u32>) {
+        let tips = [[0.0f32, 1.0], [1.0, 0.0], [0.0, -1.0], [-1.0, 0.0]];
+        // The centre first, then the border walked anticlockwise.
+        let mut positions = vec![0.0f32, 0.0, 0.0];
+        for side in 0..4 {
+            let from = tips[side];
+            let to = tips[(side + 1) % 4];
+            for step in 0..per_side {
+                let along = step as f32 / per_side as f32;
+                positions.extend_from_slice(&[
+                    from[0] + (to[0] - from[0]) * along,
+                    from[1] + (to[1] - from[1]) * along,
+                    0.0,
+                ]);
+            }
+        }
+        let border = 4 * per_side;
+        let mut indices = Vec::new();
+        for step in 0..border {
+            indices.extend_from_slice(&[0, 1 + step, 1 + (step + 1) % border]);
+        }
+        (positions, indices)
+    }
+
+    /// A corner in the middle of a chain gets a seed of its own.
+    ///
+    /// Nothing about the graph marks it: the border of a leaf runs unbroken all
+    /// the way round, so its tip has two feature partners like every other
+    /// vertex on it. Stations spaced by arc length land either side and the
+    /// rebuild cuts the tip off to a chord. The four corners of a diamond are
+    /// the same shape as that tip and are equally invisible to a degree count.
+    #[test]
+    fn a_corner_in_the_middle_of_a_border_is_a_junction() {
+        let (positions, indices) = diamond(6);
+
+        let features = features_of(&positions, &indices, true, None);
+
+        let junctions: Vec<u32> = (0..positions.len() as u32 / 3)
+            .filter(|&vertex| features.junction[vertex as usize])
+            .collect();
+        // The tips are the first vertex of each side: border vertex 0, 6, 12, 18,
+        // which are 1, 7, 13, 19 once the centre is counted.
+        assert_eq!(
+            junctions,
+            vec![1, 7, 13, 19],
+            "each of the four corners, and nothing along the straight sides"
+        );
+    }
+
+    /// Only the sharpest vertex of a bend, so a rounded tip does not flag every
+    /// vertex on it.
+    ///
+    /// Two adjacent junctions is not a harmless excess: the collapse refuses to
+    /// merge one into another, so they sit there spending budget and evening
+    /// nothing out.
+    #[test]
+    fn a_rounded_corner_flags_one_vertex_not_all_of_them() {
+        // A circle turns continuously, so every vertex on it bends by the same
+        // amount and the window sees the full turn at each. Exactly one may be
+        // picked per window.
+        let count = 32u32;
+        let mut positions = vec![0.0f32, 0.0, 0.0];
+        for step in 0..count {
+            let angle = step as f32 / count as f32 * std::f32::consts::TAU;
+            positions.extend_from_slice(&[angle.cos(), angle.sin(), 0.0]);
+        }
+        let mut indices = Vec::new();
+        for step in 0..count {
+            indices.extend_from_slice(&[0, 1 + step, 1 + (step + 1) % count]);
+        }
+
+        let features = features_of(&positions, &indices, true, None);
+
+        let flagged = features.junction.iter().filter(|&&is| is).count();
+        // The size field is one unit here against a circumference of ~6.3, so
+        // the window covers most of the ring and very few may survive it.
+        assert!(
+            flagged <= 2,
+            "a smooth ring flagged {flagged} corners; the thinning is not working"
+        );
     }
 
     #[test]
