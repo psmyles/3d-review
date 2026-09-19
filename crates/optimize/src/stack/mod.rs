@@ -380,7 +380,10 @@ impl OpKind {
                  shells and orphaned faces left behind by modelling."
             }
             OpKind::Reduce(_) => {
-                "Simplify the mesh in place. The same simplifier the LOD chain uses,                  but it replaces the mesh instead of generating extra ones - so the                  reduced geometry is what the rest of the stack works on and what the                  export writes in the source mesh's place."
+                "Simplify the mesh in place. The same simplifier the LOD chain uses, \
+                 but it replaces the mesh instead of generating extra ones - so the \
+                 reduced geometry is what the rest of the stack works on and what the \
+                 export writes in the source mesh's place."
             }
             OpKind::Remesh(_) => {
                 "Rebuild each object's surface as evenly sized, curvature-aligned \

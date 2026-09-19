@@ -600,14 +600,17 @@ fn rebuild_node(
     // quietly handing back the input.
     if job.faces as usize > job.proxy.source_triangles {
         warnings.push(&format!(
-            "Remesh: '{}' already has fewer faces ({}) than the {} asked for, and a rebuild              only ever merges - it cannot add detail that is not there. It came back at              about its current density.",
+            "Remesh: '{}' already has fewer faces ({}) than the {} asked for, and a \
+             rebuild only ever merges - it cannot add detail that is not there. It \
+             came back at about its current density.",
             job.name, job.proxy.source_triangles, job.faces
         ));
     }
 
     if output.is_empty() {
         warnings.push(&format!(
-            "Remesh: '{}' came back empty. Ask for more faces, or check that the object is              not a handful of disconnected slivers.",
+            "Remesh: '{}' came back empty. Ask for more faces, or check that the \
+             object is not a handful of disconnected slivers.",
             job.name
         ));
         return None;
@@ -619,7 +622,8 @@ fn rebuild_node(
     let regions = report.vertices.max(1);
     if report.stubborn * 20 > regions {
         warnings.push(&format!(
-            "Remesh: {} parts of '{}' could not be simplified as far as asked without              breaking the surface, so it came back denser there.",
+            "Remesh: {} parts of '{}' could not be simplified as far as asked without \
+             breaking the surface, so it came back denser there.",
             report.stubborn, job.name
         ));
     }
