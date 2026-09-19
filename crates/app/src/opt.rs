@@ -32,8 +32,8 @@ use std::time::{Duration, Instant};
 
 use review_model::{ModelData, SceneBvh};
 use review_optimize::{
-    CancelToken, ExportOptions, ExportReport, OpKind, OptError, OptProgress, OptStack, OptStage,
-    ProcessInput, ProcessedResult, RebindReport, export_fbx, preset, process_cancellable,
+    CancelToken, ExportOptions, ExportReport, OpKind, OptError, OptPreview, OptProgress, OptStack,
+    OptStage, ProcessInput, ProcessedResult, RebindReport, export_fbx, preset, process_progressive,
 };
 use review_ui::{NoticeKind, OptIntent, OptLevelView, OptResultView};
 
@@ -45,6 +45,12 @@ use crate::{App, prof};
 /// How long a run may take before the user is told it is still going. Below this
 /// the result usually lands within a frame or two and a toast would only flicker.
 const ACTIVITY_NOTICE_AFTER: Duration = Duration::from_millis(300);
+
+/// Least time between two previews reaching the event loop.
+///
+/// A preview is a whole mesh: it costs an assemble on the worker and a buffer
+/// upload on the main thread, and beyond a few a second the eye cannot tell.
+const PREVIEW_MIN_INTERVAL: Duration = Duration::from_millis(250);
 
 /// What to tell the user about a loaded preset's per-object overrides, one line
 /// per thing that happened. A preset that landed cleanly produces nothing.
@@ -88,6 +94,16 @@ pub(crate) struct OptProcessed {
     /// as unwelcome on the main thread (invariant 6). Empty when the run failed
     /// or produced no mesh.
     pub(crate) level_bvhs: Vec<Arc<SceneBvh>>,
+}
+
+/// A mesh from part way through a run, posted from the worker thread.
+///
+/// Boxed at the event, because it carries a whole `ModelData`.
+#[derive(Debug)]
+pub(crate) struct OptPreviewed {
+    /// Matched against the current generation exactly as [`OptProcessed`] is.
+    pub(crate) generation: u64,
+    pub(crate) model: ModelData,
 }
 
 /// A run reporting where it has got to, posted from the worker thread.
@@ -184,6 +200,14 @@ pub(crate) struct OptSubsystem {
     started_at: Option<Instant>,
     /// Whether the "still working" toast is currently up.
     activity_shown: bool,
+    /// The newest part-finished mesh, and the generation that produced it.
+    ///
+    /// Drawn in place of the finished level while a run is going, so a rebuild
+    /// is watched settling rather than waited out. Cleared when that run lands,
+    /// and never consulted for a *measurement*: the stats card keeps showing
+    /// the last completed run, because a half-finished count is worse than a
+    /// slightly old one.
+    pub(crate) preview: Option<(u64, Arc<ModelData>)>,
     /// The newest progress line, kept whether or not the toast is up yet.
     ///
     /// Reports start arriving the moment the run does, but the toast is
@@ -216,6 +240,7 @@ impl Default for OptSubsystem {
             dirty: false,
             started_at: None,
             activity_shown: false,
+            preview: None,
             last_progress: None,
             announced_warnings: Vec::new(),
             seen_hidden: Vec::new(),
@@ -226,10 +251,34 @@ impl Default for OptSubsystem {
 impl OptSubsystem {
     /// The mesh for `level` of the latest result, if there is one.
     pub(crate) fn level_model(&self, level: usize) -> Option<&ModelData> {
+        if let Some(model) = self.preview_of(level) {
+            return Some(model);
+        }
         self.processed
             .as_ref()
             .and_then(|result| result.lod(level))
             .map(|lod| &lod.model)
+    }
+
+    /// The part-finished mesh for `level`, if a run is showing one.
+    ///
+    /// Level 0 only: a preview is the mesh the stack has built so far, which is
+    /// what level 0 becomes. The LOD fan-out has not happened yet, so standing
+    /// in for a simplified level would show the wrong density entirely.
+    fn preview_of(&self, level: usize) -> Option<&ModelData> {
+        match &self.preview {
+            Some((_, model)) if level == 0 => Some(model),
+            _ => None,
+        }
+    }
+
+    /// [`Self::preview_of`] as an owned handle, which the renderer's borrow of
+    /// `self` can outlive.
+    pub(crate) fn level_mesh(&self, level: usize) -> Option<Arc<ModelData>> {
+        match &self.preview {
+            Some((_, model)) if level == 0 => Some(Arc::clone(model)),
+            _ => None,
+        }
     }
 
     pub(crate) fn is_running(&self) -> bool {
@@ -425,9 +474,28 @@ impl App {
                     fraction: progress.fraction(),
                 }));
             };
+            // Self-throttled: a preview costs an assemble of the whole level,
+            // and a scene of small objects can produce them faster than the
+            // event loop can draw them. Skipping one only delays what is shown,
+            // never what is produced.
+            let last_preview = std::cell::Cell::new(None::<Instant>);
+            let show = |preview: OptPreview| {
+                if last_preview
+                    .get()
+                    .is_some_and(|sent| sent.elapsed() < PREVIEW_MIN_INTERVAL)
+                {
+                    return;
+                }
+                last_preview.set(Some(Instant::now()));
+                let _ =
+                    progress_proxy.send_event(UserEvent::OptPreviewed(Box::new(OptPreviewed {
+                        generation,
+                        model: preview.model,
+                    })));
+            };
             let result = {
                 let _z = prof::zone!("Optimize Mesh");
-                process_cancellable(
+                process_progressive(
                     ProcessInput {
                         model: &model,
                         stack: &stack,
@@ -436,6 +504,7 @@ impl App {
                         extras: extras.as_deref(),
                     },
                     &report,
+                    Some(&show),
                     Some(&cancel),
                 )
             };
@@ -469,6 +538,10 @@ impl App {
         opt.in_flight = None;
         opt.started_at = None;
         opt.last_progress = None;
+        // Whatever this run was showing is superseded by what it produced —
+        // including when it produced an error, where the source alone is the
+        // honest thing to draw.
+        opt.preview = None;
         // An edit that arrived mid-run is already marked, and it is what decides
         // whether the card comes down: a drag now *cancels* each run rather than
         // queueing behind it, so ending the activity here would blink the card
@@ -540,6 +613,27 @@ impl App {
         // is none, and the line above is what the card is raised with.
         self.notifications
             .update_activity(message.message, message.fraction);
+        self.request_redraw();
+    }
+
+    /// Show a mesh from part way through a run.
+    ///
+    /// Touches none of the run's bookkeeping — not `in_flight`, not `dirty`,
+    /// not the activity card — so the respawn logic and the "still working"
+    /// notice carry on exactly as they would have. A preview from a superseded
+    /// run is dropped, as its result would be.
+    pub(crate) fn handle_opt_previewed(&mut self, message: OptPreviewed) {
+        let revision = self.next_model_revision();
+        let Some(opt) = self.opt.as_mut() else {
+            return;
+        };
+        if message.generation != opt.generation.load(Ordering::Relaxed) {
+            return;
+        }
+        opt.preview = Some((message.generation, Arc::new(message.model)));
+        // The renderer caches its mesh buffers by revision, so a fresh one is
+        // what makes the new mesh reach the GPU.
+        opt.processed_revision = revision;
         self.request_redraw();
     }
 
@@ -934,6 +1028,7 @@ impl App {
             // counter, stops it rather than letting it finish against a mesh
             // that has been replaced.
             opt.generation.fetch_add(1, Ordering::Relaxed);
+            opt.preview = None;
             opt.processed = None;
             opt.covers_revision = u64::MAX;
             opt.revision_level = usize::MAX;

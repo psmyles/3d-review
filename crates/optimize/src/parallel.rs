@@ -48,14 +48,16 @@ use crate::cancel::{CancelToken, cancelled};
 /// of them and the caller is left with holes. Every caller already treats a
 /// missing result as "this node was left as it is", and the run it belongs to
 /// is discarded whole anyway.
-pub(crate) fn solve_nodes<J, R>(
+pub(crate) fn solve_nodes<J, R, P>(
     jobs: &[J],
     cancel: Option<&CancelToken>,
-    solve: impl Fn(&J) -> R + Sync,
+    solve: impl Fn(&J, &dyn Fn(P)) -> R + Sync,
     mut landed: impl FnMut(usize, R),
+    mut previewed: impl FnMut(usize, P),
 ) where
     J: Sync,
     R: Send,
+    P: Send,
 {
     if jobs.is_empty() {
         return;
@@ -64,7 +66,15 @@ pub(crate) fn solve_nodes<J, R>(
     // would cost a thread and a channel to do the same work.
     if jobs.len() == 1 {
         if !cancelled(cancel) {
-            landed(0, solve(&jobs[0]));
+            // Held rather than handed straight on, because `solve` takes an
+            // `Fn` and `previewed` is an `FnMut`. `RefCell`, not a lock: there
+            // is exactly one thread here.
+            let held: std::cell::RefCell<Vec<P>> = std::cell::RefCell::new(Vec::new());
+            let result = solve(&jobs[0], &|preview| held.borrow_mut().push(preview));
+            for preview in held.into_inner() {
+                previewed(0, preview);
+            }
+            landed(0, result);
         }
         return;
     }
@@ -84,8 +94,8 @@ pub(crate) fn solve_nodes<J, R>(
                 loop {
                     // Claimed but not started: a superseded run stops without
                     // solving anything else, which is what bounds a cancelled
-                    // rebuild at the one engine call already in flight rather
-                    // than at the whole scene.
+                    // rebuild at the one object already in flight rather than
+                    // at the whole scene.
                     if cancelled(cancel) {
                         break;
                     }
@@ -93,9 +103,16 @@ pub(crate) fn solve_nodes<J, R>(
                     let Some(job) = jobs.get(index) else {
                         break;
                     };
+                    // A part-finished object goes down the same channel as a
+                    // finished one, so the thread below sees both in the order
+                    // they actually happened.
+                    let emit = |preview| {
+                        let _ = sender.send(Message::Preview(index, preview));
+                    };
+                    let result = solve(job, &emit);
                     // A closed channel means the receiver below is gone, which
                     // only happens once every job has been claimed.
-                    if sender.send((index, solve(job))).is_err() {
+                    if sender.send(Message::Done(index, result)).is_err() {
                         break;
                     }
                 }
@@ -108,10 +125,19 @@ pub(crate) fn solve_nodes<J, R>(
         // This thread does no solving: it blocks here handing results on, which
         // is what lets `landed` report progress the moment a node finishes
         // instead of after the whole scope.
-        while let Ok((index, result)) = receiver.recv() {
-            landed(index, result);
+        while let Ok(message) = receiver.recv() {
+            match message {
+                Message::Done(index, result) => landed(index, result),
+                Message::Preview(index, preview) => previewed(index, preview),
+            }
         }
     });
+}
+
+/// What a worker sends back: an object finished, or one part way through.
+enum Message<R, P> {
+    Done(usize, R),
+    Preview(usize, P),
 }
 
 /// How many elements one worker claims at a time in a [`sweep`].
@@ -233,11 +259,12 @@ mod tests {
         solve_nodes(
             &jobs,
             None,
-            |job| job * 2,
+            |job, _| job * 2,
             |index, result| {
                 assert!(seen[index].is_none(), "job {index} landed twice");
                 seen[index] = Some(result);
             },
+            |_, (): ()| panic!("nothing previews here"),
         );
         assert_eq!(
             seen,
@@ -254,8 +281,9 @@ mod tests {
         solve_nodes(
             &[7usize],
             None,
-            |job| job + 1,
+            |job, _| job + 1,
             |index, result| seen = Some((index, result)),
+            |_, (): ()| panic!("nothing previews here"),
         );
         assert_eq!(seen, Some((0, 8)));
     }
@@ -267,14 +295,26 @@ mod tests {
         let dead = CancelToken::new(current, 1);
         let jobs: Vec<usize> = (0..32).collect();
         let mut landed = 0;
-        solve_nodes(&jobs, Some(&dead), |job| *job, |_, _| landed += 1);
+        solve_nodes(
+            &jobs,
+            Some(&dead),
+            |job, _| *job,
+            |_, _| landed += 1,
+            |_, (): ()| panic!("nothing previews here"),
+        );
         assert_eq!(landed, 0);
     }
 
     #[test]
     fn no_jobs_is_not_an_error() {
         let jobs: [usize; 0] = [];
-        solve_nodes(&jobs, None, |job| *job, |_, _| panic!("nothing to land"));
+        solve_nodes(
+            &jobs,
+            None,
+            |job, _| *job,
+            |_, _| panic!("nothing to land"),
+            |_, (): ()| panic!("nothing to preview"),
+        );
     }
 
     /// The property every field stage rests on: a sweep writes the same bytes

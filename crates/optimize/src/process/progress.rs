@@ -15,6 +15,7 @@
 
 use crate::cancel::CancelToken;
 use crate::stack::OpKind;
+use crate::submesh::Submesh;
 
 /// The phase a run is in.
 ///
@@ -139,6 +140,10 @@ impl<'a> OptProgress<'a> {
 /// processing thread, so it must be cheap and must not block.
 pub type OptProgressSink<'a> = &'a dyn Fn(OptProgress<'_>);
 
+/// What a part-finished scene is handed to, as the pieces it is made of. The
+/// caller turns them into a mesh; this side has no opinion on how.
+pub type PieceSink<'a> = &'a dyn Fn(&[&Submesh]);
+
 /// The two things every step of a run needs from its caller: somewhere to
 /// report to, and a way to ask whether it is still wanted.
 ///
@@ -150,11 +155,39 @@ pub type OptProgressSink<'a> = &'a dyn Fn(OptProgress<'_>);
 pub struct RunContext<'a> {
     progress: OptProgressSink<'a>,
     cancel: Option<&'a CancelToken>,
+    /// Where a part-finished mesh goes, when anyone is watching. Called on the
+    /// thread that owns the run, never from a worker.
+    preview: Option<PieceSink<'a>>,
 }
 
 impl<'a> RunContext<'a> {
     pub fn new(progress: OptProgressSink<'a>, cancel: Option<&'a CancelToken>) -> Self {
-        Self { progress, cancel }
+        Self {
+            progress,
+            cancel,
+            preview: None,
+        }
+    }
+
+    /// The same context, with somewhere to send part-finished meshes.
+    pub fn watching(self, preview: PieceSink<'a>) -> Self {
+        Self {
+            preview: Some(preview),
+            ..self
+        }
+    }
+
+    /// Whether anything is watching. Checked before a preview is *built*, since
+    /// splicing one together costs more than handing it over.
+    pub(crate) fn wants_preview(&self) -> bool {
+        self.preview.is_some()
+    }
+
+    /// Show the scene as it currently stands.
+    pub(crate) fn preview(&self, pieces: &[&Submesh]) {
+        if let Some(sink) = self.preview {
+            sink(pieces);
+        }
     }
 
     /// Say where the run has got to.

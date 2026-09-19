@@ -369,7 +369,6 @@ pub(crate) fn remesh_submeshes(
     // its own slot rather than folded in as it lands, so the warning order and
     // the piece order are the stack's, not the scheduler's.
     let total = jobs.len() as u32;
-    let mut outcomes: Vec<Option<NodeOutcome>> = (0..jobs.len()).map(|_| None).collect();
     let mut done = 0u32;
     // The token alone, never the whole context: a worker may ask whether the run
     // is still wanted, but the progress sink posts to the event loop and stays
@@ -382,12 +381,21 @@ pub(crate) fn remesh_submeshes(
     let cores = crate::parallel::default_threads();
     let workers = cores.min(jobs.len().max(1));
     let threads = (cores / workers).max(1);
+    // What every object looks like right now — finished where it is finished and
+    // part-finished where it is not. Shared by both callbacks below, which the
+    // borrow checker would otherwise refuse: they both write it, and each also
+    // reads what the other wrote. `RefCell`, not a lock, because
+    // `solve_nodes` calls them both on the one thread that owns the scope.
+    let scene = std::cell::RefCell::new(Progressing {
+        previews: (0..jobs.len()).map(|_| None).collect(),
+        outcomes: (0..jobs.len()).map(|_| None).collect(),
+    });
     crate::parallel::solve_nodes(
         &jobs,
         token,
-        |job| {
+        |job, emit| {
             let mut notes = Warnings::default();
-            let rebuilt = rebuild_node(job, &mut notes, token, threads);
+            let rebuilt = rebuild_node(job, &mut notes, token, threads, emit);
             NodeOutcome {
                 rebuilt,
                 notes: notes.into_vec(),
@@ -407,9 +415,20 @@ pub(crate) fn remesh_submeshes(
                 done,
                 total,
             ));
-            outcomes[index] = Some(outcome);
+            let mut scene = scene.borrow_mut();
+            scene.outcomes[index] = Some(outcome);
+            // A finished object supersedes whatever its last preview said.
+            scene.previews[index] = None;
+        },
+        |index, pieces| {
+            {
+                let mut scene = scene.borrow_mut();
+                scene.previews[index] = Some(pieces);
+            }
+            publish_preview(run, submeshes, &jobs, &scene.borrow());
         },
     );
+    let mut outcomes = scene.into_inner().outcomes;
 
     let mut replacements: HashMap<u32, Vec<Submesh>> = HashMap::new();
     for (job, outcome) in jobs.iter().zip(&mut outcomes) {
@@ -446,6 +465,59 @@ pub(crate) fn remesh_submeshes(
     *submeshes = rebuilt;
 }
 
+/// Hand the caller the scene as it currently stands: every object that has been
+/// rebuilt or part-rebuilt in its new form, everything else as it was.
+///
+/// Built from borrows rather than by cloning, so a preview of a large scene
+/// costs one `assemble` of the level and nothing per untouched object.
+fn publish_preview(
+    run: &crate::process::RunContext<'_>,
+    submeshes: &[Submesh],
+    jobs: &[NodeJob<'_>],
+    scene: &Progressing,
+) {
+    if !run.wants_preview() {
+        return;
+    }
+    // What each node currently looks like, if anything has replaced it.
+    let mut replacement_of: HashMap<u32, &[Submesh]> = HashMap::new();
+    for (slot, job) in jobs.iter().enumerate() {
+        let current = scene.outcomes[slot]
+            .as_ref()
+            .and_then(|outcome| outcome.rebuilt.as_deref())
+            .or(scene.previews[slot].as_deref());
+        if let Some(pieces) = current {
+            replacement_of.insert(job.node, pieces);
+        }
+    }
+
+    // Spliced in the same order the final result will be, so a preview and the
+    // mesh that replaces it are laid out the same way and the viewport does not
+    // jump.
+    let mut spliced: Vec<&Submesh> = Vec::with_capacity(submeshes.len());
+    let mut placed: Vec<u32> = Vec::new();
+    for piece in submeshes {
+        match replacement_of.get(&piece.node) {
+            Some(pieces) => {
+                if !placed.contains(&piece.node) {
+                    placed.push(piece.node);
+                    spliced.extend(pieces.iter());
+                }
+            }
+            None => spliced.push(piece),
+        }
+    }
+    run.preview(&spliced);
+}
+
+/// The scene mid-run: what each object has produced so far.
+struct Progressing {
+    /// A node's newest part-finished mesh, cleared once it finishes.
+    previews: Vec<Option<Vec<Submesh>>>,
+    /// A node's finished mesh, which supersedes its preview.
+    outcomes: Vec<Option<NodeOutcome>>,
+}
+
 /// One node's whole solve, gathered before the parallel pass so a worker
 /// touches nothing it shares with another.
 struct NodeJob<'a> {
@@ -476,10 +548,29 @@ fn rebuild_node(
     warnings: &mut Warnings,
     cancel: Option<&crate::CancelToken>,
     threads: usize,
+    emit: &dyn Fn(Vec<Submesh>),
 ) -> Option<Vec<Submesh>> {
     let _z = crate::prof::zone!("Remesh Node");
+    // Each relaxation pass produces a complete, valid mesh, so it is worth
+    // showing: a dense object is seconds of work and this is what fills them.
+    // The projection is done for a preview exactly as for the result, because
+    // a preview whose materials were missing would read as a bug rather than
+    // as progress.
+    let on_pass = |soup: RemeshOutput| {
+        if !soup.is_empty() {
+            let mut soup = soup;
+            layout::canonicalize(&mut soup);
+            emit(build_pieces_from(
+                &soup,
+                &job.pieces,
+                job.proxy,
+                project::Winding::Keep,
+            ));
+        }
+        true
+    };
     let (output, report) =
-        match solve::rebuild(job.proxy, job.faces, &job.params, threads, cancel, |_| true) {
+        match solve::rebuild(job.proxy, job.faces, &job.params, threads, cancel, on_pass) {
             Ok(result) => result,
             // A cancelled rebuild is the user having moved on, and the run it
             // belongs to is discarded whole — so it is not worth a warning.

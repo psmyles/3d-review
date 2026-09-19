@@ -47,7 +47,7 @@ pub(crate) struct Rebuild {
 }
 
 pub(crate) fn assemble(
-    submeshes: &[Submesh],
+    submeshes: &[&Submesh],
     source: &ModelData,
     tags: TagPresence,
     level: usize,

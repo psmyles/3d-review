@@ -60,8 +60,9 @@ pub mod submesh;
 pub use cancel::CancelToken;
 pub use export::{ExportReport, export_fbx};
 pub use process::{
-    AnalysisMetrics, MeshCounts, OptProgress, OptProgressSink, OptStage, ProcessInput,
-    ProcessedLod, ProcessedResult, process, process_cancellable, process_with_progress,
+    AnalysisMetrics, MeshCounts, OptPreview, OptPreviewSink, OptProgress, OptProgressSink,
+    OptStage, ProcessInput, ProcessedLod, ProcessedResult, process, process_cancellable,
+    process_progressive, process_with_progress,
 };
 pub use replace_file::{Staged, write_bytes_replacing, write_replacing};
 pub use stack::{

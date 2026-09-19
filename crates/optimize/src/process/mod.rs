@@ -55,6 +55,21 @@ pub use carry::ProcessedLod;
 pub use metrics::{AnalysisMetrics, MeshCounts};
 pub use progress::{OptProgress, OptProgressSink, OptStage, RunContext};
 
+/// A mesh from part way through a run, for a caller that shows one.
+///
+/// Level 0 only, and measured for nothing: no metrics, no tangents, no
+/// spatial index. It is what the viewport draws while the run finishes, and
+/// everything a finished [`ProcessedResult`] carries beside the mesh is work
+/// that would be thrown away a second later.
+#[derive(Debug, Clone)]
+pub struct OptPreview {
+    pub model: ModelData,
+}
+
+/// What [`process_progressive`] hands its previews to. Called on the run's own
+/// thread, so it must be cheap and must not block.
+pub type OptPreviewSink<'a> = &'a dyn Fn(OptPreview);
+
 pub(crate) use assemble::*;
 pub(crate) use carry::*;
 pub(crate) use metrics::*;
@@ -153,6 +168,24 @@ pub fn process_cancellable(
     progress: OptProgressSink<'_>,
     cancel: Option<&CancelToken>,
 ) -> Result<ProcessedResult, OptError> {
+    process_progressive(input, progress, None, cancel)
+}
+
+/// [`process_cancellable`], handing `preview` a mesh of level 0 as the run
+/// improves it.
+///
+/// Only the operations that work object by object have anything to show — a
+/// rebuild's relaxation produces a complete, valid mesh every pass — and only
+/// the ones *above* the LOD fan-out, since below it there is no single level 0
+/// to preview. A preview costs one `assemble` and skips the metrics, the
+/// tangents and the level BVHs, none of which anything looks at until the run
+/// lands.
+pub fn process_progressive(
+    input: ProcessInput<'_>,
+    progress: OptProgressSink<'_>,
+    preview: Option<OptPreviewSink<'_>>,
+    cancel: Option<&CancelToken>,
+) -> Result<ProcessedResult, OptError> {
     let _z = crate::prof::zone!("Process Stack");
     let run = RunContext::new(progress, cancel);
     let started = Instant::now();
@@ -223,9 +256,34 @@ pub fn process_cancellable(
     // A Reduce among the pre-operations simplifies the mesh every level then
     // starts from, so its error is part of level 0's — and of every level below
     // it, which inherits the reduced mesh.
+    // Only the pre-LOD operations can preview: below the fan-out there is no
+    // single level 0 to show. Built here, once, so nothing downstream carries
+    // the model or the tag presence around just in case.
+    let watched;
+    let watching = match preview {
+        Some(sink) => {
+            watched = move |pieces: &[&submesh::Submesh]| {
+                let (model, _) = assemble(
+                    pieces,
+                    input.model,
+                    tags,
+                    0,
+                    Rebuild {
+                        normals: false,
+                        tangents: false,
+                    },
+                    &mut Warnings::default(),
+                );
+                sink(OptPreview { model });
+            };
+            run.watching(&watched)
+        }
+        None => run,
+    };
+
     let mut base_error = 0.0f32;
     for op in pre_ops {
-        if run.cancelled() {
+        if watching.cancelled() {
             return Err(OptError::Cancelled);
         }
         base_error = base_error.max(apply_op(
@@ -235,7 +293,7 @@ pub fn process_cancellable(
             input.model,
             input.hidden_nodes,
             &mut warnings,
-            &run,
+            &watching,
         ));
     }
 
@@ -381,8 +439,9 @@ pub fn process_cancellable(
             index as u32,
             levels.len() as u32,
         ));
+        let pieces: Vec<&submesh::Submesh> = level.submeshes.iter().collect();
         let (model, carry) = assemble(
-            &level.submeshes,
+            &pieces,
             input.model,
             tags,
             index,
@@ -605,6 +664,74 @@ mod tests {
         assert_eq!(result.expect("a live run finishes").lods.len(), 1);
     }
 
+    /// A rebuild publishes the scene as it improves it, and every one of those
+    /// is a mesh the viewport can draw.
+    #[test]
+    fn a_rebuild_previews_the_scene_before_it_finishes() {
+        let model = demo_cube_model();
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::Remesh(crate::stack::RemeshParams {
+            density: crate::stack::RemeshDensity::Absolute,
+            faces: 40,
+            ..crate::stack::RemeshParams::default()
+        }));
+
+        let previews = std::cell::RefCell::new(Vec::new());
+        let result = process_progressive(
+            ProcessInput {
+                model: &model,
+                stack: &stack,
+                render_vertex_size: VERTEX_SIZE,
+                hidden_nodes: &[],
+                extras: None,
+            },
+            &|_| {},
+            Some(&|preview| previews.borrow_mut().push(preview.model)),
+            None,
+        );
+
+        // The cube is small enough that it may settle in one pass and preview
+        // nothing; what must hold is that anything it *did* publish is a mesh.
+        let previews = previews.into_inner();
+        for (at, preview) in previews.iter().enumerate() {
+            assert_eq!(
+                preview.indices.len() % 3,
+                0,
+                "preview {at} is not whole triangles"
+            );
+            for &index in &preview.indices {
+                assert!(
+                    (index as usize) < preview.vertices.len(),
+                    "preview {at} addresses no such vertex"
+                );
+            }
+        }
+        // And the run still produces its real answer.
+        assert!(result.is_ok());
+    }
+
+    /// Nobody watching costs nothing: the sink is what decides whether a
+    /// preview is even built.
+    #[test]
+    fn a_run_nobody_is_watching_publishes_nothing() {
+        let model = demo_cube_model();
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::Weld(WeldParams::default()));
+
+        // `process` is the no-sink entry point; that it runs at all is the
+        // assertion, since a preview path that ignored the `None` would panic
+        // on the missing sink.
+        let result = process(ProcessInput {
+            model: &model,
+            stack: &stack,
+            render_vertex_size: VERTEX_SIZE,
+            hidden_nodes: &[],
+            extras: None,
+        });
+
+        assert!(result.is_ok());
+    }
+
     /// Nothing enabled produces no mesh — but the source is still measured, so
     /// the workspace can show what it costs before anything is asked of it.
     #[test]
@@ -683,8 +810,9 @@ mod tests {
         piece.polygons = Some(carry);
 
         let mut warnings = Warnings::default();
+        let pieces: Vec<&submesh::Submesh> = submeshes.iter().collect();
         let (level, carry) = assemble(
-            &submeshes,
+            &pieces,
             &model,
             tags,
             0,

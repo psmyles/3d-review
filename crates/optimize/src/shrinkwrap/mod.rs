@@ -128,7 +128,7 @@ pub(crate) fn shrinkwrap_submeshes(
     crate::parallel::solve_nodes(
         &jobs,
         run.token(),
-        |job| {
+        |job, _| {
             let mut notes = Warnings::default();
             let rebuilt = wrap_node(&job.pieces, &job.params, &job.name, &mut notes);
             WrapOutcome {
@@ -147,6 +147,9 @@ pub(crate) fn shrinkwrap_submeshes(
             ));
             outcomes[index] = Some(outcome);
         },
+        // A wrap has no half-finished state worth showing: it is one
+        // extraction, not a sequence of improving ones.
+        |_, (): ()| {},
     );
 
     let mut replacements: HashMap<u32, Vec<Submesh>> = HashMap::new();

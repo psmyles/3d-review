@@ -718,6 +718,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::TextureDecoded(decode) => self.handle_texture_decoded(decode),
             UserEvent::OptProcessed(message) => self.handle_opt_processed(*message),
             UserEvent::OptProgressed(message) => self.handle_opt_progressed(message),
+            UserEvent::OptPreviewed(message) => self.handle_opt_previewed(*message),
             UserEvent::OptExported(outcome) => self.handle_opt_exported(*outcome),
             UserEvent::ModelLoaded(message) => self.handle_model_loaded(*message),
             UserEvent::ModelLoadProgress(message) => self.handle_model_load_progress(message),
