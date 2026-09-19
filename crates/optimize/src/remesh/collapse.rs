@@ -201,7 +201,8 @@ fn collapse_region(
             if !state.alive[a as usize] || !state.alive[b as usize] {
                 continue;
             }
-            let Some((dying, survivor)) = survivor_of(features, seeds, a, b) else {
+            let along = faces_along_edge(state, incidence, a, b);
+            let Some((dying, survivor)) = survivor_of(surface, features, seeds, a, b, along) else {
                 continue;
             };
             if !link_condition(state, incidence, dying, survivor, &mut left, &mut right) {
@@ -285,9 +286,31 @@ fn distance_between(state: &Collapsed, a: u32, b: u32) -> f64 {
 
 /// Which of the two endpoints dies, or `None` when the edge may not collapse at
 /// all.
-fn survivor_of(features: &Features, seeds: &Seeds, a: u32, b: u32) -> Option<(u32, u32)> {
+fn survivor_of(
+    surface: Surface<'_>,
+    features: &Features,
+    seeds: &Seeds,
+    a: u32,
+    b: u32,
+    faces_along: usize,
+) -> Option<(u32, u32)> {
     let feature_a = features.on_feature[a as usize];
     let feature_b = features.on_feature[b as usize];
+
+    // Two vertices of an outline may only merge where the outline actually runs
+    // between them - across an edge with one face. Two points a long way apart
+    // on the *same* loop share a chain and pass every other test here, and
+    // collapsing them pinches the loop into a figure of eight: the vertex left
+    // behind carries four border edges instead of two. Measured on a stylized
+    // plant's bark, which is an open sheet curled into a tube so its outline
+    // passes close to itself.
+    if surface.topology.boundary[a as usize]
+        && surface.topology.boundary[b as usize]
+        && faces_along != 1
+    {
+        return None;
+    }
+
     if feature_a && feature_b {
         // Both on a feature: legal along one chain, never between two. Merging
         // separate chains is what would round off a corner or join two holes.
@@ -322,6 +345,20 @@ fn survivor_of(features: &Features, seeds: &Seeds, a: u32, b: u32) -> Option<(u3
     // is the one it grew from.
     let seed = seeds.vertices.binary_search(&a).is_ok();
     if seed { Some((b, a)) } else { Some((a, b)) }
+}
+
+/// How many live faces use the edge between `a` and `b`. One is an outline, two
+/// is ordinary surface, and anything else is a branch.
+fn faces_along_edge(state: &Collapsed, incidence: &[Vec<u32>], a: u32, b: u32) -> usize {
+    incidence[a as usize]
+        .iter()
+        .filter(|&&face| {
+            !state.is_dead(face) && {
+                let corners = state.face(face);
+                corners.contains(&a) && corners.contains(&b)
+            }
+        })
+        .count()
 }
 
 /// Whether collapsing `dying` into `survivor` keeps the mesh a surface.

@@ -22,11 +22,12 @@ mod common;
 use common::{compare_digest_across_binaries, fixture, geometry_digest, run};
 
 /// Every fixture this suite loads.
-const FIXTURES: [&str; 4] = [
+const FIXTURES: [&str; 5] = [
     "monkey.fbx",
     "SM_column04.fbx",
     "SM_Ammo_Crate_01a.fbx",
     "cpg_pedestal_pebbles.fbx",
+    "stylized_palm_plant_04.fbx",
 ];
 
 fn remesh_stack(params: RemeshParams) -> OptStack {
@@ -260,6 +261,102 @@ fn triangles_topology_produces_no_polygons_beyond_triangles() {
         "an all-triangle mesh counts one polygon per triangle"
     );
     assert!(face_count(level) > 0, "and it did produce a mesh");
+}
+
+/// Every undirected edge of one node's geometry, welded by position, with how
+/// many faces use it.
+///
+/// Welded because the assembled buffer splits a node into one piece per
+/// material, and each piece has its own vertices — so the seam between two
+/// materials reads as two borders unless the pieces are rejoined. That is the
+/// same weld the rebuild itself works on (`remesh::proxy`), so this measures
+/// the surface rather than the buffer layout.
+fn welded_edge_uses(model: &ModelData, node: u32) -> std::collections::HashMap<(u32, u32), u32> {
+    let mut slot_of: std::collections::HashMap<[u32; 3], u32> = std::collections::HashMap::new();
+    let mut uses: std::collections::HashMap<(u32, u32), u32> = std::collections::HashMap::new();
+    for (triangle, corners) in model.indices.as_chunks::<3>().0.iter().enumerate() {
+        if model.triangles.node.get(triangle).copied() != Some(node) {
+            continue;
+        }
+        let welded = corners.map(|corner| {
+            let point = model.vertices[corner as usize].position;
+            let key = [point.x.to_bits(), point.y.to_bits(), point.z.to_bits()];
+            let next = slot_of.len() as u32;
+            *slot_of.entry(key).or_insert(next)
+        });
+        for corner in 0..3 {
+            let (a, b) = (welded[corner], welded[(corner + 1) % 3]);
+            if a == b {
+                continue;
+            }
+            let key = if a < b { (a, b) } else { (b, a) };
+            *uses.entry(key).or_insert(0) += 1;
+        }
+    }
+    uses
+}
+
+/// The failure this whole rebuild exists to fix.
+///
+/// A stylized plant is a trunk plus a dozen leaves, and each of them is a thin
+/// closed shell. The field extraction tore them: at a quarter of the original
+/// density the leaves came back as lace, with holes punched through and their
+/// silhouettes in shreds.
+///
+/// A collapse cannot do that — it only ever removes edges from a mesh that was
+/// already a surface — and this is what says so on the asset itself. Every
+/// object that arrived closed leaves closed, and no edge anywhere has gained a
+/// third face.
+#[test]
+fn a_plant_of_thin_shells_comes_back_without_holes() {
+    let Some(model) = fixture("stylized_palm_plant_04.fbx") else {
+        return;
+    };
+    let result = run(
+        &model,
+        &remesh_stack(RemeshParams {
+            topology: RemeshTopology::Triangles,
+            density: RemeshDensity::Ratio,
+            // The setting from the report the rewrite came out of.
+            ratio: 0.25,
+            ..RemeshParams::default()
+        }),
+    );
+    assert_no_skip_warning(&result);
+    let level = result.lod(0).expect("the stack produced a level");
+    assert_consistent(&level.model, "palm plant, triangles");
+    assert!(face_count(level) > 0, "the plant came back with no faces");
+
+    // Per object, because a torn leaf would otherwise be averaged away by the
+    // trunk beside it.
+    let mut checked = 0;
+    for node in 0..model.nodes.len() as u32 {
+        let before = welded_edge_uses(&model, node);
+        if before.is_empty() {
+            continue;
+        }
+        let after = welded_edge_uses(&level.model, node);
+        assert!(!after.is_empty(), "an object vanished entirely");
+        checked += 1;
+        let name = &model.nodes[node as usize].name;
+
+        for (edge, count) in &after {
+            assert!(
+                *count <= 2,
+                "'{name}': edge {edge:?} is used by {count} faces, so the rebuild branched"
+            );
+        }
+        // The headline: a shell that arrived closed comes back closed. Every
+        // hole the old extraction punched would show up here as a border edge
+        // on a source that had none.
+        let opened = after.values().filter(|&&count| count == 1).count();
+        let was_open = before.values().filter(|&&count| count == 1).count();
+        assert!(
+            opened <= was_open,
+            "'{name}': the rebuild opened {opened} border edges where the source had {was_open}"
+        );
+    }
+    assert!(checked > 3, "the plant has several objects to check");
 }
 
 #[test]
