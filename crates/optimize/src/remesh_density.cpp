@@ -1,12 +1,19 @@
 /*
  * See `remesh_density.h` for what this is and why it is its own file.
  *
- * The rule, in one line: a chord of length `h` across a surface of curvature
- * `k` misses it by about `k * h^2 / 8`, so spending the same error everywhere
- * means `h` proportional to `1 / sqrt(k)`. Everything below is that, plus the
- * three guards that stop it from being useless in practice — a floor under
- * "flat", a dilation so a one-ring-wide fillet survives, and a floor under how
- * fine a face may be asked to be.
+ * The rule is `h` proportional to `k` to the power of minus the strength, where
+ * `k` is how tightly the surface turns here and `h` is the face size to ask for.
+ * The two ends of that slider are both named rules rather than arbitrary
+ * settings. At 0.5, `h ~ 1/sqrt(k)`: a chord of length `h` across a surface of
+ * curvature `k` misses it by about `k * h^2 / 8`, so the square root is what
+ * spends the same *chordal error* everywhere. At 1.0, `h ~ 1/k`: every face
+ * turns through the same *angle*, which is the rule a hand retopology follows
+ * and is markedly more aggressive — a tube of half the radius gets faces of
+ * half the size rather than of seven tenths.
+ *
+ * Everything else here is the guards that stop that from being useless in
+ * practice — a floor under "flat", a dilation so a one-ring-wide fillet
+ * survives, and a floor under how fine a face may be asked to be.
  */
 
 #include "remesh_density.h"
@@ -58,10 +65,14 @@ const int DILATE_PASSES = 2;
 const int SMOOTH_PASSES = 6;
 
 /// How far either side of the object's own average face size the field may
-/// reach at full strength, as a ratio. Four means the largest face is sixteen
-/// times the *area* of the smallest. Past that the layout starts to come apart:
-/// the quad grid has to resolve the transition somewhere, and an integer layout
-/// resolves a steep one with singularities rather than with a gradient.
+/// reach at full strength, as a ratio — so the widest the whole field can span
+/// is its square. Past that the layout starts to come apart: the quad grid has
+/// to resolve the transition somewhere, and it resolves a steep one with
+/// singularities rather than with a gradient. Tightening it is not a free
+/// quality win, it just moves along the same axis the strength slider already
+/// runs: measured on a driftwood branch at full strength, dropping this to 2
+/// took Mostly quads from 36% triangles to 29% and its face-size spread from
+/// 6.1x down to 4.2x.
 const double MAX_RANGE = 4.0;
 
 /// How much finer than the triangles under it a face may be asked to be — or
@@ -228,10 +239,21 @@ bool density_field(const DensityInput &input, float strength, float target_edge,
         }
     }
 
-    /* Curvature, as the angle the surface turns through per unit length: every
-     * incident edge contributes the angle between the two averaged normals
-     * across it, against its own length. */
-    std::vector<double> turn(count, 0.0);
+    /* Curvature, as the angle the surface turns through per unit length — and
+     * specifically the *largest* such rate over the incident edges, not their
+     * average.
+     *
+     * That is the difference between measuring the tightest direction and
+     * measuring a blend of every direction, and on the shapes this tool is
+     * pointed at it is most of the signal. A branch is a tube: it turns through
+     * `1/radius` around its girth and through nothing at all along its length,
+     * so averaging the two reports a fraction of the curvature that actually
+     * constrains the face size. Measured on a driftwood branch: trunk to tip,
+     * the averaged rate spans 3.2x and the largest spans 3.7x, and at the same
+     * strength that turns a 3.4x spread of output face sizes into 4.2x. A face
+     * has to be small enough to follow the tightest direction; the others are
+     * free. */
+    std::vector<double> peak(count, 0.0);
     for (std::size_t triangle = 0; triangle < triangles; ++triangle) {
         for (int corner = 0; corner < 3; ++corner) {
             const std::uint32_t i = input.indices[triangle * 3 + corner];
@@ -240,23 +262,32 @@ bool density_field(const DensityInput &input, float strength, float target_edge,
                 continue;
             }
             double dot = 0.0;
+            double length = 0.0;
             for (int axis = 0; axis < 3; ++axis) {
                 dot += normals[(std::size_t)i * 3 + axis] * normals[(std::size_t)j * 3 + axis];
+                const double d = (double)input.positions[i * 3 + axis] -
+                                 (double)input.positions[j * 3 + axis];
+                length += d * d;
+            }
+            length = std::sqrt(length);
+            if (!(length > 0.0)) {
+                continue;
             }
             const double angle = std::acos(std::fmin(std::fmax(dot, -1.0), 1.0));
-            turn[i] += angle;
-            turn[j] += angle;
+            const double rate = angle / length;
+            peak[i] = std::fmax(peak[i], rate);
+            peak[j] = std::fmax(peak[j], rate);
         }
     }
 
     /* In logs throughout: the smoothing, the averaging and the strength blend
      * are all multiplicative on a spacing, and a scale field is a ratio rather
      * than a difference. The additive constant drops out at the centring step,
-     * so only the shape of the field matters here. */
+     * so only the shape of the field matters here — which is also why the
+     * exponent can be applied later, as a multiply by the strength. */
     std::vector<double> spacing(count, 0.0);
     for (std::size_t vertex = 0; vertex < count; ++vertex) {
-        const double curvature = span[vertex] > 0.0 ? turn[vertex] / span[vertex] : 0.0;
-        spacing[vertex] = -0.5 * std::log(curvature + flat);
+        spacing[vertex] = -std::log(peak[vertex] + flat);
     }
 
     std::vector<double> scratch(count, 0.0);

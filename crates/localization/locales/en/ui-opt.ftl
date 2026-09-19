@@ -138,7 +138,9 @@ ui-opt-remesh-smoothing = Smoothing
 ui-opt-remesh-adaptive = Vary face size
     .description = How much smaller the faces get where the shape is detailed, and larger
         where it is flat. At 0 every face is the same size. Raising it does not add faces,
-        it moves them: the flat parts give up what the curved parts take.
+        it moves them: the flat parts give up what the curved parts take. 0.5 spends the
+        same error everywhere; 1 gives every face the same turn, which is stronger but
+        mixes more triangles into the quad pattern.
 ui-opt-remesh-min-cost-flow = Thorough layout
     .description = Only quads: solve the quad layout the slower, more careful way. Worth
         trying when the result comes back with folded or twisted faces.

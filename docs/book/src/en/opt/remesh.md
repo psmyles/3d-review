@@ -90,9 +90,12 @@ Two ways to say it:
 The number is what you get, within a few percent. It is not free, though: the
 rebuild works from a face *size* rather than a count, so how many faces that
 turns into is measured and the size corrected, which means an object that lands
-wide of the mark is rebuilt more than once. Very small objects are left alone -
-below about sixteen triangles there is no surface to work from, and you are told
-which objects were skipped.
+wide of the mark is rebuilt more than once. The one case that can still land
+further out is Only quads with a strong [face-size variation](#vary-face-size):
+its layout answers in steps rather than smoothly, and a step can be large enough
+that no face size lands on the number - expect up to a sixth out there. Very
+small objects are left alone - below about sixteen triangles there is no surface
+to work from, and you are told which objects were skipped.
 
 ## Vary face size
 
@@ -107,7 +110,7 @@ and the detail moves to where it does something. On a stone pedestal at the
 default setting the flat top goes from an even grid of twelve-millimetre quads to
 a coarse one, and the rounded rim gains the faces it gave up, for the same total.
 
-Two things it is careful about, both of which matter on real assets:
+Three things it is careful about, all of which matter on real assets:
 
 - **Bumps smaller than a face are not detail.** A sculpt or a scan is rough
   everywhere at the scale of one source triangle; if that counted, the whole
@@ -117,15 +120,34 @@ Two things it is careful about, both of which matter on real assets:
 - **A face is never asked to be finer than the triangles underneath it.** The
   rebuild has to follow the surface it is given, and it cannot resolve something
   the original does not.
+- **What counts is the tightest direction, not the average one.** A branch or a
+  pipe turns right around its girth and not at all along its length, and a face
+  has to be small enough for the tight direction; the other one is free. Reading
+  the average instead is what used to leave a tapering branch at one face size
+  from trunk to tip.
 
-Higher settings vary it more. Past about three-quarters the quad pattern starts
-to resolve the change in face size with singularities rather than a gradient, and
-a rim can come back faceted - worth checking the result at the top of the range
-rather than assuming more is better.
+The two ends of the slider are both real rules rather than arbitrary amounts. At
+the default of 0.5, face size follows the square root of how tightly the surface
+turns, which is the setting that spends the same amount of *error* everywhere - a
+face of twice the size bulges away from a curve by four times as much, so the
+square root is what balances it. At 1 face size follows the turn directly, so
+every face turns through the same angle. That is what a hand retopology looks
+like, and it is much stronger: a branch of half the thickness gets faces of half
+the size rather than of seven tenths.
 
-It applies to every topology. Only quads varies the least of the three, because
-an integer layout has fewer ways to change face size across a surface than a
-pattern read off a field does.
+Strength is not free above the default. The quad pattern has to resolve a change
+in face size somewhere, and it resolves a steep one with singularities rather
+than with a gradient - so a stronger setting comes back with more triangles mixed
+into Mostly quads (measured on a sculpted head at the same count: 73% quads at 0,
+64% at the default, 56% at 1), and Only quads can miss its face count by more
+than it usually does. Both are worth paying on a silhouette-critical object and
+neither is worth paying by default.
+
+It applies to every topology, and which one varies most depends on the shape. On
+a stone pedestal - a broad flat top with a rounded rim - Only quads varies the
+most, spreading face sizes seven-fold where Mostly quads manages a bit over two.
+On a driftwood branch, where the change is a gradual thinning rather than an
+edge, it is the other way round and Only quads varies the least.
 
 ## Sharp edges and open borders
 

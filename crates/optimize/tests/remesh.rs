@@ -179,16 +179,36 @@ fn mostly_quads_hits_its_face_budget_and_is_mostly_quads() {
         "asked for {target} faces and got {polygons}, which is {:.0}% off",
         error * 100.0
     );
-    // Quad share rises with density — the triangles are the field's
-    // singularities, and there are about as many of them whatever the target.
-    // Measured on this fixture: 67% at 500 faces, 75% at 2000, 83% at 8000.
-    // Suzanne is a hard case (creases, open eyes, one non-manifold edge); the
-    // game-asset fixtures sit higher.
+    // Quad share rises with density and falls as face size is allowed to vary —
+    // the triangles are the field's singularities, and a field that varies needs
+    // more of them to turn one face size into another. Measured on this fixture
+    // at 2000 faces: 73% with a uniform field, 64% at the default strength, 56%
+    // at full. Suzanne is a hard case (creases, open eyes, one non-manifold
+    // edge); the game-asset fixtures sit higher.
+    //
+    // Both arms are checked, because they fail for different reasons: the
+    // uniform one is the engine itself regressing, the varied one is the field
+    // costing more grid than it is worth.
     let quad_share = quads as f32 / polygons as f32;
     assert!(
-        quad_share >= 0.7,
-        "only {:.0}% of the faces are quads",
+        quad_share >= 0.6,
+        "only {:.0}% of the faces are quads at the default face-size variation",
         quad_share * 100.0
+    );
+    let uniform = run(
+        &model,
+        &remesh_stack(RemeshParams {
+            adaptive_strength: 0.0,
+            ..quad_params(target)
+        }),
+    );
+    let uniform = uniform.lod(0).expect("the uniform stack produced a level");
+    let (_, uniform_quads, _) = face_degrees(uniform);
+    let uniform_share = uniform_quads as f32 / uniform.model.stats.polygon_count as f32;
+    assert!(
+        uniform_share >= 0.7,
+        "only {:.0}% of the faces are quads with one face size everywhere",
+        uniform_share * 100.0
     );
     assert!(
         level.model.stats.triangle_count > polygons,
@@ -318,8 +338,14 @@ fn a_weld_below_a_remesh_keeps_the_quads() {
 
     let (_, quads, other) = face_degrees(level);
     assert_eq!(other, 0);
-    assert!(
-        quads as f32 / level.model.stats.polygon_count as f32 >= 0.7,
+    // Against the same remesh on its own rather than against a fixed share: what
+    // is being tested is that the two operations below it change nothing, and a
+    // bare threshold would drift with every change to the field.
+    let alone = run(&model, &remesh_stack(quad_params(1_500)));
+    let alone = alone.lod(0).expect("the bare remesh produced a level");
+    let (_, alone_quads, _) = face_degrees(alone);
+    assert_eq!(
+        quads, alone_quads,
         "a weld and a vertex-fetch reorder below the remesh lost its quads"
     );
 }
@@ -551,37 +577,57 @@ fn varying_face_size_spends_the_budget_on_the_curved_parts() {
         return;
     };
     let node = widest_node(&model);
-    let params = |strength: f32| RemeshParams {
-        topology: RemeshTopology::QuadDominant,
+    let params = |topology, strength: f32| RemeshParams {
+        topology,
         density: RemeshDensity::Ratio,
         ratio: 0.25,
         adaptive_strength: strength,
         ..RemeshParams::default()
     };
 
-    let even = run(&model, &remesh_stack(params(0.0)));
-    let varied = run(&model, &remesh_stack(params(1.0)));
-    let even = even.lod(0).expect("a level");
-    let varied = varied.lod(0).expect("a level");
+    // Every topology, because each carries the field through a different engine
+    // and each has broken separately. The floor is per topology because how far
+    // a layout will carry a field is a property of the layout: measured on this
+    // slab at full strength, Triangles reaches 1.8x, Mostly quads 2.4x and Only
+    // quads 7.2x. The last is the highest floor on purpose — it is the one that
+    // silently collapses to 1.5x if QuadriFlow's index map is not told a scale
+    // field exists (see `remesh_quadriflow.cpp`).
+    for (topology, floor) in [
+        (RemeshTopology::Triangles, 1.5),
+        (RemeshTopology::QuadDominant, 2.0),
+        (RemeshTopology::PureQuads, 3.0),
+    ] {
+        let even = run(&model, &remesh_stack(params(topology, 0.0)));
+        let varied = run(&model, &remesh_stack(params(topology, 1.0)));
+        let even = even.lod(0).expect("a level");
+        let varied = varied.lod(0).expect("a level");
 
-    // A uniform field puts one face size on the whole object, rim and flat
-    // alike — the spread is whatever the extraction's own jitter is.
-    let flat = face_size_spread(even, node);
-    assert!(
-        flat < 1.5,
-        "a uniform rebuild should be uniform, and this one spreads {flat:.2}x"
-    );
-    // A varied one has to be visibly different, not marginally.
-    let spread = face_size_spread(varied, node);
-    assert!(
-        spread > 2.0,
-        "varying face size barely varied it: {spread:.2}x against {flat:.2}x even"
-    );
+        // A uniform field puts one face size on the whole object, rim and flat
+        // alike — the spread is whatever the extraction's own jitter is.
+        let flat = face_size_spread(even, node);
+        assert!(
+            flat < 1.5,
+            "{topology:?}: a uniform rebuild should be uniform, and this one \
+             spreads {flat:.2}x"
+        );
+        // A varied one has to be visibly different, not marginally.
+        let spread = face_size_spread(varied, node);
+        assert!(
+            spread > floor,
+            "{topology:?}: varying face size barely varied it: {spread:.2}x \
+             against {flat:.2}x even"
+        );
+    }
 }
 
 /// Whatever the field does, the count is the one that was asked for. Every
 /// topology, because each reaches it through a different engine or a different
 /// symmetry.
+///
+/// "Only quads" at full strength is allowed more room, and the reason is a
+/// property of the engine rather than of the search: an integer quad layout
+/// answers in steps, and a strong field makes the steps large enough to jump
+/// over the target. See [`remesh::BUDGET_ATTEMPTS`] for the measurement.
 #[test]
 fn the_face_count_is_the_one_that_was_asked_for() {
     let Some(model) = fixture("cpg_pedestal_pebbles.fbx") else {
@@ -603,8 +649,12 @@ fn the_face_count_is_the_one_that_was_asked_for() {
             let level = result.lod(0).expect("a level");
             let produced = level.model.faces.len() as f32;
             let miss = (produced - wanted as f32).abs() / wanted as f32;
+            let allowed = match (topology, strength) {
+                (RemeshTopology::PureQuads, s) if s > 0.0 => 0.18,
+                _ => 0.12,
+            };
             assert!(
-                miss < 0.12,
+                miss < allowed,
                 "{topology:?} at strength {strength} produced {produced} faces for a \
                  budget of {wanted}, which is {:.0}% out. Warnings: {:?}",
                 miss * 100.0,

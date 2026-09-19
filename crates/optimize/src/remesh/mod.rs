@@ -121,6 +121,14 @@ const BUDGET_TOLERANCE: f64 = 0.05;
 /// is one the user has to guess around on every slider drag, and guessing costs
 /// them more runs than this costs the machine. It is also the *worst* case, not
 /// the usual one — a node already inside the tolerance is solved once.
+///
+/// Four rather than more because the fourth is where it stops paying. "Only
+/// quads" with a strong field is the one case that still misses, and it misses
+/// because its response has a *step* in it rather than because the search is
+/// short: measured on a sculpted pedestal's slab at full strength, asking for
+/// 2366 gave 1462 faces and asking for 2542 gave 3575, with nothing in between,
+/// so no amount of bisection finds the 1817 that was wanted. Six attempts took
+/// that node's whole-object miss from 13% to 12% for a third more solve time.
 const BUDGET_ATTEMPTS: u32 = 4;
 
 /// How far from a new corner the source surface may be and still be projected

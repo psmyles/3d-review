@@ -197,7 +197,7 @@ bool review_quadriflow_solve(const rvo_quadriflow_request &request,
          * is what every stage below expects when nothing varies. The adaptive
          * field then replaces it outright — see `apply_density_field`. */
         qflow::Optimizer::optimize_scale(field.hierarchy, field.rho, 0);
-        apply_density_field(field, request.adaptive_strength);
+        const bool varies = apply_density_field(field, request.adaptive_strength);
         /* Upstream sets this *after* the scale solve whether or not it was asked
          * for: the position solve below reads it as "a scale field exists now",
          * which it does either way. */
@@ -206,7 +206,15 @@ bool review_quadriflow_solve(const rvo_quadriflow_request &request,
         qflow::Optimizer::optimize_positions(field.hierarchy, field.flag_adaptive_scale);
         field.ComputePositionSingularities();
 
-        if (!field.ComputeIndexMap()) {
+        /* `with_scale` defaults to 0, and passing it matters: the last stage of
+         * the index map builds a target edge *vector* per output quad edge, and
+         * with the flag clear it builds every one of them at the uniform
+         * `mScale` — pulling the extracted quads back to one size and undoing
+         * the field. Upstream never notices because upstream's scale field is
+         * all ones (see `apply_density_field`). Measured at full strength on a
+         * sculpted pedestal's slab, which is the shape this is for: face sizes
+         * spread 1.5x with it clear and 7.2x with it set. */
+        if (!field.ComputeIndexMap(varies ? 1 : 0)) {
             set_error(error, error_length,
                       "the quad layout could not be solved for this object");
             return false;

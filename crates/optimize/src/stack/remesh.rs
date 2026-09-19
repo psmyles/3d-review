@@ -125,6 +125,15 @@ pub struct RemeshParams {
     /// the same count. Honoured by every topology — both engines were given a
     /// per-vertex scale field for it.
     ///
+    /// It is read as an exponent, and the two ends of it are named rules rather
+    /// than arbitrary settings. At 0.5 face size goes as `1 / sqrt(curvature)`,
+    /// which spends the same chordal error everywhere — the geometrically
+    /// correct answer, and a gentle one. At 1 it goes as `1 / curvature`, so
+    /// every face turns through the same angle; that is what a hand retopology
+    /// looks like and it is much more aggressive. Measured on a driftwood
+    /// branch, the spread of output face sizes across the object runs 1.7x /
+    /// 4.2x / 6.1x at 0 / 0.5 / 1 for Mostly quads.
+    ///
     /// At 0 no field is built at all and each engine takes its original,
     /// uniform arithmetic rather than a field of ones — the two are the same
     /// answer, but only the first is the same *code*.
@@ -150,11 +159,13 @@ impl Default for RemeshParams {
             align_to_boundaries: true,
             smooth_iterations: 2,
             deterministic: true,
-            // Measured rather than chosen. At 0.5 a sculpted pedestal's flat
-            // top drops from 1818 quads to about 1200 and its rounded rim
-            // gains them, with the silhouette intact; past about 0.75 the
-            // layout starts resolving the transition with singularities
-            // instead of a gradient and the rim goes faceted.
+            // The geometric rule (see the field doc above), which is the
+            // strongest setting that costs nothing. Past it the contrast keeps
+            // rising but the quad grid pays for it: on a driftwood branch
+            // Mostly quads goes from 26% triangles at 0.5 to 36% at 1, because
+            // an integer layout resolves a steep transition with singularities
+            // rather than with a gradient. Full strength is worth reaching for
+            // on a silhouette-critical object, not by default.
             adaptive_strength: 0.5,
             min_cost_flow: false,
         }
