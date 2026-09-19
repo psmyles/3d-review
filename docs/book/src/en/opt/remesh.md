@@ -22,8 +22,44 @@ Reach for it when the *shape* is right but the triangles are not:
   along the shape rather than across it.
 
 If the triangles are already sensible and you only want fewer of them, Reduce or
-Generate LODs is the better tool: they are faster and they keep the texture
-layout exactly.
+Generate LODs is the better tool: they are faster, they keep the texture layout
+exactly, and - see below - they hold the silhouette better.
+
+## Remesh or Reduce?
+
+**At the same triangle count, Reduce holds the shape better and Remesh gives
+better-shaped triangles.** That is not one of them being better written than the
+other; it is what each is for, and neither can have both.
+
+Reduce removes whichever edge costs the least, measured against the original
+surface - so it is aiming at exactly the thing you see in the silhouette, and it
+never invents a point: every vertex it keeps is one the model already had, still
+exactly on the original surface. It spends its triangles where the shape turns
+and leaves flat panels nearly bare.
+
+Remesh spends its triangles *evenly*, which is the point of it - but that means
+putting some where the shape is flat and taking some from where it curves. It
+also has to place new points, which no longer sit exactly on the old surface.
+
+Measured on four models, at matched triangle counts:
+
+- **How far the shape moved**, as a fraction of one new face - lower is better.
+  Reduce 0.04 to 0.19, Remesh 0.14 to 0.49. Reduce wins it on every model.
+- **How well shaped the worst tenth of the triangles are**, where 1 is
+  equilateral - higher is better. Reduce 0.10 to 0.31, Remesh 0.20 to 0.75.
+  Remesh wins it on every model, by between one and a half and four times.
+
+So: **if you want the same model with fewer triangles, use Reduce.** Use Remesh
+when the triangles themselves are the problem - a scan, a CAD export, a sculpt,
+or anything you are about to deform, tessellate or bake, where long thin
+triangles are what bites you rather than a fraction of a millimetre of
+silhouette.
+
+One setting matters more than any other here: **Smoothing**. It is what buys the
+better-shaped triangles, and with it at 0 you are getting the raw result of the
+rebuild without the part that evens it out - most of Remesh's advantage, given
+up. The default of 2 costs almost nothing in shape now; turn it up if the faces
+still look uneven.
 
 ## What it gives you
 

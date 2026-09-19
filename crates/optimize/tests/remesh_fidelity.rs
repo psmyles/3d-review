@@ -30,7 +30,8 @@ mod common;
 use common::fixture;
 use review_model::{ModelData, SceneBvh};
 use review_optimize::{
-    OpKind, OptStack, ProcessInput, RemeshDensity, RemeshParams, RemeshTopology, process,
+    LodLevel, OpKind, OptStack, ProcessInput, ReduceParams, RemeshDensity, RemeshParams,
+    RemeshTopology, process,
 };
 
 /// A stand-in for the renderer's `SceneVertex` size.
@@ -95,6 +96,28 @@ fn edge_spread(model: &ModelData) -> f32 {
     lengths.sort_by(f32::total_cmp);
     let at = |fraction: f64| lengths[((lengths.len() - 1) as f64 * fraction) as usize];
     at(0.9) / at(0.1).max(f32::MIN_POSITIVE)
+}
+
+/// How well shaped a model's triangles are: 1 for equilateral, towards 0 for a
+/// sliver. Reported at the bad tail (P10) and the worst one, because a sliver is
+/// a local failure and an average hides it.
+fn triangle_quality(model: &ModelData) -> (f32, f32) {
+    let mut scores = Vec::new();
+    for corners in model.indices.as_chunks::<3>().0 {
+        let p = corners.map(|c| model.vertices[c as usize].position);
+        let area = (p[1] - p[0]).cross(p[2] - p[0]).length() * 0.5;
+        let sides: f32 = (0..3)
+            .map(|at| p[at].distance_squared(p[(at + 1) % 3]))
+            .sum();
+        if sides > 0.0 {
+            scores.push(4.0 * 3.0f32.sqrt() * area / sides);
+        }
+    }
+    if scores.is_empty() {
+        return (0.0, 0.0);
+    }
+    scores.sort_by(f32::total_cmp);
+    (scores[scores.len() / 10], scores[0])
 }
 
 /// The triangles of `model` owned by `node`, and their total area.
@@ -397,6 +420,199 @@ fn a_rebuilt_object_keeps_its_shape() {
         "a stone kept only {:.1}% of its surface area",
         area * 100.0
     );
+}
+
+/// Everything one whole stack did, over every object it touched.
+struct StackResult {
+    least_area: f32,
+    worst_forward: f32,
+    worst_back: f32,
+    triangles: usize,
+    spread: f32,
+    quality_tail: f32,
+    quality_worst: f32,
+}
+
+/// Run a whole stack and measure what it did.
+fn measure_stack(model: &ModelData, stack: &OptStack) -> Option<StackResult> {
+    let result = process(ProcessInput {
+        model,
+        stack,
+        render_vertex_size: VERTEX_SIZE,
+        hidden_nodes: &[],
+        extras: None,
+    })
+    .ok()?;
+    let level = result.lod(0)?;
+    let source_bvh = SceneBvh::build(model);
+    let level_bvh = SceneBvh::build(&level.model);
+
+    let mut least_area = 1.0f32;
+    let mut worst_forward = 0.0f32;
+    let mut worst_back = 0.0f32;
+    for node in 0..model.nodes.len() as u32 {
+        if let Some(one) = two_sided(model, &source_bvh, &level.model, &level_bvh, node) {
+            least_area = least_area.min(one.area_ratio);
+            worst_forward = worst_forward.max(one.source_to_out.p99);
+            worst_back = worst_back.max(one.out_to_source.p99);
+        }
+    }
+    let (quality_tail, quality_worst) = triangle_quality(&level.model);
+    Some(StackResult {
+        least_area,
+        worst_forward,
+        worst_back,
+        triangles: level.model.indices.len() / 3,
+        spread: edge_spread(&level.model),
+        quality_tail,
+        quality_worst,
+    })
+}
+
+/// The two stacks a person flips between: reduce to a ratio, or rebuild to one.
+fn matched_pair(ratio: f32, smoothing: u32) -> (OptStack, OptStack) {
+    let mut reduce = OptStack::default();
+    reduce.push_op(OpKind::Reduce(ReduceParams {
+        target: LodLevel {
+            target_ratio: ratio,
+            target_error: 0.01,
+        },
+        ..ReduceParams::default()
+    }));
+
+    let mut remesh = OptStack::default();
+    remesh.push_op(OpKind::Remesh(RemeshParams {
+        topology: RemeshTopology::Triangles,
+        density: RemeshDensity::Ratio,
+        ratio,
+        smooth_iterations: smoothing,
+        sharp_edges: false,
+        align_to_boundaries: true,
+        adaptive_strength: 1.0,
+        ..RemeshParams::default()
+    }));
+    (reduce, remesh)
+}
+
+/// A rebuild produces better-shaped triangles than a simplify does, which is
+/// the whole reason it exists.
+///
+/// It loses to Reduce on *fidelity* at the same triangle count, and that is not
+/// a defect to be fixed - Reduce is QEM simplification, so it removes whichever
+/// edge costs the least squared distance to the original's own planes and is
+/// therefore directly optimising the silhouette. Every vertex it keeps is an
+/// original vertex, exactly on the original surface. A rebuild instead spends
+/// its budget on *even* faces, which by construction means putting triangles
+/// where the error is not and taking them from where it is.
+///
+/// So this is the property that has to hold, and if it ever stops holding there
+/// is no reason to offer the operation at all: the badly-shaped tail of the
+/// triangles must be markedly better than a simplify's. Measured when pinned,
+/// at the tenth percentile of a shape score that is 1 for equilateral:
+///
+/// | fixture | reduce | remesh |
+/// |---|---|---|
+/// | rock pillar | 0.187 | 0.274 |
+/// | palm plant | 0.115 | 0.509 |
+/// | pedestal stones | 0.309 | 0.746 |
+/// | column | 0.103 | 0.204 |
+#[test]
+fn a_rebuild_beats_a_simplify_on_the_shape_of_its_triangles() {
+    for (name, ratio) in [
+        ("stylized_palm_plant_04.fbx", 0.5f32),
+        ("cpg_pedestal_pebbles.fbx", 0.5),
+    ] {
+        let Some(model) = fixture(name) else {
+            continue;
+        };
+        // At the default amount of tidying, which is what the operation ships
+        // with and where the difference is meant to show.
+        let (reduce, remesh) = matched_pair(ratio, 2);
+        let Some(simplified) = measure_stack(&model, &reduce) else {
+            continue;
+        };
+        let rebuilt = measure_stack(&model, &remesh).expect("the rebuild runs");
+
+        // The counts have to be close or the comparison means nothing.
+        let ratio_of_counts = rebuilt.triangles as f64 / simplified.triangles.max(1) as f64;
+        assert!(
+            (0.9..1.1).contains(&ratio_of_counts),
+            "{name}: {} triangles against {}, too far apart to compare",
+            rebuilt.triangles,
+            simplified.triangles
+        );
+        assert!(
+            rebuilt.quality_tail > simplified.quality_tail * 1.2,
+            "{name}: the rebuild's worst-shaped tenth scores {:.3} against the \
+             simplify's {:.3} - a rebuild that does not give better-shaped \
+             triangles has nothing to offer over a simplify, which keeps the \
+             silhouette better",
+            rebuilt.quality_tail,
+            simplified.quality_tail
+        );
+        // And the faces should be more even in size, for the same reason.
+        assert!(
+            rebuilt.spread < simplified.spread,
+            "{name}: the rebuild's edge lengths spread {:.2}x against the \
+             simplify's {:.2}x",
+            rebuilt.spread,
+            simplified.spread
+        );
+    }
+}
+
+/// Remesh against Reduce at the same target, which is the comparison a person
+/// makes by flipping between the two in the workspace.
+///
+/// They are not trying to do the same thing and the numbers should say so.
+/// Reduce is QEM simplification: it removes whichever edge costs the least
+/// squared distance to the original's own planes, so it is *directly*
+/// optimising the thing measured here and should win it. Remesh spends its
+/// budget on even, well-shaped faces instead, and pays for that in fidelity.
+/// What would be a bug rather than a trade is Remesh losing by a lot, or losing
+/// on the one thing a simplifier is bad at - it cannot make a face any better
+/// shaped than the ones it inherited.
+#[test]
+#[ignore = "a measurement, not a check"]
+fn how_a_rebuild_compares_with_a_simplify() {
+    for (name, ratio) in [
+        ("rock_pillar_03.fbx", 0.6f32),
+        ("stylized_palm_plant_04.fbx", 0.5),
+        ("cpg_pedestal_pebbles.fbx", 0.5),
+        ("SM_column04.fbx", 0.5),
+    ] {
+        let Some(model) = fixture(name) else {
+            continue;
+        };
+
+        let (reduce, remesh) = matched_pair(ratio, 0);
+        let (_, smoothed) = matched_pair(ratio, 2);
+
+        println!("\n=== {name} @ {ratio} ===");
+        println!(
+            "  {:<8} {:>7} {:>7} {:>9} {:>9} | {:>7} {:>8} {:>8}",
+            "", "tris", "area", "src->out", "out->src", "spread", "shape10", "worst"
+        );
+        for (label, stack) in [
+            ("reduce", &reduce),
+            ("remesh s0", &remesh),
+            ("remesh s2", &smoothed),
+        ] {
+            let Some(one) = measure_stack(&model, stack) else {
+                continue;
+            };
+            println!(
+                "  {label:<8} {:>7} {:>6.1}% {:>8.2}h {:>8.2}h | {:>6.2}x {:>8.3} {:>8.3}",
+                one.triangles,
+                one.least_area * 100.0,
+                one.worst_forward,
+                one.worst_back,
+                one.spread,
+                one.quality_tail,
+                one.quality_worst
+            );
+        }
+    }
 }
 
 /// What the rebuild currently costs in shape, object by object.

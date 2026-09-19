@@ -83,7 +83,10 @@ fn no_message_carries_the_indentation_it_was_written_with() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
     sources(&root, &mut files);
-    assert!(!files.is_empty(), "found no sources to check under {root:?}");
+    assert!(
+        !files.is_empty(),
+        "found no sources to check under {root:?}"
+    );
 
     let mut faults = Vec::new();
     for path in &files {
