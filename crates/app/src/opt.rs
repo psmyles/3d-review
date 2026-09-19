@@ -27,12 +27,13 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use review_model::{ModelData, SceneBvh};
 use review_optimize::{
-    ExportOptions, ExportReport, OpKind, OptError, OptStack, ProcessInput, ProcessedResult,
-    RebindReport, export_fbx, preset, process,
+    CancelToken, ExportOptions, ExportReport, OpKind, OptError, OptProgress, OptStack, OptStage,
+    ProcessInput, ProcessedResult, RebindReport, export_fbx, preset, process_cancellable,
 };
 use review_ui::{NoticeKind, OptIntent, OptLevelView, OptResultView};
 
@@ -89,6 +90,59 @@ pub(crate) struct OptProcessed {
     pub(crate) level_bvhs: Vec<Arc<SceneBvh>>,
 }
 
+/// A run reporting where it has got to, posted from the worker thread.
+#[derive(Debug)]
+pub(crate) struct OptProgressed {
+    /// Matched against the current generation exactly as [`OptProcessed`] is, so
+    /// a superseded run can't retitle the notice of the one that replaced it.
+    pub(crate) generation: u64,
+    /// The finished stage line, built on the worker: `Remesh: leaf_012 (3 of 13)`.
+    pub(crate) message: String,
+    /// How far through that step, when it can be known - the card's bar.
+    pub(crate) fraction: Option<f32>,
+}
+
+/// The stage line under the optimizing card's title.
+///
+/// Rendered on the worker, like the import's, so the main thread only ever
+/// swaps a finished string into the card. What a stage is *called* comes from
+/// the chrome's catalog (`review_ui::op_kind_name` for an operation), so the
+/// notice and the stack row can't drift apart.
+fn progress_message(progress: OptProgress<'_>) -> String {
+    let stage = match progress.op {
+        Some(kind) => review_ui::op_kind_name(kind),
+        None => review_localization::tr(stage_name(progress.stage)).into_owned(),
+    };
+    match (progress.object, progress.total) {
+        (Some(object), total) if total > 0 => keys::app_notifications::opt_stage_object(
+            f64::from(progress.done + 1),
+            object.to_owned(),
+            stage,
+            f64::from(total),
+        ),
+        (None, total) if total > 0 => keys::app_notifications::opt_stage_count(
+            f64::from(progress.done + 1),
+            stage,
+            f64::from(total),
+        ),
+        _ => keys::app_notifications::opt_stage(stage),
+    }
+}
+
+/// What the optimizing card calls a stage that isn't one of the user's
+/// operations. `optimize` keeps its own English `label()` for the profiling
+/// channel, so the map lives here, on the side that draws text (invariant 12).
+fn stage_name(stage: OptStage) -> review_localization::Key {
+    match stage {
+        OptStage::Preparing => keys::app_notifications::OPT_STAGE_PREPARING,
+        OptStage::Measuring => keys::app_notifications::OPT_STAGE_MEASURING,
+        // An operation is named by `op_kind_name` above; this is only reached by
+        // a report that somehow carried no operation with it.
+        OptStage::Operation => keys::app_notifications::OPTIMIZING,
+        OptStage::Assembling => keys::app_notifications::OPT_STAGE_ASSEMBLING,
+    }
+}
+
 /// Everything the Opt workspace needs on the app side. Created on first entry
 /// into the workspace, so a session that never opens it pays nothing.
 #[derive(Debug)]
@@ -116,7 +170,13 @@ pub(crate) struct OptSubsystem {
     /// The stack revision most recently seen from the UI.
     seen_revision: u64,
     /// Monotonic run counter; the newest generation is the only one accepted.
-    generation: u64,
+    ///
+    /// Shared with the worker as an atomic rather than kept here alone, because
+    /// bumping it is also what *cancels* the run in flight: the worker holds a
+    /// [`CancelToken`] over this counter and stops as soon as it reads a value
+    /// other than its own (`review_optimize::cancel`). One piece of state, so a
+    /// superseded run cannot be live and cancelled at the same time.
+    generation: Arc<AtomicU64>,
     /// The generation of the run currently on the worker thread, if any.
     in_flight: Option<u64>,
     /// An edit landed while a run was in flight, so another is owed.
@@ -124,6 +184,15 @@ pub(crate) struct OptSubsystem {
     started_at: Option<Instant>,
     /// Whether the "still working" toast is currently up.
     activity_shown: bool,
+    /// The newest progress line, kept whether or not the toast is up yet.
+    ///
+    /// Reports start arriving the moment the run does, but the toast is
+    /// deliberately withheld for [`ACTIVITY_NOTICE_AFTER`] - and an operation
+    /// that rebuilds one object at a time can be minutes between reports. So the
+    /// line is remembered and written into the card as it is raised; otherwise
+    /// the card that finally appears is the one with a blank stage line under it
+    /// for the whole of the step the user is actually waiting on.
+    last_progress: Option<(String, Option<f32>)>,
     /// The warnings the last accepted run reported, so a condition that persists
     /// across runs is announced once rather than once per run.
     announced_warnings: Vec<String>,
@@ -142,11 +211,12 @@ impl Default for OptSubsystem {
             revision_level: usize::MAX,
             covers_revision: u64::MAX,
             seen_revision: u64::MAX,
-            generation: 0,
+            generation: Arc::new(AtomicU64::new(0)),
             in_flight: None,
             dirty: false,
             started_at: None,
             activity_shown: false,
+            last_progress: None,
             announced_warnings: Vec::new(),
             seen_hidden: Vec::new(),
         }
@@ -222,9 +292,15 @@ impl App {
             && started.elapsed() >= ACTIVITY_NOTICE_AFTER
         {
             opt.activity_shown = true;
+            let last = opt.last_progress.clone();
             self.notifications.begin_activity(
                 review_localization::tr(keys::app_notifications::OPTIMIZING).into_owned(),
             );
+            // The step the run is already on, rather than a blank line until the
+            // next report - which on a per-object operation is a long way off.
+            if let Some((message, fraction)) = last {
+                self.notifications.update_activity(message, fraction);
+            }
         }
 
         let running = self.opt.as_ref().is_some_and(OptSubsystem::is_running);
@@ -249,7 +325,11 @@ impl App {
         let Some(opt) = self.opt.as_mut() else {
             return;
         };
-        opt.generation = opt.generation.saturating_add(1);
+        // The bump both marks the newer request and cancels the older run: an
+        // edit arriving mid-run used to wait out a whole rebuild nobody would
+        // see before the run replacing it could start, which on a Remesh is
+        // tens of seconds per slider nudge.
+        opt.generation.fetch_add(1, Ordering::Relaxed);
         opt.dirty = true;
         if opt.in_flight.is_none() {
             self.spawn_process();
@@ -304,11 +384,13 @@ impl App {
         let Some(opt) = self.opt.as_mut() else {
             return;
         };
-        let generation = opt.generation;
+        let generation = opt.generation.load(Ordering::Relaxed);
+        let cancel = CancelToken::new(Arc::clone(&opt.generation), generation);
         opt.in_flight = Some(generation);
         opt.dirty = false;
         opt.covers_revision = stack_revision;
         opt.started_at = Some(Instant::now());
+        opt.last_progress = None;
 
         // The renderer's own vertex size, so the reported overfetch describes the
         // buffer the GPU actually reads rather than the optimizer's intermediate
@@ -317,17 +399,45 @@ impl App {
         // Snapshot of the Outliner-hidden nodes, read only by the AO bake.
         let hidden = self.ui.hidden_mesh_nodes();
 
+        let progress_proxy = proxy.clone();
         std::thread::spawn(move || {
             prof::thread_name("mesh-optimize");
+            // Filtered on the line having *changed*, and deliberately not on a
+            // minimum interval the way the import's is. The import reports from
+            // inside the parse, many times per whole percent, so dropping one
+            // costs nothing - another is 512 KB away. A run reports at step and
+            // object boundaries, and the next one can be a whole field solve
+            // away: a timer that dropped the report saying which object we are
+            // on would leave the card reading `Preparing the mesh...` for the
+            // minutes that object took. The volume is bounded by the stack times
+            // the scene, which the loop can take all of. `RefCell`, not a lock -
+            // the sink is only ever called from this thread, from inside the run.
+            let last_line = std::cell::RefCell::new(String::new());
+            let report = |progress: OptProgress<'_>| {
+                let message = progress_message(progress);
+                if *last_line.borrow() == message {
+                    return;
+                }
+                last_line.replace(message.clone());
+                let _ = progress_proxy.send_event(UserEvent::OptProgressed(OptProgressed {
+                    generation,
+                    message,
+                    fraction: progress.fraction(),
+                }));
+            };
             let result = {
                 let _z = prof::zone!("Optimize Mesh");
-                process(ProcessInput {
-                    model: &model,
-                    stack: &stack,
-                    render_vertex_size,
-                    hidden_nodes: &hidden,
-                    extras: extras.as_deref(),
-                })
+                process_cancellable(
+                    ProcessInput {
+                        model: &model,
+                        stack: &stack,
+                        render_vertex_size,
+                        hidden_nodes: &hidden,
+                        extras: extras.as_deref(),
+                    },
+                    &report,
+                    Some(&cancel),
+                )
             };
             // Indexed here rather than on the main thread, for the same reason
             // the source mesh's is built on the import worker.
@@ -358,7 +468,14 @@ impl App {
         };
         opt.in_flight = None;
         opt.started_at = None;
-        if opt.activity_shown {
+        opt.last_progress = None;
+        // An edit that arrived mid-run is already marked, and it is what decides
+        // whether the card comes down: a drag now *cancels* each run rather than
+        // queueing behind it, so ending the activity here would blink the card
+        // off and on for every frame of the drag. It stays up, and the run about
+        // to be spawned inherits it.
+        let owed = opt.dirty;
+        if opt.activity_shown && !owed {
             opt.activity_shown = false;
             self.notifications.end_activity();
         }
@@ -368,10 +485,16 @@ impl App {
         };
         // A result for a superseded stack is dropped: the newer run is already
         // queued and showing this one would flash a mesh the user has moved past.
-        let current = message.generation == opt.generation;
+        let current = message.generation == opt.generation.load(Ordering::Relaxed);
         if current {
             match message.result {
                 Ok(result) => self.accept_opt_result(result, message.level_bvhs),
+                // A cancelled run is not a failed one - it stopped because the
+                // user moved on, which is the feature working. It cannot reach
+                // here with a current generation (cancelling *is* superseding),
+                // so this arm only guards against saying "optimization failed"
+                // if that ever stops being true.
+                Err(OptError::Cancelled) => prof::msg("mesh optimization cancelled"),
                 Err(error) => {
                     prof::msg(&format!("mesh optimization failed: {error}"));
                     self.notifications
@@ -383,14 +506,41 @@ impl App {
         }
 
         // Edits that arrived mid-run are honoured now, with the latest stack.
-        let owed = self.opt.as_ref().is_some_and(|opt| opt.dirty);
         if owed {
             self.spawn_process();
+        }
+        // The card was held up for a run that `spawn_process` then declined to
+        // start (an empty model, or no event-loop proxy). Nothing will end it,
+        // so end it here: every `begin_activity` has to be balanced exactly once.
+        let idle = self.opt.as_ref().is_some_and(|opt| opt.in_flight.is_none());
+        if idle
+            && let Some(opt) = self.opt.as_mut()
+            && opt.activity_shown
+        {
+            opt.activity_shown = false;
+            self.notifications.end_activity();
         }
 
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
+    }
+
+    /// Rewrite the optimizing card's stage line from a worker's progress report.
+    /// A report from a superseded run is dropped, exactly as its result would be.
+    pub(crate) fn handle_opt_progressed(&mut self, message: OptProgressed) {
+        let Some(opt) = self.opt.as_mut() else {
+            return;
+        };
+        if message.generation != opt.generation.load(Ordering::Relaxed) {
+            return;
+        }
+        opt.last_progress = Some((message.message.clone(), message.fraction));
+        // Only rewrites a card that is up: below `ACTIVITY_NOTICE_AFTER` there
+        // is none, and the line above is what the card is raised with.
+        self.notifications
+            .update_activity(message.message, message.fraction);
+        self.request_redraw();
     }
 
     /// Ask where to write the current LOD chain.
@@ -780,8 +930,10 @@ impl App {
 
         if let Some(opt) = self.opt.as_mut() {
             // Bumping the generation invalidates any run still on the worker for
-            // the previous model.
-            opt.generation = opt.generation.saturating_add(1);
+            // the previous model - and, since the worker's token reads this same
+            // counter, stops it rather than letting it finish against a mesh
+            // that has been replaced.
+            opt.generation.fetch_add(1, Ordering::Relaxed);
             opt.processed = None;
             opt.covers_revision = u64::MAX;
             opt.revision_level = usize::MAX;

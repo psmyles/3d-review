@@ -8,6 +8,7 @@
 use review_model::ModelData;
 
 use crate::Warnings;
+use crate::cancel::{CancelToken, cancelled};
 use crate::ops;
 use crate::stack::{
     LodLevel, LodParams, OpInstance, OpKind, OptStack, SimplifyAlgorithm, SimplifySettings,
@@ -64,12 +65,17 @@ pub(crate) fn build_lod_level(
     level: &crate::stack::LodLevel,
     stack: &OptStack,
     warnings: &mut Warnings,
+    cancel: Option<&CancelToken>,
 ) -> LevelState {
     let mut submeshes = base.to_vec();
-    let simplify_error =
-        simplify_submeshes(&mut submeshes, stack, "Generate LODs", warnings, |_| {
-            (params.simplify, *level)
-        });
+    let simplify_error = simplify_submeshes(
+        &mut submeshes,
+        stack,
+        "Generate LODs",
+        warnings,
+        cancel,
+        |_| (params.simplify, *level),
+    );
 
     LevelState {
         submeshes,
@@ -91,6 +97,7 @@ pub(crate) fn simplify_submeshes(
     stack: &OptStack,
     label: &str,
     warnings: &mut Warnings,
+    cancel: Option<&CancelToken>,
     mut settings_for: impl FnMut(&Submesh) -> (SimplifySettings, LodLevel),
 ) -> f32 {
     let mut worst_error = 0.0f32;
@@ -101,6 +108,9 @@ pub(crate) fn simplify_submeshes(
     let mut seam_bound = false;
 
     for piece in submeshes.iter_mut() {
+        if cancelled(cancel) {
+            return worst_error;
+        }
         if is_excluded(stack, piece.node) {
             continue;
         }
@@ -152,10 +162,16 @@ pub(crate) fn apply_op(
     model: &ModelData,
     hidden_nodes: &[u32],
     warnings: &mut Warnings,
+    run: &RunContext<'_>,
 ) -> f32 {
     if !op.enabled {
         return 0.0;
     }
+
+    // Named once here, before the branches: every arm below is the same
+    // operation starting, and the three that work object by object go on to
+    // report which object through the same sink.
+    run.report(OptProgress::operation(&op.kind));
 
     // Reduce runs the simplifier, whose stall diagnosis reads the whole mesh
     // rather than one submesh at a time — so it goes through the same helper the
@@ -164,16 +180,23 @@ pub(crate) fn apply_op(
     // two: what it leaves behind is what every later operation sees, what each LOD
     // level starts from, and what the export writes in the source mesh's place.
     if let OpKind::Reduce(params) = &op.kind {
-        return simplify_submeshes(submeshes, stack, op.kind.label(), warnings, |piece| {
-            let params = match resolve_op(stack, op, piece.node) {
-                OpKind::Reduce(resolved) => resolved,
-                // An override can only ever hold the same kind as the operation
-                // it overrides; fall back to the global settings if one somehow
-                // doesn't.
-                _ => params,
-            };
-            (params.simplify, params.target)
-        });
+        return simplify_submeshes(
+            submeshes,
+            stack,
+            op.kind.label(),
+            warnings,
+            run.token(),
+            |piece| {
+                let params = match resolve_op(stack, op, piece.node) {
+                    OpKind::Reduce(resolved) => resolved,
+                    // An override can only ever hold the same kind as the operation
+                    // it overrides; fall back to the global settings if one somehow
+                    // doesn't.
+                    _ => params,
+                };
+                (params.simplify, params.target)
+            },
+        );
     }
 
     // The AO bake needs the whole scene as occluders — excluded pieces still
@@ -183,7 +206,7 @@ pub(crate) fn apply_op(
     // scene partitions by `_LOD<n>` name suffix so co-located LOD copies never
     // shadow each other; `model` supplies the node names for that.
     if matches!(op.kind, OpKind::BakeAo(_)) {
-        crate::ao::bake_submeshes(submeshes, op, stack, model, hidden_nodes);
+        crate::ao::bake_submeshes(submeshes, op, stack, model, hidden_nodes, run.token());
         return 0.0;
     }
 
@@ -192,18 +215,21 @@ pub(crate) fn apply_op(
     // like the two above it takes the whole scene at once — and unlike them it
     // takes the `Vec` itself, which is why `apply_op` does.
     if matches!(op.kind, OpKind::Remesh(_)) {
-        crate::remesh::remesh_submeshes(submeshes, op, stack, model, warnings);
+        crate::remesh::remesh_submeshes(submeshes, op, stack, model, warnings, run);
         return 0.0;
     }
 
     // Shrinkwrap replaces a node's pieces the same way, and for the same reason:
     // a wrap of one material's half of an object is not a shell of anything.
     if matches!(op.kind, OpKind::Shrinkwrap(_)) {
-        crate::shrinkwrap::shrinkwrap_submeshes(submeshes, op, stack, model, warnings);
+        crate::shrinkwrap::shrinkwrap_submeshes(submeshes, op, stack, model, warnings, run);
         return 0.0;
     }
 
     for piece in submeshes.iter_mut() {
+        if run.cancelled() {
+            return 0.0;
+        }
         if is_excluded(stack, piece.node) {
             continue;
         }

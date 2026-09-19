@@ -27,6 +27,10 @@ pub(crate) enum UserEvent {
     /// Boxed because a `ProcessedResult` carries a mesh per LOD level, which
     /// would otherwise make every variant of this enum that large.
     OptProcessed(Box<opt::OptProcessed>),
+    /// A background Opt run reached a new step, or moved within one (posted by
+    /// the optimize thread, already throttled there - see `opt.rs`). Rewrites
+    /// the optimizing card's stage line in place.
+    OptProgressed(opt::OptProgressed),
     /// A background FBX export finished (posted by the export thread).
     OptExported(Box<Result<review_optimize::ExportReport, review_optimize::OptError>>),
     /// A background model import produced a drawable model (posted by the import

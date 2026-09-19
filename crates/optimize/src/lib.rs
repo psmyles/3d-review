@@ -46,6 +46,9 @@ mod remesh_ffi;
 pub mod probe;
 
 mod ao;
+mod parallel;
+
+pub mod cancel;
 
 pub mod export;
 pub mod meshopt;
@@ -58,9 +61,11 @@ pub mod shrinkwrap;
 pub mod stack;
 pub mod submesh;
 
+pub use cancel::CancelToken;
 pub use export::{ExportReport, export_fbx};
 pub use process::{
-    AnalysisMetrics, MeshCounts, ProcessInput, ProcessedLod, ProcessedResult, process,
+    AnalysisMetrics, MeshCounts, OptProgress, OptProgressSink, OptStage, ProcessInput,
+    ProcessedLod, ProcessedResult, process, process_cancellable, process_with_progress,
 };
 pub use replace_file::{Staged, write_bytes_replacing, write_replacing};
 pub use stack::{
@@ -90,6 +95,12 @@ pub enum OptError {
 
     #[error("the mesh has no triangles to process")]
     EmptyMesh,
+
+    /// Not a failure: the stack was edited while this run was going, so it
+    /// stopped rather than finish a result nobody would see. `app` drops it
+    /// silently - the run that superseded it is already queued.
+    #[error("the run was cancelled")]
+    Cancelled,
 
     #[error("index buffer has {0} indices, which is not a whole number of triangles")]
     IndexCount(usize),

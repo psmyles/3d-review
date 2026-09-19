@@ -176,6 +176,11 @@ fn build_instant_meshes() {
             .define("EIGEN_MPL2_ONLY", None)
             .define("EIGEN_NO_DEBUG", None)
             .define("NDEBUG", None)
+            // MSVC declares neither `M_PI` nor its siblings without it, and
+            // both engines' headers use them (Instant Meshes' `common.h`,
+            // QuadriFlow's `field-math.hpp`) — so it belongs to the shared
+            // settings rather than to one of the four builds.
+            .define("_USE_MATH_DEFINES", None)
             .opt_level(2);
         // MSVC C++17 + exceptions: the extraction throws `std::runtime_error` and
         // the bridge catches it, so the unwind tables have to exist. `/bigobj`
@@ -250,6 +255,16 @@ fn build_instant_meshes() {
 fn build_quadriflow(configure: &impl Fn(&mut cc::Build)) -> bool {
     let dir = Path::new("../../third_party/quadriflow");
     let lemon = dir.join("3rd").join("lemon-1.3.1");
+    // lemon picks its platform arm on `WIN32`, which upstream's CMake defines
+    // and MSVC does not predefine (it predefines `_WIN32`). Without it
+    // `time_measure.h`, `random.h` and `bits/windows.cc` take the POSIX arm and
+    // reach for `unistd.h` / `sys/time.h`, which MSVC does not ship. Both
+    // builds below see lemon's headers, so both need it.
+    let lemon_platform = matches!(
+        std::env::var("CARGO_CFG_TARGET_OS").as_deref(),
+        Ok("windows")
+    )
+    .then_some("WIN32");
     let driver_cpp = Path::new("src/remesh_quadriflow.cpp");
     let driver_h = Path::new("src/remesh_quadriflow.h");
 
@@ -305,10 +320,10 @@ fn build_quadriflow(configure: &impl Fn(&mut cc::Build)) -> bool {
         .include(&sources_dir)
         .include(dir.join("3rd").join("pcg32"))
         .include(&lemon)
-        // MSVC does not define `M_PI` and friends without it, and
-        // `field-math.hpp` uses them.
-        .define("_USE_MATH_DEFINES", None)
         .warnings(true);
+    if let Some(define) = lemon_platform {
+        driver.define(define, None);
+    }
     // The two Eigen trips MSVC's /W4 on, suppressed by number so every other
     // warning in the driver still reaches the log.
     driver.flag_if_supported("/wd4100");
@@ -325,12 +340,14 @@ fn build_quadriflow(configure: &impl Fn(&mut cc::Build)) -> bool {
 
     let mut vendored = cc::Build::new();
     configure(&mut vendored);
+    if let Some(define) = lemon_platform {
+        vendored.define(define, None);
+    }
     vendored
         .files(&sources)
         .include(&sources_dir)
         .include(dir.join("3rd").join("pcg32"))
         .include(&lemon)
-        .define("_USE_MATH_DEFINES", None)
         .warnings(false)
         .compile("quadriflow");
 

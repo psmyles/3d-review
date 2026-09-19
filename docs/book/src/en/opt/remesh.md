@@ -163,15 +163,47 @@ edge, so a border comes back as one clean loop rather than a ragged fringe.
 **Smoothing** is how many rounds of evening-out to run over the result. Two is a
 good default: a little makes the faces more uniform, a lot rounds off detail.
 
-**Reproducible** is on by default and runs the rebuild on one core, because
-spreading it across several changes the answer: the same model rebuilt at one
+**Reproducible** is on by default and solves each object on one core, because
+spreading a *single* object's solve across several changes the answer: the same model rebuilt at one
 thread, at two and at eight gives three different meshes, and none of them is
 wrong - the solver simply settles differently depending on the order the work
 lands in. Leave it on. A preview that shifts under you while you drag a slider is
 worse than one that takes a moment longer, and "a moment" is what it costs: about
-twice as long on a large object, and no difference at all on a scene of small
-ones. Turn it off only for a one-off rebuild of something big where you do not
+twice as long on a single large object, and nothing at all on a scene of several,
+which already rebuild side by side (see [How long it takes](#how-long-it-takes)). Turn it off only for a one-off rebuild of something big where you do not
 care about matching it again.
+
+## How long it takes
+
+Objects are rebuilt **on every core at once** - one object per core, claimed as
+each core comes free, so the long ones are not stuck behind each other. A scene
+of a dozen objects on a machine with a dozen cores costs about what its slowest
+single object costs.
+
+What it cannot spread is one object on its own. Each is solved from scratch, and
+the face count you asked for is measured and the size corrected, so an object
+that lands wide of the mark is solved again - up to four times before the closest
+attempt is kept. **Only quads** is the slow end of that: its solver is
+single-core whatever else is going on, and **Thorough layout** is slower again by
+design. So a scene of many objects is quick, and one dense object at Only quads
+is still a wait.
+
+Either way it is not stuck. The notice at the bottom of the window names the step
+the run is on, and for a rebuild it names each object as it finishes and how many
+are done (`Remesh: leaf_012_mesh (3 of 13)`). If that line is moving, so is the
+run. To make it finish sooner, turn **Thorough layout** off, ask for fewer faces,
+or [exclude](overrides.md) the objects you do not need rebuilt.
+
+**Changing a setting while a rebuild is going stops it.** You do not wait for the
+run you have already moved past: the objects it has not started are abandoned and
+the new settings go in straight away. What it cannot cut short is the object
+already in the solver - the retopologizers have no way to be interrupted
+mid-object - so a change lands after about one object, not after the whole
+scene.
+
+Rebuilding several objects at once does not change any of them: an object's
+result depends on its own surface and settings, never on what is being solved
+beside it, so **Reproducible** means exactly what it did before.
 
 ## Materials, UVs and colors come back by projection
 

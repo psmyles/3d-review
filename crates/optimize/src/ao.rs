@@ -197,6 +197,7 @@ pub(crate) fn bake_submeshes(
     stack: &OptStack,
     model: &ModelData,
     hidden_nodes: &[u32],
+    cancel: Option<&crate::CancelToken>,
 ) {
     let _z = crate::prof::zone!("Bake AO");
 
@@ -270,6 +271,11 @@ pub(crate) fn bake_submeshes(
         for bucket in buckets {
             scope.spawn(move || {
                 for (chunk, params, scene) in bucket {
+                    // Per chunk, so a superseded bake stops within one chunk's
+                    // worth of rays rather than finishing the whole scene.
+                    if crate::cancel::cancelled(cancel) {
+                        return;
+                    }
                     bake_chunk(chunk, &params, scene);
                 }
             });

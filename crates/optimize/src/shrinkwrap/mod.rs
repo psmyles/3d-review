@@ -65,6 +65,7 @@ pub(crate) fn shrinkwrap_submeshes(
     stack: &OptStack,
     model: &ModelData,
     warnings: &mut Warnings,
+    run: &crate::process::RunContext<'_>,
 ) {
     let _z = crate::prof::zone!("Shrinkwrap");
 
@@ -79,7 +80,11 @@ pub(crate) fn shrinkwrap_submeshes(
         }
     }
 
-    let mut replacements: HashMap<u32, Vec<Submesh>> = HashMap::new();
+    // Gathered before any wrap starts, for the reason [`crate::parallel`] gives:
+    // the solves borrow `submeshes` immutably and the splice needs it back. A
+    // node that cannot be wrapped is filtered out here rather than inside a
+    // worker, so the warning for it is raised in stack order.
+    let mut jobs: Vec<WrapJob<'_>> = Vec::new();
     for &node in &nodes {
         if crate::process::is_excluded(stack, node) {
             continue;
@@ -106,8 +111,53 @@ pub(crate) fn shrinkwrap_submeshes(
             // overrides; fall back to the global settings if one somehow doesn't.
             _ => *global,
         };
-        if let Some(rebuilt) = wrap_node(&pieces, &params, &name, warnings) {
-            replacements.insert(node, rebuilt);
+        jobs.push(WrapJob {
+            node,
+            pieces,
+            params,
+            name,
+        });
+    }
+
+    // One object per core, each result parked in its own slot so the warning
+    // and piece order stay the stack's rather than the scheduler's.
+    let total = jobs.len() as u32;
+    let mut outcomes: Vec<Option<WrapOutcome>> = (0..jobs.len()).map(|_| None).collect();
+    let mut done = 0u32;
+    crate::parallel::solve_nodes(
+        &jobs,
+        run.token(),
+        |job| {
+            let mut notes = Warnings::default();
+            let rebuilt = wrap_node(&job.pieces, &job.params, &job.name, &mut notes);
+            WrapOutcome {
+                rebuilt,
+                notes: notes.into_vec(),
+            }
+        },
+        |index, outcome| {
+            // As each object lands, exactly as Remesh reports its own.
+            done += 1;
+            run.report(crate::process::OptProgress::object(
+                &op.kind,
+                &jobs[index].name,
+                done,
+                total,
+            ));
+            outcomes[index] = Some(outcome);
+        },
+    );
+
+    let mut replacements: HashMap<u32, Vec<Submesh>> = HashMap::new();
+    for (job, outcome) in jobs.iter().zip(&mut outcomes) {
+        let Some(outcome) = outcome.take() else {
+            continue;
+        };
+        for note in &outcome.notes {
+            warnings.push(note);
+        }
+        if let Some(rebuilt) = outcome.rebuilt {
+            replacements.insert(job.node, rebuilt);
         }
     }
     if replacements.is_empty() {
@@ -129,6 +179,22 @@ pub(crate) fn shrinkwrap_submeshes(
         }
     }
     *submeshes = rebuilt;
+}
+
+/// One node's whole wrap, gathered before the parallel pass so a worker touches
+/// nothing it shares with another. Remesh's `NodeJob` twin.
+struct WrapJob<'a> {
+    node: u32,
+    pieces: Vec<&'a Submesh>,
+    params: ShrinkwrapParams,
+    name: String,
+}
+
+/// What one node's wrap produced, warnings and all - see Remesh's `NodeOutcome`
+/// for why they ride back rather than going into the shared [`Warnings`].
+struct WrapOutcome {
+    rebuilt: Option<Vec<Submesh>>,
+    notes: Vec<String>,
 }
 
 /// Wrap one node, or `None` when it was left as it is (with a warning already

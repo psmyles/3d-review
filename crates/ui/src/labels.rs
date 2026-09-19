@@ -231,6 +231,13 @@ pub(crate) fn op_kind(kind: &OpKind) -> Key {
     }
 }
 
+/// An operation's display name, for the progress line `app` shows while a run
+/// is going. See [`material_mode_name`]: the stack row and the notice have to
+/// call an operation the same thing, and only this crate holds the names.
+pub fn op_kind_name(kind: &OpKind) -> String {
+    review_localization::tr(op_kind(kind)).into_owned()
+}
+
 /// What an operation does, in a sentence - the stack row's tooltip and the
 /// heading text over its parameters. Paired with [`op_kind`] so the name and the
 /// explanation cannot drift apart.

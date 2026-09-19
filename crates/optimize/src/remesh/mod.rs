@@ -338,6 +338,7 @@ pub(crate) fn remesh_submeshes(
     stack: &crate::stack::OptStack,
     model: &ModelData,
     warnings: &mut Warnings,
+    run: &crate::process::RunContext<'_>,
 ) {
     let _z = crate::prof::zone!("Remesh");
 
@@ -415,20 +416,84 @@ pub(crate) fn remesh_submeshes(
 
     let budgets = resolve_budgets(&budget_inputs);
 
+    // Everything each solve needs, gathered before any of them starts: the
+    // parallel pass below borrows `submeshes` immutably, and the splice at the
+    // end needs it back.
+    let jobs: Vec<NodeJob<'_>> = budget_inputs
+        .iter()
+        .zip(&budgets)
+        .filter_map(|(input, budget)| {
+            Some(NodeJob {
+                node: input.node,
+                pieces: submeshes
+                    .iter()
+                    .filter(|piece| piece.node == input.node && !piece.is_empty())
+                    .collect(),
+                proxy: proxies.get(&input.node)?,
+                faces: budget.faces,
+                params: input.params,
+                name: node_name(model, input.node),
+            })
+        })
+        .collect();
+
+    // One object per core (see [`crate::parallel`]). Each result is parked in
+    // its own slot rather than folded in as it lands, so the warning order and
+    // the piece order are the stack's, not the scheduler's.
+    let total = jobs.len() as u32;
+    let mut outcomes: Vec<Option<NodeOutcome>> = (0..jobs.len()).map(|_| None).collect();
+    let mut done = 0u32;
+    // The token alone, never the whole context: a worker may ask whether the run
+    // is still wanted, but the progress sink posts to the event loop and stays
+    // on the thread that owns the scope.
+    let token = run.token();
+    crate::parallel::solve_nodes(
+        &jobs,
+        token,
+        |job| {
+            let mut notes = Warnings::default();
+            let rebuilt = remesh_node(
+                &job.pieces,
+                job.proxy,
+                job.faces,
+                &job.params,
+                &job.name,
+                &mut notes,
+                token,
+            );
+            NodeOutcome {
+                rebuilt,
+                notes: notes.into_vec(),
+            }
+        },
+        |index, outcome| {
+            // Reported as each object *lands*: with several in flight there is
+            // no single object being waited on any more, so the count is what
+            // carries the news, and the name says which one just finished. A
+            // solve is minutes on a dense object, so this is what separates
+            // "slow" from "wedged" — the question a user staring at the notice
+            // actually has.
+            done += 1;
+            run.report(crate::process::OptProgress::object(
+                &op.kind,
+                &jobs[index].name,
+                done,
+                total,
+            ));
+            outcomes[index] = Some(outcome);
+        },
+    );
+
     let mut replacements: HashMap<u32, Vec<Submesh>> = HashMap::new();
-    for (input, budget) in budget_inputs.iter().zip(&budgets) {
-        let Some(proxy) = proxies.get(&input.node) else {
+    for (job, outcome) in jobs.iter().zip(&mut outcomes) {
+        let Some(outcome) = outcome.take() else {
             continue;
         };
-        let pieces: Vec<&Submesh> = submeshes
-            .iter()
-            .filter(|piece| piece.node == input.node && !piece.is_empty())
-            .collect();
-        let name = node_name(model, input.node);
-        if let Some(rebuilt) =
-            remesh_node(&pieces, proxy, budget.faces, &input.params, &name, warnings)
-        {
-            replacements.insert(input.node, rebuilt);
+        for note in &outcome.notes {
+            warnings.push(note);
+        }
+        if let Some(rebuilt) = outcome.rebuilt {
+            replacements.insert(job.node, rebuilt);
         }
     }
     if replacements.is_empty() {
@@ -454,6 +519,26 @@ pub(crate) fn remesh_submeshes(
     *submeshes = rebuilt;
 }
 
+/// One node's whole solve, gathered before the parallel pass so a worker
+/// touches nothing it shares with another.
+struct NodeJob<'a> {
+    node: u32,
+    pieces: Vec<&'a Submesh>,
+    proxy: &'a proxy::Proxy,
+    faces: u32,
+    params: RemeshParams,
+    name: String,
+}
+
+/// What one node's solve produced. The warnings ride back with the mesh rather
+/// than going into the shared [`Warnings`] as they happen: a worker cannot
+/// reach it, and folding them in afterwards in job order is what keeps the list
+/// the same on every run.
+struct NodeOutcome {
+    rebuilt: Option<Vec<Submesh>>,
+    notes: Vec<String>,
+}
+
 /// Rebuild one node's surface, or `None` when it was left as it is (with a
 /// warning already recorded).
 fn remesh_node(
@@ -463,7 +548,9 @@ fn remesh_node(
     params: &RemeshParams,
     name: &str,
     warnings: &mut Warnings,
+    cancel: Option<&crate::CancelToken>,
 ) -> Option<Vec<Submesh>> {
+    let _z = crate::prof::zone!("Remesh Node");
     let report = manifold::report(&proxy.indices);
 
     // "Only quads" is a solver over a half-edge structure, so a surface that
@@ -505,7 +592,7 @@ fn remesh_node(
         positions: &proxy.positions,
         indices: &proxy.indices,
     };
-    let mut output = match solve_to_budget(&input, topology, faces, params) {
+    let mut output = match solve_to_budget(&input, topology, faces, params, cancel) {
         Ok(output) => output,
         Err(error) if topology == RemeshTopology::PureQuads => {
             // The solve can fail on geometry that passed the manifold check —
@@ -517,7 +604,7 @@ fn remesh_node(
                  to 'Mostly quads'.",
                 engine_reason(&error)
             ));
-            match solve_to_budget(&input, RemeshTopology::QuadDominant, faces, params) {
+            match solve_to_budget(&input, RemeshTopology::QuadDominant, faces, params, cancel) {
                 Ok(output) => output,
                 Err(error) => {
                     warnings.push(&format!("Remesh: '{name}' was left as it is — {error}"));
@@ -571,6 +658,7 @@ fn solve_to_budget(
     topology: RemeshTopology,
     faces: u32,
     params: &RemeshParams,
+    cancel: Option<&crate::CancelToken>,
 ) -> Result<RemeshOutput, OptError> {
     let target = faces.max(MIN_FACES) as f64;
     let mut asked = faces.max(MIN_FACES) as f64;
@@ -594,7 +682,15 @@ fn solve_to_budget(
         if best.as_ref().is_none_or(|(_, previous)| miss < *previous) {
             best = Some((output, miss));
         }
-        if miss <= BUDGET_TOLERANCE || attempt + 1 == BUDGET_ATTEMPTS {
+        // Each attempt is a whole engine call, and the engine takes no cancel
+        // hook - so this is the finest this search can be interrupted, and it
+        // is what keeps a superseded "Only quads" from paying for three more
+        // solves of a result nobody wants. The best attempt so far is returned,
+        // exactly as a short budget would have returned it.
+        if miss <= BUDGET_TOLERANCE
+            || attempt + 1 == BUDGET_ATTEMPTS
+            || crate::cancel::cancelled(cancel)
+        {
             break;
         }
 
