@@ -172,6 +172,10 @@ to trade.
 Nothing is rebuilt twice to land on the face count, either - it is worked out in
 advance. A run costs what it costs once.
 
+Measured on a 24-core machine, rebuilding to a quarter of the original density:
+a stylized plant of 47,000 triangles takes about a tenth of a second, a
+100,000-triangle scan under a second, and a 250,000-triangle sculpt about two.
+
 The notice at the bottom of the window names the step the run is on, and for a
 rebuild it names each object as it finishes and how many are done
 (`Remesh: leaf_012_mesh (3 of 13)`). If that line is moving, so is the run. To
