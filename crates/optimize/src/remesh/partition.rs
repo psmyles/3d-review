@@ -206,10 +206,15 @@ fn edge_cost(surface: Surface<'_>, features: &Features, a: u32, b: u32) -> f32 {
     let length = surface.distance(a, b) as f32;
     let size = (surface.sizes[a as usize] + surface.sizes[b as usize]) * 0.5;
     let base = if size > 0.0 { length / size } else { length };
-    // Both ends on a feature means the edge runs *along* one, which is free; one
-    // end means it crosses off it, which is what the wall is for.
-    let crossing = features.on_feature[a as usize] != features.on_feature[b as usize];
-    if crossing { base * WALL } else { base }
+    // Free only where the edge is nowhere near a feature, or genuinely runs
+    // *along* one. Two ends on a feature is not enough to say it runs along it:
+    // wherever a feature passes close to itself — a strip one triangle wide, the
+    // two rims of a leaf near its tip — there are edges joining two feature
+    // vertices that cross the gap rather than follow it, and those are exactly
+    // the ones a region must not be allowed to span for nothing.
+    let touches = features.on_feature[a as usize] || features.on_feature[b as usize];
+    let along = touches && features.is_feature_edge(a, b);
+    if !touches || along { base } else { base * WALL }
 }
 
 /// Give every unreached vertex its lowest labelled neighbour.

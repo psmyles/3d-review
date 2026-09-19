@@ -108,11 +108,41 @@ pub(crate) struct Features {
     /// Per vertex: lies where chains meet or end, so a seed must sit exactly
     /// here or the corner is lost.
     pub(crate) junction: Vec<bool>,
+    /// Feature partners of each vertex, ascending: `vertex_count + 1` starts
+    /// into [`Self::partner_entries`].
+    ///
+    /// A CSR rather than a `Vec<Vec<u32>>` because the outer vector costs
+    /// twenty-four bytes of header per vertex whether or not the vertex is on a
+    /// feature at all — a quarter of a gigabyte at ten million, for a table that
+    /// is empty almost everywhere. Kept past the walk that builds it, because
+    /// the partition needs to ask whether a given edge runs *along* a feature.
+    partner_starts: Vec<u32>,
+    partner_entries: Vec<u32>,
 }
 
 impl Features {
     pub(crate) fn is_empty(&self) -> bool {
         self.polylines.is_empty()
+    }
+
+    /// The feature partners of `vertex`, ascending.
+    fn partners_of(&self, vertex: u32) -> &[u32] {
+        let at = vertex as usize;
+        match (self.partner_starts.get(at), self.partner_starts.get(at + 1)) {
+            (Some(&first), Some(&end)) => &self.partner_entries[first as usize..end as usize],
+            _ => &[],
+        }
+    }
+
+    /// Whether the edge `a..b` is itself a feature, rather than merely joining
+    /// two vertices that each happen to lie on one.
+    ///
+    /// The difference matters wherever a feature passes near itself. A strip one
+    /// triangle wide has both its rims in the same neighbourhood, and the edge
+    /// spanning its width joins two feature vertices without being one — it is
+    /// the very edge that must *not* be free to cross.
+    pub(crate) fn is_feature_edge(&self, a: u32, b: u32) -> bool {
+        self.partners_of(a).binary_search(&b).is_ok()
     }
 }
 
@@ -134,6 +164,8 @@ pub(crate) fn build(
         on_feature: vec![false; count],
         polyline_of: vec![u32::MAX; count],
         junction: vec![false; count],
+        partner_starts: Vec::new(),
+        partner_entries: Vec::new(),
     };
     if count == 0 {
         return features;
@@ -142,21 +174,48 @@ pub(crate) fn build(
     // Per vertex, its feature partners, ascending. Stored rather than recomputed
     // because the walk below visits each vertex several times and the edge scan
     // is the expensive part.
-    let mut partners: Vec<Vec<u32>> = vec![Vec::new(); count];
+    // Count, prefix-sum, fill — the shape every index in this module is built
+    // with, and the reason a vertex on no feature costs four bytes rather than
+    // an allocation.
+    let mut starts = vec![0u32; count + 1];
     let mut scratch = Vec::new();
     for vertex in 0..count as u32 {
         surface
             .topology
             .edges_at(surface.indices, vertex, &mut scratch);
+        let found = scratch
+            .iter()
+            .filter(|edge| is_feature(surface, **edge, borders, crease_cosine))
+            .count();
+        starts[vertex as usize + 1] = found as u32;
+    }
+    if cancelled(cancel) {
+        return features;
+    }
+    for vertex in 0..count {
+        starts[vertex + 1] += starts[vertex];
+    }
+    let mut entries = vec![0u32; starts[count] as usize];
+    for vertex in 0..count as u32 {
+        surface
+            .topology
+            .edges_at(surface.indices, vertex, &mut scratch);
+        let mut at = starts[vertex as usize] as usize;
         for edge in &scratch {
             if is_feature(surface, *edge, borders, crease_cosine) {
-                partners[vertex as usize].push(edge.other);
+                entries[at] = edge.other;
+                at += 1;
             }
         }
-        if !partners[vertex as usize].is_empty() {
+        // `edges_at` reports a vertex's edges in face order, and the lookups
+        // below are binary searches.
+        entries[starts[vertex as usize] as usize..at].sort_unstable();
+        if at > starts[vertex as usize] as usize {
             features.on_feature[vertex as usize] = true;
         }
     }
+    features.partner_starts = starts;
+    features.partner_entries = entries;
     if cancelled(cancel) {
         return features;
     }
@@ -164,10 +223,10 @@ pub(crate) fn build(
     // A vertex is a junction when it is not simply passing through: an endpoint
     // (one partner) or a meeting of three or more chains. Those are the points
     // a seed has to land on exactly, since they are the corners.
-    for (vertex, list) in partners.iter().enumerate() {
-        // Not simply passing through: an end, or a meeting of three or more.
-        if list.len() == 1 || list.len() > 2 {
-            features.junction[vertex] = true;
+    for vertex in 0..count as u32 {
+        let degree = features.partners_of(vertex).len();
+        if degree == 1 || degree > 2 {
+            features.junction[vertex as usize] = true;
         }
     }
 
@@ -177,17 +236,14 @@ pub(crate) fn build(
     // shared: on a cube every corner carries three creases, so a walk that
     // consumed vertices would claim one edge per corner and lose the other
     // eight. What is used up by a walk is the edge it crossed.
-    let mut used: Vec<Vec<bool>> = partners
-        .iter()
-        .map(|list| vec![false; list.len()])
-        .collect();
+    let mut used = vec![false; features.partner_entries.len()];
 
     // Open chains first, from every vertex that is not simply passing through,
     // so what is left over is exactly the closed loops. Starting an open chain
     // from its middle would split it in two.
     for start in 0..count as u32 {
-        while partners[start as usize].len() != 2 && has_unused(&used, start) {
-            let line = walk(&partners, &mut used, start);
+        while features.partners_of(start).len() != 2 && has_unused(&features, &used, start) {
+            let line = walk(&features, &mut used, start);
             push_line(&mut features, surface, line, false, borders, crease_cosine);
         }
     }
@@ -197,8 +253,8 @@ pub(crate) fn build(
     // Whatever edges remain run through degree-two vertices only, so each is
     // part of a loop that closes on itself.
     for start in 0..count as u32 {
-        while has_unused(&used, start) {
-            let mut line = walk(&partners, &mut used, start);
+        while has_unused(&features, &used, start) {
+            let mut line = walk(&features, &mut used, start);
             // The walk comes back to where it began; the repeat is dropped, so a
             // closed chain names each vertex once.
             let closed = line.len() > 2 && line.first() == line.last();
@@ -225,15 +281,15 @@ pub(crate) fn build(
 /// Stops on arriving at a vertex that is not degree two — an endpoint or a
 /// junction — because that is where one chain ends and the next begins. The
 /// junction belongs to both, which is what keeps a corner seeded.
-fn walk(partners: &[Vec<u32>], used: &mut [Vec<bool>], start: u32) -> Vec<u32> {
+fn walk(features: &Features, used: &mut [bool], start: u32) -> Vec<u32> {
     let mut line = vec![start];
     let mut at = start;
-    while let Some(slot) = lowest_unused(partners, used, at) {
-        let next = partners[at as usize][slot];
-        mark_used(partners, used, at, next);
+    while let Some(slot) = lowest_unused(features, used, at) {
+        let next = features.partner_entries[slot];
+        mark_used(features, used, at, next);
         line.push(next);
         at = next;
-        if at == start || partners[at as usize].len() != 2 {
+        if at == start || features.partners_of(at).len() != 2 {
             break;
         }
     }
@@ -242,17 +298,14 @@ fn walk(partners: &[Vec<u32>], used: &mut [Vec<bool>], start: u32) -> Vec<u32> {
 
 /// The slot of `vertex`'s lowest-numbered partner across an edge nothing has
 /// walked yet.
-fn lowest_unused(partners: &[Vec<u32>], used: &[Vec<bool>], vertex: u32) -> Option<usize> {
-    partners[vertex as usize]
-        .iter()
-        .enumerate()
-        .filter(|&(slot, _)| !used[vertex as usize][slot])
-        .min_by_key(|&(_, other)| *other)
-        .map(|(slot, _)| slot)
+fn lowest_unused(features: &Features, used: &[bool], vertex: u32) -> Option<usize> {
+    let base = features.partner_starts[vertex as usize] as usize;
+    // The entries are ascending, so the first unwalked one is the lowest.
+    (base..base + features.partners_of(vertex).len()).find(|&slot| !used[slot])
 }
 
-fn has_unused(used: &[Vec<bool>], vertex: u32) -> bool {
-    used[vertex as usize].iter().any(|&taken| !taken)
+fn has_unused(features: &Features, used: &[bool], vertex: u32) -> bool {
+    lowest_unused(features, used, vertex).is_some()
 }
 
 /// Mark the edge between `a` and `b` walked, from both ends.
@@ -260,13 +313,11 @@ fn has_unused(used: &[Vec<bool>], vertex: u32) -> bool {
 /// One `position` each way is enough because a vertex's partners are distinct:
 /// `Topology::edges_at` reports each undirected edge once, whatever the faces
 /// around it.
-fn mark_used(partners: &[Vec<u32>], used: &mut [Vec<bool>], a: u32, b: u32) {
+fn mark_used(features: &Features, used: &mut [bool], a: u32, b: u32) {
     for (from, to) in [(a, b), (b, a)] {
-        if let Some(slot) = partners[from as usize]
-            .iter()
-            .position(|&other| other == to)
-        {
-            used[from as usize][slot] = true;
+        let base = features.partner_starts[from as usize] as usize;
+        if let Ok(offset) = features.partners_of(from).binary_search(&to) {
+            used[base + offset] = true;
         }
     }
 }

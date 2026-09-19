@@ -24,15 +24,20 @@
 //! ## Snapping back to the source, and why this does not
 //!
 //! The obvious third pass is to put every vertex back on the source surface —
-//! it is what a synthesis-based remesher ends with, since the surface it built
-//! is genuinely somewhere else. Measured here it makes every fixture *worse*
-//! (a plant 96.8 % of its area to 96.1 %, a column 86.1 % to 84.0 %, a set of
-//! stones 99.7 % to 98.0 %), and the reason is that this rebuild does not
-//! synthesize anything. Its vertices are source vertices, or the optimum of a
-//! quadric built from the source's own planes — and on a convex patch that
-//! optimum sits a little *outside* the surface, where the tangent planes meet,
-//! which is exactly where a coarse mesh has to be to keep the area. Snapping
-//! them down trades a circumscribing approximation for an inscribing one.
+//! it is what a remesher that *synthesizes* a surface ends with, since the
+//! surface it built is genuinely somewhere else. Measured here, twice, it makes
+//! every fixture worse: over the whole output (a plant 96.8 % of its area to
+//! 96.1 %, a column 86.1 % to 84.0 %, stones 99.7 % to 98.0 %) and again when
+//! narrowed to only the vertices the relaxation had just moved (the plant
+//! 89.0 % to 87.3 %, the column 85.9 % to 83.3 %).
+//!
+//! The reason is that this rebuild synthesizes nothing. Its vertices are source
+//! vertices, or the optimum of a quadric built from the source's own planes —
+//! and on a convex patch that optimum sits a little *outside* the surface,
+//! where the tangent planes meet, which is where a coarse mesh has to be if it
+//! is to keep the area of the fine one. The nearest point on the source is by
+//! definition not outside it, so snapping trades a circumscribing approximation
+//! for an inscribing one, every time.
 //!
 //! ## What is never touched
 //!
@@ -55,6 +60,18 @@ use super::topology::Topology;
 /// How far toward the neighbourhood centre a vertex moves in one pass. Half is
 /// the usual choice: the whole way overshoots and oscillates.
 const RELAXATION: f64 = 0.5;
+
+/// How much the faces around a vertex must agree on a normal before the
+/// relaxation will trust one and move it.
+///
+/// About a hundred degrees of spread across the fan, which reads as "the surface
+/// is locally flat enough here to slide along". Chosen by measurement: the
+/// plant keeps 89.0 % of its area with no guard at all, 90.6 % at a half,
+/// **96.6 % here** and 97.6 % at 0.95 — but by 0.95 it is refusing so many
+/// vertices that the evenness the pass exists for starts going with it (the
+/// edge spread 5.60x here against 5.94x there, where not relaxing at all is
+/// 7.22x). See [`vertex_normal`].
+const NORMAL_AGREEMENT: f64 = 0.85;
 
 /// Neighbours an interior vertex is best off with. Six is what a regular
 /// triangulation of a plane gives.
@@ -317,9 +334,21 @@ fn relax_pass(output: &mut RemeshOutput, topology: &Topology, pinned: &[bool]) {
 
         // Only along the surface: the part of the move that runs along the
         // vertex normal is what would shrink the shape.
-        let Some(normal) = vertex_normal(output, topology, vertex) else {
+        //
+        // Which makes the whole pass only as good as that normal. Where the
+        // faces around a vertex do not agree on one — the narrow end of a leaf,
+        // where the sheet above and the sheet below are both in the same fan and
+        // point opposite ways — the area-weighted sum very nearly cancels and
+        // what is left is rounding error. Subtracting *that* from the step
+        // leaves most of the true normal component in, and the vertex is walked
+        // straight through the shell. Refusing to move is the honest answer, and
+        // it is worth ten per cent of a thin object's surface area.
+        let Some((normal, agreement)) = vertex_normal(output, topology, vertex) else {
             continue;
         };
+        if agreement < NORMAL_AGREEMENT {
+            continue;
+        }
         let along = step[0] * normal[0] + step[1] * normal[1] + step[2] * normal[2];
         let mut candidate = here;
         for axis in 0..3 {
@@ -413,21 +442,38 @@ fn cross_at(point: &dyn Fn(u32) -> [f64; 3], corners: [u32; 3]) -> [f64; 3] {
     ]
 }
 
-/// The area-weighted normal of the faces around a vertex.
-fn vertex_normal(output: &RemeshOutput, topology: &Topology, vertex: u32) -> Option<[f64; 3]> {
+/// The area-weighted normal of the faces around a vertex, and how much those
+/// faces agree on it.
+///
+/// Agreement is the length of the area-weighted sum over the total area: one
+/// where the fan is flat, zero where it folds back on itself so exactly that the
+/// two halves cancel. It is what says whether the direction is worth anything.
+fn vertex_normal(
+    output: &RemeshOutput,
+    topology: &Topology,
+    vertex: u32,
+) -> Option<([f64; 3], f64)> {
     let mut sum = [0.0f64; 3];
+    let mut total = 0.0f64;
     for &face in topology.faces_of(vertex) {
         let corners = face_of(output, face);
         let Some(normal) = normal_of(output, corners) else {
             continue;
         };
         let area = area_of(output, corners);
+        total += area;
         for (axis, value) in sum.iter_mut().enumerate() {
             *value += normal[axis] * area;
         }
     }
     let length = (sum[0] * sum[0] + sum[1] * sum[1] + sum[2] * sum[2]).sqrt();
-    (length > 0.0).then(|| [sum[0] / length, sum[1] / length, sum[2] / length])
+    if length <= 0.0 || total <= 0.0 {
+        return None;
+    }
+    Some((
+        [sum[0] / length, sum[1] / length, sum[2] / length],
+        length / total,
+    ))
 }
 
 fn deviation(valence: &[i32], topology: &Topology, vertex: u32) -> i32 {

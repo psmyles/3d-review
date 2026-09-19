@@ -75,6 +75,28 @@ impl std::fmt::Display for Spread {
     }
 }
 
+/// The spread of edge lengths: P90 over P10, which is what "even faces" means
+/// as a number. A field extraction that lays vertices on a lattice reaches
+/// about 1.4x; an unstructured triangulation of evenly spaced points cannot.
+fn edge_spread(model: &ModelData) -> f32 {
+    let mut lengths = Vec::new();
+    for corners in model.indices.as_chunks::<3>().0 {
+        let p = corners.map(|c| model.vertices[c as usize].position);
+        for at in 0..3 {
+            let length = p[at].distance(p[(at + 1) % 3]);
+            if length > 0.0 {
+                lengths.push(length);
+            }
+        }
+    }
+    if lengths.is_empty() {
+        return 0.0;
+    }
+    lengths.sort_by(f32::total_cmp);
+    let at = |fraction: f64| lengths[((lengths.len() - 1) as f64 * fraction) as usize];
+    at(0.9) / at(0.1).max(f32::MIN_POSITIVE)
+}
+
 /// The triangles of `model` owned by `node`, and their total area.
 fn node_area(model: &ModelData, node: u32) -> (usize, f64) {
     let mut faces = 0;
@@ -285,8 +307,95 @@ fn report(name: &str, ratio: f32, smoothing: u32) {
         );
     }
     println!(
-        "  worst rim->out p99: {worst_rim:.2} h, least area kept: {:.1}%",
-        least_area * 100.0
+        "  worst rim->out p99: {worst_rim:.2} h, least area kept: {:.1}%, edge spread {:.2}x",
+        least_area * 100.0,
+        edge_spread(&level.model)
+    );
+}
+
+/// Run one rebuild and hand back the worst figures over every object.
+fn worst(name: &str, ratio: f32, smoothing: u32) -> Option<(f32, f32)> {
+    let model = fixture(name)?;
+    let mut stack = OptStack::default();
+    stack.push_op(OpKind::Remesh(RemeshParams {
+        topology: RemeshTopology::Triangles,
+        density: RemeshDensity::Ratio,
+        ratio,
+        smooth_iterations: smoothing,
+        sharp_edges: false,
+        align_to_boundaries: true,
+        adaptive_strength: 0.5,
+        ..RemeshParams::default()
+    }));
+    let result = process(ProcessInput {
+        model: &model,
+        stack: &stack,
+        render_vertex_size: VERTEX_SIZE,
+        hidden_nodes: &[],
+        extras: None,
+    })
+    .expect("the stack runs");
+    let level = result.lod(0).expect("the stack produced a level");
+    let source_bvh = SceneBvh::build(&model);
+    let level_bvh = SceneBvh::build(&level.model);
+
+    let mut least_area = 1.0f32;
+    let mut worst_rim = 0.0f32;
+    let mut checked = 0;
+    for node in 0..model.nodes.len() as u32 {
+        let Some(measured) = two_sided(&model, &source_bvh, &level.model, &level_bvh, node) else {
+            continue;
+        };
+        checked += 1;
+        least_area = least_area.min(measured.area_ratio);
+        worst_rim = worst_rim.max(measured.rim_to_out.p99);
+    }
+    (checked > 0).then_some((least_area, worst_rim))
+}
+
+/// A rebuilt object is still the shape it was.
+///
+/// The thresholds are **measured, then given a margin** — not chosen and then
+/// argued for. At the time they were set the plant's worst object kept 96.9 %
+/// of its surface area with no tidying and 96.6 % with two rounds, and its rims
+/// sat 0.15 h from the rebuilt surface; the stones, which are closed and chunky
+/// and have no rims at all, kept 99.9 %.
+///
+/// Both figures matter and they fail differently. Area catches an object that
+/// came back *smaller* — a strip of bark narrowed until a gap opens against the
+/// trunk, which is what prompted all of this and what the validity suite beside
+/// this one cannot see, since a narrowed strip is a perfectly good mesh. The rim
+/// figure catches the same thing earlier and more locally: a silhouette is a few
+/// hundred vertices out of fifteen thousand, so it can move a long way before it
+/// shows up in an area total.
+#[test]
+fn a_rebuilt_object_keeps_its_shape() {
+    // Thin shells with rims — the hard case, at the density it was reported at.
+    for smoothing in [0, 2] {
+        let Some((area, rim)) = worst("stylized_palm_plant_04.fbx", 0.25, smoothing) else {
+            return;
+        };
+        assert!(
+            area > 0.92,
+            "at {smoothing} rounds of tidying an object of the plant kept only {:.1}% of its \
+             surface area",
+            area * 100.0
+        );
+        assert!(
+            rim < 0.35,
+            "at {smoothing} rounds of tidying the plant's rims moved {rim:.2} h"
+        );
+    }
+
+    // Closed and chunky: nothing here should cost anything at all, and a change
+    // that buys the plant its shape back by blunting everything else fails here.
+    let Some((area, _)) = worst("cpg_pedestal_pebbles.fbx", 0.25, 2) else {
+        return;
+    };
+    assert!(
+        area > 0.97,
+        "a stone kept only {:.1}% of its surface area",
+        area * 100.0
     );
 }
 
@@ -297,8 +406,13 @@ fn how_far_a_rebuild_moves_the_surface() {
     for (ratio, smoothing) in [(0.25, 0), (0.3, 0), (0.25, 2)] {
         report("stylized_palm_plant_04.fbx", ratio, smoothing);
     }
+    for smoothing in [0, 1, 2, 4] {
+        report("SM_column04.fbx", 0.25, smoothing);
+    }
+    report("cpg_pedestal_pebbles.fbx", 0.25, 0);
     report("cpg_pedestal_pebbles.fbx", 0.25, 2);
-    report("SM_column04.fbx", 0.25, 2);
+    report("stylized_palm_plant_04.fbx", 0.25, 1);
+    report("stylized_palm_plant_04.fbx", 0.25, 4);
 }
 
 /// How sharply the source's own surfaces fold.
