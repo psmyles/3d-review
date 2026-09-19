@@ -90,10 +90,10 @@ fn flip_pass(output: &mut RemeshOutput, topology: &Topology) {
                 continue;
             }
             let [first, second] = edge.faces;
-            let Some((left, right)) = opposite_corners(output, first, second, vertex, edge.other)
-            else {
+            let Some(quad) = Quad::read(output, first, second, vertex, edge.other) else {
                 continue;
             };
+            let (left, right) = (quad.forward_apex, quad.backward_apex);
             // The flip replaces the edge (vertex, other) with (left, right), so
             // the two ends lose a neighbour and the two opposites gain one.
             let before = deviation(&valence, topology, vertex)
@@ -107,11 +107,12 @@ fn flip_pass(output: &mut RemeshOutput, topology: &Topology) {
             if after >= before {
                 continue;
             }
-            if !flip_is_safe(output, topology, vertex, edge.other, left, right, &scratch) {
+            if !flip_is_safe(output, topology, &quad) {
                 continue;
             }
-            write_face(output, first, [vertex, left, right]);
-            write_face(output, second, [edge.other, right, left]);
+            let [forward, backward] = quad.flipped();
+            write_face(output, quad.forward, forward);
+            write_face(output, quad.backward, backward);
             valence[vertex as usize] -= 1;
             valence[edge.other as usize] -= 1;
             valence[left as usize] += 1;
@@ -123,54 +124,103 @@ fn flip_pass(output: &mut RemeshOutput, topology: &Topology) {
     }
 }
 
-/// The two corners opposite a shared edge, oriented so the rewritten faces keep
-/// the surface's winding.
-fn opposite_corners(
-    output: &RemeshOutput,
-    first: u32,
-    second: u32,
+/// The two triangles either side of an edge, read in the order they are
+/// actually wound.
+///
+/// **Which way each face runs has to be read, never assumed.** The two faces
+/// sharing an edge of an oriented surface traverse it in opposite directions:
+/// one runs `a -> b`, the other `b -> a`. Which is which is a property of the
+/// mesh, and the rewritten pair keeps the surface's winding only if it is taken
+/// from there. Deciding it by convention instead turns both triangles inside
+/// out on every flip whenever the convention is the wrong way round — and an
+/// inverted triangle reads as a *hole* on screen, because a surface lit from
+/// behind is black.
+struct Quad {
+    /// The face traversing `a -> b`, and the corner of it opposite that edge.
+    forward: u32,
+    forward_apex: u32,
+    /// The face traversing `b -> a`, and its opposite corner.
+    backward: u32,
+    backward_apex: u32,
     a: u32,
     b: u32,
-) -> Option<(u32, u32)> {
-    let third = |face: u32| -> Option<u32> {
-        let corners = face_of(output, face);
-        corners
-            .iter()
-            .copied()
-            .find(|&corner| corner != a && corner != b)
-    };
-    let left = third(first)?;
-    let right = third(second)?;
-    (left != right).then_some((left, right))
+}
+
+impl Quad {
+    /// Read the pair, or `None` if the two do not form an orientable quad.
+    fn read(output: &RemeshOutput, first: u32, second: u32, a: u32, b: u32) -> Option<Self> {
+        let (first_apex, first_forward) = apex_and_direction(output, first, a, b)?;
+        let (second_apex, second_forward) = apex_and_direction(output, second, a, b)?;
+        // Both running the same way means the two faces disagree about which
+        // side of the surface they are on. A flip cannot repair that, and
+        // rewriting the pair would only spread it.
+        if first_forward == second_forward || first_apex == second_apex {
+            return None;
+        }
+        let (forward, forward_apex, backward, backward_apex) = if first_forward {
+            (first, first_apex, second, second_apex)
+        } else {
+            (second, second_apex, first, first_apex)
+        };
+        Some(Self {
+            forward,
+            forward_apex,
+            backward,
+            backward_apex,
+            a,
+            b,
+        })
+    }
+
+    /// The pair as it stands.
+    fn faces(&self) -> [[u32; 3]; 2] {
+        [
+            [self.a, self.b, self.forward_apex],
+            [self.b, self.a, self.backward_apex],
+        ]
+    }
+
+    /// The pair split across the other diagonal, wound to match.
+    ///
+    /// The quad runs `a -> backward_apex -> b -> forward_apex` all the way
+    /// round, so splitting it the other way gives these two, each traversed the
+    /// same way as the boundary it sits on.
+    fn flipped(&self) -> [[u32; 3]; 2] {
+        [
+            [self.a, self.backward_apex, self.forward_apex],
+            [self.backward_apex, self.b, self.forward_apex],
+        ]
+    }
+}
+
+/// A face's corner opposite the edge `a..b`, and whether it traverses `a -> b`.
+fn apex_and_direction(output: &RemeshOutput, face: u32, a: u32, b: u32) -> Option<(u32, bool)> {
+    let corners = face_of(output, face);
+    let at = corners.iter().position(|&corner| corner == a)?;
+    if corners[(at + 1) % 3] == b {
+        Some((corners[(at + 2) % 3], true))
+    } else if corners[(at + 2) % 3] == b {
+        Some((corners[(at + 1) % 3], false))
+    } else {
+        None
+    }
 }
 
 /// Whether flipping is legal: it must not duplicate an existing edge, and it
 /// must not turn either new face inside out.
-fn flip_is_safe(
-    output: &RemeshOutput,
-    topology: &Topology,
-    a: u32,
-    b: u32,
-    left: u32,
-    right: u32,
-    _scratch: &[super::topology::EdgeAt],
-) -> bool {
+fn flip_is_safe(output: &RemeshOutput, topology: &Topology, quad: &Quad) -> bool {
     // An edge between the two opposite corners already existing would make the
     // flip produce a second copy of it, which no surface can carry.
     let mut edges = Vec::new();
-    topology.edges_at(&output.corners, left, &mut edges);
-    if edges.iter().any(|edge| edge.other == right) {
+    topology.edges_at(&output.corners, quad.forward_apex, &mut edges);
+    if edges.iter().any(|edge| edge.other == quad.backward_apex) {
         return false;
     }
 
-    let before = [
-        normal_of(output, [a, left, b]),
-        normal_of(output, [b, right, a]),
-    ];
-    let after = [
-        normal_of(output, [a, left, right]),
-        normal_of(output, [b, right, left]),
-    ];
+    // Both sides are read from the mesh now, which is what makes this guard
+    // mean anything: a fold shows up as the new normal opposing the old one.
+    let before = quad.faces().map(|corners| normal_of(output, corners));
+    let after = quad.flipped().map(|corners| normal_of(output, corners));
     for (before, after) in before.iter().zip(&after) {
         match (before, after) {
             (Some(before), Some(after)) => {
@@ -228,14 +278,96 @@ fn relax_pass(output: &mut RemeshOutput, topology: &Topology) {
             continue;
         };
         let along = step[0] * normal[0] + step[1] * normal[1] + step[2] * normal[2];
+        let mut candidate = here;
         for axis in 0..3 {
-            moved[vertex as usize][axis] = here[axis] + step[axis] - along * normal[axis];
+            candidate[axis] = here[axis] + step[axis] - along * normal[axis];
         }
+
+        // The tangent plane is only an estimate of the surface, and on a coarse
+        // patch of a tightly curved one it is a poor enough estimate to carry a
+        // vertex past its own neighbours, folding the faces around it over so
+        // they light from behind. Taking the move only when the neighbourhood
+        // does not fold *more* than it already did is what keeps this pass from
+        // making the mesh worse — while still letting it undo a fold the
+        // collapse left, which is most of what it achieves here.
+        if fold_count(output, topology, vertex, &original, Some(candidate))
+            > fold_count(output, topology, vertex, &original, None)
+        {
+            continue;
+        }
+        moved[vertex as usize] = candidate;
     }
 
     for (slot, point) in output.positions.iter_mut().zip(&moved) {
         *slot = glam::Vec3::new(point[0] as f32, point[1] as f32, point[2] as f32);
     }
+}
+
+/// How many pairs of faces around `vertex` fold back past a right angle, with
+/// the vertex either where it is (`candidate` of `None`) or moved.
+///
+/// A fold is a disagreement between two faces sharing an edge, which is why it
+/// cannot be judged by comparing one face against its own earlier self: every
+/// face agrees with where it just was.
+fn fold_count(
+    output: &RemeshOutput,
+    topology: &Topology,
+    vertex: u32,
+    positions: &[[f64; 3]],
+    candidate: Option<[f64; 3]>,
+) -> usize {
+    let at = |corner: u32| -> [f64; 3] {
+        match candidate {
+            Some(point) if corner == vertex => point,
+            _ => positions[corner as usize],
+        }
+    };
+    let faces = topology.faces_of(vertex);
+    let mut folded = 0;
+    for (index, &face) in faces.iter().enumerate() {
+        let corners = face_of(output, face);
+        let normal = unit(cross_at(&at, corners));
+        for &other in &faces[index + 1..] {
+            let others = face_of(output, other);
+            // Only faces sharing an edge say anything about a fold; two faces
+            // meeting at this vertex alone may legitimately face anywhere.
+            if others.iter().filter(|c| corners.contains(c)).count() != 2 {
+                continue;
+            }
+            let against = unit(cross_at(&at, others));
+            match (normal, against) {
+                (Some(normal), Some(against)) => {
+                    if normal[0] * against[0] + normal[1] * against[1] + normal[2] * against[2]
+                        < 0.0
+                    {
+                        folded += 1;
+                    }
+                }
+                // A face with no area has no opinion, and making one is itself
+                // a fault: count it so the move is refused.
+                _ => folded += 1,
+            }
+        }
+    }
+    folded
+}
+
+/// `vector` scaled to unit length, or `None` if it has none.
+fn unit(vector: [f64; 3]) -> Option<[f64; 3]> {
+    let length = (vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]).sqrt();
+    (length > 0.0).then(|| [vector[0] / length, vector[1] / length, vector[2] / length])
+}
+
+/// The unnormalized normal of `corners`, reading each position through `point`.
+fn cross_at(point: &dyn Fn(u32) -> [f64; 3], corners: [u32; 3]) -> [f64; 3] {
+    let (a, b, c) = (point(corners[0]), point(corners[1]), point(corners[2]));
+    let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ]
 }
 
 /// The area-weighted normal of the faces around a vertex.
@@ -311,4 +443,126 @@ fn normal_of(output: &RemeshOutput, corners: [u32; 3]) -> Option<[f64; 3]> {
 fn area_of(output: &RemeshOutput, corners: [u32; 3]) -> f64 {
     let cross = cross_of(output, corners);
     (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt() * 0.5
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glam::Vec3;
+
+    /// Two triangles over a square, sharing the diagonal `0..2`, both wound the
+    /// same way round the square.
+    ///
+    /// ```text
+    ///   3 ----- 2
+    ///   | \     |
+    ///   |   \   |
+    ///   |     \ |
+    ///   0 ----- 1
+    /// ```
+    fn square(first: [u32; 3], second: [u32; 3]) -> RemeshOutput {
+        RemeshOutput {
+            positions: vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(1.0, 1.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+            ],
+            face_offsets: vec![0, 3, 6],
+            corners: [first, second].concat(),
+        }
+    }
+
+    /// Every face of a rebuilt mesh has to end up on the same side of the
+    /// surface, and a flip is the one pass that rewrites faces wholesale.
+    ///
+    /// Both windings of the same pair are checked, because the fault this pins
+    /// was assuming one of them: the pass read neither face's corner order, so
+    /// on the mesh wound the other way it turned both triangles over. That
+    /// shows on screen as a black patch, since a surface lit from behind is
+    /// dark, and it is what a rebuilt plant came back covered in.
+    #[test]
+    fn a_flip_keeps_the_winding_it_found() {
+        // The same two triangles, wound each way round.
+        for (first, second) in [([0, 1, 2], [0, 2, 3]), ([0, 2, 1], [0, 3, 2])] {
+            let output = square(first, second);
+            let before = normal_of(&output, first).expect("the face has area");
+
+            let quad = Quad::read(&output, 0, 1, 0, 2).expect("the two share edge 0..2");
+            let mut flipped = output;
+            let [forward, backward] = quad.flipped();
+            write_face(&mut flipped, quad.forward, forward);
+            write_face(&mut flipped, quad.backward, backward);
+
+            // The new diagonal is the other one, 1..3.
+            let corners: Vec<[u32; 3]> = (0..2).map(|face| face_of(&flipped, face)).collect();
+            for corners in &corners {
+                assert!(
+                    corners.contains(&1) && corners.contains(&3),
+                    "the flip did not move to the other diagonal: {corners:?}"
+                );
+                let after = normal_of(&flipped, *corners).expect("the face has area");
+                let dot = before[0] * after[0] + before[1] * after[1] + before[2] * after[2];
+                assert!(
+                    dot > 0.0,
+                    "a flip of {first:?}/{second:?} turned {corners:?} over"
+                );
+            }
+        }
+    }
+
+    /// Two faces that disagree about which way round they go are not a quad to
+    /// be flipped, and rewriting them would only spread the disagreement.
+    #[test]
+    fn a_pair_that_disagrees_is_left_alone() {
+        let output = square([0, 1, 2], [0, 3, 2]);
+        assert!(Quad::read(&output, 0, 1, 0, 2).is_none());
+    }
+
+    /// The relaxation is allowed to undo a fold, which is most of what it
+    /// achieves, but never to add one.
+    #[test]
+    fn relaxing_never_folds_a_neighbourhood_further() {
+        // A hexagonal fan: a centre vertex ringed by six, flat.
+        let mut positions = vec![Vec3::ZERO];
+        let mut corners = Vec::new();
+        for step in 0..6u32 {
+            let angle = step as f32 / 6.0 * std::f32::consts::TAU;
+            positions.push(Vec3::new(angle.cos(), angle.sin(), 0.0));
+        }
+        for step in 0..6u32 {
+            corners.extend_from_slice(&[0, 1 + step, 1 + (step + 1) % 6]);
+        }
+        // Pull the centre far off the plane, so relaxing has real work to do.
+        positions[0] = Vec3::new(0.35, 0.2, 2.0);
+        let mut output = RemeshOutput {
+            positions,
+            face_offsets: (0..=6).map(|face| face * 3).collect(),
+            corners,
+        };
+
+        let folds_before = {
+            let topology = Topology::build(&output.corners, output.positions.len(), 1, None);
+            let points: Vec<[f64; 3]> = output
+                .positions
+                .iter()
+                .map(|p| [p.x as f64, p.y as f64, p.z as f64])
+                .collect();
+            fold_count(&output, &topology, 0, &points, None)
+        };
+
+        run(&mut output, 4, None);
+
+        let topology = Topology::build(&output.corners, output.positions.len(), 1, None);
+        let points: Vec<[f64; 3]> = output
+            .positions
+            .iter()
+            .map(|p| [p.x as f64, p.y as f64, p.z as f64])
+            .collect();
+        let folds_after = fold_count(&output, &topology, 0, &points, None);
+        assert!(
+            folds_after <= folds_before,
+            "relaxing added folds: {folds_before} -> {folds_after}"
+        );
+    }
 }

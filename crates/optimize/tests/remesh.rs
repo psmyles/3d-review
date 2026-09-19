@@ -270,6 +270,107 @@ fn welded_edge_uses(model: &ModelData, node: u32) -> std::collections::HashMap<(
     uses
 }
 
+/// Directed edge uses per object, welded by exact position.
+///
+/// The undirected count above cannot see an inside-out face — a triangle wound
+/// the wrong way still uses each of its edges once — so orientation needs its
+/// own reading of the same mesh.
+fn welded_directed_uses(
+    model: &ModelData,
+    node: u32,
+) -> std::collections::HashMap<(u32, u32), u32> {
+    let mut slot_of: std::collections::HashMap<[u32; 3], u32> = std::collections::HashMap::new();
+    let mut uses: std::collections::HashMap<(u32, u32), u32> = std::collections::HashMap::new();
+    for (triangle, corners) in model.indices.as_chunks::<3>().0.iter().enumerate() {
+        if model.triangles.node.get(triangle).copied() != Some(node) {
+            continue;
+        }
+        let welded = corners.map(|corner| {
+            let point = model.vertices[corner as usize].position;
+            let key = [point.x.to_bits(), point.y.to_bits(), point.z.to_bits()];
+            let next = slot_of.len() as u32;
+            *slot_of.entry(key).or_insert(next)
+        });
+        for corner in 0..3 {
+            let (a, b) = (welded[corner], welded[(corner + 1) % 3]);
+            if a != b {
+                *uses.entry((a, b)).or_insert(0) += 1;
+            }
+        }
+    }
+    uses
+}
+
+/// Interior edges whose two faces run the same way round, i.e. disagree about
+/// which side of the surface they are on.
+fn mis_wound(uses: &std::collections::HashMap<(u32, u32), u32>) -> usize {
+    uses.iter()
+        .filter(|((a, b), _)| a < b)
+        .filter(|((a, b), forward)| {
+            let back = uses.get(&(*b, *a)).copied().unwrap_or(0);
+            // Two faces on the edge, but not one running each way.
+            **forward + back == 2 && **forward != back
+        })
+        .count()
+}
+
+/// A rebuilt mesh is wound the same way all over, so nothing lights from
+/// behind.
+///
+/// This is the *other* half of "no holes", and it needs its own test because
+/// the undirected edge count above is blind to it: an inside-out triangle uses
+/// each of its three edges exactly once, like any other. On screen the two look
+/// alike — an inverted face is lit from behind, so it reads as a black patch
+/// where the surface should be, which is exactly how this was reported.
+///
+/// It is pinned on the cleanup's own settings, not the defaults, because the
+/// fault was in the flip pass: rewriting the two triangles either side of an
+/// edge to a winding assumed rather than read from the mesh turned both of them
+/// over, and the more rounds of tidying, the more of the object went black.
+#[test]
+fn a_rebuild_is_wound_the_same_way_all_over() {
+    let Some(model) = fixture("stylized_palm_plant_04.fbx") else {
+        return;
+    };
+    for smoothing in [0, 2, 6] {
+        let result = run(
+            &model,
+            &remesh_stack(RemeshParams {
+                topology: RemeshTopology::Triangles,
+                density: RemeshDensity::Ratio,
+                ratio: 0.5,
+                smooth_iterations: smoothing,
+                ..RemeshParams::default()
+            }),
+        );
+        let level = result.lod(0).expect("the stack produced a level");
+        let mut checked = 0;
+        for node in 0..model.nodes.len() as u32 {
+            let before = welded_directed_uses(&model, node);
+            if before.is_empty() {
+                continue;
+            }
+            // The sources here are all consistently wound, so anything the
+            // rebuild produces is its own doing.
+            assert_eq!(
+                mis_wound(&before),
+                0,
+                "the fixture itself is inconsistently wound"
+            );
+            let after = welded_directed_uses(&level.model, node);
+            checked += 1;
+            assert_eq!(
+                mis_wound(&after),
+                0,
+                "'{}': the rebuild turned faces inside out at {} rounds of tidying",
+                model.nodes[node as usize].name,
+                smoothing
+            );
+        }
+        assert!(checked > 3, "the plant has several objects to check");
+    }
+}
+
 /// The failure this whole rebuild exists to fix.
 ///
 /// A stylized plant is a trunk plus a dozen leaves, and each of them is a thin
