@@ -3,3 +3,6 @@
 - compression option at export time?
 - read FBX built in textures
 - save settings
+- generate UVs
+- generate colliders?
+-

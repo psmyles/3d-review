@@ -27,7 +27,9 @@
 //!   itself. The standard test: the common neighbours of the two endpoints must
 //!   be exactly the third corners of the faces along the edge.
 //! * **No normal flips.** A collapse that turns a face inside out leaves a
-//!   visible spike. Every face that survives the collapse is checked.
+//!   visible spike. Every face that survives the collapse is checked — and so
+//!   is the final placement below, which is a move like any other and was for a
+//!   while the one that was not checked.
 //! * **Features survive.** A border, crease or branching vertex is never
 //!   collapsed *into* an ordinary one, and two separate feature chains are never
 //!   merged. That is what holds an outline where it was.
@@ -43,6 +45,10 @@
 //! region *fixed*, so the order edges are collapsed in can be decided once, up
 //! front, by sorting — instead of a priority queue that has to be re-scored
 //! after every collapse.
+//!
+//! It also makes that last move the largest and the least constrained in the
+//! whole rebuild, because by then every collapse has already pulled the
+//! neighbourhood in tight around the vertex. See [`place_survivor`].
 
 use glam::Vec3;
 
@@ -58,11 +64,21 @@ use super::surface::Surface;
 /// A face that has been collapsed away.
 const DEAD: u32 = u32::MAX;
 
+/// Stands in for "no vertex is dying" in [`would_flip`], which is how a plain
+/// move is expressed as the collapse it is not: no face can contain it, so
+/// nothing is skipped and nothing is renamed.
+const NO_VERTEX: u32 = u32::MAX;
+
 /// How far from its region's centre the quadric's answer may be, as a multiple
 /// of the region's own extent. A quadric on a nearly flat patch can solve to a
 /// point far off the surface; past this the seed's own position is the better
 /// answer.
 const OPTIMUM_REACH: f64 = 2.0;
+
+/// Fractions of the way to the quadric's answer a region's last vertex is
+/// offered, longest first, until one does not fold its fan. See
+/// [`place_survivor`].
+const OPTIMUM_BACKOFF: [f64; 4] = [1.0, 0.5, 0.25, 0.125];
 
 /// The mesh mid-collapse: what is still alive, and what each face now says.
 pub(crate) struct Collapsed {
@@ -231,7 +247,7 @@ fn collapse_region(
         .collect();
     if living.len() == 1 {
         place_survivor(
-            surface, features, partition, quadrics, state, region, living[0],
+            surface, features, partition, quadrics, state, incidence, region, living[0],
         );
     } else if living.len() > 1 {
         state.stubborn += 1;
@@ -484,10 +500,47 @@ fn flips_a_normal(
     survivor: u32,
     at: [f64; 3],
 ) -> bool {
-    for &face in incidence[dying as usize]
+    let faces = incidence[dying as usize]
         .iter()
         .chain(&incidence[survivor as usize])
-    {
+        .copied();
+    would_flip(state, faces, dying, survivor, at)
+}
+
+/// Whether moving `vertex` — on its own, with nothing collapsing — to `at`
+/// would turn any of its faces inside out.
+///
+/// [`flips_a_normal`] with no dying vertex, which is what a region's final
+/// placement is: the merges are all done and one vertex is being put where its
+/// region's surface is best fitted. Without this the placement was the one
+/// move in the whole rebuild that was never checked, and it is the move most
+/// able to fold a fan, because it happens after every collapse has already
+/// pulled the neighbourhood in around it.
+fn move_flips_a_normal(
+    state: &Collapsed,
+    incidence: &[Vec<u32>],
+    vertex: u32,
+    at: [f64; 3],
+) -> bool {
+    would_flip(
+        state,
+        incidence[vertex as usize].iter().copied(),
+        NO_VERTEX,
+        vertex,
+        at,
+    )
+}
+
+/// The body of both: every live face in `faces`, with `dying` renamed to
+/// `survivor` and the survivor at `at`.
+fn would_flip(
+    state: &Collapsed,
+    faces: impl Iterator<Item = u32>,
+    dying: u32,
+    survivor: u32,
+    at: [f64; 3],
+) -> bool {
+    for face in faces {
         if state.is_dead(face) {
             continue;
         }
@@ -573,12 +626,31 @@ fn apply(state: &mut Collapsed, incidence: &mut [Vec<u32>], dying: u32, survivor
 }
 
 /// Move a region's last vertex to where its own surface is best fitted.
+///
+/// Two things bound the move, and they are not the same thing. The **reach**
+/// limit says how far: a quadric on a nearly flat patch is barely determined
+/// and can solve to a point off in space. The **flip** guard says which way: a
+/// move well inside the reach limit can still fold the fan back over its
+/// neighbours, because the collapses have just pulled that fan in tight and the
+/// optimum is under no obligation to sit inside it.
+///
+/// Without the second, this was the only move in the rebuild that nothing
+/// checked, and it was the one most able to do damage. Measured on a nine-stone
+/// pedestal it put 3.3 % of the triangles through each other at ratio 0.25 and
+/// 5.4 % at 0.07, which reads on screen as a torn silhouette — and it inflated
+/// the surface area past 100 %, so the area measure the fidelity suite leans on
+/// scored the fold as better than a perfect rebuild.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one region's last vertex against the whole state"
+)]
 fn place_survivor(
     surface: Surface<'_>,
     features: &Features,
     partition: &Partition,
     quadrics: &[Quadric],
     state: &mut Collapsed,
+    incidence: &[Vec<u32>],
     region: u32,
     survivor: u32,
 ) {
@@ -609,8 +681,30 @@ fn place_survivor(
         surface.sizes[survivor as usize] as f64
     };
     let (x, y, z) = (point[0] - here[0], point[1] - here[1], point[2] - here[2]);
-    if (x * x + y * y + z * z).sqrt() <= reach * OPTIMUM_REACH {
-        state.positions[survivor as usize] = point;
+    if (x * x + y * y + z * z).sqrt() > reach * OPTIMUM_REACH {
+        return;
+    }
+    // And the same guard every other placement in this module passes. The reach
+    // limit above bounds how far the vertex goes; it says nothing about which
+    // *way*, and a fan that the collapses have just pulled tight around this
+    // vertex folds over at a fraction of the region's own extent.
+    //
+    // Refused outright the move is simply lost, and with it the area the
+    // optimum was keeping. So the same move is offered shorter first: the
+    // direction is the quadric's answer either way, and part of the way there
+    // is better than none. Stepping down by halves rather than searching for
+    // the exact limit, because the last fraction of the move is worth less than
+    // the error term suggests and a bisection would cost a fan walk per step.
+    for &fraction in &OPTIMUM_BACKOFF {
+        let at = [
+            here[0] + x * fraction,
+            here[1] + y * fraction,
+            here[2] + z * fraction,
+        ];
+        if !move_flips_a_normal(state, incidence, survivor, at) {
+            state.positions[survivor as usize] = at;
+            return;
+        }
     }
 }
 
@@ -1000,6 +1094,50 @@ mod tests {
             "80 faces asked should give fewer than 600: {} against {}",
             coarse.output.face_count(),
             fine.output.face_count()
+        );
+    }
+
+    /// A hexagonal fan around one movable centre, wound the same way all over.
+    fn fan() -> (Collapsed, Vec<Vec<u32>>) {
+        let mut positions = vec![[0.0, 0.0, 0.0]];
+        for step in 0..6 {
+            let angle = step as f64 / 6.0 * std::f64::consts::TAU;
+            positions.push([angle.cos(), angle.sin(), 0.0]);
+        }
+        let mut corners = Vec::new();
+        for step in 0..6u32 {
+            corners.extend_from_slice(&[0, 1 + step, 1 + (step + 1) % 6]);
+        }
+        let mut incidence = vec![Vec::new(); positions.len()];
+        for face in 0..6u32 {
+            for slot in 0..3 {
+                incidence[corners[face as usize * 3 + slot] as usize].push(face);
+            }
+        }
+        let state = Collapsed {
+            corners,
+            alive: vec![true; positions.len()],
+            positions,
+            stubborn: 0,
+        };
+        (state, incidence)
+    }
+
+    /// The guard [`place_survivor`] gained: a plain move, with nothing
+    /// collapsing, still has to leave every face the right way round.
+    #[test]
+    fn moving_a_vertex_out_of_its_own_fan_reads_as_a_flip() {
+        let (state, incidence) = fan();
+
+        // Off the surface but still over the fan: every face keeps its normal.
+        assert!(
+            !move_flips_a_normal(&state, &incidence, 0, [0.1, 0.0, 0.4]),
+            "a move within the fan is not a flip"
+        );
+        // Dragged out past the ring: the faces on the far side turn over.
+        assert!(
+            move_flips_a_normal(&state, &incidence, 0, [3.0, 0.0, 0.0]),
+            "a move past the ring turns the far faces inside out"
         );
     }
 }

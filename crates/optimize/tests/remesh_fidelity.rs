@@ -422,6 +422,215 @@ fn a_rebuilt_object_keeps_its_shape() {
     );
 }
 
+/// Where the segment `p`->`q` crosses the interior of triangle `t`.
+///
+/// The margins are what make "crossing" mean crossing: a shared corner or a
+/// shared edge puts one triangle exactly on the other's boundary, which is a
+/// mesh being a mesh rather than a surface passing through itself.
+fn segment_through(p: glam::Vec3, q: glam::Vec3, t: &[glam::Vec3; 3]) -> Option<glam::Vec3> {
+    let (e1, e2, dir) = (t[1] - t[0], t[2] - t[0], q - p);
+    let h = dir.cross(e2);
+    let det = e1.dot(h);
+    // Relative to the sizes involved, so it says the same thing on a prop and
+    // on a landscape.
+    let scale = e1.length() * e2.length() * dir.length();
+    if det.abs() <= 1.0e-7 * scale.max(f32::MIN_POSITIVE) {
+        return None;
+    }
+    let inv = 1.0 / det;
+    let s = p - t[0];
+    let edge = 1.0e-4;
+    let u = inv * s.dot(h);
+    if !(edge..=1.0 - edge).contains(&u) {
+        return None;
+    }
+    let across = s.cross(e1);
+    let v = inv * dir.dot(across);
+    if v < edge || u + v > 1.0 - edge {
+        return None;
+    }
+    let along = inv * e2.dot(across);
+    (edge..=1.0 - edge)
+        .contains(&along)
+        .then(|| p + dir * along)
+}
+
+/// How far the two triangles cut into each other, or `None` when they do not.
+fn crossing_span(a: &[glam::Vec3; 3], b: &[glam::Vec3; 3]) -> Option<f32> {
+    let mut points: Vec<glam::Vec3> = Vec::new();
+    for at in 0..3 {
+        if let Some(p) = segment_through(a[at], a[(at + 1) % 3], b) {
+            points.push(p);
+        }
+        if let Some(p) = segment_through(b[at], b[(at + 1) % 3], a) {
+            points.push(p);
+        }
+    }
+    (points.len() >= 2).then(|| points[0].distance(points[points.len() - 1]))
+}
+
+/// Triangles of one object that pass through another of the same object, as a
+/// share of its triangles.
+///
+/// Pairs sharing a corner *position* are skipped rather than pairs sharing an
+/// index, because the assembled buffer splits a vertex per material and the two
+/// halves of a seam are then neighbours that no index says are related.
+///
+/// Broad phase is a uniform grid at one and a half faces to a cell: the source
+/// of a real asset is a million triangles and every pair is not an option.
+fn self_crossing_share(model: &ModelData, node: u32, h: f32) -> f32 {
+    let tris: Vec<[glam::Vec3; 3]> = model
+        .indices
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .enumerate()
+        .filter(|(at, _)| model.triangles.node.get(*at).copied() == Some(node))
+        .map(|(_, corners)| corners.map(|c| model.vertices[c as usize].position))
+        .collect();
+    if tris.is_empty() || !h.is_finite() || h <= 0.0 {
+        return 0.0;
+    }
+    let boxes: Vec<(glam::Vec3, glam::Vec3)> = tris
+        .iter()
+        .map(|t| (t[0].min(t[1]).min(t[2]), t[0].max(t[1]).max(t[2])))
+        .collect();
+
+    let mut low = glam::Vec3::splat(f32::MAX);
+    for (lo, _) in &boxes {
+        low = low.min(*lo);
+    }
+    let cell = h * 1.5;
+    let key = |p: glam::Vec3| {
+        // Clamped high as well as low: a stray vertex a long way out would
+        // otherwise ask for an unbounded span of cells.
+        let g = (p - low) / cell;
+        [
+            g.x.clamp(0.0, 1.0e6) as i32,
+            g.y.clamp(0.0, 1.0e6) as i32,
+            g.z.clamp(0.0, 1.0e6) as i32,
+        ]
+    };
+    let mut cells: std::collections::HashMap<[i32; 3], Vec<usize>> =
+        std::collections::HashMap::new();
+    for (at, (lo, hi)) in boxes.iter().enumerate() {
+        let (from, to) = (key(*lo), key(*hi));
+        for x in from[0]..=to[0] {
+            for y in from[1]..=to[1] {
+                for z in from[2]..=to[2] {
+                    cells.entry([x, y, z]).or_default().push(at);
+                }
+            }
+        }
+    }
+
+    let mut crossing = vec![false; tris.len()];
+    let mut pairs: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
+    for bucket in cells.values() {
+        for (at, &i) in bucket.iter().enumerate() {
+            for &j in &bucket[at + 1..] {
+                pairs.insert((i.min(j), i.max(j)));
+            }
+        }
+    }
+    for (i, j) in pairs {
+        if boxes[i].0.cmpgt(boxes[j].1).any() || boxes[j].0.cmpgt(boxes[i].1).any() {
+            continue;
+        }
+        if tris[i].iter().any(|p| tris[j].contains(p)) {
+            continue;
+        }
+        // A hundredth of a face is two nearly coplanar triangles rounding
+        // against each other, not a surface folded through itself.
+        if crossing_span(&tris[i], &tris[j]).is_some_and(|span| span > h * 0.01) {
+            crossing[i] = true;
+            crossing[j] = true;
+        }
+    }
+    crossing.iter().filter(|&&bad| bad).count() as f32 / tris.len() as f32
+}
+
+/// The worst self-crossing share over `model`'s objects, each measured at its
+/// own face size.
+fn worst_self_crossing(model: &ModelData) -> f32 {
+    let mut worst = 0.0f32;
+    for node in 0..model.nodes.len() as u32 {
+        let (faces, area) = node_area(model, node);
+        if faces == 0 || area <= 0.0 {
+            continue;
+        }
+        let h = (2.0 * (area / faces as f64 * (1.0f64 / 3.0).sqrt()).sqrt()) as f32;
+        worst = worst.max(self_crossing_share(model, node, h));
+    }
+    worst
+}
+
+/// A rebuild does not fold the surface through itself.
+///
+/// This is the fault the validity suite beside this one cannot see and the
+/// shape measures above barely can: a fold that doubles a patch back over its
+/// neighbours is closed, wound one way, within budget, and *adds* area, so an
+/// area ratio reads it as better than perfect. On screen it is a gash.
+///
+/// The fixture is chosen for having none of its own — the stones are closed and
+/// sit apart, and the check below fails loudly if that ever stops being true,
+/// because every figure here is meaningless against a source that already
+/// passes through itself. Most real game assets do: measured at the time this
+/// was written, a crystal cluster 11.4 % of its triangles, an ammo crate 15.7 %,
+/// a tree branch 9.2 %. A rebuild carries that through rather than causing it,
+/// which is correct and is why this cannot be asserted across the board.
+///
+/// The thresholds are measured then given a margin. What prompted this was the
+/// final placement of each region's vertex going unchecked, which put 3.3 % of
+/// the stones' triangles through each other at ratio 0.25 and 5.4 % at 0.07 -
+/// visible as torn silhouettes on a flat slab. It is 0.0-0.1 % now.
+#[test]
+fn a_rebuild_does_not_fold_through_itself() {
+    let Some(model) = fixture("cpg_pedestal_pebbles.fbx") else {
+        return;
+    };
+    let source = worst_self_crossing(&model);
+    assert!(
+        source < 0.001,
+        "the fixture itself now self-intersects ({:.1}% of one object's triangles), so it can no \
+         longer say anything about what the rebuild adds",
+        source * 100.0
+    );
+
+    for topology in [RemeshTopology::Triangles, RemeshTopology::Quads] {
+        for ratio in [0.25f32, 0.07] {
+            let mut stack = OptStack::default();
+            stack.push_op(OpKind::Remesh(RemeshParams {
+                topology,
+                density: RemeshDensity::Ratio,
+                ratio,
+                smooth_iterations: 2,
+                sharp_edges: false,
+                align_to_boundaries: true,
+                adaptive_strength: 0.5,
+                ..RemeshParams::default()
+            }));
+            let result = process(ProcessInput {
+                model: &model,
+                stack: &stack,
+                render_vertex_size: VERTEX_SIZE,
+                hidden_nodes: &[],
+                extras: None,
+            })
+            .expect("the stack runs");
+            let level = result.lod(0).expect("the stack produced a level");
+
+            let crossing = worst_self_crossing(&level.model);
+            assert!(
+                crossing < 0.01,
+                "{topology:?} at ratio {ratio}: {:.1}% of an object's triangles pass through \
+                 another of the same object",
+                crossing * 100.0
+            );
+        }
+    }
+}
+
 /// Everything one whole stack did, over every object it touched.
 struct StackResult {
     least_area: f32,
