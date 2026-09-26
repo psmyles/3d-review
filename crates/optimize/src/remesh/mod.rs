@@ -264,12 +264,12 @@ pub(crate) fn remesh_submeshes(
     };
     // Nodes in first-seen order, so the output's piece order follows the input's
     // and two runs over the same stack produce the same buffer layout.
-    let mut nodes: Vec<u32> = Vec::new();
-    for piece in submeshes.iter() {
-        if !nodes.contains(&piece.node) {
-            nodes.push(piece.node);
-        }
-    }
+    let mut seen = std::collections::HashSet::new();
+    let nodes: Vec<u32> = submeshes
+        .iter()
+        .map(|piece| piece.node)
+        .filter(|&node| seen.insert(node))
+        .collect();
 
     let mut budget_inputs: Vec<BudgetInput> = Vec::new();
     let mut proxies: HashMap<u32, proxy::Proxy> = HashMap::new();
@@ -429,12 +429,11 @@ pub(crate) fn remesh_submeshes(
     // and its other old pieces are dropped. Everything else passes through
     // untouched, in order.
     let mut rebuilt: Vec<Submesh> = Vec::with_capacity(submeshes.len());
-    let mut placed: Vec<u32> = Vec::new();
+    let mut placed = std::collections::HashSet::new();
     for piece in submeshes.drain(..) {
         match replacements.get_mut(&piece.node) {
             Some(pieces) => {
-                if !placed.contains(&piece.node) {
-                    placed.push(piece.node);
+                if placed.insert(piece.node) {
                     rebuilt.append(pieces);
                 }
             }
@@ -474,12 +473,11 @@ fn publish_preview(
     // mesh that replaces it are laid out the same way and the viewport does not
     // jump.
     let mut spliced: Vec<&Submesh> = Vec::with_capacity(submeshes.len());
-    let mut placed: Vec<u32> = Vec::new();
+    let mut placed = std::collections::HashSet::new();
     for piece in submeshes {
         match replacement_of.get(&piece.node) {
             Some(pieces) => {
-                if !placed.contains(&piece.node) {
-                    placed.push(piece.node);
+                if placed.insert(piece.node) {
                     spliced.extend(pieces.iter());
                 }
             }
@@ -556,6 +554,7 @@ fn rebuild_node(
                 job.proxy,
                 project::Winding::Keep,
                 job.params.normals.generation(job.params.normal_params),
+                threads,
             ));
         }
         true
@@ -628,6 +627,7 @@ fn rebuild_node(
         job.proxy,
         project::Winding::Keep,
         job.params.normals.generation(job.params.normal_params),
+        threads,
     ))
 }
 
@@ -644,6 +644,7 @@ pub(crate) fn build_pieces_from(
     proxy: &proxy::Proxy,
     winding: project::Winding,
     normals: Option<NormalParams>,
+    threads: usize,
 ) -> Vec<Submesh> {
     let node = pieces.first().map_or(0, |piece| piece.node);
     let uv_channel_count = pieces
@@ -665,6 +666,7 @@ pub(crate) fn build_pieces_from(
         uv_channel_count,
         color_channel_count,
         winding,
+        threads,
     );
 
     // Generated normals come from the whole object's surface at once, before the

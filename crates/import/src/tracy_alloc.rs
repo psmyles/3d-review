@@ -80,6 +80,11 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for TracyAllocator<A> {
         // Snapshot once so a free/alloc pair is reported consistently even if the
         // client's running state were to flip mid-call.
         let running = Client::running().is_some();
+        // The free is reported *before* the realloc, deliberately. Reported after,
+        // another thread could be handed the old address and report its alloc
+        // first, and Tracy would pair our free with that block. The cost is that a
+        // failed realloc leaves Tracy believing a live block was freed, and a
+        // failed realloc ends in `handle_alloc_error`, which aborts.
         if !ptr.is_null() && running {
             // SAFETY: `ptr` is the non-null block about to be reallocated; records
             // the free of the old block before the reallocation.

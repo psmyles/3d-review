@@ -200,6 +200,14 @@ const _: () = assert!(
     std::mem::size_of::<MaterialUniform>()
         == std::mem::size_of::<crate::shaders::generated::Material>()
 );
+crate::shaders::assert_same_layout!(MaterialUniform => crate::shaders::generated::Material, {
+    base_color => mat_base_color,
+    emissive => mat_emissive,
+    params => mat_params,
+    channels0 => mat_channels0,
+    channels1 => mat_channels1,
+    flags => mat_flags,
+});
 
 impl MaterialUniform {
     pub(super) fn from_state(state: &MaterialState) -> Self {

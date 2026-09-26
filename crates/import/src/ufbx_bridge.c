@@ -1,6 +1,4 @@
-#include "ufbx_bridge.h"
-
-#include "ufbx.h"
+#include "ufbx_internal.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -13,14 +11,6 @@ void review_import_set_error_message(review_import_error *out_error, const char 
 {
     review_import_set_error(out_error, message);
 }
-
-int review_import_capture_extras(const ufbx_scene *scene,
-                                 const ufbx_material *const *material_sources,
-                                 size_t material_count,
-                                 const uint32_t *channel_of_element,
-                                 const int32_t *clip_of_stack,
-                                 review_import_extras *out,
-                                 review_import_error *out_error);
 
 static void review_import_set_error(review_import_error *out_error, const char *message)
 {
@@ -313,6 +303,13 @@ static ufbx_vec4 review_import_get_vec4(const ufbx_vertex_vec4 *attr, size_t ind
    diffuse color, then to white. RGB only — the viewer renders meshes opaque.
    Returns the resolved color in *linear* space (the material table seeds a PBR
    uniform from it directly). */
+/* `value` when it is a number at all, else `fallback`. A material value is read
+   straight from the file, and NaN slips through every `< 0` / `> 1` clamp. */
+static float review_import_finite_or(double value, float fallback)
+{
+    return isfinite(value) ? (float)value : fallback;
+}
+
 static void review_import_material_base_color_linear(const ufbx_material *material, float out_color[3])
 {
     out_color[0] = 1.0f;
@@ -324,13 +321,13 @@ static void review_import_material_base_color_linear(const ufbx_material *materi
     }
 
     if (material->pbr.base_color.has_value) {
-        out_color[0] = (float)material->pbr.base_color.value_vec4.x;
-        out_color[1] = (float)material->pbr.base_color.value_vec4.y;
-        out_color[2] = (float)material->pbr.base_color.value_vec4.z;
+        out_color[0] = review_import_finite_or(material->pbr.base_color.value_vec4.x, 1.0f);
+        out_color[1] = review_import_finite_or(material->pbr.base_color.value_vec4.y, 1.0f);
+        out_color[2] = review_import_finite_or(material->pbr.base_color.value_vec4.z, 1.0f);
     } else if (material->fbx.diffuse_color.has_value) {
-        out_color[0] = (float)material->fbx.diffuse_color.value_vec4.x;
-        out_color[1] = (float)material->fbx.diffuse_color.value_vec4.y;
-        out_color[2] = (float)material->fbx.diffuse_color.value_vec4.z;
+        out_color[0] = review_import_finite_or(material->fbx.diffuse_color.value_vec4.x, 1.0f);
+        out_color[1] = review_import_finite_or(material->fbx.diffuse_color.value_vec4.y, 1.0f);
+        out_color[2] = review_import_finite_or(material->fbx.diffuse_color.value_vec4.z, 1.0f);
     }
 }
 
@@ -356,7 +353,7 @@ static float review_import_material_metallic(const ufbx_material *material)
     float metallic = 0.0f;
 
     if (material && material->pbr.metalness.has_value) {
-        metallic = (float)material->pbr.metalness.value_real;
+        metallic = review_import_finite_or(material->pbr.metalness.value_real, 0.0f);
     }
 
     if (metallic < 0.0f) {
@@ -382,13 +379,13 @@ static void review_import_material_emissive(const ufbx_material *material, float
     }
 
     if (material->pbr.emission_factor.has_value) {
-        factor = (float)material->pbr.emission_factor.value_real;
+        factor = review_import_finite_or(material->pbr.emission_factor.value_real, 0.0f);
     }
 
     if (material->pbr.emission_color.has_value) {
-        out_color[0] = (float)material->pbr.emission_color.value_vec4.x * factor;
-        out_color[1] = (float)material->pbr.emission_color.value_vec4.y * factor;
-        out_color[2] = (float)material->pbr.emission_color.value_vec4.z * factor;
+        out_color[0] = review_import_finite_or(material->pbr.emission_color.value_vec4.x, 0.0f) * factor;
+        out_color[1] = review_import_finite_or(material->pbr.emission_color.value_vec4.y, 0.0f) * factor;
+        out_color[2] = review_import_finite_or(material->pbr.emission_color.value_vec4.z, 0.0f) * factor;
     }
 }
 
@@ -406,9 +403,9 @@ static float review_import_material_smoothness(const ufbx_material *material)
     }
 
     if (material->pbr.glossiness.has_value) {
-        smoothness = (float)material->pbr.glossiness.value_real;
+        smoothness = review_import_finite_or(material->pbr.glossiness.value_real, smoothness);
     } else if (material->pbr.roughness.has_value) {
-        smoothness = 1.0f - (float)material->pbr.roughness.value_real;
+        smoothness = 1.0f - review_import_finite_or(material->pbr.roughness.value_real, 1.0f - smoothness);
     }
 
     if (smoothness < 0.0f) {
@@ -1139,7 +1136,11 @@ static int review_import_fill_skin(
             int invertible;
 
             if (deformer->clusters.count > cluster_map_capacity) {
-                uint32_t *grown = (uint32_t*)realloc(cluster_map, deformer->clusters.count * sizeof(uint32_t));
+                size_t grown_bytes;
+                uint32_t *grown = NULL;
+                if (!review_import_mul_overflows(deformer->clusters.count, sizeof(uint32_t), &grown_bytes)) {
+                    grown = (uint32_t*)realloc(cluster_map, grown_bytes);
+                }
                 if (!grown) {
                     free(cluster_map);
                     review_import_set_error(out_error, "out of memory while recording skin clusters");
@@ -1944,7 +1945,7 @@ int review_import_load_fbx(
         int32_t *clip_of_stack = NULL;
         int captured;
         if (scene->elements.count > 0) {
-            channel_of_element = (uint32_t*)malloc(scene->elements.count * sizeof(uint32_t));
+            channel_of_element = (uint32_t*)calloc(scene->elements.count, sizeof(uint32_t));
             if (!channel_of_element) {
                 review_import_set_error(out_error, "out of memory while recording blend shapes");
                 goto cleanup;
@@ -1952,7 +1953,7 @@ int review_import_load_fbx(
             memset(channel_of_element, 0xFF, scene->elements.count * sizeof(uint32_t));
         }
         if (scene->anim_stacks.count > 0) {
-            clip_of_stack = (int32_t*)malloc(scene->anim_stacks.count * sizeof(int32_t));
+            clip_of_stack = (int32_t*)calloc(scene->anim_stacks.count, sizeof(int32_t));
             if (!clip_of_stack) {
                 free(channel_of_element);
                 review_import_set_error(out_error, "out of memory while recording animation clips");

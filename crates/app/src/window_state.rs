@@ -153,6 +153,11 @@ impl App {
     /// recorded non-maximized bounds (so un-maximize restores correctly) together
     /// with the live maximized state.
     pub(crate) fn save_window_placement(&mut self) {
+        // A gate run sizes the window itself, to the same figure every time; that
+        // is not a placement the user chose, and it must not replace one.
+        if self.gate.is_some() {
+            return;
+        }
         // Refresh from the live window first in case the latest move/resize hasn't
         // been recorded yet.
         self.record_windowed_bounds();
@@ -185,8 +190,10 @@ pub(crate) fn placement_is_visible(
 ) -> bool {
     let win_left = placement.x;
     let win_top = placement.y;
-    let win_right = placement.x + placement.width as i32;
-    let win_bottom = placement.y + placement.height as i32;
+    // The placement is read from a file, so its figures are not trusted to stay
+    // in range: saturate rather than overflow.
+    let win_right = placement.x.saturating_add_unsigned(placement.width);
+    let win_bottom = placement.y.saturating_add_unsigned(placement.height);
 
     let mut any_monitor = false;
     for monitor in event_loop.available_monitors() {
@@ -195,8 +202,8 @@ pub(crate) fn placement_is_visible(
         let size = monitor.size();
         let mon_left = pos.x;
         let mon_top = pos.y;
-        let mon_right = pos.x + size.width as i32;
-        let mon_bottom = pos.y + size.height as i32;
+        let mon_right = pos.x.saturating_add_unsigned(size.width);
+        let mon_bottom = pos.y.saturating_add_unsigned(size.height);
 
         let overlaps = win_left < mon_right
             && win_right > mon_left

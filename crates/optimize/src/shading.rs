@@ -106,12 +106,12 @@ pub(crate) fn recalculate_normals_submeshes(
         return;
     };
 
-    let mut nodes: Vec<u32> = Vec::new();
-    for piece in submeshes.iter() {
-        if !nodes.contains(&piece.node) {
-            nodes.push(piece.node);
-        }
-    }
+    let mut seen = std::collections::HashSet::new();
+    let nodes: Vec<u32> = submeshes
+        .iter()
+        .map(|piece| piece.node)
+        .filter(|&node| seen.insert(node))
+        .collect();
 
     for node in nodes {
         if run.cancelled() {

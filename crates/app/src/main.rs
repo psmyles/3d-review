@@ -920,6 +920,10 @@ impl ApplicationHandler<UserEvent> for App {
     /// Exit, and on macOS the menu bar's Quit — so it is where the settings are
     /// written.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // Every way out passes through here - including the macOS menu's Quit,
+        // which never raises a close request - so the placement is saved here as
+        // well as where a close is requested.
+        self.save_window_placement();
         self.persist_settings();
         log::info!("exiting");
     }

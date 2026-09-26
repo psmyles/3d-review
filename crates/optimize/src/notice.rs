@@ -229,7 +229,7 @@ impl fmt::Display for OptWarning {
 
 /// Something an export lost, which the user should hear about now rather than
 /// when the file reaches an engine.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ExportNote {
     /// The viewer's source-property capture had not landed when the export ran.
     CaptureNotLoaded,

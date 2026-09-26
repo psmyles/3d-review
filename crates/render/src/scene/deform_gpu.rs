@@ -24,6 +24,7 @@ pub(super) struct DeformGpu {
     /// binds its one-element dummy instead.
     pub(super) morph: Option<StorageBuffer<MorphEntry>>,
     pub(super) palette: StorageBuffer<PaletteEntry>,
+    /// One `f32` per blend shape: `review.glsl`'s `morphweight` entry, pinned below.
     pub(super) shape_weights: Option<StorageBuffer<f32>>,
     /// The `pose_revision` the palette currently holds; `None` until a pose has
     /// been uploaded (the deform flag stays off until then).
@@ -31,6 +32,12 @@ pub(super) struct DeformGpu {
     /// Scratch for the palette conversion, kept so a pose change allocates nothing.
     pub(super) palette_scratch: Vec<PaletteEntry>,
 }
+
+// The weights upload as bare `f32`s, so the shader's entry must stay one scalar
+// (invariant 11): a second field would stride every weight after the first.
+const _: () = assert!(
+    std::mem::size_of::<f32>() == std::mem::size_of::<crate::shaders::generated::Morphweight>()
+);
 
 impl DeformGpu {
     pub(super) fn new(layout: &DeformLayout) -> GpuResult<Option<Self>> {

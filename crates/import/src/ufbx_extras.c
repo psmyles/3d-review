@@ -14,17 +14,10 @@
  * so the capture owns a fixed set of allocations and `review_import_free_extras`
  * is a plain list of `free`s — on every path, success or failure.
  */
-#include "ufbx_extras.h"
-
-#include "ufbx.h"
+#include "ufbx_internal.h"
 
 #include <stdlib.h>
 #include <string.h>
-
-/* Declared in ufbx_bridge.c: the geometry output this capture is indexed like,
-   and its error type. Only the fields the capture reads are named here. */
-typedef struct review_import_error review_import_error;
-void review_import_set_error_message(review_import_error *out_error, const char *message);
 
 /* --------------------------------------------------------------------------
  * Growable storage

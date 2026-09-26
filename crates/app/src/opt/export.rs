@@ -77,33 +77,42 @@ impl App {
         );
 
         log::info!("exporting to {}", path.display());
-        std::thread::spawn(move || {
-            prof::thread_name("mesh-export");
-            let started = Instant::now();
-            let outcome = {
-                let _z = prof::zone!("Export FBX");
-                export_fbx(&result.lods, &source, extras.as_deref(), &path, &options)
-            };
-            // The failures are logged where they are reported, on the main thread.
-            if let Ok(report) = &outcome {
-                let files: Vec<String> = report
-                    .files
-                    .iter()
-                    .map(|file| file.display().to_string())
-                    .collect();
-                log::info!(
-                    "exported {} meshes, {} triangles, in {:.2} s: {}",
-                    report.mesh_count,
-                    report.triangle_count,
-                    started.elapsed().as_secs_f64(),
-                    files.join(", ")
-                );
-            }
-            let _ = proxy.send_event(UserEvent::OptExported(Box::new(OptExported {
-                outcome,
-                activity,
-            })));
-        });
+        let spawned = std::thread::Builder::new()
+            .name("mesh-export".into())
+            .spawn(move || {
+                prof::thread_name("mesh-export");
+                let started = Instant::now();
+                let outcome = {
+                    let _z = prof::zone!("Export FBX");
+                    export_fbx(&result.lods, &source, extras.as_deref(), &path, &options)
+                };
+                // The failures are logged where they are reported, on the main thread.
+                if let Ok(report) = &outcome {
+                    let files: Vec<String> = report
+                        .files
+                        .iter()
+                        .map(|file| file.display().to_string())
+                        .collect();
+                    log::info!(
+                        "exported {} meshes, {} triangles, in {:.2} s: {}",
+                        report.mesh_count,
+                        report.triangle_count,
+                        started.elapsed().as_secs_f64(),
+                        files.join(", ")
+                    );
+                }
+                let _ = proxy.send_event(UserEvent::OptExported(Box::new(OptExported {
+                    outcome,
+                    activity,
+                })));
+            });
+        if let Err(error) = spawned {
+            log::error!("could not start the export thread: {error}");
+            self.notifications.end_activity(activity);
+            self.notifications.error(
+                review_localization::tr(keys::app_notifications::EXPORT_START_FAILED).into_owned(),
+            );
+        }
     }
 
     /// Report a finished export on the main thread.

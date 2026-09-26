@@ -285,12 +285,19 @@ impl OptStack {
             remap.push((op.id, new));
             op.id = new;
         }
+        // An override naming no operation is dropped rather than kept: it overrides
+        // nothing, and left at its old id it could match one of the fresh ids
+        // above and attach itself to an operation it was never written for.
         for entry in &mut self.overrides {
-            for override_op in &mut entry.ops {
-                if let Some(&(_, new)) = remap.iter().find(|(old, _)| *old == override_op.id) {
-                    override_op.id = new;
+            entry.ops.retain_mut(|override_op| {
+                match remap.iter().find(|(old, _)| *old == override_op.id) {
+                    Some(&(_, new)) => {
+                        override_op.id = new;
+                        true
+                    }
+                    None => false,
                 }
-            }
+            });
         }
         self.next_id = self.ops.len() as u64 + 1;
     }
@@ -743,6 +750,38 @@ mod tests {
         assert!(
             stack.ops.iter().all(|op| op.id < stack.next_id),
             "the id source stays ahead of every re-keyed operation"
+        );
+    }
+
+    /// An override whose operation is gone must not survive re-keying: at its
+    /// old id it could match a fresh one and attach itself to a stranger.
+    #[test]
+    fn reassigning_ids_drops_an_override_that_names_no_operation() {
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::FilterTriangles);
+        stack.push_op(OpKind::VertexCache);
+        // One override for an id that never existed, and one for an operation
+        // that has since been removed.
+        stack.node_override_mut(0).ops.push(OpInstance {
+            id: 999,
+            enabled: true,
+            kind: OpKind::FilterTriangles,
+        });
+        stack
+            .ops
+            .retain(|op| !matches!(op.kind, OpKind::VertexCache));
+        stack.node_override_mut(0).ops.push(OpInstance {
+            id: 2,
+            enabled: true,
+            kind: OpKind::VertexCache,
+        });
+
+        stack.reassign_ids();
+
+        assert!(
+            stack.overrides[0].ops.is_empty(),
+            "overrides of missing operations are dropped: {:?}",
+            stack.overrides[0].ops
         );
     }
 

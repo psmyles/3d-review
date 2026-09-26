@@ -1079,18 +1079,20 @@ static void rvo_write_curve(ufbxw_scene *out, ufbxw_anim_curve curve, const rvo_
 
 /* A 0/1 int buffer from a byte flag array — the form the boolean layers are
  * written in. Copied into the scene, so the scratch can go. */
+/* The flags widened into a buffer ufbx_write owns, filled in place. There is no
+   scratch allocation of our own to fail: if ufbx_write cannot allocate it
+   records the failure on the scene, and the `ufbxw_get_error` check before the
+   save turns that into the export's error rather than an empty layer. */
 static ufbxw_int_buffer rvo_bool_ints(ufbxw_scene *out, const uint8_t *flags, size_t count)
 {
-    ufbxw_int_buffer buffer = { 0 };
-    int32_t *ints = (int32_t *)malloc((count ? count : 1) * sizeof(int32_t));
-    if (!ints) {
+    ufbxw_int_buffer buffer = ufbxw_create_int_buffer(out, count);
+    ufbxw_int_list ints = ufbxw_edit_int_buffer(out, buffer);
+    if (!ints.data || ints.count != count) {
         return buffer;
     }
     for (size_t i = 0; i < count; i++) {
-        ints[i] = flags[i] ? 1 : 0;
+        ints.data[i] = flags[i] ? 1 : 0;
     }
-    buffer = ufbxw_copy_int_array(out, ints, count);
-    free(ints);
     return buffer;
 }
 

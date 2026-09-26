@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use review_render::{ChannelSelect, DecodedImage, TextureSlot, decode_image, suggested_channel};
-use review_ui::{ActivityId, TexturePoolEntry, TextureSlotRef};
+use review_ui::{ActivityId, NoticeKind, TexturePoolEntry, TextureSlotRef};
 use winit::event_loop::EventLoopProxy;
 
 use crate::dialog::Dialog;
@@ -229,22 +229,36 @@ impl App {
             return;
         };
         let generation = self.textures.generation;
-        std::thread::spawn(move || {
-            // Name the decode thread + time the decode in Tracy (both no-op unless
-            // `--tracy`).
-            prof::thread_name("texture-decode");
-            let result = {
-                let _z = prof::zone!("Decode Image");
-                decode_image(request.path())
-            };
-            // A send failure only means the event loop has exited; nothing to do.
-            let _ = proxy.send_event(UserEvent::TextureDecoded(TextureDecode {
-                request,
-                generation,
-                result,
-                activity,
-            }));
-        });
+        let failed_path = request.path().to_path_buf();
+        let spawned = std::thread::Builder::new()
+            .name("texture-decode".into())
+            .spawn(move || {
+                // Name the decode thread + time the decode in Tracy (both no-op unless
+                // `--tracy`).
+                prof::thread_name("texture-decode");
+                let result = {
+                    let _z = prof::zone!("Decode Image");
+                    decode_image(request.path())
+                };
+                // A send failure only means the event loop has exited; nothing to do.
+                let _ = proxy.send_event(UserEvent::TextureDecoded(TextureDecode {
+                    request,
+                    generation,
+                    result,
+                    activity,
+                }));
+            });
+        if let Err(error) = spawned {
+            // No worker, so this decode will never land: release its admission,
+            // close its card, and say so.
+            log::error!("could not start a texture decode thread: {error}");
+            self.textures.finish_decode(generation, &failed_path);
+            self.notifications.end_activity(activity);
+            self.notifications
+                .error(keys::app_notifications::texture_failed(file_label(
+                    &failed_path,
+                )));
+        }
     }
 
     /// Apply a finished background decode on the main thread: cache + upload the
@@ -341,7 +355,7 @@ impl App {
         let Some(dir) = path.parent().map(Path::to_path_buf) else {
             return;
         };
-        if self.textures.watched_dirs.contains(&dir) {
+        if self.textures.watched_dirs.contains(&dir) || self.textures.watcher_unavailable {
             return;
         }
         if self.textures.watcher.is_none() {
@@ -367,13 +381,18 @@ impl App {
                 Ok(watcher) => self.textures.watcher = Some(watcher),
                 Err(error) => {
                     log::warn!("failed to create texture watcher: {error}");
-                    self.notifications.warning(format!(
-                        "{}\n{}",
-                        review_localization::tr(keys::app_notifications::WATCHER_UNAVAILABLE),
-                        review_localization::tr(
-                            keys::app_notifications::WATCHER_UNAVAILABLE_DESCRIPTION
-                        ),
-                    ));
+                    self.textures.watcher_unavailable = true;
+                    self.notifications.report(
+                        NoticeKind::Warning,
+                        review_localization::tr(keys::app_notifications::WATCHER_UNAVAILABLE)
+                            .into_owned(),
+                        vec![
+                            review_localization::tr(
+                                keys::app_notifications::WATCHER_UNAVAILABLE_DESCRIPTION,
+                            )
+                            .into_owned(),
+                        ],
+                    );
                     return;
                 }
             }
@@ -463,6 +482,10 @@ pub(crate) struct TextureSubsystem {
     /// The disk-auto-reload watcher, created lazily on the first texture
     /// assignment. Dropping it stops watching (done on model load / reset).
     pub(crate) watcher: Option<RecommendedWatcher>,
+    /// The platform refused a watcher. Remembered for the session, so the
+    /// failure is reported once rather than once per texture - a restore after
+    /// an undo re-watches every pooled texture in a row.
+    pub(crate) watcher_unavailable: bool,
     /// Directories the watcher is registered on (the parents of assigned textures),
     /// so each directory is watched at most once.
     pub(crate) watched_dirs: HashSet<PathBuf>,

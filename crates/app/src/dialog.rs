@@ -195,12 +195,23 @@ impl App {
 
         self.dialog_open = true;
         let name = dialog.thread_name();
-        std::thread::spawn(move || {
-            prof::thread_name(name);
-            let answer = dialog.ask();
-            // A send failure only means the event loop has exited.
-            let _ = proxy.send_event(UserEvent::DialogDone(answer.map(Box::new)));
-        });
+        let spawned = std::thread::Builder::new()
+            .name(name.to_owned())
+            .spawn(move || {
+                prof::thread_name(name);
+                let answer = dialog.ask();
+                // A send failure only means the event loop has exited.
+                let _ = proxy.send_event(UserEvent::DialogDone(answer.map(Box::new)));
+            });
+        if let Err(error) = spawned {
+            // The OS would not give us a thread (it is out of them, or of memory).
+            // Nothing opened, so nothing is waiting on an answer.
+            self.dialog_open = false;
+            log::error!("could not start the file dialog thread: {error}");
+            self.notifications.error(
+                review_localization::tr(keys::app_notifications::DIALOG_FAILED).into_owned(),
+            );
+        }
     }
 
     /// Apply a finished dialog on the main thread — the continuation of whichever

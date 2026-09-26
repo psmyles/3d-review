@@ -139,6 +139,21 @@ pub struct EguiRenderer {
     pending_free: Vec<TextureId>,
 }
 
+// The egui pipeline uploads `epaint::Vertex` as it comes and declares its three
+// attributes packed in order (`PipelineDesc::attributes`), so the struct has to
+// be exactly that packing and the shader has to number the attributes the same
+// way. Neither is checked at run time: a drift reads the stream shifted.
+const _: () = {
+    use std::mem::{offset_of, size_of};
+    assert!(offset_of!(Vertex, pos) == 0);
+    assert!(offset_of!(Vertex, uv) == 8);
+    assert!(offset_of!(Vertex, color) == 16);
+    assert!(size_of::<Vertex>() == 20);
+    assert!(generated::ATTR_EGUI_IN_POS == 0);
+    assert!(generated::ATTR_EGUI_IN_UV == 1);
+    assert!(generated::ATTR_EGUI_IN_COLOR == 2);
+};
+
 impl EguiRenderer {
     /// Build the egui pipeline and its geometry streams.
     pub fn new() -> GpuResult<Self> {

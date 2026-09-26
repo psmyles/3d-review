@@ -129,12 +129,23 @@ pub(crate) fn shrinkwrap_submeshes(
     // The token alone crosses into the workers: the rest of the run context
     // holds the progress sink, which is not shareable between threads.
     let token = run.token();
+    // Each object's share of the machine, as Remesh budgets it: N objects on N
+    // cores get one thread each, one object gets them all.
+    let cores = crate::parallel::default_threads();
+    let threads = (cores / cores.min(jobs.len().max(1))).max(1);
     crate::parallel::solve_nodes(
         &jobs,
         token,
         |job, _| {
             let mut notes = Warnings::default();
-            let rebuilt = wrap_node(&job.pieces, &job.params, &job.name, &mut notes, token);
+            let rebuilt = wrap_node(
+                &job.pieces,
+                &job.params,
+                &job.name,
+                &mut notes,
+                token,
+                threads,
+            );
             WrapOutcome {
                 rebuilt,
                 notes: notes.into_vec(),
@@ -218,6 +229,7 @@ fn wrap_node(
     name: &str,
     warnings: &mut Warnings,
     cancel: Option<&CancelToken>,
+    threads: usize,
 ) -> Option<Vec<Submesh>> {
     let proxy = proxy::build(pieces);
     if proxy.triangle_count() < MIN_INPUT_TRIANGLES {
@@ -232,7 +244,9 @@ fn wrap_node(
     }
 
     let (mut surface, resolution) = match params.method {
-        ShrinkwrapMethod::Winding => distance_field_surface(&proxy, params, name, warnings)?,
+        ShrinkwrapMethod::Winding => {
+            distance_field_surface(&proxy, params, name, warnings, threads)?
+        }
         ShrinkwrapMethod::Voxel => remesher::extract(&proxy, params, name, warnings)?,
     };
     if cancelled(cancel) {
@@ -278,6 +292,7 @@ fn wrap_node(
         &proxy,
         remesh::Winding::Keep,
         params.normals.generation(params.normal_params),
+        threads,
     ))
 }
 
@@ -289,6 +304,7 @@ fn distance_field_surface(
     params: &ShrinkwrapParams,
     name: &str,
     warnings: &mut Warnings,
+    threads: usize,
 ) -> Option<(mc::Surface, u32)> {
     // A lattice fine enough to be asked for but small enough to hold. Halving
     // the resolution divides the point count by eight, so this converges in a
@@ -327,7 +343,7 @@ fn distance_field_surface(
         return None;
     }
 
-    let field = sdf::build(desc, &sampled, &bvh, &winding, params.offset);
+    let field = sdf::build(desc, &sampled, &bvh, &winding, params.offset, threads);
     Some((mc::extract(&field), resolution))
 }
 
@@ -355,7 +371,7 @@ mod tests {
             ..ShrinkwrapParams::default()
         };
 
-        let wrapped = wrap_node(&borrowed, &params, "cube", &mut warnings, None)
+        let wrapped = wrap_node(&borrowed, &params, "cube", &mut warnings, None, 4)
             .expect("the demo cube wraps");
 
         assert!(!wrapped.is_empty(), "the wrap produced geometry");
@@ -412,7 +428,8 @@ mod tests {
             resolution: 32,
             ..ShrinkwrapParams::default()
         };
-        let wrapped = wrap_node(&borrowed, &projected, "cube", &mut warnings, None).expect("wraps");
+        let wrapped =
+            wrap_node(&borrowed, &projected, "cube", &mut warnings, None, 4).expect("wraps");
         let projected_share = axis_share(&wrapped);
 
         let generated = ShrinkwrapParams {
@@ -423,7 +440,8 @@ mod tests {
             },
             ..projected
         };
-        let wrapped = wrap_node(&borrowed, &generated, "cube", &mut warnings, None).expect("wraps");
+        let wrapped =
+            wrap_node(&borrowed, &generated, "cube", &mut warnings, None, 4).expect("wraps");
         assert!(
             axis_share(&wrapped) < projected_share,
             "generating changed the shading: {} vs {projected_share}",
@@ -494,7 +512,7 @@ mod tests {
         let mut warnings = Warnings::default();
         let params = voxel(32, crate::stack::VoxelTarget::Keep);
         let wrapped =
-            wrap_node(&borrowed, &params, "cube", &mut warnings, None).expect("the cube wraps");
+            wrap_node(&borrowed, &params, "cube", &mut warnings, None, 4).expect("the cube wraps");
         assert!(warnings.is_empty(), "{warnings:?}");
 
         assert_balanced(&wrapped);
@@ -531,6 +549,7 @@ mod tests {
             "cube",
             &mut warnings,
             None,
+            4,
         )
         .expect("wraps");
         let full_count: usize = full.iter().map(Submesh::triangle_count).sum();
@@ -539,7 +558,7 @@ mod tests {
             voxel_triangles: 200,
             ..voxel(64, crate::stack::VoxelTarget::Triangles)
         };
-        let reduced = wrap_node(&borrowed, &params, "cube", &mut warnings, None).expect("wraps");
+        let reduced = wrap_node(&borrowed, &params, "cube", &mut warnings, None, 4).expect("wraps");
         let count: usize = reduced.iter().map(Submesh::triangle_count).sum();
         assert!(full_count > 400, "the raw shell is dense: {full_count}");
         assert!(
@@ -561,7 +580,9 @@ mod tests {
             ShrinkwrapParams::default(),
             voxel(32, crate::stack::VoxelTarget::Keep),
         ] {
-            assert!(wrap_node(&borrowed, &params, "cube", &mut warnings, Some(&token)).is_none());
+            assert!(
+                wrap_node(&borrowed, &params, "cube", &mut warnings, Some(&token), 4).is_none()
+            );
         }
         assert!(warnings.is_empty());
     }
@@ -591,6 +612,7 @@ mod tests {
             "sliver",
             &mut warnings,
             None,
+            4,
         );
 
         assert!(wrapped.is_none());
@@ -606,7 +628,8 @@ mod tests {
         let offset = source.bounds.size().max_element() * 0.1;
 
         let mut extent_of = |params: &ShrinkwrapParams| -> f32 {
-            let wrapped = wrap_node(&borrowed, params, "cube", &mut warnings, None).expect("wraps");
+            let wrapped =
+                wrap_node(&borrowed, params, "cube", &mut warnings, None, 4).expect("wraps");
             let mut bounds = review_model::Bounds::EMPTY;
             for piece in &wrapped {
                 for vertex in &piece.vertices {

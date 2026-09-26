@@ -372,6 +372,7 @@ pub(crate) fn project_faces(
     uv_channel_count: usize,
     color_channel_count: usize,
     winding: Winding,
+    threads: usize,
 ) -> Vec<FaceSample> {
     let _z = crate::prof::zone!("Remesh Projection");
 
@@ -385,10 +386,9 @@ pub(crate) fn project_faces(
     for (index, chunk) in faces.chunks_mut(CHUNK).enumerate() {
         jobs.push((index * CHUNK, chunk));
     }
-    let workers = std::thread::available_parallelism()
-        .map_or(1, std::num::NonZero::get)
-        .min(jobs.len())
-        .max(1);
+    // The object's own share of the machine: this runs inside `solve_nodes`,
+    // which already puts one object on each core.
+    let workers = threads.min(jobs.len()).max(1);
     let mut buckets: Vec<Vec<(usize, &mut [FaceSample])>> =
         (0..workers).map(|_| Vec::new()).collect();
     for (slot, job) in jobs.into_iter().enumerate() {

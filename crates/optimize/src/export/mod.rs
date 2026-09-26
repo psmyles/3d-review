@@ -171,7 +171,7 @@ pub fn export_fbx(
         match entry.commit() {
             Ok(committed) => report.files.push(committed),
             Err(error) => {
-                report.notes.dedup();
+                dedup_notes(&mut report.notes);
                 return Err(OptError::ExportIncomplete {
                     replaced: report.files,
                     failed: destination,
@@ -181,8 +181,16 @@ pub fn export_fbx(
         }
     }
 
-    report.notes.dedup();
+    dedup_notes(&mut report.notes);
     Ok(report)
+}
+
+/// Every note once, in the order it was first raised. The same loss can be
+/// reported by several meshes that are not next to each other, which a plain
+/// `dedup` (adjacent repeats only) lets through.
+fn dedup_notes(notes: &mut Vec<ExportNote>) {
+    let mut seen = std::collections::HashSet::new();
+    notes.retain(|note| seen.insert(note.clone()));
 }
 
 /// `asset.fbx` → `asset_LOD2.fbx`.

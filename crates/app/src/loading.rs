@@ -282,146 +282,160 @@ impl App {
                 .begin_activity(keys::app_notifications::loading(file_label(path)));
             self.redraw.requested = true;
             let path = path.to_path_buf();
-            std::thread::spawn(move || {
-                prof::thread_name("model-import");
-                // Report where the parse has got to, so a 100 MB file shows
-                // movement instead of a silent "Loading…". Two filters keep the
-                // toast calm and the event loop idle: the rendered line must have
-                // actually changed (ufbx calls back every 512 KB, which is many
-                // reports per whole percent) and a beat must have passed since the
-                // last one. `Cell`, not an atomic — the sink is only ever called
-                // from this thread, from inside the import.
-                let last_sent = std::cell::Cell::new(None::<Instant>);
-                let progress_proxy = proxy.clone();
-                // Every report reaches the clock, before the throttle drops any:
-                // a stage boundary is exactly the report that must not be missed.
-                let clock = StageClock::default();
-                clock.enter(ImportStage::Reading);
-                // `path` travels with the model; the last line still names it.
-                let name = file_label(&path);
-                let report = |progress: ImportProgress| {
-                    clock.enter(progress.stage);
-                    if last_sent
-                        .get()
-                        .is_some_and(|sent| sent.elapsed() < PROGRESS_MIN_INTERVAL)
-                    {
-                        return;
-                    }
-                    last_sent.set(Some(Instant::now()));
-                    let _ = progress_proxy.send_event(UserEvent::ModelLoadProgress(
-                        ModelLoadProgress {
-                            generation,
-                            message: progress_message(progress),
-                            fraction: progress.fraction(),
-                            activity,
-                        },
-                    ));
-                };
-                let staged = {
-                    let _z = prof::zone!("Import Model");
-                    load_model_staged_cancellable(&path, &report, Some(&cancel))
-                };
-                let (result, pending) = match staged {
-                    Ok(StagedImport { model, extras }) => (Ok(Arc::new(model)), Some(extras)),
-                    Err(error) => (Err(error), None),
-                };
-                let measure = result.as_ref().ok().map(Arc::clone);
-                // A send failure only means the event loop has exited.
-                let _ = proxy.send_event(UserEvent::ModelLoaded(Box::new(ModelLoaded {
-                    generation,
-                    path,
-                    started,
-                    result,
-                    activity,
-                })));
-
-                // The model is on screen from here; what is left is the source
-                // properties and the measurements. Each piece is sent the moment
-                // it lands, so the stats card and the clip framing fill in one at
-                // a time rather than together.
-                let Some(model) = measure else {
-                    clock.finish();
-                    return;
-                };
-                let send = |measurement, last| {
-                    let _ = proxy.send_event(UserEvent::ModelMeasured(Box::new(ModelMeasured {
+            let failed_label = file_label(&path);
+            let spawned = std::thread::Builder::new()
+                .name("model-import".into())
+                .spawn(move || {
+                    prof::thread_name("model-import");
+                    // Report where the parse has got to, so a 100 MB file shows
+                    // movement instead of a silent "Loading…". Two filters keep the
+                    // toast calm and the event loop idle: the rendered line must have
+                    // actually changed (ufbx calls back every 512 KB, which is many
+                    // reports per whole percent) and a beat must have passed since the
+                    // last one. `Cell`, not an atomic — the sink is only ever called
+                    // from this thread, from inside the import.
+                    let last_sent = std::cell::Cell::new(None::<Instant>);
+                    let progress_proxy = proxy.clone();
+                    // Every report reaches the clock, before the throttle drops any:
+                    // a stage boundary is exactly the report that must not be missed.
+                    let clock = StageClock::default();
+                    clock.enter(ImportStage::Reading);
+                    // `path` travels with the model; the last line still names it.
+                    let name = file_label(&path);
+                    let report = |progress: ImportProgress| {
+                        clock.enter(progress.stage);
+                        if last_sent
+                            .get()
+                            .is_some_and(|sent| sent.elapsed() < PROGRESS_MIN_INTERVAL)
+                        {
+                            return;
+                        }
+                        last_sent.set(Some(Instant::now()));
+                        let _ = progress_proxy.send_event(UserEvent::ModelLoadProgress(
+                            ModelLoadProgress {
+                                generation,
+                                message: progress_message(progress),
+                                fraction: progress.fraction(),
+                                activity,
+                            },
+                        ));
+                    };
+                    let staged = {
+                        let _z = prof::zone!("Import Model");
+                        load_model_staged_cancellable(&path, &report, Some(&cancel))
+                    };
+                    let (result, pending) = match staged {
+                        Ok(StagedImport { model, extras }) => (Ok(Arc::new(model)), Some(extras)),
+                        Err(error) => (Err(error), None),
+                    };
+                    let measure = result.as_ref().ok().map(Arc::clone);
+                    // A send failure only means the event loop has exited.
+                    let _ = proxy.send_event(UserEvent::ModelLoaded(Box::new(ModelLoaded {
                         generation,
-                        measurement,
-                        last,
+                        path,
+                        started,
+                        result,
                         activity,
                     })));
-                };
-                // Checked before each stage below; a worker that stops early
-                // still sends the last-message flag, since that is what closes
-                // the loading card.
-                let superseded = || {
-                    if !cancel.is_cancelled() {
-                        return false;
+
+                    // The model is on screen from here; what is left is the source
+                    // properties and the measurements. Each piece is sent the moment
+                    // it lands, so the stats card and the clip framing fill in one at
+                    // a time rather than together.
+                    let Some(model) = measure else {
+                        clock.finish();
+                        return;
+                    };
+                    let send = |measurement, last| {
+                        let _ =
+                            proxy.send_event(UserEvent::ModelMeasured(Box::new(ModelMeasured {
+                                generation,
+                                measurement,
+                                last,
+                                activity,
+                            })));
+                    };
+                    // Checked before each stage below; a worker that stops early
+                    // still sends the last-message flag, since that is what closes
+                    // the loading card.
+                    let superseded = || {
+                        if !cancel.is_cancelled() {
+                            return false;
+                        }
+                        clock.finish();
+                        log::debug!("model load superseded while measuring");
+                        send(ModelMeasurement::Cancelled, true);
+                        true
+                    };
+                    // Each of the three stages below is checked first. They are the
+                    // majority of a large load — on a 2.8M-triangle scene the mesh
+                    // groups alone are ~2.6 s — and none of it is worth doing once
+                    // the user has opened something else. The last-message flag is
+                    // what ends the loading card, so a worker that stops early still
+                    // has to send it: `handle_model_measured` balances the activity
+                    // before it looks at the generation.
+                    if superseded() {
+                        return;
+                    }
+                    if let Some(pending) = pending {
+                        let _z = prof::zone!("Marshal Extras");
+                        report(ImportProgress::stage(ImportStage::Extras));
+                        let extras = pending.marshal(&model).map(|extras| extras.map(Arc::new));
+                        let _ = proxy.send_event(UserEvent::SourceExtrasReady(Box::new(
+                            SourceExtrasReady { generation, extras },
+                        )));
+                    }
+                    if superseded() {
+                        return;
+                    }
+                    {
+                        // Before the clip envelopes, because this is what the pointer
+                        // needs: a user reaching for a part of the model the moment
+                        // it appears should be able to click it.
+                        let _z = prof::zone!("Build Scene BVH");
+                        report(ImportProgress::stage(ImportStage::Measuring));
+                        send(
+                            ModelMeasurement::SceneBvh(Arc::new(SceneBvh::build(&model))),
+                            false,
+                        );
+                    }
+                    if superseded() {
+                        return;
+                    }
+                    {
+                        let _z = prof::zone!("Measure Clip Bounds");
+                        report(ImportProgress::stage(ImportStage::Measuring));
+                        send(
+                            ModelMeasurement::ClipBounds(measure_clip_bounds(&model)),
+                            false,
+                        );
+                    }
+                    if superseded() {
+                        return;
+                    }
+                    {
+                        let _z = prof::zone!("Measure Mesh Groups");
+                        report(ImportProgress::stage(ImportStage::Finishing));
+                        send(ModelMeasurement::MeshGroups(model.mesh_group_stats()), true);
                     }
                     clock.finish();
-                    log::debug!("model load superseded while measuring");
-                    send(ModelMeasurement::Cancelled, true);
-                    true
-                };
-                // Each of the three stages below is checked first. They are the
-                // majority of a large load — on a 2.8M-triangle scene the mesh
-                // groups alone are ~2.6 s — and none of it is worth doing once
-                // the user has opened something else. The last-message flag is
-                // what ends the loading card, so a worker that stops early still
-                // has to send it: `handle_model_measured` balances the activity
-                // before it looks at the generation.
-                if superseded() {
-                    return;
-                }
-                if let Some(pending) = pending {
-                    let _z = prof::zone!("Marshal Extras");
-                    report(ImportProgress::stage(ImportStage::Extras));
-                    let extras = pending.marshal(&model).map(|extras| extras.map(Arc::new));
-                    let _ = proxy.send_event(UserEvent::SourceExtrasReady(Box::new(
-                        SourceExtrasReady { generation, extras },
-                    )));
-                }
-                if superseded() {
-                    return;
-                }
-                {
-                    // Before the clip envelopes, because this is what the pointer
-                    // needs: a user reaching for a part of the model the moment
-                    // it appears should be able to click it.
-                    let _z = prof::zone!("Build Scene BVH");
-                    report(ImportProgress::stage(ImportStage::Measuring));
-                    send(
-                        ModelMeasurement::SceneBvh(Arc::new(SceneBvh::build(&model))),
-                        false,
+                    // The worker's own finish. The main thread's "loaded" line can
+                    // come after it, since that is when the model reached the screen.
+                    log::debug!(
+                        "import worker finished {name} {:.2} s after the request",
+                        started.elapsed().as_secs_f64()
                     );
-                }
-                if superseded() {
-                    return;
-                }
-                {
-                    let _z = prof::zone!("Measure Clip Bounds");
-                    report(ImportProgress::stage(ImportStage::Measuring));
-                    send(
-                        ModelMeasurement::ClipBounds(measure_clip_bounds(&model)),
-                        false,
-                    );
-                }
-                if superseded() {
-                    return;
-                }
-                {
-                    let _z = prof::zone!("Measure Mesh Groups");
-                    report(ImportProgress::stage(ImportStage::Finishing));
-                    send(ModelMeasurement::MeshGroups(model.mesh_group_stats()), true);
-                }
-                clock.finish();
-                // The worker's own finish. The main thread's "loaded" line can
-                // come after it, since that is when the model reached the screen.
-                log::debug!(
-                    "import worker finished {name} {:.2} s after the request",
-                    started.elapsed().as_secs_f64()
-                );
-            });
+                });
+            if let Err(error) = spawned {
+                // No worker, so no message will ever close the loading card.
+                log::error!("could not start the import thread: {error}");
+                self.notifications.end_activity(activity);
+                self.notifications
+                    .error(keys::app_notifications::couldnt_load(
+                        failed_label,
+                        error.to_string(),
+                    ));
+            }
         } else {
             // No proxy to post back through (never the case once `main` has
             // built the event loop) — load in place, measurements and all, so the

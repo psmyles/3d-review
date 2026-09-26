@@ -117,12 +117,14 @@ impl Topology {
 
         // Count, prefix-sum, fill — the pattern `ao.rs` and the C bridges use,
         // so the entries array is allocated once rather than grown per vertex.
+        // A face with any corner out of range is left out whole - never kept at
+        // its good corners, where it would name a vertex that does not exist to
+        // whoever walks the face.
+        let whole = |corners: &[u32; 3]| corners.iter().all(|&c| (c as usize) < vertex_count);
         let mut face_starts = vec![0u32; vertex_count + 1];
-        for corners in faces {
+        for corners in faces.iter().filter(|corners| whole(corners)) {
             for &corner in corners {
-                if (corner as usize) < vertex_count {
-                    face_starts[corner as usize + 1] += 1;
-                }
+                face_starts[corner as usize + 1] += 1;
             }
         }
         for vertex in 0..vertex_count {
@@ -132,12 +134,13 @@ impl Topology {
         {
             let mut cursor = face_starts[..vertex_count].to_vec();
             for (face, corners) in faces.iter().enumerate() {
+                if !whole(corners) {
+                    continue;
+                }
                 for &corner in corners {
-                    if (corner as usize) < vertex_count {
-                        let slot = &mut cursor[corner as usize];
-                        face_entries[*slot as usize] = face as u32;
-                        *slot += 1;
-                    }
+                    let slot = &mut cursor[corner as usize];
+                    face_entries[*slot as usize] = face as u32;
+                    *slot += 1;
                 }
             }
         }

@@ -192,7 +192,9 @@ impl App {
 
         // Raise the "still working" notice only once a run has actually been slow,
         // and only once per run.
-        let opt = self.opt.as_mut().expect("just created");
+        let Some(opt) = self.opt.as_mut() else {
+            return;
+        };
         if let Some(started) = opt.started_at
             && opt.in_flight.is_some()
             && opt.activity.is_none()
@@ -307,85 +309,101 @@ impl App {
         let hidden = self.ui.hidden_mesh_nodes();
 
         let progress_proxy = proxy.clone();
-        std::thread::spawn(move || {
-            prof::thread_name("mesh-optimize");
-            // Filtered on the line having *changed*, and deliberately not on a
-            // minimum interval the way the import's is. The import reports from
-            // inside the parse, many times per whole percent, so dropping one
-            // costs nothing - another is 512 KB away. A run reports at step and
-            // object boundaries, and the next one can be a whole field solve
-            // away: a timer that dropped the report saying which object we are
-            // on would leave the card reading `Preparing the mesh...` for the
-            // minutes that object took. The volume is bounded by the stack times
-            // the scene, which the loop can take all of. `RefCell`, not a lock -
-            // the sink is only ever called from this thread, from inside the run.
-            let last_line = std::cell::RefCell::new(String::new());
-            let report = |progress: OptProgress<'_>| {
-                let message = progress_message(progress);
-                if *last_line.borrow() == message {
-                    return;
-                }
-                last_line.replace(message.clone());
-                let _ = progress_proxy.send_event(UserEvent::OptProgressed(OptProgressed {
-                    generation,
-                    message,
-                    fraction: progress.fraction(),
-                }));
-            };
-            // Self-throttled: a preview costs an assemble of the whole level,
-            // and a scene of small objects can produce them faster than the
-            // event loop can draw them. Skipping one only delays what is shown,
-            // never what is produced.
-            let last_preview = std::cell::Cell::new(None::<Instant>);
-            let show = |preview: OptPreview| {
-                if last_preview
-                    .get()
-                    .is_some_and(|sent| sent.elapsed() < PREVIEW_MIN_INTERVAL)
-                {
-                    return;
-                }
-                last_preview.set(Some(Instant::now()));
-                let _ =
-                    progress_proxy.send_event(UserEvent::OptPreviewed(Box::new(OptPreviewed {
+        let spawned = std::thread::Builder::new()
+            .name("mesh-optimize".into())
+            .spawn(move || {
+                prof::thread_name("mesh-optimize");
+                // Filtered on the line having *changed*, and deliberately not on a
+                // minimum interval the way the import's is. The import reports from
+                // inside the parse, many times per whole percent, so dropping one
+                // costs nothing - another is 512 KB away. A run reports at step and
+                // object boundaries, and the next one can be a whole field solve
+                // away: a timer that dropped the report saying which object we are
+                // on would leave the card reading `Preparing the mesh...` for the
+                // minutes that object took. The volume is bounded by the stack times
+                // the scene, which the loop can take all of. `RefCell`, not a lock -
+                // the sink is only ever called from this thread, from inside the run.
+                let last_line = std::cell::RefCell::new(String::new());
+                let report = |progress: OptProgress<'_>| {
+                    let message = progress_message(progress);
+                    if *last_line.borrow() == message {
+                        return;
+                    }
+                    last_line.replace(message.clone());
+                    let _ = progress_proxy.send_event(UserEvent::OptProgressed(OptProgressed {
                         generation,
-                        model: preview.model,
-                    })));
-            };
-            let result = {
-                let _z = prof::zone!("Optimize Mesh");
-                process_progressive(
-                    ProcessInput {
-                        model: &model,
-                        stack: &stack,
-                        render_vertex_size,
-                        hidden_nodes: &hidden,
-                        extras: extras.as_deref(),
-                    },
-                    &report,
-                    Some(&show),
-                    Some(&cancel),
-                )
-            };
-            // Indexed here rather than on the main thread, for the same reason
-            // the source mesh's is built on the import worker.
-            let level_bvhs = match &result {
-                Ok(processed) => {
-                    let _z = prof::zone!("Build Level BVHs");
-                    processed
-                        .lods
-                        .iter()
-                        .map(|lod| Arc::new(SceneBvh::build(&lod.model)))
-                        .collect()
-                }
-                Err(_) => Vec::new(),
-            };
-            // A send failure only means the event loop has exited.
-            let _ = proxy.send_event(UserEvent::OptProcessed(Box::new(OptProcessed {
-                generation,
-                result,
-                level_bvhs,
-            })));
-        });
+                        message,
+                        fraction: progress.fraction(),
+                    }));
+                };
+                // Self-throttled: a preview costs an assemble of the whole level,
+                // and a scene of small objects can produce them faster than the
+                // event loop can draw them. Skipping one only delays what is shown,
+                // never what is produced.
+                let last_preview = std::cell::Cell::new(None::<Instant>);
+                let show = |preview: OptPreview| {
+                    if last_preview
+                        .get()
+                        .is_some_and(|sent| sent.elapsed() < PREVIEW_MIN_INTERVAL)
+                    {
+                        return;
+                    }
+                    last_preview.set(Some(Instant::now()));
+                    let _ = progress_proxy.send_event(UserEvent::OptPreviewed(Box::new(
+                        OptPreviewed {
+                            generation,
+                            model: preview.model,
+                        },
+                    )));
+                };
+                let result = {
+                    let _z = prof::zone!("Optimize Mesh");
+                    process_progressive(
+                        ProcessInput {
+                            model: &model,
+                            stack: &stack,
+                            render_vertex_size,
+                            hidden_nodes: &hidden,
+                            extras: extras.as_deref(),
+                        },
+                        &report,
+                        Some(&show),
+                        Some(&cancel),
+                    )
+                };
+                // Indexed here rather than on the main thread, for the same reason
+                // the source mesh's is built on the import worker.
+                let level_bvhs = match &result {
+                    Ok(processed) => {
+                        let _z = prof::zone!("Build Level BVHs");
+                        processed
+                            .lods
+                            .iter()
+                            .map(|lod| Arc::new(SceneBvh::build(&lod.model)))
+                            .collect()
+                    }
+                    Err(_) => Vec::new(),
+                };
+                // A send failure only means the event loop has exited.
+                let _ = proxy.send_event(UserEvent::OptProcessed(Box::new(OptProcessed {
+                    generation,
+                    result,
+                    level_bvhs,
+                })));
+            });
+        if let Err(error) = spawned {
+            // No worker: the run never started, so it is not in flight. The
+            // revision stays covered, as for a missing proxy above, so the
+            // failure is reported once rather than on every frame.
+            log::error!("could not start the optimization thread: {error}");
+            if let Some(opt) = self.opt.as_mut() {
+                opt.in_flight = None;
+                opt.started_at = None;
+            }
+            self.notifications.error(
+                review_localization::tr(keys::app_notifications::OPT_START_FAILED).into_owned(),
+            );
+        }
     }
 
     /// Apply a finished run on the main thread.
