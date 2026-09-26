@@ -106,6 +106,8 @@ impl App {
     fn apply_menu_intent(&mut self, intent: MenuIntent) {
         match intent {
             MenuIntent::OpenFile => self.open_model_from_dialog(),
+            MenuIntent::OpenRecent(index) => self.open_recent_file(index),
+            MenuIntent::ClearRecentFiles => self.clear_recent_files(),
             MenuIntent::CloseFile => self.reset_to_start_state(),
             MenuIntent::ToggleRememberSettings => {
                 self.ui.remember_settings = !self.ui.remember_settings;

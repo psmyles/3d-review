@@ -536,6 +536,7 @@ impl App {
                     format_load_time(elapsed),
                 ));
                 prof::msg(&format!("model loaded: {}", path.display()));
+                self.remember_recent_file(path);
                 // A gate run starts measuring from here — the first present with
                 // the model actually on screen (`gate.rs`); no-op otherwise.
                 self.gate_model_ready(path);
@@ -549,6 +550,7 @@ impl App {
                         error.to_string(),
                     ));
                 prof::msg(&format!("model load failed: {} ({error})", path.display()));
+                self.forget_missing_recent_file(path);
             }
         }
         self.redraw.requested = true;

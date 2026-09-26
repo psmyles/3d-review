@@ -213,7 +213,7 @@ fn draw_menu_group(ui: &mut egui::Ui, state: &mut UiState, output: &mut UiOutput
     });
 }
 
-/// File: open, close, exit.
+/// File: open, open recent, close, exit.
 fn file_menu(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput) {
     let modifier = crate::primary_modifier().into_owned();
     let open_file = egui::Button::new(keys::ui_toolbar::MENU_OPEN_FILE)
@@ -221,6 +221,13 @@ fn file_menu(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput) {
     if ui.add(open_file).clicked() {
         output.menu = Some(MenuIntent::OpenFile);
     }
+    // Greyed out rather than hidden while there is no history, so the menu keeps
+    // its shape.
+    ui.add_enabled_ui(!state.recent_files.is_empty(), |ui| {
+        ui.menu_button(keys::ui_toolbar::MENU_OPEN_RECENT, |ui| {
+            recent_files_menu(ui, state, output);
+        });
+    });
     // Nothing to close until a model is loaded; `bounds` is `None` exactly then.
     let close_file = egui::Button::new(keys::ui_toolbar::MENU_CLOSE_FILE)
         .shortcut_text(keys::ui_toolbar::menu_close_file_shortcut(modifier));
@@ -230,6 +237,33 @@ fn file_menu(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput) {
     ui.separator();
     if ui.button(keys::ui_toolbar::MENU_EXIT).clicked() {
         output.menu = Some(MenuIntent::Exit);
+    }
+}
+
+/// File > Open Recent: one entry per recent model, most recent first, named by
+/// its file name with the full path on hover (two files of one name in different
+/// folders are otherwise indistinguishable), then the command that empties it.
+fn recent_files_menu(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput) {
+    for (index, path) in state.recent_files.iter().enumerate() {
+        let name = path
+            .file_name()
+            .unwrap_or(path.as_os_str())
+            .to_string_lossy()
+            .into_owned();
+        if ui
+            .button(name)
+            .on_hover_text(path.display().to_string())
+            .clicked()
+        {
+            output.menu = Some(MenuIntent::OpenRecent(index));
+        }
+    }
+    ui.separator();
+    if ui
+        .button(keys::ui_toolbar::MENU_CLEAR_RECENT_FILES)
+        .clicked()
+    {
+        output.menu = Some(MenuIntent::ClearRecentFiles);
     }
 }
 

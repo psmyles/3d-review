@@ -18,6 +18,8 @@ ui-toolbar-menu-help = Help
 
 ui-toolbar-menu-open-file = Open File...
 ui-toolbar-menu-open-file-shortcut = { $modifier }+O
+ui-toolbar-menu-open-recent = Open Recent
+ui-toolbar-menu-clear-recent-files = Clear Recent Files
 ui-toolbar-menu-close-file = Close File
 ui-toolbar-menu-close-file-shortcut = { $modifier }+N
 ui-toolbar-menu-exit = Exit

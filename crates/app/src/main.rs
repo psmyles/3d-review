@@ -18,6 +18,7 @@ mod loading;
 mod opt;
 mod pick;
 mod prof;
+mod recent;
 mod redraw;
 mod settings;
 mod shortcuts;

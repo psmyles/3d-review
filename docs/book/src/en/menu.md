@@ -7,6 +7,13 @@ workspace, and has three parts.
 
 - **Open File...** asks for a model to open, the same as the open shortcut
   (see [Keyboard and mouse](keyboard.md)).
+- **Open Recent** lists the last ten models you opened, the newest at the
+  top. Point at one to see where it is saved, and click it to open it again.
+  **Clear Recent Files** at the bottom empties the list. A file that has been
+  moved or deleted is taken off the list the next time you try to open it.
+  The list is kept between sessions whether or not **Remember Settings** is
+  on, in the same settings file (see [below](#remember-settings)), and it is
+  greyed out until you have opened something.
 - **Close File** puts the viewer back the way it was when it started: no
   model, and the camera in its home position. It is the same as the new-file
   shortcut, and is greyed out while no model is open.

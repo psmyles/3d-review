@@ -1,23 +1,27 @@
 //! The per-user settings file, beside `window.cfg` in the same config directory.
 //!
 //! It holds the interface language, the menu's **Remember settings** switch and,
-//! while that is on, the option-window values it remembers, and the **Tracy
-//! Profiler** preference (a saved `--tracy`, read once at launch). The format is the
+//! while that is on, the option-window values it remembers, the **Tracy
+//! Profiler** preference (a saved `--tracy`, read once at launch), and the File >
+//! Open Recent list (kept whatever the switch says — it is a history, not a tool
+//! setting; what goes into it is [`crate::recent`]'s business). The format is the
 //! same hand-rolled `key=value` one [`crate::window_state`] uses — no serde, no
 //! schema, and a line it does not recognise is skipped rather than failing the
 //! read, because a settings file that has picked up a key from a newer build must
 //! not stop this one starting.
 //!
-//! The viewer writes only the keys it owns — [`REMEMBER_KEY`], [`TRACY_KEY`] and
-//! everything under [`OPTIONS_PREFIX`] — and carries every other line through a save untouched, so
+//! The viewer writes only the keys it owns — [`REMEMBER_KEY`], [`TRACY_KEY`],
+//! [`RECENT_KEY`] and everything under [`OPTIONS_PREFIX`] — and carries every other
+//! line through a save untouched, so
 //! a hand-set `locale`, a comment, or a key only a newer build knows survives this
 //! one rewriting the file. What the remembered values *are* is `review_ui`'s
 //! business ([`UiState::remembered_options`]); this module only owns the file.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use review_ui::UiState;
 
+use crate::recent::MAX_RECENT_FILES;
 use crate::{App, prof};
 
 /// The file's name inside `<config dir>/<app name>/`.
@@ -28,6 +32,10 @@ const REMEMBER_KEY: &str = "remember_settings";
 
 /// Whether the Tracy client starts at launch, as if `--tracy` had been passed.
 const TRACY_KEY: &str = "tracy_profiler";
+
+/// One recently opened model. The key repeats, one line per file, most recent
+/// first — the order the menu lists them in.
+const RECENT_KEY: &str = "recent_file";
 
 /// The namespace the remembered option-window values are written under, so the
 /// save can tell its own lines from everyone else's.
@@ -52,9 +60,9 @@ pub(crate) fn tracy_profiler() -> bool {
         .any(|(key, value)| key == TRACY_KEY && value == "true")
 }
 
-/// Restore the saved preferences into `ui`: the Tracy switch always, and the
-/// option-window values if the user asked for them to be remembered. A value
-/// this build cannot read is skipped, leaving its default.
+/// Restore the saved preferences into `ui`: the Tracy switch and the recent
+/// files always, and the option-window values if the user asked for them to be
+/// remembered. A value this build cannot read is skipped, leaving its default.
 pub(crate) fn restore(ui: &mut UiState) {
     apply_entries(ui, &read_entries());
 }
@@ -63,6 +71,12 @@ fn apply_entries(ui: &mut UiState, entries: &[(String, String)]) {
     ui.tracy_profiler = entries
         .iter()
         .any(|(key, value)| key == TRACY_KEY && value == "true");
+    ui.recent_files = entries
+        .iter()
+        .filter(|(key, _)| key == RECENT_KEY)
+        .map(|(_, value)| PathBuf::from(value))
+        .take(MAX_RECENT_FILES)
+        .collect();
     ui.remember_settings = entries
         .iter()
         .any(|(key, value)| key == REMEMBER_KEY && value == "true");
@@ -115,12 +129,16 @@ impl App {
 }
 
 /// The new file: every line of `existing` the viewer does not own, in order,
-/// then the switch and (while it is on) the remembered values.
+/// then the switches, the recent files and (while the switch is on) the
+/// remembered values.
 fn settings_text(existing: &str, ui: &UiState) -> String {
     let mut text = String::new();
     for line in existing.lines() {
         let owned = parse_line(line).is_some_and(|(key, _)| {
-            key == REMEMBER_KEY || key == TRACY_KEY || key.starts_with(OPTIONS_PREFIX)
+            key == REMEMBER_KEY
+                || key == TRACY_KEY
+                || key == RECENT_KEY
+                || key.starts_with(OPTIONS_PREFIX)
         });
         if !owned {
             text.push_str(line);
@@ -129,12 +147,29 @@ fn settings_text(existing: &str, ui: &UiState) -> String {
     }
     text.push_str(&format!("{TRACY_KEY}={}\n", ui.tracy_profiler));
     text.push_str(&format!("{REMEMBER_KEY}={}\n", ui.remember_settings));
+    for path in ui
+        .recent_files
+        .iter()
+        .filter_map(|path| storable_path(path))
+    {
+        text.push_str(&format!("{RECENT_KEY}={path}\n"));
+    }
     if ui.remember_settings {
         for (key, value) in ui.remembered_options() {
             text.push_str(&format!("{OPTIONS_PREFIX}{key}={value}\n"));
         }
     }
     text
+}
+
+/// `path` as it can be written to one `key=value` line and read back unchanged,
+/// or `None` for the rare path that cannot: one that is not valid Unicode, that
+/// holds a line break, or whose ends the parse would trim. Such a file simply
+/// goes unremembered.
+fn storable_path(path: &Path) -> Option<&str> {
+    let text = path.to_str()?;
+    let fits = !text.is_empty() && text.trim() == text && !text.contains(['\n', '\r']);
+    fits.then_some(text)
 }
 
 fn settings_file() -> Option<PathBuf> {
@@ -246,5 +281,43 @@ mod tests {
         apply_entries(&mut restored, &parse_entries(&text));
         assert!(restored.tracy_profiler);
         assert!(!restored.remember_settings);
+    }
+
+    /// The recent files are kept in order whether or not the option-window
+    /// values are being remembered, a save replaces the old list rather than
+    /// adding to it, and a path with an `=` in it survives the `key=value` split.
+    #[test]
+    fn recent_files_round_trip_in_order() {
+        let ui = UiState {
+            recent_files: vec![
+                PathBuf::from("/assets/a=b/Barrel.fbx"),
+                PathBuf::from("/assets/Crate.fbx"),
+            ],
+            ..UiState::default()
+        };
+        let text = settings_text("recent_file=/old.fbx\n", &ui);
+        assert!(!text.contains("old.fbx"));
+        assert!(!text.contains(OPTIONS_PREFIX));
+
+        let mut restored = UiState::default();
+        apply_entries(&mut restored, &parse_entries(&text));
+        assert_eq!(restored.recent_files, ui.recent_files);
+    }
+
+    /// A path the one-line format cannot carry is left out rather than written
+    /// back as something else.
+    #[test]
+    fn an_unstorable_path_is_skipped() {
+        let ui = UiState {
+            recent_files: vec![
+                PathBuf::from("/models/ends in a space "),
+                PathBuf::from("/models/two\nlines.fbx"),
+                PathBuf::from("/models/fine.fbx"),
+            ],
+            ..UiState::default()
+        };
+        let text = settings_text("", &ui);
+        assert_eq!(text.matches(RECENT_KEY).count(), 1);
+        assert!(text.contains("recent_file=/models/fine.fbx\n"));
     }
 }

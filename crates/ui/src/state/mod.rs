@@ -13,6 +13,7 @@
 //! the option-window values into the text **Remember settings** saves.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 use review_model::{Bounds, MeshGroupStats, ModelData, ModelStats, StatsScope};
 use review_render::{
@@ -201,6 +202,12 @@ pub struct UiOutput {
 pub enum MenuIntent {
     /// Ask for a model to open (the open shortcut).
     OpenFile,
+    /// Open the model at this index of [`UiState::recent_files`] (File > Open
+    /// Recent). An index rather than the path, so the intent stays `Copy`; `app`
+    /// applies it in the same frame the list it indexes was drawn from.
+    OpenRecent(usize),
+    /// Empty [`UiState::recent_files`] and write the settings file.
+    ClearRecentFiles,
     /// Drop the loaded model and return to the start state (the new shortcut).
     CloseFile,
     /// Flip [`UiState::remember_settings`] and write the settings file at once,
@@ -425,6 +432,12 @@ pub struct UiState {
     /// Tracy is running now. Flipped only by `app`, which writes it to the
     /// settings file as it does.
     pub tracy_profiler: bool,
+    /// The models opened lately, most recent first — File > Open Recent. Kept in
+    /// the settings file whether or not **Remember settings** is on (it is a
+    /// history, not a tool setting), and maintained only by `app`: a load that
+    /// succeeds moves its file to the front, and one that fails because the file
+    /// has gone drops it.
+    pub recent_files: Vec<PathBuf>,
 }
 
 impl Default for UiState {
@@ -491,6 +504,7 @@ impl Default for UiState {
             fps: 0.0,
             remember_settings: false,
             tracy_profiler: false,
+            recent_files: Vec::new(),
         }
     }
 }
