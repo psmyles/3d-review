@@ -12,6 +12,12 @@ pub(crate) struct AppIcon {
     pub(crate) png_bytes: &'static [u8],
 }
 
+/// "Menu" — the application menu (open / close / remember settings / exit), the
+/// leftmost tile of the toolbar.
+pub(crate) const ICON_MENU: AppIcon = AppIcon {
+    id: "icon_menu",
+    png_bytes: include_bytes!("../../../assets/icons/icon_menu.png"),
+};
 /// "Show Wireframe" — the independent wireframe-overlay toggle.
 pub(crate) const ICON_SHADING_WIRE: AppIcon = AppIcon {
     id: "icon_shading_wire",

@@ -1,0 +1,17 @@
+ufbx - vendored source
+======================
+
+Upstream:  https://github.com/ufbx/ufbx
+Version:   v0.22.0
+Commit:    ee203dfe62d60c98227288f6d74b9a117857c065
+License:   MIT OR Unlicense - see LICENSE (3D Review elects MIT)
+
+What is vendored
+----------------
+`ufbx.h` and `ufbx.c` from the tag above, unmodified (byte-identical apart from
+line endings), plus upstream's `LICENSE`. `crates/import/build.rs` compiles
+them together with the project's own C bridge when both files are present.
+
+Refreshing: copy the newer upstream pair and LICENSE in, update the version and
+commit above, and re-run the workspace tests - `crates/import`'s fixture suite
+and `crates/optimize`'s export round-trips both read FBX through this copy.

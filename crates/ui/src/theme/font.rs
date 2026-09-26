@@ -8,6 +8,8 @@ pub const STATUS_ZOOM: f32 = 11.0;
 /// button). Rendered in the monospace face one step smaller than egui's
 /// default body size so numeric readouts line up on a fixed grid.
 pub const PANEL_BODY: f32 = 12.0;
+/// The Log window's lines (monospace, so the columns line up).
+pub const LOG_TEXT: f32 = 12.0;
 /// Bounding-box dimension-label text (monospace).
 pub const DIMENSION_LABEL: f32 = 12.0;
 pub const GIZMO_LABEL: f32 = 11.0;

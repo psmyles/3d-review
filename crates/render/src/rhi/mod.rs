@@ -72,13 +72,13 @@ mod error;
 mod format;
 pub(crate) mod gpu_profiler;
 mod job;
-mod log;
 mod make;
 mod mips;
 mod pipeline;
 mod present;
 mod sampler;
 pub(crate) mod shader;
+mod sokol_log;
 mod target;
 mod texture;
 
@@ -102,7 +102,7 @@ pub(crate) use texture::Texture;
 // `Frame`'s contract, and the two are read together.
 
 pub(crate) use job::SwapchainJob;
-use log::log_sokol;
+use sokol_log::log_sokol;
 
 use std::ffi::{CStr, c_char, c_void};
 
@@ -240,6 +240,29 @@ impl Gpu {
             .supported_sample_counts(SCENE_COLOR_FORMAT, SCENE_DEPTH_FORMAT)
     }
 
+    /// The graphics API sokol_gfx is drawing through, by its own name — the About
+    /// box's renderer line. Stable English, like every other `label()` here: it
+    /// names an API, not something a catalog could translate.
+    pub fn backend_name(&self) -> &'static str {
+        match sg::query_backend() {
+            sg::Backend::D3d11 => "Direct3D 11",
+            sg::Backend::MetalMacos | sg::Backend::MetalIos | sg::Backend::MetalSimulator => {
+                "Metal"
+            }
+            sg::Backend::Glcore => "OpenGL",
+            sg::Backend::Gles3 => "OpenGL ES 3",
+            sg::Backend::Wgpu => "WebGPU",
+            sg::Backend::Vulkan => "Vulkan",
+            sg::Backend::Dummy => "none",
+        }
+    }
+
+    /// The graphics adapter's own name (`NVIDIA GeForce RTX 4070`, `Apple M2`), for
+    /// the log's opening lines. Empty when the driver will not say.
+    pub fn adapter_name(&self) -> String {
+        self.device.adapter_name()
+    }
+
     /// The largest 2D texture this device can create, for `egui-winit`'s texture-size
     /// cap — a real query now rather than the hardcoded 16384 the D3D11 path assumed.
     pub fn max_texture_size(&self) -> usize {
@@ -300,14 +323,12 @@ impl Gpu {
         match gpu_profiler::GpuProfiler::new(&self.device) {
             Ok(profiler) => {
                 self.profiler = Some(profiler);
-                gpu_profiler::note("GPU profiling armed");
+                log::info!("GPU profiling armed");
             }
             Err(error) => {
                 // Disarm, so this is attempted once rather than every frame.
                 gpu_profiler::disable_tracy_gpu();
-                let line = format!("3d-review: GPU profiling unavailable: {error}");
-                eprintln!("{line}");
-                gpu_profiler::note(&line);
+                log::warn!("GPU profiling unavailable: {error}");
             }
         }
     }

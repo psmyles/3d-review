@@ -81,7 +81,7 @@ pub fn draw_overlay(
     // Native chrome panels first: the top toolbar and bottom status bar carve their
     // bands, then the dockable side panels fill the middle — declared in this order
     // so the side panels sit *between* the bars, not under them.
-    toolbar::draw(root, state);
+    toolbar::draw(root, state, &mut output);
     status_bar::draw(root, state, model);
 
     // The side panels, option panels, axis gizmo and stats overlay are all 3D-scene
@@ -157,6 +157,7 @@ pub fn draw_overlay(
             state.help.open_page(page);
         }
         crate::help::draw(ctx, &mut state.help, viewport);
+        crate::log_window::draw(ctx, &mut state.log, viewport);
 
         if state.show_axis_gizmo {
             let gizmo_response = egui::Area::new(egui::Id::new("axis_gizmo"))
@@ -196,6 +197,25 @@ pub fn draw_overlay(
         // chrome; this lays out the canvas + interaction + background fill only.
         texture_view::draw(root, state);
     }
+
+    // The manual and the log can be opened from the menu in any workspace, so
+    // outside the scene ones — which draw them above, inside their own free
+    // viewport — they get the area between the toolbar and the status bar.
+    if !state.mode.is_scene() {
+        if let Some(page) = crate::help::take_requested(ctx) {
+            state.help.open_page(page);
+        }
+        let screen = ctx.content_rect();
+        let viewport = egui::Rect::from_min_max(
+            egui::pos2(screen.left(), screen.top() + toolbar_height),
+            egui::pos2(screen.right(), screen.bottom() - status_bar_height),
+        );
+        crate::help::draw(ctx, &mut state.help, viewport);
+        crate::log_window::draw(ctx, &mut state.log, viewport);
+    }
+
+    // Last, so the modal's backdrop covers every other piece of chrome.
+    crate::about::draw(ctx, &mut state.about);
 
     output
 }
@@ -336,7 +356,7 @@ fn half_camera(mut camera: OrbitCamera, half: egui::Rect) -> OrbitCamera {
 ///
 /// Position and the open-flag stay with the caller: they are per-window, and
 /// `open` borrows.
-fn option_window<'open>(panel: OptionPanel) -> egui::Window<'open> {
+fn option_window<'open>(panel: OptionPanel, style: &egui::Style) -> egui::Window<'open> {
     egui::Window::new(panel.title())
         .id(egui::Id::new(panel.window_id()))
         // The option panels have compact, fixed content (a two-column table), so
@@ -345,11 +365,17 @@ fn option_window<'open>(panel: OptionPanel) -> egui::Window<'open> {
         .resizable(false)
         // …and the *window* has to be told to take that width. `resizable(false)`
         // alone leaves egui's own default window size in force — 340pt wide, wider
-        // than the 256pt body — so the frame sat 70pt wider than its content, as a
-        // band of dead space down the right of every panel. `auto_sized` shrinks
-        // the frame onto the body instead. It also turns scrolling off, which
-        // these already had off.
-        .auto_sized()
+        // than the body — so the frame sat 70pt wider than its content, as a band
+        // of dead space down the right of every panel. The width is the body plus
+        // the window frame's own margins and stroke, which is what egui subtracts
+        // back off before laying the title bar and body out. Height stays
+        // content-driven: a non-resizable window takes its content's height.
+        //
+        // Not `auto_sized`, which also hugs the body: a collapsed auto-sized
+        // window lays its title bar out at zero width, so egui paints the window
+        // frame round nothing — a sliver of fill and stroke down the left edge of
+        // the title bar.
+        .default_width(panels::body_width() + egui::Frame::window(style).total_margin().sum().x)
         .collapsible(true)
         // Persistent chrome, not a transient popup: skip egui's fade so an
         // always-present window never spins the on-demand redraw loop
@@ -359,6 +385,7 @@ fn option_window<'open>(panel: OptionPanel) -> egui::Window<'open> {
 }
 
 fn draw_option_panels(ctx: &egui::Context, state: &mut UiState, viewport: egui::Rect) {
+    let style = ctx.global_style();
     for (slot, panel) in OptionPanel::ALL.into_iter().enumerate() {
         if !state.panels_open.is_open(panel) {
             continue;
@@ -376,7 +403,7 @@ fn draw_option_panels(ctx: &egui::Context, state: &mut UiState, viewport: egui::
         // egui's `.open(&mut bool)` paints the title-bar X and flips this false
         // when it's clicked; mirror that back into the open-set after the window.
         let mut open = true;
-        option_window(panel)
+        option_window(panel, &style)
             .open(&mut open)
             .default_pos(default_pos)
             // Keep the window inside the free viewport so it can never be dragged
@@ -607,34 +634,59 @@ fn legend_row(ui: &mut egui::Ui, swatch: egui::Color32, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::size;
+    use crate::panels::body_width;
 
-    /// The width `draw_panel_body` pins every option panel's contents to.
-    fn body_width() -> f32 {
-        size::PANEL_LABEL_COL_WIDTH + size::PANEL_GRID_COL_GAP + size::PANEL_CONTROL_COL_WIDTH
-    }
-
-    /// Lay `panel` out in a headless context and return its window's outer width.
-    fn measured_width(panel: OptionPanel) -> f32 {
+    /// Lay `panel` out in a headless context, expanded or collapsed, and return
+    /// its window's outer width plus the width of its title text.
+    fn measured_width(panel: OptionPanel, expanded: bool) -> (f32, f32) {
         let ctx = egui::Context::default();
         crate::theme::init_style(&ctx);
         let mut state = UiState::default();
         let mut width = 0.0;
+        let mut title_width = 0.0;
         // Three passes: egui's `Grid` learns its column widths from the previous
         // frame, so the first pass is not yet settled.
         for _ in 0..3 {
             ctx.begin_pass(Default::default());
+            let style = ctx.global_style();
             let mut open = true;
-            if let Some(response) = option_window(panel)
+            if let Some(response) = option_window(panel, &style)
+                .default_open(expanded)
                 .open(&mut open)
                 .show(&ctx, |ui| panels::draw_panel_body(ui, &mut state, panel))
             {
                 width = response.response.rect.width();
             }
+            let font = egui::TextStyle::Heading.resolve(&style);
+            let title = review_localization::tr(panel.title()).to_string();
+            title_width = ctx.fonts_mut(|fonts| {
+                fonts
+                    .layout_no_wrap(title, font, egui::Color32::WHITE)
+                    .size()
+                    .x
+            });
             let mut output = ctx.end_pass();
             output.textures_delta.clear();
         }
-        width
+        (width, title_width)
+    }
+
+    /// A collapsed option window's frame must surround its title bar.
+    ///
+    /// An `auto_sized` window lays a collapsed title bar out at zero width, so
+    /// egui painted the window frame round nothing: a sliver of fill and stroke
+    /// down the left edge of the title bar, under the full-width header.
+    #[test]
+    fn collapsed_option_windows_frame_their_title() {
+        for panel in OptionPanel::ALL {
+            let (width, title) = measured_width(panel, false);
+            assert!(
+                width > title,
+                "{}: collapsed window is {width}pt wide, narrower than its {title}pt \
+                 title — the frame is painted round a zero-width title bar",
+                review_localization::tr(panel.title())
+            );
+        }
     }
 
     /// Every option window must hug the width its body pins, and they must all
@@ -654,7 +706,7 @@ mod tests {
         let body = body_width();
         let mut widths = Vec::new();
         for panel in OptionPanel::ALL {
-            let width = measured_width(panel);
+            let (width, _) = measured_width(panel, true);
             assert!(
                 width >= body,
                 "{}: window {width} is narrower than its {body}pt body",
@@ -663,7 +715,7 @@ mod tests {
             assert!(
                 width - body <= MAX_FRAME,
                 "{}: window {width} is {:.0}pt wider than its {body}pt body — \
-                 dead space on the right (is `auto_sized` still set?)",
+                 dead space on the right (is `default_width` still set?)",
                 review_localization::tr(panel.title()),
                 width - body,
             );

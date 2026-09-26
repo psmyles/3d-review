@@ -15,15 +15,18 @@ mod frame;
 mod gate;
 mod input;
 mod loading;
+mod logging;
 mod opt;
 mod pick;
 mod prof;
+mod recent;
 mod redraw;
 mod settings;
 mod shortcuts;
 mod texture_manager;
 mod ui_intents;
 mod undo;
+mod update;
 mod window_state;
 
 /// The typed message keys, generated from `crates/localization/locales/en/*.ftl` by this
@@ -71,6 +74,12 @@ use window_state::{
 };
 
 fn main() -> anyhow::Result<()> {
+    // The logger, before anything can say something: an atomic store and nothing
+    // else, so the GPU bring-up below is not held up by it and what it logs is
+    // kept. The file it writes to is opened further down (`logging::open`), and
+    // gets everything logged until then.
+    review_log::install(env!("CARGO_CRATE_NAME"));
+
     // The GPU device and `sg_setup` need no window and are the longest single item on
     // the launch path, so they start here, before anything else, and run alongside
     // the window creation and the argument scan (`mac-port-plan.md` D8). The join is
@@ -111,6 +120,12 @@ fn main() -> anyhow::Result<()> {
             .as_deref(),
     );
 
+    // Preferences > Tracy Profiler is a saved `--tracy`: it takes effect here, at
+    // launch, because a started client cannot be stopped before the process ends
+    // and the profile is only whole if it starts on this line. A gate run ignores
+    // it - the two builds it compares must be measured the same way.
+    let tracy_enabled = tracy_enabled || (gate_out.is_none() && settings::tracy_profiler());
+
     // Start the Tracy client only when asked, and keep the handle alive for the
     // whole process (dropping the last handle disconnects). With `manual-lifetime`
     // the client never auto-starts, so a normal launch opens no socket and every
@@ -119,7 +134,7 @@ fn main() -> anyhow::Result<()> {
     let tracy = tracy_enabled.then(|| {
         let client = tracy_client::Client::start();
         prof::thread_name("main");
-        prof::msg("3d-review: Tracy profiling enabled (--tracy)");
+        log::info!("Tracy profiling enabled");
         client
     });
 
@@ -127,6 +142,10 @@ fn main() -> anyhow::Result<()> {
         .build()
         .context("failed to create winit event loop")?;
     event_loop.set_control_flow(ControlFlow::Wait);
+
+    // The day's log file, off the GPU's critical path: the bring-up thread is
+    // already running. Needs the event loop, whose proxy wakes an open Log window.
+    let log_file = logging::open(event_loop.create_proxy());
 
     // The texture file-watcher posts reload events back through this proxy.
     let texture_proxy = event_loop.create_proxy();
@@ -171,6 +190,13 @@ fn main() -> anyhow::Result<()> {
         _tracy: tracy,
         ..App::default()
     };
+    app.ui.log.file = log_file;
+    // The remembered option-window values, when the user asked for them. After
+    // `gate` is known, since a gate run must render the defaults whatever this box
+    // last remembered.
+    if app.gate.is_none() {
+        settings::restore(&mut app.ui);
+    }
     let outcome = event_loop
         .run_app(&mut app)
         .context("application event loop failed");
@@ -325,6 +351,13 @@ struct App {
     /// loop, which is what makes it possible to ask for a second one while the
     /// first is on screen — this is what says no.
     dialog_open: bool,
+    /// The menu's **Exit** was chosen. It is chosen inside the egui pass, which
+    /// has no event loop to stop, so it is carried out in `about_to_wait` — the
+    /// same close `CloseRequested` performs.
+    exit_requested: bool,
+    /// A Help > Check for Updates request is on its way to GitHub; a second one
+    /// is ignored until it answers.
+    update_check_in_flight: bool,
     /// The failure that stopped `start` from bringing the viewer up, held until
     /// `run_app` has returned so the error dialog is opened from `main` rather than
     /// from inside a winit callback (D9 again: on macOS a modal run loop entered
@@ -394,6 +427,15 @@ impl Default for App {
         // image as its alt text and changes nothing else (invariant 12), so this
         // is resolved once here rather than checked on every page turn.
         ui.help.docs_dir = docs_dir::docs_dir();
+        // What the About box says this build is; the renderer line joins it once
+        // the GPU is up (`init_shell`).
+        ui.about.info = review_ui::AboutInfo {
+            product: APP_NAME.to_owned(),
+            version: env!("REVIEW_VERSION").to_owned(),
+            copyright: env!("REVIEW_COPYRIGHT").to_owned(),
+            homepage: env!("REVIEW_HOMEPAGE").to_owned(),
+            ..review_ui::AboutInfo::default()
+        };
 
         Self {
             window: None,
@@ -430,6 +472,8 @@ impl Default for App {
             frame_showing_selection: false,
             textures: TextureSubsystem::default(),
             dialog_open: false,
+            exit_requested: false,
+            update_check_in_flight: false,
             startup_error: None,
             notifications: Notifications::new(),
             tracy_enabled: false,
@@ -484,7 +528,7 @@ impl App {
         drop(phase.take());
         phase = prof::zone!("Shell Init");
         self.init_shell(event_loop, window, renderer, egui_ctx, gpu, egui_renderer);
-        prof::msg("application shell started");
+        log::debug!("application shell started");
 
         drop(phase.take());
         phase = prof::zone!("Queue Initial Model Load");
@@ -621,9 +665,7 @@ impl App {
         if let Some(mut frame) = gpu.begin_frame() {
             frame.begin_swapchain_pass();
             if let review_render::PresentStatus::DeviceLost { reason } = frame.finish(false) {
-                prof::msg(&format!(
-                    "startup present failed: device lost ({reason:#x})"
-                ));
+                log::error!("startup present failed: device lost ({reason:#x})");
                 self.notifications
                     .error(keys::app_notifications::device_lost_startup(format!(
                         "{reason:#x}"
@@ -654,6 +696,21 @@ impl App {
             .into_iter()
             .filter(|level| supported_counts.contains(&level.sample_count()))
             .collect();
+        // A remembered level can be one this adapter cannot do (the settings were
+        // saved on another GPU): step down to the highest level it can.
+        let levels = &self.ui.capabilities.msaa_levels;
+        let wanted = self.ui.anti_aliasing.msaa;
+        if !levels.is_empty() && !levels.contains(&wanted) {
+            self.ui.anti_aliasing.msaa = levels
+                .iter()
+                .copied()
+                .filter(|level| level.sample_count() <= wanted.sample_count())
+                .max_by_key(|level| level.sample_count())
+                .unwrap_or(levels[0]);
+        }
+
+        self.ui.about.info.renderer = gpu.backend_name().to_owned();
+        log::info!("graphics: {} on {}", gpu.backend_name(), gpu.adapter_name());
 
         // Under `--tracy`, arm the GPU profiler. A normal launch never calls this, so
         // nothing profiling-related is ever built.
@@ -727,6 +784,14 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::DialogDone(answer) => self.handle_dialog_done(answer),
             UserEvent::OpenPath(path) => self.open_model_from_path(&path),
             UserEvent::MenuCommand(command) => self.handle_menu_command(command),
+            UserEvent::UpdateChecked(result) => self.handle_update_checked(result),
+            // Only an open Log window asks for these, but one can close between
+            // the line being logged and this arriving.
+            UserEvent::LogUpdated => {
+                if self.ui.log.open {
+                    self.request_redraw();
+                }
+            }
         }
     }
 
@@ -843,7 +908,20 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.exit_requested {
+            self.save_window_placement();
+            event_loop.exit();
+            return;
+        }
         self.pace_next_frame(event_loop);
+    }
+
+    /// Every way out passes through here — the window's close button, the menu's
+    /// Exit, and on macOS the menu bar's Quit — so it is where the settings are
+    /// written.
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.persist_settings();
+        log::info!("exiting");
     }
 }
 
@@ -859,7 +937,7 @@ impl ApplicationHandler<UserEvent> for App {
 /// that point there is nothing left for it to block.
 fn report_startup_failure(error: &anyhow::Error) {
     let detail = format!("{error:#}");
-    prof::msg(&format!("startup failed: {detail}"));
+    log::error!("startup failed: {detail}");
     rfd::MessageDialog::new()
         .set_level(rfd::MessageLevel::Error)
         .set_title(keys::app_window::startup_failed_title(APP_NAME))

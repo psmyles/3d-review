@@ -140,6 +140,32 @@ impl NoticeKind {
     }
 }
 
+/// The target every notice is logged under, so its line is tagged `[notice]`.
+const NOTICE_TARGET: &str = "review_notice";
+
+/// Write a card to the log as well, so the log is a history of what the viewer
+/// *said* as well as what it did. In the words the card shows - the catalog's,
+/// not English - because those are what a user reporting it will quote; the
+/// line `app` logs beside most of them carries the diagnostic detail. A mode
+/// notice is Debug: it names a view the user just switched to themselves.
+fn log_notice(notice: &Notice) {
+    let mut text = notice.message.clone();
+    for line in &notice.lines {
+        text.push('\n');
+        text.push_str(line);
+    }
+    let level = if notice.compact {
+        log::Level::Debug
+    } else {
+        match notice.kind {
+            NoticeKind::Error => log::Level::Error,
+            NoticeKind::Warning => log::Level::Warn,
+            NoticeKind::Progress | NoticeKind::Info | NoticeKind::Success => log::Level::Info,
+        }
+    };
+    log::log!(target: NOTICE_TARGET, level, "{text}");
+}
+
 /// When a notice goes away.
 enum Dismiss {
     /// After `remaining` of *shown* time. `deadline` is the egui timestamp it
@@ -335,7 +361,13 @@ impl Notifications {
     /// Put a built notice in the column, replacing its keyed slot if it has one.
     fn place(&mut self, notice: Notice) {
         let key = notice.key;
-        match key.and_then(|key| self.notices.iter().position(|n| n.key == Some(key))) {
+        let slot = key.and_then(|key| self.notices.iter().position(|n| n.key == Some(key)));
+        // A slot rewritten with the words it already shows is the same notice
+        // again - a fault repeating every frame - and is logged the first time.
+        if slot.is_none_or(|index| self.notices[index].message != notice.message) {
+            log_notice(&notice);
+        }
+        match slot {
             // In place, so the replacement doesn't jump to the end of the column
             // — the point of a slot is that the card stays where the user last
             // read it.
@@ -363,8 +395,10 @@ impl Notifications {
     /// Overlapping jobs share one card and the newest one names it, since it is
     /// also the one whose reports are arriving.
     pub fn begin_activity(&mut self, title: impl Into<String>) {
+        let title = title.into();
+        log::debug!(target: NOTICE_TARGET, "working: {title}");
         self.activity = Some(Activity {
-            title: title.into(),
+            title,
             detail: String::new(),
             fraction: None,
         });

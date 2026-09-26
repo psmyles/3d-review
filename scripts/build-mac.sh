@@ -332,6 +332,17 @@ if [[ -d "$repo/docs/book/src/en/images" ]]; then
   mkdir -p "$app/Contents/Resources/docs/en"
   cp -R "$repo/docs/book/src/en/images" "$app/Contents/Resources/docs/en/"
 fi
+# The license notices. The binary is statically linked, so it carries code from every
+# project in docs/THIRD-PARTY-NOTICES.md, and their licenses require the notices to
+# travel with it - the twin of the Windows installer's [Files] entries. Not optional:
+# a bundle without them is non-compliant, so a missing one stops the build here.
+for notice in LICENSE docs/THIRD-PARTY-NOTICES.md docs/CREDITS.md; do
+  [[ -f "$repo/$notice" ]] || { echo "missing license file the bundle must ship: $notice" >&2; exit 1; }
+done
+cp "$repo/LICENSE" "$app/Contents/Resources/LICENSE.txt"
+cp "$repo/docs/THIRD-PARTY-NOTICES.md" "$repo/docs/CREDITS.md" "$app/Contents/Resources/"
+mkdir -p "$app/Contents/Resources/licenses"
+cp "$repo"/licenses/*.txt "$app/Contents/Resources/licenses/"
 # The four-byte type/creator file. Vestigial, but its absence still confuses some tools.
 printf 'APPL????' > "$app/Contents/PkgInfo"
 

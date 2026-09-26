@@ -416,7 +416,7 @@ impl App {
         }
 
         let Some(proxy) = self.textures.proxy.clone() else {
-            prof::msg("no event-loop proxy; cannot optimize off-thread");
+            log::error!("no event-loop proxy; cannot optimize off-thread");
             self.notifications.error(
                 review_localization::tr(keys::app_notifications::OPT_START_FAILED).into_owned(),
             );
@@ -567,9 +567,9 @@ impl App {
                 // here with a current generation (cancelling *is* superseding),
                 // so this arm only guards against saying "optimization failed"
                 // if that ever stops being true.
-                Err(OptError::Cancelled) => prof::msg("mesh optimization cancelled"),
+                Err(OptError::Cancelled) => log::debug!("mesh optimization cancelled"),
                 Err(error) => {
-                    prof::msg(&format!("mesh optimization failed: {error}"));
+                    log::error!("mesh optimization failed: {error}");
                     self.notifications
                         .error(keys::app_notifications::optimization_failed(
                             crate::explain::explain_opt_error(&error),
@@ -682,7 +682,7 @@ impl App {
         options: ExportOptions,
     ) {
         let Some(proxy) = self.textures.proxy.clone() else {
-            prof::msg("no event-loop proxy; cannot export off-thread");
+            log::error!("no event-loop proxy; cannot export off-thread");
             self.notifications.error(
                 review_localization::tr(keys::app_notifications::EXPORT_START_FAILED).into_owned(),
             );
@@ -693,12 +693,29 @@ impl App {
             review_localization::tr(keys::app_notifications::EXPORTING).into_owned(),
         );
 
+        log::info!("exporting to {}", path.display());
         std::thread::spawn(move || {
             prof::thread_name("mesh-export");
+            let started = Instant::now();
             let outcome = {
                 let _z = prof::zone!("Export FBX");
                 export_fbx(&result.lods, &source, extras.as_deref(), &path, &options)
             };
+            // The failures are logged where they are reported, on the main thread.
+            if let Ok(report) = &outcome {
+                let files: Vec<String> = report
+                    .files
+                    .iter()
+                    .map(|file| file.display().to_string())
+                    .collect();
+                log::info!(
+                    "exported {} meshes, {} triangles, in {:.2} s: {}",
+                    report.mesh_count,
+                    report.triangle_count,
+                    started.elapsed().as_secs_f64(),
+                    files.join(", ")
+                );
+            }
             let _ = proxy.send_event(UserEvent::OptExported(Box::new(outcome)));
         });
     }
@@ -745,10 +762,7 @@ impl App {
                 failed,
                 reason,
             }) => {
-                prof::msg(&format!(
-                    "FBX export incomplete at {}: {reason}",
-                    failed.display()
-                ));
+                log::error!("FBX export incomplete at {}: {reason}", failed.display());
                 let mut lines = vec![keys::app_notifications::export_incomplete_file(
                     crate::loading::file_label(&failed),
                     reason.clone(),
@@ -773,7 +787,7 @@ impl App {
                 );
             }
             Err(error) => {
-                prof::msg(&format!("FBX export failed: {error}"));
+                log::error!("FBX export failed: {error}");
                 self.notifications
                     .error(keys::app_notifications::export_failed(
                         crate::explain::explain_opt_error(&error),
@@ -787,6 +801,11 @@ impl App {
 
     /// Store a successful run and mirror its measured figures into the UI.
     fn accept_opt_result(&mut self, result: ProcessedResult, level_bvhs: Vec<Arc<SceneBvh>>) {
+        // Only a run that lands is logged: during a slider drag every run but
+        // the last is cancelled, and a line per cancellation would bury the one
+        // that describes what is on screen. Its generation is current, so the
+        // stack in the UI is the stack it ran.
+        log::info!("{}", run_summary(&self.ui.opt.stack, &result));
         let warnings = result.warnings.clone();
         let levels: Vec<OptLevelView> = result
             .lods
@@ -950,7 +969,7 @@ impl App {
                     crate::loading::file_label(path),
                 )),
             Err(error) => {
-                prof::msg(&format!("preset save failed {}: {error}", path.display()));
+                log::error!("preset save failed {}: {error}", path.display());
                 self.notifications
                     .error(keys::app_notifications::couldnt_save(
                         crate::loading::file_label(path),
@@ -969,7 +988,7 @@ impl App {
         let json = match std::fs::read_to_string(path) {
             Ok(json) => json,
             Err(error) => {
-                prof::msg(&format!("preset read failed {}: {error}", path.display()));
+                log::error!("preset read failed {}: {error}", path.display());
                 self.notifications
                     .error(keys::app_notifications::couldnt_read(
                         crate::loading::file_label(path),
@@ -1046,6 +1065,55 @@ impl App {
             self.schedule_reprocess();
         }
     }
+}
+
+/// One line describing a finished run: how long it took, the operations that
+/// ran, and each level's counts against the source's - the same figures, and
+/// the same baseline, the processed stats card shows.
+fn run_summary(stack: &OptStack, result: &ProcessedResult) -> String {
+    let operations: Vec<&str> = stack
+        .ops
+        .iter()
+        .filter(|op| op.enabled)
+        .map(|op| op.kind.label())
+        .collect();
+    let source = result.source;
+    let mut line = format!(
+        "optimized in {:.0} ms [{}]",
+        result.elapsed.as_secs_f64() * 1000.0,
+        operations.join(", ")
+    );
+    if !stack.overrides.is_empty() {
+        line.push_str(&format!(
+            " with {} per-object overrides",
+            stack.overrides.len()
+        ));
+    }
+    line.push_str(&format!(
+        ": source {} tris / {} verts",
+        source.triangles, source.vertices
+    ));
+    for lod in &result.lods {
+        let stats = lod.model.stats;
+        line.push_str(&format!(
+            "; LOD{} {} tris ({}) / {} verts ({})",
+            lod.level,
+            stats.triangle_count,
+            percent_change(source.triangles, stats.triangle_count),
+            stats.vertex_count,
+            percent_change(source.vertices, stats.vertex_count),
+        ));
+    }
+    line
+}
+
+/// `-50.0%`, or `n/a` against a zero baseline.
+fn percent_change(before: usize, after: usize) -> String {
+    if before == 0 {
+        return "n/a".to_owned();
+    }
+    let change = (after as f64 - before as f64) / before as f64 * 100.0;
+    format!("{change:+.1}%")
 }
 
 #[cfg(test)]

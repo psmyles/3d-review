@@ -985,7 +985,9 @@ float view_pixel_size(float view_z) {
 }
 @end
 
-// The horizon search, following Intel's XeGTAO (MIT). Three things distinguish it
+// The horizon search: a GLSL translation of `XeGTAO_MainPass` from Intel's XeGTAO
+// (MIT, Copyright (C) 2016-2021, Intel Corporation - see
+// docs/THIRD-PARTY-NOTICES.md), without its bent normals. Three things distinguish it
 // from a textbook GTAO march, and each is one of the reasons the old pass was noisy:
 //
 //   * **Steps are distributed as the square of the fraction**, so the first tap sits
@@ -1257,7 +1259,8 @@ void main() {
 // Not a box filter. A plain average across a silhouette invents a depth halfway
 // between the foreground and the background, and the occlusion pass then finds an
 // occluder floating in empty space — the speckle that used to ring thin geometry.
-// This is XeGTAO's weighted filter, biased toward the *farthest* of the four, so a
+// This is XeGTAO's weighted filter (`XeGTAO_DepthMIPFilter`, MIT, Copyright (C)
+// 2016-2021, Intel Corporation), biased toward the *farthest* of the four, so a
 // mixed neighbourhood resolves to the background it mostly is.
 @fs fs_gtao_depth_mip
 @include_block gtao_depth_encoding
@@ -1424,7 +1427,9 @@ layout(binding=0) uniform sampler scene_sampler;
 layout(location=0) in vec2 v_uv;
 layout(location=0) out vec4 frag_color;
 
-// Khronos PBR Neutral tone mapping (Rec.709 linear).
+// Khronos PBR Neutral tone mapping (Rec.709 linear). A port of the Khronos Group's
+// reference implementation, KhronosGroup/ToneMapping `PBR_Neutral/pbrNeutral.glsl`
+// (Apache-2.0) - see docs/THIRD-PARTY-NOTICES.md.
 vec3 pbr_neutral_tonemap(vec3 color_in) {
     const float start_compression = 0.8 - 0.04;
     const float desaturation = 0.15;
@@ -1447,6 +1452,10 @@ vec3 reinhard_tonemap(vec3 color) {
     return color / (vec3(1.0) + color);
 }
 
+// The fitted ACES curve (Stephen Hill's RRT + ODT fit, via MJP's BakingLab) as
+// three.js ships it in `ACESFilmicToneMapping` - including its 1/0.6 exposure lift
+// for a brighter viewing environment. Ported from three.js (MIT, (c) 2010-2026
+// three.js authors) - see docs/THIRD-PARTY-NOTICES.md.
 vec3 aces_rrt_odt_fit(vec3 v) {
     vec3 a = v * (v + 0.0245786) - 0.000090537;
     vec3 b = v * (0.983729 * v + 0.432951) + 0.238081;
@@ -1471,6 +1480,9 @@ vec3 aces_tonemap(vec3 color_in) {
     return clamp(color, 0.0, 1.0);
 }
 
+// AgX, ported from three.js's `AgXToneMapping` (MIT, (c) 2010-2026 three.js authors),
+// itself after Filament's implementation of Blender's AgX and Benjamin Wrensch's
+// polynomial fit of the default contrast curve - see docs/THIRD-PARTY-NOTICES.md.
 vec3 agx_contrast_approx(vec3 x) {
     vec3 x2 = x * x;
     vec3 x4 = x2 * x2;

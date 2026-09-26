@@ -78,7 +78,7 @@ impl Baker {
         };
         device.fill_environment(&mut desc.environment);
         desc.logger = sg::Logger {
-            func: Some(super::log::log_sokol),
+            func: Some(super::sokol_log::log_sokol),
             user_data: std::ptr::null_mut(),
         };
         sg::setup(&desc);

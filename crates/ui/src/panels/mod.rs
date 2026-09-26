@@ -26,6 +26,12 @@ mod wireframe;
 use crate::state::{OptionPanel, UiState};
 use crate::theme::{font, size};
 
+/// The width every option panel's body is pinned to: the grid's two columns plus
+/// their gap. The overlay sizes each window's frame from this too.
+pub(crate) fn body_width() -> f32 {
+    size::PANEL_LABEL_COL_WIDTH + size::PANEL_GRID_COL_GAP + size::PANEL_CONTROL_COL_WIDTH
+}
+
 /// Draw a tool panel's controls into `ui` (the body of its native window). The
 /// window chrome — title bar, collapse triangle, X-close, drag, resize, shadow —
 /// is owned by the `egui::Window` the overlay wraps this in, so this only fills
@@ -38,9 +44,7 @@ pub(crate) fn draw_panel_body(ui: &mut egui::Ui, state: &mut UiState, panel: Opt
     // width makes `ui.available_width()` deterministic, so the elastic control
     // column (see `widgets::grid_control`) fills to the right edge instead of
     // feeding back into the window's auto-size and expanding without bound.
-    ui.set_width(
-        size::PANEL_LABEL_COL_WIDTH + size::PANEL_GRID_COL_GAP + size::PANEL_CONTROL_COL_WIDTH,
-    );
+    ui.set_width(body_width());
     // Only the numeric value boxes (egui `DragValue`) render in the monospace
     // face, one step smaller than egui's default, so numeric readouts share a
     // fixed-width glyph grid. Everything else — labels, dropdowns, the reset

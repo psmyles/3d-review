@@ -9,9 +9,11 @@
 //! [`UiState`] itself is here, with the slider ranges and the debug-state funnel.
 //! Its parts are grouped below, one module per concern: [`view`], [`panels`],
 //! [`texture_view`], [`animation`], [`outliner`], [`panels_open`] and [`caches`]
-//! — the same split `opt_state` already had.
+//! — the same split `opt_state` already had — plus [`remembered`], which turns
+//! the option-window values into the text **Remember settings** saves.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 use review_model::{Bounds, MeshGroupStats, ModelData, ModelStats, StatsScope};
 use review_render::{
@@ -28,6 +30,7 @@ mod caches;
 mod outliner;
 mod panels;
 mod panels_open;
+mod remembered;
 mod selection;
 mod texture_view;
 mod view;
@@ -186,6 +189,38 @@ pub struct UiOutput {
     /// drag-coalescing hint as [`UiOutput::material_edit_active`], so scrubbing a
     /// LOD ratio produces one undo step rather than one per frame.
     pub opt_edit_active: bool,
+    /// A command chosen from the toolbar's menu this frame, for `app` to carry
+    /// out — every entry reaches outside the chrome (a file dialog, the loaded
+    /// model, the settings file, the process).
+    pub menu: Option<MenuIntent>,
+}
+
+/// An entry in the toolbar's menu. Each lands on the handler its keyboard
+/// shortcut already reaches, where it has one, so the menu is a second door onto
+/// an existing command rather than a second implementation of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuIntent {
+    /// Ask for a model to open (the open shortcut).
+    OpenFile,
+    /// Open the model at this index of [`UiState::recent_files`] (File > Open
+    /// Recent). An index rather than the path, so the intent stays `Copy`; `app`
+    /// applies it in the same frame the list it indexes was drawn from.
+    OpenRecent(usize),
+    /// Empty [`UiState::recent_files`] and write the settings file.
+    ClearRecentFiles,
+    /// Drop the loaded model and return to the start state (the new shortcut).
+    CloseFile,
+    /// Flip [`UiState::remember_settings`] and write the settings file at once,
+    /// so the choice survives even a session that never exits cleanly.
+    ToggleRememberSettings,
+    /// Flip [`UiState::tracy_profiler`] and write the settings file; it takes
+    /// effect at the next launch.
+    ToggleTracyProfiler,
+    /// Ask GitHub for the newest release, and open the releases page if it is
+    /// newer than this build (or say that this build is the latest).
+    CheckForUpdates,
+    /// Quit the application.
+    Exit,
 }
 
 #[derive(Debug, Clone)]
@@ -318,6 +353,13 @@ pub struct UiState {
     /// where its images live. Chrome state like the panel set, edited in place
     /// rather than travelling as an intent — see [`crate::HelpState`].
     pub help: crate::HelpState,
+    /// The About box — whether it is up, and the build / renderer facts `app`
+    /// handed over for it to show. Opened from the menu's Help > About.
+    pub about: crate::AboutState,
+    /// The Log window — whether it is up, its level filter, and this session's
+    /// lines as `app` last handed them over. Opened from the menu's Debug >
+    /// View Log.
+    pub log: crate::LogWindowState,
     /// Bone nodes selected in the Outliner, in click order (the last entry is the
     /// primary, mirrored into [`UiState::selection`]). Drives the skeleton
     /// overlay's highlight and the skin-weight heat map. Primary-click toggles a
@@ -382,12 +424,32 @@ pub struct UiState {
     /// Most recent measured frames-per-second, fed by `app` from the render
     /// loop. Zero while idle (the viewer redraws on demand, not continuously).
     pub fps: f32,
+    /// Whether the option-window values are carried into the next session — the
+    /// menu's **Remember settings** toggle. Read from the settings file at launch
+    /// and flipped only by `app`, in answer to [`MenuIntent::ToggleRememberSettings`],
+    /// since flipping it is also what writes the file. Off by default: nothing
+    /// persists until the user asks for it.
+    pub remember_settings: bool,
+    /// Whether the Tracy client starts at launch — the menu's **Tracy Profiler**
+    /// preference, a saved `--tracy`. It takes effect on the *next* launch only
+    /// (a started client cannot be stopped), so it says nothing about whether
+    /// Tracy is running now. Flipped only by `app`, which writes it to the
+    /// settings file as it does.
+    pub tracy_profiler: bool,
+    /// The models opened lately, most recent first — File > Open Recent. Kept in
+    /// the settings file whether or not **Remember settings** is on (it is a
+    /// history, not a tool setting), and maintained only by `app`: a load that
+    /// succeeds moves its file to the front, and one that fails because the file
+    /// has gone drops it.
+    pub recent_files: Vec<PathBuf>,
 }
 
 impl Default for UiState {
     fn default() -> Self {
         Self {
             help: crate::HelpState::default(),
+            about: crate::AboutState::default(),
+            log: crate::LogWindowState::default(),
             mode: WorkspaceMode::ThreeD,
             debug: SceneDebugOptions::default(),
             shading_mode: ShadingMode::Shaded,
@@ -445,6 +507,9 @@ impl Default for UiState {
             clip_bounds: Vec::new(),
             caches: BoundsCaches::default(),
             fps: 0.0,
+            remember_settings: false,
+            tracy_profiler: false,
+            recent_files: Vec::new(),
         }
     }
 }

@@ -46,6 +46,7 @@ const METHOD_SINKS: &[&str] = &[
     "on_disabled_hover_text",
     "selected_text",
     "hint_text",
+    "shortcut_text",
     // the tooltip builder
     "describe",
     // notifications
@@ -71,6 +72,8 @@ const METHOD_SINKS_INDEXED: &[(&str, &[usize])] = &[
     ("radio_value", &[2]),
     // (value, text)
     ("checkbox", &[1]),
+    // (text, contents)
+    ("menu_button", &[0]),
     // (name, extensions)
     ("add_filter", &[0]),
     // (id, text, enabled, accelerator)

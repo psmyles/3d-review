@@ -5,6 +5,7 @@
 # Using the viewer
 
 - [Getting a model in](getting-a-model-in.md)
+- [The menu](menu.md)
 - [Workspaces](workspaces.md)
 - [The 3D viewport](viewport.md)
 - [Shading and review modes](shading.md)

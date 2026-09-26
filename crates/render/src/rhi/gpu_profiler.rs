@@ -42,15 +42,6 @@ pub(crate) fn should_enable() -> bool {
     TRACY_GPU_ENABLED.load(Ordering::Relaxed) && Client::running().is_some()
 }
 
-/// Send a plain message to the running Tracy client (a no-op without one) — the only
-/// diagnostics channel a `--tracy` session watches, and where sokol_gfx's validation
-/// output goes alongside stderr.
-pub(crate) fn note(text: &str) {
-    if let Some(client) = Client::running() {
-        client.message(text, 0);
-    }
-}
-
 /// One profiled GPU pass. Each owns a fixed pair of timestamp slots (begin, end) in
 /// the per-frame array, in encode order, so a conditional pass (GTAO) keeps a stable
 /// identity in Tracy whether or not it ran in a given frame.

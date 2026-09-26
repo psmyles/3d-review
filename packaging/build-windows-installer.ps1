@@ -167,6 +167,20 @@ if (-not $SkipBuild) {
 Write-Host '==> Checking shader bytecode...' -ForegroundColor Cyan
 & (Join-Path $PSScriptRoot 'check-shader-bytecode.ps1')
 
+# --- 8b. Verify the license notices are present ---------------------------------
+# 3d-review.iss installs these beside the exe. The statically linked exe carries
+# code from many other projects whose licenses require their notices to travel
+# with the binary, so an installer without them is a compliance bug, not a
+# cosmetic one. Fail here with a clear message rather than letting ISCC report a
+# missing source file.
+Write-Host '==> Verifying license notices...' -ForegroundColor Cyan
+$noticeFiles = 'LICENSE', 'docs\THIRD-PARTY-NOTICES.md', 'docs\CREDITS.md'
+$absent = $noticeFiles | Where-Object { -not (Test-Path (Join-Path $repoRoot $_)) }
+if ($absent) { throw "Missing license file(s) the installer must ship: $($absent -join ', ')" }
+$licenseTexts = @(Get-ChildItem -Path (Join-Path $repoRoot 'licenses') -Filter '*.txt' -ErrorAction SilentlyContinue)
+if ($licenseTexts.Count -eq 0) { throw "No license texts found in $repoRoot\licenses\ (the installer ships licenses\*.txt)" }
+Write-Host "    $($noticeFiles.Count) notice files + $($licenseTexts.Count) license texts."
+
 # --- 9. Package the installer ---------------------------------------------------
 $exePath = Join-Path $repoRoot "target\release\$appExe"
 if (-not (Test-Path $exePath)) {
