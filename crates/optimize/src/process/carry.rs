@@ -85,6 +85,17 @@ pub struct LevelCarry {
     pub dq_weights: Vec<(u32, f32)>,
     /// Per level vertex, a source corner it came from (`u32::MAX` unknown).
     pub source_corner: Vec<u32>,
+    /// Per level vertex, the *indexed* vertex it was expanded from — and so the
+    /// FBX control point it belongs to. Empty (meaning the identity) for every
+    /// level that is not in the corner-run layout.
+    ///
+    /// A level carrying real polygons is laid out one vertex per face corner,
+    /// because that is the only layout `ModelData::faces` can describe. Writing
+    /// one control point per *level* vertex would then export a quad soup — 24
+    /// points for a cube rather than 8 — with no shared vertex anywhere. The
+    /// exporter keys its point table through this instead, so the file holds the
+    /// mesh the workspace measured.
+    pub control_point: Vec<u32>,
 }
 
 impl LevelCarry {

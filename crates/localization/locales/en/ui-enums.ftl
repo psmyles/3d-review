@@ -147,6 +147,19 @@ ui-enums-op-reduce = Reduce
         levels. Instead of making extra copies, it replaces the model, so everything
         below it in the list works on the simplified version, and the export saves it in
         place of the original.
+ui-enums-op-remesh = Remesh
+    .description = Rebuilds each object's surface out of evenly sized faces, triangles or
+        quads, sized to follow the shape's own curves. Unlike Reduce it does not take away what is there -
+        it lays down a new surface and copies the materials, texture layout and colors
+        across, which is what turns a scan or a CAD part into something a game can use.
+        Open borders and sharp edges are kept where they were. Works on still objects
+        only.
+ui-enums-op-shrinkwrap = Shrinkwrap
+    .description = Replaces each object with a single closed skin that hugs it. The shape is
+        measured onto a grid and a new surface pulled back out of it, which fuses a pile of
+        overlapping parts into one solid and seals holes. What comes out is dense and
+        irregular, so a Remesh below it is what makes it even. Materials, texture layout
+        and colors are copied across. Works on still objects only.
 ui-enums-op-simplify-lod = Generate LODs
     .description = Makes a set of simpler copies of the model (levels of detail) for a game
         to show at a distance. Each level is made from the model as it stands at this
@@ -167,6 +180,12 @@ ui-enums-op-overdraw = Optimize Overdraw
 ui-enums-op-vertex-fetch = Optimize Vertex Fetch
     .description = Reorders the points into the order they are read, and removes any point
         nothing uses. Does not change the shape.
+
+ui-enums-remesh-topology-triangles = Triangles
+ui-enums-remesh-topology-quads = Quads
+
+ui-enums-remesh-density-ratio = Ratio of current
+ui-enums-remesh-density-absolute = Face count
 
 ui-enums-simplify-standard = Standard
 ui-enums-simplify-attributes = Preserve Attributes

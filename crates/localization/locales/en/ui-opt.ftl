@@ -107,6 +107,54 @@ ui-opt-ao-write-to = Write to
     .description = Which part of each point's color the baked shadow goes in. The alpha
         channel is always stored as-is; the color channels can be stored in sRGB.
 
+## Remesh
+
+ui-opt-remesh-topology = Made of
+    .description = What the rebuilt surface is made of. Quads are what a modelling package
+        expects to be handed - they subdivide, they carry edge loops, and they are what a
+        rig deforms well. Where the surface folds too sharply for a flat quad to describe
+        it, that part stays as triangles.
+ui-opt-remesh-density = Density
+    .description = How the target number of faces for each object is worked out - as a
+        share of what it has now, or as one budget shared out across the objects by size.
+ui-opt-remesh-ratio = Amount
+    .description = The share of each object's current triangle count to aim for. 100% keeps
+        about the same level of detail; lower numbers rebuild it coarser.
+ui-opt-remesh-faces = Faces
+    .description = How many faces to produce in total, shared out between the objects by
+        surface area. The result lands near this number rather than exactly on it.
+ui-opt-remesh-sharp-edges = Keep sharp edges
+    .description = Lay the new edges along the model's own creases instead of running the
+        pattern straight over them. Worth turning on for hard-surface and CAD parts; on
+        organic shapes it only breaks the flow up.
+ui-opt-remesh-crease-angle = Sharp above
+    .description = How sharp a fold has to be, in degrees, before it counts as a crease.
+ui-opt-remesh-align-boundaries = Follow open borders
+    .description = Hold the new edges against any open border, so it comes back as one
+        clean edge loop rather than a ragged fringe.
+ui-opt-remesh-smoothing = Smoothing
+    .description = How many rounds of evening-out to run over the rebuilt surface. A little
+        makes the faces more uniform; a lot rounds off detail.
+ui-opt-remesh-adaptive = Vary face size
+    .description = How much smaller the faces get where the shape is detailed, and larger
+        where it is flat. At 0 every face is the same size. Raising it does not add faces,
+        it moves them: the flat parts give up what the curved parts take. 0.5 spends the
+        same error everywhere; 1 gives every face the same turn, which is stronger and is
+        what a hand retopology looks like.
+
+## Shrinkwrap
+
+ui-opt-shrinkwrap-resolution = Detail
+    .description = How many grid steps across the object's longest side. Higher keeps more
+        of the shape and takes longer; lower rounds it off and bridges wider gaps.
+ui-opt-shrinkwrap-offset = Offset
+    .description = How far to push the skin out from the object, in meters. A small push
+        closes gaps a tight wrap leaves open; a negative one pulls the skin inside, for a
+        collision shape.
+ui-opt-shrinkwrap-largest-shell = Keep largest piece only
+    .description = Throw away every closed piece but the biggest. Wrapping a messy object
+        leaves small blobs around stray specks of geometry, and none of them is wanted.
+
 ## Export
 
 ui-opt-export-settings = Export settings
@@ -147,6 +195,14 @@ ui-opt-prune-explained = A fraction of the model's overall size. Loose pieces sm
     this are removed.
 ui-opt-overdraw-explained = How much vertex-cache benefit may be traded away to reduce
     overdraw. 1.05 allows a 5% loss; 1.0 allows none.
+ui-opt-remesh-explained = The surface is rebuilt from scratch, so the materials, texture
+    layout and colors are read back off the original and copied across. Anything tied to
+    the old points is not: bones, shape keys and per-point creases. Objects that bend are
+    skipped and left as they are.
+ui-opt-shrinkwrap-explained = The new skin is a fresh surface, so the materials, texture
+    layout and colors are read back off the original and copied across. Anything tied to
+    the old points is not: bones, shape keys and per-point creases. Objects that bend are
+    skipped and left as they are.
 ui-opt-bake-ao-explained = Objects whose names end in _LOD and a number are shaded only by
     objects in their own level (plus objects with no such ending), so you can bake a whole
     set of levels in one go. Hidden objects neither cast shadows nor receive them, so hide

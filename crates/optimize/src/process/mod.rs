@@ -36,6 +36,7 @@ use std::time::{Duration, Instant};
 
 use review_model::{ModelData, SourceExtras};
 
+use crate::cancel::CancelToken;
 use crate::meshopt;
 use crate::stack::{OpInstance, OpKind, OptStack};
 use crate::submesh;
@@ -45,12 +46,29 @@ mod assemble;
 mod carry;
 mod metrics;
 mod pipeline;
+mod progress;
 
 // The three types `lib.rs` re-exports publicly. The globs below carry the
 // rest at crate visibility; an explicit import shadows a glob, so naming
 // these twice is not a conflict.
 pub use carry::ProcessedLod;
 pub use metrics::{AnalysisMetrics, MeshCounts};
+pub use progress::{OptProgress, OptProgressSink, OptStage, RunContext};
+
+/// A mesh from part way through a run, for a caller that shows one.
+///
+/// Level 0 only, and measured for nothing: no metrics, no tangents, no
+/// spatial index. It is what the viewport draws while the run finishes, and
+/// everything a finished [`ProcessedResult`] carries beside the mesh is work
+/// that would be thrown away a second later.
+#[derive(Debug, Clone)]
+pub struct OptPreview {
+    pub model: ModelData,
+}
+
+/// What [`process_progressive`] hands its previews to. Called on the run's own
+/// thread, so it must be cheap and must not block.
+pub type OptPreviewSink<'a> = &'a dyn Fn(OptPreview);
 
 pub(crate) use assemble::*;
 pub(crate) use carry::*;
@@ -123,8 +141,53 @@ impl ProcessedResult {
 }
 
 /// Run `stack` over `model`, producing one mesh per LOD level.
+///
+/// The complete run for a test or a batch caller, which has nothing to report to
+/// — [`process_with_progress`] is what the viewer calls.
 pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
+    process_with_progress(input, &progress::ignore)
+}
+
+/// [`process`], reporting each stage to `progress` as it goes.
+///
+/// A run is one call that can take a minute — see [`OptProgress`] — so the
+/// stages are reported from inside it rather than inferred from outside.
+pub fn process_with_progress(
+    input: ProcessInput<'_>,
+    progress: OptProgressSink<'_>,
+) -> Result<ProcessedResult, OptError> {
+    process_cancellable(input, progress, None)
+}
+
+/// [`process_with_progress`] that abandons the run when `cancel` says the
+/// request has been superseded, returning [`OptError::Cancelled`].
+///
+/// See [`crate::cancel`] for where the checks sit and how fine they can be.
+pub fn process_cancellable(
+    input: ProcessInput<'_>,
+    progress: OptProgressSink<'_>,
+    cancel: Option<&CancelToken>,
+) -> Result<ProcessedResult, OptError> {
+    process_progressive(input, progress, None, cancel)
+}
+
+/// [`process_cancellable`], handing `preview` a mesh of level 0 as the run
+/// improves it.
+///
+/// Only the operations that work object by object have anything to show — a
+/// rebuild's relaxation produces a complete, valid mesh every pass — and only
+/// the ones *above* the LOD fan-out, since below it there is no single level 0
+/// to preview. A preview costs one `assemble` and skips the metrics, the
+/// tangents and the level BVHs, none of which anything looks at until the run
+/// lands.
+pub fn process_progressive(
+    input: ProcessInput<'_>,
+    progress: OptProgressSink<'_>,
+    preview: Option<OptPreviewSink<'_>>,
+    cancel: Option<&CancelToken>,
+) -> Result<ProcessedResult, OptError> {
     let _z = crate::prof::zone!("Process Stack");
+    let run = RunContext::new(progress, cancel);
     let started = Instant::now();
 
     if !meshopt::available() {
@@ -136,12 +199,19 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
 
     let mut warnings = Warnings::default();
 
+    run.report(OptProgress::stage(OptStage::Preparing));
     let (mut submeshes, tags) = submesh::partition(input.model, input.extras);
     if submeshes.is_empty() {
         return Err(OptError::EmptyMesh);
     }
 
     index_mesh(&mut submeshes, input.stack, &mut warnings);
+
+    if run.cancelled() {
+        return Err(OptError::Cancelled);
+    }
+
+    run.report(OptProgress::stage(OptStage::Measuring));
 
     // The baseline is the mesh as it stands *now* — partitioned and losslessly
     // indexed, before any of the user's operations touch it (they mutate the
@@ -186,8 +256,36 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
     // A Reduce among the pre-operations simplifies the mesh every level then
     // starts from, so its error is part of level 0's — and of every level below
     // it, which inherits the reduced mesh.
+    // Only the pre-LOD operations can preview: below the fan-out there is no
+    // single level 0 to show. Built here, once, so nothing downstream carries
+    // the model or the tag presence around just in case.
+    let watched;
+    let watching = match preview {
+        Some(sink) => {
+            watched = move |pieces: &[&submesh::Submesh]| {
+                let (model, _) = assemble(
+                    pieces,
+                    input.model,
+                    tags,
+                    0,
+                    Rebuild {
+                        normals: false,
+                        tangents: false,
+                    },
+                    &mut Warnings::default(),
+                );
+                sink(OptPreview { model });
+            };
+            run.watching(&watched)
+        }
+        None => run,
+    };
+
     let mut base_error = 0.0f32;
     for op in pre_ops {
+        if watching.cancelled() {
+            return Err(OptError::Cancelled);
+        }
         base_error = base_error.max(apply_op(
             &mut submeshes,
             op,
@@ -195,6 +293,7 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
             input.model,
             input.hidden_nodes,
             &mut warnings,
+            &watching,
         ));
     }
 
@@ -206,8 +305,28 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
     }];
 
     if let Some(params) = lod_op {
-        for level in &params.levels {
-            let mut state = build_lod_level(&submeshes, params, level, input.stack, &mut warnings);
+        // Named by the operation rather than by the stage: the fan-out *is*
+        // "Generate LODs", and a level is the unit it counts in.
+        let kind = lod_position.map(|position| &input.stack.ops[position].kind);
+        for (index, level) in params.levels.iter().enumerate() {
+            if let Some(kind) = kind {
+                run.report(OptProgress::operation_step(
+                    kind,
+                    index as u32,
+                    params.levels.len() as u32,
+                ));
+            }
+            if run.cancelled() {
+                return Err(OptError::Cancelled);
+            }
+            let mut state = build_lod_level(
+                &submeshes,
+                params,
+                level,
+                input.stack,
+                &mut warnings,
+                cancel,
+            );
             state.simplify_error = state.simplify_error.max(base_error);
             levels.push(state);
         }
@@ -215,6 +334,9 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
 
     for level in &mut levels {
         for op in post_ops {
+            if run.cancelled() {
+                return Err(OptError::Cancelled);
+            }
             let error = apply_op(
                 &mut level.submeshes,
                 op,
@@ -222,6 +344,7 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
                 input.model,
                 input.hidden_nodes,
                 &mut warnings,
+                &run,
             );
             level.simplify_error = level.simplify_error.max(error);
         }
@@ -266,10 +389,59 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
         );
     }
 
+    // A simplifier rebuilds triangles with no correspondence to what it was
+    // given, so it clears the polygon carry — which for a remeshed piece means
+    // throwing away the quads that were the point of running it. The result is
+    // still a correct mesh, so this is advice rather than a reorder.
+    let last_remesh = input
+        .stack
+        .ops
+        .iter()
+        .rposition(|op| op.enabled && matches!(op.kind, OpKind::Remesh(_)));
+    if let (Some(remesh), Some(simplify)) = (last_remesh, last_simplify)
+        && remesh < simplify
+    {
+        warnings.push(
+            "A simplifier runs after Remesh and rebuilds its faces as triangles, so \
+             the quads it produced are lost. Move Remesh below the simplifier to keep \
+             them.",
+        );
+    }
+
+    // A wrap replaces the object outright, so everything above it was work on
+    // geometry that no longer exists. Worth saying once: the pairing the two
+    // operations exist for is Shrinkwrap *then* Remesh, and the other order is
+    // the mistake that looks most like it should work.
+    let first_shrinkwrap = input
+        .stack
+        .ops
+        .iter()
+        .position(|op| op.enabled && matches!(op.kind, OpKind::Shrinkwrap(_)));
+    if let Some(shrinkwrap) = first_shrinkwrap
+        && input.stack.ops[..shrinkwrap]
+            .iter()
+            .any(|op| op.enabled && op.kind.alters_geometry())
+    {
+        warnings.push(
+            "Shrinkwrap runs below an operation that changes the shape, and it \
+             replaces the whole object — so that operation's work is thrown away. \
+             Move Shrinkwrap to the top of the list.",
+        );
+    }
+
     let mut lods = Vec::with_capacity(levels.len());
-    for (index, level) in levels.into_iter().enumerate() {
+    for (index, level) in levels.iter().enumerate() {
+        if run.cancelled() {
+            return Err(OptError::Cancelled);
+        }
+        run.report(OptProgress::counted(
+            OptStage::Assembling,
+            index as u32,
+            levels.len() as u32,
+        ));
+        let pieces: Vec<&submesh::Submesh> = level.submeshes.iter().collect();
         let (model, carry) = assemble(
-            &level.submeshes,
+            &pieces,
             input.model,
             tags,
             index,
@@ -289,8 +461,14 @@ pub fn process(input: ProcessInput<'_>) -> Result<ProcessedResult, OptError> {
                  lower its error limit so the simplifier stops sooner."
             ));
         }
-        let metrics = measure(
-            &model,
+        // Measured off the submeshes rather than the assembled model: they are
+        // what the GPU draws, and — unlike the assembled model, which a rebuilt
+        // polygon carry puts into the corner-run layout — they are always the
+        // indexed mesh. Re-partitioning the assembled model gives the same
+        // figures outside that layout and the corner-split ones inside it, which
+        // would describe the viewer's internal buffer rather than the asset.
+        let metrics = measure_submeshes(
+            &level.submeshes,
             input.render_vertex_size,
             level.simplify_error,
             &mut warnings,
@@ -352,6 +530,208 @@ mod tests {
         .expect("the demo cube always processes")
     }
 
+    /// Every phase of a run reports itself, in order, and each of the user's
+    /// operations is named — which is the whole point: a run that takes a
+    /// minute has to say which step it is on.
+    #[test]
+    fn a_run_reports_each_stage_it_goes_through() {
+        let model = demo_cube_model();
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::Weld(WeldParams::default()));
+        stack.push_op(OpKind::VertexCache);
+
+        let seen = std::cell::RefCell::new(Vec::new());
+        process_with_progress(
+            ProcessInput {
+                model: &model,
+                stack: &stack,
+                render_vertex_size: VERTEX_SIZE,
+                hidden_nodes: &[],
+                extras: None,
+            },
+            &|progress| {
+                seen.borrow_mut()
+                    .push((progress.stage, progress.op.map(OpKind::label)));
+            },
+        )
+        .expect("the demo cube always processes");
+
+        assert_eq!(
+            seen.into_inner(),
+            vec![
+                (OptStage::Preparing, None),
+                (OptStage::Measuring, None),
+                (OptStage::Operation, Some("Weld Vertices")),
+                (OptStage::Operation, Some("Optimize Vertex Cache")),
+                (OptStage::Assembling, None),
+            ]
+        );
+    }
+
+    /// A stage that counts something reports a fraction; one that can't, can't.
+    #[test]
+    fn an_assembling_report_counts_the_levels() {
+        let model = demo_cube_model();
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::SimplifyLod(LodParams {
+            levels: vec![LodLevel::default(), LodLevel::default()],
+            ..LodParams::default()
+        }));
+
+        let assembling = std::cell::RefCell::new(Vec::new());
+        process_with_progress(
+            ProcessInput {
+                model: &model,
+                stack: &stack,
+                render_vertex_size: VERTEX_SIZE,
+                hidden_nodes: &[],
+                extras: None,
+            },
+            &|progress| {
+                if progress.stage == OptStage::Assembling {
+                    assembling
+                        .borrow_mut()
+                        .push((progress.done, progress.total));
+                }
+            },
+        )
+        .expect("the demo cube always processes");
+
+        // Level 0 plus the two configured levels.
+        assert_eq!(assembling.into_inner(), vec![(0, 3), (1, 3), (2, 3)]);
+    }
+
+    /// A run whose generation has been superseded stops rather than producing a
+    /// result nobody will look at. This is what makes an edit mid-Remesh feel
+    /// like an edit instead of a queue.
+    #[test]
+    fn a_superseded_run_stops_instead_of_finishing() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let model = demo_cube_model();
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::Weld(WeldParams::default()));
+
+        let current = Arc::new(AtomicU64::new(1));
+        let token = CancelToken::new(Arc::clone(&current), 1);
+        // Superseded the moment the run reports its first stage, which is as
+        // early as anything outside can act.
+        let result = process_cancellable(
+            ProcessInput {
+                model: &model,
+                stack: &stack,
+                render_vertex_size: VERTEX_SIZE,
+                hidden_nodes: &[],
+                extras: None,
+            },
+            &|_| {
+                current.store(2, Ordering::Relaxed);
+            },
+            Some(&token),
+        );
+
+        assert!(
+            matches!(result, Err(OptError::Cancelled)),
+            "a superseded run reports Cancelled, not a result: {result:?}"
+        );
+    }
+
+    /// A live token must not stop anything - the check is on the generation
+    /// moving, not on a token being present.
+    #[test]
+    fn a_live_token_lets_the_run_finish() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicU64;
+
+        let model = demo_cube_model();
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::Weld(WeldParams::default()));
+
+        let token = CancelToken::new(Arc::new(AtomicU64::new(4)), 4);
+        let result = process_cancellable(
+            ProcessInput {
+                model: &model,
+                stack: &stack,
+                render_vertex_size: VERTEX_SIZE,
+                hidden_nodes: &[],
+                extras: None,
+            },
+            &|_| {},
+            Some(&token),
+        );
+
+        assert_eq!(result.expect("a live run finishes").lods.len(), 1);
+    }
+
+    /// A rebuild publishes the scene as it improves it, and every one of those
+    /// is a mesh the viewport can draw.
+    #[test]
+    fn a_rebuild_previews_the_scene_before_it_finishes() {
+        let model = demo_cube_model();
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::Remesh(crate::stack::RemeshParams {
+            density: crate::stack::RemeshDensity::Absolute,
+            faces: 40,
+            ..crate::stack::RemeshParams::default()
+        }));
+
+        let previews = std::cell::RefCell::new(Vec::new());
+        let result = process_progressive(
+            ProcessInput {
+                model: &model,
+                stack: &stack,
+                render_vertex_size: VERTEX_SIZE,
+                hidden_nodes: &[],
+                extras: None,
+            },
+            &|_| {},
+            Some(&|preview| previews.borrow_mut().push(preview.model)),
+            None,
+        );
+
+        // The cube is small enough that it may settle in one pass and preview
+        // nothing; what must hold is that anything it *did* publish is a mesh.
+        let previews = previews.into_inner();
+        for (at, preview) in previews.iter().enumerate() {
+            assert_eq!(
+                preview.indices.len() % 3,
+                0,
+                "preview {at} is not whole triangles"
+            );
+            for &index in &preview.indices {
+                assert!(
+                    (index as usize) < preview.vertices.len(),
+                    "preview {at} addresses no such vertex"
+                );
+            }
+        }
+        // And the run still produces its real answer.
+        assert!(result.is_ok());
+    }
+
+    /// Nobody watching costs nothing: the sink is what decides whether a
+    /// preview is even built.
+    #[test]
+    fn a_run_nobody_is_watching_publishes_nothing() {
+        let model = demo_cube_model();
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::Weld(WeldParams::default()));
+
+        // `process` is the no-sink entry point; that it runs at all is the
+        // assertion, since a preview path that ignored the `None` would panic
+        // on the missing sink.
+        let result = process(ProcessInput {
+            model: &model,
+            stack: &stack,
+            render_vertex_size: VERTEX_SIZE,
+            hidden_nodes: &[],
+            extras: None,
+        });
+
+        assert!(result.is_ok());
+    }
+
     /// Nothing enabled produces no mesh — but the source is still measured, so
     /// the workspace can show what it costs before anything is asked of it.
     #[test]
@@ -368,6 +748,9 @@ mod tests {
         );
     }
 
+    /// The control: a level whose carry came from the source keeps that carry
+    /// for the export and publishes **no** face table, because the corner runs it
+    /// describes are in the source's vertex array and the weld destroyed them.
     #[test]
     fn an_operation_produces_a_mesh_carrying_no_polygon_topology() {
         let mut stack = OptStack::default();
@@ -379,6 +762,97 @@ mod tests {
             output.faces.is_empty() && output.triangles.to_face.is_empty(),
             "processed meshes carry no polygon topology"
         );
+    }
+
+    /// The exception: one piece with a **rebuilt** carry puts the whole level
+    /// into the import's corner-run layout, and the quads reach the viewport.
+    ///
+    /// Built by hand rather than by running a Remesh, so it holds whether or not
+    /// a retopologizer is vendored — and so the assertion is about `assemble`'s
+    /// layout rather than about what the engine happened to produce.
+    #[test]
+    fn a_level_with_a_rebuilt_carry_emits_corner_run_faces() {
+        let model = demo_cube_model();
+        let (mut submeshes, tags) = crate::submesh::partition(&model, None);
+        // Weld to the cube's eight real corners, so the indexed mesh and the
+        // corner run it expands into are different sizes and the stats have
+        // something to choose between.
+        crate::ops::weld(
+            &mut submeshes[0],
+            &WeldParams {
+                attribute_tolerance: 0.0,
+                compare_normals: false,
+                compare_uvs: false,
+                compare_colors: false,
+            },
+        )
+        .expect("the demo cube welds");
+
+        // A rebuilt carry over the welded mesh: the cube's triangles come in
+        // pairs cut from one quad — `(a, b, c)` then `(a, c, d)` — so each pair
+        // names the face `[a, b, c, d]`. Built here rather than by running a
+        // Remesh so the test does not need a vendored retopologizer, and so what
+        // it asserts is `assemble`'s layout rather than the engine's output.
+        let piece = &mut submeshes[0];
+        let mut carry = crate::submesh::PolygonCarry {
+            face_offsets: vec![0],
+            rebuilt: true,
+            ..crate::submesh::PolygonCarry::default()
+        };
+        for (face, pair) in piece.indices.as_chunks::<6>().0.iter().enumerate() {
+            carry
+                .corners
+                .extend_from_slice(&[pair[0], pair[1], pair[2], pair[5]]);
+            carry.face_offsets.push(carry.corners.len() as u32);
+            carry.source_face.push(crate::submesh::NO_FACE);
+            carry.triangle_face.extend_from_slice(&[face as u32; 2]);
+        }
+        piece.polygons = Some(carry);
+
+        let mut warnings = Warnings::default();
+        let pieces: Vec<&submesh::Submesh> = submeshes.iter().collect();
+        let (level, carry) = assemble(
+            &pieces,
+            &model,
+            tags,
+            0,
+            Rebuild {
+                normals: false,
+                tangents: false,
+            },
+            &mut warnings,
+        );
+
+        assert_eq!(level.faces.len(), 6, "the cube's six quads are published");
+        assert!(level.faces.iter().all(|face| face.index_count == 4));
+        for (index, face) in level.faces.iter().enumerate() {
+            assert_eq!(
+                face.first_index,
+                index as u32 * 4,
+                "faces own contiguous runs, in face order"
+            );
+        }
+        assert_eq!(level.vertices.len(), 24, "one vertex per face corner");
+        assert_eq!(
+            level.triangles.to_face,
+            vec![0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5]
+        );
+        level
+            .triangles
+            .validate(12, 6, level.materials.len(), level.nodes.len())
+            .expect("the per-triangle tags address the published faces");
+
+        assert_eq!(carry.control_point.len(), 24);
+        assert!(
+            carry.control_point.iter().all(|&point| point < 8),
+            "every corner names one of the eight indexed vertices"
+        );
+        assert_eq!(
+            level.stats.vertex_count, 8,
+            "the panel shows the indexed count, never the corner run (invariant 5)"
+        );
+        assert_eq!(level.stats.polygon_count, 6);
+        assert_eq!(level.stats.triangle_count, 12);
     }
 
     #[test]

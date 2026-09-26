@@ -146,6 +146,50 @@ pub fn run_with_extras(
     .expect("processing succeeds")
 }
 
+/// Compare `digest` against whatever another test binary recorded under `name`,
+/// recording it instead when this is the first one to get there.
+///
+/// The two suites that use this run the *same* stack over the same fixture at
+/// different thread counts, so the mesh must be identical; which of them runs
+/// first is not defined, and does not need to be. When only one of them runs —
+/// a filtered `cargo test`, or a build with no retopologizer — nothing is
+/// compared, which is the honest outcome rather than a failure.
+///
+/// A recording older than this executable was is **ignored**, not compared
+/// against. The file lives in the target directory and outlives any number of
+/// rebuilds, so without that rule the first legitimate change to the remesher
+/// fails this test against a mesh that no longer exists — a failure that says
+/// "the result depends on scheduling" when it does not, and that a reader can
+/// only clear by guessing at `cargo clean`.
+pub fn compare_digest_across_binaries(name: &str, digest: u64) {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("shared_digests");
+    std::fs::create_dir_all(&dir).expect("create the shared digest directory");
+    let path = dir.join(name);
+    let fresh = |path: &Path| -> bool {
+        let built = std::env::current_exe()
+            .and_then(|exe| exe.metadata())
+            .and_then(|meta| meta.modified());
+        let recorded = path.metadata().and_then(|meta| meta.modified());
+        match (built, recorded) {
+            (Ok(built), Ok(recorded)) => recorded >= built,
+            // No clock to compare with: treat it as fresh and compare, which
+            // fails loudly rather than passing silently.
+            _ => true,
+        }
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(recorded) if fresh(&path) => {
+            let recorded: u64 = recorded.trim().parse().expect("a recorded digest");
+            assert_eq!(
+                recorded, digest,
+                "{name}: this run produced a different mesh from the one the sibling \
+                 suite recorded, so the result depends on how the work was scheduled"
+            );
+        }
+        _ => std::fs::write(&path, digest.to_string()).expect("record the digest"),
+    }
+}
+
 /// The first line containing `needle`, or a panic naming it.
 pub fn line_with<'a>(text: &'a str, needle: &str) -> &'a str {
     text.lines()

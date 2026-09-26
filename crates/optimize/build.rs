@@ -1,12 +1,14 @@
 use std::path::{Path, PathBuf};
 
-/// Compile the two vendored C/C++ libraries, mirroring how
-/// `crates/import/build.rs` gates vendored ufbx: each tree is *optional*, so its
-/// absence is not a build failure — it just leaves the matching `cfg` unset and
-/// the dependent operations report `OptError::Unavailable`.
+/// Compile the vendored C/C++ libraries, mirroring how `crates/import/build.rs`
+/// gates vendored ufbx: each tree is *optional*, so its absence is not a build
+/// failure — it just leaves the matching `cfg` unset and the dependent
+/// operations report the matching "unavailable" error.
 ///
-/// They are separate `cc::Build` invocations because meshoptimizer is C++ and
-/// ufbx_write is C; one build cannot compile both correctly.
+/// They are separate `cc::Build` invocations because the trees disagree about
+/// language and flags: meshoptimizer is exception-free C++, ufbx_write is C, and
+/// Instant Meshes is C++17 over Eigen and throws. One build cannot compile them
+/// all correctly.
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(has_meshopt)");
     println!("cargo:rustc-check-cfg=cfg(has_ufbxw)");
