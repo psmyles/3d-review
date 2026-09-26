@@ -494,6 +494,8 @@ fn simplify_settings(ui: &mut egui::Ui, id: &str, edited: &mut SimplifySettings)
                 regularize,
                 regularize_light,
                 permissive,
+                preserve_folds,
+                clamp_attribute_error,
             } = &mut edited.flags;
             ui.checkbox(lock_border, keys::ui_opt::LOCK_BORDER)
                 .on_hover_text(keys::ui_opt::LOCK_BORDER_DESCRIPTION);
@@ -507,6 +509,14 @@ fn simplify_settings(ui: &mut egui::Ui, id: &str, edited: &mut SimplifySettings)
                 .on_hover_text(keys::ui_opt::REGULARIZE_LIGHT_DESCRIPTION);
             ui.checkbox(permissive, keys::ui_opt::COLLAPSE_ACROSS_SEAMS)
                 .on_hover_text(keys::ui_opt::COLLAPSE_ACROSS_SEAMS_DESCRIPTION);
+            ui.checkbox(preserve_folds, keys::ui_opt::PRESERVE_FOLDS)
+                .on_hover_text(keys::ui_opt::PRESERVE_FOLDS_DESCRIPTION);
+            // Clamping bounds the *attribute* error, which only the
+            // attribute-aware simplifier computes; elsewhere it would do nothing.
+            if edited.algorithm == SimplifyAlgorithm::WithAttributes {
+                ui.checkbox(clamp_attribute_error, keys::ui_opt::CLAMP_ATTRIBUTE_ERROR)
+                    .on_hover_text(keys::ui_opt::CLAMP_ATTRIBUTE_ERROR_DESCRIPTION);
+            }
         });
     }
 }

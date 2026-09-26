@@ -64,6 +64,14 @@ ui-opt-regularize-light = Regularize (light)
 ui-opt-collapse-across-seams = Collapse across seams
     .description = Lets the simplifier work across texture seams and hard edges. If a
         simplify seems stuck and barely removes anything, this is usually what frees it.
+ui-opt-preserve-folds = Preserve folds
+    .description = Keeps the edge where two surfaces meet back to back, such as the rim of a
+        double-sided leaf or cloth, from wearing away as the model gets simpler. Slightly
+        slower.
+ui-opt-clamp-attribute-error = Clamp attribute error
+    .description = Stops the shading, texture layout and colors from counting for more than
+        the shape itself. A busy texture area then no longer holds the whole model back, and
+        the error figure stays close to how far the surface really moved.
 ui-opt-attribute-weights = Attribute weights
     .description = How hard each kind of data pushes back against being changed. A higher
         number protects it more, at the cost of a less accurate shape. Zero ignores it.

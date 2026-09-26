@@ -16,7 +16,8 @@
 //!
 //! When the vendored sources are absent (`cfg(has_meshopt)` unset) every
 //! function short-circuits to [`OptError::Unavailable`] and the crate still
-//! compiles — the same optional-vendoring contract `crates/import` has.//!
+//! compiles — the same optional-vendoring contract `crates/import` has.
+//!
 //! ## Layout
 //!
 //! The shared validation is here — every wrapper checks its mesh preconditions
@@ -27,19 +28,53 @@
 
 use crate::OptError;
 
+// The wrapper modules exist only when the vendored tree was compiled; their
+// declarations are gated here rather than by an inner `#![cfg]` alone, since a
+// module removed that way still leaves its `pub use` naming nothing.
+#[cfg(has_meshopt)]
 mod analyze;
+pub mod options;
+#[cfg(has_meshopt)]
 mod remap;
+#[cfg(has_meshopt)]
 mod reorder;
+#[cfg(has_meshopt)]
 mod simplify;
 #[cfg(not(has_meshopt))]
 mod unavailable;
 
+#[cfg(has_meshopt)]
 pub use analyze::*;
+#[cfg(has_meshopt)]
 pub use remap::*;
+#[cfg(has_meshopt)]
 pub use reorder::*;
+#[cfg(has_meshopt)]
 pub use simplify::*;
 #[cfg(not(has_meshopt))]
 pub use unavailable::*;
+
+/// Result of a simplification pass: the reduced index buffer (still referencing
+/// the *original* vertex buffer) and the error meshoptimizer actually achieved.
+///
+/// Defined here, outside the `has_meshopt` gate, because the unavailable stubs
+/// name it too.
+#[derive(Debug, Clone)]
+pub struct SimplifyOutcome {
+    pub indices: Vec<u32>,
+    /// Achieved error, relative to mesh extents unless the caller passed the
+    /// absolute-error option.
+    pub error: f32,
+}
+
+/// Extra per-vertex attributes to preserve during simplification, as a packed
+/// stream plus one weight per component. An empty `weights` selects the
+/// position-only simplifier.
+#[derive(Debug, Clone, Default)]
+pub struct SimplifyAttributes {
+    pub stream: Vec<f32>,
+    pub weights: Vec<f32>,
+}
 
 /// Floats per position in a packed position stream.
 pub const POSITION_COMPONENTS: usize = 3;

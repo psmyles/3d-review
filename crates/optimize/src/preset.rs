@@ -164,6 +164,36 @@ mod tests {
         );
     }
 
+    /// A preset written before the v1.3 flags existed loads with them off, so it
+    /// reproduces the mesh it always did; once set, they survive a round trip.
+    #[test]
+    fn the_newer_simplifier_flags_default_off_and_round_trip() {
+        let json = r#"{
+            "version": 1,
+            "stack": { "ops": [{ "id": 1, "enabled": true, "kind": {
+                "Reduce": { "algorithm": "WithAttributes", "flags": { "permissive": true } }
+            } }] }
+        }"#;
+        let loaded = from_json(json).expect("an older preset still parses");
+        let OpKind::Reduce(params) = &loaded.ops[0].kind else {
+            panic!(
+                "the operation survives as a Reduce: {:?}",
+                loaded.ops[0].kind
+            );
+        };
+        assert!(params.simplify.flags.permissive);
+        assert!(!params.simplify.flags.preserve_folds);
+        assert!(!params.simplify.flags.clamp_attribute_error);
+
+        let mut stack = loaded.clone();
+        if let OpKind::Reduce(params) = &mut stack.ops[0].kind {
+            params.simplify.flags.preserve_folds = true;
+            params.simplify.flags.clamp_attribute_error = true;
+        }
+        let reloaded = from_json(&to_json(&stack).expect("serializes")).expect("parses");
+        assert_eq!(reloaded.ops[0].kind, stack.ops[0].kind);
+    }
+
     #[test]
     fn loading_re_keys_operation_ids_and_their_overrides() {
         let mut stack = OptStack::default();

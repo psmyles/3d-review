@@ -56,6 +56,9 @@ pub(crate) fn index_mesh(submeshes: &mut [Submesh], stack: &OptStack, warnings: 
 pub(crate) struct LevelState {
     pub(crate) submeshes: Vec<Submesh>,
     pub(crate) simplify_error: f32,
+    /// Whether any simplifier ran on this level (see
+    /// [`AnalysisMetrics::simplified`](super::AnalysisMetrics::simplified)).
+    pub(crate) simplified: bool,
 }
 
 /// Simplify a fresh copy of the base submeshes down to one LOD level's target.
@@ -80,6 +83,7 @@ pub(crate) fn build_lod_level(
     LevelState {
         submeshes,
         simplify_error,
+        simplified: true,
     }
 }
 

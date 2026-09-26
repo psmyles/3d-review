@@ -55,32 +55,9 @@ pub struct OverdrawStatistics {
     pub overdraw: c_float,
 }
 
-/// Simplification option flags (`meshopt_Simplify*`), as a bitmask passed in
-/// the `options` parameter of [`meshopt_simplify`] /
-/// [`meshopt_simplifyWithAttributes`].
-pub mod simplify_options {
-    use std::ffi::c_uint;
-
-    /// Do not move vertices that are on the topological border.
-    pub const LOCK_BORDER: c_uint = 1 << 0;
-    // Bit 1 is `meshopt_SimplifySparse`, deliberately not exposed. It is a hint
-    // that the index buffer addresses only a small subset of the vertex array,
-    // and it redefines `target_error` to be relative to that subset's extents
-    // rather than the mesh's. Submeshes arrive here with their vertices already
-    // compacted, so the hint would never be true and the error-scale change
-    // would silently mean something different from what the UI says.
-    /// Treat the error limit and resulting error as absolute rather than
-    /// relative to mesh extents.
-    pub const ERROR_ABSOLUTE: c_uint = 1 << 2;
-    /// Remove disconnected parts of the mesh during simplification.
-    pub const PRUNE: c_uint = 1 << 3;
-    /// Produce more regular triangle sizes/shapes, at some cost to quality.
-    pub const REGULARIZE: c_uint = 1 << 4;
-    /// Allow collapses across attribute discontinuities.
-    pub const PERMISSIVE: c_uint = 1 << 5;
-    /// Like [`REGULARIZE`] at a smaller cost to quality.
-    pub const REGULARIZE_LIGHT: c_uint = 1 << 6;
-}
+// The option bitmasks live in `crate::meshopt::options`, outside this
+// module's `has_meshopt` gate, because the stack's parameter types need them
+// in either build.
 
 /// `meshopt_Stream`: one attribute stream of a multi-stream call.
 #[repr(C)]

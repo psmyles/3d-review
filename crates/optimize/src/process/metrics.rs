@@ -31,6 +31,11 @@ pub struct AnalysisMetrics {
     /// world units under the absolute-error flag). `0.0` for level 0 unless the
     /// stack reduced the mesh in place, whose error every level inherits.
     pub simplify_error: f32,
+    /// Whether a simplifier ran on this level at all — a LOD level, or any level
+    /// a Reduce rewrote. What decides whether [`Self::simplify_error`] means
+    /// anything: a simplify that met its target without moving the surface
+    /// legitimately reports `0.0`.
+    pub simplified: bool,
 }
 
 /// The size of a mesh as the GPU sees it: what an engine's vertex/index buffers
@@ -122,6 +127,7 @@ pub(crate) fn measure_submeshes(
     submeshes: &[Submesh],
     render_vertex_size: usize,
     simplify_error: f32,
+    simplified: bool,
     warnings: &mut Warnings,
 ) -> AnalysisMetrics {
     let _z = crate::prof::zone!("Measure Level");
@@ -153,5 +159,6 @@ pub(crate) fn measure_submeshes(
         overdraw: counters.overdraw(),
         overfetch: counters.overfetch(),
         simplify_error,
+        simplified,
     }
 }

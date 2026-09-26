@@ -218,8 +218,13 @@ pub fn process_progressive(
     // submeshes in place below). See the field docs on [`ProcessedResult`] for
     // why the raw corner-split buffer would be the wrong thing to quote against.
     let source = MeshCounts::of_submeshes(&submeshes);
-    let source_metrics =
-        measure_submeshes(&submeshes, input.render_vertex_size, 0.0, &mut warnings);
+    let source_metrics = measure_submeshes(
+        &submeshes,
+        input.render_vertex_size,
+        0.0,
+        false,
+        &mut warnings,
+    );
 
     // Nothing enabled: no mesh is produced, but the baseline above still comes
     // back — a user reads the mesh's overdraw and cache behaviour *before*
@@ -302,6 +307,7 @@ pub fn process_progressive(
     let mut levels: Vec<LevelState> = vec![LevelState {
         submeshes: submeshes.clone(),
         simplify_error: base_error,
+        simplified: runs_reduce(pre_ops),
     }];
 
     if let Some(params) = lod_op {
@@ -332,7 +338,9 @@ pub fn process_progressive(
         }
     }
 
+    let reduced_after = runs_reduce(post_ops);
     for level in &mut levels {
+        level.simplified |= reduced_after;
         for op in post_ops {
             if run.cancelled() {
                 return Err(OptError::Cancelled);
@@ -471,6 +479,7 @@ pub fn process_progressive(
             &level.submeshes,
             input.render_vertex_size,
             level.simplify_error,
+            level.simplified,
             &mut warnings,
         );
         lods.push(ProcessedLod {
@@ -491,6 +500,13 @@ pub fn process_progressive(
 }
 
 /// Whether the user excluded `node` from processing entirely.
+/// Whether an enabled Reduce sits among `ops`, so the level it runs on has been
+/// through a simplifier.
+fn runs_reduce(ops: &[OpInstance]) -> bool {
+    ops.iter()
+        .any(|op| op.enabled && matches!(op.kind, OpKind::Reduce(_)))
+}
+
 pub(crate) fn is_excluded(stack: &OptStack, node: u32) -> bool {
     stack
         .node_override(node as usize)
@@ -1042,6 +1058,29 @@ mod tests {
             result.lods[0].metrics.simplify_error > 0.0,
             "level 0 reports the error the reduce cost: {:?}",
             result.lods[0].metrics
+        );
+        assert!(
+            result.lods[0].metrics.simplified,
+            "a reduced level 0 says a simplifier ran, which is what shows its error row"
+        );
+    }
+
+    /// Without a Reduce, level 0 is the unsimplified mesh and must say so — its
+    /// zero error is not a measurement — while every generated level did run one.
+    #[test]
+    fn only_simplified_levels_are_marked_simplified() {
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::VertexCache);
+        stack.push_op(OpKind::SimplifyLod(LodParams::default()));
+
+        let result = run(&stack);
+        assert!(
+            !result.lods[0].metrics.simplified,
+            "level 0 was not simplified"
+        );
+        assert!(
+            result.lods[1..].iter().all(|lod| lod.metrics.simplified),
+            "every LOD level ran the simplifier"
         );
     }
 
