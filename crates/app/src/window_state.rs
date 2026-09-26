@@ -19,6 +19,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
@@ -60,7 +61,16 @@ fn state_file() -> Option<PathBuf> {
 pub fn load() -> Option<WindowPlacement> {
     let path = state_file()?;
     let contents = std::fs::read_to_string(&path).ok()?;
+    let placement = parse(&contents)?;
+    log::debug!("restored window placement: {placement:?}");
+    Some(placement)
+}
 
+/// The placement a `window.cfg` describes, or `None` when it describes none.
+/// Every figure but `maximized` is required, so a partial file reads as absent,
+/// and so does a zero size — a corrupt file must not open a window with no area.
+/// Unknown keys and unparseable lines are skipped rather than failing the read.
+fn parse(contents: &str) -> Option<WindowPlacement> {
     let mut x = None;
     let mut y = None;
     let mut width = None;
@@ -95,9 +105,15 @@ pub fn load() -> Option<WindowPlacement> {
     if placement.width == 0 || placement.height == 0 {
         return None;
     }
-
-    log::debug!("restored window placement: {placement:?}");
     Some(placement)
+}
+
+/// The `window.cfg` text for `placement` — what [`parse`] reads back.
+fn serialize(placement: WindowPlacement) -> String {
+    format!(
+        "x={}\ny={}\nwidth={}\nheight={}\nmaximized={}\n",
+        placement.x, placement.y, placement.width, placement.height, placement.maximized,
+    )
 }
 
 /// Write the placement to the config directory. Failures are logged and
@@ -119,10 +135,7 @@ pub fn save(placement: WindowPlacement) {
         return;
     }
 
-    let contents = format!(
-        "x={}\ny={}\nwidth={}\nheight={}\nmaximized={}\n",
-        placement.x, placement.y, placement.width, placement.height, placement.maximized,
-    );
+    let contents = serialize(placement);
 
     // Replaced rather than overwritten: a process killed mid-write would
     // otherwise leave a half-written config, and the next launch reads it back
@@ -194,34 +207,34 @@ pub(crate) fn placement_is_visible(
     event_loop: &ActiveEventLoop,
     placement: &WindowPlacement,
 ) -> bool {
-    let win_left = placement.x;
-    let win_top = placement.y;
-    // The placement is read from a file, so its figures are not trusted to stay
-    // in range: saturate rather than overflow.
-    let win_right = placement.x.saturating_add_unsigned(placement.width);
-    let win_bottom = placement.y.saturating_add_unsigned(placement.height);
-
     let mut any_monitor = false;
     for monitor in event_loop.available_monitors() {
         any_monitor = true;
-        let pos = monitor.position();
-        let size = monitor.size();
-        let mon_left = pos.x;
-        let mon_top = pos.y;
-        let mon_right = pos.x.saturating_add_unsigned(size.width);
-        let mon_bottom = pos.y.saturating_add_unsigned(size.height);
-
-        let overlaps = win_left < mon_right
-            && win_right > mon_left
-            && win_top < mon_bottom
-            && win_bottom > mon_top;
-        if overlaps {
+        if overlaps(placement, monitor.position(), monitor.size()) {
             return true;
         }
     }
 
     // No monitors enumerated (rare/headless): don't throw the placement away.
     !any_monitor
+}
+
+/// Whether `placement`'s rect overlaps the monitor at `position` of `size`.
+fn overlaps(
+    placement: &WindowPlacement,
+    position: PhysicalPosition<i32>,
+    size: PhysicalSize<u32>,
+) -> bool {
+    // The placement is read from a file, so its figures are not trusted to stay
+    // in range: saturate rather than overflow.
+    let win_right = placement.x.saturating_add_unsigned(placement.width);
+    let win_bottom = placement.y.saturating_add_unsigned(placement.height);
+    let mon_right = position.x.saturating_add_unsigned(size.width);
+    let mon_bottom = position.y.saturating_add_unsigned(size.height);
+    placement.x < mon_right
+        && win_right > position.x
+        && placement.y < mon_bottom
+        && win_bottom > position.y
 }
 
 /// Whether a placement's rect covers essentially a whole monitor — the signature
@@ -236,22 +249,27 @@ pub(crate) fn placement_fills_monitor(
     event_loop: &ActiveEventLoop,
     placement: &WindowPlacement,
 ) -> bool {
+    event_loop
+        .available_monitors()
+        .any(|monitor| fills(placement, monitor.position(), monitor.size()))
+}
+
+/// Whether `placement` covers the monitor at `position` of `size` the way
+/// maximized geometry does — see [`placement_fills_monitor`].
+fn fills(
+    placement: &WindowPlacement,
+    position: PhysicalPosition<i32>,
+    size: PhysicalSize<u32>,
+) -> bool {
     // Maximized client width tracks the work area exactly (≈100% with a bottom
     // taskbar, a bit less with a side taskbar); height loses the taskbar band.
     const MIN_WIDTH_FRACTION: f32 = 0.9;
     const MIN_HEIGHT_FRACTION: f32 = 0.85;
 
-    for monitor in event_loop.available_monitors() {
-        let pos = monitor.position();
-        let size = monitor.size();
-        let at_origin = placement.x <= pos.x && placement.y <= pos.y;
-        let fills = placement.width as f32 >= size.width as f32 * MIN_WIDTH_FRACTION
-            && placement.height as f32 >= size.height as f32 * MIN_HEIGHT_FRACTION;
-        if at_origin && fills {
-            return true;
-        }
-    }
-    false
+    let at_origin = placement.x <= position.x && placement.y <= position.y;
+    at_origin
+        && placement.width as f32 >= size.width as f32 * MIN_WIDTH_FRACTION
+        && placement.height as f32 >= size.height as f32 * MIN_HEIGHT_FRACTION
 }
 
 /// A comfortable centered restored window, used as the un-maximize target when the
@@ -299,7 +317,7 @@ pub(crate) fn monitor_refresh_interval(window: &Window) -> Duration {
 
 #[cfg(test)]
 mod tests {
-    use super::state_dir;
+    use super::*;
 
     /// `dirs::config_dir()` must resolve to the *same* directory the hand-read
     /// `APPDATA` environment variable used to give (`docs/ARCHITECTURE.md`,
@@ -333,6 +351,100 @@ mod tests {
         expected.push("Library/Application Support");
         expected.push(crate::APP_NAME);
         assert_eq!(state_dir(), Some(expected));
+    }
+
+    fn placement(x: i32, y: i32, width: u32, height: u32) -> WindowPlacement {
+        WindowPlacement {
+            x,
+            y,
+            width,
+            height,
+            maximized: false,
+        }
+    }
+
+    #[test]
+    fn a_saved_placement_reads_back_as_itself() {
+        let saved = WindowPlacement {
+            maximized: true,
+            ..placement(-1920, 40, 1280, 720)
+        };
+        let read = parse(&serialize(saved)).expect("a whole file parses");
+        assert_eq!(
+            (read.x, read.y, read.width, read.height, read.maximized),
+            (-1920, 40, 1280, 720, true)
+        );
+    }
+
+    #[test]
+    fn a_file_missing_a_figure_or_with_no_area_is_no_placement() {
+        assert!(parse("x=0\ny=0\nwidth=800\n").is_none(), "no height");
+        assert!(
+            parse("x=0\ny=0\nwidth=800\nheight=0\n").is_none(),
+            "no area"
+        );
+        assert!(
+            parse("x=0\ny=zero\nwidth=800\nheight=600\n").is_none(),
+            "bad y"
+        );
+        assert!(parse("").is_none());
+    }
+
+    #[test]
+    fn unknown_keys_and_stray_lines_are_skipped() {
+        let read = parse("# comment\nx = 10\nfuture=1\ny=20\nwidth=300\nheight=200\n")
+            .expect("the four figures are there");
+        assert_eq!((read.x, read.y), (10, 20));
+        assert!(!read.maximized, "absent reads as not maximized");
+    }
+
+    #[test]
+    fn a_window_on_an_unplugged_monitor_does_not_overlap_the_one_left() {
+        let monitor = (PhysicalPosition::new(0, 0), PhysicalSize::new(1920, 1080));
+        assert!(overlaps(
+            &placement(100, 100, 800, 600),
+            monitor.0,
+            monitor.1
+        ));
+        // Where a second monitor to the left used to be.
+        assert!(!overlaps(
+            &placement(-1800, 100, 800, 600),
+            monitor.0,
+            monitor.1
+        ));
+        // Touching edges are not an overlap.
+        assert!(!overlaps(
+            &placement(1920, 0, 800, 600),
+            monitor.0,
+            monitor.1
+        ));
+    }
+
+    #[test]
+    fn figures_at_the_edge_of_the_integer_range_saturate_rather_than_wrap() {
+        let monitor = (PhysicalPosition::new(0, 0), PhysicalSize::new(1920, 1080));
+        // `i32::MAX + width` would wrap negative and read as overlapping.
+        assert!(!overlaps(
+            &placement(i32::MAX, 0, u32::MAX, 600),
+            monitor.0,
+            monitor.1
+        ));
+        assert!(overlaps(
+            &placement(i32::MIN, 0, u32::MAX, 600),
+            monitor.0,
+            monitor.1
+        ));
+    }
+
+    #[test]
+    fn maximized_geometry_is_told_from_a_real_window() {
+        let origin = PhysicalPosition::new(0, 0);
+        let size = PhysicalSize::new(1920, 1080);
+        // A maximized window's frame hangs a few pixels past the monitor origin.
+        assert!(fills(&placement(-8, -8, 1920, 1030), origin, size));
+        assert!(!fills(&placement(100, 100, 1280, 720), origin, size));
+        // A snapped half-width window is at the origin but not full width.
+        assert!(!fills(&placement(0, 0, 960, 1040), origin, size));
     }
 }
 

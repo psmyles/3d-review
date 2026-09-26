@@ -298,3 +298,98 @@ fn uf_union(parent: &mut [u32], a: u32, b: u32) {
         parent[root_a as usize] = root_b;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use glam::{Vec2, Vec4};
+    use review_model::{TopologyFace, Vertex};
+
+    use super::*;
+
+    /// Two triangles sharing the edge (1,0,0)-(0,1,0), corner-split as import
+    /// leaves them, with the UVs each face gives its three corners.
+    fn two_faces(first: [Vec2; 3], second: [Vec2; 3]) -> ModelData {
+        let positions = [
+            Vec3::ZERO,
+            Vec3::X,
+            Vec3::Y,
+            Vec3::X,
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::Y,
+        ];
+        let uvs = first.into_iter().chain(second);
+        let vertices = positions
+            .into_iter()
+            .zip(uvs)
+            .map(|(position, uv)| Vertex {
+                position,
+                normal: Vec3::Z,
+                uv,
+                tangent: Vec4::new(1.0, 0.0, 0.0, 1.0),
+                vertex_color: Vec4::ONE,
+            })
+            .collect();
+        let mut model = ModelData {
+            vertices,
+            indices: (0..6).collect(),
+            faces: vec![
+                TopologyFace {
+                    first_index: 0,
+                    index_count: 3,
+                },
+                TopologyFace {
+                    first_index: 3,
+                    index_count: 3,
+                },
+            ],
+            ..Default::default()
+        };
+        model.recompute_bounds();
+        model
+    }
+
+    #[test]
+    fn faces_whose_uvs_agree_across_their_edge_are_one_island() {
+        let model = two_faces(
+            [Vec2::ZERO, Vec2::X, Vec2::Y],
+            [Vec2::X, Vec2::ONE, Vec2::Y],
+        );
+        let colors = uv_island_colors(&model, 0);
+        assert_eq!(colors.len(), 2);
+        assert_eq!(colors[0], colors[1]);
+    }
+
+    #[test]
+    fn a_seam_splits_the_faces_into_two_islands() {
+        // The second face's copy of the shared edge sits elsewhere in UV space.
+        let seamed = two_faces(
+            [Vec2::ZERO, Vec2::X, Vec2::Y],
+            [
+                Vec2::new(3.0, 0.0),
+                Vec2::new(4.0, 1.0),
+                Vec2::new(3.0, 1.0),
+            ],
+        );
+        let colors = uv_island_colors(&seamed, 0);
+        assert_ne!(colors[0], colors[1]);
+    }
+
+    #[test]
+    fn a_mirrored_edge_is_a_seam_even_where_the_uvs_coincide() {
+        // Both faces map the shared edge onto the same UV segment, but swapped
+        // end for end: welding by UV alone would call this continuous.
+        let mirrored = two_faces(
+            [Vec2::ZERO, Vec2::X, Vec2::Y],
+            [Vec2::Y, Vec2::ONE, Vec2::X],
+        );
+        let colors = uv_island_colors(&mirrored, 0);
+        assert_ne!(colors[0], colors[1]);
+    }
+
+    #[test]
+    fn a_mesh_without_face_topology_has_no_islands_to_colour() {
+        let mut model = two_faces([Vec2::ZERO; 3], [Vec2::ZERO; 3]);
+        model.faces.clear();
+        assert!(uv_island_colors(&model, 0).is_empty());
+    }
+}

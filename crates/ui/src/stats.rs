@@ -794,3 +794,17 @@ fn tex_row(ui: &mut egui::Ui, row: TexStatRow, value: &str) {
         );
     }
 }
+
+#[cfg(test)]
+mod human_size_tests {
+    use super::human_size;
+
+    #[test]
+    fn a_size_reads_in_the_largest_unit_it_fills() {
+        assert_eq!(human_size(0), "-", "zero is an unmeasured size");
+        assert_eq!(human_size(1023), "1023 B");
+        assert_eq!(human_size(1024), "1.0 KB");
+        assert_eq!(human_size(1536 * 1024), "1.5 MB");
+        assert_eq!(human_size(3 * 1024 * 1024 * 1024), "3.0 GB");
+    }
+}

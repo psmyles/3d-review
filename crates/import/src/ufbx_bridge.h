@@ -13,8 +13,8 @@ typedef struct review_import_vertex {
     float tangent[4];
     /* Per-vertex RGBA color from the mesh's vertex-color attribute (the DCC
        color set). White (1,1,1,1) when the mesh has no vertex-color layer. The
-       resolved material base color / smoothness are no longer baked per vertex
-       (Phase 1): they seed `review_import_material` and drive per-material draws. */
+       resolved material base color / smoothness are no longer baked per vertex:
+       they seed `review_import_material` and drive per-material draws. */
     float vertex_color[4];
 } review_import_vertex;
 
@@ -25,7 +25,7 @@ typedef struct review_import_face {
 
 typedef struct review_import_material {
     char *name;
-    /* Import defaults seeding the editable material table (Phase 1). Base color
+    /* Import defaults seeding the editable material table. Base color
        and emissive are stored in *linear* space (unlike review_import_vertex::color,
        which is sRGB-encoded for the vertex-color shader path). Smoothness is
        glossiness (1 - roughness) in [0,1]; metallic in [0,1]. */
@@ -244,8 +244,8 @@ typedef struct review_import_scene {
     size_t tri_material_count;
     /* Per-triangle owning scene-graph node, parallel to `tri_to_face` (same
        length / ordering). Each entry indexes `nodes` (the node whose mesh the
-       triangle came from), driving the Outliner's per-node selection / solo
-       (Phase 2). NULL when there are no triangles. */
+       triangle came from), driving the Outliner's per-node selection / solo.
+       NULL when there are no triangles. */
     uint32_t *tri_node;
     size_t tri_node_count;
     /* Per expanded corner (parallel to `vertices`, same length), the *logical*

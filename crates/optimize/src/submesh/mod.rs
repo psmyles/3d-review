@@ -76,7 +76,7 @@ pub struct TagPresence {
 
 #[cfg(test)]
 mod tests {
-    use glam::Vec4;
+    use glam::{Vec3, Vec4};
     use review_model::Vertex;
 
     use super::*;
@@ -99,6 +99,37 @@ mod tests {
             model.vertices.len(),
             "every source vertex is referenced, so none is dropped"
         );
+    }
+
+    /// A triangle with one out-of-range corner goes as a unit. Skipping only the
+    /// bad corner would leave a corner stream whose length is not a multiple of
+    /// three and shift every later triangle by one.
+    #[test]
+    fn a_triangle_with_a_bad_corner_is_dropped_whole() {
+        let mut model = demo_cube_model();
+        let triangles = model.indices.len() / 3;
+        model.indices[4] = u32::MAX;
+        let (submeshes, _) = partition(&model, None);
+
+        let cube = &submeshes[0];
+        assert_eq!(cube.triangle_count(), triangles - 1);
+        assert_eq!(cube.indices.len() % 3, 0);
+        // Every surviving triangle is one the source had, corner for corner.
+        let source: Vec<[Vec3; 3]> = model
+            .indices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .filter(|corners| corners.iter().all(|&c| (c as usize) < model.vertices.len()))
+            .map(|corners| corners.map(|c| model.vertices[c as usize].position))
+            .collect();
+        for corners in cube.indices.as_chunks::<3>().0 {
+            let triangle = corners.map(|c| cube.vertices[c as usize].position);
+            assert!(
+                source.contains(&triangle),
+                "{triangle:?} is not a source triangle"
+            );
+        }
     }
 
     #[test]

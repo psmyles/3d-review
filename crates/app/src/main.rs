@@ -395,7 +395,7 @@ struct App {
     gpu: Option<Gpu>,
 }
 
-/// Startup warmup frames to pump after the first (core-only) frame (Phase B), so
+/// Startup warmup frames to pump after the first (core-only) frame, so
 /// the deferred GPU-resource build drains behind the already-shown grid. The
 /// build completes in two stages (scene pipelines, then GTAO) — i.e. by the
 /// third frame — so the extra frames are a safety margin and cost only a few cheap

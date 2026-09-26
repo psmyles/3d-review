@@ -474,7 +474,7 @@ static uint32_t review_import_add_material(review_import_scene *scene, const ufb
         scene->materials = new_materials;
         slot = &scene->materials[scene->material_count];
         slot->name = owned_name;
-        /* Seed the editable material table's import defaults (Phase 1). */
+        /* Seed the editable material table's import defaults. */
         review_import_material_base_color_linear(material, slot->base_color);
         slot->smoothness = review_import_material_smoothness(material);
         slot->metallic = review_import_material_metallic(material);

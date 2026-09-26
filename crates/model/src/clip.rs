@@ -191,3 +191,89 @@ impl ModelData {
         frame_rate_or_default(self.frame_rate)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key<T>(time: f64, value: T) -> Key<T> {
+        Key { time, value }
+    }
+
+    /// One node track and one morph track, both well formed.
+    fn clip() -> AnimationClip {
+        AnimationClip {
+            name: "walk".to_owned(),
+            time_begin: 0.0,
+            time_end: 1.0,
+            tracks: vec![NodeTrack {
+                node: 1,
+                translation: vec![key(0.0, Vec3::ZERO), key(1.0, Vec3::X)],
+                rotation: vec![key(0.0, Quat::IDENTITY)],
+                scale: vec![key(0.0, Vec3::ONE)],
+            }],
+            morph_tracks: vec![MorphTrack {
+                channel: 0,
+                keys: vec![key(0.0, 0.0), key(1.0, 1.0)],
+            }],
+        }
+    }
+
+    /// Two nodes, one morph channel: what `clip()` is valid against.
+    fn validate(clip: &AnimationClip) -> Result<(), String> {
+        clip.validate(2, 1)
+    }
+
+    #[test]
+    fn a_well_formed_clip_passes() {
+        assert_eq!(validate(&clip()), Ok(()));
+    }
+
+    #[test]
+    fn a_time_range_that_is_backwards_or_not_a_number_is_refused() {
+        let mut backwards = clip();
+        backwards.time_end = -1.0;
+        assert!(validate(&backwards).is_err());
+
+        let mut nan = clip();
+        nan.time_begin = f64::NAN;
+        assert!(validate(&nan).is_err());
+    }
+
+    #[test]
+    fn a_track_aimed_past_the_scene_is_refused() {
+        let mut node = clip();
+        node.tracks[0].node = 2;
+        assert!(validate(&node).unwrap_err().contains("node 2 of 2"));
+
+        let mut channel = clip();
+        channel.morph_tracks[0].channel = 1;
+        assert!(
+            validate(&channel)
+                .unwrap_err()
+                .contains("morph channel 1 of 1")
+        );
+    }
+
+    #[test]
+    fn keys_out_of_order_or_at_no_time_are_refused() {
+        let mut unordered = clip();
+        unordered.tracks[0].translation.reverse();
+        assert!(validate(&unordered).unwrap_err().contains("out of order"));
+
+        let mut timeless = clip();
+        timeless.morph_tracks[0].keys[1].time = f64::INFINITY;
+        assert!(validate(&timeless).unwrap_err().contains("non-finite"));
+    }
+
+    #[test]
+    fn a_value_that_is_not_a_number_is_refused() {
+        let mut rotation = clip();
+        rotation.tracks[0].rotation[0].value = Quat::from_xyzw(f32::NAN, 0.0, 0.0, 1.0);
+        assert!(validate(&rotation).is_err());
+
+        let mut weight = clip();
+        weight.morph_tracks[0].keys[0].value = f32::NAN;
+        assert!(validate(&weight).is_err());
+    }
+}

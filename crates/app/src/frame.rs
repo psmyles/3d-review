@@ -270,7 +270,7 @@ impl App {
         // A held flycam key is a live interaction (invariant 6): keep pacing
         // frames so movement is continuous, and stop the moment it is let go.
         let flying = self.flycam_active();
-        // Pump startup warmup frames (Phase B) until the deferred GPU-resource
+        // Pump startup warmup frames until the deferred GPU-resource
         // build drains, so the scene pipelines + GTAO pass compile behind
         // the already-shown grid. Paced like the other continuous-redraw sources.
         let warming_up = self.redraw.warmup_frames > 0;

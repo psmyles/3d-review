@@ -244,3 +244,76 @@ fn round_dimension(value: f32) -> String {
         format!("{value:.2}")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_length_reads_in_the_files_own_unit() {
+        // 1.22 m in a centimeter file is the 122 its author typed.
+        assert_eq!(format_dimension(1.22, 0.01), "122 cm");
+        assert_eq!(format_dimension(0.0254, 0.0254), "1.00 in");
+        // No unit, or one nobody uses, reads in meters.
+        assert_eq!(format_dimension(12.345, 0.0), "12.3 m");
+        assert_eq!(format_dimension(12.345, 0.5), "12.3 m");
+    }
+
+    #[test]
+    fn precision_falls_as_the_value_grows() {
+        assert_eq!(round_dimension(1.234), "1.23");
+        assert_eq!(round_dimension(12.34), "12.3");
+        assert_eq!(round_dimension(123.4), "123");
+    }
+
+    #[test]
+    fn a_label_is_nudged_inside_the_viewport_not_squashed() {
+        let bounds = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(100.0, 50.0));
+        let spilling = egui::Rect::from_min_size(egui::pos2(90.0, -5.0), egui::vec2(20.0, 10.0));
+        let clamped = clamp_to(spilling, bounds);
+        assert_eq!(clamped.size(), spilling.size());
+        assert_eq!(clamped.min, egui::pos2(80.0, 0.0));
+
+        // Wider than the viewport: pinned to the left edge, not centred.
+        let wide = egui::Rect::from_min_size(egui::pos2(-30.0, 10.0), egui::vec2(200.0, 10.0));
+        assert_eq!(clamp_to(wide, bounds).left(), 0.0);
+    }
+
+    #[test]
+    fn a_point_projects_into_the_image_rect_it_was_drawn_in() {
+        // The Opt split draws each view into half the viewport; the same
+        // clip-space point must land in whichever half it is projected into.
+        let half = egui::Rect::from_min_max(egui::pos2(100.0, 0.0), egui::pos2(200.0, 100.0));
+        let centre = project(Mat4::IDENTITY, Vec3::ZERO, half).expect("on screen");
+        assert_eq!(centre, egui::pos2(150.0, 50.0));
+        let top_left = project(Mat4::IDENTITY, Vec3::new(-1.0, 1.0, 0.0), half).expect("on screen");
+        assert_eq!(top_left, egui::pos2(100.0, 0.0));
+
+        assert_eq!(
+            project(Mat4::IDENTITY, Vec3::new(2.0, 0.0, 0.0), half),
+            None
+        );
+        let behind = Mat4::from_cols_array(&[
+            1.0, 0.0, 0.0, 0.0, //
+            0.0, 1.0, 0.0, 0.0, //
+            0.0, 0.0, 1.0, 0.0, //
+            0.0, 0.0, 0.0, -1.0,
+        ]);
+        assert_eq!(project(behind, Vec3::ZERO, half), None, "w <= 0 is behind");
+    }
+
+    #[test]
+    fn every_edge_midpoint_sits_on_the_box_and_runs_along_its_axis() {
+        let (min, max) = (Vec3::new(-1.0, 0.0, 2.0), Vec3::new(3.0, 4.0, 6.0));
+        let midpoints = edge_midpoints(min, max);
+        for axis in 0..3 {
+            assert_eq!(midpoints.iter().filter(|(_, a)| *a == axis).count(), 4);
+        }
+        for (point, axis) in midpoints {
+            assert_eq!(point[axis], (min[axis] + max[axis]) * 0.5);
+            for other in (0..3).filter(|&other| other != axis) {
+                assert!(point[other] == min[other] || point[other] == max[other]);
+            }
+        }
+    }
+}
