@@ -10,6 +10,11 @@
 //! and setter-based, so driving it from Rust would spread `unsafe` across a
 //! hundred call sites and leak its scene lifetime into Rust. The bridge does the
 //! whole write in one call with a single ownership story.
+
+#![allow(
+    unsafe_code,
+    reason = "invariant 9: the raw export bridge declarations"
+)]
 #![cfg(has_ufbxw)]
 
 use std::ffi::{c_char, c_int};

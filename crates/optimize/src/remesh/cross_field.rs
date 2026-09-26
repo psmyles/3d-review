@@ -85,7 +85,6 @@
 // Nothing in the crate reads this module yet: its consumer is the quad
 // extraction, which is the next change. It is not called from the solve either,
 // because building a field nothing spends costs a third of a rebuild's time.
-#![allow(dead_code, reason = "read by the quad extraction, landing next")]
 
 use crate::cancel::{CancelToken, cancelled};
 use crate::parallel;

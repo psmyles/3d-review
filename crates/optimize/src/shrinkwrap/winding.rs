@@ -172,7 +172,6 @@ impl Tree {
 
 /// Recursive median split on the widest axis of the cluster's centroids, the
 /// same shape [`review_model::Bvh`] is built with.
-#[allow(clippy::too_many_arguments)]
 fn build_node(
     index: usize,
     start: usize,

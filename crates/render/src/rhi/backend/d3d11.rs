@@ -15,6 +15,11 @@
 //! and used from the main thread after the join — D3D11 devices are free-threaded,
 //! and only the main thread ever touches the immediate context.
 
+#![allow(
+    unsafe_code,
+    reason = "invariant 9: the Windows device and swapchain leaf"
+)]
+
 use std::ffi::c_void;
 
 use sokol::gfx as sg;

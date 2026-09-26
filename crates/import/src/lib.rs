@@ -11,6 +11,10 @@
 //! `third_party/ufbx` the crate still builds and every load reports
 //! [`ImportError::UfbxUnavailable`].
 
+// Invariant 9, enforced: `unsafe` is refused crate-wide, and each sanctioned
+// FFI / GPU leaf opts in with a module-level `allow` that says why.
+#![deny(unsafe_code)]
+
 use std::path::Path;
 
 use review_model::{AnimContext, ModelData, SourceExtras};

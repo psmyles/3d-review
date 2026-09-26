@@ -16,6 +16,10 @@
 //! annotated-GLSL source (`src/shaders/review.glsl`) generated to per-backend sources
 //! and compiled offline to committed bytecode by `build.rs`.
 
+// Invariant 9, enforced: `unsafe` is refused crate-wide, and each sanctioned
+// FFI / GPU leaf opts in with a module-level `allow` that says why.
+#![deny(unsafe_code)]
+
 use glam::{Vec2, Vec3};
 use review_model::{Bounds, DeformPose, ModelData};
 
@@ -263,6 +267,18 @@ impl SceneViewport {
     }
 }
 
+/// Per-frame inputs for the 2D UV viewport, bundled for the reason
+/// [`SceneFrame`] is.
+pub struct UvFrame<'a> {
+    pub model: &'a ModelData,
+    pub model_revision: u64,
+    /// The UV set to lay out.
+    pub channel: u32,
+    pub shading_mode: UvShadingMode,
+    pub anti_aliasing: AntiAliasing,
+    pub background: ViewportBackground,
+}
+
 /// Per-frame inputs for the Opt workspace's comparison render.
 pub struct OptSceneFrame<'a> {
     /// The source mesh and every shared setting; [`SceneFrame::with_model`]
@@ -400,33 +416,14 @@ impl Renderer {
     /// optional island fill + the model's UV edges, framed by the renderer's
     /// `uv_camera`.
     ///
-    #[allow(clippy::too_many_arguments)]
-    pub fn render_uv_scene(
-        &mut self,
-        frame: &mut Frame<'_>,
-        model: &ModelData,
-        model_revision: u64,
-        channel: u32,
-        shading_mode: UvShadingMode,
-        anti_aliasing: AntiAliasing,
-        background: ViewportBackground,
-    ) -> GpuResult<()> {
-        frame.set_clear(background.gradient_srgb().0);
+    pub fn render_uv_scene(&mut self, frame: &mut Frame<'_>, uv: &UvFrame<'_>) -> GpuResult<()> {
+        frame.set_clear(uv.background.gradient_srgb().0);
         let uv_camera = self.uv_camera;
-        self.ensure_scene(frame, anti_aliasing.effective_sample_count())?;
+        self.ensure_scene(frame, uv.anti_aliasing.effective_sample_count())?;
         let Some(scene_gpu) = self.scene.as_mut() else {
             return Ok(());
         };
-        scene_gpu.render_uv(
-            frame,
-            model,
-            model_revision,
-            uv_camera,
-            channel,
-            shading_mode,
-            anti_aliasing,
-            background,
-        )
+        scene_gpu.render_uv(frame, uv, uv_camera)
     }
 
     /// Render the 2D Tex viewport (instead of the 3D scene): the chosen background

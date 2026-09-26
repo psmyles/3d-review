@@ -206,10 +206,6 @@ where
 /// The caller merges them itself, in that order, which is what keeps a
 /// floating-point reduction independent of the thread count: the partials are
 /// always the same values combined in always the same sequence.
-#[allow(
-    dead_code,
-    reason = "read by the size field, which the next stage wires in"
-)]
 pub(crate) fn sweep_reduce<A, F>(len: usize, threads: usize, fold: F) -> Vec<A>
 where
     A: Send,

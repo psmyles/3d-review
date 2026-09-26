@@ -420,7 +420,6 @@ pub(crate) fn project_faces(
 
 /// Project one face. An unreachable source surface yields an empty face, which
 /// the caller drops.
-#[allow(clippy::too_many_arguments)]
 fn project_face(
     output: &RemeshOutput,
     source: &ProjectionSource,

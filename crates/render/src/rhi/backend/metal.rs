@@ -29,6 +29,11 @@
 //! `NSView` are main-thread-only, so [`Swapchain::new`] must be called there, as its
 //! caller ([`crate::rhi::GpuBringUp::attach`], from `resumed`) is.
 
+#![allow(
+    unsafe_code,
+    reason = "invariant 9: the macOS device and swapchain leaf"
+)]
+
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_app_kit::NSView;

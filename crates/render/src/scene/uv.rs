@@ -4,11 +4,9 @@
 //! path that shares no state with the 3D pass, which is why `release_uv_views`
 //! is called from the 3D path's `sync_frame` rather than from here.
 
-use review_model::ModelData;
-
 use crate::rhi::{Frame, GpuResult};
 use crate::shaders::generated;
-use crate::{AntiAliasing, TonemapSettings, UvCamera, UvShadingMode, ViewportBackground};
+use crate::{TonemapSettings, UvCamera, UvFrame};
 
 use super::slot::SlotId;
 
@@ -21,20 +19,20 @@ impl SceneGpu {
     /// optional island fill (Shaded / Islands modes), then the model's UV edges on
     /// top — all framed by the 2D `uv_camera` and composited like the 3D scene
     /// (tone-mapped, no GTAO).
-    // Independent per-frame inputs (frame + model + revision + camera + channel +
-    // shading mode + background); none is redundant.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn render_uv(
         &mut self,
         frame: &mut Frame<'_>,
-        model: &ModelData,
-        model_revision: u64,
+        uv: &UvFrame<'_>,
         uv_camera: UvCamera,
-        channel: u32,
-        shading_mode: UvShadingMode,
-        anti_aliasing: AntiAliasing,
-        background: ViewportBackground,
     ) -> GpuResult<()> {
+        let &UvFrame {
+            model,
+            model_revision,
+            channel,
+            shading_mode,
+            anti_aliasing,
+            background,
+        } = uv;
         // The UV viewport shows the source model, so its derived buffers belong in the
         // source slot (see the note in `render`).
         self.activate(SlotId::Source);

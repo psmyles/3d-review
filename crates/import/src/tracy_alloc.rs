@@ -12,6 +12,11 @@
 //! `crates/import` — the sanctioned home for all `unsafe`/FFI (invariant 9). `app`
 //! only *declares* the `#[global_allocator]` static (safe code) over this type.
 
+#![allow(
+    unsafe_code,
+    reason = "a GlobalAlloc wrapper, which is an unsafe trait by definition"
+)]
+
 use std::alloc::{GlobalAlloc, Layout};
 
 use tracy_client::Client;

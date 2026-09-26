@@ -4,6 +4,8 @@
 //! GPU problem. Note that sokol's validation layer is compiled *out* of a release
 //! build, so a misbehaving call has to be reproduced in debug to say so.
 
+#![allow(unsafe_code, reason = "invariant 9: sokol's extern C logger callback")]
+
 use super::*;
 
 /// sokol_gfx's log/validation channel.
@@ -23,13 +25,13 @@ pub(super) extern "C" fn log_sokol(
     file: *const c_char,
     _user_data: *mut c_void,
 ) {
-    // SAFETY: sokol passes NUL-terminated C string literals from its own static
-    // storage, or null. `from_ptr` is only reached for a non-null pointer, and the
-    // borrow ends inside this call.
     let text = |ptr: *const c_char| -> &str {
         if ptr.is_null() {
             ""
         } else {
+            // SAFETY: sokol passes NUL-terminated C string literals from its own
+            // static storage, or null. This is only reached for a non-null
+            // pointer, and the borrow ends inside this call.
             unsafe { CStr::from_ptr(ptr) }.to_str().unwrap_or("")
         }
     };

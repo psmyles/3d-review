@@ -14,6 +14,11 @@
 //! through ordinary Rust and the handles above free everything on the way out.
 //! One policy, two mechanisms, because the two sites genuinely differ.
 
+#![allow(
+    unsafe_code,
+    reason = "invariant 9: the one call into the C bridge and the handles that own what it returns"
+)]
+
 use std::ffi::{CString, c_void};
 use std::mem::MaybeUninit;
 use std::os::raw::{c_char, c_int};
@@ -162,6 +167,15 @@ pub(crate) fn load_fbx(
         // The ufbx C parse + the bridge's two-pass extraction (the bulk of a
         // load), measured as one GPU-free CPU zone.
         let _z = crate::prof::zone!("ufbx Parse");
+        let mut callback = ProgressCallback {
+            sink: progress,
+            cancel,
+        };
+        let extras_ptr = extras
+            .as_deref_mut()
+            .map_or(std::ptr::null_mut(), |extras| {
+                extras as *mut ReviewImportExtras
+            });
         // SAFETY: `c_path` is a valid NUL-terminated C string that outlives the
         // call; `error` is a live stack value; `scene` is a zeroed,
         // correctly-sized `ReviewImportScene` the bridge fully writes on
@@ -173,15 +187,6 @@ pub(crate) fn load_fbx(
         // sink, which the bridge only dereferences from within this call.
         // `extras` is either null (no capture) or a live boxed struct the
         // bridge fills and this call's handle then owns.
-        let mut callback = ProgressCallback {
-            sink: progress,
-            cancel,
-        };
-        let extras_ptr = extras
-            .as_deref_mut()
-            .map_or(std::ptr::null_mut(), |extras| {
-                extras as *mut ReviewImportExtras
-            });
         unsafe {
             review_import_load_fbx(
                 c_path.as_ptr(),
@@ -215,14 +220,13 @@ pub(crate) fn load_fbx(
         None => extras.map(|raw| ExtrasHandle { raw }),
     };
 
-    // SAFETY: `loaded != 0` means the bridge fully initialized `scene`, so the
-    // `MaybeUninit` now holds a valid `ReviewImportScene`.
     // From here the scene is owned by a handle that frees it on drop — including
     // on an unwind out of the marshal below, which the old manual free could not
     // cover.
-    let scene = SceneHandle {
-        raw: unsafe { scene.assume_init() },
-    };
+    // SAFETY: `loaded != 0` means the bridge fully initialized `scene`, so the
+    // `MaybeUninit` now holds a valid `ReviewImportScene`.
+    let raw = unsafe { scene.assume_init() };
+    let scene = SceneHandle { raw };
     let model = {
         // Walk the flat bridge arrays into our `ModelData` (slices, bounds, BVH).
         let _z = crate::prof::zone!("Build ModelData");

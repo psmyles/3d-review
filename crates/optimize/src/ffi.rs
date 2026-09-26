@@ -20,6 +20,11 @@
 //! Three bindings are **experimental** upstream and may change shape in any
 //! release: `meshopt_remesh`, `meshopt_generateNormals`, and the
 //! `PreserveFolds` / `ErrorClamped` simplify bits.
+
+#![allow(
+    unsafe_code,
+    reason = "invariant 9: the raw meshoptimizer declarations"
+)]
 #![cfg(has_meshopt)]
 
 use std::ffi::{c_float, c_int, c_uint, c_void};

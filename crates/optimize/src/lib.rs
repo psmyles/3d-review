@@ -29,9 +29,10 @@
 //! without `third_party/meshoptimizer` the crate still compiles and every
 //! operation reports [`OptError::Unavailable`].
 
-// Everything outside the FFI modules is ordinary safe Rust. Those modules opt in
-// individually rather than the crate opting out globally.
-#![cfg_attr(not(any(has_meshopt, has_ufbxw)), forbid(unsafe_code))]
+// Everything outside the FFI modules is ordinary safe Rust (invariant 9). The
+// crate refuses `unsafe`, and those modules opt in individually with a
+// module-level `allow` saying why.
+#![deny(unsafe_code)]
 
 mod export_ffi;
 mod ffi;

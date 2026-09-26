@@ -238,9 +238,7 @@ impl Topology {
     /// torus, one per component for a disc.
     ///
     /// Read by the seed budget, which turns a face count into a vertex count
-    /// through it; until that stage lands the tests below are what exercise it,
-    /// and they are also what proves the index above is right.
-    #[allow(dead_code, reason = "the seed budget is the next stage to land")]
+    /// through it; the tests below are what prove the index above is right.
     pub(crate) fn euler(&self) -> i64 {
         self.referenced as i64 - self.edge_count as i64 + self.face_count as i64
     }

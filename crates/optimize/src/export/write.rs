@@ -20,6 +20,10 @@ use super::*;
 
 /// Hand one assembled scene to the bridge.
 #[cfg(has_ufbxw)]
+#[allow(
+    unsafe_code,
+    reason = "invariant 9: the single call into the export bridge"
+)]
 pub(crate) fn write_scene(
     scene: &SceneData,
     path: &Path,

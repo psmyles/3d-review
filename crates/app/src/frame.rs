@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use review_model::ModelData;
 use review_render::{
     ActiveMaterial, CameraProjection, OptSceneFrame, OptView, ProcessedModelRef, Renderer,
-    SceneFrame, SceneViewport, TexBackground, TexImage,
+    SceneFrame, SceneViewport, TexBackground, TexImage, UvFrame,
 };
 use review_ui::{
     ComparisonSide, OptLayout, OptOverlayLevel, OptOverlayView, TextureBackground, UiOutput,
@@ -408,12 +408,14 @@ impl App {
             let render_result = match workspace {
                 WorkspaceMode::Uv => renderer.render_uv_scene(
                     &mut frame,
-                    model,
-                    model_revision,
-                    uv_channel,
-                    uv_shading,
-                    anti_aliasing,
-                    background,
+                    &UvFrame {
+                        model,
+                        model_revision,
+                        channel: uv_channel,
+                        shading_mode: uv_shading,
+                        anti_aliasing,
+                        background,
+                    },
                 ),
                 WorkspaceMode::Texture => {
                     let (image, background) = texture_draw.unwrap_or((None, TexBackground::Black));

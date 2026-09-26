@@ -22,12 +22,15 @@ members = [
 exclude = ["vendor/sokol-rust"]
 resolver = "2"
 
-# §3's review gate, in the manifest rather than only in a command line someone has
+# The review gate (`scripts/check.*`), in the manifest rather than only in a command line someone has
 # to remember: `cargo clippy --workspace` now fails on a lint whether or not
 # `-D warnings` was passed. Only clippy evaluates these, so a plain `cargo build`
 # is unaffected. `priority = -1` lets an individual lint below override the group.
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
+# Invariant 9: every `unsafe` carries a `// SAFETY:` rationale directly above it.
+# A convention until this line; now a failed lint.
+undocumented_unsafe_blocks = "deny"
 
 [workspace.package]
 edition = "2024"
