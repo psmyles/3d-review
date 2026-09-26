@@ -30,12 +30,12 @@ pub struct AboutInfo {
 
 impl AboutInfo {
     /// The page for filing a new issue.
-    pub(crate) fn new_issue_url(&self) -> String {
+    pub fn new_issue_url(&self) -> String {
         format!("{}/issues/new", self.homepage)
     }
 
     /// The credits page, as the repository renders it.
-    pub(crate) fn credits_url(&self) -> String {
+    pub fn credits_url(&self) -> String {
         format!("{}/blob/main/docs/CREDITS.md", self.homepage)
     }
 }

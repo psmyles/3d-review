@@ -327,7 +327,7 @@ fn help_menu(ui: &mut egui::Ui, state: &mut UiState, output: &mut UiOutput) {
         state.about.open = true;
     }
     if ui.button(keys::ui_toolbar::MENU_DOCUMENTATION).clicked() {
-        state.help.open_page(Page::Index);
+        state.help.open_contents();
     }
     ui.separator();
     if ui
@@ -774,7 +774,7 @@ fn draw_help_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
             if state.help.open {
                 state.help.open = false;
             } else {
-                state.help.open_page(Page::Index);
+                state.help.open_contents();
             }
         }
     });

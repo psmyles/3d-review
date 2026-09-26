@@ -55,8 +55,8 @@ use review_model::{ModelData, PosedScene, SceneBvh};
 use review_render::{EguiRenderer, Gpu, GpuBringUp, Renderer, RendererConfig};
 use review_ui::{MsaaSamples, Notifications, UiState, ViewportTool, init_style};
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event::{StartCause, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowAttributes, WindowId};
 
@@ -151,10 +151,10 @@ fn main() -> anyhow::Result<()> {
     // The texture file-watcher posts reload events back through this proxy.
     let texture_proxy = event_loop.create_proxy();
 
-    // The two macOS shell leaves, installed here because both need the event loop
-    // to exist (the delegate to extend, and `NSApplication` to hang a menu on) and
-    // neither may run once it does. Both are no-op stubs on Windows, so there is no
-    // `cfg` here — see `review_shell_macos`.
+    // The macOS open hook, installed here because it needs the event loop to exist
+    // (the delegate to extend) and must be in place before it runs: a
+    // launch-by-open delivers its file during launch. A no-op stub on Windows, as is
+    // the menu bar below, so there is no `cfg` here — see `review_shell_macos`.
     //
     // A `.fbx` opened from Finder arrives as an Apple event, not as `argv[1]`
     // (D14): a fresh launch gets no arguments at all, and an already-running app
@@ -166,21 +166,9 @@ fn main() -> anyhow::Result<()> {
         let _ = open_proxy.send_event(UserEvent::OpenPath(path));
     });
 
-    // Kept alive for the life of the process: dropping the handle takes the menu
-    // bar with it (D15). Its ⌘O / ⌘N accelerators intercept those chords before
-    // winit sees them, which is why they route to the same two handlers
-    // `shortcuts.rs` reaches rather than to anything of their own.
+    // The menu bar's route back into the loop. The bar itself is installed once
+    // the loop is running (`new_events`), which is the one time it can be.
     let menu_proxy = event_loop.create_proxy();
-    let _menu_bar = review_shell_macos::install_menu_bar(
-        review_shell_macos::About {
-            product: APP_NAME,
-            version: env!("REVIEW_VERSION"),
-            copyright: env!("REVIEW_COPYRIGHT"),
-        },
-        move |command| {
-            let _ = menu_proxy.send_event(UserEvent::MenuCommand(command));
-        },
-    );
 
     let mut app = App {
         gpu_bring_up: Some(gpu_bring_up),
@@ -189,6 +177,7 @@ fn main() -> anyhow::Result<()> {
         textures: TextureSubsystem::with_proxy(texture_proxy),
         tracy_enabled,
         _tracy: tracy,
+        menu_proxy: Some(menu_proxy),
         ..App::default()
     };
     app.ui.log.file = log_file;
@@ -360,6 +349,12 @@ struct App {
     /// A Help > Check for Updates request is on its way to GitHub; a second one
     /// is ignored until it answers.
     update_check_in_flight: bool,
+    /// The macOS menu bar (D15), brought in line with [`UiState`] after every
+    /// batch of events. Always `None` on Windows, which has none.
+    menu_bar: Option<review_shell_macos::MenuBar>,
+    /// What the menu bar posts its commands through, held until the loop starts
+    /// and the bar is installed.
+    menu_proxy: Option<EventLoopProxy<UserEvent>>,
     /// The failure that stopped `start` from bringing the viewer up, held until
     /// `run_app` has returned so the error dialog is opened from `main` rather than
     /// from inside a winit callback (D9 again: on macOS a modal run loop entered
@@ -477,6 +472,8 @@ impl Default for App {
             dialog_open: false,
             exit_requested: false,
             update_check_in_flight: false,
+            menu_bar: None,
+            menu_proxy: None,
             startup_error: None,
             notifications: Notifications::new(),
             tracy_enabled: false,
@@ -770,6 +767,24 @@ fn build_startup_renderer(window: &Window) -> Renderer {
 }
 
 impl ApplicationHandler<UserEvent> for App {
+    /// The loop's first turn is where the macOS menu bar is installed (D15), and
+    /// the only place it can be: winit's `applicationDidFinishLaunching:` puts its
+    /// own default menu up just before this, over anything set earlier. Its ⌘O / ⌘N
+    /// accelerators intercept those chords before winit sees them, which is why
+    /// they route to the same handlers `shortcuts.rs` reaches rather than to
+    /// anything of their own.
+    fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
+        if cause != StartCause::Init {
+            return;
+        }
+        if let Some(proxy) = self.menu_proxy.take() {
+            self.menu_bar = review_shell_macos::install_menu_bar(APP_NAME, move |command| {
+                // A closed event loop means the app is already exiting.
+                let _ = proxy.send_event(UserEvent::MenuCommand(command));
+            });
+        }
+    }
+
     /// Handle a message a worker thread posted back through the event loop
     /// (`events.rs`): the texture watcher and decoder, the model import, the Opt
     /// runs and export, native dialogs, macOS open-file and menu events, the
@@ -919,6 +934,7 @@ impl ApplicationHandler<UserEvent> for App {
             event_loop.exit();
             return;
         }
+        self.sync_menu_bar();
         self.pace_next_frame(event_loop);
     }
 

@@ -8,9 +8,9 @@
 //! is named and bounded, exactly like the GPU's and the importers'.
 //!
 //! Nothing here knows what a model, a camera or a frame is. `app` hands over a
-//! callback and gets back paths and a two-variant [`MenuCommand`]; that is the whole
-//! interface, and it is why this crate depends on neither `winit` nor any crate of
-//! ours.
+//! callback and gets back paths and a [`MenuCommand`], and hands the menu bar the
+//! few plain values it shows ([`MenuState`]); that is the whole interface, and it
+//! is why this crate depends on neither `winit` nor any crate of ours.
 //!
 //! Every item is a no-op stub off macOS, so `app` calls them unconditionally and
 //! carries no `cfg` of its own.
@@ -25,60 +25,99 @@ use std::path::PathBuf;
 /// A menu item `app` performs itself, as opposed to the predefined ones AppKit
 /// handles through its own responder chain.
 ///
-/// Deliberately tiny and named for the *command*, not the menu item: it is the
-/// same pair of actions the primary-modifier chords in `shortcuts.rs` fire, and the
-/// menu is a second door onto them rather than a second implementation.
+/// Named for the *command*, not the menu item: these are the entries of the
+/// toolbar's own menu (`review-ui`'s `MenuIntent`, plus the few it acts on in
+/// place), and the menu bar is a second door onto them rather than a second
+/// implementation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuCommand {
+    /// App → About: the viewer's own About box.
+    About,
+    /// App → Remember Settings.
+    ToggleRememberSettings,
     /// File → Open… (⌘O)
     Open,
+    /// File → Open Recent → the model at this index of the list last handed to
+    /// [`MenuBar::sync`].
+    OpenRecent(usize),
+    /// File → Open Recent → Clear Recent Files.
+    ClearRecentFiles,
     /// File → New (⌘N): back to the empty start state.
     New,
+    /// Debug → View Log.
+    ViewLog,
+    /// Debug → Tracy Profiler.
+    ToggleTracyProfiler,
+    /// Help → Documentation: the manual's contents page.
+    Documentation,
+    /// Help → Check for Updates.
+    CheckForUpdates,
+    /// Help → Report an Issue.
+    ReportIssue,
+    /// Help → Credits.
+    Credits,
 }
 
-/// The product identity the About panel shows, read from `product.json` by `app`'s
-/// build script so this crate needs no file access of its own.
-#[derive(Debug, Clone, Copy)]
-pub struct About<'a> {
-    pub product: &'a str,
-    pub version: &'a str,
-    pub copyright: &'a str,
-}
-
-/// The installed menu bar. Opaque on purpose — `app` only has to keep it alive,
-/// and dropping it takes the menu bar down with it.
+/// The app state the menu bar shows: its two check items and the Open Recent list.
 ///
-/// Holding muda's `Menu` inside rather than handing it out is what keeps muda from
-/// becoming a dependency of `app`.
+/// Borrowed plain values, handed over by [`MenuBar::sync`], so this crate still
+/// knows nothing of where they live.
+#[derive(Debug, Clone, Copy)]
+pub struct MenuState<'a> {
+    pub remember_settings: bool,
+    pub tracy_profiler: bool,
+    pub recent_files: &'a [PathBuf],
+}
+
+/// The installed menu bar. Opaque on purpose — `app` keeps it alive and hands it
+/// the state to show, and dropping it takes the menu bar down with it.
+///
+/// Holding muda's items inside rather than handing them out is what keeps muda
+/// from becoming a dependency of `app`.
 pub struct MenuBar {
     #[cfg(target_os = "macos")]
-    _menu: muda::Menu,
+    inner: menubar::Installed,
 }
 
-/// Build and install the application menu bar, routing its own two items to
-/// `on_command`.
+impl MenuBar {
+    /// Bring the check marks and the Open Recent list in line with `state`.
+    ///
+    /// Cheap when nothing changed — two reads of a check mark and a list compare —
+    /// so `app` calls it after every batch of events rather than tracking which
+    /// ones could have changed it.
+    pub fn sync(&mut self, state: MenuState<'_>) {
+        #[cfg(target_os = "macos")]
+        self.inner.sync(state);
+        #[cfg(not(target_os = "macos"))]
+        let _ = state;
+    }
+}
+
+/// Build and install the application menu bar, routing the viewer's own items to
+/// `on_command`. `product` is the name the application menu and its items carry.
 ///
-/// Must run on the main thread, after the event loop exists (`NSApplication` has to
-/// be up). `None` means the menu could not be built, which leaves the app running
+/// Must run on the main thread, once the event loop is *running* — winit's
+/// `StartCause::Init`. Earlier is too early: winit's `applicationDidFinishLaunching:`
+/// installs its own default menu, over whatever was there. `None` means the menu could not be built, which leaves the app running
 /// without one rather than failing to start.
 ///
 /// Off macOS this is `None` and nothing is built: Windows has no application menu
-/// bar and never wanted one.
+/// bar and never wanted one — the toolbar's menu is the only one there.
 #[cfg(target_os = "macos")]
 pub fn install_menu_bar(
-    about: About<'_>,
+    product: &str,
     on_command: impl Fn(MenuCommand) + Send + Sync + 'static,
 ) -> Option<MenuBar> {
-    menubar::install(about, on_command).map(|menu| MenuBar { _menu: menu })
+    menubar::install(product, on_command).map(|inner| MenuBar { inner })
 }
 
 /// The non-macOS stub. See the macOS arm.
 #[cfg(not(target_os = "macos"))]
 pub fn install_menu_bar(
-    about: About<'_>,
+    product: &str,
     on_command: impl Fn(MenuCommand) + Send + Sync + 'static,
 ) -> Option<MenuBar> {
-    let _ = (about, on_command);
+    let _ = (product, on_command);
     None
 }
 

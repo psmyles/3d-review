@@ -11,7 +11,7 @@ rust-version.workspace = true
 # application delegate is not expressible any other way — and invariant 9 keeps
 # `crates/app` at `#![forbid(unsafe_code)]`. Everything here is shell plumbing;
 # no model, camera, GPU or UI type crosses into it, and `app` talks to it through
-# plain paths and a two-variant command enum.
+# plain paths, a command enum and a few plain values the menu bar shows.
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { workspace = true }
