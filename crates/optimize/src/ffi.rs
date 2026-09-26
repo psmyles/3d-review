@@ -6,14 +6,20 @@
 //! validates the buffer/index preconditions the C side assumes, so the rest of
 //! the crate — and all of `app` / `ui` / `render` — stays safe.
 //!
-//! Signatures mirror `third_party/meshoptimizer/meshoptimizer.h` (v1.2)
+//! Signatures mirror `third_party/meshoptimizer/meshoptimizer.h` (v1.3)
 //! verbatim. `MESHOPTIMIZER_API` expands to nothing and the header wraps the
 //! whole surface in `extern "C"`, so the platform default calling convention
 //! applies on both sides. `size_t` maps to `usize`, `unsigned int` to `u32`.
 //!
 //! Keep this file in lockstep with the vendored header when refreshing it —
 //! a silently changed parameter list is the one thing the compiler cannot
-//! catch here.
+//! catch here, which is why `build.rs` pins the header's version and checks
+//! every declaration bound below against it (`MESHOPT_BOUND`): add each new
+//! binding to that list too.
+//!
+//! Three bindings are **experimental** upstream and may change shape in any
+//! release: `meshopt_remesh`, `meshopt_generateNormals`, and the
+//! `PreserveFolds` / `ErrorClamped` simplify bits.
 #![cfg(has_meshopt)]
 
 use std::ffi::{c_float, c_int, c_uint, c_void};
