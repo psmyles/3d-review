@@ -47,6 +47,11 @@ pub struct Submesh {
     /// Per vertex, a source corner (`ModelData::vertices` of the source) it
     /// came from — the representative one after a weld. Empty when unknown.
     pub source_corner: Vec<u32>,
+    /// Whether the normals no longer describe the surface: a weld that ignored
+    /// normals merged vertices that disagreed, and each survivor kept one of
+    /// them arbitrarily. Cleared by whatever writes normals next — the stack's
+    /// finishing pass smooths them if nothing else did.
+    pub normals_stale: bool,
 }
 
 impl Submesh {
@@ -166,24 +171,7 @@ impl Submesh {
                 *slot = old as u32;
             }
         }
-        for channel in &mut self.uv_channels {
-            *channel = gather(channel, &representative, Vec2::ZERO);
-        }
-        for channel in &mut self.color_channels {
-            *channel = gather(channel, &representative, Vec4::ONE);
-        }
-        if !self.vertex_crease.is_empty() {
-            self.vertex_crease = gather(&self.vertex_crease, &representative, 0.0);
-        }
-        if !self.source_corner.is_empty() {
-            self.source_corner = gather(&self.source_corner, &representative, u32::MAX);
-        }
-        self.skin = self.skin.gather(&representative);
-        for layer in &mut self.extra_skins {
-            *layer = layer.gather(&representative);
-        }
-        self.dq_weight = self.dq_weight.gather(&representative);
-        self.morph = self.morph.gather(&representative);
+        self.gather_rows(&representative);
 
         if let Some(polygons) = &mut self.polygons {
             let mapped = |index: u32| remap.get(index as usize).copied().unwrap_or(u32::MAX);
@@ -216,6 +204,111 @@ impl Submesh {
                 polygons.retain_edges(&keep_edges);
             }
         }
+    }
+
+    /// Rebuild every per-vertex array *other than* `vertices` so slot `n` holds
+    /// what old vertex `representative[n]` carried ([`u32::MAX`] leaves the
+    /// fallback). The half of a remap that has to follow a vertex through the
+    /// UV and color channels, creases, source corners and every deform row —
+    /// shared by a merge ([`Self::apply_vertex_remap`]) and a split
+    /// ([`Self::split_by_corner`]), so a new per-vertex array is added once.
+    fn gather_rows(&mut self, representative: &[u32]) {
+        for channel in &mut self.uv_channels {
+            *channel = gather(channel, representative, Vec2::ZERO);
+        }
+        for channel in &mut self.color_channels {
+            *channel = gather(channel, representative, Vec4::ONE);
+        }
+        if !self.vertex_crease.is_empty() {
+            self.vertex_crease = gather(&self.vertex_crease, representative, 0.0);
+        }
+        if !self.source_corner.is_empty() {
+            self.source_corner = gather(&self.source_corner, representative, u32::MAX);
+        }
+        self.skin = self.skin.gather(representative);
+        for layer in &mut self.extra_skins {
+            *layer = layer.gather(representative);
+        }
+        self.dq_weight = self.dq_weight.gather(representative);
+        self.morph = self.morph.gather(representative);
+    }
+
+    /// Give every triangle corner the value `corner[i]` (one per index), copying
+    /// a vertex wherever its corners disagree. Returns the value each vertex
+    /// ended up with — `None` for one no triangle references.
+    ///
+    /// This is how a *per-corner* result (meshoptimizer's generated normals and
+    /// tangents) becomes per-vertex data: corners that agree keep sharing their
+    /// vertex, and each disagreement becomes a copy appended after the existing
+    /// vertices, carrying everything the original did — channels, creases and
+    /// deform rows exactly — so skinning is unaffected. Corners are visited in
+    /// index order, which makes the numbering deterministic.
+    ///
+    /// A carried polygon never needs two copies of one vertex, so the corners of
+    /// one face at one vertex are first made to agree (the face's first corner
+    /// there wins); then the carry's corners are renumbered per face and each
+    /// carried edge is repeated for every distinct pair of copies its faces now
+    /// use, so the export can still name each of them.
+    pub(crate) fn split_by_corner<T: Copy + PartialEq>(&mut self, corner: &[T]) -> Vec<Option<T>> {
+        debug_assert_eq!(corner.len(), self.indices.len());
+        let mut values: Vec<T> = corner.to_vec();
+
+        let triangle_face = self
+            .polygons
+            .as_ref()
+            .filter(|carry| carry.triangle_face.len() == self.indices.len() / 3)
+            .map(|carry| carry.triangle_face.clone());
+        if let Some(triangle_face) = &triangle_face {
+            let mut first: HashMap<(u32, u32), T> = HashMap::new();
+            for (index, value) in values.iter_mut().enumerate() {
+                let face = triangle_face[index / 3];
+                if face == NO_FACE {
+                    continue;
+                }
+                let key = (face, self.indices[index]);
+                *value = *first.entry(key).or_insert(*value);
+            }
+        }
+
+        let original = self.vertices.len();
+        let before = self.indices.clone();
+        let mut assigned: Vec<Option<T>> = vec![None; original];
+        let mut next_copy: Vec<u32> = vec![u32::MAX; original];
+        let mut representative: Vec<u32> = (0..original as u32).collect();
+        for (index, &value) in self.indices.iter_mut().zip(&values) {
+            let mut current = *index as usize;
+            loop {
+                match assigned[current] {
+                    None => {
+                        assigned[current] = Some(value);
+                        break;
+                    }
+                    Some(existing) if existing == value => break,
+                    Some(_) if next_copy[current] != u32::MAX => {
+                        current = next_copy[current] as usize;
+                    }
+                    Some(_) => {
+                        let copy = assigned.len();
+                        assigned.push(Some(value));
+                        next_copy.push(u32::MAX);
+                        representative.push(*index);
+                        next_copy[current] = copy as u32;
+                        current = copy;
+                        break;
+                    }
+                }
+            }
+            *index = current as u32;
+        }
+
+        if representative.len() > original {
+            self.vertices = gather(&self.vertices, &representative, Vertex::default());
+            self.gather_rows(&representative);
+            if let (Some(polygons), Some(_)) = (&mut self.polygons, &triangle_face) {
+                polygons.split_corners(&before, &self.indices);
+            }
+        }
+        assigned
     }
 
     /// Drop vertices the index buffer no longer references, preserving the

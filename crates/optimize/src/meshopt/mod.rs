@@ -39,6 +39,8 @@ mod remap;
 #[cfg(has_meshopt)]
 mod reorder;
 #[cfg(has_meshopt)]
+mod shading;
+#[cfg(has_meshopt)]
 mod simplify;
 #[cfg(not(has_meshopt))]
 mod unavailable;
@@ -49,6 +51,8 @@ pub use analyze::*;
 pub use remap::*;
 #[cfg(has_meshopt)]
 pub use reorder::*;
+#[cfg(has_meshopt)]
+pub use shading::*;
 #[cfg(has_meshopt)]
 pub use simplify::*;
 #[cfg(not(has_meshopt))]

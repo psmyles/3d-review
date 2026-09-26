@@ -429,8 +429,8 @@ impl OpKind {
     }
 
     /// Whether this operation can change the mesh's shape (as opposed to only
-    /// reordering it). Drives whether processing has to regenerate tangents and
-    /// recompute bounds, and whether the "geometry changed" warning applies.
+    /// reordering it). Drives whether processing has to recompute bounds, and
+    /// whether the "geometry changed" warning applies.
     pub fn alters_geometry(&self) -> bool {
         match self {
             OpKind::Weld(_)
@@ -445,6 +445,13 @@ impl OpKind {
             | OpKind::Overdraw { .. }
             | OpKind::VertexFetch => false,
         }
+    }
+
+    /// Whether this operation leaves the tangents stale, so processing has to
+    /// rebuild them: anything that changes the shape, and anything that rewrites
+    /// the normals they are built perpendicular to.
+    pub fn invalidates_tangents(&self) -> bool {
+        self.alters_geometry()
     }
 }
 

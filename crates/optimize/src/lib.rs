@@ -43,6 +43,7 @@ pub mod probe;
 
 mod ao;
 mod parallel;
+mod shading;
 
 pub mod cancel;
 
@@ -104,6 +105,12 @@ pub enum OptError {
 
     #[error("vertex stream contains a non-finite value")]
     NonFiniteStream,
+
+    /// A numeric setting outside what the library accepts. meshoptimizer
+    /// `assert`s on these, and its asserts abort the process, so they are
+    /// refused before the call instead.
+    #[error("{name} of {value} is out of range")]
+    InvalidParameter { name: &'static str, value: f32 },
 
     #[error("buffer size overflowed while sizing a destination")]
     SizeOverflow,

@@ -726,6 +726,7 @@ pub(crate) fn build_pieces_from(
             dq_weight: Default::default(),
             morph: Default::default(),
             source_corner: Vec::new(),
+            normals_stale: false,
         };
         let carry = piece.polygons.as_mut().expect("just built");
 

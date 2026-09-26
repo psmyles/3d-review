@@ -223,6 +223,34 @@ unsafe extern "C" {
         vertex_size: usize,
     ) -> VertexFetchStatistics;
 
+    /// Per-corner tangents (`index_count * 4` floats: xyz + handedness `w`).
+    pub fn meshopt_generateTangents(
+        result: *mut c_float,
+        indices: *const c_uint,
+        index_count: usize,
+        vertex_positions: *const c_float,
+        vertex_count: usize,
+        vertex_positions_stride: usize,
+        vertex_normals: *const c_float,
+        vertex_normals_stride: usize,
+        vertex_uvs: *const c_float,
+        vertex_uvs_stride: usize,
+        options: c_uint,
+    );
+
+    /// Experimental. Per-corner normals (`index_count * 3` floats), averaged
+    /// across edges whose dihedral angle is below `crease_angle` (radians).
+    pub fn meshopt_generateNormals(
+        result: *mut c_float,
+        indices: *const c_uint,
+        index_count: usize,
+        vertex_positions: *const c_float,
+        vertex_count: usize,
+        vertex_positions_stride: usize,
+        crease_angle: c_float,
+        smoothing: c_float,
+    );
+
     pub fn meshopt_analyzeOverdraw(
         indices: *const c_uint,
         index_count: usize,

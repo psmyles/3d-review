@@ -131,3 +131,31 @@ pub fn analyze(
 ) -> Result<AnalysisCounters, OptError> {
     Err(OptError::Unavailable)
 }
+
+#[cfg(not(has_meshopt))]
+pub const TANGENT_COMPONENTS: usize = 4;
+
+#[cfg(not(has_meshopt))]
+pub const MAX_SMOOTHING: f32 = 10.0;
+
+#[cfg(not(has_meshopt))]
+pub fn generate_normals(
+    _indices: &[u32],
+    _positions: &[f32],
+    _vertex_count: usize,
+    _crease_radians: f32,
+    _smoothing: f32,
+) -> Result<Vec<f32>, OptError> {
+    Err(OptError::Unavailable)
+}
+
+#[cfg(not(has_meshopt))]
+pub fn generate_tangents(
+    _indices: &[u32],
+    _positions: &[f32],
+    _normals: &[f32],
+    _uvs: &[f32],
+    _vertex_count: usize,
+) -> Result<Vec<f32>, OptError> {
+    Err(OptError::Unavailable)
+}
