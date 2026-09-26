@@ -81,6 +81,11 @@ app-notifications-update-available = Version { $version } is available. Opening 
 app-notifications-update-latest = You have the latest version ({ $version }).
 app-notifications-update-check-failed = Couldn't check for updates: { $detail }
 
+## Tracy
+
+app-notifications-tracy-on-next-launch = Tracy profiling will be on from the next time you start the viewer.
+app-notifications-tracy-off-next-launch = Tracy profiling will be off from the next time you start the viewer.
+
 ## The graphics device
 
 app-notifications-gpu-fault = { $context }: { $detail }

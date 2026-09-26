@@ -11,7 +11,7 @@
 use review_render::TextureSlot;
 use review_ui::{AxisGizmoAction, MenuIntent, TextureIntent, UiOutput};
 
-use crate::App;
+use crate::{App, keys};
 
 impl App {
     pub(crate) fn apply_ui_output(&mut self, output: UiOutput) {
@@ -112,6 +112,19 @@ impl App {
                 // Written now rather than only on exit, so the choice holds even
                 // for a session that never exits cleanly.
                 self.persist_settings();
+                self.redraw.requested = true;
+            }
+            MenuIntent::ToggleTracyProfiler => {
+                self.ui.tracy_profiler = !self.ui.tracy_profiler;
+                self.persist_settings();
+                // It cannot take effect in this session, so say when it will.
+                let notice = if self.ui.tracy_profiler {
+                    keys::app_notifications::TRACY_ON_NEXT_LAUNCH
+                } else {
+                    keys::app_notifications::TRACY_OFF_NEXT_LAUNCH
+                };
+                self.notifications
+                    .info(review_localization::tr(notice).into_owned());
                 self.redraw.requested = true;
             }
             MenuIntent::CheckForUpdates => self.check_for_updates(),

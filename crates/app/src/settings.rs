@@ -1,14 +1,15 @@
 //! The per-user settings file, beside `window.cfg` in the same config directory.
 //!
 //! It holds the interface language, the menu's **Remember settings** switch and,
-//! while that is on, the option-window values it remembers. The format is the
+//! while that is on, the option-window values it remembers, and the **Tracy
+//! Profiler** preference (a saved `--tracy`, read once at launch). The format is the
 //! same hand-rolled `key=value` one [`crate::window_state`] uses — no serde, no
 //! schema, and a line it does not recognise is skipped rather than failing the
 //! read, because a settings file that has picked up a key from a newer build must
 //! not stop this one starting.
 //!
-//! The viewer writes only the keys it owns — [`REMEMBER_KEY`] and everything under
-//! [`OPTIONS_PREFIX`] — and carries every other line through a save untouched, so
+//! The viewer writes only the keys it owns — [`REMEMBER_KEY`], [`TRACY_KEY`] and
+//! everything under [`OPTIONS_PREFIX`] — and carries every other line through a save untouched, so
 //! a hand-set `locale`, a comment, or a key only a newer build knows survives this
 //! one rewriting the file. What the remembered values *are* is `review_ui`'s
 //! business ([`UiState::remembered_options`]); this module only owns the file.
@@ -25,6 +26,9 @@ const SETTINGS_FILE: &str = "settings.cfg";
 /// Whether the option-window values are carried into the next session.
 const REMEMBER_KEY: &str = "remember_settings";
 
+/// Whether the Tracy client starts at launch, as if `--tracy` had been passed.
+const TRACY_KEY: &str = "tracy_profiler";
+
 /// The namespace the remembered option-window values are written under, so the
 /// save can tell its own lines from everyone else's.
 const OPTIONS_PREFIX: &str = "options.";
@@ -40,13 +44,25 @@ pub(crate) fn locale() -> Option<String> {
         .find_map(|(key, value)| (key == "locale").then_some(value))
 }
 
-/// Restore the remembered settings into `ui`, if the user asked for them to be
-/// remembered. A value this build cannot read is skipped, leaving its default.
+/// Whether the user has asked for Tracy profiling at every launch. Read by `main`
+/// before the client would start, which is the only moment the answer matters.
+pub(crate) fn tracy_profiler() -> bool {
+    read_entries()
+        .iter()
+        .any(|(key, value)| key == TRACY_KEY && value == "true")
+}
+
+/// Restore the saved preferences into `ui`: the Tracy switch always, and the
+/// option-window values if the user asked for them to be remembered. A value
+/// this build cannot read is skipped, leaving its default.
 pub(crate) fn restore(ui: &mut UiState) {
     apply_entries(ui, &read_entries());
 }
 
 fn apply_entries(ui: &mut UiState, entries: &[(String, String)]) {
+    ui.tracy_profiler = entries
+        .iter()
+        .any(|(key, value)| key == TRACY_KEY && value == "true");
     ui.remember_settings = entries
         .iter()
         .any(|(key, value)| key == REMEMBER_KEY && value == "true");
@@ -103,13 +119,15 @@ impl App {
 fn settings_text(existing: &str, ui: &UiState) -> String {
     let mut text = String::new();
     for line in existing.lines() {
-        let owned = parse_line(line)
-            .is_some_and(|(key, _)| key == REMEMBER_KEY || key.starts_with(OPTIONS_PREFIX));
+        let owned = parse_line(line).is_some_and(|(key, _)| {
+            key == REMEMBER_KEY || key == TRACY_KEY || key.starts_with(OPTIONS_PREFIX)
+        });
         if !owned {
             text.push_str(line);
             text.push('\n');
         }
     }
+    text.push_str(&format!("{TRACY_KEY}={}\n", ui.tracy_profiler));
     text.push_str(&format!("{REMEMBER_KEY}={}\n", ui.remember_settings));
     if ui.remember_settings {
         for (key, value) in ui.remembered_options() {
@@ -187,7 +205,9 @@ mod tests {
         ui.gtao.radius = 2.0;
 
         let text = settings_text(existing, &ui);
-        assert!(text.starts_with("# mine\nlocale=de\nfuture=x\nremember_settings=true\n"));
+        assert!(text.starts_with(
+            "# mine\nlocale=de\nfuture=x\ntracy_profiler=false\nremember_settings=true\n"
+        ));
         assert!(!text.contains("options.gone"));
         assert!(text.contains("options.ambient_occlusion.radius=2\n"));
         assert_eq!(text.matches(REMEMBER_KEY).count(), 1);
@@ -205,6 +225,26 @@ mod tests {
     fn switching_off_drops_the_remembered_values() {
         let existing = "locale=de\nremember_settings=true\noptions.tonemapper.enabled=false\n";
         let text = settings_text(existing, &UiState::default());
-        assert_eq!(text, "locale=de\nremember_settings=false\n");
+        assert_eq!(
+            text,
+            "locale=de\ntracy_profiler=false\nremember_settings=false\n"
+        );
+    }
+
+    /// The Tracy switch is its own preference: it is written and read whether or
+    /// not the option-window values are being remembered.
+    #[test]
+    fn the_tracy_switch_survives_without_remember_settings() {
+        let ui = UiState {
+            tracy_profiler: true,
+            ..UiState::default()
+        };
+        let text = settings_text("tracy_profiler=false\n", &ui);
+        assert_eq!(text, "tracy_profiler=true\nremember_settings=false\n");
+
+        let mut restored = UiState::default();
+        apply_entries(&mut restored, &parse_entries(&text));
+        assert!(restored.tracy_profiler);
+        assert!(!restored.remember_settings);
     }
 }

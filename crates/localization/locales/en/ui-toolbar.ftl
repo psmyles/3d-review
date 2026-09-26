@@ -27,6 +27,12 @@ ui-toolbar-menu-remember-settings = Remember Settings
         such as colors, sizes, the environment and the ambient occlusion settings, are kept
         and come back the next time you start the viewer.
 
+ui-toolbar-menu-tracy-profiler = Tracy Profiler
+    .description = For developers measuring the viewer's performance. When this is ticked, the
+        viewer starts with the Tracy profiler enabled, as if it had been launched with
+        --tracy, and a Tracy window can connect to it. It takes effect the next time you
+        start the viewer.
+
 ui-toolbar-menu-about = About
 ui-toolbar-menu-documentation = Documentation
 ui-toolbar-menu-check-for-updates = Check for Updates

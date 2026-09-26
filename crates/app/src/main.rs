@@ -112,6 +112,12 @@ fn main() -> anyhow::Result<()> {
             .as_deref(),
     );
 
+    // Preferences > Tracy Profiler is a saved `--tracy`: it takes effect here, at
+    // launch, because a started client cannot be stopped before the process ends
+    // and the profile is only whole if it starts on this line. A gate run ignores
+    // it - the two builds it compares must be measured the same way.
+    let tracy_enabled = tracy_enabled || (gate_out.is_none() && settings::tracy_profiler());
+
     // Start the Tracy client only when asked, and keep the handle alive for the
     // whole process (dropping the last handle disconnects). With `manual-lifetime`
     // the client never auto-starts, so a normal launch opens no socket and every
@@ -120,7 +126,7 @@ fn main() -> anyhow::Result<()> {
     let tracy = tracy_enabled.then(|| {
         let client = tracy_client::Client::start();
         prof::thread_name("main");
-        prof::msg("3d-review: Tracy profiling enabled (--tracy)");
+        prof::msg("3d-review: Tracy profiling enabled");
         client
     });
 
@@ -693,7 +699,6 @@ impl App {
         }
 
         self.ui.about.info.renderer = gpu.backend_name().to_owned();
-        self.ui.about.info.adapter = gpu.adapter_name();
 
         // Under `--tracy`, arm the GPU profiler. A normal launch never calls this, so
         // nothing profiling-related is ever built.

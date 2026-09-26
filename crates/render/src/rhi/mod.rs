@@ -257,11 +257,6 @@ impl Gpu {
         }
     }
 
-    /// The GPU's own name as the driver reports it, or `None` if it will not say.
-    pub fn adapter_name(&self) -> Option<String> {
-        self.device.adapter_name()
-    }
-
     /// The largest 2D texture this device can create, for `egui-winit`'s texture-size
     /// cap — a real query now rather than the hardcoded 16384 the D3D11 path assumed.
     pub fn max_texture_size(&self) -> usize {

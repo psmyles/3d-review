@@ -138,26 +138,6 @@ impl Device {
             .collect()
     }
 
-    /// The adapter's own name, as the driver reports it — what the About box says
-    /// the viewer is drawing on. `None` if DXGI will not say; the software
-    /// fallback reports itself as "Microsoft Basic Render Driver".
-    pub(crate) fn adapter_name(&self) -> Option<String> {
-        // SAFETY: plain COM traversal device -> DXGI device -> adapter on a live
-        // device, then `GetDesc`, a pure query filling a caller-owned struct.
-        let desc = unsafe {
-            let dxgi_device: IDXGIDevice = self.device.cast().ok()?;
-            dxgi_device.GetAdapter().ok()?.GetDesc().ok()?
-        };
-        let len = desc
-            .Description
-            .iter()
-            .position(|&unit| unit == 0)
-            .unwrap_or(desc.Description.len());
-        let name = String::from_utf16_lossy(&desc.Description[..len]);
-        let name = name.trim();
-        (!name.is_empty()).then(|| name.to_owned())
-    }
-
     /// `CheckMultisampleQualityLevels` for one format — 0 means the adapter cannot
     /// render `count`× MSAA into it.
     fn quality(&self, format: Format, count: u32) -> u32 {

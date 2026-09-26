@@ -16,12 +16,16 @@ workspace, and has three parts.
 
 - **Remember Settings** is a switch. A tick next to it means it is on. See
   [below](#remember-settings) for what it keeps.
+- **Tracy Profiler** is for developers measuring the viewer's performance.
+  While it is ticked, the viewer starts with the
+  [Tracy profiler](https://github.com/wolfpld/tracy) enabled, the same as
+  starting it with `--tracy`. The change takes effect the next time you start
+  the viewer, not straight away.
 
 ## Help
 
-- **About** shows which version of the viewer this is, how it is drawing (the
-  graphics system and the graphics card it is using), and a link to the
-  project's page on GitHub.
+- **About** shows which version of the viewer this is, which graphics system
+  it is drawing with, and a link to the project's page on GitHub.
 - **Documentation** opens this manual.
 - **Check for Updates** asks GitHub whether a newer version has been released.
   If there is one, the releases page opens in your web browser so you can

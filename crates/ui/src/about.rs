@@ -26,8 +26,6 @@ pub struct AboutInfo {
     /// The graphics API sokol_gfx is drawing through (`Direct3D 11`, `Metal`).
     /// Empty until the GPU is up.
     pub renderer: String,
-    /// The GPU's own name, when the driver reports one.
-    pub adapter: Option<String>,
 }
 
 impl AboutInfo {
@@ -63,9 +61,6 @@ pub(crate) fn draw(ctx: &egui::Context, about: &mut AboutState) {
         ui.add_space(size::ABOUT_SECTION_GAP);
         if !info.renderer.is_empty() {
             ui.label(keys::ui_about::renderer(info.renderer.clone()));
-        }
-        if let Some(adapter) = &info.adapter {
-            ui.label(keys::ui_about::graphics_card(adapter.clone()));
         }
         ui.add_space(size::ABOUT_SECTION_GAP);
         ui.hyperlink_to(keys::ui_about::SOURCE_CODE, &info.homepage);

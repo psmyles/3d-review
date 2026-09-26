@@ -233,7 +233,7 @@ fn file_menu(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput) {
     }
 }
 
-/// Preferences: the Remember settings switch.
+/// Preferences: the Remember Settings and Tracy Profiler switches.
 fn preferences_menu(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput) {
     // A copy, not the field: flipping it is `app`'s job, because flipping it is
     // also what writes the settings file.
@@ -248,6 +248,20 @@ fn preferences_menu(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput) {
     .clicked()
     {
         output.menu = Some(MenuIntent::ToggleRememberSettings);
+    }
+
+    // The same copy-not-field rule: the switch lives in the settings file.
+    let mut tracy = state.tracy_profiler;
+    let tracy_response = ui.checkbox(&mut tracy, keys::ui_toolbar::MENU_TRACY_PROFILER);
+    if tip(
+        tracy_response,
+        Tip::new(keys::ui_toolbar::MENU_TRACY_PROFILER)
+            .describe(keys::ui_toolbar::MENU_TRACY_PROFILER_DESCRIPTION)
+            .page(Page::Menu),
+    )
+    .clicked()
+    {
+        output.menu = Some(MenuIntent::ToggleTracyProfiler);
     }
 }
 

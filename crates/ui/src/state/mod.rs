@@ -206,6 +206,9 @@ pub enum MenuIntent {
     /// Flip [`UiState::remember_settings`] and write the settings file at once,
     /// so the choice survives even a session that never exits cleanly.
     ToggleRememberSettings,
+    /// Flip [`UiState::tracy_profiler`] and write the settings file; it takes
+    /// effect at the next launch.
+    ToggleTracyProfiler,
     /// Ask GitHub for the newest release, and open the releases page if it is
     /// newer than this build (or say that this build is the latest).
     CheckForUpdates,
@@ -416,6 +419,12 @@ pub struct UiState {
     /// since flipping it is also what writes the file. Off by default: nothing
     /// persists until the user asks for it.
     pub remember_settings: bool,
+    /// Whether the Tracy client starts at launch — the menu's **Tracy Profiler**
+    /// preference, a saved `--tracy`. It takes effect on the *next* launch only
+    /// (a started client cannot be stopped), so it says nothing about whether
+    /// Tracy is running now. Flipped only by `app`, which writes it to the
+    /// settings file as it does.
+    pub tracy_profiler: bool,
 }
 
 impl Default for UiState {
@@ -481,6 +490,7 @@ impl Default for UiState {
             caches: BoundsCaches::default(),
             fps: 0.0,
             remember_settings: false,
+            tracy_profiler: false,
         }
     }
 }
