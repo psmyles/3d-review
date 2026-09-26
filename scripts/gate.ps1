@@ -3,9 +3,10 @@
     The D2 gate: measure two builds of the viewer against each other on this box.
 
 .DESCRIPTION
-    `mac-port-plan.md` D2 lets the Windows migration land only if it costs nothing
-    measurable against `main`: same box, same fixture, release build, three
-    measurements — startup, frame time, memory — with a budget on each.
+    Platform decision D2 (`docs/ARCHITECTURE.md`) let the Windows migration land
+    only if it cost nothing measurable against `main`: same box, same fixture,
+    release build, three measurements — startup, frame time, memory — with a
+    budget on each.
 
     Each launch runs the viewer's own `--gate-out <file>` mode (`crates/app/src/gate.rs`):
     it loads the fixture, plays a scripted orbit, writes one JSON stamp and then sits

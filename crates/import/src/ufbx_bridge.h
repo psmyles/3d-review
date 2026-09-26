@@ -13,8 +13,8 @@ typedef struct review_import_vertex {
     float tangent[4];
     /* Per-vertex RGBA color from the mesh's vertex-color attribute (the DCC
        color set). White (1,1,1,1) when the mesh has no vertex-color layer. The
-       resolved material base color / smoothness are no longer baked per vertex
-       (Phase 1): they seed `review_import_material` and drive per-material draws. */
+       resolved material base color / smoothness are no longer baked per vertex:
+       they seed `review_import_material` and drive per-material draws. */
     float vertex_color[4];
 } review_import_vertex;
 
@@ -25,7 +25,7 @@ typedef struct review_import_face {
 
 typedef struct review_import_material {
     char *name;
-    /* Import defaults seeding the editable material table (Phase 1). Base color
+    /* Import defaults seeding the editable material table. Base color
        and emissive are stored in *linear* space (unlike review_import_vertex::color,
        which is sRGB-encoded for the vertex-color shader path). Smoothness is
        glossiness (1 - roughness) in [0,1]; metallic in [0,1]. */
@@ -82,7 +82,7 @@ typedef struct review_import_node {
        as translation / rotation quaternion (x, y, z, w) / scale — what an
        animation clip's baked keys replace channel by channel. The scene loads with
        helper-node inherit-mode handling, so `parent_world * TRS(local)` reproduces
-       `transform` exactly. */
+       `transform` up to the rounding of both into `float`. */
     float local_translation[3];
     float local_rotation[4];
     float local_scale[3];
@@ -244,8 +244,8 @@ typedef struct review_import_scene {
     size_t tri_material_count;
     /* Per-triangle owning scene-graph node, parallel to `tri_to_face` (same
        length / ordering). Each entry indexes `nodes` (the node whose mesh the
-       triangle came from), driving the Outliner's per-node selection / solo
-       (Phase 2). NULL when there are no triangles. */
+       triangle came from), driving the Outliner's per-node selection / solo.
+       NULL when there are no triangles. */
     uint32_t *tri_node;
     size_t tri_node_count;
     /* Per expanded corner (parallel to `vertices`, same length), the *logical*
@@ -326,6 +326,11 @@ typedef int (*review_import_progress_fn)(
 /* `review_import_load_fbx` return codes: any other non-zero value is success. */
 #define REVIEW_IMPORT_FAILED 0
 #define REVIEW_IMPORT_CANCELLED (-1)
+/* The model loaded, but the source-property capture did not (it ran out of
+   memory or hit a count past its limits): `out_extras` is left zeroed and
+   `out_error` says why. The capture is what the exporter gives back, never what
+   the viewer draws, so losing it must not cost the artist the model. */
+#define REVIEW_IMPORT_LOADED_WITHOUT_EXTRAS 2
 
 /* `progress` may be NULL, in which case no progress is reported. `out_extras`
    may be NULL to skip the source-property capture; when given it is filled from

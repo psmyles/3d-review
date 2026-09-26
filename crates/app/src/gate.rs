@@ -1,4 +1,4 @@
-//! The D2 gate stamp: `--gate-out <file>` (`mac-port-plan.md` §7, D2).
+//! The D2 gate stamp: `--gate-out <file>` (`docs/ARCHITECTURE.md`, Platform decisions D2).
 //!
 //! The port is only allowed to land on Windows if it costs nothing measurable
 //! against `main` on the same box, same fixture, release build. Measuring that by

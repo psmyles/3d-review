@@ -14,6 +14,7 @@ use glam::{Mat4, Quat, Vec3};
 use review_model::extras::{AttributeKind, Synthetic};
 use review_model::{ModelData, SourceExtras};
 
+use crate::notice::ExportNote;
 use crate::stack::HierarchyMode;
 
 use super::*;
@@ -41,21 +42,19 @@ pub(crate) fn group_by_node(model: &ModelData) -> Vec<NodeGroup> {
         }];
     }
 
-    let mut order: Vec<u32> = Vec::new();
+    // In first-appearance order, found through a map: a linear search of the
+    // groups seen so far is triangles x nodes on a scene of many objects.
+    let mut slot_of: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
     let mut groups: Vec<NodeGroup> = Vec::new();
     for triangle in 0..triangle_count {
         let node = model.triangles.node[triangle];
-        let slot = match order.iter().position(|&seen| seen == node) {
-            Some(slot) => slot,
-            None => {
-                order.push(node);
-                groups.push(NodeGroup {
-                    source_node: Some(node as usize),
-                    triangles: Vec::new(),
-                });
-                groups.len() - 1
-            }
-        };
+        let slot = *slot_of.entry(node).or_insert_with(|| {
+            groups.push(NodeGroup {
+                source_node: Some(node as usize),
+                triangles: Vec::new(),
+            });
+            groups.len() - 1
+        });
         groups[slot].triangles.push(triangle);
     }
     groups
@@ -273,7 +272,7 @@ pub(crate) fn place_node(
     group: &NodeGroup,
     hierarchy: HierarchyMode,
     level: usize,
-) -> (i32, Vec<String>) {
+) -> (i32, Vec<ExportNote>) {
     let mut notes = Vec::new();
 
     let plain = |name: CString, parent: i32, local: Mat4| -> NodeData {
@@ -336,7 +335,7 @@ pub(crate) fn place_node(
         // A cycle in the imported hierarchy would loop forever; the chain can
         // never legitimately be longer than the node table.
         if chain.len() > source.nodes.len() {
-            notes.push("A node's parent chain looped; that branch was exported flat.".to_owned());
+            notes.push(ExportNote::ParentChainLooped);
             chain.truncate(1);
             break;
         }
@@ -380,11 +379,9 @@ pub(crate) fn place_node(
         let local = if inverse.is_finite() {
             inverse * node.transform
         } else {
-            notes.push(format!(
-                "'{}' has a non-invertible transform; its children were exported \
-                 relative to it without it.",
-                node.name
-            ));
+            notes.push(ExportNote::NonInvertibleTransform {
+                node: node.name.clone(),
+            });
             node.transform
         };
 

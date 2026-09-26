@@ -69,7 +69,7 @@ impl AnimContext {
         let rest_world_inverse = model
             .nodes
             .iter()
-            .map(|node| invert_affine(node.transform))
+            .map(|node| invert_or_identity(node.transform))
             .collect();
 
         let mut corner_node = vec![u32::MAX; model.vertices.len()];
@@ -107,10 +107,11 @@ impl AnimContext {
     }
 }
 
-/// A singular rest matrix (a zero-scaled node) has no inverse; fall back to the
-/// identity so the node simply doesn't move rather than poisoning the palette
-/// with NaNs.
-fn invert_affine(matrix: Mat4) -> Mat4 {
+/// The inverse of `matrix`, or the identity when it has none. A singular matrix
+/// (a zero-scaled node) would otherwise put NaNs into whatever is built from it —
+/// the skinning palette here, the pick's per-part ray transform in `pick` — so
+/// the node stays where it is instead. The one fallback both of them use.
+pub(crate) fn invert_or_identity(matrix: Mat4) -> Mat4 {
     let determinant = matrix.determinant();
     if determinant.abs() > 1e-20 && determinant.is_finite() {
         let inverse = matrix.inverse();
@@ -835,6 +836,24 @@ mod tests {
         let empty = AnimationClip::default();
         assert_eq!(empty.frame_count(30.0), 1);
         assert_eq!(empty.wrap_time(3.0), 0.0);
+    }
+
+    #[test]
+    fn an_absurd_clip_range_is_capped_rather_than_overflowing() {
+        // A finite range the file declared, long enough that range x rate saturates
+        // a usize: the count used to overflow its `+ 1`, and stepping then panicked
+        // in `i64::clamp` with a last frame of -1.
+        let clip = AnimationClip {
+            time_begin: 0.0,
+            time_end: 1e300,
+            ..AnimationClip::default()
+        };
+        assert_eq!(clip.frame_count(1e300), crate::MAX_CLIP_FRAMES);
+        assert_eq!(clip.frame_count(30.0), crate::MAX_CLIP_FRAMES);
+        let stepped = clip.step_frame_time(0.0, i64::MAX, 30.0);
+        assert!(stepped.is_finite() && stepped > 0.0);
+        assert_eq!(clip.step_frame_time(0.0, i64::MIN, 30.0), 0.0);
+        assert_eq!(clip.frame_at(1e300, 30.0), crate::MAX_CLIP_FRAMES - 1);
     }
 
     /// One triangle skinned to the chain: corner 0 rides the child (node 1)

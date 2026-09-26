@@ -3,7 +3,8 @@
 //! settings, the adapter-capability probe, and `RendererConfig`. These form the
 //! UI→render and model→render *option contract* (a clean seam for the future
 //! renderer swap); `Renderer` and the cameras live in the crate root and read
-//! these as plain values.//!
+//! these as plain values.
+//!
 //! ## Layout
 //!
 //! The shading mode, the projection and the anti-aliasing settings are here with

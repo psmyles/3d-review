@@ -37,13 +37,15 @@ pub struct TexturePoolEntry {
 }
 
 impl TexturePoolEntry {
-    /// Display name of this texture (its file name).
+    /// Display name of this texture: its file name, or the whole path for one
+    /// that has none. A name that is not valid Unicode is shown lossily rather
+    /// than replaced by a placeholder.
     pub fn name(&self) -> String {
         self.path
             .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("<texture>")
-            .to_owned()
+            .unwrap_or(self.path.as_os_str())
+            .to_string_lossy()
+            .into_owned()
     }
 
     /// Uppercased source-file format label from the extension (e.g. `PNG`, `TGA`),
@@ -104,7 +106,7 @@ impl TextureChannelView {
     }
 
     /// The channel index the Tex viewport shader reads (`0` RGB, `1..4` R/G/B/A).
-    /// Must match `tex.hlsl`'s `channel` switch.
+    /// Must match the `channel` switch in `review.glsl`'s `fs_tex_image`.
     pub fn shader_index(self) -> u32 {
         match self {
             TextureChannelView::Rgb => 0,
@@ -227,8 +229,8 @@ pub struct TextureAssign {
 
 /// A texture-pool command the Inspector emits (at most one per frame). `app` is
 /// the sole applier (invariant 2): all decode / pool / disk-watch work lives
-/// there. New texture intents (e.g. the Phase 6 Tex-viewport picks) add a variant
-/// here rather than another `Option` field on [`UiOutput`].
+/// there. A new texture intent adds a variant here rather than another `Option`
+/// field on [`crate::UiOutput`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TextureIntent {
     /// "Add textures…" was clicked: open the image picker + import into the pool.

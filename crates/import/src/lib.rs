@@ -11,6 +11,11 @@
 //! `third_party/ufbx` the crate still builds and every load reports
 //! [`ImportError::UfbxUnavailable`].
 
+// Invariant 9, enforced: `unsafe` is refused crate-wide, and each leaf that
+// needs it — the bridge call, the pointer leaves, the Windows launch hint and
+// the Tracy allocator — opts in with a module-level `allow` that says why.
+#![deny(unsafe_code)]
+
 use std::path::Path;
 
 use review_model::{AnimContext, ModelData, SourceExtras};
@@ -177,6 +182,10 @@ pub struct StagedImport {
 pub struct PendingExtras {
     #[cfg(has_ufbx)]
     handle: Option<ffi::ExtrasHandle>,
+    /// Why the bridge dropped the capture, when it did: the model loaded, and
+    /// `marshal` reports this rather than publishing nothing in silence.
+    #[cfg(has_ufbx)]
+    dropped: Option<String>,
 }
 
 impl PendingExtras {
@@ -186,17 +195,25 @@ impl PendingExtras {
         Self {
             #[cfg(has_ufbx)]
             handle: None,
+            #[cfg(has_ufbx)]
+            dropped: None,
         }
     }
 
     /// Marshal the capture against the model it was taken with. `Ok(None)` when
     /// nothing was captured; `Err` when the capture does not describe `model`
-    /// (a drift the funnel guard [`SourceExtras::validate`] caught), in which
-    /// case nothing is published.
+    /// (a drift the funnel guard [`SourceExtras::validate`] caught) or the
+    /// bridge had to drop it (out of memory, a count past its limits), in which
+    /// case nothing is published and the model stands without it.
     pub fn marshal(self, model: &ModelData) -> Result<Option<SourceExtras>, ImportError> {
         #[cfg(has_ufbx)]
         {
             let _z = crate::prof::zone!("Marshal Extras");
+            if let Some(reason) = self.dropped {
+                return Err(ImportError::LoadFailed(format!(
+                    "source properties: {reason}"
+                )));
+            }
             match self.handle {
                 Some(handle) => handle.marshal(model).map(Some),
                 None => Ok(None),

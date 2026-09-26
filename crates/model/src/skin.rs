@@ -14,10 +14,10 @@ use glam::Mat4;
 /// sparse-row layout: vertex `v`'s influences are `bones[offsets[v]..offsets[v+1]]`
 /// paired with `weights[..]` over the same range. Per-corner storage would multiply
 /// every influence by the 3–6× corner expansion, so instead the model-wide
-/// [`ModelData::corner_to_logical`] map (4 bytes per render vertex) projects the
+/// [`ModelData::corner_to_logical`](crate::ModelData::corner_to_logical) map (4 bytes per render vertex) projects the
 /// render mesh back onto the logical vertices.
 ///
-/// [`bones`] entries index [`ModelData::nodes`] directly (**not** a separate bone
+/// [`bones`] entries index [`ModelData::nodes`](crate::ModelData::nodes) directly (**not** a separate bone
 /// table), so a skin influence and an Outliner row name the same thing with the
 /// same number. The parallel [`influence_cluster`] names the *cluster* — the
 /// (mesh node, bone) binding whose [`SkinCluster::world_to_bone_bind`] the GPU
@@ -33,7 +33,7 @@ pub struct SkinData {
     /// last entry equals the influence count (a vertex with no influences is a
     /// legal empty row).
     pub offsets: Vec<u32>,
-    /// Flat influence bones, indexing [`ModelData::nodes`]. Same length as
+    /// Flat influence bones, indexing [`ModelData::nodes`](crate::ModelData::nodes). Same length as
     /// [`SkinData::weights`].
     pub bones: Vec<u32>,
     /// Flat influence weights, parallel to [`SkinData::bones`]. Non-negative and
@@ -126,7 +126,7 @@ impl SkinData {
         (selected / total).clamp(0.0, 1.0)
     }
 
-    /// The lockstep guard, mirroring [`TriangleData::validate`]: called once at the
+    /// The lockstep guard, mirroring [`TriangleData::validate`](crate::TriangleData::validate): called once at the
     /// import funnel (invariant 7) so a drifted CSR is caught there rather than by
     /// every reader's ad-hoc bounds check. Verifies the row offsets are the right
     /// length, monotonic, and terminate at the influence count, that
@@ -135,7 +135,7 @@ impl SkinData {
     /// resolves to a cluster naming that same bone with a finite bind matrix.
     /// There is deliberately **no** upper bound on a weight: FBX does not require
     /// normalized weights, so rejecting `> 1.0` would refuse files that every other
-    /// tool loads. (The corner map is validated by [`ModelData::validate_deform`],
+    /// tool loads. (The corner map is validated by [`ModelData::validate_deform`](crate::ModelData::validate_deform),
     /// since blend shapes share it.)
     pub fn validate(&self, logical_count: usize, node_count: usize) -> Result<(), String> {
         if self.offsets.len() != logical_count + 1 {
@@ -225,9 +225,9 @@ impl SkinData {
 /// One skin cluster: the binding of a bone to a mesh node.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SkinCluster {
-    /// The bone, indexing [`ModelData::nodes`].
+    /// The bone, indexing [`ModelData::nodes`](crate::ModelData::nodes).
     pub bone: u32,
-    /// The skinned mesh node this cluster deforms, indexing [`ModelData::nodes`].
+    /// The skinned mesh node this cluster deforms, indexing [`ModelData::nodes`](crate::ModelData::nodes).
     pub mesh_node: u32,
     /// Maps a *baked world-space* vertex of `mesh_node` into the bone's bind
     /// space: `geometry_to_bone × inverse(mesh.geometry_to_world)`. The palette
@@ -272,7 +272,7 @@ impl SkinningMethod {
 /// What one skinned mesh node's deformer declared — Inspector metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SkinDeformerInfo {
-    /// The skinned mesh node, indexing [`ModelData::nodes`].
+    /// The skinned mesh node, indexing [`ModelData::nodes`](crate::ModelData::nodes).
     pub mesh_node: u32,
     pub method: SkinningMethod,
     /// The largest number of influences any vertex of this mesh carries, as the
@@ -316,7 +316,7 @@ mod tests {
         vec![0, 0, 1, 1, 0, 1]
     }
 
-    /// A model wrapping [`sample_skin`] so [`ModelData::validate_deform`] can be
+    /// A model wrapping [`sample_skin`] so [`ModelData::validate_deform`](crate::ModelData::validate_deform) can be
     /// exercised end to end.
     fn skinned_model() -> ModelData {
         ModelData {

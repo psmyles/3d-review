@@ -86,7 +86,7 @@ impl AoTarget {
     }
 }
 
-/// Settings for the [`OpKind::BakeAo`] operation.
+/// Settings for the [`OpKind::BakeAo`](crate::stack::OpKind::BakeAo) operation.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BakeAoParams {

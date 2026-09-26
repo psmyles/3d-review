@@ -185,7 +185,7 @@ impl GtaoSettings {
 /// smoother, more accurate occlusion at higher cost.
 ///
 /// The counts are lower than they look: the accumulation
-/// ([`crate::scene`]'s `ao_accum`) averages 24 frames whenever the view is still,
+/// (`crate::scene`'s `ao_accum`) averages 24 frames whenever the view is still,
 /// so a settled image at Medium has seen 72 slice directions per pixel. These
 /// numbers therefore buy quality for the frames *during* an orbit, and the denoise
 /// pass count is what carries a moving frame.

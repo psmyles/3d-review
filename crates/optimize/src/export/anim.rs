@@ -160,9 +160,9 @@ pub(crate) fn build_animation(
         }
     }
     if orphaned > 0 {
-        report.notes.push(format!(
-            "{orphaned} animation layer(s) belonged to no stack and were not written."
-        ));
+        report
+            .notes
+            .push(ExportNote::OrphanedAnimationLayers { count: orphaned });
     }
 
     let mut unmapped = 0usize;
@@ -264,11 +264,9 @@ pub(crate) fn build_animation(
         data.anim_props = anim_props;
     }
     if unmapped > 0 {
-        report.notes.push(format!(
-            "{unmapped} animated propert{} target elements this export has no counterpart for and \
-             were not written.",
-            if unmapped == 1 { "y" } else { "ies" }
-        ));
+        report
+            .notes
+            .push(ExportNote::UnmappedAnimatedProperties { count: unmapped });
     }
 }
 
@@ -382,10 +380,8 @@ pub(crate) fn build_selection_sets(
         });
     }
     if components_dropped > 0 {
-        report.notes.push(format!(
-            "{components_dropped} selection set entr{} lost some vertex / edge / face members: the \
-             stack rebuilt or removed them.",
-            if components_dropped == 1 { "y" } else { "ies" }
-        ));
+        report.notes.push(ExportNote::SelectionMembersLost {
+            count: components_dropped,
+        });
     }
 }

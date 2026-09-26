@@ -68,7 +68,8 @@ pub struct ShrinkwrapParams {
     /// emits roughly six triangles per surface cell. Measured on a real prop:
     /// 48 gives a 170 000-triangle shell in a quarter of a second, 64 gives
     /// 300 000 in half of one, and 128 gives **1.3 million** in two — dense
-    /// enough that the quad solver below it then gives up. Hence the default.
+    /// enough that the quad solver Remesh was then built on gave up on it, and
+    /// four times the work for anything below it still. Hence the default.
     pub resolution: u32,
     /// Push the shell out (or, negative, pull it in) by this many world meters.
     /// A small positive offset closes gaps a plain wrap leaves open; a negative
@@ -140,8 +141,10 @@ impl Default for ShrinkwrapParams {
             // Measured rather than chosen: at 64 a prop keeps its silhouette,
             // the wrap takes half a second, and — the part that matters — the
             // shell is clean enough for a Remesh below it to even out. At
-            // 128 the same prop's shell is four times the triangles and the
-            // solver gives up on it, which is the whole pairing failing.
+            // 128 the same prop's shell is four times the triangles, which the
+            // quad solver Remesh was then built on gave up on outright — the
+            // whole pairing failing — and which still costs four times as much
+            // to rebuild.
             resolution: 64,
             offset: 0.0,
             keep_largest_shell: true,

@@ -330,7 +330,10 @@ fn record(level: Level, target: &str, message: String) {
         store.entries.push_back(entry);
         line
     };
-    eprint!("{line}");
+    // Not `eprint!`: it panics when stderr cannot be written - a closed pipe,
+    // say - and a release build aborts on panic. A line the console missed is
+    // still in the file.
+    let _ = std::io::stderr().write_all(line.as_bytes());
     review_prof::msg(line.trim_end());
     wake();
 }

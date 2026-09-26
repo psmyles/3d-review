@@ -7,7 +7,8 @@
 # --options runtime`, notarization and the .dmg. This one exists because it is far faster — no
 # icon, no signing, and it can take a debug build — and because it is the only way to exercise the
 # two shell leaves at all: a bare executable gets no menu bar, no Dock presence, no proper
-# activation, and is not what `open` hands file arguments to (mac-port-plan.md D14/D15).
+# activation, and is not what `open` hands file arguments to (docs/ARCHITECTURE.md,
+# Platform decisions D14/D15).
 #
 #   scripts/dev-app.sh                          build release, bundle, print the path
 #   scripts/dev-app.sh assets/.../SM_x.fbx      ... and launch it on that model

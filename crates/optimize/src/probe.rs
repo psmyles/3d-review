@@ -8,6 +8,11 @@
 //! `cfg(has_ufbxw_probe)` — non-release profiles — and is `doc(hidden)` because
 //! nothing but that test should call it.
 
+#![allow(
+    unsafe_code,
+    reason = "a test-only writer probe calling its own C scene"
+)]
+
 use std::ffi::{CString, c_char, c_int};
 use std::path::Path;
 

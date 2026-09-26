@@ -61,7 +61,10 @@ pub(crate) fn build_mesh(
             .get(level_vertex)
             .map_or(level_vertex, |&point| point as usize)
     };
-    let mut local_of_control: Vec<i32> = vec![-1; model.vertices.len()];
+    // A map rather than a slot per level vertex: a scene exports one mesh per
+    // node, and a buffer the size of the whole level for each of them made the
+    // export cost nodes x vertices.
+    let mut local_of_control: HashMap<usize, i32> = HashMap::new();
     // Per emitted control point, a level vertex standing for it — what the
     // per-vertex carries (source corners, skin rows) are looked up through.
     let mut level_of_local: Vec<u32> = Vec::new();
@@ -86,14 +89,13 @@ pub(crate) fn build_mesh(
     // The local vertex for a level vertex, emitted on first use — once per
     // control point, from whichever of its corners is reached first.
     let mut local_vertex = |global: usize| -> i32 {
-        let key = control_point(global).min(local_of_control.len().saturating_sub(1));
-        let slot = local_of_control[key];
-        if slot >= 0 {
+        let key = control_point(global);
+        if let Some(&slot) = local_of_control.get(&key) {
             return slot;
         }
         let vertex = model.vertices[global];
         let slot = (positions.len() / 3) as i32;
-        local_of_control[key] = slot;
+        local_of_control.insert(key, slot);
         level_of_local.push(global as u32);
 
         // Under `Rebuild` the node's own inverse hands back the source file's
@@ -263,7 +265,17 @@ pub(crate) fn build_mesh(
         } else {
             0
         };
-        match face_of_triangle.get(&triangle) {
+        // A carried face whose corners do not all name a vertex of this level
+        // is malformed; its triangle still is not, so it goes out as one.
+        let carried = face_of_triangle
+            .get(&triangle)
+            .filter(|&&(piece_index, face)| {
+                pieces[piece_index]
+                    .face(face)
+                    .iter()
+                    .all(|&global| (global as usize) < model.vertices.len())
+            });
+        match carried {
             Some(&(piece_index, face)) => {
                 if !emitted_faces.insert((piece_index, face)) {
                     continue;
@@ -317,14 +329,12 @@ pub(crate) fn build_mesh(
         &pieces,
         // An authored edge names two *level* vertices, so it is resolved through
         // the same control-point mapping the vertices were emitted under.
-        &(0..model.vertices.len())
-            .map(|level_vertex| {
-                local_of_control
-                    .get(control_point(level_vertex))
-                    .copied()
-                    .unwrap_or(-1)
-            })
-            .collect::<Vec<i32>>(),
+        &|level_vertex| {
+            local_of_control
+                .get(&control_point(level_vertex))
+                .copied()
+                .unwrap_or(-1)
+        },
         &corner_of_edge,
         (any_edge_smoothing, any_edge_crease, any_edge_visibility),
     );
@@ -545,7 +555,7 @@ struct EdgeStreams {
 /// An edge whose face the level no longer has cannot be named, and is dropped.
 fn edge_streams(
     pieces: &[&NodePolygons],
-    local_of_global: &[i32],
+    local_of_global: &dyn Fn(usize) -> i32,
     corner_of_edge: &HashMap<(i32, i32), i32>,
     layers: (bool, bool, bool),
 ) -> EdgeStreams {
@@ -559,8 +569,8 @@ fn edge_streams(
     };
     for piece in pieces {
         for (index, edge) in piece.edges.iter().enumerate() {
-            let a = local_of_global[edge[0] as usize];
-            let b = local_of_global[edge[1] as usize];
+            let a = local_of_global(edge[0] as usize);
+            let b = local_of_global(edge[1] as usize);
             if a < 0 || b < 0 {
                 continue;
             }

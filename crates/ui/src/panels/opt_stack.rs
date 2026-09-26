@@ -62,13 +62,12 @@ pub(crate) fn body(ui: &mut egui::Ui, state: &mut UiState) -> Option<OptIntent> 
         .show(ui, |ui| {
             if state.opt.stack.ops.is_empty() {
                 ui.add_space(size::PANEL_ROW_GAP);
+                // Two labels rather than one string joined on a newline: each
+                // is a catalog message of its own, and egui wraps each where it
+                // runs out of room.
+                ui.label(egui::RichText::from(keys::ui_opt::EMPTY).color(color::TEXT_MUTED));
                 ui.label(
-                    egui::RichText::new(format!(
-                        "{}\n{}",
-                        review_localization::tr(keys::ui_opt::EMPTY),
-                        review_localization::tr(keys::ui_opt::EMPTY_DESCRIPTION),
-                    ))
-                    .color(color::TEXT_MUTED),
+                    egui::RichText::from(keys::ui_opt::EMPTY_DESCRIPTION).color(color::TEXT_MUTED),
                 );
                 return;
             }

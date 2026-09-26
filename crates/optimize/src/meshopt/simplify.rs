@@ -12,6 +12,33 @@ use crate::OptError;
 
 use super::*;
 
+/// The most attributes `meshopt_simplifyWithAttributes` accepts
+/// (`kMaxAttributes` in the vendored `simplifier.cpp`).
+pub const MAX_SIMPLIFY_ATTRIBUTES: usize = 32;
+
+/// Every `meshopt_Simplify*` option bit this crate knows, i.e. every bit of
+/// [`options::simplify`]. Anything else - `meshopt_SimplifySparse`, which would
+/// redefine the error scale, or the internal solve bit upstream asserts is
+/// never passed here - is refused.
+const KNOWN_SIMPLIFY_OPTIONS: u32 = options::simplify::LOCK_BORDER
+    | options::simplify::ERROR_ABSOLUTE
+    | options::simplify::PRUNE
+    | options::simplify::REGULARIZE
+    | options::simplify::PERMISSIVE
+    | options::simplify::REGULARIZE_LIGHT
+    | options::simplify::PRESERVE_FOLDS
+    | options::simplify::ERROR_CLAMPED;
+
+fn check_simplify_options(options: u32) -> Result<(), OptError> {
+    if options & !KNOWN_SIMPLIFY_OPTIONS != 0 {
+        return Err(OptError::InvalidParameter {
+            name: "simplify options",
+            value: options as f32,
+        });
+    }
+    Ok(())
+}
+
 /// Remove small disconnected components whose extent is below `target_error`
 /// (relative to the mesh extent, i.e. the same scale as [`simplify`]'s error).
 pub fn simplify_prune(
@@ -75,8 +102,26 @@ pub fn simplify(
 ) -> Result<SimplifyOutcome, OptError> {
     check_indices(indices, vertex_count)?;
     check_stream(positions, vertex_count, POSITION_COMPONENTS)?;
+    check_simplify_options(options)?;
 
+    // meshoptimizer asserts each of these, and its asserts abort the process.
     let attribute_count = attributes.weights.len();
+    if attribute_count > MAX_SIMPLIFY_ATTRIBUTES {
+        return Err(OptError::InvalidParameter {
+            name: "attribute count",
+            value: attribute_count as f32,
+        });
+    }
+    if let Some(&weight) = attributes
+        .weights
+        .iter()
+        .find(|weight| !(weight.is_finite() && **weight >= 0.0))
+    {
+        return Err(OptError::InvalidParameter {
+            name: "attribute weight",
+            value: weight,
+        });
+    }
     if attribute_count > 0 {
         check_stream(&attributes.stream, vertex_count, attribute_count)?;
     }
@@ -181,4 +226,74 @@ pub fn simplify_sloppy(
         indices: destination,
         error,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One triangle, which is all the checks below need to get past the mesh
+    /// validation and reach the parameter checks.
+    fn triangle() -> ([u32; 3], [f32; 9]) {
+        ([0, 1, 2], [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
+    }
+
+    fn simplify_with(
+        attributes: &SimplifyAttributes,
+        options: u32,
+    ) -> Result<SimplifyOutcome, OptError> {
+        let (indices, positions) = triangle();
+        simplify(&indices, &positions, 3, attributes, 3, 0.01, options)
+    }
+
+    /// meshoptimizer asserts on each of these, and its asserts abort the
+    /// process: the wrapper is where they have to be refused.
+    #[test]
+    fn a_negative_or_non_finite_weight_is_refused() {
+        for weight in [-1.0, f32::NAN, f32::INFINITY] {
+            let attributes = SimplifyAttributes {
+                stream: vec![0.0; 3],
+                weights: vec![weight],
+            };
+            assert!(matches!(
+                simplify_with(&attributes, 0),
+                Err(OptError::InvalidParameter {
+                    name: "attribute weight",
+                    ..
+                })
+            ));
+        }
+    }
+
+    #[test]
+    fn more_attributes_than_meshoptimizer_takes_are_refused() {
+        let count = MAX_SIMPLIFY_ATTRIBUTES + 1;
+        let attributes = SimplifyAttributes {
+            stream: vec![0.0; 3 * count],
+            weights: vec![1.0; count],
+        };
+        assert!(matches!(
+            simplify_with(&attributes, 0),
+            Err(OptError::InvalidParameter {
+                name: "attribute count",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn an_unknown_option_bit_is_refused() {
+        let attributes = SimplifyAttributes {
+            stream: Vec::new(),
+            weights: Vec::new(),
+        };
+        assert!(matches!(
+            simplify_with(&attributes, 1 << 1),
+            Err(OptError::InvalidParameter {
+                name: "simplify options",
+                ..
+            })
+        ));
+        assert!(simplify_with(&attributes, options::simplify::LOCK_BORDER).is_ok());
+    }
 }

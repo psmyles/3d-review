@@ -1,5 +1,5 @@
-//! The device + swapchain leaf, one module per OS — the only platform GPU code
-//! left in the workspace (`mac-port-plan.md` §5).
+//! The device + swapchain leaf, one module per OS — the only platform GPU code left
+//! in the workspace (`docs/ARCHITECTURE.md`, Platform decisions: platform leaves).
 //!
 //! sokol_gfx does not own a window. It is handed a device at `sg_setup` (through
 //! `sg_environment`) and a render-target view per frame (through `sg_swapchain`),

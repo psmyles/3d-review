@@ -16,8 +16,8 @@ pub struct Vertex {
     /// Per-vertex RGBA color from the mesh's vertex-color attribute (the DCC
     /// color set). White when the mesh carries no vertex-color layer. Visualized
     /// by the vertex-color debug view. The resolved material base color and
-    /// smoothness are no longer baked per vertex (Phase 1): they live on
-    /// [`MaterialImportDefaults`] and drive the per-material draws via the renderer's
+    /// smoothness are no longer baked per vertex: they live on
+    /// [`MaterialImportDefaults`](crate::MaterialImportDefaults) and drive the per-material draws via the renderer's
     /// material table.
     pub vertex_color: Vec4,
 }
@@ -78,18 +78,18 @@ pub struct TopologyFace {
 /// array is either empty or exactly `triangle_count` (= `indices.len() / 3`) long
 /// and ordered by triangle index; [`TriangleData::validate`] asserts this at the
 /// import funnel (invariant 7) so a drifted array is caught once, not by every
-/// reader's ad-hoc length guard. Future per-triangle audit data (Phase 7
-/// centroids, etc.) lands here with the same guard.
+/// reader's ad-hoc length guard. Any further per-triangle data (centroids, say)
+/// belongs here under the same guard.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TriangleData {
-    /// Owning original polygon, indexing [`ModelData::faces`].
+    /// Owning original polygon, indexing [`ModelData::faces`](crate::ModelData::faces).
     pub to_face: Vec<u32>,
-    /// Material slot, indexing [`ModelData::materials`], or `u32::MAX` for a
+    /// Material slot, indexing [`ModelData::materials`](crate::ModelData::materials), or `u32::MAX` for a
     /// triangle whose face carried no material. Drives the per-material draw
-    /// grouping (Phase 1) without a per-vertex `material_id`.
+    /// grouping without a per-vertex `material_id`.
     pub material: Vec<u32>,
-    /// Owning scene-graph node, indexing [`ModelData::nodes`] — drives the
-    /// Outliner's per-node selection / solo (Phase 2). Empty for models with no
+    /// Owning scene-graph node, indexing [`ModelData::nodes`](crate::ModelData::nodes) — drives the
+    /// Outliner's per-node selection / solo. Empty for models with no
     /// node hierarchy.
     pub node: Vec<u32>,
 }

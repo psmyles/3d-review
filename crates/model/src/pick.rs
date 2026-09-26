@@ -19,7 +19,7 @@
 //!   pose.
 //! * **Deformed** — skinned or blend-shaped. The tree's *topology* survives a
 //!   deform even though its boxes do not, so the boxes are refit from the posed
-//!   corners once per pose ([`Bvh::refit`]) and the triangle test deforms its
+//!   corners once per pose (`Bvh::refit`) and the triangle test deforms its
 //!   three corners on demand. A pick touches a few dozen triangles, so deforming
 //!   lazily there is far cheaper than materialising every posed position.
 
@@ -79,7 +79,7 @@ impl PosedScene {
                     .flatten();
                 match delta {
                     Some(matrix) if matrix != Mat4::IDENTITY => PartPick::Rigid {
-                        inverse: invert_or_identity(matrix),
+                        inverse: crate::anim::invert_or_identity(matrix),
                     },
                     _ => PartPick::Rest,
                 }
@@ -197,20 +197,6 @@ fn deformed_triangle(
             .unwrap_or(Vec3::ZERO)
     };
     [position(0), position(1), position(2)]
-}
-
-/// The inverse of a node delta, falling back to the identity for a singular one
-/// (a zero-scaled node) so the part is simply picked at rest rather than through
-/// a matrix of NaNs.
-fn invert_or_identity(matrix: Mat4) -> Mat4 {
-    let determinant = matrix.determinant();
-    if determinant.abs() > 1e-20 && determinant.is_finite() {
-        let inverse = matrix.inverse();
-        if inverse.is_finite() {
-            return inverse;
-        }
-    }
-    Mat4::IDENTITY
 }
 
 #[cfg(test)]

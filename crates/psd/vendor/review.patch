@@ -1,0 +1,254 @@
+diff --git a/Psd/PsdDecompressRle.cpp b/Psd/PsdDecompressRle.cpp
+index bfee9dc..8982632 100644
+--- a/Psd/PsdDecompressRle.cpp
++++ b/Psd/PsdDecompressRle.cpp
+@@ -15,7 +15,10 @@ namespace imageUtil
+ {
+ 	// ---------------------------------------------------------------------------------------------------------------------
+ 	// ---------------------------------------------------------------------------------------------------------------------
+-	void DecompressRle(const uint8_t* PSD_RESTRICT src, unsigned int srcSize, uint8_t* PSD_RESTRICT dest, unsigned int size)
++	// review-psd patch (see ../NOTICE.txt): every run is bounds-checked against both the
++	// destination and the source, and a malformed stream reports failure instead of
++	// writing past `dest` or reading past `src`.
++	bool DecompressRle(const uint8_t* PSD_RESTRICT src, unsigned int srcSize, uint8_t* PSD_RESTRICT dest, unsigned int size)
+ 	{
+ 		PSD_ASSERT_NOT_NULL(src);
+ 		PSD_ASSERT_NOT_NULL(dest);
+@@ -27,7 +30,7 @@ namespace imageUtil
+ 			if (bytesRead >= srcSize)
+ 			{
+ 				PSD_ERROR("DecompressRle", "Malformed RLE data encountered");
+-				return;
++				return false;
+ 			}
+ 
+ 			const uint8_t byte = *src++;
+@@ -42,6 +45,11 @@ namespace imageUtil
+ 			{
+ 				// next 257-byte bytes are replicated from the next source byte
+ 				const unsigned int count = static_cast<unsigned int>(257 - byte);
++				if (bytesRead >= srcSize || count > size - offset)
++				{
++					PSD_ERROR("DecompressRle", "Malformed RLE data encountered");
++					return false;
++				}
+ 
+ 				memset(dest + offset, *src++, count);
+ 				offset += count;
+@@ -53,7 +61,12 @@ namespace imageUtil
+ 			{
+ 				// copy next byte+1 bytes 1-by-1
+ 				const unsigned int count = static_cast<unsigned int>(byte + 1);
+-				
++				if (count > srcSize - bytesRead || count > size - offset)
++				{
++					PSD_ERROR("DecompressRle", "Malformed RLE data encountered");
++					return false;
++				}
++
+ 				memcpy(dest + offset, src, count);
+ 
+ 				src += count;
+@@ -62,6 +75,7 @@ namespace imageUtil
+ 				bytesRead += count;
+ 			}
+ 		}
++		return true;
+ 	}
+ 
+ 
+diff --git a/Psd/PsdDecompressRle.h b/Psd/PsdDecompressRle.h
+index 3fdb100..6cfc641 100644
+--- a/Psd/PsdDecompressRle.h
++++ b/Psd/PsdDecompressRle.h
+@@ -10,7 +10,8 @@ namespace imageUtil
+ {
+ 	/// \ingroup ImageUtil
+ 	/// Decompresses a block of RLE encoded data using the PackBits (http://en.wikipedia.org/wiki/PackBits) algorithm.
+-	void DecompressRle(const uint8_t* PSD_RESTRICT src, unsigned int srcSize, uint8_t* PSD_RESTRICT dest, unsigned int size);
++	/// Returns false, having written nothing past \a size, if the stream is malformed (review-psd patch).
++	bool DecompressRle(const uint8_t* PSD_RESTRICT src, unsigned int srcSize, uint8_t* PSD_RESTRICT dest, unsigned int size);
+ 
+ 	/// \ingroup ImageUtil
+ 	/// Compresses a block of data to RLE encoded data using the PackBits (http://en.wikipedia.org/wiki/PackBits) algorithm.
+diff --git a/Psd/PsdParseImageDataSection.cpp b/Psd/PsdParseImageDataSection.cpp
+index 2574eb7..c325912 100644
+--- a/Psd/PsdParseImageDataSection.cpp
++++ b/Psd/PsdParseImageDataSection.cpp
+@@ -42,25 +42,80 @@ namespace
+ 	}
+ 
+ 
++	// review-psd patch (see ../NOTICE.txt): the two readers below size every buffer with
++	// 64-bit arithmetic, refuse a plane that would not fit the 32-bit counts psd_sdk reads
++	// with, check every allocation, and bound the RLE payload by the section it sits in. On
++	// any failure they free what they allocated and return nullptr rather than writing
++	// through a null or undersized buffer.
++	static ImageDataSection* AllocateImageDataSection(Allocator* allocator, unsigned int channelCount)
++	{
++		ImageDataSection* imageData = memoryUtil::Allocate<ImageDataSection>(allocator);
++		if (!imageData)
++			return nullptr;
++
++		imageData->imageCount = 0u;
++		imageData->images = memoryUtil::AllocateArray<PlanarImage>(allocator, channelCount);
++		if (!imageData->images)
++		{
++			memoryUtil::Free(allocator, imageData);
++			return nullptr;
++		}
++		for (unsigned int i=0; i < channelCount; ++i)
++		{
++			imageData->images[i].data = nullptr;
++		}
++		imageData->imageCount = channelCount;
++		return imageData;
++	}
++
++
++	// ---------------------------------------------------------------------------------------------------------------------
++	// ---------------------------------------------------------------------------------------------------------------------
++	static ImageDataSection* FreeImageDataSection(ImageDataSection* imageData, Allocator* allocator)
++	{
++		for (unsigned int i=0; i < imageData->imageCount; ++i)
++		{
++			allocator->Free(imageData->images[i].data);
++		}
++		memoryUtil::FreeArray(allocator, imageData->images);
++		memoryUtil::Free(allocator, imageData);
++		return nullptr;
++	}
++
++
++	// ---------------------------------------------------------------------------------------------------------------------
++	// ---------------------------------------------------------------------------------------------------------------------
++	static bool PlaneBytes(unsigned int width, unsigned int height, unsigned int bytesPerPixel, uint32_t* out)
++	{
++		const uint64_t bytes = static_cast<uint64_t>(width) * height * bytesPerPixel;
++		if (bytes == 0u || bytes > UINT32_MAX)
++			return false;
++		*out = static_cast<uint32_t>(bytes);
++		return true;
++	}
++
++
+ 	// ---------------------------------------------------------------------------------------------------------------------
+ 	// ---------------------------------------------------------------------------------------------------------------------
+ 	static ImageDataSection* ReadImageDataSectionRaw(SyncFileReader& reader, Allocator* allocator, unsigned int width, unsigned int height, unsigned int channelCount, unsigned int bytesPerPixel)
+ 	{
+-		const unsigned int size = width*height;
+-		if (size == 0)
++		uint32_t planeBytes = 0u;
++		if (channelCount == 0u || !PlaneBytes(width, height, bytesPerPixel, &planeBytes))
+ 			return nullptr;
+ 
+-		ImageDataSection* imageData = memoryUtil::Allocate<ImageDataSection>(allocator);
+-		imageData->imageCount = channelCount;
+-		imageData->images = memoryUtil::AllocateArray<PlanarImage>(allocator, channelCount);
++		ImageDataSection* imageData = AllocateImageDataSection(allocator, channelCount);
++		if (!imageData)
++			return nullptr;
+ 
+ 		// read data for all channels at once
+ 		for (unsigned int i=0; i < channelCount; ++i)
+ 		{
+-			void* planarData = allocator->Allocate(size*bytesPerPixel, 16u);
++			void* planarData = allocator->Allocate(planeBytes, 16u);
++			if (!planarData)
++				return FreeImageDataSection(imageData, allocator);
+ 			imageData->images[i].data = planarData;
+ 
+-			reader.Read(planarData, size*bytesPerPixel);
++			reader.Read(planarData, planeBytes);
+ 		}
+ 
+ 		return imageData;
+@@ -69,47 +124,67 @@ namespace
+ 
+ 	// ---------------------------------------------------------------------------------------------------------------------
+ 	// ---------------------------------------------------------------------------------------------------------------------
+-	static ImageDataSection* ReadImageDataSectionRLE(SyncFileReader& reader, Allocator* allocator, unsigned int width, unsigned int height, unsigned int channelCount, unsigned int bytesPerPixel)
++	static ImageDataSection* ReadImageDataSectionRLE(SyncFileReader& reader, Allocator* allocator, unsigned int width, unsigned int height, unsigned int channelCount, unsigned int bytesPerPixel, uint64_t sectionLength)
+ 	{
+ 		// the RLE-compressed data is preceded by a 2-byte data count for each scan line, per channel.
+ 		// we store the size of the RLE data per channel, and assume a maximum of 256 channels.
+-		PSD_ASSERT(channelCount < 256, "Image data section has too many channels (%d).", channelCount);
++		if (channelCount == 0u || channelCount >= 256u)
++		{
++			PSD_ERROR("ImageData", "Image data section has an unsupported channel count (%u).", channelCount);
++			return nullptr;
++		}
++		uint32_t planeBytes = 0u;
++		if (!PlaneBytes(width, height, bytesPerPixel, &planeBytes))
++			return nullptr;
++
+ 		unsigned int channelSize[256] = {};
+-		unsigned int totalSize = 0;
++		uint64_t totalSize = 0u;
+ 		for (unsigned int i=0; i < channelCount; ++i)
+ 		{
+-			unsigned int size = 0u;
++			uint64_t size = 0u;
+ 			for (unsigned int j=0; j < height; ++j)
+ 			{
+ 				const uint16_t dataCount = fileUtil::ReadFromFileBE<uint16_t>(reader);
+ 				size += dataCount;
+ 			}
+ 
+-			channelSize[i] = size;
++			if (size > UINT32_MAX)
++				return nullptr;
++			channelSize[i] = static_cast<unsigned int>(size);
+ 			totalSize += size;
+ 		}
+ 
+-		if (totalSize == 0)
++		// The compressed payload cannot be larger than the section holding it, whatever the
++		// scan-line counts claim - refusing it here is what keeps a 40-byte file from asking
++		// for gigabytes of RLE buffer.
++		if (totalSize == 0u || totalSize > sectionLength)
+ 			return nullptr;
+ 
+-		const unsigned int size = width*height;
+-		ImageDataSection* imageData = memoryUtil::Allocate<ImageDataSection>(allocator);
+-		imageData->imageCount = channelCount;
+-		imageData->images = memoryUtil::AllocateArray<PlanarImage>(allocator, channelCount);
++		ImageDataSection* imageData = AllocateImageDataSection(allocator, channelCount);
++		if (!imageData)
++			return nullptr;
+ 
+ 		for (unsigned int i=0; i < channelCount; ++i)
+ 		{
+-			void* planarData = allocator->Allocate(size*bytesPerPixel, 16u);
++			void* planarData = allocator->Allocate(planeBytes, 16u);
++			if (!planarData)
++				return FreeImageDataSection(imageData, allocator);
+ 			imageData->images[i].data = planarData;
+ 
+ 			// read RLE data, and uncompress into planar buffer
+ 			const unsigned int rleSize = channelSize[i];
++			if (rleSize == 0u)
++				return FreeImageDataSection(imageData, allocator);
+ 			uint8_t* rleData = static_cast<uint8_t*>(allocator->Allocate(rleSize, 4u));
++			if (!rleData)
++				return FreeImageDataSection(imageData, allocator);
+ 			reader.Read(rleData, rleSize);
+ 
+-			imageUtil::DecompressRle(rleData, rleSize, static_cast<uint8_t*>(planarData), width*height*bytesPerPixel);
++			const bool decoded = imageUtil::DecompressRle(rleData, rleSize, static_cast<uint8_t*>(planarData), planeBytes);
+ 
+ 			allocator->Free(rleData);
++			if (!decoded)
++				return FreeImageDataSection(imageData, allocator);
+ 		}
+ 
+ 		return imageData;
+@@ -154,7 +229,7 @@ ImageDataSection* ParseImageDataSection(const Document* document, File* file, Al
+ 	}
+ 	else if (compressionType == compressionType::RLE)
+ 	{
+-		imageData = ReadImageDataSectionRLE(reader, allocator, width, height, channelCount, bitsPerChannel / 8u);
++		imageData = ReadImageDataSectionRLE(reader, allocator, width, height, channelCount, bitsPerChannel / 8u, section.length);
+ 	}
+ 	else
+ 	{

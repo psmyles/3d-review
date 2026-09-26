@@ -10,6 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::App;
+use crate::paths::same_file;
 
 /// How many files the menu lists. Older entries fall off the end.
 pub(crate) const MAX_RECENT_FILES: usize = 10;
@@ -20,17 +21,6 @@ fn push_front(list: &mut Vec<PathBuf>, path: PathBuf) {
     list.retain(|entry| !same_file(entry, &path));
     list.insert(0, path);
     list.truncate(MAX_RECENT_FILES);
-}
-
-/// Whether two recorded paths name the same file. Windows paths compare without
-/// regard to case, so a file opened once from the dialog and once from a
-/// command line typed in another case is one entry, not two.
-fn same_file(a: &Path, b: &Path) -> bool {
-    if cfg!(windows) {
-        a.as_os_str().eq_ignore_ascii_case(b.as_os_str())
-    } else {
-        a == b
-    }
 }
 
 impl App {

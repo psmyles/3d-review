@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fail a release build whose committed shader bytecode does not match the shaders in
-# the tree (mac-port-plan.md D5) — the twin of `check-shader-bytecode.ps1`, with the
-# two hosts' roles swapped.
+# the tree (docs/ARCHITECTURE.md, Platform decisions D5) — the twin of
+# `check-shader-bytecode.ps1`, with the two hosts' roles swapped.
 #
 # The viewer compiles no shader at run time: it `include_bytes!`s blobs committed
 # beside the generated sources, and `crates/render/build.rs` rebuilds one only when it

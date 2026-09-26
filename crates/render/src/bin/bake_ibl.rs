@@ -3,7 +3,7 @@
 //! Regenerates every `assets/ibl_baked/T_IBL_*.bin` from the source HDRs in
 //! `assets/textures/` on a headless GPU device. Needs a real GPU; it is never part of
 //! a normal build, and the shipped viewer embeds the committed results rather than
-//! ever running this (`mac-port-plan.md` D19).
+//! ever running this (`docs/ARCHITECTURE.md`, Platform decisions D19).
 //!
 //! It **overwrites committed assets in place**, so `review_render`'s bake validates
 //! each payload before writing it: a pass that rendered nothing would otherwise

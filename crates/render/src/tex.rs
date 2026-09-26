@@ -3,8 +3,9 @@
 //! Plain value types, host-agnostic — `app` resolves both from the live UI state
 //! (invariant 2) and the GPU path in [`gpu`] consumes them. They live apart from that
 //! path because the *background* is now the swapchain pass's clear colour rather than
-//! a draw of its own (`mac-port-plan.md` §3.2), so it is read a frame before any Tex
-//! GPU resource is touched — and on a frame where none is.
+//! a draw of its own (`docs/ARCHITECTURE.md`, Platform decisions: one swapchain
+//! pass), so it is read a frame before any Tex GPU resource is touched — and on a
+//! frame where none is.
 
 use std::path::PathBuf;
 use std::sync::Arc;

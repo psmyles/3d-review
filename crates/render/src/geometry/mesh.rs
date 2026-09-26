@@ -12,10 +12,10 @@ use crate::scene::SceneVertex;
 use super::deform::corner_deform;
 
 /// The shaded mesh vertices + reordered indices for `uv_channel`, with one
-/// [`MaterialDrawRange`] per group (the renderer draws one range at a time,
-/// feeding each group's parameters from the group-3 uniform). Base color /
-/// smoothness are no longer baked per vertex (Phase 1); only the DCC vertex-color
-/// attribute rides along, for the vertex-color debug view.
+/// [`MaterialDrawRange`] per group (the renderer draws one range at a time, feeding
+/// each group's parameters from the `material` uniform block). Base color and
+/// smoothness come from that block rather than the vertex; only the DCC
+/// vertex-color attribute rides along, for the vertex-color debug view.
 ///
 /// `tri_key` overrides the per-triangle grouping: `None` groups by material slot
 /// (the default), `Some(parts)` groups by an alternate per-triangle key (the
@@ -61,15 +61,7 @@ fn material_draw_ranges<'model>(
     if triangle_count == 0 {
         return (Cow::Borrowed(model.indices.as_slice()), Vec::new());
     }
-    // Prefer the explicit grouping key; fall back to the per-triangle material
-    // slot; fall back again to a single range when neither is the right length.
-    let key = tri_key
-        .filter(|key| key.len() == triangle_count)
-        .or_else(|| {
-            (model.triangles.material.len() == triangle_count)
-                .then_some(model.triangles.material.as_slice())
-        });
-    let Some(key) = key else {
+    let Some(key) = grouping_key(model, tri_key) else {
         let ranges = vec![MaterialDrawRange {
             material: 0,
             first_index: 0,
@@ -77,10 +69,39 @@ fn material_draw_ranges<'model>(
         }];
         return (Cow::Borrowed(model.indices.as_slice()), ranges);
     };
+    let (indices, ranges) = group_triangles(model, Some(key), 0..triangle_count);
+    (Cow::Owned(indices), ranges)
+}
 
+/// The per-triangle key a draw groups by: `tri_key` (the Unique mesh-part index)
+/// when it covers every triangle, else the per-triangle material slot, else
+/// `None` — a single group. The main mesh and the selection draw both ask here,
+/// because a range's `material` must index the same effective table in each.
+pub(super) fn grouping_key<'a>(
+    model: &'a ModelData,
+    tri_key: Option<&'a [u32]>,
+) -> Option<&'a [u32]> {
+    let triangle_count = model.indices.len() / 3;
+    tri_key
+        .filter(|key| key.len() == triangle_count)
+        .or_else(|| {
+            (model.triangles.material.len() == triangle_count)
+                .then_some(model.triangles.material.as_slice())
+        })
+}
+
+/// Copy `triangles` into a fresh index buffer, grouped by `key` (slot 0 for all
+/// when `None`) in first-seen order, with one [`MaterialDrawRange`] per group.
+pub(super) fn group_triangles(
+    model: &ModelData,
+    key: Option<&[u32]>,
+    triangles: impl IntoIterator<Item = usize>,
+) -> (Vec<u32>, Vec<MaterialDrawRange>) {
     let mut order: Vec<u32> = Vec::new();
     let mut groups: HashMap<u32, Vec<usize>> = HashMap::new();
-    for (triangle, &slot) in key.iter().enumerate() {
+    let mut total = 0;
+    for triangle in triangles {
+        let slot = key.map_or(0, |key| key[triangle]);
         groups
             .entry(slot)
             .or_insert_with(|| {
@@ -88,9 +109,10 @@ fn material_draw_ranges<'model>(
                 Vec::new()
             })
             .push(triangle);
+        total += 1;
     }
 
-    let mut indices = Vec::with_capacity(model.indices.len());
+    let mut indices = Vec::with_capacity(total * 3);
     let mut ranges = Vec::with_capacity(order.len());
     for slot in order {
         let triangles = &groups[&slot];
@@ -105,7 +127,7 @@ fn material_draw_ranges<'model>(
             index_count: (triangles.len() * 3) as u32,
         });
     }
-    (Cow::Owned(indices), ranges)
+    (indices, ranges)
 }
 
 #[cfg(test)]

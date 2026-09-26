@@ -9,6 +9,7 @@ use review_model::{ModelData, ModelStats};
 
 use crate::Warnings;
 use crate::meshopt::{self, AnalysisCounters};
+use crate::notice::OptWarning;
 use crate::submesh::Submesh;
 
 use super::*;
@@ -146,10 +147,9 @@ pub(crate) fn measure_submeshes(
             render_vertex_size,
         ) {
             Ok(measured) => counters.accumulate(measured),
-            Err(error) => warnings.push(&format!(
-                "Couldn't measure part of the mesh: {error}. The cache, overdraw \
-                 and fetch figures cover only the parts that measured."
-            )),
+            Err(error) => warnings.push(OptWarning::MeasureFailed {
+                detail: error.to_string(),
+            }),
         }
     }
 

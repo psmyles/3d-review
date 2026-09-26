@@ -2,10 +2,11 @@
 //! invariant 9's sanctioned GPU site, and the only file in the workspace that names
 //! Metal or Core Animation.
 //!
-//! It is the twin of [`super::d3d11`]: same contract, same shape, no trait between
-//! them (`mac-port-plan.md` §5). What sokol_gfx cannot do for itself is create a
-//! device, point `sg_environment` at it, put a drawable surface on the window, hand
-//! over a render target per frame, and present — and that is all this module is.
+//! It is the twin of [`super::d3d11`]: same contract, same shape, no trait between them
+//! (`docs/ARCHITECTURE.md`, Platform decisions: platform leaves). What sokol_gfx cannot
+//! do for itself is create a device, point `sg_environment` at it, put a drawable
+//! surface on the window, hand over a render target per frame, and present — and that
+//! is all this module is.
 //!
 //! Four things differ from the D3D11 side, and each is load-bearing:
 //!
@@ -28,6 +29,11 @@
 //! from the main thread after the join. The *layer* is not: Core Animation and
 //! `NSView` are main-thread-only, so [`Swapchain::new`] must be called there, as its
 //! caller ([`crate::rhi::GpuBringUp::attach`], from `resumed`) is.
+
+#![allow(
+    unsafe_code,
+    reason = "invariant 9: the macOS device and swapchain leaf"
+)]
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
@@ -102,17 +108,17 @@ impl Device {
         };
     }
 
-    /// The MSAA sample counts this device supports — the subset of `[1, 2, 4, 8, 16]`
-    /// the scene can actually render at (invariant 4: capability-gate, never crash).
-    /// `1` is always included.
-    ///
-    /// The formats are ignored, and that is the honest answer rather than a shortcut:
     /// The device's name as Metal reports it (`Apple M2`). The D3D11 twin reads
     /// the DXGI adapter description.
     pub(crate) fn adapter_name(&self) -> String {
         self.device.name().to_string()
     }
 
+    /// The MSAA sample counts this device supports — the subset of `[1, 2, 4, 8, 16]`
+    /// the scene can actually render at (invariant 4: capability-gate, never crash).
+    /// `1` is always included.
+    ///
+    /// The formats are ignored, and that is the honest answer rather than a shortcut:
     /// `supportsTextureSampleCount:` is a device-wide question in Metal, where the
     /// D3D11 twin's `CheckMultisampleQualityLevels` is asked per format. Apple silicon
     /// answers yes to 1/2/4/8, so the 16× option simply disappears from the menu.
@@ -206,9 +212,9 @@ impl Swapchain {
 
     /// Resize the layer's drawables.
     ///
-    /// **Infallible by design** (`mac-port-plan.md` §3.1), exactly as on D3D11: a zero
-    /// dimension (a minimized window) is remembered but not applied — Core Animation
-    /// refuses it — and the frame is skipped instead.
+    /// **Infallible by design** (Platform decisions: `rhi` owns the backend), exactly
+    /// as on D3D11: a zero dimension (a minimized window) is remembered but not applied
+    /// — Core Animation refuses it — and the frame is skipped instead.
     pub(crate) fn resize(&mut self, width: u32, height: u32) {
         self.width = width;
         self.height = height;
@@ -284,7 +290,7 @@ impl Swapchain {
 }
 
 // ---------------------------------------------------------------------------
-// The GPU-timing leaf (`mac-port-plan.md` D18)
+// The GPU-timing leaf (Platform decisions D18)
 // ---------------------------------------------------------------------------
 
 /// One frame's resolved GPU timestamps, handed back to [`crate::rhi::gpu_profiler`]
@@ -316,7 +322,7 @@ struct RingSlot {
 }
 
 /// GPU timing on Metal: two empty command buffers per frame, on sokol's own queue
-/// (`mac-port-plan.md` D18).
+/// (Platform decisions D18).
 ///
 /// **This measures the frame, not the passes, and that is the ceiling rather than a
 /// shortcut.** Timing a pass would mean sampling counters at its boundaries, which
@@ -452,7 +458,7 @@ fn seconds_to_nanos(seconds: f64) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// The readback leaf, for the offline bake only (`mac-port-plan.md` D19)
+// The readback leaf, for the offline bake only (Platform decisions D19)
 // ---------------------------------------------------------------------------
 
 /// Row alignment for the destination of a texture→buffer blit.

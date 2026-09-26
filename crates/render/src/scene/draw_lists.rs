@@ -27,8 +27,8 @@ impl SceneGpu {
     }
 
     /// Build (or free) the selected-triangle draw list (the solo isolate list + the
-    /// flash fill source) when the selection / model / hidden set / mode drifts
-    /// (invariant 3). The highlight color + flash fade ride in the uniform, so they
+    /// highlight fill source) when the selection / model / hidden set / mode drifts
+    /// (invariant 3). The highlight color + fill opacity ride in the uniform, so they
     /// never trigger a rebuild — only a change of *what* is selected does.
     pub(super) fn sync_selection(
         &mut self,

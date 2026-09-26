@@ -25,11 +25,12 @@
 //! that submesh is left as it was; the rest of the model still processes. A
 //! preview that shows most of the asset plus a clear warning is far more useful
 //! while tweaking sliders than no preview at all. Only a whole-run failure
-//! (meshoptimizer missing, empty model) returns `Err`.//!
+//! (meshoptimizer missing, empty model) returns `Err`.
+//!
 //! ## Layout
 //!
 //! [`process`] is the run. [`carry`] defines what a level carries beside its
-//! mesh, [`pipeline`] the steps a stack is walked in, [`assemble`] the rebuild
+//! mesh, [`pipeline`] the steps a stack is walked in, `assemble` the rebuild
 //! of one `ModelData` per level, and [`metrics`] the measuring of each.
 
 use std::time::{Duration, Instant};
@@ -38,6 +39,7 @@ use review_model::{ModelData, SourceExtras};
 
 use crate::cancel::CancelToken;
 use crate::meshopt;
+use crate::notice::OptWarning;
 use crate::stack::{OpInstance, OpKind, OptStack};
 use crate::submesh;
 use crate::{OptError, Warnings};
@@ -126,7 +128,7 @@ pub struct ProcessedResult {
     /// walked several times.
     pub source_metrics: AnalysisMetrics,
     /// Non-fatal problems worth telling the user about, already de-duplicated.
-    pub warnings: Vec<String>,
+    pub warnings: Vec<OptWarning>,
     /// Wall-clock time the run took, for the "this is taking a while" notice and
     /// the stats overlay.
     pub elapsed: Duration,
@@ -293,9 +295,12 @@ pub fn process_progressive(
     }
 
     // Level 0 is the mesh as the pre-operations left it; every LOD level
-    // re-simplifies from this same snapshot.
+    // re-simplifies from this same snapshot. Its pieces are moved in once the
+    // levels below have been built from them, rather than cloned up front: the
+    // snapshot is the whole working mesh, and a stack with no LOD operation
+    // used to hold two copies of it for nothing.
     let mut levels: Vec<LevelState> = vec![LevelState {
-        submeshes: submeshes.clone(),
+        submeshes: Vec::new(),
         simplify_error: base_error,
         simplified: runs_reduce(pre_ops),
     }];
@@ -327,6 +332,7 @@ pub fn process_progressive(
             levels.push(state);
         }
     }
+    levels[0].submeshes = submeshes;
 
     let reduced_after = runs_reduce(post_ops);
     for level in &mut levels {
@@ -389,11 +395,7 @@ pub fn process_progressive(
     if let (Some(bake), Some(simplify)) = (first_bake, last_simplify)
         && bake < simplify
     {
-        warnings.push(
-            "Bake AO runs before a simplifier, so the baked occlusion describes \
-             the pre-simplified geometry. Move the bake below the simplifier — or \
-             below Generate LODs to bake every level.",
-        );
+        warnings.push(OptWarning::BakeBeforeSimplify);
     }
 
     // A simplifier rebuilds triangles with no correspondence to what it was
@@ -408,11 +410,7 @@ pub fn process_progressive(
     if let (Some(remesh), Some(simplify)) = (last_remesh, last_simplify)
         && remesh < simplify
     {
-        warnings.push(
-            "A simplifier runs after Remesh and rebuilds its faces as triangles, so \
-             the quads it produced are lost. Move Remesh below the simplifier to keep \
-             them.",
-        );
+        warnings.push(OptWarning::QuadsLostToSimplify);
     }
 
     // A wrap replaces the object outright, so everything above it was work on
@@ -429,11 +427,7 @@ pub fn process_progressive(
             .iter()
             .any(|op| op.enabled && op.kind.alters_geometry())
     {
-        warnings.push(
-            "Shrinkwrap runs below an operation that changes the shape, and it \
-             replaces the whole object — so that operation's work is thrown away. \
-             Move Shrinkwrap to the top of the list.",
-        );
+        warnings.push(OptWarning::ShrinkwrapBelowShapeChange);
     }
 
     let mut lods = Vec::with_capacity(levels.len());
@@ -453,10 +447,7 @@ pub fn process_progressive(
         // but it renders as an empty viewport, so say why rather than let the
         // user wonder whether processing failed.
         if model.indices.is_empty() {
-            warnings.push(&format!(
-                "LOD {index} simplified away completely. Raise its target ratio, or \
-                 lower its error limit so the simplifier stops sooner."
-            ));
+            warnings.push(OptWarning::LodEmpty { level: index });
         }
         // Measured off the submeshes rather than the assembled model: they are
         // what the GPU draws, and — unlike the assembled model, which a rebuilt
@@ -488,7 +479,6 @@ pub fn process_progressive(
     })
 }
 
-/// Whether the user excluded `node` from processing entirely.
 /// Whether an enabled Reduce sits among `ops`, so the level it runs on has been
 /// through a simplifier.
 fn runs_reduce(ops: &[OpInstance]) -> bool {
@@ -496,6 +486,7 @@ fn runs_reduce(ops: &[OpInstance]) -> bool {
         .any(|op| op.enabled && matches!(op.kind, OpKind::Reduce(_)))
 }
 
+/// Whether the user excluded `node` from processing entirely.
 pub(crate) fn is_excluded(stack: &OptStack, node: u32) -> bool {
     stack
         .node_override(node as usize)
@@ -772,9 +763,9 @@ mod tests {
     /// The exception: one piece with a **rebuilt** carry puts the whole level
     /// into the import's corner-run layout, and the quads reach the viewport.
     ///
-    /// Built by hand rather than by running a Remesh, so it holds whether or not
-    /// a retopologizer is vendored — and so the assertion is about `assemble`'s
-    /// layout rather than about what the engine happened to produce.
+    /// Built by hand rather than by running a Remesh, so the assertion is about
+    /// `assemble`'s layout rather than about what a rebuild happened to
+    /// produce.
     #[test]
     fn a_level_with_a_rebuilt_carry_emits_corner_run_faces() {
         let model = demo_cube_model();
@@ -796,8 +787,8 @@ mod tests {
         // A rebuilt carry over the welded mesh: the cube's triangles come in
         // pairs cut from one quad — `(a, b, c)` then `(a, c, d)` — so each pair
         // names the face `[a, b, c, d]`. Built here rather than by running a
-        // Remesh so the test does not need a vendored retopologizer, and so what
-        // it asserts is `assemble`'s layout rather than the engine's output.
+        // Remesh so what it asserts is `assemble`'s layout rather than a
+        // rebuild's output.
         let piece = &mut submeshes[0];
         let mut carry = crate::submesh::PolygonCarry {
             face_offsets: vec![0],
@@ -1278,7 +1269,7 @@ mod tests {
                 result
                     .warnings
                     .iter()
-                    .any(|warning| warning.contains("simplified away")),
+                    .any(|warning| matches!(warning, OptWarning::LodEmpty { .. })),
                 "an empty level is explained: {:?}",
                 result.warnings
             );
@@ -1396,7 +1387,7 @@ mod tests {
             !result
                 .warnings
                 .iter()
-                .any(|warning| warning.contains("skin")),
+                .any(|warning| warning.to_string().contains("skin")),
             "nothing was dropped: {:?}",
             result.warnings
         );

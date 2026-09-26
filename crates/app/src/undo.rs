@@ -5,7 +5,7 @@
 //! material parameters, texture slot bindings, and the scene texture pool — is
 //! captured as a single [`EditSnapshot`]. The [`UndoStack`] keeps a baseline plus
 //! an undo/redo history of those snapshots; `Ctrl+Z` / `Ctrl+Y` (or
-//! `Ctrl+Shift+Z`) restore one. *View* state (camera, grid/shading/AA/bloom/AO/
+//! `Ctrl+Shift+Z`) restore one. *View* state (camera, grid/shading/AA/AO/
 //! tonemap/environment, UV/Tex viewports) is deliberately **not** captured.
 //!
 //! Why snapshots, not a command pattern: `app` is the single coordinator that
@@ -20,8 +20,8 @@
 //! selection-only edit costs almost nothing.
 //!
 //! Recording is driven once per frame by [`App::observe_edit_state`] (top of
-//! `render`, the same one-frame-behind cadence the selection flash uses): it
-//! builds the live snapshot and lets the stack diff it against the baseline. A
+//! `render`, so it sees what the UI committed on the frame before): it builds the
+//! live snapshot and lets the stack diff it against the baseline. A
 //! change to a cheap field (selection/solo/hidden) or a revision bump (materials /
 //! pool) is caught automatically — that is the extensibility win. The lone special
 //! case is a continuous drag (a material slider / color-picker), coalesced into a

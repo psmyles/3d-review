@@ -1,4 +1,5 @@
-//! Finder opens on macOS: `application:openURLs:` (`mac-port-plan.md` D14).
+//! Finder opens on macOS: `application:openURLs:` (`docs/ARCHITECTURE.md`,
+//! Platform decisions D14).
 //!
 //! On Windows a double-clicked `.fbx` arrives as `argv[1]`, which is what `main`
 //! reads. macOS does not work that way. Finder, `open(1)` and a drop on the Dock

@@ -6,7 +6,7 @@
 //! so nothing compiles a shader at run time and a broken shader is a build error
 //! (D4/D5). The generated `ShaderDesc` carries what bytecode cannot: the uniform
 //! block layouts, which view and sampler slot is which, which sampler pairs with
-//! which texture, and the per-backend entry-point names. [`make`] is the join.
+//! which texture, and the per-backend entry-point names. [`fn@make`] is the join.
 //!
 //! The generated desc points its funcs at the *source* it embedded, because that file
 //! is checked in and must be byte-identical whichever OS regenerates it. Every use
@@ -26,13 +26,17 @@ pub(crate) struct ShaderBytecode {
     pub(crate) fragment: &'static [u8],
 }
 
+/// A generated `<program>_shader_desc`: what a caller outside `rhi` hands over to
+/// name a program, so it never has to spell out a sokol type to do it.
+pub(crate) type ShaderDescFn = fn(sg::Backend) -> sg::ShaderDesc;
+
 /// Build a shader from its generated reflection and this host's bytecode.
 ///
 /// `desc_fn` is the generated `<program>_shader_desc` — passed as a function rather
 /// than a filled desc so the backend query happens here, in the one place that knows
 /// which bytecode it is about to substitute.
 pub(crate) fn make(
-    desc_fn: fn(sg::Backend) -> sg::ShaderDesc,
+    desc_fn: ShaderDescFn,
     bytecode: &ShaderBytecode,
     label: &'static std::ffi::CStr,
 ) -> GpuResult<sg::Shader> {

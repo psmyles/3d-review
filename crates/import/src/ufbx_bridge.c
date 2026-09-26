@@ -1,6 +1,4 @@
-#include "ufbx_bridge.h"
-
-#include "ufbx.h"
+#include "ufbx_internal.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -13,14 +11,6 @@ void review_import_set_error_message(review_import_error *out_error, const char 
 {
     review_import_set_error(out_error, message);
 }
-
-int review_import_capture_extras(const ufbx_scene *scene,
-                                 const ufbx_material *const *material_sources,
-                                 size_t material_count,
-                                 const uint32_t *channel_of_element,
-                                 const int32_t *clip_of_stack,
-                                 review_import_extras *out,
-                                 review_import_error *out_error);
 
 static void review_import_set_error(review_import_error *out_error, const char *message)
 {
@@ -313,6 +303,13 @@ static ufbx_vec4 review_import_get_vec4(const ufbx_vertex_vec4 *attr, size_t ind
    diffuse color, then to white. RGB only — the viewer renders meshes opaque.
    Returns the resolved color in *linear* space (the material table seeds a PBR
    uniform from it directly). */
+/* `value` when it is a number at all, else `fallback`. A material value is read
+   straight from the file, and NaN slips through every `< 0` / `> 1` clamp. */
+static float review_import_finite_or(double value, float fallback)
+{
+    return isfinite(value) ? (float)value : fallback;
+}
+
 static void review_import_material_base_color_linear(const ufbx_material *material, float out_color[3])
 {
     out_color[0] = 1.0f;
@@ -324,13 +321,13 @@ static void review_import_material_base_color_linear(const ufbx_material *materi
     }
 
     if (material->pbr.base_color.has_value) {
-        out_color[0] = (float)material->pbr.base_color.value_vec4.x;
-        out_color[1] = (float)material->pbr.base_color.value_vec4.y;
-        out_color[2] = (float)material->pbr.base_color.value_vec4.z;
+        out_color[0] = review_import_finite_or(material->pbr.base_color.value_vec4.x, 1.0f);
+        out_color[1] = review_import_finite_or(material->pbr.base_color.value_vec4.y, 1.0f);
+        out_color[2] = review_import_finite_or(material->pbr.base_color.value_vec4.z, 1.0f);
     } else if (material->fbx.diffuse_color.has_value) {
-        out_color[0] = (float)material->fbx.diffuse_color.value_vec4.x;
-        out_color[1] = (float)material->fbx.diffuse_color.value_vec4.y;
-        out_color[2] = (float)material->fbx.diffuse_color.value_vec4.z;
+        out_color[0] = review_import_finite_or(material->fbx.diffuse_color.value_vec4.x, 1.0f);
+        out_color[1] = review_import_finite_or(material->fbx.diffuse_color.value_vec4.y, 1.0f);
+        out_color[2] = review_import_finite_or(material->fbx.diffuse_color.value_vec4.z, 1.0f);
     }
 }
 
@@ -356,7 +353,7 @@ static float review_import_material_metallic(const ufbx_material *material)
     float metallic = 0.0f;
 
     if (material && material->pbr.metalness.has_value) {
-        metallic = (float)material->pbr.metalness.value_real;
+        metallic = review_import_finite_or(material->pbr.metalness.value_real, 0.0f);
     }
 
     if (metallic < 0.0f) {
@@ -382,13 +379,13 @@ static void review_import_material_emissive(const ufbx_material *material, float
     }
 
     if (material->pbr.emission_factor.has_value) {
-        factor = (float)material->pbr.emission_factor.value_real;
+        factor = review_import_finite_or(material->pbr.emission_factor.value_real, 0.0f);
     }
 
     if (material->pbr.emission_color.has_value) {
-        out_color[0] = (float)material->pbr.emission_color.value_vec4.x * factor;
-        out_color[1] = (float)material->pbr.emission_color.value_vec4.y * factor;
-        out_color[2] = (float)material->pbr.emission_color.value_vec4.z * factor;
+        out_color[0] = review_import_finite_or(material->pbr.emission_color.value_vec4.x, 0.0f) * factor;
+        out_color[1] = review_import_finite_or(material->pbr.emission_color.value_vec4.y, 0.0f) * factor;
+        out_color[2] = review_import_finite_or(material->pbr.emission_color.value_vec4.z, 0.0f) * factor;
     }
 }
 
@@ -406,9 +403,9 @@ static float review_import_material_smoothness(const ufbx_material *material)
     }
 
     if (material->pbr.glossiness.has_value) {
-        smoothness = (float)material->pbr.glossiness.value_real;
+        smoothness = review_import_finite_or(material->pbr.glossiness.value_real, smoothness);
     } else if (material->pbr.roughness.has_value) {
-        smoothness = 1.0f - (float)material->pbr.roughness.value_real;
+        smoothness = 1.0f - review_import_finite_or(material->pbr.roughness.value_real, 1.0f - smoothness);
     }
 
     if (smoothness < 0.0f) {
@@ -419,6 +416,13 @@ static float review_import_material_smoothness(const ufbx_material *material)
     return smoothness;
 }
 
+/* The material slot for `material`, adding one the first time it is seen.
+
+   Keyed on the ufbx material itself, not on its name. Two distinct materials
+   routinely share a name (`lambert1`, `Material`), and merging them by name
+   kept only the first one's properties and textures, so the export wrote the
+   same material out for both and the second one's animated properties had no
+   target. An unnamed material is shown as "Default" but stays its own slot. */
 static uint32_t review_import_add_material(review_import_scene *scene, const ufbx_material *material)
 {
     size_t index;
@@ -431,13 +435,13 @@ static uint32_t review_import_add_material(review_import_scene *scene, const ufb
         name_length = 7;
     }
 
+    /* Consecutive faces almost always share a material, so the last slot is
+       checked first; the scan behind it compares pointers only. */
+    if (scene->material_count > 0 && scene->materials[scene->material_count - 1].source == material) {
+        return (uint32_t)(scene->material_count - 1);
+    }
     for (index = 0; index < scene->material_count; index++) {
-        const char *existing_name = scene->materials[index].name;
-        if (!existing_name) {
-            continue;
-        }
-
-        if (strlen(existing_name) == name_length && memcmp(existing_name, name_data, name_length) == 0) {
+        if (scene->materials[index].source == material) {
             return (uint32_t)index;
         }
     }
@@ -470,7 +474,7 @@ static uint32_t review_import_add_material(review_import_scene *scene, const ufb
         scene->materials = new_materials;
         slot = &scene->materials[scene->material_count];
         slot->name = owned_name;
-        /* Seed the editable material table's import defaults (Phase 1). */
+        /* Seed the editable material table's import defaults. */
         review_import_material_base_color_linear(material, slot->base_color);
         slot->smoothness = review_import_material_smoothness(material);
         slot->metallic = review_import_material_metallic(material);
@@ -1132,7 +1136,11 @@ static int review_import_fill_skin(
             int invertible;
 
             if (deformer->clusters.count > cluster_map_capacity) {
-                uint32_t *grown = (uint32_t*)realloc(cluster_map, deformer->clusters.count * sizeof(uint32_t));
+                size_t grown_bytes;
+                uint32_t *grown = NULL;
+                if (!review_import_mul_overflows(deformer->clusters.count, sizeof(uint32_t), &grown_bytes)) {
+                    grown = (uint32_t*)realloc(cluster_map, grown_bytes);
+                }
                 if (!grown) {
                     free(cluster_map);
                     review_import_set_error(out_error, "out of memory while recording skin clusters");
@@ -1451,11 +1459,11 @@ static const ufbx_baked_prop *review_import_deform_percent(const ufbx_baked_elem
 
 /* Animation clips: bake every animation stack with ufbx (linear keys kept as
    authored, cubic segments resampled at the file's frame rate, no key
-   reduction — the exact curve, not an approximation of it), then count the
-   tracks and keys, allocate, and fill. Node keys map straight onto our node
-   table (ufbx's `typed_id` is the node's index); blend-channel keys are
-   resolved through `channel_of_element`. Returns 1 on success, 0 with
-   `out_error` set. */
+   reduction — the exact curve, not an approximation of it, though each key's
+   value is narrowed to `float`), then count the tracks and keys, allocate,
+   and fill. Node keys map straight onto our node table (ufbx's `typed_id` is
+   the node's index); blend-channel keys are resolved through
+   `channel_of_element`. Returns 1 on success, 0 with `out_error` set. */
 static int review_import_capture_animation(
     const ufbx_scene *scene,
     review_import_scene *out_scene,
@@ -1783,7 +1791,9 @@ static int review_import_capture_nodes(
 
         /* The rest local transform — what animation keys replace. With the
            helper-node inherit handling every node is a plain parent × local
-           product, so these compose back to `transform`. */
+           product, so these compose back to `transform` — to `float`
+           precision, not bit for bit: both are narrowed from ufbx's doubles
+           here. */
         dst->local_translation[0] = (float)node->local_transform.translation.x;
         dst->local_translation[1] = (float)node->local_transform.translation.y;
         dst->local_translation[2] = (float)node->local_transform.translation.z;
@@ -1846,6 +1856,7 @@ int review_import_load_fbx(
     ufbx_scene *scene = NULL;
     review_import_totals totals = { 0 };
     int success = 0;
+    int extras_dropped = 0;
 
     memset(&error, 0, sizeof(error));
     if (out_scene) {
@@ -1874,8 +1885,9 @@ int review_import_load_fbx(
     /* Make every node a plain `parent_world × local` product by letting ufbx
        insert scale-helper nodes for the non-standard inherit modes (3ds Max's
        segment-scale compensation). The rest local transforms captured below
-       then compose back to `node_to_world` exactly, which is what lets a pose
-       be recomposed from them at runtime. */
+       then compose back to `node_to_world` with no correction term — exact up
+       to the `float` both are narrowed to — which is what lets a pose be
+       recomposed from them at runtime. */
     load_opts.inherit_mode_handling = UFBX_INHERIT_MODE_HANDLING_HELPER_NODES;
     if (progress) {
         progress_ctx.fn = progress;
@@ -1936,7 +1948,7 @@ int review_import_load_fbx(
         int32_t *clip_of_stack = NULL;
         int captured;
         if (scene->elements.count > 0) {
-            channel_of_element = (uint32_t*)malloc(scene->elements.count * sizeof(uint32_t));
+            channel_of_element = (uint32_t*)calloc(scene->elements.count, sizeof(uint32_t));
             if (!channel_of_element) {
                 review_import_set_error(out_error, "out of memory while recording blend shapes");
                 goto cleanup;
@@ -1944,7 +1956,7 @@ int review_import_load_fbx(
             memset(channel_of_element, 0xFF, scene->elements.count * sizeof(uint32_t));
         }
         if (scene->anim_stacks.count > 0) {
-            clip_of_stack = (int32_t*)malloc(scene->anim_stacks.count * sizeof(int32_t));
+            clip_of_stack = (int32_t*)calloc(scene->anim_stacks.count, sizeof(int32_t));
             if (!clip_of_stack) {
                 free(channel_of_element);
                 review_import_set_error(out_error, "out of memory while recording animation clips");
@@ -1958,22 +1970,30 @@ int review_import_load_fbx(
             /* The deduplicated material table's sources, for the capture's
                material properties and animated-material targets. */
             const ufbx_material **material_sources = NULL;
+            int extras_captured = 1;
             if (out_scene->material_count > 0) {
                 size_t index;
                 material_sources = (const ufbx_material**)calloc(out_scene->material_count, sizeof(const ufbx_material*));
                 if (!material_sources) {
-                    captured = 0;
+                    extras_captured = 0;
                     review_import_set_error(out_error, "out of memory while recording source properties");
                 }
                 for (index = 0; material_sources && index < out_scene->material_count; index++) {
                     material_sources[index] = (const ufbx_material*)out_scene->materials[index].source;
                 }
             }
-            if (captured) {
-                captured = review_import_capture_extras(scene, material_sources, out_scene->material_count,
-                                                        channel_of_element, clip_of_stack, out_extras, out_error);
+            if (extras_captured) {
+                extras_captured = review_import_capture_extras(scene, material_sources, out_scene->material_count,
+                                                               channel_of_element, clip_of_stack, out_extras, out_error);
             }
             free((void*)material_sources);
+            /* A failed capture costs the export its source properties, not the
+               viewer its model: drop it (zeroed, so nothing is freed twice) and
+               say so through the return code, with `out_error` saying why. */
+            if (!extras_captured) {
+                review_import_free_extras(out_extras);
+                extras_dropped = 1;
+            }
         }
         free(channel_of_element);
         free(clip_of_stack);
@@ -1982,7 +2002,7 @@ int review_import_load_fbx(
         }
     }
 
-    success = 1;
+    success = extras_dropped ? REVIEW_IMPORT_LOADED_WITHOUT_EXTRAS : 1;
 
 cleanup:
     if (!success) {

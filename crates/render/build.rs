@@ -431,10 +431,10 @@ fn find_tool() -> Option<PathBuf> {
 ///
 /// `xcrun --find metal` is not the check: Command Line Tools ship a `metal` stub that
 /// exists, resolves, and fails with a message about a missing toolchain the moment it
-/// is asked to compile anything (`mac-port-plan.md` §7). Asking it for `--version` is
-/// the cheapest question that actually goes through the real compiler, so a box
-/// without the 839 MB toolchain answers "no" here and builds from the committed
-/// `.metallib`s instead of panicking mid-compile.
+/// is asked to compile anything (`docs/ARCHITECTURE.md`, Platform decisions:
+/// toolchain). Asking it for `--version` is the cheapest question that actually goes
+/// through the real compiler, so a box without the 839 MB toolchain answers "no" here
+/// and builds from the committed `.metallib`s instead of panicking mid-compile.
 #[cfg(target_os = "macos")]
 fn find_tool() -> Option<PathBuf> {
     let ran = Command::new("xcrun")

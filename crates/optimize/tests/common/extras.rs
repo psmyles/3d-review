@@ -59,8 +59,7 @@ pub fn round_trip(
     assert!(
         !report
             .notes
-            .iter()
-            .any(|note| note.contains("had not finished loading")),
+            .contains(&review_optimize::ExportNote::CaptureNotLoaded),
         "the capture was used: {:?}",
         report.notes
     );

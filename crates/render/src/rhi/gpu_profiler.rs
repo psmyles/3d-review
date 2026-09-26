@@ -1,5 +1,5 @@
 //! The `--tracy` GPU profiler: what the renderer times, and how those timings reach
-//! Tracy (`mac-port-plan.md` D18).
+//! Tracy (`docs/ARCHITECTURE.md`, Platform decisions D18).
 //!
 //! Everything here is platform-independent — which zones exist, which of them a
 //! given frame encodes, and how a resolved tick pair becomes a Tracy GPU span. The
@@ -249,8 +249,8 @@ impl GpuProfiler {
 }
 
 /// What Tracy calls this timeline, and which API it attributes it to. Per-OS because
-/// the measurement is: D3D11 counts real per-pass timestamps, Metal will only be able
-/// to bracket the whole frame (D18), and a capture should say which it is looking at.
+/// the measurement is: D3D11 counts real per-pass timestamps, Metal can only bracket
+/// the whole frame (D18), and a capture should say which it is looking at.
 #[cfg(windows)]
 const CONTEXT_NAME: &str = "GPU (D3D11 scene)";
 #[cfg(windows)]

@@ -87,6 +87,11 @@ pub(crate) fn relax(
             return;
         }
         *partition = partition::build(surface, features, seeds, threads, cancel);
+        // A cancelled build stops part way, and a partition that stopped part
+        // way is not worth reporting a pass over.
+        if cancelled(cancel) {
+            return;
+        }
 
         let moved = before
             .iter()

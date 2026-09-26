@@ -96,9 +96,39 @@ pub(crate) struct MaterialTable {
     /// by every draw that shares the mesh shader without sampling a material (the
     /// skybox, the grid, the overlays).
     fallback_entry: MaterialEntry,
-    /// Material revision + mode the entries were last synced to (a sentinel forces
-    /// the first sync).
-    synced: Option<(u64, MaterialMode)>,
+    /// What the entries were last synced to (`None` forces the first sync).
+    synced: Option<MaterialKey>,
+}
+
+/// Everything the effective material table depends on: the material edits'
+/// revision, the mode, and - in Unique mode only - how many mesh parts the
+/// table is hued over.
+///
+/// The part count is what lets one table serve the Opt workspace's two meshes.
+/// Both are synced every frame, and in Unique mode they have their own part
+/// counts; keyed without it, the second mesh drew with the first one's table -
+/// another object's hues, or the grey fallback past the end of it. In the other
+/// modes the table does not depend on the mesh at all, so the part count is left
+/// out and alternating between the two meshes rebuilds nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MaterialKey {
+    revision: u64,
+    mode: MaterialMode,
+    parts: usize,
+}
+
+impl MaterialKey {
+    pub(crate) fn new(revision: u64, mode: MaterialMode, part_count: usize) -> Self {
+        Self {
+            revision,
+            mode,
+            parts: if mode == MaterialMode::Unique {
+                part_count
+            } else {
+                0
+            },
+        }
+    }
 }
 
 impl MaterialTable {
@@ -120,18 +150,20 @@ impl MaterialTable {
         })
     }
 
-    /// Bring the table in line with `materials` (the effective table for `mode`) when
-    /// the revision or mode changes: upload any newly-referenced texture once
+    /// Whether the entries already describe `key`, so the caller need not even
+    /// build the effective table - which is a clone of every material, and a
+    /// steady-state frame allocates nothing (invariant 3).
+    pub(crate) fn is_current(&self, key: MaterialKey) -> bool {
+        self.synced == Some(key)
+    }
+
+    /// Bring the table in line with `materials` (the effective table for `key`'s
+    /// mode) when `key` changes: upload any newly-referenced texture once
     /// (deduplicated by path, re-uploaded on a disk reload), then build one entry per
     /// material and age out the uploads no longer referenced. A no-op when nothing
     /// changed.
-    pub(crate) fn sync(
-        &mut self,
-        materials: &[MaterialState],
-        revision: u64,
-        mode: MaterialMode,
-    ) -> GpuResult<()> {
-        if self.synced == Some((revision, mode)) {
+    pub(crate) fn sync(&mut self, materials: &[MaterialState], key: MaterialKey) -> GpuResult<()> {
+        if self.is_current(key) {
             return Ok(());
         }
         // One stamp for the whole sync: every entry this table references shares it,
@@ -177,7 +209,7 @@ impl MaterialTable {
             });
         }
         self.entries = entries;
-        self.synced = Some((revision, mode));
+        self.synced = Some(key);
         self.evict_stale(tick);
         Ok(())
     }
@@ -266,5 +298,28 @@ fn fallback_pixel(slot: TextureSlot) -> [u8; 4] {
         TextureSlot::Normal => [128, 128, 255, 255],
         TextureSlot::Roughness | TextureSlot::Metallic => [128, 128, 128, 255],
         TextureSlot::Emissive => [0, 0, 0, 255],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The Opt workspace syncs its two meshes through the one table every frame:
+    /// their part counts must tell Unique tables apart, and must not make the
+    /// other modes rebuild on every alternation.
+    #[test]
+    fn only_a_unique_table_depends_on_the_part_count() {
+        let key = |mode, parts| MaterialKey::new(7, mode, parts);
+        assert_ne!(key(MaterialMode::Unique, 3), key(MaterialMode::Unique, 5));
+        assert_eq!(key(MaterialMode::Source, 3), key(MaterialMode::Source, 5));
+        assert_eq!(
+            key(MaterialMode::Standard, 3),
+            key(MaterialMode::Standard, 5)
+        );
+        assert_ne!(
+            MaterialKey::new(7, MaterialMode::Source, 0),
+            MaterialKey::new(8, MaterialMode::Source, 0)
+        );
     }
 }

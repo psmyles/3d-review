@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use glam::{Mat3, Mat4};
 use review_model::{ModelData, SourceExtras};
 
+use crate::notice::ExportNote;
 use crate::process::ProcessedLod;
 use crate::stack::HierarchyMode;
 
@@ -92,9 +93,9 @@ pub(crate) fn build_poses(
         });
     }
     if skipped > 0 {
-        report.notes.push(format!(
-            "{skipped} non-bind pose(s) were not written (only bind poses are)."
-        ));
+        report
+            .notes
+            .push(ExportNote::NonBindPosesSkipped { count: skipped });
     }
 }
 
@@ -185,10 +186,10 @@ pub(crate) fn build_deform(
             });
         }
         if unplaced > 0 {
-            report.notes.push(format!(
-                "{unplaced} skin cluster(s) of '{}' bind to nodes that could not be written.",
-                node.name
-            ));
+            report.notes.push(ExportNote::UnplacedClusters {
+                mesh: node.name.clone(),
+                count: unplaced,
+            });
         }
         if !clusters.is_empty() {
             for (local, &level_vertex) in mesh.level_vertices.iter().enumerate() {

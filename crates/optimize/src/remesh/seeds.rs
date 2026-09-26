@@ -58,7 +58,9 @@ const MIN_COMPONENT_SEEDS: usize = 4;
 /// Where the rebuild starts from.
 #[derive(Debug, Default)]
 pub(crate) struct Seeds {
-    /// The input vertex each seed sits on. Ascending, distinct.
+    /// The input vertex each seed sits on, indexed by seed (= region). Distinct,
+    /// and ascending as `place` returns them - but the relaxation moves seeds in
+    /// place, so nothing downstream of it may assume the order.
     pub(crate) vertices: Vec<u32>,
     /// Per seed: the feature chain it is pinned to, or `u32::MAX` for a free
     /// interior seed. A pinned seed may only ever move along its own chain.
@@ -215,18 +217,37 @@ fn stations_for(surface: Surface<'_>, line: &Polyline) -> Vec<u32> {
     out
 }
 
-/// The chain vertex whose cumulative length is nearest `along`.
+/// The chain vertex whose cumulative length is nearest `along`, the earliest
+/// one on a tie.
+///
+/// A binary search over the (non-decreasing) cumulative lengths: the nearest is
+/// either the last length below `along` or the first at or above it. Scanning the
+/// chain per station instead is quadratic in the chain, and a rim on a
+/// ten-million-triangle input is a long chain.
 fn nearest_station(lengths: &[f64], along: f64, vertices: usize) -> usize {
-    let mut best = 0usize;
-    let mut best_gap = f64::INFINITY;
-    for (slot, &at) in lengths.iter().enumerate().take(vertices) {
-        let gap = (at - along).abs();
-        if gap < best_gap {
-            best_gap = gap;
-            best = slot;
+    let lengths = &lengths[..vertices.min(lengths.len())];
+    let above = lengths.partition_point(|&at| at < along);
+    let upper = lengths.get(above).map(|&at| (above, (at - along).abs()));
+    let lower = above.checked_sub(1).map(|below| {
+        let value = lengths[below];
+        // The earliest slot holding that length - a zero-length edge repeats it.
+        (
+            lengths.partition_point(|&at| at < value),
+            (value - along).abs(),
+        )
+    });
+    match (lower, upper) {
+        (Some((low, low_gap)), Some((high, high_gap))) => {
+            if low_gap <= high_gap {
+                low
+            } else {
+                high
+            }
         }
+        (Some((low, _)), None) => low,
+        (None, Some((high, _))) => high,
+        (None, None) => 0,
     }
-    best
 }
 
 /// How many times the stations that found nowhere to go are handed out again.
@@ -398,6 +419,37 @@ fn ensure_every_component(surface: Surface<'_>, taken: &mut [bool], seeds: &mut 
             per_component[component as usize] += 1;
         }
     }
+    let needy = |component: u32| {
+        component != u32::MAX && per_component[component as usize] < MIN_COMPONENT_SEEDS
+    };
+    if !(0..topology.components).any(needy) {
+        return;
+    }
+
+    // The members of every under-seeded component, bucketed in one pass over
+    // the vertices (a counting sort, so each bucket stays ascending). Scanning
+    // every vertex once *per* component instead is quadratic in exactly the
+    // shape of asset this exists for: foliage, a node holding thousands of
+    // leaf cards, each its own component.
+    let mut starts = vec![0u32; topology.components as usize + 1];
+    for &component in &topology.component[..topology.vertex_count] {
+        if needy(component) {
+            starts[component as usize + 1] += 1;
+        }
+    }
+    for index in 1..starts.len() {
+        starts[index] += starts[index - 1];
+    }
+    let mut members = vec![0u32; starts[starts.len() - 1] as usize];
+    let mut fill = starts.clone();
+    for vertex in 0..topology.vertex_count as u32 {
+        let component = topology.component[vertex as usize];
+        if needy(component) {
+            members[fill[component as usize] as usize] = vertex;
+            fill[component as usize] += 1;
+        }
+    }
+
     for (component, count) in per_component.iter().enumerate() {
         if *count >= MIN_COMPONENT_SEEDS {
             continue;
@@ -405,9 +457,7 @@ fn ensure_every_component(surface: Surface<'_>, taken: &mut [bool], seeds: &mut 
         let mut added = *count;
         // Spread over the component rather than taken from its front, so a
         // forced seed set is not four adjacent vertices.
-        let members: Vec<u32> = (0..topology.vertex_count as u32)
-            .filter(|&vertex| topology.component[vertex as usize] == component as u32)
-            .collect();
+        let members = &members[starts[component] as usize..starts[component + 1] as usize];
         if members.is_empty() {
             continue;
         }
@@ -634,6 +684,67 @@ mod tests {
                 "component {component} kept only {count} seeds"
             );
         }
+    }
+
+    /// The binary search picks exactly the station the linear scan it replaced
+    /// did - the earliest of the nearest - including across the repeated
+    /// lengths a zero-length edge leaves.
+    #[test]
+    fn the_nearest_station_matches_a_linear_scan() {
+        fn linear(lengths: &[f64], along: f64, vertices: usize) -> usize {
+            let mut best = 0usize;
+            let mut best_gap = f64::INFINITY;
+            for (slot, &at) in lengths.iter().enumerate().take(vertices) {
+                let gap = (at - along).abs();
+                if gap < best_gap {
+                    best_gap = gap;
+                    best = slot;
+                }
+            }
+            best
+        }
+        let lengths = [0.0, 0.5, 0.5, 0.5, 1.25, 2.0, 2.0, 3.5, 4.0];
+        for vertices in [1, 2, 4, 5, 8, 9] {
+            for step in 0..=90 {
+                let along = step as f64 * 0.05 - 0.25;
+                assert_eq!(
+                    nearest_station(&lengths, along, vertices),
+                    linear(&lengths, along, vertices),
+                    "along {along} over {vertices} vertices"
+                );
+            }
+        }
+    }
+
+    /// Thousands of tiny components, each needing its own seeds, place in time
+    /// proportional to the mesh rather than to components x vertices.
+    #[test]
+    fn many_small_components_are_each_seeded() {
+        // 3000 separate quads, the shape of a node full of leaf cards.
+        let mut positions = Vec::new();
+        let mut indices = Vec::new();
+        for card in 0..3000u32 {
+            let x = (card % 60) as f32 * 2.0;
+            let y = (card / 60) as f32 * 2.0;
+            let base = card * 4;
+            positions.extend_from_slice(&[x, y, 0.0, x + 1.0, y, 0.0, x, y + 1.0, 0.0]);
+            positions.extend_from_slice(&[x + 1.0, y + 1.0, 0.0]);
+            indices.extend_from_slice(&[base, base + 1, base + 2, base + 1, base + 3, base + 2]);
+        }
+        let setup = setup(positions, indices, 1.0, false);
+        let seeds = place_on(&setup, 100);
+        let topology = setup.surface().topology;
+        let mut per_component = vec![0usize; topology.components as usize];
+        for &vertex in &seeds.vertices {
+            per_component[topology.component[vertex as usize] as usize] += 1;
+        }
+        assert_eq!(per_component.len(), 3000);
+        assert!(
+            per_component
+                .iter()
+                .all(|&count| count >= MIN_COMPONENT_SEEDS),
+            "a component was left without its seeds"
+        );
     }
 
     #[test]

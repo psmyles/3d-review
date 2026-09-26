@@ -12,7 +12,8 @@ use super::{NormalMode, NormalParams};
 /// What the rebuilt surface is made of.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RemeshTopology {
-    /// Evenly sized, curvature-aligned triangles.
+    /// Triangles, evenly sized or following curvature as far as
+    /// [`RemeshParams::adaptive_strength`] asks.
     #[default]
     Triangles,
     /// The same surface with its triangles paired into quads wherever a quad
@@ -86,14 +87,15 @@ pub struct RemeshParams {
     pub ratio: f32,
     /// [`RemeshDensity::Absolute`]: faces for the whole selection.
     pub faces: u32,
-    /// Detect and hold sharp edges rather than letting the field run over them.
-    /// Off by default: on organic geometry it only fragments the result.
+    /// Detect and hold sharp edges as feature chains the rebuild keeps, rather
+    /// than letting a region collapse across them. Off by default: on organic
+    /// geometry it only fragments the result.
     pub sharp_edges: bool,
     /// Dihedral angle, in degrees, above which an edge counts as sharp. Only
     /// read when `sharp_edges` is on.
     pub crease_angle: f32,
-    /// Pin the field to open borders, so a boundary comes back as one straight
-    /// edge loop rather than a ragged fringe.
+    /// Keep open borders as feature chains, so a boundary comes back as one
+    /// straight edge loop rather than a ragged fringe.
     pub align_to_boundaries: bool,
     /// Rounds of tidying over the rebuilt mesh — a valence-improving flip pass
     /// and a relaxation along the surface. Evens out face sizes; too many round

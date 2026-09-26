@@ -76,7 +76,7 @@ fn truncated_fbx_is_a_clean_error() {
     assert!(matches!(result, Err(ImportError::LoadFailed(_))));
 }
 
-/// Phase 0 plumbing: a loaded FBX must carry the scene-graph hierarchy and a
+/// A loaded FBX must carry the scene-graph hierarchy and a
 /// per-triangle material slot parallel to the triangle list.
 #[test]
 fn import_carries_nodes_and_per_triangle_material() {
@@ -107,7 +107,7 @@ fn import_carries_nodes_and_per_triangle_material() {
     }
 
     // Per-triangle node index runs parallel to the triangle list and points
-    // at a real scene-graph node (Phase 2: drives per-node selection / solo).
+    // at a real scene-graph node (drives per-node selection / solo).
     assert_eq!(
         model.triangles.node.len(),
         model.stats.triangle_count,

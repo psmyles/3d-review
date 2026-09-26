@@ -24,10 +24,23 @@ const LEAF_SIZE: usize = 4;
 /// occluder; the start margin avoids the ray self-intersecting at its origin.
 const SEGMENT_SLACK: f32 = 1.0e-3;
 
-/// Maximum traversal-stack depth. A median-split tree over any realistic mesh is
-/// far shallower than this (≈ log2(triangles) + leaf depth), so the stack never
-/// overflows; the bound just keeps the stack on the call frame.
+/// Maximum traversal-stack depth. The stack grows by one entry per level, so
+/// [`MAX_DEPTH`] below keeps every tree inside it and the stack on the call frame.
 const MAX_STACK: usize = 64;
+
+/// The deepest a node may be built. A midpoint split is not bounded by
+/// `log2(triangles)`: on clustered geometry - one distant triangle beside a
+/// dense patch, repeated - each split peels a single triangle off, and a tree
+/// deeper than the traversal stack had whole subtrees the queries silently never
+/// visited (a missed pick, an occluder not found). Past [`MEDIAN_FROM_DEPTH`]
+/// every split is a median one, which halves the triangles and so adds at most
+/// `log2` more levels; this is the backstop past which a node is a leaf whatever
+/// its size.
+const MAX_DEPTH: usize = MAX_STACK - 2;
+
+/// The depth from which splits are by median rather than by midpoint - see
+/// [`MAX_DEPTH`]. A realistic mesh never gets here; its tree is ~log2(n) deep.
+const MEDIAN_FROM_DEPTH: usize = 32;
 
 #[derive(Debug, Clone, Copy)]
 struct Node {
@@ -127,7 +140,7 @@ impl Bvh {
         let mut nodes = Vec::with_capacity(2 * n);
         nodes.push(Node::EMPTY);
         build_node(
-            0, 0, n, &mut nodes, &mut order, &tri_min, &tri_max, &centroid,
+            0, 0, n, 0, &mut nodes, &mut order, &tri_min, &tri_max, &centroid,
         );
         nodes.shrink_to_fit();
 
@@ -137,7 +150,7 @@ impl Bvh {
 
     /// Whether the mesh occludes the segment from `origin` to `target`: true when
     /// any triangle is crossed strictly between the endpoints (excluding the thin
-    /// [`SEGMENT_SLACK`] margins). Sub-linear in the triangle count; reads
+    /// `SEGMENT_SLACK` margins). Sub-linear in the triangle count; reads
     /// triangle positions from `model` (must be the model this was built from).
     pub fn segment_occluded(&self, model: &ModelData, origin: Vec3, target: Vec3) -> bool {
         let dir = target - origin;
@@ -605,6 +618,7 @@ fn build_node(
     node_idx: usize,
     start: usize,
     end: usize,
+    depth: usize,
     nodes: &mut Vec<Node>,
     tris: &mut [u32],
     tri_min: &[Vec3],
@@ -622,7 +636,7 @@ fn build_node(
     nodes[node_idx].max = hi;
 
     let count = end - start;
-    if count <= LEAF_SIZE {
+    if count <= LEAF_SIZE || depth >= MAX_DEPTH {
         nodes[node_idx].left_first = start as u32;
         nodes[node_idx].count = count as u32;
         return;
@@ -651,13 +665,17 @@ fn build_node(
     }
 
     let split = axis_value(clo, axis) + axis_value(extent, axis) * 0.5;
-    let mut mid = start
-        + partition(&mut tris[start..end], |t| {
-            axis_value(centroid[t as usize], axis) < split
-        });
+    let mut mid = if depth >= MEDIAN_FROM_DEPTH {
+        start
+    } else {
+        start
+            + partition(&mut tris[start..end], |t| {
+                axis_value(centroid[t as usize], axis) < split
+            })
+    };
     if mid == start || mid == end {
-        // A spatial split that put everything on one side; fall back to a median
-        // split so the recursion still makes progress.
+        // A spatial split that put everything on one side, or a node deep enough
+        // that only a median split keeps the tree inside the traversal stack.
         mid = start + count / 2;
         tris[start..end].select_nth_unstable_by(count / 2, |&p, &q| {
             axis_value(centroid[p as usize], axis)
@@ -675,6 +693,7 @@ fn build_node(
         left as usize,
         start,
         mid,
+        depth + 1,
         nodes,
         tris,
         tri_min,
@@ -685,6 +704,7 @@ fn build_node(
         left as usize + 1,
         mid,
         end,
+        depth + 1,
         nodes,
         tris,
         tri_min,
@@ -1353,5 +1373,52 @@ mod tests {
         assert!(bvh.segment_occluded(&model, origin, target, &[1]));
         // Hiding node 0 removes the only occluder.
         assert!(!bvh.segment_occluded(&model, origin, target, &[0]));
+    }
+
+    /// A tree deeper than the traversal stack used to lose whole subtrees to
+    /// every query. Triangles at exponentially growing distances are the worst
+    /// case for a midpoint split - each one peels a single triangle off - and
+    /// every one of them must still be found.
+    #[test]
+    fn a_degenerately_clustered_mesh_is_still_searched_to_the_bottom() {
+        use glam::{Vec2, Vec4};
+        let count = 300u32;
+        let mut positions = Vec::new();
+        for index in 0..count {
+            let x = 1.3f32.powi(index as i32);
+            positions.extend([
+                Vec3::new(x, 0.0, 0.0),
+                Vec3::new(x + 0.1, 0.0, 0.0),
+                Vec3::new(x, 0.1, 0.0),
+            ]);
+        }
+        let model = ModelData {
+            vertices: positions
+                .iter()
+                .map(|&position| Vertex {
+                    position,
+                    normal: Vec3::Z,
+                    uv: Vec2::ZERO,
+                    tangent: Vec4::new(1.0, 0.0, 0.0, 1.0),
+                    vertex_color: Vec4::ONE,
+                })
+                .collect(),
+            indices: (0..count * 3).collect(),
+            ..Default::default()
+        };
+        let bvh = Bvh::build(&model);
+
+        for triangle in 0..count {
+            let [a, b, c] = triangle_positions(&model, triangle);
+            let centre = (a + b + c) / 3.0;
+            let hit = bvh
+                .closest_point(&model, centre, f32::INFINITY)
+                .expect("the mesh has faces");
+            assert!(
+                hit.distance_squared <= centre.length_squared() * 1.0e-10,
+                "triangle {triangle} was not reached: nearest found at {}",
+                hit.distance_squared.sqrt()
+            );
+        }
     }
 }

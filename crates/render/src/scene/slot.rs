@@ -64,8 +64,8 @@ pub(super) struct PivotParams {
 pub(super) const SKELETON_FILL_ALPHA: f32 = 0.35;
 
 /// Baked parameters for the skeleton overlay. The selected set is part of the key
-/// because the highlight color is baked per bone into the vertex buffer (unlike
-/// the mesh selection flash, whose color rides in a uniform) — a skeleton is a few
+/// because the highlight color is baked per bone into the vertex buffer (unlike the
+/// mesh selection highlight, whose color rides in a uniform) — a skeleton is a few
 /// thousand vertices, so rebuilding it on an Outliner click is far cheaper than
 /// carrying a per-bone lookup into the shader.
 #[derive(PartialEq)]
@@ -241,9 +241,9 @@ pub(super) struct ModelSlot {
     /// wireframe and normal lines drawn over the new one.
     pub(super) views_revision: u64,
     /// The selected triangles reordered per-material over a fresh index buffer that
-    /// shares the mesh vertex buffer (the solo isolate list + the flash fill source).
-    /// `None` while nothing is selected or the selection resolves to no geometry
-    /// (invariant 3).
+    /// shares the mesh vertex buffer (the solo isolate list + the highlight fill
+    /// source). `None` while nothing is selected or the selection resolves to no
+    /// geometry (invariant 3).
     pub(super) selection_index: Option<IndexBuffer>,
     pub(super) selection_ranges: Vec<MaterialDrawRange>,
     pub(super) selection_baked: Option<SelectionBaked>,
@@ -309,6 +309,31 @@ impl ModelSlot {
         let generation = self.visibility_generation;
         *self = ModelSlot::new();
         self.visibility_generation = generation.wrapping_add(1);
+    }
+
+    /// Drop everything derived from the mesh - the line views, the selection,
+    /// hover and visibility lists, the ghost wireframe - but keep the mesh
+    /// itself (invariant 3). For a slot that is uploaded but not being drawn as
+    /// a scene: the Opt workspace's processed mesh while another workspace is up,
+    /// or whichever mesh is the overlay's ghost, which is drawn from its mesh
+    /// buffers alone.
+    ///
+    /// Every bake key goes with its buffer, so the next frame that draws this
+    /// slot as a scene rebuilds exactly what it needs; the visibility list's
+    /// rebuild bumps its own generation, which is what resets the AO then.
+    pub(super) fn release_derived(&mut self) {
+        self.views = DerivedViews::default();
+        self.selection_index = None;
+        self.selection_ranges = Vec::new();
+        self.selection_baked = None;
+        self.hover_index = None;
+        self.hover_baked = None;
+        self.visible_index = None;
+        self.visible_ranges = Vec::new();
+        self.visible_active = false;
+        self.visibility_baked = None;
+        self.ghost_wireframe_index = None;
+        self.ghost_wireframe_baked = None;
     }
 
     /// The per-corner deform lanes the mesh-derived builders copy (empty for a

@@ -9,6 +9,7 @@ use review_model::ModelData;
 
 use crate::Warnings;
 use crate::cancel::{CancelToken, cancelled};
+use crate::notice::OptWarning;
 use crate::ops;
 use crate::stack::{
     LodLevel, LodParams, OpInstance, OpKind, OptStack, SimplifyAlgorithm, SimplifySettings,
@@ -47,7 +48,9 @@ pub(crate) fn index_mesh(submeshes: &mut [Submesh], stack: &OptStack, warnings: 
             continue;
         }
         if let Err(error) = ops::weld(piece, &crate::stack::WeldParams::default()) {
-            warnings.push(&format!("Couldn't index the mesh for processing: {error}"));
+            warnings.push(OptWarning::IndexFailed {
+                detail: error.to_string(),
+            });
         }
     }
 }
@@ -71,14 +74,11 @@ pub(crate) fn build_lod_level(
     cancel: Option<&CancelToken>,
 ) -> LevelState {
     let mut submeshes = base.to_vec();
-    let simplify_error = simplify_submeshes(
-        &mut submeshes,
-        stack,
-        "Generate LODs",
-        warnings,
-        cancel,
-        |_| (params.simplify, *level),
-    );
+    let operation = OpKind::SimplifyLod(params.clone());
+    let simplify_error =
+        simplify_submeshes(&mut submeshes, stack, &operation, warnings, cancel, |_| {
+            (params.simplify, *level)
+        });
 
     LevelState {
         submeshes,
@@ -99,7 +99,7 @@ pub(crate) fn build_lod_level(
 pub(crate) fn simplify_submeshes(
     submeshes: &mut [Submesh],
     stack: &OptStack,
-    label: &str,
+    operation: &OpKind,
     warnings: &mut Warnings,
     cancel: Option<&CancelToken>,
     mut settings_for: impl FnMut(&Submesh) -> (SimplifySettings, LodLevel),
@@ -131,7 +131,10 @@ pub(crate) fn simplify_submeshes(
 
         match ops::simplify(piece, &settings, triangles, target.target_error.max(0.0)) {
             Ok(error) => worst_error = worst_error.max(error),
-            Err(error) => warnings.push(&format!("{label}: {error}")),
+            Err(error) => warnings.push(OptWarning::OperationFailed {
+                operation: operation.clone(),
+                detail: error.to_string(),
+            }),
         }
         requested += before.saturating_sub(triangles);
         produced += before.saturating_sub(piece.triangle_count());
@@ -145,12 +148,7 @@ pub(crate) fn simplify_submeshes(
     // rather than let the user rediscover them.
     let stalled = requested > 0 && produced * 10 < requested;
     if stalled && seam_bound {
-        warnings.push(
-            "The simplifier removed almost nothing: this mesh has an attribute seam \
-             at nearly every edge, which a topology-preserving collapse cannot cross. \
-             Add a Weld operation with 'Compare normals' off, or turn on 'Collapse \
-             across seams' in the simplifier options.",
-        );
+        warnings.push(OptWarning::SimplifierStalledOnSeams);
     }
 
     worst_error
@@ -184,23 +182,16 @@ pub(crate) fn apply_op(
     // two: what it leaves behind is what every later operation sees, what each LOD
     // level starts from, and what the export writes in the source mesh's place.
     if let OpKind::Reduce(params) = &op.kind {
-        return simplify_submeshes(
-            submeshes,
-            stack,
-            op.kind.label(),
-            warnings,
-            run.token(),
-            |piece| {
-                let params = match resolve_op(stack, op, piece.node) {
-                    OpKind::Reduce(resolved) => resolved,
-                    // An override can only ever hold the same kind as the operation
-                    // it overrides; fall back to the global settings if one somehow
-                    // doesn't.
-                    _ => params,
-                };
-                (params.simplify, params.target)
-            },
-        );
+        return simplify_submeshes(submeshes, stack, &op.kind, warnings, run.token(), |piece| {
+            let params = match resolve_op(stack, op, piece.node) {
+                OpKind::Reduce(resolved) => resolved,
+                // An override can only ever hold the same kind as the operation
+                // it overrides; fall back to the global settings if one somehow
+                // doesn't.
+                _ => params,
+            };
+            (params.simplify, params.target)
+        });
     }
 
     // The AO bake needs the whole scene as occluders — excluded pieces still
@@ -263,7 +254,10 @@ pub(crate) fn apply_op(
             | OpKind::RecalculateNormals(_) => Ok(()),
         };
         if let Err(error) = outcome {
-            warnings.push(&format!("{}: {error}", kind.label()));
+            warnings.push(OptWarning::OperationFailed {
+                operation: kind.clone(),
+                detail: error.to_string(),
+            });
         }
     }
     0.0

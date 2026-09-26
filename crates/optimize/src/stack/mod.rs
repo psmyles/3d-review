@@ -3,8 +3,9 @@
 //!
 //! The stack is deliberately a plain data description — it holds *what* to do,
 //! never any mesh or GPU state — so it is cheap to clone into an undo snapshot,
-//! cheap to hand to a worker thread, and serializable as-is. [`crate::process`]
-//! is what interprets it.//!
+//! cheap to hand to a worker thread, and serializable as-is. [`crate::process`](mod@crate::process)
+//! is what interprets it.
+//!
 //! ## Layout
 //!
 //! [`OptStack`] and the operations it holds are here; [`params`] carries each
@@ -17,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 mod ao;
 mod export;
+pub mod limits;
 mod normals;
 mod params;
 mod remesh;
@@ -171,6 +173,24 @@ impl OptStack {
 
     /// Drop override entries that no longer say anything, so an empty entry left
     /// behind by unchecking every box doesn't persist into a preset.
+    /// Clamp every numeric setting into the range the inspector offers
+    /// ([`limits`]) and cap the LOD chain at [`limits::MAX_LOD_LEVELS`], the
+    /// per-object overrides included.
+    ///
+    /// For a stack that came from outside the chrome: a preset is a file anyone
+    /// can edit, and the operations assume the inspector's ranges. Unchecked, a
+    /// hand-written `levels` list builds one full copy of the mesh per entry,
+    /// and a face count of four billion is a seeding loop that never ends.
+    pub fn sanitize(&mut self) {
+        let overridden = self
+            .overrides
+            .iter_mut()
+            .flat_map(|entry| entry.ops.iter_mut());
+        for op in self.ops.iter_mut().chain(overridden) {
+            op.kind.sanitize();
+        }
+    }
+
     pub fn prune_overrides(&mut self) {
         self.overrides
             .retain(|entry| entry.exclude || !entry.ops.is_empty());
@@ -266,12 +286,19 @@ impl OptStack {
             remap.push((op.id, new));
             op.id = new;
         }
+        // An override naming no operation is dropped rather than kept: it overrides
+        // nothing, and left at its old id it could match one of the fresh ids
+        // above and attach itself to an operation it was never written for.
         for entry in &mut self.overrides {
-            for override_op in &mut entry.ops {
-                if let Some(&(_, new)) = remap.iter().find(|(old, _)| *old == override_op.id) {
-                    override_op.id = new;
+            entry.ops.retain_mut(|override_op| {
+                match remap.iter().find(|(old, _)| *old == override_op.id) {
+                    Some(&(_, new)) => {
+                        override_op.id = new;
+                        true
+                    }
+                    None => false,
                 }
-            }
+            });
         }
         self.next_id = self.ops.len() as u64 + 1;
     }
@@ -310,8 +337,8 @@ pub enum OpKind {
     /// [`OpKind::SimplifyLod`] runs, applied as an ordinary stack step rather
     /// than as a fan-out.
     Reduce(ReduceParams),
-    /// Regenerate each object's surface as evenly sized, curvature-aligned
-    /// triangles or quads, with the materials, UVs and colors projected back on.
+    /// Regenerate each object's surface as evenly sized triangles or quads, with
+    /// the materials, UVs and colors projected back on.
     Remesh(RemeshParams),
     /// Replace each object with one closed shell that hugs it, fusing
     /// interpenetrating parts into a single watertight surface.
@@ -332,6 +359,165 @@ pub enum OpKind {
 }
 
 impl OpKind {
+    /// Clamp this operation's settings into [`limits`]; see
+    /// [`OptStack::sanitize`].
+    pub fn sanitize(&mut self) {
+        use limits::*;
+        fn normals(params: &mut NormalParams) {
+            let default = NormalParams::default();
+            fit(
+                &mut params.crease_angle,
+                NORMAL_CREASE_MIN,
+                NORMAL_CREASE_MAX,
+                default.crease_angle,
+            );
+            fit(
+                &mut params.smoothing,
+                NORMAL_SMOOTHING_MIN,
+                NORMAL_SMOOTHING_MAX,
+                default.smoothing,
+            );
+        }
+        fn simplify(settings: &mut SimplifySettings) {
+            let default = AttributeWeights::default();
+            let weights = &mut settings.attribute_weights;
+            fit(
+                &mut weights.normal,
+                ATTRIBUTE_WEIGHT_MIN,
+                ATTRIBUTE_WEIGHT_MAX,
+                default.normal,
+            );
+            fit(
+                &mut weights.uv,
+                ATTRIBUTE_WEIGHT_MIN,
+                ATTRIBUTE_WEIGHT_MAX,
+                default.uv,
+            );
+            fit(
+                &mut weights.color,
+                ATTRIBUTE_WEIGHT_MIN,
+                ATTRIBUTE_WEIGHT_MAX,
+                default.color,
+            );
+        }
+        fn level(level: &mut LodLevel) {
+            let default = LodLevel::default();
+            fit(
+                &mut level.target_ratio,
+                LOD_RATIO_MIN,
+                LOD_RATIO_MAX,
+                default.target_ratio,
+            );
+            fit(
+                &mut level.target_error,
+                LOD_ERROR_MIN,
+                LOD_ERROR_MAX,
+                default.target_error,
+            );
+        }
+        match self {
+            OpKind::Weld(params) => fit(
+                &mut params.attribute_tolerance,
+                WELD_TOLERANCE_MIN,
+                WELD_TOLERANCE_MAX,
+                WeldParams::default().attribute_tolerance,
+            ),
+            OpKind::PruneComponents { error } => {
+                fit(
+                    error,
+                    PRUNE_THRESHOLD_MIN,
+                    PRUNE_THRESHOLD_MAX,
+                    PRUNE_THRESHOLD_MIN,
+                );
+            }
+            OpKind::Reduce(params) => {
+                simplify(&mut params.simplify);
+                level(&mut params.target);
+            }
+            OpKind::Remesh(params) => {
+                let default = RemeshParams::default();
+                fit(
+                    &mut params.ratio,
+                    REMESH_RATIO_MIN,
+                    REMESH_RATIO_MAX,
+                    default.ratio,
+                );
+                params.faces = params.faces.clamp(REMESH_FACES_MIN, REMESH_FACES_MAX);
+                fit(
+                    &mut params.crease_angle,
+                    REMESH_CREASE_MIN,
+                    REMESH_CREASE_MAX,
+                    default.crease_angle,
+                );
+                params.smooth_iterations = params.smooth_iterations.min(REMESH_SMOOTH_MAX);
+                fit(
+                    &mut params.adaptive_strength,
+                    REMESH_ADAPTIVE_MIN,
+                    REMESH_ADAPTIVE_MAX,
+                    default.adaptive_strength,
+                );
+                normals(&mut params.normal_params);
+            }
+            OpKind::Shrinkwrap(params) => {
+                let default = ShrinkwrapParams::default();
+                params.resolution = params
+                    .resolution
+                    .clamp(SHRINKWRAP_RESOLUTION_MIN, SHRINKWRAP_RESOLUTION_MAX);
+                fit(
+                    &mut params.offset,
+                    SHRINKWRAP_OFFSET_MIN,
+                    SHRINKWRAP_OFFSET_MAX,
+                    default.offset,
+                );
+                params.voxel_resolution = params.voxel_resolution.clamp(
+                    SHRINKWRAP_VOXEL_RESOLUTION_MIN,
+                    SHRINKWRAP_VOXEL_RESOLUTION_MAX,
+                );
+                fit(
+                    &mut params.voxel_ratio,
+                    SHRINKWRAP_TARGET_RATIO_MIN,
+                    SHRINKWRAP_TARGET_RATIO_MAX,
+                    default.voxel_ratio,
+                );
+                params.voxel_triangles = params.voxel_triangles.clamp(
+                    SHRINKWRAP_TARGET_TRIANGLES_MIN,
+                    SHRINKWRAP_TARGET_TRIANGLES_MAX,
+                );
+                normals(&mut params.normal_params);
+            }
+            OpKind::RecalculateNormals(params) => normals(params),
+            OpKind::SimplifyLod(params) => {
+                simplify(&mut params.simplify);
+                params.levels.truncate(MAX_LOD_LEVELS);
+                params.levels.iter_mut().for_each(level);
+            }
+            OpKind::BakeAo(params) => {
+                let default = BakeAoParams::default();
+                fit(
+                    &mut params.max_distance,
+                    AO_BAKE_DISTANCE_MIN,
+                    AO_BAKE_DISTANCE_MAX,
+                    default.max_distance,
+                );
+                fit(
+                    &mut params.intensity,
+                    AO_BAKE_INTENSITY_MIN,
+                    AO_BAKE_INTENSITY_MAX,
+                    default.intensity,
+                );
+            }
+            OpKind::Overdraw { threshold } => {
+                fit(
+                    threshold,
+                    OVERDRAW_THRESHOLD_MIN,
+                    OVERDRAW_THRESHOLD_MAX,
+                    OVERDRAW_THRESHOLD_MIN,
+                );
+            }
+            OpKind::FilterTriangles | OpKind::VertexCache | OpKind::VertexFetch => {}
+        }
+    }
+
     /// Every operation the "Add" menu offers, in menu order — cleanup first
     /// (what you almost always want before anything else), then the LOD
     /// generator, then the GPU reorder passes that belong at the end.
@@ -365,80 +551,6 @@ impl OpKind {
             OpKind::VertexCache => "Optimize Vertex Cache",
             OpKind::Overdraw { .. } => "Optimize Overdraw",
             OpKind::VertexFetch => "Optimize Vertex Fetch",
-        }
-    }
-
-    /// One-line explanation, shown as the row tooltip and above the parameters
-    /// in the Inspector.
-    pub fn description(&self) -> &'static str {
-        match self {
-            OpKind::Weld(_) => {
-                "Merge vertices across a seam. Every run already merges vertices \
-                 that match in every attribute; this widens what counts as a match \
-                 — dropping normals or UVs from the comparison, or allowing a \
-                 tolerance — which does change the mesh."
-            }
-            OpKind::FilterTriangles => {
-                "Remove degenerate triangles (two corners at one position) and exact \
-                 duplicates. Opposite-winding duplicates are kept for double-sided geometry."
-            }
-            OpKind::PruneComponents { .. } => {
-                "Remove disconnected pieces smaller than the error threshold — stray \
-                 shells and orphaned faces left behind by modelling."
-            }
-            OpKind::Reduce(_) => {
-                "Simplify the mesh in place. The same simplifier the LOD chain uses, \
-                 but it replaces the mesh instead of generating extra ones - so the \
-                 reduced geometry is what the rest of the stack works on and what the \
-                 export writes in the source mesh's place."
-            }
-            OpKind::Remesh(_) => {
-                "Rebuild each object's surface as evenly sized, curvature-aligned \
-                 triangles or quads. Unlike a simplifier it does not remove what is \
-                 there - it regenerates the surface from scratch and projects the \
-                 materials, UVs and colors back on, which is what turns a scan or a \
-                 CAD import into geometry an engine can use. For fewer triangles with \
-                 the silhouette kept, a Reduce does better at the same count. Static \
-                 meshes only."
-            }
-            OpKind::Shrinkwrap(_) => {
-                "Replace each object with one closed shell that hugs it. The surface is \
-                 voxelized into a distance field (or, with the Voxel method, remeshed \
-                 on a voxel grid that keeps thin sheets) and re-extracted, which fuses \
-                 a kitbash of interpenetrating parts into a single watertight mesh — and is what \
-                 a Remesh below it can even out. Materials, UVs and \
-                 colors are projected back on. Static meshes only."
-            }
-            OpKind::RecalculateNormals(_) => {
-                "Regenerate the normals from the shape itself. Edges sharper than the \
-                 crease angle stay hard and the rest are smoothed, and the export's \
-                 hard/soft edge flags are rewritten to match. Objects with blend \
-                 shapes are left as they are. Changes no geometry."
-            }
-            OpKind::SimplifyLod(_) => {
-                "Generate the LOD chain. Each level is simplified independently from \
-                 the mesh as it stands at this point in the stack."
-            }
-            OpKind::BakeAo(_) => {
-                "Raycast ambient occlusion at each vertex and write it into the \
-                 vertex-color set. Objects named *_LOD<n> bake only against their \
-                 own LOD's geometry, so a whole visible LOD chain bakes correctly \
-                 in one run; hidden objects don't take part — hide collision \
-                 shells first. Bakes the mesh as it stands at this point in the \
-                 stack. Changes no geometry."
-            }
-            OpKind::VertexCache => {
-                "Reorder triangles so the GPU's post-transform vertex cache hits more \
-                 often. Changes no geometry; watch ACMR/ATVR in the stats."
-            }
-            OpKind::Overdraw { .. } => {
-                "Reorder triangles front-to-back within cache-friendly clusters so the \
-                 GPU shades fewer hidden pixels. Changes no geometry."
-            }
-            OpKind::VertexFetch => {
-                "Reorder vertices into the order the index buffer reads them, and drop \
-                 any vertex nothing references. Changes no geometry."
-            }
         }
     }
 
@@ -565,6 +677,38 @@ mod tests {
         assert!(
             stack.ops.iter().all(|op| op.id < stack.next_id),
             "the id source stays ahead of every re-keyed operation"
+        );
+    }
+
+    /// An override whose operation is gone must not survive re-keying: at its
+    /// old id it could match a fresh one and attach itself to a stranger.
+    #[test]
+    fn reassigning_ids_drops_an_override_that_names_no_operation() {
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::FilterTriangles);
+        stack.push_op(OpKind::VertexCache);
+        // One override for an id that never existed, and one for an operation
+        // that has since been removed.
+        stack.node_override_mut(0).ops.push(OpInstance {
+            id: 999,
+            enabled: true,
+            kind: OpKind::FilterTriangles,
+        });
+        stack
+            .ops
+            .retain(|op| !matches!(op.kind, OpKind::VertexCache));
+        stack.node_override_mut(0).ops.push(OpInstance {
+            id: 2,
+            enabled: true,
+            kind: OpKind::VertexCache,
+        });
+
+        stack.reassign_ids();
+
+        assert!(
+            stack.overrides[0].ops.is_empty(),
+            "overrides of missing operations are dropped: {:?}",
+            stack.overrides[0].ops
         );
     }
 

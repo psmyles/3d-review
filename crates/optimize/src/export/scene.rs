@@ -60,6 +60,7 @@ pub(crate) struct PropData {
 /// The owned Rust side of a scene payload. Every buffer the bridge borrows lives
 /// here, so the whole thing must outlive the `review_export_fbx` call — which
 /// it does, since [`write_scene`] takes it by reference.
+#[cfg_attr(test, derive(Default))]
 pub(crate) struct ClusterData {
     pub(crate) bone: i32,
     pub(crate) name: CString,
@@ -69,6 +70,7 @@ pub(crate) struct ClusterData {
     pub(crate) weights: Vec<f64>,
 }
 
+#[cfg_attr(test, derive(Default))]
 pub(crate) struct SkinExportData {
     pub(crate) skinning_type: u32,
     pub(crate) clusters: Vec<ClusterData>,
@@ -77,6 +79,7 @@ pub(crate) struct SkinExportData {
     pub(crate) bind_pose: i32,
 }
 
+#[cfg_attr(test, derive(Default))]
 pub(crate) struct BlendShapeData {
     pub(crate) name: CString,
     pub(crate) vertices: Vec<i32>,
@@ -85,6 +88,7 @@ pub(crate) struct BlendShapeData {
     pub(crate) target_weight: f64,
 }
 
+#[cfg_attr(test, derive(Default))]
 pub(crate) struct BlendChannelData {
     pub(crate) name: CString,
     pub(crate) weight: f64,
@@ -308,6 +312,7 @@ pub(crate) struct VideoData {
     pub(crate) props: PropRange,
 }
 
+#[cfg_attr(test, derive(Default))]
 pub(crate) struct MeshData {
     pub(crate) name: CString,
     pub(crate) node: i32,

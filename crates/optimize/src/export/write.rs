@@ -20,6 +20,10 @@ use super::*;
 
 /// Hand one assembled scene to the bridge.
 #[cfg(has_ufbxw)]
+#[allow(
+    unsafe_code,
+    reason = "invariant 9: the single call into the export bridge"
+)]
 pub(crate) fn write_scene(
     scene: &SceneData,
     path: &Path,
@@ -34,8 +38,18 @@ pub(crate) fn write_scene(
         RvoExportSkin, RvoExportTexture, RvoExportTextureLayer, RvoExportVideo,
     };
 
-    let path_string = path.to_string_lossy().into_owned();
-    let c_path = CString::new(path_string)
+    // The bridge takes UTF-8 and widens it for `_wfopen` on Windows. A path that
+    // is not valid Unicode is refused outright: `to_string_lossy` would have
+    // quietly written the file under a different name.
+    check_lengths(scene).map_err(OptError::Export)?;
+
+    let path_utf8 = path.to_str().ok_or_else(|| {
+        OptError::Export(format!(
+            "the output path is not valid Unicode: {}",
+            path.display()
+        ))
+    })?;
+    let c_path = CString::new(path_utf8)
         .map_err(|_| OptError::Export("the output path contains a NUL byte".to_owned()))?;
 
     let range = |range: PropRange| RvoExportPropRange {
@@ -675,6 +689,114 @@ pub(crate) fn write_scene(
     Err(OptError::Unavailable)
 }
 
+/// Check every stream the bridge reads by a count it is *given* rather than
+/// the stream's own length, before any of them crosses into C.
+///
+/// The bridge validates what it can see - index ranges, parent order, property
+/// ranges - but it is handed a vertex count and a pointer, so a normal stream
+/// one vertex short is an out-of-bounds read it has no way to notice. The
+/// builders produce these lengths correctly today; this is what keeps a builder
+/// that drifts from turning into a read past a `Vec` rather than an error.
+pub(crate) fn check_lengths(scene: &SceneData) -> Result<(), String> {
+    for (index, mesh) in scene.meshes.iter().enumerate() {
+        check_mesh_lengths(mesh).map_err(|what| format!("mesh {index}: {what}"))?;
+    }
+    Ok(())
+}
+
+fn check_mesh_lengths(mesh: &MeshData) -> Result<(), String> {
+    let vertices = mesh.vertex_count;
+    let faces = mesh.face_offsets.len().saturating_sub(1);
+    let edges = mesh.edges.len();
+    // Exactly `per * count` values, or none at all where the layer is optional.
+    let sized = |what: &str, len: usize, per: usize, count: usize, optional: bool| {
+        let expected = per.checked_mul(count);
+        if (optional && len == 0) || expected == Some(len) {
+            Ok(())
+        } else {
+            Err(format!("{what} has {len} values, expected {per} x {count}"))
+        }
+    };
+    sized("positions", mesh.positions.len(), 3, vertices, false)?;
+    sized("normals", mesh.normals.len(), 3, vertices, true)?;
+    sized("colors", mesh.colors.len(), 4, vertices, true)?;
+    sized("tangents", mesh.tangents.len(), 4, vertices, true)?;
+    if mesh.uv_set_names.len() != mesh.uv_sets.len() {
+        return Err("a UV set has no name".to_owned());
+    }
+    for set in &mesh.uv_sets {
+        sized("a UV set", set.len(), 2, vertices, false)?;
+    }
+    for (_, values) in &mesh.color_sets {
+        sized("a color set", values.len(), 4, vertices, false)?;
+    }
+    sized(
+        "vertex creases",
+        mesh.vertex_crease.len(),
+        1,
+        vertices,
+        true,
+    )?;
+    let per_face_materials = mesh.material_slots.len() > 1;
+    sized(
+        "face materials",
+        mesh.face_materials.len(),
+        1,
+        faces,
+        !per_face_materials,
+    )?;
+    sized("face smoothing", mesh.face_smoothing.len(), 1, faces, true)?;
+    sized("face holes", mesh.face_hole.len(), 1, faces, true)?;
+    sized("face groups", mesh.face_group.len(), 1, faces, true)?;
+    sized("edge smoothing", mesh.edge_smoothing.len(), 1, edges, true)?;
+    sized("edge creases", mesh.edge_crease.len(), 1, edges, true)?;
+    sized(
+        "edge visibility",
+        mesh.edge_visibility.len(),
+        1,
+        edges,
+        true,
+    )?;
+    for skin in &mesh.skins {
+        for cluster in &skin.clusters {
+            sized(
+                "a cluster's vertices",
+                cluster.vertices.len(),
+                1,
+                cluster.weights.len(),
+                false,
+            )?;
+        }
+        sized(
+            "blend-weight vertices",
+            skin.dq_vertices.len(),
+            1,
+            skin.dq_weights.len(),
+            false,
+        )?;
+    }
+    for channel in &mesh.blend_channels {
+        for shape in &channel.shapes {
+            let offsets = shape.vertices.len();
+            sized(
+                "a blend shape's offsets",
+                shape.offsets.len(),
+                3,
+                offsets,
+                false,
+            )?;
+            sized(
+                "a blend shape's normals",
+                shape.normals.len(),
+                3,
+                offsets,
+                true,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// A null pointer for an empty buffer — the bridge reads "attribute absent".
 #[cfg(has_ufbxw)]
 pub(crate) fn optional(values: &[f64]) -> *const f64 {
@@ -698,5 +820,69 @@ pub(crate) fn error_message(buffer: &[c_char]) -> String {
         "the FBX writer failed without reporting a reason".to_owned()
     } else {
         message
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A one-triangle mesh whose every stream is the length the bridge reads.
+    fn triangle() -> MeshData {
+        MeshData {
+            positions: vec![0.0; 9],
+            indices: vec![0, 1, 2],
+            face_offsets: vec![0, 3],
+            vertex_count: 3,
+            normals: vec![0.0; 9],
+            uv_sets: vec![vec![0.0; 6]],
+            uv_set_names: vec![CString::new("map1").expect("no NUL")],
+            ..MeshData::default()
+        }
+    }
+
+    #[test]
+    fn a_consistent_mesh_passes() {
+        assert_eq!(check_mesh_lengths(&triangle()), Ok(()));
+    }
+
+    /// Each of these is a count the bridge is handed separately from the
+    /// stream, so a short stream would be read past its end in C.
+    #[test]
+    fn a_stream_shorter_than_its_count_is_refused() {
+        type Breaks = fn(&mut MeshData);
+        let cases: [(&str, Breaks); 6] = [
+            ("normals", |mesh| {
+                mesh.normals.pop();
+            }),
+            ("UV set", |mesh| mesh.uv_sets[0].truncate(4)),
+            ("tangents", |mesh| mesh.tangents = vec![0.0; 8]),
+            ("vertex creases", |mesh| mesh.vertex_crease = vec![0.0; 2]),
+            ("face smoothing", |mesh| mesh.face_smoothing = vec![0; 2]),
+            ("cluster", |mesh| {
+                mesh.skins = vec![SkinExportData {
+                    clusters: vec![ClusterData {
+                        vertices: vec![0, 1],
+                        weights: vec![1.0],
+                        ..ClusterData::default()
+                    }],
+                    ..SkinExportData::default()
+                }];
+            }),
+        ];
+        for (what, break_it) in cases {
+            let mut mesh = triangle();
+            break_it(&mut mesh);
+            assert!(check_mesh_lengths(&mesh).is_err(), "{what} was not caught");
+        }
+    }
+
+    #[test]
+    fn per_face_materials_are_required_once_there_are_several_slots() {
+        let mut mesh = triangle();
+        mesh.material_slots = vec![0, 1];
+        assert!(check_mesh_lengths(&mesh).is_err());
+        mesh.face_materials = vec![1];
+        assert_eq!(check_mesh_lengths(&mesh), Ok(()));
     }
 }

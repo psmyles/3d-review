@@ -105,7 +105,21 @@ impl App {
         let Some(path) = settings_file() else {
             return;
         };
-        let existing = std::fs::read_to_string(&path).unwrap_or_default();
+        // Every line the viewer does not own is carried through the rewrite, so a
+        // file that exists but cannot be read - locked by a sync client or an
+        // antivirus scan, or no longer UTF-8 after a hand edit - must not be taken
+        // for an empty one: that would save over the user's own lines. Only a
+        // file that is not there yet starts from nothing.
+        let existing = match read_settings(&path) {
+            Ok(existing) => existing,
+            Err(error) => {
+                log::warn!(
+                    "not saving settings: could not read {} to carry its other lines: {error}",
+                    path.display()
+                );
+                return;
+            }
+        };
         let contents = settings_text(&existing, &self.ui);
 
         if let Some(dir) = path.parent()
@@ -176,14 +190,29 @@ pub(crate) fn settings_file() -> Option<PathBuf> {
     Some(path)
 }
 
+/// The settings file's text: empty when there is no file yet, an error when
+/// there is one that cannot be read.
+fn read_settings(path: &Path) -> std::io::Result<String> {
+    match std::fs::read_to_string(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        other => other,
+    }
+}
+
 /// Every `key=value` line of the file with a non-empty value, in file order. An
-/// absent or unreadable file is simply empty.
+/// absent file is simply empty; an unreadable one is too, with a warning, since
+/// the defaults are the only thing to start from either way.
 fn read_entries() -> Vec<(String, String)> {
     let Some(path) = settings_file() else {
         return Vec::new();
     };
-    let text = std::fs::read_to_string(path).unwrap_or_default();
-    parse_entries(&text)
+    match read_settings(&path) {
+        Ok(text) => parse_entries(&text),
+        Err(error) => {
+            log::warn!("could not read settings {}: {error}", path.display());
+            Vec::new()
+        }
+    }
 }
 
 fn parse_entries(text: &str) -> Vec<(String, String)> {
@@ -208,6 +237,24 @@ fn parse_line(line: &str) -> Option<(&str, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file that is not there yet is empty; one that is there but cannot be
+    /// read is an error, which is what stops a save from writing over it.
+    #[test]
+    fn only_a_missing_file_reads_as_empty() {
+        let dir = std::env::temp_dir().join(format!("review-settings-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let missing = dir.join("absent.cfg");
+        assert_eq!(read_settings(&missing).expect("a missing file is fine"), "");
+
+        let garbled = dir.join("garbled.cfg");
+        std::fs::write(&garbled, [b'l', b'o', 0xFF, 0xFE, b'\n']).expect("write");
+        assert!(
+            read_settings(&garbled).is_err(),
+            "a file that is not UTF-8 must not read as an empty one"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// The parse must survive whatever a hand-edited file, or a newer build,
     /// leaves in it: comments, blank lines, keys this build does not know, and a

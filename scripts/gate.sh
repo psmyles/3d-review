@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The macOS measurement harness: the twin of `scripts/gate.ps1` (mac-port-plan.md
-# Phase 2 step 6).
+# The macOS measurement harness: the twin of `scripts/gate.ps1` (docs/ARCHITECTURE.md,
+# Platform decisions D2).
 #
 # One difference of substance, and it is a decision rather than an omission: **there
 # is no cross-OS budget.** D2's three budgets exist to gate the *Windows* migration

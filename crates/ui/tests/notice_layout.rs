@@ -245,23 +245,23 @@ fn a_full_load_sequence_leaves_a_normal_sized_card() {
     let mut sizes = Vec::new();
 
     for name in ["first.fbx", "cpg_pedestal_pebbles.fbx"] {
-        harness
+        let load = harness
             .notifications
             .begin_activity(format!("Loading {name}…"));
         harness.pass(0.01);
         harness
             .notifications
-            .update_activity("Reading… 12%", Some(0.12));
+            .update_activity(load, "Reading… 12%", Some(0.12));
         harness.pass(0.01);
         harness
             .notifications
-            .update_activity("Building geometry…", None);
+            .update_activity(load, "Building geometry…", None);
         harness.pass(0.01);
         harness
             .notifications
-            .update_activity("Reading… 94%", Some(0.94));
+            .update_activity(load, "Reading… 94%", Some(0.94));
         harness.pass(0.01);
-        harness.notifications.end_activity();
+        harness.notifications.end_activity(load);
         harness.notifications.success(format!("Loaded {name}"));
         for _ in 0..3 {
             harness.pass(0.01);

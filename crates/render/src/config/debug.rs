@@ -75,8 +75,8 @@ pub struct SceneDebugOptions {
     /// targets bones, and the tint is baked into the overlay's vertices rather
     /// than applied from a uniform, so it needs its own entry here.
     pub skeleton_hover_color: [f32; 4],
-    /// Color for the bones in [`SceneFrame::selected_bones`], so an Outliner
-    /// selection reads in the viewport. Unlike the selection *flash* this is
+    /// Color for the bones in [`crate::SceneFrame::selected_bones`], so an Outliner
+    /// selection reads in the viewport. Like the mesh selection highlight, this is
     /// persistent — it lasts as long as the selection does.
     pub skeleton_selected_color: [f32; 4],
     pub face_normals: bool,
@@ -116,7 +116,7 @@ pub struct SceneDebugOptions {
     pub bounding_box_scope: BoundingBoxScope,
     /// The Outliner selection the box wraps in [`BoundingBoxScope::OnlySelection`]
     /// mode (ignored otherwise). Carried here so the box can be baked from the
-    /// scene callback without threading the selection through separately.
+    /// scene render without threading the selection through separately.
     pub bounding_box_selection: Selection,
     /// When `true` back-facing triangles are drawn (the mesh is double-sided);
     /// when `false` (the default) they are culled, so only camera-facing surfaces

@@ -24,6 +24,11 @@
 //! keep `deny(unsafe_code)`, and now no raw pointer even reaches them — and it is
 //! what lets [`checked_slice`] state its preconditions honestly.
 
+#![allow(
+    unsafe_code,
+    reason = "invariant 9: the pointer-to-slice leaves every safe accessor is built on"
+)]
+
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::ptr::NonNull;
@@ -361,10 +366,8 @@ mod tests {
     fn read_optional_c_string_reads_a_c_string() {
         let text = CString::new("mesh_01").unwrap();
         // SAFETY: `text` is a live NUL-terminated C string outliving the call.
-        assert_eq!(
-            unsafe { read_optional_c_string(text.as_ptr()) },
-            Some("mesh_01".to_owned())
-        );
+        let read = unsafe { read_optional_c_string(text.as_ptr()) };
+        assert_eq!(read, Some("mesh_01".to_owned()));
     }
 
     #[test]

@@ -163,7 +163,7 @@ if (-not $SkipBuild) {
 # not the shader beside it. build.rs rebuilds a stale blob where fxc is present (the
 # step above) and only *warns* where it is not; this fails instead — and it is what
 # catches a shader rebuilt on the Mac and not here, which no timestamp comparison can
-# (`mac-port-plan.md` D5).
+# (`docs/ARCHITECTURE.md`, Platform decisions D5).
 Write-Host '==> Checking shader bytecode...' -ForegroundColor Cyan
 & (Join-Path $PSScriptRoot 'check-shader-bytecode.ps1')
 

@@ -204,7 +204,7 @@ impl App {
 
         // Read before the renderer borrow below.
         let synced = self.opt_cameras_synced();
-        let half_view = self.opt_split_metrics().map(|(_, size)| size);
+        let half_view = self.opt_split_halves().map(|[(_, size), _]| size);
         if let (Some(renderer), Some(last), Some(mode)) = (
             self.renderer.as_mut(),
             self.last_pointer_position,
@@ -286,27 +286,33 @@ impl App {
         if self.ui.opt.camera_sync {
             return false;
         }
-        self.opt_split_metrics()
-            .is_some_and(|(divider, _)| position.x >= divider)
+        self.opt_split_halves()
+            .is_some_and(|[_, (right, _)]| position.x >= right.x)
     }
 
-    /// Where the Opt split divides, and how big each of its two views is — both
-    /// in physical pixels, `None` outside the split layout.
+    /// The Opt split's two views, left then right, each as `(top-left, size)` in
+    /// the physical pixels a pointer position is measured in; `None` outside the
+    /// split layout.
     ///
     /// The renderer lays the split out inside the chrome-free scene area rather
-    /// than across the whole window, so the divider is the centre of *that* rect;
-    /// deriving it from the window instead would put the pointer in the wrong
-    /// view for every pixel between the two centres.
-    fn opt_split_metrics(&self) -> Option<(f32, Vec2)> {
+    /// than across the whole window, so the halves are `ui`'s
+    /// [`review_ui::split_halves`] of *that* rect — the same call the divider and
+    /// the dimension labels make. Deriving them from the window instead would put
+    /// the pointer in the wrong view for every pixel between the two centres.
+    pub(crate) fn opt_split_halves(&self) -> Option<[(Vec2, Vec2); 2]> {
         if self.ui.mode != WorkspaceMode::Opt || self.ui.opt.layout != OptLayout::Split {
             return None;
         }
         let rect = self.ui.scene_viewport?;
         let scale = self.window.as_ref()?.scale_factor() as f32;
-        Some((
-            rect.center().x * scale,
-            Vec2::new(rect.width() * 0.5 * scale, rect.height() * scale),
-        ))
+        let physical = |half: egui::Rect| {
+            (
+                Vec2::new(half.left(), half.top()) * scale,
+                Vec2::new(half.width(), half.height()) * scale,
+            )
+        };
+        let (left, right) = review_ui::split_halves(rect);
+        Some([physical(left), physical(right)])
     }
 
     /// A scroll-wheel event: zoom the active (2D UV or 3D) camera unless egui claimed
@@ -329,10 +335,10 @@ impl App {
     }
 
     /// A trackpad pinch: zoom the active camera, exactly as the wheel does
-    /// (`mac-port-plan.md` D16). macOS only in practice — winit reports
-    /// `PinchGesture` nowhere else — but routed unconditionally, because which
-    /// gestures a platform sends is winit's business and not something to `cfg` on
-    /// here.
+    /// (`docs/ARCHITECTURE.md`, Platform decisions D16). macOS only in practice —
+    /// winit reports `PinchGesture` nowhere else — but routed unconditionally,
+    /// because which gestures a platform sends is winit's business and not
+    /// something to `cfg` on here.
     ///
     /// `delta` is a *scale fraction* per event (roughly ±0.01–0.05 as the fingers
     /// move), not a pixel count, so it gets its own sensitivity rather than the
@@ -394,10 +400,10 @@ pub(crate) const WHEEL_LINE_ZOOM_STEP: f32 = 0.5;
 /// Pixel-precise scroll (trackpads) divided by this to match one wheel notch.
 pub(crate) const WHEEL_PIXELS_PER_ZOOM_STEP: f32 = 120.0;
 
-/// Camera zoom per unit of trackpad pinch scale (`mac-port-plan.md` D16). A pinch
-/// delta is a scale *fraction* — a comfortable two-finger spread accumulates to
-/// roughly 1.0 over its length — so this is the zoom that whole gesture is worth,
-/// not a per-notch step like the wheel's.
+/// Camera zoom per unit of trackpad pinch scale (`docs/ARCHITECTURE.md`, Platform
+/// decisions D16). A pinch delta is a scale *fraction* — a comfortable two-finger
+/// spread accumulates to roughly 1.0 over its length — so this is the zoom that
+/// whole gesture is worth, not a per-notch step like the wheel's.
 pub(crate) const PINCH_ZOOM_STEP: f32 = 4.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

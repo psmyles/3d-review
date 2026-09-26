@@ -1,6 +1,6 @@
 //! Central semantic theme for the UI crate (invariant 8).
 //!
-//! Every color, pixel size, spacing, font size and opacity used by the overlay
+//! Every color, size, spacing, font size and opacity used by the overlay
 //! lives here under a **semantic** name (`panel_bg`, `selection`, `gizmo_ball`),
 //! never a literal at the call site. The only values allowed to stay inline are
 //! ones computed at runtime from state (e.g. a per-axis gizmo alpha derived from
@@ -9,7 +9,8 @@
 //! Tweak the app's look here: changing a token re-skins every place that reads
 //! it. Tokens are grouped into [`color`], [`size`], [`font`] and [`motion`] (how
 //! long a transient state lasts, how fast a gesture drives its value) so a change
-//! of one kind doesn't have to scroll past the others.//!
+//! of one kind doesn't have to scroll past the others.
+//!
 //! ## Layout
 //!
 //! The four token groups are one file each — [`color`], [`size`], [`font`],
@@ -43,8 +44,8 @@ pub fn init_style(ctx: &egui::Context) {
 /// rectangular slider grab ([`size::SLIDER_HANDLE_ASPECT_RATIO`], matching the
 /// egui.rs demo rather than the library default circle).
 ///
-/// Note: the hand-painted overlays (axis gizmo, stats, dimension labels, help
-/// card) and the toolbar / status-bar chrome paint with explicit theme tokens in
+/// Note: the hand-painted overlays (axis gizmo, stats, dimension labels) and
+/// the toolbar / status-bar chrome paint with explicit theme tokens in
 /// their own draw code, *not* through this style — so they are unaffected by it
 /// and invariant 8 still holds for them.
 pub fn apply_visuals(ctx: &egui::Context) {

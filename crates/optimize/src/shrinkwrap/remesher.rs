@@ -19,6 +19,7 @@ use glam::Vec3;
 
 use crate::Warnings;
 use crate::meshopt::{self, SimplifyAttributes, options};
+use crate::notice::OptWarning;
 use crate::remesh::proxy::Proxy;
 use crate::stack::{ShrinkwrapParams, VoxelTarget};
 
@@ -54,9 +55,10 @@ pub(super) fn extract(
     }
     let vertex_count = proxy.positions.len() / 3;
     let refused = |error: crate::OptError, warnings: &mut Warnings| {
-        warnings.push(&format!(
-            "Shrinkwrap: '{name}' could not be voxel remeshed ({error}), so it was left as it is."
-        ));
+        warnings.push(OptWarning::ShrinkwrapVoxelFailed {
+            object: name.to_string(),
+            detail: error.to_string(),
+        });
     };
 
     let requested = params
@@ -90,10 +92,11 @@ pub(super) fn extract(
         };
     }
     if resolution != requested {
-        warnings.push(&format!(
-            "Shrinkwrap: '{name}' would need more memory than a wrap is worth at \
-             resolution {requested}, so it ran at {resolution} instead."
-        ));
+        warnings.push(OptWarning::ShrinkwrapResolutionLowered {
+            object: name.to_string(),
+            requested,
+            resolution,
+        });
     }
 
     let soup = match meshopt::remesh(

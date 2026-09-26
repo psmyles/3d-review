@@ -168,7 +168,7 @@ impl Default for LodLevel {
 /// Settings for the in-place [`OpKind::Reduce`] operation: the same simplifier
 /// configuration a LOD chain uses, against a single target.
 ///
-/// The difference from [`LodParams`] is entirely in what [`crate::process`] does
+/// The difference from [`LodParams`] is entirely in what [`crate::process`](mod@crate::process) does
 /// with the result. A LOD operation fans out, leaving the mesh it simplified
 /// from untouched as level 0; Reduce is an ordinary stack step, so its output
 /// *is* the mesh every later operation sees, every LOD level starts from, and

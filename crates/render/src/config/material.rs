@@ -78,7 +78,7 @@ pub enum ActiveMaterial {
     SkinWeights,
     /// A single material/geometry buffer shown flat for data inspection — base
     /// color, the world/geometric normal, roughness, metallic, AO, emission, … —
-    /// selected by [`SceneDebugOptions::buffer_view`]. Bypasses lighting + tone
+    /// selected by [`crate::SceneDebugOptions::buffer_view`]. Bypasses lighting + tone
     /// mapping so the displayed pixel is the value itself.
     Buffers,
 }

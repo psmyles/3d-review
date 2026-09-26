@@ -32,14 +32,19 @@
 //!
 //! Checks sit wherever the run is between units of work: between operations,
 //! between LOD levels, between assembled levels, per submesh in a simplify, per
-//! vertex chunk in an AO bake, per object in a rebuild, and between the repeat
-//! attempts one object's face-count search makes.
+//! vertex chunk in an AO bake, per object in a rebuild, and between the stages
+//! of one object's rebuild.
 //!
-//! The floor is **one engine call**. Neither vendored retopologizer takes a
-//! progress or cancel callback (`rvo_remesh_options` has no hook), so a solve
-//! that has started runs to its end. In practice that bounds a cancelled Remesh
-//! at roughly the cost of its single slowest object rather than the whole scene,
-//! and every other operation stops almost at once.
+//! Inside a Remesh object the floor is **one pass**. `remesh::solve` checks
+//! between every stage, and the stages that iterate check again between their
+//! own passes — the size field's smoothing, each partition sweep and Lloyd
+//! iteration, each region the collapse merges, each cleanup round, the cross
+//! field's smoothing — so a cancelled rebuild stops part way through the object
+//! it is on rather than finishing it. The parallel sweeps a pass is built from
+//! (`parallel::sweep`) do not check: each is one pass over a flat array and
+//! short. Shrinkwrap checks only between its stages, so it can still wait out
+//! one of them (the distance field or the extraction). Every other operation
+//! stops almost at once.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 
+use crate::keys;
 use crate::state::{
     TexViewRequest, TexViewTransition, TexturePoolEntry, TextureViewState, UiState,
 };
@@ -225,7 +226,7 @@ fn draw_empty_hint(ui: &mut egui::Ui, rect: egui::Rect) {
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
-        "No textures loaded - drop image files here or add them in the Inspector",
+        review_localization::tr(keys::ui_texture_view::EMPTY_HINT),
         egui::FontId::proportional(font::VIEWPORT_EMPTY_HINT),
         color::TEXT_MUTED,
     );

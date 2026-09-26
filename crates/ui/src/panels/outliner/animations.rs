@@ -74,8 +74,7 @@ pub(super) fn animations_tab(ui: &mut egui::Ui, state: &mut UiState, model: &Mod
             response,
             Tip::new(name.clone())
                 .describe(format!(
-                    "{}
-{}",
+                    "{}\n{}",
                     keys::ui_outliner::clip_tooltip(
                         frames as f64,
                         format!("{fps:.0}"),

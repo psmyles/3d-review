@@ -5,6 +5,11 @@
 //! FFI to a named set of crates, of which this is one. `app` reads the answer as
 //! a plain `bool` and never sees the Win32 call.
 
+#![allow(
+    unsafe_code,
+    reason = "invariant 9: reads the Windows STARTUPINFO launch hint"
+)]
+
 /// Whether the process was asked to start maximized — e.g. launched from a
 /// shortcut whose **Run** field is set to *Maximized*. Windows passes that hint
 /// through `STARTUPINFO.wShowWindow`, but winit creates its window without

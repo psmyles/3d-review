@@ -15,7 +15,7 @@
 use review_model::ModelData;
 use review_optimize::{
     AoQuality, AoTarget, BakeAoParams, LodLevel, LodParams, NormalParams, OpKind, OptStack,
-    ReduceParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings, WeldParams,
+    OptWarning, ReduceParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings, WeldParams,
 };
 
 mod common;
@@ -245,7 +245,7 @@ fn a_flat_shaded_scan_simplifies_once_its_attribute_seams_are_dealt_with() {
         blocked_result
             .warnings
             .iter()
-            .any(|warning| warning.contains("attribute seam")),
+            .any(|warning| matches!(warning, OptWarning::SimplifierStalledOnSeams)),
         "a stalled simplify explains itself: {:?}",
         blocked_result.warnings
     );
@@ -452,7 +452,7 @@ fn a_multi_material_character_keeps_every_triangle_tagged() {
             !result
                 .warnings
                 .iter()
-                .any(|warning| warning.contains("skin")),
+                .any(|warning| warning.to_string().contains("skin")),
             "nothing about the skin was dropped: {:?}",
             result.warnings
         );

@@ -11,8 +11,13 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 #include "ufbx_write.h"
 
@@ -1074,19 +1079,114 @@ static void rvo_write_curve(ufbxw_scene *out, ufbxw_anim_curve curve, const rvo_
 
 /* A 0/1 int buffer from a byte flag array — the form the boolean layers are
  * written in. Copied into the scene, so the scratch can go. */
+/* The flags widened into a buffer ufbx_write owns, filled in place. There is no
+   scratch allocation of our own to fail: if ufbx_write cannot allocate it
+   records the failure on the scene, and the `ufbxw_get_error` check before the
+   save turns that into the export's error rather than an empty layer. */
 static ufbxw_int_buffer rvo_bool_ints(ufbxw_scene *out, const uint8_t *flags, size_t count)
 {
-    ufbxw_int_buffer buffer = { 0 };
-    int32_t *ints = (int32_t *)malloc((count ? count : 1) * sizeof(int32_t));
-    if (!ints) {
+    ufbxw_int_buffer buffer = ufbxw_create_int_buffer(out, count);
+    ufbxw_int_list ints = ufbxw_edit_int_buffer(out, buffer);
+    if (!ints.data || ints.count != count) {
         return buffer;
     }
     for (size_t i = 0; i < count; i++) {
-        ints[i] = flags[i] ? 1 : 0;
+        ints.data[i] = flags[i] ? 1 : 0;
     }
-    buffer = ufbxw_copy_int_array(out, ints, count);
-    free(ints);
     return buffer;
+}
+
+/* --------------------------------------------------------------------------
+ * Output file
+ *
+ * ufbx_write's own `ufbxw_save_file` opens with the narrow `fopen`, which on
+ * Windows reads the path in the ANSI code page - so a UTF-8 path with any
+ * non-ASCII character (a user folder named `Zoe` with a diaeresis) fails to open
+ * or lands on a mangled name - caps the path at 1023 bytes, and seeks with an
+ * `int` offset, which corrupts any file past 2 GB. The bridge therefore opens
+ * the file itself and hands ufbx_write a stream: UTF-8 widened to UTF-16 for
+ * `_wfopen` on Windows, 64-bit seeks, and a close whose failure (the final flush
+ * hitting a full disk) is reported rather than dropped.
+ * -------------------------------------------------------------------------- */
+
+typedef struct rvo_file_stream {
+    FILE *file;
+    int failed;
+} rvo_file_stream;
+
+static FILE *rvo_open_for_write(const char *path)
+{
+#if defined(_WIN32)
+    int wide_length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
+    wchar_t *wide = NULL;
+    FILE *file = NULL;
+    if (wide_length <= 0) {
+        return NULL;
+    }
+    wide = (wchar_t *)malloc((size_t)wide_length * sizeof(wchar_t));
+    if (!wide) {
+        return NULL;
+    }
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide, wide_length) == wide_length) {
+        file = _wfopen(wide, L"wb");
+    }
+    free(wide);
+    return file;
+#else
+    return fopen(path, "wb");
+#endif
+}
+
+static bool rvo_file_write(void *user, uint64_t offset, const void *data, size_t size)
+{
+    rvo_file_stream *stream = (rvo_file_stream *)user;
+#if defined(_WIN32)
+    int seek = offset > (uint64_t)INT64_MAX ? -1 : _fseeki64(stream->file, (__int64)offset, SEEK_SET);
+#else
+    int seek = offset > (uint64_t)INT64_MAX ? -1 : fseeko(stream->file, (off_t)offset, SEEK_SET);
+#endif
+    if (seek != 0 || fwrite(data, 1, size, stream->file) != size) {
+        stream->failed = 1;
+        return false;
+    }
+    return true;
+}
+
+/* Save `out` to `path`, returning 1 on success. On failure `error` holds why. */
+static int rvo_save_to_path(ufbxw_scene *out, const char *path, const ufbxw_save_opts *opts,
+                            char *error, size_t error_length)
+{
+    rvo_file_stream file_stream;
+    ufbxw_write_stream stream;
+    ufbxw_error save_error;
+    int saved;
+
+    file_stream.file = rvo_open_for_write(path);
+    file_stream.failed = 0;
+    if (!file_stream.file) {
+        rvo_set_error(error, error_length, "failed to open the output file for writing");
+        return 0;
+    }
+
+    memset(&stream, 0, sizeof(stream));
+    stream.write_fn = rvo_file_write;
+    /* No close_fn: the file is closed below, where a failed close can be seen. */
+    stream.user = &file_stream;
+
+    memset(&save_error, 0, sizeof(save_error));
+    saved = ufbxw_save_stream(out, &stream, opts, &save_error) ? 1 : 0;
+    if (fclose(file_stream.file) != 0) {
+        file_stream.failed = 1;
+    }
+    if (!saved) {
+        rvo_set_ufbxw_error(error, error_length, &save_error, "failed to write the FBX file");
+        return 0;
+    }
+    if (file_stream.failed) {
+        rvo_set_error(error, error_length, "failed to write the FBX file (the disk may be full)");
+        return 0;
+    }
+    return 1;
 }
 
 /* --------------------------------------------------------------------------
@@ -1549,10 +1649,7 @@ int review_export_fbx(const rvo_export_scene *scene, const char *path, int ascii
     save_opts.format = ascii ? UFBXW_SAVE_FORMAT_ASCII : UFBXW_SAVE_FORMAT_BINARY;
     save_opts.version = RVO_FBX_VERSION;
 
-    ufbxw_error save_error;
-    memset(&save_error, 0, sizeof(save_error));
-    if (!ufbxw_save_file(out, path, &save_opts, &save_error)) {
-        rvo_set_ufbxw_error(error, error_length, &save_error, "failed to write the FBX file");
+    if (!rvo_save_to_path(out, path, &save_opts, error, error_length)) {
         goto cleanup;
     }
 

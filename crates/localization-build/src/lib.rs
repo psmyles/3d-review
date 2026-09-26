@@ -146,8 +146,10 @@ pub fn load_catalog(locales_dir: &Path, locale: &str) -> Result<Vec<MessageDef>>
 /// formatter for every message that takes variables.
 ///
 /// `prefixes` is how one catalog serves three crates without handing each of them
-/// the others' keys: `ui` takes `["common-", "ui-"]`, `app` `["common-", "app-"]`,
-/// `shell-macos` `["menu-"]`. A key two crates need goes in `common.ftl`.
+/// the others' keys: `ui` takes `["common-", "ui-"]`, `app` `["app-"]`, and
+/// `shell-macos` `["menu-"]`. `app` formats text for the notices rather than
+/// handing keys to widgets, so it has no use for the shared `common-` labels; a
+/// key two crates need goes in `common.ftl`.
 ///
 /// Emits the `cargo:rerun-if-changed` lines for the catalog, so editing a `.ftl`
 /// rebuilds the consumer.
@@ -211,9 +213,19 @@ pub fn generate_keys(locales_dir: &Path, prefixes: &[&str], out_dir: &Path) -> R
                 Some(attr) => format!("Some(\"{attr}\")"),
                 None => "None".to_owned(),
             };
+            // A message with variables is reached only through its formatter, so
+            // its `Key` is private to the module and the formatter is the item the
+            // crate uses - which is what lets `dead_code` report one nobody calls.
+            // Were the key crate-visible too, the formatter's own use of it would
+            // keep the key alive and an unused message would go unnoticed.
+            let visibility = if def.vars.is_empty() {
+                "pub(crate) "
+            } else {
+                ""
+            };
             let _ = writeln!(
                 rust,
-                "    pub(crate) const {name}: Key = Key::new(\"{}\", {attr});",
+                "    {visibility}const {name}: Key = Key::new(\"{}\", {attr});",
                 def.id
             );
 
@@ -229,7 +241,6 @@ pub fn generate_keys(locales_dir: &Path, prefixes: &[&str], out_dir: &Path) -> R
                     rust,
                     "    /// `{target}`, with its variables. A missing argument is a compile error."
                 );
-                rust.push_str("    #[allow(dead_code)]\n");
                 let _ = writeln!(
                     rust,
                     "    pub(crate) fn {fn_name}<'a>({params}) -> String {{"

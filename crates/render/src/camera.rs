@@ -358,7 +358,7 @@ impl OrbitCamera {
     /// the *scene*, not to how close the camera has come, so on a large model it
     /// parks the near plane metres out and clips away the very surface the user
     /// zoomed in to read. So the near plane also tracks the pivot
-    /// ([`NEAR_PIVOT_FRACTION`]), taking whichever of the two is nearer — the
+    /// (`NEAR_PIVOT_FRACTION`), taking whichever of the two is nearer — the
     /// ratio governs the ordinary case, the pivot term takes over on a close
     /// approach and keeps what's being inspected inside the frustum.
     pub fn near_far(self) -> (f32, f32) {
@@ -493,7 +493,7 @@ impl OrbitCamera {
     /// between a prop and an interior.
     ///
     /// One expression covers both projections, because
-    /// [`Self::orthographic_half_height`] is defined as the same
+    /// `Self::orthographic_half_height` is defined as the same
     /// `distance * tan(fov/2)`: a perspective and an orthographic camera framing
     /// the same content report the same extent, so nothing downstream needs a
     /// projection branch.

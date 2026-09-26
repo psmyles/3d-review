@@ -6,8 +6,8 @@
 //! tetrahedron is triangulated from its four corner signs. That is a different
 //! choice from the textbook 256-case cube table, for one reason: **the result
 //! has to be a closed manifold**, because the whole point of the operation is to
-//! hand a quad solver something it can run on, and that is exactly what a closed
-//! manifold means here.
+//! hand what runs below it one surface it can walk as a surface, and that is
+//! exactly what a closed manifold means here.
 //!
 //! Marching cubes does not promise one. Its classic table is watertight but
 //! leaves non-manifold *vertices* at the ambiguous cases — two cones meeting at
@@ -361,8 +361,9 @@ fn lattice_index(desc: &GridDesc, point: IVec3) -> u32 {
 /// Drop everything but the largest connected shell.
 ///
 /// A wrap of a messy object routinely leaves satellites around specks of stray
-/// geometry; none of them is wanted, and each is one more thing the quad solver
-/// would refuse to run on. Connectivity is through shared *vertices*, which on
+/// geometry; none of them is wanted, and each is carried into whatever runs
+/// below the wrap — a Remesh would spend part of its face budget rebuilding
+/// it. Connectivity is through shared *vertices*, which on
 /// a welded extraction is the same as through shared edges.
 pub(super) fn keep_largest_shell(surface: &mut Surface) {
     let triangles = surface.triangle_count();

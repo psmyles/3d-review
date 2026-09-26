@@ -62,8 +62,8 @@ impl Bindings {
         self.0.views[slot] = target.texture();
     }
 
-    /// Bind a read-only structured buffer to a view slot — the deform tables the
-    /// vertex stage indexes into.
+    /// Bind a read-only storage buffer to a view slot — the deform tables the vertex
+    /// stage indexes into.
     pub(crate) fn storage<T: bytemuck::Pod>(&mut self, slot: usize, buffer: &StorageBuffer<T>) {
         self.0.views[slot] = buffer.view();
     }

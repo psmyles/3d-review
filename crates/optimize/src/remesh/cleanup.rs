@@ -55,6 +55,7 @@
 use crate::cancel::{CancelToken, cancelled};
 
 use super::RemeshOutput;
+use super::geom;
 use super::topology::Topology;
 
 /// How far toward the neighbourhood centre a vertex moves in one pass. Half is
@@ -420,7 +421,7 @@ fn fold_count(
     let mut folded = 0;
     for (index, &face) in faces.iter().enumerate() {
         let corners = face_of(output, face);
-        let normal = unit(cross_at(&at, corners));
+        let normal = geom::normalized(cross_at(&at, corners));
         for &other in &faces[index + 1..] {
             let others = face_of(output, other);
             // Only faces sharing an edge say anything about a fold; two faces
@@ -428,7 +429,7 @@ fn fold_count(
             if others.iter().filter(|c| corners.contains(c)).count() != 2 {
                 continue;
             }
-            let against = unit(cross_at(&at, others));
+            let against = geom::normalized(cross_at(&at, others));
             match (normal, against) {
                 (Some(normal), Some(against)) => {
                     if normal[0] * against[0] + normal[1] * against[1] + normal[2] * against[2]
@@ -446,22 +447,9 @@ fn fold_count(
     folded
 }
 
-/// `vector` scaled to unit length, or `None` if it has none.
-fn unit(vector: [f64; 3]) -> Option<[f64; 3]> {
-    let length = (vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]).sqrt();
-    (length > 0.0).then(|| [vector[0] / length, vector[1] / length, vector[2] / length])
-}
-
 /// The unnormalized normal of `corners`, reading each position through `point`.
 fn cross_at(point: &dyn Fn(u32) -> [f64; 3], corners: [u32; 3]) -> [f64; 3] {
-    let (a, b, c) = (point(corners[0]), point(corners[1]), point(corners[2]));
-    let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-    let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-    [
-        u[1] * v[2] - u[2] * v[1],
-        u[2] * v[0] - u[0] * v[2],
-        u[0] * v[1] - u[1] * v[0],
-    ]
+    geom::triangle_cross(point(corners[0]), point(corners[1]), point(corners[2]))
 }
 
 /// The area-weighted normal of the faces around a vertex, and how much those
@@ -531,29 +519,19 @@ fn point_of(output: &RemeshOutput, vertex: u32) -> [f64; 3] {
 }
 
 fn cross_of(output: &RemeshOutput, corners: [u32; 3]) -> [f64; 3] {
-    let (a, b, c) = (
+    geom::triangle_cross(
         point_of(output, corners[0]),
         point_of(output, corners[1]),
         point_of(output, corners[2]),
-    );
-    let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-    let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-    [
-        u[1] * v[2] - u[2] * v[1],
-        u[2] * v[0] - u[0] * v[2],
-        u[0] * v[1] - u[1] * v[0],
-    ]
+    )
 }
 
 fn normal_of(output: &RemeshOutput, corners: [u32; 3]) -> Option<[f64; 3]> {
-    let cross = cross_of(output, corners);
-    let length = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
-    (length > 0.0).then(|| [cross[0] / length, cross[1] / length, cross[2] / length])
+    geom::normalized(cross_of(output, corners))
 }
 
 fn area_of(output: &RemeshOutput, corners: [u32; 3]) -> f64 {
-    let cross = cross_of(output, corners);
-    (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt() * 0.5
+    geom::length(cross_of(output, corners)) * 0.5
 }
 
 #[cfg(test)]

@@ -14,10 +14,9 @@
 //! Escape hatch: `// localization: exempt <reason>` on the offending line. The reason is
 //! required — an exemption without one is how this rots.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use quote::ToTokens;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 
@@ -47,6 +46,14 @@ const METHOD_SINKS: &[&str] = &[
     "selected_text",
     "hint_text",
     "shortcut_text",
+    "monospace",
+    "strong",
+    "code",
+    "prefix",
+    "suffix",
+    "layout",
+    "layout_no_wrap",
+    "with_title",
     // the tooltip builder
     "describe",
     // notifications
@@ -72,6 +79,14 @@ const METHOD_SINKS_INDEXED: &[(&str, &[usize])] = &[
     ("radio_value", &[2]),
     // (value, text)
     ("checkbox", &[1]),
+    ("toggle_value", &[1]),
+    ("radio", &[1]),
+    // (color, text)
+    ("colored_label", &[1]),
+    // (heading, contents)
+    ("collapsing", &[0]),
+    // LayoutJob::append(text, leading_space, format)
+    ("append", &[0]),
     // (text, contents)
     ("menu_button", &[0]),
     // (name, extensions)
@@ -105,6 +120,14 @@ const FUNCTION_SINKS: &[(&str, &[usize])] = &[
     ("CollapsingHeader::new", &[0]),
     ("WidgetText::from", &[0]),
     ("Tip::new", &[0]),
+    ("Link::new", &[0]),
+    ("Checkbox::new", &[1]),
+    ("RadioButton::new", &[1]),
+    ("SelectableLabel::new", &[1]),
+    ("ComboBox::from_label", &[0]),
+    ("LayoutJob::simple", &[0]),
+    ("LayoutJob::simple_singleline", &[0]),
+    ("LayoutJob::single_section", &[0]),
     // widget wrappers: (ui, …).
     ("grid_label_tip", &[1]),
     ("labeled_checkbox", &[1]),
@@ -132,6 +155,24 @@ const FUNCTION_SINKS: &[(&str, &[usize])] = &[
     ("icon_tile_button", &[3]),
     // (ui, icon, flag, panels_open, panel, tooltip)
     ("option_toggle", &[5]),
+];
+
+/// `Painter::text(pos, anchor, text, font, color)` and `Slider::text(text)` share
+/// a name and put the text at different positions; the argument count tells them
+/// apart.
+fn text_argument(argument_count: usize) -> usize {
+    if argument_count >= 5 { 2 } else { 0 }
+}
+
+/// Methods that hand back their receiver or one of their arguments: a literal in
+/// the argument (or in a closure's body) is a literal that can reach the sink.
+const FALLBACKS: &[&str] = &[
+    "unwrap_or",
+    "unwrap_or_else",
+    "map_or",
+    "map_or_else",
+    "or",
+    "or_else",
 ];
 
 /// Marks a line as deliberately exempt. The trailing reason is required.
@@ -219,7 +260,11 @@ fn scan(path: &Path, findings: &mut Vec<Finding>) {
     let Ok(source) = std::fs::read_to_string(path) else {
         return;
     };
-    let Ok(file) = syn::parse_file(&source) else {
+    scan_source(path, &source, findings);
+}
+
+fn scan_source(path: &Path, source: &str, findings: &mut Vec<Finding>) {
+    let Ok(file) = syn::parse_file(source) else {
         // A file this crate's `syn` cannot parse is a `syn` version problem, not
         // a localization one; the compiler is what reports a real syntax error.
         return;
@@ -236,6 +281,8 @@ fn scan(path: &Path, findings: &mut Vec<Finding>) {
         path: path.to_owned(),
         exempt,
         findings,
+        bindings: Vec::new(),
+        following: HashSet::new(),
     };
     visitor.visit_file(&file);
 }
@@ -244,6 +291,13 @@ struct SinkVisitor<'a> {
     path: PathBuf,
     exempt: HashSet<usize>,
     findings: &'a mut Vec<Finding>,
+    /// The `let` bindings of every block the walk is inside, innermost last, so
+    /// a local handed to a sink can be followed back to what it was bound to - a
+    /// literal routed through a variable reaches the screen just the same.
+    bindings: Vec<HashMap<String, syn::Expr>>,
+    /// The locals being followed right now, so a binding that mentions itself
+    /// (`let text = text.trim();`) cannot recurse forever.
+    following: HashSet<String>,
 }
 
 impl SinkVisitor<'_> {
@@ -266,6 +320,29 @@ impl SinkVisitor<'_> {
                 // A chained `.to_owned()` / `.into()` on a literal is still that
                 // literal arriving at the sink.
                 self.check(&call.receiver, sink);
+                // And `.unwrap_or_else(|| "...")` is a literal the sink gets
+                // whenever the receiver has nothing.
+                if FALLBACKS.contains(&call.method.to_string().as_str()) {
+                    for argument in &call.args {
+                        self.check(argument, sink);
+                    }
+                }
+            }
+            syn::Expr::Closure(closure) => self.check(&closure.body, sink),
+            syn::Expr::Path(path) if path.qself.is_none() && path.path.segments.len() == 1 => {
+                let name = path.path.segments[0].ident.to_string();
+                let bound = self
+                    .bindings
+                    .iter()
+                    .rev()
+                    .find_map(|scope| scope.get(&name))
+                    .cloned();
+                if let Some(bound) = bound
+                    && self.following.insert(name.clone())
+                {
+                    self.check(&bound, sink);
+                    self.following.remove(&name);
+                }
             }
             syn::Expr::If(branch) => {
                 for statement in &branch.then_branch.stmts {
@@ -305,9 +382,10 @@ impl SinkVisitor<'_> {
 
     fn record(&mut self, literal: &str, line: usize, sink: &str) {
         // Only text with letters *outside* a placeholder. Punctuation, an em
-        // dash and a bare `%` read the same in every language, and a format
-        // specifier like `{value:.2}` or `{stem}.fbx` is a number and a file
-        // extension — the letters in it name a binding, not a word.
+        // dash and a bare `%` read the same in every language, and in a format
+        // specifier like `{value:.2}` the letters name a binding, not a word. A
+        // file extension (`{stem}.fbx`) does count: it is letters outside the
+        // braces, and a line that writes one takes an exemption saying so.
         if !has_prose(literal) || self.exempt.contains(&line) {
             return;
         }
@@ -325,17 +403,42 @@ impl<'ast> Visit<'ast> for SinkVisitor<'_> {
     /// data, never shown to anyone, and a notice fixture reading "Loading a.fbx"
     /// is clearer than one reading through the catalog.
     fn visit_item_mod(&mut self, module: &'ast syn::ItemMod) {
+        // Exactly `#[cfg(test)]`: a `#[cfg(not(test))]` module is the one that
+        // ships, and merely containing the word is not being a test.
         let is_test = module.attrs.iter().any(|attr| {
-            attr.path().is_ident("cfg") && attr.to_token_stream().to_string().contains("test")
+            attr.path().is_ident("cfg")
+                && attr
+                    .meta
+                    .require_list()
+                    .is_ok_and(|list| list.tokens.to_string() == "test")
         });
         if !is_test {
             syn::visit::visit_item_mod(self, module);
         }
     }
 
+    fn visit_block(&mut self, block: &'ast syn::Block) {
+        let mut scope = HashMap::new();
+        for statement in &block.stmts {
+            if let syn::Stmt::Local(local) = statement
+                && let syn::Pat::Ident(pattern) = strip_type(&local.pat)
+                && let Some(init) = &local.init
+            {
+                scope.insert(pattern.ident.to_string(), (*init.expr).clone());
+            }
+        }
+        self.bindings.push(scope);
+        syn::visit::visit_block(self, block);
+        self.bindings.pop();
+    }
+
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
         let name = call.method.to_string();
-        if METHOD_SINKS.contains(&name.as_str()) {
+        if name == "text" {
+            if let Some(argument) = call.args.iter().nth(text_argument(call.args.len())) {
+                self.check(argument, &name);
+            }
+        } else if METHOD_SINKS.contains(&name.as_str()) {
             for argument in &call.args {
                 self.check(argument, &name);
             }
@@ -363,6 +466,19 @@ impl<'ast> Visit<'ast> for SinkVisitor<'_> {
                     if let Some(argument) = call.args.iter().nth(*index) {
                         self.check(argument, name);
                     }
+                }
+            }
+            // A typed formatter's arguments are values set into a catalog
+            // sentence; a literal among them is a sentence fragment the catalog
+            // never sees.
+            if path
+                .path
+                .segments
+                .iter()
+                .any(|segment| segment.ident == "keys")
+            {
+                for argument in &call.args {
+                    self.check(argument, &short);
                 }
             }
             // Nothing outside a generated `keys.rs` may mint a key: that is what
@@ -393,6 +509,14 @@ fn path_tail(path: &syn::Path, n: usize) -> String {
     segments[start..].join("::")
 }
 
+/// `pattern` without a type ascription: `let text: String = ...` binds `text`.
+fn strip_type(pattern: &syn::Pat) -> &syn::Pat {
+    match pattern {
+        syn::Pat::Type(typed) => strip_type(&typed.pat),
+        other => other,
+    }
+}
+
 fn macro_name(path: &syn::Path) -> Option<String> {
     path.segments.last().map(|last| last.ident.to_string())
 }
@@ -416,5 +540,62 @@ fn collect_literals(tokens: proc_macro2::TokenStream, found: &mut Vec<(String, u
             proc_macro2::TokenTree::Group(group) => collect_literals(group.stream(), found),
             _ => {}
         }
+    }
+}
+
+/// The gate's own checks: each shape of leak it exists to catch, fed to the
+/// scanner as source, must be reported.
+mod gate {
+    use super::*;
+
+    fn findings(source: &str) -> Vec<String> {
+        let mut found = Vec::new();
+        scan_source(Path::new("snippet.rs"), source, &mut found);
+        found.into_iter().map(|finding| finding.literal).collect()
+    }
+
+    #[test]
+    fn painted_text_is_a_sink() {
+        let source = r#"fn f(ui: &egui::Ui) {
+            ui.painter().text(pos, anchor, "No textures loaded", font, color);
+        }"#;
+        assert_eq!(findings(source), ["No textures loaded"]);
+    }
+
+    #[test]
+    fn a_literal_reaching_a_sink_through_a_local_is_followed() {
+        let source = r#"fn f(ui: &egui::Ui) {
+            let selected = binding.map(name).unwrap_or_else(|| "select texture".to_owned());
+            combo.selected_text(selected);
+        }"#;
+        assert_eq!(findings(source), ["select texture"]);
+    }
+
+    #[test]
+    fn a_typed_formatters_arguments_are_checked() {
+        let source = r#"fn f() {
+            let text = keys::app_notifications::gpu_fault("Scene render failed", detail);
+        }"#;
+        assert_eq!(findings(source), ["Scene render failed"]);
+    }
+
+    #[test]
+    fn only_a_test_module_is_skipped() {
+        let source = r#"
+            #[cfg(test)]
+            mod tests { fn f(ui: &egui::Ui) { ui.label("fixture"); } }
+            #[cfg(not(test))]
+            mod shipped { fn f(ui: &egui::Ui) { ui.label("Shipped text"); } }
+        "#;
+        assert_eq!(findings(source), ["Shipped text"]);
+    }
+
+    #[test]
+    fn a_self_referencing_binding_does_not_recurse() {
+        let source = r#"fn f(ui: &egui::Ui) {
+            let text = text.trim();
+            ui.label(text);
+        }"#;
+        assert!(findings(source).is_empty());
     }
 }

@@ -25,7 +25,7 @@ pub(crate) struct RedrawScheduler {
     /// triggering an immediate `request_redraw`, so a high-polling-rate mouse or
     /// key auto-repeat can't drive rendering faster than the monitor refresh.
     pub(crate) requested: bool,
-    /// Remaining startup "warmup" frames to pump (Phase B). The first frame builds
+    /// Remaining startup "warmup" frames to pump. The first frame builds
     /// only the cheap core scene resources; the deferred scene pipelines + GTAO
     /// pass then compile one stage per subsequent frame. While this is non-zero,
     /// `render` keeps scheduling the next frame so the build drains behind the
@@ -47,6 +47,47 @@ impl Default for RedrawScheduler {
             requested: false,
             warmup_frames: 0,
             refresh_interval: Duration::from_secs_f64(1.0 / FALLBACK_REFRESH_HZ),
+        }
+    }
+}
+
+/// What the event loop should do once the queued events are handled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Wake {
+    /// Draw a frame now, then wait for the next event.
+    Draw,
+    /// Sleep until this instant, then decide again.
+    Until(Instant),
+    /// Nothing is scheduled: block until the next event.
+    Idle,
+}
+
+impl RedrawScheduler {
+    /// Fold a pending interactive redraw (drag, hover, wheel, key) into the paced
+    /// schedule. The earliest it may draw is one refresh interval after the last
+    /// frame, so a burst of high-frequency input coalesces into a single redraw
+    /// capped at the monitor refresh rate; an earlier repaint already scheduled
+    /// stands.
+    fn fold_request(&mut self, now: Instant) {
+        if !self.requested {
+            return;
+        }
+        self.requested = false;
+        let earliest = self
+            .last_render_instant
+            .map_or(now, |last| last + self.refresh_interval);
+        self.repaint_at = Some(self.repaint_at.map_or(earliest, |at| at.min(earliest)));
+    }
+
+    /// Whether the scheduled repaint is due, and consume it if so.
+    fn wake(&mut self, now: Instant) -> Wake {
+        match self.repaint_at {
+            Some(wake) if now >= wake => {
+                self.repaint_at = None;
+                Wake::Draw
+            }
+            Some(wake) => Wake::Until(wake),
+            None => Wake::Idle,
         }
     }
 }
@@ -89,36 +130,93 @@ impl App {
             self.record_windowed_bounds();
         }
 
-        // Fold a pending interactive redraw (drag, hover, wheel, key) into the
-        // paced schedule. The earliest we'll draw is one refresh interval after
-        // the last frame, so a burst of high-frequency input events coalesces
-        // into a single redraw capped at the monitor refresh rate.
-        if self.redraw.requested {
-            self.redraw.requested = false;
-            let earliest = self
-                .redraw
-                .last_render_instant
-                .map_or(now, |last| last + self.redraw.refresh_interval);
-            self.redraw.repaint_at = Some(
-                self.redraw
-                    .repaint_at
-                    .map_or(earliest, |at| at.min(earliest)),
-            );
-        }
+        self.redraw.fold_request(now);
 
         // Sleep until the next scheduled repaint (if any), otherwise block until
         // the next input event. When the scheduled time arrives, fire one redraw
         // and fall back to waiting.
-        match self.redraw.repaint_at {
-            Some(wake) if now >= wake => {
-                self.redraw.repaint_at = None;
+        match self.redraw.wake(now) {
+            Wake::Draw => {
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
                 }
                 event_loop.set_control_flow(ControlFlow::Wait);
             }
-            Some(wake) => event_loop.set_control_flow(ControlFlow::WaitUntil(wake)),
-            None => event_loop.set_control_flow(ControlFlow::Wait),
+            Wake::Until(wake) => event_loop.set_control_flow(ControlFlow::WaitUntil(wake)),
+            Wake::Idle => event_loop.set_control_flow(ControlFlow::Wait),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FRAME: Duration = Duration::from_millis(16);
+
+    fn scheduler(last_frame: Option<Instant>) -> RedrawScheduler {
+        RedrawScheduler {
+            last_render_instant: last_frame,
+            refresh_interval: FRAME,
+            ..RedrawScheduler::default()
+        }
+    }
+
+    #[test]
+    fn with_nothing_asked_for_the_loop_sleeps() {
+        let now = Instant::now();
+        let mut redraw = scheduler(Some(now));
+        redraw.fold_request(now);
+        assert_eq!(redraw.wake(now), Wake::Idle);
+    }
+
+    #[test]
+    fn a_request_right_after_a_frame_waits_out_the_refresh_interval() {
+        let last = Instant::now();
+        let mut redraw = scheduler(Some(last));
+        redraw.requested = true;
+        redraw.fold_request(last + Duration::from_millis(2));
+        assert!(!redraw.requested, "the request is folded, not kept");
+        assert_eq!(
+            redraw.wake(last + Duration::from_millis(2)),
+            Wake::Until(last + FRAME)
+        );
+        assert_eq!(redraw.wake(last + FRAME), Wake::Draw);
+        assert_eq!(
+            redraw.wake(last + FRAME),
+            Wake::Idle,
+            "one request, one frame"
+        );
+    }
+
+    #[test]
+    fn a_burst_of_input_coalesces_into_one_frame() {
+        let last = Instant::now();
+        let mut redraw = scheduler(Some(last));
+        for step in 1..=10 {
+            redraw.requested = true;
+            redraw.fold_request(last + Duration::from_millis(step));
+        }
+        assert_eq!(redraw.repaint_at, Some(last + FRAME));
+    }
+
+    #[test]
+    fn the_first_frame_is_drawn_at_once() {
+        let now = Instant::now();
+        let mut redraw = scheduler(None);
+        redraw.requested = true;
+        redraw.fold_request(now);
+        assert_eq!(redraw.wake(now), Wake::Draw);
+    }
+
+    #[test]
+    fn an_earlier_repaint_already_scheduled_is_kept() {
+        let last = Instant::now();
+        let mut redraw = scheduler(Some(last));
+        let sooner = last + Duration::from_millis(5);
+        redraw.repaint_at = Some(sooner);
+        redraw.requested = true;
+        redraw.fold_request(last);
+        assert_eq!(redraw.repaint_at, Some(sooner));
     }
 }

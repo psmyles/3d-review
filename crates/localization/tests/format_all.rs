@@ -1,4 +1,4 @@
-//! Every message in every locale must format, with the arguments it declares.
+//! Every message must format, with the arguments it declares.
 //!
 //! The build script checks the catalog *parses* and that every locale's ids and
 //! variables match English. This checks the other half: that each pattern
@@ -14,15 +14,13 @@ use review_localization::{FluentArgs, FluentValue, catalog};
 /// given a string falls to the default variant and never exercises the others,
 /// and a message written for a number but handed a string reports no error while
 /// silently choosing the wrong branch.
+///
+/// Through the public API, so in the locale `init` settles on — English here,
+/// since `init` is a `OnceLock` and a test binary gets one. Each locale's own
+/// bundle is checked by `every_locale_formats_every_message_it_defines` in the
+/// crate's unit tests, which can reach them all.
 #[test]
-fn every_message_formats_in_every_locale() {
-    for locale in review_localization::available_locales() {
-        // `init` is a `OnceLock`, so a test binary gets one locale. The
-        // negotiation is exercised in the unit tests; here English is enough,
-        // because a message that fails to format fails in every locale.
-        let _ = locale;
-    }
-
+fn every_message_formats() {
     for message in catalog::MESSAGES {
         for numeric in [false, true] {
             let mut args = FluentArgs::new();

@@ -16,3 +16,5 @@ app-dialogs-filter-preset = Optimization preset
 
 # Default file name offered when saving a preset.
 app-dialogs-preset-file-name = optimization-preset.json
+# The export dialog's default file name when the model has no name of its own.
+app-dialogs-export-file-name = optimized

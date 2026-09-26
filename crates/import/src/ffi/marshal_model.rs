@@ -567,12 +567,18 @@ pub(super) fn build_uv_channels(scene: &ReviewImportScene) -> Result<Vec<Vec<Vec
 mod tests {
     use super::*;
 
-    /// A zeroed bridge scene (every pointer null, every count 0) with just the
-    /// UV fields set — the shape `build_uv_channels` consumes.
-    // SAFETY (of the test helper): `ReviewImportScene` is a plain `#[repr(C)]`
-    // struct of pointers + integers, for which all-zero bytes is a valid value.
+    /// A bridge scene with every pointer null and every count 0: the empty
+    /// capture each fixture below fills in.
+    fn zeroed_scene() -> ReviewImportScene {
+        // SAFETY: `ReviewImportScene` is a plain `#[repr(C)]` struct of pointers
+        // and integers, for which all-zero bytes is a valid value.
+        unsafe { std::mem::zeroed() }
+    }
+
+    /// A zeroed bridge scene with just the UV fields set — the shape
+    /// `build_uv_channels` consumes.
     fn uv_scene(uv_set_count: u32, vertex_count: usize, uvs: &[f32]) -> ReviewImportScene {
-        let mut scene: ReviewImportScene = unsafe { std::mem::zeroed() };
+        let mut scene = zeroed_scene();
         scene.uv_set_count = uv_set_count;
         scene.vertex_count = vertex_count;
         scene.uvs = uvs.as_ptr() as *mut f32;
@@ -613,7 +619,7 @@ mod tests {
         influence_cluster: &[u32],
         clusters: &[ReviewImportSkinCluster],
     ) -> ReviewImportScene {
-        let mut scene: ReviewImportScene = unsafe { std::mem::zeroed() };
+        let mut scene = zeroed_scene();
         scene.vertex_count = corner_to_logical.len();
         scene.corner_source_vertex = corner_to_logical.as_ptr() as *mut u32;
         scene.corner_source_vertex_count = corner_to_logical.len();
@@ -641,7 +647,7 @@ mod tests {
 
     #[test]
     fn marshal_skin_is_none_for_an_unskinned_scene() {
-        let scene: ReviewImportScene = unsafe { std::mem::zeroed() };
+        let scene = zeroed_scene();
         assert!(
             marshal_skin(&scene)
                 .expect("no skin is not an error")
@@ -739,7 +745,7 @@ mod tests {
             normal: [0.0; 3],
         };
         let entries = [entry(2, 0, 2.0), entry(0, 1, 0.5), entry(2, 1, 2.5)];
-        let mut scene: ReviewImportScene = unsafe { std::mem::zeroed() };
+        let mut scene = zeroed_scene();
         scene.morph_channels = channels.as_ptr() as *mut ReviewImportMorphChannel;
         scene.morph_channel_count = channels.len();
         scene.morph_keyframes = keyframes.as_ptr() as *mut ReviewImportMorphKeyframe;
@@ -815,7 +821,7 @@ mod tests {
             morph_track_first: 0,
             morph_track_count: 1,
         }];
-        let mut scene: ReviewImportScene = unsafe { std::mem::zeroed() };
+        let mut scene = zeroed_scene();
         scene.anim_stacks = stacks.as_ptr() as *mut ReviewImportAnimStack;
         scene.anim_stack_count = stacks.len();
         scene.anim_node_tracks = tracks.as_ptr() as *mut ReviewImportNodeTrack;
@@ -858,7 +864,7 @@ mod tests {
         ));
 
         // No stacks at all is simply no clips.
-        let empty: ReviewImportScene = unsafe { std::mem::zeroed() };
+        let empty = zeroed_scene();
         assert!(marshal_animations(&empty).expect("no animation").is_empty());
     }
 
@@ -877,7 +883,7 @@ mod tests {
     /// A zeroed scene carrying only geometry — the shape
     /// `model_from_bridge_scene`'s range guard reads.
     fn geometry_scene(vertices: &[ReviewImportVertex], indices: &[u32]) -> ReviewImportScene {
-        let mut scene: ReviewImportScene = unsafe { std::mem::zeroed() };
+        let mut scene = zeroed_scene();
         scene.vertices = vertices.as_ptr() as *mut ReviewImportVertex;
         scene.vertex_count = vertices.len();
         scene.indices = indices.as_ptr() as *mut u32;

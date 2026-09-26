@@ -29,9 +29,9 @@ use crate::{ActiveMaterial, SceneDebugOptions, ShadingMode, VertexColorMode};
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub(crate) struct PostUniforms {
-    // The four scalars below fill exactly one 16-byte cbuffer register — HLSL
-    // packs them implicitly, so adding/removing any one silently shifts `bg_top`
-    // unless the `post` program moves in lockstep. Keep the count a multiple of four.
+    // The four scalars below fill exactly one 16-byte std140 slot — the block packs
+    // them implicitly, so adding/removing any one silently shifts `bg_top` unless the
+    // `post` program moves in lockstep. Keep the count a multiple of four.
     pub(crate) gtao_enabled: u32,
     pub(crate) tonemap_enabled: u32,
     pub(crate) tonemap_op: u32,
@@ -41,9 +41,9 @@ pub(crate) struct PostUniforms {
     /// final display pixels itself so the shown value is faithful.
     pub(crate) passthrough: u32,
     /// Viewport background fill in display (sRGB) space (`xyz`; `w` padding for the
-    /// 16-byte cbuffer slot). The composite paints `lerp(bg_top, bg_bottom, v)`
-    /// where the scene coverage is below 1; a flat preset sets both equal, the
-    /// gradient distinct. Built from `ViewportBackground::gradient_srgb`.
+    /// 16-byte std140 slot). The composite paints `lerp(bg_top, bg_bottom, v)` where
+    /// the scene coverage is below 1; a flat preset sets both equal, the gradient
+    /// distinct. Built from `ViewportBackground::gradient_srgb`.
     pub(crate) bg_top: [f32; 4],
     pub(crate) bg_bottom: [f32; 4],
 }
@@ -52,7 +52,7 @@ pub(crate) struct PostUniforms {
 // `size_of::<T>()` and an upload is rejected only when it is *larger* than the
 // buffer, so a field added on one side alone grows both and uploads happily while
 // the shader keeps reading the old offsets — wrong pixels, not an error. Changing
-// this number means the HLSL moved with it.
+// this number means `review.glsl` moved with it.
 const _: () = assert!(std::mem::size_of::<PostUniforms>() == 48);
 // ...and against the layout sokol-shdc generated from `review.glsl`, which is what
 // turns invariant 11 into a check against the *shader* rather than against a number
@@ -72,8 +72,8 @@ assert_same_layout!(PostUniforms => crate::shaders::generated::PostParams, {
     bg_bottom => bg_bottom,
 });
 
-/// GTAO-pass uniform (`gtao_params` in `review.glsl`): a `float4x4` + three
-/// `float4`s, all 16-byte aligned. Uploaded each frame so the panel sliders stay
+/// GTAO-pass uniform (`gtao_params` in `review.glsl`): a `mat4` + three
+/// `vec4`s, all 16-byte aligned. Uploaded each frame so the panel sliders stay
 /// live, and shared by the occlusion and denoise passes.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -135,9 +135,9 @@ pub(crate) struct SceneUniforms {
     pub(crate) inv_view_projection: [[f32; 4]; 4],
     pub(crate) render_options: [f32; 4],
     /// World-space camera eye in `xyz`. Used by the shaded path to build the view
-    /// vector for the specular highlight / reflection. `w` flags the GPU deform
-    /// path (>0.5): the vertex shader then applies the blend-shape deltas and the
-    /// skinning palette bound at `t12..t15` to every vertex carrying a non-empty
+    /// vector for the specular highlight / reflection. `w` flags the GPU deform path
+    /// (>0.5): the vertex shader then applies the blend-shape deltas and the skinning
+    /// palette (storage-buffer bindings 12..15) to every vertex carrying a non-empty
     /// [`SceneVertex::deform`] lane.
     pub(crate) camera_position: [f32; 4],
     /// Image-based lighting: `x` = IBL enabled (>0.5), `y` = intensity, `z` =
@@ -205,14 +205,14 @@ pub(crate) struct SceneVertex {
     /// The DCC vertex-color attribute on the mesh; on overlay/line/UV-fill
     /// geometry (zero normal) it instead carries the flat color the shader's
     /// overlay path returns. The material base color / smoothness come from the
-    /// group-3 material uniform, not per vertex.
+    /// `material` uniform block, not per vertex.
     pub(crate) vertex_color: [f32; 4],
-    /// The deform lane (`BLENDINDICES`): `x` / `y` = first index + count of this
-    /// vertex's run in the influence buffer (`t12`), `z` / `w` = first index +
-    /// count of its run in the blend-shape delta buffer (`t14`). All zero for
-    /// geometry that never deforms (grid, bounding box, UV islands); a rigid
-    /// mesh vertex references its node's single-entry run. Built by
-    /// `geometry::deform`.
+    /// The deform lane (`in_deform`, attribute location 5): `x` / `y` = first index +
+    /// count of this vertex's run in the influence buffer (`deform_influences`), `z` /
+    /// `w` = first index + count of its run in the blend-shape delta buffer
+    /// (`morph_deltas`). All zero for geometry that never deforms (grid, bounding box,
+    /// UV islands); a rigid mesh vertex references its node's single-entry run. Built
+    /// by `geometry::deform`.
     pub(crate) deform: [u32; 4],
 }
 
@@ -220,9 +220,9 @@ pub(crate) struct SceneVertex {
 // per-field pins live in the layout test beside the pipelines.
 const _: () = assert!(std::mem::size_of::<SceneVertex>() == 80);
 
-/// One entry of the influence buffer (`StructuredBuffer<InfluenceEntry>` at VS
-/// `t12`): a palette entry and its weight. A vertex's run is `deform.x ..
-/// deform.x + deform.y` of these.
+/// One entry of the influence buffer (the `deform_influences` storage buffer,
+/// vertex-stage binding 12): a palette entry and its weight. A vertex's run is
+/// `deform.x .. deform.x + deform.y` of these.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq)]
 pub(crate) struct InfluenceEntry {
@@ -240,10 +240,10 @@ assert_same_layout!(InfluenceEntry => crate::shaders::generated::Influenceentry,
     weight => weight,
 });
 
-/// One palette entry (`StructuredBuffer<PaletteEntry>` at VS `t13`): the three
-/// rows of an affine 3×4 matrix, spelled as rows rather than an HLSL matrix type
-/// so the structured-buffer packing is unambiguous on both sides. Entry `i <
-/// node_count` is node `i`'s rigid delta, the rest are the skin clusters' — see
+/// One palette entry (the `deform_palette` storage buffer, binding 13): the three rows
+/// of an affine 3×4 matrix, spelled as rows rather than a shader matrix type so the
+/// storage-buffer packing is unambiguous on both sides. Entry `i < node_count` is node
+/// `i`'s rigid delta, the rest are the skin clusters' — see
 /// `review_model::anim::build_palette`.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq)]
@@ -277,9 +277,9 @@ impl PaletteEntry {
     }
 }
 
-/// One blend-shape delta (`StructuredBuffer<MorphEntry>` at VS `t14`): the
-/// shape whose weight (`t15`) scales it, and the world-oriented position /
-/// normal offsets. A vertex's run is `deform.z .. deform.z + deform.w`.
+/// One blend-shape delta (the `morph_deltas` storage buffer, binding 14): the shape
+/// whose weight (`morph_weights`, binding 15) scales it, and the world-oriented
+/// position / normal offsets. A vertex's run is `deform.z .. deform.z + deform.w`.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq)]
 pub(crate) struct MorphEntry {

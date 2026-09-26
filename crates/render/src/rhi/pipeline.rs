@@ -124,8 +124,8 @@ pub(crate) struct Depth {
 
 impl Depth {
     /// Depth-tested but never depth-writing: the line overlays, the UV island fill
-    /// and the selection flash all layer onto a surface the mesh pass already wrote,
-    /// and must not push each other out of the way.
+    /// and the selection highlight all layer onto a surface the mesh pass already
+    /// wrote, and must not push each other out of the way.
     pub(crate) const TEST_ONLY: Self = Self {
         compare: DepthCompare::GreaterEqual,
         write: false,

@@ -42,7 +42,9 @@ pub fn to_json(stack: &OptStack) -> Result<String, OptError> {
 ///
 /// Operation ids are re-keyed from a fresh sequence on the way out: the loaded
 /// stack replaces one whose ids the UI may still be holding, and a collision
-/// would silently point a selection or an override at the wrong operation.
+/// would silently point a selection or an override at the wrong operation. Every
+/// setting is then clamped into the range the inspector offers
+/// ([`OptStack::sanitize`]), since the file may have been edited by hand.
 pub fn from_json(json: &str) -> Result<OptStack, OptError> {
     let preset: Preset =
         serde_json::from_str(json).map_err(|error| OptError::Preset(error.to_string()))?;
@@ -57,6 +59,7 @@ pub fn from_json(json: &str) -> Result<OptStack, OptError> {
     let mut stack = preset.stack;
     stack.reassign_ids();
     stack.prune_overrides();
+    stack.sanitize();
     Ok(stack)
 }
 
@@ -72,7 +75,7 @@ mod tests {
     fn a_stack_round_trips() {
         let mut stack = OptStack::default();
         stack.push_op(OpKind::Weld(WeldParams {
-            attribute_tolerance: 0.25,
+            attribute_tolerance: 0.05,
             compare_normals: false,
             compare_uvs: true,
             compare_colors: true,
@@ -315,5 +318,67 @@ mod tests {
         let stack = from_json(r#"{"version": 1, "stack": {}}"#).expect("parses");
         assert!(stack.ops.is_empty());
         assert_eq!(stack.export, crate::stack::ExportOptions::default());
+    }
+
+    /// A preset is a file anyone can edit, and nothing past the loader checks
+    /// what the inspector would have refused: every value comes back inside the
+    /// inspector's own ranges.
+    #[test]
+    fn a_hand_edited_preset_is_clamped_into_the_inspectors_ranges() {
+        use crate::stack::limits::*;
+        use crate::stack::{LodLevel, RemeshParams};
+
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::SimplifyLod(LodParams {
+            levels: vec![LodLevel::default(); 1000],
+            ..LodParams::default()
+        }));
+        stack.push_op(OpKind::Remesh(RemeshParams {
+            faces: u32::MAX,
+            smooth_iterations: u32::MAX,
+            ratio: 1.0e9,
+            ..RemeshParams::default()
+        }));
+        stack.push_op(OpKind::Weld(WeldParams {
+            attribute_tolerance: -3.0,
+            ..WeldParams::default()
+        }));
+        // Edited in the text, as a hand would: an error limit fifty times the
+        // mesh extent.
+        let json = to_json(&stack)
+            .expect("serializes")
+            .replace("\"target_error\": 0.01", "\"target_error\": 50.0");
+
+        let loaded = from_json(&json).expect("a preset loads");
+        let OpKind::SimplifyLod(lod) = &loaded.ops[0].kind else {
+            panic!("the LOD operation came back as something else");
+        };
+        assert_eq!(lod.levels.len(), MAX_LOD_LEVELS);
+        assert!(
+            lod.levels
+                .iter()
+                .all(|level| level.target_error <= LOD_ERROR_MAX)
+        );
+        let OpKind::Remesh(remesh) = &loaded.ops[1].kind else {
+            panic!("the remesh came back as something else");
+        };
+        assert_eq!(remesh.faces, REMESH_FACES_MAX);
+        assert_eq!(remesh.smooth_iterations, REMESH_SMOOTH_MAX);
+        assert_eq!(remesh.ratio, REMESH_RATIO_MAX);
+        let OpKind::Weld(weld) = &loaded.ops[2].kind else {
+            panic!("the weld came back as something else");
+        };
+        assert_eq!(weld.attribute_tolerance, WELD_TOLERANCE_MIN);
+    }
+
+    #[test]
+    fn a_setting_that_is_not_a_number_falls_back_to_its_default() {
+        use crate::stack::limits::fit;
+        let mut value = f32::NAN;
+        fit(&mut value, 0.0, 1.0, 0.25);
+        assert_eq!(value, 0.25);
+        let mut value = f32::INFINITY;
+        fit(&mut value, 0.0, 1.0, 0.25);
+        assert_eq!(value, 1.0);
     }
 }

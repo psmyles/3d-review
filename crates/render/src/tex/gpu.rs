@@ -8,9 +8,10 @@
 //! the first view of a texture costs work.
 //!
 //! Both draws are [`SwapchainJob`]s rather than immediate draws: [`crate::Renderer`]
-//! runs before the frame's one swapchain pass opens (`mac-port-plan.md` §3.2). The
-//! *background* is not drawn at all for a solid fill — it is that pass's clear colour
-//! ([`TexBackground::clear_color`]) — so only the checker needs a draw of its own.
+//! runs before the frame's one swapchain pass opens (`docs/ARCHITECTURE.md`, Platform
+//! decisions: one swapchain pass). The *background* is not drawn at all for a solid
+//! fill — it is that pass's clear colour ([`TexBackground::clear_color`]) — so only
+//! the checker needs a draw of its own.
 //!
 //! Ownership: the decoded pixels arrive by `Arc` from the app-owned texture pool
 //! (invariant 2); the UI emits only the selected image + channel + placement.

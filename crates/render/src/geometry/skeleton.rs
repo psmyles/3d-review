@@ -1,13 +1,14 @@
 //! The skeleton overlay's CPU geometry: one octahedral bone per parent→child
 //! joint pair, plus a 3-axis marker at every joint that terminates a chain.
 //!
-//! Joint positions come from [`SceneNode::transform`]'s translation column — the
-//! rest-pose `node_to_world` the importer carried through. Geometry is world-baked
-//! at import, so these are already in the same space as the mesh and need no
-//! further transform. Under animation the overlay follows the pose through the
-//! same deform palette as the mesh: every octahedron vertex carries the deform
-//! lane of the joint it belongs to (head + ring → the parent, tail → the child),
-//! so no CPU rebuild is needed per frame.
+//! Joint positions come from
+//! [`SceneNode::transform`](review_model::SceneNode::transform)'s translation
+//! column — the rest-pose `node_to_world` the importer carried through. Geometry
+//! is world-baked at import, so these are already in the same space as the mesh
+//! and need no further transform. Under animation the overlay follows the pose
+//! through the same deform palette as the mesh: every octahedron vertex carries
+//! the deform lane of the joint it belongs to (head + ring → the parent, tail →
+//! the child), so no CPU rebuild is needed per frame.
 //!
 //! Both builders emit **zero-normal** vertices (via [`push_line`] /
 //! [`push_fill_vertex`]), which is the scene shader's overlay sentinel: the

@@ -117,24 +117,3 @@ fn no_message_carries_the_indentation_it_was_written_with() {
         faults.join("\n  ")
     );
 }
-
-/// The same check, through the API rather than the source, for the one set of
-/// strings a user reads in full.
-#[test]
-fn no_operation_description_has_a_gap_in_it() {
-    for make in review_optimize::OpKind::ALL {
-        let kind = make();
-        let description = kind.description();
-        assert!(
-            !description.contains("   "),
-            "the description of {} has a run of spaces in it: {description:?}",
-            kind.label()
-        );
-        assert!(
-            !description.contains('\n'),
-            "the description of {} spans lines; it is shown as one paragraph and \
-             wrapped where it is drawn",
-            kind.label()
-        );
-    }
-}

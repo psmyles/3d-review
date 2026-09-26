@@ -9,6 +9,7 @@ fn main() {
     let bridge_h_path = Path::new("src/ufbx_bridge.h");
     let extras_c_path = Path::new("src/ufbx_extras.c");
     let extras_h_path = Path::new("src/ufbx_extras.h");
+    let internal_h_path = Path::new("src/ufbx_internal.h");
 
     println!("cargo:rerun-if-changed={}", c_path.display());
     println!("cargo:rerun-if-changed={}", h_path.display());
@@ -16,6 +17,7 @@ fn main() {
     println!("cargo:rerun-if-changed={}", bridge_h_path.display());
     println!("cargo:rerun-if-changed={}", extras_c_path.display());
     println!("cargo:rerun-if-changed={}", extras_h_path.display());
+    println!("cargo:rerun-if-changed={}", internal_h_path.display());
 
     if c_path.exists() && h_path.exists() {
         // Two builds, not one: the bridge is this project's own C and compiles

@@ -172,7 +172,7 @@ baked_bytes_fn!(
 const BAKED_BRDF_BYTES: &[u8] = include_bytes!("../../../assets/ibl_baked/T_IBL_BRDF.bin");
 
 // ---------------------------------------------------------------------------
-// The offline precompute (`bake` feature only) — `mac-port-plan.md` D19
+// The offline precompute (`bake` feature only) — Platform decisions D19
 // ---------------------------------------------------------------------------
 
 /// The HDR colour format the precompute *renders* into and reads back:

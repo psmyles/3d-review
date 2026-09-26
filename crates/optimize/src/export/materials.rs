@@ -59,9 +59,9 @@ pub(crate) fn build_textures(
         }
     }
     if dropped > 0 {
-        report.notes.push(format!(
-            "{dropped} layered texture(s) nested inside another layered texture were not written."
-        ));
+        report
+            .notes
+            .push(ExportNote::NestedLayeredTextures { count: dropped });
     }
     map
 }

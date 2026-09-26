@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use review_model::{ModelData, SourceExtras};
 
 use crate::OptError;
+use crate::notice::ExportNote;
 use crate::process::ProcessedLod;
 use crate::stack::{ExportOptions, HierarchyMode};
 
@@ -51,11 +52,7 @@ pub(crate) fn build_scene(
     }
     let deforms = source.skin.is_some() || source.morph.is_some();
     if deforms && options.hierarchy == HierarchyMode::FlatBaked {
-        report.notes.push(
-            "Skinning and blend shapes were not written: a flat hierarchy bakes the geometry \
-             into world space, which has no bones to bind to."
-                .to_owned(),
-        );
+        report.notes.push(ExportNote::DeformNotWrittenFlat);
     }
 
     for lod in lods {
@@ -99,16 +96,16 @@ pub(crate) fn build_scene(
             }
             let mesh_name = mesh.name.to_string_lossy().into_owned();
             if notes.polygons_lost {
-                report.notes.push(format!(
-                    "LOD {}: '{mesh_name}' was written as triangles — the stack rebuilt its geometry.",
-                    lod.level
-                ));
+                report.notes.push(ExportNote::WrittenAsTriangles {
+                    level: lod.level,
+                    mesh: mesh_name,
+                });
             } else if notes.triangles_rebuilt > 0 {
-                report.notes.push(format!(
-                    "LOD {}: {} triangle(s) of '{mesh_name}' were written as triangles — the stack \
-                     rebuilt them.",
-                    lod.level, notes.triangles_rebuilt
-                ));
+                report.notes.push(ExportNote::TrianglesRebuilt {
+                    level: lod.level,
+                    mesh: mesh_name,
+                    count: notes.triangles_rebuilt,
+                });
             }
             if options.hierarchy == HierarchyMode::Rebuild {
                 build_deform(
@@ -134,10 +131,7 @@ pub(crate) fn build_scene(
         build_selection_sets(&mut scene, &placed, source, extras, report);
         build_animation(&mut scene, &placed, extras, report);
     } else if extras.is_some_and(|extras| !extras.animations.is_empty()) {
-        report.notes.push(
-            "Animation was not written: a flat hierarchy has no nodes for the curves to drive."
-                .to_owned(),
-        );
+        report.notes.push(ExportNote::AnimationNotWrittenFlat);
     }
 
     scene.mesh_count_into(report);

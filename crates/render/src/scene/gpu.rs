@@ -7,7 +7,7 @@
 //! The full shaded look is the skybox + the per-material PBR/IBL `fs_main` (the
 //! material uniform block + its seven texture slots + the IBL maps + the UV checker),
 //! drawn one indexed range per material, plus the live tone-map operator switch, the
-//! debug line views and the selection flash.
+//! debug line views and the selection highlight.
 //!
 //! ## Bindings are per program, not per pass
 //!
@@ -28,19 +28,21 @@
 //!   binds three IBL maps, not four.
 //! * `fs_line` reads none of the fragment-stage scene uniforms, so the line
 //!   pipelines apply only the vertex block — while `fs_selection`, which reads the
-//!   flash colour, takes both.
+//!   highlight colour, takes both.
 //! * `vs_main` declares all four deform tables, so every program sharing it must
 //!   bind all four. That is what [`DeformDummies`] is for: a model without a skin
 //!   has none of them.
 //!
 //! ## Ambient occlusion
 //!
-//! GTAO is three more offscreen passes before the composite, and it reads a G-buffer
-//! of its own rather than the scene MRT: a **single-sample** mesh-only pass writes the
-//! view normal and view Z, so MSAA edge averaging never blends a normal across a
-//! silhouette. The occlusion and blur passes are fullscreen `R8`, and the composite
-//! darkens only the AO-eligible ambient attachment by the result — an additive
-//! correction over the radiance, so direct and emissive light are never darkened.//!
+//! GTAO is a run of offscreen passes before the composite (see [`super::gtao`] for the
+//! sequence), and it reads a G-buffer of its own rather than the scene MRT: a
+//! **single-sample** mesh-only pass writes the view normal and view Z, so MSAA edge
+//! averaging never blends a normal across a silhouette. The occlusion and denoise
+//! passes are fullscreen `R16F`, and the composite darkens only the AO-eligible ambient
+//! attachment by the result — an additive correction over the radiance, so direct and
+//! emissive light are never darkened.
+//!
 //! The pass sequencing lives here; the pieces it sequences are beside it:
 //! [`super::targets`] owns the attachments, [`super::gtao`] the occlusion
 //! passes, [`super::draw`] the draw verbs, [`super::uv`] the UV viewport, and
@@ -50,7 +52,7 @@ use bytemuck::Zeroable;
 
 use crate::geometry::{scene_lines, uv_grid_lines};
 use crate::ibl::IblMaps;
-use crate::material::{MaterialState, MaterialTable, effective_materials};
+use crate::material::{MaterialKey, MaterialState, MaterialTable, effective_materials};
 use crate::rhi::{
     Bindings, Cull, DEPTH_MIP_COLORS, Depth, DepthBias, Format, Frame, GBUFFER_COLORS, GpuResult,
     IndexBuffer, OCCLUSION_COLORS, Pipeline, PipelineDesc, Sampler, StorageBuffer, Texture,
@@ -160,10 +162,10 @@ pub(crate) struct SceneGpu {
     /// A second set for the Opt split's right-hand view, at the same half-width size
     /// as the first — so the two together cost what one full-width set would.
     ///
-    /// It exists because the composite is a *deferred* job (`mac-port-plan.md` §3.2):
-    /// both halves' passes have run by the time either composite does, so a shared set
-    /// would show the second view's contents in both. `None` outside the split
-    /// (invariant 3).
+    /// It exists because the composite is a *deferred* job (`docs/ARCHITECTURE.md`,
+    /// Platform decisions: one swapchain pass): both halves' passes have run by the
+    /// time either composite does, so a shared set would show the second view's
+    /// contents in both. `None` outside the split (invariant 3).
     pub(super) split_targets: Option<TargetSet>,
     /// The MSAA level the pipelines are built for.
     pub(super) sample_count: u32,
@@ -289,9 +291,8 @@ impl SceneGpu {
         // the processed slot — rebuilding both, and discarding the processed cache on
         // every switch between workspaces.
         self.activate(SlotId::Source);
-        // One view, so the split's second target set goes (invariant 3). It is the
-        // only path a workspace switch out of Opt is guaranteed to reach.
-        self.release_split_targets();
+        // One view, so what only the Opt comparison draws with goes (invariant 3).
+        self.release_opt_views();
 
         let size = frame.size();
         self.sync_frame(frame, scene, material_states, material_revision, size)?;
@@ -403,6 +404,24 @@ impl SceneGpu {
         self.active_slot = slot;
     }
 
+    /// Drop what only the Opt comparison draws with (invariant 3): the split's
+    /// second target set (a full MSAA HDR set with its G-buffer and AO chain), both
+    /// slots' ghost wireframes, and everything derived from the processed mesh.
+    /// The processed mesh itself stays uploaded, so returning to Opt redraws it
+    /// without a rebuild.
+    ///
+    /// Called by every path that is not Opt - the 3D scene, the UV viewport and
+    /// the Tex viewport - since leaving the workspace is not an event the
+    /// renderer sees, only a frame that draws something else.
+    pub(crate) fn release_opt_views(&mut self) {
+        self.release_split_targets();
+        self.release_ghost_wireframes();
+        match self.active_slot {
+            SlotId::Processed => self.active.release_derived(),
+            SlotId::Source => self.idle.release_derived(),
+        }
+    }
+
     /// Drop the processed model's cached buffers (invariant 3), whichever slot
     /// currently holds them.
     pub(crate) fn release_processed(&mut self) {
@@ -444,13 +463,19 @@ impl SceneGpu {
             scene.debug.uv_channel,
             scene.debug.material_mode,
         )?;
-        let effective = effective_materials(
+        let material_key = MaterialKey::new(
+            material_revision,
             scene.debug.material_mode,
-            material_states,
             self.active.unique_part_count,
         );
-        self.materials
-            .sync(&effective, material_revision, scene.debug.material_mode)?;
+        if !self.materials.is_current(material_key) {
+            let effective = effective_materials(
+                scene.debug.material_mode,
+                material_states,
+                self.active.unique_part_count,
+            );
+            self.materials.sync(&effective, material_key)?;
+        }
 
         // The pose (palette + shape weights) the vertex shader deforms with, uploaded
         // only when its revision moves; then build-on-demand / free-on-off for the
@@ -507,7 +532,8 @@ impl SceneGpu {
     }
 
     /// The offscreen 2-MRT scene pass: skybox, the mesh draw list, the grid, the
-    /// derived line overlays, the pivot marker, the skeleton and the selection flash.
+    /// derived line overlays, the pivot marker, the skeleton and the selection
+    /// highlight.
     pub(super) fn record_scene_pass(
         &self,
         frame: &mut Frame<'_>,
@@ -517,7 +543,6 @@ impl SceneGpu {
         ghost: Option<(GhostStyle, SceneUniforms)>,
     ) {
         let debug = scene.debug;
-        let selection = scene.selection;
 
         // Clear the scene colour + ambient to zero radiance *and* zero alpha: the
         // alpha is the composite's coverage mask, so the cleared background reads as
@@ -536,20 +561,48 @@ impl SceneGpu {
             CheckerTexture::Color => &self.checker_color,
         };
 
+        // Back to front: the skybox behind everything, the mesh, the line views
+        // over it, then the hover and selection fills.
+        if scene.environment.show_background {
+            self.draw_skybox(frame, uniforms);
+        }
+        self.draw_mesh_list(frame, scene, checker, uniforms);
+        self.draw_line_overlays(frame, scene, checker, uniforms);
+        self.draw_highlights(frame, scene, uniforms);
+
+        if let Some((style, ghost_uniforms)) = &ghost {
+            self.draw_ghost(frame, *style, ghost_uniforms);
+        }
+        frame.end_pass();
+        frame.zone_end(Zone::Scene);
+    }
+
+    /// The skybox, behind all geometry.
+    fn draw_skybox(&self, frame: &mut Frame<'_>, uniforms: &SceneUniforms) {
         // Skybox background first, behind all geometry, when shown. It declares only
         // the environment cube and the IBL sampler, so that is all it binds.
-        if scene.environment.show_background {
-            let mut bindings = Bindings::new();
-            self.ibl.bind_env(&mut bindings);
-            bindings.sampler(generated::SMP_IBL_SAMPLER, &self.sampler);
-            frame.apply_pipeline(&self.scene.skybox);
-            frame.apply_bindings(&bindings);
-            // `vs_skybox` builds its ray from the fragment block alone, so the vertex
-            // block is not declared here and applying it would fail validation.
-            frame.apply_uniforms(generated::UB_SCENE_FS, uniforms);
-            frame.draw(0, FULLSCREEN_VERTICES);
-        }
+        let mut bindings = Bindings::new();
+        self.ibl.bind_env(&mut bindings);
+        bindings.sampler(generated::SMP_IBL_SAMPLER, &self.sampler);
+        frame.apply_pipeline(&self.scene.skybox);
+        frame.apply_bindings(&bindings);
+        // `vs_skybox` builds its ray from the fragment block alone, so the vertex
+        // block is not declared here and applying it would fail validation.
+        frame.apply_uniforms(generated::UB_SCENE_FS, uniforms);
+        frame.draw(0, FULLSCREEN_VERTICES);
+    }
 
+    /// The mesh itself, one draw per material range, from whichever index list
+    /// is in effect.
+    fn draw_mesh_list(
+        &self,
+        frame: &mut Frame<'_>,
+        scene: &SceneFrame<'_>,
+        checker: &Texture,
+        uniforms: &SceneUniforms,
+    ) {
+        let debug = scene.debug;
+        let selection = scene.selection;
         // Mesh draw list, in precedence order: solo (isolate the selection) wins;
         // otherwise per-mesh visibility (the filtered list, present only while some
         // mesh is hidden); otherwise the whole mesh. All three share the mesh vertex
@@ -607,7 +660,18 @@ impl SceneGpu {
                 }
             }
         }
+    }
 
+    /// The grid, the wireframe and every derived line view, then the skeleton
+    /// and the always-on-top markers.
+    fn draw_line_overlays(
+        &self,
+        frame: &mut Frame<'_>,
+        scene: &SceneFrame<'_>,
+        checker: &Texture,
+        uniforms: &SceneUniforms,
+    ) {
+        let debug = scene.debug;
         // The static grid, then the derived line overlays (wireframe / bounding box /
         // face+vertex normals / UV seams) on top of the mesh. All share the line
         // pipeline (depth-tested Reversed-Z `GreaterEqual`, no depth write — the mesh
@@ -615,34 +679,33 @@ impl SceneGpu {
         // its view is off. Seams go last: they sit exactly on wireframe edges, and
         // with equal depth and no depth write the later draw is the one that shows.
         if debug.show_grid {
-            self.draw_lines(frame, &self.scene.line, &[&self.grid], uniforms);
+            self.draw_lines(frame, &self.scene.line, [&self.grid], uniforms);
         }
         // The wireframe sits between the grid and the rest: it is the one line view
         // drawn indexed over the mesh vertex buffer, on its own pipeline.
         if debug.wireframe_overlay || matches!(debug.shading_mode, ShadingMode::Wireframe) {
             self.draw_wireframe(frame, uniforms, debug.wireframe_color);
         }
-        let line_views: Vec<&VertexBuffer> = [
+        let line_views = [
             &self.active.views.bounding_box_buf,
             &self.active.views.face_normal_buf,
             &self.active.views.vertex_normal_buf,
             &self.active.views.uv_seam_buf,
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        self.draw_lines(frame, &self.scene.line, &line_views, uniforms);
+        ];
+        self.draw_lines(
+            frame,
+            &self.scene.line,
+            line_views.into_iter().flatten(),
+            uniforms,
+        );
 
         // Pivot marker + the skeleton's outlines: the always-on-top line pipeline
         // (depth compare `Always`), so they read *through* the mesh instead of being
         // occluded inside it.
-        let overlay_lines: Vec<&VertexBuffer> = [
+        let overlay_lines = [
             &self.active.views.pivot_buf,
             &self.active.views.skeleton_line_buf,
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
+        ];
 
         // Skeleton fills go first, under their own outlines: translucent octahedra,
         // with the per-bone selection tint already baked into the buffer.
@@ -656,8 +719,23 @@ impl SceneGpu {
             frame.apply_uniforms(generated::UB_MATERIAL, self.materials.fallback().uniform());
             frame.draw(0, fill.count());
         }
-        self.draw_lines(frame, &self.scene.line_overlay, &overlay_lines, uniforms);
+        self.draw_lines(
+            frame,
+            &self.scene.line_overlay,
+            overlay_lines.into_iter().flatten(),
+            uniforms,
+        );
+    }
 
+    /// The hover preview and the selection highlight, over the mesh.
+    fn draw_highlights(
+        &self,
+        frame: &mut Frame<'_>,
+        scene: &SceneFrame<'_>,
+        uniforms: &SceneUniforms,
+    ) {
+        let debug = scene.debug;
+        let selection = scene.selection;
         // Hover preview, then the selection highlight over it: two flat-colour
         // fills redrawing those triangles on top of the mesh, each through
         // `fs_selection` with its own tint in the uniform. Selection goes last so
@@ -682,12 +760,6 @@ impl SceneGpu {
                 uniforms.selection_color,
             );
         }
-
-        if let Some((style, ghost_uniforms)) = &ghost {
-            self.draw_ghost(frame, *style, ghost_uniforms);
-        }
-        frame.end_pass();
-        frame.zone_end(Zone::Scene);
     }
 }
 

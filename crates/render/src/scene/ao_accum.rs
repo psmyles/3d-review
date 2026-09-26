@@ -66,11 +66,10 @@ pub(super) fn temporal_pattern(index: u32) -> (f32, f32) {
 /// slice, no `Vec`, nothing that would allocate or walk. The hidden-mesh set reaches
 /// it as [`super::slot::ModelSlot::visibility_generation`] for exactly that reason.
 ///
-/// What is *not* in here matters as much as what is. The selection flash colour and
-/// fade change every frame while a flash runs but never touch the G-buffer, so
-/// including them would restart the average for nothing. The MSAA level does not
-/// either: the GTAO targets are single-sample by design and an AA change does not
-/// recreate them.
+/// What is *not* in here matters as much as what is. The selection highlight's colour
+/// and opacity never touch the G-buffer, so including them would restart the average
+/// for nothing. The MSAA level does not either: the GTAO targets are single-sample by
+/// design and an AA change does not recreate them.
 #[derive(Clone, Copy, PartialEq)]
 pub(super) struct AoKey {
     /// World → view and view → clip. Between them they pin the camera completely:
