@@ -451,7 +451,8 @@ fi
 
 say "dmg"
 mkdir -p "$out_dir"
-dmg="$out_dir/$name-$version.dmg"
+# Named <exeName>-<version>.dmg, the same scheme as the Windows installer.
+dmg="$out_dir/$exe-$version.dmg"
 staging="$tmp/staging"
 mkdir -p "$staging"
 # ditto again, for the same reason: `cp -R` on a signed bundle can drop extended

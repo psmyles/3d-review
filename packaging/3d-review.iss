@@ -19,6 +19,11 @@
 #ifndef MyAppExe
   #define MyAppExe "3d-review.exe"
 #endif
+; The release file's stem — product.json's exeName, so the installer is named
+; <exeName>-<version>.exe, the same scheme as the macOS .dmg.
+#ifndef MyAppFileStem
+  #define MyAppFileStem "3d-review"
+#endif
 #ifndef MyAppProgId
   #define MyAppProgId "3DReview.fbx"
 #endif
@@ -44,7 +49,7 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 OutputDir=..\dist
-OutputBaseFilename=3D-Review-Setup-{#MyAppVersion}
+OutputBaseFilename={#MyAppFileStem}-{#MyAppVersion}
 SetupIconFile=..\assets\icons\application-logo.ico
 UninstallDisplayIcon={app}\{#MyAppExe}
 UninstallDisplayName={#MyAppName}
