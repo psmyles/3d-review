@@ -442,6 +442,12 @@ impl Renderer {
         image: Option<TexImage>,
         background: TexBackground,
     ) -> GpuResult<()> {
+        // Nothing the 3D, UV or Opt views derived is on screen here (invariant 3).
+        // The meshes themselves stay uploaded, so returning costs no rebuild.
+        if let Some(scene) = self.scene.as_mut() {
+            scene.release_opt_views();
+            scene.release_uv_views();
+        }
         // Built on the first Tex frame rather than at startup: a session that never
         // opens this workspace pays for none of it.
         let tex = match self.tex.as_mut() {

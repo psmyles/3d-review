@@ -40,7 +40,7 @@ pub(crate) struct BakeAttachment(sg::View);
 /// It lives here rather than at the call site so `ibl.rs` never has to name
 /// `sg::Backend` or `sg::ShaderDesc` to pass a generated `*_shader_desc` along.
 pub(crate) fn pipeline(
-    desc_fn: fn(sg::Backend) -> sg::ShaderDesc,
+    desc_fn: super::shader::ShaderDescFn,
     bytecode: &super::shader::ShaderBytecode,
     format: Format,
     label: &'static CStr,

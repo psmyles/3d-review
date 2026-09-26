@@ -215,7 +215,7 @@ impl SceneGpu {
         // scene pass draws it normally. The ghost is drawn from the idle slot, which is
         // only safe because a slot owns its own buffers outright.
         self.activate(ghost_slot);
-        self.sync_frame(frame, ghost_frame, material_states, material_revision, size)?;
+        self.sync_ghost(ghost_frame)?;
         if ghost == GhostStyle::Wireframe {
             self.sync_ghost_wireframe(ghost_frame)?;
         } else {
@@ -235,6 +235,34 @@ impl SceneGpu {
             BackbufferRect::full(size),
             Some((ghost, tint)),
         )
+    }
+
+    /// Sync the active slot as the overlay's ghost: its mesh buffers, which are all
+    /// [`SceneGpu::draw_ghost`] reads, and nothing else.
+    ///
+    /// A full [`SceneGpu::sync_frame`] here built every derived view the user had
+    /// switched on - normals, skeleton, the selection and hover lists - over the
+    /// ghost too, and none of it was ever drawn; the source's selection was even
+    /// resolved against the processed mesh. Anything such a frame left behind, or
+    /// that this slot built while it was the solid one, is dropped.
+    fn sync_ghost(&mut self, scene: &SceneFrame<'_>) -> GpuResult<()> {
+        self.sync_unique_parts(scene.model, scene.model_revision, scene.debug.material_mode);
+        self.sync_mesh(
+            scene.model,
+            scene.model_revision,
+            scene.debug.uv_channel,
+            scene.debug.material_mode,
+        )?;
+        let ghost_wireframe = (
+            self.active.ghost_wireframe_index.take(),
+            self.active.ghost_wireframe_baked.take(),
+        );
+        self.active.release_derived();
+        (
+            self.active.ghost_wireframe_index,
+            self.active.ghost_wireframe_baked,
+        ) = ghost_wireframe;
+        Ok(())
     }
 
     /// Build the active slot's ghost wireframe, which exists regardless of the user's

@@ -73,7 +73,7 @@ pub(super) struct ScenePipelineSet {
 /// every line and fill view is its own vertex stream. The skybox is the one that
 /// cannot use the helper: it runs its own vertex shader and takes no vertex input.
 pub(super) fn build_scene_pipelines(sample_count: u32) -> GpuResult<ScenePipelineSet> {
-    let program = |desc_fn: fn(sokol::gfx::Backend) -> sokol::gfx::ShaderDesc,
+    let program = |desc_fn: crate::rhi::shader::ShaderDescFn,
                    bytecode: &'static crate::rhi::shader::ShaderBytecode,
                    label: &'static std::ffi::CStr,
                    topology: Topology,

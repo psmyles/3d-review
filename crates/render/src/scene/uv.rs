@@ -38,6 +38,7 @@ impl SceneGpu {
         // The UV viewport shows the source model, so its derived buffers belong in the
         // source slot (see the note in `render`).
         self.activate(SlotId::Source);
+        self.release_opt_views();
         let size = frame.size();
         self.sync_targets(frame, size, anti_aliasing.effective_sample_count())?;
         self.sync_uv_view(model, model_revision, channel, shading_mode)?;

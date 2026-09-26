@@ -311,6 +311,31 @@ impl ModelSlot {
         self.visibility_generation = generation.wrapping_add(1);
     }
 
+    /// Drop everything derived from the mesh - the line views, the selection,
+    /// hover and visibility lists, the ghost wireframe - but keep the mesh
+    /// itself (invariant 3). For a slot that is uploaded but not being drawn as
+    /// a scene: the Opt workspace's processed mesh while another workspace is up,
+    /// or whichever mesh is the overlay's ghost, which is drawn from its mesh
+    /// buffers alone.
+    ///
+    /// Every bake key goes with its buffer, so the next frame that draws this
+    /// slot as a scene rebuilds exactly what it needs; the visibility list's
+    /// rebuild bumps its own generation, which is what resets the AO then.
+    pub(super) fn release_derived(&mut self) {
+        self.views = DerivedViews::default();
+        self.selection_index = None;
+        self.selection_ranges = Vec::new();
+        self.selection_baked = None;
+        self.hover_index = None;
+        self.hover_baked = None;
+        self.visible_index = None;
+        self.visible_ranges = Vec::new();
+        self.visible_active = false;
+        self.visibility_baked = None;
+        self.ghost_wireframe_index = None;
+        self.ghost_wireframe_baked = None;
+    }
+
     /// The per-corner deform lanes the mesh-derived builders copy (empty for a
     /// model that never deforms).
     pub(super) fn lanes(&self) -> &[[u32; 4]] {

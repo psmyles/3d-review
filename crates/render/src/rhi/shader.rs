@@ -26,13 +26,17 @@ pub(crate) struct ShaderBytecode {
     pub(crate) fragment: &'static [u8],
 }
 
+/// A generated `<program>_shader_desc`: what a caller outside `rhi` hands over to
+/// name a program, so it never has to spell out a sokol type to do it.
+pub(crate) type ShaderDescFn = fn(sg::Backend) -> sg::ShaderDesc;
+
 /// Build a shader from its generated reflection and this host's bytecode.
 ///
 /// `desc_fn` is the generated `<program>_shader_desc` — passed as a function rather
 /// than a filled desc so the backend query happens here, in the one place that knows
 /// which bytecode it is about to substitute.
 pub(crate) fn make(
-    desc_fn: fn(sg::Backend) -> sg::ShaderDesc,
+    desc_fn: ShaderDescFn,
     bytecode: &ShaderBytecode,
     label: &'static std::ffi::CStr,
 ) -> GpuResult<sg::Shader> {

@@ -20,7 +20,7 @@ mod gpu;
 mod mode;
 mod state;
 
-pub(crate) use gpu::{MaterialEntry, MaterialTable};
+pub(crate) use gpu::{MaterialEntry, MaterialKey, MaterialTable};
 pub(crate) use mode::{build_part_key, effective_materials};
 pub(crate) use state::MaterialDrawRange;
 pub use state::{

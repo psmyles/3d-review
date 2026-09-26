@@ -48,6 +48,14 @@ pub(crate) struct DeformLayout {
 }
 
 impl DeformLayout {
+    /// Drop the influence and morph tables once they have been uploaded, keeping
+    /// the per-corner lanes the mesh-derived overlays read. The GPU copies are
+    /// reused for as long as the model is, so these are never needed again.
+    pub(crate) fn release_tables(&mut self) {
+        self.influences = Vec::new();
+        self.morph = Vec::new();
+    }
+
     /// Build the layout for `model`, or `None` when it needs no deform path
     /// (no skin, no blend shapes, no clips) or has no nodes to attach to.
     pub(crate) fn build(model: &ModelData) -> Option<Self> {

@@ -35,7 +35,7 @@ impl SceneGpu {
     /// left a full-model edge list (two 64-byte vertices per UV edge — tens of
     /// megabytes on a real asset) plus its island fill resident for the rest of the
     /// session, since the bake keys alone are only invalidated by a model swap.
-    pub(super) fn release_uv_views(&mut self) {
+    pub(crate) fn release_uv_views(&mut self) {
         for slot in [&mut self.active, &mut self.idle] {
             slot.views.uv_wireframe_buf = None;
             slot.views.uv_wireframe_baked = None;
@@ -130,18 +130,30 @@ impl SceneGpu {
             }
             _ => None,
         };
-        // The deform layout is a property of the model alone; rebuild it only on
-        // a model change, not on a UV-channel / material-mode switch.
-        if self.active.mesh_revision != model_revision {
+        // The deform layout and its GPU tables are a property of the model alone:
+        // built and uploaded on a model change, and carried across a UV-channel or
+        // material-mode rebuild, which only reorders the mesh's own buffers. Once
+        // uploaded the influence and morph tables are dropped from the CPU side
+        // (invariant 1 - the morph table is the model's blend shapes over again);
+        // only the per-corner lanes stay, since every mesh-derived overlay copies
+        // them.
+        let model_changed = self.active.mesh_revision != model_revision;
+        if model_changed {
             self.active.deform_layout = DeformLayout::build(model);
         }
         let (vertices, indices, ranges) = model_mesh(model, self.active.lanes(), uv_channel, key);
+        let kept_deform = self.active.mesh.take().and_then(|mesh| mesh.deform);
         self.active.mesh = if indices.is_empty() {
             None
         } else {
-            let deform = match &self.active.deform_layout {
-                Some(layout) => DeformGpu::new(layout)?,
-                None => None,
+            let deform = match (&mut self.active.deform_layout, model_changed) {
+                (Some(layout), true) => {
+                    let deform = DeformGpu::new(layout)?;
+                    layout.release_tables();
+                    deform
+                }
+                (Some(_), false) => kept_deform,
+                (None, _) => None,
             };
             Some(MeshBuffers {
                 vertices: VertexBuffer::new(&vertices, c"mesh")?,

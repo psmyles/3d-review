@@ -50,7 +50,7 @@ use bytemuck::Zeroable;
 
 use crate::geometry::{scene_lines, uv_grid_lines};
 use crate::ibl::IblMaps;
-use crate::material::{MaterialState, MaterialTable, effective_materials};
+use crate::material::{MaterialKey, MaterialState, MaterialTable, effective_materials};
 use crate::rhi::{
     Bindings, Cull, DEPTH_MIP_COLORS, Depth, DepthBias, Format, Frame, GBUFFER_COLORS, GpuResult,
     IndexBuffer, OCCLUSION_COLORS, Pipeline, PipelineDesc, Sampler, StorageBuffer, Texture,
@@ -289,9 +289,8 @@ impl SceneGpu {
         // the processed slot — rebuilding both, and discarding the processed cache on
         // every switch between workspaces.
         self.activate(SlotId::Source);
-        // One view, so the split's second target set goes (invariant 3). It is the
-        // only path a workspace switch out of Opt is guaranteed to reach.
-        self.release_split_targets();
+        // One view, so what only the Opt comparison draws with goes (invariant 3).
+        self.release_opt_views();
 
         let size = frame.size();
         self.sync_frame(frame, scene, material_states, material_revision, size)?;
@@ -403,6 +402,24 @@ impl SceneGpu {
         self.active_slot = slot;
     }
 
+    /// Drop what only the Opt comparison draws with (invariant 3): the split's
+    /// second target set (a full MSAA HDR set with its G-buffer and AO chain), both
+    /// slots' ghost wireframes, and everything derived from the processed mesh.
+    /// The processed mesh itself stays uploaded, so returning to Opt redraws it
+    /// without a rebuild.
+    ///
+    /// Called by every path that is not Opt - the 3D scene, the UV viewport and
+    /// the Tex viewport - since leaving the workspace is not an event the
+    /// renderer sees, only a frame that draws something else.
+    pub(crate) fn release_opt_views(&mut self) {
+        self.release_split_targets();
+        self.release_ghost_wireframes();
+        match self.active_slot {
+            SlotId::Processed => self.active.release_derived(),
+            SlotId::Source => self.idle.release_derived(),
+        }
+    }
+
     /// Drop the processed model's cached buffers (invariant 3), whichever slot
     /// currently holds them.
     pub(crate) fn release_processed(&mut self) {
@@ -444,13 +461,19 @@ impl SceneGpu {
             scene.debug.uv_channel,
             scene.debug.material_mode,
         )?;
-        let effective = effective_materials(
+        let material_key = MaterialKey::new(
+            material_revision,
             scene.debug.material_mode,
-            material_states,
             self.active.unique_part_count,
         );
-        self.materials
-            .sync(&effective, material_revision, scene.debug.material_mode)?;
+        if !self.materials.is_current(material_key) {
+            let effective = effective_materials(
+                scene.debug.material_mode,
+                material_states,
+                self.active.unique_part_count,
+            );
+            self.materials.sync(&effective, material_key)?;
+        }
 
         // The pose (palette + shape weights) the vertex shader deforms with, uploaded
         // only when its revision moves; then build-on-demand / free-on-off for the
