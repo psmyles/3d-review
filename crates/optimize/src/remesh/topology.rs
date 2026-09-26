@@ -1,10 +1,10 @@
 //! The proxy's connectivity, as flat arrays.
 //!
 //! Every stage of the rebuild asks the same two questions — *what touches this
-//! vertex* and *what kind of edge is this* — and each of them used to answer it
-//! by building a `HashMap` of its own ([`super::manifold`] built two;
-//! `remesh_density.cpp` built a third; [`super::project`] a fourth). This is
-//! that structure, built once.
+//! vertex* and *what kind of edge is this* — over the proxy, and this is the one
+//! structure that answers them, built once. (The attribute projection is the
+//! one stage that works on the *source* index buffer instead, whose edges stop
+//! at attribute seams; it groups them by sorting, for the reason below.)
 //!
 //! ## Why there is no edge table
 //!
@@ -180,14 +180,29 @@ impl Topology {
 
     /// Every undirected edge at `vertex`, once each, ascending by far endpoint.
     ///
-    /// `scratch` is reused across calls: a sweep over five million vertices must
-    /// not allocate five million times.
+    /// `scratch` is reused across calls, and so is the working list behind it
+    /// (one per thread): a sweep over five million vertices must not allocate
+    /// five million times.
     pub(crate) fn edges_at(&self, indices: &[u32], vertex: u32, scratch: &mut Vec<EdgeAt>) {
+        thread_local! {
+            static PARTNERS: std::cell::RefCell<Vec<(u32, u32)>> =
+                const { std::cell::RefCell::new(Vec::new()) };
+        }
+        PARTNERS.with_borrow_mut(|partners| self.edges_at_with(indices, vertex, scratch, partners));
+    }
+
+    fn edges_at_with(
+        &self,
+        indices: &[u32],
+        vertex: u32,
+        scratch: &mut Vec<EdgeAt>,
+        partners: &mut Vec<(u32, u32)>,
+    ) {
         scratch.clear();
         // Every face corner adjacent to `vertex`, as (far endpoint, face). A
         // vertex of valence n contributes 2n of these, and an interior edge
         // appears twice — once from each of its faces.
-        let mut partners: Vec<(u32, u32)> = Vec::new();
+        partners.clear();
         for &face in self.faces_of(vertex) {
             let corners = &indices[face as usize * 3..face as usize * 3 + 3];
             let Some(at) = corners.iter().position(|&corner| corner == vertex) else {

@@ -41,7 +41,6 @@
 //! off its patch is better served by continuing the attribute gradient than by
 //! being pinned to the patch's rim, which would flatten a UV island's border
 //! into a ridge.
-use std::collections::HashMap;
 
 use glam::{Vec2, Vec3, Vec4};
 use review_model::{Bvh, ModelData, Vertex, closest_point_on_triangle, triangle_positions};
@@ -520,28 +519,34 @@ fn plane_barycentric(model: &ModelData, triangle: u32, query: Vec3) -> Vec3 {
 /// every attribute seam — which is the property the corner sampling relies on.
 /// An edge shared by more than two triangles links none of them: there is no
 /// single neighbour, and guessing one would grow the patch across a branch.
+///
+/// Grouped by sorting one `(edge, triangle corner)` entry per corner rather than
+/// by hashing: a hash map of every edge with a small `Vec` per entry is several
+/// times the memory at ten million triangles (see [`super::topology`] for why
+/// that shape is ruled out). Sorting on the corner as well keeps each group in
+/// triangle order, so the pairs come out exactly as the map's insertion order had
+/// them.
 fn build_adjacency(indices: &[u32]) -> Vec<[u32; 3]> {
     let triangle_count = indices.len() / 3;
-    let mut owners: HashMap<(u32, u32), Vec<(u32, u8)>> = HashMap::new();
+    let mut owners: Vec<(u64, u32)> = Vec::with_capacity(triangle_count * 3);
     for triangle in 0..triangle_count {
-        for corner in 0..3u8 {
-            let a = indices[triangle * 3 + corner as usize];
-            let b = indices[triangle * 3 + (corner as usize + 1) % 3];
-            let key = if a < b { (a, b) } else { (b, a) };
-            owners
-                .entry(key)
-                .or_default()
-                .push((triangle as u32, corner));
+        for corner in 0..3 {
+            let a = indices[triangle * 3 + corner];
+            let b = indices[triangle * 3 + (corner + 1) % 3];
+            let (low, high) = if a < b { (a, b) } else { (b, a) };
+            let key = (u64::from(low) << 32) | u64::from(high);
+            owners.push((key, (triangle * 3 + corner) as u32));
         }
     }
+    owners.sort_unstable();
 
     let mut adjacency = vec![[u32::MAX; 3]; triangle_count];
-    for sharing in owners.values() {
-        if sharing.len() != 2 {
+    for sharing in owners.chunk_by(|a, b| a.0 == b.0) {
+        let [(_, first), (_, second)] = sharing else {
             continue;
-        }
-        let (first, first_edge) = sharing[0];
-        let (second, second_edge) = sharing[1];
+        };
+        let (first, first_edge) = (first / 3, first % 3);
+        let (second, second_edge) = (second / 3, second % 3);
         adjacency[first as usize][first_edge as usize] = second;
         adjacency[second as usize][second_edge as usize] = first;
     }

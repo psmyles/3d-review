@@ -56,10 +56,12 @@ use crate::cancel::{CancelToken, cancelled};
 
 use super::RemeshOutput;
 use super::features::Features;
+use super::geom;
 use super::partition::Partition;
 use super::quadric::Quadric;
 use super::seeds::Seeds;
 use super::surface::Surface;
+use super::topology::Topology;
 
 /// A face that has been collapsed away.
 const DEAD: u32 = u32::MAX;
@@ -129,6 +131,103 @@ impl Collapsed {
     }
 }
 
+/// Each vertex's faces as the collapse stands.
+///
+/// Starts as the input's own CSR, *borrowed*: at ten million vertices a
+/// `Vec<Vec<u32>>` copy of it is ten million allocations and a quarter of a
+/// gigabyte of headers before a single collapse has happened, and most vertices
+/// are only ever read. A vertex gets a list of its own the first time a collapse
+/// makes it absorb another's faces, and gives it back when it dies itself, so the
+/// owned lists number the live survivors rather than the input. Every list reads
+/// in the same order the copy did - the input's, then each absorbed face in turn -
+/// so the collapse makes exactly the same choices.
+struct Incidence<'a> {
+    topology: &'a Topology,
+    /// Per vertex: [`BORROWED`], [`EMPTIED`], or its index into `owned`.
+    slot: Vec<u32>,
+    owned: Vec<Vec<u32>>,
+    /// `owned` entries a dead vertex gave back, reused before `owned` grows.
+    free: Vec<u32>,
+    /// The buffer a borrowed list is copied into when its vertex dies.
+    spare: Vec<u32>,
+}
+
+/// [`Incidence::slot`]: the vertex still has exactly the input's faces.
+const BORROWED: u32 = u32::MAX;
+/// [`Incidence::slot`]: the vertex has died and has no faces.
+const EMPTIED: u32 = u32::MAX - 1;
+
+impl<'a> Incidence<'a> {
+    fn new(topology: &'a Topology) -> Self {
+        Self {
+            topology,
+            slot: vec![BORROWED; topology.vertex_count],
+            owned: Vec::new(),
+            free: Vec::new(),
+            spare: Vec::new(),
+        }
+    }
+
+    fn of(&self, vertex: u32) -> &[u32] {
+        match self.slot[vertex as usize] {
+            BORROWED => self.topology.faces_of(vertex),
+            EMPTIED => &[],
+            owned => &self.owned[owned as usize],
+        }
+    }
+
+    /// Take `vertex`'s faces away, leaving it with none. Hand the buffer back
+    /// through [`Self::recycle`] once done with it.
+    fn take(&mut self, vertex: u32) -> Vec<u32> {
+        let taken = match self.slot[vertex as usize] {
+            BORROWED => {
+                let mut buffer = std::mem::take(&mut self.spare);
+                buffer.clear();
+                buffer.extend_from_slice(self.topology.faces_of(vertex));
+                buffer
+            }
+            EMPTIED => Vec::new(),
+            owned => {
+                self.free.push(owned);
+                std::mem::take(&mut self.owned[owned as usize])
+            }
+        };
+        self.slot[vertex as usize] = EMPTIED;
+        taken
+    }
+
+    fn recycle(&mut self, buffer: Vec<u32>) {
+        if buffer.capacity() > self.spare.capacity() {
+            self.spare = buffer;
+        }
+    }
+
+    fn push(&mut self, vertex: u32, face: u32) {
+        let owned = match self.slot[vertex as usize] {
+            BORROWED | EMPTIED => {
+                let list = match self.slot[vertex as usize] {
+                    BORROWED => self.topology.faces_of(vertex).to_vec(),
+                    _ => Vec::new(),
+                };
+                let owned = match self.free.pop() {
+                    Some(reused) => {
+                        self.owned[reused as usize] = list;
+                        reused
+                    }
+                    None => {
+                        self.owned.push(list);
+                        (self.owned.len() - 1) as u32
+                    }
+                };
+                self.slot[vertex as usize] = owned;
+                owned
+            }
+            owned => owned,
+        };
+        self.owned[owned as usize].push(face);
+    }
+}
+
 /// Collapse every region down, as far as it will go.
 pub(crate) fn run(
     surface: Surface<'_>,
@@ -152,10 +251,18 @@ pub(crate) fn run(
     // The incidence starts as the input's and grows as vertices absorb their
     // neighbours'. Only the vertices being collapsed need a mutable one: a
     // vertex outside the region keeps its faces, they just say something
-    // different afterwards.
-    let mut incidence: Vec<Vec<u32>> = (0..count as u32)
-        .map(|vertex| surface.topology.faces_of(vertex).to_vec())
-        .collect();
+    // different afterwards - which is what lets it stay borrowed.
+    let mut incidence = Incidence::new(surface.topology);
+
+    // A seed is its region's natural survivor. Marked per vertex rather than
+    // looked up in `seeds.vertices`, which is indexed by region and so stops
+    // being sorted the moment the relaxation moves a seed.
+    let mut is_seed = vec![false; count];
+    for &vertex in &seeds.vertices {
+        if let Some(slot) = is_seed.get_mut(vertex as usize) {
+            *slot = true;
+        }
+    }
 
     for region in 0..partition.regions as u32 {
         if cancelled(cancel) {
@@ -164,7 +271,7 @@ pub(crate) fn run(
         collapse_region(
             surface,
             features,
-            seeds,
+            &is_seed,
             partition,
             quadrics,
             &mut state,
@@ -183,11 +290,11 @@ pub(crate) fn run(
 fn collapse_region(
     surface: Surface<'_>,
     features: &Features,
-    seeds: &Seeds,
+    is_seed: &[bool],
     partition: &Partition,
     quadrics: &[Quadric],
     state: &mut Collapsed,
-    incidence: &mut [Vec<u32>],
+    incidence: &mut Incidence<'_>,
     region: u32,
 ) {
     let members = partition.members_of(region);
@@ -218,7 +325,8 @@ fn collapse_region(
                 continue;
             }
             let along = faces_along_edge(state, incidence, a, b);
-            let Some((dying, survivor)) = survivor_of(surface, features, seeds, a, b, along) else {
+            let Some((dying, survivor)) = survivor_of(surface, features, is_seed, a, b, along)
+            else {
                 continue;
             };
             if !link_condition(state, incidence, dying, survivor, &mut left, &mut right) {
@@ -261,7 +369,7 @@ fn collapse_region(
 /// so two runs agree.
 fn live_edges(
     state: &Collapsed,
-    incidence: &[Vec<u32>],
+    incidence: &Incidence<'_>,
     partition: &Partition,
     members: &[u32],
     region: u32,
@@ -272,7 +380,7 @@ fn live_edges(
         if !state.alive[vertex as usize] {
             continue;
         }
-        for &face in &incidence[vertex as usize] {
+        for &face in incidence.of(vertex) {
             if state.is_dead(face) {
                 continue;
             }
@@ -305,7 +413,7 @@ fn distance_between(state: &Collapsed, a: u32, b: u32) -> f64 {
 fn survivor_of(
     surface: Surface<'_>,
     features: &Features,
-    seeds: &Seeds,
+    is_seed: &[bool],
     a: u32,
     b: u32,
     faces_along: usize,
@@ -359,14 +467,18 @@ fn survivor_of(
     }
     // Otherwise the seed is the natural survivor, so the region's last vertex
     // is the one it grew from.
-    let seed = seeds.vertices.binary_search(&a).is_ok();
-    if seed { Some((b, a)) } else { Some((a, b)) }
+    if is_seed[a as usize] {
+        Some((b, a))
+    } else {
+        Some((a, b))
+    }
 }
 
 /// How many live faces use the edge between `a` and `b`. One is an outline, two
 /// is ordinary surface, and anything else is a branch.
-fn faces_along_edge(state: &Collapsed, incidence: &[Vec<u32>], a: u32, b: u32) -> usize {
-    incidence[a as usize]
+fn faces_along_edge(state: &Collapsed, incidence: &Incidence<'_>, a: u32, b: u32) -> usize {
+    incidence
+        .of(a)
         .iter()
         .filter(|&&face| {
             !state.is_dead(face) && {
@@ -385,14 +497,14 @@ fn faces_along_edge(state: &Collapsed, incidence: &[Vec<u32>], a: u32, b: u32) -
 /// onto each other.
 fn link_condition(
     state: &Collapsed,
-    incidence: &[Vec<u32>],
+    incidence: &Incidence<'_>,
     dying: u32,
     survivor: u32,
     left: &mut Vec<u32>,
     right: &mut Vec<u32>,
 ) -> bool {
-    state.neighbours(dying, &incidence[dying as usize], left);
-    state.neighbours(survivor, &incidence[survivor as usize], right);
+    state.neighbours(dying, incidence.of(dying), left);
+    state.neighbours(survivor, incidence.of(survivor), right);
 
     let mut shared: Vec<u32> = left
         .iter()
@@ -403,7 +515,7 @@ fn link_condition(
     shared.dedup();
 
     let mut thirds: Vec<u32> = Vec::new();
-    for &face in &incidence[dying as usize] {
+    for &face in incidence.of(dying) {
         if state.is_dead(face) {
             continue;
         }
@@ -436,7 +548,7 @@ fn link_condition(
 /// and the outline is where it is.
 fn placement(
     state: &Collapsed,
-    incidence: &[Vec<u32>],
+    incidence: &Incidence<'_>,
     quadrics: &[Quadric],
     features: &Features,
     dying: u32,
@@ -495,14 +607,15 @@ fn placement(
 /// moving too, so the faces around it are just as able to fold over.
 fn flips_a_normal(
     state: &Collapsed,
-    incidence: &[Vec<u32>],
+    incidence: &Incidence<'_>,
     dying: u32,
     survivor: u32,
     at: [f64; 3],
 ) -> bool {
-    let faces = incidence[dying as usize]
+    let faces = incidence
+        .of(dying)
         .iter()
-        .chain(&incidence[survivor as usize])
+        .chain(incidence.of(survivor))
         .copied();
     would_flip(state, faces, dying, survivor, at)
 }
@@ -518,13 +631,13 @@ fn flips_a_normal(
 /// pulled the neighbourhood in around it.
 fn move_flips_a_normal(
     state: &Collapsed,
-    incidence: &[Vec<u32>],
+    incidence: &Incidence<'_>,
     vertex: u32,
     at: [f64; 3],
 ) -> bool {
     would_flip(
         state,
-        incidence[vertex as usize].iter().copied(),
+        incidence.of(vertex).iter().copied(),
         NO_VERTEX,
         vertex,
         at,
@@ -585,26 +698,17 @@ fn normal_with(state: &Collapsed, corners: [u32; 3], moved: u32, at: [f64; 3]) -
             state.positions[corner as usize]
         }
     };
-    let (a, b, c) = (
+    geom::normalized(geom::triangle_cross(
         position(corners[0]),
         position(corners[1]),
         position(corners[2]),
-    );
-    let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-    let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-    let cross = [
-        u[1] * v[2] - u[2] * v[1],
-        u[2] * v[0] - u[0] * v[2],
-        u[0] * v[1] - u[1] * v[0],
-    ];
-    let length = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
-    (length > 0.0).then(|| [cross[0] / length, cross[1] / length, cross[2] / length])
+    ))
 }
 
 /// Perform the collapse: the faces along the edge die, the rest rename their
 /// corner, and the survivor takes over the dying vertex's faces.
-fn apply(state: &mut Collapsed, incidence: &mut [Vec<u32>], dying: u32, survivor: u32) {
-    let faces = std::mem::take(&mut incidence[dying as usize]);
+fn apply(state: &mut Collapsed, incidence: &mut Incidence<'_>, dying: u32, survivor: u32) {
+    let faces = incidence.take(dying);
     for &face in &faces {
         if state.is_dead(face) {
             continue;
@@ -620,8 +724,9 @@ fn apply(state: &mut Collapsed, incidence: &mut [Vec<u32>], dying: u32, survivor
                 state.corners[base + slot] = survivor;
             }
         }
-        incidence[survivor as usize].push(face);
+        incidence.push(survivor, face);
     }
+    incidence.recycle(faces);
     state.alive[dying as usize] = false;
 }
 
@@ -650,7 +755,7 @@ fn place_survivor(
     partition: &Partition,
     quadrics: &[Quadric],
     state: &mut Collapsed,
-    incidence: &[Vec<u32>],
+    incidence: &Incidence<'_>,
     region: u32,
     survivor: u32,
 ) {
@@ -858,7 +963,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use crate::remesh::topology::Topology;
+
     use crate::remesh::{features, partition, seeds, size_field};
 
     /// A flat strip of `steps` quads: an open surface one quad wide, which is
@@ -1069,6 +1174,66 @@ mod tests {
         }
     }
 
+    /// The seed survives its region, after the relaxation has moved it too.
+    ///
+    /// The relaxation rewrites `seeds.vertices[region]` in place, so the list
+    /// stops being sorted; the survivor rule used to binary-search it and so
+    /// picked the survivor at random, collapsing a region onto whatever vertex
+    /// happened to be last rather than the one the relaxation had centred.
+    #[test]
+    fn a_relaxed_seed_is_the_vertex_its_region_collapses_onto() {
+        let (positions, indices) = torus(48, 24);
+        let topology = Topology::build(&indices, positions.len() / 3, 1, None);
+        let sizes = vec![0.2; topology.vertex_count];
+        let areas = size_field::dual_areas(&positions, &indices, &topology, 1);
+        let surface = Surface {
+            positions: &positions,
+            indices: &indices,
+            topology: &topology,
+            sizes: &sizes,
+            areas: &areas,
+        };
+        let features = features::build(surface, true, None, None);
+        let mut seeds = seeds::place(surface, &features, 200, None);
+        let mut partition = partition::build(surface, &features, &seeds, 1, None);
+        let before = seeds.vertices.clone();
+        crate::remesh::lloyd::relax(
+            surface,
+            &features,
+            &mut seeds,
+            &mut partition,
+            1,
+            None,
+            |_, _, _| true,
+        );
+        assert_ne!(before, seeds.vertices, "the relaxation moved something");
+        assert!(
+            !seeds.vertices.is_sorted(),
+            "the fixture only proves something once the seeds are out of order"
+        );
+
+        let quadrics = build_quadrics(surface, 1);
+        let state = run(surface, &features, &seeds, &partition, &quadrics, None);
+
+        let mut checked = 0;
+        for region in 0..partition.regions as u32 {
+            let living: Vec<u32> = partition
+                .members_of(region)
+                .iter()
+                .copied()
+                .filter(|&vertex| state.alive[vertex as usize])
+                .collect();
+            if let [survivor] = living[..] {
+                assert_eq!(
+                    survivor, seeds.vertices[region as usize],
+                    "region {region} collapsed onto a vertex other than its seed"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "no region came down to one vertex");
+    }
+
     #[test]
     fn the_collapse_is_the_same_on_every_run() {
         let (positions, indices) = grid(18);
@@ -1098,7 +1263,7 @@ mod tests {
     }
 
     /// A hexagonal fan around one movable centre, wound the same way all over.
-    fn fan() -> (Collapsed, Vec<Vec<u32>>) {
+    fn fan() -> (Collapsed, Topology) {
         let mut positions = vec![[0.0, 0.0, 0.0]];
         for step in 0..6 {
             let angle = step as f64 / 6.0 * std::f64::consts::TAU;
@@ -1108,26 +1273,22 @@ mod tests {
         for step in 0..6u32 {
             corners.extend_from_slice(&[0, 1 + step, 1 + (step + 1) % 6]);
         }
-        let mut incidence = vec![Vec::new(); positions.len()];
-        for face in 0..6u32 {
-            for slot in 0..3 {
-                incidence[corners[face as usize * 3 + slot] as usize].push(face);
-            }
-        }
+        let topology = Topology::build(&corners, positions.len(), 1, None);
         let state = Collapsed {
             corners,
             alive: vec![true; positions.len()],
             positions,
             stubborn: 0,
         };
-        (state, incidence)
+        (state, topology)
     }
 
     /// The guard [`place_survivor`] gained: a plain move, with nothing
     /// collapsing, still has to leave every face the right way round.
     #[test]
     fn moving_a_vertex_out_of_its_own_fan_reads_as_a_flip() {
-        let (state, incidence) = fan();
+        let (state, topology) = fan();
+        let incidence = Incidence::new(&topology);
 
         // Off the surface but still over the fan: every face keeps its normal.
         assert!(

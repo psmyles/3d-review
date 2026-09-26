@@ -85,6 +85,7 @@ use crate::cancel::{CancelToken, cancelled};
 
 use super::RemeshOutput;
 use super::cleanup::Quad;
+use super::geom::{add, cross, dot, scale, sub};
 use super::topology::Topology;
 
 /// How far out of plane a quad's corner may stand, as a fraction of the quad's
@@ -540,30 +541,6 @@ fn alignment(
 fn point_of(output: &RemeshOutput, vertex: u32) -> [f64; 3] {
     let at = output.positions[vertex as usize];
     [f64::from(at.x), f64::from(at.y), f64::from(at.z)]
-}
-
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-fn scale(a: [f64; 3], by: f64) -> [f64; 3] {
-    [a[0] * by, a[1] * by, a[2] * by]
-}
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 fn unit(vector: [f64; 3]) -> Option<[f64; 3]> {

@@ -15,6 +15,7 @@
 //! the later stages read them. They stay a separate argument, which is honest
 //! about which stages care.
 
+use super::geom;
 use super::topology::Topology;
 
 /// The mesh a rebuild is working on.
@@ -70,30 +71,20 @@ impl<'a> Surface<'a> {
     /// Twice the area of a face, as a vector along its normal.
     pub(crate) fn face_cross(&self, face: u32) -> [f64; 3] {
         let corners = self.face(face);
-        let (a, b, c) = (
+        geom::triangle_cross(
             self.position(corners[0]),
             self.position(corners[1]),
             self.position(corners[2]),
-        );
-        let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-        let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-        [
-            u[1] * v[2] - u[2] * v[1],
-            u[2] * v[0] - u[0] * v[2],
-            u[0] * v[1] - u[1] * v[0],
-        ]
+        )
     }
 
     /// A face's unit normal, or `None` when it has no area to have one.
     pub(crate) fn face_normal(&self, face: u32) -> Option<[f64; 3]> {
-        let cross = self.face_cross(face);
-        let length = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
-        (length > 0.0).then(|| [cross[0] / length, cross[1] / length, cross[2] / length])
+        geom::normalized(self.face_cross(face))
     }
 
     /// A face's area.
     pub(crate) fn face_area(&self, face: u32) -> f64 {
-        let cross = self.face_cross(face);
-        (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt() * 0.5
+        geom::length(self.face_cross(face)) * 0.5
     }
 }

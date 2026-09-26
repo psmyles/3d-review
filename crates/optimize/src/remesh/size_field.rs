@@ -38,6 +38,7 @@
 use crate::cancel::{CancelToken, cancelled};
 use crate::parallel;
 
+use super::geom;
 use super::topology::Topology;
 
 /// A surface counts as flat once its radius of curvature passes this many times
@@ -246,22 +247,32 @@ pub(crate) fn build(
     let radius = NORMAL_RADII * target_edge as f64;
     let passes =
         MAX_NORMAL_PASSES.min((4.0 * radius * radius / (mean_edge * mean_edge)).ceil() as i32);
-    let mut smoothed: Vec<f64> = (0..count * 3).map(|slot| normals[slot] as f64).collect();
+    // One element per *vertex*, never per float. The sweep hands out fixed
+    // chunks of elements, and CHUNK is not a multiple of three: sweeping a flat
+    // float buffer put chunk k's first vertex `base % 3` floats away from where
+    // its local writes landed, which scrambled every normal past vertex 21845.
+    let mut smoothed: Vec<[f64; 3]> = (0..count)
+        .map(|vertex| {
+            let at = vertex * 3;
+            [
+                normals[at] as f64,
+                normals[at + 1] as f64,
+                normals[at + 2] as f64,
+            ]
+        })
+        .collect();
     {
-        let mut next = vec![0.0f64; smoothed.len()];
+        let mut next = vec![[0.0f64; 3]; smoothed.len()];
         for _ in 0..passes {
             parallel::sweep(&mut next, threads, |base, chunk| {
-                // The chunk is over *floats*, and a vertex owns three of them;
-                // stepping by vertex keeps the neighbour walk to one per vertex.
-                let first = base / 3;
-                for (slot, vertex) in (first..).enumerate().take(chunk.len().div_ceil(3)) {
-                    let vertex = vertex as u32;
-                    let at = vertex as usize * 3;
-                    let mut sum = [smoothed[at], smoothed[at + 1], smoothed[at + 2]];
+                for (offset, slot) in chunk.iter_mut().enumerate() {
+                    let vertex = (base + offset) as u32;
+                    let own = smoothed[vertex as usize];
+                    let mut sum = own;
                     for_each_neighbour(topology, indices, vertex, |other| {
-                        let base = other as usize * 3;
-                        for (axis, value) in sum.iter_mut().enumerate() {
-                            *value += smoothed[base + axis];
+                        let theirs = smoothed[other as usize];
+                        for (value, add) in sum.iter_mut().zip(theirs) {
+                            *value += add;
                         }
                     });
                     // Renormalized rather than averaged: what is wanted is the
@@ -269,16 +280,11 @@ pub(crate) fn build(
                     // normals a fold apart must not average to a shorter vector
                     // that then reads as low curvature.
                     let length = (sum[0] * sum[0] + sum[1] * sum[1] + sum[2] * sum[2]).sqrt();
-                    for axis in 0..3 {
-                        let out = slot * 3 + axis;
-                        if out < chunk.len() {
-                            chunk[out] = if length > 0.0 {
-                                sum[axis] / length
-                            } else {
-                                smoothed[at + axis]
-                            };
-                        }
-                    }
+                    *slot = if length > 0.0 {
+                        sum.map(|value| value / length)
+                    } else {
+                        own
+                    };
                 }
             });
             std::mem::swap(&mut smoothed, &mut next);
@@ -310,14 +316,12 @@ pub(crate) fn build(
         for (offset, slot) in chunk.iter_mut().enumerate() {
             let vertex = (base + offset) as u32;
             let here = position_of(vertex);
-            let at = vertex as usize * 3;
+            let own = smoothed[vertex as usize];
             let mut peak = 0.0f64;
             for_each_neighbour(topology, indices, vertex, |other| {
                 let there = position_of(other);
-                let base = other as usize * 3;
-                let dot = smoothed[at] * smoothed[base]
-                    + smoothed[at + 1] * smoothed[base + 1]
-                    + smoothed[at + 2] * smoothed[base + 2];
+                let theirs = smoothed[other as usize];
+                let dot = own[0] * theirs[0] + own[1] * theirs[1] + own[2] * theirs[2];
                 let length = distance(here, there);
                 if length > 0.0 {
                     let angle = dot.clamp(-1.0, 1.0).acos();
@@ -527,7 +531,10 @@ pub(crate) fn vertex_normals(
     threads: usize,
 ) -> Vec<f32> {
     let count = topology.vertex_count;
-    let mut normals = vec![0.0f32; count * 3];
+    // One element per vertex, for the reason `build`'s smoothing gives: a sweep
+    // over the flat float buffer misplaces every chunk whose start is not a
+    // multiple of three. Flattened once at the end for the callers.
+    let mut normals = vec![[0.0f32; 3]; count];
     let position_of = |vertex: u32| -> [f64; 3] {
         let base = vertex as usize * 3;
         [
@@ -537,43 +544,28 @@ pub(crate) fn vertex_normals(
         ]
     };
     parallel::sweep(&mut normals, threads, |base, chunk| {
-        let first = base / 3;
-        for (slot, vertex) in (first..).enumerate().take(chunk.len().div_ceil(3)) {
-            let vertex = vertex as u32;
+        for (offset, slot) in chunk.iter_mut().enumerate() {
+            let vertex = (base + offset) as u32;
             let mut sum = [0.0f64; 3];
             // Gathered from the vertex's own faces rather than scattered from
             // each face, so the sum is per vertex and the sweep needs no
             // synchronization.
             for &face in topology.faces_of(vertex) {
                 let corners = &indices[face as usize * 3..face as usize * 3 + 3];
-                let (a, b, c) = (
+                let cross = geom::triangle_cross(
                     position_of(corners[0]),
                     position_of(corners[1]),
                     position_of(corners[2]),
                 );
-                let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-                let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-                sum[0] += u[1] * v[2] - u[2] * v[1];
-                sum[1] += u[2] * v[0] - u[0] * v[2];
-                sum[2] += u[0] * v[1] - u[1] * v[0];
+                sum = geom::add(sum, cross);
             }
-            let length = (sum[0] * sum[0] + sum[1] * sum[1] + sum[2] * sum[2]).sqrt();
             // A vertex whose faces cancel, or has none, keeps a unit normal
             // rather than a zero one: every use below divides by its length.
-            let unit = if length > 0.0 {
-                [sum[0] / length, sum[1] / length, sum[2] / length]
-            } else {
-                [0.0, 1.0, 0.0]
-            };
-            for (axis, value) in unit.iter().enumerate() {
-                let out = slot * 3 + axis;
-                if out < chunk.len() {
-                    chunk[out] = *value as f32;
-                }
-            }
+            let unit = geom::normalized(sum).unwrap_or([0.0, 1.0, 0.0]);
+            *slot = unit.map(|value| value as f32);
         }
     });
-    normals
+    normals.into_iter().flatten().collect()
 }
 
 /// The dual area of each vertex: a third of each incident face's, which is what
@@ -600,20 +592,11 @@ pub(crate) fn dual_areas(
             let mut total = 0.0f64;
             for &face in topology.faces_of(vertex) {
                 let corners = &indices[face as usize * 3..face as usize * 3 + 3];
-                let (a, b, c) = (
+                total += geom::triangle_area(
                     position_of(corners[0]),
                     position_of(corners[1]),
                     position_of(corners[2]),
                 );
-                let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-                let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-                let cross = [
-                    u[1] * v[2] - u[2] * v[1],
-                    u[2] * v[0] - u[0] * v[2],
-                    u[0] * v[1] - u[1] * v[0],
-                ];
-                total +=
-                    (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt() * 0.5;
             }
             *slot = (total / 3.0) as f32;
         }
@@ -909,6 +892,104 @@ mod tests {
                 "vertex {vertex}: {a} at one thread, {b} at eight"
             );
         }
+    }
+
+    /// Enough vertices that a sweep over their floats spans three chunks (past
+    /// vertex 43690), so both misaligned offsets (`base % 3` of 1 and 2) occur -
+    /// every chunk boundary a float-wise sweep could misplace is crossed.
+    const PAST_ONE_CHUNK: u32 = 220;
+
+    /// The area-weighted normal of each vertex, one vertex at a time, with no
+    /// sweep: the reference the parallel version has to reproduce exactly.
+    fn serial_normals(positions: &[f32], indices: &[u32], topology: &Topology) -> Vec<f32> {
+        let position_of = |vertex: u32| {
+            let at = vertex as usize * 3;
+            [
+                positions[at] as f64,
+                positions[at + 1] as f64,
+                positions[at + 2] as f64,
+            ]
+        };
+        let mut out = Vec::with_capacity(topology.vertex_count * 3);
+        for vertex in 0..topology.vertex_count as u32 {
+            let mut sum = [0.0f64; 3];
+            for &face in topology.faces_of(vertex) {
+                let corners = &indices[face as usize * 3..face as usize * 3 + 3];
+                let (a, b, c) = (
+                    position_of(corners[0]),
+                    position_of(corners[1]),
+                    position_of(corners[2]),
+                );
+                let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+                sum[0] += u[1] * v[2] - u[2] * v[1];
+                sum[1] += u[2] * v[0] - u[0] * v[2];
+                sum[2] += u[0] * v[1] - u[1] * v[0];
+            }
+            let length = (sum[0] * sum[0] + sum[1] * sum[1] + sum[2] * sum[2]).sqrt();
+            let unit = if length > 0.0 {
+                [sum[0] / length, sum[1] / length, sum[2] / length]
+            } else {
+                [0.0, 1.0, 0.0]
+            };
+            out.extend(unit.map(|value| value as f32));
+        }
+        out
+    }
+
+    /// The normals past the first sweep chunk land on their own vertex. The sweep
+    /// used to run over the flat float buffer, and `CHUNK` is not a multiple of
+    /// three, so two chunks in three wrote each vertex's normal one or two floats
+    /// off - identically at any thread count, which is why the determinism test
+    /// never saw it.
+    #[test]
+    fn normals_past_the_first_chunk_belong_to_their_own_vertex() {
+        let (positions, indices) = cone(PAST_ONE_CHUNK, PAST_ONE_CHUNK, 0.6, 0.15);
+        let count = positions.len() / 3;
+        assert!(
+            count * 3 > 2 * parallel::CHUNK,
+            "the fixture crosses two chunks"
+        );
+        let topology = Topology::build(&indices, count, 1, None);
+        let reference = serial_normals(&positions, &indices, &topology);
+
+        for threads in [1, 8] {
+            let normals = vertex_normals(&positions, &indices, &topology, threads);
+            assert_eq!(normals.len(), reference.len());
+            if let Some(slot) = (0..normals.len()).find(|&slot| normals[slot] != reference[slot]) {
+                panic!(
+                    "vertex {} axis {} at {threads} threads: {} against {}",
+                    slot / 3,
+                    slot % 3,
+                    normals[slot],
+                    reference[slot]
+                );
+            }
+        }
+    }
+
+    /// A plane has no curvature anywhere, however many vertices it has. With the
+    /// normals scrambled past the first chunk it read as creased all over.
+    #[test]
+    fn a_large_flat_surface_still_asks_for_one_size_everywhere() {
+        let (positions, indices) = flat_grid(PAST_ONE_CHUNK);
+        assert!(positions.len() > 2 * parallel::CHUNK);
+
+        assert!(field_of(&positions, &indices, 1.0, 0.02, 8).is_none());
+    }
+
+    /// Bit for bit, across more than one chunk of vertices: the claim the fixed
+    /// chunk exists to keep, on a fixture large enough for the parallel path to
+    /// actually split the work.
+    #[test]
+    fn the_field_is_bit_identical_at_every_thread_count_past_one_chunk() {
+        let (positions, indices) = cone(300, 240, 0.6, 0.15);
+        assert!(positions.len() / 3 > parallel::CHUNK);
+
+        let one = field_of(&positions, &indices, 1.0, 0.02, 1).expect("a cone varies");
+        let many = field_of(&positions, &indices, 1.0, 0.02, 8).expect("a cone varies");
+
+        assert!(one == many, "the field changed with the thread count");
     }
 
     #[test]

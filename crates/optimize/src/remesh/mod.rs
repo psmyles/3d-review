@@ -60,6 +60,7 @@ mod cross_field;
     reason = "the rebuild that reads the chains is the next stage"
 )]
 pub(crate) mod features;
+pub(crate) mod geom;
 pub(crate) mod layout;
 #[allow(
     dead_code,
@@ -383,6 +384,9 @@ pub(crate) fn remesh_submeshes(
     // is still wanted, but the progress sink posts to the event loop and stays
     // on the thread that owns the scope.
     let token = run.token();
+    // Asked once, here: nothing watching means no preview is ever built, and a
+    // preview is a full projection of the part-finished object.
+    let wants_preview = run.wants_preview();
     // What each object may spend inside its own rebuild, so the per-object
     // parallelism and the parallelism *within* an object do not oversubscribe
     // each other: N objects across N cores get one thread each, one object gets
@@ -404,7 +408,7 @@ pub(crate) fn remesh_submeshes(
         token,
         |job, emit| {
             let mut notes = Warnings::default();
-            let rebuilt = rebuild_node(job, &mut notes, token, threads, emit);
+            let rebuilt = rebuild_node(job, &mut notes, token, threads, wants_preview, emit);
             NodeOutcome {
                 rebuilt,
                 notes: notes.into_vec(),
@@ -557,6 +561,7 @@ fn rebuild_node(
     warnings: &mut Warnings,
     cancel: Option<&crate::CancelToken>,
     threads: usize,
+    wants_preview: bool,
     emit: &dyn Fn(Vec<Submesh>),
 ) -> Option<Vec<Submesh>> {
     let _z = crate::prof::zone!("Remesh Node");
@@ -575,7 +580,7 @@ fn rebuild_node(
     }
     let source = project::ProjectionSource::build(&job.pieces);
     let on_pass = |soup: RemeshOutput| {
-        if !soup.is_empty() {
+        if wants_preview && !soup.is_empty() {
             let mut soup = soup;
             layout::canonicalize(&mut soup);
             emit(build_pieces_from(

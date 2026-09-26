@@ -66,14 +66,14 @@ pub(crate) fn solve_nodes<J, R, P>(
     // would cost a thread and a channel to do the same work.
     if jobs.len() == 1 {
         if !cancelled(cancel) {
-            // Held rather than handed straight on, because `solve` takes an
-            // `Fn` and `previewed` is an `FnMut`. `RefCell`, not a lock: there
-            // is exactly one thread here.
-            let held: std::cell::RefCell<Vec<P>> = std::cell::RefCell::new(Vec::new());
-            let result = solve(&jobs[0], &|preview| held.borrow_mut().push(preview));
-            for preview in held.into_inner() {
-                previewed(0, preview);
-            }
+            // Handed straight on as each one is made, exactly as the threaded
+            // path below does: holding them until the solve returned meant a
+            // single-object rebuild - the common edit - showed no progress at
+            // all, then replayed every stale preview at the end. `solve` takes
+            // an `Fn` and `previewed` is an `FnMut`, hence the `RefCell`; not a
+            // lock, because there is exactly one thread here.
+            let previewed = std::cell::RefCell::new(&mut previewed);
+            let result = solve(&jobs[0], &|preview| (previewed.borrow_mut())(0, preview));
             landed(0, result);
         }
         return;
@@ -286,6 +286,33 @@ mod tests {
             |_, (): ()| panic!("nothing previews here"),
         );
         assert_eq!(seen, Some((0, 8)));
+    }
+
+    /// A single job's previews reach the caller while it is still solving - the
+    /// whole point of a preview. They used to be held until the solve returned
+    /// and then replayed, all stale, just before the result.
+    #[test]
+    fn a_single_jobs_previews_arrive_while_it_solves() {
+        // Atomic only because `solve` must be `Sync`; one thread touches it.
+        let delivered = std::sync::atomic::AtomicU32::new(0);
+        let read = || delivered.load(Ordering::Relaxed);
+        let mut landed_after = None;
+        solve_nodes(
+            &[()],
+            None,
+            |_, emit| {
+                for pass in 1..=3 {
+                    emit(pass);
+                    assert_eq!(read(), pass, "preview {pass} was held back");
+                }
+            },
+            |_, ()| landed_after = Some(read()),
+            |_, pass: u32| {
+                assert_eq!(pass, read() + 1, "previews arrive in order");
+                delivered.store(pass, Ordering::Relaxed);
+            },
+        );
+        assert_eq!(landed_after, Some(3));
     }
 
     /// A token that is already dead stops the run before any job is claimed.
