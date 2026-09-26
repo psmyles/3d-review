@@ -8,13 +8,14 @@
 //! within a frame is a `mem::swap` rather than two mesh uploads.
 //!
 //! The split is the one path that needs **two target sets**, at half width each. The
-//! composite is a deferred job (`mac-port-plan.md` §3.2), so by the time either half's
-//! composite runs, both halves' passes have already been recorded — a shared set would
-//! have the second view's contents in it and both halves would show the same mesh. Two
-//! half-width sets cost what one full-width set does, and the second is released the
-//! moment the split is not on screen (invariant 3).
+//! composite is a deferred job (`docs/ARCHITECTURE.md`, Platform decisions: one
+//! swapchain pass), so by the time either half's composite runs, both halves' passes
+//! have already been recorded — a shared set would have the second view's contents in
+//! it and both halves would show the same mesh. Two half-width sets cost what one
+//! full-width set does, and the second is released the moment the split is not on
+//! screen (invariant 3).
 //!
-//! [`ModelSlot`]: super::resources::ModelSlot
+//! [`ModelSlot`]: super::slot::ModelSlot
 
 use crate::geometry::wireframe_edge_indices;
 use crate::material::MaterialState;
@@ -34,7 +35,7 @@ impl SceneGpu {
     /// meshes to stay uploaded across the swap between them, which is what
     /// [`ModelSlot`] is for.
     ///
-    /// [`ModelSlot`]: super::resources::ModelSlot
+    /// [`ModelSlot`]: super::slot::ModelSlot
     pub(crate) fn render_opt(
         &mut self,
         frame: &mut Frame<'_>,
@@ -215,7 +216,7 @@ impl SceneGpu {
         // scene pass draws it normally. The ghost is drawn from the idle slot, which is
         // only safe because a slot owns its own buffers outright.
         self.activate(ghost_slot);
-        self.sync_frame(frame, ghost_frame, material_states, material_revision, size)?;
+        self.sync_ghost(ghost_frame)?;
         if ghost == GhostStyle::Wireframe {
             self.sync_ghost_wireframe(ghost_frame)?;
         } else {
@@ -235,6 +236,34 @@ impl SceneGpu {
             BackbufferRect::full(size),
             Some((ghost, tint)),
         )
+    }
+
+    /// Sync the active slot as the overlay's ghost: its mesh buffers, which are all
+    /// [`SceneGpu::draw_ghost`] reads, and nothing else.
+    ///
+    /// A full [`SceneGpu::sync_frame`] here built every derived view the user had
+    /// switched on - normals, skeleton, the selection and hover lists - over the
+    /// ghost too, and none of it was ever drawn; the source's selection was even
+    /// resolved against the processed mesh. Anything such a frame left behind, or
+    /// that this slot built while it was the solid one, is dropped.
+    fn sync_ghost(&mut self, scene: &SceneFrame<'_>) -> GpuResult<()> {
+        self.sync_unique_parts(scene.model, scene.model_revision, scene.debug.material_mode);
+        self.sync_mesh(
+            scene.model,
+            scene.model_revision,
+            scene.debug.uv_channel,
+            scene.debug.material_mode,
+        )?;
+        let ghost_wireframe = (
+            self.active.ghost_wireframe_index.take(),
+            self.active.ghost_wireframe_baked.take(),
+        );
+        self.active.release_derived();
+        (
+            self.active.ghost_wireframe_index,
+            self.active.ghost_wireframe_baked,
+        ) = ghost_wireframe;
+        Ok(())
     }
 
     /// Build the active slot's ghost wireframe, which exists regardless of the user's

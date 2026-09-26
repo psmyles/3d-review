@@ -1,10 +1,10 @@
 //! The egui renderer: egui's tessellated output drawn through sokol_gfx.
 //!
 //! This replaced `egui-directx11`, which was the last thing pinning the workspace to
-//! Direct3D 11 *and* to egui 0.33 (`mac-port-plan.md` D3/D6). It is deliberately the
-//! smallest thing that draws the chrome correctly: one program, one interleaved
-//! vertex stream, one index stream, a texture per egui texture id, and a sampler per
-//! distinct [`egui::TextureOptions`].
+//! Direct3D 11 *and* to egui 0.33 (`docs/ARCHITECTURE.md`, Platform decisions D3/D6).
+//! It is deliberately the smallest thing that draws the chrome correctly: one program,
+//! one interleaved vertex stream, one index stream, a texture per egui texture id, and
+//! a sampler per distinct [`egui::TextureOptions`].
 //!
 //! ## The frame
 //!
@@ -138,6 +138,21 @@ pub struct EguiRenderer {
     /// frame that may still have drawn from them has been submitted.
     pending_free: Vec<TextureId>,
 }
+
+// The egui pipeline uploads `epaint::Vertex` as it comes and declares its three
+// attributes packed in order (`PipelineDesc::attributes`), so the struct has to
+// be exactly that packing and the shader has to number the attributes the same
+// way. Neither is checked at run time: a drift reads the stream shifted.
+const _: () = {
+    use std::mem::{offset_of, size_of};
+    assert!(offset_of!(Vertex, pos) == 0);
+    assert!(offset_of!(Vertex, uv) == 8);
+    assert!(offset_of!(Vertex, color) == 16);
+    assert!(size_of::<Vertex>() == 20);
+    assert!(generated::ATTR_EGUI_IN_POS == 0);
+    assert!(generated::ATTR_EGUI_IN_UV == 1);
+    assert!(generated::ATTR_EGUI_IN_COLOR == 2);
+};
 
 impl EguiRenderer {
     /// Build the egui pipeline and its geometry streams.

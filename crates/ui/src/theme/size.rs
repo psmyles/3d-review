@@ -4,7 +4,7 @@
 //! the DPI-independent unit — egui multiplies by `pixels_per_point` when it
 //! rasterizes — so a token authored against a 100%-scale display needs no
 //! conversion to keep one apparent size on a HiDPI one. Anything needing the
-//! height of the toolbar + status-bar band asks [`chrome_height`] rather than
+//! height of the toolbar + status-bar band asks [`super::chrome_height`] rather than
 //! adding [`TOOLBAR_HEIGHT`] and [`STATUS_BAR_HEIGHT`] up itself.
 //!
 //! These used to be "design pixels" divided by `pixels_per_point` at the use
@@ -223,7 +223,7 @@ pub const STATS_PANEL_WIDTH: f32 = 260.0;
 /// Width of one scope column on the model-stats card (All / Sel / Vis).
 /// Fixed, so the three numeric columns line up down the card however wide
 /// the numbers in them are; wide enough for an eight-digit count in the
-/// monospace [`font::STATS`] face. Divides up [`STATS_PANEL_WIDTH`].
+/// monospace [`super::font::STATS`] face. Divides up [`STATS_PANEL_WIDTH`].
 pub const STATS_VALUE_COLUMN: f32 = 56.0;
 pub const STATS_PANEL_PAD_X: i8 = 9;
 pub const STATS_PANEL_PAD_Y: i8 = 9;

@@ -26,6 +26,11 @@
 //! collapses, [`reorder`] the cache / overdraw / fetch reorders, and [`analyze`]
 //! the measuring.
 
+#![allow(
+    unsafe_code,
+    reason = "invariant 9: the checked safe wrappers, one per meshoptimizer call"
+)]
+
 use crate::OptError;
 
 // The wrapper modules exist only when the vendored tree was compiled; their

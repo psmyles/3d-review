@@ -25,6 +25,7 @@ pub(super) fn build(
     bvh: &Bvh,
     winding: &Tree,
     offset: f32,
+    threads: usize,
 ) -> Field {
     let _z = crate::prof::zone!("Shrinkwrap Sample");
 
@@ -60,10 +61,8 @@ pub(super) fn build(
     if jobs.is_empty() {
         return field;
     }
-    let workers = std::thread::available_parallelism()
-        .map_or(1, std::num::NonZero::get)
-        .min(jobs.len())
-        .max(1);
+    // The object's own share of the machine; see `shrinkwrap_submeshes`.
+    let workers = threads.min(jobs.len()).max(1);
     let mut buckets: Vec<Vec<(IVec3, &mut [f32])>> = (0..workers).map(|_| Vec::new()).collect();
     for (slot, job) in jobs.drain(..).enumerate() {
         buckets[slot % workers].push(job);
@@ -144,7 +143,7 @@ mod tests {
         let (model, bvh, winding, bounds) = cube_parts();
         let desc = GridDesc::cover(bounds, 48, 0.0);
 
-        let field = build(desc, &model, &bvh, &winding, 0.0);
+        let field = build(desc, &model, &bvh, &winding, 0.0, 4);
 
         let dense = desc.block_dims().element_product() as usize;
         assert!(field.allocated_blocks() > 0, "the surface has blocks");
@@ -166,7 +165,7 @@ mod tests {
         let (model, bvh, winding, bounds) = cube_parts();
         let desc = GridDesc::cover(bounds, 32, 0.0);
 
-        let field = build(desc, &model, &bvh, &winding, 0.0);
+        let field = build(desc, &model, &bvh, &winding, 0.0, 4);
 
         let mut negative = 0;
         let mut positive = 0;

@@ -14,7 +14,7 @@
 //! keys::ui_stats::scope_vis_description(primary_modifier());  // typed formatter
 //! ```
 //!
-//! Two Fluent details this wraps, both of which are wrong by default for a
+//! Three Fluent details this wraps, all of which are wrong by default for a
 //! desktop viewer:
 //!
 //! * `format_pattern` brackets every variable in Unicode isolation marks
@@ -388,5 +388,53 @@ mod tests {
     fn a_malformed_tag_does_not_panic() {
         let localizer = Localizer::new(Some("not a language tag"));
         assert_eq!(localizer.locale, fallback());
+    }
+
+    /// Every message each locale defines formats *in that locale's own bundle*,
+    /// with no Fluent error. Not through the negotiated chain: that falls back to
+    /// English, so a translation whose selector has no default variant would
+    /// quietly show the English text and pass. `tests/format_all.rs` checks the
+    /// public path; `init` is a `OnceLock`, so only here can every locale be
+    /// reached in one test binary.
+    #[test]
+    fn every_locale_formats_every_message_it_defines() {
+        for locale in available_locales() {
+            let bundle = build_bundle(&locale).expect("an available locale has a bundle");
+            for message in catalog::MESSAGES {
+                let Some(defined) = bundle.get_message(message.id) else {
+                    // Not translated yet; the chain falls back to English.
+                    continue;
+                };
+                let pattern = match message.attr {
+                    Some(attr) => defined.get_attribute(attr).map(|attr| attr.value()),
+                    None => defined.value(),
+                };
+                let Some(pattern) = pattern else { continue };
+                for numeric in [false, true] {
+                    let mut args = FluentArgs::new();
+                    for variable in message.vars {
+                        let value = if numeric {
+                            FluentValue::from(2)
+                        } else {
+                            FluentValue::from("x")
+                        };
+                        args.set(*variable, value);
+                    }
+                    let mut errors = Vec::new();
+                    let text = bundle.format_pattern(pattern, Some(&args), &mut errors);
+                    assert!(
+                        errors.is_empty(),
+                        "{locale}: `{}`{} failed to format: {errors:?}",
+                        message.id,
+                        message.attr.map(|a| format!(".{a}")).unwrap_or_default(),
+                    );
+                    assert!(
+                        !text.is_empty(),
+                        "{locale}: `{}` formatted to nothing",
+                        message.id
+                    );
+                }
+            }
+        }
     }
 }

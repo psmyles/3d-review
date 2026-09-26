@@ -1,9 +1,9 @@
 //! GPU buffers: the per-frame geometry stream ([`TransientBuffer`]), the immutable
-//! mesh buffers ([`VertexBuffer`] / [`IndexBuffer`]) and the read-only structured
+//! mesh buffers ([`VertexBuffer`] / [`IndexBuffer`]) and the read-only storage
 //! buffers the vertex shader deforms through ([`StorageBuffer`]).
 //!
 //! All four are the same sokol object with different usage flags, so they share
-//! [`make`] and differ only in what they promise the caller.
+//! [`fn@make`] and differ only in what they promise the caller.
 
 use std::ffi::CStr;
 use std::marker::PhantomData;
@@ -186,8 +186,8 @@ impl Drop for IndexBuffer {
     }
 }
 
-/// A read-only structured buffer the vertex stage indexes into — the four deform
-/// tables at view slots 12..15.
+/// A read-only storage buffer the vertex stage indexes into — the four deform tables
+/// at view slots 12..15.
 ///
 /// Two flavours, because two of the tables are properties of the *model* (the
 /// influence runs and the blend-shape deltas, uploaded once with the mesh) and two

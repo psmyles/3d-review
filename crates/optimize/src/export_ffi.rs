@@ -1,6 +1,7 @@
 //! Raw declarations for the export bridge (`src/export_bridge.c`).
 //!
-//! Kept beside [`crate::ffi`] as the crate's second and last `unsafe` surface.
+//! Kept beside [`crate::ffi`] as the crate's second `unsafe` surface; its one
+//! caller is `export::write`'s `write_scene`, plus the test-only `probe`.
 //! The structs mirror `export_bridge.h` field for field; changing one without
 //! the other is the single thing the compiler cannot catch here, so they are
 //! written in the same order with the same names.
@@ -10,6 +11,11 @@
 //! and setter-based, so driving it from Rust would spread `unsafe` across a
 //! hundred call sites and leak its scene lifetime into Rust. The bridge does the
 //! whole write in one call with a single ownership story.
+
+#![allow(
+    unsafe_code,
+    reason = "invariant 9: the raw export bridge declarations"
+)]
 #![cfg(has_ufbxw)]
 
 use std::ffi::{c_char, c_int};

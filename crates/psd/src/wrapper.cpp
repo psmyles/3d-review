@@ -18,9 +18,8 @@
 #include "PsdPlanarImage.h"
 #include "PsdImageDataSection.h"
 #include "PsdParseImageDataSection.h"
-#include "PsdImageResourcesSection.h"
-#include "PsdParseImageResourcesSection.h"
 
+#include <cmath>
 #include <cstring>
 #include <vector>
 #include <new>
@@ -78,26 +77,52 @@ private:
     bool m_shortRead;
 };
 
-// Size guard, mirroring fire-decode's MAX_DECODE_DIM / MAX_DECODE_BYTES.
+// What this wrapper decodes, checked here as well as in Rust (`review-psd`'s
+// `check_supported` / `checked_output_len`, whose constants these mirror). Rust is the
+// validation boundary callers see; this copy is what makes the C ABI safe on its own,
+// because psd_sdk sizes its planar buffers straight from the header and never checks
+// any of it.
 //
-// It has to live here, not in Rust: ParseImageDataSection below allocates psd_sdk's planar
-// channel buffers straight from the dimensions in the file header, which is *before* Rust ever
-// sees a dimension it could validate. A 30-byte PSD claiming 60000x60000 would ask psd_sdk for
-// ~10 GB, and an allocation that fails aborts the process — nothing on the Rust side, not even
-// catch_unwind, can intervene. Refuse it at the point of allocation instead.
-const uint64_t MAX_PSD_DIM = 131072;              // per axis
-const uint64_t MAX_PSD_BYTES = 4ull << 30;        // 4 GiB of planar channel data
+// * 8/16/32 bits per channel only. psd_sdk allocates `bits / 8` bytes a sample, so a
+//   1-bit Bitmap document gets zero-byte planes that the sampler below would over-read.
+// * Grayscale or RGB only. Anything else (Bitmap, Indexed, CMYK, Multichannel, Duotone,
+//   Lab) would be drawn as if it were RGB, which is a wrong picture rather than an error.
+// * 1..=56 channels (Photoshop's own limit), and at least three for RGB.
+// * The RGBA8 output and the planar data psd_sdk holds are both capped, in 64-bit
+//   arithmetic, so no 32-bit product inside psd_sdk can wrap.
+const uint64_t MAX_PSD_DIM = 30000;                 // review-psd MAX_DIMENSION
+const uint64_t MAX_PSD_OUTPUT_BYTES = 1ull << 30;   // review-psd MAX_OUTPUT_BYTES
+const uint64_t MAX_PSD_PLANAR_BYTES = 2ull << 30;   // review-psd MAX_PLANAR_BYTES
+const unsigned int MAX_PSD_CHANNELS = 56;
 
-bool psd_size_is_sane(const psd::Document* document) {
+bool psd_is_supported(const psd::Document* document) {
     const uint64_t w = document->width;
     const uint64_t h = document->height;
     if (w == 0 || h == 0 || w > MAX_PSD_DIM || h > MAX_PSD_DIM) {
         return false;
     }
-    const uint64_t channels = document->channelCount ? document->channelCount : 1;
-    const uint64_t bytesPerSample = (document->bitsPerChannel + 7u) / 8u;
-    // w*h <= 2^34 and channels/bytesPerSample are small, so this cannot overflow 64 bits.
-    return w * h * channels * bytesPerSample <= MAX_PSD_BYTES;
+    const unsigned int bits = document->bitsPerChannel;
+    if (bits != 8 && bits != 16 && bits != 32) {
+        return false;
+    }
+    const unsigned int channels = document->channelCount;
+    if (channels == 0 || channels > MAX_PSD_CHANNELS) {
+        return false;
+    }
+    switch (document->colorMode) {
+        case psd::colorMode::GRAYSCALE:
+            break;
+        case psd::colorMode::RGB:
+            if (channels < 3) {
+                return false;
+            }
+            break;
+        default:
+            return false;
+    }
+    // w, h <= 30000 and channels <= 56, so neither product can overflow 64 bits.
+    return w * h * 4 <= MAX_PSD_OUTPUT_BYTES
+        && w * h * channels * (bits / 8u) <= MAX_PSD_PLANAR_BYTES;
 }
 
 // Everything parsed for one document, owned behind a single opaque handle.
@@ -107,22 +132,28 @@ struct Doc {
     MemoryFile* file = nullptr;
     psd::Document* document = nullptr;
     psd::ImageDataSection* imageData = nullptr;
-    psd::ImageResourcesSection* resources = nullptr;
 };
 
+// sRGB encode of a linear value already clamped to 0..1 (IEC 61966-2-1).
+inline float linear_to_srgb(float v) {
+    return v <= 0.0031308f ? v * 12.92f : 1.055f * std::pow(v, 1.0f / 2.4f) - 0.055f;
+}
+
 // Read one channel's value at planar index `i`, normalized to 8-bit, by source bit depth.
-inline uint8_t sample_channel(const void* data, unsigned int bits, size_t i) {
+// `bits` is one of 8/16/32 (psd_is_supported). A 32-bit document stores linear floats,
+// and the viewer samples the result as sRGB, so colour channels are encoded here; alpha
+// is coverage, not light, and stays linear.
+inline uint8_t sample_channel(const void* data, unsigned int bits, size_t i, bool colour) {
     if (bits == 8) {
         return static_cast<const uint8_t*>(data)[i];
     }
     if (bits == 16) {
         return static_cast<uint8_t>(static_cast<const uint16_t*>(data)[i] >> 8);
     }
-    // 32-bit float (typically linear 0..1). Clamp + scale; the proper linear→sRGB
-    // encode is handled later in the render color pipeline.
     float v = static_cast<const float*>(data)[i];
-    if (v < 0.0f) v = 0.0f;
+    if (!(v > 0.0f)) v = 0.0f;   // also catches NaN
     if (v > 1.0f) v = 1.0f;
+    if (colour) v = linear_to_srgb(v);
     return static_cast<uint8_t>(v * 255.0f + 0.5f);
 }
 
@@ -153,28 +184,15 @@ fire_psd* fire_psd_open(const uint8_t* bytes, size_t len) {
             return nullptr;
         }
         d.file->OpenRead(L"memory");
+        // The header and the section table only: nothing is sized from the header yet, so
+        // the caller can read it (fire_psd_info_get) and refuse the document before any
+        // pixel data is allocated.
         d.document = psd::CreateDocument(d.file, &d.allocator);
-        if (!d.document) {
-            fire_psd_free(handle);
-            return nullptr;
-        }
-        // Checked before anything is sized from the header (see psd_size_is_sane).
-        if (!psd_size_is_sane(d.document)) {
-            fire_psd_free(handle);
-            return nullptr;
-        }
-        // Merged image is only present when the PSD was saved with Maximize Compatibility.
-        if (d.document->imageDataSection.length != 0) {
-            d.imageData = psd::ParseImageDataSection(d.document, d.file, &d.allocator);
-        }
-        // Image resources carry the embedded ICC profile (best-effort).
-        if (d.document->imageResourcesSection.length != 0) {
-            d.resources = psd::ParseImageResourcesSection(d.document, d.file, &d.allocator);
-        }
-        // A truncated document parses "successfully" — psd_sdk follows the header's own offsets
-        // and never learns it ran off the end — so the composite would be built from the zeros we
-        // substituted for the missing bytes. Refuse it rather than display a half-invented image.
-        if (d.file->HadShortRead()) {
+        // Section lengths come from the file and are *skipped*, not read, so one that runs
+        // past the end is not a short read — it leaves the image data starting beyond the
+        // file, with psd_sdk's `size - offset` length wrapped round to gigabytes.
+        if (!d.document || d.file->HadShortRead()
+            || d.document->imageDataSection.offset > d.bytes.size()) {
             fire_psd_free(handle);
             return nullptr;
         }
@@ -194,86 +212,91 @@ int fire_psd_info_get(const fire_psd* doc, fire_psd_info* out_info) {
     out_info->height = document->height;
     out_info->channels = static_cast<uint16_t>(document->channelCount);
     out_info->bits_per_channel = static_cast<uint16_t>(document->bitsPerChannel);
+    out_info->color_mode = static_cast<uint16_t>(document->colorMode);
+    out_info->reserved = 0;
     return 0;
+}
+
+int fire_psd_decode_merged(fire_psd* doc) {
+    if (!doc || !doc->d.document) {
+        return FIRE_PSD_BAD_ARGUMENT;
+    }
+    Doc& d = doc->d;
+    if (d.imageData) {
+        return FIRE_PSD_OK;
+    }
+    // Checked before anything is sized from the header (see psd_is_supported).
+    if (!psd_is_supported(d.document)) {
+        return FIRE_PSD_UNSUPPORTED;
+    }
+    // Merged image is only present when the PSD was saved with Maximize Compatibility.
+    if (d.document->imageDataSection.length == 0) {
+        return FIRE_PSD_NO_MERGED_IMAGE;
+    }
+    try {
+        d.imageData = psd::ParseImageDataSection(d.document, d.file, &d.allocator);
+    } catch (...) {
+        d.imageData = nullptr;
+        return FIRE_PSD_DECODE_FAILED;
+    }
+    // A truncated document parses "successfully" — psd_sdk follows the header's own offsets
+    // and never learns it ran off the end — so the composite would be built from the zeros we
+    // substituted for the missing bytes. Refuse it rather than display a half-invented image.
+    if (d.file->HadShortRead()) {
+        return FIRE_PSD_TRUNCATED;
+    }
+    if (!d.imageData || !d.imageData->images
+        || d.imageData->imageCount < d.document->channelCount) {
+        return FIRE_PSD_DECODE_FAILED;
+    }
+    for (unsigned int i = 0; i < d.imageData->imageCount; ++i) {
+        if (!d.imageData->images[i].data) {
+            return FIRE_PSD_DECODE_FAILED;
+        }
+    }
+    return FIRE_PSD_OK;
 }
 
 int fire_psd_read_merged_rgba8(const fire_psd* doc, uint8_t* out_pixels, size_t out_len) {
     if (!doc || !out_pixels || !doc->d.document) {
-        return 1;
+        return FIRE_PSD_BAD_ARGUMENT;
     }
     const Doc& d = doc->d;
-    if (!d.imageData) {
-        return 2; // no merged image (PSD saved without Maximize Compatibility)
+    // fire_psd_decode_merged succeeded, which is what vouches for every plane below.
+    if (!d.imageData || d.file->HadShortRead()) {
+        return FIRE_PSD_NOT_DECODED;
     }
     const psd::Document* document = d.document;
-    const uint32_t width = document->width;
-    const uint32_t height = document->height;
-    const size_t pixels = static_cast<size_t>(width) * height;
-    if (out_len < pixels * 4) {
-        return 3;
+    const size_t pixels = static_cast<size_t>(document->width) * document->height;
+    if (out_len / 4 < pixels) {
+        return FIRE_PSD_BUFFER_TOO_SMALL;
     }
 
     const unsigned int bits = document->bitsPerChannel;
     const unsigned int imageCount = d.imageData->imageCount;
     const psd::PlanarImage* images = d.imageData->images;
-    if (imageCount == 0 || !images[0].data) {
-        return 4;
-    }
+    const bool isGray = document->colorMode == psd::colorMode::GRAYSCALE;
+    // The first extra channel is the composite's transparency when the document has one
+    // (plane 1 for grayscale, plane 3 for RGB).
+    const unsigned int alphaPlane = isGray ? 1u : 3u;
+    const bool hasAlpha = imageCount > alphaPlane;
 
-    const bool isGray = (document->colorMode == psd::colorMode::GRAYSCALE) || (imageCount == 1);
-    const bool hasAlpha = (document->colorMode == psd::colorMode::RGB) && (imageCount >= 4)
-                          && images[3].data;
-
-    try {
-        for (size_t i = 0; i < pixels; ++i) {
-            uint8_t r, g, b;
-            uint8_t a = 255;
-            if (isGray) {
-                const uint8_t v = sample_channel(images[0].data, bits, i);
-                r = g = b = v;
-            } else {
-                r = sample_channel(images[0].data, bits, i);
-                g = (imageCount >= 2 && images[1].data) ? sample_channel(images[1].data, bits, i) : r;
-                b = (imageCount >= 3 && images[2].data) ? sample_channel(images[2].data, bits, i) : r;
-                if (hasAlpha) {
-                    a = sample_channel(images[3].data, bits, i);
-                }
-            }
-            out_pixels[i * 4 + 0] = r;
-            out_pixels[i * 4 + 1] = g;
-            out_pixels[i * 4 + 2] = b;
-            out_pixels[i * 4 + 3] = a;
+    for (size_t i = 0; i < pixels; ++i) {
+        uint8_t r, g, b;
+        if (isGray) {
+            r = g = b = sample_channel(images[0].data, bits, i, true);
+        } else {
+            r = sample_channel(images[0].data, bits, i, true);
+            g = sample_channel(images[1].data, bits, i, true);
+            b = sample_channel(images[2].data, bits, i, true);
         }
-    } catch (...) {
-        return 5;
+        const uint8_t a = hasAlpha ? sample_channel(images[alphaPlane].data, bits, i, false) : 255;
+        out_pixels[i * 4 + 0] = r;
+        out_pixels[i * 4 + 1] = g;
+        out_pixels[i * 4 + 2] = b;
+        out_pixels[i * 4 + 3] = a;
     }
-    return 0;
-}
-
-size_t fire_psd_icc_len(const fire_psd* doc) {
-    if (!doc) {
-        return 0;
-    }
-    const psd::ImageResourcesSection* r = doc->d.resources;
-    if (!r || !r->iccProfile) {
-        return 0;
-    }
-    return r->sizeOfICCProfile;
-}
-
-int fire_psd_icc_get(const fire_psd* doc, uint8_t* out_icc, size_t out_len) {
-    if (!doc || !out_icc) {
-        return 1;
-    }
-    const psd::ImageResourcesSection* r = doc->d.resources;
-    if (!r || !r->iccProfile) {
-        return 2;
-    }
-    if (out_len < r->sizeOfICCProfile) {
-        return 3;
-    }
-    std::memcpy(out_icc, r->iccProfile, r->sizeOfICCProfile);
-    return 0;
+    return FIRE_PSD_OK;
 }
 
 void fire_psd_free(fire_psd* doc) {
@@ -283,9 +306,6 @@ void fire_psd_free(fire_psd* doc) {
     Doc& d = doc->d;
     if (d.imageData) {
         psd::DestroyImageDataSection(d.imageData, &d.allocator);
-    }
-    if (d.resources) {
-        psd::DestroyImageResourcesSection(d.resources, &d.allocator);
     }
     if (d.document) {
         psd::DestroyDocument(d.document, &d.allocator);

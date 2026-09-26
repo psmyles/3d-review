@@ -3,7 +3,8 @@
 //! Per invariant 2 this crate holds plain values + displayed stats and emits
 //! [`UiOutput`] *intents*; it never owns or mutates renderer/model internals.
 //! [`sync_debug_state`] funnels the committed panel values into the
-//! [`SceneDebugOptions`] the renderer reads.//!
+//! [`SceneDebugOptions`] the renderer reads.
+//!
 //! ## Layout
 //!
 //! [`UiState`] itself is here, with the slider ranges and the debug-state funnel.
@@ -84,74 +85,9 @@ pub(crate) mod range {
     pub const ENV_ROTATION_MIN: f32 = 0.0;
     pub const ENV_ROTATION_MAX: f32 = 360.0;
 
-    /// Opt operations. The weld tolerance and the prune size threshold are both
-    /// fractions of the mesh's overall size; the attribute weights scale a
-    /// simplifier's per-attribute error; the overdraw threshold is the vertex-cache
-    /// efficiency it may give up (1.0 = none); the LOD rows are the per-level
-    /// triangle target and error limit.
-    pub const WELD_TOLERANCE_MIN: f32 = 0.0;
-    pub const WELD_TOLERANCE_MAX: f32 = 0.1;
-    pub const PRUNE_THRESHOLD_MIN: f32 = 0.0;
-    pub const PRUNE_THRESHOLD_MAX: f32 = 0.5;
-    pub const ATTRIBUTE_WEIGHT_MIN: f32 = 0.0;
-    pub const ATTRIBUTE_WEIGHT_MAX: f32 = 4.0;
-    pub const OVERDRAW_THRESHOLD_MIN: f32 = 1.0;
-    pub const OVERDRAW_THRESHOLD_MAX: f32 = 3.0;
-    pub const LOD_RATIO_MIN: f32 = 0.01;
-    pub const LOD_RATIO_MAX: f32 = 1.0;
-    pub const LOD_ERROR_MIN: f32 = 0.0;
-    pub const LOD_ERROR_MAX: f32 = 1.0;
-    /// Remesh: the density given either as a share of the object's current
-    /// triangles or as an absolute face budget, the crease angle in degrees, and
-    /// the smoothing pass count. The ratio's ceiling is deliberately above 1.0 —
-    /// a retopology that *adds* faces is a normal thing to ask of a coarse CAD
-    /// part.
-    pub const REMESH_RATIO_MIN: f32 = 0.05;
-    pub const REMESH_RATIO_MAX: f32 = 2.0;
-    pub const REMESH_FACES_MIN: u32 = 100;
-    pub const REMESH_FACES_MAX: u32 = 200_000;
-    pub const REMESH_CREASE_MIN: f32 = 5.0;
-    pub const REMESH_CREASE_MAX: f32 = 90.0;
-    pub const REMESH_SMOOTH_MAX: u32 = 10;
-    /// Remesh: how far face size follows curvature. The top of the range is 1
-    /// rather than something larger because past it the quad layout resolves
-    /// the transition with singularities instead of a gradient — the engines
-    /// clamp there anyway, so a slider that went further would be a lie.
-    pub const REMESH_ADAPTIVE_MIN: f32 = 0.0;
-    pub const REMESH_ADAPTIVE_MAX: f32 = 1.0;
-    /// Shrinkwrap: grid steps across the object's longest side, and how far the
-    /// shell is pushed out (or, negative, pulled in) in world meters. The offset
-    /// range is deliberately symmetric — a shell *inside* the object is a
-    /// collision proxy, which is as normal a thing to ask for as one outside it.
-    pub const SHRINKWRAP_RESOLUTION_MIN: u32 = 16;
-    pub const SHRINKWRAP_RESOLUTION_MAX: u32 = 512;
-    pub const SHRINKWRAP_OFFSET_MIN: f32 = -0.5;
-    pub const SHRINKWRAP_OFFSET_MAX: f32 = 0.5;
-    /// Shrinkwrap's voxel method: meshoptimizer's own resolution window, and
-    /// the built-in reduction's target as a share of the object's triangles
-    /// (above 1 is allowed — a coarse source can want a denser shell) or as a
-    /// per-object count on Remesh's scale.
-    pub const SHRINKWRAP_VOXEL_RESOLUTION_MIN: u32 = 4;
-    pub const SHRINKWRAP_VOXEL_RESOLUTION_MAX: u32 = 256;
-    pub const SHRINKWRAP_TARGET_RATIO_MIN: f32 = 0.01;
-    pub const SHRINKWRAP_TARGET_RATIO_MAX: f32 = 2.0;
-    pub const SHRINKWRAP_TARGET_TRIANGLES_MIN: u32 = 100;
-    pub const SHRINKWRAP_TARGET_TRIANGLES_MAX: u32 = 200_000;
-    /// Normal generation (Recalculate Normals, and a rebuild told to generate):
-    /// the crease angle in degrees and the smoothing amount. The smoothing
-    /// ceiling is meshoptimizer's recommended range; the library accepts more,
-    /// but past it every pass relaxes shape into mush.
-    pub const NORMAL_CREASE_MIN: f32 = 0.0;
-    pub const NORMAL_CREASE_MAX: f32 = 180.0;
-    pub const NORMAL_SMOOTHING_MIN: f32 = 0.0;
-    pub const NORMAL_SMOOTHING_MAX: f32 = 5.0;
-    /// Bake AO: the max ray distance in world meters (0 = unlimited) and the
-    /// power on visibility (matching the viewport AO panel's Intensity, whose
-    /// range is deliberately wider here — a bake is worth over-driving).
-    pub const AO_BAKE_DISTANCE_MIN: f32 = 0.0;
-    pub const AO_BAKE_DISTANCE_MAX: f32 = 10.0;
-    pub const AO_BAKE_INTENSITY_MIN: f32 = 0.1;
-    pub const AO_BAKE_INTENSITY_MAX: f32 = 4.0;
+    /// The Opt operations' ranges live with the operations, so a preset loaded
+    /// from disk is clamped to exactly what these sliders offer.
+    pub use review_optimize::stack::limits::*;
 }
 
 /// How much of the window the docked side panels are covering, in egui points.
@@ -390,8 +326,8 @@ pub struct UiState {
     pub has_skin: bool,
     /// Mesh nodes the user has hidden via the Outliner's per-row visibility
     /// checkbox (node indices into [`review_model::ModelData::nodes`]). The scene
-    /// callback filters these meshes' triangles out of the viewport draw + GTAO
-    /// (Phase 2). Cleared by `app` on model load (the indices no longer apply).
+    /// callback filters these meshes' triangles out of the viewport draw + GTAO.
+    /// Cleared by `app` on model load (the indices no longer apply).
     pub hidden_meshes: HashSet<usize>,
     /// Whether the dockable side panels — the Outliner (left) and the Inspector
     /// (right) — are open. They share one flag because they are two halves of one

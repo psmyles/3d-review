@@ -5,7 +5,7 @@
 //! ## Layering
 //!
 //! * [`stack`] — the user's setup as plain, serializable data. No mesh state.
-//! * [`process`] — interprets a stack against a `ModelData`, producing one
+//! * [`process`](mod@process) — interprets a stack against a `ModelData`, producing one
 //!   `ModelData` per LOD level plus measured metrics.
 //! * [`submesh`] / [`ops`] — the pieces `process` is built from.
 //! * [`meshopt`] / `ffi` — the checked wrappers and the raw C declarations.
@@ -18,10 +18,14 @@
 //! ## `unsafe`
 //!
 //! Invariant 9 confines `unsafe`/FFI to a named set of sites; this crate is one
-//! of them (see docs/ARCHITECTURE.md). All of it lives in `ffi` (declarations) and
-//! [`meshopt`] (checked wrappers that validate every buffer and index before the
-//! call and re-validate the reported sizes after). Nothing above that layer —
-//! [`ops`], [`process`], [`stack`], [`preset`] — contains any.
+//! of them (see docs/ARCHITECTURE.md). All of it lives in five places: `ffi`
+//! (the meshoptimizer declarations) and [`meshopt`] (checked wrappers that
+//! validate every buffer and index before the call and re-validate the reported
+//! sizes after); `export_ffi` (the export bridge's declarations) and
+//! `export::write`'s `write_scene` (the one call into that bridge); and the
+//! test-only writer probe, `probe`. Nothing else — [`ops`],
+//! [`process`](mod@process), [`remesh`], [`shrinkwrap`], [`stack`], [`preset`]
+//! — contains any.
 //!
 //! ## Optional vendoring
 //!
@@ -29,9 +33,10 @@
 //! without `third_party/meshoptimizer` the crate still compiles and every
 //! operation reports [`OptError::Unavailable`].
 
-// Everything outside the FFI modules is ordinary safe Rust. Those modules opt in
-// individually rather than the crate opting out globally.
-#![cfg_attr(not(any(has_meshopt, has_ufbxw)), forbid(unsafe_code))]
+// Everything outside the FFI modules is ordinary safe Rust (invariant 9). The
+// crate refuses `unsafe`, and those sites opt in individually with an `allow`
+// saying why — module-level, except `write_scene`'s, which covers one function.
+#![deny(unsafe_code)]
 
 mod export_ffi;
 mod ffi;
@@ -49,6 +54,7 @@ pub mod cancel;
 
 pub mod export;
 pub mod meshopt;
+pub mod notice;
 pub mod ops;
 pub mod preset;
 pub mod process;
@@ -60,6 +66,7 @@ pub mod submesh;
 
 pub use cancel::CancelToken;
 pub use export::{ExportReport, export_fbx};
+pub use notice::{ExportNote, OptWarning};
 pub use process::{
     AnalysisMetrics, MeshCounts, OptPreview, OptPreviewSink, OptProgress, OptProgressSink,
     OptStage, ProcessInput, ProcessedLod, ProcessedResult, process, process_cancellable,
@@ -155,22 +162,22 @@ impl From<std::io::Error> for OptError {
 /// the rest; the user needs to know *that* it happened, once.
 #[derive(Debug, Default)]
 pub struct Warnings {
-    messages: Vec<String>,
+    warnings: Vec<OptWarning>,
 }
 
 impl Warnings {
-    pub fn push(&mut self, message: &str) {
-        if !self.messages.iter().any(|existing| existing == message) {
-            self.messages.push(message.to_owned());
+    pub fn push(&mut self, warning: OptWarning) {
+        if !self.warnings.contains(&warning) {
+            self.warnings.push(warning);
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.messages.is_empty()
+        self.warnings.is_empty()
     }
 
-    pub fn into_vec(self) -> Vec<String> {
-        self.messages
+    pub fn into_vec(self) -> Vec<OptWarning> {
+        self.warnings
     }
 }
 
@@ -181,9 +188,9 @@ mod tests {
     #[test]
     fn warnings_report_a_repeated_problem_once() {
         let mut warnings = Warnings::default();
-        warnings.push("Weld Vertices: the mesh has no triangles to process");
-        warnings.push("Weld Vertices: the mesh has no triangles to process");
-        warnings.push("Generate LODs: something else");
+        warnings.push(OptWarning::LodEmpty { level: 1 });
+        warnings.push(OptWarning::LodEmpty { level: 1 });
+        warnings.push(OptWarning::LodEmpty { level: 2 });
 
         assert_eq!(warnings.into_vec().len(), 2);
     }

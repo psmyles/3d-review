@@ -123,7 +123,7 @@ pub(crate) fn require_valid(
 impl From<windows::core::Error> for GpuError {
     /// The default conversion, so an internal `?` on a COM call inside `rhi` still
     /// just works. Constructors upgrade this to a [`GpuError::Resource`] naming the
-    /// resource via [`ResourceContext::resource`], which is the more useful message
+    /// resource via `ResourceContext::resource`, which is the more useful message
     /// — this catch-all covers everything else.
     fn from(error: windows::core::Error) -> Self {
         Self::Backend(backend_message(&error))
@@ -132,10 +132,10 @@ impl From<windows::core::Error> for GpuError {
 
 /// Attach "which resource this was" to a failing COM call.
 ///
-/// The `windows` crate gives back an `HRESULT` and a driver string, neither of
-/// which says whether the thing that failed was a 4K texture or a 96-byte cbuffer.
-/// Every `rhi` constructor ends in `.resource(ResourceKind::…, "…")`, which is the
-/// one place that context exists.
+/// The `windows` crate gives back an `HRESULT` and a driver string, neither of which
+/// says whether the thing that failed was the swapchain or a timestamp query. Every
+/// COM call in the D3D11 backend leaf ends in `.resource(ResourceKind::…, "…")`,
+/// which is the one place that context exists.
 #[cfg(windows)]
 pub(crate) trait ResourceContext<T> {
     fn resource(self, kind: ResourceKind, label: &str) -> GpuResult<T>;

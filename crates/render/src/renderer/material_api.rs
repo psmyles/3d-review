@@ -66,7 +66,7 @@ impl Renderer {
         self.material_revision = self.material_revision.wrapping_add(1);
     }
 
-    /// The editable material parameters, carried into the scene callback each frame.
+    /// The editable material parameters, carried into the scene render each frame.
     pub fn material_states(&self) -> &[MaterialState] {
         &self.material_states
     }

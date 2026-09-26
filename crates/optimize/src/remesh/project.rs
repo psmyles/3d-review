@@ -41,7 +41,6 @@
 //! off its patch is better served by continuing the attribute gradient than by
 //! being pinned to the patch's rim, which would flatten a UV island's border
 //! into a ridge.
-use std::collections::HashMap;
 
 use glam::{Vec2, Vec3, Vec4};
 use review_model::{Bvh, ModelData, Vertex, closest_point_on_triangle, triangle_positions};
@@ -347,9 +346,11 @@ pub(crate) struct FaceSample {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Winding {
     /// Take it from the source surface: flip a face whose normal opposes the
-    /// source's at the point under its centroid. A field extraction's winding is
-    /// its own business and carries no relation to which way the object faces,
-    /// so it has to be re-derived.
+    /// source's at the point under its centroid. For a soup whose winding carries
+    /// no relation to which way the object faces, which is what the field
+    /// extraction Remesh used to be built on produced. Neither caller asks for it
+    /// now: the collapse keeps the source's own winding, and a shell is
+    /// [`Self::Keep`] for the reason below.
     FromSource,
     /// Leave it exactly as the soup has it. A [`crate::shrinkwrap`] shell's
     /// winding is derived from the distance field's sign and is *more* reliable
@@ -373,6 +374,7 @@ pub(crate) fn project_faces(
     uv_channel_count: usize,
     color_channel_count: usize,
     winding: Winding,
+    threads: usize,
 ) -> Vec<FaceSample> {
     let _z = crate::prof::zone!("Remesh Projection");
 
@@ -386,10 +388,9 @@ pub(crate) fn project_faces(
     for (index, chunk) in faces.chunks_mut(CHUNK).enumerate() {
         jobs.push((index * CHUNK, chunk));
     }
-    let workers = std::thread::available_parallelism()
-        .map_or(1, std::num::NonZero::get)
-        .min(jobs.len())
-        .max(1);
+    // The object's own share of the machine: this runs inside `solve_nodes`,
+    // which already puts one object on each core.
+    let workers = threads.min(jobs.len()).max(1);
     let mut buckets: Vec<Vec<(usize, &mut [FaceSample])>> =
         (0..workers).map(|_| Vec::new()).collect();
     for (slot, job) in jobs.into_iter().enumerate() {
@@ -421,7 +422,6 @@ pub(crate) fn project_faces(
 
 /// Project one face. An unreachable source surface yields an empty face, which
 /// the caller drops.
-#[allow(clippy::too_many_arguments)]
 fn project_face(
     output: &RemeshOutput,
     source: &ProjectionSource,
@@ -443,10 +443,10 @@ fn project_face(
     };
     let material = source.material_of(anchor.triangle);
 
-    // A field extraction's winding is its own; a face whose normal opposes the
-    // surface it was built from would draw back-to-front. Newell's formula
-    // rather than one corner's cross product, so a slightly non-planar quad
-    // still answers. See [`Winding`] for why a wrapped shell opts out.
+    // A soup that does not keep the source's winding would draw a face whose
+    // normal opposes the surface it was built from back-to-front. Newell's
+    // formula rather than one corner's cross product, so a slightly non-planar
+    // quad still answers. See [`Winding`] for why a wrapped shell opts out.
     let mut ordered = positions;
     if winding == Winding::FromSource
         && let (Some(face_normal), Some(source_normal)) =
@@ -520,28 +520,34 @@ fn plane_barycentric(model: &ModelData, triangle: u32, query: Vec3) -> Vec3 {
 /// every attribute seam — which is the property the corner sampling relies on.
 /// An edge shared by more than two triangles links none of them: there is no
 /// single neighbour, and guessing one would grow the patch across a branch.
+///
+/// Grouped by sorting one `(edge, triangle corner)` entry per corner rather than
+/// by hashing: a hash map of every edge with a small `Vec` per entry is several
+/// times the memory at ten million triangles (see [`super::topology`] for why
+/// that shape is ruled out). Sorting on the corner as well keeps each group in
+/// triangle order, so the pairs come out exactly as the map's insertion order had
+/// them.
 fn build_adjacency(indices: &[u32]) -> Vec<[u32; 3]> {
     let triangle_count = indices.len() / 3;
-    let mut owners: HashMap<(u32, u32), Vec<(u32, u8)>> = HashMap::new();
+    let mut owners: Vec<(u64, u32)> = Vec::with_capacity(triangle_count * 3);
     for triangle in 0..triangle_count {
-        for corner in 0..3u8 {
-            let a = indices[triangle * 3 + corner as usize];
-            let b = indices[triangle * 3 + (corner as usize + 1) % 3];
-            let key = if a < b { (a, b) } else { (b, a) };
-            owners
-                .entry(key)
-                .or_default()
-                .push((triangle as u32, corner));
+        for corner in 0..3 {
+            let a = indices[triangle * 3 + corner];
+            let b = indices[triangle * 3 + (corner + 1) % 3];
+            let (low, high) = if a < b { (a, b) } else { (b, a) };
+            let key = (u64::from(low) << 32) | u64::from(high);
+            owners.push((key, (triangle * 3 + corner) as u32));
         }
     }
+    owners.sort_unstable();
 
     let mut adjacency = vec![[u32::MAX; 3]; triangle_count];
-    for sharing in owners.values() {
-        if sharing.len() != 2 {
+    for sharing in owners.chunk_by(|a, b| a.0 == b.0) {
+        let [(_, first), (_, second)] = sharing else {
             continue;
-        }
-        let (first, first_edge) = sharing[0];
-        let (second, second_edge) = sharing[1];
+        };
+        let (first, first_edge) = (first / 3, first % 3);
+        let (second, second_edge) = (second / 3, second % 3);
         adjacency[first as usize][first_edge as usize] = second;
         adjacency[second as usize][second_edge as usize] = first;
     }

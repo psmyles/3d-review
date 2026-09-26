@@ -217,19 +217,26 @@ pub struct Notifications {
     notices: Vec<Notice>,
     /// Source of [`Notice::id`].
     next_id: u64,
-    /// What the progress card says, or `None` while nothing is running. It is
-    /// drawn above the notices rather than among them: it is the one card that
-    /// is *about the future*, and it must not shuffle down the column as
-    /// results land beneath it.
-    activity: Option<Activity>,
-    /// In-flight background jobs. The progress card shows while this is `> 0`
-    /// and is dismissed when it returns to `0`, so overlapping jobs share one
-    /// indicator.
-    active: usize,
+    /// Every background job still running, oldest first, each with its own
+    /// title and progress. The progress card shows the newest; when it ends,
+    /// the one before it is shown again, still saying what *it* is doing. The
+    /// card is drawn above the notices rather than among them: it is the one
+    /// card that is *about the future*, and it must not shuffle down the column
+    /// as results land beneath it.
+    activities: Vec<(ActivityId, Activity)>,
+    /// Source of [`ActivityId`]s.
+    next_activity: u64,
     /// The egui timestamp of the previous [`Notifications::show`], so a hovered
     /// card's deadline can be pushed forward by exactly the elapsed time.
     last_now: f64,
 }
+
+/// One background job's claim on the progress card, handed back by
+/// [`Notifications::begin_activity`]. A job reports and ends through its own id,
+/// so two jobs running at once cannot write into each other's card - a load's
+/// `Reading... 47%` under a texture decode's title, say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ActivityId(u64);
 
 /// What the progress card is showing.
 struct Activity {
@@ -255,8 +262,8 @@ impl Notifications {
         Self {
             notices: Vec::new(),
             next_id: 0,
-            activity: None,
-            active: 0,
+            activities: Vec::new(),
+            next_activity: 0,
             last_now: 0.0,
         }
     }
@@ -385,45 +392,58 @@ impl Notifications {
         self.notices.drain(..overflow);
     }
 
-    /// Mark the start of a background job, raising the progress card on the
-    /// first concurrent job. Pair every call with
-    /// [`Notifications::end_activity`].
+    /// Mark the start of a background job, raising the progress card. Pair the
+    /// returned id with exactly one [`Notifications::end_activity`].
     ///
     /// `title` names the job; what it is *doing* goes to
     /// [`Notifications::update_activity`].
     ///
-    /// Overlapping jobs share one card and the newest one names it, since it is
-    /// also the one whose reports are arriving.
-    pub fn begin_activity(&mut self, title: impl Into<String>) {
+    /// Overlapping jobs share one card, which shows the newest; each keeps its
+    /// own title and progress underneath, so ending the newest brings back the
+    /// one before it exactly as it stands.
+    pub fn begin_activity(&mut self, title: impl Into<String>) -> ActivityId {
         let title = title.into();
         log::debug!(target: NOTICE_TARGET, "working: {title}");
-        self.activity = Some(Activity {
-            title,
-            detail: String::new(),
-            fraction: None,
-        });
-        self.active += 1;
+        let id = ActivityId(self.next_activity);
+        self.next_activity += 1;
+        self.activities.push((
+            id,
+            Activity {
+                title,
+                detail: String::new(),
+                fraction: None,
+            },
+        ));
+        id
     }
 
-    /// The running job reporting where it has got to: a short line under the
-    /// title (`Reading… 47%`) and, when it can say, how far along it is.
+    /// Job `id` reporting where it has got to: a short line under its title
+    /// (`Reading... 47%`) and, when it can say, how far along it is.
     ///
-    /// This rewrites the card in place — nothing moves — so `app` may call it as
-    /// often as it has something new to say. A no-op when nothing is running, so
-    /// a report that arrives after its job ended can't raise a card.
-    pub fn update_activity(&mut self, detail: impl Into<String>, fraction: Option<f32>) {
-        if let Some(activity) = self.activity.as_mut() {
+    /// This rewrites the job's own line in place — nothing moves — so `app` may
+    /// call it as often as it has something new to say. A no-op for a job that
+    /// has ended, so a report that arrives late can't raise a card.
+    pub fn update_activity(
+        &mut self,
+        id: ActivityId,
+        detail: impl Into<String>,
+        fraction: Option<f32>,
+    ) {
+        if let Some((_, activity)) = self.activities.iter_mut().find(|(job, _)| *job == id) {
             activity.detail = detail.into();
             activity.fraction = fraction.map(|value| value.clamp(0.0, 1.0));
         }
     }
 
-    /// Mark a background job finished; hides the progress card once all are done.
-    pub fn end_activity(&mut self) {
-        self.active = self.active.saturating_sub(1);
-        if self.active == 0 {
-            self.activity = None;
-        }
+    /// Mark job `id` finished; hides the progress card once every job is done.
+    /// Ending a job twice, or one that never began, does nothing.
+    pub fn end_activity(&mut self, id: ActivityId) {
+        self.activities.retain(|(job, _)| *job != id);
+    }
+
+    /// The job the progress card shows: the newest one still running.
+    fn shown_activity(&self) -> Option<&Activity> {
+        self.activities.last().map(|(_, activity)| activity)
     }
 
     /// Draw the column. Call once per frame inside the egui pass.
@@ -438,7 +458,7 @@ impl Notifications {
         let elapsed = (now - self.last_now).max(0.0);
         self.last_now = now;
 
-        if self.notices.is_empty() && self.activity.is_none() {
+        if self.notices.is_empty() && self.activities.is_empty() {
             return;
         }
 
@@ -485,7 +505,7 @@ impl Notifications {
             )
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing.y = size::NOTIFICATION_CARD_GAP;
-                if let Some(activity) = self.activity.as_ref() {
+                if let Some(activity) = self.shown_activity() {
                     activity_card(ui, activity, text_width);
                 }
                 for notice in &self.notices {
@@ -834,25 +854,43 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_jobs_share_one_progress_card() {
+    fn overlapping_jobs_share_one_card_and_keep_their_own_lines() {
         let ctx = context();
         let mut notifications = Notifications::new();
-        notifications.begin_activity("Loading a.fbx");
-        notifications.begin_activity("Decoding b.png");
+        let load = notifications.begin_activity("Loading a.fbx");
+        let decode = notifications.begin_activity("Decoding b.png");
         pass(&ctx, &mut notifications, 0.0);
-        // The newest names it: it is the one whose reports are arriving.
+        let shown = |notifications: &Notifications| {
+            notifications
+                .shown_activity()
+                .map(|a| (a.title.clone(), a.detail.clone()))
+        };
+        // The newest is shown.
         assert_eq!(
-            notifications.activity.as_ref().map(|a| a.title.as_str()),
-            Some("Decoding b.png")
+            shown(&notifications),
+            Some(("Decoding b.png".to_owned(), String::new()))
         );
 
-        notifications.end_activity();
-        assert!(notifications.activity.is_some());
-        notifications.end_activity();
-        assert!(notifications.activity.is_none());
+        // The load reporting does not write under the decode's title.
+        notifications.update_activity(load, "Reading... 47%", Some(0.47));
+        assert_eq!(
+            shown(&notifications),
+            Some(("Decoding b.png".to_owned(), String::new()))
+        );
 
-        // An update after the last job ended can't raise a card.
-        notifications.update_activity("late", None);
-        assert!(notifications.activity.is_none());
+        // The decode ending brings the load back, with its own progress.
+        notifications.end_activity(decode);
+        assert_eq!(
+            shown(&notifications),
+            Some(("Loading a.fbx".to_owned(), "Reading... 47%".to_owned()))
+        );
+        notifications.end_activity(load);
+        assert!(notifications.shown_activity().is_none());
+
+        // An update after a job ended can't raise a card, and ending one twice
+        // does nothing.
+        notifications.update_activity(load, "late", None);
+        notifications.end_activity(load);
+        assert!(notifications.shown_activity().is_none());
     }
 }

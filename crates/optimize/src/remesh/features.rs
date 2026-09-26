@@ -129,6 +129,7 @@ pub(crate) struct Features {
 }
 
 impl Features {
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.polylines.is_empty()
     }

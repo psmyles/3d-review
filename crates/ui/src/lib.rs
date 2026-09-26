@@ -41,10 +41,11 @@ pub mod docs {
 /// The platform's own file-command modifier, as the chrome names it.
 ///
 /// `app`'s `shortcuts::primary_held` is the dispatch side of the same decision
-/// (`mac-port-plan.md` D10); this is only what the chrome calls the key. It is
-/// resolved at run time and passed *into* a message as a variable, rather than
-/// `concat!`ed into a const string as it used to be — a literal spliced between
-/// two halves of a sentence is exactly what a translation cannot move.
+/// (`docs/ARCHITECTURE.md`, Platform decisions D10); this is only what the chrome
+/// calls the key. It is resolved at run time and passed *into* a message as a
+/// variable, rather than `concat!`ed into a const string as it used to be — a
+/// literal spliced between two halves of a sentence is exactly what a translation
+/// cannot move.
 ///
 /// `cfg!` rather than `#[cfg]` so both keys stay referenced on both platforms;
 /// under `#[cfg]` the unused one would be `dead_code` and fail the build.
@@ -84,12 +85,12 @@ pub use about::{AboutInfo, AboutState};
 pub use help::{HelpState, option_panel_at, workspace_help_page};
 pub use labels::{buffer_view_name, material_mode_name, op_kind_name, viewport_tool_name};
 pub use log_window::LogWindowState;
-pub use notifications::{NoticeKind, Notifications};
+pub use notifications::{ActivityId, NoticeKind, Notifications};
 pub use opt_state::{
     ComparisonSide, GhostStyle, OptIntent, OptLayout, OptLevelView, OptResultView, OptUiState,
     StackItem,
 };
-pub use overlay::{OptOverlayLevel, OptOverlayView, draw_overlay};
+pub use overlay::{OptOverlayLevel, OptOverlayView, draw_overlay, split_halves};
 pub use review_render::{MsaaSamples, Selection};
 pub use state::{
     AnimationUiState, AxisGizmoAction, ChromeInsets, HoverTarget, MenuIntent, PlaybackSpeed,

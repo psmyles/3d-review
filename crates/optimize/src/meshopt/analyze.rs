@@ -20,10 +20,8 @@ pub fn analyze(
     check_indices(indices, vertex_count)?;
     check_stream(positions, vertex_count, POSITION_COMPONENTS)?;
 
-    // SAFETY (all three): `indices` is checked whole-triangle with every entry
-    // below `vertex_count`, and `positions` is exactly `vertex_count * 3` finite
-    // floats at the declared stride. All three calls only read, and return their
-    // statistics by value.
+    // SAFETY: `indices` is checked whole-triangle with every entry below
+    // `vertex_count`; the call only reads it and returns its statistics by value.
     let cache = unsafe {
         crate::ffi::meshopt_analyzeVertexCache(
             indices.as_ptr(),
@@ -34,6 +32,8 @@ pub fn analyze(
             PRIMGROUP_SIZE,
         )
     };
+    // SAFETY: as above, and `positions` is exactly `vertex_count * 3` finite
+    // floats at the declared stride; the call only reads both.
     let overdraw = unsafe {
         crate::ffi::meshopt_analyzeOverdraw(
             indices.as_ptr(),
@@ -43,6 +43,8 @@ pub fn analyze(
             POSITION_STRIDE,
         )
     };
+    // SAFETY: as for the vertex cache - checked indices, read only, statistics
+    // returned by value.
     let fetch = unsafe {
         crate::ffi::meshopt_analyzeVertexFetch(
             indices.as_ptr(),

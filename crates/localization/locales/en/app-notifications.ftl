@@ -8,7 +8,7 @@
 ## Loading
 
 app-notifications-loading = Loading { $file }...
-app-notifications-loaded = Loaded { $file } in { $seconds }
+app-notifications-loaded = Loaded { $file } in { $seconds }s
 app-notifications-couldnt-load = Couldn't load { $file }: { $detail }
 # The model itself is fine and already on screen; what failed is the capture the
 # exporter writes back, so the notice has to say that rather than read as a load
@@ -88,7 +88,10 @@ app-notifications-tracy-off-next-launch = Tracy profiling will be off from the n
 
 ## The graphics device
 
-app-notifications-gpu-fault = { $context }: { $detail }
+app-notifications-gpu-scene-failed = Scene render failed: { $detail }
+app-notifications-gpu-ui-failed = UI render failed: { $detail }
+# `$detail` is the device's own reason code.
+app-notifications-gpu-device-lost = Graphics device lost ({ $detail }) - restart the viewer
 app-notifications-device-lost-startup = The GPU stopped responding while starting up ({ $reason }). The view may stay blank, so please restart the viewer.
 
 ## Mode notices
@@ -103,8 +106,6 @@ app-notifications-buffer-mode = Buffer: { $buffer }
 app-notifications-opt-unavailable = Mesh optimization is not available in this build.
     It was built without the optimizer library, so the Opt workspace can measure a
     model but cannot change one.
-    It was built without the retopology library, so every other operation still runs
-    but Remesh is skipped.
 app-notifications-preset-newer = This preset was saved by a newer version of the viewer.
     It is version { $found }, and this build understands up to version { $supported }.
     Open it with the version that saved it, or set the operations up again here.

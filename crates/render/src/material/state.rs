@@ -111,7 +111,7 @@ pub struct MaterialState {
     pub metallic: f32,
     pub roughness: f32,
     pub emissive: Vec3,
-    /// The seven texture slots, indexed by [`TextureSlot::index`]. `None` slots use
+    /// The seven texture slots, indexed by [`crate::TextureSlot::index`]. `None` slots use
     /// the shader's neutral per-slot fallback.
     pub textures: [Option<TextureBinding>; TEXTURE_SLOT_COUNT],
     pub alpha_mode: AlphaMode,
@@ -156,7 +156,7 @@ pub enum MaterialChange {
     Roughness(f32),
     Emissive([f32; 3]),
     /// Re-route an already-assigned slot's channel (the Inspector dropdown). The
-    /// `usize` is the [`TextureSlot::index`].
+    /// `usize` is the [`crate::TextureSlot::index`].
     Channel(usize, ChannelSelect),
     AlphaMode(AlphaMode),
     AlphaCutoff(f32),
@@ -173,7 +173,7 @@ pub struct MaterialEdit {
 
 /// GPU-side per-material uniform (the `material` block in `review.glsl`).
 /// `#[repr(C)]` +
-/// `Pod` to match that HLSL cbuffer layout exactly (invariant 11).
+/// `Pod` to match that block's std140 layout exactly (invariant 11).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct MaterialUniform {
@@ -200,6 +200,14 @@ const _: () = assert!(
     std::mem::size_of::<MaterialUniform>()
         == std::mem::size_of::<crate::shaders::generated::Material>()
 );
+crate::shaders::assert_same_layout!(MaterialUniform => crate::shaders::generated::Material, {
+    base_color => mat_base_color,
+    emissive => mat_emissive,
+    params => mat_params,
+    channels0 => mat_channels0,
+    channels1 => mat_channels1,
+    flags => mat_flags,
+});
 
 impl MaterialUniform {
     pub(super) fn from_state(state: &MaterialState) -> Self {

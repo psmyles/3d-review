@@ -104,10 +104,7 @@ impl App {
         // `in_opt_right_view` — that answers "which camera does a drag move",
         // which is deliberately false while the cameras are synced, and a pick
         // still has to target the processed mesh on that side.
-        let split = (self.ui.mode == WorkspaceMode::Opt)
-            .then(|| self.opt_split_rects())
-            .flatten();
-        if let Some((left, right)) = split {
+        if let Some([left, right]) = self.opt_split_halves() {
             let right_half = position.x >= right.0.x;
             let (origin, size) = if right_half { right } else { left };
             // Each half is drawn through a camera whose aspect ratio is its own,
@@ -158,27 +155,12 @@ impl App {
         })
     }
 
-    /// The two halves of the Opt split, each as `(top-left, size)` in physical
-    /// pixels. `None` outside the split layout.
     /// The window's device pixel ratio, for turning a size in egui points into
     /// the physical pixels a pointer position is measured in.
     fn scale_factor(&self) -> f32 {
         self.window
             .as_ref()
             .map_or(1.0, |window| window.scale_factor() as f32)
-    }
-
-    fn opt_split_rects(&self) -> Option<((Vec2, Vec2), (Vec2, Vec2))> {
-        if self.ui.opt.layout != review_ui::OptLayout::Split {
-            return None;
-        }
-        let rect = self.ui.scene_viewport?;
-        let scale = self.window.as_ref()?.scale_factor() as f32;
-        let size = Vec2::new(rect.width() * 0.5 * scale, rect.height() * scale);
-        let top = rect.top() * scale;
-        let left = Vec2::new(rect.left() * scale, top);
-        let right = Vec2::new(rect.center().x * scale, top);
-        Some(((left, size), (right, size)))
     }
 
     /// The processed level currently drawn, with its own index — what the split's

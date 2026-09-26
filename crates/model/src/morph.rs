@@ -4,7 +4,7 @@
 use glam::Vec3;
 
 /// Blend-shape (morph target) data, stored **per logical source vertex** as a
-/// compressed sparse-row table like [`SkinData`]: logical vertex `v`'s shape
+/// compressed sparse-row table like [`SkinData`](crate::SkinData): logical vertex `v`'s shape
 /// offsets are `shape[offsets[v]..offsets[v+1]]` paired with `position[..]` /
 /// `normal[..]`. Offsets are already rotated into the baked world orientation of
 /// their mesh node (the importer applies the mesh's `geometry_to_world` linear
@@ -12,7 +12,7 @@ use glam::Vec3;
 /// exact — skinning is linear.
 ///
 /// A channel is the artist-facing slider; it blends between its keyframes'
-/// shapes by the ufbx in-between rule (see [`anim::channel_effective_weights`]).
+/// shapes by the ufbx in-between rule (see [`anim::channel_effective_weights`](crate::anim::channel_effective_weights)).
 /// In the common case a channel has exactly one keyframe at target weight 1.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MorphData {
@@ -43,7 +43,7 @@ impl MorphData {
         }
     }
 
-    /// The import-funnel guard, like [`SkinData::validate`].
+    /// The import-funnel guard, like [`SkinData::validate`](crate::SkinData::validate).
     pub fn validate(&self, logical_count: usize, node_count: usize) -> Result<(), String> {
         if self.offsets.len() != logical_count + 1 {
             return Err(format!(
@@ -125,7 +125,7 @@ impl MorphData {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MorphChannel {
     pub name: String,
-    /// The mesh node this channel deforms, indexing [`ModelData::nodes`].
+    /// The mesh node this channel deforms, indexing [`ModelData::nodes`](crate::ModelData::nodes).
     pub mesh_node: u32,
     /// The channel's weight at the file's default pose, in `0..=1`.
     pub rest_weight: f32,
@@ -144,4 +144,98 @@ pub struct MorphKeyframe {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MorphShape {
     pub name: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two logical vertices, the second carrying one offset into the one shape
+    /// channel 0 targets: valid against two logical vertices and one node.
+    fn morph() -> MorphData {
+        MorphData {
+            channels: vec![MorphChannel {
+                name: "smile".to_owned(),
+                mesh_node: 0,
+                rest_weight: 0.0,
+                keyframes: vec![MorphKeyframe {
+                    shape: 0,
+                    target_weight: 1.0,
+                }],
+            }],
+            shapes: vec![MorphShape {
+                name: "smile".to_owned(),
+            }],
+            offsets: vec![0, 0, 1],
+            shape: vec![0],
+            position: vec![Vec3::Y],
+            normal: vec![Vec3::ZERO],
+        }
+    }
+
+    fn refused(morph: &MorphData, needle: &str) {
+        let error = morph
+            .validate(2, 1)
+            .expect_err("the table should be refused");
+        assert!(error.contains(needle), "{needle:?} not in {error:?}");
+    }
+
+    #[test]
+    fn a_well_formed_table_passes_and_reads_back() {
+        let morph = morph();
+        assert_eq!(morph.validate(2, 1), Ok(()));
+        assert_eq!(morph.logical_vertex_count(), 2);
+        assert_eq!(morph.entry_range(0), 0..0);
+        assert_eq!(morph.entry_range(1), 0..1);
+        assert_eq!(morph.entry_range(9), 0..0, "out of range reads as empty");
+    }
+
+    #[test]
+    fn offsets_that_do_not_describe_the_entries_are_refused() {
+        let mut short = morph();
+        short.offsets.pop();
+        refused(&short, "expected 3");
+
+        let mut backwards = morph();
+        backwards.offsets = vec![0, 1, 0];
+        refused(&backwards, "not monotonic");
+
+        let mut overrun = morph();
+        overrun.offsets = vec![0, 0, 2];
+        refused(&overrun, "end at 2");
+
+        let mut ragged = morph();
+        ragged.normal.clear();
+        refused(&ragged, "disagree");
+    }
+
+    #[test]
+    fn a_reference_past_its_table_is_refused() {
+        let mut entry = morph();
+        entry.shape[0] = 1;
+        refused(&entry, "references shape 1 of 1");
+
+        let mut node = morph();
+        node.channels[0].mesh_node = 1;
+        refused(&node, "references node 1 of 1");
+
+        let mut keyframe = morph();
+        keyframe.channels[0].keyframes[0].shape = 3;
+        refused(&keyframe, "references shape 3 of 1");
+    }
+
+    #[test]
+    fn a_value_that_is_not_a_number_is_refused() {
+        let mut offset = morph();
+        offset.position[0] = Vec3::new(f32::NAN, 0.0, 0.0);
+        refused(&offset, "not finite");
+
+        let mut rest = morph();
+        rest.channels[0].rest_weight = f32::INFINITY;
+        refused(&rest, "rest weight");
+
+        let mut target = morph();
+        target.channels[0].keyframes[0].target_weight = f32::NAN;
+        refused(&target, "target weight");
+    }
 }

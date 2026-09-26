@@ -10,39 +10,8 @@
 //! `sg::` type, a pixel format enum or a window handle: every resource is created
 //! through a wrapper, every format is a [`Format`], and every failure is a
 //! [`GpuError`]. That is what makes the renderer's shape independent of what is
-//! underneath it — see `mac-port-plan.md` §3.1.
-//!
-//! ## The frame
-//!
-//! sokol_gfx is a process singleton with no thread affinity: [`Gpu::start`] creates
-//! the device and calls `sg_setup` on a bring-up thread while the window is being
-//! created (D8), and the join is the synchronisation. Everything after runs on the
-//! main thread.
-//!
-//! A frame is **exactly one swapchain pass**, because the Metal backend presents
-//! inside `sg_end_pass` and a second one would double-present:
-//!
-//! ```ignore
-//! let Some(mut frame) = gpu.begin_frame() else { return };  // None: nothing to draw into
-//! renderer.render_scene(&mut frame, &scene_frame)?;         // offscreen passes
-//! egui.prepare(&ctx, output)?;                              // outside any pass
-//! frame.begin_swapchain_pass();                             // the pass owns the clear
-//! egui.paint(ppp);
-//! frame.finish(vsync)                                       // end_pass, commit, present
-//! ```
-//! The GPU plumbing: sokol_gfx, plus the one per-OS device/swapchain leaf it runs
-//! on ([`backend`]).
-//!
-//! This module is the **sole** home for the drawing API in the renderer, and — in
-//! its `backend/` leaf — for the platform GPU `unsafe` that is invariant 9's
-//! sanctioned exception. Everything here is GPU plumbing; no model geometry, camera
-//! math or material logic lives near it.
-//!
-//! It is also the sole home for the backend's *types*. Nothing outside `rhi` names an
-//! `sg::` type, a pixel format enum or a window handle: every resource is created
-//! through a wrapper, every format is a [`Format`], and every failure is a
-//! [`GpuError`]. That is what makes the renderer's shape independent of what is
-//! underneath it — see `mac-port-plan.md` §3.1.
+//! underneath it — see `docs/ARCHITECTURE.md`, Platform decisions: `rhi` owns the
+//! backend.
 //!
 //! ## The frame
 //!

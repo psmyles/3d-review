@@ -14,17 +14,10 @@
  * so the capture owns a fixed set of allocations and `review_import_free_extras`
  * is a plain list of `free`s — on every path, success or failure.
  */
-#include "ufbx_extras.h"
-
-#include "ufbx.h"
+#include "ufbx_internal.h"
 
 #include <stdlib.h>
 #include <string.h>
-
-/* Declared in ufbx_bridge.c: the geometry output this capture is indexed like,
-   and its error type. Only the fields the capture reads are named here. */
-typedef struct review_import_error review_import_error;
-void review_import_set_error_message(review_import_error *out_error, const char *message);
 
 /* --------------------------------------------------------------------------
  * Growable storage
@@ -927,7 +920,7 @@ static int review_extras_capture_mesh(review_extras_builder *b, const ufbx_node 
         size_t edge_count = mesh->edges.count;
         if (edge_first > UINT32_MAX || edge_count > UINT32_MAX) {
             b->failed = 1;
-        } else if (review_extras_push_edge_layers(b, edge_count)) {
+        } else if (!b->failed && review_extras_push_edge_layers(b, edge_count)) {
             review_import_extras *o = b->out;
             dst.has_edge_smoothing = mesh->edge_smoothing.count >= edge_count && edge_count > 0 ? 1u : 0u;
             dst.has_edge_crease = mesh->edge_crease.count >= edge_count && edge_count > 0 ? 1u : 0u;
@@ -953,8 +946,13 @@ static int review_extras_capture_mesh(review_extras_builder *b, const ufbx_node 
         }
     }
 
-    /* Per-face layers, indexed by global face. */
-    if (review_extras_push_face_layers(b, bases->face_count)) {
+    /* Per-face layers, indexed by global face. The arrays grow from the capture's
+       own `face_count`, which only matches the geometry's `face_first` while every
+       earlier push succeeded - so the fill is skipped once the capture has failed
+       (it is discarded as a whole then) and bounds-checked regardless. */
+    if (!b->failed && review_extras_push_face_layers(b, bases->face_count)
+        && bases->face_first <= b->out->face_count
+        && bases->face_count <= b->out->face_count - bases->face_first) {
         review_import_extras *o = b->out;
         size_t count = bases->face_count;
         dst.has_face_smoothing = mesh->face_smoothing.count >= count && count > 0 ? 1u : 0u;
@@ -995,11 +993,15 @@ static int review_extras_capture_mesh(review_extras_builder *b, const ufbx_node 
        layer still push zeros. */
     {
         size_t needed = bases->logical_first + bases->logical_count;
-        while (b->out->vertex_crease_count < needed && !b->failed) {
-            double zero = 0.0;
-            review_extras_push_vertex_crease(b, &zero, 1);
+        if (!b->failed && b->out->vertex_crease_count < needed) {
+            /* NULL pushes zeroed elements, and all-zero bits are 0.0. */
+            review_extras_push_vertex_crease(b, NULL, needed - b->out->vertex_crease_count);
         }
-        if (mesh->vertex_crease.exists && bases->logical_count > 0) {
+        /* An earlier failure (here or anywhere in the capture) leaves the array
+           short of `needed`, so the fill below must not run: it indexes up to
+           `needed - 1`. The capture is discarded as a whole once `failed` is set. */
+        if (!b->failed && b->out->vertex_crease_count >= needed && mesh->vertex_crease.exists
+            && bases->logical_count > 0) {
             dst.has_vertex_crease = 1;
             for (index = 0; index < bases->logical_count && index < mesh->vertex_first_index.count; index++) {
                 uint32_t first_corner = mesh->vertex_first_index.data[index];

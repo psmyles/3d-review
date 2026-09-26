@@ -14,14 +14,19 @@ under.
 - [GPU struct layout and the render passes](#gpu-struct-layout-and-the-render-passes)
 - [Import and the FBX libraries](#import-and-the-fbx-libraries)
 - [The Opt workspace](#the-opt-workspace)
+- [Remesh](#remesh)
 - [Baked assets](#baked-assets)
 
 ---
 
 ## Testing and CI
 
-**A real GPU is required for render checks.** Reserve CI for `cargo check`,
-`clippy` and the unit tests. GPU render checks stay manual.
+**There is no CI; the gate is `scripts/check.ps1` (or `.sh`).** It runs fmt,
+clippy (the workspace, and `review-render` with its `bake` feature, which nothing
+else compiles), the tests with `REVIEW_REQUIRE_FIXTURES=1` — so a suite that
+cannot find its fixture or vendored tree *fails* rather than printing "skipping"
+— and the shader bytecode check. **A real GPU is required for render checks**,
+which stay manual.
 
 **`crates/optimize` carries two integration suites over the real fixtures** in
 `assets/test_models`, both of which have already caught bugs the synthetic demo
@@ -29,7 +34,8 @@ cube could not: `tests/real_models.rs` (welds, LOD targets, per-triangle tag
 survival, exclusions) and `tests/export_round_trip.rs`, which checks every written
 FBX by **reading it back** through the vendored ufbx reader — the writer's own
 return value only proves it did not error. Each test skips itself when its fixture
-or a vendored tree is absent.
+or a vendored tree is absent. `tests/remesh.rs` and `tests/remesh_fidelity.rs`
+are the Remesh pair — see [Remesh](#remesh) for why validity alone is not enough.
 
 **The shaders are validated by the build, not by a test.** `fxc /WX` (or `xcrun
 metal`) in `render`'s `build.rs` rejects a broken shader.
@@ -105,12 +111,16 @@ each struct's `size_of` assertion against **shdc's generated struct** rejects a
 layout that drifted. Re-run `scripts/gen-shaders.ps1` (or `.sh`) after editing the
 GLSL, and commit what it writes.
 
-### Structured-buffer structs are invariant-11 territory too
+### Storage-buffer structs are invariant-11 territory too
 
-`InfluenceEntry`, `PaletteEntry` and `MorphEntry` in `gpu_types.rs` mirror the
-HLSL structs at `t12..t15` byte for byte. The palette is three `float4` rows,
-never `float3x4`, because matrix packing differs between cbuffers and structured
-buffers. Each has a `const` size assertion.
+`InfluenceEntry`, `PaletteEntry` and `MorphEntry` in `gpu_types.rs` mirror
+`review.glsl`'s storage-buffer entries at bindings 12-15 byte for byte, and the
+morph weights upload as bare `f32`s against a one-scalar entry. The palette is
+three `vec4` rows, never a `mat3x4`, because matrix packing differs between
+uniform blocks (std140) and storage buffers (std430); `MorphEntry` spells its
+vectors out as scalars for the same reason, since a `vec3` member would pad the
+std430 entry to 48 bytes. Each has size and field-offset assertions against
+shdc's reflection.
 
 `scene_vertex_size()` deliberately reports the 64-byte engine-equivalent vertex,
 not `SceneVertex`'s 80 bytes — the deform lane is viewer-internal and must not
@@ -213,14 +223,17 @@ Tone mapping and sRGB encoding happen once in `post`, not in the scene shader.
 ### Derived views: follow the ensure/free pattern
 
 CPU-side vertex generation (grid, wireframe, face and vertex normal lines) lives
-in `crates/render/src/geometry/`, one file per category;
-`scene/resources.rs` (`ModelSlot` / `DerivedViews`) owns the draw list, the GPU
-resource cache and the buffer upload.
+in `crates/render/src/geometry/`, one file per category; `scene/slot.rs`
+(`ModelSlot` / `DerivedViews`) owns the per-model GPU state and its bake keys.
 
 Derived line views are built-on-demand and freed-on-off by
-`SceneGpu::sync_line_views` (invariant 3): a view's buffer exists only while its
-toggle is on, and is rebuilt live when its baked length or colour drifts. Add new
-debug views by following that pattern.
+`SceneGpu::sync_line_views` in `scene/line_views.rs` (invariant 3): a view's
+buffer exists only while its toggle is on, and is rebuilt live when its baked
+length or colour drifts. Add new debug views by following that pattern, and give
+every one a free arm on *each* path that leaves its view — including a switch to
+another workspace, which runs a different `render_*` entry point that never
+calls the view's `sync_*` at all. `SceneGpu::release_opt_views` and
+`release_uv_views` are those arms for the Opt-only and UV-only resources.
 
 A `sync_*` must compare against the **borrowed** frame inputs and only `to_vec()`
 its bake key on the rebuild path, so a steady-state frame allocates nothing.
@@ -346,6 +359,32 @@ P1's `UFBXW_PROP_FLAG_EXPLICIT`, set on every property the bridge writes, forces
 it out. The elision is upstream's design — don't remove the flag to "clean up"
 the file.
 
+### `ReflectionFactor` is not metalness
+
+Import takes metalness from `pbr.metalness` alone. A classic Lambert or Phong
+material declares none, and its `ReflectionFactor` is Phong reflectivity — a slot
+DCCs fill with a non-zero default nobody authored (Maya 0.5, the FBX SDK 1.0).
+Reading it as metalness made nearly every real game asset arrive half or fully
+metal, and in the IBL path a metal has no diffuse term, so stone, wood and skin
+became mirrors of the environment. ufbx *does* map that slot onto metalness for
+`UFBX_SHADER_BLENDER_PHONG`, where Blender genuinely writes it there, and that
+arrives through `pbr.metalness` anyway. The export's Phong fallback still writes
+the viewer's metallic to `ReflectionFactor` (the closest slot Phong has); that is
+deliberately **one-way**, so do not "restore symmetry" by reading it back.
+`a_classic_material_imports_as_a_dielectric` pins it.
+
+### UV and vertex-colour layers go out `ByPolygonVertex` + `IndexToDirect`
+
+ufbx_write's plain `ufbxw_mesh_set_uvs` / `set_colors` ask it to generate
+indices, which dedups the values and emits an index array *as long as the value
+array* — so vertex-mapped values become `ByVertice` + `IndexToDirect` with a
+per-control-point index. That is legal FBX that no reader assuming an indexed
+UV or colour layer is per polygon vertex can load: Unity rejects the mesh with
+"has invalid UV coordinates" / "invalid vertex Colors" and blames the exporting
+tool. `export_bridge.c` therefore uses the `*_indexed` setters with the mesh's own
+index buffer. Normals are unaffected — their layer forbids indices, so they stay
+vertex-mapped and `Direct`.
+
 ### Recovering from a malformed index drops the whole triangle, never one corner
 
 An index buffer is a flat corner stream, so `continue`-ing past a single bad
@@ -439,6 +478,37 @@ Two consequences:
   leaves each survivor with an arbitrary UV, so the layout can fold and the split
   count grows; tests about such a weld count distinct *positions*.
 
+### An overlay projects into the rect its camera draws into, and the split has two
+
+`ui`'s `dimensions.rs` maps clip space onto a view's `image` rect and clamps a
+label to its `clamp` rect. For a single view those are the whole window (the
+scene is drawn over the full backbuffer and the chrome paints on top) and the
+chrome-free viewport. The Opt split is two views over *halves* of the chrome-free
+viewport, each with its own mesh, camera and measured box — and each camera's
+aspect ratio has to be re-derived from its half, because `app` sets it from the
+whole window and `render_opt` overrides it on its side; project through the
+uncorrected one and every label drifts sideways from its box.
+`ui::overlay::split_halves` is the single source of that geometry, shared with
+the divider, the picking and the pointer routing. The split lays out both halves
+*before* any run lands (the renderer draws the source into both), so the second
+view exists whenever the workspace does; keying it on "a processed level exists"
+mis-projects the common empty-stack case.
+
+### The UV-seam view finds a shared edge two ways, and both are exact
+
+A seam is an edge whose faces disagree about the UVs, so the question is which
+render corners are the same point. An imported mesh answers from
+`corner_to_logical` — free, and the only workable answer, since import
+corner-splits every face corner and comparing vertex indices would find no shared
+edges at all. An Opt-processed level carries no such map, so
+`geometry::uv_seams::welded_logical_ids` welds by **(owning node, exact position
+bits)** instead. Exact is correct, not a shortcut: `optimize` never synthesizes a
+position outside Remesh and Shrinkwrap, which rebuild whole objects — every other
+operation drops vertices or copies whole ones — so a processed position is bit
+for bit one the source had. The node is in the key because reassembly
+concatenates per-object buffers, and a bare position weld would fuse two objects
+that merely touch and hide the border each really has.
+
 ### A voxel shell is closed, but not always manifold
 
 Shrinkwrap's Voxel method (`meshopt_remesh`) keeps a thin sheet as two
@@ -448,6 +518,220 @@ can be used twice in each direction. Its closedness is *balanced* directed edges
 field's test would reject a correct result. The same sheets z-fight when
 back-face rendering is on, and are why the method defaults to generated normals:
 projection would read one side's shading onto both.
+
+## Remesh
+
+`crates/optimize/src/remesh/` partitions the surface into even regions and
+collapses each to one vertex (see [ARCHITECTURE.md](ARCHITECTURE.md#settled-decisions)
+for why it replaced the vendored engines). Most of what follows was found by
+measuring, and the numbers are what the change measured at the time it was made.
+`tests/remesh_fidelity.rs` re-measures them; run it with `--ignored --nocapture`
+in release before and after any change to a stage.
+
+### A rebuild can be valid and the wrong shape, and validity is all most tests check
+
+Closed where the source was closed, wound one way, within its face budget — a
+strip of bark narrowed until a gap opens against the trunk passes all of it.
+`tests/remesh_fidelity.rs` is the other half: per object, the two-sided distance
+between source and rebuild in units of the target face size `h`, the same
+restricted to *rim* vertices, and the share of surface area kept. Area is the
+bluntest measure and the hardest to argue with. Rim distance is the most
+sensitive, because a silhouette is a few hundred vertices out of fifteen thousand
+and can move a long way before a percentile over all of them notices.
+
+**A fold inflates surface area**, so an area ratio scores a self-intersecting
+rebuild *above* 100% and reads the damage as better than perfect.
+`a_rebuild_does_not_fold_through_itself` is what catches that, and it asserts the
+fixture's own source is clean first: most real game assets self-intersect as
+authored (a crystal cluster 11.4%, an ammo crate 15.7%, a tree branch 9.2% of
+triangles), and a rebuild carries that through rather than causing it.
+
+### A rebuilt mesh is even in density and unstructured in layout — not a bug
+
+Vertices land at an even spacing and are triangulated as that gives; a field
+extraction laid them on a lattice. An unstructured triangulation of perfectly
+spaced points has real area variance in it — 2.8x P90/P10 on edge length against
+the old engines' 1.4x, measured at the switch — and it is *not* a convergence
+problem: twenty-four relaxation passes plateau and forty Lloyd iterations change
+nothing. Aligning the layout to a cross field is the fix on paper and **does not
+work on triangles**: a cross describes a square lattice and a triangulation wants
+a hexagonal one. Four ways of spending the field on the triangle output each
+measured neutral or worse (`remesh/cross_field.rs`'s module doc has all four). It
+is spent on the quad merge instead, where the output genuinely is four-valent.
+
+### A collapse cannot add faces
+
+Asking for more faces than the input holds returns about the input, with a
+warning (`a_budget_above_the_input_says_so`). The engines could subdivide; this
+cannot, and that is the trade for never tearing a mesh.
+
+### The rim of a thin shell is a feature, whatever **Keep sharp edges** says
+
+A leaf, a strip of bark, a sheet of cloth is two sheets meeting at a fold, and
+that fold is the silhouette. `features::is_feature` treats a dihedral past
+`FOLD_COSINE` (a hair past a right angle) as a feature regardless of the crease
+setting. The threshold was measured, not chosen: every value from 30 to 100
+degrees held the bark's area within a point or two and it fell away past 110
+(93.9%). The margin past square is there so a box modelled at exactly 90 degrees
+still rebuilds smooth. Without the rule the bark kept 88% of its area; with it,
+97%.
+
+**A rim is usually bevelled**, so a single edge's dihedral will not find it — but
+a chain of them will. On the palm fixture only 0.5% of edges turn past 120
+degrees; the leaves turn their full 180 over two or three rings at about 60 each.
+That is why the threshold sits near a right angle rather than near a fold-back,
+and why `how_sharply_the_source_folds` exists: run it before assuming a per-edge
+test can see a feature at all.
+
+### A sliver's normal is rounding error and will invent features
+
+A cross product of two nearly parallel edges points anywhere, and a pair of them
+reads as folded. A feature costs a seed and the seeds *are* the vertex budget, so
+a coarse sphere whose poles each read as a ring of folds came back 42% denser
+than asked. `features::is_sliver` refuses a normal from a face whose area is
+below `SLIVER_QUALITY` times its longest edge squared. (The sphere's case comes
+from `sin(PI)` being 8.7e-8 rather than 0; real exporters leave worse.)
+
+### A corner in the middle of a chain is invisible to a degree count
+
+A leaf's tip sits on a border that runs unbroken all the way round, so it has two
+feature partners like every other vertex and is never a junction; stations
+spaced by arc length land either side and the tip comes back as a chord.
+`features::mark_corners` measures the turn across a window of half a target edge
+either side — not between one edge and the next, which on a dense input is a
+degree of noise — and flags only the sharpest vertex of each bend, because two
+adjacent junctions cannot collapse into one another and sit there spending
+budget. **Both walks step outward and stop**, so the cost is the number of input
+vertices one new edge spans; scanning the chain per vertex instead is quadratic
+and ruinous on a ten-million-triangle rim.
+
+### Seeding must hand out stations that land on a full patch again
+
+A station is a point on the surface and a seed has to be an input vertex; where
+the input is barely denser than the target, a patch fills up and every later
+station landing there used to be spent for nothing — 18% under budget at ratio 1,
+hidden on every fixture because regions that will not collapse added about as
+many faces back. `seeds::place_interior` hands those stations out again over the
+surface that still has room (`REFILL_ROUNDS`, weights recomputed with the full
+faces left out), which put every fixture within 5% of its budget. Taking the seed
+from wherever there happened to be a free vertex meets the count too, but spreads
+face sizes 4.9x against 2.8x — do not.
+
+### The survivor of a collapse has to be allowed to move
+
+Pinning it to its own position makes every edge length static, which is tempting
+because the collapse order can then be one sort. It also means the last merges
+in a region drag a vertex across the whole of it and flip every sliver on the
+way: 1489 collapses refused for normal flips against 102 for every other reason,
+and a fifth more faces than asked for.
+
+### A collapse can pinch an outline shut if it is allowed to
+
+Two vertices far apart on one border loop share a feature chain and pass the link
+condition, and merging them leaves a vertex with four border edges — a figure of
+eight. `collapse::survivor_of` therefore requires the edge between two border
+vertices to have exactly one face, i.e. the outline genuinely runs between them.
+The palm's bark is the fixture: a sheet curled into a tube, whose border passes
+close to itself.
+
+### The final placement needs the flip guard the rest of the collapse has
+
+Every placement in `collapse` refuses a move that turns an incident face over —
+except, for a long time, `place_survivor`, the move of a region's last vertex to
+its quadric's optimum, which was bounded only by how *far* it went
+(`OPTIMUM_REACH`), not which *way*. It is the largest and least constrained move
+in the rebuild, because by then the collapses have pulled the fan tight around
+the vertex. Unguarded it put 3.3% of a clean fixture's triangles through each
+other at ratio 0.25 and 5.4% at 0.07. Refusing the move outright costs the area
+the optimum was keeping, so `OPTIMUM_BACKOFF` offers the same move at a half, a
+quarter and an eighth first.
+
+### The relaxation's guard has to be stated as a fold, not as a flip
+
+This is the opposite call from the collapse's. Out of the collapse, 5.01% of the
+palm's edges fold past a right angle, and two rounds of `cleanup`'s relaxation
+bring that to 3.56%. A guard that refuses any move turning an incident face over
+makes it *worse* (4.54%), because it blocks exactly the recovery moves: a face
+always agrees with where it just was, so that test only measures "did this vertex
+move far". A fold is a disagreement between two faces sharing an edge, and
+`cleanup::fold_count` is the one-ring reading of that; a move is taken when it
+does not *increase* it, which permits the recovery and makes the pass unable to
+make the mesh worse.
+
+### Tangential relaxation is only as good as the vertex normal
+
+The pass drops the part of its move along the vertex normal, which is what keeps
+it on the surface. At the narrow end of a leaf the sheet above and the sheet
+below are in the same fan and point opposite ways, so the area-weighted sum
+nearly cancels, and subtracting the rounding error that is left walks the vertex
+through the shell. `cleanup::vertex_normal` reports how much the fan agrees (the
+weighted sum's length over the total area), and the pass declines below
+`NORMAL_AGREEMENT`. Worth ten points of a thin object's area.
+
+### A black patch is an inside-out face, and the hole test cannot see one
+
+`welded_edge_uses` counts edges *undirected*, and an inverted triangle uses each
+of its edges exactly once like any other — so a mesh can pass every no-holes
+check and still show dark patches, because a surface lit from behind is black.
+The cleanup's edge flip produced them by rewriting the two triangles either side
+of an edge to a winding it *assumed*: the two faces of an oriented surface
+traverse their shared edge in opposite directions, which is a property of the
+mesh, so guessing turned both over every time the guess was wrong. Its
+normal-flip guard compared fabricated before-normals against fabricated
+after-normals under the same assumption and so never noticed.
+`cleanup::Quad::read` now reads the winding from the corner order, and
+`a_rebuild_is_wound_the_same_way_all_over` pins it on directed edges.
+
+### Snapping the rebuild back onto the source surface makes it worse
+
+It is the obvious last pass, and what a remesher that *synthesizes* a surface
+ends with. Measured over every vertex: a plant 96.8% of its area to 96.1%, a
+column 86.1% to 84.0%, stones 99.7% to 98.0%; narrowed to only the vertices the
+relaxation had just moved, the plant 89.0% to 87.3%. This rebuild synthesizes
+nothing: its vertices are source vertices or the optimum of a quadric over the
+source's own planes, and on a convex patch that optimum sits slightly *outside*
+the surface — which is where a coarse mesh has to be to keep the area of the fine
+one. The nearest point on the source is by definition not outside it, so
+snapping inscribes what was correctly circumscribed. Do not re-add it.
+
+### Two changes that look right and measure worse
+
+Do not retry these without a fixture that shows otherwise.
+
+- **Spacing chain stations by cost** (per-vertex `h`) instead of one averaged
+  size per chain: correct in principle, and 1% worse on the plant at every
+  smoothing setting, because no fixture here has a rim whose density varies.
+- **Widening the size field's dilation** from 2 passes to a radius in `h`: at
+  these densities it resolves to the same 2 passes, and where it does bite it is
+  a trade — 4 passes buys evenness (5.64x edge spread to 4.96x) and costs area
+  (97.3% to 96.8%).
+
+### A quad is two triangles with the edge between them rubbed out
+
+`remesh::quads` runs after the cleanup and merges a pair only when the four
+corners are near enough coplanar — `MERGE_WARP`, a corner's distance out of the
+other three's plane over the mean edge, **not** a dihedral angle, which reads 160
+degrees across the short diagonal of two long thin triangles whose corners are
+all but in one plane. Nothing moves: the merged quad keeps its own diagonal in
+its corner order, `layout::canonicalize` rotates a quad only by an even number of
+places so that survives, and `remesh::fan` splits on corners `0..2`, so the
+triangles drawn are the triangles that were there before the merge. Do not
+"improve" `fan` to pick the shorter diagonal: that silently flips the
+triangulation of every quad whose merge diagonal was the longer one.
+
+**Greedy matching strands more triangles than it looks like it should**, because
+a pair taken early can be the only partner two other faces had. `quads::augment`
+finds the length-three augmenting paths (a stranded triangle, a quad, another
+stranded triangle) and is worth about ten points of quad share. What is left is a
+property of the model: at half density, 81% on a plant and 47% on a creased stone
+column, where nearly every edge is a genuine fold and a quad across one would be
+a lie.
+
+### Measuring a tear on the assembled buffer counts material seams
+
+A node is split into one piece per material with its own vertices, so a closed
+object reads as several open ones. Weld by position first — `welded_edge_uses` in
+`tests/remesh.rs` — which is the same weld `remesh::proxy` works on.
 
 ---
 

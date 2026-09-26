@@ -1,5 +1,5 @@
 //! The deform tables on the GPU: the influence / palette / morph buffers the
-//! vertex shader reads at `t12..t15`.
+//! vertex shader reads at storage-buffer bindings 12..15.
 //!
 //! The palette and shape weights are re-uploaded only when `pose_revision`
 //! moves, so a steady-state frame of a playing clip uploads two small buffers
@@ -14,9 +14,9 @@ use crate::shaders::generated;
 use super::gpu::SceneGpu;
 use super::gpu_types::{InfluenceEntry, MorphEntry, PaletteEntry};
 
-/// The vertex shader's deform inputs for one model (`t12..t15`): the immutable
-/// influence + blend-shape tables built with the mesh, and the dynamic palette +
-/// shape weights re-uploaded when the pose revision moves.
+/// The vertex shader's deform inputs for one model (storage-buffer bindings 12..15):
+/// the immutable influence + blend-shape tables built with the mesh, and the dynamic
+/// palette + shape weights re-uploaded when the pose revision moves.
 pub(super) struct DeformGpu {
     pub(super) influences: StorageBuffer<InfluenceEntry>,
     /// `None` when the model has no blend shapes; the shader never reads it then
@@ -24,6 +24,7 @@ pub(super) struct DeformGpu {
     /// binds its one-element dummy instead.
     pub(super) morph: Option<StorageBuffer<MorphEntry>>,
     pub(super) palette: StorageBuffer<PaletteEntry>,
+    /// One `f32` per blend shape: `review.glsl`'s `morphweight` entry, pinned below.
     pub(super) shape_weights: Option<StorageBuffer<f32>>,
     /// The `pose_revision` the palette currently holds; `None` until a pose has
     /// been uploaded (the deform flag stays off until then).
@@ -31,6 +32,12 @@ pub(super) struct DeformGpu {
     /// Scratch for the palette conversion, kept so a pose change allocates nothing.
     pub(super) palette_scratch: Vec<PaletteEntry>,
 }
+
+// The weights upload as bare `f32`s, so the shader's entry must stay one scalar
+// (invariant 11): a second field would stride every weight after the first.
+const _: () = assert!(
+    std::mem::size_of::<f32>() == std::mem::size_of::<crate::shaders::generated::Morphweight>()
+);
 
 impl DeformGpu {
     pub(super) fn new(layout: &DeformLayout) -> GpuResult<Option<Self>> {

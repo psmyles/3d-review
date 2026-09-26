@@ -2,14 +2,15 @@
 //!
 //! What the unit tests beside the implementation cannot show is the thing the
 //! operation exists for: that a real game asset — a pile of overlapping parts
-//! that no quad solver will touch — comes back as one closed shell, and that the
-//! solver then runs on it.
+//! with no one surface to walk — comes back as one closed shell, and that a
+//! Remesh then runs on it.
 
 #![cfg(has_meshopt)]
 
 use review_model::ModelData;
 use review_optimize::{
-    OpKind, OptStack, RemeshDensity, RemeshParams, ShrinkwrapMethod, ShrinkwrapParams, VoxelTarget,
+    OpKind, OptStack, OptWarning, RemeshDensity, RemeshParams, ShrinkwrapMethod, ShrinkwrapParams,
+    VoxelTarget,
 };
 
 mod common;
@@ -153,7 +154,7 @@ fn a_wrap_below_a_shape_changing_operation_is_advised_against() {
         result
             .warnings
             .iter()
-            .any(|warning| warning.contains("Move Shrinkwrap to the top")),
+            .any(|warning| matches!(warning, OptWarning::ShrinkwrapBelowShapeChange)),
         "{:?}",
         result.warnings
     );

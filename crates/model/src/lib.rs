@@ -1,5 +1,6 @@
 // Host-agnostic data only (invariant 10) — and fully safe (invariant 9): all
-// `unsafe`/FFI lives in `import`/`psd` and the sanctioned D3D11 sites.
+// `unsafe`/FFI lives in `import`, `psd` and `optimize`, the platform GPU leaf
+// (`render/src/rhi/backend/`) and `shell-macos`.
 #![forbid(unsafe_code)]
 
 use glam::{Vec2, Vec3};
@@ -25,7 +26,8 @@ pub use bvh::{
     triangle_positions,
 };
 pub use clip::{
-    AnimationClip, DEFAULT_FRAME_RATE, Key, MorphTrack, NodeTrack, frame_rate_or_default,
+    AnimationClip, DEFAULT_FRAME_RATE, Key, MAX_CLIP_FRAMES, MorphTrack, NodeTrack,
+    frame_rate_or_default,
 };
 pub use demo::demo_cube_model;
 pub use extras::{ExtrasCounts, SourceExtras};

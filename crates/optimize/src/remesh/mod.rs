@@ -1,100 +1,74 @@
-//! Field-guided retopology: regenerate an object's surface as evenly sized,
-//! curvature-aligned triangles or quads.
+//! Retopology: regenerate an object's surface as evenly sized triangles or
+//! quads, by partitioning it into even regions and collapsing each region to
+//! one vertex.
 //!
 //! ## Why this is not like the other operations
 //!
 //! Every meshoptimizer operation *edits* the mesh it is handed — it removes
 //! triangles, merges vertices or reorders buffers, and each output triangle can
-//! be traced back to an input one. Retopology cannot: the output shares no
-//! vertex, no edge and no face with the input. It is a new surface that happens
-//! to lie on the old one.
+//! be traced back to an input one. Retopology cannot: its faces join vertices
+//! that were regions apart, and those vertices sit where the collapse placed
+//! them, so no output face corresponds to an input one. It is a new surface
+//! that happens to lie on the old one.
 //!
 //! Three things follow, and they shape this whole module:
 //!
 //! * **Attributes come back by projection.** For each new corner, the nearest
 //!   point on the source surface is found ([`review_model::Bvh::closest_point`])
-//!   and the material, UVs, colors and normal are read there ([`project`]).
+//!   and the material, UVs, colors and normal are read there (`project`).
 //! * **The operation replaces a node's pieces** rather than rewriting them, so
 //!   it takes the whole `Vec<Submesh>` and splices — a node that came in as
 //!   three materials may come out as three different ones.
-//! * **Quads are real.** The engine emits polygons, and they survive to the
-//!   viewport, the stats card and the export as polygons, through a rebuilt
-//!   [`crate::submesh::PolygonCarry`] ([`layout`]).
+//! * **Quads are real.** `quads` pairs the finished triangles into quads, and
+//!   they survive to the viewport, the stats card and the export as polygons,
+//!   through a rebuilt [`crate::submesh::PolygonCarry`] (`layout`).
 //!
 //! ## Static meshes only
 //!
 //! A node carrying skin weights or blend shapes is left untouched with a
-//! warning. Weights are per *vertex*, and the new mesh has none of the old
-//! vertices; projecting them would mean inventing a binding the artist never
+//! warning. Weights are per *vertex*, and each vertex of the new mesh stands
+//! for a whole region of old ones, moved to where the collapse put it; blending
+//! or projecting their weights would mean inventing a binding the artist never
 //! authored and that no later edit could check.
 //!
 //! ## Layout
 //!
-//! [`proxy`] builds the welded position-only mesh the engine solves over,
-//! [`project`] is the attribute transfer, [`manifold`] the pre-flight report,
-//! and [`layout`] the canonicalization plus the corner-run expansion
-//! `process::assemble` uses. The engine call itself is behind
-//! [`crate::remesh_ffi`], with [`unavailable`] as its twin for a build with no
-//! vendored tree.
+//! `solve` is one object's rebuild, stage by stage: `topology`, `size_field`,
+//! `features`, `seeds`, `partition` + `lloyd`, `quadric` + `collapse`,
+//! `cleanup`, and `quads` guided by `cross_field`. `proxy` builds the welded
+//! position-only mesh it runs over, `preview` the cheap mesh shown while it
+//! converges, `project` is the attribute transfer, and `layout` the
+//! canonicalization plus the corner-run expansion `process::assemble` uses.
 
 use std::collections::HashMap;
 
 use glam::{Vec3, Vec4};
 use review_model::{ModelData, Vertex};
 
+use crate::notice::OptWarning;
 use crate::stack::{
     NormalParams, OpInstance, OpKind, RemeshDensity, RemeshParams, RemeshTopology, WeldParams,
 };
 use crate::submesh::{NO_FACE, PolygonCarry, Submesh};
 use crate::{OptError, Warnings, ops};
 
-#[allow(
-    dead_code,
-    reason = "the solver that drives the collapse is the next stage"
-)]
 pub(crate) mod cleanup;
 pub(crate) mod collapse;
 mod cross_field;
-#[allow(
-    dead_code,
-    reason = "the rebuild that reads the chains is the next stage"
-)]
 pub(crate) mod features;
+pub(crate) mod geom;
 pub(crate) mod layout;
-#[allow(
-    dead_code,
-    reason = "the rebuild that relaxes the seeds is the next stage"
-)]
 pub(crate) mod lloyd;
-#[allow(
-    dead_code,
-    reason = "the rebuild that reads the regions is the next stage"
-)]
 pub(crate) mod partition;
-#[allow(
-    dead_code,
-    reason = "the progressive display that shows these lands in step 4"
-)]
 pub(crate) mod preview;
 pub(crate) mod project;
 pub(crate) mod proxy;
-#[allow(dead_code, reason = "the collapse that reads these is the next stage")]
 pub(crate) mod quadric;
 mod quads;
-#[allow(
-    dead_code,
-    reason = "the rebuild that reads the seeds is the next stage"
-)]
 pub(crate) mod seeds;
+pub(crate) mod size_field;
 pub(crate) mod solve;
 pub(crate) mod surface;
-// Built and proven against the C++ it was ported from in this step; the solver
-// that calls it lands in the next, and takes this allow with it.
-#[allow(
-    dead_code,
-    reason = "the rebuild that reads the field is the next stage"
-)]
-pub(crate) mod size_field;
 pub(crate) mod topology;
 
 pub(crate) use project::{ProjectionSource, Winding};
@@ -109,20 +83,21 @@ pub fn available() -> bool {
     true
 }
 
-/// Fewest faces a node may be asked for. Below about this the field has no room
-/// to align to anything and the result is noise rather than a low-poly mesh.
+/// Fewest faces a node may be asked for. Below about this there are too few
+/// regions to describe any shape and the result is noise rather than a low-poly
+/// mesh.
 const MIN_FACES: u32 = 4;
 
 /// Fewest source triangles a node must have to be worth remeshing. A handful of
-/// triangles carries no surface to solve a field over, and the result would be
-/// worse than what is already there.
+/// triangles carries no surface to partition, and the result would be worse
+/// than what is already there.
 const MIN_INPUT_TRIANGLES: usize = 16;
 
 /// How far from a new corner the source surface may be and still be projected
 /// from, as a multiple of the proxy's bounding-sphere radius. Generous on
 /// purpose: the retopologized surface sits within a fraction of an edge length
-/// of the original, so this only ever rejects a corner the engine put somewhere
-/// impossible.
+/// of the original, so this only ever rejects a corner the rebuild put
+/// somewhere impossible.
 const PROJECTION_RANGE: f32 = 0.25;
 
 /// How much the faces around a vertex must agree on a direction before that
@@ -132,8 +107,9 @@ const NORMAL_AGREEMENT: f32 = 0.5;
 
 /// What one rebuild produced: a polygon soup over its own vertices.
 ///
-/// Triangles today; the offsets table is what lets a quad-dominant topology
-/// hand back n-gons later without changing anything that reads this.
+/// Triangles, or triangles and quads once [`quads`] has merged them; the
+/// offsets table is what lets a face have either corner count without changing
+/// anything that reads this.
 pub(crate) struct RemeshOutput {
     pub positions: Vec<Vec3>,
     /// `face_count + 1` starts into `corners`.
@@ -156,12 +132,12 @@ impl RemeshOutput {
         self.face_count() == 0 || self.positions.is_empty()
     }
 
-    /// Re-check what the bridge handed back before any of it is indexed.
+    /// Re-check a finished rebuild before any of it is indexed.
     ///
-    /// The bridge validates its own output, but this is the boundary the rest of
-    /// the crate trusts: an offset table that is not monotone, or a corner past
-    /// the vertex array, would otherwise surface as a panic in the projection
-    /// loop with nothing to point at.
+    /// Every stage keeps these properties by construction, but this is the
+    /// boundary the rest of the crate trusts: an offset table that is not
+    /// monotone, or a corner past the vertex array, would otherwise surface as a
+    /// panic in the projection loop with nothing to point at.
     pub(crate) fn validate(&self) -> Result<(), OptError> {
         let Some(&first) = self.face_offsets.first() else {
             return Err(OptError::Remesh(
@@ -276,8 +252,8 @@ pub(crate) fn resolve_budgets(inputs: &[BudgetInput]) -> Vec<NodeBudget> {
 ///
 /// Runs over the whole `Vec` rather than one piece at a time — like the AO bake
 /// and unlike the per-piece operations — because a node's materials share one
-/// surface: the field has to be solved over all of them at once or the seams
-/// between them come back as holes.
+/// surface: it has to be rebuilt over all of them at once or the seams between
+/// them come back as holes.
 pub(crate) fn remesh_submeshes(
     submeshes: &mut Vec<Submesh>,
     op: &OpInstance,
@@ -293,12 +269,12 @@ pub(crate) fn remesh_submeshes(
     };
     // Nodes in first-seen order, so the output's piece order follows the input's
     // and two runs over the same stack produce the same buffer layout.
-    let mut nodes: Vec<u32> = Vec::new();
-    for piece in submeshes.iter() {
-        if !nodes.contains(&piece.node) {
-            nodes.push(piece.node);
-        }
-    }
+    let mut seen = std::collections::HashSet::new();
+    let nodes: Vec<u32> = submeshes
+        .iter()
+        .map(|piece| piece.node)
+        .filter(|&node| seen.insert(node))
+        .collect();
 
     let mut budget_inputs: Vec<BudgetInput> = Vec::new();
     let mut proxies: HashMap<u32, proxy::Proxy> = HashMap::new();
@@ -314,12 +290,9 @@ pub(crate) fn remesh_submeshes(
             continue;
         }
         if pieces.iter().any(|piece| piece.has_rows()) {
-            warnings.push(&format!(
-                "Remesh: '{}' is skinned or has blend shapes, so it was left as it is. \
-                 Remeshing rebuilds the surface from scratch, and no skin weight \
-                 authored against the old vertices can follow it.",
-                node_name(model, node)
-            ));
+            warnings.push(OptWarning::RemeshKeptDeforming {
+                object: node_name(model, node),
+            });
             continue;
         }
         let resolved = crate::process::resolve_op(stack, op, node);
@@ -331,11 +304,10 @@ pub(crate) fn remesh_submeshes(
         };
         let proxy = proxy::build(&pieces);
         if proxy.triangle_count() < MIN_INPUT_TRIANGLES {
-            warnings.push(&format!(
-                "Remesh: '{}' has too few triangles to rebuild ({}), so it was left as it is.",
-                node_name(model, node),
-                proxy.triangle_count()
-            ));
+            warnings.push(OptWarning::RemeshTooFewTriangles {
+                object: node_name(model, node),
+                triangles: proxy.triangle_count(),
+            });
             continue;
         }
         budget_inputs.push(BudgetInput {
@@ -383,6 +355,9 @@ pub(crate) fn remesh_submeshes(
     // is still wanted, but the progress sink posts to the event loop and stays
     // on the thread that owns the scope.
     let token = run.token();
+    // Asked once, here: nothing watching means no preview is ever built, and a
+    // preview is a full projection of the part-finished object.
+    let wants_preview = run.wants_preview();
     // What each object may spend inside its own rebuild, so the per-object
     // parallelism and the parallelism *within* an object do not oversubscribe
     // each other: N objects across N cores get one thread each, one object gets
@@ -404,7 +379,7 @@ pub(crate) fn remesh_submeshes(
         token,
         |job, emit| {
             let mut notes = Warnings::default();
-            let rebuilt = rebuild_node(job, &mut notes, token, threads, emit);
+            let rebuilt = rebuild_node(job, &mut notes, token, threads, wants_preview, emit);
             NodeOutcome {
                 rebuilt,
                 notes: notes.into_vec(),
@@ -445,7 +420,7 @@ pub(crate) fn remesh_submeshes(
             continue;
         };
         for note in &outcome.notes {
-            warnings.push(note);
+            warnings.push(note.clone());
         }
         if let Some(rebuilt) = outcome.rebuilt {
             replacements.insert(job.node, rebuilt);
@@ -459,12 +434,11 @@ pub(crate) fn remesh_submeshes(
     // and its other old pieces are dropped. Everything else passes through
     // untouched, in order.
     let mut rebuilt: Vec<Submesh> = Vec::with_capacity(submeshes.len());
-    let mut placed: Vec<u32> = Vec::new();
+    let mut placed = std::collections::HashSet::new();
     for piece in submeshes.drain(..) {
         match replacements.get_mut(&piece.node) {
             Some(pieces) => {
-                if !placed.contains(&piece.node) {
-                    placed.push(piece.node);
+                if placed.insert(piece.node) {
                     rebuilt.append(pieces);
                 }
             }
@@ -504,12 +478,11 @@ fn publish_preview(
     // mesh that replaces it are laid out the same way and the viewport does not
     // jump.
     let mut spliced: Vec<&Submesh> = Vec::with_capacity(submeshes.len());
-    let mut placed: Vec<u32> = Vec::new();
+    let mut placed = std::collections::HashSet::new();
     for piece in submeshes {
         match replacement_of.get(&piece.node) {
             Some(pieces) => {
-                if !placed.contains(&piece.node) {
-                    placed.push(piece.node);
+                if placed.insert(piece.node) {
                     spliced.extend(pieces.iter());
                 }
             }
@@ -544,19 +517,20 @@ struct NodeJob<'a> {
 /// the same on every run.
 struct NodeOutcome {
     rebuilt: Option<Vec<Submesh>>,
-    notes: Vec<String>,
+    notes: Vec<OptWarning>,
 }
 
 /// One node through the in-house rebuild.
 ///
-/// Unlike the engine path there is no budget search: the face count becomes a
-/// vertex count by Euler's formula and the seeds are placed to match, so the
-/// number in the box is produced once rather than converged on.
+/// There is no budget search: the face count becomes a vertex count by Euler's
+/// formula and the seeds are placed to match, so the number in the box is
+/// produced once rather than converged on.
 fn rebuild_node(
     job: &NodeJob<'_>,
     warnings: &mut Warnings,
     cancel: Option<&crate::CancelToken>,
     threads: usize,
+    wants_preview: bool,
     emit: &dyn Fn(Vec<Submesh>),
 ) -> Option<Vec<Submesh>> {
     let _z = crate::prof::zone!("Remesh Node");
@@ -575,7 +549,7 @@ fn rebuild_node(
     }
     let source = project::ProjectionSource::build(&job.pieces);
     let on_pass = |soup: RemeshOutput| {
-        if !soup.is_empty() {
+        if wants_preview && !soup.is_empty() {
             let mut soup = soup;
             layout::canonicalize(&mut soup);
             emit(build_pieces_from(
@@ -585,6 +559,7 @@ fn rebuild_node(
                 job.proxy,
                 project::Winding::Keep,
                 job.params.normals.generation(job.params.normal_params),
+                threads,
             ));
         }
         true
@@ -596,10 +571,10 @@ fn rebuild_node(
             // belongs to is discarded whole — so it is not worth a warning.
             Err(OptError::Cancelled) => return None,
             Err(error) => {
-                warnings.push(&format!(
-                    "Remesh: '{}' was left as it is — {error}",
-                    job.name
-                ));
+                warnings.push(OptWarning::RemeshFailed {
+                    object: job.name.clone(),
+                    detail: error.to_string(),
+                });
                 return None;
             }
         };
@@ -609,20 +584,17 @@ fn rebuild_node(
     // instead of reducing one - so it is worth saying plainly rather than
     // quietly handing back the input.
     if job.faces as usize > job.proxy.source_triangles {
-        warnings.push(&format!(
-            "Remesh: '{}' already has fewer faces ({}) than the {} asked for, and a \
-             rebuild only ever merges - it cannot add detail that is not there. It \
-             came back at about its current density.",
-            job.name, job.proxy.source_triangles, job.faces
-        ));
+        warnings.push(OptWarning::RemeshBudgetAboveInput {
+            object: job.name.clone(),
+            triangles: job.proxy.source_triangles,
+            asked: job.faces,
+        });
     }
 
     if output.is_empty() {
-        warnings.push(&format!(
-            "Remesh: '{}' came back empty. Ask for more faces, or check that the \
-             object is not a handful of disconnected slivers.",
-            job.name
-        ));
+        warnings.push(OptWarning::RemeshEmpty {
+            object: job.name.clone(),
+        });
         return None;
     }
 
@@ -631,11 +603,10 @@ fn rebuild_node(
     // it is a large share, since the face count is otherwise exact.
     let regions = report.vertices.max(1);
     if report.stubborn * 20 > regions {
-        warnings.push(&format!(
-            "Remesh: {} parts of '{}' could not be simplified as far as asked without \
-             breaking the surface, so it came back denser there.",
-            report.stubborn, job.name
-        ));
+        warnings.push(OptWarning::RemeshStubborn {
+            object: job.name.clone(),
+            parts: report.stubborn,
+        });
     }
 
     // Quads were asked for and most of the surface would not take them. The
@@ -645,14 +616,11 @@ fn rebuild_node(
     // of triangles they are. Worth saying, because the face count comes back
     // high when it happens and the reason is not visible in the viewport.
     if job.params.topology == RemeshTopology::Quads && report.quads * 2 < output.face_count() {
-        warnings.push(&format!(
-            "Remesh: only {} of '{}' came back as quads ({} faces) - the rebuilt surface \
-             folds too sharply at this density for the rest to pair up. Ask for more faces, \
-             or rebuild it as triangles.",
-            report.quads,
-            job.name,
-            output.face_count()
-        ));
+        warnings.push(OptWarning::RemeshFewQuads {
+            object: job.name.clone(),
+            quads: report.quads,
+            faces: output.face_count(),
+        });
     }
 
     let mut output = output;
@@ -664,6 +632,7 @@ fn rebuild_node(
         job.proxy,
         project::Winding::Keep,
         job.params.normals.generation(job.params.normal_params),
+        threads,
     ))
 }
 
@@ -680,6 +649,7 @@ pub(crate) fn build_pieces_from(
     proxy: &proxy::Proxy,
     winding: project::Winding,
     normals: Option<NormalParams>,
+    threads: usize,
 ) -> Vec<Submesh> {
     let node = pieces.first().map_or(0, |piece| piece.node);
     let uv_channel_count = pieces
@@ -701,6 +671,7 @@ pub(crate) fn build_pieces_from(
         uv_channel_count,
         color_channel_count,
         winding,
+        threads,
     );
 
     // Generated normals come from the whole object's surface at once, before the

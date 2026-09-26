@@ -22,7 +22,8 @@ pub struct Submesh {
     pub vertices: Vec<Vertex>,
     /// Extra UV sets, one entry per channel, each parallel to `vertices`. Empty
     /// unless the source model carries more than one UV set (matching
-    /// [`ModelData::uv_channels`]'s own convention).
+    /// [`ModelData::uv_channels`](review_model::ModelData::uv_channels)'s own
+    /// convention).
     pub uv_channels: Vec<Vec<Vec2>>,
     /// Vertex-color sets beyond the first (which lives in `Vertex::vertex_color`),
     /// each parallel to `vertices`.
@@ -140,26 +141,14 @@ impl Submesh {
     /// remapping indices are separate steps in the C API, and keeping them
     /// separate here lets [`Self::compact_unreferenced`] reuse this.
     ///
-    /// Several old vertices may map to one new slot (a weld). The vertex itself
-    /// is written last-writer-wins, as meshoptimizer's remap does; the carried
-    /// per-vertex data is *gathered* from the first old vertex of each slot
-    /// instead, so every slot's extras come from one consistent source vertex.
+    /// Several old vertices may map to one new slot (a weld). Every slot takes
+    /// the vertex *and* all of its carried per-vertex data from one old vertex,
+    /// the first that maps there - so after a tolerance weld the vertex's own UV
+    /// and the first UV channel still agree, which a last-writer-wins vertex
+    /// (meshoptimizer's own remap) beside first-writer channels did not.
     /// Polygon corners and edges are renumbered through the same remap.
     pub fn apply_vertex_remap(&mut self, remap: &[u32], unique: usize) {
         debug_assert_eq!(remap.len(), self.vertices.len());
-
-        let mut vertices = vec![Vertex::default(); unique];
-        for (old, &new) in remap.iter().enumerate() {
-            if new == u32::MAX {
-                continue;
-            }
-            if let (Some(source), Some(destination)) =
-                (self.vertices.get(old), vertices.get_mut(new as usize))
-            {
-                *destination = *source;
-            }
-        }
-        self.vertices = vertices;
 
         // The representative old vertex of every new slot: the first one that
         // maps there.
@@ -171,6 +160,7 @@ impl Submesh {
                 *slot = old as u32;
             }
         }
+        self.vertices = gather(&self.vertices, &representative, Vertex::default());
         self.gather_rows(&representative);
 
         if let Some(polygons) = &mut self.polygons {

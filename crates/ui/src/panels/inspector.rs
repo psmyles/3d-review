@@ -327,7 +327,9 @@ fn texture_mapping_row(
 
         let selected_text = binding
             .map(|binding| pool_name(&binding.path))
-            .unwrap_or_else(|| "select texture".to_owned());
+            .unwrap_or_else(|| {
+                review_localization::tr(keys::ui_inspector::SELECT_TEXTURE).into_owned()
+            });
         egui::ComboBox::from_id_salt(("inspector_tex", index, slot.index()))
             .selected_text(selected_text)
             .width(texture_w)
@@ -518,7 +520,7 @@ fn node_inspector(ui: &mut egui::Ui, state: &UiState, model: &ModelData, index: 
     };
 
     let name = if node.name.is_empty() {
-        format!("Node {index}")
+        keys::ui_outliner::unnamed_node(index as f64)
     } else {
         node.name.clone()
     };

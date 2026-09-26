@@ -21,7 +21,7 @@
 //! what lets one exist, and it is the standard construction - a 4-RoSy field, or
 //! a *cross* field.
 //!
-//! It is also exactly what a quad topology needs, which is why it comes first: a
+//! It is also exactly what a quad topology needs, which is what it is for: a
 //! quad's two edge directions *are* the cross, and laying triangles along one is
 //! the same problem solved less completely.
 //!
@@ -42,7 +42,7 @@
 //! order vertices are visited in, cancellable between passes, and parallel over
 //! a fixed chunk exactly as every other sweep here is.
 //!
-//! ## Why it does not help a triangle mesh, and waits for quads
+//! ## Why it does not help a triangle mesh, and is spent on quads
 //!
 //! It was wired into the existing stages four different ways before this was
 //! understood, and every one of them measured neutral or worse:
@@ -68,24 +68,26 @@
 //! neighbourhood centre - measured, a plant's badly-shaped tenth fell from
 //! 0.508 to 0.425.
 //!
-//! So the field is right and the place to spend it is the quad extraction,
-//! where the output *is* four-valent and the lattice it describes is the one
-//! being built. A triangle mesh would want the six-fold field instead, which is
-//! the same construction with six rotations in place of four.
+//! So the field is right and the place to spend it is the quad merge
+//! ([`super::quads`]), where the output *is* four-valent and the lattice it
+//! describes is the one being built. A triangle mesh would want the six-fold
+//! field instead, which is the same construction with six rotations in place of
+//! four.
 //!
 //! ## What it does not do
 //!
 //! Nothing about singularities. A cross field on a closed surface must have
 //! points where the four directions cannot be combed flat - eight of them on a
-//! sphere - and a quad extraction has to know where they are, because they are
+//! sphere - and a quad *extraction* has to know where they are, because they are
 //! where the quad grid's irregular vertices go. Smoothing puts them somewhere
-//! sensible on its own without ever naming them, which is enough to line edges
-//! up and is not enough to extract a quad layout. That is the next piece.
+//! sensible on its own without ever naming them, which is enough for the merge
+//! to line neighbouring quads up and is not enough to extract a quad layout.
+//! The rebuild does not attempt one: it pairs finished triangles rather than
+//! laying out a quad grid.
 
-// Nothing in the crate reads this module yet: its consumer is the quad
-// extraction, which is the next change. It is not called from the solve either,
-// because building a field nothing spends costs a third of a rebuild's time.
-#![allow(dead_code, reason = "read by the quad extraction, landing next")]
+// The one consumer is `super::quads`. `solve` builds the field only when
+// quads were asked for, and only just before the merge, because it costs about
+// a third of a rebuild's time and nothing earlier can spend it.
 
 use crate::cancel::{CancelToken, cancelled};
 use crate::parallel;

@@ -1,6 +1,7 @@
 //! The 3D debug line views: the wireframe traced over original polygons, the
 //! bounding box, the face/vertex normal lines and the UV-seam edges — each able
-//! to skip an Outliner-hidden mesh via the per-triangle node info.//!
+//! to skip an Outliner-hidden mesh via the per-triangle node info.
+//!
 //! The pivot and bounding box are in [`super::markers`], the normal lines in
 //! [`super::normal_lines`] and the seam view in [`super::uv_seams`]; what is left
 //! here is the model wireframe.
@@ -22,7 +23,7 @@ use super::hidden::HiddenFilter;
 ///
 /// Indices, not a fresh vertex stream, because this is invariant 1 exactly:
 /// a derived view indexes *into* the shared geometry. Two `u32` corner indices
-/// per edge is 8 bytes where two 80-byte [`SceneVertex`]es were 160 — the 20×
+/// per edge is 8 bytes where two 80-byte `SceneVertex`es were 160 — the 20×
 /// that makes the wireframe cheap enough to build without a visible hitch, and
 /// cheap enough to keep resident across a toggle (see
 /// `DerivedViews::wireframe_index`). It also drops the two things that used to be

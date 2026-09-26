@@ -1,7 +1,7 @@
 //! The offscreen attachments a frame draws into, and the backbuffer rect the
 //! composite lands in.
 //!
-//! A [`TargetSet`] is the seven targets one view needs. The Opt split holds
+//! A [`TargetSet`] is the fourteen targets one view needs. The Opt split holds
 //! *two* of them, each sized to half the viewport: the composite is a deferred
 //! swapchain job, so both halves' passes have run before either composite does,
 //! and one shared set would show the second view in both.

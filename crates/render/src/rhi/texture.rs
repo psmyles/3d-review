@@ -2,8 +2,9 @@
 //!
 //! sokol separates the two — an `sg::Image` is storage, an `sg::View` is how a
 //! binding slot reads it — so a [`Texture`] owns a matched pair and hands out only
-//! the view. The BC6H cubes and the render-target views arrive with the scene stages
-//! that need them (`mac-port-plan.md` Phase 1 step 4).
+//! the view. The baked IBL maps' BC6H cubes are built here too
+//! ([`Texture::cube_block_compressed`]); a render target, which also needs the views
+//! a pass attaches, is a `target::ColorTarget` / `target::DepthTarget` instead.
 
 use std::ffi::CStr;
 

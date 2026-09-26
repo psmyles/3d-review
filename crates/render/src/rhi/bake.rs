@@ -1,5 +1,5 @@
 //! Offline IBL bake plumbing — only compiled with the `bake` feature
-//! (`mac-port-plan.md` D19).
+//! (`docs/ARCHITECTURE.md`, Platform decisions D19).
 //!
 //! A headless sokol_gfx: a device with no window and no swapchain, plus the render
 //! targets the IBL precompute draws into and reads back. A render-target **cube**
@@ -40,7 +40,7 @@ pub(crate) struct BakeAttachment(sg::View);
 /// It lives here rather than at the call site so `ibl.rs` never has to name
 /// `sg::Backend` or `sg::ShaderDesc` to pass a generated `*_shader_desc` along.
 pub(crate) fn pipeline(
-    desc_fn: fn(sg::Backend) -> sg::ShaderDesc,
+    desc_fn: super::shader::ShaderDescFn,
     bytecode: &super::shader::ShaderBytecode,
     format: Format,
     label: &'static CStr,

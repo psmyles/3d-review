@@ -60,10 +60,10 @@ impl SceneGpu {
     /// scene pass the caller has already opened.
     ///
     /// Both styles reuse pipelines that already exist. The x-ray is the
-    /// selection-flash fill — a flat tinted colour, alpha-blended, depth-tested but not
-    /// depth-writing, which is exactly ghost behaviour — with the tint fed through the
-    /// same `selection_color` uniform it always reads. The wireframe ghost is the same
-    /// fragment shader over the same mesh vertex buffer, drawn as an indexed
+    /// selection-highlight fill — a flat tinted colour, alpha-blended, depth-tested but
+    /// not depth-writing, which is exactly ghost behaviour — with the tint fed through
+    /// the same `selection_color` uniform it always reads. The wireframe ghost is the
+    /// same fragment shader over the same mesh vertex buffer, drawn as an indexed
     /// `LineList` through the wireframe pipeline, so it reads that tint too. Neither
     /// needs a shader change, so the committed bytecode stays valid.
     ///
@@ -168,14 +168,17 @@ impl SceneGpu {
 
     /// Draw a set of line buffers through one pipeline. They share everything but the
     /// vertex stream, so the pipeline and the scene uniforms are applied once.
-    pub(super) fn draw_lines(
+    pub(super) fn draw_lines<'b>(
         &self,
         frame: &mut Frame<'_>,
         pipeline: &Pipeline,
-        buffers: &[&VertexBuffer],
+        buffers: impl IntoIterator<Item = &'b VertexBuffer>,
         uniforms: &SceneUniforms,
     ) {
-        if buffers.is_empty() {
+        // An iterator rather than a slice, so the caller's list of optional views
+        // is filtered in place instead of collected into a `Vec` every frame.
+        let mut buffers = buffers.into_iter().peekable();
+        if buffers.peek().is_none() {
             return;
         }
         frame.apply_pipeline(pipeline);
@@ -194,10 +197,10 @@ impl SceneGpu {
     /// tone map + sRGB encode over the viewport background, into `dest`.
     ///
     /// Deferred rather than drawn, because that pass has not opened yet and there is
-    /// only one of it per frame (`mac-port-plan.md` §3.2). With GTAO off, `ao` is
-    /// `None` and its slot is bound with the ambient target as a harmless placeholder
-    /// — the shader ignores it while `gtao_enabled` is 0, but every declared view must
-    /// still be bound.
+    /// only one of it per frame (`docs/ARCHITECTURE.md`, Platform decisions: one
+    /// swapchain pass). With GTAO off, `ao` is `None` and its slot is bound with the
+    /// ambient target as a harmless placeholder — the shader ignores it while
+    /// `gtao_enabled` is 0, but every declared view must still be bound.
     pub(super) fn queue_composite(
         &self,
         frame: &mut Frame<'_>,

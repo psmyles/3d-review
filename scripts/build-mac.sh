@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build, sign, notarize and package 3D Review for macOS — the twin of
-# packaging/build-windows-installer.ps1 (mac-port-plan.md D12).
+# packaging/build-windows-installer.ps1 (docs/ARCHITECTURE.md, Platform decisions D12).
 #
 # This runs **on the dev Mac, by hand**. Nothing else signs or packages, so the
 # Developer ID certificate and the App Store Connect credential never have to exist as

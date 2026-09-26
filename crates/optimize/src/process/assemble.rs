@@ -32,6 +32,7 @@ use review_model::{
 };
 
 use crate::Warnings;
+use crate::notice::OptWarning;
 use crate::remesh::layout::{self, CornerRun};
 use crate::submesh::{NO_FACE, Submesh, TagPresence};
 
@@ -493,10 +494,9 @@ pub(crate) fn assemble(
     if let Err(error) = model.validate_deform() {
         // Never publish a table the funnel guard rejects; the level draws as
         // static geometry and the user hears why.
-        warnings.push(&format!(
-            "The processed mesh's skin / blend-shape data did not reconcile ({error}); it was \
-             dropped from this level and its export."
-        ));
+        warnings.push(OptWarning::DeformDropped {
+            detail: error.to_string(),
+        });
         model.corner_to_logical = Vec::new();
         model.skin = None;
         model.morph = None;

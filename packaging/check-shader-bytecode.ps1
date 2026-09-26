@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Fail a release build whose committed shader bytecode does not match the shaders
-    in the tree (`mac-port-plan.md` D5).
+    in the tree (`docs/ARCHITECTURE.md`, Platform decisions D5).
 
 .DESCRIPTION
     The viewer compiles no shader at run time: it `include_bytes!`s blobs that are
@@ -22,8 +22,8 @@
     still hash to what that row records. Anything else fails the packaging build.
 
     The other host's rows are checked too, but only ever **warn**: a Windows
-    installer cannot ship a `.metallib`, and until Phase 2 there are none in the tree
-    to check. The Mac's own packaging script is what hard-fails on those.
+    installer cannot ship a `.metallib`, so a stale one is the Mac's to fix. The
+    Mac's own packaging script is what hard-fails on those.
 
 .PARAMETER RepoRoot
     Defaults to the parent of this script's folder.
@@ -131,7 +131,7 @@ bytecode.manifest.
 "@
 }
 
-# The Mac half: warn only, and stay silent before Phase 2 has produced any.
+# The Mac half: warn only, and stay silent on a tree that carries no Metal blobs.
 $metalBlobs = @(Get-ChildItem -LiteralPath $generated -Filter '*.metallib' -ErrorAction SilentlyContinue)
 if ($metalBlobs.Count -gt 0) {
     $metal = @(Test-ShaderSet -Slang 'metal_macos' -SourceExtension 'metal' -BlobExtension 'metallib')

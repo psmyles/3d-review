@@ -5,9 +5,10 @@
 //! `product.json` at the repo root, so the exe, the installer, the macOS bundle and
 //! the UI all agree on one source of truth. It reaches the compiled binary as the
 //! `REVIEW_PRODUCT` / `REVIEW_VERSION` / `REVIEW_COPYRIGHT` environment variables,
-//! read back with `env!` — the macOS About panel (`mac-port-plan.md` D15) is what
-//! wants them, and it wants them as constants because `product.json` is a repo file,
-//! not something the app ships. That half runs on **every** host.
+//! read back with `env!` — the macOS About panel (`docs/ARCHITECTURE.md`, Platform
+//! decisions D15) is what wants them, and it wants them as constants because
+//! `product.json` is a repo file, not something the app ships. That half runs on
+//! **every** host.
 //!
 //! The Windows half is the icon and the version-info string table. The icon is what
 //! Explorer shows for `3d-review.exe` and what a *pinned*/unlaunched taskbar

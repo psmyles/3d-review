@@ -1,20 +1,26 @@
 //! `review-render` — the viewer's camera math + GPU layer.
 //!
 //! The crate owns four things: the **cameras** ([`OrbitCamera`] for the 3D viewport,
-//! [`UvCamera`] for the 2D UV viewport, and the 0.3s [`CameraTransition`] easing
+//! [`UvCamera`] for the 2D UV viewport, and the 0.3s `CameraTransition` easing
 //! between framings, all Reversed-Z), the per-view **config** types (re-exported from
-//! [`config`]: shading / material / environment / GTAO / tonemap / AA options), the
+//! `config`: shading / material / environment / GTAO / tonemap / AA options), the
 //! [`Renderer`] — the host-facing handle that holds the live camera + editable
 //! material table and draws each frame — and [`EguiRenderer`], which paints the
 //! chrome into the same frame.
 //!
-//! Drawing goes through sokol_gfx, and every GPU call is confined to the [`rhi`]
-//! module; the platform `unsafe` is confined further still, to `rhi/backend/`, which
-//! is invariant 9's sanctioned GPU site. The camera and material math above stays
-//! host-agnostic and safe, so `app` drives the renderer purely through [`Renderer`]'s
-//! public API and never touches GPU state directly (invariant 2). Shaders are one
-//! annotated-GLSL source (`src/shaders/review.glsl`) generated to per-backend sources
-//! and compiled offline to committed bytecode by `build.rs`.
+//! Drawing goes through sokol_gfx, and every GPU call is confined to the `rhi`
+//! module; the platform `unsafe` is confined further still, to the platform GPU leaf
+//! `rhi/backend/` (plus sokol's one `extern "C"` logger callback in
+//! `rhi/sokol_log.rs`), which is invariant 9's sanctioned GPU site. The camera and
+//! material math above stays host-agnostic and safe, so `app` drives the renderer
+//! purely through [`Renderer`]'s public API and never touches GPU state directly
+//! (invariant 2). Shaders are one annotated-GLSL source (`src/shaders/review.glsl`)
+//! generated to per-backend sources and compiled offline to committed bytecode by
+//! `build.rs`.
+
+// Invariant 9, enforced: `unsafe` is refused crate-wide, and each sanctioned
+// FFI / GPU leaf opts in with a module-level `allow` that says why.
+#![deny(unsafe_code)]
 
 use glam::{Vec2, Vec3};
 use review_model::{Bounds, DeformPose, ModelData};
@@ -59,7 +65,7 @@ pub use texture::{ChannelSelect, DecodedImage, TextureSlot, decode_image, sugges
 /// Exposed for the Opt workspace's vertex-fetch analysis: meshoptimizer's
 /// overfetch figure is "bytes fetched / vertex buffer size", so it describes the
 /// asset's real cost only when given the size an engine would fetch. The
-/// renderer's own [`scene::SceneVertex`] additionally carries a 16-byte deform
+/// renderer's own `scene::SceneVertex` additionally carries a 16-byte deform
 /// lane (skinning / blend-shape run references) that is a viewer-internal
 /// mechanism, not part of the asset — so that lane is deliberately excluded and
 /// this is pinned by the assertion below rather than measured from the struct.
@@ -120,7 +126,7 @@ pub struct Renderer {
     framing_safe_area: Vec2,
     /// Editable per-material PBR parameters, seeded from the loaded model's import
     /// defaults and edited live via [`MaterialEdit`] intents (invariant 2). Carried
-    /// into the scene callback each frame; the renderer-side table re-uploads them
+    /// into the scene render each frame; the renderer-side table re-uploads them
     /// when `material_revision` changes.
     material_states: Vec<MaterialState>,
     /// Display names paired with `material_states`, for the app→UI snapshot.
@@ -263,6 +269,18 @@ impl SceneViewport {
     }
 }
 
+/// Per-frame inputs for the 2D UV viewport, bundled for the reason
+/// [`SceneFrame`] is.
+pub struct UvFrame<'a> {
+    pub model: &'a ModelData,
+    pub model_revision: u64,
+    /// The UV set to lay out.
+    pub channel: u32,
+    pub shading_mode: UvShadingMode,
+    pub anti_aliasing: AntiAliasing,
+    pub background: ViewportBackground,
+}
+
 /// Per-frame inputs for the Opt workspace's comparison render.
 pub struct OptSceneFrame<'a> {
     /// The source mesh and every shared setting; [`SceneFrame::with_model`]
@@ -400,33 +418,14 @@ impl Renderer {
     /// optional island fill + the model's UV edges, framed by the renderer's
     /// `uv_camera`.
     ///
-    #[allow(clippy::too_many_arguments)]
-    pub fn render_uv_scene(
-        &mut self,
-        frame: &mut Frame<'_>,
-        model: &ModelData,
-        model_revision: u64,
-        channel: u32,
-        shading_mode: UvShadingMode,
-        anti_aliasing: AntiAliasing,
-        background: ViewportBackground,
-    ) -> GpuResult<()> {
-        frame.set_clear(background.gradient_srgb().0);
+    pub fn render_uv_scene(&mut self, frame: &mut Frame<'_>, uv: &UvFrame<'_>) -> GpuResult<()> {
+        frame.set_clear(uv.background.gradient_srgb().0);
         let uv_camera = self.uv_camera;
-        self.ensure_scene(frame, anti_aliasing.effective_sample_count())?;
+        self.ensure_scene(frame, uv.anti_aliasing.effective_sample_count())?;
         let Some(scene_gpu) = self.scene.as_mut() else {
             return Ok(());
         };
-        scene_gpu.render_uv(
-            frame,
-            model,
-            model_revision,
-            uv_camera,
-            channel,
-            shading_mode,
-            anti_aliasing,
-            background,
-        )
+        scene_gpu.render_uv(frame, uv, uv_camera)
     }
 
     /// Render the 2D Tex viewport (instead of the 3D scene): the chosen background
@@ -434,14 +433,21 @@ impl Renderer {
     /// rectangle) when one is present. The egui chrome is drawn on top afterwards.
     ///
     /// A solid background needs no draw of its own — it is the frame's clear colour
-    /// (`mac-port-plan.md` §3.2); the checker and the image are queued as deferred
-    /// draws, because the one swapchain pass has not opened yet.
+    /// (`docs/ARCHITECTURE.md`, Platform decisions: one swapchain pass); the checker
+    /// and the image are queued as deferred draws, because the one swapchain pass has
+    /// not opened yet.
     pub fn render_texture(
         &mut self,
         frame: &mut Frame<'_>,
         image: Option<TexImage>,
         background: TexBackground,
     ) -> GpuResult<()> {
+        // Nothing the 3D, UV or Opt views derived is on screen here (invariant 3).
+        // The meshes themselves stay uploaded, so returning costs no rebuild.
+        if let Some(scene) = self.scene.as_mut() {
+            scene.release_opt_views();
+            scene.release_uv_views();
+        }
         // Built on the first Tex frame rather than at startup: a session that never
         // opens this workspace pays for none of it.
         let tex = match self.tex.as_mut() {

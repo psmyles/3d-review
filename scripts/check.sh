@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # The gate: everything that must pass before a change is claimed done.
 #
-# The same four checks CLAUDE.md and README.md have always named, in one command
-# so there is no set to remember and no chance of running three of them. Nothing
-# here is new policy — the point is that "did you run the gate" has one answer.
+# The checks README.md and docs/ARCHITECTURE.md name, in one command so there is
+# no set to remember and no chance of running only some of them. Nothing here is
+# new policy — the point is that "did you run the gate" has one answer.
 #
 # The bash twin of `check.ps1`; keep the two in step.
 #
@@ -41,6 +41,10 @@ step() {
 
 step 'cargo fmt --check' cargo fmt --all -- --check
 step 'cargo clippy' cargo clippy --workspace --all-targets -- -D warnings
+# The offline IBL bake is feature-gated, so the line above never compiles it:
+# `rhi/bake.rs`, the bake half of `ibl.rs`, the backend's readback leaf and the
+# `bake_ibl` binary would otherwise go unchecked until someone re-bakes.
+step 'cargo clippy (bake)' cargo clippy -p review-render --features bake --all-targets -- -D warnings
 
 if [ "$allow_skips" -eq 0 ]; then
     export REVIEW_REQUIRE_FIXTURES=1

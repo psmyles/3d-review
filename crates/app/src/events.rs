@@ -36,7 +36,7 @@ pub(crate) enum UserEvent {
     /// finished level until that run lands. Boxed: it carries a whole model.
     OptPreviewed(Box<opt::OptPreviewed>),
     /// A background FBX export finished (posted by the export thread).
-    OptExported(Box<Result<review_optimize::ExportReport, review_optimize::OptError>>),
+    OptExported(Box<crate::opt::OptExported>),
     /// A background model import produced a drawable model (posted by the import
     /// thread). Boxed because it carries the whole parsed model.
     ModelLoaded(Box<loading::ModelLoaded>),
@@ -54,15 +54,17 @@ pub(crate) enum UserEvent {
     /// exporter; nothing in the viewport reads it.
     SourceExtrasReady(Box<loading::SourceExtrasReady>),
     /// A native file dialog closed (posted by the thread that opened it —
-    /// `mac-port-plan.md` D9). `None` when the user cancelled. Boxed because the
-    /// export variant carries a whole LOD chain's worth of `Arc`s.
+    /// `docs/ARCHITECTURE.md`, Platform decisions D9). `None` when the user
+    /// cancelled. Boxed because the export variant carries a whole LOD chain's
+    /// worth of `Arc`s.
     DialogDone(Option<Box<dialog::DialogAnswer>>),
     /// Help > Check for Updates has its answer (posted by the thread that asked
     /// GitHub - see `update.rs`).
     UpdateChecked(update::UpdateCheck),
-    /// The OS asked for a file to be opened (`mac-port-plan.md` D14): a Finder
-    /// double-click, an `open(1)`, or a drop on the Dock icon. macOS only —
-    /// Windows delivers the same intent as `argv[1]`, which `main` reads directly.
+    /// The OS asked for a file to be opened (`docs/ARCHITECTURE.md`, Platform
+    /// decisions D14): a Finder double-click, an `open(1)`, or a drop on the Dock
+    /// icon. macOS only — Windows delivers the same intent as `argv[1]`, which
+    /// `main` reads directly.
     OpenPath(PathBuf),
     /// A macOS menu item the viewer performs itself was chosen (D15). Routed
     /// through the loop rather than acted on in muda's callback so it lands on the

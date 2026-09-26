@@ -1,28 +1,32 @@
-//! Source-image decoding for the material texture slots (Phase 3).
+//! Source-image decoding for the material texture slots.
 //!
-//! Decoding uses prebuilt decoders only: the Rust `image` crate for the
+//! Decoding uses existing decoder libraries only: the Rust `image` crate for the
 //! formats it covers (PNG/TGA/TIFF/HDR/BMP/GIF/PNM), **zune** for the JPEG fast path
 //! (platform intrinsics + unsafe fast paths, measured faster than `image`'s decoder),
-//! and the prebuilt psd_sdk FFI crate ([`review_psd`]) for layered **PSD** source art
-//! (its merged composite). This replaces the old bundled-ImageMagick `magick.exe`
-//! shell-out — no external binary is shipped anymore.
+//! and the psd_sdk FFI crate ([`review_psd`], psd_sdk vendored as source and compiled
+//! with `cc`) for layered **PSD** source art (its merged composite). This replaces
+//! the old bundled-ImageMagick `magick.exe` shell-out — no external binary is shipped
+//! anymore.
 //!
 //! Dispatch is by magic bytes first (robust to mislabeled extensions — common in
 //! game-asset exports), with the file extension as a fallback for formats that carry
 //! no signature (e.g. TGA). Only the `review_psd` path is `unsafe`/FFI, and it is
 //! confined to that crate (invariant 9); the decode code here stays safe.
 //!
-//! [`decode_image`] runs on the app thread when the user assigns a slot — never in
-//! the render `prepare` callback. The decoded RGBA8 pixels live behind an `Arc`
-//! ([`DecodedImage`]) so the per-frame scene render shares them by refcount, and
-//! the GPU upload is deduplicated by path (the material table's path-keyed cache).
+//! [`decode_image`] runs on a worker thread `app`'s texture manager spawns per decode
+//! (a file imported into the scene texture pool, or a reload after it changes on
+//! disk) — never on the main thread, and never inside a frame's render. The decoded
+//! RGBA8 pixels live behind an `Arc` ([`DecodedImage`]) so the per-frame scene render
+//! shares them by refcount, and the GPU upload is deduplicated by path (the material
+//! table's path-keyed cache).
 
 use std::io::Cursor;
 use std::path::Path;
 
-/// The seven PBR texture slots a material carries, in the order the GPU bind group
-/// and the shader expect them. The numeric index is the binding offset within
-/// bind group 3 (slot `i` → texture binding `i + 1`).
+/// The seven PBR texture slots a material carries, in the order `review.glsl`
+/// declares them. The numeric index is the offset from the first material texture
+/// binding (slot `i` → texture binding `5 + i`, `base_color_tex` through
+/// `opacity_tex`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TextureSlot {
     BaseColor,
@@ -157,7 +161,7 @@ impl ChannelSelect {
 }
 
 /// Decoded RGBA8 pixels for one source image, shared by `Arc` so the per-frame
-/// scene callback and the GPU upload reference the same buffer without copying.
+/// scene render and the GPU upload reference the same buffer without copying.
 ///
 /// The pixels are always RGBA8 (the renderer / Tex viewer sample one layout); the
 /// `source_*` fields preserve the *original* file's channel count and per-channel
@@ -291,7 +295,7 @@ fn decode_jpeg_zune(bytes: &[u8]) -> Result<DecodedImage, String> {
     })
 }
 
-/// Decode a PSD's merged/composited image via the prebuilt psd_sdk FFI crate. The
+/// Decode a PSD's merged/composited image via the psd_sdk FFI crate. The
 /// `unsafe`/FFI is fully contained in [`review_psd`] (invariant 9); this only maps
 /// its result into a [`DecodedImage`], reporting the source channel count + bit
 /// depth from the PSD header.
@@ -431,7 +435,7 @@ mod tests {
         assert_eq!(decoded.source_bit_depth, 8);
     }
 
-    /// The prebuilt psd_sdk FFI decodes a real layered PSD's merged composite into a
+    /// The psd_sdk FFI decodes a real layered PSD's merged composite into a
     /// tightly-packed RGBA8 buffer. Uses the committed fixture; skips gracefully if
     /// it's absent so the suite still passes in a trimmed checkout.
     #[test]

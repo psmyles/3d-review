@@ -15,6 +15,11 @@
 //! and used from the main thread after the join — D3D11 devices are free-threaded,
 //! and only the main thread ever touches the immediate context.
 
+#![allow(
+    unsafe_code,
+    reason = "invariant 9: the Windows device and swapchain leaf"
+)]
+
 use std::ffi::c_void;
 
 use sokol::gfx as sg;
@@ -266,11 +271,12 @@ impl Swapchain {
 
     /// Drop the view and resize the backbuffers.
     ///
-    /// **Infallible by design** (`mac-port-plan.md` §3.1): a zero dimension (a
-    /// minimized window) is remembered but not applied — DXGI refuses it — and the
-    /// frame is skipped instead, and a `ResizeBuffers` that fails leaves the old
-    /// buffers in place for the next frame to draw into. Neither is anything the
-    /// caller in `input.rs` could act on, so neither is a `Result`.
+    /// **Infallible by design** (`docs/ARCHITECTURE.md`, Platform decisions: `rhi`
+    /// owns the backend): a zero dimension (a minimized window) is remembered but not
+    /// applied — DXGI refuses it — and the frame is skipped instead, and a
+    /// `ResizeBuffers` that fails leaves the old buffers in place for the next frame
+    /// to draw into. Neither is anything the caller in `input.rs` could act on, so
+    /// neither is a `Result`.
     pub(crate) fn resize(&mut self, width: u32, height: u32) {
         self.width = width;
         self.height = height;
@@ -477,14 +483,14 @@ fn create_device(
 }
 
 // ---------------------------------------------------------------------------
-// The GPU-timing leaf (`mac-port-plan.md` D18)
+// The GPU-timing leaf (Platform decisions D18)
 // ---------------------------------------------------------------------------
 
 /// One frame's resolved GPU timestamps, handed back to [`crate::rhi::gpu_profiler`]
 /// to become Tracy zones.
 ///
 /// The split is deliberate: everything platform-specific about *measuring* GPU time
-/// is here, everything about *reporting* it is shared. The Metal twin will fill one
+/// is here, everything about *reporting* it is shared. The Metal twin fills one
 /// of these from two sentinel command buffers instead of a query ring, and the Tracy
 /// side will not know the difference.
 pub(crate) struct FrameTimings {
@@ -692,7 +698,7 @@ fn create_query(
 }
 
 // ---------------------------------------------------------------------------
-// The readback leaf, for the offline bake only (`mac-port-plan.md` D19)
+// The readback leaf, for the offline bake only (Platform decisions D19)
 // ---------------------------------------------------------------------------
 
 /// Copy one subresource of a sokol image back to the CPU as tight, row-padding-free
