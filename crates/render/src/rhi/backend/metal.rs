@@ -102,6 +102,14 @@ impl Device {
         };
     }
 
+    /// The GPU's own name, as Metal reports it — what the About box says the viewer
+    /// is drawing on. The twin of the D3D11 side's adapter description.
+    pub(crate) fn adapter_name(&self) -> Option<String> {
+        let name = self.device.name().to_string();
+        let name = name.trim();
+        (!name.is_empty()).then(|| name.to_owned())
+    }
+
     /// The MSAA sample counts this device supports — the subset of `[1, 2, 4, 8, 16]`
     /// the scene can actually render at (invariant 4: capability-gate, never crash).
     /// `1` is always included.

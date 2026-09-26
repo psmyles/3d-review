@@ -65,6 +65,7 @@ objc2-app-kit = { workspace = true, features = [
 ] }
 objc2-foundation = { workspace = true, features = [
     "NSGeometry",                    # CGSize, for the layer's drawableSize
+    "NSString",                      # the device's name, for the About box
 ] }
 objc2-metal = { workspace = true, features = [
     "MTLDevice",                     # MTLCreateSystemDefaultDevice, the device sokol runs on

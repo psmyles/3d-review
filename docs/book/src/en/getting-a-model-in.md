@@ -9,7 +9,7 @@ There are four ways to open a file:
 
 - Drag the file from a folder and drop it onto the window.
 - Press the open shortcut (see [Keyboard and mouse](keyboard.md)), or choose
-  **Open file...** from [the menu](menu.md), to get a file dialog.
+  **Open File...** from [the menu](menu.md), to get a file dialog.
 - Double-click the empty view.
 - Open the file from your desktop. On Windows the installer teaches the system
   that `.fbx` files belong to 3D Review; on macOS the app offers itself in
@@ -28,7 +28,7 @@ wins. You will never be shown the wrong model.
 
 ## Starting over
 
-The new-file shortcut, or **Close file** in [the menu](menu.md), puts the
+The new-file shortcut, or **Close File** in [the menu](menu.md), puts the
 viewer back the way it was when it started: no model, the camera in its home
 position, and every panel as it was.
 

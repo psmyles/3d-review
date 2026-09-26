@@ -197,6 +197,24 @@ pub fn draw_overlay(
         texture_view::draw(root, state);
     }
 
+    // The manual can be opened from the menu in any workspace, so outside the
+    // scene ones — which draw it above, inside their own free viewport — it
+    // gets the area between the toolbar and the status bar.
+    if !state.mode.is_scene() {
+        if let Some(page) = crate::help::take_requested(ctx) {
+            state.help.open_page(page);
+        }
+        let screen = ctx.content_rect();
+        let viewport = egui::Rect::from_min_max(
+            egui::pos2(screen.left(), screen.top() + toolbar_height),
+            egui::pos2(screen.right(), screen.bottom() - status_bar_height),
+        );
+        crate::help::draw(ctx, &mut state.help, viewport);
+    }
+
+    // Last, so the modal's backdrop covers every other piece of chrome.
+    crate::about::draw(ctx, &mut state.about);
+
     output
 }
 

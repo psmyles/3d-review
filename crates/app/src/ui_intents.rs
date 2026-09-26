@@ -114,6 +114,7 @@ impl App {
                 self.persist_settings();
                 self.redraw.requested = true;
             }
+            MenuIntent::CheckForUpdates => self.check_for_updates(),
             MenuIntent::Exit => self.exit_requested = true,
         }
     }

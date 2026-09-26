@@ -73,6 +73,16 @@ Source: "..\target\release\{#MyAppExe}"; DestDir: "{app}"; Flags: ignoreversion
 ; An install without them still shows every page — each image renders as its
 ; alt text — which is why this entry is allowed to find nothing.
 Source: "..\docs\book\src\en\images\*"; DestDir: "{app}\docs\en\images"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+; --- license notices ---------------------------------------------------------
+; The exe is statically linked, so it contains code from every project listed in
+; docs\THIRD-PARTY-NOTICES.md. Their licenses require the notices to travel with
+; the binary, so a user who only ever runs Setup.exe still receives them. Not
+; optional and not behind a task: dropping these makes the installed copy
+; non-compliant. build-windows-installer.ps1 fails before ISCC if one is missing.
+Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
+Source: "..\docs\THIRD-PARTY-NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\docs\CREDITS.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\licenses\*.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
 ; No external tools to ship: PSD is decoded in-process by the prebuilt psd_sdk FFI
 ; crate (review-psd), JPEG by zune, and the rest by the Rust `image` crate — the
 ; old bundled ImageMagick CLI is gone.

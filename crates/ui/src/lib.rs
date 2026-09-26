@@ -55,6 +55,7 @@ pub(crate) fn primary_modifier() -> std::borrow::Cow<'static, str> {
     }
 }
 
+mod about;
 mod assets;
 mod dimensions;
 mod gizmo;
@@ -77,6 +78,7 @@ mod widgets;
 
 // Root re-exports carry exactly what `app` (the sole consumer) uses; everything
 // else stays reachable under its own module path.
+pub use about::{AboutInfo, AboutState};
 pub use help::{HelpState, option_panel_at, workspace_help_page};
 pub use labels::{buffer_view_name, material_mode_name, op_kind_name, viewport_tool_name};
 pub use notifications::{NoticeKind, Notifications};

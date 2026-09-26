@@ -74,6 +74,13 @@ app-notifications-overrides-by-position = { $count ->
        *[other] { $count } per-object settings came from an older preset that did not store object names, so they were matched by their place in the list - please check they landed on the objects you meant.
     }
 
+## Updates
+
+app-notifications-checking-for-updates = Checking for updates...
+app-notifications-update-available = Version { $version } is available. Opening the releases page...
+app-notifications-update-latest = You have the latest version ({ $version }).
+app-notifications-update-check-failed = Couldn't check for updates: { $detail }
+
 ## The graphics device
 
 app-notifications-gpu-fault = { $context }: { $detail }

@@ -240,6 +240,28 @@ impl Gpu {
             .supported_sample_counts(SCENE_COLOR_FORMAT, SCENE_DEPTH_FORMAT)
     }
 
+    /// The graphics API sokol_gfx is drawing through, by its own name — the About
+    /// box's renderer line. Stable English, like every other `label()` here: it
+    /// names an API, not something a catalog could translate.
+    pub fn backend_name(&self) -> &'static str {
+        match sg::query_backend() {
+            sg::Backend::D3d11 => "Direct3D 11",
+            sg::Backend::MetalMacos | sg::Backend::MetalIos | sg::Backend::MetalSimulator => {
+                "Metal"
+            }
+            sg::Backend::Glcore => "OpenGL",
+            sg::Backend::Gles3 => "OpenGL ES 3",
+            sg::Backend::Wgpu => "WebGPU",
+            sg::Backend::Vulkan => "Vulkan",
+            sg::Backend::Dummy => "none",
+        }
+    }
+
+    /// The GPU's own name as the driver reports it, or `None` if it will not say.
+    pub fn adapter_name(&self) -> Option<String> {
+        self.device.adapter_name()
+    }
+
     /// The largest 2D texture this device can create, for `egui-winit`'s texture-size
     /// cap — a real query now rather than the hardcoded 16384 the D3D11 path assumed.
     pub fn max_texture_size(&self) -> usize {

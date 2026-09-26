@@ -24,6 +24,7 @@ mod shortcuts;
 mod texture_manager;
 mod ui_intents;
 mod undo;
+mod update;
 mod window_state;
 
 /// The typed message keys, generated from `crates/localization/locales/en/*.ftl` by this
@@ -335,6 +336,9 @@ struct App {
     /// has no event loop to stop, so it is carried out in `about_to_wait` — the
     /// same close `CloseRequested` performs.
     exit_requested: bool,
+    /// A Help > Check for Updates request is on its way to GitHub; a second one
+    /// is ignored until it answers.
+    update_check_in_flight: bool,
     /// The failure that stopped `start` from bringing the viewer up, held until
     /// `run_app` has returned so the error dialog is opened from `main` rather than
     /// from inside a winit callback (D9 again: on macOS a modal run loop entered
@@ -404,6 +408,15 @@ impl Default for App {
         // image as its alt text and changes nothing else (invariant 12), so this
         // is resolved once here rather than checked on every page turn.
         ui.help.docs_dir = docs_dir::docs_dir();
+        // What the About box says this build is; the renderer line joins it once
+        // the GPU is up (`init_shell`).
+        ui.about.info = review_ui::AboutInfo {
+            product: APP_NAME.to_owned(),
+            version: env!("REVIEW_VERSION").to_owned(),
+            copyright: env!("REVIEW_COPYRIGHT").to_owned(),
+            homepage: env!("REVIEW_HOMEPAGE").to_owned(),
+            ..review_ui::AboutInfo::default()
+        };
 
         Self {
             window: None,
@@ -441,6 +454,7 @@ impl Default for App {
             textures: TextureSubsystem::default(),
             dialog_open: false,
             exit_requested: false,
+            update_check_in_flight: false,
             startup_error: None,
             notifications: Notifications::new(),
             tracy_enabled: false,
@@ -678,6 +692,9 @@ impl App {
                 .unwrap_or(levels[0]);
         }
 
+        self.ui.about.info.renderer = gpu.backend_name().to_owned();
+        self.ui.about.info.adapter = gpu.adapter_name();
+
         // Under `--tracy`, arm the GPU profiler. A normal launch never calls this, so
         // nothing profiling-related is ever built.
         if self.tracy_enabled {
@@ -750,6 +767,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::DialogDone(answer) => self.handle_dialog_done(answer),
             UserEvent::OpenPath(path) => self.open_model_from_path(&path),
             UserEvent::MenuCommand(command) => self.handle_menu_command(command),
+            UserEvent::UpdateChecked(result) => self.handle_update_checked(result),
         }
     }
 

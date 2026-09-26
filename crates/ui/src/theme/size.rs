@@ -25,6 +25,11 @@
 
 // ── Overlay layout ────────────────────────────────────────────────────
 pub const TOOLBAR_HEIGHT: f32 = 48.0;
+/// The About box's content width: wide enough that a long GPU name wraps once at
+/// most rather than word by word.
+pub const ABOUT_WIDTH: f32 = 320.0;
+/// The gap between the About box's blocks (identity / renderer / links).
+pub const ABOUT_SECTION_GAP: f32 = 6.0;
 pub const STATUS_BAR_HEIGHT: f32 = 42.0;
 pub const OVERLAY_MARGIN: f32 = 8.0;
 /// Width of the dockable Outliner / Inspector side panels (their default /

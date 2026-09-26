@@ -178,10 +178,16 @@ const MENU_POPUP_ID: &str = "toolbar_menu";
 /// The application menu, alone in a group at the far left of the bar.
 ///
 /// Its own group, and first, for the same reason Help is alone and last: its
-/// entries act on the application — the file, the settings, the process — rather
+/// entries act on the application - the file, the settings, the process - rather
 /// than on what is being looked at, so it reads as the thing before the tools
-/// rather than one of them. Each entry is a [`MenuIntent`] for `app` to carry out.
-fn draw_menu_group(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput, width: f32) {
+/// rather than one of them.
+///
+/// Three submenus, File / Preferences / Help, built from egui's own `menu_button`
+/// (which becomes a submenu inside a menu). What reaches outside the chrome - a
+/// dialog, the loaded model, the settings file, the network, the process -
+/// travels to `app` as a [`MenuIntent`]; what the chrome can do itself (open the
+/// About box or the manual, hand a link to the browser) it does in place.
+fn draw_menu_group(ui: &mut egui::Ui, state: &mut UiState, output: &mut UiOutput, width: f32) {
     let popup_id = egui::Id::new(MENU_POPUP_ID);
     let open = egui::Popup::is_id_open(ui.ctx(), popup_id);
     toolbar_group_shell(ui, width, |ui| {
@@ -194,29 +200,41 @@ fn draw_menu_group(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput, wi
                 .page(Page::Menu),
         );
         egui::Popup::menu(&button).id(popup_id).show(|ui| {
-            output.menu = menu_entries(ui, state);
+            ui.menu_button(keys::ui_toolbar::MENU_FILE, |ui| {
+                file_menu(ui, state, output);
+            });
+            ui.menu_button(keys::ui_toolbar::MENU_PREFERENCES, |ui| {
+                preferences_menu(ui, state, output);
+            });
+            ui.menu_button(keys::ui_toolbar::MENU_HELP, |ui| {
+                help_menu(ui, state, output);
+            });
         });
     });
 }
 
-/// The menu's entries, returning the one chosen this frame (if any).
-fn menu_entries(ui: &mut egui::Ui, state: &UiState) -> Option<MenuIntent> {
+/// File: open, close, exit.
+fn file_menu(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput) {
     let modifier = crate::primary_modifier().into_owned();
-    let mut chosen = None;
-
     let open_file = egui::Button::new(keys::ui_toolbar::MENU_OPEN_FILE)
         .shortcut_text(keys::ui_toolbar::menu_open_file_shortcut(modifier.clone()));
     if ui.add(open_file).clicked() {
-        chosen = Some(MenuIntent::OpenFile);
+        output.menu = Some(MenuIntent::OpenFile);
     }
     // Nothing to close until a model is loaded; `bounds` is `None` exactly then.
     let close_file = egui::Button::new(keys::ui_toolbar::MENU_CLOSE_FILE)
         .shortcut_text(keys::ui_toolbar::menu_close_file_shortcut(modifier));
     if ui.add_enabled(state.bounds.is_some(), close_file).clicked() {
-        chosen = Some(MenuIntent::CloseFile);
+        output.menu = Some(MenuIntent::CloseFile);
     }
-
     ui.separator();
+    if ui.button(keys::ui_toolbar::MENU_EXIT).clicked() {
+        output.menu = Some(MenuIntent::Exit);
+    }
+}
+
+/// Preferences: the Remember settings switch.
+fn preferences_menu(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput) {
     // A copy, not the field: flipping it is `app`'s job, because flipping it is
     // also what writes the settings file.
     let mut remember = state.remember_settings;
@@ -229,14 +247,35 @@ fn menu_entries(ui: &mut egui::Ui, state: &UiState) -> Option<MenuIntent> {
     )
     .clicked()
     {
-        chosen = Some(MenuIntent::ToggleRememberSettings);
+        output.menu = Some(MenuIntent::ToggleRememberSettings);
     }
+}
 
-    ui.separator();
-    if ui.button(keys::ui_toolbar::MENU_EXIT).clicked() {
-        chosen = Some(MenuIntent::Exit);
+/// Help: about, the manual, updates, and the two project links.
+fn help_menu(ui: &mut egui::Ui, state: &mut UiState, output: &mut UiOutput) {
+    if ui.button(keys::ui_toolbar::MENU_ABOUT).clicked() {
+        state.about.open = true;
     }
-    chosen
+    if ui.button(keys::ui_toolbar::MENU_DOCUMENTATION).clicked() {
+        state.help.open_page(Page::Index);
+    }
+    ui.separator();
+    if ui
+        .button(keys::ui_toolbar::MENU_CHECK_FOR_UPDATES)
+        .clicked()
+    {
+        output.menu = Some(MenuIntent::CheckForUpdates);
+    }
+    // Both links go to the browser through egui's own `open_url`, which
+    // `egui-winit` hands to the OS.
+    if ui.button(keys::ui_toolbar::MENU_REPORT_ISSUE).clicked() {
+        ui.ctx()
+            .open_url(egui::OpenUrl::new_tab(state.about.info.new_issue_url()));
+    }
+    if ui.button(keys::ui_toolbar::MENU_CREDITS).clicked() {
+        ui.ctx()
+            .open_url(egui::OpenUrl::new_tab(state.about.info.credits_url()));
+    }
 }
 
 /// Show Wireframe, alone in a group: the independent wireframe-overlay toggle,

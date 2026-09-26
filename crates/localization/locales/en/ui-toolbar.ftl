@@ -9,16 +9,29 @@
 
 ui-toolbar-menu = Menu
     .description = Opens and closes files, sets whether your tool settings are kept for
-        next time, and quits.
-ui-toolbar-menu-open-file = Open file...
+        next time, and leads to the manual, updates and the project's pages.
+
+# The three submenus.
+ui-toolbar-menu-file = File
+ui-toolbar-menu-preferences = Preferences
+ui-toolbar-menu-help = Help
+
+ui-toolbar-menu-open-file = Open File...
 ui-toolbar-menu-open-file-shortcut = { $modifier }+O
-ui-toolbar-menu-close-file = Close file
+ui-toolbar-menu-close-file = Close File
 ui-toolbar-menu-close-file-shortcut = { $modifier }+N
-ui-toolbar-menu-remember-settings = Remember settings
+ui-toolbar-menu-exit = Exit
+
+ui-toolbar-menu-remember-settings = Remember Settings
     .description = When this is ticked, the choices you make in the tools' options windows,
         such as colors, sizes, the environment and the ambient occlusion settings, are kept
         and come back the next time you start the viewer.
-ui-toolbar-menu-exit = Exit
+
+ui-toolbar-menu-about = About
+ui-toolbar-menu-documentation = Documentation
+ui-toolbar-menu-check-for-updates = Check for Updates
+ui-toolbar-menu-report-issue = Report an Issue
+ui-toolbar-menu-credits = Credits
 
 ## Shading modes
 
