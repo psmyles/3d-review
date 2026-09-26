@@ -15,8 +15,8 @@
 use review_localization::Key;
 use review_model::{NodeKind, SkinningMethod};
 use review_optimize::{
-    AoQuality, AoTarget, FbxFormat, HierarchyMode, LodPackaging, OpKind, RemeshDensity,
-    RemeshTopology, SimplifyAlgorithm,
+    AoQuality, AoTarget, FbxFormat, HierarchyMode, LodPackaging, NormalMode, OpKind, RemeshDensity,
+    RemeshTopology, ShrinkwrapMethod, SimplifyAlgorithm, VoxelTarget,
 };
 use review_render::{
     AlphaMode, BufferView, ChannelSelect, CheckerTexture, EnvironmentMap, GtaoQuality,
@@ -223,6 +223,7 @@ pub(crate) fn op_kind(kind: &OpKind) -> Key {
         OpKind::Reduce(_) => keys::ui_enums::OP_REDUCE,
         OpKind::Remesh(_) => keys::ui_enums::OP_REMESH,
         OpKind::Shrinkwrap(_) => keys::ui_enums::OP_SHRINKWRAP,
+        OpKind::RecalculateNormals(_) => keys::ui_enums::OP_RECALCULATE_NORMALS,
         OpKind::SimplifyLod(_) => keys::ui_enums::OP_SIMPLIFY_LOD,
         OpKind::BakeAo(_) => keys::ui_enums::OP_BAKE_AO,
         OpKind::VertexCache => keys::ui_enums::OP_VERTEX_CACHE,
@@ -249,11 +250,34 @@ pub(crate) fn op_description(kind: &OpKind) -> Key {
         OpKind::Reduce(_) => keys::ui_enums::OP_REDUCE_DESCRIPTION,
         OpKind::Remesh(_) => keys::ui_enums::OP_REMESH_DESCRIPTION,
         OpKind::Shrinkwrap(_) => keys::ui_enums::OP_SHRINKWRAP_DESCRIPTION,
+        OpKind::RecalculateNormals(_) => keys::ui_enums::OP_RECALCULATE_NORMALS_DESCRIPTION,
         OpKind::SimplifyLod(_) => keys::ui_enums::OP_SIMPLIFY_LOD_DESCRIPTION,
         OpKind::BakeAo(_) => keys::ui_enums::OP_BAKE_AO_DESCRIPTION,
         OpKind::VertexCache => keys::ui_enums::OP_VERTEX_CACHE_DESCRIPTION,
         OpKind::Overdraw { .. } => keys::ui_enums::OP_OVERDRAW_DESCRIPTION,
         OpKind::VertexFetch => keys::ui_enums::OP_VERTEX_FETCH_DESCRIPTION,
+    }
+}
+
+pub(crate) fn normal_mode(mode: NormalMode) -> Key {
+    match mode {
+        NormalMode::Project => keys::ui_enums::NORMAL_MODE_PROJECT,
+        NormalMode::Generate => keys::ui_enums::NORMAL_MODE_GENERATE,
+    }
+}
+
+pub(crate) fn shrinkwrap_method(method: ShrinkwrapMethod) -> Key {
+    match method {
+        ShrinkwrapMethod::Winding => keys::ui_enums::SHRINKWRAP_METHOD_WINDING,
+        ShrinkwrapMethod::Voxel => keys::ui_enums::SHRINKWRAP_METHOD_VOXEL,
+    }
+}
+
+pub(crate) fn voxel_target(target: VoxelTarget) -> Key {
+    match target {
+        VoxelTarget::Keep => keys::ui_enums::VOXEL_TARGET_KEEP,
+        VoxelTarget::Ratio => keys::ui_enums::VOXEL_TARGET_RATIO,
+        VoxelTarget::Triangles => keys::ui_enums::VOXEL_TARGET_TRIANGLES,
     }
 }
 

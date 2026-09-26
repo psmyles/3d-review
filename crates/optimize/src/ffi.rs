@@ -6,14 +6,20 @@
 //! validates the buffer/index preconditions the C side assumes, so the rest of
 //! the crate — and all of `app` / `ui` / `render` — stays safe.
 //!
-//! Signatures mirror `third_party/meshoptimizer/meshoptimizer.h` (v1.2)
+//! Signatures mirror `third_party/meshoptimizer/meshoptimizer.h` (v1.3)
 //! verbatim. `MESHOPTIMIZER_API` expands to nothing and the header wraps the
 //! whole surface in `extern "C"`, so the platform default calling convention
 //! applies on both sides. `size_t` maps to `usize`, `unsigned int` to `u32`.
 //!
 //! Keep this file in lockstep with the vendored header when refreshing it —
 //! a silently changed parameter list is the one thing the compiler cannot
-//! catch here.
+//! catch here, which is why `build.rs` pins the header's version and checks
+//! every declaration bound below against it (`MESHOPT_BOUND`): add each new
+//! binding to that list too.
+//!
+//! Three bindings are **experimental** upstream and may change shape in any
+//! release: `meshopt_remesh`, `meshopt_generateNormals`, and the
+//! `PreserveFolds` / `ErrorClamped` simplify bits.
 #![cfg(has_meshopt)]
 
 use std::ffi::{c_float, c_int, c_uint, c_void};
@@ -49,32 +55,9 @@ pub struct OverdrawStatistics {
     pub overdraw: c_float,
 }
 
-/// Simplification option flags (`meshopt_Simplify*`), as a bitmask passed in
-/// the `options` parameter of [`meshopt_simplify`] /
-/// [`meshopt_simplifyWithAttributes`].
-pub mod simplify_options {
-    use std::ffi::c_uint;
-
-    /// Do not move vertices that are on the topological border.
-    pub const LOCK_BORDER: c_uint = 1 << 0;
-    // Bit 1 is `meshopt_SimplifySparse`, deliberately not exposed. It is a hint
-    // that the index buffer addresses only a small subset of the vertex array,
-    // and it redefines `target_error` to be relative to that subset's extents
-    // rather than the mesh's. Submeshes arrive here with their vertices already
-    // compacted, so the hint would never be true and the error-scale change
-    // would silently mean something different from what the UI says.
-    /// Treat the error limit and resulting error as absolute rather than
-    /// relative to mesh extents.
-    pub const ERROR_ABSOLUTE: c_uint = 1 << 2;
-    /// Remove disconnected parts of the mesh during simplification.
-    pub const PRUNE: c_uint = 1 << 3;
-    /// Produce more regular triangle sizes/shapes, at some cost to quality.
-    pub const REGULARIZE: c_uint = 1 << 4;
-    /// Allow collapses across attribute discontinuities.
-    pub const PERMISSIVE: c_uint = 1 << 5;
-    /// Like [`REGULARIZE`] at a smaller cost to quality.
-    pub const REGULARIZE_LIGHT: c_uint = 1 << 6;
-}
+// The option bitmasks live in `crate::meshopt::options`, outside this
+// module's `has_meshopt` gate, because the stack's parameter types need them
+// in either build.
 
 /// `meshopt_Stream`: one attribute stream of a multi-stream call.
 #[repr(C)]
@@ -239,6 +222,48 @@ unsafe extern "C" {
         vertex_count: usize,
         vertex_size: usize,
     ) -> VertexFetchStatistics;
+
+    /// Per-corner tangents (`index_count * 4` floats: xyz + handedness `w`).
+    pub fn meshopt_generateTangents(
+        result: *mut c_float,
+        indices: *const c_uint,
+        index_count: usize,
+        vertex_positions: *const c_float,
+        vertex_count: usize,
+        vertex_positions_stride: usize,
+        vertex_normals: *const c_float,
+        vertex_normals_stride: usize,
+        vertex_uvs: *const c_float,
+        vertex_uvs_stride: usize,
+        options: c_uint,
+    );
+
+    /// Experimental. Per-corner normals (`index_count * 3` floats), averaged
+    /// across edges whose dihedral angle is below `crease_angle` (radians).
+    pub fn meshopt_generateNormals(
+        result: *mut c_float,
+        indices: *const c_uint,
+        index_count: usize,
+        vertex_positions: *const c_float,
+        vertex_count: usize,
+        vertex_positions_stride: usize,
+        crease_angle: c_float,
+        smoothing: c_float,
+    );
+
+    /// Experimental. Voxel remesh into an unindexed position soup (`9` floats
+    /// per triangle); with too small a destination it returns an upper bound.
+    pub fn meshopt_remesh(
+        destination: *mut c_float,
+        max_triangle_count: usize,
+        indices: *const c_uint,
+        index_count: usize,
+        vertex_positions: *const c_float,
+        vertex_count: usize,
+        vertex_positions_stride: usize,
+        resolution: c_int,
+        options: c_uint,
+    ) -> usize;
 
     pub fn meshopt_analyzeOverdraw(
         indices: *const c_uint,

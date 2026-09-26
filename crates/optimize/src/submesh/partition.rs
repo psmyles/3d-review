@@ -256,6 +256,7 @@ pub fn partition(model: &ModelData, extras: Option<&SourceExtras>) -> (Vec<Subme
             dq_weight: dq_rows,
             morph: morph_rows,
             source_corner,
+            normals_stale: false,
         });
     }
 

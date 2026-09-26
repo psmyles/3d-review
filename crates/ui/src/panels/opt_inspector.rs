@@ -10,9 +10,9 @@
 use review_model::ModelData;
 use review_optimize::{
     AoQuality, AoTarget, AttributeWeights, BakeAoParams, ExportOptions, FbxFormat, HierarchyMode,
-    LodLevel, LodPackaging, LodParams, OpKind, ReduceParams, RemeshDensity, RemeshParams,
-    RemeshTopology, ShrinkwrapParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings,
-    WeldParams,
+    LodLevel, LodPackaging, LodParams, NormalMode, NormalParams, OpKind, ReduceParams,
+    RemeshDensity, RemeshParams, RemeshTopology, ShrinkwrapMethod, ShrinkwrapParams,
+    SimplifyAlgorithm, SimplifyFlags, SimplifySettings, VoxelTarget, WeldParams,
 };
 use review_render::Selection;
 
@@ -25,11 +25,15 @@ use crate::state::{
     range::{
         AO_BAKE_DISTANCE_MAX, AO_BAKE_DISTANCE_MIN, AO_BAKE_INTENSITY_MAX, AO_BAKE_INTENSITY_MIN,
         ATTRIBUTE_WEIGHT_MAX, ATTRIBUTE_WEIGHT_MIN, LOD_ERROR_MAX, LOD_ERROR_MIN, LOD_RATIO_MAX,
-        LOD_RATIO_MIN, OVERDRAW_THRESHOLD_MAX, OVERDRAW_THRESHOLD_MIN, PRUNE_THRESHOLD_MAX,
+        LOD_RATIO_MIN, NORMAL_CREASE_MAX, NORMAL_CREASE_MIN, NORMAL_SMOOTHING_MAX,
+        NORMAL_SMOOTHING_MIN, OVERDRAW_THRESHOLD_MAX, OVERDRAW_THRESHOLD_MIN, PRUNE_THRESHOLD_MAX,
         PRUNE_THRESHOLD_MIN, REMESH_ADAPTIVE_MAX, REMESH_ADAPTIVE_MIN, REMESH_CREASE_MAX,
         REMESH_CREASE_MIN, REMESH_FACES_MAX, REMESH_FACES_MIN, REMESH_RATIO_MAX, REMESH_RATIO_MIN,
         REMESH_SMOOTH_MAX, SHRINKWRAP_OFFSET_MAX, SHRINKWRAP_OFFSET_MIN, SHRINKWRAP_RESOLUTION_MAX,
-        SHRINKWRAP_RESOLUTION_MIN, WELD_TOLERANCE_MAX, WELD_TOLERANCE_MIN,
+        SHRINKWRAP_RESOLUTION_MIN, SHRINKWRAP_TARGET_RATIO_MAX, SHRINKWRAP_TARGET_RATIO_MIN,
+        SHRINKWRAP_TARGET_TRIANGLES_MAX, SHRINKWRAP_TARGET_TRIANGLES_MIN,
+        SHRINKWRAP_VOXEL_RESOLUTION_MAX, SHRINKWRAP_VOXEL_RESOLUTION_MIN, WELD_TOLERANCE_MAX,
+        WELD_TOLERANCE_MIN,
     },
 };
 use crate::theme;
@@ -95,6 +99,9 @@ fn operation_body(ui: &mut egui::Ui, state: &mut UiState, id: u64) {
         OpKind::Reduce(params) => reduce_params(ui, params).map(OpKind::Reduce),
         OpKind::Remesh(params) => remesh_params(ui, params).map(OpKind::Remesh),
         OpKind::Shrinkwrap(params) => shrinkwrap_params(ui, params).map(OpKind::Shrinkwrap),
+        OpKind::RecalculateNormals(params) => {
+            recalculate_normals_params(ui, params).map(OpKind::RecalculateNormals)
+        }
         OpKind::SimplifyLod(params) => lod_params(ui, params).map(OpKind::SimplifyLod),
         OpKind::BakeAo(params) => bake_ao_params(ui, params).map(OpKind::BakeAo),
         // These three have nothing to configure — meshoptimizer exposes no knobs
@@ -192,29 +199,118 @@ fn overdraw_params(ui: &mut egui::Ui, threshold: f32) -> Option<OpKind> {
         .then_some(OpKind::Overdraw { threshold: edited })
 }
 
-/// The AO bake editor.
 /// Returns the edited parameters only when they actually changed.
+fn recalculate_normals_params(ui: &mut egui::Ui, params: NormalParams) -> Option<NormalParams> {
+    let mut edited = params;
+    panel_grid(ui, "opt_recalculate_normals", |ui| {
+        normal_params_rows(ui, &mut edited);
+    });
+    ui.add_space(size::PANEL_ROW_GAP);
+    ui.label(
+        egui::RichText::from(keys::ui_opt::RECALCULATE_NORMALS_EXPLAINED).color(color::TEXT_MUTED),
+    );
+    (edited != params).then_some(edited)
+}
+
+/// The crease angle and smoothing rows, inside the caller's grid: shared by
+/// Recalculate Normals and by every rebuild told to generate its normals, so the
+/// same two numbers read the same wherever they appear.
+fn normal_params_rows(ui: &mut egui::Ui, params: &mut NormalParams) {
+    labeled_slider_with_value(
+        ui,
+        Tip::new(keys::ui_opt::NORMAL_CREASE_ANGLE)
+            .describe(keys::ui_opt::NORMAL_CREASE_ANGLE_DESCRIPTION)
+            .page(Page::OptNormals),
+        &mut params.crease_angle,
+        NORMAL_CREASE_MIN..=NORMAL_CREASE_MAX,
+        0,
+    );
+    labeled_slider_with_value(
+        ui,
+        Tip::new(keys::ui_opt::NORMAL_SMOOTHING)
+            .describe(keys::ui_opt::NORMAL_SMOOTHING_DESCRIPTION)
+            .page(Page::OptNormals),
+        &mut params.smoothing,
+        NORMAL_SMOOTHING_MIN..=NORMAL_SMOOTHING_MAX,
+        1,
+    );
+}
+
+/// The "Normals" choice a rebuilding operation offers — projected off the
+/// original, or generated from the new surface — with the generation rows
+/// shown only when they are what the choice reads.
+fn normal_source_rows(
+    ui: &mut egui::Ui,
+    id: &str,
+    mode: &mut NormalMode,
+    params: &mut NormalParams,
+) {
+    labeled_combo(
+        ui,
+        Tip::new(keys::ui_opt::NORMAL_SOURCE)
+            .describe(keys::ui_opt::NORMAL_SOURCE_DESCRIPTION)
+            .page(Page::OptNormals),
+        id,
+        labels::normal_mode(*mode),
+        |ui| {
+            for option in NormalMode::ALL {
+                ui.selectable_value(mode, option, labels::normal_mode(option));
+            }
+        },
+    );
+    if *mode == NormalMode::Generate {
+        normal_params_rows(ui, params);
+    }
+}
+
+/// Returns the edited parameters only when they actually changed.
+///
+/// The rows follow the method: each extraction reads its own settings, and
+/// showing the other's would invite setting one and wondering why nothing
+/// changed. Changing method goes through [`ShrinkwrapParams::set_method`], which
+/// also resets the normals to that method's default.
 fn shrinkwrap_params(ui: &mut egui::Ui, params: ShrinkwrapParams) -> Option<ShrinkwrapParams> {
     let mut edited = params;
     panel_grid(ui, "opt_shrinkwrap", |ui| {
-        labeled_slider_with_value(
+        let mut method = edited.method;
+        labeled_combo(
             ui,
-            Tip::new(keys::ui_opt::SHRINKWRAP_RESOLUTION)
-                .describe(keys::ui_opt::SHRINKWRAP_RESOLUTION_DESCRIPTION)
+            Tip::new(keys::ui_opt::SHRINKWRAP_METHOD)
+                .describe(keys::ui_opt::SHRINKWRAP_METHOD_DESCRIPTION)
                 .page(Page::OptShrinkwrap),
-            &mut edited.resolution,
-            SHRINKWRAP_RESOLUTION_MIN..=SHRINKWRAP_RESOLUTION_MAX,
-            0,
+            "opt_shrinkwrap_method",
+            labels::shrinkwrap_method(method),
+            |ui| {
+                for option in ShrinkwrapMethod::ALL {
+                    ui.selectable_value(&mut method, option, labels::shrinkwrap_method(option));
+                }
+            },
         );
-        labeled_slider_with_value(
-            ui,
-            Tip::new(keys::ui_opt::SHRINKWRAP_OFFSET)
-                .describe(keys::ui_opt::SHRINKWRAP_OFFSET_DESCRIPTION)
-                .page(Page::OptShrinkwrap),
-            &mut edited.offset,
-            SHRINKWRAP_OFFSET_MIN..=SHRINKWRAP_OFFSET_MAX,
-            3,
-        );
+        edited.set_method(method);
+
+        match edited.method {
+            ShrinkwrapMethod::Winding => {
+                labeled_slider_with_value(
+                    ui,
+                    Tip::new(keys::ui_opt::SHRINKWRAP_RESOLUTION)
+                        .describe(keys::ui_opt::SHRINKWRAP_RESOLUTION_DESCRIPTION)
+                        .page(Page::OptShrinkwrap),
+                    &mut edited.resolution,
+                    SHRINKWRAP_RESOLUTION_MIN..=SHRINKWRAP_RESOLUTION_MAX,
+                    0,
+                );
+                labeled_slider_with_value(
+                    ui,
+                    Tip::new(keys::ui_opt::SHRINKWRAP_OFFSET)
+                        .describe(keys::ui_opt::SHRINKWRAP_OFFSET_DESCRIPTION)
+                        .page(Page::OptShrinkwrap),
+                    &mut edited.offset,
+                    SHRINKWRAP_OFFSET_MIN..=SHRINKWRAP_OFFSET_MAX,
+                    3,
+                );
+            }
+            ShrinkwrapMethod::Voxel => voxel_rows(ui, &mut edited),
+        }
         labeled_checkbox(
             ui,
             Tip::new(keys::ui_opt::SHRINKWRAP_LARGEST_SHELL)
@@ -222,12 +318,97 @@ fn shrinkwrap_params(ui: &mut egui::Ui, params: ShrinkwrapParams) -> Option<Shri
                 .page(Page::OptShrinkwrap),
             &mut edited.keep_largest_shell,
         );
+        normal_source_rows(
+            ui,
+            "opt_shrinkwrap_normals",
+            &mut edited.normals,
+            &mut edited.normal_params,
+        );
     });
 
     ui.add_space(size::PANEL_ROW_GAP);
     ui.label(egui::RichText::from(keys::ui_opt::SHRINKWRAP_EXPLAINED).color(color::TEXT_MUTED));
 
     (edited != params).then_some(edited)
+}
+
+/// The voxel method's own rows, inside the Shrinkwrap grid. The target's
+/// amount row shows a ratio *or* a count, never both, as Remesh's density does.
+fn voxel_rows(ui: &mut egui::Ui, edited: &mut ShrinkwrapParams) {
+    labeled_slider_with_value(
+        ui,
+        Tip::new(keys::ui_opt::SHRINKWRAP_VOXEL_RESOLUTION)
+            .describe(keys::ui_opt::SHRINKWRAP_VOXEL_RESOLUTION_DESCRIPTION)
+            .page(Page::OptShrinkwrap),
+        &mut edited.voxel_resolution,
+        SHRINKWRAP_VOXEL_RESOLUTION_MIN..=SHRINKWRAP_VOXEL_RESOLUTION_MAX,
+        0,
+    );
+    labeled_checkbox(
+        ui,
+        Tip::new(keys::ui_opt::SHRINKWRAP_FIT_SURFACE)
+            .describe(keys::ui_opt::SHRINKWRAP_FIT_SURFACE_DESCRIPTION)
+            .page(Page::OptShrinkwrap),
+        &mut edited.voxel_solve,
+    );
+    labeled_checkbox(
+        ui,
+        Tip::new(keys::ui_opt::SHRINKWRAP_TWO_SIDED)
+            .describe(keys::ui_opt::SHRINKWRAP_TWO_SIDED_DESCRIPTION)
+            .page(Page::OptShrinkwrap),
+        &mut edited.voxel_shell,
+    );
+    labeled_combo(
+        ui,
+        Tip::new(keys::ui_opt::SHRINKWRAP_TARGET)
+            .describe(keys::ui_opt::SHRINKWRAP_TARGET_DESCRIPTION)
+            .page(Page::OptShrinkwrap),
+        "opt_shrinkwrap_target",
+        labels::voxel_target(edited.voxel_target),
+        |ui| {
+            for target in VoxelTarget::ALL {
+                ui.selectable_value(
+                    &mut edited.voxel_target,
+                    target,
+                    labels::voxel_target(target),
+                );
+            }
+        },
+    );
+    match edited.voxel_target {
+        VoxelTarget::Keep => {}
+        VoxelTarget::Ratio => {
+            labeled_slider_with_value(
+                ui,
+                Tip::new(keys::ui_opt::SHRINKWRAP_TARGET_RATIO)
+                    .describe(keys::ui_opt::SHRINKWRAP_TARGET_RATIO_DESCRIPTION)
+                    .page(Page::OptShrinkwrap),
+                &mut edited.voxel_ratio,
+                SHRINKWRAP_TARGET_RATIO_MIN..=SHRINKWRAP_TARGET_RATIO_MAX,
+                2,
+            );
+        }
+        VoxelTarget::Triangles => {
+            labeled_slider_with_value(
+                ui,
+                Tip::new(keys::ui_opt::SHRINKWRAP_TARGET_TRIANGLES)
+                    .describe(keys::ui_opt::SHRINKWRAP_TARGET_TRIANGLES_DESCRIPTION)
+                    .page(Page::OptShrinkwrap),
+                &mut edited.voxel_triangles,
+                SHRINKWRAP_TARGET_TRIANGLES_MIN..=SHRINKWRAP_TARGET_TRIANGLES_MAX,
+                0,
+            );
+        }
+    }
+    if edited.voxel_target != VoxelTarget::Keep {
+        labeled_checkbox(
+            ui,
+            Tip::new(keys::ui_opt::SHRINKWRAP_EVEN_TRIANGLES)
+                .describe(keys::ui_opt::SHRINKWRAP_EVEN_TRIANGLES_DESCRIPTION)
+                .page(Page::OptShrinkwrap),
+            &mut edited.voxel_regularize,
+        );
+    }
 }
 
 /// Returns the edited parameters only when they actually changed.
@@ -339,6 +520,12 @@ fn remesh_params(ui: &mut egui::Ui, params: RemeshParams) -> Option<RemeshParams
             &mut edited.adaptive_strength,
             REMESH_ADAPTIVE_MIN..=REMESH_ADAPTIVE_MAX,
             2,
+        );
+        normal_source_rows(
+            ui,
+            "opt_remesh_normals",
+            &mut edited.normals,
+            &mut edited.normal_params,
         );
     });
 
@@ -494,6 +681,8 @@ fn simplify_settings(ui: &mut egui::Ui, id: &str, edited: &mut SimplifySettings)
                 regularize,
                 regularize_light,
                 permissive,
+                preserve_folds,
+                clamp_attribute_error,
             } = &mut edited.flags;
             ui.checkbox(lock_border, keys::ui_opt::LOCK_BORDER)
                 .on_hover_text(keys::ui_opt::LOCK_BORDER_DESCRIPTION);
@@ -507,6 +696,14 @@ fn simplify_settings(ui: &mut egui::Ui, id: &str, edited: &mut SimplifySettings)
                 .on_hover_text(keys::ui_opt::REGULARIZE_LIGHT_DESCRIPTION);
             ui.checkbox(permissive, keys::ui_opt::COLLAPSE_ACROSS_SEAMS)
                 .on_hover_text(keys::ui_opt::COLLAPSE_ACROSS_SEAMS_DESCRIPTION);
+            ui.checkbox(preserve_folds, keys::ui_opt::PRESERVE_FOLDS)
+                .on_hover_text(keys::ui_opt::PRESERVE_FOLDS_DESCRIPTION);
+            // Clamping bounds the *attribute* error, which only the
+            // attribute-aware simplifier computes; elsewhere it would do nothing.
+            if edited.algorithm == SimplifyAlgorithm::WithAttributes {
+                ui.checkbox(clamp_attribute_error, keys::ui_opt::CLAMP_ATTRIBUTE_ERROR)
+                    .on_hover_text(keys::ui_opt::CLAMP_ATTRIBUTE_ERROR_DESCRIPTION);
+            }
         });
     }
 }

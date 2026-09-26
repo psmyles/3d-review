@@ -218,8 +218,13 @@ pub fn process_progressive(
     // submeshes in place below). See the field docs on [`ProcessedResult`] for
     // why the raw corner-split buffer would be the wrong thing to quote against.
     let source = MeshCounts::of_submeshes(&submeshes);
-    let source_metrics =
-        measure_submeshes(&submeshes, input.render_vertex_size, 0.0, &mut warnings);
+    let source_metrics = measure_submeshes(
+        &submeshes,
+        input.render_vertex_size,
+        0.0,
+        false,
+        &mut warnings,
+    );
 
     // Nothing enabled: no mesh is produced, but the baseline above still comes
     // back — a user reads the mesh's overdraw and cache behaviour *before*
@@ -263,17 +268,7 @@ pub fn process_progressive(
     let watching = match preview {
         Some(sink) => {
             watched = move |pieces: &[&submesh::Submesh]| {
-                let (model, _) = assemble(
-                    pieces,
-                    input.model,
-                    tags,
-                    0,
-                    Rebuild {
-                        normals: false,
-                        tangents: false,
-                    },
-                    &mut Warnings::default(),
-                );
+                let (model, _) = assemble(pieces, input.model, tags, 0, &mut Warnings::default());
                 sink(OptPreview { model });
             };
             run.watching(&watched)
@@ -302,6 +297,7 @@ pub fn process_progressive(
     let mut levels: Vec<LevelState> = vec![LevelState {
         submeshes: submeshes.clone(),
         simplify_error: base_error,
+        simplified: runs_reduce(pre_ops),
     }];
 
     if let Some(params) = lod_op {
@@ -332,7 +328,9 @@ pub fn process_progressive(
         }
     }
 
+    let reduced_after = runs_reduce(post_ops);
     for level in &mut levels {
+        level.simplified |= reduced_after;
         for op in post_ops {
             if run.cancelled() {
                 return Err(OptError::Cancelled);
@@ -353,20 +351,29 @@ pub fn process_progressive(
         }
     }
 
-    let geometry_changed = input
+    // Tangents are derived from positions, UVs and normals, so any change to
+    // those invalidates them. Regenerating unconditionally would be wasted work
+    // on a reorder-only stack, and would also overwrite the source file's
+    // authored tangents with synthesized ones for no reason. Stale *normals* are
+    // tracked per piece instead (`Submesh::normals_stale`), since only a
+    // normal-blind weld leaves them so and a later operation may already have
+    // rewritten them.
+    let tangents_invalidated = input
         .stack
         .ops
         .iter()
-        .any(|op| op.enabled && op.kind.alters_geometry());
-
-    // A weld that ignores normals merges vertices whose normals differ, and the
-    // survivor keeps one of them arbitrarily — it then describes one incident face
-    // rather than the surface, and the mesh shades as noise. Simplification needs
-    // no such fix-up: it only ever *removes* vertices, so the ones that survive
-    // still carry their authored normals.
-    let normals_invalidated = input.stack.ops.iter().any(|op| {
-        op.enabled && matches!(&op.kind, OpKind::Weld(params) if !params.compare_normals)
-    });
+        .any(|op| op.enabled && op.kind.invalidates_tangents());
+    for level in &mut levels {
+        if run.cancelled() {
+            return Err(OptError::Cancelled);
+        }
+        crate::shading::finish_bases(
+            &mut level.submeshes,
+            input.stack,
+            tangents_invalidated,
+            &mut warnings,
+        );
+    }
 
     // A bake above a simplifier isn't wrong — surviving vertices keep their
     // colors — but the AO then describes the pre-simplified geometry, which is
@@ -440,17 +447,7 @@ pub fn process_progressive(
             levels.len() as u32,
         ));
         let pieces: Vec<&submesh::Submesh> = level.submeshes.iter().collect();
-        let (model, carry) = assemble(
-            &pieces,
-            input.model,
-            tags,
-            index,
-            Rebuild {
-                normals: normals_invalidated,
-                tangents: geometry_changed,
-            },
-            &mut warnings,
-        );
+        let (model, carry) = assemble(&pieces, input.model, tags, index, &mut warnings);
         // A level can legitimately collapse to nothing when the target ratio and
         // error budget are aggressive enough. That is a real result, not a bug —
         // but it renders as an empty viewport, so say why rather than let the
@@ -471,6 +468,7 @@ pub fn process_progressive(
             &level.submeshes,
             input.render_vertex_size,
             level.simplify_error,
+            level.simplified,
             &mut warnings,
         );
         lods.push(ProcessedLod {
@@ -491,6 +489,13 @@ pub fn process_progressive(
 }
 
 /// Whether the user excluded `node` from processing entirely.
+/// Whether an enabled Reduce sits among `ops`, so the level it runs on has been
+/// through a simplifier.
+fn runs_reduce(ops: &[OpInstance]) -> bool {
+    ops.iter()
+        .any(|op| op.enabled && matches!(op.kind, OpKind::Reduce(_)))
+}
+
 pub(crate) fn is_excluded(stack: &OptStack, node: u32) -> bool {
     stack
         .node_override(node as usize)
@@ -811,17 +816,7 @@ mod tests {
 
         let mut warnings = Warnings::default();
         let pieces: Vec<&submesh::Submesh> = submeshes.iter().collect();
-        let (level, carry) = assemble(
-            &pieces,
-            &model,
-            tags,
-            0,
-            Rebuild {
-                normals: false,
-                tangents: false,
-            },
-            &mut warnings,
-        );
+        let (level, carry) = assemble(&pieces, &model, tags, 0, &mut warnings);
 
         assert_eq!(level.faces.len(), 6, "the cube's six quads are published");
         assert!(level.faces.iter().all(|face| face.index_count == 4));
@@ -869,10 +864,25 @@ mod tests {
 
         let result = run(&stack);
         let output = &result.lods[0].model;
-        assert_eq!(output.vertices.len(), 8, "a cube has eight corners");
+        // Eight *positions*, not eight vertices: each survivor keeps one of its
+        // group's UVs arbitrarily, so the welded UV layout folds over itself and
+        // the tangent rebuild legitimately splits a vertex wherever handedness
+        // flips — real vertices an engine would need too, which the stats count.
+        assert_eq!(distinct_positions(output), 8, "a cube has eight corners");
         assert_eq!(output.indices.len(), 36, "welding removes no triangles");
-        assert_eq!(output.stats.vertex_count, 8);
+        assert_eq!(output.stats.vertex_count, output.vertices.len());
         assert_eq!(output.stats.triangle_count, 12);
+    }
+
+    fn distinct_positions(model: &ModelData) -> usize {
+        let mut positions: Vec<[u32; 3]> = model
+            .vertices
+            .iter()
+            .map(|vertex| vertex.position.to_array().map(f32::to_bits))
+            .collect();
+        positions.sort_unstable();
+        positions.dedup();
+        positions.len()
     }
 
     #[test]
@@ -898,7 +908,7 @@ mod tests {
             compare_colors: false,
         }));
 
-        assert_eq!(run(&stack).lods[0].model.vertices.len(), 8);
+        assert_eq!(distinct_positions(&run(&stack).lods[0].model), 8);
     }
 
     #[test]
@@ -1042,6 +1052,29 @@ mod tests {
             result.lods[0].metrics.simplify_error > 0.0,
             "level 0 reports the error the reduce cost: {:?}",
             result.lods[0].metrics
+        );
+        assert!(
+            result.lods[0].metrics.simplified,
+            "a reduced level 0 says a simplifier ran, which is what shows its error row"
+        );
+    }
+
+    /// Without a Reduce, level 0 is the unsimplified mesh and must say so — its
+    /// zero error is not a measurement — while every generated level did run one.
+    #[test]
+    fn only_simplified_levels_are_marked_simplified() {
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::VertexCache);
+        stack.push_op(OpKind::SimplifyLod(LodParams::default()));
+
+        let result = run(&stack);
+        assert!(
+            !result.lods[0].metrics.simplified,
+            "level 0 was not simplified"
+        );
+        assert!(
+            result.lods[1..].iter().all(|lod| lod.metrics.simplified),
+            "every LOD level ran the simplifier"
         );
     }
 

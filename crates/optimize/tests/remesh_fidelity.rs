@@ -836,22 +836,45 @@ fn how_a_rebuild_compares_with_a_simplify() {
 /// Returns (share facing backwards, share past 90 degrees from the local
 /// geometry, worst angle in degrees).
 fn shading_error(model: &ModelData) -> (f32, f32, f32) {
-    let mut geometric = vec![glam::Vec3::ZERO; model.vertices.len()];
-    let mut total_area = vec![0.0f32; model.vertices.len()];
+    // Shading sees a position and a normal, so that is what a "vertex" is here.
+    // The tangent rebuild splits a vertex at a mirrored-UV seam into copies that
+    // differ only in tangent; each copy then borders just one side's faces,
+    // and measuring the copies apart would judge one normal against half its
+    // surface — at a fold's rim, against the wrong sheet.
+    let mut group_of_key: std::collections::HashMap<[u32; 6], usize> =
+        std::collections::HashMap::new();
+    let group: Vec<usize> = model
+        .vertices
+        .iter()
+        .map(|vertex| {
+            let p = vertex.position.to_array().map(f32::to_bits);
+            let n = vertex.normal.to_array().map(f32::to_bits);
+            let key = [p[0], p[1], p[2], n[0], n[1], n[2]];
+            let next = group_of_key.len();
+            *group_of_key.entry(key).or_insert(next)
+        })
+        .collect();
+    let groups = group_of_key.len();
+    let mut geometric = vec![glam::Vec3::ZERO; groups];
+    let mut total_area = vec![0.0f32; groups];
     for corners in model.indices.as_chunks::<3>().0 {
         let p = corners.map(|c| model.vertices[c as usize].position);
         let weighted = (p[1] - p[0]).cross(p[2] - p[0]);
         for &corner in corners {
-            geometric[corner as usize] += weighted;
-            total_area[corner as usize] += weighted.length();
+            geometric[group[corner as usize]] += weighted;
+            total_area[group[corner as usize]] += weighted.length();
         }
+    }
+    let mut normal_of = vec![glam::Vec3::ZERO; groups];
+    for (vertex, &at) in model.vertices.iter().zip(&group) {
+        normal_of[at] = vertex.normal;
     }
 
     let mut backwards = 0usize;
     let mut steep = 0usize;
     let mut counted = 0usize;
     let mut worst = 0.0f32;
-    for (at, vertex) in model.vertices.iter().enumerate() {
+    for (at, normal) in normal_of.iter().enumerate() {
         // Where the faces around a vertex do not agree on a direction - a rim,
         // where the surface folds back on itself - their weighted sum is very
         // nearly zero and points nowhere in particular. Comparing anything
@@ -862,7 +885,7 @@ fn shading_error(model: &ModelData) -> (f32, f32, f32) {
         let Some(surface) = geometric[at].try_normalize() else {
             continue;
         };
-        let Some(stored) = vertex.normal.try_normalize() else {
+        let Some(stored) = normal.try_normalize() else {
             continue;
         };
         counted += 1;
@@ -874,7 +897,7 @@ fn shading_error(model: &ModelData) -> (f32, f32, f32) {
             steep += 1;
         }
     }
-    let measurable = counted as f32 / model.vertices.len().max(1) as f32;
+    let measurable = counted as f32 / groups.max(1) as f32;
     let _ = measurable;
     let counted = counted.max(1) as f32;
     (backwards as f32 / counted, steep as f32 / counted, worst)

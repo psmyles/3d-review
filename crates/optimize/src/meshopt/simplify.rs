@@ -57,28 +57,9 @@ pub fn simplify_scale(positions: &[f32], vertex_count: usize) -> Result<f32, Opt
     })
 }
 
-/// Result of a simplification pass: the reduced index buffer (still referencing
-/// the *original* vertex buffer) and the error meshoptimizer actually achieved.
-#[derive(Debug, Clone)]
-pub struct SimplifyOutcome {
-    pub indices: Vec<u32>,
-    /// Achieved error, relative to mesh extents unless the caller passed the
-    /// absolute-error option.
-    pub error: f32,
-}
-
-/// Extra per-vertex attributes to preserve during simplification, as a packed
-/// stream plus one weight per component. An empty `weights` selects the
-/// position-only simplifier.
-#[derive(Debug, Clone, Default)]
-pub struct SimplifyAttributes {
-    pub stream: Vec<f32>,
-    pub weights: Vec<f32>,
-}
-
 /// Collapse the mesh toward `target_index_count`, stopping early if
 /// `target_error` would be exceeded. `options` is a bitmask from
-/// [`crate::ffi::simplify_options`].
+/// [`options::simplify`].
 ///
 /// Note the destination must be sized to `index_count`, *not* the target: the
 /// simplifier can stop short of the goal on topology constraints, and the C

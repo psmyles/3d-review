@@ -158,6 +158,7 @@ mod tests {
             dq_weight: VertexRows::default(),
             morph: VertexRows::default(),
             source_corner: Vec::new(),
+            normals_stale: false,
             polygons: Some(PolygonCarry {
                 face_offsets: vec![0, 4],
                 corners: vec![0, 1, 2, 3],
@@ -256,6 +257,7 @@ mod row_tests {
             dq_weight: VertexRows::default(),
             morph: VertexRows::default(),
             source_corner: Vec::new(),
+            normals_stale: false,
         };
         let ids = piece.row_ids();
         assert_eq!(ids[0], ids[2], "identical rows share an id");

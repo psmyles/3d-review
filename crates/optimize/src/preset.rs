@@ -64,8 +64,8 @@ pub fn from_json(json: &str) -> Result<OptStack, OptError> {
 mod tests {
     use super::*;
     use crate::stack::{
-        AoQuality, AoTarget, BakeAoParams, LodParams, OpKind, ReduceParams, SimplifyAlgorithm,
-        WeldParams,
+        AoQuality, AoTarget, BakeAoParams, LodParams, NormalMode, NormalParams, OpKind,
+        ReduceParams, SimplifyAlgorithm, WeldParams,
     };
 
     #[test]
@@ -161,6 +161,70 @@ mod tests {
         assert!(
             written.contains("\"algorithm\""),
             "the settings are written at the operation's top level: {written}"
+        );
+    }
+
+    /// A preset written before the v1.3 flags existed loads with them off, so it
+    /// reproduces the mesh it always did; once set, they survive a round trip.
+    #[test]
+    fn the_newer_simplifier_flags_default_off_and_round_trip() {
+        let json = r#"{
+            "version": 1,
+            "stack": { "ops": [{ "id": 1, "enabled": true, "kind": {
+                "Reduce": { "algorithm": "WithAttributes", "flags": { "permissive": true } }
+            } }] }
+        }"#;
+        let loaded = from_json(json).expect("an older preset still parses");
+        let OpKind::Reduce(params) = &loaded.ops[0].kind else {
+            panic!(
+                "the operation survives as a Reduce: {:?}",
+                loaded.ops[0].kind
+            );
+        };
+        assert!(params.simplify.flags.permissive);
+        assert!(!params.simplify.flags.preserve_folds);
+        assert!(!params.simplify.flags.clamp_attribute_error);
+
+        let mut stack = loaded.clone();
+        if let OpKind::Reduce(params) = &mut stack.ops[0].kind {
+            params.simplify.flags.preserve_folds = true;
+            params.simplify.flags.clamp_attribute_error = true;
+        }
+        let reloaded = from_json(&to_json(&stack).expect("serializes")).expect("parses");
+        assert_eq!(reloaded.ops[0].kind, stack.ops[0].kind);
+    }
+
+    /// A Remesh or Shrinkwrap saved before rebuilt surfaces could generate
+    /// their normals keeps projecting them, so it reproduces what it always did.
+    #[test]
+    fn older_rebuilds_keep_projecting_their_normals() {
+        let json = r#"{
+            "version": 1,
+            "stack": { "ops": [
+                { "id": 1, "enabled": true, "kind": { "Shrinkwrap": { "resolution": 48 } } },
+                { "id": 2, "enabled": true, "kind": { "Remesh": { "ratio": 0.5 } } }
+            ] }
+        }"#;
+        let loaded = from_json(json).expect("an older preset still parses");
+        let OpKind::Shrinkwrap(wrap) = &loaded.ops[0].kind else {
+            panic!("a Shrinkwrap: {:?}", loaded.ops[0].kind);
+        };
+        let OpKind::Remesh(remesh) = &loaded.ops[1].kind else {
+            panic!("a Remesh: {:?}", loaded.ops[1].kind);
+        };
+        assert_eq!(wrap.resolution, 48);
+        assert_eq!(wrap.normals, NormalMode::Project);
+        assert_eq!(remesh.normals, NormalMode::Project);
+
+        let mut stack = loaded.clone();
+        stack.push_op(OpKind::RecalculateNormals(NormalParams {
+            crease_angle: 30.0,
+            smoothing: 1.0,
+        }));
+        let reloaded = from_json(&to_json(&stack).expect("serializes")).expect("parses");
+        assert_eq!(
+            reloaded.ops.last().map(|op| &op.kind),
+            stack.ops.last().map(|op| &op.kind)
         );
     }
 

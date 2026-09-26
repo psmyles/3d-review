@@ -27,6 +27,9 @@ with and without it.
   layout: it lays down a surface of its own and copies the materials, texture
   layout and colors across, keeping open borders and sharp edges where they
   were. Still objects only.
+- **Recalculate Normals** - [works out fresh shading directions](normals.md)
+  from the shape, keeping edges sharper than a crease angle hard and smoothing
+  the rest. Does not change the shape. Objects with blend shapes are skipped.
 - **Generate LODs** - makes a chain of simpler copies of the model (levels of
   detail) for a game to show at a distance. Operations above it run once on the
   base model; operations below it run on every level. You can only have one in
@@ -63,6 +66,12 @@ whole (filter, prune, the reorders) keeps the original faces and simply drops
 any face that lost a triangle. A simplify throws the original faces away,
 because it rebuilds the surface, and the [export](export.md) saves that level
 as triangles with a note saying which operation was responsible.
+
+[Recalculate Normals](normals.md) keeps the faces and edges but rewrites their
+hard and soft markings to agree with the new shading, and drops smoothing
+groups. Where it, or the tangent rebuild at the end of a run, has to split a
+point in two, the faces and edges follow the split, so the export still names
+each of them.
 
 [Remesh](remesh.md) is the one operation that builds faces of its own rather
 than carrying the original ones. Its quads are real everywhere the others'

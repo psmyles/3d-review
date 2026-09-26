@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ffi::simplify_options;
+use crate::meshopt::options::simplify as simplify_options;
 
 use super::*;
 
@@ -203,6 +203,12 @@ pub struct SimplifyFlags {
     pub regularize_light: bool,
     /// Allow collapses across attribute discontinuities (UV/normal seams).
     pub permissive: bool,
+    /// Keep the fold line of a double-sided sheet (two opposite-facing
+    /// triangles sharing an edge) from eroding. Experimental upstream.
+    pub preserve_folds: bool,
+    /// Clamp the attribute error to the position error's scale. Only has an
+    /// effect with [`SimplifyAlgorithm::WithAttributes`]. Experimental upstream.
+    pub clamp_attribute_error: bool,
 }
 
 impl SimplifyFlags {
@@ -227,6 +233,12 @@ impl SimplifyFlags {
         if self.permissive {
             bits |= simplify_options::PERMISSIVE;
         }
+        if self.preserve_folds {
+            bits |= simplify_options::PRESERVE_FOLDS;
+        }
+        if self.clamp_attribute_error {
+            bits |= simplify_options::ERROR_CLAMPED;
+        }
         bits
     }
 }
@@ -250,4 +262,39 @@ pub struct NodeOverride {
     /// Replacement settings for specific operations, matched by
     /// [`OpInstance::id`]. Operations not listed here use the global settings.
     pub ops: Vec<OpInstance>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_simplify_flag_sets_exactly_its_own_bit() {
+        assert_eq!(SimplifyFlags::default().bits(), 0);
+        let one = |set: fn(&mut SimplifyFlags)| {
+            let mut flags = SimplifyFlags::default();
+            set(&mut flags);
+            flags.bits()
+        };
+        assert_eq!(one(|f| f.lock_border = true), simplify_options::LOCK_BORDER);
+        assert_eq!(
+            one(|f| f.error_absolute = true),
+            simplify_options::ERROR_ABSOLUTE
+        );
+        assert_eq!(one(|f| f.prune = true), simplify_options::PRUNE);
+        assert_eq!(one(|f| f.regularize = true), simplify_options::REGULARIZE);
+        assert_eq!(
+            one(|f| f.regularize_light = true),
+            simplify_options::REGULARIZE_LIGHT
+        );
+        assert_eq!(one(|f| f.permissive = true), simplify_options::PERMISSIVE);
+        assert_eq!(
+            one(|f| f.preserve_folds = true),
+            simplify_options::PRESERVE_FOLDS
+        );
+        assert_eq!(
+            one(|f| f.clamp_attribute_error = true),
+            simplify_options::ERROR_CLAMPED
+        );
+    }
 }
