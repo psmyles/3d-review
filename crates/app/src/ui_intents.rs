@@ -9,6 +9,7 @@
 //! way (app→UI data).
 
 use review_render::TextureSlot;
+use review_shell_macos::{MenuCommand, MenuState};
 use review_ui::{AxisGizmoAction, MenuIntent, TextureIntent, UiOutput};
 
 use crate::{App, keys};
@@ -131,6 +132,64 @@ impl App {
             }
             MenuIntent::CheckForUpdates => self.check_for_updates(),
             MenuIntent::Exit => self.exit_requested = true,
+        }
+    }
+
+    /// A macOS menu item the viewer performs itself (`docs/ARCHITECTURE.md`,
+    /// Platform decisions D15).
+    ///
+    /// Each lands where the same entry of the toolbar's menu does — the
+    /// [`MenuIntent`] handler for the ones that reach outside the chrome, and the
+    /// same in-place state change for the ones the toolbar makes itself — which is
+    /// the point: the menu bar is a second door onto the existing commands, never
+    /// a second implementation of them.
+    pub(crate) fn handle_menu_command(&mut self, command: MenuCommand) {
+        let intent = match command {
+            MenuCommand::Open => MenuIntent::OpenFile,
+            MenuCommand::New => MenuIntent::CloseFile,
+            MenuCommand::OpenRecent(index) => MenuIntent::OpenRecent(index),
+            MenuCommand::ClearRecentFiles => MenuIntent::ClearRecentFiles,
+            MenuCommand::ToggleRememberSettings => MenuIntent::ToggleRememberSettings,
+            MenuCommand::ToggleTracyProfiler => MenuIntent::ToggleTracyProfiler,
+            MenuCommand::CheckForUpdates => MenuIntent::CheckForUpdates,
+            MenuCommand::About => {
+                self.ui.about.open = true;
+                return self.request_redraw();
+            }
+            MenuCommand::ViewLog => {
+                self.ui.log.open = true;
+                return self.request_redraw();
+            }
+            MenuCommand::Documentation => {
+                self.ui.help.open_contents();
+                return self.request_redraw();
+            }
+            MenuCommand::ReportIssue => {
+                return self.open_url(self.ui.about.info.new_issue_url());
+            }
+            MenuCommand::Credits => return self.open_url(self.ui.about.info.credits_url()),
+        };
+        self.apply_menu_intent(intent);
+    }
+
+    /// Hand `url` to the browser. Queued on egui, which hands it to the OS in the
+    /// next frame's platform output — the same road the toolbar's links take.
+    fn open_url(&mut self, url: String) {
+        if let Some(ctx) = self.egui_ctx.as_ref() {
+            ctx.open_url(egui::OpenUrl::new_tab(url));
+            self.request_redraw();
+        }
+    }
+
+    /// Bring the macOS menu bar's check marks and Open Recent list in line with
+    /// the state the toolbar's menu shows. A no-op without a menu bar.
+    pub(crate) fn sync_menu_bar(&mut self) {
+        if let Some(menu_bar) = self.menu_bar.as_mut() {
+            menu_bar.sync(MenuState {
+                remember_settings: self.ui.remember_settings,
+                tracy_profiler: self.ui.tracy_profiler,
+                recent_files: &self.ui.recent_files,
+            });
         }
     }
 

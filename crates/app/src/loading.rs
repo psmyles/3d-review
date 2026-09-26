@@ -225,19 +225,6 @@ impl App {
         }
     }
 
-    /// A macOS menu item the viewer performs itself (`docs/ARCHITECTURE.md`,
-    /// Platform decisions D15).
-    ///
-    /// Both land on the same handlers the primary-modifier chords in
-    /// `shortcuts.rs` fire, which is the point: the menu is a second door onto the
-    /// existing commands, never a second implementation of them.
-    pub(crate) fn handle_menu_command(&mut self, command: review_shell_macos::MenuCommand) {
-        match command {
-            review_shell_macos::MenuCommand::Open => self.open_model_from_dialog(),
-            review_shell_macos::MenuCommand::New => self.reset_to_start_state(),
-        }
-    }
-
     /// Ask for a model to open. The picker runs on a worker thread and comes back
     /// through the event loop (`dialog.rs`), so the answer lands in
     /// [`Self::open_model_from_path`] one turn of the loop later rather than in

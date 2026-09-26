@@ -68,6 +68,11 @@ pub struct HelpState {
 const MAX_HISTORY: usize = 32;
 
 impl HelpState {
+    /// Open the manual at its contents page (Help > Documentation).
+    pub fn open_contents(&mut self) {
+        self.open_page(Page::Index);
+    }
+
     /// Open the manual at `page`, remembering where we were.
     pub fn open_page(&mut self, page: Page) {
         if self.open && self.page != page {

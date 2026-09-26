@@ -7,9 +7,11 @@ differ:
 - **Anti-aliasing levels.** A Windows GPU usually offers 1x up to
   16x. A Mac with Apple silicon offers 1x, 2x and 4x. The menu only lists what
   your card can actually do.
-- **The Mac menu bar.** On macOS there is a menu bar (the app menu, File with
-  New and Open, and Window), and the app works with Finder, so double-clicking
-  a file, using `open`, or dropping a file on the Dock icon all open it.
+- **The Mac menu bar.** On macOS the entries of the toolbar's menu are also in
+  the menu bar at the top of the screen, where a Mac keeps them: About and
+  Remember Settings in the app menu, File with New, Open and Open Recent, Debug,
+  Window, and Help. The app also works with Finder, so double-clicking a file,
+  using `open`, or dropping a file on the Dock icon all open it.
 - **How it is installed.** Windows gets an installer that also teaches the
   system that `.fbx` files belong to 3D Review. macOS gets a signed `.dmg`.
 - **Where settings are kept.** Window position and preferences are saved in
