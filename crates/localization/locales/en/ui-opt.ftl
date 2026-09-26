@@ -152,6 +152,12 @@ ui-opt-remesh-adaptive = Vary face size
 
 ## Shrinkwrap
 
+ui-opt-normal-crease-angle = Crease angle
+    .description = Where two faces meet at a sharper angle than this, in degrees, the edge
+        stays hard; gentler edges are smoothed. 180 smooths everything.
+ui-opt-normal-smoothing = Smoothing
+    .description = Relaxes the result over neighbouring faces. Zero leaves it as worked out;
+        a little hides the small steps on a surface built from a grid.
 ui-opt-shrinkwrap-resolution = Detail
     .description = How many grid steps across the object's longest side. Higher keeps more
         of the shape and takes longer; lower rounds it off and bridges wider gaps.
@@ -211,6 +217,9 @@ ui-opt-shrinkwrap-explained = The new skin is a fresh surface, so the materials,
     layout and colors are read back off the original and copied across. Anything tied to
     the old points is not: bones, shape keys and per-point creases. Objects that bend are
     skipped and left as they are.
+ui-opt-recalculate-normals-explained = Objects that bend with bones are recalculated too.
+    Objects with blend shapes are skipped, because their shapes store shading changes
+    relative to the old normals.
 ui-opt-bake-ao-explained = Objects whose names end in _LOD and a number are shaded only by
     objects in their own level (plus objects with no such ending), so you can bake a whole
     set of levels in one go. Hidden objects neither cast shadows nor receive them, so hide

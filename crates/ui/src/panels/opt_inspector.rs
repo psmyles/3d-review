@@ -10,9 +10,9 @@
 use review_model::ModelData;
 use review_optimize::{
     AoQuality, AoTarget, AttributeWeights, BakeAoParams, ExportOptions, FbxFormat, HierarchyMode,
-    LodLevel, LodPackaging, LodParams, OpKind, ReduceParams, RemeshDensity, RemeshParams,
-    RemeshTopology, ShrinkwrapParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings,
-    WeldParams,
+    LodLevel, LodPackaging, LodParams, NormalParams, OpKind, ReduceParams, RemeshDensity,
+    RemeshParams, RemeshTopology, ShrinkwrapParams, SimplifyAlgorithm, SimplifyFlags,
+    SimplifySettings, WeldParams,
 };
 use review_render::Selection;
 
@@ -25,7 +25,8 @@ use crate::state::{
     range::{
         AO_BAKE_DISTANCE_MAX, AO_BAKE_DISTANCE_MIN, AO_BAKE_INTENSITY_MAX, AO_BAKE_INTENSITY_MIN,
         ATTRIBUTE_WEIGHT_MAX, ATTRIBUTE_WEIGHT_MIN, LOD_ERROR_MAX, LOD_ERROR_MIN, LOD_RATIO_MAX,
-        LOD_RATIO_MIN, OVERDRAW_THRESHOLD_MAX, OVERDRAW_THRESHOLD_MIN, PRUNE_THRESHOLD_MAX,
+        LOD_RATIO_MIN, NORMAL_CREASE_MAX, NORMAL_CREASE_MIN, NORMAL_SMOOTHING_MAX,
+        NORMAL_SMOOTHING_MIN, OVERDRAW_THRESHOLD_MAX, OVERDRAW_THRESHOLD_MIN, PRUNE_THRESHOLD_MAX,
         PRUNE_THRESHOLD_MIN, REMESH_ADAPTIVE_MAX, REMESH_ADAPTIVE_MIN, REMESH_CREASE_MAX,
         REMESH_CREASE_MIN, REMESH_FACES_MAX, REMESH_FACES_MIN, REMESH_RATIO_MAX, REMESH_RATIO_MIN,
         REMESH_SMOOTH_MAX, SHRINKWRAP_OFFSET_MAX, SHRINKWRAP_OFFSET_MIN, SHRINKWRAP_RESOLUTION_MAX,
@@ -95,6 +96,9 @@ fn operation_body(ui: &mut egui::Ui, state: &mut UiState, id: u64) {
         OpKind::Reduce(params) => reduce_params(ui, params).map(OpKind::Reduce),
         OpKind::Remesh(params) => remesh_params(ui, params).map(OpKind::Remesh),
         OpKind::Shrinkwrap(params) => shrinkwrap_params(ui, params).map(OpKind::Shrinkwrap),
+        OpKind::RecalculateNormals(params) => {
+            recalculate_normals_params(ui, params).map(OpKind::RecalculateNormals)
+        }
         OpKind::SimplifyLod(params) => lod_params(ui, params).map(OpKind::SimplifyLod),
         OpKind::BakeAo(params) => bake_ao_params(ui, params).map(OpKind::BakeAo),
         // These three have nothing to configure — meshoptimizer exposes no knobs
@@ -192,7 +196,43 @@ fn overdraw_params(ui: &mut egui::Ui, threshold: f32) -> Option<OpKind> {
         .then_some(OpKind::Overdraw { threshold: edited })
 }
 
-/// The AO bake editor.
+/// Returns the edited parameters only when they actually changed.
+fn recalculate_normals_params(ui: &mut egui::Ui, params: NormalParams) -> Option<NormalParams> {
+    let mut edited = params;
+    panel_grid(ui, "opt_recalculate_normals", |ui| {
+        normal_params_rows(ui, &mut edited);
+    });
+    ui.add_space(size::PANEL_ROW_GAP);
+    ui.label(
+        egui::RichText::from(keys::ui_opt::RECALCULATE_NORMALS_EXPLAINED).color(color::TEXT_MUTED),
+    );
+    (edited != params).then_some(edited)
+}
+
+/// The crease angle and smoothing rows, inside the caller's grid: shared by
+/// Recalculate Normals and by every rebuild told to generate its normals, so the
+/// same two numbers read the same wherever they appear.
+fn normal_params_rows(ui: &mut egui::Ui, params: &mut NormalParams) {
+    labeled_slider_with_value(
+        ui,
+        Tip::new(keys::ui_opt::NORMAL_CREASE_ANGLE)
+            .describe(keys::ui_opt::NORMAL_CREASE_ANGLE_DESCRIPTION)
+            .page(Page::OptNormals),
+        &mut params.crease_angle,
+        NORMAL_CREASE_MIN..=NORMAL_CREASE_MAX,
+        0,
+    );
+    labeled_slider_with_value(
+        ui,
+        Tip::new(keys::ui_opt::NORMAL_SMOOTHING)
+            .describe(keys::ui_opt::NORMAL_SMOOTHING_DESCRIPTION)
+            .page(Page::OptNormals),
+        &mut params.smoothing,
+        NORMAL_SMOOTHING_MIN..=NORMAL_SMOOTHING_MAX,
+        1,
+    );
+}
+
 /// Returns the edited parameters only when they actually changed.
 fn shrinkwrap_params(ui: &mut egui::Ui, params: ShrinkwrapParams) -> Option<ShrinkwrapParams> {
     let mut edited = params;

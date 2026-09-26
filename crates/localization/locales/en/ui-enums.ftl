@@ -160,6 +160,11 @@ ui-enums-op-shrinkwrap = Shrinkwrap
         overlapping parts into one solid and seals holes. What comes out is dense and
         irregular, so a Remesh below it is what makes it even. Materials, texture layout
         and colors are copied across. Works on still objects only.
+ui-enums-op-recalculate-normals = Recalculate Normals
+    .description = Works out fresh shading directions from the shape itself. Edges sharper
+        than the crease angle stay hard and the rest are smoothed, and the hard and soft
+        edge markings saved with the model are rewritten to match. Objects with blend
+        shapes are left as they are. Does not change the shape.
 ui-enums-op-simplify-lod = Generate LODs
     .description = Makes a set of simpler copies of the model (levels of detail) for a game
         to show at a distance. Each level is made from the model as it stands at this

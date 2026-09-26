@@ -124,6 +124,14 @@ pub(crate) mod range {
     pub const SHRINKWRAP_RESOLUTION_MAX: u32 = 512;
     pub const SHRINKWRAP_OFFSET_MIN: f32 = -0.5;
     pub const SHRINKWRAP_OFFSET_MAX: f32 = 0.5;
+    /// Normal generation (Recalculate Normals, and a rebuild told to generate):
+    /// the crease angle in degrees and the smoothing amount. The smoothing
+    /// ceiling is meshoptimizer's recommended range; the library accepts more,
+    /// but past it every pass relaxes shape into mush.
+    pub const NORMAL_CREASE_MIN: f32 = 0.0;
+    pub const NORMAL_CREASE_MAX: f32 = 180.0;
+    pub const NORMAL_SMOOTHING_MIN: f32 = 0.0;
+    pub const NORMAL_SMOOTHING_MAX: f32 = 5.0;
     /// Bake AO: the max ray distance in world meters (0 = unlimited) and the
     /// power on visibility (matching the viewport AO panel's Intensity, whose
     /// range is deliberately wider here — a bake is worth over-driving).

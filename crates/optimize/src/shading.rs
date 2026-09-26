@@ -14,14 +14,17 @@
 //! never compares tangents ([`crate::ops::weld`]), so any weld after it would
 //! merge the copies it made back together.
 
+use std::collections::HashMap;
+
 use glam::Vec3;
+use review_model::ModelData;
 
 use crate::OptError;
 use crate::Warnings;
 use crate::meshopt::{self, TANGENT_COMPONENTS};
-use crate::process::is_excluded;
-use crate::stack::OptStack;
-use crate::submesh::Submesh;
+use crate::process::{RunContext, is_excluded, resolve_op};
+use crate::stack::{NormalParams, OpInstance, OpKind, OptStack, WeldParams};
+use crate::submesh::{PolygonCarry, Submesh};
 
 /// Finish a level's pieces: smooth the normals a normal-blind weld left stale,
 /// then — when `tangents_invalidated` — rebuild every piece's tangents.
@@ -48,6 +51,223 @@ pub(crate) fn finish_bases(
             warnings.push(&format!("Couldn't rebuild the tangents: {error}"));
         }
     }
+}
+
+/// Per-corner normals for one indexed surface, from its positions alone:
+/// `indices.len()` of them. `params.crease_angle` is in degrees.
+pub(crate) fn corner_normals(
+    indices: &[u32],
+    positions: &[f32],
+    vertex_count: usize,
+    params: &NormalParams,
+) -> Result<Vec<Vec3>, OptError> {
+    let flat = meshopt::generate_normals(
+        indices,
+        positions,
+        vertex_count,
+        params.crease_angle.to_radians(),
+        params.smoothing,
+    )?;
+    Ok(flat
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|n| Vec3::from_array(*n).normalize_or(Vec3::Z))
+        .collect())
+}
+
+/// The Recalculate Normals operation: every eligible object's normals are
+/// regenerated from its shape, with the operation's crease angle deciding which
+/// edges stay hard.
+///
+/// Whole-object rather than per piece: an object's material pieces share one
+/// surface, and generating each alone would put a hard edge along every
+/// material border. So an object's pieces are concatenated, the normals are
+/// generated once, and each piece then takes its share — splitting a vertex
+/// where its corners landed on different sides of a crease, and merging back
+/// the vertices that were only ever apart because their old normals differed.
+///
+/// A skinned object is recalculated (skin weights follow a split exactly). One
+/// with blend shapes is skipped: its shapes carry normal *offsets* authored
+/// against the old normals, which the new ones would silently contradict.
+pub(crate) fn recalculate_normals_submeshes(
+    submeshes: &mut [Submesh],
+    op: &OpInstance,
+    stack: &OptStack,
+    model: &ModelData,
+    warnings: &mut Warnings,
+    run: &RunContext<'_>,
+) {
+    let _z = crate::prof::zone!("Recalculate Normals");
+    let OpKind::RecalculateNormals(global) = &op.kind else {
+        return;
+    };
+
+    let mut nodes: Vec<u32> = Vec::new();
+    for piece in submeshes.iter() {
+        if !nodes.contains(&piece.node) {
+            nodes.push(piece.node);
+        }
+    }
+
+    for node in nodes {
+        if run.cancelled() {
+            return;
+        }
+        if is_excluded(stack, node) {
+            continue;
+        }
+        let members: Vec<usize> = (0..submeshes.len())
+            .filter(|&at| submeshes[at].node == node && !submeshes[at].is_empty())
+            .collect();
+        if members.is_empty() {
+            continue;
+        }
+        if members.iter().any(|&at| !submeshes[at].morph.is_empty()) {
+            let name = crate::remesh::node_name(model, node);
+            warnings.push(&format!(
+                "Recalculate Normals: '{name}' has blend shapes, so its normals were left \
+                 as they are. Its shapes store normal changes relative to the old normals, \
+                 which new ones would contradict."
+            ));
+            continue;
+        }
+        let params = match resolve_op(stack, op, node) {
+            OpKind::RecalculateNormals(params) => *params,
+            // An override can only ever hold the same kind as the operation it
+            // overrides; fall back to the global settings if one somehow doesn't.
+            _ => *global,
+        };
+        let pieces: Vec<&mut Submesh> = submeshes
+            .iter_mut()
+            .enumerate()
+            .filter(|(at, _)| members.contains(at))
+            .map(|(_, piece)| piece)
+            .collect();
+        if let Err(error) = recalculate_node(pieces, &params) {
+            let name = crate::remesh::node_name(model, node);
+            warnings.push(&format!("Recalculate Normals: '{name}': {error}"));
+        }
+    }
+}
+
+/// One object's pieces, recalculated together.
+fn recalculate_node(mut pieces: Vec<&mut Submesh>, params: &NormalParams) -> Result<(), OptError> {
+    let mut positions = Vec::new();
+    let mut indices = Vec::new();
+    let mut vertex_count = 0usize;
+    for piece in &pieces {
+        let base = u32::try_from(vertex_count).map_err(|_| OptError::SizeOverflow)?;
+        positions.extend_from_slice(&piece.positions());
+        indices.extend(piece.indices.iter().map(|&index| index + base));
+        vertex_count += piece.vertices.len();
+    }
+    let normals = corner_normals(&indices, &positions, vertex_count, params)?;
+
+    let mut first_corner = 0usize;
+    for piece in &mut pieces {
+        let corners = piece.indices.len();
+        let assigned = piece.split_by_corner(&normals[first_corner..first_corner + corners]);
+        first_corner += corners;
+        for (vertex, normal) in piece.vertices.iter_mut().zip(assigned) {
+            if let Some(normal) = normal {
+                vertex.normal = normal;
+            }
+        }
+        piece.normals_stale = false;
+        // Vertices that were apart only because their *old* normals differed
+        // now match in every attribute; an exact weld puts them back together.
+        crate::ops::weld(piece, &WeldParams::default())?;
+    }
+
+    derive_edge_smoothing(&mut pieces);
+    Ok(())
+}
+
+/// A vector's exact bits, as a hashable key.
+fn bits(v: Vec3) -> [u32; 3] {
+    v.to_array().map(f32::to_bits)
+}
+
+/// Per geometric edge (its two end positions, in a fixed order), every distinct
+/// pair of end normals the faces along it use: one pair means the sides agree,
+/// two or more that the edge is hard.
+type EdgeSides = HashMap<([u32; 3], [u32; 3]), Vec<([u32; 3], [u32; 3])>>;
+
+/// Rewrite the carried hard/soft edge flags to agree with the normals the
+/// pieces now have, and drop the face smoothing groups, which would otherwise
+/// tell a DCC to rebuild the old shading on import.
+///
+/// An edge is hard where the faces on either side of it disagree about the
+/// normal at either end — read by *position*, because the two sides of a hard
+/// edge are different vertices and may even sit in different pieces (a
+/// material border). An edge only one face touches is left soft: there is no
+/// second side for it to be hard against.
+fn derive_edge_smoothing(pieces: &mut [&mut Submesh]) {
+    let mut sides = EdgeSides::new();
+    for piece in pieces.iter() {
+        let Some(carry) = &piece.polygons else {
+            continue;
+        };
+        for face in 0..carry.face_count() {
+            let corners = carry.face(face);
+            for k in 0..corners.len() {
+                let (Some(a), Some(b)) = (
+                    piece.vertices.get(corners[k] as usize),
+                    piece
+                        .vertices
+                        .get(corners[(k + 1) % corners.len()] as usize),
+                ) else {
+                    continue;
+                };
+                // Keyed position-first-then-second in a fixed order, so both
+                // faces sharing the edge file their normals under one key.
+                let (first, second) = if bits(a.position) <= bits(b.position) {
+                    (a, b)
+                } else {
+                    (b, a)
+                };
+                let key = (bits(first.position), bits(second.position));
+                let side = (bits(first.normal), bits(second.normal));
+                let entry = sides.entry(key).or_default();
+                if !entry.contains(&side) {
+                    entry.push(side);
+                }
+            }
+        }
+    }
+
+    for piece in pieces.iter_mut() {
+        let vertices = piece.vertices.clone();
+        let Some(carry) = &mut piece.polygons else {
+            continue;
+        };
+        apply_edge_smoothing(carry, &vertices, &sides);
+    }
+}
+
+fn apply_edge_smoothing(
+    carry: &mut PolygonCarry,
+    vertices: &[review_model::Vertex],
+    sides: &EdgeSides,
+) {
+    carry.face_smoothing.clear();
+    carry.edge_smoothing = carry
+        .edges
+        .iter()
+        .map(|edge| {
+            let (Some(a), Some(b)) = (
+                vertices.get(edge[0] as usize),
+                vertices.get(edge[1] as usize),
+            ) else {
+                return true;
+            };
+            let (pa, pb) = (bits(a.position), bits(b.position));
+            let key = if pa <= pb { (pa, pb) } else { (pb, pa) };
+            // Soft unless the sides meeting here disagree.
+            sides.get(&key).is_none_or(|sides| sides.len() < 2)
+        })
+        .collect();
 }
 
 /// Rebuild `piece`'s tangents with meshoptimizer's generator, splitting a
@@ -334,5 +554,216 @@ mod tests {
             |source: u32| carry.edges[carry.source_edge.iter().position(|&s| s == source).unwrap()];
         assert_eq!(edge_of(4), [6, 4]);
         assert_eq!(edge_of(6), [5, 7]);
+    }
+
+    /// Two quads meeting at a right angle along the edge 1–2: the left one in
+    /// the XY plane, the right one folded back into the plane x = 1.
+    fn folded_quads() -> Submesh {
+        let at = |x: f32, y: f32, z: f32| Vertex {
+            position: Vec3::new(x, y, z),
+            normal: Vec3::Z,
+            ..Vertex::default()
+        };
+        let mut quads = piece(
+            vec![
+                at(0.0, 0.0, 0.0),
+                at(1.0, 0.0, 0.0),
+                at(1.0, 1.0, 0.0),
+                at(0.0, 1.0, 0.0),
+                at(1.0, 0.0, -1.0),
+                at(1.0, 1.0, -1.0),
+            ],
+            vec![0, 1, 2, 0, 2, 3, 1, 4, 5, 1, 5, 2],
+        );
+        quads.polygons = Some(PolygonCarry {
+            face_offsets: vec![0, 4, 8],
+            corners: vec![0, 1, 2, 3, 1, 4, 5, 2],
+            source_face: vec![0, 1],
+            triangle_face: vec![0, 0, 1, 1],
+            face_smoothing: vec![true, true],
+            edges: vec![[0, 1], [1, 2], [2, 3], [3, 0], [1, 4], [4, 5], [5, 2]],
+            source_edge: (0..7).collect(),
+            ..PolygonCarry::default()
+        });
+        for i in 0..6u32 {
+            quads.skin.push_row(&[(i, 1.0)]);
+        }
+        quads
+    }
+
+    fn recalculate(
+        pieces: &mut [Submesh],
+        params: NormalParams,
+        stack: Option<OptStack>,
+    ) -> Vec<String> {
+        let mut stack = stack.unwrap_or_default();
+        let id = stack.push_op(OpKind::RecalculateNormals(params));
+        let op = stack.op(id).expect("just pushed").clone();
+        let progress = |_: crate::process::OptProgress<'_>| {};
+        let run = RunContext::new(&progress, None);
+        let mut warnings = Warnings::default();
+        recalculate_normals_submeshes(
+            pieces,
+            &op,
+            &stack,
+            &ModelData::default(),
+            &mut warnings,
+            &run,
+        );
+        warnings.into_vec()
+    }
+
+    #[test]
+    fn a_fold_sharper_than_the_crease_splits_and_carries_the_skin() {
+        let mut pieces = vec![folded_quads()];
+        let warnings = recalculate(
+            &mut pieces,
+            NormalParams {
+                crease_angle: 45.0,
+                smoothing: 0.0,
+            },
+            None,
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let quads = &pieces[0];
+        assert_eq!(quads.vertices.len(), 8, "the fold's two vertices split");
+        assert_eq!(quads.skin.offsets.len(), 9, "one skin row per vertex");
+        // Every normal is one face's own (the left faces +Z, the folded one
+        // along X), and each fold vertex now exists once per side.
+        for vertex in &quads.vertices {
+            let n = vertex.normal;
+            assert!(
+                n.z.abs() > 0.999 || n.x.abs() > 0.999,
+                "a face's own normal, not an average: {n:?}"
+            );
+        }
+        for fold in [Vec3::new(1.0, 0.0, 0.0), Vec3::new(1.0, 1.0, 0.0)] {
+            let sides: Vec<Vec3> = quads
+                .vertices
+                .iter()
+                .filter(|v| v.position == fold)
+                .map(|v| v.normal)
+                .collect();
+            assert_eq!(sides.len(), 2, "one vertex per side at {fold:?}");
+            assert!(sides[0].dot(sides[1]).abs() < 1e-3, "the two sides differ");
+        }
+        // Skin rows follow their vertex: each vertex's row names the original
+        // it descends from, found by position.
+        let originals = folded_quads();
+        for (at, vertex) in quads.vertices.iter().enumerate() {
+            let original = originals
+                .vertices
+                .iter()
+                .position(|v| v.position == vertex.position)
+                .expect("every vertex descends from an original");
+            assert_eq!(quads.skin.row(at), &[(original as u32, 1.0)]);
+        }
+        assert!(!quads.normals_stale);
+    }
+
+    #[test]
+    fn a_fold_gentler_than_the_crease_is_smoothed_without_a_split() {
+        let mut pieces = vec![folded_quads()];
+        recalculate(
+            &mut pieces,
+            NormalParams {
+                crease_angle: 120.0,
+                smoothing: 0.0,
+            },
+            None,
+        );
+        let quads = &pieces[0];
+        assert_eq!(quads.vertices.len(), 6);
+        let shared = quads.vertices[1].normal;
+        assert!(
+            shared.x.abs() > 0.1 && shared.z.abs() > 0.1,
+            "averaged across the fold: {shared:?}"
+        );
+    }
+
+    #[test]
+    fn edge_flags_follow_the_new_normals_and_smoothing_groups_go() {
+        let mut pieces = vec![folded_quads()];
+        recalculate(
+            &mut pieces,
+            NormalParams {
+                crease_angle: 45.0,
+                smoothing: 0.0,
+            },
+            None,
+        );
+        let carry = pieces[0].polygons.as_ref().expect("the carry survives");
+        assert!(carry.face_smoothing.is_empty());
+        assert_eq!(carry.edge_smoothing.len(), carry.edges.len());
+        for (edge, &smooth) in carry.source_edge.iter().zip(&carry.edge_smoothing) {
+            assert_eq!(smooth, *edge != 1, "only the fold (source edge 1) is hard");
+        }
+
+        let mut soft = vec![folded_quads()];
+        recalculate(
+            &mut soft,
+            NormalParams {
+                crease_angle: 120.0,
+                smoothing: 0.0,
+            },
+            None,
+        );
+        let carry = soft[0].polygons.as_ref().expect("the carry survives");
+        assert!(carry.edge_smoothing.iter().all(|&smooth| smooth));
+    }
+
+    #[test]
+    fn material_pieces_of_one_object_stay_smooth_across_their_border() {
+        // The folded pair again, but each quad its own material piece: the
+        // border between them must not become a hard edge on its own.
+        let whole = folded_quads();
+        let mut left = piece(whole.vertices[..4].to_vec(), vec![0, 1, 2, 0, 2, 3]);
+        let mut right = piece(
+            vec![
+                whole.vertices[1],
+                whole.vertices[4],
+                whole.vertices[5],
+                whole.vertices[2],
+            ],
+            vec![0, 1, 2, 0, 2, 3],
+        );
+        left.material = 0;
+        right.material = 1;
+        let mut pieces = vec![left, right];
+        recalculate(
+            &mut pieces,
+            NormalParams {
+                crease_angle: 120.0,
+                smoothing: 0.0,
+            },
+            None,
+        );
+        assert_eq!(pieces[0].vertices[1].normal, pieces[1].vertices[0].normal);
+    }
+
+    #[test]
+    fn an_object_with_blend_shapes_is_skipped_with_a_warning() {
+        let mut quads = folded_quads();
+        for _ in 0..6 {
+            quads.morph.push_row(&[]);
+        }
+        let before = quads.vertices.clone();
+        let mut pieces = vec![quads];
+        let warnings = recalculate(&mut pieces, NormalParams::default(), None);
+        assert_eq!(pieces[0].vertices, before);
+        assert!(
+            warnings.iter().any(|w| w.contains("blend shapes")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn an_excluded_object_is_untouched() {
+        let mut stack = OptStack::default();
+        stack.node_override_mut(0).exclude = true;
+        let before = folded_quads().vertices;
+        let mut pieces = vec![folded_quads()];
+        recalculate(&mut pieces, NormalParams::default(), Some(stack));
+        assert_eq!(pieces[0].vertices, before);
     }
 }

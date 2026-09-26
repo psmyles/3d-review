@@ -230,6 +230,13 @@ pub(crate) fn apply_op(
         return 0.0;
     }
 
+    // Normals are generated per object, not per piece: a node's material pieces
+    // share one surface, and each alone would come out hard along the border.
+    if matches!(op.kind, OpKind::RecalculateNormals(_)) {
+        crate::shading::recalculate_normals_submeshes(submeshes, op, stack, model, warnings, run);
+        return 0.0;
+    }
+
     for piece in submeshes.iter_mut() {
         if run.cancelled() {
             return 0.0;
@@ -252,7 +259,8 @@ pub(crate) fn apply_op(
             | OpKind::SimplifyLod(_)
             | OpKind::BakeAo(_)
             | OpKind::Remesh(_)
-            | OpKind::Shrinkwrap(_) => Ok(()),
+            | OpKind::Shrinkwrap(_)
+            | OpKind::RecalculateNormals(_) => Ok(()),
         };
         if let Err(error) = outcome {
             warnings.push(&format!("{}: {error}", kind.label()));

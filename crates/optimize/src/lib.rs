@@ -68,9 +68,9 @@ pub use process::{
 pub use replace_file::{Staged, write_bytes_replacing, write_replacing};
 pub use stack::{
     AoQuality, AoTarget, AttributeWeights, BakeAoParams, ExportOptions, FbxFormat, HierarchyMode,
-    LodLevel, LodPackaging, LodParams, NodeOverride, OpInstance, OpKind, OptStack, RebindReport,
-    ReduceParams, RemeshDensity, RemeshParams, RemeshTopology, ShrinkwrapParams, SimplifyAlgorithm,
-    SimplifyFlags, SimplifySettings, WeldParams,
+    LodLevel, LodPackaging, LodParams, NodeOverride, NormalMode, NormalParams, OpInstance, OpKind,
+    OptStack, RebindReport, ReduceParams, RemeshDensity, RemeshParams, RemeshTopology,
+    ShrinkwrapParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings, WeldParams,
 };
 
 /// Everything that can go wrong in this crate.
