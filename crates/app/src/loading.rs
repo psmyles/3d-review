@@ -38,7 +38,7 @@ use review_import::{
 };
 use review_model::{Bounds, MeshGroupStats, ModelData, SceneBvh, SourceExtras};
 use review_render::Renderer;
-use review_ui::Selection;
+use review_ui::{ActivityId, Selection};
 
 use crate::dialog::Dialog;
 use crate::events::UserEvent;
@@ -73,6 +73,8 @@ pub(crate) struct ModelLoaded {
     /// Already an `Arc`: the worker keeps a handle so it can go on measuring the
     /// model it has just published, and `app` would have made one anyway.
     result: Result<Arc<ModelData>, ImportError>,
+    /// The loading card this import opened, which a failed import closes here.
+    activity: ActivityId,
 }
 
 /// The source-property capture, marshaled on the import worker right after
@@ -114,6 +116,8 @@ pub(crate) struct ModelMeasured {
     /// message per spawn carries it — this on the success path, `ModelLoaded` on
     /// the error path — so every `begin_activity` is balanced once.
     last: bool,
+    /// The loading card this import opened.
+    activity: ActivityId,
 }
 
 /// An import reporting where it has got to, posted from the worker thread.
@@ -126,6 +130,9 @@ pub(crate) struct ModelLoadProgress {
     message: String,
     /// How far through that stage, when it can be known — the card's bar.
     fraction: Option<f32>,
+    /// The loading card this import opened: its line is the one rewritten, even
+    /// while another job's card is the one showing.
+    activity: ActivityId,
 }
 
 /// The stage line under the loading card's title. The file is already named by
@@ -270,7 +277,8 @@ impl App {
         // ready. The chrome keeps running; the result lands back on the main
         // thread via [`UserEvent::ModelLoaded`].
         if let Some(proxy) = self.textures.proxy.clone() {
-            self.notifications
+            let activity = self
+                .notifications
                 .begin_activity(keys::app_notifications::loading(file_label(path)));
             self.redraw.requested = true;
             let path = path.to_path_buf();
@@ -305,6 +313,7 @@ impl App {
                             generation,
                             message: progress_message(progress),
                             fraction: progress.fraction(),
+                            activity,
                         },
                     ));
                 };
@@ -323,6 +332,7 @@ impl App {
                     path,
                     started,
                     result,
+                    activity,
                 })));
 
                 // The model is on screen from here; what is left is the source
@@ -338,7 +348,20 @@ impl App {
                         generation,
                         measurement,
                         last,
+                        activity,
                     })));
+                };
+                // Checked before each stage below; a worker that stops early
+                // still sends the last-message flag, since that is what closes
+                // the loading card.
+                let superseded = || {
+                    if !cancel.is_cancelled() {
+                        return false;
+                    }
+                    clock.finish();
+                    log::debug!("model load superseded while measuring");
+                    send(ModelMeasurement::Cancelled, true);
+                    true
                 };
                 // Each of the three stages below is checked first. They are the
                 // majority of a large load — on a 2.8M-triangle scene the mesh
@@ -347,10 +370,7 @@ impl App {
                 // what ends the loading card, so a worker that stops early still
                 // has to send it: `handle_model_measured` balances the activity
                 // before it looks at the generation.
-                if cancel.is_cancelled() {
-                    clock.finish();
-                    log::debug!("model load superseded while measuring");
-                    send(ModelMeasurement::Cancelled, true);
+                if superseded() {
                     return;
                 }
                 if let Some(pending) = pending {
@@ -361,10 +381,7 @@ impl App {
                         SourceExtrasReady { generation, extras },
                     )));
                 }
-                if cancel.is_cancelled() {
-                    clock.finish();
-                    log::debug!("model load superseded while measuring");
-                    send(ModelMeasurement::Cancelled, true);
+                if superseded() {
                     return;
                 }
                 {
@@ -378,10 +395,7 @@ impl App {
                         false,
                     );
                 }
-                if cancel.is_cancelled() {
-                    clock.finish();
-                    log::debug!("model load superseded while measuring");
-                    send(ModelMeasurement::Cancelled, true);
+                if superseded() {
                     return;
                 }
                 {
@@ -392,10 +406,7 @@ impl App {
                         false,
                     );
                 }
-                if cancel.is_cancelled() {
-                    clock.finish();
-                    log::debug!("model load superseded while measuring");
-                    send(ModelMeasurement::Cancelled, true);
+                if superseded() {
                     return;
                 }
                 {
@@ -444,7 +455,7 @@ impl App {
             return;
         }
         self.notifications
-            .update_activity(message.message, message.fraction);
+            .update_activity(message.activity, message.message, message.fraction);
         self.request_redraw();
     }
 
@@ -453,7 +464,7 @@ impl App {
     /// dropped, but its `last` flag still balances the activity it began.
     pub(crate) fn handle_model_measured(&mut self, message: ModelMeasured) {
         if message.last {
-            self.notifications.end_activity();
+            self.notifications.end_activity(message.activity);
         }
         if message.generation != self.model_load_generation() {
             return;
@@ -531,7 +542,7 @@ impl App {
     /// exactly one of the two paths balances each `begin_activity`).
     pub(crate) fn handle_model_loaded(&mut self, message: ModelLoaded) {
         if message.result.is_err() {
-            self.notifications.end_activity();
+            self.notifications.end_activity(message.activity);
         }
 
         // A cancelled import is not a failed one: the parse stopped because a

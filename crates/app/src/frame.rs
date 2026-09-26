@@ -85,6 +85,51 @@ impl App {
         // Hand the Log window what has been logged since last frame, if it is up.
         self.feed_log_window();
 
+        let Some((full_output, ui_output)) = self.run_egui_pass(&window, &egui_ctx) else {
+            return;
+        };
+
+        // The pass above is what decides whether egui took the last press — a
+        // panel divider or a window's resize edge grabs it here, a frame after
+        // `egui_winit` had to guess. Resolve the proposal before anything reads
+        // `drag_mode`.
+        self.settle_pending_drag(&egui_ctx);
+
+        {
+            let _z = prof::zone!("Apply UI Output");
+            self.apply_ui_output(ui_output);
+        }
+        // The pass may have opened or closed the Log window.
+        self.watch_log_window();
+
+        // Reconcile the Opt workspace with the stack the egui pass just edited:
+        // create its subsystem on first entry, schedule a run for any change, and
+        // manage the "still working" notice. Only while the workspace is active —
+        // a session that never opens it never builds any of this.
+        if self.ui.mode == WorkspaceMode::Opt {
+            let _z = prof::zone!("Sync Opt");
+            self.sync_opt();
+        }
+
+        self.schedule_next_frame(&full_output);
+
+        let Some(before_present) = self.paint(full_output, &egui_ctx, gate_active, vsync) else {
+            return;
+        };
+        self.gate_after_present(before_present);
+
+        // Delimit the frame for Tracy's frame view (no-op unless `--tracy`).
+        prof::frame_mark();
+    }
+
+    /// Run this frame's egui pass: lay out the chrome over the current state,
+    /// collect the intents it emits, and announce the mode switches it made.
+    /// `None` until the egui state and the renderer exist.
+    fn run_egui_pass(
+        &mut self,
+        window: &winit::window::Window,
+        egui_ctx: &egui::Context,
+    ) -> Option<(egui::FullOutput, UiOutput)> {
         // The Opt workspace's processed level, resolved *before* the egui pass so its
         // half of the split can be labelled with its own box and its own camera. Like
         // every other input the chrome reads, this is the state as of the start of the
@@ -110,14 +155,10 @@ impl App {
                 .map(|model| (model, *revision))
         });
         let (full_output, ui_output) = {
-            let Some(egui_state) = self.egui_state.as_mut() else {
-                return;
-            };
-            let Some(renderer) = self.renderer.as_ref() else {
-                return;
-            };
+            let egui_state = self.egui_state.as_mut()?;
+            let renderer = self.renderer.as_ref()?;
 
-            let raw_input = egui_state.take_egui_input(&window);
+            let raw_input = egui_state.take_egui_input(window);
             let camera = renderer.camera;
             let scene_model = self.scene_model.clone();
             // Both the dimension labels' occlusion and the viewport pick read
@@ -196,32 +237,16 @@ impl App {
                 notifications.show(ui.ctx(), self.ui.chrome_insets);
             });
 
-            egui_state.handle_platform_output(&window, full_output.platform_output.clone());
+            egui_state.handle_platform_output(window, full_output.platform_output.clone());
             (full_output, ui_output)
         };
+        Some((full_output, ui_output))
+    }
 
-        // The pass above is what decides whether egui took the last press — a
-        // panel divider or a window's resize edge grabs it here, a frame after
-        // `egui_winit` had to guess. Resolve the proposal before anything reads
-        // `drag_mode`.
-        self.settle_pending_drag(&egui_ctx);
-
-        {
-            let _z = prof::zone!("Apply UI Output");
-            self.apply_ui_output(ui_output);
-        }
-        // The pass may have opened or closed the Log window.
-        self.watch_log_window();
-
-        // Reconcile the Opt workspace with the stack the egui pass just edited:
-        // create its subsystem on first entry, schedule a run for any change, and
-        // manage the "still working" notice. Only while the workspace is active —
-        // a session that never opens it never builds any of this.
-        if self.ui.mode == WorkspaceMode::Opt {
-            let _z = prof::zone!("Sync Opt");
-            self.sync_opt();
-        }
-
+    /// Decide when the next frame should be drawn (invariant 6): paced to the
+    /// display while something is moving, at egui's own deadline while it waits
+    /// on a timer, and not at all while everything is idle.
+    fn schedule_next_frame(&mut self, full_output: &egui::FullOutput) {
         // Decide when the next frame should be drawn. Continuous motion — a live
         // camera transition, or egui asking to "repaint immediately" (zero delay)
         // — is paced to the monitor's refresh interval so the viewer never renders
@@ -260,7 +285,22 @@ impl App {
         } else {
             Instant::now().checked_add(repaint_delay)
         };
+    }
 
+    /// Record and present the frame: resolve this frame's scene inputs from the
+    /// UI state, have the renderer draw the active workspace, paint the chrome
+    /// over it, present, and report any GPU fault. Returns when the CPU side of
+    /// the frame ended (for the gate), or `None` when there was nothing to draw
+    /// into.
+    fn paint(
+        &mut self,
+        full_output: egui::FullOutput,
+        egui_ctx: &egui::Context,
+        gate_active: bool,
+        vsync: bool,
+    ) -> Option<Option<Instant>> {
+        let (backbuffer_width, backbuffer_height) =
+            self.gpu.as_ref().map_or((0, 0), review_render::Gpu::size);
         // The synced scene inputs the renderer draws this frame (read before the
         // disjoint renderer/gpu borrows below). `debug` carries show_grid / shading
         // / overlay flags (synced during the egui pass); `projection` the
@@ -346,15 +386,9 @@ impl App {
         let pose_revision = self.animation.pose_revision;
         let scene_bounds = self.ui.bounds;
 
-        let Some(renderer) = self.renderer.as_mut() else {
-            return;
-        };
-        let Some(gpu) = self.gpu.as_mut() else {
-            return;
-        };
-        let Some(egui_renderer) = self.egui_renderer.as_mut() else {
-            return;
-        };
+        let renderer = self.renderer.as_mut()?;
+        let gpu = self.gpu.as_mut()?;
+        let egui_renderer = self.egui_renderer.as_mut()?;
 
         // GPU faults hit while painting. Collected rather than reported inline:
         // `gpu` and `egui_renderer` are borrowed out of `self` for the whole block,
@@ -367,9 +401,7 @@ impl App {
             // Acquire this frame's backbuffer. `None` means there is nothing to draw
             // into — a minimized window, or a drawable the device refused after a
             // reset — so the frame is skipped rather than drawn into nothing.
-            let Some(mut frame) = gpu.begin_frame() else {
-                return;
-            };
+            let mut frame = gpu.begin_frame()?;
 
             // The renderer records its offscreen passes and leaves the composite for
             // the swapchain pass below (§3.2).
@@ -466,7 +498,7 @@ impl App {
             // Tessellate the chrome and upload its geometry + texture deltas. Outside
             // any pass on purpose: both are resource updates sokol forbids inside one.
             if let Err(err) = egui_renderer.prepare(
-                &egui_ctx,
+                egui_ctx,
                 full_output.shapes,
                 full_output.textures_delta,
                 full_output.pixels_per_point,
@@ -491,10 +523,7 @@ impl App {
         for (fault, detail) in faults {
             self.report_gpu_fault(fault, detail);
         }
-        self.gate_after_present(before_present);
-
-        // Delimit the frame for Tracy's frame view (no-op unless `--tracy`).
-        prof::frame_mark();
+        Some(before_present)
     }
 
     /// Report a GPU fault: on screen and in the log the first time one happens

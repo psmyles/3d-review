@@ -540,7 +540,6 @@ impl SceneGpu {
         ghost: Option<(GhostStyle, SceneUniforms)>,
     ) {
         let debug = scene.debug;
-        let selection = scene.selection;
 
         // Clear the scene colour + ambient to zero radiance *and* zero alpha: the
         // alpha is the composite's coverage mask, so the cleared background reads as
@@ -559,20 +558,48 @@ impl SceneGpu {
             CheckerTexture::Color => &self.checker_color,
         };
 
+        // Back to front: the skybox behind everything, the mesh, the line views
+        // over it, then the hover and selection fills.
+        if scene.environment.show_background {
+            self.draw_skybox(frame, uniforms);
+        }
+        self.draw_mesh_list(frame, scene, checker, uniforms);
+        self.draw_line_overlays(frame, scene, checker, uniforms);
+        self.draw_highlights(frame, scene, uniforms);
+
+        if let Some((style, ghost_uniforms)) = &ghost {
+            self.draw_ghost(frame, *style, ghost_uniforms);
+        }
+        frame.end_pass();
+        frame.zone_end(Zone::Scene);
+    }
+
+    /// The skybox, behind all geometry.
+    fn draw_skybox(&self, frame: &mut Frame<'_>, uniforms: &SceneUniforms) {
         // Skybox background first, behind all geometry, when shown. It declares only
         // the environment cube and the IBL sampler, so that is all it binds.
-        if scene.environment.show_background {
-            let mut bindings = Bindings::new();
-            self.ibl.bind_env(&mut bindings);
-            bindings.sampler(generated::SMP_IBL_SAMPLER, &self.sampler);
-            frame.apply_pipeline(&self.scene.skybox);
-            frame.apply_bindings(&bindings);
-            // `vs_skybox` builds its ray from the fragment block alone, so the vertex
-            // block is not declared here and applying it would fail validation.
-            frame.apply_uniforms(generated::UB_SCENE_FS, uniforms);
-            frame.draw(0, FULLSCREEN_VERTICES);
-        }
+        let mut bindings = Bindings::new();
+        self.ibl.bind_env(&mut bindings);
+        bindings.sampler(generated::SMP_IBL_SAMPLER, &self.sampler);
+        frame.apply_pipeline(&self.scene.skybox);
+        frame.apply_bindings(&bindings);
+        // `vs_skybox` builds its ray from the fragment block alone, so the vertex
+        // block is not declared here and applying it would fail validation.
+        frame.apply_uniforms(generated::UB_SCENE_FS, uniforms);
+        frame.draw(0, FULLSCREEN_VERTICES);
+    }
 
+    /// The mesh itself, one draw per material range, from whichever index list
+    /// is in effect.
+    fn draw_mesh_list(
+        &self,
+        frame: &mut Frame<'_>,
+        scene: &SceneFrame<'_>,
+        checker: &Texture,
+        uniforms: &SceneUniforms,
+    ) {
+        let debug = scene.debug;
+        let selection = scene.selection;
         // Mesh draw list, in precedence order: solo (isolate the selection) wins;
         // otherwise per-mesh visibility (the filtered list, present only while some
         // mesh is hidden); otherwise the whole mesh. All three share the mesh vertex
@@ -630,7 +657,18 @@ impl SceneGpu {
                 }
             }
         }
+    }
 
+    /// The grid, the wireframe and every derived line view, then the skeleton
+    /// and the always-on-top markers.
+    fn draw_line_overlays(
+        &self,
+        frame: &mut Frame<'_>,
+        scene: &SceneFrame<'_>,
+        checker: &Texture,
+        uniforms: &SceneUniforms,
+    ) {
+        let debug = scene.debug;
         // The static grid, then the derived line overlays (wireframe / bounding box /
         // face+vertex normals / UV seams) on top of the mesh. All share the line
         // pipeline (depth-tested Reversed-Z `GreaterEqual`, no depth write — the mesh
@@ -638,34 +676,33 @@ impl SceneGpu {
         // its view is off. Seams go last: they sit exactly on wireframe edges, and
         // with equal depth and no depth write the later draw is the one that shows.
         if debug.show_grid {
-            self.draw_lines(frame, &self.scene.line, &[&self.grid], uniforms);
+            self.draw_lines(frame, &self.scene.line, [&self.grid], uniforms);
         }
         // The wireframe sits between the grid and the rest: it is the one line view
         // drawn indexed over the mesh vertex buffer, on its own pipeline.
         if debug.wireframe_overlay || matches!(debug.shading_mode, ShadingMode::Wireframe) {
             self.draw_wireframe(frame, uniforms, debug.wireframe_color);
         }
-        let line_views: Vec<&VertexBuffer> = [
+        let line_views = [
             &self.active.views.bounding_box_buf,
             &self.active.views.face_normal_buf,
             &self.active.views.vertex_normal_buf,
             &self.active.views.uv_seam_buf,
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        self.draw_lines(frame, &self.scene.line, &line_views, uniforms);
+        ];
+        self.draw_lines(
+            frame,
+            &self.scene.line,
+            line_views.into_iter().flatten(),
+            uniforms,
+        );
 
         // Pivot marker + the skeleton's outlines: the always-on-top line pipeline
         // (depth compare `Always`), so they read *through* the mesh instead of being
         // occluded inside it.
-        let overlay_lines: Vec<&VertexBuffer> = [
+        let overlay_lines = [
             &self.active.views.pivot_buf,
             &self.active.views.skeleton_line_buf,
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
+        ];
 
         // Skeleton fills go first, under their own outlines: translucent octahedra,
         // with the per-bone selection tint already baked into the buffer.
@@ -679,8 +716,23 @@ impl SceneGpu {
             frame.apply_uniforms(generated::UB_MATERIAL, self.materials.fallback().uniform());
             frame.draw(0, fill.count());
         }
-        self.draw_lines(frame, &self.scene.line_overlay, &overlay_lines, uniforms);
+        self.draw_lines(
+            frame,
+            &self.scene.line_overlay,
+            overlay_lines.into_iter().flatten(),
+            uniforms,
+        );
+    }
 
+    /// The hover preview and the selection highlight, over the mesh.
+    fn draw_highlights(
+        &self,
+        frame: &mut Frame<'_>,
+        scene: &SceneFrame<'_>,
+        uniforms: &SceneUniforms,
+    ) {
+        let debug = scene.debug;
+        let selection = scene.selection;
         // Hover preview, then the selection highlight over it: two flat-colour
         // fills redrawing those triangles on top of the mesh, each through
         // `fs_selection` with its own tint in the uniform. Selection goes last so
@@ -705,12 +757,6 @@ impl SceneGpu {
                 uniforms.selection_color,
             );
         }
-
-        if let Some((style, ghost_uniforms)) = &ghost {
-            self.draw_ghost(frame, *style, ghost_uniforms);
-        }
-        frame.end_pass();
-        frame.zone_end(Zone::Scene);
     }
 }
 

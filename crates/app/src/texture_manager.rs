@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use review_render::{ChannelSelect, DecodedImage, TextureSlot, decode_image, suggested_channel};
-use review_ui::{TexturePoolEntry, TextureSlotRef};
+use review_ui::{ActivityId, TexturePoolEntry, TextureSlotRef};
 use winit::event_loop::EventLoopProxy;
 
 use crate::dialog::Dialog;
@@ -35,6 +35,8 @@ pub(crate) struct TextureDecode {
     generation: u64,
     /// Decoded pixels, or a human-readable error (shown as an error toast).
     result: Result<DecodedImage, String>,
+    /// The progress card the request opened, closed when this lands.
+    activity: ActivityId,
 }
 
 /// Why a texture was being decoded off-thread — determines how the result is
@@ -138,12 +140,13 @@ impl App {
             // import wants, and it pools the file when it lands.
             return;
         }
-        self.notifications
+        let activity = self
+            .notifications
             .begin_activity(keys::app_notifications::decoding(file_label(
                 request.path(),
             )));
         self.redraw.requested = true;
-        self.spawn_decode(request);
+        self.spawn_decode(request, activity);
     }
 
     /// Bind an already-pooled texture to a material slot, auto-detecting the
@@ -210,7 +213,7 @@ impl App {
     /// Spawn a background thread that decodes `request`'s source image and posts the
     /// result back to the event loop. Decoding (especially a large PSD composite or
     /// a 4K image) can take a while, so it must never run on the main thread.
-    fn spawn_decode(&mut self, request: TextureDecodeRequest) {
+    fn spawn_decode(&mut self, request: TextureDecodeRequest, activity: ActivityId) {
         let Some(proxy) = self.textures.proxy.clone() else {
             // Without a proxy the decode can never land back: end the paired
             // "Decoding…" / "Reloading…" activity toast (it would otherwise hang
@@ -218,7 +221,7 @@ impl App {
             log::error!("no event-loop proxy; cannot decode texture off-thread");
             self.textures
                 .finish_decode(self.textures.generation, request.path());
-            self.notifications.end_activity();
+            self.notifications.end_activity(activity);
             self.notifications
                 .error(keys::app_notifications::texture_failed(file_label(
                     request.path(),
@@ -239,6 +242,7 @@ impl App {
                 request,
                 generation,
                 result,
+                activity,
             }));
         });
     }
@@ -247,15 +251,16 @@ impl App {
     /// pixels and update the slot/binding, or report the failure. Always clears the
     /// activity toast it was paired with (in `import_texture_path` / `reload_texture_file`).
     pub(crate) fn handle_texture_decoded(&mut self, decode: TextureDecode) {
-        // Balanced first and unconditionally: the activity counter is paired with
-        // the *request*, so a result this scene no longer wants still has to
-        // close the toast its request opened.
-        self.notifications.end_activity();
+        // Balanced first and unconditionally: the activity is paired with the
+        // *request*, so a result this scene no longer wants still has to close
+        // the card its request opened.
         let TextureDecode {
             request,
             generation,
             result,
+            activity,
         } = decode;
+        self.notifications.end_activity(activity);
         let path = request.path().to_path_buf();
         let name = file_label(&path);
 
@@ -266,9 +271,13 @@ impl App {
             // rescues the common case of an editor's first event arriving
             // mid-save: that read fails or reads a fragment, and this is the
             // read of the finished file.
-            self.notifications
+            let activity = self
+                .notifications
                 .begin_activity(keys::app_notifications::reloading(name.clone()));
-            self.spawn_decode(TextureDecodeRequest::Reload { path: path.clone() });
+            self.spawn_decode(
+                TextureDecodeRequest::Reload { path: path.clone() },
+                activity,
+            );
         }
         if !outcome.apply {
             log::debug!("texture decode superseded, dropped: {}", path.display());
@@ -294,15 +303,19 @@ impl App {
                             .success(keys::app_notifications::texture_loaded(name.clone()));
                     }
                     TextureDecodeRequest::Reload { .. } => {
-                        let updated = self
+                        let bound = self
                             .renderer
                             .as_mut()
                             .is_some_and(|renderer| renderer.reload_texture(&path, image));
-                        // Refresh the pool regardless so the thumbnail picks up the
-                        // re-decoded image even if the file isn't bound to a slot.
+                        // Refresh the pool regardless so the thumbnail and the Tex
+                        // viewport pick up the re-decoded image even if the file
+                        // isn't bound to a slot.
+                        let pooled = self.textures.pool.contains(&path);
                         self.refresh_texture_pool();
-                        if updated {
+                        if bound {
                             self.refresh_materials();
+                        }
+                        if bound || pooled {
                             self.redraw.requested = true;
                             self.notifications
                                 .info(keys::app_notifications::texture_reloaded(name.clone()));
@@ -386,22 +399,25 @@ impl App {
     }
 
     /// Re-decode + re-upload a texture that changed on disk (the watcher event).
-    /// Matches the event path against the bound texture paths (canonicalizing to
-    /// tolerate path-form differences), then decodes off-thread (like an assign) so
-    /// a slow re-decode of an edited PSD never freezes the loop; the reload is
-    /// applied in `handle_texture_decoded`.
+    /// Matches the event path against every texture the scene holds - the ones
+    /// bound to a material slot and the ones only imported into the pool, which
+    /// the Tex viewport shows just the same - canonicalizing to tolerate
+    /// path-form differences. Decodes off-thread (like an assign) so a slow
+    /// re-decode of an edited PSD never freezes the loop; the reload is applied in
+    /// `handle_texture_decoded`.
     pub(crate) fn reload_texture_file(&mut self, changed: &Path) {
         let Some(renderer) = self.renderer.as_ref() else {
             return;
         };
-        let Some(bound) = renderer
+        let Some(held) = renderer
             .texture_paths()
             .into_iter()
-            .find(|bound| same_path(bound, changed))
+            .chain(self.textures.pool.iter().cloned())
+            .find(|held| same_path(held, changed))
         else {
             return;
         };
-        let request = TextureDecodeRequest::Reload { path: bound };
+        let request = TextureDecodeRequest::Reload { path: held };
         if self.textures.admit_decode(&request) == Admission::Coalesced {
             // A decode of this file is already running; it is now marked dirty,
             // so one more follows it. A single editor save emits several change
@@ -409,11 +425,12 @@ impl App {
             // file.
             return;
         }
-        self.notifications
+        let activity = self
+            .notifications
             .begin_activity(keys::app_notifications::reloading(file_label(
                 request.path(),
             )));
-        self.spawn_decode(request);
+        self.spawn_decode(request, activity);
     }
 
     /// Drop all texture-watching + decode state (model load / reset): the new

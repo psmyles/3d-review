@@ -84,7 +84,7 @@ pub use about::{AboutInfo, AboutState};
 pub use help::{HelpState, option_panel_at, workspace_help_page};
 pub use labels::{buffer_view_name, material_mode_name, op_kind_name, viewport_tool_name};
 pub use log_window::LogWindowState;
-pub use notifications::{NoticeKind, Notifications};
+pub use notifications::{ActivityId, NoticeKind, Notifications};
 pub use opt_state::{
     ComparisonSide, GhostStyle, OptIntent, OptLayout, OptLevelView, OptResultView, OptUiState,
     StackItem,

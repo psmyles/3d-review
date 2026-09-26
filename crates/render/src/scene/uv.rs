@@ -58,7 +58,7 @@ impl SceneGpu {
         );
 
         // Reference grid first.
-        self.draw_lines(frame, &self.scene.line, &[&self.uv_grid], &uniforms);
+        self.draw_lines(frame, &self.scene.line, [&self.uv_grid], &uniforms);
 
         // Island fill (Shaded / Islands), under the wireframe. It runs `fs_main`, so
         // it binds the full material set even though the zero-normal branch it takes
@@ -77,7 +77,7 @@ impl SceneGpu {
 
         // The model's UV edges on top.
         if let Some(wireframe) = &self.active.views.uv_wireframe_buf {
-            self.draw_lines(frame, &self.scene.line, &[wireframe], &uniforms);
+            self.draw_lines(frame, &self.scene.line, [wireframe], &uniforms);
         }
         frame.end_pass();
 

@@ -36,7 +36,7 @@ pub(crate) enum UserEvent {
     /// finished level until that run lands. Boxed: it carries a whole model.
     OptPreviewed(Box<opt::OptPreviewed>),
     /// A background FBX export finished (posted by the export thread).
-    OptExported(Box<Result<review_optimize::ExportReport, review_optimize::OptError>>),
+    OptExported(Box<crate::opt::OptExported>),
     /// A background model import produced a drawable model (posted by the import
     /// thread). Boxed because it carries the whole parsed model.
     ModelLoaded(Box<loading::ModelLoaded>),

@@ -168,14 +168,17 @@ impl SceneGpu {
 
     /// Draw a set of line buffers through one pipeline. They share everything but the
     /// vertex stream, so the pipeline and the scene uniforms are applied once.
-    pub(super) fn draw_lines(
+    pub(super) fn draw_lines<'b>(
         &self,
         frame: &mut Frame<'_>,
         pipeline: &Pipeline,
-        buffers: &[&VertexBuffer],
+        buffers: impl IntoIterator<Item = &'b VertexBuffer>,
         uniforms: &SceneUniforms,
     ) {
-        if buffers.is_empty() {
+        // An iterator rather than a slice, so the caller's list of optional views
+        // is filtered in place instead of collected into a `Vec` every frame.
+        let mut buffers = buffers.into_iter().peekable();
+        if buffers.peek().is_none() {
             return;
         }
         frame.apply_pipeline(pipeline);
