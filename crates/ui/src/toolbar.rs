@@ -182,11 +182,11 @@ const MENU_POPUP_ID: &str = "toolbar_menu";
 /// than on what is being looked at, so it reads as the thing before the tools
 /// rather than one of them.
 ///
-/// Three submenus, File / Preferences / Help, built from egui's own `menu_button`
+/// Four submenus, File / Preferences / Debug / Help, built from egui's own `menu_button`
 /// (which becomes a submenu inside a menu). What reaches outside the chrome - a
 /// dialog, the loaded model, the settings file, the network, the process -
 /// travels to `app` as a [`MenuIntent`]; what the chrome can do itself (open the
-/// About box or the manual, hand a link to the browser) it does in place.
+/// About box, the manual or the log, hand a link to the browser) it does in place.
 fn draw_menu_group(ui: &mut egui::Ui, state: &mut UiState, output: &mut UiOutput, width: f32) {
     let popup_id = egui::Id::new(MENU_POPUP_ID);
     let open = egui::Popup::is_id_open(ui.ctx(), popup_id);
@@ -205,6 +205,9 @@ fn draw_menu_group(ui: &mut egui::Ui, state: &mut UiState, output: &mut UiOutput
             });
             ui.menu_button(keys::ui_toolbar::MENU_PREFERENCES, |ui| {
                 preferences_menu(ui, state, output);
+            });
+            ui.menu_button(keys::ui_toolbar::MENU_DEBUG, |ui| {
+                debug_menu(ui, state, output);
             });
             ui.menu_button(keys::ui_toolbar::MENU_HELP, |ui| {
                 help_menu(ui, state, output);
@@ -267,7 +270,7 @@ fn recent_files_menu(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput) 
     }
 }
 
-/// Preferences: the Remember Settings and Tracy Profiler switches.
+/// Preferences: the Remember Settings switch.
 fn preferences_menu(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput) {
     // A copy, not the field: flipping it is `app`'s job, because flipping it is
     // also what writes the settings file.
@@ -283,8 +286,27 @@ fn preferences_menu(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput) {
     {
         output.menu = Some(MenuIntent::ToggleRememberSettings);
     }
+}
 
-    // The same copy-not-field rule: the switch lives in the settings file.
+/// Debug: the log, and the Tracy Profiler switch. Things for finding out what
+/// the viewer is doing, rather than for setting it up.
+fn debug_menu(ui: &mut egui::Ui, state: &mut UiState, output: &mut UiOutput) {
+    // Opens the window in place, like About: nothing outside the chrome changes.
+    // `app` sees it open on the next frame and starts handing it lines.
+    let view_log = ui.button(keys::ui_toolbar::MENU_VIEW_LOG);
+    if tip(
+        view_log,
+        Tip::new(keys::ui_toolbar::MENU_VIEW_LOG)
+            .describe(keys::ui_toolbar::MENU_VIEW_LOG_DESCRIPTION)
+            .page(Page::Menu),
+    )
+    .clicked()
+    {
+        state.log.open = true;
+    }
+
+    // A copy, not the field, as with Remember Settings: the switch lives in the
+    // settings file, and flipping it is `app`'s job.
     let mut tracy = state.tracy_profiler;
     let tracy_response = ui.checkbox(&mut tracy, keys::ui_toolbar::MENU_TRACY_PROFILER);
     if tip(

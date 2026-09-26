@@ -69,4 +69,8 @@ pub(crate) enum UserEvent {
     /// main thread, in order with every other event, instead of racing the state
     /// it is about to change.
     MenuCommand(review_shell_macos::MenuCommand),
+    /// A line was logged while the Log window is open (posted by whichever
+    /// thread logged it, at most once until the window next reads the log).
+    /// Asks for a frame, which is where the window is handed the line.
+    LogUpdated,
 }

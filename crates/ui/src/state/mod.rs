@@ -356,6 +356,10 @@ pub struct UiState {
     /// The About box — whether it is up, and the build / renderer facts `app`
     /// handed over for it to show. Opened from the menu's Help > About.
     pub about: crate::AboutState,
+    /// The Log window — whether it is up, its level filter, and this session's
+    /// lines as `app` last handed them over. Opened from the menu's Debug >
+    /// View Log.
+    pub log: crate::LogWindowState,
     /// Bone nodes selected in the Outliner, in click order (the last entry is the
     /// primary, mirrored into [`UiState::selection`]). Drives the skeleton
     /// overlay's highlight and the skin-weight heat map. Primary-click toggles a
@@ -445,6 +449,7 @@ impl Default for UiState {
         Self {
             help: crate::HelpState::default(),
             about: crate::AboutState::default(),
+            log: crate::LogWindowState::default(),
             mode: WorkspaceMode::ThreeD,
             debug: SceneDebugOptions::default(),
             shading_mode: ShadingMode::Shaded,

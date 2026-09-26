@@ -1,7 +1,7 @@
 # The menu
 
 The button at the far left of the toolbar opens the menu. It is there in every
-workspace, and has three parts.
+workspace, and has four parts.
 
 ## File
 
@@ -23,6 +23,11 @@ workspace, and has three parts.
 
 - **Remember Settings** is a switch. A tick next to it means it is on. See
   [below](#remember-settings) for what it keeps.
+
+## Debug
+
+- **View Log** opens the log window, which lists what the viewer has
+  reported since it started. See [below](#the-log).
 - **Tracy Profiler** is for developers measuring the viewer's performance.
   While it is ticked, the viewer starts with the
   [Tracy profiler](https://github.com/wolfpld/tracy) enabled, the same as
@@ -43,6 +48,40 @@ workspace, and has three parts.
   web browser, where you can describe a problem or ask for something.
 - **Credits** opens the list of the people and projects the viewer is built
   on, in your web browser.
+
+## The log
+
+The viewer keeps a log of what it does: which version it is and what it is
+drawing with, each file you open with how long it took and what is in it,
+each optimization run and export, every message it has shown you, and any
+warning or error along the way.
+
+**View Log** shows this session's part of it in a window, newest at the
+bottom, updating as new lines arrive. Each line has the time it happened, how
+serious it is, which part of the viewer said it (in square brackets), and
+the message itself. The switches along the top choose which kinds of line
+are shown:
+
+- **Debug** is extra detail for developers, such as how long each stage of
+  a file load took. It is hidden until you tick it.
+- **Info** is things happening as they should.
+- **Warning** is something that went through, but not entirely as asked.
+- **Error** is something that did not happen.
+
+**Clear** empties the window. It does not touch the log file, so nothing a
+bug report would need is lost. You can select the text in the window and
+copy it.
+
+The same lines, all four kinds, are saved to a file for the rest of the
+day. Every time you start the viewer that day adds to the same file, and the
+first start on a later day deletes it, so no log is kept for more than a
+day. The file's location is shown at the bottom of the window:
+
+- Windows: `%LOCALAPPDATA%\3D Review\logs\3d-review-<date>.log`
+- macOS: `~/Library/Logs/3D Review/3d-review-<date>.log`
+
+The log file is a good thing to attach when you
+[report an issue](#help).
 
 ## Remember settings
 

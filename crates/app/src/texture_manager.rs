@@ -154,10 +154,7 @@ impl App {
             return;
         };
         let Some(image) = self.textures.cache.get(&path).cloned() else {
-            prof::msg(&format!(
-                "assign of a texture not in the pool: {}",
-                path.display()
-            ));
+            log::warn!("assign of a texture not in the pool: {}", path.display());
             return;
         };
         let channel = suggested_channel(&path, slot);
@@ -218,7 +215,7 @@ impl App {
             // Without a proxy the decode can never land back: end the paired
             // "Decoding…" / "Reloading…" activity toast (it would otherwise hang
             // forever) and surface the failure instead of silently dropping it.
-            prof::msg("no event-loop proxy; cannot decode texture off-thread");
+            log::error!("no event-loop proxy; cannot decode texture off-thread");
             self.textures
                 .finish_decode(self.textures.generation, request.path());
             self.notifications.end_activity();
@@ -274,10 +271,7 @@ impl App {
             self.spawn_decode(TextureDecodeRequest::Reload { path: path.clone() });
         }
         if !outcome.apply {
-            prof::msg(&format!(
-                "texture decode superseded, dropped: {}",
-                path.display()
-            ));
+            log::debug!("texture decode superseded, dropped: {}", path.display());
             return;
         }
 
@@ -317,10 +311,7 @@ impl App {
                 }
             }
             Err(error) => {
-                prof::msg(&format!(
-                    "texture decode failed {}: {error}",
-                    path.display()
-                ));
+                log::error!("texture decode failed {}: {error}", path.display());
                 self.notifications
                     .error(keys::app_notifications::texture_failed(name.clone()));
             }
@@ -356,13 +347,13 @@ impl App {
                     }
                     // A backend error stops reload events for its watch; leave a
                     // trace instead of dropping it without a word.
-                    Err(error) => prof::msg(&format!("texture watcher error: {error}")),
+                    Err(error) => log::warn!("texture watcher error: {error}"),
                 }
             };
             match RecommendedWatcher::new(handler, notify::Config::default()) {
                 Ok(watcher) => self.textures.watcher = Some(watcher),
                 Err(error) => {
-                    prof::msg(&format!("failed to create texture watcher: {error}"));
+                    log::warn!("failed to create texture watcher: {error}");
                     self.notifications.warning(format!(
                         "{}\n{}",
                         review_localization::tr(keys::app_notifications::WATCHER_UNAVAILABLE),
@@ -380,10 +371,10 @@ impl App {
                     self.textures.watched_dirs.insert(dir);
                 }
                 Err(error) => {
-                    prof::msg(&format!(
+                    log::warn!(
                         "failed to watch texture directory {}: {error}",
                         dir.display()
-                    ));
+                    );
                     self.notifications
                         .warning(keys::app_notifications::watch_failed(file_label(&dir)));
                     // Record the attempt so a failing directory isn't retried

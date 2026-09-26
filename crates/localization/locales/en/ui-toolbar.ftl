@@ -9,11 +9,13 @@
 
 ui-toolbar-menu = Menu
     .description = Opens and closes files, sets whether your tool settings are kept for
-        next time, and leads to the manual, updates and the project's pages.
+        next time, shows the viewer's log, and leads to the manual, updates and the
+        project's pages.
 
-# The three submenus.
+# The four submenus.
 ui-toolbar-menu-file = File
 ui-toolbar-menu-preferences = Preferences
+ui-toolbar-menu-debug = Debug
 ui-toolbar-menu-help = Help
 
 ui-toolbar-menu-open-file = Open File...
@@ -28,6 +30,11 @@ ui-toolbar-menu-remember-settings = Remember Settings
     .description = When this is ticked, the choices you make in the tools' options windows,
         such as colors, sizes, the environment and the ambient occlusion settings, are kept
         and come back the next time you start the viewer.
+
+ui-toolbar-menu-view-log = View Log
+    .description = Opens a window listing what the viewer has reported since it started:
+        files opened, how long they took, warnings and errors. The same lines are saved to
+        a file for the rest of the day, which is useful to attach to a bug report.
 
 ui-toolbar-menu-tracy-profiler = Tracy Profiler
     .description = For developers measuring the viewer's performance. When this is ticked, the

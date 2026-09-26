@@ -15,6 +15,7 @@ mod frame;
 mod gate;
 mod input;
 mod loading;
+mod logging;
 mod opt;
 mod pick;
 mod prof;
@@ -73,6 +74,12 @@ use window_state::{
 };
 
 fn main() -> anyhow::Result<()> {
+    // The logger, before anything can say something: an atomic store and nothing
+    // else, so the GPU bring-up below is not held up by it and what it logs is
+    // kept. The file it writes to is opened further down (`logging::open`), and
+    // gets everything logged until then.
+    review_log::install(env!("CARGO_CRATE_NAME"));
+
     // The GPU device and `sg_setup` need no window and are the longest single item on
     // the launch path, so they start here, before anything else, and run alongside
     // the window creation and the argument scan (`mac-port-plan.md` D8). The join is
@@ -127,7 +134,7 @@ fn main() -> anyhow::Result<()> {
     let tracy = tracy_enabled.then(|| {
         let client = tracy_client::Client::start();
         prof::thread_name("main");
-        prof::msg("3d-review: Tracy profiling enabled");
+        log::info!("Tracy profiling enabled");
         client
     });
 
@@ -135,6 +142,10 @@ fn main() -> anyhow::Result<()> {
         .build()
         .context("failed to create winit event loop")?;
     event_loop.set_control_flow(ControlFlow::Wait);
+
+    // The day's log file, off the GPU's critical path: the bring-up thread is
+    // already running. Needs the event loop, whose proxy wakes an open Log window.
+    let log_file = logging::open(event_loop.create_proxy());
 
     // The texture file-watcher posts reload events back through this proxy.
     let texture_proxy = event_loop.create_proxy();
@@ -179,6 +190,7 @@ fn main() -> anyhow::Result<()> {
         _tracy: tracy,
         ..App::default()
     };
+    app.ui.log.file = log_file;
     // The remembered option-window values, when the user asked for them. After
     // `gate` is known, since a gate run must render the defaults whatever this box
     // last remembered.
@@ -516,7 +528,7 @@ impl App {
         drop(phase.take());
         phase = prof::zone!("Shell Init");
         self.init_shell(event_loop, window, renderer, egui_ctx, gpu, egui_renderer);
-        prof::msg("application shell started");
+        log::debug!("application shell started");
 
         drop(phase.take());
         phase = prof::zone!("Queue Initial Model Load");
@@ -653,9 +665,7 @@ impl App {
         if let Some(mut frame) = gpu.begin_frame() {
             frame.begin_swapchain_pass();
             if let review_render::PresentStatus::DeviceLost { reason } = frame.finish(false) {
-                prof::msg(&format!(
-                    "startup present failed: device lost ({reason:#x})"
-                ));
+                log::error!("startup present failed: device lost ({reason:#x})");
                 self.notifications
                     .error(keys::app_notifications::device_lost_startup(format!(
                         "{reason:#x}"
@@ -700,6 +710,7 @@ impl App {
         }
 
         self.ui.about.info.renderer = gpu.backend_name().to_owned();
+        log::info!("graphics: {} on {}", gpu.backend_name(), gpu.adapter_name());
 
         // Under `--tracy`, arm the GPU profiler. A normal launch never calls this, so
         // nothing profiling-related is ever built.
@@ -774,6 +785,13 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::OpenPath(path) => self.open_model_from_path(&path),
             UserEvent::MenuCommand(command) => self.handle_menu_command(command),
             UserEvent::UpdateChecked(result) => self.handle_update_checked(result),
+            // Only an open Log window asks for these, but one can close between
+            // the line being logged and this arriving.
+            UserEvent::LogUpdated => {
+                if self.ui.log.open {
+                    self.request_redraw();
+                }
+            }
         }
     }
 
@@ -903,6 +921,7 @@ impl ApplicationHandler<UserEvent> for App {
     /// written.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.persist_settings();
+        log::info!("exiting");
     }
 }
 
@@ -918,7 +937,7 @@ impl ApplicationHandler<UserEvent> for App {
 /// that point there is nothing left for it to block.
 fn report_startup_failure(error: &anyhow::Error) {
     let detail = format!("{error:#}");
-    prof::msg(&format!("startup failed: {detail}"));
+    log::error!("startup failed: {detail}");
     rfd::MessageDialog::new()
         .set_level(rfd::MessageLevel::Error)
         .set_title(keys::app_window::startup_failed_title(APP_NAME))

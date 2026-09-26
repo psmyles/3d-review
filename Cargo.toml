@@ -4,6 +4,7 @@ members = [
     "crates/import",
     "crates/localization",
     "crates/localization-build",
+    "crates/log",
     "crates/model",
     "crates/optimize",
     "crates/prof",
@@ -38,6 +39,9 @@ rust-version = "1.88"
 anyhow = "1"
 bytemuck = { version = "1", features = ["derive"] }
 cc = "1"
+# The local wall clock behind the log's timestamps and its day-named files
+# (`crates/log`). `std` has no time zone; `clock` is what reads the OS's.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # The per-user config directory `window.cfg` lives in (`mac-port-plan.md` D17):
 # `%APPDATA%` on Windows — the same path the hand-read `APPDATA` env var gave —
 # and `~/Library/Application Support` on macOS, where that env var does not exist.
@@ -75,6 +79,10 @@ fluent-bundle = "0.16"
 # "it built" means "it loads".
 fluent-syntax = "0.12"
 glam = "0.30"
+# The standard logging facade. Already in the graph (winit, egui and notify log
+# through it), so `review-log` installing the one logger hears them too, and a
+# crate that only writes lines needs nothing but this.
+log = "0.4"
 half = "2"
 image = { version = "0.25", default-features = false, features = [
     "png",
@@ -99,6 +107,9 @@ review-localization = { path = "crates/localization" }
 # in each consumer's OUT_DIR. Separate crate so a build script compiles only the
 # `.ftl` parser, not the whole Fluent runtime.
 review-localization-build = { path = "crates/localization-build" }
+# The viewer's log: the `log` facade's one logger, fanning each line out to the
+# Log window's session buffer, today's file, stderr and Tracy.
+review-log = { path = "crates/log" }
 # The guarded Tracy zone/plot/message helpers, in one place: `tracy_client`'s own
 # macros panic when no client is running, so every crate that instruments itself
 # needs the same `Client::running()` guard around them.

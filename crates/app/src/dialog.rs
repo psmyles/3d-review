@@ -186,7 +186,7 @@ impl App {
         // the fallback is *not* to run the dialog inline, which is the exact thing
         // this module exists to stop doing.
         let Some(proxy) = self.textures.proxy.clone() else {
-            prof::msg("no event-loop proxy; cannot open a file dialog");
+            log::error!("no event-loop proxy; cannot open a file dialog");
             self.notifications.error(
                 review_localization::tr(keys::app_notifications::DIALOG_FAILED).into_owned(),
             );

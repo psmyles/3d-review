@@ -157,6 +157,47 @@ fn stage_name(stage: ImportStage) -> review_localization::Key {
     }
 }
 
+/// Times an import's stages for the log, from the progress reports the import
+/// already makes. Lives on the import worker, which is the only thread that
+/// reports; `Cell` rather than a lock for the same reason the throttle is one.
+#[derive(Default)]
+struct StageClock {
+    current: std::cell::Cell<Option<(ImportStage, Instant)>>,
+}
+
+impl StageClock {
+    /// The import has reached `stage`. Ends (and logs) the stage before it; a
+    /// repeat report within one stage changes nothing.
+    fn enter(&self, stage: ImportStage) {
+        match self.current.get() {
+            Some((current, _)) if current == stage => {}
+            _ => {
+                self.finish();
+                self.current.set(Some((stage, Instant::now())));
+            }
+        }
+    }
+
+    /// End the stage in progress, if any, and log how long it took.
+    fn finish(&self) {
+        if let Some((stage, since)) = self.current.take() {
+            log::debug!(
+                "import stage '{}' took {:.0} ms",
+                stage.label(),
+                since.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+    }
+}
+
+/// A file's size for the log, or `?` when it cannot be read.
+fn file_size_label(path: &Path) -> String {
+    std::fs::metadata(path).map_or_else(
+        |_| "?".to_owned(),
+        |metadata| format!("{:.1} MB", metadata.len() as f64 / (1024.0 * 1024.0)),
+    )
+}
+
 /// Whether `path`'s extension is one the texture pool accepts (case-insensitive).
 fn is_image_path(path: &Path) -> bool {
     path.extension()
@@ -222,6 +263,7 @@ impl App {
         // — and the worker running it stops rather than finishing for nothing.
         let generation = self.supersede_loads();
         let cancel = CancelToken::new(Arc::clone(&self.model_load_generation), generation);
+        log::info!("loading {} ({})", path.display(), file_size_label(path));
 
         // Parse on a worker thread so a large FBX can't hold the event loop —
         // at startup the window would otherwise stay blank until the model was
@@ -243,7 +285,14 @@ impl App {
                 // from this thread, from inside the import.
                 let last_sent = std::cell::Cell::new(None::<Instant>);
                 let progress_proxy = proxy.clone();
+                // Every report reaches the clock, before the throttle drops any:
+                // a stage boundary is exactly the report that must not be missed.
+                let clock = StageClock::default();
+                clock.enter(ImportStage::Reading);
+                // `path` travels with the model; the last line still names it.
+                let name = file_label(&path);
                 let report = |progress: ImportProgress| {
+                    clock.enter(progress.stage);
                     if last_sent
                         .get()
                         .is_some_and(|sent| sent.elapsed() < PROGRESS_MIN_INTERVAL)
@@ -281,6 +330,7 @@ impl App {
                 // it lands, so the stats card and the clip framing fill in one at
                 // a time rather than together.
                 let Some(model) = measure else {
+                    clock.finish();
                     return;
                 };
                 let send = |measurement, last| {
@@ -298,6 +348,8 @@ impl App {
                 // has to send it: `handle_model_measured` balances the activity
                 // before it looks at the generation.
                 if cancel.is_cancelled() {
+                    clock.finish();
+                    log::debug!("model load superseded while measuring");
                     send(ModelMeasurement::Cancelled, true);
                     return;
                 }
@@ -310,6 +362,8 @@ impl App {
                     )));
                 }
                 if cancel.is_cancelled() {
+                    clock.finish();
+                    log::debug!("model load superseded while measuring");
                     send(ModelMeasurement::Cancelled, true);
                     return;
                 }
@@ -325,6 +379,8 @@ impl App {
                     );
                 }
                 if cancel.is_cancelled() {
+                    clock.finish();
+                    log::debug!("model load superseded while measuring");
                     send(ModelMeasurement::Cancelled, true);
                     return;
                 }
@@ -337,6 +393,8 @@ impl App {
                     );
                 }
                 if cancel.is_cancelled() {
+                    clock.finish();
+                    log::debug!("model load superseded while measuring");
                     send(ModelMeasurement::Cancelled, true);
                     return;
                 }
@@ -345,6 +403,13 @@ impl App {
                     report(ImportProgress::stage(ImportStage::Finishing));
                     send(ModelMeasurement::MeshGroups(model.mesh_group_stats()), true);
                 }
+                clock.finish();
+                // The worker's own finish. The main thread's "loaded" line can
+                // come after it, since that is when the model reached the screen.
+                log::debug!(
+                    "import worker finished {name} {:.2} s after the request",
+                    started.elapsed().as_secs_f64()
+                );
             });
         } else {
             // No proxy to post back through (never the case once `main` has
@@ -427,7 +492,7 @@ impl App {
                 // The model stays; only the re-export fidelity is lost, and the
                 // export report will say so.
                 self.scene_extras = None;
-                prof::msg(&format!("source properties dropped: {error}"));
+                log::warn!("source properties dropped: {error}");
                 // A warning, not an error: the model loaded and is on screen.
                 self.notifications
                     .warning(keys::app_notifications::couldnt_read_properties(
@@ -473,17 +538,11 @@ impl App {
         // newer load superseded it, which is the same case as the generation
         // mismatch below and says nothing the user needs to hear.
         if matches!(message.result, Err(ImportError::Cancelled)) {
-            prof::msg(&format!(
-                "model load cancelled mid-parse: {}",
-                message.path.display()
-            ));
+            log::debug!("model load cancelled mid-parse: {}", message.path.display());
         } else if message.generation == self.model_load_generation() {
             self.apply_loaded_model(&message.path, message.result, message.started.elapsed());
         } else {
-            prof::msg(&format!(
-                "model load superseded, dropped: {}",
-                message.path.display()
-            ));
+            log::debug!("model load superseded, dropped: {}", message.path.display());
         }
 
         if let Some(window) = self.window.as_ref() {
@@ -508,6 +567,24 @@ impl App {
 
         match result {
             Ok(model) => {
+                let stats = model.stats;
+                log::info!(
+                    "loaded {} in {:.2} s: {} polygons, {} triangles, {} vertices, \
+                     {} materials, {} draws, {} UV sets, {} nodes, {} bones, {} clips, \
+                     1 unit = {} m",
+                    path.display(),
+                    elapsed.as_secs_f64(),
+                    stats.polygon_count,
+                    stats.triangle_count,
+                    stats.vertex_count,
+                    stats.material_count,
+                    stats.draw_count,
+                    stats.uv_set_count,
+                    model.nodes.len(),
+                    stats.bone_count,
+                    stats.clip_count,
+                    stats.source_unit_meters,
+                );
                 let (materials_snapshot, material_revision) =
                     if let Some(renderer) = self.renderer.as_mut() {
                         frame_camera_to_model(renderer, &model, animate_framing);
@@ -535,7 +612,6 @@ impl App {
                     label.clone(),
                     format_load_time(elapsed),
                 ));
-                prof::msg(&format!("model loaded: {}", path.display()));
                 self.remember_recent_file(path);
                 // A gate run starts measuring from here — the first present with
                 // the model actually on screen (`gate.rs`); no-op otherwise.
@@ -549,7 +625,7 @@ impl App {
                         file_label(path),
                         error.to_string(),
                     ));
-                prof::msg(&format!("model load failed: {} ({error})", path.display()));
+                log::error!("model load failed: {} ({error})", path.display());
                 self.forget_missing_recent_file(path);
             }
         }
@@ -587,7 +663,7 @@ impl App {
         self.reset_opt_for_new_model();
         self.set_window_title(None);
 
-        prof::msg("reset to start state");
+        log::info!("reset to start state");
         self.redraw.requested = true;
     }
 

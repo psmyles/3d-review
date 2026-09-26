@@ -107,6 +107,12 @@ impl Device {
     /// `1` is always included.
     ///
     /// The formats are ignored, and that is the honest answer rather than a shortcut:
+    /// The device's name as Metal reports it (`Apple M2`). The D3D11 twin reads
+    /// the DXGI adapter description.
+    pub(crate) fn adapter_name(&self) -> String {
+        self.device.name().to_string()
+    }
+
     /// `supportsTextureSampleCount:` is a device-wide question in Metal, where the
     /// D3D11 twin's `CheckMultisampleQualityLevels` is asked per format. Apple silicon
     /// answers yes to 1/2/4/8, so the 16× option simply disappears from the menu.

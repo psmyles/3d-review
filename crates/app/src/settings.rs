@@ -21,8 +21,8 @@ use std::path::{Path, PathBuf};
 
 use review_ui::UiState;
 
+use crate::App;
 use crate::recent::MAX_RECENT_FILES;
-use crate::{App, prof};
 
 /// The file's name inside `<config dir>/<app name>/`.
 const SETTINGS_FILE: &str = "settings.cfg";
@@ -111,19 +111,16 @@ impl App {
         if let Some(dir) = path.parent()
             && let Err(error) = std::fs::create_dir_all(dir)
         {
-            prof::msg(&format!(
+            log::warn!(
                 "failed to create settings directory {}: {error}",
                 dir.display()
-            ));
+            );
             return;
         }
         // Replaced rather than overwritten, as `window.cfg` is: a process killed
         // mid-write would otherwise leave half a file.
         if let Err(error) = review_optimize::write_bytes_replacing(&path, &contents) {
-            prof::msg(&format!(
-                "failed to save settings {}: {error}",
-                path.display()
-            ));
+            log::warn!("failed to save settings {}: {error}", path.display());
         }
     }
 }
@@ -172,7 +169,7 @@ fn storable_path(path: &Path) -> Option<&str> {
     fits.then_some(text)
 }
 
-fn settings_file() -> Option<PathBuf> {
+pub(crate) fn settings_file() -> Option<PathBuf> {
     let mut path = dirs::config_dir()?;
     path.push(crate::APP_NAME);
     path.push(SETTINGS_FILE);

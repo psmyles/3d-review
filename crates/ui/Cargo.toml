@@ -12,6 +12,10 @@ egui.workspace = true
 egui_commonmark.workspace = true
 glam.workspace = true
 image.workspace = true
+# The notices write every card they raise to the log as well.
+log.workspace = true
+# The Log window's `Entry` / `Level`, which `app` hands over as plain values.
+review-log.workspace = true
 review-model = { path = "../model" }
 # The Opt workspace edits an `OptStack` and displays its measured metrics, so the
 # chrome needs those types. Commands still flow ui -> app (invariant 2): this

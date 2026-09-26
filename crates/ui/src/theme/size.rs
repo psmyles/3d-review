@@ -421,6 +421,13 @@ pub const HELP_WINDOW_DEFAULT: [f32; 2] = [720.0, 520.0];
 /// Minimum the Help window may be dragged down to before its two panes stop
 /// being readable.
 pub const HELP_WINDOW_MIN: [f32; 2] = [420.0, 260.0];
+/// The Log window's default size: wide enough for a line with a full file path
+/// in it, short enough to leave the model in view beneath it.
+pub const LOG_WINDOW_DEFAULT: [f32; 2] = [760.0, 360.0];
+/// Minimum the Log window may be dragged down to before the filter bar wraps.
+pub const LOG_WINDOW_MIN: [f32; 2] = [440.0, 160.0];
+/// Space between the columns of a log line (time, level, tag, message).
+pub const LOG_COLUMN_GAP: f32 = 12.0;
 /// Width of the Help window's contents list.
 pub const HELP_TOC_WIDTH: f32 = 196.0;
 /// Indent per nesting level in the contents list.

@@ -82,6 +82,9 @@ impl App {
             return;
         }
 
+        // Hand the Log window what has been logged since last frame, if it is up.
+        self.feed_log_window();
+
         // The Opt workspace's processed level, resolved *before* the egui pass so its
         // half of the split can be labelled with its own box and its own camera. Like
         // every other input the chrome reads, this is the state as of the start of the
@@ -207,6 +210,8 @@ impl App {
             let _z = prof::zone!("Apply UI Output");
             self.apply_ui_output(ui_output);
         }
+        // The pass may have opened or closed the Log window.
+        self.watch_log_window();
 
         // Reconcile the Opt workspace with the stack the egui pass just edited:
         // create its subsystem on first entry, schedule a run for any change, and
@@ -495,18 +500,20 @@ impl App {
         prof::frame_mark();
     }
 
-    /// Report a GPU fault: always down the prof channel, and on screen the first
-    /// time one happens this session. A wedged device fails again on every frame,
-    /// so the `gpu_fault_notified` latch reports the *first* fault and lets the
-    /// rest pass — which is the one that says what went wrong, the later ones
-    /// being its consequences. The notice is keyed as well, so even if that latch
-    /// is ever relaxed the viewport gets one card rather than a column of them.
-    /// It is the user's only sign, since the prof channel is invisible without
-    /// `--tracy` and a windowed release build has no console.
+    /// Report a GPU fault: on screen and in the log the first time one happens
+    /// this session, down the prof channel every time after. A wedged device
+    /// fails again on every frame, so the `gpu_fault_notified` latch reports the
+    /// *first* fault and lets the rest pass — which is the one that says what
+    /// went wrong, the later ones being its consequences. The notice is keyed as
+    /// well, so even if that latch is ever relaxed the viewport gets one card
+    /// rather than a column of them. The first fault reaches the log through its
+    /// card, which logs itself; a line a frame after it would fill the day's log
+    /// file with the same sentence.
     pub(crate) fn report_gpu_fault(&mut self, context: &str, err: impl std::fmt::Display) {
         let message = keys::app_notifications::gpu_fault(context, err.to_string());
-        prof::msg(&message);
-        if !self.gpu_fault_notified {
+        if self.gpu_fault_notified {
+            prof::msg(&message);
+        } else {
             self.gpu_fault_notified = true;
             self.notifications.error_keyed(GPU_FAULT_NOTICE, message);
         }

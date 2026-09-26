@@ -40,7 +40,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use glam::Vec2;
 
 use crate::App;
-use crate::prof;
 
 /// Frames drawn but not measured, after the model is up. The first frames after a
 /// model lands build every derived buffer the view needs and warm the shader/PSO
@@ -243,7 +242,7 @@ impl App {
         gate.phase = Phase::Warmup {
             left: WARMUP_FRAMES,
         };
-        prof::msg("gate: model up, warming");
+        log::info!("gate: model up, warming");
     }
 
     /// Whether the run is still drawing (the frame loop keeps redrawing) and
@@ -271,8 +270,8 @@ impl App {
         };
         let stamp = gate.stamp(size, msaa, gtao);
         match std::fs::write(&gate.out, stamp) {
-            Ok(()) => prof::msg("gate: stamp written"),
-            Err(err) => prof::msg(&format!("gate: stamp write failed: {err}")),
+            Ok(()) => log::info!("gate: stamp written"),
+            Err(err) => log::error!("gate: stamp write failed: {err}"),
         }
         gate.phase = Phase::Holding {
             until: Instant::now() + HOLD,

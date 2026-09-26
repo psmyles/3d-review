@@ -72,13 +72,13 @@ mod error;
 mod format;
 pub(crate) mod gpu_profiler;
 mod job;
-mod log;
 mod make;
 mod mips;
 mod pipeline;
 mod present;
 mod sampler;
 pub(crate) mod shader;
+mod sokol_log;
 mod target;
 mod texture;
 
@@ -102,7 +102,7 @@ pub(crate) use texture::Texture;
 // `Frame`'s contract, and the two are read together.
 
 pub(crate) use job::SwapchainJob;
-use log::log_sokol;
+use sokol_log::log_sokol;
 
 use std::ffi::{CStr, c_char, c_void};
 
@@ -257,6 +257,12 @@ impl Gpu {
         }
     }
 
+    /// The graphics adapter's own name (`NVIDIA GeForce RTX 4070`, `Apple M2`), for
+    /// the log's opening lines. Empty when the driver will not say.
+    pub fn adapter_name(&self) -> String {
+        self.device.adapter_name()
+    }
+
     /// The largest 2D texture this device can create, for `egui-winit`'s texture-size
     /// cap — a real query now rather than the hardcoded 16384 the D3D11 path assumed.
     pub fn max_texture_size(&self) -> usize {
@@ -317,14 +323,12 @@ impl Gpu {
         match gpu_profiler::GpuProfiler::new(&self.device) {
             Ok(profiler) => {
                 self.profiler = Some(profiler);
-                gpu_profiler::note("GPU profiling armed");
+                log::info!("GPU profiling armed");
             }
             Err(error) => {
                 // Disarm, so this is attempted once rather than every frame.
                 gpu_profiler::disable_tracy_gpu();
-                let line = format!("3d-review: GPU profiling unavailable: {error}");
-                eprintln!("{line}");
-                gpu_profiler::note(&line);
+                log::warn!("GPU profiling unavailable: {error}");
             }
         }
     }

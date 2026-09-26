@@ -16,7 +16,7 @@
 use std::process::Command;
 
 use crate::events::UserEvent;
-use crate::{App, keys, prof};
+use crate::{App, keys};
 
 /// This build's version, from `product.json` via `build.rs`.
 const CURRENT_VERSION: &str = env!("REVIEW_VERSION");
@@ -87,7 +87,7 @@ impl App {
                     ))
             }
             UpdateCheck::Failed(detail) => {
-                prof::msg(&format!("update check failed: {detail}"));
+                log::warn!("update check failed: {detail}");
                 self.notifications
                     .warning(keys::app_notifications::update_check_failed(detail));
             }

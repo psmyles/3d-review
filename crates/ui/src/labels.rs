@@ -13,6 +13,7 @@
 //! screen.
 
 use review_localization::Key;
+use review_log::Level;
 use review_model::{NodeKind, SkinningMethod};
 use review_optimize::{
     AoQuality, AoTarget, FbxFormat, HierarchyMode, LodPackaging, NormalMode, OpKind, RemeshDensity,
@@ -386,6 +387,27 @@ pub(crate) fn viewport_tool(tool: ViewportTool) -> Key {
 /// [`material_mode_name`].
 pub fn viewport_tool_name(tool: ViewportTool) -> String {
     review_localization::tr(viewport_tool(tool)).into_owned()
+}
+
+/// A log level's name on the Log window's filter switches.
+pub(crate) fn log_level(level: Level) -> Key {
+    match level {
+        Level::Debug => keys::ui_log::LEVEL_DEBUG,
+        Level::Info => keys::ui_log::LEVEL_INFO,
+        Level::Warning => keys::ui_log::LEVEL_WARNING,
+        Level::Error => keys::ui_log::LEVEL_ERROR,
+    }
+}
+
+/// A log level in the Log window's level column: short, in capitals, like the
+/// file's own `label()`.
+pub(crate) fn log_row_level(level: Level) -> Key {
+    match level {
+        Level::Debug => keys::ui_log::ROW_DEBUG,
+        Level::Info => keys::ui_log::ROW_INFO,
+        Level::Warning => keys::ui_log::ROW_WARNING,
+        Level::Error => keys::ui_log::ROW_ERROR,
+    }
 }
 
 #[cfg(test)]
