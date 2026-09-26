@@ -44,6 +44,18 @@ app-notifications-texture-failed = Couldn't load { $file }
 ## Opt
 
 app-notifications-optimizing = Optimizing mesh...
+
+# The stage line under the optimizing card's title: which step of the run is
+# going, and - for a step that works through a list - how far through it is. The
+# operations that rebuild one object at a time name the object, because on a
+# dense mesh a single one can take a while and its name is what says the run is
+# still moving.
+app-notifications-opt-stage = { $stage }...
+app-notifications-opt-stage-count = { $stage }... { $done } of { $total }
+app-notifications-opt-stage-object = { $stage }: { $object } ({ $done } of { $total })
+app-notifications-opt-stage-preparing = Preparing the mesh
+app-notifications-opt-stage-measuring = Measuring the source
+app-notifications-opt-stage-assembling = Rebuilding the mesh
 app-notifications-exporting = Exporting FBX...
 app-notifications-export-failed = Export failed: { $detail }
 app-notifications-optimization-warning = Optimization warning
@@ -72,16 +84,19 @@ app-notifications-device-lost-startup = The GPU stopped responding while startin
 # Named after the key that switched the view, so it is one word and always fits.
 app-notifications-buffer-mode = Buffer: { $buffer }
 
-## The three errors a user can act on
+## The errors a user can act on
 
-# Everything else keeps its library diagnostic verbatim; these three tell the
-# reader what to *do*, which a diagnostic written for a bug report does not.
+# Everything else keeps its library diagnostic verbatim; these tell the reader
+# what to *do*, which a diagnostic written for a bug report does not.
 app-notifications-opt-unavailable = Mesh optimization is not available in this build.
     It was built without the optimizer library, so the Opt workspace can measure a
     model but cannot change one.
+    It was built without the retopology library, so every other operation still runs
+    but Remesh is skipped.
 app-notifications-preset-newer = This preset was saved by a newer version of the viewer.
     It is version { $found }, and this build understands up to version { $supported }.
     Open it with the version that saved it, or set the operations up again here.
+
 ## The export's own report
 
 app-notifications-exported-one = Exported { $file } ({ $triangles } triangles)

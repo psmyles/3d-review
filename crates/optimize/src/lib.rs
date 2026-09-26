@@ -42,25 +42,34 @@ mod prof;
 pub mod probe;
 
 mod ao;
+mod parallel;
+
+pub mod cancel;
 
 pub mod export;
 pub mod meshopt;
 pub mod ops;
 pub mod preset;
 pub mod process;
+pub mod remesh;
 pub mod replace_file;
+pub mod shrinkwrap;
 pub mod stack;
 pub mod submesh;
 
+pub use cancel::CancelToken;
 pub use export::{ExportReport, export_fbx};
 pub use process::{
-    AnalysisMetrics, MeshCounts, ProcessInput, ProcessedLod, ProcessedResult, process,
+    AnalysisMetrics, MeshCounts, OptPreview, OptPreviewSink, OptProgress, OptProgressSink,
+    OptStage, ProcessInput, ProcessedLod, ProcessedResult, process, process_cancellable,
+    process_progressive, process_with_progress,
 };
 pub use replace_file::{Staged, write_bytes_replacing, write_replacing};
 pub use stack::{
     AoQuality, AoTarget, AttributeWeights, BakeAoParams, ExportOptions, FbxFormat, HierarchyMode,
     LodLevel, LodPackaging, LodParams, NodeOverride, OpInstance, OpKind, OptStack, RebindReport,
-    ReduceParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings, WeldParams,
+    ReduceParams, RemeshDensity, RemeshParams, RemeshTopology, ShrinkwrapParams, SimplifyAlgorithm,
+    SimplifyFlags, SimplifySettings, WeldParams,
 };
 
 /// Everything that can go wrong in this crate.
@@ -72,8 +81,17 @@ pub enum OptError {
     )]
     Unavailable,
 
+    #[error("the remesher could not rebuild this object: {0}")]
+    Remesh(String),
+
     #[error("the mesh has no triangles to process")]
     EmptyMesh,
+
+    /// Not a failure: the stack was edited while this run was going, so it
+    /// stopped rather than finish a result nobody would see. `app` drops it
+    /// silently - the run that superseded it is already queued.
+    #[error("the run was cancelled")]
+    Cancelled,
 
     #[error("index buffer has {0} indices, which is not a whole number of triangles")]
     IndexCount(usize),
@@ -165,5 +183,9 @@ mod tests {
     #[test]
     fn availability_matches_the_vendored_tree() {
         assert_eq!(meshopt::available(), cfg!(has_meshopt));
+        // The rebuild is ordinary Rust with nothing vendored behind it, so it
+        // is always there - which is itself worth pinning, since it used to
+        // depend on two C++ trees being present.
+        assert!(remesh::available());
     }
 }

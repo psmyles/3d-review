@@ -93,10 +93,18 @@ impl App {
             .then(|| self.opt_processed_revision())
             .flatten()
             .zip(self.opt.as_ref().and_then(|opt| opt.processed.clone()));
+        // The same preference the scene draw makes, so the labels describe the
+        // mesh actually on screen rather than the one behind it.
+        let opt_overlay_preview = opt_level
+            .is_some()
+            .then_some(self.opt.as_ref())
+            .flatten()
+            .and_then(|opt| opt.level_mesh(self.ui.opt.active_lod));
         let opt_level_model = opt_level.as_ref().and_then(|(revision, result)| {
-            result
-                .lod(self.ui.opt.active_lod)
-                .map(|lod| (&lod.model, *revision))
+            opt_overlay_preview
+                .as_deref()
+                .or_else(|| result.lod(self.ui.opt.active_lod).map(|lod| &lod.model))
+                .map(|model| (model, *revision))
         });
         let (full_output, ui_output) = {
             let Some(egui_state) = self.egui_state.as_mut() else {
@@ -294,6 +302,13 @@ impl App {
         let opt_result = opt_revision
             .and(self.opt.as_ref())
             .and_then(|opt| opt.processed.clone());
+        // A run in flight publishes level 0 as it improves it, and that is what
+        // the viewport shows until the run lands — so a rebuild is watched
+        // settling rather than waited out. Held as its own `Arc` for the same
+        // reason the result is: the borrow below outlives the `self` reborrow.
+        let opt_preview = opt_revision
+            .and(self.opt.as_ref())
+            .and_then(|opt| opt.level_mesh(self.ui.opt.active_lod));
         // The chrome-free area the split lays its two views out in, in physical
         // pixels. The UI measures it in points during the pass above; without it
         // (the first frame, before the chrome has been laid out) the whole
@@ -393,14 +408,16 @@ impl App {
                         // evaluated after the `&mut renderer` receiver is borrowed.
                         let source_camera = renderer.camera;
                         let processed_camera = renderer.opt_camera;
-                        let processed = opt_result
-                            .as_ref()
-                            .and_then(|result| result.lod(active_lod))
+                        let processed = opt_preview
+                            .as_deref()
+                            .or_else(|| {
+                                opt_result
+                                    .as_ref()
+                                    .and_then(|result| result.lod(active_lod))
+                                    .map(|lod| &lod.model)
+                            })
                             .zip(opt_revision)
-                            .map(|(lod, revision)| ProcessedModelRef {
-                                model: &lod.model,
-                                revision,
-                            });
+                            .map(|(model, revision)| ProcessedModelRef { model, revision });
                         renderer.render_opt_scene(
                             &mut frame,
                             &OptSceneFrame {

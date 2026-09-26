@@ -98,6 +98,32 @@ pub(crate) mod range {
     pub const LOD_RATIO_MAX: f32 = 1.0;
     pub const LOD_ERROR_MIN: f32 = 0.0;
     pub const LOD_ERROR_MAX: f32 = 1.0;
+    /// Remesh: the density given either as a share of the object's current
+    /// triangles or as an absolute face budget, the crease angle in degrees, and
+    /// the smoothing pass count. The ratio's ceiling is deliberately above 1.0 —
+    /// a retopology that *adds* faces is a normal thing to ask of a coarse CAD
+    /// part.
+    pub const REMESH_RATIO_MIN: f32 = 0.05;
+    pub const REMESH_RATIO_MAX: f32 = 2.0;
+    pub const REMESH_FACES_MIN: u32 = 100;
+    pub const REMESH_FACES_MAX: u32 = 200_000;
+    pub const REMESH_CREASE_MIN: f32 = 5.0;
+    pub const REMESH_CREASE_MAX: f32 = 90.0;
+    pub const REMESH_SMOOTH_MAX: u32 = 10;
+    /// Remesh: how far face size follows curvature. The top of the range is 1
+    /// rather than something larger because past it the quad layout resolves
+    /// the transition with singularities instead of a gradient — the engines
+    /// clamp there anyway, so a slider that went further would be a lie.
+    pub const REMESH_ADAPTIVE_MIN: f32 = 0.0;
+    pub const REMESH_ADAPTIVE_MAX: f32 = 1.0;
+    /// Shrinkwrap: grid steps across the object's longest side, and how far the
+    /// shell is pushed out (or, negative, pulled in) in world meters. The offset
+    /// range is deliberately symmetric — a shell *inside* the object is a
+    /// collision proxy, which is as normal a thing to ask for as one outside it.
+    pub const SHRINKWRAP_RESOLUTION_MIN: u32 = 16;
+    pub const SHRINKWRAP_RESOLUTION_MAX: u32 = 512;
+    pub const SHRINKWRAP_OFFSET_MIN: f32 = -0.5;
+    pub const SHRINKWRAP_OFFSET_MAX: f32 = 0.5;
     /// Bake AO: the max ray distance in world meters (0 = unlimited) and the
     /// power on visibility (matching the viewport AO panel's Intensity, whose
     /// range is deliberately wider here — a bake is worth over-driving).

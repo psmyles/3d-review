@@ -9,7 +9,7 @@ use review_model::{ModelData, ModelStats};
 
 use crate::Warnings;
 use crate::meshopt::{self, AnalysisCounters};
-use crate::submesh::{self, Submesh};
+use crate::submesh::Submesh;
 
 use super::*;
 
@@ -72,19 +72,26 @@ pub(crate) fn level_name(source_name: &str, level: usize) -> String {
 /// Two figures deliberately differ in meaning from their source counterparts:
 /// `polygon_count` counts the source faces the stack preserved plus every
 /// triangle no face survived for (a simplified piece is all triangles), and
-/// `vertex_count` is the real length of the vertex buffer rather than the
+/// `vertex_count` is the processed mesh's own vertex count rather than the
 /// source file's logical DCC count. Both are honest measurements of the mesh
 /// in hand, which is what the overlay must show.
+///
+/// `indexed_vertices` is that count. It is usually the vertex buffer's own
+/// length, but a level in the corner-run layout (one that carries rebuilt
+/// polygons) holds one vertex per face *corner*, and the corner count is an
+/// internal layout the panel must never surface (invariant 5) — so the caller
+/// passes the indexed count the export will write and the weld produced.
 pub(crate) fn measured_stats(
     model: &ModelData,
     source: &ModelData,
     carry: &LevelCarry,
+    indexed_vertices: usize,
 ) -> ModelStats {
     let triangle_count = model.indices.len() / 3;
     ModelStats {
         polygon_count: carry.polygon_count(triangle_count),
         triangle_count,
-        vertex_count: model.vertices.len(),
+        vertex_count: indexed_vertices,
         gpu_vertex_count: model.count_gpu_vertices(),
         uv_set_count: source.stats.uv_set_count,
         material_count: model.materials.len(),
@@ -97,28 +104,20 @@ pub(crate) fn measured_stats(
     }
 }
 
-/// Measure a finished level against the cache / overdraw / fetch models.
+/// Measure a level against the cache / overdraw / fetch models.
 ///
-/// Submeshes are measured separately (they are what the GPU draws) and their raw
-/// counters summed before the ratios are re-derived — averaging per-submesh
-/// ratios would let a ten-triangle part outweigh a hundred-thousand-triangle one
-/// and report a number the mesh never exhibits.
-pub(crate) fn measure(
-    model: &ModelData,
-    render_vertex_size: usize,
-    simplify_error: f32,
-    warnings: &mut Warnings,
-) -> AnalysisMetrics {
-    let (submeshes, _) = submesh::partition(model, None);
-    measure_submeshes(&submeshes, render_vertex_size, simplify_error, warnings)
-}
-
-/// [`measure`] over submeshes already in hand — the shape the pipeline holds
-/// mid-run, so the baseline can be measured without assembling a `ModelData`.
+/// Takes the submeshes rather than the assembled `ModelData`: they are what the
+/// GPU draws, and they are the *indexed* mesh whichever layout the assembled
+/// level ends up in (a rebuilt polygon carry puts it in the corner-run one,
+/// where every vertex is unique by construction and every figure would describe
+/// the viewer's buffer rather than the asset).
 ///
-/// A submesh that cannot be analyzed is left out of the totals and reported: the
-/// figures would otherwise describe part of the mesh while being presented as
-/// the whole of it (invariant 5).
+/// Submeshes are measured separately and their raw counters summed before the
+/// ratios are re-derived — averaging per-submesh ratios would let a
+/// ten-triangle part outweigh a hundred-thousand-triangle one and report a
+/// number the mesh never exhibits. A submesh that cannot be analyzed is left out
+/// of the totals and reported: the figures would otherwise describe part of the
+/// mesh while being presented as the whole of it (invariant 5).
 pub(crate) fn measure_submeshes(
     submeshes: &[Submesh],
     render_vertex_size: usize,

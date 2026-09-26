@@ -37,6 +37,22 @@ pub struct PolygonCarry {
     pub edge_smoothing: Vec<bool>,
     pub edge_crease: Vec<f32>,
     pub edge_visibility: Vec<bool>,
+    /// Whether an operation *built* these faces rather than carrying the
+    /// source's through.
+    ///
+    /// The distinction matters because a rebuilt carry is the only one the
+    /// renderer can be shown: the source's faces describe corner runs in the
+    /// *source* vertex array, a layout welding destroys, so a processed level
+    /// normally goes out as pure triangles with no `faces` table at all. A
+    /// rebuilt one describes the level's own geometry, so `process::assemble`
+    /// expands the whole level into the corner-run layout and the quads reach
+    /// the viewport, the stats card and the export as quads.
+    ///
+    /// `false` for every carry `build_polygon_carry` produces; set by
+    /// [`crate::remesh`] on the pieces it rebuilds. It survives a vertex remap
+    /// and a triangle reconciliation with the rest of the carry, so a Weld or a
+    /// Vertex Fetch below a Remesh keeps the polygons.
+    pub rebuilt: bool,
 }
 
 impl PolygonCarry {

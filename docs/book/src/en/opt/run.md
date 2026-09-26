@@ -40,11 +40,25 @@ also makes the "before" number match the `GPU Verts` row on the
 
 ## Runs do not pile up
 
-Every change you make starts a run on a background thread. Only one run happens
-at a time. If you change something while a run is going, the viewer notes that
-the run is out of date and starts a fresh one with your latest settings as soon
-as the current one finishes. So you can drag a slider freely: the result
-settles on its own, and a result that is already out of date is thrown away
-rather than shown to you.
+Every change you make starts a run on a background thread, and only one run
+happens at a time. If you change something while a run is going, **that run is
+abandoned** and the new settings go in straight away - you never wait out a
+result you have already moved past. So you can drag a slider freely: the result
+settles on its own, and a result that is out of date is thrown away rather than
+shown to you.
 
-A notice appears only if a run is taking a while.
+A notice appears only if a run is taking a while, and it names the step the run
+is on. Where a step works through the objects one at a time it names each as it
+finishes, with a count, so a long run is visibly moving rather than merely
+slow.
+
+## Watching a rebuild settle
+
+[Remesh](remesh.md) is the one operation whose work is worth watching. It
+improves its answer in passes, and each pass is a complete mesh, so the viewport
+shows the rebuild converging in place instead of holding the old result until
+the end. What you see is the real thing getting steadily better.
+
+The stats card is the exception and deliberately so: it keeps showing the last
+*finished* run until this one lands. A half-measured count is worse than a
+slightly old one.

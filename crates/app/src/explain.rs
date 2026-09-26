@@ -1,16 +1,16 @@
-//! Turns the three optimizer errors a user can act on into text that says what
-//! to do about them.
+//! Turns the optimizer errors a user can act on into text that says what to do
+//! about them.
 //!
 //! Everything else keeps its library diagnostic verbatim (invariant 12). That is
 //! deliberate: an `OptError` is written for whoever debugs it, it is what a bug
 //! report quotes, and `review-optimize` must not learn about catalogs to say it.
-//! But three of its variants are not really diagnostics — they describe a
+//! But some of its variants are not really diagnostics — they describe a
 //! situation the reader can resolve, and "preset could not be read (version 4,
 //! this build reads 3)" tells them less than "open it with the build that wrote
 //! it" does.
 //!
-//! A fourth variant that turns out to need this is one more arm here, not a trait
-//! spread across four crates.
+//! A further variant that turns out to need this is one more arm here, not a
+//! trait spread across four crates.
 
 use review_optimize::OptError;
 
@@ -38,7 +38,7 @@ pub(crate) fn explain_opt_error(error: &OptError) -> String {
 mod tests {
     use super::*;
 
-    /// The three actionable variants must not fall through to the library's own
+    /// The actionable variants must not fall through to the library's own
     /// `Display`, and everything else must.
     #[test]
     fn only_the_actionable_variants_are_rewritten() {

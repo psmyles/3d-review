@@ -10,8 +10,9 @@
 use review_model::ModelData;
 use review_optimize::{
     AoQuality, AoTarget, AttributeWeights, BakeAoParams, ExportOptions, FbxFormat, HierarchyMode,
-    LodLevel, LodPackaging, LodParams, OpKind, ReduceParams, SimplifyAlgorithm, SimplifyFlags,
-    SimplifySettings, WeldParams,
+    LodLevel, LodPackaging, LodParams, OpKind, ReduceParams, RemeshDensity, RemeshParams,
+    RemeshTopology, ShrinkwrapParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings,
+    WeldParams,
 };
 use review_render::Selection;
 
@@ -25,7 +26,10 @@ use crate::state::{
         AO_BAKE_DISTANCE_MAX, AO_BAKE_DISTANCE_MIN, AO_BAKE_INTENSITY_MAX, AO_BAKE_INTENSITY_MIN,
         ATTRIBUTE_WEIGHT_MAX, ATTRIBUTE_WEIGHT_MIN, LOD_ERROR_MAX, LOD_ERROR_MIN, LOD_RATIO_MAX,
         LOD_RATIO_MIN, OVERDRAW_THRESHOLD_MAX, OVERDRAW_THRESHOLD_MIN, PRUNE_THRESHOLD_MAX,
-        PRUNE_THRESHOLD_MIN, WELD_TOLERANCE_MAX, WELD_TOLERANCE_MIN,
+        PRUNE_THRESHOLD_MIN, REMESH_ADAPTIVE_MAX, REMESH_ADAPTIVE_MIN, REMESH_CREASE_MAX,
+        REMESH_CREASE_MIN, REMESH_FACES_MAX, REMESH_FACES_MIN, REMESH_RATIO_MAX, REMESH_RATIO_MIN,
+        REMESH_SMOOTH_MAX, SHRINKWRAP_OFFSET_MAX, SHRINKWRAP_OFFSET_MIN, SHRINKWRAP_RESOLUTION_MAX,
+        SHRINKWRAP_RESOLUTION_MIN, WELD_TOLERANCE_MAX, WELD_TOLERANCE_MIN,
     },
 };
 use crate::theme;
@@ -89,6 +93,8 @@ fn operation_body(ui: &mut egui::Ui, state: &mut UiState, id: u64) {
         OpKind::PruneComponents { error } => prune_params(ui, error),
         OpKind::Overdraw { threshold } => overdraw_params(ui, threshold),
         OpKind::Reduce(params) => reduce_params(ui, params).map(OpKind::Reduce),
+        OpKind::Remesh(params) => remesh_params(ui, params).map(OpKind::Remesh),
+        OpKind::Shrinkwrap(params) => shrinkwrap_params(ui, params).map(OpKind::Shrinkwrap),
         OpKind::SimplifyLod(params) => lod_params(ui, params).map(OpKind::SimplifyLod),
         OpKind::BakeAo(params) => bake_ao_params(ui, params).map(OpKind::BakeAo),
         // These three have nothing to configure — meshoptimizer exposes no knobs
@@ -187,6 +193,161 @@ fn overdraw_params(ui: &mut egui::Ui, threshold: f32) -> Option<OpKind> {
 }
 
 /// The AO bake editor.
+/// Returns the edited parameters only when they actually changed.
+fn shrinkwrap_params(ui: &mut egui::Ui, params: ShrinkwrapParams) -> Option<ShrinkwrapParams> {
+    let mut edited = params;
+    panel_grid(ui, "opt_shrinkwrap", |ui| {
+        labeled_slider_with_value(
+            ui,
+            Tip::new(keys::ui_opt::SHRINKWRAP_RESOLUTION)
+                .describe(keys::ui_opt::SHRINKWRAP_RESOLUTION_DESCRIPTION)
+                .page(Page::OptShrinkwrap),
+            &mut edited.resolution,
+            SHRINKWRAP_RESOLUTION_MIN..=SHRINKWRAP_RESOLUTION_MAX,
+            0,
+        );
+        labeled_slider_with_value(
+            ui,
+            Tip::new(keys::ui_opt::SHRINKWRAP_OFFSET)
+                .describe(keys::ui_opt::SHRINKWRAP_OFFSET_DESCRIPTION)
+                .page(Page::OptShrinkwrap),
+            &mut edited.offset,
+            SHRINKWRAP_OFFSET_MIN..=SHRINKWRAP_OFFSET_MAX,
+            3,
+        );
+        labeled_checkbox(
+            ui,
+            Tip::new(keys::ui_opt::SHRINKWRAP_LARGEST_SHELL)
+                .describe(keys::ui_opt::SHRINKWRAP_LARGEST_SHELL_DESCRIPTION)
+                .page(Page::OptShrinkwrap),
+            &mut edited.keep_largest_shell,
+        );
+    });
+
+    ui.add_space(size::PANEL_ROW_GAP);
+    ui.label(egui::RichText::from(keys::ui_opt::SHRINKWRAP_EXPLAINED).color(color::TEXT_MUTED));
+
+    (edited != params).then_some(edited)
+}
+
+/// Returns the edited parameters only when they actually changed.
+///
+/// Two rows are conditional rather than always present: the density row shows a
+/// ratio *or* a face count (they are alternatives, and showing both would invite
+/// setting one and reading the other), and the crease angle only appears with
+/// sharp-edge detection on, which is the only thing that reads it.
+fn remesh_params(ui: &mut egui::Ui, params: RemeshParams) -> Option<RemeshParams> {
+    let mut edited = params;
+    panel_grid(ui, "opt_remesh", |ui| {
+        labeled_combo(
+            ui,
+            Tip::new(keys::ui_opt::REMESH_TOPOLOGY)
+                .describe(keys::ui_opt::REMESH_TOPOLOGY_DESCRIPTION)
+                .page(Page::OptRemesh),
+            "opt_remesh_topology",
+            labels::remesh_topology(edited.topology),
+            |ui| {
+                for topology in RemeshTopology::ALL {
+                    ui.selectable_value(
+                        &mut edited.topology,
+                        topology,
+                        labels::remesh_topology(topology),
+                    );
+                }
+            },
+        );
+        labeled_combo(
+            ui,
+            Tip::new(keys::ui_opt::REMESH_DENSITY)
+                .describe(keys::ui_opt::REMESH_DENSITY_DESCRIPTION)
+                .page(Page::OptRemesh),
+            "opt_remesh_density",
+            labels::remesh_density(edited.density),
+            |ui| {
+                for density in RemeshDensity::ALL {
+                    ui.selectable_value(
+                        &mut edited.density,
+                        density,
+                        labels::remesh_density(density),
+                    );
+                }
+            },
+        );
+        match edited.density {
+            RemeshDensity::Ratio => {
+                labeled_slider_with_value(
+                    ui,
+                    Tip::new(keys::ui_opt::REMESH_RATIO)
+                        .describe(keys::ui_opt::REMESH_RATIO_DESCRIPTION)
+                        .page(Page::OptRemesh),
+                    &mut edited.ratio,
+                    REMESH_RATIO_MIN..=REMESH_RATIO_MAX,
+                    2,
+                );
+            }
+            RemeshDensity::Absolute => {
+                labeled_slider_with_value(
+                    ui,
+                    Tip::new(keys::ui_opt::REMESH_FACES)
+                        .describe(keys::ui_opt::REMESH_FACES_DESCRIPTION)
+                        .page(Page::OptRemesh),
+                    &mut edited.faces,
+                    REMESH_FACES_MIN..=REMESH_FACES_MAX,
+                    0,
+                );
+            }
+        }
+        labeled_checkbox(
+            ui,
+            Tip::new(keys::ui_opt::REMESH_SHARP_EDGES)
+                .describe(keys::ui_opt::REMESH_SHARP_EDGES_DESCRIPTION)
+                .page(Page::OptRemesh),
+            &mut edited.sharp_edges,
+        );
+        if edited.sharp_edges {
+            labeled_slider_with_value(
+                ui,
+                Tip::new(keys::ui_opt::REMESH_CREASE_ANGLE)
+                    .describe(keys::ui_opt::REMESH_CREASE_ANGLE_DESCRIPTION)
+                    .page(Page::OptRemesh),
+                &mut edited.crease_angle,
+                REMESH_CREASE_MIN..=REMESH_CREASE_MAX,
+                0,
+            );
+        }
+        labeled_checkbox(
+            ui,
+            Tip::new(keys::ui_opt::REMESH_ALIGN_BOUNDARIES)
+                .describe(keys::ui_opt::REMESH_ALIGN_BOUNDARIES_DESCRIPTION)
+                .page(Page::OptRemesh),
+            &mut edited.align_to_boundaries,
+        );
+        labeled_slider_with_value(
+            ui,
+            Tip::new(keys::ui_opt::REMESH_SMOOTHING)
+                .describe(keys::ui_opt::REMESH_SMOOTHING_DESCRIPTION)
+                .page(Page::OptRemesh),
+            &mut edited.smooth_iterations,
+            0..=REMESH_SMOOTH_MAX,
+            0,
+        );
+        labeled_slider_with_value(
+            ui,
+            Tip::new(keys::ui_opt::REMESH_ADAPTIVE)
+                .describe(keys::ui_opt::REMESH_ADAPTIVE_DESCRIPTION)
+                .page(Page::OptRemesh),
+            &mut edited.adaptive_strength,
+            REMESH_ADAPTIVE_MIN..=REMESH_ADAPTIVE_MAX,
+            2,
+        );
+    });
+
+    ui.add_space(size::PANEL_ROW_GAP);
+    ui.label(egui::RichText::from(keys::ui_opt::REMESH_EXPLAINED).color(color::TEXT_MUTED));
+
+    (edited != params).then_some(edited)
+}
+
 fn bake_ao_params(ui: &mut egui::Ui, params: BakeAoParams) -> Option<BakeAoParams> {
     let mut edited = params;
     panel_grid(ui, "opt_bake_ao", |ui| {

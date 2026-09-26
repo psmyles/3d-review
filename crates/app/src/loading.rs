@@ -453,7 +453,7 @@ impl App {
 
     /// Ask for one more frame, from a background result that changed what is on
     /// screen.
-    fn request_redraw(&mut self) {
+    pub(crate) fn request_redraw(&mut self) {
         self.redraw.requested = true;
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();

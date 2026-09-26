@@ -121,6 +121,13 @@ fn add_menu(ui: &mut egui::Ui, state: &mut UiState) {
                         _ => VertexColorMode::Rgb,
                     };
                 }
+                // The whole point of a remesh — or of a wrap — is the new
+                // topology, and a shaded surface hides it completely. Same rule
+                // as the bake above: on add only, so a user who turns the
+                // overlay back off is not overruled.
+                if matches!(kind, OpKind::Remesh(_) | OpKind::Shrinkwrap(_)) {
+                    state.debug.wireframe_overlay = true;
+                }
                 let id = state.opt.edit_stack_with(|stack| stack.push_op(kind));
                 state.select_stack_item(StackItem::Op(id));
                 ui.close();

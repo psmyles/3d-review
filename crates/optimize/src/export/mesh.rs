@@ -50,7 +50,21 @@ pub(crate) fn build_mesh(
     let color_set_count = carry.color_channels.len();
     let has_crease = !carry.vertex_crease.is_empty();
 
-    let mut local_of_global: Vec<i32> = vec![-1; model.vertices.len()];
+    // Keyed by *control point*, not by level vertex. Outside the corner-run
+    // layout the two are the same thing and `control_point` is empty; inside it
+    // one control point owns several corners, and keying on the corner would
+    // write a quad soup — 24 points for a cube instead of 8, with no shared
+    // vertex anywhere and every FBX consumer left to re-weld it.
+    let control_point = |level_vertex: usize| -> usize {
+        carry
+            .control_point
+            .get(level_vertex)
+            .map_or(level_vertex, |&point| point as usize)
+    };
+    let mut local_of_control: Vec<i32> = vec![-1; model.vertices.len()];
+    // Per emitted control point, a level vertex standing for it — what the
+    // per-vertex carries (source corners, skin rows) are looked up through.
+    let mut level_of_local: Vec<u32> = Vec::new();
     let mut positions: Vec<f64> = Vec::new();
     let mut normals: Vec<f64> = Vec::new();
     let mut colors: Vec<f64> = Vec::new();
@@ -69,15 +83,18 @@ pub(crate) fn build_mesh(
             .all(|&index| (index as usize) < model.vertices.len())
     };
 
-    // The local vertex for a level vertex, emitted on first use.
+    // The local vertex for a level vertex, emitted on first use — once per
+    // control point, from whichever of its corners is reached first.
     let mut local_vertex = |global: usize| -> i32 {
-        let slot = local_of_global[global];
+        let key = control_point(global).min(local_of_control.len().saturating_sub(1));
+        let slot = local_of_control[key];
         if slot >= 0 {
             return slot;
         }
         let vertex = model.vertices[global];
         let slot = (positions.len() / 3) as i32;
-        local_of_global[global] = slot;
+        local_of_control[key] = slot;
+        level_of_local.push(global as u32);
 
         // Under `Rebuild` the node's own inverse hands back the source file's
         // unit already — import parks the unit normalization in the node
@@ -298,7 +315,16 @@ pub(crate) fn build_mesh(
         edge_visibility,
     } = edge_streams(
         &pieces,
-        &local_of_global,
+        // An authored edge names two *level* vertices, so it is resolved through
+        // the same control-point mapping the vertices were emitted under.
+        &(0..model.vertices.len())
+            .map(|level_vertex| {
+                local_of_control
+                    .get(control_point(level_vertex))
+                    .copied()
+                    .unwrap_or(-1)
+            })
+            .collect::<Vec<i32>>(),
         &corner_of_edge,
         (any_edge_smoothing, any_edge_crease, any_edge_visibility),
     );
@@ -348,12 +374,7 @@ pub(crate) fn build_mesh(
         polygons_lost: pieces.is_empty() && part.is_some() && extras.is_some(),
     };
     let vertex_count = positions.len() / 3;
-    let mut level_vertices = vec![0u32; vertex_count];
-    for (level_vertex, &local) in local_of_global.iter().enumerate() {
-        if local >= 0 {
-            level_vertices[local as usize] = level_vertex as u32;
-        }
-    }
+    let level_vertices = level_of_local;
     let source_corners: Vec<u32> = level_vertices
         .iter()
         .map(|&level_vertex| {

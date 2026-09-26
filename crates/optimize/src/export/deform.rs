@@ -139,6 +139,16 @@ pub(crate) fn build_deform(
     for (local, &level_vertex) in mesh.level_vertices.iter().enumerate() {
         local_of_level.insert(level_vertex, local as i32);
     }
+    // The skin and blend-shape tables are per *logical* vertex, which is the
+    // level vertex itself in the ordinary layout and the indexed vertex a run of
+    // corners was expanded from in the corner-run one. `corner_to_logical` is the
+    // identity in the first case, so this is the same lookup either way.
+    let logical_of = |level_vertex: u32| -> usize {
+        level
+            .corner_to_logical
+            .get(level_vertex as usize)
+            .map_or(level_vertex as usize, |&logical| logical as usize)
+    };
     // Deltas move back into geometry space like the positions did.
     let geometry_to_node = extras
         .and_then(|extras| extras.nodes.get(node_index))
@@ -182,7 +192,7 @@ pub(crate) fn build_deform(
         }
         if !clusters.is_empty() {
             for (local, &level_vertex) in mesh.level_vertices.iter().enumerate() {
-                let range = skin.influence_range(level_vertex as usize);
+                let range = skin.influence_range(logical_of(level_vertex));
                 for (&cluster, &weight) in skin.influence_cluster[range.clone()]
                     .iter()
                     .zip(&skin.weights[range])
@@ -282,10 +292,8 @@ pub(crate) fn build_deform(
         // Every shape's offsets over this mesh, gathered in one walk.
         let mut by_shape: HashMap<u32, ShapeOffsets> = HashMap::new();
         for (local, &level_vertex) in mesh.level_vertices.iter().enumerate() {
-            let range = match (
-                morph.offsets.get(level_vertex as usize),
-                morph.offsets.get(level_vertex as usize + 1),
-            ) {
+            let logical = logical_of(level_vertex);
+            let range = match (morph.offsets.get(logical), morph.offsets.get(logical + 1)) {
                 (Some(&start), Some(&end)) if end >= start => start as usize..end as usize,
                 _ => 0..0,
             };
