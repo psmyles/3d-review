@@ -5,4 +5,4 @@
 - save settings
 - generate UVs
 - generate colliders?
--
+- Headless batch mode (preset × files → export + report)
