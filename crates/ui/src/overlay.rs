@@ -81,7 +81,7 @@ pub fn draw_overlay(
     // Native chrome panels first: the top toolbar and bottom status bar carve their
     // bands, then the dockable side panels fill the middle — declared in this order
     // so the side panels sit *between* the bars, not under them.
-    toolbar::draw(root, state);
+    toolbar::draw(root, state, &mut output);
     status_bar::draw(root, state, model);
 
     // The side panels, option panels, axis gizmo and stats overlay are all 3D-scene

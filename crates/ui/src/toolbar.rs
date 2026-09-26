@@ -1,13 +1,14 @@
-//! The top toolbar: shading-mode group, debug-view group, the 3D/UV/Tex mode
-//! segments, and the gizmo/grid/projection group, with the side-panels toggle
-//! and then Help closing out the right-hand end. Emits panel-open intents by
-//! mutating [`UiState`] in place.
+//! The top toolbar: the application menu, the wireframe overlay, the shading-mode
+//! group, debug-view group, the 3D/UV/Tex mode segments, and the
+//! gizmo/grid/projection group, with the side-panels toggle and then Help closing
+//! out the right-hand end. Emits panel-open intents by mutating [`UiState`] in
+//! place, and the menu's commands as a [`MenuIntent`].
 
 use review_render::{ActiveMaterial, ShadingMode, UvShadingMode};
 
 use crate::assets::{
-    ICON_AXIS_GIZMO, ICON_BACKFACE, ICON_BBOX, ICON_BUFFERS, ICON_GRID, ICON_HELP, ICON_NODE_BONE,
-    ICON_NORMALS_FACE, ICON_NORMALS_VERTEX, ICON_OUTLINER, ICON_PIVOT, ICON_SELECT,
+    ICON_AXIS_GIZMO, ICON_BACKFACE, ICON_BBOX, ICON_BUFFERS, ICON_GRID, ICON_HELP, ICON_MENU,
+    ICON_NODE_BONE, ICON_NORMALS_FACE, ICON_NORMALS_VERTEX, ICON_OUTLINER, ICON_PIVOT, ICON_SELECT,
     ICON_SHADING_SHADED, ICON_SHADING_TEXTURE, ICON_SHADING_UNLIT, ICON_SHADING_WIRE,
     ICON_SHADING_WIRE_ONLY, ICON_SKIN_WEIGHTS, ICON_UV, ICON_UV_ISLANDS, ICON_UV_SEAM,
     ICON_UV_SHADED, ICON_UV_WIRE, ICON_VERTEX_COLORS, ICON_VIEW_ORTHO, ICON_VIEW_PERSPECTIVE,
@@ -16,13 +17,13 @@ use crate::docs::Page;
 use crate::keys;
 use crate::labels;
 use crate::state::{
-    OptionPanel, TextureChannelView, TexturePoolEntry, UiState, ViewProjectionMode, ViewportTool,
-    WorkspaceMode,
+    MenuIntent, OptionPanel, TextureChannelView, TexturePoolEntry, UiOutput, UiState,
+    ViewProjectionMode, ViewportTool, WorkspaceMode,
 };
 use crate::theme::{color, size};
 use crate::widgets::{
     Tip, compact_combo, icon_toggle_button, icon_toggle_button_with_options, option_toggle,
-    segment_button, toolbar_group_shell,
+    segment_button, tip, toolbar_group_shell,
 };
 
 /// Background frame shared by the toolbar (and matched by the status bar). Zero
@@ -35,7 +36,7 @@ pub(crate) fn toolbar_frame() -> egui::Frame {
         .inner_margin(egui::Margin::same(0))
 }
 
-pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState) {
+pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutput) {
     let toolbar_height = size::TOOLBAR_HEIGHT;
     let overlay_margin = size::OVERLAY_MARGIN;
     let group_spacing = size::TOOLBAR_GROUP_SPACING;
@@ -89,55 +90,41 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState) {
                 egui::vec2(right_width.min(row_rect.width()), group_height),
             );
 
-            // The shading / material / normal tool groups and the view /
-            // projection groups operate on the 3D scene, so they are shown only
-            // in the 3D workspace. UV mode swaps in the UV-shading group + UV-set
-            // picker; Texture mode swaps in the channel group + texture picker.
-            if state.mode.is_scene() {
-                ui.scope_builder(
-                    egui::UiBuilder::new()
-                        .max_rect(left_rect)
-                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                    |ui| {
-                        ui.set_height(group_height);
-                        ui.spacing_mut().item_spacing.x = group_spacing;
-                        draw_shading_group(ui, state, shading_group_width);
-                        // One tile wider when the model carries skin weights, so
-                        // the extra radio has room.
-                        let material_width = if state.has_skin {
-                            quint_icon_group_width
-                        } else {
-                            material_group_width
-                        };
-                        draw_material_group(ui, state, material_width);
-                        draw_geometry_debug_group(ui, state, triple_icon_group_width);
-                    },
-                );
-            } else if state.mode == WorkspaceMode::Uv {
-                // UV mode swaps the 3D tool groups for the UV-shading group.
-                ui.scope_builder(
-                    egui::UiBuilder::new()
-                        .max_rect(left_rect)
-                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                    |ui| {
-                        ui.set_height(group_height);
-                        ui.spacing_mut().item_spacing.x = group_spacing;
-                        draw_uv_shading_group(ui, state, triple_icon_group_width);
-                    },
-                );
-            } else if state.mode == WorkspaceMode::Texture {
-                // Texture mode shows the channel radio group (RGB/R/G/B/A).
-                ui.scope_builder(
-                    egui::UiBuilder::new()
-                        .max_rect(left_rect)
-                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                    |ui| {
-                        ui.set_height(group_height);
-                        ui.spacing_mut().item_spacing.x = group_spacing;
-                        draw_texture_channel_group(ui, state);
-                    },
-                );
-            }
+            // The menu anchors the left end of the bar in every workspace: its
+            // commands are about the application, not the view. After it, the
+            // shading / material / normal tool groups operate on the 3D scene, so
+            // they are shown only in the 3D workspace. UV mode swaps in the
+            // UV-shading group + UV-set picker; Texture mode swaps in the channel
+            // group + texture picker.
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(left_rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                |ui| {
+                    ui.set_height(group_height);
+                    ui.spacing_mut().item_spacing.x = group_spacing;
+                    draw_menu_group(ui, state, output, single_icon_group_width);
+                    match state.mode {
+                        WorkspaceMode::ThreeD | WorkspaceMode::Opt => {
+                            draw_wireframe_group(ui, state, single_icon_group_width);
+                            draw_shading_group(ui, state, shading_group_width);
+                            // One tile wider when the model carries skin weights,
+                            // so the extra radio has room.
+                            let material_width = if state.has_skin {
+                                quint_icon_group_width
+                            } else {
+                                material_group_width
+                            };
+                            draw_material_group(ui, state, material_width);
+                            draw_geometry_debug_group(ui, state, triple_icon_group_width);
+                        }
+                        WorkspaceMode::Uv => {
+                            draw_uv_shading_group(ui, state, triple_icon_group_width);
+                        }
+                        WorkspaceMode::Texture => draw_texture_channel_group(ui, state),
+                    }
+                },
+            );
 
             ui.scope_builder(
                 egui::UiBuilder::new().max_rect(center_rect).layout(
@@ -183,13 +170,81 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState) {
         });
 }
 
-/// Shading group: the independent "Show Wireframe" overlay toggle, the
-/// mutually-exclusive shading modes (wireframe-only / unlit / shaded), and the
-/// independent "Backface Rendering" toggle. The two toggles bookend the radio:
-/// either can be on regardless of which shading mode is selected.
-fn draw_shading_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
+/// The fixed id of the menu's popup, so the menu tile can ask whether it is open
+/// before the tile itself — whose response the popup would otherwise be keyed
+/// on — has been laid out.
+const MENU_POPUP_ID: &str = "toolbar_menu";
+
+/// The application menu, alone in a group at the far left of the bar.
+///
+/// Its own group, and first, for the same reason Help is alone and last: its
+/// entries act on the application — the file, the settings, the process — rather
+/// than on what is being looked at, so it reads as the thing before the tools
+/// rather than one of them. Each entry is a [`MenuIntent`] for `app` to carry out.
+fn draw_menu_group(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput, width: f32) {
+    let popup_id = egui::Id::new(MENU_POPUP_ID);
+    let open = egui::Popup::is_id_open(ui.ctx(), popup_id);
     toolbar_group_shell(ui, width, |ui| {
-        // 1. Show Wireframe — independent overlay toggle; retains its options panel.
+        let button = icon_toggle_button(
+            ui,
+            &ICON_MENU,
+            open,
+            Tip::new(keys::ui_toolbar::MENU)
+                .describe(keys::ui_toolbar::MENU_DESCRIPTION)
+                .page(Page::Menu),
+        );
+        egui::Popup::menu(&button).id(popup_id).show(|ui| {
+            output.menu = menu_entries(ui, state);
+        });
+    });
+}
+
+/// The menu's entries, returning the one chosen this frame (if any).
+fn menu_entries(ui: &mut egui::Ui, state: &UiState) -> Option<MenuIntent> {
+    let modifier = crate::primary_modifier().into_owned();
+    let mut chosen = None;
+
+    let open_file = egui::Button::new(keys::ui_toolbar::MENU_OPEN_FILE)
+        .shortcut_text(keys::ui_toolbar::menu_open_file_shortcut(modifier.clone()));
+    if ui.add(open_file).clicked() {
+        chosen = Some(MenuIntent::OpenFile);
+    }
+    // Nothing to close until a model is loaded; `bounds` is `None` exactly then.
+    let close_file = egui::Button::new(keys::ui_toolbar::MENU_CLOSE_FILE)
+        .shortcut_text(keys::ui_toolbar::menu_close_file_shortcut(modifier));
+    if ui.add_enabled(state.bounds.is_some(), close_file).clicked() {
+        chosen = Some(MenuIntent::CloseFile);
+    }
+
+    ui.separator();
+    // A copy, not the field: flipping it is `app`'s job, because flipping it is
+    // also what writes the settings file.
+    let mut remember = state.remember_settings;
+    let remember_response = ui.checkbox(&mut remember, keys::ui_toolbar::MENU_REMEMBER_SETTINGS);
+    if tip(
+        remember_response,
+        Tip::new(keys::ui_toolbar::MENU_REMEMBER_SETTINGS)
+            .describe(keys::ui_toolbar::MENU_REMEMBER_SETTINGS_DESCRIPTION)
+            .page(Page::Menu),
+    )
+    .clicked()
+    {
+        chosen = Some(MenuIntent::ToggleRememberSettings);
+    }
+
+    ui.separator();
+    if ui.button(keys::ui_toolbar::MENU_EXIT).clicked() {
+        chosen = Some(MenuIntent::Exit);
+    }
+    chosen
+}
+
+/// Show Wireframe, alone in a group: the independent wireframe-overlay toggle,
+/// with its options panel. A group of its own rather than a tile in the shading
+/// group, because it is not a shading mode — it draws over whichever one is
+/// selected, and sitting beside the radio made it read as a fourth choice.
+fn draw_wireframe_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
+    toolbar_group_shell(ui, width, |ui| {
         option_toggle(
             ui,
             &ICON_SHADING_WIRE,
@@ -201,8 +256,15 @@ fn draw_shading_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
                 .with_options()
                 .page(Page::Shading),
         );
+    });
+}
 
-        // 2-4. Shading mode — radio selection; exactly one is active.
+/// Shading group: the mutually-exclusive shading modes (wireframe-only / unlit /
+/// shaded), then the independent "Backface Rendering" toggle, which can be on
+/// regardless of which shading mode is selected.
+fn draw_shading_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
+    toolbar_group_shell(ui, width, |ui| {
+        // 1-3. Shading mode — radio selection; exactly one is active.
         let wire_only = matches!(state.shading_mode, ShadingMode::Wireframe);
         let unlit = matches!(state.shading_mode, ShadingMode::Unlit);
         let shaded = matches!(state.shading_mode, ShadingMode::Shaded);
@@ -246,7 +308,7 @@ fn draw_shading_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
             state.shading_mode = ShadingMode::Shaded;
         }
 
-        // 5. Backface Rendering — independent toggle; off (default) culls back
+        // 4. Backface Rendering — independent toggle; off (default) culls back
         // faces, on draws the mesh double-sided.
         if icon_toggle_button(
             ui,

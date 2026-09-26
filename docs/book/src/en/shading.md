@@ -10,7 +10,9 @@ modes, and exactly one is active at a time:
 - **Shaded** - the model lit realistically, the way a game would draw it. This
   is the normal view.
 
-Two extra switches sit either side of those and work with all three:
+Two extra switches work with all three. **Show Wireframe** has a group of its
+own just left of the shading modes, and **Backface Rendering** sits at the end
+of theirs:
 
 - **Show Wireframe** draws the model's edges on top of the filled surface.
   Edges that are hidden behind the model stay hidden, and the edge smoothing

@@ -9,7 +9,8 @@
 //! [`UiState`] itself is here, with the slider ranges and the debug-state funnel.
 //! Its parts are grouped below, one module per concern: [`view`], [`panels`],
 //! [`texture_view`], [`animation`], [`outliner`], [`panels_open`] and [`caches`]
-//! — the same split `opt_state` already had.
+//! — the same split `opt_state` already had — plus [`remembered`], which turns
+//! the option-window values into the text **Remember settings** saves.
 
 use std::collections::HashSet;
 
@@ -28,6 +29,7 @@ mod caches;
 mod outliner;
 mod panels;
 mod panels_open;
+mod remembered;
 mod selection;
 mod texture_view;
 mod view;
@@ -186,6 +188,26 @@ pub struct UiOutput {
     /// drag-coalescing hint as [`UiOutput::material_edit_active`], so scrubbing a
     /// LOD ratio produces one undo step rather than one per frame.
     pub opt_edit_active: bool,
+    /// A command chosen from the toolbar's menu this frame, for `app` to carry
+    /// out — every entry reaches outside the chrome (a file dialog, the loaded
+    /// model, the settings file, the process).
+    pub menu: Option<MenuIntent>,
+}
+
+/// An entry in the toolbar's menu. Each lands on the handler its keyboard
+/// shortcut already reaches, where it has one, so the menu is a second door onto
+/// an existing command rather than a second implementation of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuIntent {
+    /// Ask for a model to open (the open shortcut).
+    OpenFile,
+    /// Drop the loaded model and return to the start state (the new shortcut).
+    CloseFile,
+    /// Flip [`UiState::remember_settings`] and write the settings file at once,
+    /// so the choice survives even a session that never exits cleanly.
+    ToggleRememberSettings,
+    /// Quit the application.
+    Exit,
 }
 
 #[derive(Debug, Clone)]
@@ -382,6 +404,12 @@ pub struct UiState {
     /// Most recent measured frames-per-second, fed by `app` from the render
     /// loop. Zero while idle (the viewer redraws on demand, not continuously).
     pub fps: f32,
+    /// Whether the option-window values are carried into the next session — the
+    /// menu's **Remember settings** toggle. Read from the settings file at launch
+    /// and flipped only by `app`, in answer to [`MenuIntent::ToggleRememberSettings`],
+    /// since flipping it is also what writes the file. Off by default: nothing
+    /// persists until the user asks for it.
+    pub remember_settings: bool,
 }
 
 impl Default for UiState {
@@ -445,6 +473,7 @@ impl Default for UiState {
             clip_bounds: Vec::new(),
             caches: BoundsCaches::default(),
             fps: 0.0,
+            remember_settings: false,
         }
     }
 }

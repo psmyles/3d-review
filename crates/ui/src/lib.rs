@@ -87,8 +87,8 @@ pub use opt_state::{
 pub use overlay::{OptOverlayLevel, OptOverlayView, draw_overlay};
 pub use review_render::{MsaaSamples, Selection};
 pub use state::{
-    AnimationUiState, AxisGizmoAction, ChromeInsets, HoverTarget, PlaybackSpeed, SelectMode,
-    TexViewRequest, TextureBackground, TextureIntent, TexturePoolEntry, TextureSlotRef, UiOutput,
-    UiState, ViewportTool, WorkspaceMode, apply_pick,
+    AnimationUiState, AxisGizmoAction, ChromeInsets, HoverTarget, MenuIntent, PlaybackSpeed,
+    SelectMode, TexViewRequest, TextureBackground, TextureIntent, TexturePoolEntry, TextureSlotRef,
+    UiOutput, UiState, ViewportTool, WorkspaceMode, apply_pick,
 };
 pub use theme::init_style;

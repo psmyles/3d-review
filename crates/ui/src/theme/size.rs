@@ -94,16 +94,16 @@ pub const TOOLBAR_CENTER_WIDTH: f32 = 120.0;
 /// so. It grows leftward from the right edge, away from the centered mode
 /// segments.
 pub const TOOLBAR_RIGHT_WIDTH: f32 = 325.0;
-/// Left toolbar cluster: shading (5) + material + geometry-debug (3) groups, with
-/// two group spacings between them.
+/// Left toolbar cluster: the menu (32) + show-wireframe (32) + shading (4) +
+/// material + geometry-debug (3) groups, with four group spacings between them.
 ///
 /// Sized for the widest case like [`TOOLBAR_RIGHT_WIDTH`]: the material group
 /// gains a tile for the skin-weight view on a skinned mesh (152 rather than 122),
-/// so 152 + 9 + 152 + 9 + 92 = 414, plus a little slack.
-pub const TOOLBAR_LEFT_WIDTH: f32 = 420.0;
-/// Five-icon shading group: show-wireframe, wireframe-only, unlit, shaded,
-/// backface-rendering.
-pub const TOOLBAR_SHADING_GROUP_WIDTH: f32 = 152.0;
+/// so 32 + 9 + 32 + 9 + 122 + 9 + 152 + 9 + 92 = 466, plus a little slack.
+pub const TOOLBAR_LEFT_WIDTH: f32 = 470.0;
+/// Four-icon shading group: wireframe-only, unlit, shaded, backface-rendering
+/// (4 padding + 4×28 icons + 3×2 gaps). Show Wireframe is a group of its own.
+pub const TOOLBAR_SHADING_GROUP_WIDTH: f32 = 122.0;
 /// Four-icon active-material group: source material, UV checker, vertex colors,
 /// buffers (4 padding + 4×28 icons + 3×2 gaps).
 pub const TOOLBAR_MATERIAL_GROUP_WIDTH: f32 = 122.0;

@@ -171,6 +171,12 @@ fn main() -> anyhow::Result<()> {
         _tracy: tracy,
         ..App::default()
     };
+    // The remembered option-window values, when the user asked for them. After
+    // `gate` is known, since a gate run must render the defaults whatever this box
+    // last remembered.
+    if app.gate.is_none() {
+        settings::restore(&mut app.ui);
+    }
     let outcome = event_loop
         .run_app(&mut app)
         .context("application event loop failed");
@@ -325,6 +331,10 @@ struct App {
     /// loop, which is what makes it possible to ask for a second one while the
     /// first is on screen — this is what says no.
     dialog_open: bool,
+    /// The menu's **Exit** was chosen. It is chosen inside the egui pass, which
+    /// has no event loop to stop, so it is carried out in `about_to_wait` — the
+    /// same close `CloseRequested` performs.
+    exit_requested: bool,
     /// The failure that stopped `start` from bringing the viewer up, held until
     /// `run_app` has returned so the error dialog is opened from `main` rather than
     /// from inside a winit callback (D9 again: on macOS a modal run loop entered
@@ -430,6 +440,7 @@ impl Default for App {
             frame_showing_selection: false,
             textures: TextureSubsystem::default(),
             dialog_open: false,
+            exit_requested: false,
             startup_error: None,
             notifications: Notifications::new(),
             tracy_enabled: false,
@@ -654,6 +665,18 @@ impl App {
             .into_iter()
             .filter(|level| supported_counts.contains(&level.sample_count()))
             .collect();
+        // A remembered level can be one this adapter cannot do (the settings were
+        // saved on another GPU): step down to the highest level it can.
+        let levels = &self.ui.capabilities.msaa_levels;
+        let wanted = self.ui.anti_aliasing.msaa;
+        if !levels.is_empty() && !levels.contains(&wanted) {
+            self.ui.anti_aliasing.msaa = levels
+                .iter()
+                .copied()
+                .filter(|level| level.sample_count() <= wanted.sample_count())
+                .max_by_key(|level| level.sample_count())
+                .unwrap_or(levels[0]);
+        }
 
         // Under `--tracy`, arm the GPU profiler. A normal launch never calls this, so
         // nothing profiling-related is ever built.
@@ -843,7 +866,19 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.exit_requested {
+            self.save_window_placement();
+            event_loop.exit();
+            return;
+        }
         self.pace_next_frame(event_loop);
+    }
+
+    /// Every way out passes through here — the window's close button, the menu's
+    /// Exit, and on macOS the menu bar's Quit — so it is where the settings are
+    /// written.
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.persist_settings();
     }
 }
 

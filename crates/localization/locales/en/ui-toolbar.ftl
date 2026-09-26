@@ -5,6 +5,21 @@
 ### "Right-click for options" is deliberately *not* repeated in each message: the
 ### `Tip` builder appends it once, so it is translated once.
 
+## The menu
+
+ui-toolbar-menu = Menu
+    .description = Opens and closes files, sets whether your tool settings are kept for
+        next time, and quits.
+ui-toolbar-menu-open-file = Open file...
+ui-toolbar-menu-open-file-shortcut = { $modifier }+O
+ui-toolbar-menu-close-file = Close file
+ui-toolbar-menu-close-file-shortcut = { $modifier }+N
+ui-toolbar-menu-remember-settings = Remember settings
+    .description = When this is ticked, the choices you make in the tools' options windows,
+        such as colors, sizes, the environment and the ambient occlusion settings, are kept
+        and come back the next time you start the viewer.
+ui-toolbar-menu-exit = Exit
+
 ## Shading modes
 
 ui-toolbar-wireframe-only = Wireframe Only
