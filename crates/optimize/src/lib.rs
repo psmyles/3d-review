@@ -43,6 +43,7 @@ pub mod probe;
 
 mod ao;
 mod parallel;
+mod shading;
 
 pub mod cancel;
 
@@ -67,9 +68,10 @@ pub use process::{
 pub use replace_file::{Staged, write_bytes_replacing, write_replacing};
 pub use stack::{
     AoQuality, AoTarget, AttributeWeights, BakeAoParams, ExportOptions, FbxFormat, HierarchyMode,
-    LodLevel, LodPackaging, LodParams, NodeOverride, OpInstance, OpKind, OptStack, RebindReport,
-    ReduceParams, RemeshDensity, RemeshParams, RemeshTopology, ShrinkwrapParams, SimplifyAlgorithm,
-    SimplifyFlags, SimplifySettings, WeldParams,
+    LodLevel, LodPackaging, LodParams, NodeOverride, NormalMode, NormalParams, OpInstance, OpKind,
+    OptStack, RebindReport, ReduceParams, RemeshDensity, RemeshParams, RemeshTopology,
+    ShrinkwrapMethod, ShrinkwrapParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings,
+    VoxelTarget, WeldParams,
 };
 
 /// Everything that can go wrong in this crate.
@@ -104,6 +106,12 @@ pub enum OptError {
 
     #[error("vertex stream contains a non-finite value")]
     NonFiniteStream,
+
+    /// A numeric setting outside what the library accepts. meshoptimizer
+    /// `assert`s on these, and its asserts abort the process, so they are
+    /// refused before the call instead.
+    #[error("{name} of {value} is out of range")]
+    InvalidParameter { name: &'static str, value: f32 },
 
     #[error("buffer size overflowed while sizing a destination")]
     SizeOverflow,

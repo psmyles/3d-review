@@ -355,6 +355,7 @@ mod tests {
             dq_weight: Default::default(),
             morph: Default::default(),
             source_corner: Vec::new(),
+            normals_stale: false,
         }
     }
 

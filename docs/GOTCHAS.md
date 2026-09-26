@@ -406,6 +406,49 @@ already-rewritten override collide with a later operation's *old* id and be
 rewritten twice, silently reattaching the user's per-object settings to the wrong
 operation — reachable with one reorder plus a preset round-trip.
 
+### meshoptimizer's `assert`s abort the process in every build profile
+
+Nothing defines `NDEBUG` for the vendored tree, so upstream's C `assert`s are
+compiled into release builds too, and a failed one aborts — it is not a Rust
+panic and nothing catches it. Every wrapper in `crates/optimize/src/meshopt/`
+therefore rejects in Rust whatever upstream asserts on before the call: whole
+triangles and in-range indices, exact stream lengths, a voxel resolution in
+`4..=256`, a crease angle in `[0, π]`, non-negative smoothing, and only the
+documented option bits (`meshopt_remesh` keeps a private debug bit at `1 << 30`).
+Each `// SAFETY:` comment names the asserts it satisfies. Do the same for any new
+binding, and extend `MESHOPT_BOUND` in `build.rs`, which is what turns a changed
+upstream signature into a build error rather than an ABI mismatch.
+
+### Normals and tangents are per corner; the split happens on the pieces
+
+meshoptimizer's generators answer per index-buffer *corner*, and two corners of
+one vertex can legitimately disagree (either side of a hard edge, either side of
+a mirrored-UV seam). `Submesh::split_by_corner` is the one place that turns that
+into vertices: it copies every per-vertex array and deform row, makes a carried
+polygon's corners at one vertex agree first (so a quad never needs two copies of
+a vertex), and fans each carried edge out to the copies its faces now use. It
+runs on the submeshes, before `assemble`, because splitting the assembled model
+would break the corner-run layout and every carry that indexes its vertices.
+
+Two consequences:
+
+- **The tangent rebuild must run last.** `ops::weld` never compares tangents, so
+  a weld after `shading::finish_bases` would merge the mirror-seam copies back.
+- **Those copies are real vertices** and the stats count them — an engine needs
+  them too. On a real character they add about 0.2%. A weld that ignores UVs
+  leaves each survivor with an arbitrary UV, so the layout can fold and the split
+  count grows; tests about such a weld count distinct *positions*.
+
+### A voxel shell is closed, but not always manifold
+
+Shrinkwrap's Voxel method (`meshopt_remesh`) keeps a thin sheet as two
+coincident, opposite-facing surfaces over the same welded vertices, so one edge
+can be used twice in each direction. Its closedness is *balanced* directed edges
+(each matched by as many reversed ones), not one edge one twin — the distance
+field's test would reject a correct result. The same sheets z-fight when
+back-face rendering is on, and are why the method defaults to generated normals:
+projection would read one side's shading onto both.
+
 ---
 
 ## Baked assets

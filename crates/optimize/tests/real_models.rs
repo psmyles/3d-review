@@ -14,8 +14,8 @@
 
 use review_model::ModelData;
 use review_optimize::{
-    AoQuality, AoTarget, BakeAoParams, LodLevel, LodParams, OpKind, OptStack, ReduceParams,
-    SimplifyAlgorithm, SimplifyFlags, SimplifySettings, WeldParams,
+    AoQuality, AoTarget, BakeAoParams, LodLevel, LodParams, NormalParams, OpKind, OptStack,
+    ReduceParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings, WeldParams,
 };
 
 mod common;
@@ -714,4 +714,57 @@ fn bake_ao_writes_bounded_deterministic_colors() {
             "two runs are bit-identical"
         );
     }
+}
+
+/// Recalculating a skinned character's normals splits vertices at its hard
+/// edges, and every copy must keep the skin its original had — checked by the
+/// same guard import runs, over the level's own vertices.
+#[test]
+fn recalculating_a_skinned_characters_normals_keeps_its_skin() {
+    let Some(model) = fixture("SK_Player_01.fbx") else {
+        return;
+    };
+    let mut stack = OptStack::default();
+    stack.push_op(OpKind::RecalculateNormals(NormalParams::default()));
+    let result = run(&model, &stack);
+    let level = &result.lods[0].model;
+    assert_consistent(level, "recalculated character");
+    assert_eq!(
+        level.indices.len(),
+        model.indices.len(),
+        "no triangle changed"
+    );
+    if model.skin.is_some() {
+        let skin = level.skin.as_ref().expect("the skin is kept");
+        assert_eq!(skin.logical_vertex_count(), level.vertices.len());
+        assert!(level.validate_deform().is_ok());
+    }
+    assert!(
+        level
+            .vertices
+            .iter()
+            .all(|vertex| (vertex.normal.length() - 1.0).abs() < 1e-3),
+        "every normal is unit length"
+    );
+}
+
+/// The tangent rebuild splits a vertex only at a mirrored-UV seam, so on a real
+/// asset it adds a handful of vertices, not a multiple of them. A regression to
+/// splitting on every tangent difference would show up here as a jump.
+#[test]
+fn the_tangent_rebuild_adds_only_a_few_vertices_on_a_real_asset() {
+    let Some(model) = fixture("SK_Player_01.fbx") else {
+        return;
+    };
+    let mut indexed = OptStack::default();
+    indexed.push_op(OpKind::VertexFetch);
+    let baseline = run(&model, &indexed).lods[0].model.vertices.len();
+
+    let mut welded = OptStack::default();
+    welded.push_op(OpKind::FilterTriangles);
+    let split = run(&model, &welded).lods[0].model.vertices.len();
+    assert!(
+        split >= baseline && split * 100 <= baseline * 105,
+        "the rebuild grew {baseline} vertices to {split}"
+    );
 }

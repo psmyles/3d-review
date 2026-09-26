@@ -37,21 +37,11 @@ use crate::submesh::{NO_FACE, Submesh, TagPresence};
 
 use super::*;
 
-/// Which derived per-vertex bases the assembled mesh has to rebuild. Both are
-/// computed from the geometry, so recomputing one that is still valid would just
-/// overwrite the source file's authored values with synthesized ones.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Rebuild {
-    pub(crate) normals: bool,
-    pub(crate) tangents: bool,
-}
-
 pub(crate) fn assemble(
     submeshes: &[&Submesh],
     source: &ModelData,
     tags: TagPresence,
     level: usize,
-    rebuild: Rebuild,
     warnings: &mut Warnings,
 ) -> (ModelData, LevelCarry) {
     let _z = crate::prof::zone!("Assemble Model");
@@ -479,19 +469,6 @@ pub(crate) fn assemble(
         animations: source.animations.clone(),
         frame_rate: source.frame_rate,
     };
-
-    // Normals first: tangents are orthonormalized against them, so rebuilding
-    // tangents from stale normals would bake the staleness into both.
-    if rebuild.normals {
-        model.generate_normals();
-    }
-    // Tangents are derived from positions, UVs and normals, so any geometry
-    // change invalidates them. Regenerating unconditionally would be wasted work
-    // on a reorder-only stack, and would also overwrite the source file's
-    // authored tangents with synthesized ones for no reason.
-    if rebuild.tangents {
-        model.generate_tangents();
-    }
 
     // The stats first: `validate_deform` reads the logical count off them.
     model.stats = measured_stats(&model, source, &carry, indexed_base as usize);

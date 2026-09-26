@@ -42,7 +42,9 @@ use std::collections::HashMap;
 use glam::{Vec3, Vec4};
 use review_model::{ModelData, Vertex};
 
-use crate::stack::{OpInstance, OpKind, RemeshDensity, RemeshParams, RemeshTopology, WeldParams};
+use crate::stack::{
+    NormalParams, OpInstance, OpKind, RemeshDensity, RemeshParams, RemeshTopology, WeldParams,
+};
 use crate::submesh::{NO_FACE, PolygonCarry, Submesh};
 use crate::{OptError, Warnings, ops};
 
@@ -582,6 +584,7 @@ fn rebuild_node(
                 &job.pieces,
                 job.proxy,
                 project::Winding::Keep,
+                job.params.normals.generation(job.params.normal_params),
             ));
         }
         true
@@ -660,6 +663,7 @@ fn rebuild_node(
         &job.pieces,
         job.proxy,
         project::Winding::Keep,
+        job.params.normals.generation(job.params.normal_params),
     ))
 }
 
@@ -675,6 +679,7 @@ pub(crate) fn build_pieces_from(
     pieces: &[&Submesh],
     proxy: &proxy::Proxy,
     winding: project::Winding,
+    normals: Option<NormalParams>,
 ) -> Vec<Submesh> {
     let node = pieces.first().map_or(0, |piece| piece.node);
     let uv_channel_count = pieces
@@ -697,6 +702,24 @@ pub(crate) fn build_pieces_from(
         color_channel_count,
         winding,
     );
+
+    // Generated normals come from the whole object's surface at once, before the
+    // per-material split — generating each material's piece alone would put a
+    // hard edge along every material border. `None` keeps the projected ones.
+    let generated = normals.and_then(|params| {
+        let generated = generate_face_normals(&samples, &params);
+        debug_assert!(
+            generated.is_ok(),
+            "generating rebuilt normals failed: {generated:?}"
+        );
+        generated.ok()
+    });
+    let mut first_corner = Vec::with_capacity(samples.len());
+    let mut corner_total = 0usize;
+    for face in &samples {
+        first_corner.push(corner_total);
+        corner_total += face.corners.len();
+    }
 
     // One piece per material actually used, in first-seen face order so the
     // output is a deterministic function of the canonicalized soup.
@@ -726,19 +749,27 @@ pub(crate) fn build_pieces_from(
             dq_weight: Default::default(),
             morph: Default::default(),
             source_corner: Vec::new(),
+            normals_stale: false,
         };
         let carry = piece.polygons.as_mut().expect("just built");
 
-        for face in samples.iter().filter(|face| face.material == material) {
+        for (face_index, face) in samples
+            .iter()
+            .enumerate()
+            .filter(|(_, face)| face.material == material)
+        {
             // One vertex per corner, contiguous and in face order — the import's
             // own layout, and what `layout::corner_run` later re-establishes at
             // the level scale. The weld below is what turns it back into a
             // shared-vertex mesh.
             let base = piece.vertices.len() as u32;
-            for corner in &face.corners {
+            for (k, corner) in face.corners.iter().enumerate() {
+                let normal = generated.as_ref().map_or(corner.normal, |normals| {
+                    normals[first_corner[face_index] + k]
+                });
                 piece.vertices.push(Vertex {
                     position: corner.position,
-                    normal: corner.normal,
+                    normal,
                     uv: corner.uv,
                     // Rebuilt by `assemble` — geometry changed, so any tangent
                     // carried here would describe the old surface.
@@ -775,7 +806,11 @@ pub(crate) fn build_pieces_from(
             // still draws and exports correctly — only larger.
             debug_assert!(false, "welding a rebuilt piece failed: {error}");
         }
-        turn_back_inverted_normals(&mut piece);
+        // Only projected normals can face into their own surface; generated
+        // ones are built from it.
+        if generated.is_none() {
+            turn_back_inverted_normals(&mut piece);
+        }
         // A pure triangle mesh publishes no polygon table: a face table over
         // triangles says nothing the index buffer does not, and carrying one
         // would put the whole level into the corner-run layout for no gain.
@@ -791,6 +826,39 @@ pub(crate) fn build_pieces_from(
         built.push(piece);
     }
     built
+}
+
+/// Normals generated from a rebuilt surface itself: one per face corner, in
+/// the order `samples` lists faces and their corners. Each face is fanned the
+/// way [`fan`] triangulates it, and a corner several fan triangles share takes
+/// the normal of the first — a face is one shading unit, never split inside.
+fn generate_face_normals(
+    samples: &[project::FaceSample],
+    params: &NormalParams,
+) -> Result<Vec<Vec3>, OptError> {
+    let mut positions = Vec::new();
+    let mut indices = Vec::new();
+    let mut corners = 0u32;
+    for face in samples {
+        for corner in &face.corners {
+            positions.extend_from_slice(&corner.position.to_array());
+        }
+        for triangle in fan(&face.corners, corners) {
+            indices.extend_from_slice(&triangle);
+        }
+        corners += face.corners.len() as u32;
+    }
+    let mut normals = vec![None; corners as usize];
+    if !indices.is_empty() {
+        let generated =
+            crate::shading::corner_normals(&indices, &positions, corners as usize, params)?;
+        for (&corner, normal) in indices.iter().zip(generated) {
+            normals[corner as usize].get_or_insert(normal);
+        }
+    }
+    // A corner of a face too small to fan has no triangle; it points nowhere
+    // in particular, and the fallback only has to be a unit vector.
+    Ok(normals.into_iter().map(|n| n.unwrap_or(Vec3::Z)).collect())
 }
 
 /// Replace any shading normal that points into the surface it sits on.

@@ -64,6 +64,14 @@ ui-opt-regularize-light = Regularize (light)
 ui-opt-collapse-across-seams = Collapse across seams
     .description = Lets the simplifier work across texture seams and hard edges. If a
         simplify seems stuck and barely removes anything, this is usually what frees it.
+ui-opt-preserve-folds = Preserve folds
+    .description = Keeps the edge where two surfaces meet back to back, such as the rim of a
+        double-sided leaf or cloth, from wearing away as the model gets simpler. Slightly
+        slower.
+ui-opt-clamp-attribute-error = Clamp attribute error
+    .description = Stops the shading, texture layout and colors from counting for more than
+        the shape itself. A busy texture area then no longer holds the whole model back, and
+        the error figure stays close to how far the surface really moved.
 ui-opt-attribute-weights = Attribute weights
     .description = How hard each kind of data pushes back against being changed. A higher
         number protects it more, at the cost of a less accurate shape. Zero ignores it.
@@ -144,6 +152,46 @@ ui-opt-remesh-adaptive = Vary face size
 
 ## Shrinkwrap
 
+ui-opt-normal-source = Normals
+    .description = Where the new surface's shading comes from. From the original reads it
+        off the model it was built from, which keeps the artist's smooth and hard edges.
+        Worked out fresh builds it from the new surface itself, which avoids odd shading
+        where overlapping parts were fused, at the cost of the original's smoothing.
+ui-opt-normal-crease-angle = Crease angle
+    .description = Where two faces meet at a sharper angle than this, in degrees, the edge
+        stays hard; gentler edges are smoothed. 180 smooths everything.
+ui-opt-normal-smoothing = Smoothing
+    .description = Relaxes the result over neighbouring faces. Zero leaves it as worked out;
+        a little hides the small steps on a surface built from a grid.
+ui-opt-shrinkwrap-method = Method
+    .description = How the skin is made. Distance field measures how far every point is
+        from the surface and which side it is on; it seals holes and ignores parts turned
+        inside out, but loses anything thinner than one grid step. Voxel keeps thin sheets
+        such as leaves, cloth and wings at any detail, snaps to sharp features and is much
+        faster, but a hole wider than a grid step lets the outside in.
+ui-opt-shrinkwrap-voxel-resolution = Detail
+    .description = How many grid steps across the object's longest side, from 4 to 256.
+        Higher keeps more of the shape; the triangle target below decides how many
+        triangles are kept.
+ui-opt-shrinkwrap-fit-surface = Fit to surface
+    .description = Moves the new points onto the original's surface, so edges and corners
+        stay crisp. Untick for a more regular grid of triangles.
+ui-opt-shrinkwrap-two-sided = Two-sided skin
+    .description = Wraps every surface in a thin skin of its own instead of filling the
+        object solid. Keeps inner surfaces, but doubles the triangles and can make the
+        skin pass through itself.
+ui-opt-shrinkwrap-target = Triangles
+    .description = How far to simplify the new skin before the materials, texture layout
+        and colors are copied back. Simplifying first works much better than a Reduce
+        below, which the copied texture seams would hold back.
+ui-opt-shrinkwrap-target-ratio = Share
+    .description = Triangles to keep, as a share of the object's own before the wrap. 1.0
+        keeps as many as it had.
+ui-opt-shrinkwrap-target-triangles = Count
+    .description = Triangles to keep, for each object.
+ui-opt-shrinkwrap-even-triangles = Even triangles
+    .description = Simplifies toward evenly sized, well-shaped triangles, at a small cost
+        to how closely the shape is kept.
 ui-opt-shrinkwrap-resolution = Detail
     .description = How many grid steps across the object's longest side. Higher keeps more
         of the shape and takes longer; lower rounds it off and bridges wider gaps.
@@ -203,6 +251,9 @@ ui-opt-shrinkwrap-explained = The new skin is a fresh surface, so the materials,
     layout and colors are read back off the original and copied across. Anything tied to
     the old points is not: bones, shape keys and per-point creases. Objects that bend are
     skipped and left as they are.
+ui-opt-recalculate-normals-explained = Objects that bend with bones are recalculated too.
+    Objects with blend shapes are skipped, because their shapes store shading changes
+    relative to the old normals.
 ui-opt-bake-ao-explained = Objects whose names end in _LOD and a number are shaded only by
     objects in their own level (plus objects with no such ending), so you can bake a whole
     set of levels in one go. Hidden objects neither cast shadows nor receive them, so hide

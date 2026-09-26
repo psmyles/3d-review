@@ -17,12 +17,14 @@ use serde::{Deserialize, Serialize};
 
 mod ao;
 mod export;
+mod normals;
 mod params;
 mod remesh;
 mod shrinkwrap;
 
 pub use ao::*;
 pub use export::*;
+pub use normals::*;
 pub use params::*;
 pub use remesh::*;
 pub use shrinkwrap::*;
@@ -314,6 +316,9 @@ pub enum OpKind {
     /// Replace each object with one closed shell that hugs it, fusing
     /// interpenetrating parts into a single watertight surface.
     Shrinkwrap(ShrinkwrapParams),
+    /// Regenerate the normals from the geometry, with a crease angle deciding
+    /// which edges stay hard.
+    RecalculateNormals(NormalParams),
     /// Generate the LOD chain. At most one per stack.
     SimplifyLod(LodParams),
     /// Bake raycast ambient occlusion into the vertex-color set.
@@ -330,13 +335,14 @@ impl OpKind {
     /// Every operation the "Add" menu offers, in menu order — cleanup first
     /// (what you almost always want before anything else), then the LOD
     /// generator, then the GPU reorder passes that belong at the end.
-    pub const ALL: [fn() -> OpKind; 11] = [
+    pub const ALL: [fn() -> OpKind; 12] = [
         || OpKind::Weld(WeldParams::default()),
         || OpKind::FilterTriangles,
         || OpKind::PruneComponents { error: 0.01 },
         || OpKind::Shrinkwrap(ShrinkwrapParams::default()),
         || OpKind::Reduce(ReduceParams::default()),
         || OpKind::Remesh(RemeshParams::default()),
+        || OpKind::RecalculateNormals(NormalParams::default()),
         || OpKind::SimplifyLod(LodParams::default()),
         || OpKind::BakeAo(BakeAoParams::default()),
         || OpKind::VertexCache,
@@ -353,6 +359,7 @@ impl OpKind {
             OpKind::Reduce(_) => "Reduce",
             OpKind::Remesh(_) => "Remesh",
             OpKind::Shrinkwrap(_) => "Shrinkwrap",
+            OpKind::RecalculateNormals(_) => "Recalculate Normals",
             OpKind::SimplifyLod(_) => "Generate LODs",
             OpKind::BakeAo(_) => "Bake AO to Vertex Colors",
             OpKind::VertexCache => "Optimize Vertex Cache",
@@ -396,10 +403,17 @@ impl OpKind {
             }
             OpKind::Shrinkwrap(_) => {
                 "Replace each object with one closed shell that hugs it. The surface is \
-                 voxelized into a distance field and re-extracted, which fuses a kitbash \
-                 of interpenetrating parts into a single watertight mesh — and is what \
+                 voxelized into a distance field (or, with the Voxel method, remeshed \
+                 on a voxel grid that keeps thin sheets) and re-extracted, which fuses \
+                 a kitbash of interpenetrating parts into a single watertight mesh — and is what \
                  a Remesh below it can even out. Materials, UVs and \
                  colors are projected back on. Static meshes only."
+            }
+            OpKind::RecalculateNormals(_) => {
+                "Regenerate the normals from the shape itself. Edges sharper than the \
+                 crease angle stay hard and the rest are smoothed, and the export's \
+                 hard/soft edge flags are rewritten to match. Objects with blend \
+                 shapes are left as they are. Changes no geometry."
             }
             OpKind::SimplifyLod(_) => {
                 "Generate the LOD chain. Each level is simplified independently from \
@@ -429,8 +443,8 @@ impl OpKind {
     }
 
     /// Whether this operation can change the mesh's shape (as opposed to only
-    /// reordering it). Drives whether processing has to regenerate tangents and
-    /// recompute bounds, and whether the "geometry changed" warning applies.
+    /// reordering it). Drives whether processing has to recompute bounds, and
+    /// whether the "geometry changed" warning applies.
     pub fn alters_geometry(&self) -> bool {
         match self {
             OpKind::Weld(_)
@@ -441,10 +455,18 @@ impl OpKind {
             | OpKind::Shrinkwrap(_)
             | OpKind::SimplifyLod(_) => true,
             OpKind::BakeAo(_)
+            | OpKind::RecalculateNormals(_)
             | OpKind::VertexCache
             | OpKind::Overdraw { .. }
             | OpKind::VertexFetch => false,
         }
+    }
+
+    /// Whether this operation leaves the tangents stale, so processing has to
+    /// rebuild them: anything that changes the shape, and anything that rewrites
+    /// the normals they are built perpendicular to.
+    pub fn invalidates_tangents(&self) -> bool {
+        self.alters_geometry() || matches!(self, OpKind::RecalculateNormals(_))
     }
 }
 
@@ -547,9 +569,9 @@ mod tests {
     }
 
     #[test]
-    fn the_add_menu_offers_eleven_distinct_operations() {
+    fn the_add_menu_offers_twelve_distinct_operations() {
         let labels: Vec<&str> = OpKind::ALL.iter().map(|build| build().label()).collect();
-        assert_eq!(labels.len(), 11);
+        assert_eq!(labels.len(), 12);
         for (index, label) in labels.iter().enumerate() {
             assert!(
                 !labels[index + 1..].contains(label),

@@ -434,8 +434,11 @@ it hands back plain `ModelData` and never touches GPU or UI types.
 
 Layers, bottom up:
 
-1. `ffi.rs` (raw `extern "C"` declarations) and `meshopt.rs` (the checked safe
-   wrappers) — together the entire unsafe surface for meshoptimizer.
+1. `ffi.rs` (raw `extern "C"` declarations) and `meshopt/` (the checked safe
+   wrappers) — together the entire unsafe surface for meshoptimizer. The option
+   bitmasks (`meshopt/options.rs`) sit outside the `has_meshopt` gate, since the
+   stack's parameter types need them in either build; `build.rs` pins the header
+   version and every bound declaration.
 2. `submesh.rs` — splits a `ModelData` into per-(node, material) pieces, the unit
    that can survive a simplify, since meshoptimizer returns a new index buffer
    with no triangle correspondence.
@@ -446,6 +449,14 @@ Layers, bottom up:
    fans out the LOD chain, reassembles a `ModelData` per level and measures it,
    alongside the source's own buffer counts so the overlay's deltas subtract like
    from like.
+
+`shading.rs` owns the derived shading bases. meshoptimizer's normal and tangent
+generators answer per corner; `Submesh::split_by_corner` turns that into vertices
+on the pieces, before `assemble` (see
+[GOTCHAS](GOTCHAS.md#normals-and-tangents-are-per-corner-the-split-happens-on-the-pieces)).
+It holds the Recalculate Normals operation and `finish_bases`, each level's last
+step: smooth normals a normal-blind weld left stale, then rebuild tangents when
+any operation invalidated them.
 
 `stack.rs` is the serializable operation stack the UI edits; `preset.rs` is its
 versioned JSON envelope. The two operations that simplify share one
@@ -673,7 +684,7 @@ The sanctioned exceptions:
 - **meshoptimizer + ufbx_write FFI** (`crates/optimize`). The two libraries are
   bound differently *because their APIs differ*. meshoptimizer's is already flat
   over raw pointers, so `ffi.rs` declares its entry points directly and
-  `meshopt.rs` holds every call — each wrapper validating the mesh preconditions
+  `meshopt/` holds every call — each wrapper validating the mesh preconditions
   before it (whole-triangle index buffers, in-range indices, exact stream lengths,
   `checked_mul` destination sizes) and re-validating the returned element count
   after. ufbx_write's is handle-and-setter-based, so driving it from Rust would

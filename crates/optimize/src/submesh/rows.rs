@@ -39,7 +39,7 @@ impl<T: Clone> VertexRows<T> {
         }
     }
 
-    pub(super) fn push_row(&mut self, entries: &[T]) {
+    pub(crate) fn push_row(&mut self, entries: &[T]) {
         if self.offsets.is_empty() {
             self.offsets.push(0);
         }

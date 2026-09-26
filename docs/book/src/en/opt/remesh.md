@@ -321,6 +321,11 @@ than smearing across a face. That is why a rebuilt model can carry a few more
 points than its face count implies - the extra ones are the seam corners, exactly
 as they were in the original.
 
+The shading direction is the one thing you can choose not to project. Set
+**Normals** to **Worked out fresh** and the new surface's normals are built from
+its own shape instead, with a crease angle deciding which edges stay hard - see
+[Normals and tangents](normals.md).
+
 ## What is lost
 
 Everything tied to the old points, because the old points are gone:

@@ -29,6 +29,25 @@ real distance instead of a fraction, remove loose pieces as it goes,
 regularize (keep triangles evenly shaped, with a lighter version), and allow
 collapses across seams.
 
+Two more are newer and marked experimental by the library they come from, so
+they are off unless you tick them:
+
+- **Preserve folds** - keeps the rim of a double-sided surface from wearing
+  away. A leaf card or a cloth panel modelled as two faces back to back has a
+  sharp fold along its edge, and a plain simplify tends to eat into it. This
+  keeps it, at a small cost in speed. It matters most below a
+  [Shrinkwrap](shrinkwrap.md) using the Voxel method, which makes thin parts
+  exactly that way.
+- **Clamp attribute error** - only offered with **Preserve Attributes**. It
+  stops the shading, texture layout and colors from counting for more than the
+  shape itself. Without it, a small area where those change quickly (a busy
+  texture seam, say) can hold the whole model back and push the error figure far
+  above how far the surface really moved. With it, the simplifier spends its
+  effort more evenly and the error figure reads closer to a real distance.
+
+After a **Reduce**, the stats card shows the error it reached on the base model
+too, not only on generated levels, so you can compare settings directly.
+
 ## When a simplify barely removes anything
 
 This is usually seams, not a bug.

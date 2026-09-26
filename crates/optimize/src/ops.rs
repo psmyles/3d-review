@@ -61,6 +61,11 @@ pub fn weld(submesh: &mut Submesh, params: &WeldParams) -> Result<(), OptError> 
 
     submesh.indices = meshopt::remap_index_buffer(&submesh.indices, &remap)?;
     submesh.apply_vertex_remap(&remap, unique);
+    // A weld blind to normals keeps one of each merged group's normals
+    // arbitrarily; the survivor then describes one face rather than the surface.
+    if !params.compare_normals {
+        submesh.normals_stale = true;
+    }
     Ok(())
 }
 

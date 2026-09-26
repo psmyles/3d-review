@@ -10,7 +10,8 @@
 use review_model::extras::{AttributeKind, ElementRef};
 use review_model::{ModelData, NodeKind};
 use review_optimize::{
-    BakeAoParams, FbxFormat, LodLevel, OpKind, OptStack, ReduceParams, SimplifySettings, WeldParams,
+    BakeAoParams, FbxFormat, LodLevel, NormalParams, OpKind, OptStack, ReduceParams,
+    SimplifySettings, WeldParams,
 };
 
 mod common;
@@ -166,6 +167,9 @@ fn polygons_survive_every_operation_that_keeps_triangles_whole() {
     let mut stack = OptStack::default();
     stack.push_op(OpKind::Overdraw { threshold: 1.05 });
     preserving.push(("overdraw", stack));
+    let mut stack = OptStack::default();
+    stack.push_op(OpKind::RecalculateNormals(NormalParams::default()));
+    preserving.push(("normals", stack));
 
     for (label, stack) in &preserving {
         let result = run(&model, &extras, stack);

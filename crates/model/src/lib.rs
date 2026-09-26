@@ -207,37 +207,7 @@ impl ModelData {
     /// A vertex whose incident faces cancel out (or that no face references) keeps
     /// the normal it had, so this can never introduce a zero-length one.
     pub fn generate_normals(&mut self) {
-        if self.vertices.is_empty() || self.indices.len() < 3 {
-            return;
-        }
-
-        let mut accumulated = vec![Vec3::ZERO; self.vertices.len()];
-        for triangle in self.indices.as_chunks::<3>().0 {
-            let [i0, i1, i2] = [
-                triangle[0] as usize,
-                triangle[1] as usize,
-                triangle[2] as usize,
-            ];
-            let (Some(v0), Some(v1), Some(v2)) = (
-                self.vertices.get(i0),
-                self.vertices.get(i1),
-                self.vertices.get(i2),
-            ) else {
-                continue;
-            };
-            // Unnormalized: its length is twice the triangle's area, which is the
-            // weighting we want.
-            let face = (v1.position - v0.position).cross(v2.position - v0.position);
-            for &index in &[i0, i1, i2] {
-                accumulated[index] += face;
-            }
-        }
-
-        for (vertex, normal) in self.vertices.iter_mut().zip(accumulated) {
-            if normal.length_squared() > 1e-20 {
-                vertex.normal = normal.normalize();
-            }
-        }
+        smooth_vertex_normals(&mut self.vertices, &self.indices);
     }
 
     /// Synthesize a per-vertex tangent basis from positions, UVs and normals
@@ -333,6 +303,43 @@ impl ModelData {
             }
         }
         (!bounds.is_empty()).then_some(bounds)
+    }
+}
+
+/// [`ModelData::generate_normals`] over a bare vertex / index pair: each
+/// vertex's normal becomes the area-weighted average of the faces using it,
+/// never crossing a split the mesh has. Free rather than a method so a caller
+/// holding one piece of a model (the optimizer's submeshes) runs the exact same
+/// smoothing as the whole model would. An out-of-range index is skipped, and a
+/// vertex whose faces cancel out keeps the normal it had.
+pub fn smooth_vertex_normals(vertices: &mut [Vertex], indices: &[u32]) {
+    if vertices.is_empty() || indices.len() < 3 {
+        return;
+    }
+
+    let mut accumulated = vec![Vec3::ZERO; vertices.len()];
+    for triangle in indices.as_chunks::<3>().0 {
+        let [i0, i1, i2] = [
+            triangle[0] as usize,
+            triangle[1] as usize,
+            triangle[2] as usize,
+        ];
+        let (Some(v0), Some(v1), Some(v2)) = (vertices.get(i0), vertices.get(i1), vertices.get(i2))
+        else {
+            continue;
+        };
+        // Unnormalized: its length is twice the triangle's area, which is the
+        // weighting we want.
+        let face = (v1.position - v0.position).cross(v2.position - v0.position);
+        for &index in &[i0, i1, i2] {
+            accumulated[index] += face;
+        }
+    }
+
+    for (vertex, normal) in vertices.iter_mut().zip(accumulated) {
+        if normal.length_squared() > 1e-20 {
+            vertex.normal = normal.normalize();
+        }
     }
 }
 

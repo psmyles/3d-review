@@ -2,8 +2,8 @@ meshoptimizer — vendored source
 ================================
 
 Upstream:  https://github.com/zeux/meshoptimizer
-Version:   v1.2  (MESHOPTIMIZER_VERSION 1020)
-Commit:    9d9890c73011d75920af614485296d1e03e95448
+Version:   v1.3  (MESHOPTIMIZER_VERSION 1030)
+Commit:    9e1f07b159d3cb777f1c67ed31fc11fd117986f4
 License:   MIT — see LICENSE.md
 
 What is vendored

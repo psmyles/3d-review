@@ -8,7 +8,9 @@
 #![cfg(has_meshopt)]
 
 use review_model::ModelData;
-use review_optimize::{OpKind, OptStack, RemeshDensity, RemeshParams, ShrinkwrapParams};
+use review_optimize::{
+    OpKind, OptStack, RemeshDensity, RemeshParams, ShrinkwrapMethod, ShrinkwrapParams, VoxelTarget,
+};
 
 mod common;
 
@@ -174,4 +176,119 @@ fn two_wraps_of_the_same_object_produce_the_same_mesh() {
     let b = second.lod(0).expect("a level");
     assert_eq!(a.model.vertices, b.model.vertices, "vertices differ");
     assert_eq!(a.model.indices, b.model.indices, "index buffers differ");
+}
+
+/// The voxel method's settings at a given resolution, the normals reset to
+/// what switching to it in the Inspector sets.
+fn voxel(resolution: u32) -> ShrinkwrapParams {
+    let mut params = ShrinkwrapParams {
+        voxel_resolution: resolution,
+        ..ShrinkwrapParams::default()
+    };
+    params.set_method(ShrinkwrapMethod::Voxel);
+    params
+}
+
+/// Per node, every directed edge (by position) matched by as many reversed
+/// ones. The voxel method's closedness: a thin sheet comes back as two
+/// coincident opposite-facing surfaces, legitimately using an edge twice.
+fn assert_balanced_per_node(model: &ModelData, label: &str) {
+    use std::collections::HashMap;
+    let key = |index: u32| {
+        model.vertices[index as usize]
+            .position
+            .to_array()
+            .map(f32::to_bits)
+    };
+    type Balance = HashMap<([u32; 3], [u32; 3]), i64>;
+    let mut per_node: HashMap<u32, Balance> = HashMap::new();
+    for (triangle, corners) in model.indices.as_chunks::<3>().0.iter().enumerate() {
+        let node = model.triangles.node.get(triangle).copied().unwrap_or(0);
+        let edges = per_node.entry(node).or_default();
+        for k in 0..3 {
+            let (a, b) = (key(corners[k]), key(corners[(k + 1) % 3]));
+            *edges.entry((a, b)).or_insert(0) += 1;
+            *edges.entry((b, a)).or_insert(0) -= 1;
+        }
+    }
+    for (node, edges) in per_node {
+        assert!(
+            edges.values().all(|&balance| balance == 0),
+            "{label}: node {node} has an unmatched edge"
+        );
+    }
+}
+
+#[test]
+fn a_voxel_wrap_of_a_kitbash_is_balanced_near_its_target_and_where_the_object_is() {
+    let Some(model) = fixture("SM_Ammo_Crate_01a.fbx") else {
+        return;
+    };
+    let result = run(&model, &wrap_stack(voxel(96)));
+    let level = result.lod(0).expect("the stack produced a level");
+    assert!(level.model.stats.triangle_count > 0);
+    assert_balanced_per_node(&level.model, "voxel-wrapped ammo crate");
+    assert!(level.model.faces.is_empty(), "a wrap emits triangles");
+
+    // The default target is the object's own triangle count, per object; the
+    // simplifier can stop a little short on a tiny part, never far over.
+    assert!(
+        level.model.stats.triangle_count <= model.stats.triangle_count * 11 / 10,
+        "the wrap reduced to about the source's size: {} vs {}",
+        level.model.stats.triangle_count,
+        model.stats.triangle_count
+    );
+
+    let extent = |mesh: &ModelData| {
+        let mut bounds = review_model::Bounds::EMPTY;
+        for vertex in &mesh.vertices {
+            bounds.include_point(vertex.position);
+        }
+        bounds
+    };
+    let (before, after) = (extent(&model), extent(&level.model));
+    let slack = before.size().max_element() / 96.0 * 4.0;
+    assert!(
+        before.min.abs_diff_eq(after.min, slack) && before.max.abs_diff_eq(after.max, slack),
+        "the shell is not where the object is: {before:?} -> {after:?}"
+    );
+}
+
+#[test]
+fn two_voxel_wraps_of_the_same_object_produce_the_same_mesh() {
+    let Some(model) = fixture("monkey.fbx") else {
+        return;
+    };
+    let stack = wrap_stack(ShrinkwrapParams {
+        voxel_target: VoxelTarget::Keep,
+        ..voxel(64)
+    });
+    let first = run(&model, &stack);
+    let second = run(&model, &stack);
+    let (a, b) = (
+        first.lod(0).expect("a level"),
+        second.lod(0).expect("a level"),
+    );
+    assert_eq!(a.model.vertices, b.model.vertices, "vertices differ");
+    assert_eq!(a.model.indices, b.model.indices, "index buffers differ");
+}
+
+#[test]
+fn a_remesh_runs_on_a_voxel_shell() {
+    let Some(model) = fixture("monkey.fbx") else {
+        return;
+    };
+    let mut stack = wrap_stack(voxel(64));
+    stack.push_op(OpKind::Remesh(RemeshParams {
+        density: RemeshDensity::Absolute,
+        faces: 1_000,
+        ..RemeshParams::default()
+    }));
+    let result = run(&model, &stack);
+    let level = result.lod(0).expect("the stack produced a level");
+    assert!(
+        level.model.stats.triangle_count > 0,
+        "{:?}",
+        result.warnings
+    );
 }

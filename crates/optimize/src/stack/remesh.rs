@@ -7,6 +7,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::{NormalMode, NormalParams};
+
 /// What the rebuilt surface is made of.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RemeshTopology {
@@ -114,6 +116,11 @@ pub struct RemeshParams {
     /// At 0 no field is built at all and one size is used everywhere — the same
     /// answer as a field of ones, by a shorter road.
     pub adaptive_strength: f32,
+    /// Where the rebuilt surface's normals come from. Projected by default,
+    /// which carries the artist's shading across.
+    pub normals: NormalMode,
+    /// How they are generated, when [`Self::normals`] says to.
+    pub normal_params: NormalParams,
 }
 
 impl Default for RemeshParams {
@@ -133,6 +140,8 @@ impl Default for RemeshParams {
             // strongest setting that costs nothing. Full strength is worth
             // reaching for on a silhouette-critical object, not by default.
             adaptive_strength: 0.5,
+            normals: NormalMode::Project,
+            normal_params: NormalParams::default(),
         }
     }
 }

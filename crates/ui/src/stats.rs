@@ -604,10 +604,10 @@ pub(crate) fn processed_stats_grid(ui: &mut egui::Ui, state: &UiState) {
         compare.map(|m| m.overfetch),
     );
 
-    // The simplifier's achieved error, shown only for a level that ran one — it
-    // is meaningless (and always zero) for the unsimplified level 0. It has no
-    // source counterpart to change against.
-    if state.opt.active_lod > 0 && level.is_some() {
+    // The simplifier's achieved error, shown only for a level that ran one — a
+    // LOD level, or level 0 once a Reduce rewrote it. It is meaningless for an
+    // unsimplified level, and has no source counterpart to change against.
+    if level.is_some() && metrics.simplified {
         stat_row(
             ui,
             StatRow::Error,
