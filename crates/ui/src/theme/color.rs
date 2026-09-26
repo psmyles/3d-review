@@ -28,7 +28,7 @@ pub const ACCENT: Color32 = Color32::from_rgb(66, 103, 163);
 pub const SELECTION_STROKE: Color32 = Color32::from_rgb(88, 135, 217);
 /// Viewport selection highlight: the outline drawn around the Outliner-selected
 /// node / material in the 3D scene. A punchy orange so it reads against an
-/// arbitrary model surface and the grey wireframe (Phase 2).
+/// arbitrary model surface and the grey wireframe.
 pub const SELECTION_OUTLINE: Color32 = Color32::from_rgb(255, 140, 35);
 /// How opaque the viewport's selection fill is. The highlight persists for as
 /// long as something is selected, so this is the level it holds throughout.

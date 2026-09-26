@@ -69,7 +69,7 @@ impl AnimContext {
         let rest_world_inverse = model
             .nodes
             .iter()
-            .map(|node| invert_affine(node.transform))
+            .map(|node| invert_or_identity(node.transform))
             .collect();
 
         let mut corner_node = vec![u32::MAX; model.vertices.len()];
@@ -107,10 +107,11 @@ impl AnimContext {
     }
 }
 
-/// A singular rest matrix (a zero-scaled node) has no inverse; fall back to the
-/// identity so the node simply doesn't move rather than poisoning the palette
-/// with NaNs.
-fn invert_affine(matrix: Mat4) -> Mat4 {
+/// The inverse of `matrix`, or the identity when it has none. A singular matrix
+/// (a zero-scaled node) would otherwise put NaNs into whatever is built from it —
+/// the skinning palette here, the pick's per-part ray transform in `pick` — so
+/// the node stays where it is instead. The one fallback both of them use.
+pub(crate) fn invert_or_identity(matrix: Mat4) -> Mat4 {
     let determinant = matrix.determinant();
     if determinant.abs() > 1e-20 && determinant.is_finite() {
         let inverse = matrix.inverse();

@@ -3,7 +3,8 @@
 //! Per invariant 2 this crate holds plain values + displayed stats and emits
 //! [`UiOutput`] *intents*; it never owns or mutates renderer/model internals.
 //! [`sync_debug_state`] funnels the committed panel values into the
-//! [`SceneDebugOptions`] the renderer reads.//!
+//! [`SceneDebugOptions`] the renderer reads.
+//!
 //! ## Layout
 //!
 //! [`UiState`] itself is here, with the slider ranges and the debug-state funnel.
@@ -325,8 +326,8 @@ pub struct UiState {
     pub has_skin: bool,
     /// Mesh nodes the user has hidden via the Outliner's per-row visibility
     /// checkbox (node indices into [`review_model::ModelData::nodes`]). The scene
-    /// callback filters these meshes' triangles out of the viewport draw + GTAO
-    /// (Phase 2). Cleared by `app` on model load (the indices no longer apply).
+    /// callback filters these meshes' triangles out of the viewport draw + GTAO.
+    /// Cleared by `app` on model load (the indices no longer apply).
     pub hidden_meshes: HashSet<usize>,
     /// Whether the dockable side panels — the Outliner (left) and the Inspector
     /// (right) — are open. They share one flag because they are two halves of one

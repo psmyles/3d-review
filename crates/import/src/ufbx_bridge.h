@@ -82,7 +82,7 @@ typedef struct review_import_node {
        as translation / rotation quaternion (x, y, z, w) / scale — what an
        animation clip's baked keys replace channel by channel. The scene loads with
        helper-node inherit-mode handling, so `parent_world * TRS(local)` reproduces
-       `transform` exactly. */
+       `transform` up to the rounding of both into `float`. */
     float local_translation[3];
     float local_rotation[4];
     float local_scale[3];

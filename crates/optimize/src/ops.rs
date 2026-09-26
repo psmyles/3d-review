@@ -1,9 +1,9 @@
 //! Applying one stack operation to one submesh.
 //!
 //! Every function here takes a [`Submesh`] and rewrites it in place, so
-//! [`crate::process`] can walk the stack without knowing what any individual
+//! [`crate::process`](mod@crate::process) can walk the stack without knowing what any individual
 //! operation does. The LOD operation is the exception: it fans one submesh out
-//! into several and lives in [`crate::process`] with the rest of the chain logic
+//! into several and lives in [`crate::process`](mod@crate::process) with the rest of the chain logic
 //! — though the simplify itself is [`simplify`] here, which the in-place Reduce
 //! operation calls the same way.
 

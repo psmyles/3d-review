@@ -1,41 +1,44 @@
-//! Field-guided retopology: regenerate an object's surface as evenly sized,
-//! curvature-aligned triangles or quads.
+//! Retopology: regenerate an object's surface as evenly sized triangles or
+//! quads, by partitioning it into even regions and collapsing each region to
+//! one vertex.
 //!
 //! ## Why this is not like the other operations
 //!
 //! Every meshoptimizer operation *edits* the mesh it is handed — it removes
 //! triangles, merges vertices or reorders buffers, and each output triangle can
-//! be traced back to an input one. Retopology cannot: the output shares no
-//! vertex, no edge and no face with the input. It is a new surface that happens
-//! to lie on the old one.
+//! be traced back to an input one. Retopology cannot: its faces join vertices
+//! that were regions apart, and those vertices sit where the collapse placed
+//! them, so no output face corresponds to an input one. It is a new surface
+//! that happens to lie on the old one.
 //!
 //! Three things follow, and they shape this whole module:
 //!
 //! * **Attributes come back by projection.** For each new corner, the nearest
 //!   point on the source surface is found ([`review_model::Bvh::closest_point`])
-//!   and the material, UVs, colors and normal are read there ([`project`]).
+//!   and the material, UVs, colors and normal are read there (`project`).
 //! * **The operation replaces a node's pieces** rather than rewriting them, so
 //!   it takes the whole `Vec<Submesh>` and splices — a node that came in as
 //!   three materials may come out as three different ones.
-//! * **Quads are real.** The engine emits polygons, and they survive to the
-//!   viewport, the stats card and the export as polygons, through a rebuilt
-//!   [`crate::submesh::PolygonCarry`] ([`layout`]).
+//! * **Quads are real.** `quads` pairs the finished triangles into quads, and
+//!   they survive to the viewport, the stats card and the export as polygons,
+//!   through a rebuilt [`crate::submesh::PolygonCarry`] (`layout`).
 //!
 //! ## Static meshes only
 //!
 //! A node carrying skin weights or blend shapes is left untouched with a
-//! warning. Weights are per *vertex*, and the new mesh has none of the old
-//! vertices; projecting them would mean inventing a binding the artist never
+//! warning. Weights are per *vertex*, and each vertex of the new mesh stands
+//! for a whole region of old ones, moved to where the collapse put it; blending
+//! or projecting their weights would mean inventing a binding the artist never
 //! authored and that no later edit could check.
 //!
 //! ## Layout
 //!
-//! [`proxy`] builds the welded position-only mesh the engine solves over,
-//! [`project`] is the attribute transfer, [`manifold`] the pre-flight report,
-//! and [`layout`] the canonicalization plus the corner-run expansion
-//! `process::assemble` uses. The engine call itself is behind
-//! [`crate::remesh_ffi`], with [`unavailable`] as its twin for a build with no
-//! vendored tree.
+//! `solve` is one object's rebuild, stage by stage: `topology`, `size_field`,
+//! `features`, `seeds`, `partition` + `lloyd`, `quadric` + `collapse`,
+//! `cleanup`, and `quads` guided by `cross_field`. `proxy` builds the welded
+//! position-only mesh it runs over, `preview` the cheap mesh shown while it
+//! converges, `project` is the attribute transfer, and `layout` the
+//! canonicalization plus the corner-run expansion `process::assemble` uses.
 
 use std::collections::HashMap;
 
@@ -80,20 +83,21 @@ pub fn available() -> bool {
     true
 }
 
-/// Fewest faces a node may be asked for. Below about this the field has no room
-/// to align to anything and the result is noise rather than a low-poly mesh.
+/// Fewest faces a node may be asked for. Below about this there are too few
+/// regions to describe any shape and the result is noise rather than a low-poly
+/// mesh.
 const MIN_FACES: u32 = 4;
 
 /// Fewest source triangles a node must have to be worth remeshing. A handful of
-/// triangles carries no surface to solve a field over, and the result would be
-/// worse than what is already there.
+/// triangles carries no surface to partition, and the result would be worse
+/// than what is already there.
 const MIN_INPUT_TRIANGLES: usize = 16;
 
 /// How far from a new corner the source surface may be and still be projected
 /// from, as a multiple of the proxy's bounding-sphere radius. Generous on
 /// purpose: the retopologized surface sits within a fraction of an edge length
-/// of the original, so this only ever rejects a corner the engine put somewhere
-/// impossible.
+/// of the original, so this only ever rejects a corner the rebuild put
+/// somewhere impossible.
 const PROJECTION_RANGE: f32 = 0.25;
 
 /// How much the faces around a vertex must agree on a direction before that
@@ -103,8 +107,9 @@ const NORMAL_AGREEMENT: f32 = 0.5;
 
 /// What one rebuild produced: a polygon soup over its own vertices.
 ///
-/// Triangles today; the offsets table is what lets a quad-dominant topology
-/// hand back n-gons later without changing anything that reads this.
+/// Triangles, or triangles and quads once [`quads`] has merged them; the
+/// offsets table is what lets a face have either corner count without changing
+/// anything that reads this.
 pub(crate) struct RemeshOutput {
     pub positions: Vec<Vec3>,
     /// `face_count + 1` starts into `corners`.
@@ -127,12 +132,12 @@ impl RemeshOutput {
         self.face_count() == 0 || self.positions.is_empty()
     }
 
-    /// Re-check what the bridge handed back before any of it is indexed.
+    /// Re-check a finished rebuild before any of it is indexed.
     ///
-    /// The bridge validates its own output, but this is the boundary the rest of
-    /// the crate trusts: an offset table that is not monotone, or a corner past
-    /// the vertex array, would otherwise surface as a panic in the projection
-    /// loop with nothing to point at.
+    /// Every stage keeps these properties by construction, but this is the
+    /// boundary the rest of the crate trusts: an offset table that is not
+    /// monotone, or a corner past the vertex array, would otherwise surface as a
+    /// panic in the projection loop with nothing to point at.
     pub(crate) fn validate(&self) -> Result<(), OptError> {
         let Some(&first) = self.face_offsets.first() else {
             return Err(OptError::Remesh(
@@ -247,8 +252,8 @@ pub(crate) fn resolve_budgets(inputs: &[BudgetInput]) -> Vec<NodeBudget> {
 ///
 /// Runs over the whole `Vec` rather than one piece at a time — like the AO bake
 /// and unlike the per-piece operations — because a node's materials share one
-/// surface: the field has to be solved over all of them at once or the seams
-/// between them come back as holes.
+/// surface: it has to be rebuilt over all of them at once or the seams between
+/// them come back as holes.
 pub(crate) fn remesh_submeshes(
     submeshes: &mut Vec<Submesh>,
     op: &OpInstance,
@@ -517,9 +522,9 @@ struct NodeOutcome {
 
 /// One node through the in-house rebuild.
 ///
-/// Unlike the engine path there is no budget search: the face count becomes a
-/// vertex count by Euler's formula and the seeds are placed to match, so the
-/// number in the box is produced once rather than converged on.
+/// There is no budget search: the face count becomes a vertex count by Euler's
+/// formula and the seeds are placed to match, so the number in the box is
+/// produced once rather than converged on.
 fn rebuild_node(
     job: &NodeJob<'_>,
     warnings: &mut Warnings,

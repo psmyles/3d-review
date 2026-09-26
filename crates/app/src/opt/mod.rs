@@ -81,8 +81,8 @@ pub(crate) struct OptSubsystem {
     ///
     /// Shared with the worker as an atomic rather than kept here alone, because
     /// bumping it is also what *cancels* the run in flight: the worker holds a
-    /// [`CancelToken`] over this counter and stops as soon as it reads a value
-    /// other than its own (`review_optimize::cancel`). One piece of state, so a
+    /// [`review_optimize::CancelToken`] over this counter and stops as soon as it
+    /// reads a value other than its own (`review_optimize::cancel`). One piece of state, so a
     /// superseded run cannot be live and cancelled at the same time.
     generation: Arc<AtomicU64>,
     /// The generation of the run currently on the worker thread, if any.

@@ -1,16 +1,19 @@
-//! Two layout rewrites: making the engine's output order-independent, and
+//! Two layout rewrites: making the rebuild's output order-independent, and
 //! expanding an indexed piece back into the corner-run layout a `ModelData`
 //! carrying real polygons has to be in.
 //!
 //! ## Canonicalization
 //!
-//! The retopologizer's vertex and face *order* is a function of how its work was
-//! scheduled, even when the geometry is not: a parallel extraction appends
-//! vertices as threads reach them. That is invisible on screen and fatal to
-//! reproducibility — a preset that produces one file today and a byte-different
-//! one tomorrow cannot be diffed, and the export round-trip test could not pin
-//! anything. [`canonicalize`] rewrites the soup into an order derived from the
-//! geometry alone, after which two runs of the same input are byte-identical.
+//! The rebuild's vertex and face *order* is a by-product of how it got there —
+//! which region was numbered first, which merge ran before which — rather than
+//! of the geometry it produced. Every stage is deterministic, so the same input
+//! gives the same order today, but any change to a stage's bookkeeping would
+//! reorder an otherwise identical result. That is invisible on screen and fatal
+//! to reproducibility — a preset that produces one file today and a
+//! byte-different one tomorrow cannot be diffed, and the export round-trip test
+//! could not pin anything. [`canonicalize`] rewrites the soup into an order
+//! derived from the geometry alone, after which two runs of the same input are
+//! byte-identical.
 //!
 //! ## Corner runs
 //!
@@ -34,11 +37,12 @@ use super::RemeshOutput;
 
 /// Rewrite `output` into an order that depends only on its geometry.
 ///
-/// Each face is rotated to lead with its lowest-positioned corner, the faces are
-/// sorted by the resulting corner sequence, and the vertices are renumbered in
-/// order of first use. Winding is preserved throughout — a rotation is not a
-/// reversal — so the orientation guard in [`super::project`] still sees the face
-/// the engine built.
+/// Each face is rotated to lead with its lowest-positioned corner (see
+/// [`lead_corner`] for the quad exception), the faces are sorted by the
+/// resulting corner sequence, and the vertices are renumbered in order of first
+/// use. Winding is preserved throughout — a rotation is not a reversal — so the
+/// orientation guard in [`super::project`] still sees each face wound the way
+/// the rebuild wound it.
 pub(super) fn canonicalize(output: &mut RemeshOutput) {
     let face_count = output.face_count();
     if face_count == 0 {
@@ -47,9 +51,10 @@ pub(super) fn canonicalize(output: &mut RemeshOutput) {
 
     // Each face first rotated to lead with its lowest-positioned corner, then
     // the faces sorted by the resulting sequence. Both steps read positions
-    // only, so neither depends on how the extraction was scheduled — and the
-    // rotation has to come *first*, because the vertex renumbering below is by
-    // order of first use and would otherwise inherit the emitted corner order.
+    // only, so neither depends on the order the rebuild emitted them in — and
+    // the rotation has to come *first*, because the vertex renumbering below is
+    // by order of first use and would otherwise inherit the emitted corner
+    // order.
     //
     // The key is the rotated sequence rather than a sorted multiset, so two
     // faces over the same corners in opposite windings stay distinct.

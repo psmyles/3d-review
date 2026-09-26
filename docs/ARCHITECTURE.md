@@ -82,9 +82,15 @@ One `impl App` block per concern, one file each:
 | `dialog.rs` | Every native file dialog |
 | `texture_manager.rs` | Scene texture pool, off-thread decode, disk auto-reload |
 | `animation.rs` | The animation clock and pose evaluation |
-| `window_state.rs` | Window position/size restore, monitor validation, refresh-rate query |
+| `window_state.rs` | Window position/size restore (saved on exit, never in a gate run), monitor validation, refresh-rate query |
+| `settings.rs` | The per-user `settings.cfg`: the locale, **Remember settings** and the option values it keeps, the recent-files list. A read error other than "not found" skips the next save rather than overwriting lines the viewer does not own |
+| `recent.rs` | File > Open Recent |
+| `update.rs` | Help > Check for Updates, over the OS `curl` on a worker |
+| `logging.rs` | The log from `app`'s side: where the day's file lives, the session header, the handover into the Log window |
+| `explain.rs` | The optimizer errors, warnings and export notes a user can act on, turned into catalog text (`review_optimize::notice`'s `OptWarning` / `ExportNote` are typed, so every one has a key) |
+| `docs_dir.rs` | Where the manual's images live on this install |
 | `undo.rs` | The unified undo/redo snapshot stack |
-| `opt.rs` | The Opt workspace's processing loop |
+| `opt/` | The Opt workspace: `mod.rs` (`OptSubsystem`, its state and the latest-request-wins rules), `process.rs` (scheduling runs, the worker, folding progress / previews / results back), `export.rs`, `preset.rs` |
 
 **GPU bring-up.** `Gpu::start` runs on the *first line of main*, on its own
 thread — device creation needs no window and is the longest single item on the
@@ -113,6 +119,12 @@ arriving mid-run mark it dirty and it respawns once with the latest stack, so
 dragging a slider coalesces without a debounce timer, and a result whose
 generation has been superseded is dropped rather than shown. Export runs on its
 own worker the same way.
+
+**Background work** starts through `thread::Builder::spawn`, and a failure to
+spawn is a notice, never a panic. Each job that shows progress owns its own
+activity card: `ui`'s `begin_activity` returns an `ActivityId` that the job's
+messages carry and `update_activity` / `end_activity` take, so two jobs running
+at once (a load and an Opt rebuild, say) never write into each other's card.
 
 ### `model` — `review-model`
 
@@ -272,7 +284,10 @@ independent of the API underneath it.
 
 | File | Contents |
 | --- | --- |
-| `mod.rs` | `Gpu` (device + swapchain), `Frame` (one frame in flight, borrowing the `Gpu` so "one frame at a time" is a compile-time fact), `SwapchainJob`, the sokol logger |
+| `mod.rs` | `Gpu` (device + swapchain), `Frame` (one frame in flight, borrowing the `Gpu` so "one frame at a time" is a compile-time fact) |
+| `job.rs` | `SwapchainJob`, a draw recorded before the swapchain pass and replayed inside it |
+| `make.rs` | Creating a sokol resource validated, with the pool slot freed if creation failed |
+| `sokol_log.rs` | The sokol logger — without it validation failures are silent — handing each line to the `log` facade |
 | `error.rs` | `GpuError` / `GpuResult` / `ResourceKind`, `require_valid`, the `.resource(kind, label)` combinator |
 | `format.rs` | `Format` and `SCENE_*_FORMAT`; its `sg()` is `pub(in crate::rhi)`, which stops an `sg::PixelFormat` leaking out |
 | `present.rs` | `PresentStatus` |
@@ -323,18 +338,27 @@ between mismatched formats is a silent no-op.
   `deform.rs` (the per-model
   `DeformLayout`: each corner's 16-byte `deform` lane and the influence / morph
   tables it indexes).
-- `material/` — the editable per-material table (cbuffer `b1`, `t5..t11`, aniso
-  sampler) and its path-keyed LRU texture cache.
+- `material/` — the editable per-material table (the `material` uniform block,
+  texture bindings 5-11, the anisotropic `material_sampler`) and its path-keyed
+  LRU texture cache. The GPU table is keyed on the model revision, the mode and,
+  in Unique mode, the part count, so the Opt split's two meshes never share one.
 - `texture.rs` — source-texture decode by magic-byte dispatch: PSD via
   `review-psd`, JPEG via zune's fast path, PNG/TGA/TIFF/HDR/BMP/GIF/PNM via the
   `image` crate. Plus filename channel auto-detect.
 - `tex.rs` / `tex/gpu.rs` — what the Tex viewport is asked to draw, and its image
   and checker draws (two deferred `SwapchainJob`s, deliberately outside the scene
   MRT/tonemap path so the displayed texel equals the stored texel).
-- `scene/` — `ModelSlot` (per-model GPU state: mesh buffers, derived views,
-  selection/visibility draw lists, each with its bake key), `resources.rs` (where
-  every `sync_*` / `release_*` pair lives), `gpu_types.rs` (the `#[repr(C)]`
-  uniforms and `SceneVertex`), `opt.rs` (the Opt split view).
+- `scene/` — `gpu.rs` (`SceneGpu`, the frame's sync and pass recording),
+  `slot.rs` (`ModelSlot`: per-model GPU state — mesh buffers, derived views,
+  selection/visibility draw lists, each with its bake key), `resources.rs` (the
+  mesh and UV builds), `line_views.rs` (the derived line overlays),
+  `draw_lists.rs` (selection / hover / visibility index orderings),
+  `deform_gpu.rs` (the skinning and morph tables), `targets.rs` (`TargetSet`),
+  `gtao.rs` + `ao_accum.rs` (ambient occlusion and its convergence), `uv.rs`,
+  `pipelines.rs`, `uniforms.rs`, `draw.rs`, `gpu_types.rs` (the `#[repr(C)]`
+  uniforms and `SceneVertex`), `opt.rs` (the Opt split and overlay views). Each
+  derived resource's `sync_*` sits beside the thing it builds, and every one has
+  a free arm on the path that leaves its view (invariant 3).
 - `ibl.rs` — HDR image-based lighting. At runtime the env cube, irradiance,
   prefilter and shared BRDF LUT are **loaded** (`IblMaps::from_baked`, a pure
   upload, no startup precompute) from offline-baked assets. The precompute lives
@@ -349,9 +373,11 @@ half the viewport, composited into its own half via a viewport rect. Two sets, n
 one: the composite is a deferred `SwapchainJob`, so both halves' passes have run
 before either composite does and a shared set would show the second view in both.
 Two half-width sets cost what one full-width set does, and the second is released
-the moment a single view is drawn.
+the moment a single view is drawn — as is everything else only Opt uses (the ghost
+wireframe, the idle slot's derived views) the moment `render`, `render_uv` or the
+Tex path runs (`SceneGpu::release_opt_views`).
 
-**Shaders are one source**: `src/shaders/review.glsl`, all fifteen programs in
+**Shaders are one source**: `src/shaders/review.glsl`, all sixteen programs in
 sokol-shdc's annotated GLSL. `scripts/gen-shaders.{sh,ps1}` turns it into the
 checked-in `src/shaders/generated/` — per-backend HLSL5 and MSL sources plus
 shdc's Rust reflection (bind slots, attribute locations, a struct per uniform
@@ -439,11 +465,12 @@ Layers, bottom up:
    bitmasks (`meshopt/options.rs`) sit outside the `has_meshopt` gate, since the
    stack's parameter types need them in either build; `build.rs` pins the header
    version and every bound declaration.
-2. `submesh.rs` — splits a `ModelData` into per-(node, material) pieces, the unit
+2. `submesh/` — splits a `ModelData` into per-(node, material) pieces, the unit
    that can survive a simplify, since meshoptimizer returns a new index buffer
    with no triangle correspondence.
-3. `ops.rs` — one function per operation.
-4. `process.rs` — indexes the mesh losslessly (see
+3. `ops.rs` — one function per operation; `remesh/`, `shrinkwrap/`, `shading.rs`
+   and `ao.rs` for the operations too large for one function.
+4. `process/` — indexes the mesh losslessly (see
    [GOTCHAS](GOTCHAS.md#every-opt-run-begins-with-a-lossless-index-pass), this is
    what makes any meshoptimizer call do anything at all), then walks the stack,
    fans out the LOD chain, reassembles a `ModelData` per level and measures it,
@@ -458,7 +485,10 @@ It holds the Recalculate Normals operation and `finish_bases`, each level's last
 step: smooth normals a normal-blind weld left stale, then rebuild tangents when
 any operation invalidated them.
 
-`stack.rs` is the serializable operation stack the UI edits; `preset.rs` is its
+`stack/` is the serializable operation stack the UI edits, and `stack/limits.rs`
+the range every numeric setting may take — one table read by both the
+inspector's sliders and `OptStack::sanitize`, which clamps a preset loaded from
+disk into the same ranges (a preset is a file anyone can edit). `preset.rs` is its
 versioned JSON envelope. The two operations that simplify share one
 `SimplifySettings` (flattened on the wire, so older presets still load) and one
 `process::simplify_submeshes` — the LOD op fans its output out into levels,
@@ -481,7 +511,29 @@ The processed `ModelData` still leaves `faces` / `triangles.to_face` empty: the
 corner-run layout the renderer assumes cannot survive a weld, so the polygons
 reach only the exporter.
 
-`export.rs` and `export_bridge.c` write a LOD chain out as FBX via vendored
+**Retopology** (`remesh/`) is our own: partition the surface into even regions,
+collapse each to one vertex, clean up, pair triangles into quads, and project the
+source's attributes back on (`remesh/solve.rs` is the per-object order; see
+[Settled decisions](#settled-decisions) and [GOTCHAS](GOTCHAS.md#remesh)).
+`shrinkwrap/` rebuilds a closed shell around an object, from a distance field or
+voxels. Both run one object per core through `parallel.rs`, which also holds
+`sweep` / `sweep_reduce`: the parallel pass the stages *inside* one object are
+built from, over a **fixed** 65536-element chunk so a reduction folds per chunk
+and merges in chunk order. That constant, not the thread count, is what the
+arithmetic depends on — it is the whole determinism argument — so a sweep's
+chunks must be whole elements (a per-vertex `[f64; 3]`, never a flat `f64`
+stream, where 65536 is not a multiple of three). Each object gets its share of
+the machine (`cores / objects`) for its own inner parallelism. Cancellation is
+checked between passes (`cancel.rs`'s `CancelToken`, over the same generation
+counter `app` supersedes runs by), so a cancelled rebuild costs at most the pass
+in flight.
+
+`notice.rs` holds what a run or an export has to say about its result as values
+(`OptWarning`, `ExportNote`) rather than sentences, so `app` renders them through
+the catalog (invariant 12). `replace_file.rs` writes a file by replacing it, so a
+failed write never destroys what was there.
+
+`export/` and `export_bridge.c` write a LOD chain out as FBX via vendored
 ufbx_write (suffixed siblings in one file or one file per level, rebuilt or
 flattened hierarchy), giving back **every source property the stack did not
 change**: the authored node graph (props, pivots, rotation order, inherit type,
@@ -540,6 +592,16 @@ A safe `decode_psd` over a C-ABI bridge to psd_sdk (C++), returning a PSD's merg
 composite as RGBA8. Vendors psd_sdk as **source** and compiles it with `cc`
 alongside the C-ABI `wrapper.cpp`; `bindings.rs` is committed Rust hand-kept
 against `wrapper.h`, so no bindgen or libclang runs at build time.
+
+The decode is staged — open (header only), check, decode, read — so the wrapper
+refuses what psd_sdk would mishandle *before* psd_sdk allocates for it: only 8,
+16 and 32-bit Grayscale or RGB, 1 to 56 channels, and the same size caps the Rust
+side applies (`PsdError::Unsupported`). The vendored tree is **patched**, not an
+unmodified snapshot: its RLE decoder was unchecked and its image-data section
+sized buffers with 32-bit arithmetic, and `vendor/review.patch` + `NOTICE.txt`
+record the bounds checks added to both. `tests/synthetic.rs` builds malformed
+PSDs in-test (grayscale with alpha, 1-bit, too many channels, truncated RLE) and
+requires each to decode correctly or be refused with an error - never a crash.
 
 ### `shell-macos` — `review-shell-macos`
 
@@ -625,11 +687,13 @@ arm on the path that leaves that viewport: `sync_uv_view` is called from
 `render_uv` alone, so `release_uv_views` runs from the 3D path's `sync_frame`.
 
 **4. Heavy derived views are GPU compute and capability-gated.** Compute-based
-views read buffers already on the GPU and write transient storage buffers. Gate
-them on what the device reports — `sg_query_features()`, `sg_query_limits()`,
-`sg_query_pixelformat()`, plus `backend::supported_sample_counts` where sokol's
-answer is only a yes/no — and disable them in the UI when the active device cannot
-run them. Never crash.
+views (none ship yet) read buffers already on the GPU and write transient storage
+buffers. Gate them on what the device reports — sokol's `query_features` /
+`query_limits` / `query_pixelformat` — and disable them in the UI when the active
+device cannot run them. Never crash. The one capability gate today is the scene
+MSAA picker, which asks `backend::supported_sample_counts` because sokol reports
+MSAA only as a yes/no; the texture path already asks `query_limits` for the
+largest 2D image the device takes.
 
 **5. Faithful stats.** The Model Stats panel reads source DCC counts carried
 through import in `ModelStats` (original polygon and vertex counts), **never**
@@ -669,10 +733,30 @@ apparent size on a 2× display while the native `Window`/`Panel` chrome beside i
 did not. Don't reintroduce a px-to-point conversion.
 
 **9. All unsafe and all C/FFI lives in `import`, `psd` and `optimize`** — plus the
-scoped GPU site below. No unsafe leaks into `model` or `ui`, nor into `render`'s
-geometry, material or camera modules. Before `slice::from_raw_parts`, null-check
-the pointer and treat len 0 as empty (`checked_slice`). Free the C scene on
-**both** success and error paths.
+scoped GPU site below and `shell-macos`'s one Objective-C hook. No unsafe leaks
+into `model` or `ui`, nor into `render`'s geometry, material or camera modules.
+Before `slice::from_raw_parts`, null-check the pointer and treat len 0 as empty
+(`checked_slice`). Free the C scene on **both** success and error paths.
+
+**The compiler enforces it.** `app`, `model`, `ui`, `log`, `prof` and
+`localization` are `#![forbid(unsafe_code)]`. `render`, `import` and `optimize`
+are `#![deny(unsafe_code)]` at the crate root, and each sanctioned module opts
+back in with a scoped `#![allow(unsafe_code, reason = "...")]` saying why — so a
+new `unsafe` anywhere else is a build error, and the list of `allow`s *is* the
+list of unsafe modules:
+
+- `import`: `ffi/bridge.rs` (the one call into C and the handles that free what
+  it returns), `ffi/raw.rs` (pointer-to-slice leaves), `startup.rs` (the Windows
+  launch hint), `tracy_alloc.rs` (the `GlobalAlloc` wrapper). The marshallers are
+  `deny`, and read only through `raw.rs`'s safe accessors.
+- `optimize`: `ffi.rs` + `meshopt/`, `export_ffi.rs` + `export/write.rs`, and the
+  test-only `probe.rs`.
+- `render`: `rhi/backend/{d3d11,metal}.rs` and the `extern "C"` logger callback
+  in `rhi/sokol_log.rs`.
+
+The workspace also denies `clippy::undocumented_unsafe_blocks`, which is what
+makes "every unsafe carries a `// SAFETY:` rationale" a build error rather than a
+convention.
 
 The sanctioned exceptions:
 
@@ -691,7 +775,7 @@ The sanctioned exceptions:
   spread unsafe across a hundred call sites and leak its scene lifetime into Rust;
   instead `export_bridge.c` does the whole write in one call taking flat arrays,
   validating the payload up front and freeing the scene on every path. Those
-  modules plus `export.rs`'s single call site are the whole unsafe surface:
+  modules plus `export/write.rs`'s single call site are the whole unsafe surface:
   `ops`, `process`, `stack`, `preset` and `submesh` are ordinary safe Rust, and
   the crate `forbid`s `unsafe_code` outright when neither vendored tree is
   present.
@@ -699,11 +783,10 @@ The sanctioned exceptions:
   the renderer's unsafe lives, and it is a few hundred lines per OS. Everything
   sokol_gfx draws with — pipelines, buffers, targets, textures, samplers — is safe
   Rust over its C API, so what used to be ~2000 lines of pervasive COM unsafe is
-  now that leaf plus the one `extern "C"` logger callback in `rhi/mod.rs`.
+  now that leaf plus the one `extern "C"` logger callback in `rhi/sokol_log.rs`.
 
-`app`, `model` and `ui` are fully safe (`#![forbid(unsafe_code)]`). Every unsafe
-carries a `// SAFETY:` rationale and touches only GPU plumbing — never model
-geometry, camera math or material logic, which stay safe.
+Every unsafe in `render` touches only GPU plumbing — never model geometry, camera
+math or material logic, which stay safe.
 
 **10. `model` is host-agnostic.** It depends only on `glam` — no GPU API, `egui`,
 `winit` or importer types. This is what kept the renderer swappable (wgpu → D3D11
@@ -722,9 +805,11 @@ against shdc's reflection. The second is what pins the invariant to the *shader*
 rather than to a hand-typed number. Add both with the struct; they are the only
 thing that turns this invariant into a build error. Vertex attribute locations are
 pinned the same way, by a test asserting the generated `ATTR_*` constants against
-the layout every program sharing `vs_main` expects. Each uniform block also gets
-its own slot across all programs (scene VS 0, scene FS 1, material 2), so a slot
-never means two different structs.
+the layout every program sharing `vs_main` expects. Within the scene programs
+each uniform block has its own slot (scene VS 0, scene FS 1, material 2), so a
+scene draw never binds one slot to two structs. The single-purpose programs —
+post, GTAO, the depth chain, Tex, egui, the bake — each bind their own block at 0,
+and nothing draws with two of them at once.
 
 **12. No inline user-visible strings; one documentation source.** Every string a
 user can read — a label, a tooltip, a panel title, a notice, a dialog title or
@@ -736,9 +821,14 @@ never a literal at the call site.
 `review-localization-build` turns the English catalog into those keys inside each
 consuming crate at build time, so a key that does not exist is a compile error and
 one that nothing names is a `dead_code` warning that `-D warnings` turns into a
-failed build. `crates/localization/tests/no_inline_strings.rs` parses `ui`, `app` and
-`shell-macos` and fails on a literal handed to any text sink; a literal that
-genuinely is not user-visible is marked `// localization: exempt <reason>`.
+failed build. A message that takes variables gets no key constant at all, only its
+typed formatter — so the formatter is what goes unused, and is reported, when no
+screen shows the message. `crates/localization/tests/no_inline_strings.rs` parses
+`ui`, `app` and `shell-macos` and fails on a literal handed to any text sink —
+egui's widgets and builders, `painter.text`, `LayoutJob`, the window title — or
+routed there through a `let` or a formatter argument; it carries self-tests for
+each sink, since a gate that silently misses one is worse than none. A literal
+that genuinely is not user-visible is marked `// localization: exempt <reason>`.
 
 Widgets take `impl Into<egui::WidgetText>`, into which a `Key` converts, and a
 runtime value — a file name, a count — is formatted *through* a message with a
@@ -769,7 +859,10 @@ run and the widget breaks it where it actually runs out of room.
 are what a bug report quotes, and their crates must not learn about catalogs to
 say them. `app` localizes the *lead* line and passes the diagnostic through as
 `{ $detail }`; the three optimizer errors a user can act on get their own text in
-`app/src/explain.rs`. Enums in `render` / `optimize` / `model` / `import` keep
+`app/src/explain.rs`. What a run or an export has to *say* — a warning, a note
+about what the file lost — is not an error, so it is a typed value
+(`review_optimize::OptWarning` / `ExportNote`) that `explain.rs` renders through
+the catalog, exhaustively. Enums in `render` / `optimize` / `model` / `import` keep
 `label()` as a stable English identifier for logs and reports, and get their
 display name through `ui`'s `labels.rs` map — which is exhaustive, so a variant
 added upstream is a compile error rather than an English word on a translated
@@ -834,6 +927,42 @@ uniform swizzle and the displayed texel equals the stored texel.
 
 **Crate boundaries are load-bearing** (invariants 2, 9, 10). Keep them.
 
+**Retopology is ours, in Rust, and the vendored engines are gone.** Remesh was
+built on Instant Meshes (triangles, mostly quads) and QuadriFlow (only quads)
+behind a C++ bridge. Three things made that untenable and none was tunable: a
+field extraction *synthesizes* a surface, so on the thin open shells game assets
+are full of it tore holes; neither engine took a cancel hook, so an edit mid-run
+waited out the object in the solver; and QuadriFlow was serial as vendored while
+Instant Meshes' field solve gave a different mesh per thread count.
+`crates/optimize/src/remesh/` replaces all of it: partition the surface into even
+regions and **collapse** each one to a vertex. A collapse only ever removes edges
+from a mesh that was already whole, so it cannot open a hole or drop a border —
+which is the entire point. Its parallel stages sweep fixed chunks, it is
+cancellable between passes, and it gives the same mesh at any thread count, so `Reproducible` and
+`Thorough layout` are gone as settings rather than defaulted. **Do not
+reintroduce a vendored retopologizer.** Two consequences are load-bearing and
+documented for users in `docs/book/src/en/opt/remesh.md`: a rebuild can never
+produce *more* faces than the input has, and its face sizes are less uniform than
+a lattice-based extraction's ([GOTCHAS.md](GOTCHAS.md#remesh)). Quads are real:
+`remesh/quads.rs` pairs the finished triangles up, guided by the cross field.
+
+Two papers were assessed as replacement engines (2026-09-19) and neither is
+adoptable. *SQuadGen* (arXiv 2604.27329, MIT, microsoft/SQuadGen) is an
+802M-parameter diffusion model needing CUDA 13 and PyTorch on Linux and 30-60 s
+per shape on an A100, and its stated scope is coarse, simple base layouts —
+detailed geometry is filtered out of its training data. *LATO* (arXiv
+2603.06357) is a mesh *generator*; even geometry-conditioned its fidelity to the
+input is a Hausdorff distance of 0.08 of the shape's extent, orders of magnitude
+worse than what `tests/remesh_fidelity.rs` measures here. Three classical parts
+of SQuadGen are worth keeping in mind: its extraction (seeded region growing plus
+feature-aware shortest-edge collapse) is structurally what `remesh/` already
+does; its refinement ends with a nearest-point projection onto the input, which
+we **measured as harmful** ([GOTCHAS.md](GOTCHAS.md#snapping-the-rebuild-back-onto-the-source-surface-makes-it-worse));
+and its dataset-side quad recovery — rectangularity-sorted edge merging,
+direction-aligned loop growing, loop shifting, a Blossom-Quad fallback — is a
+licence-clean, non-neural triangle-to-quad converter and the best candidate if
+the quad merge is ever extended.
+
 **Engine-cooked compressed textures (KTX2, DDS) are intentionally not a goal.**
 Artists test *source* assets (PNG, TGA, …); KTX2 and DDS are produced inside an
 engine's content pipeline and never hand-authored or carried, so the viewer is
@@ -845,7 +974,9 @@ are BC6H — but that is our own offline bake, not an import path.
 ## Platform decisions
 
 The cross-platform work was planned as a numbered list of decisions, and source
-comments still cite them by number. This is what each one settled.
+comments cite them by number (`D9`) or, for the structural rules below the
+table, by name (`Platform decisions: one swapchain pass`). This is what each
+one settled.
 
 | # | Decision |
 | --- | --- |
@@ -858,9 +989,10 @@ comments still cite them by number. This is what each one settled.
 | D7 | Mip chains are generated on the CPU; sokol has no `GenerateMips`. sRGB is averaged in linear light so the result matches what the hardware produced. |
 | D8 | GPU bring-up starts on the first line of `main`, on its own thread, and is joined when the window appears. |
 | D9 | Native dialogs run on a worker thread and answer through the event loop; a modal run loop entered from a winit callback aborts the process on macOS. |
-| D10 | File commands chord with the **primary** modifier — `Ctrl` on Windows and Linux, `Cmd` on macOS. |
+| D10 | File commands chord with the **primary** modifier — `Ctrl` on Windows and Linux, `Cmd` on macOS. `app`'s `shortcuts::primary_held` matches it; `ui`'s `primary_modifier()` is the one place that names it on screen, passed into a message as a variable, so no label hard-codes "Ctrl". |
 | D11 | macOS builds are Apple silicon only, so the packaging script checks the binary's architecture rather than producing a universal binary. |
-| D12 | Windows ships an Inno Setup installer with the `.fbx` file association. |
+| D12 | The macOS build is signed and notarized by hand on the dev Mac (`scripts/build-mac.sh`, the twin of `packaging/build-windows-installer.ps1`), and its `.fbx` association is `LSHandlerRank = Alternate`: the viewer volunteers in Open With without taking the extension from whatever already owns it. |
+| D13 | Windows first, then macOS: the shared code and the gate risk were in the Windows migration, and the Mac is leaves plus packaging. |
 | D14 | A `.fbx` opened from Finder arrives as an Apple event, not `argv[1]`; without the open hook the file association does nothing. |
 | D15 | The macOS menu bar is a second door onto the existing commands, never a second implementation; its items route through the event loop rather than acting in the callback. |
 | D16 | Trackpad pinch zooms the camera. A pinch delta is a scale *fraction*, so its constant is what a whole gesture is worth, not a per-notch step. |
@@ -868,3 +1000,14 @@ comments still cite them by number. This is what each one settled.
 | D18 | GPU timing is a per-OS leaf beside the device (timestamp and disjoint queries), since sokol has no notion of it. |
 | D19 | The IBL precompute is offline only, behind the `bake` feature, on a headless sokol device; image readback is another per-OS leaf. |
 | D20 | The swapchain is plain UNORM, not an sRGB format — the flip model disallows `*_SRGB` — so the composite, egui and Tex shaders encode sRGB themselves. |
+| D21 | `vendor/sokol-rust` is a pinned upstream checkout, `exclude`d in the root manifest so `-D warnings` does not lint it. `--exclude` on the command line is not enough: cargo lints every path dependency inside the workspace directory as local. |
+| D22 | psd_sdk is vendored as source and compiled with `cc` beside a C-ABI wrapper, with committed hand-kept bindings, so a clean checkout links without a prebuilt library. |
+
+The structural rules the decisions add up to:
+
+| Rule | What it says |
+| --- | --- |
+| **`rhi` owns the backend** | Nothing outside `render/src/rhi/` names an `sg::` type, a backend pixel format or a window handle. Every resource goes through a wrapper, every format is `Format`, every failure is a `GpuError`, and invalid input (a zero dimension, a refused drawable) is an error there rather than a sokol validation abort. |
+| **One swapchain pass** | Exactly one swapchain pass per frame — Metal presents inside `sg_end_pass`, so a second one would double-present. Everything a `Renderer::render_*` draws onscreen is therefore recorded as a deferred `SwapchainJob` and replayed when that pass opens; offscreen passes are issued directly. |
+| **Platform leaves** | The complete inventory of per-OS code: `rhi/backend/{d3d11,metal}.rs` (device, swapchain, GPU timer, bake readback), `crates/shell-macos` (open-file events, menu bar), and the packaging scripts. Nothing else in the workspace names an OS. |
+| **Toolchain** | `rust-toolchain.toml` tracks stable rather than pinning a version, and shader edits are the only thing that needs a platform shader compiler (D5): a checkout that does not touch `review.glsl` builds from the committed bytecode. |

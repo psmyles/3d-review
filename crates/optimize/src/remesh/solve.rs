@@ -15,10 +15,10 @@
 //! 8. [`quads`](super::quads) — pair the triangles up, when quads were asked
 //!    for, guided by a [`cross_field`](super::cross_field) built here for it.
 //!
-//! Between every stage, and inside the ones that sweep, the run can be
-//! abandoned. That is the difference the user actually feels: the engines this
-//! replaces took no cancel hook at all, so an edit mid-rebuild had to wait out
-//! the object already in the solver.
+//! Between every stage, and between the passes of the ones that iterate, the
+//! run can be abandoned. That is the difference the user actually feels: the
+//! engines this replaces took no cancel hook at all, so an edit mid-rebuild had
+//! to wait out the object already in the solver.
 //!
 //! ## The target edge length
 //!

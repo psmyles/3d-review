@@ -7,7 +7,7 @@
 //! The full shaded look is the skybox + the per-material PBR/IBL `fs_main` (the
 //! material uniform block + its seven texture slots + the IBL maps + the UV checker),
 //! drawn one indexed range per material, plus the live tone-map operator switch, the
-//! debug line views and the selection flash.
+//! debug line views and the selection highlight.
 //!
 //! ## Bindings are per program, not per pass
 //!
@@ -28,19 +28,21 @@
 //!   binds three IBL maps, not four.
 //! * `fs_line` reads none of the fragment-stage scene uniforms, so the line
 //!   pipelines apply only the vertex block — while `fs_selection`, which reads the
-//!   flash colour, takes both.
+//!   highlight colour, takes both.
 //! * `vs_main` declares all four deform tables, so every program sharing it must
 //!   bind all four. That is what [`DeformDummies`] is for: a model without a skin
 //!   has none of them.
 //!
 //! ## Ambient occlusion
 //!
-//! GTAO is three more offscreen passes before the composite, and it reads a G-buffer
-//! of its own rather than the scene MRT: a **single-sample** mesh-only pass writes the
-//! view normal and view Z, so MSAA edge averaging never blends a normal across a
-//! silhouette. The occlusion and blur passes are fullscreen `R8`, and the composite
-//! darkens only the AO-eligible ambient attachment by the result — an additive
-//! correction over the radiance, so direct and emissive light are never darkened.//!
+//! GTAO is a run of offscreen passes before the composite (see [`super::gtao`] for the
+//! sequence), and it reads a G-buffer of its own rather than the scene MRT: a
+//! **single-sample** mesh-only pass writes the view normal and view Z, so MSAA edge
+//! averaging never blends a normal across a silhouette. The occlusion and denoise
+//! passes are fullscreen `R16F`, and the composite darkens only the AO-eligible ambient
+//! attachment by the result — an additive correction over the radiance, so direct and
+//! emissive light are never darkened.
+//!
 //! The pass sequencing lives here; the pieces it sequences are beside it:
 //! [`super::targets`] owns the attachments, [`super::gtao`] the occlusion
 //! passes, [`super::draw`] the draw verbs, [`super::uv`] the UV viewport, and
@@ -160,10 +162,10 @@ pub(crate) struct SceneGpu {
     /// A second set for the Opt split's right-hand view, at the same half-width size
     /// as the first — so the two together cost what one full-width set would.
     ///
-    /// It exists because the composite is a *deferred* job (`mac-port-plan.md` §3.2):
-    /// both halves' passes have run by the time either composite does, so a shared set
-    /// would show the second view's contents in both. `None` outside the split
-    /// (invariant 3).
+    /// It exists because the composite is a *deferred* job (`docs/ARCHITECTURE.md`,
+    /// Platform decisions: one swapchain pass): both halves' passes have run by the
+    /// time either composite does, so a shared set would show the second view's
+    /// contents in both. `None` outside the split (invariant 3).
     pub(super) split_targets: Option<TargetSet>,
     /// The MSAA level the pipelines are built for.
     pub(super) sample_count: u32,
@@ -530,7 +532,8 @@ impl SceneGpu {
     }
 
     /// The offscreen 2-MRT scene pass: skybox, the mesh draw list, the grid, the
-    /// derived line overlays, the pivot marker, the skeleton and the selection flash.
+    /// derived line overlays, the pivot marker, the skeleton and the selection
+    /// highlight.
     pub(super) fn record_scene_pass(
         &self,
         frame: &mut Frame<'_>,

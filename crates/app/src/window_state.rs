@@ -1,15 +1,20 @@
 //! Persist the window's last position, size, and maximized state so the viewer
 //! reopens where the user left it.
 //!
-//! The state file lives in the OS's per-user config directory, not next to the
-//! executable: an install in `Program Files` is read-only for a non-admin user, so
-//! writing config beside the exe would silently fail. Reading and writing here
-//! needs no `unsafe`, so this stays in `app` rather than `import` (invariant 9
-//! only funnels FFI through `import`).
+//! The state file lives in the OS's per-user config directory (found through
+//! `dirs`, see [`state_dir`]), not next to the executable: an install in
+//! `Program Files` is read-only for a non-admin user, so writing config beside
+//! the exe would silently fail. It is written on the way out (a close request,
+//! the menu's Exit, and `exiting`, which the macOS Quit reaches without a close
+//! request) and neither read nor written by a gate run, which opens at a fixed
+//! size of its own.
 //!
 //! The format is a tiny `key=value` text file — deliberately dependency-free
 //! (no serde) for a five-field record. A missing, unreadable, or malformed file
-//! is never fatal: load returns `None` and the window falls back to OS defaults.
+//! is never fatal: load returns `None` and the window falls back to OS defaults,
+//! as it does for a saved placement no connected monitor can show any more
+//! ([`placement_is_visible`]). The monitor refresh-rate query the redraw pacing
+//! uses lives here too, beside the rest of the monitor geometry.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -36,8 +41,9 @@ pub struct WindowPlacement {
 /// Review` on Windows (the per-user *Roaming* profile, exactly the path the
 /// hand-read `APPDATA` env var used to give) and `~/Library/Application
 /// Support/3D Review` on macOS, where that variable does not exist at all
-/// (`mac-port-plan.md` D17). `None` on a platform or environment `dirs` can't
-/// answer for, in which case persistence is simply skipped.
+/// (`docs/ARCHITECTURE.md`, Platform decisions D17). `None` on a platform or
+/// environment `dirs` can't answer for, in which case persistence is simply
+/// skipped.
 fn state_dir() -> Option<PathBuf> {
     let mut path = dirs::config_dir()?;
     path.push(crate::APP_NAME);
@@ -296,11 +302,11 @@ mod tests {
     use super::state_dir;
 
     /// `dirs::config_dir()` must resolve to the *same* directory the hand-read
-    /// `APPDATA` environment variable used to give (`mac-port-plan.md` D17) — the
-    /// point of the swap is a path that also exists on macOS, not a new location
-    /// on Windows. Getting this wrong would silently strand every existing user's
-    /// saved window placement, with no error and no way to notice but a window
-    /// that stopped reopening where it was left.
+    /// `APPDATA` environment variable used to give (`docs/ARCHITECTURE.md`,
+    /// Platform decisions D17) — the point of the swap is a path that also exists
+    /// on macOS, not a new location on Windows. Getting this wrong would silently
+    /// strand every existing user's saved window placement, with no error and no
+    /// way to notice but a window that stopped reopening where it was left.
     #[cfg(windows)]
     #[test]
     fn the_config_directory_is_still_appdata_on_windows() {

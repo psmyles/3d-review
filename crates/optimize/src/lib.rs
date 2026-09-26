@@ -5,7 +5,7 @@
 //! ## Layering
 //!
 //! * [`stack`] — the user's setup as plain, serializable data. No mesh state.
-//! * [`process`] — interprets a stack against a `ModelData`, producing one
+//! * [`process`](mod@process) — interprets a stack against a `ModelData`, producing one
 //!   `ModelData` per LOD level plus measured metrics.
 //! * [`submesh`] / [`ops`] — the pieces `process` is built from.
 //! * [`meshopt`] / `ffi` — the checked wrappers and the raw C declarations.
@@ -18,10 +18,14 @@
 //! ## `unsafe`
 //!
 //! Invariant 9 confines `unsafe`/FFI to a named set of sites; this crate is one
-//! of them (see docs/ARCHITECTURE.md). All of it lives in `ffi` (declarations) and
-//! [`meshopt`] (checked wrappers that validate every buffer and index before the
-//! call and re-validate the reported sizes after). Nothing above that layer —
-//! [`ops`], [`process`], [`stack`], [`preset`] — contains any.
+//! of them (see docs/ARCHITECTURE.md). All of it lives in five places: `ffi`
+//! (the meshoptimizer declarations) and [`meshopt`] (checked wrappers that
+//! validate every buffer and index before the call and re-validate the reported
+//! sizes after); `export_ffi` (the export bridge's declarations) and
+//! `export::write`'s `write_scene` (the one call into that bridge); and the
+//! test-only writer probe, `probe`. Nothing else — [`ops`],
+//! [`process`](mod@process), [`remesh`], [`shrinkwrap`], [`stack`], [`preset`]
+//! — contains any.
 //!
 //! ## Optional vendoring
 //!
@@ -30,8 +34,8 @@
 //! operation reports [`OptError::Unavailable`].
 
 // Everything outside the FFI modules is ordinary safe Rust (invariant 9). The
-// crate refuses `unsafe`, and those modules opt in individually with a
-// module-level `allow` saying why.
+// crate refuses `unsafe`, and those sites opt in individually with an `allow`
+// saying why — module-level, except `write_scene`'s, which covers one function.
 #![deny(unsafe_code)]
 
 mod export_ffi;

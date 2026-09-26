@@ -16,10 +16,12 @@
 //!
 //! ## A port, deliberately line for line
 //!
-//! This is `remesh_density.cpp` in Rust, and it keeps that file's constants, its
-//! pass counts, its arithmetic in `f64` and — in [`for_each_neighbour`] — even
-//! the *order* its neighbour lists were built in, because a float sum is not
-//! associative and the two must agree to the last bit where they can. The
+//! This began as `remesh_density.cpp`, the density pass of the C++ bridge
+//! Remesh used to be built on, and it keeps that file's constants,
+//! its pass counts, its arithmetic in `f64` and — in [`for_each_neighbour`] —
+//! even the *order* its neighbour lists were built in, because a float sum is
+//! not associative and the port was checked against the original to the last
+//! bit where it could be. The C++ is gone; "the reference" below means it. The
 //! constants are the measured part of this operation: each was set against a
 //! real asset, and the reasons are kept with them below.
 //!
@@ -518,8 +520,8 @@ fn diagonal_of(positions: &[f32], count: usize) -> f64 {
 
 /// Area-weighted vertex normals over the proxy, unit length.
 ///
-/// The reference was handed the engine's own smoothed or creased normals; this
-/// operation has no engine, so they are computed here from the same surface.
+/// The reference was handed the old engines' own smoothed or creased normals;
+/// there is no engine now, so they are computed here from the same surface.
 /// Area weighting rather than plain averaging for the reason
 /// `ModelData::generate_normals` uses it: the unnormalized cross product *is*
 /// twice the area, so a sliver contributes in proportion to the surface it

@@ -667,9 +667,9 @@ fn varying_face_size_spends_the_budget_on_the_curved_parts() {
         ..RemeshParams::default()
     };
 
-    // One topology today; a quad-dominant one would want its own floor and
-    // ceiling here, since how far a layout carries a field is a property of the
-    // layout.
+    // Triangles only: a quad layout would want its own floor and ceiling here,
+    // since how far a layout carries a field is a property of the layout, and
+    // `tests/remesh_quads.rs` is where the quad path is measured.
     {
         let (topology, floor) = (RemeshTopology::Triangles, 1.5);
         let even = run(&model, &remesh_stack(params(topology, 0.0)));
@@ -762,9 +762,9 @@ fn the_face_count_is_the_one_that_was_asked_for() {
     }
 }
 
-/// The reproducible path has to stay reproducible *with* a field, which is where
-/// it is hardest: the field decides how fine each region is, and the extraction
-/// then snaps and collapses at that size.
+/// A rebuild has to stay reproducible *with* a size field, which is where it is
+/// hardest: the field decides how fine each region is, and the rebuild then
+/// seeds, partitions and collapses at that size.
 #[test]
 fn a_varied_rebuild_is_reproducible() {
     let Some(model) = fixture("monkey.fbx") else {

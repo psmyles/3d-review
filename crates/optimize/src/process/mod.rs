@@ -25,11 +25,12 @@
 //! that submesh is left as it was; the rest of the model still processes. A
 //! preview that shows most of the asset plus a clear warning is far more useful
 //! while tweaking sliders than no preview at all. Only a whole-run failure
-//! (meshoptimizer missing, empty model) returns `Err`.//!
+//! (meshoptimizer missing, empty model) returns `Err`.
+//!
 //! ## Layout
 //!
 //! [`process`] is the run. [`carry`] defines what a level carries beside its
-//! mesh, [`pipeline`] the steps a stack is walked in, [`assemble`] the rebuild
+//! mesh, [`pipeline`] the steps a stack is walked in, `assemble` the rebuild
 //! of one `ModelData` per level, and [`metrics`] the measuring of each.
 
 use std::time::{Duration, Instant};
@@ -478,7 +479,6 @@ pub fn process_progressive(
     })
 }
 
-/// Whether the user excluded `node` from processing entirely.
 /// Whether an enabled Reduce sits among `ops`, so the level it runs on has been
 /// through a simplifier.
 fn runs_reduce(ops: &[OpInstance]) -> bool {
@@ -486,6 +486,7 @@ fn runs_reduce(ops: &[OpInstance]) -> bool {
         .any(|op| op.enabled && matches!(op.kind, OpKind::Reduce(_)))
 }
 
+/// Whether the user excluded `node` from processing entirely.
 pub(crate) fn is_excluded(stack: &OptStack, node: u32) -> bool {
     stack
         .node_override(node as usize)
@@ -762,9 +763,9 @@ mod tests {
     /// The exception: one piece with a **rebuilt** carry puts the whole level
     /// into the import's corner-run layout, and the quads reach the viewport.
     ///
-    /// Built by hand rather than by running a Remesh, so it holds whether or not
-    /// a retopologizer is vendored — and so the assertion is about `assemble`'s
-    /// layout rather than about what the engine happened to produce.
+    /// Built by hand rather than by running a Remesh, so the assertion is about
+    /// `assemble`'s layout rather than about what a rebuild happened to
+    /// produce.
     #[test]
     fn a_level_with_a_rebuilt_carry_emits_corner_run_faces() {
         let model = demo_cube_model();
@@ -786,8 +787,8 @@ mod tests {
         // A rebuilt carry over the welded mesh: the cube's triangles come in
         // pairs cut from one quad — `(a, b, c)` then `(a, c, d)` — so each pair
         // names the face `[a, b, c, d]`. Built here rather than by running a
-        // Remesh so the test does not need a vendored retopologizer, and so what
-        // it asserts is `assemble`'s layout rather than the engine's output.
+        // Remesh so what it asserts is `assemble`'s layout rather than a
+        // rebuild's output.
         let piece = &mut submeshes[0];
         let mut carry = crate::submesh::PolygonCarry {
             face_offsets: vec![0],

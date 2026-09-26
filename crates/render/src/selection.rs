@@ -1,10 +1,10 @@
 //! Selection state carried from the UI into the scene pass.
 //!
-//! The UI owns the selection (set by clicking an Outliner row) and passes it,
-//! plus the solo flag, a highlight color, and the flash fade, into the scene
-//! renderer each frame (invariant 2). The renderer builds the selected-triangle
-//! index buffer (an isolate/solo draw list, reused as the highlight flash's fill
-//! source) on demand and frees it on deselect (invariant 3).
+//! The UI owns the selection (set by clicking an Outliner row) and passes it, plus
+//! the solo flag and a highlight color (whose alpha is the fill's opacity), into
+//! the scene renderer each frame (invariant 2). The renderer builds the
+//! selected-triangle index buffer (an isolate/solo draw list, reused as the
+//! highlight's fill source) on demand and frees it on deselect (invariant 3).
 
 use review_model::{Bounds, ModelData};
 
@@ -70,7 +70,7 @@ pub fn selection_bounds(
     (!bounds.is_empty()).then_some(bounds)
 }
 
-/// The selection view carried into the scene callback each frame: what is
+/// The selection view carried into the scene render each frame: what is
 /// selected, whether to isolate it (solo), and the highlight color the UI
 /// sources from its theme (gamma-space RGB + the fill's opacity).
 ///

@@ -1,5 +1,5 @@
 //! Native file dialogs, opened on a worker thread and answered back through the
-//! event loop (`mac-port-plan.md` D9).
+//! event loop (`docs/ARCHITECTURE.md`, Platform decisions D9).
 //!
 //! Every `rfd` call used to run *inline*, inside the winit callback that handled
 //! the click or the key: the event loop stopped while the OS ran its own modal

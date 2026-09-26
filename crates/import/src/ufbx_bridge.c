@@ -1459,11 +1459,11 @@ static const ufbx_baked_prop *review_import_deform_percent(const ufbx_baked_elem
 
 /* Animation clips: bake every animation stack with ufbx (linear keys kept as
    authored, cubic segments resampled at the file's frame rate, no key
-   reduction — the exact curve, not an approximation of it), then count the
-   tracks and keys, allocate, and fill. Node keys map straight onto our node
-   table (ufbx's `typed_id` is the node's index); blend-channel keys are
-   resolved through `channel_of_element`. Returns 1 on success, 0 with
-   `out_error` set. */
+   reduction — the exact curve, not an approximation of it, though each key's
+   value is narrowed to `float`), then count the tracks and keys, allocate,
+   and fill. Node keys map straight onto our node table (ufbx's `typed_id` is
+   the node's index); blend-channel keys are resolved through
+   `channel_of_element`. Returns 1 on success, 0 with `out_error` set. */
 static int review_import_capture_animation(
     const ufbx_scene *scene,
     review_import_scene *out_scene,
@@ -1791,7 +1791,9 @@ static int review_import_capture_nodes(
 
         /* The rest local transform — what animation keys replace. With the
            helper-node inherit handling every node is a plain parent × local
-           product, so these compose back to `transform`. */
+           product, so these compose back to `transform` — to `float`
+           precision, not bit for bit: both are narrowed from ufbx's doubles
+           here. */
         dst->local_translation[0] = (float)node->local_transform.translation.x;
         dst->local_translation[1] = (float)node->local_transform.translation.y;
         dst->local_translation[2] = (float)node->local_transform.translation.z;
@@ -1883,8 +1885,9 @@ int review_import_load_fbx(
     /* Make every node a plain `parent_world × local` product by letting ufbx
        insert scale-helper nodes for the non-standard inherit modes (3ds Max's
        segment-scale compensation). The rest local transforms captured below
-       then compose back to `node_to_world` exactly, which is what lets a pose
-       be recomposed from them at runtime. */
+       then compose back to `node_to_world` with no correction term — exact up
+       to the `float` both are narrowed to — which is what lets a pose be
+       recomposed from them at runtime. */
     load_opts.inherit_mode_handling = UFBX_INHERIT_MODE_HANDLING_HELPER_NODES;
     if (progress) {
         progress_ctx.fn = progress;

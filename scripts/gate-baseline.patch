@@ -1,4 +1,5 @@
-The D2 gate's baseline instrumentation, for `main` (mac-port-plan.md step 8).
+The D2 gate's baseline instrumentation, for `main` (docs/ARCHITECTURE.md, Platform
+decisions D2).
 
 The gate compares two builds, so the baseline needs the same `--gate-out` stamp the
 port carries -- and `main` predates it. This is that patch, kept so the measurement
@@ -58,7 +59,7 @@ index 0000000..eb7e3d6
 --- /dev/null
 +++ b/crates/app/src/gate.rs
 @@ -0,0 +1,407 @@
-+//! The D2 gate stamp: `--gate-out <file>` (`mac-port-plan.md` §7, D2).
++//! The D2 gate stamp: `--gate-out <file>` (`docs/ARCHITECTURE.md`, Platform decisions D2).
 +//!
 +//! The port is only allowed to land on Windows if it costs nothing measurable
 +//! against `main` on the same box, same fixture, release build. Measuring that by

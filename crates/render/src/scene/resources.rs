@@ -1,12 +1,14 @@
-//! Everything the scene renderer caches *per model*: [`ModelSlot`] — the uploaded
-//! mesh buffers, the build-on-demand derived views and the selection / visibility
-//! draw lists, each with the bake key it was built for — and the `sync_*` builders
-//! that reconcile them with the live frame.
+//! Everything the scene renderer caches *per model*:
+//! [`ModelSlot`](super::slot::ModelSlot) — the uploaded mesh buffers, the
+//! build-on-demand derived views and the selection / visibility draw lists, each with
+//! the bake key it was built for — and the `sync_*` builders that reconcile them with
+//! the live frame.
 //!
 //! Invariant 3 lives here: a derived view's buffer exists only while its toggle is
 //! on, is rebuilt when its baked parameters drift, and is dropped the moment the
 //! toggle goes off, so the steady-state shaded view holds no derived buffers. The
-//! passes that *draw* these buffers are in [`super::gpu`].//!
+//! passes that *draw* these buffers are in [`super::gpu`].
+//!
 //! What is left here is the mesh upload itself and the UV viewport's views; the
 //! rest is beside it: [`super::slot`] defines the per-model state,
 //! [`super::deform_gpu`] the deform tables, [`super::line_views`] the derived

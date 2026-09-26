@@ -1,6 +1,6 @@
 //! The one shader source and everything sokol-shdc generates from it.
 //!
-//! `review.glsl` is the single annotated-GLSL source for all 15 programs;
+//! `review.glsl` is the single annotated-GLSL source for all 16 programs;
 //! `scripts/gen-shaders.{sh,ps1}` turns it into the checked-in `generated/`
 //! directory — the per-backend HLSL5 and MSL sources plus [`generated`], shdc's
 //! reflection (bind slots, attribute locations, and a Rust struct per uniform
@@ -10,7 +10,7 @@
 //! What this module is *for*, beyond re-exporting: the generated structs are the
 //! authority on layout, so every hand-written `#[repr(C)]` GPU struct asserts its
 //! size against its generated twin. Invariant 11 already pinned each against a
-//! hand-typed number; that catches a field added on one side of the Rust/HLSL
+//! hand-typed number; that catches a field added on one side of the Rust/shader
 //! boundary, but not a number typed wrong in the first place. Pinning against
 //! generated text closes that.
 //!

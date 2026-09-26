@@ -1,5 +1,5 @@
 //! The deform tables on the GPU: the influence / palette / morph buffers the
-//! vertex shader reads at `t12..t15`.
+//! vertex shader reads at storage-buffer bindings 12..15.
 //!
 //! The palette and shape weights are re-uploaded only when `pose_revision`
 //! moves, so a steady-state frame of a playing clip uploads two small buffers
@@ -14,9 +14,9 @@ use crate::shaders::generated;
 use super::gpu::SceneGpu;
 use super::gpu_types::{InfluenceEntry, MorphEntry, PaletteEntry};
 
-/// The vertex shader's deform inputs for one model (`t12..t15`): the immutable
-/// influence + blend-shape tables built with the mesh, and the dynamic palette +
-/// shape weights re-uploaded when the pose revision moves.
+/// The vertex shader's deform inputs for one model (storage-buffer bindings 12..15):
+/// the immutable influence + blend-shape tables built with the mesh, and the dynamic
+/// palette + shape weights re-uploaded when the pose revision moves.
 pub(super) struct DeformGpu {
     pub(super) influences: StorageBuffer<InfluenceEntry>,
     /// `None` when the model has no blend shapes; the shader never reads it then

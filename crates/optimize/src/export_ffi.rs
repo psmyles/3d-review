@@ -1,6 +1,7 @@
 //! Raw declarations for the export bridge (`src/export_bridge.c`).
 //!
-//! Kept beside [`crate::ffi`] as the crate's second and last `unsafe` surface.
+//! Kept beside [`crate::ffi`] as the crate's second `unsafe` surface; its one
+//! caller is `export::write`'s `write_scene`, plus the test-only `probe`.
 //! The structs mirror `export_bridge.h` field for field; changing one without
 //! the other is the single thing the compiler cannot catch here, so they are
 //! written in the same order with the same names.

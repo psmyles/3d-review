@@ -5,10 +5,10 @@
 //! Game assets are rarely surfaces. A prop is a kitbash of interpenetrating
 //! parts, a wall is a plane with no thickness, a scan has holes, and an
 //! artist's mesh has inverted shells in the places nobody ever looks. None of
-//! that stops a *renderer*, and none of it stops [`crate::remesh`]'s field
-//! extraction either — but it stops every algorithm that needs to walk the
-//! surface as a surface, and for a rebuild that wants one even shell rather
-//! than a pile of overlapping parts.
+//! that stops a *renderer* — but it stops every algorithm that needs to walk
+//! the surface as a surface, and a rebuild that wants one even shell cannot get
+//! one from a pile of overlapping parts: [`crate::remesh`] would rebuild each
+//! part on its own, overlaps and all.
 //!
 //! Shrinkwrap is the operation that makes such an object into one: sample a
 //! signed distance field around it, extract the zero crossing, and hand back a

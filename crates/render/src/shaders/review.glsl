@@ -7,7 +7,8 @@
 // in. `build.rs` then compiles *this host's* generated source to committed bytecode
 // (`fxc` → DXBC on Windows, `xcrun metal` → `.metallib` on macOS). So nothing
 // compiles a shader at run time on either OS, a broken shader is a build error, and
-// there is one source instead of two hand-kept twins (`mac-port-plan.md` D4/D5).
+// there is one source instead of two hand-kept twins (`docs/ARCHITECTURE.md`,
+// Platform decisions D4/D5).
 //
 // **Edit this file, re-run the script, commit both.** And note D5's discipline: the
 // bytecode is per-host, so a shader edit committed from one OS ships stale bytecode

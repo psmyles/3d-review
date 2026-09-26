@@ -1,8 +1,8 @@
 //! Where a run has got to, reported as it goes.
 //!
-//! A stack run is one call that can take a minute — Remesh solves a field per
-//! object, and asks the engine again when the face count lands outside its
-//! tolerance — and until this existed the only thing on screen for all of it was
+//! A stack run is one call that can take a minute — Remesh and Shrinkwrap
+//! rebuild a whole surface per object, seconds apiece on a dense one — and
+//! until this existed the only thing on screen for all of it was
 //! "Optimizing mesh...". That says nothing about whether the run is close, and
 //! nothing about whether it is moving at all, which is the question a user
 //! actually has when they are looking at it.

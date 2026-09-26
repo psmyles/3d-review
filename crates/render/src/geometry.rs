@@ -2,9 +2,9 @@
 //! views (wireframe, face/vertex normal lines).
 //!
 //! These index *into* the shared [`ModelData`] buffers (invariant 1) and produce
-//! flat [`SceneVertex`] arrays for upload; they never copy or re-own geometry.
-//! Each builder takes its visual parameters explicitly so the renderer can
-//! rebuild a single view live when its slider/color changes.
+//! flat [`SceneVertex`](crate::scene::SceneVertex) arrays for upload; they never
+//! copy or re-own geometry. Each builder takes its visual parameters explicitly
+//! so the renderer can rebuild a single view live when its slider/color changes.
 //!
 //! Organized by purpose: [`vertex`] holds the shared emit helpers; [`hidden`] the
 //! Outliner hidden-mesh filter every visibility-aware builder resolves through;
@@ -38,6 +38,6 @@ pub(crate) use select::{selected_triangle_mask, selection_geometry, visible_geom
 pub use skeleton::{BONE_PICK_TOLERANCE_POINTS, pick_bone_shape, posed_joint_positions};
 pub(crate) use skeleton::{BoneTint, skeleton_fill_triangles, skeleton_lines};
 pub(crate) use skin::skin_weight_vertices;
-pub(crate) use uv::{uv_fill_triangles, uv_wireframe_lines};
+pub(crate) use uv::{hsv_to_rgb, uv_fill_triangles, uv_wireframe_lines};
 pub(crate) use uv_seams::uv_seam_lines;
 pub(crate) use wireframe::wireframe_edge_indices;

@@ -1,6 +1,6 @@
 //! The animation clock and the pose it evaluates for the renderer.
 //!
-//! Split out of `main.rs` as its own concern, like the selection flash: `frame.rs`
+//! Split out of `main.rs` as its own concern, like the undo history: `frame.rs`
 //! calls [`App::tick_animation`] once per redraw and keeps pacing frames while
 //! [`App::animation_playing`]; the evaluated [`DeformPose`] rides into the
 //! `SceneFrame` with a revision the renderer re-uploads the palette on. The UI
@@ -170,20 +170,13 @@ impl App {
     /// pause itself is never counted as elapsed time.
     pub(crate) fn toggle_playback(&mut self) {
         let state = &mut self.ui.animation;
-        if state.selected_clip.is_none() {
+        let Some(clip) = state
+            .selected_clip
+            .and_then(|index| self.scene_model.animations.get(index))
+        else {
             return;
-        }
-        // Playing again from the end of a non-looping clip starts over.
-        if !state.playing
-            && !state.looping
-            && let Some(clip) = state
-                .selected_clip
-                .and_then(|index| self.scene_model.animations.get(index))
-            && state.time >= clip.time_end
-        {
-            state.time = clip.time_begin;
-        }
-        state.playing = !state.playing;
+        };
+        state.toggle_playback(clip);
         self.animation.last_tick = None;
     }
 

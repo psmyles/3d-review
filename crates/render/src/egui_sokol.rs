@@ -1,10 +1,10 @@
 //! The egui renderer: egui's tessellated output drawn through sokol_gfx.
 //!
 //! This replaced `egui-directx11`, which was the last thing pinning the workspace to
-//! Direct3D 11 *and* to egui 0.33 (`mac-port-plan.md` D3/D6). It is deliberately the
-//! smallest thing that draws the chrome correctly: one program, one interleaved
-//! vertex stream, one index stream, a texture per egui texture id, and a sampler per
-//! distinct [`egui::TextureOptions`].
+//! Direct3D 11 *and* to egui 0.33 (`docs/ARCHITECTURE.md`, Platform decisions D3/D6).
+//! It is deliberately the smallest thing that draws the chrome correctly: one program,
+//! one interleaved vertex stream, one index stream, a texture per egui texture id, and
+//! a sampler per distinct [`egui::TextureOptions`].
 //!
 //! ## The frame
 //!

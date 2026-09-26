@@ -1,14 +1,14 @@
-//! The position-only mesh the retopologizer solves a field over.
+//! The position-only mesh the rebuild runs over.
 //!
 //! A node reaches this operation as one submesh per material, each with its own
 //! vertex array — and the seam between two materials is a hard vertex split,
-//! since import gives every face corner its own vertex. The field solve needs
-//! the opposite: one connected surface, or it treats each material as a separate
+//! since import gives every face corner its own vertex. The rebuild needs the
+//! opposite: one connected surface, or it treats each material as a separate
 //! object and leaves a hole along every seam.
 //!
 //! So the proxy concatenates the node's pieces and welds by **position bits**
 //! across all of them. That is lossy in every attribute — which is exactly right
-//! here, because no attribute crosses this boundary: the engine is told where
+//! here, because no attribute crosses this boundary: the rebuild is told where
 //! the surface is and nothing else, and [`super::project`] puts the attributes
 //! back afterwards.
 
@@ -19,7 +19,7 @@ use review_model::Bounds;
 
 use crate::submesh::Submesh;
 
-/// One node's surface as the engine sees it.
+/// One node's surface as the rebuild sees it.
 pub(crate) struct Proxy {
     /// Three floats per vertex, welded across the node's materials.
     pub positions: Vec<f32>,
@@ -91,7 +91,7 @@ pub(crate) fn build(pieces: &[&Submesh]) -> Proxy {
                 continue;
             };
             // A triangle whose corners weld together has no surface for the
-            // field to follow and makes the half-edge structure non-manifold.
+            // rebuild to follow and makes the adjacency non-manifold.
             if a == b || b == c || a == c {
                 continue;
             }

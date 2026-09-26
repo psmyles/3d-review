@@ -2,8 +2,8 @@
 //!
 //! What the unit tests beside the implementation cannot show is the thing the
 //! operation exists for: that a real game asset — a pile of overlapping parts
-//! that no quad solver will touch — comes back as one closed shell, and that the
-//! solver then runs on it.
+//! with no one surface to walk — comes back as one closed shell, and that a
+//! Remesh then runs on it.
 
 #![cfg(has_meshopt)]
 

@@ -1,7 +1,8 @@
 //! Raw declarations for the vendored meshoptimizer C API.
 //!
-//! This module and [`crate::meshopt`] are the *only* `unsafe` in the crate
-//! (invariant 9's meshoptimizer exception). Nothing here is public outside the
+//! This module and [`crate::meshopt`] are the *only* `unsafe` over meshoptimizer
+//! (invariant 9's meshoptimizer exception); the export bridge's is the crate's
+//! other `unsafe` surface (`export_ffi`). Nothing here is public outside the
 //! crate: every call goes through a checked wrapper in [`crate::meshopt`] that
 //! validates the buffer/index preconditions the C side assumes, so the rest of
 //! the crate — and all of `app` / `ui` / `render` — stays safe.

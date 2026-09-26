@@ -240,9 +240,10 @@ fn draw_split_divider(ctx: &egui::Context, state: &UiState, viewport: egui::Rect
 
 /// The two rects the Opt split lays its views out in. The renderer halves the same
 /// rect the same way (`SceneViewport`), so these are where its two composites
-/// actually land — which is what lets the divider sit on the seam and the dimension
-/// labels project into the half they belong to.
-fn split_halves(viewport: egui::Rect) -> (egui::Rect, egui::Rect) {
+/// actually land — which is what lets the divider sit on the seam, the dimension
+/// labels project into the half they belong to, and `app` route the pointer and
+/// the pick to the view under it. Every one of those asks here.
+pub fn split_halves(viewport: egui::Rect) -> (egui::Rect, egui::Rect) {
     let x = viewport.center().x;
     (
         egui::Rect::from_min_max(viewport.min, egui::pos2(x, viewport.max.y)),

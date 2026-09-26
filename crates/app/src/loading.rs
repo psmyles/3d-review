@@ -225,11 +225,8 @@ impl App {
         }
     }
 
-    /// Ask for a model to open. The picker runs on a worker thread and comes back
-    /// through the event loop (`dialog.rs`), so the answer lands in
-    /// [`Self::open_model_from_path`] one turn of the loop later rather than in
-    /// this call.
-    /// A macOS menu item the viewer performs itself (`mac-port-plan.md` D15).
+    /// A macOS menu item the viewer performs itself (`docs/ARCHITECTURE.md`,
+    /// Platform decisions D15).
     ///
     /// Both land on the same handlers the primary-modifier chords in
     /// `shortcuts.rs` fire, which is the point: the menu is a second door onto the
@@ -241,6 +238,10 @@ impl App {
         }
     }
 
+    /// Ask for a model to open. The picker runs on a worker thread and comes back
+    /// through the event loop (`dialog.rs`), so the answer lands in
+    /// [`Self::open_model_from_path`] one turn of the loop later rather than in
+    /// this call.
     pub(crate) fn open_model_from_dialog(&mut self) {
         self.ask(Dialog::OpenModel);
     }

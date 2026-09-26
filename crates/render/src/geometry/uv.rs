@@ -17,9 +17,9 @@ const UV_EDGE_COLOR: [f32; 4] = [0.29, 0.64, 0.91, 0.9];
 const UV_FILL_SOLID_COLOR: [f32; 4] = [0.24, 0.34, 0.46, 1.0];
 
 /// The model's UV edges for `channel`, traced over each *original* polygon (like
-/// [`wireframe_lines`](super::wireframe_lines) but in UV space): positions are the
-/// per-corner UVs mapped to the UV plane as `(u, v, 0)`. Falls back to triangle
-/// edges when the model arrives without face topology.
+/// the model wireframe, [`super::wireframe_edge_indices`], but in UV space):
+/// positions are the per-corner UVs mapped to the UV plane as `(u, v, 0)`. Falls
+/// back to triangle edges when the model arrives without face topology.
 pub(crate) fn uv_wireframe_lines(model: &ModelData, channel: u32) -> Vec<SceneVertex> {
     let channel = channel as usize;
     let mut vertices = Vec::with_capacity(model.indices.len() * 2);
@@ -261,14 +261,17 @@ fn island_color(index: u32) -> [f32; 4] {
     [r, g, b, 1.0]
 }
 
-/// HSV→RGB for `h`, `s`, `v` in 0..1, returning 0..1 RGB.
-fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
-    let i = (h * 6.0).floor();
-    let f = h * 6.0 - i;
+/// HSV to RGB, each component in `0..=1`; the hue wraps. What the RGB means
+/// (gamma or linear) is the caller's: this is only the colour-wheel arithmetic,
+/// shared by the UV islands and the Unique material mode's per-part hues.
+pub(crate) fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
+    let h = h.rem_euclid(1.0) * 6.0;
+    let sector = h.floor() as i32;
+    let f = h - sector as f32;
     let p = v * (1.0 - s);
-    let q = v * (1.0 - f * s);
-    let t = v * (1.0 - (1.0 - f) * s);
-    match (i as i32).rem_euclid(6) {
+    let q = v * (1.0 - s * f);
+    let t = v * (1.0 - s * (1.0 - f));
+    match sector.rem_euclid(6) {
         0 => [v, t, p],
         1 => [q, v, p],
         2 => [p, v, t],

@@ -7,7 +7,8 @@
 //! reads UI state and applies the resulting `UiOutput` intents through `App`'s own
 //! helpers (invariant 2).
 //!
-//! The draw order is the one sokol_gfx's pass model imposes (`mac-port-plan.md` §3.2):
+//! The draw order is the one sokol_gfx's pass model imposes (`docs/ARCHITECTURE.md`,
+//! Platform decisions: one swapchain pass):
 //! acquire the frame, let the renderer record its offscreen passes, tessellate the
 //! chrome *outside* any pass, then open the **one** swapchain pass — Metal presents
 //! inside `sg_end_pass`, so a second one would double-present — composite into it,
@@ -250,8 +251,10 @@ impl App {
         // Decide when the next frame should be drawn. Continuous motion — a live
         // camera transition, or egui asking to "repaint immediately" (zero delay)
         // — is paced to the monitor's refresh interval so the viewer never renders
-        // faster than the display can show it. (We can't rely on the swapchain to
-        // pace us: on the Vulkan path `present` does not block on vblank.) A finite
+        // faster than the display can show it. (We don't leave that to the
+        // swapchain: a vsynced present only blocks once its queue of frames is full
+        // — inside `Present` on D3D11, at `nextDrawable` on Metal — so on its own it
+        // would let a burst of redraws run frames ahead of the display.) A finite
         // egui delay (e.g. a tooltip timer) schedules a single future wake-up, and
         // an infinite delay means everything is idle, so we wait for the next event.
         let repaint_delay = full_output
@@ -330,7 +333,7 @@ impl App {
         // The Tex viewport's draw inputs (background + placed image), resolved from
         // the live UI state only in Texture mode. Built before the renderer borrow
         // below; `pixels_per_point` converts the canvas/placement from egui points to
-        // physical pixels for the D3D11 image draw.
+        // physical pixels for the renderer's image draw.
         let texture_draw = (workspace == WorkspaceMode::Texture)
             .then(|| self.build_texture_draw(full_output.pixels_per_point));
 
@@ -551,7 +554,7 @@ impl App {
         }
     }
 
-    /// Resolve the Tex viewport's D3D11 draw inputs from the live UI state: the
+    /// Resolve the Tex viewport's draw inputs from the live UI state: the
     /// background fill, plus — when a texture is selected and the canvas has been laid
     /// out — the image placed by the canvas center + pan/zoom (egui points → physical
     /// pixels via `ppp`). The UI emits only plain values (invariant 2); `app` owns the

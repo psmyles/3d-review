@@ -106,7 +106,7 @@ impl TextureChannelView {
     }
 
     /// The channel index the Tex viewport shader reads (`0` RGB, `1..4` R/G/B/A).
-    /// Must match `tex.hlsl`'s `channel` switch.
+    /// Must match the `channel` switch in `review.glsl`'s `fs_tex_image`.
     pub fn shader_index(self) -> u32 {
         match self {
             TextureChannelView::Rgb => 0,
@@ -229,8 +229,8 @@ pub struct TextureAssign {
 
 /// A texture-pool command the Inspector emits (at most one per frame). `app` is
 /// the sole applier (invariant 2): all decode / pool / disk-watch work lives
-/// there. New texture intents (e.g. the Phase 6 Tex-viewport picks) add a variant
-/// here rather than another `Option` field on [`UiOutput`].
+/// there. A new texture intent adds a variant here rather than another `Option`
+/// field on [`crate::UiOutput`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TextureIntent {
     /// "Add textures…" was clicked: open the image picker + import into the pool.

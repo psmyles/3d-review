@@ -116,11 +116,11 @@ impl Default for LocalTransform {
 /// One node in the imported scene-graph hierarchy (every FBX node, mesh-bearing
 /// or not), carried through for the Outliner. The transform is display metadata
 /// only — geometry is world-baked at import (invariant 1); animation re-poses it
-/// through the GPU deform palette (see [`anim`]), never by rewriting vertices.
+/// through the GPU deform palette (see [`anim`](crate::anim)), never by rewriting vertices.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SceneNode {
     pub name: String,
-    /// Index into [`ModelData::nodes`] of this node's parent, or `None` for the
+    /// Index into [`ModelData::nodes`](crate::ModelData::nodes) of this node's parent, or `None` for the
     /// root (and any node the importer left parentless).
     pub parent: Option<usize>,
     /// Running index among mesh-bearing nodes (in import traversal order), or
@@ -128,7 +128,7 @@ pub struct SceneNode {
     pub mesh_part: Option<usize>,
     /// This node's own mesh's logical (DCC control-point) vertex count, as the
     /// source file authored it — the per-node share of
-    /// [`ModelStats::vertex_count`], which is exactly their sum. `0` for a node
+    /// [`ModelStats::vertex_count`](crate::ModelStats::vertex_count), which is exactly their sum. `0` for a node
     /// carrying no mesh, and for a model whose producer doesn't track it (the
     /// demo cube, the Opt workspace's rebuilt meshes), in which case a scoped
     /// Verts stat reports nothing rather than a wrong number.

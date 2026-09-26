@@ -1,12 +1,14 @@
 //! The scene texture pool + disk-auto-reload subsystem (an `impl App` block).
 //!
 //! Owns the import → decode → cache → pool → assign flow and the file-watcher
-//! that re-decodes a bound texture when its source changes on disk. The five
-//! texture fields stay on [`App`]; this module holds their logic. Background
-//! decodes run off the main thread and post their result back through the winit
-//! event loop ([`UserEvent`]) so all renderer mutation + redraw stays in `app`
-//! (invariant 6). The subsystem Phases 4–7 (referenced/embedded textures, the Tex
-//! viewport) extend, kept apart from the window/event-loop glue.
+//! that re-decodes a pooled texture when its source changes on disk. The state
+//! lives in [`TextureSubsystem`] (`App::textures`); this module holds its logic.
+//! Every decode runs on a worker thread and posts its result back through the
+//! winit event loop ([`UserEvent`]) so all renderer mutation + redraw stays on
+//! the main thread in `app` (invariant 6). One decode per path is in flight at a
+//! time — a second request folds into the running one ([`Admission`]) — and each
+//! carries the scene generation it was started for, so a result that lands after
+//! a new model was opened is dropped rather than pooled into the wrong scene.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -79,16 +81,6 @@ pub(crate) struct DecodeOutcome {
     /// Whether the file changed again while this decode was running, so one more
     /// is owed.
     pub(crate) respawn: bool,
-}
-
-fn same_path(a: &Path, b: &Path) -> bool {
-    if a == b {
-        return true;
-    }
-    match (a.canonicalize(), b.canonicalize()) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => false,
-    }
 }
 
 impl App {
@@ -432,7 +424,7 @@ impl App {
             .texture_paths()
             .into_iter()
             .chain(self.textures.pool.iter().cloned())
-            .find(|held| same_path(held, changed))
+            .find(|held| crate::paths::same_file(held, changed))
         else {
             return;
         };
@@ -479,14 +471,15 @@ pub(crate) struct TextureSubsystem {
     /// Proxy used by the texture file-watcher thread to post reload events to the
     /// event loop (set in `main` before the loop runs).
     pub(crate) proxy: Option<EventLoopProxy<UserEvent>>,
-    /// The disk-auto-reload watcher, created lazily on the first texture
-    /// assignment. Dropping it stops watching (done on model load / reset).
+    /// The disk-auto-reload watcher, created lazily when the first texture is
+    /// imported or assigned. Dropping it stops watching (done on model load /
+    /// reset).
     pub(crate) watcher: Option<RecommendedWatcher>,
     /// The platform refused a watcher. Remembered for the session, so the
     /// failure is reported once rather than once per texture - a restore after
     /// an undo re-watches every pooled texture in a row.
     pub(crate) watcher_unavailable: bool,
-    /// Directories the watcher is registered on (the parents of assigned textures),
+    /// Directories the watcher is registered on (the parents of pooled textures),
     /// so each directory is watched at most once.
     pub(crate) watched_dirs: HashSet<PathBuf>,
     /// Decoded-image cache keyed by source path, so a packed map assigned to

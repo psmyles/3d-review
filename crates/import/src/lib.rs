@@ -11,8 +11,9 @@
 //! `third_party/ufbx` the crate still builds and every load reports
 //! [`ImportError::UfbxUnavailable`].
 
-// Invariant 9, enforced: `unsafe` is refused crate-wide, and each sanctioned
-// FFI / GPU leaf opts in with a module-level `allow` that says why.
+// Invariant 9, enforced: `unsafe` is refused crate-wide, and each leaf that
+// needs it — the bridge call, the pointer leaves, the Windows launch hint and
+// the Tracy allocator — opts in with a module-level `allow` that says why.
 #![deny(unsafe_code)]
 
 use std::path::Path;

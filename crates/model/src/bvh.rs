@@ -150,7 +150,7 @@ impl Bvh {
 
     /// Whether the mesh occludes the segment from `origin` to `target`: true when
     /// any triangle is crossed strictly between the endpoints (excluding the thin
-    /// [`SEGMENT_SLACK`] margins). Sub-linear in the triangle count; reads
+    /// `SEGMENT_SLACK` margins). Sub-linear in the triangle count; reads
     /// triangle positions from `model` (must be the model this was built from).
     pub fn segment_occluded(&self, model: &ModelData, origin: Vec3, target: Vec3) -> bool {
         let dir = target - origin;

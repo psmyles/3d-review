@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Regenerate the per-backend shader sources and the sokol_gfx reflection from the one
-# annotated-GLSL source, `crates/render/src/shaders/review.glsl` (mac-port-plan D4).
+# annotated-GLSL source, `crates/render/src/shaders/review.glsl` (docs/ARCHITECTURE.md,
+# Platform decisions D4).
 #
 # Everything this writes under `crates/render/src/shaders/generated/` is checked in, so a
 # plain `cargo build` never needs sokol-shdc — build.rs only compiles the generated source

@@ -346,9 +346,11 @@ pub(crate) struct FaceSample {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Winding {
     /// Take it from the source surface: flip a face whose normal opposes the
-    /// source's at the point under its centroid. A field extraction's winding is
-    /// its own business and carries no relation to which way the object faces,
-    /// so it has to be re-derived.
+    /// source's at the point under its centroid. For a soup whose winding carries
+    /// no relation to which way the object faces, which is what the field
+    /// extraction Remesh used to be built on produced. Neither caller asks for it
+    /// now: the collapse keeps the source's own winding, and a shell is
+    /// [`Self::Keep`] for the reason below.
     FromSource,
     /// Leave it exactly as the soup has it. A [`crate::shrinkwrap`] shell's
     /// winding is derived from the distance field's sign and is *more* reliable
@@ -441,10 +443,10 @@ fn project_face(
     };
     let material = source.material_of(anchor.triangle);
 
-    // A field extraction's winding is its own; a face whose normal opposes the
-    // surface it was built from would draw back-to-front. Newell's formula
-    // rather than one corner's cross product, so a slightly non-planar quad
-    // still answers. See [`Winding`] for why a wrapped shell opts out.
+    // A soup that does not keep the source's winding would draw a face whose
+    // normal opposes the surface it was built from back-to-front. Newell's
+    // formula rather than one corner's cross product, so a slightly non-planar
+    // quad still answers. See [`Winding`] for why a wrapped shell opts out.
     let mut ordered = positions;
     if winding == Winding::FromSource
         && let (Some(face_normal), Some(source_normal)) =

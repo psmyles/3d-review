@@ -23,7 +23,7 @@ use super::slot::{
     SkeletonParams, SkinWeightParams, UvSeamParams,
 };
 
-/// Build an optional vertex buffer from `vertices`: `None` for an empty set (D3D11
+/// Build an optional vertex buffer from `vertices`: `None` for an empty set (sokol
 /// rejects a zero-byte buffer, and the draw is skipped anyway), else an immutable
 /// [`VertexBuffer`]. The build-on-demand line views + the UV wireframe/fill use this
 /// so an off / empty view holds no allocation.
@@ -291,7 +291,7 @@ impl SceneGpu {
     /// Rebuilt on every change of the selected bone set, which is what makes the
     /// heat map follow the Outliner. That is a full vertex re-upload (~48 bytes
     /// per render vertex); the alternative — a per-vertex weight lookup in the
-    /// shader — would need a structured buffer and a capability gate (invariant 4)
+    /// shader — would need a storage buffer and a capability gate (invariant 4)
     /// to save a cost only paid on an explicit click.
     pub(super) fn sync_skin_weights(
         &mut self,

@@ -15,7 +15,8 @@ use crate::App;
 use crate::flycam::FlyDirection;
 
 /// Whether the **primary** modifier — the one file and edit commands chord with —
-/// is held: `Ctrl` on Windows and Linux, `Cmd` on macOS (`mac-port-plan.md` D10).
+/// is held: `Ctrl` on Windows and Linux, `Cmd` on macOS (`docs/ARCHITECTURE.md`,
+/// Platform decisions D10).
 ///
 /// Ctrl is not an acceptable file-command modifier on a Mac, where `Ctrl`+click is
 /// a *secondary* click and `Cmd`+O is what every application binds. The bare-key

@@ -94,8 +94,8 @@ pub(crate) fn solve_nodes<J, R, P>(
                 loop {
                     // Claimed but not started: a superseded run stops without
                     // solving anything else, which is what bounds a cancelled
-                    // rebuild at the one object already in flight rather than
-                    // at the whole scene.
+                    // rebuild at the objects already in flight rather than at
+                    // the whole scene — and those stop at their own next check.
                     if cancelled(cancel) {
                         break;
                     }

@@ -22,7 +22,8 @@ pub struct Submesh {
     pub vertices: Vec<Vertex>,
     /// Extra UV sets, one entry per channel, each parallel to `vertices`. Empty
     /// unless the source model carries more than one UV set (matching
-    /// [`ModelData::uv_channels`]'s own convention).
+    /// [`ModelData::uv_channels`](review_model::ModelData::uv_channels)'s own
+    /// convention).
     pub uv_channels: Vec<Vec<Vec2>>,
     /// Vertex-color sets beyond the first (which lives in `Vertex::vertex_color`),
     /// each parallel to `vertices`.

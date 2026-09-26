@@ -1,4 +1,4 @@
-//! The macOS menu bar (`mac-port-plan.md` D15).
+//! The macOS menu bar (`docs/ARCHITECTURE.md`, Platform decisions D15).
 //!
 //! A Mac app without a menu bar reads as broken and, more concretely, cannot be
 //! quit: ⌘Q belongs to the menu, not the window, so without one there is no way out
@@ -26,14 +26,14 @@ use muda::{AboutMetadata, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem,
 
 use crate::{About, MenuCommand};
 
-/// Menu-item ids. Only the items the viewer performs itself need one; the predefined
-/// items are AppKit's.
 /// The menu's typed message keys, generated from the `menu-` half of the English
 /// catalog by this crate's build script (invariant 12).
 mod keys {
     include!(concat!(env!("OUT_DIR"), "/keys.rs"));
 }
 
+// Menu-item ids. Only the items the viewer performs itself need one; the predefined
+// items are AppKit's.
 const ID_OPEN: &str = "review.open";
 const ID_NEW: &str = "review.new";
 

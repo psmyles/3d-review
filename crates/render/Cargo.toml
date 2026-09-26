@@ -7,10 +7,10 @@ rust-version.workspace = true
 
 [dependencies]
 bytemuck.workspace = true
-# egui's paint types (`epaint::ClippedPrimitive` / `TexturesDelta`), consumed by our
-# own sokol_gfx egui renderer (`src/egui_sokol.rs`, `mac-port-plan.md` D3). `render`
-# *draws* the chrome; it never builds any — invariant 2 is unaffected, this is a
-# paint-data dependency, not a UI one.
+# egui's paint types (`epaint::ClippedPrimitive` / `TexturesDelta`), consumed by our own
+# sokol_gfx egui renderer (`src/egui_sokol.rs`; `docs/ARCHITECTURE.md`, Platform
+# decisions D3). `render` *draws* the chrome; it never builds any — invariant 2 is
+# unaffected, this is a paint-data dependency, not a UI one.
 egui.workspace = true
 glam.workspace = true
 half.workspace = true
@@ -26,7 +26,7 @@ review-psd.workspace = true
 zune-core.workspace = true
 zune-image.workspace = true
 review-model = { path = "../model" }
-# sokol_gfx — the one drawing API on both OSes (`mac-port-plan.md` D1). Every GPU
+# sokol_gfx — the one drawing API on both OSes (Platform decisions D1). Every GPU
 # call the renderer makes goes through it; the only platform code left is the
 # device + swapchain leaf in `rhi/backend/`.
 sokol.workspace = true
@@ -37,8 +37,9 @@ thiserror.workspace = true
 # (`--tracy`). Drives the GPU timestamp-query profiler (`rhi/gpu_profiler.rs`) + the
 # first-frame CPU zones in the app/render structure.
 tracy-client.workspace = true
-# `Gpu::attach` reads the window's raw handle itself, so `app` hands over a
-# `&Window` and needs no platform window-handle types (`mac-port-plan.md` §3.1).
+# `Gpu::attach` reads the window's raw handle itself, so `app` hands over a `&Window`
+# and needs no platform window-handle types (Platform decisions: `rhi` owns the
+# backend).
 winit.workspace = true
 
 # Direct3D 11 / DXGI, for the Windows device + swapchain leaf (`rhi/backend/d3d11.rs`):
@@ -102,7 +103,7 @@ optional = true
 sha2.workspace = true
 
 [features]
-# The offline IBL precompute (`mac-port-plan.md` D19): the bake half of `src/ibl.rs`,
+# The offline IBL precompute (Platform decisions D19): the bake half of `src/ibl.rs`,
 # the headless device + render targets in `src/rhi/bake.rs`, the readback leaf in the
 # backend, and the `bake_ibl` binary. Off by default — a normal build compiles none of
 # it, and the viewer embeds the committed baked maps instead.

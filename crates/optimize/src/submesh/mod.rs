@@ -1,4 +1,4 @@
-//! Partitioning a [`ModelData`] into independently-optimizable submeshes, and
+//! Partitioning a [`ModelData`](review_model::ModelData) into independently-optimizable submeshes, and
 //! the buffer surgery every operation shares.
 //!
 //! ## Why (node, material) is the unit
@@ -41,7 +41,8 @@
 //!   the *renderer* can be shown — the others describe corner runs in a vertex
 //!   array welding has destroyed — so it is what puts real quads on screen and
 //!   in the exported file. The first three rules still apply to it afterwards: a
-//!   Weld below a Remesh renumbers its corners like any other carry's.//!
+//!   Weld below a Remesh renumbers its corners like any other carry's.
+//!
 //! ## Layout
 //!
 //! [`mesh`] is the `Submesh` itself, [`rows`] the per-vertex rows a remap must

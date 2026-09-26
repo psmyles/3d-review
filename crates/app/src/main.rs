@@ -1,7 +1,7 @@
 // Suppress the console window in release builds — a shipped GUI viewer should
 // open as a window, not alongside a terminal.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-// Fully safe (invariant 9): the D3D11 bootstrap moved behind `review-render`'s
+// Fully safe (invariant 9): the GPU bootstrap lives behind `review-render`'s
 // safe `Gpu` wrapper, so no `unsafe` may land in this crate again.
 #![forbid(unsafe_code)]
 
@@ -17,6 +17,7 @@ mod input;
 mod loading;
 mod logging;
 mod opt;
+mod paths;
 mod pick;
 mod prof;
 mod recent;
@@ -82,8 +83,8 @@ fn main() -> anyhow::Result<()> {
 
     // The GPU device and `sg_setup` need no window and are the longest single item on
     // the launch path, so they start here, before anything else, and run alongside
-    // the window creation and the argument scan (`mac-port-plan.md` D8). The join is
-    // in `App::start`.
+    // the window creation and the argument scan (`docs/ARCHITECTURE.md`, Platform
+    // decisions D8). The join is in `App::start`.
     let gpu_bring_up = Gpu::start();
 
     // Tiny manual arg scan (the workspace has no arg parser and needs two flags):
@@ -120,7 +121,7 @@ fn main() -> anyhow::Result<()> {
             .as_deref(),
     );
 
-    // Preferences > Tracy Profiler is a saved `--tracy`: it takes effect here, at
+    // Debug > Tracy Profiler is a saved `--tracy`: it takes effect here, at
     // launch, because a started client cannot be stopped before the process ends
     // and the profile is only whole if it starts on this line. A gate run ignores
     // it - the two builds it compares must be measured the same way.
@@ -204,8 +205,8 @@ fn main() -> anyhow::Result<()> {
     // Report a startup failure now, from `main`'s own stack rather than from the
     // `resumed` callback that hit it: `rfd`'s message box runs a modal loop of its
     // own, and on macOS AppKit aborts the process rather than re-enter one from
-    // inside an event callback (`mac-port-plan.md` D9). By here the event loop has
-    // returned, so there is no loop to re-enter.
+    // inside an event callback (`docs/ARCHITECTURE.md`, Platform decisions D9). By
+    // here the event loop has returned, so there is no loop to re-enter.
     if let Some(error) = app.startup_error.take() {
         report_startup_failure(&error);
     }
@@ -218,7 +219,8 @@ struct App {
     egui_ctx: Option<egui::Context>,
     egui_state: Option<egui_winit::State>,
     /// Our own sokol_gfx egui renderer: tessellates the chrome and paints it into the
-    /// swapchain pass the scene composited into (`mac-port-plan.md` D3).
+    /// swapchain pass the scene composited into (`docs/ARCHITECTURE.md`, Platform
+    /// decisions D3).
     egui_renderer: Option<EguiRenderer>,
     drag_mode: Option<DragMode>,
     /// A press that has not yet been confirmed as the viewer's to act on.
@@ -347,9 +349,9 @@ struct App {
     /// logic lives in `texture_manager.rs`.
     textures: TextureSubsystem,
     /// Whether a native file dialog is currently up on its worker thread
-    /// (`dialog.rs`, `mac-port-plan.md` D9). The dialogs no longer block the event
-    /// loop, which is what makes it possible to ask for a second one while the
-    /// first is on screen — this is what says no.
+    /// (`dialog.rs`; `docs/ARCHITECTURE.md`, Platform decisions D9). The dialogs no
+    /// longer block the event loop, which is what makes it possible to ask for a
+    /// second one while the first is on screen — this is what says no.
     dialog_open: bool,
     /// The menu's **Exit** was chosen. It is chosen inside the egui pass, which
     /// has no event loop to stop, so it is carried out in `about_to_wait` — the
@@ -367,7 +369,8 @@ struct App {
     /// triggers the notices (texture decode start/finish); the UI crate only
     /// provides the themed type and draws it. Shown once per frame in `render`.
     notifications: Notifications,
-    /// Whether `--tracy` was passed: arms the GPU profiler (via
+    /// Whether Tracy profiling is on for this run — `--tracy` was passed, or the
+    /// saved Debug > Tracy Profiler switch asked for it: arms the GPU profiler (via
     /// `review_render::enable_tracy_gpu`) in `resumed`, and turns on sokol's per-frame
     /// resource counters.
     tracy_enabled: bool,
@@ -767,8 +770,11 @@ fn build_startup_renderer(window: &Window) -> Renderer {
 }
 
 impl ApplicationHandler<UserEvent> for App {
-    /// Handle a custom event from the texture file-watcher: re-decode + re-upload
-    /// the changed texture (the disk-auto-reload path; redraw stays here).
+    /// Handle a message a worker thread posted back through the event loop
+    /// (`events.rs`): the texture watcher and decoder, the model import, the Opt
+    /// runs and export, native dialogs, macOS open-file and menu events, the
+    /// update check, and the logger. Each is dispatched to the handler that owns
+    /// its concern.
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::TextureChanged(path) => self.reload_texture_file(&path),

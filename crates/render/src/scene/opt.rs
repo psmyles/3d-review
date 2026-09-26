@@ -8,13 +8,14 @@
 //! within a frame is a `mem::swap` rather than two mesh uploads.
 //!
 //! The split is the one path that needs **two target sets**, at half width each. The
-//! composite is a deferred job (`mac-port-plan.md` §3.2), so by the time either half's
-//! composite runs, both halves' passes have already been recorded — a shared set would
-//! have the second view's contents in it and both halves would show the same mesh. Two
-//! half-width sets cost what one full-width set does, and the second is released the
-//! moment the split is not on screen (invariant 3).
+//! composite is a deferred job (`docs/ARCHITECTURE.md`, Platform decisions: one
+//! swapchain pass), so by the time either half's composite runs, both halves' passes
+//! have already been recorded — a shared set would have the second view's contents in
+//! it and both halves would show the same mesh. Two half-width sets cost what one
+//! full-width set does, and the second is released the moment the split is not on
+//! screen (invariant 3).
 //!
-//! [`ModelSlot`]: super::resources::ModelSlot
+//! [`ModelSlot`]: super::slot::ModelSlot
 
 use crate::geometry::wireframe_edge_indices;
 use crate::material::MaterialState;
@@ -34,7 +35,7 @@ impl SceneGpu {
     /// meshes to stay uploaded across the swap between them, which is what
     /// [`ModelSlot`] is for.
     ///
-    /// [`ModelSlot`]: super::resources::ModelSlot
+    /// [`ModelSlot`]: super::slot::ModelSlot
     pub(crate) fn render_opt(
         &mut self,
         frame: &mut Frame<'_>,

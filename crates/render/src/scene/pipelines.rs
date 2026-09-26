@@ -53,8 +53,8 @@ pub(super) struct ScenePipelineSet {
     /// Flat-colour triangle fill for the UV islands (`fs_main`'s zero-normal overlay
     /// branch — the same shader as the mesh, filled rather than lined).
     pub(super) uv_fill: Pipeline,
-    /// Selection-flash fill: flat highlight colour × fade, depth-tested but not
-    /// depth-writing, alpha-blended. Doubles as the Opt overlay's x-ray ghost.
+    /// Selection-highlight fill: flat highlight colour × its opacity, depth-tested but
+    /// not depth-writing, alpha-blended. Doubles as the Opt overlay's x-ray ghost.
     pub(super) selection: Pipeline,
     /// The model wireframe: an *indexed* line draw over the mesh's own vertex
     /// buffer. It runs `fs_selection` rather than `fs_line` because those
@@ -66,12 +66,12 @@ pub(super) struct ScenePipelineSet {
 
 /// Build every scene pipeline.
 ///
-/// They share `vs_main`, the `SceneVertex` layout and the pass's formats, so
-/// `program` fills those in and each call spells out only what distinguishes it: the
-/// program, topology, culling, depth behaviour, bias, and whether its draws are
-/// indexed — the mesh and the selection flash index into the shared vertex buffer;
-/// every line and fill view is its own vertex stream. The skybox is the one that
-/// cannot use the helper: it runs its own vertex shader and takes no vertex input.
+/// They share `vs_main`, the `SceneVertex` layout and the pass's formats, so `program`
+/// fills those in and each call spells out only what distinguishes it: the program,
+/// topology, culling, depth behaviour, bias, and whether its draws are indexed — the
+/// mesh and the selection highlight index into the shared vertex buffer; every line
+/// and fill view is its own vertex stream. The skybox is the one that cannot use the
+/// helper: it runs its own vertex shader and takes no vertex input.
 pub(super) fn build_scene_pipelines(sample_count: u32) -> GpuResult<ScenePipelineSet> {
     let program = |desc_fn: crate::rhi::shader::ShaderDescFn,
                    bytecode: &'static crate::rhi::shader::ShaderBytecode,

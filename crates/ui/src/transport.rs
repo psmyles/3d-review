@@ -152,11 +152,7 @@ pub(crate) fn transport_row(
                 .describe(keys::ui_transport::PLAY_PAUSE_DESCRIPTION)
                 .page(Page::Animation),
         ) {
-            // Playing again from the end of a non-looping clip starts over.
-            if !anim.playing && !anim.looping && anim.time >= clip.time_end {
-                anim.time = clip.time_begin;
-            }
-            anim.playing = !anim.playing;
+            anim.toggle_playback(clip);
         }
         if button(
             ui,

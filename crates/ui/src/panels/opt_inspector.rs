@@ -83,7 +83,7 @@ fn operation_body(ui: &mut egui::Ui, state: &mut UiState, id: u64) {
 
     ui.heading(egui::RichText::from(labels::op_kind(&kind)));
     ui.add_space(size::PANEL_ROW_GAP);
-    ui.label(egui::RichText::new(kind.description()).color(color::TEXT_MUTED));
+    ui.label(egui::RichText::from(labels::op_description(&kind)).color(color::TEXT_MUTED));
     ui.add_space(size::PANEL_ROW_GAP);
     ui.separator();
 

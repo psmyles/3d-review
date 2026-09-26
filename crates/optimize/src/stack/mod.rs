@@ -3,8 +3,9 @@
 //!
 //! The stack is deliberately a plain data description — it holds *what* to do,
 //! never any mesh or GPU state — so it is cheap to clone into an undo snapshot,
-//! cheap to hand to a worker thread, and serializable as-is. [`crate::process`]
-//! is what interprets it.//!
+//! cheap to hand to a worker thread, and serializable as-is. [`crate::process`](mod@crate::process)
+//! is what interprets it.
+//!
 //! ## Layout
 //!
 //! [`OptStack`] and the operations it holds are here; [`params`] carries each
@@ -336,8 +337,8 @@ pub enum OpKind {
     /// [`OpKind::SimplifyLod`] runs, applied as an ordinary stack step rather
     /// than as a fan-out.
     Reduce(ReduceParams),
-    /// Regenerate each object's surface as evenly sized, curvature-aligned
-    /// triangles or quads, with the materials, UVs and colors projected back on.
+    /// Regenerate each object's surface as evenly sized triangles or quads, with
+    /// the materials, UVs and colors projected back on.
     Remesh(RemeshParams),
     /// Replace each object with one closed shell that hugs it, fusing
     /// interpenetrating parts into a single watertight surface.
@@ -550,80 +551,6 @@ impl OpKind {
             OpKind::VertexCache => "Optimize Vertex Cache",
             OpKind::Overdraw { .. } => "Optimize Overdraw",
             OpKind::VertexFetch => "Optimize Vertex Fetch",
-        }
-    }
-
-    /// One-line explanation, shown as the row tooltip and above the parameters
-    /// in the Inspector.
-    pub fn description(&self) -> &'static str {
-        match self {
-            OpKind::Weld(_) => {
-                "Merge vertices across a seam. Every run already merges vertices \
-                 that match in every attribute; this widens what counts as a match \
-                 — dropping normals or UVs from the comparison, or allowing a \
-                 tolerance — which does change the mesh."
-            }
-            OpKind::FilterTriangles => {
-                "Remove degenerate triangles (two corners at one position) and exact \
-                 duplicates. Opposite-winding duplicates are kept for double-sided geometry."
-            }
-            OpKind::PruneComponents { .. } => {
-                "Remove disconnected pieces smaller than the error threshold — stray \
-                 shells and orphaned faces left behind by modelling."
-            }
-            OpKind::Reduce(_) => {
-                "Simplify the mesh in place. The same simplifier the LOD chain uses, \
-                 but it replaces the mesh instead of generating extra ones - so the \
-                 reduced geometry is what the rest of the stack works on and what the \
-                 export writes in the source mesh's place."
-            }
-            OpKind::Remesh(_) => {
-                "Rebuild each object's surface as evenly sized, curvature-aligned \
-                 triangles or quads. Unlike a simplifier it does not remove what is \
-                 there - it regenerates the surface from scratch and projects the \
-                 materials, UVs and colors back on, which is what turns a scan or a \
-                 CAD import into geometry an engine can use. For fewer triangles with \
-                 the silhouette kept, a Reduce does better at the same count. Static \
-                 meshes only."
-            }
-            OpKind::Shrinkwrap(_) => {
-                "Replace each object with one closed shell that hugs it. The surface is \
-                 voxelized into a distance field (or, with the Voxel method, remeshed \
-                 on a voxel grid that keeps thin sheets) and re-extracted, which fuses \
-                 a kitbash of interpenetrating parts into a single watertight mesh — and is what \
-                 a Remesh below it can even out. Materials, UVs and \
-                 colors are projected back on. Static meshes only."
-            }
-            OpKind::RecalculateNormals(_) => {
-                "Regenerate the normals from the shape itself. Edges sharper than the \
-                 crease angle stay hard and the rest are smoothed, and the export's \
-                 hard/soft edge flags are rewritten to match. Objects with blend \
-                 shapes are left as they are. Changes no geometry."
-            }
-            OpKind::SimplifyLod(_) => {
-                "Generate the LOD chain. Each level is simplified independently from \
-                 the mesh as it stands at this point in the stack."
-            }
-            OpKind::BakeAo(_) => {
-                "Raycast ambient occlusion at each vertex and write it into the \
-                 vertex-color set. Objects named *_LOD<n> bake only against their \
-                 own LOD's geometry, so a whole visible LOD chain bakes correctly \
-                 in one run; hidden objects don't take part — hide collision \
-                 shells first. Bakes the mesh as it stands at this point in the \
-                 stack. Changes no geometry."
-            }
-            OpKind::VertexCache => {
-                "Reorder triangles so the GPU's post-transform vertex cache hits more \
-                 often. Changes no geometry; watch ACMR/ATVR in the stats."
-            }
-            OpKind::Overdraw { .. } => {
-                "Reorder triangles front-to-back within cache-friendly clusters so the \
-                 GPU shades fewer hidden pixels. Changes no geometry."
-            }
-            OpKind::VertexFetch => {
-                "Reorder vertices into the order the index buffer reads them, and drop \
-                 any vertex nothing references. Changes no geometry."
-            }
         }
     }
 

@@ -14,7 +14,7 @@
 //! keys::ui_stats::scope_vis_description(primary_modifier());  // typed formatter
 //! ```
 //!
-//! Two Fluent details this wraps, both of which are wrong by default for a
+//! Three Fluent details this wraps, all of which are wrong by default for a
 //! desktop viewer:
 //!
 //! * `format_pattern` brackets every variable in Unicode isolation marks

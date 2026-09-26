@@ -64,8 +64,8 @@ pub(super) struct PivotParams {
 pub(super) const SKELETON_FILL_ALPHA: f32 = 0.35;
 
 /// Baked parameters for the skeleton overlay. The selected set is part of the key
-/// because the highlight color is baked per bone into the vertex buffer (unlike
-/// the mesh selection flash, whose color rides in a uniform) — a skeleton is a few
+/// because the highlight color is baked per bone into the vertex buffer (unlike the
+/// mesh selection highlight, whose color rides in a uniform) — a skeleton is a few
 /// thousand vertices, so rebuilding it on an Outliner click is far cheaper than
 /// carrying a per-bone lookup into the shader.
 #[derive(PartialEq)]
@@ -241,9 +241,9 @@ pub(super) struct ModelSlot {
     /// wireframe and normal lines drawn over the new one.
     pub(super) views_revision: u64,
     /// The selected triangles reordered per-material over a fresh index buffer that
-    /// shares the mesh vertex buffer (the solo isolate list + the flash fill source).
-    /// `None` while nothing is selected or the selection resolves to no geometry
-    /// (invariant 3).
+    /// shares the mesh vertex buffer (the solo isolate list + the highlight fill
+    /// source). `None` while nothing is selected or the selection resolves to no
+    /// geometry (invariant 3).
     pub(super) selection_index: Option<IndexBuffer>,
     pub(super) selection_ranges: Vec<MaterialDrawRange>,
     pub(super) selection_baked: Option<SelectionBaked>,

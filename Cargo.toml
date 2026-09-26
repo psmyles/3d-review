@@ -13,12 +13,13 @@ members = [
     "crates/shell-macos",
     "crates/ui",
 ]
-# `vendor/sokol-rust` is a pinned upstream copy (`mac-port-plan.md` D21), not our code,
-# but it sits inside the workspace directory and cargo makes any path dependency there a
-# member automatically — which puts it under `cargo clippy --workspace -- -D warnings`
-# and fails the lint on upstream's own style. Cargo only caps lints for crates it did not
-# consider local, and `--exclude` on the command line does not change that; declaring it
-# excluded here does. It still builds exactly as before, as a path dependency.
+# `vendor/sokol-rust` is a pinned upstream copy (`docs/ARCHITECTURE.md`, Platform
+# decisions D21), not our code, but it sits inside the workspace directory and cargo
+# makes any path dependency there a member automatically — which puts it under
+# `cargo clippy --workspace -- -D warnings` and fails the lint on upstream's own style.
+# Cargo only caps lints for crates it did not consider local, and `--exclude` on the
+# command line does not change that; declaring it excluded here does. It still builds
+# exactly as before, as a path dependency.
 exclude = ["vendor/sokol-rust"]
 resolver = "2"
 
@@ -45,13 +46,14 @@ cc = "1"
 # The local wall clock behind the log's timestamps and its day-named files
 # (`crates/log`). `std` has no time zone; `clock` is what reads the OS's.
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-# The per-user config directory `window.cfg` lives in (`mac-port-plan.md` D17):
-# `%APPDATA%` on Windows — the same path the hand-read `APPDATA` env var gave —
-# and `~/Library/Application Support` on macOS, where that env var does not exist.
+# The per-user config directory `window.cfg` lives in (`docs/ARCHITECTURE.md`,
+# Platform decisions D17): `%APPDATA%` on Windows — the same path the hand-read
+# `APPDATA` env var gave — and `~/Library/Application Support` on macOS, where that
+# env var does not exist.
 dirs = "6"
 # egui renders through our own sokol_gfx renderer (`render/src/egui_sokol.rs`,
-# `mac-port-plan.md` D3), which is what lifted the 0.33 ceiling egui-directx11
-# 0.12.1 (`^0.33`) had pinned us to — that crate is gone (D6).
+# `docs/ARCHITECTURE.md`, Platform decisions D3), which is what lifted the 0.33
+# ceiling egui-directx11 0.12.1 (`^0.33`) had pinned us to — that crate is gone (D6).
 # `bytemuck` gives `epaint::Vertex` a `Pod` impl, so our egui renderer casts a
 # tessellated mesh straight to bytes for the GPU with no `unsafe` of its own.
 egui = { version = "0.36.1", features = ["bytemuck"] }
@@ -126,10 +128,11 @@ rfd = "0.15"
 # shell (`Get-FileHash`, `shasum -a 256`). That portability is what picks SHA-256
 # over something we could hand-roll in ten lines.
 sha2 = "0.10"
-# The shared GPU API the renderer is being ported onto (`mac-port-plan.md` D1/D21):
-# sokol_gfx, over D3D11 on Windows and Metal on macOS. A pinned upstream checkout
-# rather than a registry crate — the `sokol` name on crates.io is an unrelated 2019
-# crate — and `exclude`d above so `-D warnings` does not lint it. See vendor/NOTICE.txt.
+# The shared GPU API the renderer draws through (`docs/ARCHITECTURE.md`, Platform
+# decisions D1/D21): sokol_gfx, over D3D11 on Windows and Metal on macOS. A pinned
+# upstream checkout rather than a registry crate — the `sokol` name on crates.io is an
+# unrelated 2019 crate — and `exclude`d above so `-D warnings` does not lint it. See
+# vendor/NOTICE.txt.
 sokol = { path = "vendor/sokol-rust" }
 # Derived on `review-optimize`'s operation-stack types only, so a stack can be
 # saved/loaded as a JSON preset. Deliberately not a `review-model` dependency —

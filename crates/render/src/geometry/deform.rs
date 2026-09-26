@@ -1,5 +1,5 @@
 //! The per-model deform layout: what every render vertex's `deform` lane points
-//! at, and the two structured-buffer tables those lanes index.
+//! at, and the two storage-buffer tables those lanes index.
 //!
 //! Built once per model alongside the mesh upload. The influence table starts
 //! with one single-entry run per scene node (entry `i`, weight 1) — what a rigid
@@ -11,7 +11,7 @@
 //!
 //! Every vertex builder that derives geometry from the mesh copies the source
 //! corner's lane, so wireframe edges, normal lines, the heat map and the
-//! selection flash all deform with the mesh through the one vertex shader.
+//! selection highlight all deform with the mesh through the one vertex shader.
 
 use review_model::ModelData;
 
@@ -37,13 +37,14 @@ pub(crate) fn corner_deform(lanes: &[[u32; 4]], corner: usize) -> [u32; 4] {
 pub(crate) struct DeformLayout {
     /// Per render vertex, its `deform` lane.
     pub(crate) corner: Vec<[u32; 4]>,
-    /// The influence table (`t12`).
+    /// The influence table (`deform_influences`, storage-buffer binding 12).
     pub(crate) influences: Vec<InfluenceEntry>,
-    /// The blend-shape delta table (`t14`), empty when the model has none.
+    /// The blend-shape delta table (`morph_deltas`, binding 14), empty when the
+    /// model has none.
     pub(crate) morph: Vec<MorphEntry>,
     /// Palette entries the shader may index: nodes + clusters.
     pub(crate) palette_len: usize,
-    /// Blend shapes the weight buffer (`t15`) must hold.
+    /// Blend shapes the weight buffer (`morph_weights`, binding 15) must hold.
     pub(crate) shape_count: usize,
 }
 

@@ -1,5 +1,6 @@
 # Regenerate the per-backend shader sources and the sokol_gfx reflection from the one
-# annotated-GLSL source, `crates/render/src/shaders/review.glsl` (mac-port-plan D4).
+# annotated-GLSL source, `crates/render/src/shaders/review.glsl` (docs/ARCHITECTURE.md,
+# Platform decisions D4).
 #
 # The PowerShell twin of `gen-shaders.sh` — same inputs, same outputs, so a Windows shell
 # without bash can regenerate. Keep the two in step.

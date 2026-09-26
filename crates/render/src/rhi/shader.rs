@@ -6,7 +6,7 @@
 //! so nothing compiles a shader at run time and a broken shader is a build error
 //! (D4/D5). The generated `ShaderDesc` carries what bytecode cannot: the uniform
 //! block layouts, which view and sampler slot is which, which sampler pairs with
-//! which texture, and the per-backend entry-point names. [`make`] is the join.
+//! which texture, and the per-backend entry-point names. [`fn@make`] is the join.
 //!
 //! The generated desc points its funcs at the *source* it embedded, because that file
 //! is checked in and must be byte-identical whichever OS regenerates it. Every use

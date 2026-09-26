@@ -4,7 +4,7 @@
 use glam::Vec3;
 
 /// Blend-shape (morph target) data, stored **per logical source vertex** as a
-/// compressed sparse-row table like [`SkinData`]: logical vertex `v`'s shape
+/// compressed sparse-row table like [`SkinData`](crate::SkinData): logical vertex `v`'s shape
 /// offsets are `shape[offsets[v]..offsets[v+1]]` paired with `position[..]` /
 /// `normal[..]`. Offsets are already rotated into the baked world orientation of
 /// their mesh node (the importer applies the mesh's `geometry_to_world` linear
@@ -12,7 +12,7 @@ use glam::Vec3;
 /// exact — skinning is linear.
 ///
 /// A channel is the artist-facing slider; it blends between its keyframes'
-/// shapes by the ufbx in-between rule (see [`anim::channel_effective_weights`]).
+/// shapes by the ufbx in-between rule (see [`anim::channel_effective_weights`](crate::anim::channel_effective_weights)).
 /// In the common case a channel has exactly one keyframe at target weight 1.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MorphData {
@@ -43,7 +43,7 @@ impl MorphData {
         }
     }
 
-    /// The import-funnel guard, like [`SkinData::validate`].
+    /// The import-funnel guard, like [`SkinData::validate`](crate::SkinData::validate).
     pub fn validate(&self, logical_count: usize, node_count: usize) -> Result<(), String> {
         if self.offsets.len() != logical_count + 1 {
             return Err(format!(
@@ -125,7 +125,7 @@ impl MorphData {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MorphChannel {
     pub name: String,
-    /// The mesh node this channel deforms, indexing [`ModelData::nodes`].
+    /// The mesh node this channel deforms, indexing [`ModelData::nodes`](crate::ModelData::nodes).
     pub mesh_node: u32,
     /// The channel's weight at the file's default pose, in `0..=1`.
     pub rest_weight: f32,
