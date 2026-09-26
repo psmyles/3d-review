@@ -764,15 +764,16 @@ pub(crate) fn file_label(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
-/// How long a load took, for the success notice: `2.3s`. Under a second a
-/// tenth is most of the figure, so those get two decimals (`0.42s`) — long
-/// enough to read as a real measurement rather than a rounded `0.4s`.
+/// How long a load took, as the number the success notice puts its unit after:
+/// `2.3`. Under a second a tenth is most of the figure, so those get two
+/// decimals (`0.42`) - long enough to read as a real measurement rather than a
+/// rounded `0.4`.
 fn format_load_time(elapsed: Duration) -> String {
     let seconds = elapsed.as_secs_f64();
     if seconds < 1.0 {
-        format!("{seconds:.2}s")
+        format!("{seconds:.2}")
     } else {
-        format!("{seconds:.1}s")
+        format!("{seconds:.1}")
     }
 }
 
@@ -782,9 +783,9 @@ mod tests {
 
     #[test]
     fn load_time_reads_as_seconds() {
-        assert_eq!(format_load_time(Duration::from_millis(2340)), "2.3s");
-        assert_eq!(format_load_time(Duration::from_millis(420)), "0.42s");
-        assert_eq!(format_load_time(Duration::from_millis(1000)), "1.0s");
-        assert_eq!(format_load_time(Duration::from_secs(125)), "125.0s");
+        assert_eq!(format_load_time(Duration::from_millis(2340)), "2.3");
+        assert_eq!(format_load_time(Duration::from_millis(420)), "0.42");
+        assert_eq!(format_load_time(Duration::from_millis(1000)), "1.0");
+        assert_eq!(format_load_time(Duration::from_secs(125)), "125.0");
     }
 }

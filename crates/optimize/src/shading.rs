@@ -22,6 +22,7 @@ use review_model::ModelData;
 use crate::OptError;
 use crate::Warnings;
 use crate::meshopt::{self, TANGENT_COMPONENTS};
+use crate::notice::OptWarning;
 use crate::process::{RunContext, is_excluded, resolve_op};
 use crate::stack::{NormalParams, OpInstance, OpKind, OptStack, WeldParams};
 use crate::submesh::{PolygonCarry, Submesh};
@@ -48,7 +49,9 @@ pub(crate) fn finish_bases(
             piece.normals_stale = false;
         }
         if tangents_invalidated && let Err(error) = rebuild_tangents(piece) {
-            warnings.push(&format!("Couldn't rebuild the tangents: {error}"));
+            warnings.push(OptWarning::TangentsFailed {
+                detail: error.to_string(),
+            });
         }
     }
 }
@@ -125,11 +128,9 @@ pub(crate) fn recalculate_normals_submeshes(
         }
         if members.iter().any(|&at| !submeshes[at].morph.is_empty()) {
             let name = crate::remesh::node_name(model, node);
-            warnings.push(&format!(
-                "Recalculate Normals: '{name}' has blend shapes, so its normals were left \
-                 as they are. Its shapes store normal changes relative to the old normals, \
-                 which new ones would contradict."
-            ));
+            warnings.push(OptWarning::NormalsKeptForBlendShapes {
+                object: name.to_string(),
+            });
             continue;
         }
         let params = match resolve_op(stack, op, node) {
@@ -146,7 +147,10 @@ pub(crate) fn recalculate_normals_submeshes(
             .collect();
         if let Err(error) = recalculate_node(pieces, &params) {
             let name = crate::remesh::node_name(model, node);
-            warnings.push(&format!("Recalculate Normals: '{name}': {error}"));
+            warnings.push(OptWarning::NormalsFailed {
+                object: name.to_string(),
+                detail: error.to_string(),
+            });
         }
     }
 }
@@ -595,7 +599,7 @@ mod tests {
         pieces: &mut [Submesh],
         params: NormalParams,
         stack: Option<OptStack>,
-    ) -> Vec<String> {
+    ) -> Vec<OptWarning> {
         let mut stack = stack.unwrap_or_default();
         let id = stack.push_op(OpKind::RecalculateNormals(params));
         let op = stack.op(id).expect("just pushed").clone();
@@ -752,7 +756,9 @@ mod tests {
         let warnings = recalculate(&mut pieces, NormalParams::default(), None);
         assert_eq!(pieces[0].vertices, before);
         assert!(
-            warnings.iter().any(|w| w.contains("blend shapes")),
+            warnings
+                .iter()
+                .any(|w| matches!(w, OptWarning::NormalsKeptForBlendShapes { .. })),
             "{warnings:?}"
         );
     }

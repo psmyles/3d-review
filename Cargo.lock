@@ -2730,7 +2730,6 @@ dependencies = [
  "fluent-bundle",
  "fluent-langneg",
  "proc-macro2",
- "quote",
  "review-localization-build",
  "syn",
  "unic-langid",

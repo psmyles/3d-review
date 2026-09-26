@@ -33,7 +33,8 @@ use std::time::{Duration, Instant};
 use review_model::{ModelData, SceneBvh};
 use review_optimize::{
     CancelToken, ExportOptions, ExportReport, OpKind, OptError, OptPreview, OptProgress, OptStack,
-    OptStage, ProcessInput, ProcessedResult, RebindReport, export_fbx, preset, process_progressive,
+    OptStage, OptWarning, ProcessInput, ProcessedResult, RebindReport, export_fbx, preset,
+    process_progressive,
 };
 use review_ui::{NoticeKind, OptIntent, OptLevelView, OptResultView};
 
@@ -219,7 +220,7 @@ pub(crate) struct OptSubsystem {
     last_progress: Option<(String, Option<f32>)>,
     /// The warnings the last accepted run reported, so a condition that persists
     /// across runs is announced once rather than once per run.
-    announced_warnings: Vec<String>,
+    announced_warnings: Vec<OptWarning>,
     /// The Outliner-hidden node set most recently seen (sorted). Visibility is
     /// part of the AO bake's input — a hidden mesh neither occludes nor bakes —
     /// so toggling an eye while a bake is enabled reruns the stack.
@@ -655,7 +656,7 @@ impl App {
         // A sensible default file name: the model's own, which is also the stem
         // the per-LOD packaging appends its suffixes to.
         let stem = if self.scene_model.name.is_empty() {
-            "optimized".to_owned()
+            review_localization::tr(keys::app_dialogs::EXPORT_FILE_NAME).into_owned()
         } else {
             self.scene_model.name.clone()
         };
@@ -750,8 +751,15 @@ impl App {
                 // as its body rather than one notice each: a chain of several
                 // meshes has a note per mesh, and that used to bury the export's
                 // own result under a column of near-identical boxes.
-                self.notifications
-                    .report(NoticeKind::Success, title, report.notes);
+                for note in &report.notes {
+                    log::info!("export: {note}");
+                }
+                let notes = report
+                    .notes
+                    .iter()
+                    .map(crate::explain::explain_export_note)
+                    .collect();
+                self.notifications.report(NoticeKind::Success, title, notes);
             }
             // A partial replacement is the one failure the user has to act on:
             // some of their assets on disk are now from this run and some are
@@ -817,7 +825,11 @@ impl App {
             .collect();
         let view = OptResultView {
             elapsed_ms: result.elapsed.as_secs_f32() * 1000.0,
-            warnings: result.warnings.clone(),
+            warnings: result
+                .warnings
+                .iter()
+                .map(crate::explain::explain_opt_warning)
+                .collect(),
             source: result.source,
             source_metrics: result.source_metrics,
             levels,
@@ -861,7 +873,7 @@ impl App {
         // this mesh), so they persist across runs while it holds — and dragging a
         // slider is a run per frame. Only what is newly true is announced;
         // otherwise one stuck condition buries the viewport in identical toasts.
-        let fresh: Vec<String> = self
+        let fresh: Vec<OptWarning> = self
             .opt
             .as_ref()
             .map(|opt| {
@@ -876,6 +888,14 @@ impl App {
             opt.announced_warnings = warnings;
         }
         if !fresh.is_empty() {
+            for warning in &fresh {
+                // The English diagnostic, for the log; the card shows the catalog's.
+                log::warn!("optimization: {warning}");
+            }
+            let fresh: Vec<String> = fresh
+                .iter()
+                .map(crate::explain::explain_opt_warning)
+                .collect();
             // One notice for the run, however many things it has to say.
             self.notifications.report(
                 NoticeKind::Warning,

@@ -13,8 +13,8 @@
 
 use review_model::ModelData;
 use review_optimize::{
-    NodeOverride, OpKind, OptStack, ProcessedLod, RemeshDensity, RemeshParams, RemeshTopology,
-    WeldParams,
+    NodeOverride, OpKind, OptStack, OptWarning, ProcessedLod, RemeshDensity, RemeshParams,
+    RemeshTopology, WeldParams,
 };
 
 mod common;
@@ -130,7 +130,7 @@ fn assert_consistent(model: &ModelData, label: &str) {
 fn assert_no_skip_warning(result: &review_optimize::ProcessedResult) {
     for warning in &result.warnings {
         assert!(
-            !warning.contains("left as it is"),
+            !warning.to_string().contains("left as it is"),
             "the remesh skipped an object: {warning}"
         );
     }
@@ -205,7 +205,7 @@ fn a_budget_above_the_input_says_so() {
         result
             .warnings
             .iter()
-            .any(|warning| warning.contains("cannot add detail")),
+            .any(|warning| matches!(warning, OptWarning::RemeshBudgetAboveInput { .. })),
         "asking for more than the input holds should be reported: {:?}",
         result.warnings
     );

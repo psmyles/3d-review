@@ -38,6 +38,7 @@ use review_model::{ModelData, SourceExtras};
 
 use crate::cancel::CancelToken;
 use crate::meshopt;
+use crate::notice::OptWarning;
 use crate::stack::{OpInstance, OpKind, OptStack};
 use crate::submesh;
 use crate::{OptError, Warnings};
@@ -126,7 +127,7 @@ pub struct ProcessedResult {
     /// walked several times.
     pub source_metrics: AnalysisMetrics,
     /// Non-fatal problems worth telling the user about, already de-duplicated.
-    pub warnings: Vec<String>,
+    pub warnings: Vec<OptWarning>,
     /// Wall-clock time the run took, for the "this is taking a while" notice and
     /// the stats overlay.
     pub elapsed: Duration,
@@ -393,11 +394,7 @@ pub fn process_progressive(
     if let (Some(bake), Some(simplify)) = (first_bake, last_simplify)
         && bake < simplify
     {
-        warnings.push(
-            "Bake AO runs before a simplifier, so the baked occlusion describes \
-             the pre-simplified geometry. Move the bake below the simplifier — or \
-             below Generate LODs to bake every level.",
-        );
+        warnings.push(OptWarning::BakeBeforeSimplify);
     }
 
     // A simplifier rebuilds triangles with no correspondence to what it was
@@ -412,11 +409,7 @@ pub fn process_progressive(
     if let (Some(remesh), Some(simplify)) = (last_remesh, last_simplify)
         && remesh < simplify
     {
-        warnings.push(
-            "A simplifier runs after Remesh and rebuilds its faces as triangles, so \
-             the quads it produced are lost. Move Remesh below the simplifier to keep \
-             them.",
-        );
+        warnings.push(OptWarning::QuadsLostToSimplify);
     }
 
     // A wrap replaces the object outright, so everything above it was work on
@@ -433,11 +426,7 @@ pub fn process_progressive(
             .iter()
             .any(|op| op.enabled && op.kind.alters_geometry())
     {
-        warnings.push(
-            "Shrinkwrap runs below an operation that changes the shape, and it \
-             replaces the whole object — so that operation's work is thrown away. \
-             Move Shrinkwrap to the top of the list.",
-        );
+        warnings.push(OptWarning::ShrinkwrapBelowShapeChange);
     }
 
     let mut lods = Vec::with_capacity(levels.len());
@@ -457,10 +446,7 @@ pub fn process_progressive(
         // but it renders as an empty viewport, so say why rather than let the
         // user wonder whether processing failed.
         if model.indices.is_empty() {
-            warnings.push(&format!(
-                "LOD {index} simplified away completely. Raise its target ratio, or \
-                 lower its error limit so the simplifier stops sooner."
-            ));
+            warnings.push(OptWarning::LodEmpty { level: index });
         }
         // Measured off the submeshes rather than the assembled model: they are
         // what the GPU draws, and — unlike the assembled model, which a rebuilt
@@ -1282,7 +1268,7 @@ mod tests {
                 result
                     .warnings
                     .iter()
-                    .any(|warning| warning.contains("simplified away")),
+                    .any(|warning| matches!(warning, OptWarning::LodEmpty { .. })),
                 "an empty level is explained: {:?}",
                 result.warnings
             );
@@ -1400,7 +1386,7 @@ mod tests {
             !result
                 .warnings
                 .iter()
-                .any(|warning| warning.contains("skin")),
+                .any(|warning| warning.to_string().contains("skin")),
             "nothing was dropped: {:?}",
             result.warnings
         );

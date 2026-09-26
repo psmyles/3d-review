@@ -228,8 +228,8 @@ fn clamp_to(rect: egui::Rect, bounds: egui::Rect) -> egui::Rect {
 /// falls back to meters when the file declared no / an unrecognised unit.
 fn format_dimension(length_meters: f32, source_unit_meters: f32) -> String {
     match match_known_unit(source_unit_meters) {
-        Some((factor, label)) => format!("{} {label}", round_dimension(length_meters / factor)),
-        None => format!("{} m", round_dimension(length_meters)),
+        Some(unit) => (unit.value)(round_dimension(length_meters / unit.meters)),
+        None => crate::units::meters_value(round_dimension(length_meters)),
     }
 }
 

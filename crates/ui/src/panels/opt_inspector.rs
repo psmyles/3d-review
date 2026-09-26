@@ -927,7 +927,7 @@ fn node_body(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData) {
         .nodes
         .get(index)
         .map(|node| node.name.clone())
-        .unwrap_or_else(|| format!("Node {index}"));
+        .unwrap_or_else(|| keys::ui_opt::unnamed_node(index as f64));
     ui.heading(name);
     ui.add_space(size::PANEL_ROW_GAP);
     ui.label(egui::RichText::from(keys::ui_opt::OBJECT_OVERRIDES).color(color::TEXT_MUTED));

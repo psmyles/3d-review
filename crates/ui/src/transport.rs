@@ -92,15 +92,22 @@ pub(crate) fn transport_row(
         let gap = size::ANIM_TRANSPORT_GAP;
         ui.spacing_mut().item_spacing.x = gap;
 
+        // The numerals are formatted here - the frame padded to a constant width,
+        // the seconds to two places - and handed to the message as values, so the
+        // words and their order around them are the catalog's.
         let digits = last_frame.to_string().len();
-        let readout = format!(
-            "{:>digits$} / {last_frame}   {:.2} s",
-            clip.frame_at(anim.time, fps),
-            (anim.time - clip.time_begin).max(0.0)
+        let readout = keys::ui_transport::readout(
+            format!("{:>digits$}", clip.frame_at(anim.time, fps)),
+            last_frame as f64,
+            format!("{:.2}", (anim.time - clip.time_begin).max(0.0)),
         );
         // The frame field is space-padded to a constant width already; the elapsed
         // seconds are not, so the block is measured at the clip's full duration.
-        let widest = format!("{last_frame} / {last_frame}   {:.2} s", clip.duration());
+        let widest = keys::ui_transport::readout(
+            last_frame.to_string(),
+            last_frame as f64,
+            format!("{:.2}", clip.duration()),
+        );
         let readout_width = mono_width(ui, &widest) + size::ANIM_TRANSPORT_GROUP_GAP;
 
         // Five tiles (four transport + loop) and the combo, whose `width` is its

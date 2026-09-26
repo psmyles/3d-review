@@ -42,6 +42,7 @@ use std::collections::HashMap;
 use glam::{Vec3, Vec4};
 use review_model::{ModelData, Vertex};
 
+use crate::notice::OptWarning;
 use crate::stack::{
     NormalParams, OpInstance, OpKind, RemeshDensity, RemeshParams, RemeshTopology, WeldParams,
 };
@@ -315,12 +316,9 @@ pub(crate) fn remesh_submeshes(
             continue;
         }
         if pieces.iter().any(|piece| piece.has_rows()) {
-            warnings.push(&format!(
-                "Remesh: '{}' is skinned or has blend shapes, so it was left as it is. \
-                 Remeshing rebuilds the surface from scratch, and no skin weight \
-                 authored against the old vertices can follow it.",
-                node_name(model, node)
-            ));
+            warnings.push(OptWarning::RemeshKeptDeforming {
+                object: node_name(model, node),
+            });
             continue;
         }
         let resolved = crate::process::resolve_op(stack, op, node);
@@ -332,11 +330,10 @@ pub(crate) fn remesh_submeshes(
         };
         let proxy = proxy::build(&pieces);
         if proxy.triangle_count() < MIN_INPUT_TRIANGLES {
-            warnings.push(&format!(
-                "Remesh: '{}' has too few triangles to rebuild ({}), so it was left as it is.",
-                node_name(model, node),
-                proxy.triangle_count()
-            ));
+            warnings.push(OptWarning::RemeshTooFewTriangles {
+                object: node_name(model, node),
+                triangles: proxy.triangle_count(),
+            });
             continue;
         }
         budget_inputs.push(BudgetInput {
@@ -449,7 +446,7 @@ pub(crate) fn remesh_submeshes(
             continue;
         };
         for note in &outcome.notes {
-            warnings.push(note);
+            warnings.push(note.clone());
         }
         if let Some(rebuilt) = outcome.rebuilt {
             replacements.insert(job.node, rebuilt);
@@ -548,7 +545,7 @@ struct NodeJob<'a> {
 /// the same on every run.
 struct NodeOutcome {
     rebuilt: Option<Vec<Submesh>>,
-    notes: Vec<String>,
+    notes: Vec<OptWarning>,
 }
 
 /// One node through the in-house rebuild.
@@ -601,10 +598,10 @@ fn rebuild_node(
             // belongs to is discarded whole — so it is not worth a warning.
             Err(OptError::Cancelled) => return None,
             Err(error) => {
-                warnings.push(&format!(
-                    "Remesh: '{}' was left as it is — {error}",
-                    job.name
-                ));
+                warnings.push(OptWarning::RemeshFailed {
+                    object: job.name.clone(),
+                    detail: error.to_string(),
+                });
                 return None;
             }
         };
@@ -614,20 +611,17 @@ fn rebuild_node(
     // instead of reducing one - so it is worth saying plainly rather than
     // quietly handing back the input.
     if job.faces as usize > job.proxy.source_triangles {
-        warnings.push(&format!(
-            "Remesh: '{}' already has fewer faces ({}) than the {} asked for, and a \
-             rebuild only ever merges - it cannot add detail that is not there. It \
-             came back at about its current density.",
-            job.name, job.proxy.source_triangles, job.faces
-        ));
+        warnings.push(OptWarning::RemeshBudgetAboveInput {
+            object: job.name.clone(),
+            triangles: job.proxy.source_triangles,
+            asked: job.faces,
+        });
     }
 
     if output.is_empty() {
-        warnings.push(&format!(
-            "Remesh: '{}' came back empty. Ask for more faces, or check that the \
-             object is not a handful of disconnected slivers.",
-            job.name
-        ));
+        warnings.push(OptWarning::RemeshEmpty {
+            object: job.name.clone(),
+        });
         return None;
     }
 
@@ -636,11 +630,10 @@ fn rebuild_node(
     // it is a large share, since the face count is otherwise exact.
     let regions = report.vertices.max(1);
     if report.stubborn * 20 > regions {
-        warnings.push(&format!(
-            "Remesh: {} parts of '{}' could not be simplified as far as asked without \
-             breaking the surface, so it came back denser there.",
-            report.stubborn, job.name
-        ));
+        warnings.push(OptWarning::RemeshStubborn {
+            object: job.name.clone(),
+            parts: report.stubborn,
+        });
     }
 
     // Quads were asked for and most of the surface would not take them. The
@@ -650,14 +643,11 @@ fn rebuild_node(
     // of triangles they are. Worth saying, because the face count comes back
     // high when it happens and the reason is not visible in the viewport.
     if job.params.topology == RemeshTopology::Quads && report.quads * 2 < output.face_count() {
-        warnings.push(&format!(
-            "Remesh: only {} of '{}' came back as quads ({} faces) - the rebuilt surface \
-             folds too sharply at this density for the rest to pair up. Ask for more faces, \
-             or rebuild it as triangles.",
-            report.quads,
-            job.name,
-            output.face_count()
-        ));
+        warnings.push(OptWarning::RemeshFewQuads {
+            object: job.name.clone(),
+            quads: report.quads,
+            faces: output.face_count(),
+        });
     }
 
     let mut output = output;

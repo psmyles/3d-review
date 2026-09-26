@@ -41,6 +41,7 @@ use review_model::{Bvh, ModelData, Vertex};
 
 use crate::Warnings;
 use crate::cancel::{CancelToken, cancelled};
+use crate::notice::OptWarning;
 use crate::remesh::{self, proxy};
 use crate::stack::{OpInstance, OpKind, OptStack, ShrinkwrapMethod, ShrinkwrapParams};
 use crate::submesh::Submesh;
@@ -101,11 +102,9 @@ pub(crate) fn shrinkwrap_submeshes(
         }
         let name = remesh::node_name(model, node);
         if pieces.iter().any(|piece| piece.has_rows()) {
-            warnings.push(&format!(
-                "Shrinkwrap: '{name}' is skinned or has blend shapes, so it was left as it \
-                 is. Wrapping replaces the surface entirely, and no skin weight authored \
-                 against the old vertices can follow it."
-            ));
+            warnings.push(OptWarning::ShrinkwrapKeptDeforming {
+                object: name.to_string(),
+            });
             continue;
         }
         let params = match crate::process::resolve_op(stack, op, node) {
@@ -163,7 +162,7 @@ pub(crate) fn shrinkwrap_submeshes(
             continue;
         };
         for note in &outcome.notes {
-            warnings.push(note);
+            warnings.push(note.clone());
         }
         if let Some(rebuilt) = outcome.rebuilt {
             replacements.insert(job.node, rebuilt);
@@ -203,7 +202,7 @@ struct WrapJob<'a> {
 /// for why they ride back rather than going into the shared [`Warnings`].
 struct WrapOutcome {
     rebuilt: Option<Vec<Submesh>>,
-    notes: Vec<String>,
+    notes: Vec<OptWarning>,
 }
 
 /// Wrap one node, or `None` when it was left as it is (with a warning already
@@ -222,10 +221,10 @@ fn wrap_node(
 ) -> Option<Vec<Submesh>> {
     let proxy = proxy::build(pieces);
     if proxy.triangle_count() < MIN_INPUT_TRIANGLES {
-        warnings.push(&format!(
-            "Shrinkwrap: '{name}' has too few triangles to wrap ({}), so it was left as it is.",
-            proxy.triangle_count()
-        ));
+        warnings.push(OptWarning::ShrinkwrapTooFewTriangles {
+            object: name.to_string(),
+            triangles: proxy.triangle_count(),
+        });
         return None;
     }
     if proxy.bounds.is_empty() || cancelled(cancel) {
@@ -248,16 +247,10 @@ fn wrap_node(
         remesher::reduce(&mut surface, target, params.voxel_regularize);
     }
     if surface.is_empty() {
-        warnings.push(&match params.method {
-            ShrinkwrapMethod::Winding => format!(
-                "Shrinkwrap: '{name}' came back empty — at resolution {resolution} the object \
-                 is thinner than one voxel. Raise the resolution, or add a small offset to \
-                 give it some thickness."
-            ),
-            ShrinkwrapMethod::Voxel => format!(
-                "Shrinkwrap: '{name}' came back empty at voxel resolution {resolution}. Raise \
-                 the resolution, or switch to the distance-field method."
-            ),
+        let object = name.to_string();
+        warnings.push(match params.method {
+            ShrinkwrapMethod::Winding => OptWarning::ShrinkwrapEmptyField { object, resolution },
+            ShrinkwrapMethod::Voxel => OptWarning::ShrinkwrapEmptyVoxels { object, resolution },
         });
         return None;
     }
@@ -308,10 +301,11 @@ fn distance_field_surface(
         desc = grid::GridDesc::cover(proxy.bounds, resolution, params.offset);
     }
     if resolution != requested {
-        warnings.push(&format!(
-            "Shrinkwrap: '{name}' would need more memory than a wrap is worth at \
-             resolution {requested}, so it ran at {resolution} instead."
-        ));
+        warnings.push(OptWarning::ShrinkwrapResolutionLowered {
+            object: name.to_string(),
+            requested,
+            resolution,
+        });
     }
 
     // The proxy as something the hierarchies can be queried against. Positions

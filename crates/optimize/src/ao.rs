@@ -1177,7 +1177,7 @@ mod tests {
             run(&stack)
                 .warnings
                 .iter()
-                .any(|warning| warning.contains("Bake AO runs before a simplifier")),
+                .any(|warning| matches!(warning, crate::OptWarning::BakeBeforeSimplify)),
             "the ordering advisory is raised"
         );
 
@@ -1186,7 +1186,7 @@ mod tests {
             !run(&stack)
                 .warnings
                 .iter()
-                .any(|warning| warning.contains("Bake AO runs before a simplifier")),
+                .any(|warning| matches!(warning, crate::OptWarning::BakeBeforeSimplify)),
             "baking after the simplifier is the recommended order"
         );
     }

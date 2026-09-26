@@ -249,14 +249,15 @@ fn human_size(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;
     const GB: u64 = MB * 1024;
+    let scaled = |unit: u64| format!("{:.1}", bytes as f64 / unit as f64);
     if bytes >= GB {
-        format!("{:.1} GB", bytes as f64 / GB as f64)
+        keys::ui_units::gigabytes_value(scaled(GB))
     } else if bytes >= MB {
-        format!("{:.1} MB", bytes as f64 / MB as f64)
+        keys::ui_units::megabytes_value(scaled(MB))
     } else if bytes >= KB {
-        format!("{:.1} KB", bytes as f64 / KB as f64)
+        keys::ui_units::kilobytes_value(scaled(KB))
     } else {
-        format!("{bytes} B")
+        keys::ui_units::bytes_value(bytes.to_string())
     }
 }
 
@@ -755,9 +756,9 @@ fn row_interaction(
 /// factor for anything else; `0.0`/non-finite means the file declared no unit.
 fn source_unit_label(meters_per_unit: f32) -> String {
     match crate::units::match_known_unit(meters_per_unit) {
-        Some((_, label)) => label.to_owned(),
+        Some(unit) => review_localization::tr(unit.symbol).into_owned(),
         None if meters_per_unit.is_finite() && meters_per_unit > 0.0 => {
-            format!("{meters_per_unit:.4} m")
+            crate::units::meters_value(format!("{meters_per_unit:.4}"))
         }
         None => review_localization::tr(keys::ui_stats::UNMEASURED).into_owned(),
     }

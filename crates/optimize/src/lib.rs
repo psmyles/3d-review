@@ -49,6 +49,7 @@ pub mod cancel;
 
 pub mod export;
 pub mod meshopt;
+pub mod notice;
 pub mod ops;
 pub mod preset;
 pub mod process;
@@ -60,6 +61,7 @@ pub mod submesh;
 
 pub use cancel::CancelToken;
 pub use export::{ExportReport, export_fbx};
+pub use notice::{ExportNote, OptWarning};
 pub use process::{
     AnalysisMetrics, MeshCounts, OptPreview, OptPreviewSink, OptProgress, OptProgressSink,
     OptStage, ProcessInput, ProcessedLod, ProcessedResult, process, process_cancellable,
@@ -155,22 +157,22 @@ impl From<std::io::Error> for OptError {
 /// the rest; the user needs to know *that* it happened, once.
 #[derive(Debug, Default)]
 pub struct Warnings {
-    messages: Vec<String>,
+    warnings: Vec<OptWarning>,
 }
 
 impl Warnings {
-    pub fn push(&mut self, message: &str) {
-        if !self.messages.iter().any(|existing| existing == message) {
-            self.messages.push(message.to_owned());
+    pub fn push(&mut self, warning: OptWarning) {
+        if !self.warnings.contains(&warning) {
+            self.warnings.push(warning);
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.messages.is_empty()
+        self.warnings.is_empty()
     }
 
-    pub fn into_vec(self) -> Vec<String> {
-        self.messages
+    pub fn into_vec(self) -> Vec<OptWarning> {
+        self.warnings
     }
 }
 
@@ -181,9 +183,9 @@ mod tests {
     #[test]
     fn warnings_report_a_repeated_problem_once() {
         let mut warnings = Warnings::default();
-        warnings.push("Weld Vertices: the mesh has no triangles to process");
-        warnings.push("Weld Vertices: the mesh has no triangles to process");
-        warnings.push("Generate LODs: something else");
+        warnings.push(OptWarning::LodEmpty { level: 1 });
+        warnings.push(OptWarning::LodEmpty { level: 1 });
+        warnings.push(OptWarning::LodEmpty { level: 2 });
 
         assert_eq!(warnings.into_vec().len(), 2);
     }

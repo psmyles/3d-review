@@ -360,7 +360,7 @@ impl App {
         // `gpu` and `egui_renderer` are borrowed out of `self` for the whole block,
         // so the reporter — which needs all of `self` — runs once it closes. An
         // empty `Vec` allocates nothing, so a clean frame pays for none of this.
-        let mut faults: Vec<(&str, String)> = Vec::new();
+        let mut faults: Vec<(GpuFault, String)> = Vec::new();
         let before_present: Option<Instant>;
         {
             let _z = prof::zone!("Paint + Present");
@@ -447,7 +447,7 @@ impl App {
                 }
             };
             if let Err(err) = render_result {
-                faults.push(("Scene render failed", err.to_string()));
+                faults.push((GpuFault::Scene, err.to_string()));
             }
 
             // Ambient occlusion averages frames whenever the view holds still, and
@@ -472,7 +472,7 @@ impl App {
                 full_output.pixels_per_point,
                 frame.size(),
             ) {
-                faults.push(("UI render failed", err.to_string()));
+                faults.push((GpuFault::Ui, err.to_string()));
             }
 
             // The one swapchain pass: it owns the clear, replays whatever the
@@ -483,16 +483,13 @@ impl App {
             // this is the present itself.
             before_present = gate_active.then(Instant::now);
             if let review_render::PresentStatus::DeviceLost { reason } = frame.finish(vsync) {
-                faults.push((
-                    "Graphics device lost",
-                    format!("{reason:#x} - restart the viewer"),
-                ));
+                faults.push((GpuFault::DeviceLost, format!("{reason:#x}")));
             }
             // After the frame: a texture egui freed may still have been drawn from it.
             egui_renderer.free_textures();
         }
-        for (context, detail) in faults {
-            self.report_gpu_fault(context, detail);
+        for (fault, detail) in faults {
+            self.report_gpu_fault(fault, detail);
         }
         self.gate_after_present(before_present);
 
@@ -509,8 +506,12 @@ impl App {
     /// rather than a column of them. The first fault reaches the log through its
     /// card, which logs itself; a line a frame after it would fill the day's log
     /// file with the same sentence.
-    pub(crate) fn report_gpu_fault(&mut self, context: &str, err: impl std::fmt::Display) {
-        let message = keys::app_notifications::gpu_fault(context, err.to_string());
+    pub(crate) fn report_gpu_fault(&mut self, fault: GpuFault, detail: String) {
+        let message = match fault {
+            GpuFault::Scene => keys::app_notifications::gpu_scene_failed(detail),
+            GpuFault::Ui => keys::app_notifications::gpu_ui_failed(detail),
+            GpuFault::DeviceLost => keys::app_notifications::gpu_device_lost(detail),
+        };
         if self.gpu_fault_notified {
             prof::msg(&message);
         } else {
@@ -674,4 +675,16 @@ mod tests {
         assert_eq!((view.x, view.y), (0, 0));
         assert_eq!((view.width, view.height), (1280, 720));
     }
+}
+
+/// Which part of a frame failed on the GPU: what the error notice leads with.
+/// The detail that follows it is the renderer's own diagnostic.
+#[derive(Clone, Copy)]
+pub(crate) enum GpuFault {
+    /// The scene's offscreen passes or its composite.
+    Scene,
+    /// The chrome's tessellation upload.
+    Ui,
+    /// The device went away; the detail is its reason code.
+    DeviceLost,
 }

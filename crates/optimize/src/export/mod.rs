@@ -41,6 +41,7 @@ use std::path::{Path, PathBuf};
 use review_model::{ModelData, SourceExtras};
 
 use crate::OptError;
+use crate::notice::ExportNote;
 use crate::process::ProcessedLod;
 use crate::replace_file::Staged;
 use crate::stack::{ExportOptions, LodPackaging};
@@ -78,7 +79,7 @@ pub struct ExportReport {
     pub triangle_count: usize,
     /// Things worth saying about the result — a dropped skin, a node whose
     /// transform could not be inverted, properties that had not loaded.
-    pub notes: Vec<String>,
+    pub notes: Vec<ExportNote>,
 }
 
 /// True when this build has the vendored ufbx_write compiled in.
@@ -117,12 +118,7 @@ pub fn export_fbx(
         notes: Vec::new(),
     };
     if extras.is_none() {
-        report.notes.push(
-            "The source's properties had not finished loading: node transforms, materials and \
-             scene settings were written from what the viewer shows, without textures or user \
-             properties."
-                .to_owned(),
-        );
+        report.notes.push(ExportNote::CaptureNotLoaded);
     }
 
     // Every file is written to a temporary sibling first and the whole set is
@@ -341,7 +337,7 @@ mod tests {
             "the loop emits one node, not an endless chain"
         );
         assert!(
-            notes.iter().any(|note| note.contains("looped")),
+            notes.contains(&ExportNote::ParentChainLooped),
             "the user is told the branch was flattened: {notes:?}"
         );
     }

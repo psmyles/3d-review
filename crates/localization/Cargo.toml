@@ -23,9 +23,6 @@ review-localization-build.workspace = true
 
 [dev-dependencies]
 proc-macro2.workspace = true
-# Reading an attribute back as tokens, to spot a `#[cfg(test)]` module. Already
-# in the graph beside `syn`, which every derive macro pulls it in with.
-quote = "1"
 syn.workspace = true
 
 [lints]
