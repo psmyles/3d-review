@@ -25,7 +25,8 @@ pub use bvh::{
     triangle_positions,
 };
 pub use clip::{
-    AnimationClip, DEFAULT_FRAME_RATE, Key, MorphTrack, NodeTrack, frame_rate_or_default,
+    AnimationClip, DEFAULT_FRAME_RATE, Key, MAX_CLIP_FRAMES, MorphTrack, NodeTrack,
+    frame_rate_or_default,
 };
 pub use demo::demo_cube_model;
 pub use extras::{ExtrasCounts, SourceExtras};

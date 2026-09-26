@@ -34,8 +34,16 @@ pub(crate) fn write_scene(
         RvoExportSkin, RvoExportTexture, RvoExportTextureLayer, RvoExportVideo,
     };
 
-    let path_string = path.to_string_lossy().into_owned();
-    let c_path = CString::new(path_string)
+    // The bridge takes UTF-8 and widens it for `_wfopen` on Windows. A path that
+    // is not valid Unicode is refused outright: `to_string_lossy` would have
+    // quietly written the file under a different name.
+    let path_utf8 = path.to_str().ok_or_else(|| {
+        OptError::Export(format!(
+            "the output path is not valid Unicode: {}",
+            path.display()
+        ))
+    })?;
+    let c_path = CString::new(path_utf8)
         .map_err(|_| OptError::Export("the output path contains a NUL byte".to_owned()))?;
 
     let range = |range: PropRange| RvoExportPropRange {

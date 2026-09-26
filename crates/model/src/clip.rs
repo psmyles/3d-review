@@ -59,10 +59,17 @@ impl AnimationClip {
     }
 
     /// The number of frames the transport steps through at `fps`: the range
-    /// rounded to whole frames, plus the frame at `time_begin` itself.
+    /// rounded to whole frames, plus the frame at `time_begin` itself, capped at
+    /// [`MAX_CLIP_FRAMES`].
+    ///
+    /// The range and the rate both come from the file, so their product can be any
+    /// finite number at all: the cap is what keeps the `+ 1` from overflowing and
+    /// every per-frame walk (the transport, [`crate::anim::clip_bounds`]) bounded.
     pub fn frame_count(&self, fps: f64) -> usize {
         let fps = frame_rate_or_default(fps);
-        (self.duration() * fps).round().max(0.0) as usize + 1
+        // `as` saturates (and maps NaN to 0), so this is total before the cap.
+        let span = (self.duration() * fps).round().max(0.0) as usize;
+        span.min(MAX_CLIP_FRAMES - 1) + 1
     }
 
     /// The time of frame `frame` (0-based) at `fps`, clamped into the clip.
@@ -81,8 +88,10 @@ impl AnimationClip {
     /// The time `delta` whole frames from the frame `time` falls on, clamped
     /// into the clip — one step of the transport's frame buttons / `,` `.` keys.
     pub fn step_frame_time(&self, time: f64, delta: i64, fps: f64) -> f64 {
-        let frame = self.frame_at(time, fps) as i64 + delta;
+        // `frame_count` is at least 1 and at most MAX_CLIP_FRAMES, so `last` is a
+        // valid clamp bound and both casts are lossless.
         let last = self.frame_count(fps) as i64 - 1;
+        let frame = (self.frame_at(time, fps) as i64).saturating_add(delta);
         self.frame_time(frame.clamp(0, last) as usize, fps)
     }
 
@@ -157,6 +166,11 @@ impl AnimationClip {
         Ok(())
     }
 }
+
+/// The most frames a clip is ever stepped through or measured at — over nine
+/// hours at 30 fps. A stack range past it is a malformed (or absurd) file, and the
+/// clip is simply cut off there rather than walked for days.
+pub const MAX_CLIP_FRAMES: usize = 1_000_000;
 
 /// The frame rate assumed when a file declares none.
 pub const DEFAULT_FRAME_RATE: f64 = 30.0;

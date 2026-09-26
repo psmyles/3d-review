@@ -2,33 +2,32 @@
 //! C-ABI wrapper, exposing a small safe Rust API that decodes a PSD's
 //! merged/composited image to 8-bit RGBA.
 //!
-//! This is the FBX importer's sibling: the **only** place besides `crates/import`
-//! and the sanctioned Direct3D 11 sites where `unsafe`/FFI lives (invariant 9). It
-//! exists so the texture pipeline can read layered PSD source art without shelling
-//! out to a bundled ImageMagick — the merged composite ("Maximize Compatibility")
-//! is what the viewer displays.
+//! This is the FBX importer's sibling: one of the sanctioned FFI sites (invariant 9),
+//! beside `crates/import`, `crates/optimize` and the GPU backend leaf. It exists so the
+//! texture pipeline can read layered PSD source art without shelling out to a bundled
+//! ImageMagick — the merged composite ("Maximize Compatibility") is what the viewer
+//! displays.
 //!
-//! The psd_sdk C++ is **vendored as source** (`vendor/Psd/`) and compiled by `cc`
-//! alongside the C-ABI `src/wrapper.cpp` — the same model as ufbx
-//! (`crates/import`) and meshoptimizer (`crates/optimize`), so a clean checkout
-//! builds on any OS with a C++ compiler. `src/bindings.rs` is committed Rust kept
-//! in lockstep with `src/wrapper.h` by hand, so no bindgen or libclang runs at
+//! The psd_sdk C++ is **vendored as source** (`vendor/Psd/`, patched — see
+//! `vendor/NOTICE.txt`) and compiled by `cc` alongside the C-ABI `src/wrapper.cpp` — the
+//! same model as ufbx (`crates/import`) and meshoptimizer (`crates/optimize`), so a
+//! clean checkout builds on any OS with a C++ compiler. `src/bindings.rs` is committed
+//! Rust kept in lockstep with `src/wrapper.h` by hand, so no bindgen or libclang runs at
 //! build time — see `build.rs` / `vendor/NOTICE.txt`.
 //!
-//! Safety: [`decode_psd`] validates the header dimensions with checked arithmetic
-//! before sizing the output buffer, so a malformed header can never wrap to an
-//! undersized allocation the C++ merged-image read would then overrun. The C++
-//! wrapper additionally catches its own exceptions at the FFI boundary. Callers
-//! (the texture decode worker in `crates/app`) run this off the UI thread.
+//! Safety: the decode is staged so the header is read and **validated before anything
+//! is sized from it** — `fire_psd_open` parses the header alone, [`decode_psd`] refuses
+//! a document it cannot draw faithfully or whose buffers would be absurd
+//! (`check_supported`, `checked_output_len`), and only then asks the wrapper to
+//! allocate and decode the planes. The wrapper repeats the same checks on its side, so
+//! the C ABI is safe on its own, and it catches its own exceptions at the boundary.
+//! Callers (the texture decode worker in `crates/app`) run this off the UI thread.
 
 use thiserror::Error;
 
 mod ffi {
-    // The committed bindgen output declares the full C-ABI surface, incl. the ICC
-    // helpers this viewer doesn't use (it has no ICC pipeline). Keep them bound but
-    // silence the unused-function + generated-naming warnings here, scoped to the
-    // generated code, rather than hand-editing it (or de-linting the whole crate).
-    #![allow(dead_code)]
+    // The committed bindgen-shaped declarations; only the generated naming style is
+    // silenced here, scoped to that code, rather than hand-renaming it.
     #![allow(non_upper_case_globals)]
     #![allow(non_camel_case_types)]
     #![allow(non_snake_case)]
@@ -51,7 +50,7 @@ pub struct PsdImage {
 /// Why a PSD decode failed.
 #[derive(Debug, Error)]
 pub enum PsdError {
-    /// psd_sdk could not parse the file / out of memory.
+    /// psd_sdk could not parse the header / out of memory.
     #[error("psd_sdk failed to open the document")]
     OpenFailed,
     /// Header info could not be read (incl. zero/degenerate dimensions).
@@ -61,10 +60,20 @@ pub enum PsdError {
     /// absurd) file whose output buffer would be a multi-gigabyte allocation.
     #[error("PSD merged image is too large to decode ({width}x{height})")]
     TooLarge { width: u32, height: u32 },
+    /// A document the viewer cannot draw faithfully: a colour mode other than
+    /// Grayscale/RGB, a bit depth other than 8/16/32, or an impossible channel count.
+    #[error("PSD {0} is not supported")]
+    Unsupported(String),
     /// No merged image — the PSD was saved without "Maximize Compatibility".
     #[error("PSD has no composited image (re-save with Maximize Compatibility)")]
     NoMergedImage,
-    /// Unexpected non-zero return from the merged-image read (code).
+    /// The file ends before the data its header describes.
+    #[error("PSD file is truncated")]
+    Truncated,
+    /// The merged image's pixel data is malformed (e.g. a corrupt RLE stream).
+    #[error("PSD merged image data is corrupt")]
+    DecodeFailed,
+    /// Unexpected non-zero return from the wrapper (its status code).
     #[error("PSD merged-image read failed (code {0})")]
     ReadFailed(i32),
 }
@@ -82,12 +91,63 @@ impl Drop for DocHandle {
 /// Hard ceiling on either decoded dimension. PSD's own format maximum is
 /// 30000 px (PSB: 300000), and source-art textures are far smaller; a header
 /// past this is malformed or absurd, and is rejected instead of attempted.
+/// Mirrored by `MAX_PSD_DIM` in `wrapper.cpp`.
 const MAX_DIMENSION: u32 = 30000;
 
 /// Hard ceiling on the decoded RGBA payload (1 GiB — a 16384² RGBA image).
 /// The dimension check alone still admits a ~3.6 GB allocation whose failure
 /// would abort the whole process; cap the total instead of gambling on it.
+/// Mirrored by `MAX_PSD_OUTPUT_BYTES` in `wrapper.cpp`.
 const MAX_OUTPUT_BYTES: usize = 1 << 30;
+
+/// Hard ceiling on the planar data psd_sdk holds while decoding (every channel at
+/// the source depth) — 2 GiB, a 16384² RGBA document at 16 bits. Mirrored by
+/// `MAX_PSD_PLANAR_BYTES` in `wrapper.cpp`.
+const MAX_PLANAR_BYTES: u64 = 2 << 30;
+
+/// Photoshop's own channel limit. Mirrored by `MAX_PSD_CHANNELS` in `wrapper.cpp`.
+const MAX_CHANNELS: u16 = 56;
+
+/// psd_sdk's `colorMode::Enum` values for the two modes the wrapper draws.
+const COLOR_MODE_GRAYSCALE: u16 = 1;
+const COLOR_MODE_RGB: u16 = 3;
+
+/// Refuse a document the wrapper cannot draw faithfully, before anything is sized
+/// from its header: the bit depths psd_sdk decodes (a 1-bit Bitmap document would get
+/// zero-byte planes), the two colour modes the merged read understands (CMYK or Lab
+/// drawn as RGB is a wrong picture, not an image), and a channel count Photoshop could
+/// have written. The planar total is capped so the decode cannot ask for gigabytes.
+fn check_supported(info: &ffi::fire_psd_info) -> Result<(), PsdError> {
+    let unsupported = |what: &str| Err(PsdError::Unsupported(what.to_owned()));
+    let mode = match info.color_mode {
+        COLOR_MODE_GRAYSCALE | COLOR_MODE_RGB => info.color_mode,
+        0 => return unsupported("Bitmap color mode"),
+        2 => return unsupported("Indexed color mode"),
+        4 => return unsupported("CMYK color mode"),
+        7 => return unsupported("Multichannel color mode"),
+        8 => return unsupported("Duotone color mode"),
+        9 => return unsupported("Lab color mode"),
+        other => return unsupported(&format!("color mode {other}")),
+    };
+    if !matches!(info.bits_per_channel, 8 | 16 | 32) {
+        return unsupported(&format!("{}-bit depth", info.bits_per_channel));
+    }
+    let min_channels = if mode == COLOR_MODE_RGB { 3 } else { 1 };
+    if info.channels < min_channels || info.channels > MAX_CHANNELS {
+        return unsupported(&format!("channel count of {}", info.channels));
+    }
+    let planar = u64::from(info.width)
+        * u64::from(info.height)
+        * u64::from(info.channels)
+        * u64::from(info.bits_per_channel / 8);
+    if planar > MAX_PLANAR_BYTES {
+        return Err(PsdError::TooLarge {
+            width: info.width,
+            height: info.height,
+        });
+    }
+    Ok(())
+}
 
 /// Validate a merged image's header dimensions and size its RGBA8 output
 /// buffer. FFI = validation boundary: rejects zero/degenerate/absurd dimensions
@@ -109,6 +169,24 @@ fn checked_output_len(width: u32, height: u32) -> Result<usize, PsdError> {
     Ok(len)
 }
 
+/// The error a non-`FIRE_PSD_OK` wrapper status stands for.
+fn status_error(status: i32) -> PsdError {
+    match u32::try_from(status) {
+        Ok(ffi::FIRE_PSD_NO_MERGED_IMAGE) => PsdError::NoMergedImage,
+        Ok(ffi::FIRE_PSD_UNSUPPORTED) => {
+            PsdError::Unsupported("document (refused by the decoder)".to_owned())
+        }
+        Ok(ffi::FIRE_PSD_DECODE_FAILED) => PsdError::DecodeFailed,
+        Ok(ffi::FIRE_PSD_TRUNCATED) => PsdError::Truncated,
+        // This crate's own mistakes rather than the file's; report the code verbatim.
+        Ok(
+            ffi::FIRE_PSD_BAD_ARGUMENT | ffi::FIRE_PSD_NOT_DECODED | ffi::FIRE_PSD_BUFFER_TOO_SMALL,
+        ) => PsdError::ReadFailed(status),
+        // A code this crate does not know: the wrapper and the bindings disagree.
+        Ok(_) | Err(_) => PsdError::ReadFailed(status),
+    }
+}
+
 /// Decode a PSD's merged image from in-memory bytes into 8-bit RGBA.
 pub fn decode_psd(bytes: &[u8]) -> Result<PsdImage, PsdError> {
     // SAFETY: `bytes`/len describe a valid read-only slice for the duration of
@@ -126,6 +204,8 @@ pub fn decode_psd(bytes: &[u8]) -> Result<PsdImage, PsdError> {
         height: 0,
         channels: 0,
         bits_per_channel: 0,
+        color_mode: 0,
+        reserved: 0,
     };
     // SAFETY: `handle` is the live document just opened (guard not dropped);
     // `info` is a valid out-pointer to a correctly-sized struct the call fully
@@ -136,17 +216,24 @@ pub fn decode_psd(bytes: &[u8]) -> Result<PsdImage, PsdError> {
 
     let (w, h) = (info.width, info.height);
     let len = checked_output_len(w, h)?;
+    check_supported(&info)?;
+
+    // SAFETY: `handle` is still live (guard not dropped). The wrapper re-checks the
+    // header against the same limits before it allocates anything.
+    let status = unsafe { ffi::fire_psd_decode_merged(handle) };
+    if status != ffi::FIRE_PSD_OK as i32 {
+        return Err(status_error(status));
+    }
+
     let mut rgba = vec![0u8; len];
-    // SAFETY: `handle` is still live (guard not dropped); `rgba` is a writable
-    // buffer of exactly `len` bytes, and `len` was sized from the same
-    // `fire_psd_info_get` dimensions the wrapper decodes, so a full `w*h*4`
-    // merged-image write cannot overrun it — the wrapper honors the passed
-    // `out_len` as its write bound regardless.
-    let rc = unsafe { ffi::fire_psd_read_merged_rgba8(handle, rgba.as_mut_ptr(), rgba.len()) };
-    match rc {
-        0 => {}
-        2 => return Err(PsdError::NoMergedImage),
-        other => return Err(PsdError::ReadFailed(other)),
+    // SAFETY: `handle` is still live and decoded; `rgba` is a writable buffer of
+    // exactly `len` bytes, and `len` was sized from the same `fire_psd_info_get`
+    // dimensions the wrapper decodes, so a full `w*h*4` merged-image write cannot
+    // overrun it — the wrapper honors the passed `out_len` as its write bound
+    // regardless.
+    let status = unsafe { ffi::fire_psd_read_merged_rgba8(handle, rgba.as_mut_ptr(), rgba.len()) };
+    if status != ffi::FIRE_PSD_OK as i32 {
+        return Err(status_error(status));
     }
 
     drop(guard); // explicit: free the document now that pixels are copied out

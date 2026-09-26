@@ -82,6 +82,32 @@ fn a_written_file_reads_back_with_the_same_geometry() {
 }
 
 #[test]
+fn a_path_with_non_ascii_characters_is_written_where_it_says() {
+    // ufbx_write's own file writer opens with the narrow `fopen`, which on Windows
+    // reads the path in the ANSI code page: a folder named for its user (`Zoë`) or
+    // a file named in any other script failed to open, although the reader opens
+    // the same path fine. The bridge now opens the file itself.
+    let Some(model) = fixture("monkey.fbx") else {
+        return;
+    };
+    let result = run(&model, &passthrough());
+
+    let dir = temp_dir("round_trip_Zoë_日本語");
+    let path = dir.join("modèle_テスト.fbx");
+    let report = export_fbx(&result.lods, &model, None, &path, &ExportOptions::default())
+        .expect("export succeeds");
+
+    assert_eq!(report.files, vec![path.clone()]);
+    assert!(path.exists(), "the file was written under its own name");
+    let loaded = reimport(&path);
+    assert_eq!(
+        loaded.indices.len(),
+        result.lods[0].model.indices.len(),
+        "the triangle count survives the round trip"
+    );
+}
+
+#[test]
 fn a_lod_chain_writes_suffixed_sibling_nodes_into_one_file() {
     let Some(model) = fixture("monkey.fbx") else {
         return;

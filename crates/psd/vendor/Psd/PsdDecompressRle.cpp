@@ -15,7 +15,10 @@ namespace imageUtil
 {
 	// ---------------------------------------------------------------------------------------------------------------------
 	// ---------------------------------------------------------------------------------------------------------------------
-	void DecompressRle(const uint8_t* PSD_RESTRICT src, unsigned int srcSize, uint8_t* PSD_RESTRICT dest, unsigned int size)
+	// review-psd patch (see ../NOTICE.txt): every run is bounds-checked against both the
+	// destination and the source, and a malformed stream reports failure instead of
+	// writing past `dest` or reading past `src`.
+	bool DecompressRle(const uint8_t* PSD_RESTRICT src, unsigned int srcSize, uint8_t* PSD_RESTRICT dest, unsigned int size)
 	{
 		PSD_ASSERT_NOT_NULL(src);
 		PSD_ASSERT_NOT_NULL(dest);
@@ -27,7 +30,7 @@ namespace imageUtil
 			if (bytesRead >= srcSize)
 			{
 				PSD_ERROR("DecompressRle", "Malformed RLE data encountered");
-				return;
+				return false;
 			}
 
 			const uint8_t byte = *src++;
@@ -42,6 +45,11 @@ namespace imageUtil
 			{
 				// next 257-byte bytes are replicated from the next source byte
 				const unsigned int count = static_cast<unsigned int>(257 - byte);
+				if (bytesRead >= srcSize || count > size - offset)
+				{
+					PSD_ERROR("DecompressRle", "Malformed RLE data encountered");
+					return false;
+				}
 
 				memset(dest + offset, *src++, count);
 				offset += count;
@@ -53,7 +61,12 @@ namespace imageUtil
 			{
 				// copy next byte+1 bytes 1-by-1
 				const unsigned int count = static_cast<unsigned int>(byte + 1);
-				
+				if (count > srcSize - bytesRead || count > size - offset)
+				{
+					PSD_ERROR("DecompressRle", "Malformed RLE data encountered");
+					return false;
+				}
+
 				memcpy(dest + offset, src, count);
 
 				src += count;
@@ -62,6 +75,7 @@ namespace imageUtil
 				bytesRead += count;
 			}
 		}
+		return true;
 	}
 
 

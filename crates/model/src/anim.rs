@@ -837,6 +837,24 @@ mod tests {
         assert_eq!(empty.wrap_time(3.0), 0.0);
     }
 
+    #[test]
+    fn an_absurd_clip_range_is_capped_rather_than_overflowing() {
+        // A finite range the file declared, long enough that range x rate saturates
+        // a usize: the count used to overflow its `+ 1`, and stepping then panicked
+        // in `i64::clamp` with a last frame of -1.
+        let clip = AnimationClip {
+            time_begin: 0.0,
+            time_end: 1e300,
+            ..AnimationClip::default()
+        };
+        assert_eq!(clip.frame_count(1e300), crate::MAX_CLIP_FRAMES);
+        assert_eq!(clip.frame_count(30.0), crate::MAX_CLIP_FRAMES);
+        let stepped = clip.step_frame_time(0.0, i64::MAX, 30.0);
+        assert!(stepped.is_finite() && stepped > 0.0);
+        assert_eq!(clip.step_frame_time(0.0, i64::MIN, 30.0), 0.0);
+        assert_eq!(clip.frame_at(1e300, 30.0), crate::MAX_CLIP_FRAMES - 1);
+    }
+
     /// One triangle skinned to the chain: corner 0 rides the child (node 1)
     /// fully, corners 1 and 2 are split between root and child.
     fn skinned_triangle() -> ModelData {

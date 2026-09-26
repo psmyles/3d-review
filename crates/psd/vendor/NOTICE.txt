@@ -15,6 +15,22 @@ Vendored commit: f51449543273cbf12058ae92b230e0c4209f5066
 License: BSD 2-Clause (see LICENSE).
 Only src/Psd/ (the library) is vendored; Samples/bin/build are omitted.
 
+Patched, not an unmodified snapshot: `review.patch` is the diff of `Psd/` against
+the commit above, and every hunk is marked `review-psd patch` in the source.
+
+  P1  PsdDecompressRle.cpp/.h - every run is bounds-checked against the
+      destination and the source; a malformed stream returns false instead of
+      writing past the plane or reading past the RLE buffer.
+  P2  PsdParseImageDataSection.cpp - plane sizes in 64-bit arithmetic (refused
+      past 32 bits), every allocation null-checked, the RLE payload bounded by
+      the image data section it sits in, channel count < 256 refused rather than
+      asserted, and a failed decode frees what it allocated and returns nullptr.
+
+Header validation (bit depth, colour mode, channel count, size caps) is not a
+patch: it lives in ../src/wrapper.cpp, which also no longer calls the image
+resources parser (its DISPLAY_INFO branch assumes RGB and writes through NULL
+for a grayscale document with alpha).
+
 What is compiled
 ----------------
 Every `Psd/*.cpp` except the platform `NativeFile` sources, plus
@@ -27,7 +43,7 @@ through its own in-memory `psd::File`, so no `NativeFile` is ever instantiated.
 The C ABI and the committed bindings
 ------------------------------------
 `../src/wrapper.h` declares the C ABI (`fire_psd_open` / `_info_get` /
-`_read_merged_rgba8` / `_free`, plus the unused `_icc_*`); `../src/bindings.rs`
+`_decode_merged` / `_read_merged_rgba8` / `_free`); `../src/bindings.rs`
 is a committed Rust mirror of it, originally bindgen output. Nothing regenerates
 it during a build — the two are kept in lockstep by hand, and the size/offset
 assertions in `bindings.rs` are what turn a mismatch into a compile error. If you
@@ -42,6 +58,8 @@ To regenerate `bindings.rs` after an ABI change, run bindgen over `wrapper.h`
 
 Updating psd_sdk
 ----------------
-Replace `Psd/` with the new upstream `src/Psd/`, update the commit above, and
-rebuild. `wrapper.cpp` uses only psd_sdk's public parse/destroy API plus
-`psd::Document` / `psd::PlanarImage` / `psd::ImageResourcesSection` fields.
+Replace `Psd/` with the new upstream `src/Psd/`, update the commit above,
+re-apply `review.patch` (`git apply --directory=crates/psd/vendor
+crates/psd/vendor/review.patch`, resolving drift by hand), regenerate the patch
+from the result, and rebuild. `tests/synthetic.rs` exercises every patched path. `wrapper.cpp` uses only psd_sdk's public parse/destroy API plus
+`psd::Document` / `psd::PlanarImage` / `psd::ImageDataSection` fields.
