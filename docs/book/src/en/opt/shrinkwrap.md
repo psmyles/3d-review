@@ -85,7 +85,10 @@ with an even quad layout, or above a [Reduce](simplify.md) if triangles are what
 you want.
 
 Materials, texture layout and colors are read back off the original and copied
-across, the same way [a remesh does it](remesh.md). What cannot come with it is
+across, the same way [a remesh does it](remesh.md). So is the shading, unless you
+set **Normals** to **Worked out fresh**, which builds it from the skin itself -
+often the better choice for a wrap, since where overlapping parts were fused the
+original has no sensible shading to read ([more](normals.md)). What cannot come with it is
 anything tied to the old points: bones, shape keys and per-point creases. An
 object that bends is skipped and left as it is, with a note saying so.
 

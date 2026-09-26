@@ -49,4 +49,9 @@ pub enum NormalMode {
 
 impl NormalMode {
     pub const ALL: [NormalMode; 2] = [NormalMode::Project, NormalMode::Generate];
+
+    /// The generation settings to use, or `None` to project.
+    pub fn generation(self, params: NormalParams) -> Option<NormalParams> {
+        (self == NormalMode::Generate).then_some(params)
+    }
 }

@@ -49,6 +49,23 @@ operation.
   contradict them.
 - Objects excluded from the operation, as with every operation.
 
+## Rebuilt surfaces
+
+[Remesh](remesh.md) and [Shrinkwrap](shrinkwrap.md) both lay down a new surface,
+and both offer a **Normals** choice for it:
+
+- **From the original** - the default for both. Each new point reads the
+  shading of the original surface underneath it, which keeps the artist's
+  smooth and hard edges.
+- **Worked out fresh** - the new surface's normals are built from its own shape,
+  exactly as Recalculate Normals would, with the same crease angle and smoothing
+  settings. Choose this where the original has no sensible shading to give: where
+  a wrap fused overlapping parts, or where a thin sheet sits so close to another
+  that a point can read the wrong side of it.
+
+Working them out fresh looks at the whole object at once, so the border between
+two materials is not made into a hard edge.
+
 ## Tangents
 
 Whenever an operation changes the shape or the normals, the tangents are worked

@@ -186,6 +186,9 @@ ui-enums-op-vertex-fetch = Optimize Vertex Fetch
     .description = Reorders the points into the order they are read, and removes any point
         nothing uses. Does not change the shape.
 
+ui-enums-normal-mode-project = From the original
+ui-enums-normal-mode-generate = Worked out fresh
+
 ui-enums-remesh-topology-triangles = Triangles
 ui-enums-remesh-topology-quads = Quads
 

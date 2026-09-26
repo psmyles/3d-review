@@ -7,6 +7,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::{NormalMode, NormalParams};
+
 /// Settings for the [`crate::stack::OpKind::Shrinkwrap`] operation.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -29,6 +31,11 @@ pub struct ShrinkwrapParams {
     /// default: a wrap of a messy object routinely leaves small satellites
     /// around specks of stray geometry, and none of them is wanted.
     pub keep_largest_shell: bool,
+    /// Where the shell's normals come from: projected off the original by
+    /// default, or generated from the shell itself.
+    pub normals: NormalMode,
+    /// How they are generated, when [`Self::normals`] says to.
+    pub normal_params: NormalParams,
 }
 
 impl Default for ShrinkwrapParams {
@@ -42,6 +49,8 @@ impl Default for ShrinkwrapParams {
             resolution: 64,
             offset: 0.0,
             keep_largest_shell: true,
+            normals: NormalMode::Project,
+            normal_params: NormalParams::default(),
         }
     }
 }

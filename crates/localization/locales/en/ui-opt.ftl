@@ -152,6 +152,11 @@ ui-opt-remesh-adaptive = Vary face size
 
 ## Shrinkwrap
 
+ui-opt-normal-source = Normals
+    .description = Where the new surface's shading comes from. From the original reads it
+        off the model it was built from, which keeps the artist's smooth and hard edges.
+        Worked out fresh builds it from the new surface itself, which avoids odd shading
+        where overlapping parts were fused, at the cost of the original's smoothing.
 ui-opt-normal-crease-angle = Crease angle
     .description = Where two faces meet at a sharper angle than this, in degrees, the edge
         stays hard; gentler edges are smoothed. 180 smooths everything.

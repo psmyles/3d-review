@@ -15,7 +15,7 @@
 use review_localization::Key;
 use review_model::{NodeKind, SkinningMethod};
 use review_optimize::{
-    AoQuality, AoTarget, FbxFormat, HierarchyMode, LodPackaging, OpKind, RemeshDensity,
+    AoQuality, AoTarget, FbxFormat, HierarchyMode, LodPackaging, NormalMode, OpKind, RemeshDensity,
     RemeshTopology, SimplifyAlgorithm,
 };
 use review_render::{
@@ -256,6 +256,13 @@ pub(crate) fn op_description(kind: &OpKind) -> Key {
         OpKind::VertexCache => keys::ui_enums::OP_VERTEX_CACHE_DESCRIPTION,
         OpKind::Overdraw { .. } => keys::ui_enums::OP_OVERDRAW_DESCRIPTION,
         OpKind::VertexFetch => keys::ui_enums::OP_VERTEX_FETCH_DESCRIPTION,
+    }
+}
+
+pub(crate) fn normal_mode(mode: NormalMode) -> Key {
+    match mode {
+        NormalMode::Project => keys::ui_enums::NORMAL_MODE_PROJECT,
+        NormalMode::Generate => keys::ui_enums::NORMAL_MODE_GENERATE,
     }
 }
 

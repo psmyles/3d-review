@@ -290,6 +290,7 @@ fn wrap_node(
         pieces,
         &proxy,
         remesh::Winding::Keep,
+        params.normals.generation(params.normal_params),
     ))
 }
 
@@ -344,6 +345,63 @@ mod tests {
                     "a shell vertex at {:?} is {outside} outside the object",
                     vertex.position
                 );
+            }
+        }
+    }
+
+    /// Generated normals are built from the shell rather than read off the
+    /// cube, so they change the result — the shell's bevelled edges lean
+    /// between faces instead of taking one face's normal — and every one of them
+    /// agrees with the triangle it shades.
+    #[test]
+    fn a_wrap_told_to_generate_normals_builds_them_from_the_shell() {
+        let model = demo_cube_model();
+        let (pieces, _) = partition(&model, None);
+        let borrowed: Vec<&Submesh> = pieces.iter().collect();
+        let mut warnings = Warnings::default();
+        let axis_share = |wrapped: &[Submesh]| {
+            let normals: Vec<glam::Vec3> = wrapped
+                .iter()
+                .flat_map(|piece| piece.vertices.iter().map(|v| v.normal))
+                .collect();
+            normals
+                .iter()
+                .filter(|n| n.abs().max_element() > 0.999)
+                .count() as f32
+                / normals.len() as f32
+        };
+
+        let projected = ShrinkwrapParams {
+            resolution: 32,
+            ..ShrinkwrapParams::default()
+        };
+        let wrapped = wrap_node(&borrowed, &projected, "cube", &mut warnings).expect("wraps");
+        let projected_share = axis_share(&wrapped);
+
+        let generated = ShrinkwrapParams {
+            normals: crate::stack::NormalMode::Generate,
+            normal_params: crate::stack::NormalParams {
+                crease_angle: 45.0,
+                smoothing: 0.0,
+            },
+            ..projected
+        };
+        let wrapped = wrap_node(&borrowed, &generated, "cube", &mut warnings).expect("wraps");
+        assert!(
+            axis_share(&wrapped) < projected_share,
+            "generating changed the shading: {} vs {projected_share}",
+            axis_share(&wrapped)
+        );
+        for piece in &wrapped {
+            for triangle in piece.indices.as_chunks::<3>().0 {
+                let [a, b, c] = triangle.map(|i| piece.vertices[i as usize]);
+                let face = (b.position - a.position).cross(c.position - a.position);
+                for corner in [a, b, c] {
+                    assert!(
+                        corner.normal.dot(face) >= 0.0,
+                        "a generated normal agrees with the face it shades"
+                    );
+                }
             }
         }
     }

@@ -10,9 +10,9 @@
 use review_model::ModelData;
 use review_optimize::{
     AoQuality, AoTarget, AttributeWeights, BakeAoParams, ExportOptions, FbxFormat, HierarchyMode,
-    LodLevel, LodPackaging, LodParams, NormalParams, OpKind, ReduceParams, RemeshDensity,
-    RemeshParams, RemeshTopology, ShrinkwrapParams, SimplifyAlgorithm, SimplifyFlags,
-    SimplifySettings, WeldParams,
+    LodLevel, LodPackaging, LodParams, NormalMode, NormalParams, OpKind, ReduceParams,
+    RemeshDensity, RemeshParams, RemeshTopology, ShrinkwrapParams, SimplifyAlgorithm,
+    SimplifyFlags, SimplifySettings, WeldParams,
 };
 use review_render::Selection;
 
@@ -233,6 +233,33 @@ fn normal_params_rows(ui: &mut egui::Ui, params: &mut NormalParams) {
     );
 }
 
+/// The "Normals" choice a rebuilding operation offers — projected off the
+/// original, or generated from the new surface — with the generation rows
+/// shown only when they are what the choice reads.
+fn normal_source_rows(
+    ui: &mut egui::Ui,
+    id: &str,
+    mode: &mut NormalMode,
+    params: &mut NormalParams,
+) {
+    labeled_combo(
+        ui,
+        Tip::new(keys::ui_opt::NORMAL_SOURCE)
+            .describe(keys::ui_opt::NORMAL_SOURCE_DESCRIPTION)
+            .page(Page::OptNormals),
+        id,
+        labels::normal_mode(*mode),
+        |ui| {
+            for option in NormalMode::ALL {
+                ui.selectable_value(mode, option, labels::normal_mode(option));
+            }
+        },
+    );
+    if *mode == NormalMode::Generate {
+        normal_params_rows(ui, params);
+    }
+}
+
 /// Returns the edited parameters only when they actually changed.
 fn shrinkwrap_params(ui: &mut egui::Ui, params: ShrinkwrapParams) -> Option<ShrinkwrapParams> {
     let mut edited = params;
@@ -261,6 +288,12 @@ fn shrinkwrap_params(ui: &mut egui::Ui, params: ShrinkwrapParams) -> Option<Shri
                 .describe(keys::ui_opt::SHRINKWRAP_LARGEST_SHELL_DESCRIPTION)
                 .page(Page::OptShrinkwrap),
             &mut edited.keep_largest_shell,
+        );
+        normal_source_rows(
+            ui,
+            "opt_shrinkwrap_normals",
+            &mut edited.normals,
+            &mut edited.normal_params,
         );
     });
 
@@ -379,6 +412,12 @@ fn remesh_params(ui: &mut egui::Ui, params: RemeshParams) -> Option<RemeshParams
             &mut edited.adaptive_strength,
             REMESH_ADAPTIVE_MIN..=REMESH_ADAPTIVE_MAX,
             2,
+        );
+        normal_source_rows(
+            ui,
+            "opt_remesh_normals",
+            &mut edited.normals,
+            &mut edited.normal_params,
         );
     });
 
