@@ -25,7 +25,7 @@ use crate::state::{
     range::{
         AO_BAKE_DISTANCE_MAX, AO_BAKE_DISTANCE_MIN, AO_BAKE_INTENSITY_MAX, AO_BAKE_INTENSITY_MIN,
         ATTRIBUTE_WEIGHT_MAX, ATTRIBUTE_WEIGHT_MIN, LOD_ERROR_MAX, LOD_ERROR_MIN, LOD_RATIO_MAX,
-        LOD_RATIO_MIN, NORMAL_CREASE_MAX, NORMAL_CREASE_MIN, NORMAL_SMOOTHING_MAX,
+        LOD_RATIO_MIN, MAX_LOD_LEVELS, NORMAL_CREASE_MAX, NORMAL_CREASE_MIN, NORMAL_SMOOTHING_MAX,
         NORMAL_SMOOTHING_MIN, OVERDRAW_THRESHOLD_MAX, OVERDRAW_THRESHOLD_MIN, PRUNE_THRESHOLD_MAX,
         PRUNE_THRESHOLD_MIN, REMESH_ADAPTIVE_MAX, REMESH_ADAPTIVE_MIN, REMESH_CREASE_MAX,
         REMESH_CREASE_MIN, REMESH_FACES_MAX, REMESH_FACES_MIN, REMESH_RATIO_MAX, REMESH_RATIO_MIN,
@@ -42,11 +42,6 @@ use crate::widgets::{
     Tip, labeled_checkbox, labeled_combo, labeled_slider_with_value, panel_grid, tip, tip_body,
     wide_button,
 };
-
-/// The most levels a LOD chain may hold. Past this the chain stops being a
-/// pipeline decision and starts being an experiment; the cost is one full
-/// simplify of the whole model per level, per edit.
-const MAX_LOD_LEVELS: usize = 8;
 
 /// What the Opt inspector emitted this frame.
 #[derive(Debug, Clone, Default)]

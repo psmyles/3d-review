@@ -419,6 +419,13 @@ static float review_import_material_smoothness(const ufbx_material *material)
     return smoothness;
 }
 
+/* The material slot for `material`, adding one the first time it is seen.
+
+   Keyed on the ufbx material itself, not on its name. Two distinct materials
+   routinely share a name (`lambert1`, `Material`), and merging them by name
+   kept only the first one's properties and textures, so the export wrote the
+   same material out for both and the second one's animated properties had no
+   target. An unnamed material is shown as "Default" but stays its own slot. */
 static uint32_t review_import_add_material(review_import_scene *scene, const ufbx_material *material)
 {
     size_t index;
@@ -431,13 +438,13 @@ static uint32_t review_import_add_material(review_import_scene *scene, const ufb
         name_length = 7;
     }
 
+    /* Consecutive faces almost always share a material, so the last slot is
+       checked first; the scan behind it compares pointers only. */
+    if (scene->material_count > 0 && scene->materials[scene->material_count - 1].source == material) {
+        return (uint32_t)(scene->material_count - 1);
+    }
     for (index = 0; index < scene->material_count; index++) {
-        const char *existing_name = scene->materials[index].name;
-        if (!existing_name) {
-            continue;
-        }
-
-        if (strlen(existing_name) == name_length && memcmp(existing_name, name_data, name_length) == 0) {
+        if (scene->materials[index].source == material) {
             return (uint32_t)index;
         }
     }
@@ -1846,6 +1853,7 @@ int review_import_load_fbx(
     ufbx_scene *scene = NULL;
     review_import_totals totals = { 0 };
     int success = 0;
+    int extras_dropped = 0;
 
     memset(&error, 0, sizeof(error));
     if (out_scene) {
@@ -1958,22 +1966,30 @@ int review_import_load_fbx(
             /* The deduplicated material table's sources, for the capture's
                material properties and animated-material targets. */
             const ufbx_material **material_sources = NULL;
+            int extras_captured = 1;
             if (out_scene->material_count > 0) {
                 size_t index;
                 material_sources = (const ufbx_material**)calloc(out_scene->material_count, sizeof(const ufbx_material*));
                 if (!material_sources) {
-                    captured = 0;
+                    extras_captured = 0;
                     review_import_set_error(out_error, "out of memory while recording source properties");
                 }
                 for (index = 0; material_sources && index < out_scene->material_count; index++) {
                     material_sources[index] = (const ufbx_material*)out_scene->materials[index].source;
                 }
             }
-            if (captured) {
-                captured = review_import_capture_extras(scene, material_sources, out_scene->material_count,
-                                                        channel_of_element, clip_of_stack, out_extras, out_error);
+            if (extras_captured) {
+                extras_captured = review_import_capture_extras(scene, material_sources, out_scene->material_count,
+                                                               channel_of_element, clip_of_stack, out_extras, out_error);
             }
             free((void*)material_sources);
+            /* A failed capture costs the export its source properties, not the
+               viewer its model: drop it (zeroed, so nothing is freed twice) and
+               say so through the return code, with `out_error` saying why. */
+            if (!extras_captured) {
+                review_import_free_extras(out_extras);
+                extras_dropped = 1;
+            }
         }
         free(channel_of_element);
         free(clip_of_stack);
@@ -1982,7 +1998,7 @@ int review_import_load_fbx(
         }
     }
 
-    success = 1;
+    success = extras_dropped ? REVIEW_IMPORT_LOADED_WITHOUT_EXTRAS : 1;
 
 cleanup:
     if (!success) {

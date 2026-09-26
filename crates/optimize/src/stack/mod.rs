@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 
 mod ao;
 mod export;
+pub mod limits;
 mod normals;
 mod params;
 mod remesh;
@@ -171,6 +172,24 @@ impl OptStack {
 
     /// Drop override entries that no longer say anything, so an empty entry left
     /// behind by unchecking every box doesn't persist into a preset.
+    /// Clamp every numeric setting into the range the inspector offers
+    /// ([`limits`]) and cap the LOD chain at [`limits::MAX_LOD_LEVELS`], the
+    /// per-object overrides included.
+    ///
+    /// For a stack that came from outside the chrome: a preset is a file anyone
+    /// can edit, and the operations assume the inspector's ranges. Unchecked, a
+    /// hand-written `levels` list builds one full copy of the mesh per entry,
+    /// and a face count of four billion is a seeding loop that never ends.
+    pub fn sanitize(&mut self) {
+        let overridden = self
+            .overrides
+            .iter_mut()
+            .flat_map(|entry| entry.ops.iter_mut());
+        for op in self.ops.iter_mut().chain(overridden) {
+            op.kind.sanitize();
+        }
+    }
+
     pub fn prune_overrides(&mut self) {
         self.overrides
             .retain(|entry| entry.exclude || !entry.ops.is_empty());
@@ -332,6 +351,165 @@ pub enum OpKind {
 }
 
 impl OpKind {
+    /// Clamp this operation's settings into [`limits`]; see
+    /// [`OptStack::sanitize`].
+    pub fn sanitize(&mut self) {
+        use limits::*;
+        fn normals(params: &mut NormalParams) {
+            let default = NormalParams::default();
+            fit(
+                &mut params.crease_angle,
+                NORMAL_CREASE_MIN,
+                NORMAL_CREASE_MAX,
+                default.crease_angle,
+            );
+            fit(
+                &mut params.smoothing,
+                NORMAL_SMOOTHING_MIN,
+                NORMAL_SMOOTHING_MAX,
+                default.smoothing,
+            );
+        }
+        fn simplify(settings: &mut SimplifySettings) {
+            let default = AttributeWeights::default();
+            let weights = &mut settings.attribute_weights;
+            fit(
+                &mut weights.normal,
+                ATTRIBUTE_WEIGHT_MIN,
+                ATTRIBUTE_WEIGHT_MAX,
+                default.normal,
+            );
+            fit(
+                &mut weights.uv,
+                ATTRIBUTE_WEIGHT_MIN,
+                ATTRIBUTE_WEIGHT_MAX,
+                default.uv,
+            );
+            fit(
+                &mut weights.color,
+                ATTRIBUTE_WEIGHT_MIN,
+                ATTRIBUTE_WEIGHT_MAX,
+                default.color,
+            );
+        }
+        fn level(level: &mut LodLevel) {
+            let default = LodLevel::default();
+            fit(
+                &mut level.target_ratio,
+                LOD_RATIO_MIN,
+                LOD_RATIO_MAX,
+                default.target_ratio,
+            );
+            fit(
+                &mut level.target_error,
+                LOD_ERROR_MIN,
+                LOD_ERROR_MAX,
+                default.target_error,
+            );
+        }
+        match self {
+            OpKind::Weld(params) => fit(
+                &mut params.attribute_tolerance,
+                WELD_TOLERANCE_MIN,
+                WELD_TOLERANCE_MAX,
+                WeldParams::default().attribute_tolerance,
+            ),
+            OpKind::PruneComponents { error } => {
+                fit(
+                    error,
+                    PRUNE_THRESHOLD_MIN,
+                    PRUNE_THRESHOLD_MAX,
+                    PRUNE_THRESHOLD_MIN,
+                );
+            }
+            OpKind::Reduce(params) => {
+                simplify(&mut params.simplify);
+                level(&mut params.target);
+            }
+            OpKind::Remesh(params) => {
+                let default = RemeshParams::default();
+                fit(
+                    &mut params.ratio,
+                    REMESH_RATIO_MIN,
+                    REMESH_RATIO_MAX,
+                    default.ratio,
+                );
+                params.faces = params.faces.clamp(REMESH_FACES_MIN, REMESH_FACES_MAX);
+                fit(
+                    &mut params.crease_angle,
+                    REMESH_CREASE_MIN,
+                    REMESH_CREASE_MAX,
+                    default.crease_angle,
+                );
+                params.smooth_iterations = params.smooth_iterations.min(REMESH_SMOOTH_MAX);
+                fit(
+                    &mut params.adaptive_strength,
+                    REMESH_ADAPTIVE_MIN,
+                    REMESH_ADAPTIVE_MAX,
+                    default.adaptive_strength,
+                );
+                normals(&mut params.normal_params);
+            }
+            OpKind::Shrinkwrap(params) => {
+                let default = ShrinkwrapParams::default();
+                params.resolution = params
+                    .resolution
+                    .clamp(SHRINKWRAP_RESOLUTION_MIN, SHRINKWRAP_RESOLUTION_MAX);
+                fit(
+                    &mut params.offset,
+                    SHRINKWRAP_OFFSET_MIN,
+                    SHRINKWRAP_OFFSET_MAX,
+                    default.offset,
+                );
+                params.voxel_resolution = params.voxel_resolution.clamp(
+                    SHRINKWRAP_VOXEL_RESOLUTION_MIN,
+                    SHRINKWRAP_VOXEL_RESOLUTION_MAX,
+                );
+                fit(
+                    &mut params.voxel_ratio,
+                    SHRINKWRAP_TARGET_RATIO_MIN,
+                    SHRINKWRAP_TARGET_RATIO_MAX,
+                    default.voxel_ratio,
+                );
+                params.voxel_triangles = params.voxel_triangles.clamp(
+                    SHRINKWRAP_TARGET_TRIANGLES_MIN,
+                    SHRINKWRAP_TARGET_TRIANGLES_MAX,
+                );
+                normals(&mut params.normal_params);
+            }
+            OpKind::RecalculateNormals(params) => normals(params),
+            OpKind::SimplifyLod(params) => {
+                simplify(&mut params.simplify);
+                params.levels.truncate(MAX_LOD_LEVELS);
+                params.levels.iter_mut().for_each(level);
+            }
+            OpKind::BakeAo(params) => {
+                let default = BakeAoParams::default();
+                fit(
+                    &mut params.max_distance,
+                    AO_BAKE_DISTANCE_MIN,
+                    AO_BAKE_DISTANCE_MAX,
+                    default.max_distance,
+                );
+                fit(
+                    &mut params.intensity,
+                    AO_BAKE_INTENSITY_MIN,
+                    AO_BAKE_INTENSITY_MAX,
+                    default.intensity,
+                );
+            }
+            OpKind::Overdraw { threshold } => {
+                fit(
+                    threshold,
+                    OVERDRAW_THRESHOLD_MIN,
+                    OVERDRAW_THRESHOLD_MAX,
+                    OVERDRAW_THRESHOLD_MIN,
+                );
+            }
+            OpKind::FilterTriangles | OpKind::VertexCache | OpKind::VertexFetch => {}
+        }
+    }
+
     /// Every operation the "Add" menu offers, in menu order — cleanup first
     /// (what you almost always want before anything else), then the LOD
     /// generator, then the GPU reorder passes that belong at the end.

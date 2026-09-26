@@ -326,6 +326,11 @@ typedef int (*review_import_progress_fn)(
 /* `review_import_load_fbx` return codes: any other non-zero value is success. */
 #define REVIEW_IMPORT_FAILED 0
 #define REVIEW_IMPORT_CANCELLED (-1)
+/* The model loaded, but the source-property capture did not (it ran out of
+   memory or hit a count past its limits): `out_extras` is left zeroed and
+   `out_error` says why. The capture is what the exporter gives back, never what
+   the viewer draws, so losing it must not cost the artist the model. */
+#define REVIEW_IMPORT_LOADED_WITHOUT_EXTRAS 2
 
 /* `progress` may be NULL, in which case no progress is reported. `out_extras`
    may be NULL to skip the source-property capture; when given it is filled from

@@ -24,6 +24,8 @@ use crate::{CancelToken, ImportError, PendingExtras, StagedImport};
 
 /// `REVIEW_IMPORT_CANCELLED` from `ufbx_bridge.h`.
 const CANCELLED: c_int = -1;
+/// `REVIEW_IMPORT_LOADED_WITHOUT_EXTRAS` from `ufbx_bridge.h`.
+const LOADED_WITHOUT_EXTRAS: c_int = 2;
 
 use super::marshal_model::model_from_bridge_scene;
 use super::raw::read_error_message;
@@ -203,8 +205,15 @@ pub(crate) fn load_fbx(
         // is dropped here without a free.
         return Err(ImportError::LoadFailed(read_error_message(&error)));
     }
+    // The model loaded but its source-property capture did not: the bridge has
+    // already freed and zeroed it, and says why. Carried to `marshal`, which is
+    // where a capture that cannot be published is reported.
+    let dropped = (loaded == LOADED_WITHOUT_EXTRAS).then(|| read_error_message(&error));
     // From here the capture is owned by a handle that frees it on drop.
-    let extras = extras.map(|raw| ExtrasHandle { raw });
+    let extras = match dropped {
+        Some(_) => None,
+        None => extras.map(|raw| ExtrasHandle { raw }),
+    };
 
     // SAFETY: `loaded != 0` means the bridge fully initialized `scene`, so the
     // `MaybeUninit` now holds a valid `ReviewImportScene`.
@@ -223,6 +232,9 @@ pub(crate) fn load_fbx(
     // function — after the marshal has finished reading them, on every path.
     Ok(StagedImport {
         model: model?,
-        extras: PendingExtras { handle: extras },
+        extras: PendingExtras {
+            handle: extras,
+            dropped,
+        },
     })
 }

@@ -266,6 +266,49 @@ fn a_multi_material_mesh_keeps_its_materials() {
     );
 }
 
+/// Two materials that merely share a name are still two materials. The importer
+/// used to key its material table on the name, so every material called
+/// `lambert1` became the first one: its colour and textures on all of them, and
+/// one material where the file had several.
+#[test]
+fn materials_that_share_a_name_stay_separate() {
+    let Some(mut model) = fixture("SK_Player_01.fbx") else {
+        return;
+    };
+    assert!(model.materials.len() > 1);
+    let count = model.materials.len();
+    for material in &mut model.materials {
+        material.name = "lambert1".to_owned();
+    }
+    let result = run(&model, &passthrough());
+
+    let dir = temp_dir("round_trip_same_named_materials");
+    let path = dir.join("same_named.fbx");
+    // No capture: the writer names each material from the model, so every one
+    // goes out called `lambert1`.
+    export_fbx(&result.lods, &model, None, &path, &ExportOptions::default())
+        .expect("export succeeds");
+
+    let loaded = reimport(&path);
+    assert_eq!(
+        loaded.materials.len(),
+        count,
+        "every material comes back as its own slot"
+    );
+    assert!(
+        loaded
+            .materials
+            .iter()
+            .all(|material| material.name == "lambert1")
+    );
+    let distinct: std::collections::HashSet<u32> =
+        loaded.triangles.material.iter().copied().collect();
+    assert!(
+        distinct.len() > 1,
+        "faces stay assigned to different materials: {distinct:?}"
+    );
+}
+
 #[test]
 fn ascii_output_reads_back_too() {
     let Some(model) = fixture("meter_cube.fbx") else {

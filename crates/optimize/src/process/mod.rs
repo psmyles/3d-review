@@ -293,9 +293,12 @@ pub fn process_progressive(
     }
 
     // Level 0 is the mesh as the pre-operations left it; every LOD level
-    // re-simplifies from this same snapshot.
+    // re-simplifies from this same snapshot. Its pieces are moved in once the
+    // levels below have been built from them, rather than cloned up front: the
+    // snapshot is the whole working mesh, and a stack with no LOD operation
+    // used to hold two copies of it for nothing.
     let mut levels: Vec<LevelState> = vec![LevelState {
-        submeshes: submeshes.clone(),
+        submeshes: Vec::new(),
         simplify_error: base_error,
         simplified: runs_reduce(pre_ops),
     }];
@@ -327,6 +330,7 @@ pub fn process_progressive(
             levels.push(state);
         }
     }
+    levels[0].submeshes = submeshes;
 
     let reduced_after = runs_reduce(post_ops);
     for level in &mut levels {
