@@ -124,6 +124,16 @@ pub(crate) mod range {
     pub const SHRINKWRAP_RESOLUTION_MAX: u32 = 512;
     pub const SHRINKWRAP_OFFSET_MIN: f32 = -0.5;
     pub const SHRINKWRAP_OFFSET_MAX: f32 = 0.5;
+    /// Shrinkwrap's voxel method: meshoptimizer's own resolution window, and
+    /// the built-in reduction's target as a share of the object's triangles
+    /// (above 1 is allowed — a coarse source can want a denser shell) or as a
+    /// per-object count on Remesh's scale.
+    pub const SHRINKWRAP_VOXEL_RESOLUTION_MIN: u32 = 4;
+    pub const SHRINKWRAP_VOXEL_RESOLUTION_MAX: u32 = 256;
+    pub const SHRINKWRAP_TARGET_RATIO_MIN: f32 = 0.01;
+    pub const SHRINKWRAP_TARGET_RATIO_MAX: f32 = 2.0;
+    pub const SHRINKWRAP_TARGET_TRIANGLES_MIN: u32 = 100;
+    pub const SHRINKWRAP_TARGET_TRIANGLES_MAX: u32 = 200_000;
     /// Normal generation (Recalculate Normals, and a rebuild told to generate):
     /// the crease angle in degrees and the smoothing amount. The smoothing
     /// ceiling is meshoptimizer's recommended range; the library accepts more,

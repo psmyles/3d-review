@@ -11,8 +11,8 @@ use review_model::ModelData;
 use review_optimize::{
     AoQuality, AoTarget, AttributeWeights, BakeAoParams, ExportOptions, FbxFormat, HierarchyMode,
     LodLevel, LodPackaging, LodParams, NormalMode, NormalParams, OpKind, ReduceParams,
-    RemeshDensity, RemeshParams, RemeshTopology, ShrinkwrapParams, SimplifyAlgorithm,
-    SimplifyFlags, SimplifySettings, WeldParams,
+    RemeshDensity, RemeshParams, RemeshTopology, ShrinkwrapMethod, ShrinkwrapParams,
+    SimplifyAlgorithm, SimplifyFlags, SimplifySettings, VoxelTarget, WeldParams,
 };
 use review_render::Selection;
 
@@ -30,7 +30,10 @@ use crate::state::{
         PRUNE_THRESHOLD_MIN, REMESH_ADAPTIVE_MAX, REMESH_ADAPTIVE_MIN, REMESH_CREASE_MAX,
         REMESH_CREASE_MIN, REMESH_FACES_MAX, REMESH_FACES_MIN, REMESH_RATIO_MAX, REMESH_RATIO_MIN,
         REMESH_SMOOTH_MAX, SHRINKWRAP_OFFSET_MAX, SHRINKWRAP_OFFSET_MIN, SHRINKWRAP_RESOLUTION_MAX,
-        SHRINKWRAP_RESOLUTION_MIN, WELD_TOLERANCE_MAX, WELD_TOLERANCE_MIN,
+        SHRINKWRAP_RESOLUTION_MIN, SHRINKWRAP_TARGET_RATIO_MAX, SHRINKWRAP_TARGET_RATIO_MIN,
+        SHRINKWRAP_TARGET_TRIANGLES_MAX, SHRINKWRAP_TARGET_TRIANGLES_MIN,
+        SHRINKWRAP_VOXEL_RESOLUTION_MAX, SHRINKWRAP_VOXEL_RESOLUTION_MIN, WELD_TOLERANCE_MAX,
+        WELD_TOLERANCE_MIN,
     },
 };
 use crate::theme;
@@ -261,27 +264,53 @@ fn normal_source_rows(
 }
 
 /// Returns the edited parameters only when they actually changed.
+///
+/// The rows follow the method: each extraction reads its own settings, and
+/// showing the other's would invite setting one and wondering why nothing
+/// changed. Changing method goes through [`ShrinkwrapParams::set_method`], which
+/// also resets the normals to that method's default.
 fn shrinkwrap_params(ui: &mut egui::Ui, params: ShrinkwrapParams) -> Option<ShrinkwrapParams> {
     let mut edited = params;
     panel_grid(ui, "opt_shrinkwrap", |ui| {
-        labeled_slider_with_value(
+        let mut method = edited.method;
+        labeled_combo(
             ui,
-            Tip::new(keys::ui_opt::SHRINKWRAP_RESOLUTION)
-                .describe(keys::ui_opt::SHRINKWRAP_RESOLUTION_DESCRIPTION)
+            Tip::new(keys::ui_opt::SHRINKWRAP_METHOD)
+                .describe(keys::ui_opt::SHRINKWRAP_METHOD_DESCRIPTION)
                 .page(Page::OptShrinkwrap),
-            &mut edited.resolution,
-            SHRINKWRAP_RESOLUTION_MIN..=SHRINKWRAP_RESOLUTION_MAX,
-            0,
+            "opt_shrinkwrap_method",
+            labels::shrinkwrap_method(method),
+            |ui| {
+                for option in ShrinkwrapMethod::ALL {
+                    ui.selectable_value(&mut method, option, labels::shrinkwrap_method(option));
+                }
+            },
         );
-        labeled_slider_with_value(
-            ui,
-            Tip::new(keys::ui_opt::SHRINKWRAP_OFFSET)
-                .describe(keys::ui_opt::SHRINKWRAP_OFFSET_DESCRIPTION)
-                .page(Page::OptShrinkwrap),
-            &mut edited.offset,
-            SHRINKWRAP_OFFSET_MIN..=SHRINKWRAP_OFFSET_MAX,
-            3,
-        );
+        edited.set_method(method);
+
+        match edited.method {
+            ShrinkwrapMethod::Winding => {
+                labeled_slider_with_value(
+                    ui,
+                    Tip::new(keys::ui_opt::SHRINKWRAP_RESOLUTION)
+                        .describe(keys::ui_opt::SHRINKWRAP_RESOLUTION_DESCRIPTION)
+                        .page(Page::OptShrinkwrap),
+                    &mut edited.resolution,
+                    SHRINKWRAP_RESOLUTION_MIN..=SHRINKWRAP_RESOLUTION_MAX,
+                    0,
+                );
+                labeled_slider_with_value(
+                    ui,
+                    Tip::new(keys::ui_opt::SHRINKWRAP_OFFSET)
+                        .describe(keys::ui_opt::SHRINKWRAP_OFFSET_DESCRIPTION)
+                        .page(Page::OptShrinkwrap),
+                    &mut edited.offset,
+                    SHRINKWRAP_OFFSET_MIN..=SHRINKWRAP_OFFSET_MAX,
+                    3,
+                );
+            }
+            ShrinkwrapMethod::Voxel => voxel_rows(ui, &mut edited),
+        }
         labeled_checkbox(
             ui,
             Tip::new(keys::ui_opt::SHRINKWRAP_LARGEST_SHELL)
@@ -301,6 +330,85 @@ fn shrinkwrap_params(ui: &mut egui::Ui, params: ShrinkwrapParams) -> Option<Shri
     ui.label(egui::RichText::from(keys::ui_opt::SHRINKWRAP_EXPLAINED).color(color::TEXT_MUTED));
 
     (edited != params).then_some(edited)
+}
+
+/// The voxel method's own rows, inside the Shrinkwrap grid. The target's
+/// amount row shows a ratio *or* a count, never both, as Remesh's density does.
+fn voxel_rows(ui: &mut egui::Ui, edited: &mut ShrinkwrapParams) {
+    labeled_slider_with_value(
+        ui,
+        Tip::new(keys::ui_opt::SHRINKWRAP_VOXEL_RESOLUTION)
+            .describe(keys::ui_opt::SHRINKWRAP_VOXEL_RESOLUTION_DESCRIPTION)
+            .page(Page::OptShrinkwrap),
+        &mut edited.voxel_resolution,
+        SHRINKWRAP_VOXEL_RESOLUTION_MIN..=SHRINKWRAP_VOXEL_RESOLUTION_MAX,
+        0,
+    );
+    labeled_checkbox(
+        ui,
+        Tip::new(keys::ui_opt::SHRINKWRAP_FIT_SURFACE)
+            .describe(keys::ui_opt::SHRINKWRAP_FIT_SURFACE_DESCRIPTION)
+            .page(Page::OptShrinkwrap),
+        &mut edited.voxel_solve,
+    );
+    labeled_checkbox(
+        ui,
+        Tip::new(keys::ui_opt::SHRINKWRAP_TWO_SIDED)
+            .describe(keys::ui_opt::SHRINKWRAP_TWO_SIDED_DESCRIPTION)
+            .page(Page::OptShrinkwrap),
+        &mut edited.voxel_shell,
+    );
+    labeled_combo(
+        ui,
+        Tip::new(keys::ui_opt::SHRINKWRAP_TARGET)
+            .describe(keys::ui_opt::SHRINKWRAP_TARGET_DESCRIPTION)
+            .page(Page::OptShrinkwrap),
+        "opt_shrinkwrap_target",
+        labels::voxel_target(edited.voxel_target),
+        |ui| {
+            for target in VoxelTarget::ALL {
+                ui.selectable_value(
+                    &mut edited.voxel_target,
+                    target,
+                    labels::voxel_target(target),
+                );
+            }
+        },
+    );
+    match edited.voxel_target {
+        VoxelTarget::Keep => {}
+        VoxelTarget::Ratio => {
+            labeled_slider_with_value(
+                ui,
+                Tip::new(keys::ui_opt::SHRINKWRAP_TARGET_RATIO)
+                    .describe(keys::ui_opt::SHRINKWRAP_TARGET_RATIO_DESCRIPTION)
+                    .page(Page::OptShrinkwrap),
+                &mut edited.voxel_ratio,
+                SHRINKWRAP_TARGET_RATIO_MIN..=SHRINKWRAP_TARGET_RATIO_MAX,
+                2,
+            );
+        }
+        VoxelTarget::Triangles => {
+            labeled_slider_with_value(
+                ui,
+                Tip::new(keys::ui_opt::SHRINKWRAP_TARGET_TRIANGLES)
+                    .describe(keys::ui_opt::SHRINKWRAP_TARGET_TRIANGLES_DESCRIPTION)
+                    .page(Page::OptShrinkwrap),
+                &mut edited.voxel_triangles,
+                SHRINKWRAP_TARGET_TRIANGLES_MIN..=SHRINKWRAP_TARGET_TRIANGLES_MAX,
+                0,
+            );
+        }
+    }
+    if edited.voxel_target != VoxelTarget::Keep {
+        labeled_checkbox(
+            ui,
+            Tip::new(keys::ui_opt::SHRINKWRAP_EVEN_TRIANGLES)
+                .describe(keys::ui_opt::SHRINKWRAP_EVEN_TRIANGLES_DESCRIPTION)
+                .page(Page::OptShrinkwrap),
+            &mut edited.voxel_regularize,
+        );
+    }
 }
 
 /// Returns the edited parameters only when they actually changed.

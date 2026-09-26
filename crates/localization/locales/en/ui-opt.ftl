@@ -163,6 +163,35 @@ ui-opt-normal-crease-angle = Crease angle
 ui-opt-normal-smoothing = Smoothing
     .description = Relaxes the result over neighbouring faces. Zero leaves it as worked out;
         a little hides the small steps on a surface built from a grid.
+ui-opt-shrinkwrap-method = Method
+    .description = How the skin is made. Distance field measures how far every point is
+        from the surface and which side it is on; it seals holes and ignores parts turned
+        inside out, but loses anything thinner than one grid step. Voxel keeps thin sheets
+        such as leaves, cloth and wings at any detail, snaps to sharp features and is much
+        faster, but a hole wider than a grid step lets the outside in.
+ui-opt-shrinkwrap-voxel-resolution = Detail
+    .description = How many grid steps across the object's longest side, from 4 to 256.
+        Higher keeps more of the shape; the triangle target below decides how many
+        triangles are kept.
+ui-opt-shrinkwrap-fit-surface = Fit to surface
+    .description = Moves the new points onto the original's surface, so edges and corners
+        stay crisp. Untick for a more regular grid of triangles.
+ui-opt-shrinkwrap-two-sided = Two-sided skin
+    .description = Wraps every surface in a thin skin of its own instead of filling the
+        object solid. Keeps inner surfaces, but doubles the triangles and can make the
+        skin pass through itself.
+ui-opt-shrinkwrap-target = Triangles
+    .description = How far to simplify the new skin before the materials, texture layout
+        and colors are copied back. Simplifying first works much better than a Reduce
+        below, which the copied texture seams would hold back.
+ui-opt-shrinkwrap-target-ratio = Share
+    .description = Triangles to keep, as a share of the object's own before the wrap. 1.0
+        keeps as many as it had.
+ui-opt-shrinkwrap-target-triangles = Count
+    .description = Triangles to keep, for each object.
+ui-opt-shrinkwrap-even-triangles = Even triangles
+    .description = Simplifies toward evenly sized, well-shaped triangles, at a small cost
+        to how closely the shape is kept.
 ui-opt-shrinkwrap-resolution = Detail
     .description = How many grid steps across the object's longest side. Higher keeps more
         of the shape and takes longer; lower rounds it off and bridges wider gaps.

@@ -44,6 +44,8 @@ mod shading;
 mod simplify;
 #[cfg(not(has_meshopt))]
 mod unavailable;
+#[cfg(has_meshopt)]
+mod voxel;
 
 #[cfg(has_meshopt)]
 pub use analyze::*;
@@ -57,6 +59,8 @@ pub use shading::*;
 pub use simplify::*;
 #[cfg(not(has_meshopt))]
 pub use unavailable::*;
+#[cfg(has_meshopt)]
+pub use voxel::*;
 
 /// Result of a simplification pass: the reduced index buffer (still referencing
 /// the *original* vertex buffer) and the error meshoptimizer actually achieved.
@@ -90,10 +94,13 @@ pub const POSITION_STRIDE: usize = POSITION_COMPONENTS * size_of::<f32>();
 /// stats overlay. 16 entries with 32-wide warps is meshoptimizer's own
 /// "modern GPU" default, and using one fixed model keeps the numbers
 /// comparable between the source and processed meshes.
+#[cfg_attr(not(has_meshopt), allow(dead_code))] // read only by the gated wrappers
 const CACHE_SIZE: u32 = 16;
 
+#[cfg_attr(not(has_meshopt), allow(dead_code))] // read only by the gated wrappers
 const WARP_SIZE: u32 = 32;
 
+#[cfg_attr(not(has_meshopt), allow(dead_code))] // read only by the gated wrappers
 const PRIMGROUP_SIZE: u32 = 0;
 
 /// Raw counters behind the analysis ratios, summed across submeshes before the
@@ -160,6 +167,7 @@ pub const fn available() -> bool {
 /// Validate an index buffer against a vertex count: whole triangles, non-empty,
 /// and every index in range. Every wrapper below calls this first, which is what
 /// lets the C calls assume a well-formed mesh.
+#[cfg_attr(not(has_meshopt), allow(dead_code))] // read only by the gated wrappers
 fn check_indices(indices: &[u32], vertex_count: usize) -> Result<(), OptError> {
     if indices.is_empty() {
         return Err(OptError::EmptyMesh);
@@ -183,6 +191,7 @@ fn check_indices(indices: &[u32], vertex_count: usize) -> Result<(), OptError> {
 /// all finite. Non-finite positions would make the simplifier's error metric and
 /// the overdraw rasterizer produce garbage rather than fail, so they are
 /// rejected up front.
+#[cfg_attr(not(has_meshopt), allow(dead_code))] // read only by the gated wrappers
 fn check_stream(stream: &[f32], vertex_count: usize, components: usize) -> Result<(), OptError> {
     let expected = vertex_count
         .checked_mul(components)
@@ -201,6 +210,7 @@ fn check_stream(stream: &[f32], vertex_count: usize, components: usize) -> Resul
 
 /// Check a returned index count against the destination capacity, and that it
 /// describes whole triangles.
+#[cfg_attr(not(has_meshopt), allow(dead_code))] // read only by the gated wrappers
 fn check_index_result(produced: usize, capacity: usize) -> Result<(), OptError> {
     if produced > capacity || !produced.is_multiple_of(3) {
         return Err(OptError::BadResult { produced, capacity });
@@ -210,6 +220,7 @@ fn check_index_result(produced: usize, capacity: usize) -> Result<(), OptError> 
 
 /// Check a returned vertex count against the input vertex count (a remap can
 /// only ever merge vertices, never invent them).
+#[cfg_attr(not(has_meshopt), allow(dead_code))] // read only by the gated wrappers
 fn check_vertex_result(produced: usize, vertex_count: usize) -> Result<(), OptError> {
     if produced > vertex_count {
         return Err(OptError::BadResult {

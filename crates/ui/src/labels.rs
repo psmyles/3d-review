@@ -16,7 +16,7 @@ use review_localization::Key;
 use review_model::{NodeKind, SkinningMethod};
 use review_optimize::{
     AoQuality, AoTarget, FbxFormat, HierarchyMode, LodPackaging, NormalMode, OpKind, RemeshDensity,
-    RemeshTopology, SimplifyAlgorithm,
+    RemeshTopology, ShrinkwrapMethod, SimplifyAlgorithm, VoxelTarget,
 };
 use review_render::{
     AlphaMode, BufferView, ChannelSelect, CheckerTexture, EnvironmentMap, GtaoQuality,
@@ -263,6 +263,21 @@ pub(crate) fn normal_mode(mode: NormalMode) -> Key {
     match mode {
         NormalMode::Project => keys::ui_enums::NORMAL_MODE_PROJECT,
         NormalMode::Generate => keys::ui_enums::NORMAL_MODE_GENERATE,
+    }
+}
+
+pub(crate) fn shrinkwrap_method(method: ShrinkwrapMethod) -> Key {
+    match method {
+        ShrinkwrapMethod::Winding => keys::ui_enums::SHRINKWRAP_METHOD_WINDING,
+        ShrinkwrapMethod::Voxel => keys::ui_enums::SHRINKWRAP_METHOD_VOXEL,
+    }
+}
+
+pub(crate) fn voxel_target(target: VoxelTarget) -> Key {
+    match target {
+        VoxelTarget::Keep => keys::ui_enums::VOXEL_TARGET_KEEP,
+        VoxelTarget::Ratio => keys::ui_enums::VOXEL_TARGET_RATIO,
+        VoxelTarget::Triangles => keys::ui_enums::VOXEL_TARGET_TRIANGLES,
     }
 }
 

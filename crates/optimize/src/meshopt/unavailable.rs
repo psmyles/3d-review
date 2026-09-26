@@ -75,7 +75,6 @@ pub fn simplify_scale(_positions: &[f32], _vertex_count: usize) -> Result<f32, O
 }
 
 #[cfg(not(has_meshopt))]
-#[expect(clippy::too_many_arguments, reason = "mirrors the enabled signature")]
 pub fn simplify(
     _indices: &[u32],
     _positions: &[f32],
@@ -156,6 +155,35 @@ pub fn generate_tangents(
     _normals: &[f32],
     _uvs: &[f32],
     _vertex_count: usize,
+) -> Result<Vec<f32>, OptError> {
+    Err(OptError::Unavailable)
+}
+
+#[cfg(not(has_meshopt))]
+pub const VOXEL_RESOLUTION_MIN: u32 = 4;
+
+#[cfg(not(has_meshopt))]
+pub const VOXEL_RESOLUTION_MAX: u32 = 256;
+
+#[cfg(not(has_meshopt))]
+pub fn remesh_bound(
+    _indices: &[u32],
+    _positions: &[f32],
+    _vertex_count: usize,
+    _resolution: u32,
+    _flags: u32,
+) -> Result<usize, OptError> {
+    Err(OptError::Unavailable)
+}
+
+#[cfg(not(has_meshopt))]
+pub fn remesh(
+    _indices: &[u32],
+    _positions: &[f32],
+    _vertex_count: usize,
+    _resolution: u32,
+    _flags: u32,
+    _capacity: usize,
 ) -> Result<Vec<f32>, OptError> {
     Err(OptError::Unavailable)
 }

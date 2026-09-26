@@ -157,7 +157,8 @@ ui-enums-op-remesh = Remesh
 ui-enums-op-shrinkwrap = Shrinkwrap
     .description = Replaces each object with a single closed skin that hugs it. The shape is
         measured onto a grid and a new surface pulled back out of it, which fuses a pile of
-        overlapping parts into one solid and seals holes. What comes out is dense and
+        overlapping parts into one solid and seals holes; the Voxel method also keeps thin
+        sheets such as leaves. What comes out is dense and
         irregular, so a Remesh below it is what makes it even. Materials, texture layout
         and colors are copied across. Works on still objects only.
 ui-enums-op-recalculate-normals = Recalculate Normals
@@ -185,6 +186,13 @@ ui-enums-op-overdraw = Optimize Overdraw
 ui-enums-op-vertex-fetch = Optimize Vertex Fetch
     .description = Reorders the points into the order they are read, and removes any point
         nothing uses. Does not change the shape.
+
+ui-enums-shrinkwrap-method-winding = Distance field
+ui-enums-shrinkwrap-method-voxel = Voxel
+
+ui-enums-voxel-target-keep = Keep all
+ui-enums-voxel-target-ratio = Share of original
+ui-enums-voxel-target-triangles = Triangle count
 
 ui-enums-normal-mode-project = From the original
 ui-enums-normal-mode-generate = Worked out fresh

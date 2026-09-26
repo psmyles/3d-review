@@ -251,6 +251,20 @@ unsafe extern "C" {
         smoothing: c_float,
     );
 
+    /// Experimental. Voxel remesh into an unindexed position soup (`9` floats
+    /// per triangle); with too small a destination it returns an upper bound.
+    pub fn meshopt_remesh(
+        destination: *mut c_float,
+        max_triangle_count: usize,
+        indices: *const c_uint,
+        index_count: usize,
+        vertex_positions: *const c_float,
+        vertex_count: usize,
+        vertex_positions_stride: usize,
+        resolution: c_int,
+        options: c_uint,
+    ) -> usize;
+
     pub fn meshopt_analyzeOverdraw(
         indices: *const c_uint,
         index_count: usize,

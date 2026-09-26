@@ -70,7 +70,8 @@ pub use stack::{
     AoQuality, AoTarget, AttributeWeights, BakeAoParams, ExportOptions, FbxFormat, HierarchyMode,
     LodLevel, LodPackaging, LodParams, NodeOverride, NormalMode, NormalParams, OpInstance, OpKind,
     OptStack, RebindReport, ReduceParams, RemeshDensity, RemeshParams, RemeshTopology,
-    ShrinkwrapParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings, WeldParams,
+    ShrinkwrapMethod, ShrinkwrapParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings,
+    VoxelTarget, WeldParams,
 };
 
 /// Everything that can go wrong in this crate.

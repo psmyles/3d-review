@@ -403,8 +403,9 @@ impl OpKind {
             }
             OpKind::Shrinkwrap(_) => {
                 "Replace each object with one closed shell that hugs it. The surface is \
-                 voxelized into a distance field and re-extracted, which fuses a kitbash \
-                 of interpenetrating parts into a single watertight mesh — and is what \
+                 voxelized into a distance field (or, with the Voxel method, remeshed \
+                 on a voxel grid that keeps thin sheets) and re-extracted, which fuses \
+                 a kitbash of interpenetrating parts into a single watertight mesh — and is what \
                  a Remesh below it can even out. Materials, UVs and \
                  colors are projected back on. Static meshes only."
             }

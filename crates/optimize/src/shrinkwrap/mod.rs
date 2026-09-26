@@ -40,12 +40,14 @@ use std::collections::HashMap;
 use review_model::{Bvh, ModelData, Vertex};
 
 use crate::Warnings;
+use crate::cancel::{CancelToken, cancelled};
 use crate::remesh::{self, proxy};
-use crate::stack::{OpInstance, OpKind, OptStack, ShrinkwrapParams};
+use crate::stack::{OpInstance, OpKind, OptStack, ShrinkwrapMethod, ShrinkwrapParams};
 use crate::submesh::Submesh;
 
 mod grid;
 mod mc;
+mod remesher;
 mod sdf;
 mod voxel;
 mod winding;
@@ -125,12 +127,15 @@ pub(crate) fn shrinkwrap_submeshes(
     let total = jobs.len() as u32;
     let mut outcomes: Vec<Option<WrapOutcome>> = (0..jobs.len()).map(|_| None).collect();
     let mut done = 0u32;
+    // The token alone crosses into the workers: the rest of the run context
+    // holds the progress sink, which is not shareable between threads.
+    let token = run.token();
     crate::parallel::solve_nodes(
         &jobs,
-        run.token(),
+        token,
         |job, _| {
             let mut notes = Warnings::default();
-            let rebuilt = wrap_node(&job.pieces, &job.params, &job.name, &mut notes);
+            let rebuilt = wrap_node(&job.pieces, &job.params, &job.name, &mut notes, token);
             WrapOutcome {
                 rebuilt,
                 notes: notes.into_vec(),
@@ -202,12 +207,18 @@ struct WrapOutcome {
 }
 
 /// Wrap one node, or `None` when it was left as it is (with a warning already
-/// recorded).
+/// recorded, unless the run was cancelled — a result nobody will see needs no
+/// explanation).
+///
+/// The two methods differ only in how they extract the shell; keeping the
+/// largest piece, projecting the attributes back and splitting by material are
+/// the same for both.
 fn wrap_node(
     pieces: &[&Submesh],
     params: &ShrinkwrapParams,
     name: &str,
     warnings: &mut Warnings,
+    cancel: Option<&CancelToken>,
 ) -> Option<Vec<Submesh>> {
     let proxy = proxy::build(pieces);
     if proxy.triangle_count() < MIN_INPUT_TRIANGLES {
@@ -217,10 +228,75 @@ fn wrap_node(
         ));
         return None;
     }
-    if proxy.bounds.is_empty() {
+    if proxy.bounds.is_empty() || cancelled(cancel) {
         return None;
     }
 
+    let (mut surface, resolution) = match params.method {
+        ShrinkwrapMethod::Winding => distance_field_surface(&proxy, params, name, warnings)?,
+        ShrinkwrapMethod::Voxel => remesher::extract(&proxy, params, name, warnings)?,
+    };
+    if cancelled(cancel) {
+        return None;
+    }
+    if params.keep_largest_shell {
+        mc::keep_largest_shell(&mut surface);
+    }
+    if params.method == ShrinkwrapMethod::Voxel
+        && let Some(target) = remesher::target_triangles(&proxy, params)
+    {
+        remesher::reduce(&mut surface, target, params.voxel_regularize);
+    }
+    if surface.is_empty() {
+        warnings.push(&match params.method {
+            ShrinkwrapMethod::Winding => format!(
+                "Shrinkwrap: '{name}' came back empty — at resolution {resolution} the object \
+                 is thinner than one voxel. Raise the resolution, or add a small offset to \
+                 give it some thickness."
+            ),
+            ShrinkwrapMethod::Voxel => format!(
+                "Shrinkwrap: '{name}' came back empty at voxel resolution {resolution}. Raise \
+                 the resolution, or switch to the distance-field method."
+            ),
+        });
+        return None;
+    }
+    if cancelled(cancel) {
+        return None;
+    }
+
+    // The extraction is a polygon soup of triangles, which is exactly what the
+    // remesh path already knows how to project attributes onto and split by
+    // material. No polygon carry: a wrap produces triangles, and a face table
+    // over them would put the whole level into the corner-run layout for nothing.
+    let face_offsets = (0..=surface.triangle_count() as u32)
+        .map(|face| face * 3)
+        .collect();
+    let output = remesh::RemeshOutput {
+        positions: surface.positions,
+        face_offsets,
+        corners: surface.indices,
+    };
+    let source = remesh::ProjectionSource::build(pieces);
+    Some(remesh::build_pieces_from(
+        &output,
+        &source,
+        pieces,
+        &proxy,
+        remesh::Winding::Keep,
+        params.normals.generation(params.normal_params),
+    ))
+}
+
+/// The distance-field method's shell: a narrow-band signed distance field whose
+/// sign is the generalized winding number, re-extracted by marching
+/// tetrahedra. Returns it with the resolution it actually ran at.
+fn distance_field_surface(
+    proxy: &proxy::Proxy,
+    params: &ShrinkwrapParams,
+    name: &str,
+    warnings: &mut Warnings,
+) -> Option<(mc::Surface, u32)> {
     // A lattice fine enough to be asked for but small enough to hold. Halving
     // the resolution divides the point count by eight, so this converges in a
     // step or two whatever was asked for.
@@ -258,40 +334,7 @@ fn wrap_node(
     }
 
     let field = sdf::build(desc, &sampled, &bvh, &winding, params.offset);
-    let mut surface = mc::extract(&field);
-    if params.keep_largest_shell {
-        mc::keep_largest_shell(&mut surface);
-    }
-    if surface.is_empty() {
-        warnings.push(&format!(
-            "Shrinkwrap: '{name}' came back empty — at resolution {resolution} the object \
-             is thinner than one voxel. Raise the resolution, or add a small offset to \
-             give it some thickness."
-        ));
-        return None;
-    }
-
-    // The extraction is a polygon soup of triangles, which is exactly what the
-    // remesh path already knows how to project attributes onto and split by
-    // material. No polygon carry: a wrap produces triangles, and a face table
-    // over them would put the whole level into the corner-run layout for nothing.
-    let face_offsets = (0..=surface.triangle_count() as u32)
-        .map(|face| face * 3)
-        .collect();
-    let output = remesh::RemeshOutput {
-        positions: surface.positions,
-        face_offsets,
-        corners: surface.indices,
-    };
-    let source = remesh::ProjectionSource::build(pieces);
-    Some(remesh::build_pieces_from(
-        &output,
-        &source,
-        pieces,
-        &proxy,
-        remesh::Winding::Keep,
-        params.normals.generation(params.normal_params),
-    ))
+    Some((mc::extract(&field), resolution))
 }
 
 #[cfg(test)]
@@ -318,8 +361,8 @@ mod tests {
             ..ShrinkwrapParams::default()
         };
 
-        let wrapped =
-            wrap_node(&borrowed, &params, "cube", &mut warnings).expect("the demo cube wraps");
+        let wrapped = wrap_node(&borrowed, &params, "cube", &mut warnings, None)
+            .expect("the demo cube wraps");
 
         assert!(!wrapped.is_empty(), "the wrap produced geometry");
         let triangles: usize = wrapped.iter().map(Submesh::triangle_count).sum();
@@ -375,7 +418,7 @@ mod tests {
             resolution: 32,
             ..ShrinkwrapParams::default()
         };
-        let wrapped = wrap_node(&borrowed, &projected, "cube", &mut warnings).expect("wraps");
+        let wrapped = wrap_node(&borrowed, &projected, "cube", &mut warnings, None).expect("wraps");
         let projected_share = axis_share(&wrapped);
 
         let generated = ShrinkwrapParams {
@@ -386,7 +429,7 @@ mod tests {
             },
             ..projected
         };
-        let wrapped = wrap_node(&borrowed, &generated, "cube", &mut warnings).expect("wraps");
+        let wrapped = wrap_node(&borrowed, &generated, "cube", &mut warnings, None).expect("wraps");
         assert!(
             axis_share(&wrapped) < projected_share,
             "generating changed the shading: {} vs {projected_share}",
@@ -406,6 +449,140 @@ mod tests {
         }
     }
 
+    fn voxel(resolution: u32, target: crate::stack::VoxelTarget) -> ShrinkwrapParams {
+        let mut params = ShrinkwrapParams {
+            voxel_resolution: resolution,
+            voxel_target: target,
+            ..ShrinkwrapParams::default()
+        };
+        params.set_method(ShrinkwrapMethod::Voxel);
+        params
+    }
+
+    /// Closed in the sense a voxel shell can promise: every directed edge (by
+    /// position) is matched by as many reversed ones. A thin sheet legitimately
+    /// traverses an edge twice, which a strict manifold check would reject.
+    fn assert_balanced(wrapped: &[Submesh]) {
+        let key = |p: glam::Vec3| p.to_array().map(f32::to_bits);
+        let mut directed: HashMap<([u32; 3], [u32; 3]), i64> = HashMap::new();
+        for piece in wrapped {
+            for triangle in piece.indices.as_chunks::<3>().0 {
+                for k in 0..3 {
+                    let a = key(piece.vertices[triangle[k] as usize].position);
+                    let b = key(piece.vertices[triangle[(k + 1) % 3] as usize].position);
+                    *directed.entry((a, b)).or_insert(0) += 1;
+                    *directed.entry((b, a)).or_insert(0) -= 1;
+                }
+            }
+        }
+        assert!(
+            directed.values().all(|&balance| balance == 0),
+            "every edge is matched by a reversed one"
+        );
+    }
+
+    fn signed_volume(wrapped: &[Submesh]) -> f32 {
+        wrapped
+            .iter()
+            .flat_map(|piece| {
+                piece.indices.as_chunks::<3>().0.iter().map(|t| {
+                    let [a, b, c] = t.map(|i| piece.vertices[i as usize].position);
+                    a.dot(b.cross(c)) / 6.0
+                })
+            })
+            .sum()
+    }
+
+    #[test]
+    fn a_voxel_wrap_of_the_cube_is_a_closed_outward_shell_around_it() {
+        let pieces = cube_pieces();
+        let borrowed: Vec<&Submesh> = pieces.iter().collect();
+        let mut warnings = Warnings::default();
+        let params = voxel(32, crate::stack::VoxelTarget::Keep);
+        let wrapped =
+            wrap_node(&borrowed, &params, "cube", &mut warnings, None).expect("the cube wraps");
+        assert!(warnings.is_empty(), "{warnings:?}");
+
+        assert_balanced(&wrapped);
+        let source = proxy::build(&borrowed);
+        let volume = source.bounds.size().x * source.bounds.size().y * source.bounds.size().z;
+        let wrapped_volume = signed_volume(&wrapped);
+        assert!(
+            (wrapped_volume - volume).abs() < volume * 0.1,
+            "wound outward and filling the cube: {wrapped_volume} vs {volume}"
+        );
+        let slack = source.bounds.size().max_element() / 32.0 * 2.0;
+        for piece in &wrapped {
+            for vertex in &piece.vertices {
+                let outside = (source.bounds.min - vertex.position)
+                    .max(vertex.position - source.bounds.max)
+                    .max_element();
+                assert!(
+                    outside < slack,
+                    "{:?} is {outside} outside",
+                    vertex.position
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_voxel_wrap_reduces_to_its_target_before_the_attributes_return() {
+        let pieces = cube_pieces();
+        let borrowed: Vec<&Submesh> = pieces.iter().collect();
+        let mut warnings = Warnings::default();
+        let full = wrap_node(
+            &borrowed,
+            &voxel(64, crate::stack::VoxelTarget::Keep),
+            "cube",
+            &mut warnings,
+            None,
+        )
+        .expect("wraps");
+        let full_count: usize = full.iter().map(Submesh::triangle_count).sum();
+
+        let params = ShrinkwrapParams {
+            voxel_triangles: 200,
+            ..voxel(64, crate::stack::VoxelTarget::Triangles)
+        };
+        let reduced = wrap_node(&borrowed, &params, "cube", &mut warnings, None).expect("wraps");
+        let count: usize = reduced.iter().map(Submesh::triangle_count).sum();
+        assert!(full_count > 400, "the raw shell is dense: {full_count}");
+        assert!(
+            (180..=220).contains(&count),
+            "the reduction lands on its target: {count}"
+        );
+        assert_balanced(&reduced);
+    }
+
+    #[test]
+    fn a_cancelled_wrap_returns_nothing_and_says_nothing() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicU64;
+        let pieces = cube_pieces();
+        let borrowed: Vec<&Submesh> = pieces.iter().collect();
+        let mut warnings = Warnings::default();
+        let token = CancelToken::new(Arc::new(AtomicU64::new(2)), 1);
+        for params in [
+            ShrinkwrapParams::default(),
+            voxel(32, crate::stack::VoxelTarget::Keep),
+        ] {
+            assert!(wrap_node(&borrowed, &params, "cube", &mut warnings, Some(&token)).is_none());
+        }
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn switching_method_switches_the_normals_default() {
+        let mut params = ShrinkwrapParams::default();
+        assert_eq!(params.normals, crate::stack::NormalMode::Project);
+        params.set_method(ShrinkwrapMethod::Voxel);
+        assert_eq!(params.normals, crate::stack::NormalMode::Generate);
+        assert!(params.normal_params.smoothing > 0.0);
+        params.set_method(ShrinkwrapMethod::Winding);
+        assert_eq!(params.normals, crate::stack::NormalMode::Project);
+    }
+
     #[test]
     fn a_node_with_almost_no_triangles_is_left_alone() {
         let model = demo_cube_model();
@@ -419,6 +596,7 @@ mod tests {
             &ShrinkwrapParams::default(),
             "sliver",
             &mut warnings,
+            None,
         );
 
         assert!(wrapped.is_none());
@@ -434,7 +612,7 @@ mod tests {
         let offset = source.bounds.size().max_element() * 0.1;
 
         let mut extent_of = |params: &ShrinkwrapParams| -> f32 {
-            let wrapped = wrap_node(&borrowed, params, "cube", &mut warnings).expect("wraps");
+            let wrapped = wrap_node(&borrowed, params, "cube", &mut warnings, None).expect("wraps");
             let mut bounds = review_model::Bounds::EMPTY;
             for piece in &wrapped {
                 for vertex in &piece.vertices {
