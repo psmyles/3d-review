@@ -25,7 +25,8 @@
       9. Checks the built exe is there, locates ISCC.exe (Inno Setup 6) and
          compiles packaging\3d-review.iss, passing product metadata as /D defines.
 
-    Output: dist\3D-Review-Setup-<version>.exe
+    Output: dist\<exeName>-<version>.exe (e.g. dist\3d-review-0.5.1.exe), the same
+    naming as the macOS .dmg.
 
     It edits two tracked files — crates/app/Cargo.toml and Cargo.lock — which is
     step 3; the macOS twin (scripts/build-mac.sh) does the same. Everything else
@@ -62,7 +63,8 @@ $meta = Get-Content $productJson -Raw | ConvertFrom-Json
 $appName = $meta.productName
 $appVersion = $meta.version
 $appPublisher = $meta.publisher
-$appExe = "$($meta.exeName).exe"
+$appFileStem = $meta.exeName
+$appExe = "$appFileStem.exe"
 $appProgId = $meta.fileAssociation.progId
 $appTypeName = $meta.fileAssociation.typeName
 $appUrl = $meta.homepage
@@ -210,11 +212,12 @@ Write-Host "==> Packaging installer for $appName $appVersion..." -ForegroundColo
     "/DMyAppVersion=$appVersion" `
     "/DMyAppPublisher=$appPublisher" `
     "/DMyAppExe=$appExe" `
+    "/DMyAppFileStem=$appFileStem" `
     "/DMyAppProgId=$appProgId" `
     "/DMyAppTypeName=$appTypeName" `
     "/DMyAppUrl=$appUrl" `
     $issScript
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed (exit $LASTEXITCODE)." }
 
-$installer = Join-Path $distDir "3D-Review-Setup-$appVersion.exe"
+$installer = Join-Path $distDir "$appFileStem-$appVersion.exe"
 Write-Host "==> Done: $installer" -ForegroundColor Green
