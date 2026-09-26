@@ -703,10 +703,8 @@ pub(super) fn decode_checker(png_bytes: &[u8]) -> GpuResult<Texture> {
         }
         Err(error) => {
             // Degrading to flat white is deliberate, but not silently: a corrupt baked
-            // checker is a packaging bug worth seeing under `--tracy`.
-            crate::rhi::gpu_profiler::note(&format!(
-                "baked UV-checker PNG failed to decode: {error}"
-            ));
+            // checker is a packaging bug worth seeing in the log.
+            log::warn!("baked UV-checker PNG failed to decode: {error}");
             Texture::immutable_2d(
                 &[255, 255, 255, 255],
                 1,

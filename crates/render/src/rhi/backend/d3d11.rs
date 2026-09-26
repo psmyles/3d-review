@@ -99,9 +99,7 @@ impl Device {
             match made {
                 Ok((device, context)) => {
                     if is_warp {
-                        eprintln!(
-                            "3d-review: no hardware D3D11 device - using the WARP software renderer"
-                        );
+                        log::warn!("no hardware D3D11 device - using the WARP software renderer");
                     }
                     return Ok(Device { device, context });
                 }
@@ -119,6 +117,31 @@ impl Device {
             device: self.device.as_raw(),
             device_context: self.context.as_raw(),
         };
+    }
+
+    /// The adapter the device was created on, by the name its driver reports
+    /// (`DXGI_ADAPTER_DESC::Description`), or empty if it will not say.
+    pub(crate) fn adapter_name(&self) -> String {
+        // SAFETY: plain COM traversal device -> DXGI device -> adapter on a live
+        // device, then `GetDesc`, which fills a struct we own and returns it by
+        // value. Nothing is borrowed past the call.
+        let description = unsafe {
+            self.device
+                .cast::<IDXGIDevice>()
+                .and_then(|dxgi_device| dxgi_device.GetAdapter())
+                .and_then(|adapter| adapter.GetDesc())
+                .map(|desc| desc.Description)
+        };
+        description.map_or_else(
+            |_| String::new(),
+            |name| {
+                let len = name
+                    .iter()
+                    .position(|&unit| unit == 0)
+                    .unwrap_or(name.len());
+                String::from_utf16_lossy(&name[..len])
+            },
+        )
     }
 
     /// The MSAA sample counts this adapter supports for **both** given formats — the
@@ -269,7 +292,7 @@ impl Swapchain {
             self.swap_chain
                 .ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, flags)
         } {
-            eprintln!("3d-review: swapchain ResizeBuffers failed: {err}");
+            log::error!("swapchain ResizeBuffers failed: {err}");
         }
     }
 
@@ -306,7 +329,7 @@ impl Swapchain {
                 let back: ID3D11Texture2D = match self.swap_chain.GetBuffer(0) {
                     Ok(back) => back,
                     Err(err) => {
-                        eprintln!("3d-review: swapchain GetBuffer failed: {err}");
+                        log::error!("swapchain GetBuffer failed: {err}");
                         return None;
                     }
                 };
@@ -317,7 +340,7 @@ impl Swapchain {
                 {
                     Ok(()) => rtv,
                     Err(err) => {
-                        eprintln!("3d-review: CreateRenderTargetView failed: {err}");
+                        log::error!("CreateRenderTargetView failed: {err}");
                         None
                     }
                 }

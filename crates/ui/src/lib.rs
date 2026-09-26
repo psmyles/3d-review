@@ -12,6 +12,7 @@
 //! - [`widgets`] — reusable theme-driven primitives.
 //! - [`overlay`] — per-frame orchestration (the public entry points).
 //! - `help` — the in-app manual, over the generated [`docs`] page table.
+//! - `log_window` — Debug > View Log, over the lines `app` hands it.
 //! - `notifications` — the notice column (`app`-owned, drawn + themed here).
 //! - `toolbar` / `status_bar` / `stats` / `gizmo` / `panels` — the chrome.
 
@@ -55,11 +56,13 @@ pub(crate) fn primary_modifier() -> std::borrow::Cow<'static, str> {
     }
 }
 
+mod about;
 mod assets;
 mod dimensions;
 mod gizmo;
 mod help;
 mod labels;
+mod log_window;
 mod notifications;
 mod opt_state;
 mod overlay;
@@ -77,8 +80,10 @@ mod widgets;
 
 // Root re-exports carry exactly what `app` (the sole consumer) uses; everything
 // else stays reachable under its own module path.
+pub use about::{AboutInfo, AboutState};
 pub use help::{HelpState, option_panel_at, workspace_help_page};
 pub use labels::{buffer_view_name, material_mode_name, op_kind_name, viewport_tool_name};
+pub use log_window::LogWindowState;
 pub use notifications::{NoticeKind, Notifications};
 pub use opt_state::{
     ComparisonSide, GhostStyle, OptIntent, OptLayout, OptLevelView, OptResultView, OptUiState,
@@ -87,8 +92,8 @@ pub use opt_state::{
 pub use overlay::{OptOverlayLevel, OptOverlayView, draw_overlay};
 pub use review_render::{MsaaSamples, Selection};
 pub use state::{
-    AnimationUiState, AxisGizmoAction, ChromeInsets, HoverTarget, PlaybackSpeed, SelectMode,
-    TexViewRequest, TextureBackground, TextureIntent, TexturePoolEntry, TextureSlotRef, UiOutput,
-    UiState, ViewportTool, WorkspaceMode, apply_pick,
+    AnimationUiState, AxisGizmoAction, ChromeInsets, HoverTarget, MenuIntent, PlaybackSpeed,
+    SelectMode, TexViewRequest, TextureBackground, TextureIntent, TexturePoolEntry, TextureSlotRef,
+    UiOutput, UiState, ViewportTool, WorkspaceMode, apply_pick,
 };
 pub use theme::init_style;

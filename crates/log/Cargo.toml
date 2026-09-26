@@ -1,0 +1,20 @@
+[package]
+name = "review-log"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# The local wall clock: a log line is read against the clock on the wall, and the
+# day's file is named and pruned by the local date. `std` has no time zone.
+chrono.workspace = true
+# The standard facade every crate in the graph already logs through (winit, egui,
+# notify...), so installing one logger captures their warnings too, and our own
+# crates need only `log` itself to write a line.
+log.workspace = true
+# Every line also goes down the Tracy message channel while a client is running.
+review-prof.workspace = true
+
+[lints]
+workspace = true

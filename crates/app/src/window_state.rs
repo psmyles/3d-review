@@ -17,7 +17,7 @@ use std::time::Duration;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
-use crate::{App, FALLBACK_REFRESH_HZ, prof};
+use crate::{App, FALLBACK_REFRESH_HZ};
 
 /// The window placement we save and restore: outer position (including
 /// decorations) plus the inner client size, and whether the window was
@@ -90,7 +90,7 @@ pub fn load() -> Option<WindowPlacement> {
         return None;
     }
 
-    prof::msg(&format!("restored window placement: {placement:?}"));
+    log::debug!("restored window placement: {placement:?}");
     Some(placement)
 }
 
@@ -106,10 +106,10 @@ pub fn save(placement: WindowPlacement) {
     };
 
     if let Err(error) = std::fs::create_dir_all(&dir) {
-        prof::msg(&format!(
+        log::warn!(
             "failed to create window-state directory {}: {error}",
             dir.display()
-        ));
+        );
         return;
     }
 
@@ -122,10 +122,7 @@ pub fn save(placement: WindowPlacement) {
     // otherwise leave a half-written config, and the next launch reads it back
     // as a window with no size.
     if let Err(error) = review_optimize::write_bytes_replacing(&path, &contents) {
-        prof::msg(&format!(
-            "failed to write window state {}: {error}",
-            path.display()
-        ));
+        log::warn!("failed to write window state {}: {error}", path.display());
     }
 }
 

@@ -9,9 +9,9 @@
 //! way (app→UI data).
 
 use review_render::TextureSlot;
-use review_ui::{AxisGizmoAction, TextureIntent, UiOutput};
+use review_ui::{AxisGizmoAction, MenuIntent, TextureIntent, UiOutput};
 
-use crate::App;
+use crate::{App, keys};
 
 impl App {
     pub(crate) fn apply_ui_output(&mut self, output: UiOutput) {
@@ -25,6 +25,13 @@ impl App {
         // before it exists.
         if let Some(intent) = output.opt {
             self.apply_opt_intent(intent);
+        }
+
+        // The menu's commands land on the handlers their shortcuts already reach
+        // (`shortcuts.rs`), so the menu is a second door onto each command rather
+        // than a second implementation of it.
+        if let Some(intent) = output.menu {
+            self.apply_menu_intent(intent);
         }
 
         if self.renderer.is_none() {
@@ -93,6 +100,37 @@ impl App {
 
         if redraw {
             self.redraw.requested = true;
+        }
+    }
+
+    fn apply_menu_intent(&mut self, intent: MenuIntent) {
+        match intent {
+            MenuIntent::OpenFile => self.open_model_from_dialog(),
+            MenuIntent::OpenRecent(index) => self.open_recent_file(index),
+            MenuIntent::ClearRecentFiles => self.clear_recent_files(),
+            MenuIntent::CloseFile => self.reset_to_start_state(),
+            MenuIntent::ToggleRememberSettings => {
+                self.ui.remember_settings = !self.ui.remember_settings;
+                // Written now rather than only on exit, so the choice holds even
+                // for a session that never exits cleanly.
+                self.persist_settings();
+                self.redraw.requested = true;
+            }
+            MenuIntent::ToggleTracyProfiler => {
+                self.ui.tracy_profiler = !self.ui.tracy_profiler;
+                self.persist_settings();
+                // It cannot take effect in this session, so say when it will.
+                let notice = if self.ui.tracy_profiler {
+                    keys::app_notifications::TRACY_ON_NEXT_LAUNCH
+                } else {
+                    keys::app_notifications::TRACY_OFF_NEXT_LAUNCH
+                };
+                self.notifications
+                    .info(review_localization::tr(notice).into_owned());
+                self.redraw.requested = true;
+            }
+            MenuIntent::CheckForUpdates => self.check_for_updates(),
+            MenuIntent::Exit => self.exit_requested = true,
         }
     }
 

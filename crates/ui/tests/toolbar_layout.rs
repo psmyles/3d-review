@@ -43,7 +43,8 @@ fn the_right_cluster_fits_its_reserved_width() {
     }
 }
 
-/// The left cluster: shading, active material, and the geometry-debug group.
+/// The left cluster: the menu, show-wireframe, shading, active material, and the
+/// geometry-debug group.
 #[test]
 fn the_left_cluster_fits_its_reserved_width() {
     let spacing = size::TOOLBAR_GROUP_SPACING;
@@ -53,7 +54,11 @@ fn the_left_cluster_fits_its_reserved_width() {
         size::TOOLBAR_MATERIAL_GROUP_WIDTH,
         size::TOOLBAR_QUINT_ICON_GROUP_WIDTH,
     ] {
-        let needed = size::TOOLBAR_SHADING_GROUP_WIDTH
+        let needed = size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH
+            + spacing
+            + size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH
+            + spacing
+            + size::TOOLBAR_SHADING_GROUP_WIDTH
             + spacing
             + material_group
             + spacing
@@ -78,6 +83,7 @@ fn every_icon_group_width_holds_its_tiles() {
         (1, size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH),
         (3, size::TOOLBAR_TRIPLE_ICON_GROUP_WIDTH),
         (4, size::TOOLBAR_QUAD_ICON_GROUP_WIDTH),
+        (4, size::TOOLBAR_SHADING_GROUP_WIDTH),
         (5, size::TOOLBAR_QUINT_ICON_GROUP_WIDTH),
     ];
 

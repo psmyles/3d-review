@@ -5,6 +5,49 @@
 ### "Right-click for options" is deliberately *not* repeated in each message: the
 ### `Tip` builder appends it once, so it is translated once.
 
+## The menu
+
+ui-toolbar-menu = Menu
+    .description = Opens and closes files, sets whether your tool settings are kept for
+        next time, shows the viewer's log, and leads to the manual, updates and the
+        project's pages.
+
+# The four submenus.
+ui-toolbar-menu-file = File
+ui-toolbar-menu-preferences = Preferences
+ui-toolbar-menu-debug = Debug
+ui-toolbar-menu-help = Help
+
+ui-toolbar-menu-open-file = Open File...
+ui-toolbar-menu-open-file-shortcut = { $modifier }+O
+ui-toolbar-menu-open-recent = Open Recent
+ui-toolbar-menu-clear-recent-files = Clear Recent Files
+ui-toolbar-menu-close-file = Close File
+ui-toolbar-menu-close-file-shortcut = { $modifier }+N
+ui-toolbar-menu-exit = Exit
+
+ui-toolbar-menu-remember-settings = Remember Settings
+    .description = When this is ticked, the choices you make in the tools' options windows,
+        such as colors, sizes, the environment and the ambient occlusion settings, are kept
+        and come back the next time you start the viewer.
+
+ui-toolbar-menu-view-log = View Log
+    .description = Opens a window listing what the viewer has reported since it started:
+        files opened, how long they took, warnings and errors. The same lines are saved to
+        a file for the rest of the day, which is useful to attach to a bug report.
+
+ui-toolbar-menu-tracy-profiler = Tracy Profiler
+    .description = For developers measuring the viewer's performance. When this is ticked, the
+        viewer starts with the Tracy profiler enabled, as if it had been launched with
+        --tracy, and a Tracy window can connect to it. It takes effect the next time you
+        start the viewer.
+
+ui-toolbar-menu-about = About
+ui-toolbar-menu-documentation = Documentation
+ui-toolbar-menu-check-for-updates = Check for Updates
+ui-toolbar-menu-report-issue = Report an Issue
+ui-toolbar-menu-credits = Credits
+
 ## Shading modes
 
 ui-toolbar-wireframe-only = Wireframe Only

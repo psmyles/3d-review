@@ -25,6 +25,11 @@
 
 // ── Overlay layout ────────────────────────────────────────────────────
 pub const TOOLBAR_HEIGHT: f32 = 48.0;
+/// The About box's content width: wide enough that a long GPU name wraps once at
+/// most rather than word by word.
+pub const ABOUT_WIDTH: f32 = 320.0;
+/// The gap between the About box's blocks (identity / renderer / links).
+pub const ABOUT_SECTION_GAP: f32 = 6.0;
 pub const STATUS_BAR_HEIGHT: f32 = 42.0;
 pub const OVERLAY_MARGIN: f32 = 8.0;
 /// Width of the dockable Outliner / Inspector side panels (their default /
@@ -94,16 +99,16 @@ pub const TOOLBAR_CENTER_WIDTH: f32 = 120.0;
 /// so. It grows leftward from the right edge, away from the centered mode
 /// segments.
 pub const TOOLBAR_RIGHT_WIDTH: f32 = 325.0;
-/// Left toolbar cluster: shading (5) + material + geometry-debug (3) groups, with
-/// two group spacings between them.
+/// Left toolbar cluster: the menu (32) + show-wireframe (32) + shading (4) +
+/// material + geometry-debug (3) groups, with four group spacings between them.
 ///
 /// Sized for the widest case like [`TOOLBAR_RIGHT_WIDTH`]: the material group
 /// gains a tile for the skin-weight view on a skinned mesh (152 rather than 122),
-/// so 152 + 9 + 152 + 9 + 92 = 414, plus a little slack.
-pub const TOOLBAR_LEFT_WIDTH: f32 = 420.0;
-/// Five-icon shading group: show-wireframe, wireframe-only, unlit, shaded,
-/// backface-rendering.
-pub const TOOLBAR_SHADING_GROUP_WIDTH: f32 = 152.0;
+/// so 32 + 9 + 32 + 9 + 122 + 9 + 152 + 9 + 92 = 466, plus a little slack.
+pub const TOOLBAR_LEFT_WIDTH: f32 = 470.0;
+/// Four-icon shading group: wireframe-only, unlit, shaded, backface-rendering
+/// (4 padding + 4×28 icons + 3×2 gaps). Show Wireframe is a group of its own.
+pub const TOOLBAR_SHADING_GROUP_WIDTH: f32 = 122.0;
 /// Four-icon active-material group: source material, UV checker, vertex colors,
 /// buffers (4 padding + 4×28 icons + 3×2 gaps).
 pub const TOOLBAR_MATERIAL_GROUP_WIDTH: f32 = 122.0;
@@ -416,6 +421,13 @@ pub const HELP_WINDOW_DEFAULT: [f32; 2] = [720.0, 520.0];
 /// Minimum the Help window may be dragged down to before its two panes stop
 /// being readable.
 pub const HELP_WINDOW_MIN: [f32; 2] = [420.0, 260.0];
+/// The Log window's default size: wide enough for a line with a full file path
+/// in it, short enough to leave the model in view beneath it.
+pub const LOG_WINDOW_DEFAULT: [f32; 2] = [760.0, 360.0];
+/// Minimum the Log window may be dragged down to before the filter bar wraps.
+pub const LOG_WINDOW_MIN: [f32; 2] = [440.0, 160.0];
+/// Space between the columns of a log line (time, level, tag, message).
+pub const LOG_COLUMN_GAP: f32 = 12.0;
 /// Width of the Help window's contents list.
 pub const HELP_TOC_WIDTH: f32 = 196.0;
 /// Indent per nesting level in the contents list.

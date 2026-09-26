@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use crate::texture_manager::TextureDecode;
-use crate::{dialog, loading, opt};
+use crate::{dialog, loading, opt, update};
 
 /// Custom event posted from a background thread to the winit event loop, so work
 /// done off the main thread is applied back on it (the redraw loop + all renderer
@@ -57,6 +57,9 @@ pub(crate) enum UserEvent {
     /// `mac-port-plan.md` D9). `None` when the user cancelled. Boxed because the
     /// export variant carries a whole LOD chain's worth of `Arc`s.
     DialogDone(Option<Box<dialog::DialogAnswer>>),
+    /// Help > Check for Updates has its answer (posted by the thread that asked
+    /// GitHub - see `update.rs`).
+    UpdateChecked(update::UpdateCheck),
     /// The OS asked for a file to be opened (`mac-port-plan.md` D14): a Finder
     /// double-click, an `open(1)`, or a drop on the Dock icon. macOS only —
     /// Windows delivers the same intent as `argv[1]`, which `main` reads directly.
@@ -66,4 +69,8 @@ pub(crate) enum UserEvent {
     /// main thread, in order with every other event, instead of racing the state
     /// it is about to change.
     MenuCommand(review_shell_macos::MenuCommand),
+    /// A line was logged while the Log window is open (posted by whichever
+    /// thread logged it, at most once until the window next reads the log).
+    /// Asks for a frame, which is where the window is handed the line.
+    LogUpdated,
 }

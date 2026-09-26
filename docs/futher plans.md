@@ -7,7 +7,7 @@ the Opt stack and the FBX round-trip export are all built and documented
 (README.md). The user's stated scope is broad: tech-artist pre-import audit,
 outsourcing QA acceptance, an optimization operator, a general previewer, a
 **headless batch optimizer driven by saved presets**, targeting Unity + Unreal +
-engine-agnostic pipelines, with import *and* export formats allowed to broaden, as a
+engine-agnostic pipelines, with import _and_ export formats allowed to broaden, as a
 **commercial / public release**.
 
 Every item below was checked against the code (not just the README). Legend:
@@ -19,10 +19,12 @@ feature. File paths point at the seam a feature would attach to.
 ## Tier 1 — gaps that block a use case the user named
 
 ### 1. Headless batch mode (preset × files → export + report) — ABSENT
+
 `crates/app/src/main.rs:77-88` hand-scans three flags (`--tracy`, `--gate-out`, a
 path); nothing runs without a window. Everything underneath is already pure:
 `review_import::load_model`, `review_optimize::process` + `preset` (JSON) +
 `export`, and the AO bake is CPU raycasts. What's missing is the driver:
+
 - A `review-cli` binary (or `3d-review batch` subcommand) with a real arg parser:
   `--preset p.json --out <dir> [--recurse] [--glob] <files...>`, per-file
   progress on stdout, non-zero exit on any failure, `--report out.json`.
@@ -32,10 +34,12 @@ path); nothing runs without a window. Everything underneath is already pure:
 - Parallelism across files (each run already uses `std::thread::scope` inside).
 
 ### 2. Automated validation / audit report — PARTIAL (integrity asserts only)
+
 The only user-visible warning today is one toast (`crates/app/src/loading.rs:394`).
 `crates/model/src/skin.rs:140` / `geometry.rs:111` reject malformed data at load;
-nothing *reports* on a well-formed but bad asset. QA acceptance and outsourcing
+nothing _reports_ on a well-formed but bad asset. QA acceptance and outsourcing
 review need a rule set with pass/fail:
+
 - **Mesh**: degenerate / zero-area triangles, non-manifold edges, isolated verts,
   unwelded duplicates, n-gon count, missing normals/tangents, inverted normals
   (winding vs. normal), hard-edge ratio, triangle and draw-call budgets.
@@ -57,6 +61,7 @@ review need a rule set with pass/fail:
   the offender) and go out as JSON/HTML from the CLI.
 
 ### 3. Import formats beyond FBX — ABSENT (glTF/GLB, OBJ; USD is a separate question)
+
 The user opened this up. glTF/GLB is the common outsourcing delivery and the
 Godot/agnostic native. Constraints from the invariants: each format is its own
 funnel producing an identical `ModelData` (invariant 7 applies to the ufbx core,
@@ -66,17 +71,13 @@ must say so. USD needs a C++ dependency (OpenUSD) far heavier than anything
 vendored so far; recommend deferring it and listing it separately.
 
 ### 4. Export formats beyond FBX — ABSENT
+
 glTF/GLB export from the Opt chain is the natural pair to item 3 (and what
 Unity/Unreal both import). The processed `ModelData` + `LevelCarry` already hold
 everything a glTF needs; skins/morphs/clips map cleanly.
 
-### 5. Viewport click-to-select and hover — ABSENT (in TODO.md)
-`crates/app/src/input.rs:88-124` has no ray cast; selection is Outliner-only. A
-triangle BVH already exists (`crates/model/src/bvh.rs`) and is used for label
-occlusion, so picking is a ray query + the existing `Selection` path. Reviewing a
-1000-node scene without it is the single biggest usability gap.
+### 5. Embedded FBX textures for display — PARTIAL
 
-### 6. Embedded FBX textures for display — PARTIAL
 Bytes are captured (`crates/model/src/extras.rs:413`) and written back on export,
 but never decoded for the viewport; `crates/app/src/texture_manager.rs:8` lists it
 as an unbuilt phase. Outsourced deliveries frequently embed. Needs a decode path
@@ -135,35 +136,8 @@ from bytes into the same pool as file textures.
 24. **Screenshot / turntable capture** — ABSENT. Readback exists only in the
     bake-gated leaf (`read_image_subresource`). PNG capture with/without chrome
     and a turntable image sequence are how reviewers attach evidence to tickets.
-25. **Localization** — ABSENT; all strings inline. Decide now whether to i18n,
-    because retrofitting is the expensive path.
-26. **Third-party notices bundle** in the installer (ufbx, meshoptimizer,
-    ufbx-write, psd_sdk, sokol, egui, fonts) — verify present.
-27. **Code-quality findings F1–F8** (`docs/CODE_QUALITY_ANALYSIS.md`) are
+25. **Code-quality findings F1–F8** (`docs/CODE_QUALITY_ANALYSIS.md`) are
     hardening items a public release needs: F2 (silent overwrite) and F7
     (superseded background work accumulating) especially.
-28. **Opt-in telemetry / crash upload** — a product decision, listed for
+26. **Opt-in telemetry / crash upload** — a product decision, listed for
     completeness.
-
----
-
-## Recommended sequencing (my recommendation, not a decision)
-
-1. **Batch CLI** (item 1) — smallest surface, everything under it exists, and it
-   is the one feature the user asked for by name. Also forces the overwrite policy.
-2. **Validation rules + Issues panel + JSON report** (item 2) — turns the viewer
-   into a QA tool and gives the CLI a second output. Rules are additive; ship a
-   first set and grow it.
-3. **Picking** (item 5) and **embedded textures** (item 6) — both already in TODO
-   and both have their foundations in place.
-4. **glTF import, then glTF export** (items 3–4).
-5. Tier 2 audit views in the order Unity/Unreal users hit them: texel density,
-   UV diagnostics, skin stats, LOD group export.
-6. Tier 3 plumbing before the first public build: crash hook + logging,
-   preferences, recent files, help, signing.
-
-## Verification
-
-This plan is an assessment, not a code change. The next step is the user picking
-which item(s) to turn into an implementation plan; each would get its own plan
-with its own verification section.
