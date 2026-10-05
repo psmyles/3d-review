@@ -1,8 +1,8 @@
 - Texture view in UV mode
-- quick open/hide outliner box on left edge of the viewport
 - compression option at export time?
 - read FBX built in textures
-- save settings
-- generate UVs
+- generate UVs - xatlas?
 - generate colliders?
 - Headless batch mode (preset × files → export + report)
+- UV view during opt mode?
+- audit module
