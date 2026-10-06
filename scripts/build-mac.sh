@@ -88,16 +88,6 @@ exe="$(meta exeName)"
 file_ext="$(meta fileAssociation.extension)"; file_ext="${file_ext#.}"
 file_type_name="$(meta fileAssociation.typeName)"
 bundle_id="com.psmyles.3d-review"
-# `assets/icons/application-logo.png` has a transparent background; the Dock, Finder
-# and the app switcher all show it against whatever is behind them, which leaves the
-# cube floating. Composite it onto this instead — the same grey Fire's icon uses, so
-# the two products' tiles read as a set.
-icon_bg="343639"
-# ...inset by this much of the icon's edge on every side. The master's artwork is
-# full-bleed in *both* directions (measured: 996 x 1024 of 1024²), and macOS masks a
-# legacy icon like this one into the rounded rect it draws everywhere, so with no
-# inset the cube's own corners are what the mask cuts off.
-icon_inset="10%"
 # The `xcrun notarytool store-credentials` profile to use when none is named.
 #
 # **Not derived from the product name**, which is the obvious thing to do and is
@@ -237,81 +227,31 @@ archs="$(lipo -archs "$bin")"
 # ---------------------------------------------------------------------------------------------
 # 4. The icon
 # ---------------------------------------------------------------------------------------------
-# iconutil wants an .iconset directory of exact sizes, each the 1024² master
-# downsampled, inset by `icon_inset` and composited onto the opaque `icon_bg`. Rebuilt
-# every run: it is well under a second, and it means a change to the master cannot be
-# silently missing from a release.
-#
-# `sips -z` would do the downsampling but cannot composite, and a transparent icon is
-# exactly what we are trying not to ship. So the resize and the fill happen together in
-# AppKit, driven by osascript's JavaScript-for-Automation ObjC bridge — which is in the
-# base OS, so this still needs nothing installed.
-#
-# The scratch bitmap is retagged sRGB before anything is drawn into it. Without that it
-# is NSCalibratedRGB and both the fill and the artwork come out colour-converted:
-# #343639 lands as #27292b. That matters more here than for most icons — the cube's
-# faces *are* the sRGB primaries, and a colour-managed detour is exactly what would
-# take the red, green and blue off their values.
+# `assets/mac_icon/icon.icon` is an Icon Composer document (layers, fill, specular, the
+# Liquid Glass treatment), and `actool` is what compiles one. It writes two things: the
+# `Assets.car` macOS 26 renders the layered icon from, and a flattened `.icns` fallback for
+# everything older and for the places that only read `CFBundleIconFile` (Finder's Get Info,
+# document-type icons). Rebuilt every run so a change to the document cannot be silently
+# missing from a release. Needs full Xcode, not just the Command Line Tools.
 
 say "icon"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-iconset="$tmp/$name.iconset"
-mkdir -p "$iconset"
-
-cat > "$tmp/flatten-icon.js" <<'JS'
-ObjC.import('AppKit');
-
-// argv: <src.png> <rrggbb> <inset-percent> <size>:<dst.png>...
-function run(argv) {
-    var src = argv[0], hex = argv[1], inset = parseFloat(argv[2]) / 100;
-    var img = $.NSImage.alloc.initWithContentsOfFile(src);
-    if (img.isNil()) throw new Error('cannot read ' + src);
-    var rgb = [0, 2, 4].map(function (i) { return parseInt(hex.substr(i, 2), 16) / 255; });
-
-    argv.slice(3).forEach(function (spec) {
-        var colon = spec.indexOf(':');
-        var size = parseInt(spec.slice(0, colon), 10), dst = spec.slice(colon + 1);
-        // Fractional at the small sizes (16² insets by under a pixel), which is the
-        // point: the artwork is drawn into a sub-pixel rect and antialiased, rather
-        // than snapped to the edge.
-        var pad = size * inset;
-
-        var rep = $.NSBitmapImageRep.alloc
-            .initWithBitmapDataPlanesPixelsWidePixelsHighBitsPerSampleSamplesPerPixelHasAlphaIsPlanarColorSpaceNameBytesPerRowBitsPerPixel(
-                $(), size, size, 8, 4, true, false, $.NSCalibratedRGBColorSpace, 0, 0);
-        rep = rep.bitmapImageRepByRetaggingWithColorSpace($.NSColorSpace.sRGBColorSpace);
-
-        $.NSGraphicsContext.saveGraphicsState;
-        $.NSGraphicsContext.setCurrentContext(
-            $.NSGraphicsContext.graphicsContextWithBitmapImageRep(rep));
-        $.NSGraphicsContext.currentContext.setImageInterpolation(3); // .high
-        $.NSColor.colorWithSRGBRedGreenBlueAlpha(rgb[0], rgb[1], rgb[2], 1.0).setFill;
-        $.NSBezierPath.fillRect($.NSMakeRect(0, 0, size, size));
-        img.drawInRectFromRectOperationFraction(
-            $.NSMakeRect(pad, pad, size - 2 * pad, size - 2 * pad),
-            $.NSZeroRect, $.NSCompositingOperationSourceOver, 1.0);
-        $.NSGraphicsContext.restoreGraphicsState;
-
-        var png = rep.representationUsingTypeProperties($.NSBitmapImageFileTypePNG, $({}));
-        if (!png.writeToFileAtomically(dst, true)) throw new Error('cannot write ' + dst);
-    });
-}
-JS
-
-renders=()
-for size in 16 32 128 256 512; do
-    renders+=("$size:$iconset/icon_${size}x${size}.png")
-    renders+=("$((size * 2)):$iconset/icon_${size}x${size}@2x.png")
-done
-osascript -l JavaScript "$tmp/flatten-icon.js" \
-    "$repo/assets/icons/application-logo.png" "$icon_bg" "${icon_inset%\%}" "${renders[@]}" \
-    || die "could not render the iconset from assets/icons/application-logo.png"
-(( $(ls "$iconset" | wc -l) == ${#renders[@]} )) || die "the iconset is short of ${#renders[@]} images"
-
-icns="$tmp/$name.icns"
-iconutil -c icns "$iconset" -o "$icns"
-echo "  $(basename "$icns") — $(stat -f%z "$icns") bytes, on #$icon_bg, inset $icon_inset"
+icon_doc="$repo/assets/mac_icon/icon.icon"
+icon_name="$(basename "$icon_doc" .icon)"
+[[ -d "$icon_doc" ]] || die "missing $icon_doc"
+mkdir -p "$tmp/icon"
+xcrun actool "$icon_doc" --compile "$tmp/icon" --output-format human-readable-text \
+    --notices --warnings --errors --output-partial-info-plist "$tmp/icon/partial.plist" \
+    --app-icon "$icon_name" --include-all-app-icons --enable-on-demand-resources NO \
+    --development-region en --target-device mac --minimum-deployment-target 11.0 \
+    --platform macosx >/dev/null \
+    || die "actool could not compile $icon_doc (needs full Xcode, not just the CLT)"
+[[ -f "$tmp/icon/Assets.car" && -f "$tmp/icon/$icon_name.icns" ]] \
+    || die "actool produced no Assets.car / $icon_name.icns"
+icns="$tmp/icon/$icon_name.icns"
+car="$tmp/icon/Assets.car"
+echo "  Assets.car — $(stat -f%z "$car") bytes, $icon_name.icns — $(stat -f%z "$icns") bytes"
 
 # ---------------------------------------------------------------------------------------------
 # 5. The bundle
@@ -323,6 +263,7 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin" "$app/Contents/MacOS/$name"
 cp "$icns" "$app/Contents/Resources/$name.icns"
+cp "$car" "$app/Contents/Resources/Assets.car"
 
 # The manual's images. Its page *text* is compiled into the binary (invariant 12),
 # so this is the only docs payload — and an bundle without it still shows every
@@ -364,6 +305,8 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <key>CFBundleName</key>               <string>$name</string>
     <key>CFBundleDisplayName</key>        <string>$name</string>
     <key>CFBundleIconFile</key>           <string>$name</string>
+    <!-- Names the layered icon in Assets.car (macOS 26); CFBundleIconFile is the fallback. -->
+    <key>CFBundleIconName</key>           <string>$icon_name</string>
     <key>CFBundlePackageType</key>        <string>APPL</string>
     <key>CFBundleShortVersionString</key> <string>$version</string>
     <key>CFBundleVersion</key>            <string>$version</string>
