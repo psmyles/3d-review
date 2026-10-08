@@ -1,0 +1,23 @@
+[package]
+name = "review-annotate"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Review comments stored inside an FBX: a lossless FBX property patcher and its reader"
+
+# Pure safe Rust with no ufbx, GPU or window dependency, so the comments in a file
+# can be read headlessly — by the viewer, by the `review-comments` CLI and by any
+# other Rust tool — through exactly the same code.
+[dependencies]
+thiserror.workspace = true
+
+[dev-dependencies]
+# The round-trip tests re-read every patched file through the viewer's own
+# importer: a patch that leaves the bytes parseable by us but not by ufbx would
+# otherwise pass.
+review-import = { path = "../import" }
+review-model = { path = "../model" }
+
+[lints]
+workspace = true
