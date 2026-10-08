@@ -20,6 +20,11 @@ fills them:
 If the model has more than one UV layout, a picker in the toolbar switches
 between them.
 
+The [Outliner](outliner-inspector.md) decides which parts are laid out. With
+nothing selected you see every part, and with parts selected you see only
+theirs, so you can check one piece of a model without the others drawn over
+it. A part hidden with its eye icon is left out either way.
+
 ## Reading a layout
 
 The island coloring is the quickest way to spot a piece that was left outside

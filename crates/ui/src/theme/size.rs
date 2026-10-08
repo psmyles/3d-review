@@ -189,6 +189,19 @@ pub const TEXTURE_REMOVE_BTN_W: f32 = 24.0;
 /// Inspector is dragged narrow (the row's elastic control).
 pub const TEXTURE_COMBO_MIN_W: f32 = 60.0;
 
+// ── Textures tab + texture Inspector ──────────────────────────────────
+/// Height of one row in the Outliner's Textures tab — room for its thumbnail.
+pub const TEXTURE_ROW_HEIGHT: f32 = 26.0;
+/// On-screen edge of a Textures-tab row's thumbnail.
+pub const TEXTURE_ROW_THUMB: f32 = 20.0;
+/// Gap between a Textures-tab row's thumbnail and its name.
+pub const TEXTURE_ROW_THUMB_GAP: f32 = 6.0;
+/// Width reserved at a Textures-tab row's right edge for its pixel-size readout.
+pub const TEXTURE_ROW_TRAILING_WIDTH: f32 = 88.0;
+/// Longest on-screen edge of the texture Inspector's preview, which otherwise
+/// fills the panel's width.
+pub const TEXTURE_PREVIEW_MAX: f32 = 256.0;
+
 // ── Texture viewport ──────────────────────────────────────────────────
 /// One segment width of the channel radio group (RGB / R / G / B / A),
 /// top-left of the Tex toolbar. The group width is derived per-frame from the
@@ -198,13 +211,8 @@ pub const TEXTURE_CHANNEL_SEGMENT_WIDTH: f32 = 29.0;
 /// bar: one segment width and the group width (4 segments + gaps + padding).
 pub const TEXTURE_BG_SEGMENT_WIDTH: f32 = 27.0;
 pub const TEXTURE_BG_GROUP_WIDTH: f32 = 118.0;
-/// Width of the texture-picker dropdown on the right of the Tex toolbar.
-pub const TOOLBAR_TEXTURE_DROPDOWN_WIDTH: f32 = 147.0;
-/// Width of the Tex viewport's stats panel (wider than the model-stats panel so
-/// "Dimension  1024 × 1024" fits on one row).
-pub const TEXTURE_STATS_PANEL_WIDTH: f32 = 188.0;
-/// Width of the clickable zoom-percentage readout next to the texture-info
-/// button in the Tex status bar. Sized to hold the widest readout
+/// Width of the clickable zoom-percentage readout at the left of the Tex status
+/// bar. Sized to hold the widest readout
 /// (`6400%` at the max zoom) without reflowing.
 pub const TEXTURE_ZOOM_LABEL_WIDTH: f32 = 40.0;
 /// Screen-point side of one checkerboard-background square.

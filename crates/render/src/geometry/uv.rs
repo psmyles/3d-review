@@ -9,6 +9,7 @@ use crate::scene::SceneVertex;
 
 use super::deform::NO_DEFORM;
 use super::vertex::{push_fill_vertex, push_line};
+use super::wireframe::face_node_map;
 
 /// Color of the model's UV edges drawn over the grid (a readable cyan-blue).
 const UV_EDGE_COLOR: [f32; 4] = [0.29, 0.64, 0.91, 0.9];
@@ -16,11 +17,128 @@ const UV_EDGE_COLOR: [f32; 4] = [0.29, 0.64, 0.91, 0.9];
 /// like the line colors). The wireframe is drawn on top of it.
 const UV_FILL_SOLID_COLOR: [f32; 4] = [0.24, 0.34, 0.46, 1.0];
 
+/// Which nodes' UVs the UV viewport lays out: the Outliner's node selection when
+/// there is one, else every node, and in both cases minus the meshes the Outliner
+/// has hidden — so hiding a part hides it in every workspace, and selecting parts
+/// isolates their layout.
+///
+/// Resolved once per rebuild into a per-node inclusion mask; `None` draws
+/// everything (nothing selected and nothing hidden, or a model whose per-triangle
+/// node info cannot resolve a node at all — the same rule [`super::hidden::HiddenFilter`]
+/// follows, so a malformed model still shows its UVs).
+pub(crate) struct UvNodeScope<'a> {
+    include: Option<Vec<bool>>,
+    /// What a node outside the mask's range resolves to: excluded under a
+    /// selection (it was not selected), included otherwise (it was not hidden).
+    out_of_range: bool,
+    /// Per-triangle owning node, present only when it runs parallel to the
+    /// triangle list (so a lookup can't index out of range).
+    triangle_node: Option<&'a [u32]>,
+}
+
+impl<'a> UvNodeScope<'a> {
+    /// Resolve `selected_nodes` (sorted mesh/group node indices; a node covers its
+    /// whole subtree) and `hidden_nodes` (Outliner-hidden mesh nodes) against
+    /// `model`.
+    pub(crate) fn new(model: &'a ModelData, selected_nodes: &[u32], hidden_nodes: &[u32]) -> Self {
+        let triangle_count = model.indices.len() / 3;
+        let triangle_node = (triangle_count != 0 && model.triangles.node.len() == triangle_count)
+            .then_some(model.triangles.node.as_slice());
+        if (selected_nodes.is_empty() && hidden_nodes.is_empty()) || triangle_node.is_none() {
+            return Self {
+                include: None,
+                out_of_range: true,
+                triangle_node: None,
+            };
+        }
+
+        let node_count = model.nodes.len();
+        let mut include = if selected_nodes.is_empty() {
+            vec![true; node_count]
+        } else {
+            subtree_union(model, selected_nodes)
+        };
+        for &hidden in hidden_nodes {
+            if let Some(slot) = include.get_mut(hidden as usize) {
+                *slot = false;
+            }
+        }
+        Self {
+            include: Some(include),
+            out_of_range: selected_nodes.is_empty(),
+            triangle_node,
+        }
+    }
+
+    /// Whether scene-graph node `node` is laid out.
+    fn includes_node(&self, node: u32) -> bool {
+        match &self.include {
+            None => true,
+            Some(mask) => mask
+                .get(node as usize)
+                .copied()
+                .unwrap_or(self.out_of_range),
+        }
+    }
+
+    /// Whether triangle `index` is laid out.
+    fn includes_triangle(&self, index: usize) -> bool {
+        match self.triangle_node {
+            None => true,
+            Some(nodes) => nodes
+                .get(index)
+                .is_none_or(|&node| self.includes_node(node)),
+        }
+    }
+
+    /// Whether every triangle is laid out, which lets a builder skip the per-face
+    /// node map entirely.
+    fn includes_everything(&self) -> bool {
+        self.include.is_none()
+    }
+}
+
+/// Per-node mask of the union of the subtrees rooted at `roots`, in one
+/// O(nodes × depth) pass however many roots there are (rather than one
+/// [`ModelData::node_subtree_mask`] walk per root). A guard bounds a malformed
+/// parent cycle.
+fn subtree_union(model: &ModelData, roots: &[u32]) -> Vec<bool> {
+    let node_count = model.nodes.len();
+    let mut is_root = vec![false; node_count];
+    for &root in roots {
+        if let Some(slot) = is_root.get_mut(root as usize) {
+            *slot = true;
+        }
+    }
+    (0..node_count)
+        .map(|index| {
+            let mut current = Some(index);
+            let mut guard = 0;
+            while let Some(node) = current {
+                if is_root[node] {
+                    return true;
+                }
+                current = model.nodes.get(node).and_then(|node| node.parent);
+                guard += 1;
+                if guard > node_count || current.is_some_and(|parent| parent >= node_count) {
+                    break;
+                }
+            }
+            false
+        })
+        .collect()
+}
+
 /// The model's UV edges for `channel`, traced over each *original* polygon (like
 /// the model wireframe, [`super::wireframe_edge_indices`], but in UV space):
 /// positions are the per-corner UVs mapped to the UV plane as `(u, v, 0)`. Falls
-/// back to triangle edges when the model arrives without face topology.
-pub(crate) fn uv_wireframe_lines(model: &ModelData, channel: u32) -> Vec<SceneVertex> {
+/// back to triangle edges when the model arrives without face topology. Only the
+/// faces `scope` lays out are traced.
+pub(crate) fn uv_wireframe_lines(
+    model: &ModelData,
+    channel: u32,
+    scope: &UvNodeScope<'_>,
+) -> Vec<SceneVertex> {
     let channel = channel as usize;
     let mut vertices = Vec::with_capacity(model.indices.len() * 2);
 
@@ -30,7 +148,10 @@ pub(crate) fn uv_wireframe_lines(model: &ModelData, channel: u32) -> Vec<SceneVe
     };
 
     if model.faces.is_empty() {
-        for triangle in model.indices.as_chunks::<3>().0 {
+        for (triangle_index, triangle) in model.indices.as_chunks::<3>().0.iter().enumerate() {
+            if !scope.includes_triangle(triangle_index) {
+                continue;
+            }
             let [a, b, c] = [
                 triangle[0] as usize,
                 triangle[1] as usize,
@@ -61,7 +182,20 @@ pub(crate) fn uv_wireframe_lines(model: &ModelData, channel: u32) -> Vec<SceneVe
         return vertices;
     }
 
-    for face in &model.faces {
+    // Faces are filtered through their owning node. A model whose faces can't be
+    // mapped to nodes can't resolve the scope, so it traces every face — the same
+    // fallback the 3D wireframe takes for a hidden mesh.
+    let face_node = (!scope.includes_everything())
+        .then(|| face_node_map(model))
+        .flatten();
+    for (face_index, face) in model.faces.iter().enumerate() {
+        if let Some(map) = face_node.as_ref()
+            && map
+                .get(face_index)
+                .is_some_and(|&node| node != u32::MAX && !scope.includes_node(node))
+        {
+            continue;
+        }
         let count = face.index_count as usize;
         if count < 2 {
             continue;
@@ -90,11 +224,14 @@ pub(crate) fn uv_wireframe_lines(model: &ModelData, channel: u32) -> Vec<SceneVe
 /// to the UV plane as `(u, v, 0)`, with a zero normal so the scene shader returns
 /// the baked vertex color flat (no lighting). When `per_island` is false every
 /// triangle gets [`UV_FILL_SOLID_COLOR`]; when true each connected UV island is
-/// tinted a unique color (see [`uv_island_colors`]).
+/// tinted a unique color (see [`uv_island_colors`]). Only the triangles `scope`
+/// lays out are filled; island colors are assigned over the *whole* model, so a
+/// part keeps its color as the selection changes around it.
 pub(crate) fn uv_fill_triangles(
     model: &ModelData,
     channel: u32,
     per_island: bool,
+    scope: &UvNodeScope<'_>,
 ) -> Vec<SceneVertex> {
     let channel = channel as usize;
     if model.indices.is_empty() || model.vertices.is_empty() {
@@ -110,6 +247,9 @@ pub(crate) fn uv_fill_triangles(
 
     let mut vertices = Vec::with_capacity(model.indices.len());
     for (triangle_index, triangle) in model.indices.as_chunks::<3>().0.iter().enumerate() {
+        if !scope.includes_triangle(triangle_index) {
+            continue;
+        }
         let [a, b, c] = [
             triangle[0] as usize,
             triangle[1] as usize,
@@ -302,7 +442,7 @@ fn uf_union(parent: &mut [u32], a: u32, b: u32) {
 #[cfg(test)]
 mod tests {
     use glam::{Vec2, Vec4};
-    use review_model::{TopologyFace, Vertex};
+    use review_model::{SceneNode, TopologyFace, TriangleData, Vertex};
 
     use super::*;
 
@@ -391,5 +531,85 @@ mod tests {
         let mut model = two_faces([Vec2::ZERO; 3], [Vec2::ZERO; 3]);
         model.faces.clear();
         assert!(uv_island_colors(&model, 0).is_empty());
+    }
+    /// [`two_faces`] with each face owned by its own node — node 1 a child of
+    /// node 0 — the way import tags a two-part hierarchy.
+    fn two_parts() -> ModelData {
+        let mut model = two_faces(
+            [Vec2::ZERO, Vec2::X, Vec2::Y],
+            [Vec2::X, Vec2::ONE, Vec2::Y],
+        );
+        model.nodes = vec![
+            SceneNode::default(),
+            SceneNode {
+                parent: Some(0),
+                ..SceneNode::default()
+            },
+        ];
+        model.triangles = TriangleData {
+            to_face: vec![0, 1],
+            material: vec![0, 0],
+            node: vec![0, 1],
+        };
+        model
+    }
+
+    /// How many faces' edges a UV wireframe traced (three edges, two vertices
+    /// each, per triangle face).
+    fn traced_faces(model: &ModelData, selected: &[u32], hidden: &[u32]) -> usize {
+        let scope = UvNodeScope::new(model, selected, hidden);
+        uv_wireframe_lines(model, 0, &scope).len() / 6
+    }
+
+    /// How many triangles a UV fill laid out.
+    fn filled_triangles(model: &ModelData, selected: &[u32], hidden: &[u32]) -> usize {
+        let scope = UvNodeScope::new(model, selected, hidden);
+        uv_fill_triangles(model, 0, false, &scope).len() / 3
+    }
+
+    #[test]
+    fn nothing_selected_or_hidden_lays_out_every_face() {
+        let model = two_parts();
+        assert_eq!(traced_faces(&model, &[], &[]), 2);
+        assert_eq!(filled_triangles(&model, &[], &[]), 2);
+    }
+
+    #[test]
+    fn a_selection_lays_out_only_its_subtree() {
+        let model = two_parts();
+        // The child alone is its own face.
+        assert_eq!(traced_faces(&model, &[1], &[]), 1);
+        assert_eq!(filled_triangles(&model, &[1], &[]), 1);
+        // The parent covers its child too.
+        assert_eq!(traced_faces(&model, &[0], &[]), 2);
+        assert_eq!(filled_triangles(&model, &[0], &[]), 2);
+    }
+
+    #[test]
+    fn a_hidden_mesh_is_never_laid_out_even_when_selected() {
+        let model = two_parts();
+        assert_eq!(traced_faces(&model, &[], &[0]), 1);
+        assert_eq!(filled_triangles(&model, &[], &[0]), 1);
+        assert_eq!(traced_faces(&model, &[1], &[1]), 0);
+        assert_eq!(filled_triangles(&model, &[1], &[1]), 0);
+    }
+
+    /// A model whose triangles carry no node info can't resolve the scope, so
+    /// it draws everything rather than nothing — the hidden-mesh filter's rule.
+    #[test]
+    fn a_model_without_node_info_lays_out_everything() {
+        let mut model = two_parts();
+        model.triangles.node.clear();
+        assert_eq!(traced_faces(&model, &[1], &[0]), 2);
+        assert_eq!(filled_triangles(&model, &[1], &[0]), 2);
+    }
+
+    /// The triangle fallback (no face topology) honours the scope too.
+    #[test]
+    fn the_triangle_fallback_honours_the_scope() {
+        let mut model = two_parts();
+        model.faces.clear();
+        assert_eq!(traced_faces(&model, &[1], &[]), 1);
+        assert_eq!(traced_faces(&model, &[], &[]), 2);
     }
 }

@@ -25,9 +25,6 @@ ui-status-bar-model-stats = Model Stats
 
 ## Tex viewport
 
-ui-status-bar-texture-info = Texture Info
-    .description = Shows the real facts about the image you are looking at: its file type,
-        size in pixels, color channels, bit depth and size on disk.
 ui-status-bar-background-black = Black background
 ui-status-bar-background-white = White background
 ui-status-bar-background-grey = Grey background

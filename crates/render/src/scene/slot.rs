@@ -40,6 +40,34 @@ pub(super) struct NormalParams {
     pub(super) hidden: Vec<u32>,
 }
 
+/// Baked parameters for the UV viewport's wireframe and fill: which mesh, which
+/// UV set, and which nodes were laid out (the Outliner's node selection and its
+/// hidden set — see [`crate::geometry::UvNodeScope`]).
+#[derive(PartialEq)]
+pub(super) struct UvViewParams {
+    pub(super) model_revision: u64,
+    pub(super) channel: u32,
+    pub(super) selected: Vec<u32>,
+    pub(super) hidden: Vec<u32>,
+}
+
+impl UvViewParams {
+    /// Whether these are the parameters the borrowed frame inputs describe —
+    /// compared without allocating, so a steady UV frame rebuilds nothing.
+    pub(super) fn matches(
+        &self,
+        model_revision: u64,
+        channel: u32,
+        selected: &[u32],
+        hidden: &[u32],
+    ) -> bool {
+        self.model_revision == model_revision
+            && self.channel == channel
+            && self.selected == selected
+            && self.hidden == hidden
+    }
+}
+
 /// Baked parameters for the UV-seam view. The channel is in the key because the
 /// seams themselves change with the UV set, not just their color.
 #[derive(PartialEq)]
@@ -183,14 +211,13 @@ pub(super) struct DerivedViews {
     pub(super) skeleton_fill_buf: Option<VertexBuffer>,
     pub(super) skeleton_line_buf: Option<VertexBuffer>,
     pub(super) skeleton_baked: Option<SkeletonParams>,
-    /// The model's UV edges for the active channel; built per
-    /// `(model_revision, channel)`.
+    /// The model's UV edges for the active channel and the laid-out nodes.
     pub(super) uv_wireframe_buf: Option<VertexBuffer>,
-    pub(super) uv_wireframe_baked: Option<(u64, u32)>,
+    pub(super) uv_wireframe_baked: Option<UvViewParams>,
     /// The UV island fill (Shaded / Islands modes only); `None` in Wire mode.
-    /// Built per `(model_revision, channel, shading_mode)`.
+    /// Built per the same parameters as the wireframe, plus the shading mode.
     pub(super) uv_fill_buf: Option<VertexBuffer>,
-    pub(super) uv_fill_baked: Option<(u64, u32, UvShadingMode)>,
+    pub(super) uv_fill_baked: Option<(UvViewParams, UvShadingMode)>,
 }
 
 /// Which model a [`ModelSlot`] holds. The Opt workspace draws a source mesh and a

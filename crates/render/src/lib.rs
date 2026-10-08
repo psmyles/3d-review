@@ -279,6 +279,13 @@ pub struct UvFrame<'a> {
     pub shading_mode: UvShadingMode,
     pub anti_aliasing: AntiAliasing,
     pub background: ViewportBackground,
+    /// The Outliner's node selection (sorted, deduplicated mesh/group nodes; each
+    /// covers its subtree). Non-empty lays out only those nodes' UVs; empty lays
+    /// out every node.
+    pub selected_nodes: &'a [u32],
+    /// Outliner-hidden mesh nodes (sorted), never laid out — hiding a part hides
+    /// it in every workspace.
+    pub hidden_meshes: &'a [u32],
 }
 
 /// Per-frame inputs for the Opt workspace's comparison render.

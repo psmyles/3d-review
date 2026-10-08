@@ -84,49 +84,51 @@ pub fn draw_overlay(
     toolbar::draw(root, state, &mut output);
     status_bar::draw(root, state, model);
 
-    // The side panels, option panels, axis gizmo and stats overlay are all 3D-scene
-    // chrome; the UV / Texture workspaces keep a clean viewport (just the UV dropdown
-    // in the toolbar), so they draw only in the scene workspaces (3D and Opt).
+    // Re-scoped before the panels rather than after: the Inspector's multi-part
+    // summary states these same sums, and measuring them after it had drawn
+    // would leave it one frame behind the selection it describes. The call is
+    // cached against the selection + hidden set, so the second one below is a
+    // lookup (invariant 6 — nothing O(mesh) per frame).
+    let scoped = state.scoped_stats(model);
+
+    // Outliner (left) + Inspector (right) dockable side panels, in every
+    // workspace — each shows its own tabs (`OutlinerTab::available`). They paint
+    // over the full-window background scene (exactly as the toolbar / status bar
+    // already do); their live widths inset the floating viewport chrome below so
+    // the gizmo / stats never land on top of a panel, and the Tex canvas is laid
+    // out in what they leave. The Inspector emits material-edit intents for `app`
+    // to apply (invariant 2).
+    let side = draw_side_panels(root, state, model);
+    state.chrome_insets = ChromeInsets {
+        left: side.left_inset,
+        right: side.right_inset,
+    };
+    output.material_edit = side.inspector.material_edit;
+    output.texture = side.inspector.texture;
+    output.material_edit_active = side.inspector.material_edit_active;
+    output.opt = side.opt.intent;
+    output.opt_edit_active = side.opt.edit_active;
+
+    // The free viewport: the screen minus the chrome bands (toolbar top, status
+    // bar bottom) and the open side panels (left/right). Floating chrome — the
+    // dimension labels, the option windows, the manual and the log — is kept
+    // inside this rect so it never overlaps the toolbar icons or a side panel.
+    let screen = ctx.content_rect();
+    let viewport = egui::Rect::from_min_max(
+        egui::pos2(
+            screen.left() + side.left_inset,
+            screen.top() + toolbar_height,
+        ),
+        egui::pos2(
+            screen.right() - side.right_inset,
+            screen.bottom() - status_bar_height,
+        ),
+    );
+
+    // The option panels, axis gizmo and stats overlay are all 3D-scene chrome;
+    // the UV / Texture workspaces keep a clean viewport, so they draw only in the
+    // scene workspaces (3D and Opt).
     if state.mode.is_scene() {
-        // Re-scoped before the panels rather than after: the Inspector's
-        // multi-part summary states these same sums, and measuring them after it
-        // had drawn would leave it one frame behind the selection it describes.
-        // The call is cached against the selection + hidden set, so the second
-        // one below is a lookup (invariant 6 — nothing O(mesh) per frame).
-        let scoped = state.scoped_stats(model);
-
-        // Outliner (left) + Inspector (right) dockable side panels. They paint over
-        // the full-window background scene (exactly as the toolbar / status bar
-        // already do); their live widths inset the floating viewport chrome below so
-        // the gizmo / stats never land on top of a panel. The Inspector emits
-        // material-edit intents for `app` to apply (invariant 2).
-        let side = draw_side_panels(root, state, model);
-        state.chrome_insets = ChromeInsets {
-            left: side.left_inset,
-            right: side.right_inset,
-        };
-        output.material_edit = side.inspector.material_edit;
-        output.texture = side.inspector.texture;
-        output.material_edit_active = side.inspector.material_edit_active;
-        output.opt = side.opt.intent;
-        output.opt_edit_active = side.opt.edit_active;
-
-        // The free viewport: the screen minus the chrome bands (toolbar top,
-        // status bar bottom) and the open side panels (left/right). Floating
-        // chrome — the dimension labels and the option windows — is kept inside
-        // this rect so it never overlaps the toolbar icons or a side panel.
-        let screen = ctx.content_rect();
-        let viewport = egui::Rect::from_min_max(
-            egui::pos2(
-                screen.left() + side.left_inset,
-                screen.top() + toolbar_height,
-            ),
-            egui::pos2(
-                screen.right() - side.right_inset,
-                screen.bottom() - status_bar_height,
-            ),
-        );
-
         // `app` reads this back to lay the Opt split out inside the area the user
         // can actually see (the renderer's `SceneViewport`).
         state.scene_viewport = Some(viewport);
@@ -190,26 +192,22 @@ pub fn draw_overlay(
             side.left_inset,
             side.right_inset,
         );
-    } else if state.mode == WorkspaceMode::Texture {
-        // The Tex workspace paints a 2D image viewer (channel-isolated, pan/zoom)
-        // over a chosen background fill, plus its own floating stats panel. The
-        // image itself is drawn by the renderer into the same frame, behind the
-        // chrome; this lays out the canvas + interaction + background fill only.
-        texture_view::draw(root, state);
-    }
+    } else {
+        if state.mode == WorkspaceMode::Texture {
+            // The Tex workspace paints a 2D image viewer (channel-isolated,
+            // pan/zoom) over a chosen background fill, in the central area the
+            // side panels leave. The image itself is drawn by the renderer into
+            // the same frame, behind the chrome; this lays out the canvas +
+            // interaction + background fill only.
+            texture_view::draw(root, state);
+        }
 
-    // The manual and the log can be opened from the menu in any workspace, so
-    // outside the scene ones — which draw them above, inside their own free
-    // viewport — they get the area between the toolbar and the status bar.
-    if !state.mode.is_scene() {
+        // The manual and the log can be opened from the menu in any workspace, so
+        // outside the scene ones — which draw them above — they get the same free
+        // viewport.
         if let Some(page) = crate::help::take_requested(ctx) {
             state.help.open_page(page);
         }
-        let screen = ctx.content_rect();
-        let viewport = egui::Rect::from_min_max(
-            egui::pos2(screen.left(), screen.top() + toolbar_height),
-            egui::pos2(screen.right(), screen.bottom() - status_bar_height),
-        );
         crate::help::draw(ctx, &mut state.help, viewport);
         crate::log_window::draw(ctx, &mut state.log, viewport);
     }
@@ -452,6 +450,11 @@ fn draw_side_panels(
     // Measure the selection's influence once per frame, before either panel reads
     // it (the Inspector shows it; the scan is far too heavy to repeat per repaint).
     state.sync_bone_influence(model);
+    // Keep the current texture in range before the Textures tab and the
+    // Inspector read it: a removed texture may have shrunk the pool.
+    if state.texture_view.selected >= state.texture_pool.len() {
+        state.texture_view.selected = 0;
+    }
 
     let opt_mode = state.mode == WorkspaceMode::Opt;
     let mut opt = OptEmission::default();

@@ -32,6 +32,8 @@ impl SceneGpu {
             shading_mode,
             anti_aliasing,
             background,
+            selected_nodes,
+            hidden_meshes,
         } = uv;
         // The UV viewport shows the source model, so its derived buffers belong in the
         // source slot (see the note in `render`).
@@ -39,7 +41,14 @@ impl SceneGpu {
         self.release_opt_views();
         let size = frame.size();
         self.sync_targets(frame, size, anti_aliasing.effective_sample_count())?;
-        self.sync_uv_view(model, model_revision, channel, shading_mode)?;
+        self.sync_uv_view(
+            model,
+            model_revision,
+            channel,
+            shading_mode,
+            selected_nodes,
+            hidden_meshes,
+        )?;
 
         // The UV camera's orthographic view-projection; the rest of the uniform is
         // unused by the UV path (lines and fills return their own vertex colour).

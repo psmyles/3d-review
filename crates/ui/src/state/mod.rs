@@ -602,10 +602,23 @@ impl UiState {
         nodes
     }
 
-    /// Drop every selection — both sets, the primary and the range anchor.
+    /// The nodes the UV workspace lays out, in the shape [`Self::selected_node_set`]
+    /// gives: the mesh/group selection, or empty — meaning every node — when
+    /// nothing is selected, or only a material or bones are (neither has a UV
+    /// layout of its own to isolate).
+    pub fn uv_scope_nodes(&self) -> Vec<u32> {
+        if !self.selected_bones.is_empty() || !matches!(self.selection, Selection::Node(_)) {
+            return Vec::new();
+        }
+        self.selected_node_set()
+    }
+
+    /// Drop every selection — both sets, the primary and the range anchor — and
+    /// hand the Inspector back from a texture to the (now empty) selection.
     /// `Esc` and a click on empty viewport both land here, so neither can leave
     /// half a selection behind (a cleared primary with the skeleton still lit).
     pub fn clear_selection(&mut self) {
+        self.texture_view.inspected = false;
         self.selection = Selection::None;
         self.selected_nodes.clear();
         self.selected_bones.clear();
@@ -652,18 +665,15 @@ impl UiState {
     }
 
     /// Re-point the animation state at `model` (the one about to be shown):
-    /// drop the clip selection and playback (they index the old model's clips),
-    /// re-derive the capability flag that gates the Animations tab, and snap a
-    /// stale Animations tab back to the scene tree when the new model has no
-    /// clips to list.
+    /// drop the clip selection and playback (they index the old model's clips)
+    /// and re-derive the capability flag that gates the Animations tab. A stale
+    /// Animations tab needs no snapping back here: the Outliner resolves its tab
+    /// against what the model offers every frame ([`OutlinerState::tab`]).
     pub fn reset_animation_state(&mut self, model: &ModelData) {
         self.animation = AnimationUiState {
             has_clips: !model.animations.is_empty(),
             ..AnimationUiState::default()
         };
-        if !self.animation.has_clips && self.outliner.tab == OutlinerTab::Animations {
-            self.outliner.tab = OutlinerTab::Scene;
-        }
     }
 
     /// Select clip `clip` (or none), landing paused on its first frame; the app's

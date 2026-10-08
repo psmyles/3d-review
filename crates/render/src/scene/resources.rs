@@ -17,7 +17,7 @@
 use review_model::ModelData;
 
 use crate::geometry::deform::DeformLayout;
-use crate::geometry::{model_mesh, uv_fill_triangles, uv_wireframe_lines};
+use crate::geometry::{UvNodeScope, model_mesh, uv_fill_triangles, uv_wireframe_lines};
 use crate::material::build_part_key;
 use crate::rhi::{GpuResult, IndexBuffer, VertexBuffer};
 use crate::{MaterialMode, UvShadingMode};
@@ -25,7 +25,7 @@ use crate::{MaterialMode, UvShadingMode};
 use super::deform_gpu::DeformGpu;
 use super::gpu::SceneGpu;
 use super::line_views::optional_vertex_buffer;
-use super::slot::MeshBuffers;
+use super::slot::{MeshBuffers, UvViewParams};
 
 impl SceneGpu {
     /// Free both slots' UV viewport buffers (invariant 3) — this frame is a 3D one,
@@ -47,38 +47,63 @@ impl SceneGpu {
     }
 
     /// Build-on-demand for the UV viewport's derived buffers (invariant 3): the
-    /// wireframe is rebuilt only when the model / channel changes; the island fill
-    /// when the model / channel / shading mode changes, and freed in Wire mode — so
-    /// panning/zooming rebuilds nothing. Leaving the viewport frees both, in
-    /// [`Self::release_uv_views`].
+    /// wireframe is rebuilt only when the model / channel / laid-out nodes change;
+    /// the island fill when those or the shading mode change, and freed in Wire
+    /// mode — so panning/zooming rebuilds nothing. Both compare against the
+    /// borrowed inputs, so a steady frame allocates nothing. Leaving the viewport
+    /// frees both, in [`Self::release_uv_views`].
+    ///
+    /// `selected` is the Outliner's node selection (sorted; empty for none) and
+    /// `hidden` its hidden meshes: the view lays out the selection when there is
+    /// one, else every node, and never a hidden one ([`UvNodeScope`]).
     pub(super) fn sync_uv_view(
         &mut self,
         model: &ModelData,
         model_revision: u64,
         channel: u32,
         shading_mode: UvShadingMode,
+        selected: &[u32],
+        hidden: &[u32],
     ) -> GpuResult<()> {
-        let want_wireframe = Some((model_revision, channel));
-        if self.active.views.uv_wireframe_baked != want_wireframe {
-            self.active.views.uv_wireframe_buf =
-                optional_vertex_buffer(&uv_wireframe_lines(model, channel))?;
-            self.active.views.uv_wireframe_baked = want_wireframe;
+        let views = &mut self.active.views;
+        let wireframe_current = views
+            .uv_wireframe_baked
+            .as_ref()
+            .is_some_and(|params| params.matches(model_revision, channel, selected, hidden));
+        let fill_current = match (shading_mode, &views.uv_fill_baked) {
+            (UvShadingMode::Wire, baked) => baked.is_none(),
+            (mode, Some((params, baked_mode))) => {
+                *baked_mode == mode && params.matches(model_revision, channel, selected, hidden)
+            }
+            (_, None) => false,
+        };
+        if wireframe_current && fill_current {
+            return Ok(());
         }
 
-        let want_fill = match shading_mode {
-            UvShadingMode::Wire => None,
-            UvShadingMode::Shaded | UvShadingMode::Islands => {
-                Some((model_revision, channel, shading_mode))
-            }
+        let scope = UvNodeScope::new(model, selected, hidden);
+        let params = || UvViewParams {
+            model_revision,
+            channel,
+            selected: selected.to_vec(),
+            hidden: hidden.to_vec(),
         };
-        if self.active.views.uv_fill_baked != want_fill {
+        if !wireframe_current {
+            views.uv_wireframe_buf =
+                optional_vertex_buffer(&uv_wireframe_lines(model, channel, &scope))?;
+            views.uv_wireframe_baked = Some(params());
+        }
+        if !fill_current {
             let fill = match shading_mode {
                 UvShadingMode::Wire => Vec::new(),
-                UvShadingMode::Shaded => uv_fill_triangles(model, channel, false),
-                UvShadingMode::Islands => uv_fill_triangles(model, channel, true),
+                UvShadingMode::Shaded => uv_fill_triangles(model, channel, false, &scope),
+                UvShadingMode::Islands => uv_fill_triangles(model, channel, true, &scope),
             };
-            self.active.views.uv_fill_buf = optional_vertex_buffer(&fill)?;
-            self.active.views.uv_fill_baked = want_fill;
+            views.uv_fill_buf = optional_vertex_buffer(&fill)?;
+            views.uv_fill_baked = match shading_mode {
+                UvShadingMode::Wire => None,
+                mode => Some((params(), mode)),
+            };
         }
 
         Ok(())

@@ -46,8 +46,8 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, model: &ModelData) 
         .show(root, |ui| {
             // The UV workspace keeps a clean status bar (its tools are in the
             // toolbar). The 3D workspace shows the model-stats toggle + the
-            // rendering-quality group; the Texture workspace shows the texture-stats
-            // toggle + the background-fill group.
+            // rendering-quality group; the Texture workspace shows the zoom
+            // readout + the background-fill group.
             match state.mode {
                 WorkspaceMode::Uv => return,
                 // Opt draws the same 3D scene through the same shading and
@@ -372,53 +372,21 @@ fn lod_label(level: usize) -> String {
     }
 }
 
-/// The Texture-workspace status bar: the texture-stats toggle inset on the left
-/// (the Tex viewport's analogue of the model-stats info button) and the
+/// The Texture-workspace status bar: the zoom readout inset on the left and the
 /// background-fill radio group (Black / White / Grey / Checker) mirrored to the
 /// right. Laid out with the same edge inset as the 3D bar.
 fn draw_texture_status_bar(ui: &mut egui::Ui, state: &mut UiState, group_height: f32) {
-    let single_icon_group_width = size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH;
     let bg_group_width = size::TEXTURE_BG_GROUP_WIDTH;
     let segment_w = size::TEXTURE_BG_SEGMENT_WIDTH;
 
     let bar_rect = ui.max_rect();
     let edge_inset = (bar_rect.height() - group_height) * 0.5;
 
-    // Texture-stats toggle — single-icon group inset equally on the left.
-    let left_rect = bar_group_rect(
-        bar_rect,
-        false,
-        edge_inset,
-        single_icon_group_width,
-        group_height,
-    );
-    bar_group_scope(ui, left_rect, group_height, |ui| {
-        toolbar_group_shell(ui, single_icon_group_width, |ui| {
-            if icon_toggle_button(
-                ui,
-                &ICON_INFO,
-                state.texture_view.show_stats,
-                Tip::new(keys::ui_status_bar::TEXTURE_INFO)
-                    .describe(keys::ui_status_bar::TEXTURE_INFO_DESCRIPTION)
-                    .page(Page::Tex),
-            )
-            .clicked()
-            {
-                state.texture_view.show_stats = !state.texture_view.show_stats;
-            }
-        });
-    });
-
-    // Zoom-level readout next to the texture-info button: the current zoom as an
-    // integer percentage, clickable to reset to 100%.
+    // Zoom-level readout, inset equally on the left: the current zoom as an
+    // integer percentage, clickable to reset to 100%. (The viewed texture's
+    // measured properties live in the Inspector, beside its name.)
     let zoom_label_width = size::TEXTURE_ZOOM_LABEL_WIDTH;
-    let zoom_rect = egui::Rect::from_min_size(
-        egui::pos2(
-            left_rect.right() + edge_inset,
-            bar_rect.center().y - group_height * 0.5,
-        ),
-        egui::vec2(zoom_label_width, group_height),
-    );
+    let zoom_rect = bar_group_rect(bar_rect, false, edge_inset, zoom_label_width, group_height);
     bar_group_scope(ui, zoom_rect, group_height, |ui| {
         if zoom_reset_label(ui, state.texture_view.zoom).clicked() {
             // Toggle on the readout the user sees: at 100% → fit, at any other

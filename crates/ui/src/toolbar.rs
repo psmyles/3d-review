@@ -17,8 +17,8 @@ use crate::docs::Page;
 use crate::keys;
 use crate::labels;
 use crate::state::{
-    MenuIntent, OptionPanel, TextureChannelView, TexturePoolEntry, UiOutput, UiState,
-    ViewProjectionMode, ViewportTool, WorkspaceMode,
+    MenuIntent, OptionPanel, TextureChannelView, UiOutput, UiState, ViewProjectionMode,
+    ViewportTool, WorkspaceMode,
 };
 use crate::theme::{color, size};
 use crate::widgets::{
@@ -95,7 +95,7 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
             // shading / material / normal tool groups operate on the 3D scene, so
             // they are shown only in the 3D workspace. UV mode swaps in the
             // UV-shading group + UV-set picker; Texture mode swaps in the channel
-            // group + texture picker.
+            // group (its image is picked in the Outliner's Textures tab).
             ui.scope_builder(
                 egui::UiBuilder::new()
                     .max_rect(left_rect)
@@ -162,8 +162,19 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
                             draw_side_panels_group(ui, state, single_icon_group_width);
                             draw_tool_group(ui, state, single_icon_group_width);
                         }
-                        WorkspaceMode::Uv => draw_uv_set_picker(ui, state),
-                        WorkspaceMode::Texture => draw_texture_picker(ui, state),
+                        // The 2D workspaces keep Help and the side panels — the
+                        // Outliner and Inspector are in every workspace — and UV
+                        // adds the set it lays out. Tex picks its image from the
+                        // Outliner's Textures tab.
+                        WorkspaceMode::Uv => {
+                            draw_help_group(ui, state, single_icon_group_width);
+                            draw_side_panels_group(ui, state, single_icon_group_width);
+                            draw_uv_set_picker(ui, state);
+                        }
+                        WorkspaceMode::Texture => {
+                            draw_help_group(ui, state, single_icon_group_width);
+                            draw_side_panels_group(ui, state, single_icon_group_width);
+                        }
                     }
                 },
             );
@@ -703,7 +714,7 @@ fn draw_view_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
     });
 }
 
-/// Side-panel toggle group (3D mode): one button opening the Outliner (left) and
+/// Side-panel toggle group (every workspace): one button opening the Outliner (left) and
 /// the Inspector (right) together. They are two halves of one workflow — the
 /// Outliner picks a row, the Inspector describes it — so they share a toggle, and
 /// it shows highlighted while they're open.
@@ -886,32 +897,6 @@ fn draw_texture_channel_group(ui: &mut egui::Ui, state: &mut UiState) {
             if segment_button(ui, label.as_ref(), selected, segment_w).clicked() {
                 state.texture_view.channel = channel;
             }
-        }
-    });
-}
-
-/// The texture-picker dropdown shown on the right of the toolbar in Texture mode:
-/// lists the scene texture pool by file name and selects which one the Tex
-/// viewport shows. Hidden when the pool is empty.
-fn draw_texture_picker(ui: &mut egui::Ui, state: &mut UiState) {
-    if state.texture_pool.is_empty() {
-        return;
-    }
-    // Keep the selection in range (a removed texture may have shrunk the pool).
-    if state.texture_view.selected >= state.texture_pool.len() {
-        state.texture_view.selected = 0;
-    }
-
-    let width = size::TOOLBAR_TEXTURE_DROPDOWN_WIDTH;
-    let names: Vec<String> = state
-        .texture_pool
-        .iter()
-        .map(TexturePoolEntry::name)
-        .collect();
-    let selected = names[state.texture_view.selected].clone();
-    compact_combo(ui, "texture_picker", width, selected, |ui| {
-        for (index, name) in names.iter().enumerate() {
-            ui.selectable_value(&mut state.texture_view.selected, index, name);
         }
     });
 }

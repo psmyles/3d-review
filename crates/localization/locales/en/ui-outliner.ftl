@@ -5,6 +5,7 @@
 
 ui-outliner-tab-scene = Scene
 ui-outliner-tab-materials = Materials
+ui-outliner-tab-textures = Textures
 ui-outliner-tab-animations = Animations
 
 ## Scene tab chrome
@@ -17,7 +18,7 @@ ui-outliner-view-flat = Showing a flat node list
         attached to which, and where a part gets its position from.
 
 ui-outliner-search-hint = Search
-    .description = Filters both tabs as you type. Matches are shown in a plain list, so
+    .description = Filters the list as you type. Matches are shown in a plain list, so
         one is never hidden inside a folded branch.
 
 # The node-kind filter glyphs; { $kind } is the kind's own name.
@@ -54,3 +55,10 @@ ui-outliner-clip-tooltip = { $frames } frames at { $fps } fps - { $duration } s
         again to put the model back in its resting pose.
 
 ui-outliner-no-materials = No materials.
+ui-outliner-no-textures = No textures loaded. Drop image files on the window to add them.
+
+## Textures
+
+# A texture row's tooltip: its full path.
+ui-outliner-texture-tooltip = { $path }
+    .description = Click to show this image in the Inspector.

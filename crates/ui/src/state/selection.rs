@@ -9,7 +9,7 @@
 
 use review_render::Selection;
 
-use super::{HoverTarget, UiState};
+use super::{HoverTarget, OutlinerTab, UiState, WorkspaceMode};
 use crate::opt_state::StackItem;
 
 /// Which set a click is editing. The two behave identically; they differ only in
@@ -85,17 +85,40 @@ impl UiState {
         };
     }
 
-    /// Hand the Inspector over to the scene: whatever the Opt stack pane had
-    /// selected gives it up.
+    /// Hand the Inspector over to the scene: whatever the Opt stack pane or the
+    /// Textures tab had selected gives it up.
     ///
-    /// The Inspector shows one thing, and in the Opt workspace two surfaces can
-    /// fill it — the stack pane's rows and the Outliner's. They are therefore
+    /// The Inspector shows one thing, and several surfaces can fill it — the Opt
+    /// stack pane's rows, the Textures tab's, and the scene's. They are therefore
     /// exclusive in both directions: every scene selection comes through here,
-    /// and [`UiState::select_stack_item`] clears the scene selection the same
-    /// way. Without it a selected operation simply outranked the Outliner and
-    /// kept the panel however much the user clicked around the tree.
+    /// and [`UiState::select_stack_item`] / [`UiState::select_texture`] clear or
+    /// outrank the scene selection the same way. Without it a selected operation
+    /// simply outranked the Outliner and kept the panel however much the user
+    /// clicked around the tree.
     fn release_stack_selection(&mut self) {
         self.opt.selected = None;
+        self.texture_view.inspected = false;
+    }
+
+    /// Make pooled texture `index` the current one and show it in the Inspector.
+    ///
+    /// Unlike a material, a texture is not a scene selection: nothing in the
+    /// viewport highlights it, so the node or material the user had selected
+    /// stays selected (and lit) underneath, and gets the Inspector back the
+    /// moment anything in the scene is clicked.
+    pub(crate) fn select_texture(&mut self, index: usize) {
+        self.texture_view.selected = index;
+        self.texture_view.inspected = true;
+    }
+
+    /// Whether the Inspector is showing the current texture rather than the
+    /// scene selection: always in the Tex workspace, which has nothing else to
+    /// show, and elsewhere only after a Textures-tab click and only in a
+    /// workspace that offers that tab — Opt never does, so a texture picked in 3D
+    /// can't hide the operation settings there.
+    pub(crate) fn texture_inspected(&self) -> bool {
+        self.mode == WorkspaceMode::Texture
+            || (self.texture_view.inspected && OutlinerTab::Textures.offered_in(self.mode))
     }
 
     /// Select a stack row (an operation or the export settings), taking the

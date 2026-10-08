@@ -43,6 +43,24 @@ fn the_right_cluster_fits_its_reserved_width() {
     }
 }
 
+/// The right-hand cluster in the UV workspace: Help, the side-panels toggle (the
+/// Outliner and Inspector are in every workspace) and the UV-set picker. Tex
+/// draws the same two groups without the picker, so it fits whenever this does.
+#[test]
+fn the_uv_right_cluster_fits_its_reserved_width() {
+    let spacing = size::TOOLBAR_GROUP_SPACING;
+    let needed = size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH
+        + spacing
+        + size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH
+        + spacing
+        + size::TOOLBAR_UV_DROPDOWN_WIDTH;
+    assert!(
+        needed <= size::TOOLBAR_RIGHT_WIDTH,
+        "the UV right cluster needs {needed}pt but TOOLBAR_RIGHT_WIDTH reserves only {}pt",
+        size::TOOLBAR_RIGHT_WIDTH,
+    );
+}
+
 /// The left cluster: the menu, show-wireframe, shading, active material, and the
 /// geometry-debug group.
 #[test]

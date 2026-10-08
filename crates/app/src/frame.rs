@@ -329,6 +329,13 @@ impl App {
         };
         let workspace = self.ui.mode;
         let uv_channel = self.ui.uv_view_channel;
+        // What the UV workspace lays out: the Outliner's mesh/group selection, or
+        // every visible node when there is none. Built only for that workspace.
+        let uv_nodes = if workspace == WorkspaceMode::Uv {
+            self.ui.uv_scope_nodes()
+        } else {
+            Vec::new()
+        };
         let uv_shading = self.ui.uv_shading_mode;
         // The Tex viewport's draw inputs (background + placed image), resolved from
         // the live UI state only in Texture mode. Built before the renderer borrow
@@ -418,6 +425,8 @@ impl App {
                         shading_mode: uv_shading,
                         anti_aliasing,
                         background,
+                        selected_nodes: &uv_nodes,
+                        hidden_meshes: &hidden_meshes,
                     },
                 ),
                 WorkspaceMode::Texture => {

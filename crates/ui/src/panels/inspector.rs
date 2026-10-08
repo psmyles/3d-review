@@ -3,7 +3,9 @@
 //! metallic / emissive), **Texture mapping** (one texture + channel dropdown per
 //! PBR property, drawing from the scene texture pool), and **Texture files** (the
 //! pooled images with thumbnails + remove) — each under a collapsible header. For
-//! a selected node it shows read-only stats instead.
+//! a selected node it shows read-only stats instead, and for a texture picked in
+//! the Outliner's Textures tab (always, in the Tex workspace) that image's
+//! measured properties and the materials that read it.
 //!
 //! Textures live in a **scene-wide pool** (`app`-owned, decoded once, shared by
 //! `Arc`): the Inspector lists the pool and lets each property *reference* a
@@ -13,18 +15,19 @@
 //! intents and the live [`MaterialEdit`]s for the overlay to forward.
 
 use std::path::Path;
-use std::sync::Arc;
 
 use review_model::ModelData;
 use review_render::{
-    AlphaMode, ChannelSelect, DecodedImage, MaterialChange, MaterialEdit, MaterialState,
-    RoughnessWorkflow, Selection, TextureSlot,
+    AlphaMode, ChannelSelect, MaterialChange, MaterialEdit, MaterialState, RoughnessWorkflow,
+    Selection, TextureSlot,
 };
 
 use crate::docs::Page;
 use crate::keys;
 use crate::labels;
-use crate::state::{TextureAssign, TextureIntent, TexturePoolEntry, TextureSlotRef, UiState};
+use crate::state::{
+    TextureAssign, TextureIntent, TexturePoolEntry, TextureSlotRef, UiState, WorkspaceMode,
+};
 use crate::theme::size;
 use crate::widgets::{
     Tip, labeled_color_button, labeled_combo, labeled_slider_with_value, panel_grid, tip,
@@ -44,6 +47,11 @@ pub(crate) struct InspectorOutput {
 }
 
 pub(crate) fn body(ui: &mut egui::Ui, state: &UiState, model: &ModelData) -> InspectorOutput {
+    if state.texture_inspected() {
+        return egui::ScrollArea::vertical()
+            .show(ui, |ui| texture_inspector(ui, state))
+            .inner;
+    }
     match state.selection {
         Selection::None => {
             ui.weak(keys::ui_inspector::EMPTY);
@@ -407,11 +415,7 @@ fn texture_files_section(ui: &mut egui::Ui, pool: &[TexturePoolEntry], out: &mut
         }
     }
 
-    ui.add_space(ui.spacing().item_spacing.y);
-    if ui.button(keys::ui_inspector::ADD_TEXTURES).clicked() {
-        out.texture = Some(TextureIntent::Import);
-    }
-    ui.weak(keys::ui_inspector::DROP_TEXTURES);
+    add_textures_controls(ui, out);
 }
 
 /// One Texture files row: thumbnail (left), name (fills, truncating), remove
@@ -420,7 +424,7 @@ fn texture_file_row(ui: &mut egui::Ui, entry: &TexturePoolEntry, out: &mut Inspe
     ui.horizontal(|ui| {
         let side = size::TEXTURE_THUMB_SIZE;
         let thumb_size = egui::vec2(side, side);
-        match texture_thumbnail(ui, entry) {
+        match crate::widgets::texture_thumbnail(ui, entry, side) {
             Some(texture) => {
                 ui.add(egui::Image::from_texture(texture).fit_to_exact_size(thumb_size));
             }
@@ -460,55 +464,93 @@ fn pool_name(path: &Path) -> String {
         .unwrap_or_else(|| review_localization::tr(keys::ui_inspector::NO_TEXTURE).into_owned())
 }
 
-/// Lazily build + cache a small egui texture thumbnail for a pooled image. Cached
-/// in egui temp data keyed by path, with the source `Arc`'s identity stored so a
-/// disk reload (a fresh `Arc` at the same path) rebuilds the thumbnail. Mirrors
-/// [`crate::assets::load_icon_texture`]'s caching, downscaled on the CPU first so
-/// a 4K source doesn't upload at full size.
-fn texture_thumbnail(
-    ui: &mut egui::Ui,
-    entry: &TexturePoolEntry,
-) -> Option<egui::load::SizedTexture> {
-    let id = egui::Id::new(("texture_thumb", entry.path.as_path()));
-    let identity = Arc::as_ptr(&entry.image) as usize;
-    if let Some((cached, handle)) =
-        ui.data(|data| data.get_temp::<(usize, egui::TextureHandle)>(id))
-        && cached == identity
-    {
-        return Some(egui::load::SizedTexture::from_handle(&handle));
+/// The current texture: a preview (outside Tex, whose viewport already is one),
+/// its measured properties, the materials that read it, and the pool's remove /
+/// add commands. With nothing in the pool it offers only the add.
+fn texture_inspector(ui: &mut egui::Ui, state: &UiState) -> InspectorOutput {
+    let mut out = InspectorOutput::default();
+    let Some(entry) = state.texture_pool.get(state.texture_view.selected) else {
+        ui.weak(if state.texture_pool.is_empty() {
+            keys::ui_inspector::NO_TEXTURES
+        } else {
+            keys::ui_inspector::NO_TEXTURE_SELECTED
+        });
+        add_textures_controls(ui, &mut out);
+        return out;
+    };
+
+    ui.heading(entry.name());
+
+    if state.mode != WorkspaceMode::Texture {
+        let edge = ui.available_width().min(size::TEXTURE_PREVIEW_MAX);
+        if let Some(texture) = crate::widgets::texture_thumbnail(ui, entry, edge) {
+            // Fit the longest edge to the preview size, keeping the aspect.
+            let scale = edge / texture.size.x.max(texture.size.y).max(1.0);
+            ui.add(egui::Image::from_texture(texture).fit_to_exact_size(texture.size * scale));
+        }
     }
 
-    let color_image = thumbnail_color_image(&entry.image)?;
-    let handle = ui.ctx().load_texture(
-        format!("thumb:{}", entry.path.display()),
-        color_image,
-        egui::TextureOptions::LINEAR,
+    panel_grid(ui, "inspector_texture", |ui| {
+        for (row, value) in crate::stats::texture_stat_rows(entry) {
+            crate::widgets::value_row(ui, row, value);
+        }
+        crate::widgets::value_row(
+            ui,
+            Tip::new(keys::ui_inspector::TEXTURE_PATH)
+                .describe(keys::ui_inspector::TEXTURE_PATH_DESCRIPTION)
+                .page(Page::Tex),
+            egui::RichText::new(entry.path.display().to_string()),
+        );
+    });
+
+    // Every material with this image bound to one of its slots, by name.
+    let users: Vec<&str> = state
+        .materials_snapshot
+        .iter()
+        .filter(|material| {
+            material
+                .state
+                .textures
+                .iter()
+                .flatten()
+                .any(|binding| binding.path == entry.path)
+        })
+        .map(|material| material.name.as_str())
+        .collect();
+    let used_by = egui::CollapsingHeader::new(keys::ui_inspector::TEXTURE_USED_BY)
+        .id_salt("inspector_texture_used_by")
+        .default_open(true)
+        .show(ui, |ui| {
+            if users.is_empty() {
+                ui.weak(keys::ui_inspector::TEXTURE_UNUSED);
+            }
+            for name in &users {
+                ui.label(*name);
+            }
+        });
+    tip(
+        used_by.header_response,
+        Tip::new(keys::ui_inspector::TEXTURE_USED_BY)
+            .describe(keys::ui_inspector::TEXTURE_USED_BY_DESCRIPTION)
+            .page(Page::Materials),
     );
-    let sized = egui::load::SizedTexture::from_handle(&handle);
-    ui.data_mut(|data| data.insert_temp(id, (identity, handle)));
-    Some(sized)
+
+    ui.add_space(ui.spacing().item_spacing.y);
+    if ui.button(keys::ui_inspector::REMOVE_TEXTURE).clicked() {
+        out.texture = Some(TextureIntent::Remove(entry.path.clone()));
+    }
+    add_textures_controls(ui, &mut out);
+    out
 }
 
-/// Downscale a decoded RGBA8 image to a small `egui::ColorImage` thumbnail,
-/// preserving aspect ratio (longest edge ≈ twice the on-screen size for crispness
-/// on HiDPI). Returns `None` if the buffer is too small to be that image.
-fn thumbnail_color_image(image: &DecodedImage) -> Option<egui::ColorImage> {
-    let width = image.width.max(1);
-    let height = image.height.max(1);
-    if image.rgba.len() < (width as usize * height as usize * 4) {
-        return None;
+/// The pool's "Add textures..." button and its drop hint, shared by the material
+/// Inspector's Texture files section and the texture Inspector.
+fn add_textures_controls(ui: &mut egui::Ui, out: &mut InspectorOutput) {
+    ui.add_space(ui.spacing().item_spacing.y);
+    if ui.button(keys::ui_inspector::ADD_TEXTURES).clicked() {
+        out.texture = Some(TextureIntent::Import);
     }
-    let source = image::RgbaImage::from_raw(width, height, image.rgba.clone())?;
-    let max_edge = (size::TEXTURE_THUMB_SIZE * 2.0) as u32;
-    let scale = (max_edge as f32 / width.max(height) as f32).min(1.0);
-    let target_w = ((width as f32 * scale).round() as u32).max(1);
-    let target_h = ((height as f32 * scale).round() as u32).max(1);
-    let thumb = image::imageops::thumbnail(&source, target_w, target_h);
-    let dimensions = [thumb.width() as usize, thumb.height() as usize];
-    Some(egui::ColorImage::from_rgba_unmultiplied(
-        dimensions,
-        thumb.as_raw(),
-    ))
+    ui.weak(keys::ui_inspector::DROP_TEXTURES);
 }
 
 /// Read-only stats for a selected node: name, type, child count, triangle count,

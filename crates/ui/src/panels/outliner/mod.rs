@@ -1,9 +1,12 @@
-//! The Outliner: a two-tab list (the scene's nodes + the deduplicated materials)
-//! that drives the [`Selection`] used by the viewport highlight and the Inspector.
+//! The Outliner: a tabbed list — the scene's nodes, the deduplicated materials,
+//! the texture pool and the animation clips, each workspace showing its own
+//! subset ([`OutlinerTab::available`]) — that drives the [`Selection`] used by the
+//! viewport highlight and the Inspector.
 //!
-//! Both tabs sit under one always-present header — the flat/tree view toggle, the
-//! node-kind filter glyphs, and a search box — so the controls never move or
-//! vanish as the view changes. The Scene tab has three presentations:
+//! Every tab sits under one always-present header — the flat/tree view toggle and
+//! the node-kind filter glyphs on the Scene tab, and a search box on all of them —
+//! so the controls never move or vanish as the view changes. The Scene tab has
+//! three presentations:
 //!
 //! * **Scene tree** — the full node hierarchy, indented and collapsible, with
 //!   guide lines tying each row back to its parent.
@@ -30,6 +33,7 @@ mod nav;
 mod rows;
 #[cfg(test)]
 mod test_fixture;
+mod textures;
 mod tree;
 
 use review_model::{ModelData, NodeKind, SceneNode};
@@ -39,7 +43,7 @@ use crate::assets::{self, AppIcon};
 use crate::docs::Page;
 use crate::keys;
 use crate::labels;
-use crate::state::{OutlinerTab, OutlinerViewMode, UiState, WorkspaceMode};
+use crate::state::{OutlinerTab, OutlinerViewMode, UiState};
 use crate::theme::{color, size};
 use crate::widgets;
 use crate::widgets::{Tip, tip};
@@ -50,12 +54,8 @@ use animations::animations_tab;
 use materials::materials_tab;
 use nav::{apply_row_click, handle_nav, row_refs};
 use rows::draw_rows;
+use textures::textures_tab;
 use tree::{TreeRow, flat_rows, search_rows, visible_tree_rows};
-
-/// The Outliner's tabs, in strip order. The index into this array is what
-/// [`widgets::tab_bar`] hands back on a click. The Animations tab is appended
-/// only while the model carries clips and the workspace can play them.
-const TABS: [OutlinerTab; 2] = [OutlinerTab::Scene, OutlinerTab::Materials];
 
 /// What one drawn frame of rows produced. Every mutation is deferred to after the
 /// draw: [`apply_row_click`] needs the full visible row order for Shift-range
@@ -75,42 +75,45 @@ struct RowsOutput {
 }
 
 pub(crate) fn body(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData) {
-    // ── Tabs: Scene / Materials [/ Animations], as a full-width underlined
-    // tab strip. The Animations tab exists only while there is something to
-    // list and the workspace can play it: the Opt workspace compares static
-    // geometry in the bind pose, so it never offers clips.
-    let show_animations = state.animation.has_clips && state.mode != WorkspaceMode::Opt;
-    let mut tabs: Vec<OutlinerTab> = TABS.to_vec();
-    if show_animations {
-        tabs.push(OutlinerTab::Animations);
-    }
-    if !tabs.contains(&state.outliner.tab) {
-        state.outliner.tab = OutlinerTab::Scene;
-    }
+    // ── Tabs: the workspace's own subset (Scene / Materials / Textures /
+    // Animations), as a full-width underlined tab strip. Each workspace
+    // remembers its own tab; one it can't currently show (Animations, once a
+    // model without clips is loaded) resolves to its first.
+    let mode = state.mode;
+    let tabs: Vec<OutlinerTab> = OutlinerTab::available(mode, state.animation.has_clips).collect();
+    let tab = state.outliner.tab(mode, state.animation.has_clips);
+    state.outliner.tabs.set(mode, tab);
     let labels: Vec<egui::WidgetText> = tabs
         .iter()
         .map(|tab| match tab {
             OutlinerTab::Scene => keys::ui_outliner::TAB_SCENE.into(),
             OutlinerTab::Materials => keys::ui_outliner::TAB_MATERIALS.into(),
+            OutlinerTab::Textures => keys::ui_outliner::TAB_TEXTURES.into(),
             OutlinerTab::Animations => keys::ui_outliner::TAB_ANIMATIONS.into(),
         })
         .collect();
-    let active = tabs
-        .iter()
-        .position(|tab| *tab == state.outliner.tab)
-        .unwrap_or(0);
+    let active = tabs.iter().position(|t| *t == tab).unwrap_or(0);
+    // Drawn even for a workspace offering a single tab (Tex): the strip is also
+    // the panel's heading, and keeps the list starting at the same height in
+    // every workspace.
     if let Some(index) = widgets::tab_bar(ui, &labels, active) {
-        state.outliner.tab = tabs[index];
+        state.outliner.tabs.set(mode, tabs[index]);
     }
+    let tab = state.outliner.tab(mode, state.animation.has_clips);
     ui.add_space(size::PANEL_ROW_GAP);
 
-    header_controls(ui, state, model);
+    header_controls(ui, state, model, tab);
 
-    match state.outliner.tab {
+    match tab {
         OutlinerTab::Materials => {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| materials_tab(ui, state));
+        }
+        OutlinerTab::Textures => {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| textures_tab(ui, state));
         }
         OutlinerTab::Animations => {
             egui::ScrollArea::vertical()
@@ -123,11 +126,12 @@ pub(crate) fn body(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData) {
 
 /// The header strip, drawn on every tab so the controls never shift underfoot:
 /// the flat/tree view toggle and the node-kind filter row (Scene tab only — they
-/// say nothing about a material), then the search box, which filters both tabs.
+/// say nothing about a material or an image), then the search box, which filters
+/// whichever tab is showing.
 /// Only the kinds the model actually contains get a toggle, so an unrigged mesh
 /// never shows a dead bone filter.
-fn header_controls(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData) {
-    if state.outliner.tab == OutlinerTab::Scene {
+fn header_controls(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData, tab: OutlinerTab) {
+    if tab == OutlinerTab::Scene {
         let tree_mode = state.outliner.view == OutlinerViewMode::SceneTree;
         ui.horizontal(|ui| {
             let view_tip = if tree_mode {

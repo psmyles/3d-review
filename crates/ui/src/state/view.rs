@@ -16,9 +16,10 @@ pub enum WorkspaceMode {
 
 impl WorkspaceMode {
     /// True for the workspaces that draw the 3D scene and therefore share its
-    /// chrome — side panels, option windows, the axis gizmo, the stats overlay,
-    /// and every shading / diagnostic control. Opt is a 3D workspace with extra
-    /// tooling, not a separate kind of viewport.
+    /// chrome — option windows, the axis gizmo, the stats overlay, and every
+    /// shading / diagnostic control. Opt is a 3D workspace with extra tooling,
+    /// not a separate kind of viewport. (The Outliner and Inspector are in every
+    /// workspace; which tabs each shows is `OutlinerTab::available`.)
     pub fn is_scene(self) -> bool {
         matches!(self, WorkspaceMode::ThreeD | WorkspaceMode::Opt)
     }
