@@ -57,6 +57,9 @@ use rows::draw_rows;
 use textures::textures_tab;
 use tree::{TreeRow, flat_rows, search_rows, visible_tree_rows};
 
+/// What the Outliner tab strip's id is made from (see [`widgets::tab_bar`]).
+pub(crate) const TAB_STRIP_ID: &str = "outliner_tabs";
+
 /// What one drawn frame of rows produced. Every mutation is deferred to after the
 /// draw: [`apply_row_click`] needs the full visible row order for Shift-range
 /// selection, and mutating selection state mid-draw would let rows within one
@@ -96,7 +99,7 @@ pub(crate) fn body(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData) {
     // Drawn even for a workspace offering a single tab (Tex): the strip is also
     // the panel's heading, and keeps the list starting at the same height in
     // every workspace.
-    if let Some(index) = widgets::tab_bar(ui, &labels, active) {
+    if let Some(index) = widgets::tab_bar(ui, egui::Id::new(TAB_STRIP_ID), &labels, active) {
         state.outliner.tabs.set(mode, tabs[index]);
     }
     let tab = state.outliner.tab(mode, state.animation.has_clips);

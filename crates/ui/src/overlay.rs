@@ -471,8 +471,20 @@ fn draw_side_panels(
                 // keeps the rest. A nested `Panel` is egui's own primitive for
                 // this, so egui owns the divider drag and the split height across
                 // frames exactly as it owns the side panel's width.
+                //
+                // Both nested panels are already inside the side panel's frame,
+                // whose fill and margin they would otherwise repeat: a default
+                // `CentralPanel` adds 8pt on every side, which pushed the
+                // Outliner's tabs down and in, in this workspace alone. So the
+                // tree's panel draws no frame of its own, and the stack keeps only
+                // its vertical margin — every workspace's Outliner, and both
+                // halves of this one, share the side panel's single inset.
                 if opt_mode {
+                    let mut stack_frame = egui::Frame::side_top_panel(ui.style());
+                    stack_frame.inner_margin.left = 0;
+                    stack_frame.inner_margin.right = 0;
                     let stack = egui::Panel::bottom("opt_stack_pane")
+                        .frame(stack_frame)
                         .resizable(true)
                         .default_size(size::OPT_STACK_DEFAULT_HEIGHT)
                         .size_range(size::OPT_STACK_MIN_HEIGHT..=size::OPT_STACK_MAX_HEIGHT)
@@ -481,6 +493,7 @@ fn draw_side_panels(
                         opt.intent = stack.inner;
                     }
                     egui::CentralPanel::default()
+                        .frame(egui::Frame::NONE)
                         .show(ui, |ui| panels::outliner::body(ui, state, model));
                 } else {
                     panels::outliner::body(ui, state, model);
@@ -673,6 +686,62 @@ mod tests {
             output.textures_delta.clear();
         }
         (width, title_width)
+    }
+
+    /// Where the first Outliner tab lands with `mode` up, after the overlay has
+    /// settled (egui sizes panels from the previous pass).
+    fn first_tab_rect(mode: WorkspaceMode) -> egui::Rect {
+        let ctx = egui::Context::default();
+        crate::theme::init_style(&ctx);
+        let model = review_model::demo_cube_model();
+        let mut state = UiState {
+            mode,
+            ..UiState::default()
+        };
+        let input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1600.0, 900.0),
+            )),
+            ..Default::default()
+        };
+        for _ in 0..3 {
+            let mut output = ctx.run_ui(input(), |ui| {
+                draw_overlay(ui, &mut state, OrbitCamera::default(), &model, None, None);
+            });
+            output.textures_delta.clear();
+        }
+        let id = egui::Id::new(panels::outliner::TAB_STRIP_ID).with(("tab", 0_usize));
+        ctx.read_response(id)
+            .unwrap_or_else(|| panic!("{mode:?}: no Outliner tab was laid out"))
+            .rect
+    }
+
+    /// The Outliner's tab strip sits at the same place in every workspace.
+    ///
+    /// Opt nests the tree in a `CentralPanel` under its operation stack, and a
+    /// default one repeats the side panel's frame — 8pt more on every side, so the
+    /// tabs alone in that workspace sat lower and narrower than everywhere else.
+    #[test]
+    fn the_outliner_tabs_sit_at_one_place_in_every_workspace() {
+        let reference = first_tab_rect(WorkspaceMode::ThreeD);
+        for mode in [
+            WorkspaceMode::Uv,
+            WorkspaceMode::Texture,
+            WorkspaceMode::Opt,
+        ] {
+            let rect = first_tab_rect(mode);
+            assert_eq!(
+                rect.min, reference.min,
+                "{mode:?}: the tab strip starts at {:?}, not where 3D's does ({:?})",
+                rect.min, reference.min
+            );
+            assert_eq!(
+                rect.height(),
+                reference.height(),
+                "{mode:?}: tab height differs"
+            );
+        }
     }
 
     /// A collapsed option window's frame must surround its title bar.

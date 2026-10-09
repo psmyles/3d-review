@@ -181,9 +181,12 @@ pub(crate) fn segment_button(
 /// `UiState` field that already owns it (invariant 2).
 ///
 /// Returns the index of the tab clicked this frame, if any; the caller owns the
-/// selection.
+/// selection. `strip_id` names the strip: each cell's id is
+/// `strip_id.with(("tab", index))` wherever the strip is laid out, so it doesn't
+/// change with the panels nested around it.
 pub(crate) fn tab_bar(
     ui: &mut egui::Ui,
+    strip_id: egui::Id,
     labels: &[egui::WidgetText],
     selected: usize,
 ) -> Option<usize> {
@@ -220,7 +223,7 @@ pub(crate) fn tab_bar(
             egui::pos2(strip.left() + cell_width * index as f32, strip.top()),
             egui::vec2(cell_width, height),
         );
-        let response = ui.interact(cell, ui.id().with(("tab", index)), egui::Sense::click());
+        let response = ui.interact(cell, strip_id.with(("tab", index)), egui::Sense::click());
         let active = index == selected;
 
         if response.hovered() {
