@@ -96,6 +96,16 @@ impl App {
                 self.reset_to_start_state();
             } else if character.eq_ignore_ascii_case("o") {
                 self.open_model_from_dialog();
+            } else if character.eq_ignore_ascii_case("s") {
+                // Primary+S saves the comments back into the file; with Shift,
+                // into a new one.
+                if self.ui.comments.writable() {
+                    if self.modifiers.shift_key() {
+                        self.save_comments_as();
+                    } else {
+                        self.save_comments(crate::comments_save::AfterSave::Nothing);
+                    }
+                }
             } else if character.eq_ignore_ascii_case("z") {
                 // Primary+Z undoes; Primary+Shift+Z redoes (the common alt-redo
                 // chord, and the only redo chord on a Mac).
@@ -199,6 +209,17 @@ impl App {
                 // Nothing is under the pointer as far as View mode is
                 // concerned, and a stale highlight would outlive the tool.
                 if self.ui.tool == review_ui::ViewportTool::View {
+                    self.set_hover(None);
+                }
+            }
+            // Switches the left button between turning the camera and leaving
+            // review comments, in the 3D workspace.
+            "c" => {
+                if self.ui.mode != WorkspaceMode::ThreeD {
+                    return;
+                }
+                self.ui.tool = self.ui.tool.toggled_comment();
+                if self.ui.tool != review_ui::ViewportTool::Select {
                     self.set_hover(None);
                 }
             }

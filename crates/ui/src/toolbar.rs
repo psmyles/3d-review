@@ -7,9 +7,9 @@
 use review_render::{ActiveMaterial, ShadingMode, UvShadingMode};
 
 use crate::assets::{
-    ICON_AXIS_GIZMO, ICON_BACKFACE, ICON_BBOX, ICON_BUFFERS, ICON_GRID, ICON_HELP, ICON_MENU,
-    ICON_NODE_BONE, ICON_NORMALS_FACE, ICON_NORMALS_VERTEX, ICON_OUTLINER, ICON_PIVOT, ICON_SELECT,
-    ICON_SHADING_SHADED, ICON_SHADING_TEXTURE, ICON_SHADING_UNLIT, ICON_SHADING_WIRE,
+    ICON_AXIS_GIZMO, ICON_BACKFACE, ICON_BBOX, ICON_BUFFERS, ICON_COMMENT, ICON_GRID, ICON_HELP,
+    ICON_MENU, ICON_NODE_BONE, ICON_NORMALS_FACE, ICON_NORMALS_VERTEX, ICON_OUTLINER, ICON_PIVOT,
+    ICON_SELECT, ICON_SHADING_SHADED, ICON_SHADING_TEXTURE, ICON_SHADING_UNLIT, ICON_SHADING_WIRE,
     ICON_SHADING_WIRE_ONLY, ICON_SKIN_WEIGHTS, ICON_UV, ICON_UV_ISLANDS, ICON_UV_SEAM,
     ICON_UV_SHADED, ICON_UV_WIRE, ICON_VERTEX_COLORS, ICON_VIEW_ORTHO, ICON_VIEW_PERSPECTIVE,
 };
@@ -160,7 +160,7 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
                             draw_view_group(ui, state, view_group_width);
                             draw_projection_group(ui, state, single_icon_group_width);
                             draw_side_panels_group(ui, state, single_icon_group_width);
-                            draw_tool_group(ui, state, single_icon_group_width);
+                            draw_tool_group(ui, state, size::TOOLBAR_DOUBLE_ICON_GROUP_WIDTH);
                         }
                         // The 2D workspaces keep Help and the side panels — the
                         // Outliner and Inspector are in every workspace — and UV
@@ -244,9 +244,23 @@ fn file_menu(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput) {
     });
     // Nothing to close until a model is loaded; `bounds` is `None` exactly then.
     let close_file = egui::Button::new(keys::ui_toolbar::MENU_CLOSE_FILE)
-        .shortcut_text(keys::ui_toolbar::menu_close_file_shortcut(modifier));
+        .shortcut_text(keys::ui_toolbar::menu_close_file_shortcut(modifier.clone()));
     if ui.add_enabled(state.bounds.is_some(), close_file).clicked() {
         output.menu = Some(MenuIntent::CloseFile);
+    }
+    ui.separator();
+    // The comments are the one part of the file the viewer changes, so they are
+    // what Save writes — back into the FBX, or into a copy of it.
+    let writable = state.comments.writable();
+    let save = egui::Button::new(keys::ui_toolbar::MENU_SAVE)
+        .shortcut_text(keys::ui_toolbar::menu_save_shortcut(modifier.clone()));
+    if ui.add_enabled(writable, save).clicked() {
+        output.menu = Some(MenuIntent::SaveComments);
+    }
+    let save_as = egui::Button::new(keys::ui_toolbar::MENU_SAVE_AS)
+        .shortcut_text(keys::ui_toolbar::menu_save_as_shortcut(modifier.clone()));
+    if ui.add_enabled(writable, save_as).clicked() {
+        output.menu = Some(MenuIntent::SaveCommentsAs);
     }
     ui.separator();
     if ui.button(keys::ui_toolbar::MENU_EXIT).clicked() {
@@ -757,6 +771,24 @@ fn draw_tool_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
         {
             state.tool = state.tool.toggled();
         }
+        // Comments are left in the 3D workspace; Opt lays its two meshes out side
+        // by side and has no one surface to pin to.
+        ui.add_enabled_ui(state.mode == WorkspaceMode::ThreeD, |ui| {
+            if icon_toggle_button(
+                ui,
+                &ICON_COMMENT,
+                state.tool == ViewportTool::Comment,
+                Tip::new(keys::ui_toolbar::COMMENT_TOOL)
+                    .describe(keys::ui_toolbar::comment_tool_description(
+                        review_localization::tr(keys::ui_toolbar::COMMENT_TOOL_KEY).into_owned(),
+                    ))
+                    .page(Page::Comments),
+            )
+            .clicked()
+            {
+                state.tool = state.tool.toggled_comment();
+            }
+        });
     });
 }
 

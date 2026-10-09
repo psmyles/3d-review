@@ -135,6 +135,43 @@ impl UiState {
         self.texture_view.inspected = false;
     }
 
+    /// Post the comment being written and show it in the Inspector.
+    pub(crate) fn post_comment(&mut self) {
+        if let Some(index) = self.comments.post_draft() {
+            self.select_comment(index, false);
+        }
+    }
+
+    /// The clip and frame on screen, as a one-frame range — what a new comment
+    /// offers to be about.
+    pub fn current_frames(
+        &self,
+        model: &review_model::ModelData,
+    ) -> Option<review_annotate::thread::FrameRange> {
+        let clip = model.animations.get(self.animation.selected_clip?)?;
+        let frame = clip.frame_at(self.animation.time, model.frame_rate_or_default()) as u32;
+        Some(review_annotate::thread::FrameRange {
+            clip: clip.name.clone(),
+            start: frame,
+            end: frame,
+        })
+    }
+
+    /// Start a comment from the chrome — about an object picked in the Outliner,
+    /// or about the whole file — opening its composer at `screen`.
+    pub(crate) fn start_comment(
+        &mut self,
+        model: &review_model::ModelData,
+        anchor: crate::state::DraftAnchor,
+        screen: egui::Pos2,
+    ) {
+        let Some(view) = self.comments.view_now else {
+            return;
+        };
+        let frames = self.current_frames(model);
+        self.comments.begin_draft(anchor, frames, view, screen);
+    }
+
     /// Whether the Inspector is showing the selected review comment: after a
     /// click in the Comments tab or on a pin, until the next scene selection, and
     /// only in a workspace that lists comments.

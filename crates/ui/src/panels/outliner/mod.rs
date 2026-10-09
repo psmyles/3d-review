@@ -73,6 +73,8 @@ struct RowsOutput {
     /// The mesh row whose visibility eye was clicked, and the modifiers held —
     /// the primary modifier isolates that mesh instead of toggling it.
     toggled_eye: Option<(usize, egui::Modifiers)>,
+    /// The node whose "Comment on this part" was chosen from its context menu.
+    comment_on: Option<usize>,
     /// Whether a pending [`OutlinerState::scroll_to_selection`] was honored.
     ///
     /// [`OutlinerState::scroll_to_selection`]: crate::state::OutlinerState::scroll_to_selection
@@ -127,7 +129,7 @@ pub(crate) fn body(
                 .auto_shrink([false, false])
                 .show(ui, |ui| textures_tab(ui, state));
         }
-        OutlinerTab::Comments => return comments_tab(ui, state),
+        OutlinerTab::Comments => return comments_tab(ui, state, model),
         OutlinerTab::Animations => {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
@@ -319,6 +321,12 @@ fn apply_rows_output(state: &mut UiState, model: &ModelData, rows: &[TreeRow], o
         && !state.outliner.collapsed.remove(&node)
     {
         state.outliner.collapsed.insert(node);
+    }
+    if let Some(node) = output.comment_on {
+        let center = state
+            .scene_viewport
+            .map_or(egui::Pos2::ZERO, |viewport| viewport.center());
+        state.start_comment(model, crate::state::DraftAnchor::Object { node }, center);
     }
     if let Some((node, modifiers)) = output.clicked {
         // Clicking a row is also how the Outliner claims the arrow keys.

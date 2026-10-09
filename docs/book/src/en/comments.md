@@ -5,6 +5,54 @@ itself**. Whoever opens the file in 3D Review later sees the comments, and so
 can anyone with a tool that reads them, because the file is still an ordinary
 FBX that every other application opens.
 
+## Writing a comment
+
+Pick the **Comment** tool beside Select in the toolbar, or press `C`. Then:
+
+- **Click the model** to pin a comment to that spot. The pin follows the model
+  as it animates and bends; choose **Fixed in the scene** in the comment box to
+  keep it at that point in space instead.
+- **Click empty space** for a comment about the view as a whole.
+
+A box opens beside the pin. Write the comment and press **Post** (or the
+primary modifier with Enter); `Esc` or **Cancel** throws it away. The box
+offers two extras, both on to begin with:
+
+- **The frame** - if an animation is selected, the comment is about the frame
+  on screen. Give it a second frame number to make it about a stretch of the
+  animation.
+- **Save the camera view** - clicking the comment later moves the view back to
+  where it is now.
+
+The first time, the box also asks for your name, which every comment and reply
+is signed with. It is remembered for next time.
+
+There are two more ways to start a comment: right-click a part in the Outliner
+and choose **Comment on this part**, or press **Add a note about the file** in
+the Comments tab.
+
+## Replying, resolving and editing
+
+Select a comment to see it in the Inspector. From there you can **Reply**,
+**Resolve** it once it has been dealt with (or **Reopen** it), **Edit** any
+message, **Move pin** to point it somewhere else, **Save current view** to
+change where it takes you, or **Delete comment** (click twice). All of these
+can be undone.
+
+## Saving
+
+Comments are part of the file, so they are saved into it: **Save Comments**
+in the File menu, or the primary modifier with `S`, writes them back into the
+FBX you opened. **Save Comments As** (with Shift as well) writes a copy of the
+file, with the comments, somewhere else - and later saves go to that copy.
+
+Nothing else in the file changes: the model, its materials and animations, and
+everything 3D Review does not understand are written back exactly as they
+were. The window title shows a `*` while there are comments to save, and
+opening another file, starting over or quitting asks whether to save them
+first. If the file was changed by another application since you opened it,
+saving asks before writing over those changes.
+
 ## Reading comments
 
 Open the **Comments** tab in the Outliner. It is in the 3D, UV and Opt

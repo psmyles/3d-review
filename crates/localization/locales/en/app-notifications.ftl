@@ -142,3 +142,5 @@ app-notifications-comments-unreadable = { $count ->
         [one] Some review comments on one object couldn't be read. They are kept as they are.
        *[other] Some review comments on { $count } objects couldn't be read. They are kept as they are.
     }
+app-notifications-comments-saved = Comments saved to { $file }
+app-notifications-comments-save-failed = Couldn't save the comments to { $file }: { $detail }

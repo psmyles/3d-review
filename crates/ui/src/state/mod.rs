@@ -158,6 +158,10 @@ pub enum MenuIntent {
     OpenRecent(usize),
     /// Empty [`UiState::recent_files`] and write the settings file.
     ClearRecentFiles,
+    /// Write the review comments back into the opened FBX (the save shortcut).
+    SaveComments,
+    /// Write the opened FBX, with its review comments, to a new file.
+    SaveCommentsAs,
     /// Drop the loaded model and return to the start state (the new shortcut).
     CloseFile,
     /// Flip [`UiState::remember_settings`] and write the settings file at once,

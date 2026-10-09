@@ -44,6 +44,13 @@ pub enum MenuCommand {
     ClearRecentFiles,
     /// File → New (⌘N): back to the empty start state.
     New,
+    /// File → Save Comments (⌘S).
+    Save,
+    /// File → Save Comments As… (⌘⇧S).
+    SaveAs,
+    /// App → Quit (⌘Q). Ours rather than AppKit's `terminate:`, so it can ask
+    /// about unsaved comments first, as closing the window does.
+    Quit,
     /// Debug → View Log.
     ViewLog,
     /// Debug → Tracy Profiler.
@@ -67,6 +74,8 @@ pub struct MenuState<'a> {
     pub remember_settings: bool,
     pub tracy_profiler: bool,
     pub recent_files: &'a [PathBuf],
+    /// Whether the loaded file can carry comments — what enables Save.
+    pub can_save: bool,
 }
 
 /// The installed menu bar. Opaque on purpose — `app` keeps it alive and hands it

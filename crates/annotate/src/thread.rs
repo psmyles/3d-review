@@ -5,6 +5,9 @@
 //! not know (`extra`), so a file written by a newer viewer loses nothing when an
 //! older one edits a different thread in it.
 
+use std::hash::{BuildHasher, Hasher};
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -163,5 +166,63 @@ impl Thread {
         self.messages
             .first()
             .map_or("", |message| message.author.as_str())
+    }
+}
+
+/// A fresh thread id: 16 random hex digits, from the standard library's
+/// per-process random hash keys mixed with the clock.
+pub fn new_thread_id() -> String {
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    hasher.write_u128(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos()),
+    );
+    format!("{:016x}", hasher.finish())
+}
+
+/// The current time as a message's `time`: RFC 3339 in UTC, to the second.
+pub fn utc_now() -> String {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    utc_from_unix(seconds)
+}
+
+/// `seconds` since the Unix epoch as RFC 3339 in UTC — the civil-from-days
+/// conversion (Howard Hinnant's), so no date library is needed for one format.
+fn utc_from_unix(seconds: u64) -> String {
+    let days = (seconds / 86_400) as i64;
+    let rem = seconds % 86_400;
+    let (hour, minute, second) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unix_times_format_as_utc() {
+        assert_eq!(utc_from_unix(0), "1970-01-01T00:00:00Z");
+        assert_eq!(utc_from_unix(951_782_400), "2000-02-29T00:00:00Z");
+        assert_eq!(utc_from_unix(1_791_460_800), "2026-10-08T12:00:00Z");
+    }
+
+    #[test]
+    fn thread_ids_are_sixteen_hex_digits_and_differ() {
+        let (a, b) = (new_thread_id(), new_thread_id());
+        assert_eq!(a.len(), 16);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b);
     }
 }

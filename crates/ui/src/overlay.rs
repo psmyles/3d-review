@@ -12,7 +12,10 @@ use crate::state::{
     sync_debug_state,
 };
 use crate::theme::{self, color, size};
-use crate::{comment_pins, dimensions, gizmo, panels, stats, status_bar, texture_view, toolbar};
+use crate::{
+    comment_composer, comment_pins, dimensions, gizmo, panels, stats, status_bar, texture_view,
+    toolbar,
+};
 
 /// The Opt workspace's second view, as the overlay needs to see it. `app` supplies
 /// this whenever that workspace is active; every other workspace passes `None`.
@@ -85,6 +88,20 @@ pub fn draw_overlay(
     toolbar::draw(root, state, &mut output);
     status_bar::draw(root, state, model);
 
+    // The camera as a review comment would save it, for a comment started from
+    // the chrome this frame.
+    state.comments.view_now = Some(review_annotate::thread::SavedView {
+        target: camera.target.to_array(),
+        yaw: camera.yaw,
+        pitch: camera.pitch,
+        distance: camera.distance,
+        fov: camera.fov_y_radians,
+        ortho: matches!(
+            state.projection_mode,
+            crate::state::ViewProjectionMode::Orthographic
+        ),
+    });
+
     // Re-scoped before the panels rather than after: the Inspector's multi-part
     // summary states these same sums, and measuring them after it had drawn
     // would leave it one frame behind the selection it describes. The call is
@@ -143,6 +160,13 @@ pub fn draw_overlay(
         if state.hover.is_some() && !ctx.is_pointer_over_egui() {
             ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
         }
+        // The Comment tool's click places something, so the pointer says where.
+        if state.tool == crate::state::ViewportTool::Comment
+            && state.mode == WorkspaceMode::ThreeD
+            && !ctx.is_pointer_over_egui()
+        {
+            ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
+        }
         draw_split_divider(ctx, state, viewport);
 
         // Bounding-box dimension labels sit on the viewport (under the chrome).
@@ -152,19 +176,20 @@ pub fn draw_overlay(
         let views = dimension_views(state, camera, model, bvh, opt, screen, viewport);
         dimensions::draw_dimension_labels(ctx, state, &views);
 
-        // Review-comment pins, over the scene and under the floating chrome.
+        // Review-comment pins, over the scene and under the floating chrome, and
+        // the composer of a comment being written.
         if state.mode == WorkspaceMode::ThreeD {
-            comment_pins::draw_comment_pins(
-                ctx,
-                state,
-                &comment_pins::PinView {
-                    camera,
-                    image: screen,
-                    clamp: viewport,
-                    model,
-                    bvh,
-                },
-            );
+            let pin_view = comment_pins::PinView {
+                camera,
+                image: screen,
+                clamp: viewport,
+                model,
+                bvh,
+            };
+            comment_pins::draw_comment_pins(ctx, state, &pin_view);
+            comment_composer::draw_composer(ctx, state, Some(&pin_view), viewport);
+        } else {
+            comment_composer::draw_composer(ctx, state, None, viewport);
         }
 
         draw_option_panels(ctx, state, viewport);
@@ -227,6 +252,8 @@ pub fn draw_overlay(
         }
         crate::help::draw(ctx, &mut state.help, viewport);
         crate::log_window::draw(ctx, &mut state.log, viewport);
+        // A note about the file, started from the Comments tab.
+        comment_composer::draw_composer(ctx, state, None, viewport);
     }
 
     // Last, so the modal's backdrop covers every other piece of chrome.

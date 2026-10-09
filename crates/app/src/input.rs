@@ -85,7 +85,11 @@ impl App {
                     crate::shortcuts::primary_held(self.modifiers),
                     self.modifiers.shift_key(),
                 );
-                self.pick_click(position, mode);
+                if self.commenting_enabled() {
+                    self.place_comment(position);
+                } else {
+                    self.pick_click(position, mode);
+                }
             }
             return;
         }
@@ -124,7 +128,8 @@ impl App {
                         self.last_primary_click = Some((Instant::now(), position));
                         // Where a click would land, if this press turns out not
                         // to be the start of a drag.
-                        self.click_press = self.picking_enabled().then_some(position);
+                        self.click_press = (self.picking_enabled() || self.commenting_enabled())
+                            .then_some(position);
                     }
                 }
             }

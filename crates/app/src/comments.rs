@@ -8,27 +8,30 @@
 //! drift apart. A binary file is streamed, so the read costs a small fraction of
 //! the import it follows.
 
-use std::collections::HashMap;
-use std::hash::{BuildHasher, Hasher};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use glam::Vec3;
-use review_annotate::comments::read_file;
+use review_annotate::comments::{file_note_host, read_file};
 use review_annotate::fbx::Format;
 use review_annotate::mapping::{ImportedNode, map_nodes};
-use review_annotate::thread::Anchor;
+use review_annotate::thread::{Anchor, SavedView, Topology};
 use review_model::extras::Synthetic;
-use review_model::{ModelData, SourceExtras, anim};
+use review_model::{ModelData, SourceExtras, anim, closest_point_on_triangle};
 use review_render::OrbitCamera;
-use review_ui::{CommentEntry, CommentPin, ViewProjectionMode, WorkspaceMode};
+use review_ui::{
+    CommentEntry, CommentPin, DraftAnchor, NotWritable, ObjectRef, ViewProjectionMode,
+    ViewportTool, WorkspaceMode,
+};
 
 use crate::App;
+use crate::pick::MeshHit;
 
 /// What a file looked like on disk when its comments were read: what a save
 /// checks before it writes over the file, so an artist's re-export in the
 /// meantime is noticed rather than silently replaced.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Fingerprint {
     len: u64,
     modified: Option<SystemTime>,
@@ -44,13 +47,23 @@ impl Fingerprint {
     }
 }
 
-/// Where the loaded comments came from.
+/// Where the loaded comments came from, and what a save has to carry through
+/// untouched.
 #[derive(Debug, Clone)]
 pub(crate) struct CommentSource {
+    /// The file the comments are saved back into — the opened one, or the file a
+    /// Save As last wrote.
     pub(crate) path: PathBuf,
-    #[expect(dead_code, reason = "checked by the save path before it writes")]
+    /// What `path` looked like when it was read or last saved.
     pub(crate) fingerprint: Fingerprint,
     pub(crate) format: Format,
+    /// Per object, the threads that did not decode, written back as they were.
+    pub(crate) opaque: HashMap<i64, Vec<serde_json::Value>>,
+    /// Objects whose payload came from a newer format version: never rewritten.
+    pub(crate) frozen: HashSet<i64>,
+    /// Objects that carried comments in the file — a save removes the property
+    /// from any of these that no longer has a thread.
+    pub(crate) had_comments: HashSet<i64>,
 }
 
 /// A file's comments, read on the import worker.
@@ -58,6 +71,10 @@ pub(crate) struct CommentSource {
 pub(crate) struct LoadedComments {
     pub(crate) entries: Vec<CommentEntry>,
     pub(crate) source: CommentSource,
+    /// Per scene node, the FBX object it came from.
+    pub(crate) node_objects: Vec<Option<ObjectRef>>,
+    /// The object file-level notes go on, and its node.
+    pub(crate) file_host: Option<(ObjectRef, Option<usize>)>,
     /// Objects whose comments could not all be read (kept as written, and
     /// reported once).
     pub(crate) unreadable: usize,
@@ -69,18 +86,6 @@ pub(crate) struct LoadedComments {
 pub(crate) struct CommentsReady {
     pub(crate) generation: u64,
     pub(crate) result: Result<LoadedComments, String>,
-}
-
-/// A fresh thread id: 16 random hex digits, from the standard library's
-/// per-process random hash keys.
-pub(crate) fn new_thread_id() -> String {
-    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
-    hasher.write_u128(
-        SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_nanos()),
-    );
-    format!("{:016x}", hasher.finish())
 }
 
 /// Read `path`'s comments and attach each to the scene node of `model` it is
@@ -115,13 +120,53 @@ pub(crate) fn read_comments(
         .filter_map(|(node, model)| model.map(|model| (model, node)))
         .collect();
 
+    let node_objects: Vec<Option<ObjectRef>> = mapped
+        .iter()
+        .map(|model| {
+            model.map(|model| ObjectRef {
+                id: scan.models[model].id,
+                name: scan.models[model].name.clone(),
+            })
+        })
+        .collect();
+    let file_host = file_note_host(&scan).map(|model| {
+        (
+            ObjectRef {
+                id: scan.models[model].id,
+                name: scan.models[model].name.clone(),
+            },
+            node_of_model.get(&model).copied(),
+        )
+    });
+    let mut opaque: HashMap<i64, Vec<serde_json::Value>> = HashMap::new();
+    let mut frozen = HashSet::new();
+    let mut had_comments = HashSet::new();
+    for host in &comments.hosts {
+        let id = scan.models[host.model].id;
+        had_comments.insert(id);
+        if host.payload.is_newer() {
+            frozen.insert(id);
+        }
+        if !host.payload.opaque.is_empty() {
+            opaque.insert(id, host.payload.opaque.clone());
+        }
+    }
+    // An object whose property could not be read at all is left as it is.
+    for warning in &comments.warnings {
+        if matches!(warning.error, review_annotate::codec::CodecError::Json(_)) {
+            let id = scan.models[warning.model].id;
+            had_comments.insert(id);
+            frozen.insert(id);
+        }
+    }
+
     let mut entries = Vec::with_capacity(comments.thread_count());
     for host in &comments.hosts {
         let object = &scan.models[host.model];
         for thread in &host.payload.threads {
             let mut thread = thread.clone();
             if thread.id.is_empty() {
-                thread.id = new_thread_id();
+                thread.id = review_annotate::thread::new_thread_id();
             }
             entries.push(CommentEntry {
                 thread,
@@ -144,7 +189,12 @@ pub(crate) fn read_comments(
             path: path.to_path_buf(),
             fingerprint,
             format: scan.format,
+            opaque,
+            frozen,
+            had_comments,
         },
+        node_objects,
+        file_host,
         unreadable: unreadable.len(),
     })
 }
@@ -274,13 +324,17 @@ impl App {
                     loaded.source.format
                 );
                 self.ui.comments.load(loaded.entries);
+                self.ui.comments.node_objects = loaded.node_objects;
+                self.ui.comments.file_host = loaded.file_host;
+                self.ui.comments.not_writable = None;
                 self.comment_source = Some(loaded.source);
             }
             Err(error) => {
                 // A file ufbx opened but the comment reader cannot (an FBX 6 file,
-                // say) simply has no comments to show.
+                // say) has no comments to show, and none can be written to it.
                 log::warn!("review comments could not be read: {error}");
                 self.ui.comments.clear();
+                self.ui.comments.not_writable = Some(NotWritable::Unreadable);
                 self.comment_source = None;
             }
         }
@@ -340,6 +394,132 @@ impl App {
             });
         }
         self.ui.comments.pins = pins;
+    }
+
+    /// Whether a viewport click leaves a review comment.
+    pub(crate) fn commenting_enabled(&self) -> bool {
+        self.ui.tool == ViewportTool::Comment && self.ui.mode == WorkspaceMode::ThreeD
+    }
+
+    /// The camera now, as a comment saves it.
+    fn saved_view(&self) -> Option<SavedView> {
+        let camera = self.renderer.as_ref()?.camera;
+        Some(SavedView {
+            target: camera.target.to_array(),
+            yaw: camera.yaw,
+            pitch: camera.pitch,
+            distance: camera.distance,
+            fov: camera.fov_y_radians,
+            ortho: self.ui.projection_mode == ViewProjectionMode::Orthographic,
+        })
+    }
+
+    /// A Comment-tool click at `position` (physical pixels): on the mesh, start a
+    /// comment pinned to the spot — or, while a pin is being moved, move it there;
+    /// on empty space, start a comment about the view.
+    pub(crate) fn place_comment(&mut self, position: glam::Vec2) {
+        let hit = self.cast_mesh(position);
+        let model = self.scene_model.clone();
+        let placed = hit.map(|hit| (hit, self.surface_anchor(&model, hit)));
+        if let Some(index) = self.ui.comments.repin {
+            if let Some((hit, (anchor, world))) = placed {
+                self.ui
+                    .comments
+                    .repin_thread(index, hit.node, anchor, world);
+            }
+            self.request_redraw();
+            return;
+        }
+        let Some(view) = self.saved_view() else {
+            return;
+        };
+        let frames = self.ui.current_frames(&model);
+        let scale = self.scale_factor();
+        let screen = egui::pos2(position.x / scale, position.y / scale);
+        let anchor = match placed {
+            Some((hit, (anchor, world))) => DraftAnchor::Surface {
+                node: hit.node,
+                anchor,
+                world,
+            },
+            None => DraftAnchor::View,
+        };
+        self.ui.comments.begin_draft(anchor, frames, view, screen);
+        self.request_redraw();
+    }
+
+    /// The surface anchor for a click on the mesh: the polygon of the clicked
+    /// node and triangle of its fan that was hit, the barycentrics of the point on
+    /// that triangle as drawn (posed, if it is), the point in the node's local
+    /// space, and the node's counts. A mesh with no polygon topology gets a scene
+    /// point instead.
+    fn surface_anchor(&mut self, model: &ModelData, hit: MeshHit) -> (Anchor, Vec3) {
+        let world_point = (
+            Anchor::World {
+                pos: hit.world.to_array(),
+            },
+            hit.world,
+        );
+        let Some(node) = model.nodes.get(hit.node) else {
+            return world_point;
+        };
+        let faces = self
+            .pin_geometry
+            .faces_of(model, self.scene_revision, hit.node);
+        let polys = faces.len() as u64;
+        let Some((face, first)) = faces
+            .iter()
+            .enumerate()
+            .find_map(|(face, &(first, count))| {
+                (first as usize..(first + count) as usize)
+                    .contains(&hit.triangle)
+                    .then_some((face, first))
+            })
+        else {
+            return world_point;
+        };
+        let pose = (hit.posed && self.animation.active)
+            .then(|| {
+                self.animation
+                    .context()
+                    .map(|context| (context, &self.animation.deform))
+            })
+            .flatten();
+        let Some(corners) = model.indices.get(hit.triangle * 3..hit.triangle * 3 + 3) else {
+            return world_point;
+        };
+        let corner = |index: u32| match pose {
+            Some((context, deform)) => {
+                anim::deform_corner(model, context, deform, index as usize).0
+            }
+            None => model
+                .vertices
+                .get(index as usize)
+                .map_or(Vec3::ZERO, |vertex| vertex.position),
+        };
+        let (_, bary) = closest_point_on_triangle(
+            hit.world,
+            corner(corners[0]),
+            corner(corners[1]),
+            corner(corners[2]),
+        );
+        (
+            Anchor::Surface {
+                face: face as u32,
+                tri: (hit.triangle - first as usize) as u32,
+                bary: bary.to_array(),
+                local: node
+                    .transform
+                    .inverse()
+                    .transform_point3(hit.world)
+                    .to_array(),
+                topo: Topology {
+                    polys,
+                    verts: node.source_vertex_count as u64,
+                },
+            },
+            hit.world,
+        )
     }
 
     /// Go to thread `index` the way it was written: fly to its saved view (or,
@@ -529,14 +709,5 @@ mod tests {
             .transform
             .transform_point3(Vec3::new(1.0, 2.0, 3.0));
         assert!(point.distance(fallback) < 1e-4);
-    }
-
-    #[test]
-    fn thread_ids_are_sixteen_hex_digits_and_differ() {
-        let a = new_thread_id();
-        let b = new_thread_id();
-        assert_eq!(a.len(), 16);
-        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
-        assert_ne!(a, b);
     }
 }

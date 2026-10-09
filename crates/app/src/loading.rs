@@ -250,6 +250,11 @@ impl App {
     }
 
     pub(crate) fn open_model_from_path(&mut self, path: &Path) {
+        // Unsaved review comments are asked about first; the open is resumed
+        // once the question is answered.
+        if !self.may_drop_comments(crate::comments_save::AfterSave::Open(path.to_path_buf())) {
+            return;
+        }
         // The clock the success notice reports runs from here — what the user
         // waited, not what the parse cost.
         let started = Instant::now();
@@ -544,13 +549,24 @@ impl App {
     /// Name the loaded model in the window title — `Barrel.fbx — 3D Review`
     /// — so the title bar, Alt+Tab and the taskbar button say which file is
     /// open. `None` is the empty start state, which restores the bare product name.
-    fn set_window_title(&self, model: Option<&str>) {
+    fn set_window_title(&mut self, model: Option<&str>) {
+        self.title_file = model.map(str::to_owned);
+        self.title_shows_unsaved = Some(false);
+        self.set_window_title_marked(model, false);
+    }
+
+    /// Title the window after `model`, marked when its comments have unsaved
+    /// changes.
+    pub(crate) fn set_window_title_marked(&self, model: Option<&str>, unsaved: bool) {
         if let Some(window) = self.window.as_ref() {
-            match model {
-                Some(name) => {
+            match (model, unsaved) {
+                (Some(name), false) => {
                     window.set_title(&keys::app_window::title_with_model(name, APP_NAME));
                 }
-                None => window.set_title(APP_NAME),
+                (Some(name), true) => {
+                    window.set_title(&keys::app_window::title_unsaved(name, APP_NAME));
+                }
+                (None, _) => window.set_title(APP_NAME),
             }
         }
     }
@@ -676,6 +692,9 @@ impl App {
     /// camera back to its home framing. Bumping the scene revision drops the
     /// previously-uploaded GPU geometry on the next paint.
     pub(crate) fn reset_to_start_state(&mut self) {
+        if !self.may_drop_comments(crate::comments_save::AfterSave::New) {
+            return;
+        }
         // A load still on the worker describes a model the user has just
         // dismissed; superseding it both drops its result when it lands (its
         // "Loading…" toast ends there, where its refcount is balanced) and stops

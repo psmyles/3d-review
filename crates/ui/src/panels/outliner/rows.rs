@@ -253,6 +253,19 @@ pub(super) fn draw_rows(
         if row.selectable && response.hovered() && !on_eye && !on_arrow {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
+        // A part's own context menu offers to comment on it, where comments can
+        // be written.
+        if row.selectable
+            && state.comments.writable()
+            && state.mode == crate::state::WorkspaceMode::ThreeD
+        {
+            response.context_menu(|ui| {
+                if ui.button(keys::ui_comments::COMMENT_ON_PART).clicked() {
+                    output.comment_on = Some(row.node);
+                    ui.close();
+                }
+            });
+        }
         if state.outliner.scroll_to_selection && state.selection == Selection::Node(row.node) {
             response.scroll_to_me(None);
             output.scrolled = true;

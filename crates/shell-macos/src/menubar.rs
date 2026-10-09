@@ -5,7 +5,8 @@
 //! but Force Quit. This builds the menu bar the viewer's own toolbar menu implies,
 //! with each entry where a Mac puts it rather than where the toolbar does: About and
 //! the Remember Settings preference go in the application menu, the toolbar's Exit
-//! *is* Quit, and Help is AppKit's Help menu (which is what gives it the search
+//! *is* Quit (ours rather than AppKit's, so it can ask about unsaved comments), and
+//! Help is AppKit's Help menu (which is what gives it the search
 //! field). Every item that is *ours* routes back through the caller's callback as a
 //! [`MenuCommand`], into the handler the toolbar's entry already reaches.
 //!
@@ -17,8 +18,8 @@
 //! brought back in line by [`Installed::sync`].
 //!
 //! **Accelerators here intercept keys before winit ever sees them.** That is why only
-//! Open and New carry one, and why each carries exactly the chord `shortcuts.rs`
-//! binds: a menu accelerator that disagreed with the keyboard handler would silently
+//! Open, New, Save and Save As carry one (and Quit, which `shortcuts.rs` leaves
+//! alone), and why each carries exactly the chord `shortcuts.rs` binds: a menu accelerator that disagreed with the keyboard handler would silently
 //! shadow it, and the shortcut would look broken with no way to tell why. The other
 //! file-command chords (⌘Z / ⌘⇧Z / ⌘Y) get no menu item precisely so they keep
 //! reaching winit — there is no Edit menu to put them in that would not also have to
@@ -44,6 +45,9 @@ const ID_ABOUT: &str = "review.about";
 const ID_REMEMBER_SETTINGS: &str = "review.remember-settings";
 const ID_OPEN: &str = "review.open";
 const ID_NEW: &str = "review.new";
+const ID_SAVE: &str = "review.save";
+const ID_SAVE_AS: &str = "review.save-as";
+const ID_QUIT: &str = "review.quit";
 const ID_CLEAR_RECENT: &str = "review.clear-recent";
 const ID_VIEW_LOG: &str = "review.view-log";
 const ID_TRACY_PROFILER: &str = "review.tracy-profiler";
@@ -60,6 +64,8 @@ pub(crate) struct Installed {
     remember_settings: CheckMenuItem,
     tracy_profiler: CheckMenuItem,
     open_recent: Submenu,
+    save: MenuItem,
+    save_as: MenuItem,
     /// The list Open Recent was last built from; `None` until the first sync, so
     /// that one always builds it.
     recent_shown: Option<Vec<PathBuf>>,
@@ -73,6 +79,10 @@ impl Installed {
         // has reached `app`, so only the item knows what it is showing.
         sync_check(&self.remember_settings, state.remember_settings);
         sync_check(&self.tracy_profiler, state.tracy_profiler);
+        if self.save.is_enabled() != state.can_save {
+            self.save.set_enabled(state.can_save);
+            self.save_as.set_enabled(state.can_save);
+        }
         if self.recent_shown.as_deref() != Some(state.recent_files) {
             self.rebuild_open_recent(state.recent_files);
             self.recent_shown = Some(state.recent_files.to_vec());
@@ -129,6 +139,22 @@ pub(crate) fn install(
     );
     // Filled by the first `sync`.
     let open_recent = Submenu::new(review_localization::tr(keys::menu::OPEN_RECENT), false);
+    // Enabled by `sync` once a file that can carry comments is loaded.
+    let save = MenuItem::with_id(
+        ID_SAVE,
+        review_localization::tr(keys::menu::SAVE),
+        false,
+        accelerator(Code::KeyS),
+    );
+    let save_as = MenuItem::with_id(
+        ID_SAVE_AS,
+        review_localization::tr(keys::menu::SAVE_AS),
+        false,
+        Some(Accelerator::new(
+            Some(Modifiers::META | Modifiers::SHIFT),
+            Code::KeyS,
+        )),
+    );
 
     // About opens the viewer's own About box rather than AppKit's standard panel,
     // so there is one About whichever menu it is reached from — and it is the one
@@ -149,7 +175,14 @@ pub(crate) fn install(
             ))),
             &PredefinedMenuItem::show_all(Some(&review_localization::tr(keys::menu::SHOW_ALL))),
             &PredefinedMenuItem::separator(),
-            &PredefinedMenuItem::quit(Some(&keys::menu::quit(product))),
+            // Ours, not AppKit's: `terminate:` would end the process without
+            // asking about unsaved comments.
+            &MenuItem::with_id(
+                ID_QUIT,
+                keys::menu::quit(product),
+                true,
+                accelerator(Code::KeyQ),
+            ),
         ],
     )
     .ok()?;
@@ -171,6 +204,9 @@ pub(crate) fn install(
                 accelerator(Code::KeyO),
             ),
             &open_recent,
+            &PredefinedMenuItem::separator(),
+            &save,
+            &save_as,
         ],
     )
     .ok()?;
@@ -244,6 +280,8 @@ pub(crate) fn install(
         remember_settings,
         tracy_profiler,
         open_recent,
+        save,
+        save_as,
         recent_shown: None,
     })
 }
@@ -259,6 +297,9 @@ fn command_for(id: &MenuId) -> Option<MenuCommand> {
         ID_REMEMBER_SETTINGS => MenuCommand::ToggleRememberSettings,
         ID_OPEN => MenuCommand::Open,
         ID_NEW => MenuCommand::New,
+        ID_SAVE => MenuCommand::Save,
+        ID_SAVE_AS => MenuCommand::SaveAs,
+        ID_QUIT => MenuCommand::Quit,
         ID_CLEAR_RECENT => MenuCommand::ClearRecentFiles,
         ID_VIEW_LOG => MenuCommand::ViewLog,
         ID_TRACY_PROFILER => MenuCommand::ToggleTracyProfiler,

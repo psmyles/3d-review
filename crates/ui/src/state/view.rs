@@ -40,14 +40,26 @@ pub enum ViewportTool {
     View,
     /// Clicking picks what is under the pointer, and hovering previews it.
     Select,
+    /// Clicking leaves a review comment: on the model, pinned to the spot
+    /// clicked; on empty space, about the view.
+    Comment,
 }
 
 impl ViewportTool {
-    /// The other tool — what the toolbar button and `Q` switch to.
+    /// What the Select button and `Q` switch to: Select, or back to View from it.
     pub fn toggled(self) -> Self {
         match self {
-            Self::View => Self::Select,
             Self::Select => Self::View,
+            Self::View | Self::Comment => Self::Select,
+        }
+    }
+
+    /// What the Comment button and `C` switch to: Comment, or back to View from
+    /// it.
+    pub fn toggled_comment(self) -> Self {
+        match self {
+            Self::Comment => Self::View,
+            Self::View | Self::Select => Self::Comment,
         }
     }
 }

@@ -24,6 +24,10 @@ ui-toolbar-menu-open-recent = Open Recent
 ui-toolbar-menu-clear-recent-files = Clear Recent Files
 ui-toolbar-menu-close-file = Close File
 ui-toolbar-menu-close-file-shortcut = { $modifier }+N
+ui-toolbar-menu-save = Save Comments
+ui-toolbar-menu-save-shortcut = { $modifier }+S
+ui-toolbar-menu-save-as = Save Comments As...
+ui-toolbar-menu-save-as-shortcut = { $modifier }+Shift+S
 ui-toolbar-menu-exit = Exit
 
 ui-toolbar-menu-remember-settings = Remember Settings
@@ -126,6 +130,12 @@ ui-toolbar-select-tool = Select
 # message so a keyboard layout that needs a different letter can say so without
 # the sentence having to be rebuilt around it.
 ui-toolbar-select-tool-key = Q
+ui-toolbar-comment-tool = Comment
+    .description = Click the model to leave a review comment pinned to that spot, or click
+        empty space for a comment about the view. Dragging still turns the camera. Press
+        { $key } to switch.
+# The key that toggles the Comment tool, named inside the tooltip above.
+ui-toolbar-comment-tool-key = C
 
 ui-toolbar-side-panels = Outliner & Inspector
     .description = Shows or hides the two side panels: the list of parts on the left and

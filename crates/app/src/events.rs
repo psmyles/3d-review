@@ -56,6 +56,8 @@ pub(crate) enum UserEvent {
     /// The review comments of the model on screen have been read from its file
     /// (posted by the import thread, right after the source properties).
     CommentsReady(Box<crate::comments::CommentsReady>),
+    /// A save of the review comments finished (posted by the save thread).
+    CommentsSaved(Box<crate::comments_save::CommentsSaved>),
     /// A native file dialog closed (posted by the thread that opened it —
     /// `docs/ARCHITECTURE.md`, Platform decisions D9). `None` when the user
     /// cancelled. Boxed because the export variant carries a whole LOD chain's

@@ -103,7 +103,7 @@ pub const TOOLBAR_CENTER_WIDTH: f32 = 120.0;
 /// moment a skinned mesh was opened - `tests/toolbar_layout.rs` is what now says
 /// so. It grows leftward from the right edge, away from the centered mode
 /// segments.
-pub const TOOLBAR_RIGHT_WIDTH: f32 = 325.0;
+pub const TOOLBAR_RIGHT_WIDTH: f32 = 356.0;
 /// Left toolbar cluster: the menu (32) + show-wireframe (32) + shading (4) +
 /// material + geometry-debug (3) groups, with four group spacings between them.
 ///
@@ -118,6 +118,8 @@ pub const TOOLBAR_SHADING_GROUP_WIDTH: f32 = 122.0;
 /// buffers (4 padding + 4×28 icons + 3×2 gaps).
 pub const TOOLBAR_MATERIAL_GROUP_WIDTH: f32 = 122.0;
 pub const TOOLBAR_SINGLE_ICON_GROUP_WIDTH: f32 = 32.0;
+/// A two-tile group (the viewport tools: Select and Comment).
+pub const TOOLBAR_DOUBLE_ICON_GROUP_WIDTH: f32 = 62.0;
 /// Width of a three-icon toolbar group (the geometry-debug face-normals /
 /// vertex-normals / UV-seams group, and the UV-shading wire / shaded / islands
 /// group): 4 padding + 3×28 icons + 2×2 gaps.
@@ -221,6 +223,14 @@ pub const COMMENT_PIN_STROKE: f32 = 1.5;
 pub const COMMENT_PIN_RING_GAP: f32 = 2.5;
 /// Gap between the messages of a thread in the Inspector.
 pub const COMMENT_MESSAGE_GAP: f32 = 8.0;
+/// Width of the comment composer popover.
+pub const COMMENT_COMPOSER_WIDTH: f32 = 280.0;
+/// How far the composer opens from the pin it is writing about.
+pub const COMMENT_COMPOSER_OFFSET: f32 = 16.0;
+/// Rows the composer's text box shows before it scrolls.
+pub const COMMENT_COMPOSER_ROWS: usize = 3;
+/// Rows the Inspector's reply box shows.
+pub const COMMENT_REPLY_ROWS: usize = 2;
 /// Height of an Outliner row's comment-count badge.
 pub const OUTLINER_BADGE_HEIGHT: f32 = 14.0;
 /// Space either side of the count inside the badge.

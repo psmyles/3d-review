@@ -100,6 +100,10 @@ impl App {
             let _z = prof::zone!("Apply UI Output");
             self.apply_ui_output(ui_output);
         }
+        // The pass may have changed the comments (the title's unsaved mark),
+        // signed the first one (the remembered name), or left the Comment tool
+        // with a pin move pending.
+        self.sync_comment_chrome();
         // The pass may have opened or closed the Log window.
         self.watch_log_window();
 

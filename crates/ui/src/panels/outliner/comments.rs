@@ -8,7 +8,7 @@ use review_annotate::thread::{FrameRange, Status};
 use super::matches_search;
 use crate::docs::Page;
 use crate::keys;
-use crate::state::{CommentFilter, CommentIntent, UiState};
+use crate::state::{CommentFilter, CommentIntent, DraftAnchor, UiState};
 use crate::theme::{color, font, size};
 use crate::widgets;
 use crate::widgets::{Tip, tip};
@@ -35,7 +35,11 @@ fn filter_label(filter: CommentFilter) -> review_localization::Key {
     }
 }
 
-pub(super) fn comments_tab(ui: &mut egui::Ui, state: &mut UiState) -> Option<CommentIntent> {
+pub(super) fn comments_tab(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    model: &review_model::ModelData,
+) -> Option<CommentIntent> {
     // ── The filter and the pins toggle: stock widgets, one row.
     ui.horizontal(|ui| {
         for filter in CommentFilter::ALL {
@@ -50,6 +54,13 @@ pub(super) fn comments_tab(ui: &mut egui::Ui, state: &mut UiState) -> Option<Com
                 .page(Page::Comments),
         );
     });
+    if state.comments.writable() && ui.button(keys::ui_comments::NEW_FILE_NOTE).clicked() {
+        let center = state.scene_viewport.map_or_else(
+            || ui.ctx().content_rect().center(),
+            |viewport| viewport.center(),
+        );
+        state.start_comment(model, DraftAnchor::File, center);
+    }
     ui.add_space(size::PANEL_ROW_GAP);
 
     if state.comments.threads.is_empty() {

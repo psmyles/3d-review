@@ -2,6 +2,8 @@
 
 # The title bar with a model open: the file, then the product name.
 app-window-title-with-model = { $file } - { $product }
+# The title while the file's review comments have unsaved changes.
+app-window-title-unsaved = { $file } * - { $product }
 
 app-window-startup-failed-title = { $product }
 # The diagnostic is appended after this, verbatim: it is what a bug report
