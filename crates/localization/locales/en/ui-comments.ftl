@@ -59,7 +59,13 @@ ui-comments-composer-hint = Write a comment...
 ui-comments-composer-name = Your name
     .description = Comments are signed with this name. It is remembered for next time.
 ui-comments-composer-name-hint = Sign your comments as...
+ui-comments-composer-frames = { $clip } frames
+    .description = Make the comment about these frames of the animation. Going to the comment
+        later jumps the animation to its first frame, and its pin is faint while the animation
+        is outside them.
 ui-comments-composer-to-frame = to
+ui-comments-composer-frames-outside = Frames are whole numbers from 0 to { $last }.
+ui-comments-composer-frames-backwards = The first frame can't come after the last.
 ui-comments-composer-save-view = Save the camera view
     .description = Clicking this comment later moves the view back to where it is now.
 ui-comments-composer-follow-surface = Follows the surface
@@ -71,6 +77,13 @@ ui-comments-composer-post = Post
 ui-comments-composer-cancel = Cancel
 ui-comments-not-writable-no-file = Open a model to comment on it.
 ui-comments-not-writable-unreadable = Comments can't be added to this file, because it couldn't be read for them. Only FBX 2011 and newer files can carry comments.
+
+## Preferences > User Name
+
+ui-comments-user-name-title = User Name
+ui-comments-user-name-intro = Your comments and replies are signed with this name.
+ui-comments-user-name-save = Save
+ui-comments-user-name-cancel = Cancel
 
 ## Changing a comment in the Inspector
 

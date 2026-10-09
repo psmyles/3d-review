@@ -104,6 +104,14 @@ pub(super) fn textures_tab(ui: &mut egui::Ui, state: &mut UiState) {
     }
 
     if let Some(index) = clicked {
+        // In UV the click also puts the texture behind the layout, where it stays
+        // whatever is selected afterwards; a second click on it only hands the
+        // Inspector back.
+        if state.mode == WorkspaceMode::Uv
+            && let Some(entry) = state.texture_pool.get(index)
+        {
+            state.uv_texture = Some(entry.path.clone());
+        }
         // In Tex the current texture *is* the view, so there is nothing to
         // toggle back to; elsewhere a second click returns the Inspector to the
         // scene selection.

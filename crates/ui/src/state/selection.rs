@@ -9,7 +9,7 @@
 
 use review_render::Selection;
 
-use super::{HoverTarget, OutlinerTab, UiState, WorkspaceMode};
+use super::{HoverTarget, OutlinerTab, UiState, ViewportTool, WorkspaceMode};
 use crate::opt_state::StackItem;
 
 /// Which set a click is editing. The two behave identically; they differ only in
@@ -98,7 +98,7 @@ impl UiState {
     fn release_stack_selection(&mut self) {
         self.opt.selected = None;
         self.texture_view.inspected = false;
-        self.comments.inspected = false;
+        self.deselect_comment();
     }
 
     /// Make pooled texture `index` the current one and show it in the Inspector.
@@ -135,26 +135,43 @@ impl UiState {
         self.texture_view.inspected = false;
     }
 
-    /// Post the comment being written and show it in the Inspector.
+    /// Let go of the selected review comment: its pin loses its ring, its row
+    /// its highlight, and the Inspector goes back to the scene selection. A pin
+    /// move waiting for its click is abandoned with it.
+    pub fn deselect_comment(&mut self) {
+        self.comments.selected = None;
+        self.comments.inspected = false;
+        self.comments.repin = None;
+    }
+
+    /// Post the comment being written and show it in the Inspector. The Comment
+    /// tool has done its job once the comment is posted, so it hands the click
+    /// back to the camera, as its button would.
     pub(crate) fn post_comment(&mut self) {
         if let Some(index) = self.comments.post_draft() {
             self.select_comment(index, false);
+            if self.tool == ViewportTool::Comment {
+                self.tool = self.tool.toggled_comment();
+            }
         }
     }
 
-    /// The clip and frame on screen, as a one-frame range — what a new comment
-    /// offers to be about.
+    /// The clip and frame on screen, as a one-frame range in fields the composer
+    /// can widen - what a new comment offers to be about.
     pub fn current_frames(
         &self,
         model: &review_model::ModelData,
-    ) -> Option<review_annotate::thread::FrameRange> {
+    ) -> Option<crate::state::FrameFields> {
         let clip = model.animations.get(self.animation.selected_clip?)?;
-        let frame = clip.frame_at(self.animation.time, model.frame_rate_or_default()) as u32;
-        Some(review_annotate::thread::FrameRange {
+        let fps = model.frame_rate_or_default();
+        let frame = clip.frame_at(self.animation.time, fps) as u32;
+        let last = clip.frame_count(fps).saturating_sub(1) as u32;
+        let range = review_annotate::thread::FrameRange {
             clip: clip.name.clone(),
             start: frame,
             end: frame,
-        })
+        };
+        Some(crate::state::FrameFields::new(range, last))
     }
 
     /// Start a comment from the chrome — about an object picked in the Outliner,
@@ -175,7 +192,7 @@ impl UiState {
     /// Whether the Inspector is showing the selected review comment: after a
     /// click in the Comments tab or on a pin, until the next scene selection, and
     /// only in a workspace that lists comments.
-    pub(crate) fn comment_inspected(&self) -> bool {
+    pub fn comment_inspected(&self) -> bool {
         self.comments.inspected
             && self
                 .comments
@@ -463,5 +480,62 @@ mod tests {
         // A material selection covers no nodes.
         state.selection = Selection::Material(2);
         assert!(state.selected_node_set().is_empty());
+    }
+
+    #[test]
+    fn clearing_the_selection_lets_go_of_the_comment() {
+        let mut state = UiState::default();
+        state.comments.selected = Some(0);
+        state.comments.inspected = true;
+        state.comments.repin = Some(0);
+        assert!(state.has_selection(), "Esc has something to clear");
+        state.clear_selection();
+        assert_eq!(state.comments.selected, None);
+        assert!(!state.comments.inspected);
+        assert_eq!(state.comments.repin, None, "the pin move is abandoned");
+    }
+
+    #[test]
+    fn a_click_on_empty_space_lets_go_of_the_comment() {
+        let mut state = UiState::default();
+        state.comments.selected = Some(0);
+        state.comments.inspected = true;
+        apply_pick(&mut state, None, mode(false, false));
+        assert_eq!(state.comments.selected, None);
+    }
+
+    #[test]
+    fn posting_a_comment_puts_the_comment_tool_down() {
+        let mut state = UiState::default();
+        state.comments.not_writable = None;
+        state.comments.author = "Ana".to_owned();
+        state.comments.file_host = Some((
+            crate::state::ObjectRef {
+                id: 1,
+                name: "Root".to_owned(),
+            },
+            None,
+        ));
+        state.tool = ViewportTool::Comment;
+        let view = review_annotate::thread::SavedView {
+            target: [0.0; 3],
+            yaw: 0.0,
+            pitch: 0.0,
+            distance: 1.0,
+            fov: 1.0,
+            ortho: false,
+        };
+        state.comments.begin_draft(
+            crate::state::DraftAnchor::View,
+            None,
+            view,
+            egui::Pos2::ZERO,
+        );
+        if let Some(draft) = state.comments.draft.as_mut() {
+            draft.text = "Too dark".to_owned();
+        }
+        state.post_comment();
+        assert_eq!(state.tool, ViewportTool::View);
+        assert!(state.comment_inspected(), "the new comment is selected");
     }
 }

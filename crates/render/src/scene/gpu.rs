@@ -157,6 +157,11 @@ pub(crate) struct SceneGpu {
     pub(super) grid: VertexBuffer,
     /// The static 0..1 UV reference grid (built once; model-independent).
     pub(super) uv_grid: VertexBuffer,
+    /// The image the UV viewport lays its islands over, uploaded while it is on
+    /// screen and dropped with the other UV views (invariant 3).
+    pub(super) uv_texture: Option<super::uv::UvTextureGpu>,
+    /// The UV viewport's checkerboard background, while it is the one picked.
+    pub(super) uv_checker: Option<super::uv::UvCheckerGpu>,
     /// Everything one view renders through.
     pub(super) targets: TargetSet,
     /// A second set for the Opt split's right-hand view, at the same half-width size
@@ -265,6 +270,8 @@ impl SceneGpu {
             dummies: DeformDummies::new()?,
             grid: VertexBuffer::new(&scene_lines(), c"grid")?,
             uv_grid: VertexBuffer::new(&uv_grid_lines(), c"uv grid")?,
+            uv_texture: None,
+            uv_checker: None,
             targets: TargetSet::new(width, height, sample_count)?,
             split_targets: None,
             sample_count,

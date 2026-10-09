@@ -43,15 +43,24 @@ impl App {
     /// Keyboard events egui has already consumed are filtered out by the caller.
     pub(crate) fn handle_keyboard_shortcut(&mut self, event: &KeyEvent) {
         // Escape clears the whole selection — the primary, both multi-selection
-        // sets and the range anchor — whether it was made in the Outliner or by
-        // clicking the viewport. It's a Named key, so handle it before the
-        // Character extraction below.
+        // sets, the range anchor and the selected review comment — whether it
+        // was made in the Outliner or by clicking the viewport — and, in UV, the
+        // texture behind the layout. While a comment
+        // is being written it is the composer's, which it cancels. It's a Named
+        // key, so handle it before the Character extraction below.
         if event.state == ElementState::Pressed
             && matches!(&event.logical_key, Key::Named(NamedKey::Escape))
         {
-            if self.ui.has_selection() {
-                self.ui.clear_selection();
-                self.redraw.requested = true;
+            if self.ui.comments.draft.is_none() {
+                if self.ui.has_selection() {
+                    self.ui.clear_selection();
+                    self.redraw.requested = true;
+                }
+                // In UV it also takes away the texture drawn behind the layout,
+                // which no selection can.
+                if self.ui.mode == WorkspaceMode::Uv && self.ui.uv_texture.take().is_some() {
+                    self.redraw.requested = true;
+                }
             }
             return;
         }

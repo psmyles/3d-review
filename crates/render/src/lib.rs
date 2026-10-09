@@ -278,7 +278,8 @@ pub struct UvFrame<'a> {
     pub channel: u32,
     pub shading_mode: UvShadingMode,
     pub anti_aliasing: AntiAliasing,
-    pub background: ViewportBackground,
+    /// The fill around the layout: the Tex viewport's four backgrounds.
+    pub background: TexBackground,
     /// The Outliner's node selection (sorted, deduplicated mesh/group nodes; each
     /// covers its subtree). Non-empty lays out only those nodes' UVs; empty lays
     /// out every node.
@@ -286,6 +287,18 @@ pub struct UvFrame<'a> {
     /// Outliner-hidden mesh nodes (sorted), never laid out — hiding a part hides
     /// it in every workspace.
     pub hidden_meshes: &'a [u32],
+    /// The texture picked in the Textures tab, drawn over the 0..1 square behind
+    /// the layout so the islands can be read against the image they map.
+    pub texture: Option<UvTexture<'a>>,
+}
+
+/// An image the UV viewport lays its islands over: the decoded pixels from the
+/// app-owned pool, and the path that keys the upload (with the `Arc` as the
+/// identity check, so a disk reload re-uploads).
+#[derive(Clone, Copy)]
+pub struct UvTexture<'a> {
+    pub path: &'a std::path::Path,
+    pub image: &'a std::sync::Arc<DecodedImage>,
 }
 
 /// Per-frame inputs for the Opt workspace's comparison render.
@@ -426,7 +439,7 @@ impl Renderer {
     /// `uv_camera`.
     ///
     pub fn render_uv_scene(&mut self, frame: &mut Frame<'_>, uv: &UvFrame<'_>) -> GpuResult<()> {
-        frame.set_clear(uv.background.gradient_srgb().0);
+        frame.set_clear(uv.background.clear_color());
         let uv_camera = self.uv_camera;
         self.ensure_scene(frame, uv.anti_aliasing.effective_sample_count())?;
         let Some(scene_gpu) = self.scene.as_mut() else {

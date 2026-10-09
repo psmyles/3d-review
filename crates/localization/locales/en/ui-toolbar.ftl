@@ -35,6 +35,9 @@ ui-toolbar-menu-remember-settings = Remember Settings
         such as colors, sizes, the environment and the ambient occlusion settings, are kept
         and come back the next time you start the viewer.
 
+ui-toolbar-menu-user-name = User Name...
+    .description = Change the name your review comments and replies are signed with.
+
 ui-toolbar-menu-view-log = View Log
     .description = Opens a window listing what the viewer has reported since it started:
         files opened, how long they took, warnings and errors. The same lines are saved to

@@ -231,6 +231,15 @@ pub const COMMENT_COMPOSER_OFFSET: f32 = 16.0;
 pub const COMMENT_COMPOSER_ROWS: usize = 3;
 /// Rows the Inspector's reply box shows.
 pub const COMMENT_REPLY_ROWS: usize = 2;
+/// Width of each of the composer's two frame-number fields: room for six digits
+/// of monospace, as many as an imported clip's frame numbers run to
+/// (`review_model::MAX_CLIP_FRAMES`).
+pub const COMMENT_FRAME_FIELD_WIDTH: f32 = 60.0;
+/// Width of the outline round a frame field that doesn't name a frame of the
+/// clip.
+pub const COMMENT_FRAME_FIELD_ERROR_STROKE: f32 = 1.0;
+/// Width of the User Name box opened from Preferences.
+pub const USER_NAME_WIDTH: f32 = 280.0;
 /// Height of an Outliner row's comment-count badge.
 pub const OUTLINER_BADGE_HEIGHT: f32 = 14.0;
 /// Space either side of the count inside the badge.

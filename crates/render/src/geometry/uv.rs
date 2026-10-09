@@ -226,11 +226,13 @@ pub(crate) fn uv_wireframe_lines(
 /// triangle gets [`UV_FILL_SOLID_COLOR`]; when true each connected UV island is
 /// tinted a unique color (see [`uv_island_colors`]). Only the triangles `scope`
 /// lays out are filled; island colors are assigned over the *whole* model, so a
-/// part keeps its color as the selection changes around it.
+/// part keeps its color as the selection changes around it. `opacity` scales every
+/// color's alpha: below 1 the fill lets a texture behind the layout show through.
 pub(crate) fn uv_fill_triangles(
     model: &ModelData,
     channel: u32,
     per_island: bool,
+    opacity: f32,
     scope: &UvNodeScope<'_>,
 ) -> Vec<SceneVertex> {
     let channel = channel as usize;
@@ -272,6 +274,7 @@ pub(crate) fn uv_fill_triangles(
             }
             None => UV_FILL_SOLID_COLOR,
         };
+        let color = [color[0], color[1], color[2], color[3] * opacity];
         push_fill_vertex(&mut vertices, uv_point(a), color, NO_DEFORM);
         push_fill_vertex(&mut vertices, uv_point(b), color, NO_DEFORM);
         push_fill_vertex(&mut vertices, uv_point(c), color, NO_DEFORM);
@@ -564,7 +567,7 @@ mod tests {
     /// How many triangles a UV fill laid out.
     fn filled_triangles(model: &ModelData, selected: &[u32], hidden: &[u32]) -> usize {
         let scope = UvNodeScope::new(model, selected, hidden);
-        uv_fill_triangles(model, 0, false, &scope).len() / 3
+        uv_fill_triangles(model, 0, false, 1.0, &scope).len() / 3
     }
 
     #[test]

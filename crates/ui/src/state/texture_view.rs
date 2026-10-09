@@ -137,16 +137,6 @@ impl TextureBackground {
         TextureBackground::Grey,
         TextureBackground::Checker,
     ];
-
-    /// Single-letter status-bar segment label (Black / White / Grey / Checker).
-    pub fn label(self) -> &'static str {
-        match self {
-            TextureBackground::Black => "B",
-            TextureBackground::White => "W",
-            TextureBackground::Grey => "G",
-            TextureBackground::Checker => "C",
-        }
-    }
 }
 
 /// State backing the Tex viewport and the Textures tab: which pooled texture is

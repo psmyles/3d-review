@@ -110,6 +110,67 @@ impl DraftAnchor {
     }
 }
 
+/// A draft's frame range as typed into the composer: two text fields - text, so
+/// a half-typed number can exist while it is being typed - checked against the
+/// frames of the clip they belong to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameFields {
+    pub clip: String,
+    pub start: String,
+    pub end: String,
+    /// The clip's last frame, the highest either field may name. Frames count
+    /// from 0, as the transport's readout does.
+    pub last: u32,
+}
+
+/// What is wrong with a typed frame range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameError {
+    /// A field is not a whole number from 0 to the clip's last frame; each flag
+    /// says whether that field is one of them.
+    OutsideClip { start: bool, end: bool },
+    /// Both are frames of the clip, but the start comes after the end.
+    Backwards,
+}
+
+impl FrameFields {
+    /// Fields showing `range`, in a clip whose last frame is `last`.
+    pub fn new(range: FrameRange, last: u32) -> Self {
+        Self {
+            start: range.start.to_string(),
+            end: range.end.to_string(),
+            clip: range.clip,
+            last,
+        }
+    }
+
+    /// The frame `text` names, if it is a whole number in the clip. Digits only:
+    /// a sign, a decimal point or a space inside it make it something else.
+    fn frame(&self, text: &str) -> Option<u32> {
+        let text = text.trim();
+        if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        text.parse::<u32>().ok().filter(|&frame| frame <= self.last)
+    }
+
+    /// The range the fields name, or what is wrong with it.
+    pub fn range(&self) -> Result<FrameRange, FrameError> {
+        match (self.frame(&self.start), self.frame(&self.end)) {
+            (Some(start), Some(end)) if start <= end => Ok(FrameRange {
+                clip: self.clip.clone(),
+                start,
+                end,
+            }),
+            (Some(_), Some(_)) => Err(FrameError::Backwards),
+            (start, end) => Err(FrameError::OutsideClip {
+                start: start.is_none(),
+                end: end.is_none(),
+            }),
+        }
+    }
+}
+
 /// A comment being written, before it is posted.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Draft {
@@ -118,8 +179,9 @@ pub struct Draft {
     /// For a surface click: whether the pin follows the surface (through
     /// animation and skinning) or stays at the clicked point in the scene.
     pub follow_surface: bool,
-    /// The clip and frame on screen when the draft was started, if any.
-    pub frames: Option<FrameRange>,
+    /// The clip and frames it is about: the frame on screen when the draft was
+    /// started, if a clip was selected, which the composer can widen.
+    pub frames: Option<FrameFields>,
     pub include_frames: bool,
     /// The camera when the draft was started.
     pub view: SavedView,
@@ -130,6 +192,17 @@ pub struct Draft {
     pub screen: egui::Pos2,
     /// Set once the composer has taken keyboard focus.
     pub focused: bool,
+}
+
+impl Draft {
+    /// The frames the comment is about: none when it is not about any, or what
+    /// is wrong with the typed range.
+    pub fn frames(&self) -> Result<Option<FrameRange>, FrameError> {
+        match &self.frames {
+            Some(fields) if self.include_frames => fields.range().map(Some),
+            _ => Ok(None),
+        }
+    }
 }
 
 /// Why comments can't be written right now, when they can't.
@@ -313,10 +386,14 @@ impl CommentsState {
     pub fn begin_draft(
         &mut self,
         anchor: DraftAnchor,
-        frames: Option<FrameRange>,
+        frames: Option<FrameFields>,
         view: SavedView,
         screen: egui::Pos2,
     ) {
+        // A new comment is a click somewhere other than the selected one's pin,
+        // which lets go of it, as any other click away from it does.
+        self.selected = None;
+        self.inspected = false;
         self.draft = Some(Draft {
             anchor,
             text: String::new(),
@@ -336,6 +413,10 @@ impl CommentsState {
     pub(crate) fn post_draft(&mut self) -> Option<usize> {
         let draft = self.draft.take()?;
         let text = draft.text.trim().to_owned();
+        let Ok(frames) = draft.frames() else {
+            self.draft = Some(draft);
+            return None;
+        };
         if text.is_empty() {
             self.draft = Some(draft);
             return None;
@@ -384,7 +465,7 @@ impl CommentsState {
             status: Status::Open,
             scope,
             anchor: anchor.map(AnchorValue::Known),
-            frames: draft.include_frames.then_some(draft.frames).flatten(),
+            frames,
             view: draft.include_view.then_some(draft.view),
             messages: vec![Message {
                 author: self.author.trim().to_owned(),
@@ -775,5 +856,106 @@ mod writing_tests {
         comments.delete(index);
         assert!(comments.threads.is_empty());
         assert_eq!(comments.selected, None);
+    }
+
+    fn walk(start: &str, end: &str) -> FrameFields {
+        FrameFields {
+            clip: "Walk".to_owned(),
+            start: start.to_owned(),
+            end: end.to_owned(),
+            last: 24,
+        }
+    }
+
+    #[test]
+    fn typed_frames_are_whole_numbers_inside_the_clip() {
+        assert_eq!(
+            walk("3", " 24 ").range(),
+            Ok(FrameRange {
+                clip: "Walk".to_owned(),
+                start: 3,
+                end: 24,
+            })
+        );
+        assert!(walk("0", "0").range().is_ok(), "the first frame is 0");
+        for bad in ["", "25", "-1", "+3", "2.5", "1e1", "x", "3 4"] {
+            assert_eq!(
+                walk(bad, "5").range(),
+                Err(FrameError::OutsideClip {
+                    start: true,
+                    end: false,
+                }),
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            walk("9", "99").range(),
+            Err(FrameError::OutsideClip {
+                start: false,
+                end: true,
+            })
+        );
+        assert_eq!(walk("9", "4").range(), Err(FrameError::Backwards));
+    }
+
+    #[test]
+    fn a_draft_with_a_bad_range_waits_until_it_is_fixed() {
+        let mut comments = writable();
+        comments.begin_draft(
+            DraftAnchor::File,
+            Some(walk("9", "4")),
+            view(),
+            egui::Pos2::ZERO,
+        );
+        if let Some(draft) = comments.draft.as_mut() {
+            draft.text = "Pops here".to_owned();
+        }
+        assert_eq!(comments.post_draft(), None);
+        assert!(comments.draft.is_some(), "the draft stays open");
+
+        if let Some(fields) = comments
+            .draft
+            .as_mut()
+            .and_then(|draft| draft.frames.as_mut())
+        {
+            fields.end = "12".to_owned();
+        }
+        let index = comments.post_draft().expect("posts");
+        let frames = comments.threads[index].thread.frames.as_ref();
+        assert_eq!(
+            frames.map(|frames| (frames.start, frames.end)),
+            Some((9, 12))
+        );
+    }
+
+    #[test]
+    fn a_range_left_out_is_not_checked() {
+        let mut comments = writable();
+        comments.begin_draft(
+            DraftAnchor::File,
+            Some(walk("x", "4")),
+            view(),
+            egui::Pos2::ZERO,
+        );
+        if let Some(draft) = comments.draft.as_mut() {
+            draft.text = "Whole clip".to_owned();
+            draft.include_frames = false;
+        }
+        let index = comments.post_draft().expect("posts");
+        assert_eq!(comments.threads[index].thread.frames, None);
+    }
+
+    #[test]
+    fn starting_a_comment_lets_go_of_the_selected_one() {
+        let mut comments = writable();
+        comments.begin_draft(DraftAnchor::File, None, view(), egui::Pos2::ZERO);
+        if let Some(draft) = comments.draft.as_mut() {
+            draft.text = "First".to_owned();
+        }
+        comments.post_draft().expect("posts");
+        comments.inspected = true;
+        comments.begin_draft(DraftAnchor::View, None, view(), egui::Pos2::ZERO);
+        assert_eq!(comments.selected, None);
+        assert!(!comments.inspected);
     }
 }

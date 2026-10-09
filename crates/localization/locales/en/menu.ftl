@@ -14,6 +14,7 @@ menu-save-as = Save Comments As...
 menu-clear-recent-files = Clear Recent Files
 menu-about = About { $product }
 menu-remember-settings = Remember Settings
+menu-user-name = User Name...
 menu-hide = Hide { $product }
 menu-hide-others = Hide Others
 menu-show-all = Show All

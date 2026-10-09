@@ -175,6 +175,10 @@ impl App {
                 self.ui.log.open = true;
                 return self.request_redraw();
             }
+            MenuCommand::UserName => {
+                self.ui.user_name.open(&self.ui.comments.author);
+                return self.request_redraw();
+            }
             MenuCommand::Documentation => {
                 self.ui.help.open_contents();
                 return self.request_redraw();

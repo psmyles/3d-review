@@ -296,8 +296,9 @@ fn recent_files_menu(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput) 
     }
 }
 
-/// Preferences: the Remember Settings switch.
-fn preferences_menu(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput) {
+/// Preferences: the Remember Settings switch, and the name review comments are
+/// signed with.
+fn preferences_menu(ui: &mut egui::Ui, state: &mut UiState, output: &mut UiOutput) {
     // A copy, not the field: flipping it is `app`'s job, because flipping it is
     // also what writes the settings file.
     let mut remember = state.remember_settings;
@@ -311,6 +312,19 @@ fn preferences_menu(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput) {
     .clicked()
     {
         output.menu = Some(MenuIntent::ToggleRememberSettings);
+    }
+    // Opens the box in place, like About: the name is the chrome's to edit, and
+    // `app` notices it change and saves it.
+    let user_name = ui.button(keys::ui_toolbar::MENU_USER_NAME);
+    if tip(
+        user_name,
+        Tip::new(keys::ui_toolbar::MENU_USER_NAME)
+            .describe(keys::ui_toolbar::MENU_USER_NAME_DESCRIPTION)
+            .page(Page::Menu),
+    )
+    .clicked()
+    {
+        state.user_name.open(&state.comments.author);
     }
 }
 

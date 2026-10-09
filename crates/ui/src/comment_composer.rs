@@ -9,8 +9,7 @@
 use crate::comment_pins::PinView;
 use crate::docs::Page;
 use crate::keys;
-use crate::panels::outliner::comments::frames_label;
-use crate::state::{DraftAnchor, NotWritable, UiState};
+use crate::state::{Draft, DraftAnchor, FrameError, NotWritable, UiState};
 use crate::theme::{color, size};
 use crate::widgets::{Tip, tip};
 
@@ -148,22 +147,8 @@ fn composer_body(ui: &mut egui::Ui, state: &mut UiState) -> (bool, bool) {
         draft.focused = true;
     }
 
-    // The frame (extendable into a range), the view, and how a surface pin
-    // behaves.
-    if let Some(frames) = draft.frames.as_mut() {
-        ui.horizontal(|ui| {
-            let single = review_annotate::thread::FrameRange {
-                end: frames.start,
-                ..frames.clone()
-            };
-            ui.checkbox(&mut draft.include_frames, frames_label(&single));
-            if draft.include_frames {
-                ui.label(keys::ui_comments::COMPOSER_TO_FRAME);
-                let start = frames.start;
-                ui.add(egui::DragValue::new(&mut frames.end).range(start..=u32::MAX));
-            }
-        });
-    }
+    // The frames, the view, and how a surface pin behaves.
+    frames_row(ui, draft);
     let view = ui.checkbox(
         &mut draft.include_view,
         keys::ui_comments::COMPOSER_SAVE_VIEW,
@@ -201,7 +186,9 @@ fn composer_body(ui: &mut egui::Ui, state: &mut UiState) -> (bool, bool) {
         });
     }
 
-    let ready = !draft.text.trim().is_empty() && !comments.author.trim().is_empty();
+    let ready = !draft.text.trim().is_empty()
+        && !comments.author.trim().is_empty()
+        && draft.frames().is_ok();
     let mut post = false;
     let mut cancel = false;
     ui.horizontal(|ui| {
@@ -220,4 +207,86 @@ fn composer_body(ui: &mut egui::Ui, state: &mut UiState) -> (bool, bool) {
     });
     let chord = ui.input(|input| input.key_pressed(egui::Key::Enter) && input.modifiers.command);
     (post || (ready && chord), cancel)
+}
+
+/// The clip the comment is about and its first and last frame, typed. While the
+/// two fields don't name a range of the clip's frames, the wrong one is outlined,
+/// a line says why, and the comment can't be posted.
+fn frames_row(ui: &mut egui::Ui, draft: &mut Draft) {
+    let Some(clip) = draft.frames.as_ref().map(|fields| fields.clip.clone()) else {
+        return;
+    };
+    let label = keys::ui_comments::composer_frames(clip);
+    let include = ui.checkbox(&mut draft.include_frames, label.clone());
+    tip(
+        include,
+        Tip::new(label)
+            .describe(keys::ui_comments::COMPOSER_FRAMES_DESCRIPTION)
+            .page(Page::Comments),
+    );
+
+    let enabled = draft.include_frames;
+    let error = draft.frames().err();
+    let (start_wrong, end_wrong) = match error {
+        Some(FrameError::OutsideClip { start, end }) => (start, end),
+        Some(FrameError::Backwards) => (true, true),
+        None => (false, false),
+    };
+    let Some(fields) = draft.frames.as_mut() else {
+        return;
+    };
+    let last = fields.last;
+    ui.indent("comment_composer_frames", |ui| {
+        ui.add_enabled_ui(enabled, |ui| {
+            let changed = ui
+                .horizontal(|ui| {
+                    let start = frame_field(ui, &mut fields.start, start_wrong);
+                    ui.label(keys::ui_comments::COMPOSER_TO_FRAME);
+                    let end = frame_field(ui, &mut fields.end, end_wrong);
+                    start.changed() || end.changed()
+                })
+                .inner;
+            // The outline and the line below were decided before this frame's
+            // typing reached the fields; one more pass shows them for what is
+            // in the fields now.
+            if changed {
+                ui.ctx().request_repaint();
+            }
+            let reason = match error {
+                Some(FrameError::OutsideClip { .. }) => {
+                    keys::ui_comments::composer_frames_outside(f64::from(last))
+                }
+                Some(FrameError::Backwards) => {
+                    review_localization::tr(keys::ui_comments::COMPOSER_FRAMES_BACKWARDS)
+                        .into_owned()
+                }
+                None => return,
+            };
+            ui.label(egui::RichText::new(reason).color(ui.visuals().error_fg_color));
+        });
+    });
+}
+
+/// One frame-number field: monospace and a fixed width, as the numeric boxes
+/// elsewhere are, and outlined in the error colour while `wrong`.
+fn frame_field(ui: &mut egui::Ui, text: &mut String, wrong: bool) -> egui::Response {
+    ui.scope(|ui| {
+        if wrong {
+            let stroke = egui::Stroke::new(
+                size::COMMENT_FRAME_FIELD_ERROR_STROKE,
+                ui.visuals().error_fg_color,
+            );
+            let visuals = ui.visuals_mut();
+            visuals.widgets.inactive.bg_stroke = stroke;
+            visuals.widgets.hovered.bg_stroke = stroke;
+            visuals.widgets.active.bg_stroke = stroke;
+            visuals.selection.stroke = stroke;
+        }
+        ui.add(
+            egui::TextEdit::singleline(text)
+                .font(egui::TextStyle::Monospace)
+                .desired_width(size::COMMENT_FRAME_FIELD_WIDTH),
+        )
+    })
+    .inner
 }

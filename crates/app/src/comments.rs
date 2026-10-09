@@ -511,6 +511,8 @@ impl App {
                 self.ui
                     .comments
                     .repin_thread(index, hit.node, anchor, world);
+                // Move pin picked the Comment tool up for this one click.
+                self.ui.tool = self.ui.tool.toggled_comment();
             }
             self.request_redraw();
             return;
@@ -562,6 +564,7 @@ impl App {
             self.ui
                 .comments
                 .repin_thread(index, node.unwrap_or(usize::MAX), anchor, Vec3::ZERO);
+            self.ui.tool = self.ui.tool.toggled_comment();
             self.request_redraw();
             return;
         }

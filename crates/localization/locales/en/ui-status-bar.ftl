@@ -25,6 +25,12 @@ ui-status-bar-model-stats = Model Stats
 
 ## Tex viewport
 
+# The background segments' labels: one letter each, all a segment has room for.
+# The tooltips below spell them out.
+ui-status-bar-background-black-letter = B
+ui-status-bar-background-white-letter = W
+ui-status-bar-background-grey-letter = G
+ui-status-bar-background-checker-letter = C
 ui-status-bar-background-black = Black background
 ui-status-bar-background-white = White background
 ui-status-bar-background-grey = Grey background

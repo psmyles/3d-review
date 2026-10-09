@@ -4,7 +4,8 @@
 //! quit: ⌘Q belongs to the menu, not the window, so without one there is no way out
 //! but Force Quit. This builds the menu bar the viewer's own toolbar menu implies,
 //! with each entry where a Mac puts it rather than where the toolbar does: About and
-//! the Remember Settings preference go in the application menu, the toolbar's Exit
+//! the two preferences (Remember Settings, User Name) go in the application menu,
+//! the toolbar's Exit
 //! *is* Quit (ours rather than AppKit's, so it can ask about unsaved comments), and
 //! Help is AppKit's Help menu (which is what gives it the search
 //! field). Every item that is *ours* routes back through the caller's callback as a
@@ -43,6 +44,7 @@ mod keys {
 // items are AppKit's.
 const ID_ABOUT: &str = "review.about";
 const ID_REMEMBER_SETTINGS: &str = "review.remember-settings";
+const ID_USER_NAME: &str = "review.user-name";
 const ID_OPEN: &str = "review.open";
 const ID_NEW: &str = "review.new";
 const ID_SAVE: &str = "review.save";
@@ -166,6 +168,10 @@ pub(crate) fn install(
             &item(ID_ABOUT, &keys::menu::about(product)),
             &PredefinedMenuItem::separator(),
             &remember_settings,
+            &item(
+                ID_USER_NAME,
+                &review_localization::tr(keys::menu::USER_NAME),
+            ),
             &PredefinedMenuItem::separator(),
             &PredefinedMenuItem::services(Some(&review_localization::tr(keys::menu::SERVICES))),
             &PredefinedMenuItem::separator(),
@@ -295,6 +301,7 @@ fn command_for(id: &MenuId) -> Option<MenuCommand> {
     Some(match id {
         ID_ABOUT => MenuCommand::About,
         ID_REMEMBER_SETTINGS => MenuCommand::ToggleRememberSettings,
+        ID_USER_NAME => MenuCommand::UserName,
         ID_OPEN => MenuCommand::Open,
         ID_NEW => MenuCommand::New,
         ID_SAVE => MenuCommand::Save,
@@ -346,6 +353,7 @@ mod tests {
         let ids = [
             (ID_ABOUT, MenuCommand::About),
             (ID_REMEMBER_SETTINGS, MenuCommand::ToggleRememberSettings),
+            (ID_USER_NAME, MenuCommand::UserName),
             (ID_OPEN, MenuCommand::Open),
             (ID_NEW, MenuCommand::New),
             (ID_CLEAR_RECENT, MenuCommand::ClearRecentFiles),

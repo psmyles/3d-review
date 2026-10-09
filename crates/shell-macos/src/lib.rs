@@ -35,6 +35,9 @@ pub enum MenuCommand {
     About,
     /// App → Remember Settings.
     ToggleRememberSettings,
+    /// App → User Name…: the box the name review comments are signed with is
+    /// changed in.
+    UserName,
     /// File → Open… (⌘O)
     Open,
     /// File → Open Recent → the model at this index of the list last handed to

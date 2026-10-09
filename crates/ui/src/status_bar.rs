@@ -44,12 +44,24 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, model: &ModelData) 
         .exact_size(status_bar_height)
         .frame(status_bar_frame())
         .show(root, |ui| {
-            // The UV workspace keeps a clean status bar (its tools are in the
-            // toolbar). The 3D workspace shows the model-stats toggle + the
-            // rendering-quality group; the Texture workspace shows the zoom
-            // readout + the background-fill group.
+            // The UV workspace shows only the background-fill group (its other
+            // tools are in the toolbar). The 3D workspace shows the model-stats
+            // toggle + the rendering-quality group; the Texture workspace shows the
+            // zoom readout + the background-fill group.
             match state.mode {
-                WorkspaceMode::Uv => return,
+                WorkspaceMode::Uv => {
+                    let bar_rect = ui.max_rect();
+                    let edge_inset = (bar_rect.height() - group_height) * 0.5;
+                    background_group(
+                        ui,
+                        &mut state.uv_background,
+                        bar_rect,
+                        edge_inset,
+                        group_height,
+                        Page::Uv,
+                    );
+                    return;
+                }
                 // Opt draws the same 3D scene through the same shading and
                 // rendering-quality controls, so it shares this bar unchanged.
                 WorkspaceMode::ThreeD | WorkspaceMode::Opt => {}
@@ -376,9 +388,6 @@ fn lod_label(level: usize) -> String {
 /// background-fill radio group (Black / White / Grey / Checker) mirrored to the
 /// right. Laid out with the same edge inset as the 3D bar.
 fn draw_texture_status_bar(ui: &mut egui::Ui, state: &mut UiState, group_height: f32) {
-    let bg_group_width = size::TEXTURE_BG_GROUP_WIDTH;
-    let segment_w = size::TEXTURE_BG_SEGMENT_WIDTH;
-
     let bar_rect = ui.max_rect();
     let edge_inset = (bar_rect.height() - group_height) * 0.5;
 
@@ -402,22 +411,44 @@ fn draw_texture_status_bar(ui: &mut egui::Ui, state: &mut UiState, group_height:
     });
 
     // Background-fill radio group — mirrored to the right edge.
+    background_group(
+        ui,
+        &mut state.texture_view.background,
+        bar_rect,
+        edge_inset,
+        group_height,
+        Page::Tex,
+    );
+}
+
+/// The background-fill radio group (Black / White / Grey / Checker), mirrored to
+/// the right edge of the bar - the Tex workspace's, and the UV workspace's own
+/// copy of it. `page` is the manual page its tooltips point at.
+fn background_group(
+    ui: &mut egui::Ui,
+    current: &mut TextureBackground,
+    bar_rect: egui::Rect,
+    edge_inset: f32,
+    group_height: f32,
+    page: Page,
+) {
+    let bg_group_width = size::TEXTURE_BG_GROUP_WIDTH;
+    let segment_w = size::TEXTURE_BG_SEGMENT_WIDTH;
     let right_rect = bar_group_rect(bar_rect, true, edge_inset, bg_group_width, group_height);
     bar_group_scope(ui, right_rect, group_height, |ui| {
         toolbar_group_shell(ui, bg_group_width, |ui| {
             for background in TextureBackground::ALL {
-                let selected = state.texture_view.background == background;
                 let response = tip(
                     segment_button(
                         ui,
                         review_localization::tr(labels::texture_background(background)).as_ref(),
-                        selected,
+                        *current == background,
                         segment_w,
                     ),
-                    background_tooltip(background),
+                    background_tooltip(background, page),
                 );
                 if response.clicked() {
-                    state.texture_view.background = background;
+                    *current = background;
                 }
             }
         });
@@ -451,14 +482,14 @@ fn zoom_reset_label(ui: &mut egui::Ui, zoom: f32) -> egui::Response {
 }
 
 /// Hover tooltip spelling out a background-fill segment's single-letter label.
-fn background_tooltip(background: TextureBackground) -> Tip {
+fn background_tooltip(background: TextureBackground, page: Page) -> Tip {
     let title = match background {
         TextureBackground::Black => keys::ui_status_bar::BACKGROUND_BLACK,
         TextureBackground::White => keys::ui_status_bar::BACKGROUND_WHITE,
         TextureBackground::Grey => keys::ui_status_bar::BACKGROUND_GREY,
         TextureBackground::Checker => keys::ui_status_bar::BACKGROUND_CHECKER,
     };
-    let tip = Tip::new(title).page(Page::Tex);
+    let tip = Tip::new(title).page(page);
     // Only the checker has anything to add: the other three are what their names
     // say, and a paragraph restating "this makes the background black" is noise.
     match background {

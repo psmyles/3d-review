@@ -79,6 +79,7 @@ pub mod theme;
 mod toolbar;
 mod transport;
 mod units;
+mod user_name;
 mod widgets;
 
 // Root re-exports carry exactly what `app` (the sole consumer) uses; everything
@@ -101,3 +102,4 @@ pub use state::{
     UiState, ViewProjectionMode, ViewportTool, WorkspaceMode, apply_pick,
 };
 pub use theme::init_style;
+pub use user_name::UserNameState;

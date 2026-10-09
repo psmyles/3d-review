@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use review_model::ModelData;
 use review_render::{
     ActiveMaterial, CameraProjection, OptSceneFrame, OptView, ProcessedModelRef, Renderer,
-    SceneFrame, SceneViewport, TexBackground, TexImage, UvFrame,
+    SceneFrame, SceneViewport, TexBackground, TexImage, UvFrame, UvTexture,
 };
 use review_ui::{
     ComparisonSide, OptLayout, OptOverlayLevel, OptOverlayView, TextureBackground, UiOutput,
@@ -345,6 +345,20 @@ impl App {
         } else {
             Vec::new()
         };
+        // The texture picked in the Textures tab, which the UV workspace draws
+        // behind the layout until another is picked or `Esc` clears it. Cloned handles (a path and an `Arc`), so nothing of
+        // `self.ui` stays borrowed across the paint.
+        let uv_texture = (workspace == WorkspaceMode::Uv)
+            .then_some(self.ui.uv_texture.as_ref())
+            .flatten()
+            .and_then(|path| {
+                self.ui
+                    .texture_pool
+                    .iter()
+                    .find(|entry| &entry.path == path)
+            })
+            .map(|entry| (entry.path.clone(), Arc::clone(&entry.image)));
+        let uv_background = tex_background(self.ui.uv_background, full_output.pixels_per_point);
         let uv_shading = self.ui.uv_shading_mode;
         // The Tex viewport's draw inputs (background + placed image), resolved from
         // the live UI state only in Texture mode. Built before the renderer borrow
@@ -433,9 +447,13 @@ impl App {
                         channel: uv_channel,
                         shading_mode: uv_shading,
                         anti_aliasing,
-                        background,
+                        background: uv_background,
                         selected_nodes: &uv_nodes,
                         hidden_meshes: &hidden_meshes,
+                        texture: uv_texture.as_ref().map(|(path, image)| UvTexture {
+                            path: path.as_path(),
+                            image,
+                        }),
                     },
                 ),
                 WorkspaceMode::Texture => {
@@ -578,15 +596,7 @@ impl App {
     /// pixels via `ppp`). The UI emits only plain values (invariant 2); `app` owns the
     /// pool and resolves placement here.
     fn build_texture_draw(&self, ppp: f32) -> (Option<TexImage>, TexBackground) {
-        let background = match self.ui.texture_view.background {
-            TextureBackground::Black => TexBackground::Black,
-            TextureBackground::White => TexBackground::White,
-            TextureBackground::Grey => TexBackground::Grey,
-            TextureBackground::Checker => TexBackground::Checker {
-                // The UI theme's checker cell (points), scaled to physical pixels.
-                cell_px: theme::size::TEXTURE_CHECKER_CELL * ppp,
-            },
-        };
+        let background = tex_background(self.ui.texture_view.background, ppp);
 
         let view = &self.ui.texture_view;
         let (Some(canvas), Some(entry)) = (
@@ -612,6 +622,19 @@ impl App {
             size_px: [size_pts.x * ppp, size_pts.y * ppp],
         };
         (Some(tex_image), background)
+    }
+}
+
+/// The renderer's form of a Tex / UV background fill: the checker's cell (the UI
+/// theme's, in points) scaled to physical pixels by `ppp`.
+fn tex_background(background: TextureBackground, ppp: f32) -> TexBackground {
+    match background {
+        TextureBackground::Black => TexBackground::Black,
+        TextureBackground::White => TexBackground::White,
+        TextureBackground::Grey => TexBackground::Grey,
+        TextureBackground::Checker => TexBackground::Checker {
+            cell_px: theme::size::TEXTURE_CHECKER_CELL * ppp,
+        },
     }
 }
 

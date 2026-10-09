@@ -130,12 +130,14 @@ pub(crate) fn viewport_background(background: ViewportBackground) -> Key {
     }
 }
 
+/// A Tex background segment's label: one letter, which is all its segment has
+/// room for. The tooltip spells it out.
 pub(crate) fn texture_background(background: TextureBackground) -> Key {
     match background {
-        TextureBackground::Black => keys::ui_enums::BACKGROUND_BLACK,
-        TextureBackground::White => keys::ui_enums::BACKGROUND_WHITE,
-        TextureBackground::Grey => keys::ui_enums::BACKGROUND_GREY,
-        TextureBackground::Checker => keys::ui_enums::BACKGROUND_CHECKER,
+        TextureBackground::Black => keys::ui_status_bar::BACKGROUND_BLACK_LETTER,
+        TextureBackground::White => keys::ui_status_bar::BACKGROUND_WHITE_LETTER,
+        TextureBackground::Grey => keys::ui_status_bar::BACKGROUND_GREY_LETTER,
+        TextureBackground::Checker => keys::ui_status_bar::BACKGROUND_CHECKER_LETTER,
     }
 }
 

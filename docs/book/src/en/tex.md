@@ -12,9 +12,10 @@ the file.
   itself when the image has no see-through channel.
 - Left-drag slides the image, the wheel or right-drag zooms, and `F` fits it to
   the window.
-- A background choice: black, white, grey, or a checkerboard. The checkerboard
-  shows through any see-through parts, which is the easiest way to see what the
-  alpha channel is doing.
+- A background choice in the bottom right: **B** black, **W** white, **G**
+  grey, or **C** a checkerboard (point at a button to see its name). The
+  checkerboard shows through any see-through parts, which is the easiest way to
+  see what the alpha channel is doing.
 - The Inspector, on the right, has the real facts about the file: its type,
   its size in pixels, which channels it has, its bit depth, how big it is on
   disk, where it was read from, and which materials use it.

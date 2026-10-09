@@ -215,9 +215,10 @@ pub(super) struct DerivedViews {
     pub(super) uv_wireframe_buf: Option<VertexBuffer>,
     pub(super) uv_wireframe_baked: Option<UvViewParams>,
     /// The UV island fill (Shaded / Islands modes only); `None` in Wire mode.
-    /// Built per the same parameters as the wireframe, plus the shading mode.
+    /// Built per the same parameters as the wireframe, plus the shading mode and
+    /// whether it is dimmed over a texture.
     pub(super) uv_fill_buf: Option<VertexBuffer>,
-    pub(super) uv_fill_baked: Option<(UvViewParams, UvShadingMode)>,
+    pub(super) uv_fill_baked: Option<(UvViewParams, UvShadingMode, bool)>,
 }
 
 /// Which model a [`ModelSlot`] holds. The Opt workspace draws a source mesh and a

@@ -15,17 +15,24 @@ Pick the **Comment** tool beside Select in the toolbar, or press `C`. Then:
 - **Click empty space** for a comment about the view as a whole.
 
 A box opens beside the pin. Write the comment and press **Post** (or the
-primary modifier with Enter); `Esc` or **Cancel** throws it away. The box
-offers two extras, both on to begin with:
+primary modifier with Enter); `Esc` or **Cancel** throws it away. Once the
+comment is posted, the Comment tool switches off and clicking turns the camera
+again, so press `C` for the next one. The box offers two extras, both on to
+begin with:
 
-- **The frame** - if an animation is selected, the comment is about the frame
-  on screen. Give it a second frame number to make it about a stretch of the
-  animation.
+- **The frames** - if an animation is selected, the comment is about the frame
+  on screen: both of its frame boxes start at that frame. Change the first or
+  the last to make it about a stretch of the animation. Frames are counted from
+  0, as the playback bar counts them, and each box takes a whole number up to
+  the animation's last frame, with the first no later than the last. While they
+  don't, the box that is wrong is outlined, a line underneath says why, and
+  **Post** waits until it is put right. Untick it to leave the frames out.
 - **Save the camera view** - clicking the comment later moves the view back to
   where it is now.
 
 The first time, the box also asks for your name, which every comment and reply
-is signed with. It is remembered for next time.
+is signed with. It is remembered for next time. To change it later, choose
+**Preferences > User Name...** in the menu.
 
 There are two more ways to start a comment: right-click a part in the Outliner
 and choose **Comment on this part**, or press **Add a note about the file** in
@@ -51,7 +58,8 @@ Select a comment to see it in the Inspector. From there you can **Reply**,
 **Resolve** it once it has been dealt with (or **Reopen** it), **Edit** any
 message, **Move pin** to point it somewhere else, **Save current view** to
 change where it takes you, or **Delete comment** (click twice). All of these
-can be undone.
+can be undone. **Move pin** picks up the Comment tool for one click: click the
+model where the pin should go, and clicking turns the camera again after.
 
 ## Saving
 
@@ -94,6 +102,9 @@ green.
 - Hovering a pin shows the start of the comment and who wrote it.
 - Clicking a pin selects the comment and shows it in the Inspector, without
   moving the view. The Inspector's **Go to comment** button moves it.
+- Clicking anywhere else in the view, or pressing `Esc`, lets go of the selected
+  comment, whichever tool is picked. With the Comment tool, that click also
+  starts a new comment.
 
 **Show pins**, beside the filter buttons, turns the pins off and on.
 

@@ -265,8 +265,9 @@ pub fn draw_overlay(
         crate::log_window::draw(ctx, &mut state.log, viewport);
     }
 
-    // Last, so the modal's backdrop covers every other piece of chrome.
+    // Last, so a modal's backdrop covers every other piece of chrome.
     crate::about::draw(ctx, &mut state.about);
+    crate::user_name::draw(ctx, state);
 
     output
 }

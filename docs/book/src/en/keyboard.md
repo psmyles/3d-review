@@ -37,7 +37,8 @@ panel.
   [selecting by clicking](selection.md). While the right mouse button is held it
   keeps its flying meaning instead, and moves you down.
 - `C` - switch between turning the camera and
-  [leaving review comments](comments.md) by clicking.
+  [leaving review comments](comments.md) by clicking. Posting a comment
+  switches back to turning the camera.
 - `R` - put the camera back where it started. In UV and Tex, refit the image.
 - `W` `A` `S` `D` `Q` `E` - fly the camera, while the right mouse button is
   held.
@@ -51,7 +52,10 @@ panel.
 
 - `X` - in the Opt overlay, swap which model is solid.
 - `F1` - open this manual, at the page for whatever is under the pointer.
-- `Esc` - clear the selection, in the viewport or the Outliner.
+- `Esc` - clear the selection, in the viewport or the Outliner, including a
+  selected review comment. In UV it also takes away the texture behind the
+  layout. While a comment is being written, `Esc` throws it
+  away instead.
 - Primary + `N` - start over with an empty viewer.
 - Primary + `O` - open a model.
 - Primary + `S` - save the review comments into the model's file.
