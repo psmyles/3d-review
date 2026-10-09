@@ -9,4 +9,4 @@
 - animation curves
 - onion skin mode for animation review
 - viewport presets
--
+- update outliner icon

@@ -118,6 +118,18 @@ it, as long as it writes custom properties: Blender only does with **Custom
 Properties** ticked in its FBX export options.
 
 The `review-comments` tool installed beside the viewer prints the comments of
-a file without opening the viewer, as a report or as JSON for scripts. On
-Windows it is `review-comments.exe` in the install folder; on macOS it is inside
-the app, at `3D Review.app/Contents/MacOS/review-comments`.
+a file, several files or every FBX in a folder without opening the viewer, as a
+report or as JSON for scripts. On Windows it is `review-comments.exe` in the
+install folder; on macOS it is inside the app, at
+`3D Review.app/Contents/MacOS/review-comments`.
+
+To see what is new after you update a project, run it over the project with a
+file to remember what you have already seen:
+
+```
+review-comments project/ --baseline .review-seen.json --update-baseline
+```
+
+The first run lists everything. After that, each run lists only the new
+threads, the new replies, and the threads that were resolved or reopened since
+the run before.

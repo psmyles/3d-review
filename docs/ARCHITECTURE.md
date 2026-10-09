@@ -630,7 +630,12 @@ JSON.
   by depth, not in file order** (measured on a rigged fixture) and adds nodes the
   file never had, so the pairing walks both trees from the root and matches each
   parent's children by name, *k*-th to *k*-th, stepping over synthetic nodes.
-- `report` lists a file's comments as JSON or Markdown.
+- `report` lists the comments of one file or many as JSON or Markdown, and
+  `baseline` narrows a listing to what changed since an earlier `--json` one
+  (the CLI's `--baseline`). It matches threads by `id` across every file, so a
+  moved file reports nothing new, and messages by author, time and text, never
+  by time alone: `time` is the writer's clock, so a reply written before the
+  last check and pushed after it would otherwise be missed.
 
 `app/src/comments.rs` reads them on the import worker, right after the source
 properties (whose synthetic-node flags the mapping needs), and posts them as their

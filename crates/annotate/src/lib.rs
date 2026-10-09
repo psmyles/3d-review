@@ -12,12 +12,14 @@
 //! * [`thread`] is what a comment is, and [`codec`] its versioned JSON payload;
 //! * [`comments`] gathers a file's comments by the object each is stored on;
 //! * [`mapping`] pairs the file's objects with the importer's scene nodes;
-//! * [`report`] lists them as JSON or Markdown (the `review-comments` CLI).
+//! * [`report`] lists them as JSON or Markdown (the `review-comments` CLI), and
+//!   [`baseline`] narrows a listing to what changed since an earlier one.
 //!
 //! The format other tools read against is `docs/review-comments-format.md`.
 
 #![forbid(unsafe_code)]
 
+pub mod baseline;
 pub mod codec;
 pub mod comments;
 pub mod fbx;

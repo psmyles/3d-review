@@ -105,10 +105,48 @@ the install folder on Windows, and
 review-comments model.fbx                  # Markdown report, grouped by object
 review-comments model.fbx --json           # every thread, with its object
 review-comments model.fbx --status open    # only the open ones
+review-comments assets/ other.fbx          # several files, and every .fbx in a folder
 ```
 
-It exits 0 when it listed at least one thread, 1 when there were none, and 2
-when the file could not be read.
+A folder is searched at any depth for `.fbx` files, skipping folders whose name
+starts with `.` (such as `.git`) and not following symlinked folders.
+
+`--json` prints one document for the whole run: `scanned` (how many files were
+looked at), `files` (each file with something to list: its `file`, `format`,
+`threads` and `warnings`, each thread being the stored thread with its `number`
+and the `object` it is on added), and `errors` (each file that could not be read,
+with a `message`).
+
+### What changed since the last check
+
+`--baseline` takes an earlier `--json` listing and prints only what has changed
+since: threads it did not hold, replies it did not hold, and threads that have
+been resolved or reopened. Adding `--update-baseline` rewrites that listing with
+everything just read, so the next run reports only what arrives after this one.
+Run over a project after each `git pull`, that is a feed of new comments:
+
+```
+review-comments project/ --baseline .review-seen.json --update-baseline
+```
+
+A baseline that does not exist yet is created, and everything in that first run
+counts as new. What is saved is every thread, whatever `--status` hid from the
+report. If any file cannot be read, the baseline is left as it was, since saving
+it without that file's threads would report them all as new next time. An `.fbx`
+that is really a Git LFS pointer is reported as such.
+
+Threads are matched by `id` across every file in the listing, not by the file
+they were in, so a moved or renamed file reports nothing new. Messages are
+matched by author, time and text together, not compared by time: `time` is the
+writer's clock when they wrote the message, so a reply written before your last
+check and pushed after it is still new. In `--json`, each listed thread carries
+a `change`: `{"thread": "new" | "updated", "new_messages": [...]}` (indices into
+`messages`) plus `previous_status` when its status changed. The Markdown report
+shows an updated thread's new replies only.
+
+It exits 0 when it listed at least one thread, 1 when there were none (after
+the filter and the baseline), and 2 on a usage error or when a file, a folder
+or the baseline could not be read.
 
 From the FBX SDK's Python bindings:
 
