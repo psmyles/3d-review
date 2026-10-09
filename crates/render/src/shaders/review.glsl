@@ -858,8 +858,9 @@ vec4 line_corner_color(uint vertex) {
 }
 
 // Corner `corner_index` (0..5) of a line's quad, as two triangles: x picks the line's
-// end (0 = first, 1 = second), y its side.
-vec2 line_quad_corner(int corner_index) {
+// end (0 = first, 1 = second), y its side. Unsigned, like the arithmetic that finds
+// it: fxc warns on a signed integer divide, and `/WX` makes that a build error.
+vec2 line_quad_corner(uint corner_index) {
     vec2 corners[6] = vec2[6](
         vec2(0.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0),
         vec2(0.0, -1.0), vec2(1.0, 1.0), vec2(0.0, 1.0));
@@ -868,7 +869,7 @@ vec2 line_quad_corner(int corner_index) {
 
 // Write `gl_Position` and `v_line` for corner `corner_index` of the quad over the line
 // from `first` to `second`, both in clip space.
-void emit_line_quad(vec4 first, vec4 second, int corner_index) {
+void emit_line_quad(vec4 first, vec4 second, uint corner_index) {
     vec2 corner = line_quad_corner(corner_index);
 
     // Clip the line to the near plane before anything divides by w: an end behind
@@ -926,11 +927,12 @@ void emit_line_quad(vec4 first, vec4 second, int corner_index) {
 @include_block line_quad
 
 void main() {
-    int line = gl_VertexIndex / 6;
-    uint first_vertex = uint(2 * line);
+    uint vertex = uint(gl_VertexIndex);
+    uint line = vertex / 6u;
+    uint first_vertex = 2u * line;
     vec4 first = su.view_projection * vec4(line_corner_position(first_vertex), 1.0);
     vec4 second = su.view_projection * vec4(line_corner_position(first_vertex + 1u), 1.0);
-    int corner_index = gl_VertexIndex - line * 6;
+    uint corner_index = vertex - line * 6u;
     emit_line_quad(first, second, corner_index);
     v_color = line_corner_color(first_vertex + uint(line_quad_corner(corner_index).x));
 }
@@ -953,12 +955,13 @@ struct LineIndex {
 layout(binding=17) readonly buffer line_indices { LineIndex line_index[]; };
 
 void main() {
-    int edge = gl_VertexIndex / 6;
+    uint vertex = uint(gl_VertexIndex);
+    uint edge = vertex / 6u;
     vec4 first = su.view_projection
-        * vec4(line_corner_position(line_index[2 * edge].index), 1.0);
+        * vec4(line_corner_position(line_index[2u * edge].index), 1.0);
     vec4 second = su.view_projection
-        * vec4(line_corner_position(line_index[2 * edge + 1].index), 1.0);
-    emit_line_quad(first, second, gl_VertexIndex - edge * 6);
+        * vec4(line_corner_position(line_index[2u * edge + 1u].index), 1.0);
+    emit_line_quad(first, second, vertex - edge * 6u);
     v_color = su.selection_color;
 }
 @end

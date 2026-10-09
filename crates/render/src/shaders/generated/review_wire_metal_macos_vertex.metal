@@ -156,7 +156,7 @@ struct line_indices
     LineIndex line_index[1];
 };
 
-constant spvUnsafeArray<float2, 6> _436 = spvUnsafeArray<float2, 6>({ float2(0.0, -1.0), float2(1.0, -1.0), float2(1.0), float2(0.0, -1.0), float2(1.0), float2(0.0, 1.0) });
+constant spvUnsafeArray<float2, 6> _435 = spvUnsafeArray<float2, 6>({ float2(0.0, -1.0), float2(1.0, -1.0), float2(1.0), float2(0.0, -1.0), float2(1.0), float2(0.0, 1.0) });
 
 struct main0_out
 {
@@ -168,8 +168,8 @@ struct main0_out
 static inline __attribute__((always_inline))
 float3 palette_point(thread const PaletteEntry& m, thread const float3& p)
 {
-    float4 _56 = float4(p, 1.0);
-    return float3(dot(m.r0, _56), dot(m.r1, _56), dot(m.r2, _56));
+    float4 _54 = float4(p, 1.0);
+    return float3(dot(m.r0, _54), dot(m.r1, _54), dot(m.r2, _54));
 }
 
 static inline __attribute__((always_inline))
@@ -179,16 +179,16 @@ float3 palette_direction(thread const PaletteEntry& m, thread const float3& v)
 }
 
 static inline __attribute__((always_inline))
-void apply_deform(thread const uint4& lane, thread float3& position, thread float3& normal, thread float3& tangent, const device morph_deltas& _120, const device morph_weights& _153, const device deform_influences& _216, const device deform_palette& _233)
+void apply_deform(thread const uint4& lane, thread float3& position, thread float3& normal, thread float3& tangent, const device morph_deltas& _119, const device morph_weights& _152, const device deform_influences& _215, const device deform_palette& _232)
 {
-    bool _100 = dot(normal, normal) > 9.9999999600419720025001879548654e-13;
+    bool _99 = dot(normal, normal) > 9.9999999600419720025001879548654e-13;
     for (uint m = 0u; m < lane.w; m++)
     {
-        uint _125 = lane.z + m;
-        position += (float3(_120.morphs[_125].px, _120.morphs[_125].py, _120.morphs[_125].pz) * _153.weights[_120.morphs[_125].shape].value);
-        if (_100)
+        uint _124 = lane.z + m;
+        position += (float3(_119.morphs[_124].px, _119.morphs[_124].py, _119.morphs[_124].pz) * _152.weights[_119.morphs[_124].shape].value);
+        if (_99)
         {
-            normal += (float3(_120.morphs[_125].nx, _120.morphs[_125].ny, _120.morphs[_125].nz) * _153.weights[_120.morphs[_125].shape].value);
+            normal += (float3(_119.morphs[_124].nx, _119.morphs[_124].ny, _119.morphs[_124].nz) * _152.weights[_119.morphs[_124].shape].value);
         }
     }
     if (lane.y == 0u)
@@ -201,18 +201,18 @@ void apply_deform(thread const uint4& lane, thread float3& position, thread floa
     float total = 0.0;
     for (uint i = 0u; i < lane.y; i++)
     {
-        uint _220 = lane.x + i;
-        PaletteEntry _698 = PaletteEntry{ _233.palette[_216.influences[_220].entry].r0, _233.palette[_216.influences[_220].entry].r1, _233.palette[_216.influences[_220].entry].r2 };
-        PaletteEntry param = _698;
+        uint _219 = lane.x + i;
+        PaletteEntry _700 = PaletteEntry{ _232.palette[_215.influences[_219].entry].r0, _232.palette[_215.influences[_219].entry].r1, _232.palette[_215.influences[_219].entry].r2 };
+        PaletteEntry param = _700;
         float3 param_1 = position;
-        blended_position += (palette_point(param, param_1) * _216.influences[_220].weight);
-        PaletteEntry param_2 = _698;
+        blended_position += (palette_point(param, param_1) * _215.influences[_219].weight);
+        PaletteEntry param_2 = _700;
         float3 param_3 = normal;
-        blended_normal += (palette_direction(param_2, param_3) * _216.influences[_220].weight);
-        PaletteEntry param_4 = _698;
+        blended_normal += (palette_direction(param_2, param_3) * _215.influences[_219].weight);
+        PaletteEntry param_4 = _700;
         float3 param_5 = tangent;
-        blended_tangent += (palette_direction(param_4, param_5) * _216.influences[_220].weight);
-        total += _216.influences[_220].weight;
+        blended_tangent += (palette_direction(param_4, param_5) * _215.influences[_219].weight);
+        total += _215.influences[_219].weight;
     }
     if (total <= 0.0)
     {
@@ -220,10 +220,10 @@ void apply_deform(thread const uint4& lane, thread float3& position, thread floa
     }
     if (abs(total - 1.0) > 9.9999999747524270787835121154785e-07)
     {
-        float _295 = 1.0 / total;
-        blended_position *= _295;
-        blended_normal *= _295;
-        blended_tangent *= _295;
+        float _294 = 1.0 / total;
+        blended_position *= _294;
+        blended_normal *= _294;
+        blended_tangent *= _294;
     }
     position = blended_position;
     normal = blended_normal;
@@ -231,111 +231,112 @@ void apply_deform(thread const uint4& lane, thread float3& position, thread floa
 }
 
 static inline __attribute__((always_inline))
-float3 line_corner_position(thread const uint& vertex0, const device morph_deltas& _120, const device morph_weights& _153, const device deform_influences& _216, const device deform_palette& _233, const device line_vertices& _315, constant scene_vs& su)
+float3 line_corner_position(thread const uint& vertex0, const device morph_deltas& _119, const device morph_weights& _152, const device deform_influences& _215, const device deform_palette& _232, const device line_vertices& _314, constant scene_vs& su)
 {
-    float3 position = float3(_315.line_vertex[vertex0].px, _315.line_vertex[vertex0].py, _315.line_vertex[vertex0].pz);
-    bool _398 = su.camera_position.w > 0.5;
-    bool _407;
-    if (_398)
+    float3 position = float3(_314.line_vertex[vertex0].px, _314.line_vertex[vertex0].py, _314.line_vertex[vertex0].pz);
+    bool _397 = su.camera_position.w > 0.5;
+    bool _406;
+    if (_397)
     {
-        _407 = (_315.line_vertex[vertex0].d1 | _315.line_vertex[vertex0].d3) != 0u;
+        _406 = (_314.line_vertex[vertex0].d1 | _314.line_vertex[vertex0].d3) != 0u;
     }
     else
     {
-        _407 = _398;
+        _406 = _397;
     }
-    if (_407)
+    if (_406)
     {
-        uint4 param = uint4(_315.line_vertex[vertex0].d0, _315.line_vertex[vertex0].d1, _315.line_vertex[vertex0].d2, _315.line_vertex[vertex0].d3);
+        uint4 param = uint4(_314.line_vertex[vertex0].d0, _314.line_vertex[vertex0].d1, _314.line_vertex[vertex0].d2, _314.line_vertex[vertex0].d3);
         float3 param_1 = position;
         float3 param_2 = float3(0.0);
         float3 param_3 = float3(0.0);
-        apply_deform(param, param_1, param_2, param_3, _120, _153, _216, _233);
+        apply_deform(param, param_1, param_2, param_3, _119, _152, _215, _232);
         position = param_1;
     }
     return position;
 }
 
 static inline __attribute__((always_inline))
-float2 line_quad_corner(thread const int& corner_index)
+float2 line_quad_corner(thread const uint& corner_index)
 {
-    return _436[corner_index];
+    return _435[corner_index];
 }
 
 static inline __attribute__((always_inline))
-void emit_line_quad(thread float4& first, thread float4& second, thread const int& corner_index, thread float4& gl_Position, thread float4& v_line, constant line_params& lu)
+void emit_line_quad(thread float4& first, thread float4& second, thread const uint& corner_index, thread float4& gl_Position, thread float4& v_line, constant line_params& lu)
 {
-    int param = corner_index;
-    float2 _446 = line_quad_corner(param);
-    float _449 = first.w;
-    float _451 = first.z;
-    float _452 = _449 - _451;
-    float _458 = second.w - second.z;
-    bool _460 = _452 < 0.0;
-    bool _462 = _458 < 0.0;
-    if (_460 && _462)
+    uint param = corner_index;
+    float2 _445 = line_quad_corner(param);
+    float _448 = first.w;
+    float _450 = first.z;
+    float _451 = _448 - _450;
+    float _457 = second.w - second.z;
+    bool _459 = _451 < 0.0;
+    bool _461 = _457 < 0.0;
+    if (_459 && _461)
     {
         gl_Position = float4(2.0, 2.0, 2.0, 1.0);
         v_line = float4(0.0);
         return;
     }
-    if (_460)
+    if (_459)
     {
-        first = mix(first, second, float4(_452 / (_452 - _458)));
+        first = mix(first, second, float4(_451 / (_451 - _457)));
     }
     else
     {
-        if (_462)
+        if (_461)
         {
-            second = mix(second, first, float4(_458 / (_458 - _452)));
+            second = mix(second, first, float4(_457 / (_457 - _451)));
         }
     }
-    float2 _512 = lu.params.xy * 0.5;
-    float2 _534 = ((second.xy / float2(second.w)) * _512) - ((first.xy / float2(first.w)) * _512);
-    float _537 = length(_534);
-    float2 _542;
-    if (_537 > 9.9999997473787516355514526367188e-05)
+    float2 _511 = lu.params.xy * 0.5;
+    float2 _533 = ((second.xy / float2(second.w)) * _511) - ((first.xy / float2(first.w)) * _511);
+    float _536 = length(_533);
+    float2 _541;
+    if (_536 > 9.9999997473787516355514526367188e-05)
     {
-        _542 = _534 / float2(_537);
+        _541 = _533 / float2(_536);
     }
     else
     {
-        _542 = float2(1.0, 0.0);
+        _541 = float2(1.0, 0.0);
     }
-    float _562 = 0.5 * lu.params.z;
-    float _565 = fast::max(_562, 0.5);
-    float _566 = _565 + 0.5;
-    float _569 = _446.x;
-    bool _575 = _569 < 0.5;
-    float4 _580 = select(second, first, bool4(_575));
-    float _586 = _446.y * _566;
-    float2 _602 = _580.xy + ((((float2(-_542.y, _542.x) * _586) + (_542 * (((_569 * 2.0) - 1.0) * _566))) / _512) * _580.w);
-    float4 _736 = _580;
-    _736.x = _602.x;
-    _736.y = _602.y;
-    gl_Position = _736;
-    float _616;
-    if (_575)
+    float _561 = 0.5 * lu.params.z;
+    float _564 = fast::max(_561, 0.5);
+    float _565 = _564 + 0.5;
+    float _568 = _445.x;
+    bool _574 = _568 < 0.5;
+    float4 _579 = select(second, first, bool4(_574));
+    float _585 = _445.y * _565;
+    float2 _601 = _579.xy + ((((float2(-_541.y, _541.x) * _585) + (_541 * (((_568 * 2.0) - 1.0) * _565))) / _511) * _579.w);
+    float4 _738 = _579;
+    _738.x = _601.x;
+    _738.y = _601.y;
+    gl_Position = _738;
+    float _615;
+    if (_574)
     {
-        _616 = (-0.5) - _565;
+        _615 = (-0.5) - _564;
     }
     else
     {
-        _616 = _537 + _566;
+        _615 = _536 + _565;
     }
-    v_line = float4(_586, _616, _537, _562);
+    v_line = float4(_585, _615, _536, _561);
 }
 
-vertex main0_out main0(constant scene_vs& su [[buffer(0)]], constant line_params& lu [[buffer(3)]], const device deform_influences& _216 [[buffer(8)]], const device deform_palette& _233 [[buffer(9)]], const device morph_deltas& _120 [[buffer(10)]], const device morph_weights& _153 [[buffer(11)]], const device line_vertices& _315 [[buffer(12)]], const device line_indices& _642 [[buffer(13)]], uint gl_VertexIndex [[vertex_id]])
+vertex main0_out main0(constant scene_vs& su [[buffer(0)]], constant line_params& lu [[buffer(3)]], const device deform_influences& _215 [[buffer(8)]], const device deform_palette& _232 [[buffer(9)]], const device morph_deltas& _119 [[buffer(10)]], const device morph_weights& _152 [[buffer(11)]], const device line_vertices& _314 [[buffer(12)]], const device line_indices& _644 [[buffer(13)]], uint gl_VertexIndex [[vertex_id]])
 {
     main0_out out = {};
-    int _633 = int(gl_VertexIndex) / 6;
-    int _644 = 2 * _633;
-    uint param = _642.line_index[_644].index;
-    uint param_1 = _642.line_index[_644 + 1].index;
-    float4 param_2 = su.view_projection * float4(line_corner_position(param, _120, _153, _216, _233, _315, su), 1.0);
-    float4 param_3 = su.view_projection * float4(line_corner_position(param_1, _120, _153, _216, _233, _315, su), 1.0);
-    int param_4 = int(gl_VertexIndex) - (_633 * 6);
+    uint _632 = uint(int(gl_VertexIndex));
+    uint _635 = _632 / 6u;
+    uint _646 = 2u * _635;
+    uint param = _644.line_index[_646].index;
+    uint param_1 = _644.line_index[_646 + 1u].index;
+    float4 param_2 = su.view_projection * float4(line_corner_position(param, _119, _152, _215, _232, _314, su), 1.0);
+    float4 param_3 = su.view_projection * float4(line_corner_position(param_1, _119, _152, _215, _232, _314, su), 1.0);
+    uint param_4 = _632 - (_635 * 6u);
     emit_line_quad(param_2, param_3, param_4, out.gl_Position, out.v_line, lu);
     out.v_color = su.selection_color;
     return out;

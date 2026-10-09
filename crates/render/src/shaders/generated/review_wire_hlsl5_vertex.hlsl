@@ -56,13 +56,13 @@ struct LineIndex
     uint index;
 };
 
-static const float2 _436[6] = { float2(0.0f, -1.0f), float2(1.0f, -1.0f), 1.0f.xx, float2(0.0f, -1.0f), 1.0f.xx, float2(0.0f, 1.0f) };
+static const float2 _435[6] = { float2(0.0f, -1.0f), float2(1.0f, -1.0f), 1.0f.xx, float2(0.0f, -1.0f), 1.0f.xx, float2(0.0f, 1.0f) };
 
-ByteAddressBuffer _120 : register(t2);
-ByteAddressBuffer _153 : register(t3);
-ByteAddressBuffer _216 : register(t0);
-ByteAddressBuffer _233 : register(t1);
-ByteAddressBuffer _315 : register(t4);
+ByteAddressBuffer _119 : register(t2);
+ByteAddressBuffer _152 : register(t3);
+ByteAddressBuffer _215 : register(t0);
+ByteAddressBuffer _232 : register(t1);
+ByteAddressBuffer _314 : register(t4);
 cbuffer scene_vs : register(b0)
 {
     row_major float4x4 su_view_projection : packoffset(c0);
@@ -80,7 +80,7 @@ cbuffer line_params : register(b3)
     float4 lu_params : packoffset(c0);
 };
 
-ByteAddressBuffer _642 : register(t5);
+ByteAddressBuffer _644 : register(t5);
 
 static float4 gl_Position;
 static int gl_VertexIndex;
@@ -101,8 +101,8 @@ struct SPIRV_Cross_Output
 
 float3 palette_point(PaletteEntry m, float3 p)
 {
-    float4 _56 = float4(p, 1.0f);
-    return float3(dot(m.r0, _56), dot(m.r1, _56), dot(m.r2, _56));
+    float4 _54 = float4(p, 1.0f);
+    return float3(dot(m.r0, _54), dot(m.r1, _54), dot(m.r2, _54));
 }
 
 float3 palette_direction(PaletteEntry m, float3 v)
@@ -112,21 +112,21 @@ float3 palette_direction(PaletteEntry m, float3 v)
 
 void apply_deform(uint4 lane, inout float3 position, inout float3 normal, inout float3 tangent)
 {
-    bool _100 = dot(normal, normal) > 9.9999999600419720025001879548654e-13f;
+    bool _99 = dot(normal, normal) > 9.9999999600419720025001879548654e-13f;
     for (uint m = 0u; m < lane.w; m++)
     {
-        MorphEntry _128;
-        _128.shape = _120.Load((lane.z + m) * 28 + 0);
-        _128.px = asfloat(_120.Load((lane.z + m) * 28 + 4));
-        _128.py = asfloat(_120.Load((lane.z + m) * 28 + 8));
-        _128.pz = asfloat(_120.Load((lane.z + m) * 28 + 12));
-        _128.nx = asfloat(_120.Load((lane.z + m) * 28 + 16));
-        _128.ny = asfloat(_120.Load((lane.z + m) * 28 + 20));
-        _128.nz = asfloat(_120.Load((lane.z + m) * 28 + 24));
-        position += (float3(_128.px, _128.py, _128.pz) * asfloat(_153.Load(_128.shape * 4 + 0)));
-        if (_100)
+        MorphEntry _127;
+        _127.shape = _119.Load((lane.z + m) * 28 + 0);
+        _127.px = asfloat(_119.Load((lane.z + m) * 28 + 4));
+        _127.py = asfloat(_119.Load((lane.z + m) * 28 + 8));
+        _127.pz = asfloat(_119.Load((lane.z + m) * 28 + 12));
+        _127.nx = asfloat(_119.Load((lane.z + m) * 28 + 16));
+        _127.ny = asfloat(_119.Load((lane.z + m) * 28 + 20));
+        _127.nz = asfloat(_119.Load((lane.z + m) * 28 + 24));
+        position += (float3(_127.px, _127.py, _127.pz) * asfloat(_152.Load(_127.shape * 4 + 0)));
+        if (_99)
         {
-            normal += (float3(_128.nx, _128.ny, _128.nz) * asfloat(_153.Load(_128.shape * 4 + 0)));
+            normal += (float3(_127.nx, _127.ny, _127.nz) * asfloat(_152.Load(_127.shape * 4 + 0)));
         }
     }
     if (lane.y == 0u)
@@ -139,24 +139,24 @@ void apply_deform(uint4 lane, inout float3 position, inout float3 normal, inout 
     float total = 0.0f;
     for (uint i = 0u; i < lane.y; i++)
     {
-        InfluenceEntry _223;
-        _223.entry = _216.Load((lane.x + i) * 8 + 0);
-        _223.weight = asfloat(_216.Load((lane.x + i) * 8 + 4));
-        PaletteEntry _238;
-        _238.r0 = asfloat(_233.Load4(_223.entry * 48 + 0));
-        _238.r1 = asfloat(_233.Load4(_223.entry * 48 + 16));
-        _238.r2 = asfloat(_233.Load4(_223.entry * 48 + 32));
-        PaletteEntry _698 = { _238.r0, _238.r1, _238.r2 };
-        PaletteEntry param = _698;
+        InfluenceEntry _222;
+        _222.entry = _215.Load((lane.x + i) * 8 + 0);
+        _222.weight = asfloat(_215.Load((lane.x + i) * 8 + 4));
+        PaletteEntry _237;
+        _237.r0 = asfloat(_232.Load4(_222.entry * 48 + 0));
+        _237.r1 = asfloat(_232.Load4(_222.entry * 48 + 16));
+        _237.r2 = asfloat(_232.Load4(_222.entry * 48 + 32));
+        PaletteEntry _700 = { _237.r0, _237.r1, _237.r2 };
+        PaletteEntry param = _700;
         float3 param_1 = position;
-        blended_position += (palette_point(param, param_1) * _223.weight);
-        PaletteEntry param_2 = _698;
+        blended_position += (palette_point(param, param_1) * _222.weight);
+        PaletteEntry param_2 = _700;
         float3 param_3 = normal;
-        blended_normal += (palette_direction(param_2, param_3) * _223.weight);
-        PaletteEntry param_4 = _698;
+        blended_normal += (palette_direction(param_2, param_3) * _222.weight);
+        PaletteEntry param_4 = _700;
         float3 param_5 = tangent;
-        blended_tangent += (palette_direction(param_4, param_5) * _223.weight);
-        total += _223.weight;
+        blended_tangent += (palette_direction(param_4, param_5) * _222.weight);
+        total += _222.weight;
     }
     if (total <= 0.0f)
     {
@@ -164,10 +164,10 @@ void apply_deform(uint4 lane, inout float3 position, inout float3 normal, inout 
     }
     if (abs(total - 1.0f) > 9.9999999747524270787835121154785e-07f)
     {
-        float _295 = 1.0f / total;
-        blended_position *= _295;
-        blended_normal *= _295;
-        blended_tangent *= _295;
+        float _294 = 1.0f / total;
+        blended_position *= _294;
+        blended_normal *= _294;
+        blended_tangent *= _294;
     }
     position = blended_position;
     normal = blended_normal;
@@ -176,41 +176,41 @@ void apply_deform(uint4 lane, inout float3 position, inout float3 normal, inout 
 
 float3 line_corner_position(uint vertex)
 {
-    LineVertex _319;
-    _319.px = asfloat(_315.Load(vertex * 80 + 0));
-    _319.py = asfloat(_315.Load(vertex * 80 + 4));
-    _319.pz = asfloat(_315.Load(vertex * 80 + 8));
-    _319.nx = asfloat(_315.Load(vertex * 80 + 12));
-    _319.ny = asfloat(_315.Load(vertex * 80 + 16));
-    _319.nz = asfloat(_315.Load(vertex * 80 + 20));
-    _319.u = asfloat(_315.Load(vertex * 80 + 24));
-    _319.v = asfloat(_315.Load(vertex * 80 + 28));
-    _319.tx = asfloat(_315.Load(vertex * 80 + 32));
-    _319.ty = asfloat(_315.Load(vertex * 80 + 36));
-    _319.tz = asfloat(_315.Load(vertex * 80 + 40));
-    _319.tw = asfloat(_315.Load(vertex * 80 + 44));
-    _319.r = asfloat(_315.Load(vertex * 80 + 48));
-    _319.g = asfloat(_315.Load(vertex * 80 + 52));
-    _319.b = asfloat(_315.Load(vertex * 80 + 56));
-    _319.a = asfloat(_315.Load(vertex * 80 + 60));
-    _319.d0 = _315.Load(vertex * 80 + 64);
-    _319.d1 = _315.Load(vertex * 80 + 68);
-    _319.d2 = _315.Load(vertex * 80 + 72);
-    _319.d3 = _315.Load(vertex * 80 + 76);
-    float3 position = float3(_319.px, _319.py, _319.pz);
-    bool _398 = su_camera_position.w > 0.5f;
-    bool _407;
-    if (_398)
+    LineVertex _318;
+    _318.px = asfloat(_314.Load(vertex * 80 + 0));
+    _318.py = asfloat(_314.Load(vertex * 80 + 4));
+    _318.pz = asfloat(_314.Load(vertex * 80 + 8));
+    _318.nx = asfloat(_314.Load(vertex * 80 + 12));
+    _318.ny = asfloat(_314.Load(vertex * 80 + 16));
+    _318.nz = asfloat(_314.Load(vertex * 80 + 20));
+    _318.u = asfloat(_314.Load(vertex * 80 + 24));
+    _318.v = asfloat(_314.Load(vertex * 80 + 28));
+    _318.tx = asfloat(_314.Load(vertex * 80 + 32));
+    _318.ty = asfloat(_314.Load(vertex * 80 + 36));
+    _318.tz = asfloat(_314.Load(vertex * 80 + 40));
+    _318.tw = asfloat(_314.Load(vertex * 80 + 44));
+    _318.r = asfloat(_314.Load(vertex * 80 + 48));
+    _318.g = asfloat(_314.Load(vertex * 80 + 52));
+    _318.b = asfloat(_314.Load(vertex * 80 + 56));
+    _318.a = asfloat(_314.Load(vertex * 80 + 60));
+    _318.d0 = _314.Load(vertex * 80 + 64);
+    _318.d1 = _314.Load(vertex * 80 + 68);
+    _318.d2 = _314.Load(vertex * 80 + 72);
+    _318.d3 = _314.Load(vertex * 80 + 76);
+    float3 position = float3(_318.px, _318.py, _318.pz);
+    bool _397 = su_camera_position.w > 0.5f;
+    bool _406;
+    if (_397)
     {
-        _407 = (_319.d1 | _319.d3) != 0u;
+        _406 = (_318.d1 | _318.d3) != 0u;
     }
     else
     {
-        _407 = _398;
+        _406 = _397;
     }
-    if (_407)
+    if (_406)
     {
-        uint4 param = uint4(_319.d0, _319.d1, _319.d2, _319.d3);
+        uint4 param = uint4(_318.d0, _318.d1, _318.d2, _318.d3);
         float3 param_1 = position;
         float3 param_2 = 0.0f.xxx;
         float3 param_3 = 0.0f.xxx;
@@ -220,84 +220,85 @@ float3 line_corner_position(uint vertex)
     return position;
 }
 
-float2 line_quad_corner(int corner_index)
+float2 line_quad_corner(uint corner_index)
 {
-    return _436[corner_index];
+    return _435[corner_index];
 }
 
-void emit_line_quad(inout float4 first, inout float4 second, int corner_index)
+void emit_line_quad(inout float4 first, inout float4 second, uint corner_index)
 {
-    int param = corner_index;
-    float2 _446 = line_quad_corner(param);
-    float _449 = first.w;
-    float _451 = first.z;
-    float _452 = _449 - _451;
-    float _458 = second.w - second.z;
-    bool _460 = _452 < 0.0f;
-    bool _462 = _458 < 0.0f;
-    if (_460 && _462)
+    uint param = corner_index;
+    float2 _445 = line_quad_corner(param);
+    float _448 = first.w;
+    float _450 = first.z;
+    float _451 = _448 - _450;
+    float _457 = second.w - second.z;
+    bool _459 = _451 < 0.0f;
+    bool _461 = _457 < 0.0f;
+    if (_459 && _461)
     {
         gl_Position = float4(2.0f, 2.0f, 2.0f, 1.0f);
         v_line = 0.0f.xxxx;
         return;
     }
-    if (_460)
+    if (_459)
     {
-        first = lerp(first, second, (_452 / (_452 - _458)).xxxx);
+        first = lerp(first, second, (_451 / (_451 - _457)).xxxx);
     }
     else
     {
-        if (_462)
+        if (_461)
         {
-            second = lerp(second, first, (_458 / (_458 - _452)).xxxx);
+            second = lerp(second, first, (_457 / (_457 - _451)).xxxx);
         }
     }
-    float2 _512 = lu_params.xy * 0.5f;
-    float2 _534 = ((second.xy / second.w.xx) * _512) - ((first.xy / first.w.xx) * _512);
-    float _537 = length(_534);
-    float2 _542;
-    if (_537 > 9.9999997473787516355514526367188e-05f)
+    float2 _511 = lu_params.xy * 0.5f;
+    float2 _533 = ((second.xy / second.w.xx) * _511) - ((first.xy / first.w.xx) * _511);
+    float _536 = length(_533);
+    float2 _541;
+    if (_536 > 9.9999997473787516355514526367188e-05f)
     {
-        _542 = _534 / _537.xx;
+        _541 = _533 / _536.xx;
     }
     else
     {
-        _542 = float2(1.0f, 0.0f);
+        _541 = float2(1.0f, 0.0f);
     }
-    float _562 = 0.5f * lu_params.z;
-    float _565 = max(_562, 0.5f);
-    float _566 = _565 + 0.5f;
-    float _569 = _446.x;
-    bool _575 = _569 < 0.5f;
-    bool4 _579 = _575.xxxx;
-    float4 _580 = float4(_579.x ? first.x : second.x, _579.y ? first.y : second.y, _579.z ? first.z : second.z, _579.w ? first.w : second.w);
-    float _586 = _446.y * _566;
-    float2 _602 = _580.xy + ((((float2(-_542.y, _542.x) * _586) + (_542 * (((_569 * 2.0f) - 1.0f) * _566))) / _512) * _580.w);
-    float4 _736 = _580;
-    _736.x = _602.x;
-    _736.y = _602.y;
-    gl_Position = _736;
-    float _616;
-    if (_575)
+    float _561 = 0.5f * lu_params.z;
+    float _564 = max(_561, 0.5f);
+    float _565 = _564 + 0.5f;
+    float _568 = _445.x;
+    bool _574 = _568 < 0.5f;
+    bool4 _578 = _574.xxxx;
+    float4 _579 = float4(_578.x ? first.x : second.x, _578.y ? first.y : second.y, _578.z ? first.z : second.z, _578.w ? first.w : second.w);
+    float _585 = _445.y * _565;
+    float2 _601 = _579.xy + ((((float2(-_541.y, _541.x) * _585) + (_541 * (((_568 * 2.0f) - 1.0f) * _565))) / _511) * _579.w);
+    float4 _738 = _579;
+    _738.x = _601.x;
+    _738.y = _601.y;
+    gl_Position = _738;
+    float _615;
+    if (_574)
     {
-        _616 = (-0.5f) - _565;
+        _615 = (-0.5f) - _564;
     }
     else
     {
-        _616 = _537 + _566;
+        _615 = _536 + _565;
     }
-    v_line = float4(_586, _616, _537, _562);
+    v_line = float4(_585, _615, _536, _561);
 }
 
 void vert_main()
 {
-    int _633 = gl_VertexIndex / 6;
-    int _644 = 2 * _633;
-    uint param = _642.Load(_644 * 4 + 0);
-    uint param_1 = _642.Load((_644 + 1) * 4 + 0);
+    uint _632 = uint(gl_VertexIndex);
+    uint _635 = _632 / 6u;
+    uint _646 = 2u * _635;
+    uint param = _644.Load(_646 * 4 + 0);
+    uint param_1 = _644.Load((_646 + 1u) * 4 + 0);
     float4 param_2 = mul(float4(line_corner_position(param), 1.0f), su_view_projection);
     float4 param_3 = mul(float4(line_corner_position(param_1), 1.0f), su_view_projection);
-    int param_4 = gl_VertexIndex - (_633 * 6);
+    uint param_4 = _632 - (_635 * 6u);
     emit_line_quad(param_2, param_3, param_4);
     v_color = su_selection_color;
 }
