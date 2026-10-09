@@ -73,6 +73,9 @@ Name: "desktopicon"; GroupDescription: "Additional icons:"; \
 ; maps, the message catalogs and every manual page's *text* are all
 ; include_bytes!-embedded.
 Source: "..\target\release\{#MyAppExe}"; DestDir: "{app}"; Flags: ignoreversion
+; The headless reader for the review comments stored in an FBX
+; (docs\review-comments-format.md), for scripts and pipelines.
+Source: "..\target\release\review-comments.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; The manual's images are the one exception (invariant 12): embedding
 ; screenshots would put megabytes in a binary whose startup time is a feature.
 ; An install without them still shows every page — each image renders as its

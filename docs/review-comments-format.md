@@ -97,7 +97,9 @@ axes, whatever unit the file declares.
 
 ## Reading them without 3D Review
 
-The `review-comments` tool ships beside the viewer:
+The `review-comments` tool ships beside the viewer — `review-comments.exe` in
+the install folder on Windows, and
+`/Applications/3D Review.app/Contents/MacOS/review-comments` on macOS:
 
 ```
 review-comments model.fbx                  # Markdown report, grouped by object
