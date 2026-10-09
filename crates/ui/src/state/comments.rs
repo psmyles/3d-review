@@ -83,12 +83,31 @@ pub enum DraftAnchor {
         anchor: Anchor,
         world: Vec3,
     },
+    /// A click on the UV layout: a point on UV set `set`, inside a triangle of
+    /// `node` when one is under it.
+    Uv {
+        node: Option<usize>,
+        set: String,
+        uv: [f32; 2],
+    },
     /// A click on empty space: the comment is about the view, not a point.
     View,
     /// An object picked in the Outliner, with no particular point on it.
     Object { node: usize },
     /// A note about the whole file.
     File,
+}
+
+impl DraftAnchor {
+    /// The point the draft's pin sits at, in the space its view projects: the
+    /// scene for a surface click, the `(u, v, 0)` plane for a UV one.
+    pub fn point(&self) -> Option<Vec3> {
+        match self {
+            DraftAnchor::Surface { world, .. } => Some(*world),
+            DraftAnchor::Uv { uv, .. } => Some(Vec3::new(uv[0], uv[1], 0.0)),
+            DraftAnchor::View | DraftAnchor::Object { .. } | DraftAnchor::File => None,
+        }
+    }
 }
 
 /// A comment being written, before it is posted.
@@ -326,6 +345,7 @@ impl CommentsState {
         // root-most object.
         let node = match &draft.anchor {
             DraftAnchor::Surface { node, .. } | DraftAnchor::Object { node } => Some(*node),
+            DraftAnchor::Uv { node, .. } => *node,
             DraftAnchor::View | DraftAnchor::File => None,
         };
         let own = node.and_then(|node| {
@@ -340,9 +360,9 @@ impl CommentsState {
             None => self.file_host.clone()?,
         };
         let stored_on_own = own_host(&object, node, &self.node_objects);
-        let scope = match draft.anchor_kind() {
-            DraftKind::Object => Scope::Object,
-            DraftKind::Whole => Scope::File,
+        let scope = match (draft.anchor_kind(), stored_on_own) {
+            (DraftKind::Object, _) | (DraftKind::Layout, true) => Scope::Object,
+            (DraftKind::Whole, _) | (DraftKind::Layout, false) => Scope::File,
         };
         let anchor = match draft.anchor {
             // A surface pin indexes its host's polygons, so it only stays one on
@@ -356,6 +376,7 @@ impl CommentsState {
                     }
                 })
             }
+            DraftAnchor::Uv { set, uv, .. } => Some(Anchor::Uv { set, uv }),
             DraftAnchor::View | DraftAnchor::Object { .. } | DraftAnchor::File => None,
         };
         let thread = Thread {
@@ -455,12 +476,13 @@ impl CommentsState {
         if entry.read_only {
             return;
         }
-        let anchor = if entry.node == Some(node) {
-            anchor
-        } else {
-            Anchor::World {
+        // Only a surface anchor indexes its node's polygons; a UV point or a
+        // scene point means the same thing on any host.
+        let anchor = match anchor {
+            Anchor::Surface { .. } if entry.node != Some(node) => Anchor::World {
                 pos: world.to_array(),
-            }
+            },
+            other => other,
         };
         self.edit(|threads| threads[index].thread.anchor = Some(AnchorValue::Known(anchor)));
         self.repin = None;
@@ -517,16 +539,19 @@ fn own_host(object: &ObjectRef, node: Option<usize>, node_objects: &[Option<Obje
         .is_some_and(|own| own == *object)
 }
 
-/// Whether a draft is about something in particular or about the whole view.
+/// Whether a draft is about something in particular, the whole view, or a
+/// spot on the UV layout (about its part when it has one, else the layout).
 enum DraftKind {
     Object,
     Whole,
+    Layout,
 }
 
 impl Draft {
     fn anchor_kind(&self) -> DraftKind {
         match self.anchor {
             DraftAnchor::Surface { .. } | DraftAnchor::Object { .. } => DraftKind::Object,
+            DraftAnchor::Uv { .. } => DraftKind::Layout,
             DraftAnchor::View | DraftAnchor::File => DraftKind::Whole,
         }
     }

@@ -31,6 +31,20 @@ There are two more ways to start a comment: right-click a part in the Outliner
 and choose **Comment on this part**, or press **Add a note about the file** in
 the Comments tab.
 
+## In the UV and Opt workspaces
+
+In the **UV** workspace, a comment pinned to the model also shows on the UV
+layout, at the spot its pin covers. The Comment tool works there too: click the
+layout to pin a note to that point of it - "these islands overlap", say. Such a
+note belongs to the UV set it was left on, and shows whenever that set is the
+one on screen.
+
+In the **Opt** workspace the comments are listed and can be read, answered and
+resolved as anywhere else, and the pins sit on the original model (the left
+half of the split). New comments are left in the 3D or UV workspace. An Opt
+export writes the comments as they stand onto the parts they belong to, so the
+optimized file carries them too.
+
 ## Replying, resolving and editing
 
 Select a comment to see it in the Inspector. From there you can **Reply**,

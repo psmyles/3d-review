@@ -44,12 +44,14 @@ fn the_right_cluster_fits_its_reserved_width() {
 }
 
 /// The right-hand cluster in the UV workspace: Help, the side-panels toggle (the
-/// Outliner and Inspector are in every workspace) and the UV-set picker. Tex
-/// draws the same two groups without the picker, so it fits whenever this does.
+/// Outliner and Inspector are in every workspace), the Comment tool and the
+/// UV-set picker. Tex draws only the first two, so it fits whenever this does.
 #[test]
 fn the_uv_right_cluster_fits_its_reserved_width() {
     let spacing = size::TOOLBAR_GROUP_SPACING;
     let needed = size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH
+        + spacing
+        + size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH
         + spacing
         + size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH
         + spacing

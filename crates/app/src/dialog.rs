@@ -67,6 +67,9 @@ pub(crate) enum Dialog {
         options: ExportOptions,
         /// Default file name stem, which the per-LOD packaging also suffixes.
         stem: String,
+        /// The review comments as they stood when Export was clicked, per source
+        /// node, for the export to write onto those nodes.
+        comments: Option<review_optimize::NodeStrings>,
     },
     /// Choose where to write an operation-stack preset. The JSON is serialized
     /// before the dialog opens, so it describes the stack the user was looking at.
@@ -112,6 +115,7 @@ pub(crate) enum DialogAnswer {
         source: Arc<ModelData>,
         extras: Option<Arc<SourceExtras>>,
         options: ExportOptions,
+        comments: Option<review_optimize::NodeStrings>,
     },
     SavePreset {
         path: PathBuf,
@@ -169,6 +173,7 @@ impl Dialog {
                 extras,
                 options,
                 stem,
+                comments,
             } => rfd::FileDialog::new()
                 .set_title(review_localization::tr(keys::app_dialogs::EXPORT_MESH))
                 .add_filter(
@@ -183,6 +188,7 @@ impl Dialog {
                     source,
                     extras,
                     options,
+                    comments,
                 }),
             Dialog::SavePreset { json } => rfd::FileDialog::new()
                 .set_title(review_localization::tr(keys::app_dialogs::SAVE_PRESET))
@@ -323,7 +329,8 @@ impl App {
                 source,
                 extras,
                 options,
-            } => self.spawn_opt_export(path, result, source, extras, options),
+                comments,
+            } => self.spawn_opt_export(path, result, source, extras, options, comments),
             DialogAnswer::SavePreset { path, json } => self.write_opt_preset(&path, &json),
             DialogAnswer::LoadPreset(path) => self.read_opt_preset(&path),
             DialogAnswer::SaveCommentsAs(path) => {

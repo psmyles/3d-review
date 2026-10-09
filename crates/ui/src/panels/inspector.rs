@@ -576,7 +576,7 @@ fn comment_inspector(ui: &mut egui::Ui, state: &mut UiState, index: usize) -> In
             status,
             Tip::new(label).describe(description).page(Page::Comments),
         );
-        if state.mode == WorkspaceMode::ThreeD {
+        if matches!(state.mode, WorkspaceMode::ThreeD | WorkspaceMode::Uv) {
             let repin = ui.button(keys::ui_comments::REPIN);
             if repin.clicked() {
                 state.comments.repin = Some(index);

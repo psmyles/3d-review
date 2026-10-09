@@ -7,7 +7,6 @@
 //! started. The first comment also asks for a name to sign with.
 
 use crate::comment_pins::PinView;
-use crate::dimensions;
 use crate::docs::Page;
 use crate::keys;
 use crate::panels::outliner::comments::frames_label;
@@ -30,14 +29,11 @@ pub(crate) fn draw_composer(
 
     // Where the popover opens: beside the draft's pin when it has one on screen,
     // else where the draft was started.
-    let pin = match (&draft.anchor, view) {
-        (DraftAnchor::Surface { world, .. }, Some(view)) => dimensions::project(
-            view.camera.view_projection(state.projection_mode.into()),
-            *world,
-            view.image,
-        ),
-        _ => None,
-    };
+    let pin = draft
+        .anchor
+        .point()
+        .zip(view)
+        .and_then(|(point, view)| view.project(point));
     if let Some(center) = pin {
         let painter = ctx.layer_painter(egui::LayerId::new(
             egui::Order::Background,
@@ -96,6 +92,19 @@ fn composer_body(ui: &mut egui::Ui, state: &mut UiState) -> (bool, bool) {
                 .unwrap_or_default();
             keys::ui_comments::composer_on(name).into()
         }
+        DraftAnchor::Uv {
+            node: Some(node), ..
+        } => {
+            let name = comments
+                .node_objects
+                .get(*node)
+                .cloned()
+                .flatten()
+                .map(|object| object.name)
+                .unwrap_or_default();
+            keys::ui_comments::composer_on(name).into()
+        }
+        DraftAnchor::Uv { node: None, .. } => keys::ui_comments::COMPOSER_ABOUT_UV.into(),
         DraftAnchor::View => keys::ui_comments::COMPOSER_ABOUT_VIEW.into(),
         DraftAnchor::File => keys::ui_comments::COMPOSER_ABOUT_FILE.into(),
     };

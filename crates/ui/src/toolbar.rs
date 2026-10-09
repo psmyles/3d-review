@@ -169,6 +169,7 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
                         WorkspaceMode::Uv => {
                             draw_help_group(ui, state, single_icon_group_width);
                             draw_side_panels_group(ui, state, single_icon_group_width);
+                            draw_comment_tool_group(ui, state, single_icon_group_width);
                             draw_uv_set_picker(ui, state);
                         }
                         WorkspaceMode::Texture => {
@@ -771,25 +772,36 @@ fn draw_tool_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
         {
             state.tool = state.tool.toggled();
         }
-        // Comments are left in the 3D workspace; Opt lays its two meshes out side
-        // by side and has no one surface to pin to.
+        // Comments are placed in the 3D and UV workspaces; Opt lays its two
+        // meshes out side by side and has no one surface to pin to.
         ui.add_enabled_ui(state.mode == WorkspaceMode::ThreeD, |ui| {
-            if icon_toggle_button(
-                ui,
-                &ICON_COMMENT,
-                state.tool == ViewportTool::Comment,
-                Tip::new(keys::ui_toolbar::COMMENT_TOOL)
-                    .describe(keys::ui_toolbar::comment_tool_description(
-                        review_localization::tr(keys::ui_toolbar::COMMENT_TOOL_KEY).into_owned(),
-                    ))
-                    .page(Page::Comments),
-            )
-            .clicked()
-            {
-                state.tool = state.tool.toggled_comment();
-            }
+            comment_tool_button(ui, state);
         });
     });
+}
+
+/// The UV workspace's one viewport tool: Comment, for pinning a note to a spot
+/// on the layout.
+fn draw_comment_tool_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
+    toolbar_group_shell(ui, width, |ui| comment_tool_button(ui, state));
+}
+
+/// The Comment tool's tile.
+fn comment_tool_button(ui: &mut egui::Ui, state: &mut UiState) {
+    if icon_toggle_button(
+        ui,
+        &ICON_COMMENT,
+        state.tool == ViewportTool::Comment,
+        Tip::new(keys::ui_toolbar::COMMENT_TOOL)
+            .describe(keys::ui_toolbar::comment_tool_description(
+                review_localization::tr(keys::ui_toolbar::COMMENT_TOOL_KEY).into_owned(),
+            ))
+            .page(Page::Comments),
+    )
+    .clicked()
+    {
+        state.tool = state.tool.toggled_comment();
+    }
 }
 
 /// Help, alone in a group at the far right of the bar.

@@ -220,6 +220,28 @@ impl App {
         self.request_redraw();
     }
 
+    /// The review comments as an export override: per source node, the
+    /// payload its threads encode to. Always given, even with no threads, so the
+    /// copy of the property in the source capture — the comments as the file was
+    /// opened, before any edit — is never what an export writes. Threads stored on
+    /// an object the scene has no node for, and payloads this version can't
+    /// rewrite, are left out: the export writes from the scene, not the file.
+    pub(crate) fn comment_export_strings(&self) -> Option<review_optimize::NodeStrings> {
+        let mut by_node: BTreeMap<usize, Vec<review_annotate::thread::Thread>> = BTreeMap::new();
+        for entry in &self.ui.comments.threads {
+            if let (Some(node), false) = (entry.node, entry.read_only) {
+                by_node.entry(node).or_default().push(entry.thread.clone());
+            }
+        }
+        Some(review_optimize::NodeStrings {
+            name: PROPERTY.to_owned(),
+            values: by_node
+                .into_iter()
+                .map(|(node, threads)| (node, encode(&threads, &[])))
+                .collect(),
+        })
+    }
+
     /// Before doing something that drops the comments: `true` when it may go
     /// ahead now; otherwise the user is asked, and `then` happens once they have
     /// answered (or not at all, if they stay).

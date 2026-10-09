@@ -243,6 +243,70 @@ fn node_faces(model: &ModelData, node: usize) -> Vec<(u32, u32)> {
     faces
 }
 
+/// The corner indices of a surface anchor's triangle on `node`, while the mesh
+/// still has the counts the anchor recorded — `None` once it has been edited.
+fn anchored_triangle(
+    model: &ModelData,
+    revision: u64,
+    geometry: &mut PinGeometry,
+    node: usize,
+    anchor: (u32, u32, &Topology),
+) -> Option<[u32; 3]> {
+    let (face, tri, topo) = anchor;
+    let scene_node = model.nodes.get(node)?;
+    let faces = geometry.faces_of(model, revision, node);
+    let matches =
+        faces.len() as u64 == topo.polys && scene_node.source_vertex_count as u64 == topo.verts;
+    let &(first, count) = matches.then(|| faces.get(face as usize)).flatten()?;
+    if tri >= count {
+        return None;
+    }
+    let triangle = (first + tri) as usize;
+    let corners = model.indices.get(triangle * 3..triangle * 3 + 3)?;
+    Some([corners[0], corners[1], corners[2]])
+}
+
+/// Where `entry`'s pin sits on UV set `channel` (named `set_name`), as a point
+/// on the `(u, v, 0)` plane the UV view projects: a surface pin at the UV its
+/// barycentrics interpolate on its triangle (while the mesh is unedited), a UV
+/// pin on its own set. Other anchors have no place on the layout.
+pub(crate) fn resolve_uv(
+    model: &ModelData,
+    revision: u64,
+    geometry: &mut PinGeometry,
+    channel: usize,
+    set_name: &str,
+    entry: &CommentEntry,
+) -> Option<Vec3> {
+    match entry.thread.anchor.as_ref()?.known()? {
+        Anchor::Surface {
+            face,
+            tri,
+            bary,
+            topo,
+            ..
+        } => {
+            let corners =
+                anchored_triangle(model, revision, geometry, entry.node?, (*face, *tri, topo))?;
+            let uv = corners
+                .iter()
+                .zip(bary)
+                .map(|(&corner, &weight)| model.uv_for_channel(corner as usize, channel) * weight)
+                .sum::<glam::Vec2>();
+            Some(uv.extend(0.0))
+        }
+        Anchor::Uv { set, uv } => {
+            let on_this_set = if set.is_empty() {
+                channel == 0
+            } else {
+                set == set_name
+            };
+            on_this_set.then(|| Vec3::new(uv[0], uv[1], 0.0))
+        }
+        Anchor::World { .. } => None,
+    }
+}
+
 /// Where `entry`'s pin is, and whether that point is on the surface: a world
 /// anchor as stored; a surface anchor on its triangle, through `pose` when one is
 /// active, or — when the host mesh no longer has the polygon it was placed on —
@@ -267,28 +331,22 @@ pub(crate) fn resolve_anchor(
         } => {
             let node = entry.node?;
             let scene_node = model.nodes.get(node)?;
-            let faces = geometry.faces_of(model, revision, node);
-            let matches = faces.len() as u64 == topo.polys
-                && scene_node.source_vertex_count as u64 == topo.verts;
-            let on_surface = matches
-                .then(|| faces.get(*face as usize))
-                .flatten()
-                .filter(|&&(_, count)| *tri < count)
-                .and_then(|&(first, _)| {
-                    let triangle = (first + tri) as usize;
-                    let corners = model.indices.get(triangle * 3..triangle * 3 + 3)?;
-                    let mut point = Vec3::ZERO;
-                    for (&corner, &weight) in corners.iter().zip(bary) {
-                        let position = match pose {
-                            Some((context, deform)) => {
-                                anim::deform_corner(model, context, deform, corner as usize).0
-                            }
-                            None => model.vertices.get(corner as usize)?.position,
-                        };
-                        point += position * weight;
-                    }
-                    Some(point)
-                });
+            let on_surface =
+                anchored_triangle(model, revision, geometry, node, (*face, *tri, topo)).and_then(
+                    |corners| {
+                        let mut point = Vec3::ZERO;
+                        for (&corner, &weight) in corners.iter().zip(bary) {
+                            let position = match pose {
+                                Some((context, deform)) => {
+                                    anim::deform_corner(model, context, deform, corner as usize).0
+                                }
+                                None => model.vertices.get(corner as usize)?.position,
+                            };
+                            point += position * weight;
+                        }
+                        Some(point)
+                    },
+                );
             Some(match on_surface {
                 Some(point) => (point, true),
                 None => (
@@ -347,58 +405,81 @@ impl App {
     /// longer has the polygon it was placed on.
     pub(crate) fn update_comment_pins(&mut self) {
         self.ui.comments.pins.clear();
-        if self.ui.mode != WorkspaceMode::ThreeD
-            || !self.ui.comments.show_pins
-            || self.ui.comments.threads.is_empty()
-        {
+        if !self.ui.comments.show_pins || self.ui.comments.threads.is_empty() {
             return;
         }
         let model = self.scene_model.clone();
         let revision = self.scene_revision;
-        let fps = model.frame_rate_or_default();
-        // The frame on screen, to tell which pins are in their frame range.
-        let current = self.ui.animation.selected_clip.and_then(|index| {
-            let clip = model.animations.get(index)?;
-            Some((
-                clip.name.as_str(),
-                clip.frame_at(self.ui.animation.time, fps),
-            ))
-        });
-        let pose = self
-            .animation
-            .active
-            .then(|| {
-                self.animation
-                    .context()
-                    .map(|context| (context, &self.animation.deform))
-            })
-            .flatten();
-
         let mut pins = Vec::new();
-        for (index, entry) in self.ui.comments.threads.iter().enumerate() {
-            let resolved = resolve_anchor(&model, revision, &mut self.pin_geometry, pose, entry);
-            let Some((world, on_surface)) = resolved else {
-                continue;
-            };
-            let in_range = entry.thread.frames.as_ref().is_none_or(|frames| {
-                current.is_some_and(|(clip, frame)| {
-                    clip == frames.clip
-                        && (frames.start as usize..=frames.end as usize).contains(&frame)
-                })
-            });
-            pins.push(CommentPin {
-                thread: index,
-                world,
-                on_surface,
-                in_range,
-            });
+        match self.ui.mode {
+            WorkspaceMode::ThreeD | WorkspaceMode::Opt => {
+                let fps = model.frame_rate_or_default();
+                // The frame on screen, to tell which pins are in their frame range.
+                let current = self.ui.animation.selected_clip.and_then(|index| {
+                    let clip = model.animations.get(index)?;
+                    Some((
+                        clip.name.as_str(),
+                        clip.frame_at(self.ui.animation.time, fps),
+                    ))
+                });
+                // Opt shows the bind pose on purpose, so its pins sit on it too.
+                let pose = (self.ui.mode == WorkspaceMode::ThreeD && self.animation.active)
+                    .then(|| {
+                        self.animation
+                            .context()
+                            .map(|context| (context, &self.animation.deform))
+                    })
+                    .flatten();
+                for (index, entry) in self.ui.comments.threads.iter().enumerate() {
+                    let resolved =
+                        resolve_anchor(&model, revision, &mut self.pin_geometry, pose, entry);
+                    let Some((world, on_surface)) = resolved else {
+                        continue;
+                    };
+                    let in_range = entry.thread.frames.as_ref().is_none_or(|frames| {
+                        current.is_some_and(|(clip, frame)| {
+                            clip == frames.clip
+                                && (frames.start as usize..=frames.end as usize).contains(&frame)
+                        })
+                    });
+                    pins.push(CommentPin {
+                        thread: index,
+                        world,
+                        on_surface,
+                        in_range,
+                    });
+                }
+            }
+            WorkspaceMode::Uv => {
+                let channel = self.ui.uv_view_channel as usize;
+                let set_name = model.uv_set_names.get(channel).cloned().unwrap_or_default();
+                for (index, entry) in self.ui.comments.threads.iter().enumerate() {
+                    if let Some(world) = resolve_uv(
+                        &model,
+                        revision,
+                        &mut self.pin_geometry,
+                        channel,
+                        &set_name,
+                        entry,
+                    ) {
+                        pins.push(CommentPin {
+                            thread: index,
+                            world,
+                            on_surface: false,
+                            in_range: true,
+                        });
+                    }
+                }
+            }
+            WorkspaceMode::Texture => {}
         }
         self.ui.comments.pins = pins;
     }
 
     /// Whether a viewport click leaves a review comment.
     pub(crate) fn commenting_enabled(&self) -> bool {
-        self.ui.tool == ViewportTool::Comment && self.ui.mode == WorkspaceMode::ThreeD
+        self.ui.tool == ViewportTool::Comment
+            && matches!(self.ui.mode, WorkspaceMode::ThreeD | WorkspaceMode::Uv)
     }
 
     /// The camera now, as a comment saves it.
@@ -418,6 +499,10 @@ impl App {
     /// comment pinned to the spot — or, while a pin is being moved, move it there;
     /// on empty space, start a comment about the view.
     pub(crate) fn place_comment(&mut self, position: glam::Vec2) {
+        if self.ui.mode == WorkspaceMode::Uv {
+            self.place_uv_comment(position);
+            return;
+        }
         let hit = self.cast_mesh(position);
         let model = self.scene_model.clone();
         let placed = hit.map(|hit| (hit, self.surface_anchor(&model, hit)));
@@ -445,6 +530,53 @@ impl App {
             None => DraftAnchor::View,
         };
         self.ui.comments.begin_draft(anchor, frames, view, screen);
+        self.request_redraw();
+    }
+
+    /// A Comment-tool click on the UV layout at `position` (physical pixels):
+    /// start a comment pinned to that UV point — on the part whose UVs are under
+    /// it, among the parts the view lays out — or, while a pin is being moved,
+    /// move it there.
+    fn place_uv_comment(&mut self, position: glam::Vec2) {
+        let (Some(renderer), Some(gpu)) = (self.renderer.as_ref(), self.gpu.as_ref()) else {
+            return;
+        };
+        let (width, height) = gpu.size();
+        let ndc =
+            OrbitCamera::ndc_from_viewport(position, glam::Vec2::new(width as f32, height as f32));
+        let plane = renderer.uv_camera.view_projection().inverse()
+            * glam::Vec4::new(ndc.x, ndc.y, 0.0, 1.0);
+        let uv = [plane.x, plane.y];
+        let model = self.scene_model.clone();
+        let channel = self.ui.uv_view_channel as usize;
+        let set = model.uv_set_names.get(channel).cloned().unwrap_or_default();
+        let node = uv_owner(
+            &model,
+            channel,
+            glam::Vec2::from(uv),
+            &self.ui.uv_scope_nodes(),
+            &self.ui.hidden_mesh_nodes(),
+        );
+        if let Some(index) = self.ui.comments.repin {
+            let anchor = Anchor::Uv { set, uv };
+            self.ui
+                .comments
+                .repin_thread(index, node.unwrap_or(usize::MAX), anchor, Vec3::ZERO);
+            self.request_redraw();
+            return;
+        }
+        let Some(view) = self.saved_view() else {
+            return;
+        };
+        let scale = self.scale_factor();
+        let screen = egui::pos2(position.x / scale, position.y / scale);
+        self.ui
+            .comments
+            .begin_draft(DraftAnchor::Uv { node, set, uv }, None, view, screen);
+        // A note on the layout is about the UVs, not about a camera angle.
+        if let Some(draft) = self.ui.comments.draft.as_mut() {
+            draft.include_view = false;
+        }
         self.request_redraw();
     }
 
@@ -574,9 +706,66 @@ impl App {
     }
 }
 
+/// The node whose UV triangle on `channel` contains `uv`, among the nodes the UV
+/// view lays out (`selected`, else every node; never one in `hidden`). The last
+/// such triangle wins, as the one drawn on top.
+fn uv_owner(
+    model: &ModelData,
+    channel: usize,
+    uv: glam::Vec2,
+    selected: &[u32],
+    hidden: &[u32],
+) -> Option<usize> {
+    let triangle_count = model.indices.len() / 3;
+    if model.triangles.node.len() != triangle_count {
+        return None;
+    }
+    let in_scope = |node: u32| {
+        !hidden.contains(&node)
+            && (selected.is_empty()
+                || selected.iter().any(|&root| {
+                    // A selected group lays out its whole subtree.
+                    let mut current = Some(node as usize);
+                    for _ in 0..model.nodes.len() {
+                        match current {
+                            Some(at) if at == root as usize => return true,
+                            Some(at) => current = model.nodes.get(at).and_then(|n| n.parent),
+                            None => break,
+                        }
+                    }
+                    false
+                }))
+    };
+    let mut owner = None;
+    for (triangle, corners) in model.indices.as_chunks::<3>().0.iter().enumerate() {
+        let node = model.triangles.node[triangle];
+        let [a, b, c] = corners.map(|corner| model.uv_for_channel(corner as usize, channel));
+        if in_triangle(uv, a, b, c) && in_scope(node) {
+            owner = Some(node as usize);
+        }
+    }
+    owner
+}
+
+/// Whether `p` lies inside (or on an edge of) the 2D triangle `a b c`, either
+/// winding.
+fn in_triangle(p: glam::Vec2, a: glam::Vec2, b: glam::Vec2, c: glam::Vec2) -> bool {
+    let side = |from: glam::Vec2, to: glam::Vec2| (to - from).perp_dot(p - from);
+    let (ab, bc, ca) = (side(a, b), side(b, c), side(c, a));
+    (ab >= 0.0 && bc >= 0.0 && ca >= 0.0) || (ab <= 0.0 && bc <= 0.0 && ca <= 0.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_point_in_a_triangle_is_found_either_winding() {
+        let (a, b, c) = (glam::Vec2::ZERO, glam::Vec2::X, glam::Vec2::Y);
+        assert!(in_triangle(glam::Vec2::new(0.2, 0.2), a, b, c));
+        assert!(in_triangle(glam::Vec2::new(0.2, 0.2), a, c, b));
+        assert!(!in_triangle(glam::Vec2::new(0.8, 0.8), a, b, c));
+    }
     use review_annotate::codec::{PROPERTY, encode};
     use review_annotate::fbx::{self, Edit};
     use review_annotate::thread::{AnchorValue, Message, Scope, Status, Thread, Topology};
@@ -701,6 +890,25 @@ mod tests {
             resolve_anchor(&model, 1, &mut geometry, None, &loaded.entries[0]).expect("resolves");
         assert!(on_surface);
         assert!(point.distance(expected) < 1e-4, "{point} vs {expected}");
+
+        // The same pin, mirrored onto the UV layout at its triangle's
+        // interpolated UV.
+        let expected_uv = corners
+            .iter()
+            .map(|&corner| model.uv_for_channel(corner as usize, 0))
+            .sum::<glam::Vec2>()
+            / 3.0;
+        let uv =
+            resolve_uv(&model, 1, &mut geometry, 0, "", &loaded.entries[0]).expect("on the layout");
+        assert!(
+            uv.truncate().distance(expected_uv) < 1e-4,
+            "{uv} vs {expected_uv}"
+        );
+        assert_eq!(
+            resolve_uv(&model, 1, &mut geometry, 0, "", &loaded.entries[1]),
+            None,
+            "an edited mesh has no place on the layout"
+        );
 
         let (point, on_surface) =
             resolve_anchor(&model, 1, &mut geometry, None, &loaded.entries[1]).expect("resolves");

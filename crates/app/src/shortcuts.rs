@@ -159,6 +159,11 @@ impl App {
                 }
                 self.redraw.requested = true;
             }
+            // The Comment tool pins notes to the layout here too.
+            if event.state == ElementState::Pressed && key == "c" {
+                self.ui.tool = self.ui.tool.toggled_comment();
+                self.redraw.requested = true;
+            }
             return;
         }
 
@@ -213,7 +218,7 @@ impl App {
                 }
             }
             // Switches the left button between turning the camera and leaving
-            // review comments, in the 3D workspace.
+            // review comments, in the 3D workspace (UV handles it above).
             "c" => {
                 if self.ui.mode != WorkspaceMode::ThreeD {
                     return;

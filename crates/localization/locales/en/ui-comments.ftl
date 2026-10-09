@@ -54,6 +54,7 @@ ui-comments-go-to = Go to comment
 ui-comments-composer-on = On { $object }
 ui-comments-composer-about-view = About this view
 ui-comments-composer-about-file = About the whole file
+ui-comments-composer-about-uv = About the UV layout
 ui-comments-composer-hint = Write a comment...
 ui-comments-composer-name = Your name
     .description = Comments are signed with this name. It is remembered for next time.

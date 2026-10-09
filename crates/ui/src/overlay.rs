@@ -3,7 +3,7 @@
 //! and returns the [`UiOutput`] intents for `app` to apply.
 
 use review_model::{ModelData, SceneBvh};
-use review_render::{OrbitCamera, Selection};
+use review_render::{OrbitCamera, Selection, UvCamera};
 
 use crate::dimensions::DimensionView;
 use crate::opt_state::{ComparisonSide, OptIntent, OptLayout};
@@ -48,7 +48,9 @@ pub struct OptOverlayLevel<'a> {
     pub revision: u64,
 }
 
-/// Draw the full egui overlay and return the intents emitted this frame. `model`
+/// Draw the full egui overlay and return the intents emitted this frame.
+/// `camera` and `uv_camera` are the 3D and UV views' cameras, for projecting
+/// what the chrome draws over them (labels, review-comment pins). `model`
 /// is the shared scene geometry and `bvh` an acceleration structure over it, both
 /// read only for the bounding-box dimension labels' occlusion test (invariant 1:
 /// borrowed, never copied). `bvh` is `None` until `app` has built it for the
@@ -59,6 +61,7 @@ pub fn draw_overlay(
     root: &mut egui::Ui,
     state: &mut UiState,
     camera: OrbitCamera,
+    uv_camera: UvCamera,
     model: &ModelData,
     bvh: Option<&SceneBvh>,
     opt: Option<OptOverlayView<'_>>,
@@ -177,20 +180,18 @@ pub fn draw_overlay(
         dimensions::draw_dimension_labels(ctx, state, &views);
 
         // Review-comment pins, over the scene and under the floating chrome, and
-        // the composer of a comment being written.
-        if state.mode == WorkspaceMode::ThreeD {
-            let pin_view = comment_pins::PinView {
-                camera,
-                image: screen,
-                clamp: viewport,
-                model,
-                bvh,
-            };
-            comment_pins::draw_comment_pins(ctx, state, &pin_view);
-            comment_composer::draw_composer(ctx, state, Some(&pin_view), viewport);
+        // the composer of a comment being written. In the Opt split they sit on
+        // the source half — the mesh they were written on — through that half's
+        // own camera.
+        let split = state.mode == WorkspaceMode::Opt && state.opt.layout == OptLayout::Split;
+        let pin_view = if split {
+            let (left, _) = split_halves(viewport);
+            comment_pins::PinView::scene(state, half_camera(camera, left), left, left, model, bvh)
         } else {
-            comment_composer::draw_composer(ctx, state, None, viewport);
-        }
+            comment_pins::PinView::scene(state, camera, screen, viewport, model, bvh)
+        };
+        comment_pins::draw_comment_pins(ctx, state, &pin_view);
+        comment_composer::draw_composer(ctx, state, Some(&pin_view), viewport);
 
         draw_option_panels(ctx, state, viewport);
 
@@ -235,6 +236,16 @@ pub fn draw_overlay(
             side.right_inset,
         );
     } else {
+        if state.mode == WorkspaceMode::Uv {
+            if state.tool == crate::state::ViewportTool::Comment && !ctx.is_pointer_over_egui() {
+                ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
+            }
+            // The UV layout's pins, through the UV camera — the renderer draws the
+            // layout over the whole window, as it does the 3D scene.
+            let pin_view = comment_pins::PinView::uv(uv_camera, screen, viewport);
+            comment_pins::draw_comment_pins(ctx, state, &pin_view);
+            comment_composer::draw_composer(ctx, state, Some(&pin_view), viewport);
+        }
         if state.mode == WorkspaceMode::Texture {
             // The Tex workspace paints a 2D image viewer (channel-isolated,
             // pan/zoom) over a chosen background fill, in the central area the
@@ -252,8 +263,6 @@ pub fn draw_overlay(
         }
         crate::help::draw(ctx, &mut state.help, viewport);
         crate::log_window::draw(ctx, &mut state.log, viewport);
-        // A note about the file, started from the Comments tab.
-        comment_composer::draw_composer(ctx, state, None, viewport);
     }
 
     // Last, so the modal's backdrop covers every other piece of chrome.
@@ -757,7 +766,15 @@ mod tests {
         };
         for _ in 0..3 {
             let mut output = ctx.run_ui(input(), |ui| {
-                draw_overlay(ui, &mut state, OrbitCamera::default(), &model, None, None);
+                draw_overlay(
+                    ui,
+                    &mut state,
+                    OrbitCamera::default(),
+                    UvCamera::default(),
+                    &model,
+                    None,
+                    None,
+                );
             });
             output.textures_delta.clear();
         }

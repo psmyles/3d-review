@@ -168,6 +168,7 @@ impl App {
 
             let raw_input = egui_state.take_egui_input(window);
             let camera = renderer.camera;
+            let uv_camera = renderer.uv_camera;
             let scene_model = self.scene_model.clone();
             // Both the dimension labels' occlusion and the viewport pick read
             // this one index, built on the import worker; `None` until it lands.
@@ -211,6 +212,7 @@ impl App {
                     ui,
                     &mut self.ui,
                     camera,
+                    uv_camera,
                     &scene_model,
                     occlusion_bvh,
                     opt_overlay,

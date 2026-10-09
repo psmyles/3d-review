@@ -1,30 +1,105 @@
-//! Review-comment pins over the 3D view: a numbered circle wherever a listed
-//! thread points, placed this frame by `app` (which resolves each anchor against
-//! the current pose) and projected here through the live camera.
+//! Review-comment pins over a view: a numbered circle wherever a listed thread
+//! points, placed this frame by `app` (which resolves each anchor against the
+//! current pose, or onto the UV layout) and projected here through the view's
+//! own camera.
 //!
-//! A pin behind the model is drawn faded rather than hidden, so a reviewer always
-//! knows a comment is there; one about frames the animation isn't on is fainter
-//! still. Hovering shows the comment's opening; a click selects it without
-//! moving the camera — going to it is the Comments tab's click, or the
+//! In the 3D view a pin behind the model is drawn faded rather than hidden, so a
+//! reviewer always knows a comment is there; one about frames the animation isn't
+//! on is fainter still. Hovering shows the comment's opening; a click selects it
+//! without moving the camera — going to it is the Comments tab's click, or the
 //! Inspector's button.
 
-use glam::Vec3;
+use glam::{Mat4, Vec3};
 use review_model::{ModelData, SceneBvh};
-use review_render::OrbitCamera;
+use review_render::{OrbitCamera, UvCamera};
 
 use crate::dimensions;
 use crate::state::{CommentPin, UiState, ViewProjectionMode};
 use crate::theme::{color, font, size};
 
-/// What the pins are projected through: the camera, the rect its picture covers,
-/// and the rect pins are kept inside (the free viewport).
+/// What pins are projected through: the view's projection of the space `app`
+/// placed them in, the rect its picture covers, the rect pins are kept inside
+/// (the free viewport), and — for a 3D view — what can hide them.
 pub(crate) struct PinView<'a> {
-    pub(crate) camera: OrbitCamera,
+    pub(crate) view_projection: Mat4,
     pub(crate) image: egui::Rect,
     pub(crate) clamp: egui::Rect,
-    pub(crate) model: &'a ModelData,
+    pub(crate) occlusion: Option<PinOcclusion<'a>>,
+}
+
+/// The 3D view's occlusion test for pins.
+pub(crate) struct PinOcclusion<'a> {
+    camera: OrbitCamera,
+    orthographic: bool,
+    model: &'a ModelData,
     /// Occlusion structure over `model`; `None` draws every pin at full strength.
-    pub(crate) bvh: Option<&'a SceneBvh>,
+    bvh: Option<&'a SceneBvh>,
+}
+
+impl<'a> PinView<'a> {
+    /// A 3D view through `camera`, whose pins `bvh` can hide behind `model`.
+    pub(crate) fn scene(
+        state: &UiState,
+        camera: OrbitCamera,
+        image: egui::Rect,
+        clamp: egui::Rect,
+        model: &'a ModelData,
+        bvh: Option<&'a SceneBvh>,
+    ) -> Self {
+        Self {
+            view_projection: camera.view_projection(state.projection_mode.into()),
+            image,
+            clamp,
+            occlusion: Some(PinOcclusion {
+                camera,
+                orthographic: matches!(state.projection_mode, ViewProjectionMode::Orthographic),
+                model,
+                bvh,
+            }),
+        }
+    }
+
+    /// The UV layout through `camera`, whose pins `app` placed at `(u, v, 0)`.
+    /// Nothing hides a pin there.
+    pub(crate) fn uv(camera: UvCamera, image: egui::Rect, clamp: egui::Rect) -> Self {
+        Self {
+            view_projection: camera.view_projection(),
+            image,
+            clamp,
+            occlusion: None,
+        }
+    }
+
+    /// Where `world` lands on screen, if it is in the picture.
+    pub(crate) fn project(&self, world: Vec3) -> Option<egui::Pos2> {
+        dimensions::project(self.view_projection, world, self.image)
+    }
+
+    /// Whether the model hides the pin at `world` from the camera.
+    fn occluded(&self, world: Vec3, on_surface: bool, hidden: &[u32]) -> bool {
+        let Some(occlusion) = &self.occlusion else {
+            return false;
+        };
+        let Some(bvh) = occlusion.bvh else {
+            return false;
+        };
+        let scene_size = occlusion
+            .model
+            .bounds
+            .map_or(1.0, |bounds| bounds.size().length())
+            .max(1.0e-3);
+        let origin = if occlusion.orthographic {
+            world - occlusion.camera.forward_dir() * scene_size * 2.0
+        } else {
+            occlusion.camera.eye_position()
+        };
+        let target = if on_surface {
+            lifted(world, origin, scene_size)
+        } else {
+            world
+        };
+        bvh.segment_occluded(occlusion.model, origin, target, hidden)
+    }
 }
 
 /// How far a surface pin's occlusion ray stops short of it, as a fraction of the
@@ -37,14 +112,6 @@ pub(crate) fn draw_comment_pins(ctx: &egui::Context, state: &mut UiState, view: 
         return;
     }
     let hidden: Vec<u32> = state.hidden_meshes.iter().map(|&i| i as u32).collect();
-    let view_projection = view.camera.view_projection(state.projection_mode.into());
-    let orthographic = matches!(state.projection_mode, ViewProjectionMode::Orthographic);
-    let scene_size = view
-        .model
-        .bounds
-        .map_or(1.0, |bounds| bounds.size().length())
-        .max(1.0e-3);
-    let eye = view.camera.eye_position();
     let selected = state
         .comment_inspected()
         .then_some(state.comments.selected)
@@ -68,26 +135,13 @@ pub(crate) fn draw_comment_pins(ctx: &egui::Context, state: &mut UiState, view: 
         .show(ctx, |ui| {
             ui.set_clip_rect(view.clamp);
             for pin in pins {
-                let Some(center) = dimensions::project(view_projection, pin.world, view.image)
-                else {
+                let Some(center) = view.project(pin.world) else {
                     continue;
                 };
                 if !view.clamp.contains(center) {
                     continue;
                 }
-                let origin = if orthographic {
-                    pin.world - view.camera.forward_dir() * scene_size * 2.0
-                } else {
-                    eye
-                };
-                let target = if pin.on_surface {
-                    lifted(pin.world, origin, scene_size)
-                } else {
-                    pin.world
-                };
-                let occluded = view
-                    .bvh
-                    .is_some_and(|bvh| bvh.segment_occluded(view.model, origin, target, &hidden));
+                let occluded = view.occluded(pin.world, pin.on_surface, &hidden);
                 let mut opacity: f32 = 1.0;
                 if occluded {
                     opacity = opacity.min(color::COMMENT_PIN_OCCLUDED_OPACITY);
