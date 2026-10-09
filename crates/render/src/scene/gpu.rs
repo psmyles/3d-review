@@ -55,8 +55,8 @@ use crate::ibl::IblMaps;
 use crate::material::{MaterialKey, MaterialState, MaterialTable, effective_materials};
 use crate::rhi::{
     Bindings, Cull, DEPTH_MIP_COLORS, Depth, DepthBias, Format, Frame, GBUFFER_COLORS, GpuResult,
-    IndexBuffer, OCCLUSION_COLORS, Pipeline, PipelineDesc, Sampler, StorageBuffer, Texture,
-    Topology, VertexBuffer, Zone, shader,
+    OCCLUSION_COLORS, Pipeline, PipelineDesc, Sampler, StorageBuffer, Texture, Topology,
+    VertexBuffer, Zone, shader,
 };
 use crate::shaders::generated;
 use crate::{
@@ -65,10 +65,13 @@ use crate::{
 
 use super::gpu_types::{InfluenceEntry, MorphEntry, PaletteEntry, SceneUniforms};
 use super::opt::ghost_tint;
-use super::pipelines::{SCENE_VERTEX_LAYOUT, ScenePipelineSet, build_scene_pipelines};
+use super::pipelines::{
+    LinePipelineSet, SCENE_VERTEX_LAYOUT, ScenePipelineSet, build_line_pipelines,
+    build_scene_pipelines,
+};
 use super::slot::{ModelSlot, SlotId};
 use super::targets::{BackbufferRect, TargetSet, TargetSetId};
-use super::uniforms::{flat_display, post_uniforms, scene_uniforms};
+use super::uniforms::{LineWidths, flat_display, post_uniforms, scene_uniforms};
 
 /// The greyscale + colour UV-checker PNGs (baked in; invariant: assets via
 /// `include_bytes!`), uploaded once as sRGB textures and picked per frame.
@@ -124,9 +127,12 @@ impl DeformDummies {
 /// targets are recreated on resize; the mesh buffers when the model changes; the IBL
 /// maps when the environment changes.
 pub(crate) struct SceneGpu {
-    /// Every pipeline that draws into the scene pass, held as the one set
-    /// [`build_scene_pipelines`] returns.
+    /// Every pipeline that draws into the multisampled scene pass, held as the one
+    /// set [`build_scene_pipelines`] returns.
     pub(super) scene: ScenePipelineSet,
+    /// Every pipeline that draws into the single-sample line pass. Built once:
+    /// unlike [`Self::scene`], nothing in it depends on the AA level.
+    pub(super) lines: LinePipelineSet,
     /// The composite, drawn into the frame's swapchain pass as a deferred job.
     pub(super) composite: Pipeline,
     /// Mesh-only single-sample view-normal/Z G-buffer pass.
@@ -255,6 +261,7 @@ impl SceneGpu {
 
         Ok(Self {
             scene: build_scene_pipelines(sample_count)?,
+            lines: build_line_pipelines()?,
             composite: Pipeline::new(&PipelineDesc::swapchain(composite_shader, c"composite"))?,
             gtao_gbuffer_pipeline,
             gtao_depth_mip_pipeline,
@@ -268,8 +275,9 @@ impl SceneGpu {
             ibl: IblMaps::from_baked(EnvironmentSettings::default().map)?,
             materials: MaterialTable::new()?,
             dummies: DeformDummies::new()?,
-            grid: VertexBuffer::new(&scene_lines(), c"grid")?,
-            uv_grid: VertexBuffer::new(&uv_grid_lines(), c"uv grid")?,
+            // Pullable: `vs_line` reads each line's ends through a storage view.
+            grid: VertexBuffer::pullable(&scene_lines(), c"grid")?,
+            uv_grid: VertexBuffer::pullable(&uv_grid_lines(), c"uv grid")?,
             uv_texture: None,
             uv_checker: None,
             targets: TargetSet::new(width, height, sample_count)?,
@@ -345,12 +353,14 @@ impl SceneGpu {
             scene.debug,
             self.active.deform_enabled(),
         );
+        let lines = LineWidths::new(scene, targets.color.size());
         let gtao_active = self.gtao_active(scene);
         self.record_scene_pass(
             frame,
             scene,
             targets,
             &uniforms,
+            &lines,
             ghost.map(|(style, tint)| {
                 // The ghost's own uniform: the same camera and projection, with the flat
                 // fill colour swapped in. Under sokol nothing has to be *restored*
@@ -538,19 +548,24 @@ impl SceneGpu {
         Ok(())
     }
 
-    /// The offscreen 2-MRT scene pass: skybox, the mesh draw list, the grid, the
-    /// derived line overlays, the pivot marker, the skeleton and the selection
-    /// highlight.
+    /// The offscreen 2-MRT scene pass — skybox, the mesh draw list, the hover and
+    /// selection fills, the x-ray ghost — and then the line views over it.
+    ///
+    /// The lines antialias their own edges, so they gain nothing from MSAA and pay a
+    /// blend per sample for every pixel they cover, which a dense wireframe makes a
+    /// great many. At 2×+ they therefore go in a pass of their own after this one has
+    /// resolved ([`Self::record_line_pass`]); at 1× this pass is single-sample anyway
+    /// and they are simply drawn last in it. Either way they come after every fill,
+    /// so the two paths look the same.
     pub(super) fn record_scene_pass(
         &self,
         frame: &mut Frame<'_>,
         scene: &SceneFrame<'_>,
         targets: &TargetSet,
         uniforms: &SceneUniforms,
+        lines: &LineWidths,
         ghost: Option<(GhostStyle, SceneUniforms)>,
     ) {
-        let debug = scene.debug;
-
         // Clear the scene colour + ambient to zero radiance *and* zero alpha: the
         // alpha is the composite's coverage mask, so the cleared background reads as
         // "no geometry" and the post pass paints the chosen viewport background there
@@ -563,25 +578,80 @@ impl SceneGpu {
             c"scene",
         );
 
-        let checker = match debug.uv_checker_texture {
+        let checker = match scene.debug.uv_checker_texture {
             CheckerTexture::Greyscale => &self.checker_greyscale,
             CheckerTexture::Color => &self.checker_color,
         };
 
-        // Back to front: the skybox behind everything, the mesh, the line views
-        // over it, then the hover and selection fills.
+        // Back to front: the skybox behind everything, the mesh, the hover and
+        // selection fills over it, then the ghost.
         if scene.environment.show_background {
             self.draw_skybox(frame, uniforms);
         }
         self.draw_mesh_list(frame, scene, checker, uniforms);
-        self.draw_line_overlays(frame, scene, checker, uniforms);
         self.draw_highlights(frame, scene, uniforms);
+        let wireframe_ghost = match &ghost {
+            Some((GhostStyle::Xray, ghost_uniforms)) => {
+                self.draw_xray_ghost(frame, ghost_uniforms);
+                None
+            }
+            Some((GhostStyle::Wireframe, ghost_uniforms)) => Some(ghost_uniforms),
+            None => None,
+        };
 
-        if let Some((style, ghost_uniforms)) = &ghost {
-            self.draw_ghost(frame, *style, ghost_uniforms);
+        let views = LineViews {
+            scene,
+            checker,
+            uniforms,
+            lines,
+            wireframe_ghost,
+        };
+        if targets.color.sample_count() > 1 {
+            frame.end_pass();
+            if self.has_line_views(&views) {
+                self.record_line_pass(frame, targets, &views);
+            }
+        } else {
+            self.draw_line_views(frame, &views);
+            frame.end_pass();
         }
-        frame.end_pass();
         frame.zone_end(Zone::Scene);
+    }
+
+    /// The single-sample pass the lines draw in when the scene pass was
+    /// multisampled: over the scene's *resolved* colour and ambient, against a
+    /// depth-only redraw of the mesh in the scratch depth — the multisampled depth
+    /// cannot be read, and a line has to be hidden behind the surface just as it was.
+    ///
+    /// The one thing given up is the occlusion's antialiasing: where a line passes
+    /// behind the mesh's silhouette it is now cut on whole pixels rather than on
+    /// samples. A line's *own* edges are unaffected — the shader smooths those.
+    fn record_line_pass(&self, frame: &mut Frame<'_>, targets: &TargetSet, views: &LineViews<'_>) {
+        frame.begin_resolved_pass(
+            &[&targets.color, &targets.ambient],
+            &targets.scratch_depth,
+            c"lines",
+        );
+        self.draw_depth_prepass(frame, views.scene, views.uniforms);
+        self.draw_line_views(frame, views);
+        frame.end_pass();
+    }
+
+    /// Whether this frame draws any line at all — so that a view with the grid off
+    /// and nothing else switched on does not pay for a line pass with nothing in it.
+    fn has_line_views(&self, views: &LineViews<'_>) -> bool {
+        let debug = views.scene.debug;
+        let derived = &self.active.views;
+        (debug.show_grid)
+            || (wireframe_on(views.scene) && derived.wireframe_edges.is_some())
+            || derived.bounding_box_buf.is_some()
+            || derived.face_normal_buf.is_some()
+            || derived.vertex_normal_buf.is_some()
+            || derived.uv_seam_buf.is_some()
+            || derived.pivot_buf.is_some()
+            || derived.skeleton_fill_buf.is_some()
+            || derived.skeleton_line_buf.is_some()
+            || (views.wireframe_ghost.is_some() && self.idle.ghost_wireframe_edges.is_some())
     }
 
     /// The skybox, behind all geometry.
@@ -600,7 +670,7 @@ impl SceneGpu {
     }
 
     /// The mesh itself, one draw per material range, from whichever index list
-    /// is in effect.
+    /// is in effect ([`Self::mesh_draw_list`]).
     fn draw_mesh_list(
         &self,
         frame: &mut Frame<'_>,
@@ -609,89 +679,73 @@ impl SceneGpu {
         uniforms: &SceneUniforms,
     ) {
         let debug = scene.debug;
-        let selection = scene.selection;
-        // Mesh draw list, in precedence order: solo (isolate the selection) wins;
-        // otherwise per-mesh visibility (the filtered list, present only while some
-        // mesh is hidden); otherwise the whole mesh. All three share the mesh vertex
-        // buffer, so only the index source + ranges differ. Wireframe shading draws no
-        // filled surface.
-        let solo = selection.solo && selection.selection.is_active();
-        if let Some(mesh) = &self.active.mesh
-            && !matches!(debug.shading_mode, ShadingMode::Wireframe)
-        {
-            let pipeline = if debug.render_backfaces {
-                &self.scene.mesh_double_sided
-            } else {
-                &self.scene.mesh
-            };
-            // The skin-weight heat map is a drop-in replacement for the mesh's vertex
-            // buffer: same length, same order, so the index buffer, the per-material
-            // ranges and the solo / visibility lists below all stay valid. It keeps
-            // the real normals (the shader Lambert-shades it) and is selected by
-            // `projection_params.w`, so the material bound per range is simply
-            // ignored.
-            let vertices = self
-                .active
-                .views
-                .weights_buf
-                .as_ref()
-                .unwrap_or(&mesh.vertices);
-            // Solo draws only the selection (empty → nothing); visible draws the
-            // filtered list (`None` while active means every mesh is hidden → nothing);
-            // otherwise the whole mesh.
-            let draw_list: Option<(&IndexBuffer, &[_])> = if solo {
-                self.active
-                    .selection_index
-                    .as_ref()
-                    .map(|index| (index, self.active.selection_ranges.as_slice()))
-            } else if self.active.visible_active {
-                self.active
-                    .visible_index
-                    .as_ref()
-                    .map(|index| (index, self.active.visible_ranges.as_slice()))
-            } else {
-                Some((&mesh.indices, mesh.ranges.as_slice()))
-            };
-            if let Some((index_buffer, ranges)) = draw_list {
-                frame.apply_pipeline(pipeline);
-                frame.apply_uniforms(generated::UB_SCENE_VS, uniforms);
-                frame.apply_uniforms(generated::UB_SCENE_FS, uniforms);
-                for range in ranges {
-                    let material = self.materials.entry(range.material);
-                    let mut bindings = self.mesh_bindings(checker, material);
-                    bindings.mesh_vertices(vertices);
-                    bindings.mesh_indices(index_buffer);
-                    frame.apply_bindings(&bindings);
-                    frame.apply_uniforms(generated::UB_MATERIAL, material.uniform());
-                    frame.draw(range.first_index as usize, range.index_count as usize);
-                }
-            }
+        let (Some(mesh), Some((index_buffer, ranges))) =
+            (&self.active.mesh, self.mesh_draw_list(scene))
+        else {
+            return;
+        };
+        let pipeline = if debug.render_backfaces {
+            &self.scene.mesh_double_sided
+        } else {
+            &self.scene.mesh
+        };
+        // The skin-weight heat map is a drop-in replacement for the mesh's vertex
+        // buffer: same length, same order, so the index buffer, the per-material
+        // ranges and the solo / visibility lists all stay valid. It keeps the real
+        // normals (the shader Lambert-shades it) and is selected by
+        // `projection_params.w`, so the material bound per range is simply ignored.
+        let vertices = self
+            .active
+            .views
+            .weights_buf
+            .as_ref()
+            .unwrap_or(&mesh.vertices);
+        frame.apply_pipeline(pipeline);
+        frame.apply_uniforms(generated::UB_SCENE_VS, uniforms);
+        frame.apply_uniforms(generated::UB_SCENE_FS, uniforms);
+        for range in ranges {
+            let material = self.materials.entry(range.material);
+            let mut bindings = self.mesh_bindings(checker, material);
+            bindings.mesh_vertices(vertices);
+            bindings.mesh_indices(index_buffer);
+            frame.apply_bindings(&bindings);
+            frame.apply_uniforms(generated::UB_MATERIAL, material.uniform());
+            frame.draw(range.first_index as usize, range.index_count as usize);
         }
     }
 
-    /// The grid, the wireframe and every derived line view, then the skeleton
-    /// and the always-on-top markers.
-    fn draw_line_overlays(
-        &self,
-        frame: &mut Frame<'_>,
-        scene: &SceneFrame<'_>,
-        checker: &Texture,
-        uniforms: &SceneUniforms,
-    ) {
+    /// The grid, the wireframe and every derived line view, then the skeleton and
+    /// the always-on-top markers, then the Opt overlay's wireframe ghost — all
+    /// through the single-sample line pipelines, into whichever pass the caller has
+    /// open (see [`Self::record_scene_pass`]).
+    fn draw_line_views(&self, frame: &mut Frame<'_>, views: &LineViews<'_>) {
+        let &LineViews {
+            scene,
+            checker,
+            uniforms,
+            lines,
+            wireframe_ghost,
+        } = views;
         let debug = scene.debug;
         // The static grid, then the derived line overlays (wireframe / bounding box /
-        // face+vertex normals / UV seams) on top of the mesh. All share the line
-        // pipeline (depth-tested Reversed-Z `GreaterEqual`, no depth write — the mesh
-        // pushed its surface back so coplanar edges win). Each buffer is `None` while
-        // its view is off. Seams go last: they sit exactly on wireframe edges, and
-        // with equal depth and no depth write the later draw is the one that shows.
+        // face+vertex normals / UV seams) on top of the mesh. All are depth-tested
+        // (Reversed-Z `GreaterEqual`, no depth write — the mesh pushed its surface back
+        // so coplanar edges win). Each buffer is `None` while its view is off. Seams go
+        // last: they sit exactly on wireframe edges, and with equal depth and no depth
+        // write the later draw is the one that shows.
         if debug.show_grid {
-            self.draw_lines(frame, &self.scene.line, [&self.grid], uniforms);
+            self.draw_lines(
+                frame,
+                &self.lines.line,
+                [&self.grid],
+                uniforms,
+                &lines.overlay,
+            );
         }
         // The wireframe sits between the grid and the rest: it is the one line view
-        // drawn indexed over the mesh vertex buffer, on its own pipeline.
-        if debug.wireframe_overlay || matches!(debug.shading_mode, ShadingMode::Wireframe) {
-            self.draw_wireframe(frame, uniforms, debug.wireframe_color);
+        // drawn over the mesh vertex buffer, on its own pipeline, at its own width.
+        if wireframe_on(scene) {
+            self.draw_wireframe(frame, uniforms, &lines.wireframe, debug.wireframe_color);
         }
         let line_views = [
             &self.active.views.bounding_box_buf,
@@ -701,11 +755,24 @@ impl SceneGpu {
         ];
         self.draw_lines(
             frame,
-            &self.scene.line,
+            &self.lines.line,
             line_views.into_iter().flatten(),
             uniforms,
+            &lines.overlay,
         );
 
+        // Skeleton fills go first, under their own outlines: translucent octahedra,
+        // with the per-bone selection tint already baked into the buffer.
+        if let Some(fill) = &self.active.views.skeleton_fill_buf {
+            let mut bindings = self.mesh_bindings(checker, self.materials.fallback());
+            bindings.mesh_vertices(fill);
+            frame.apply_pipeline(&self.lines.fill_overlay);
+            frame.apply_bindings(&bindings);
+            frame.apply_uniforms(generated::UB_SCENE_VS, uniforms);
+            frame.apply_uniforms(generated::UB_SCENE_FS, uniforms);
+            frame.apply_uniforms(generated::UB_MATERIAL, self.materials.fallback().uniform());
+            frame.draw(0, fill.count());
+        }
         // Pivot marker + the skeleton's outlines: the always-on-top line pipeline
         // (depth compare `Always`), so they read *through* the mesh instead of being
         // occluded inside it.
@@ -713,25 +780,18 @@ impl SceneGpu {
             &self.active.views.pivot_buf,
             &self.active.views.skeleton_line_buf,
         ];
-
-        // Skeleton fills go first, under their own outlines: translucent octahedra,
-        // with the per-bone selection tint already baked into the buffer.
-        if let Some(fill) = &self.active.views.skeleton_fill_buf {
-            let mut bindings = self.mesh_bindings(checker, self.materials.fallback());
-            bindings.mesh_vertices(fill);
-            frame.apply_pipeline(&self.scene.fill_overlay);
-            frame.apply_bindings(&bindings);
-            frame.apply_uniforms(generated::UB_SCENE_VS, uniforms);
-            frame.apply_uniforms(generated::UB_SCENE_FS, uniforms);
-            frame.apply_uniforms(generated::UB_MATERIAL, self.materials.fallback().uniform());
-            frame.draw(0, fill.count());
-        }
         self.draw_lines(
             frame,
-            &self.scene.line_overlay,
+            &self.lines.line_overlay,
             overlay_lines.into_iter().flatten(),
             uniforms,
+            &lines.overlay,
         );
+
+        // The Opt overlay's wireframe ghost, over everything, at the wireframe's width.
+        if let Some(ghost_uniforms) = wireframe_ghost {
+            self.draw_wireframe_ghost(frame, ghost_uniforms, &lines.wireframe);
+        }
     }
 
     /// The hover preview and the selection highlight, over the mesh.
@@ -768,6 +828,25 @@ impl SceneGpu {
             );
         }
     }
+}
+
+/// What drawing one view's lines needs, gathered once so the inline (1×) and
+/// separate-pass (2×+) paths of [`SceneGpu::record_scene_pass`] are handed the same
+/// thing.
+pub(super) struct LineViews<'a> {
+    pub(super) scene: &'a SceneFrame<'a>,
+    pub(super) checker: &'a Texture,
+    pub(super) uniforms: &'a SceneUniforms,
+    pub(super) lines: &'a LineWidths,
+    /// The Opt overlay's ghost uniforms (its tint in `selection_color`), when the
+    /// ghost is drawn as a wireframe.
+    pub(super) wireframe_ghost: Option<&'a SceneUniforms>,
+}
+
+/// Whether the model wireframe is drawn: the overlay toggle, or the Wireframe-only
+/// shading mode, which draws the edges as the only geometry.
+pub(super) fn wireframe_on(scene: &SceneFrame<'_>) -> bool {
+    scene.debug.wireframe_overlay || matches!(scene.debug.shading_mode, ShadingMode::Wireframe)
 }
 
 /// Decode a baked UV-checker PNG into an sRGB GPU texture. A decode failure is a

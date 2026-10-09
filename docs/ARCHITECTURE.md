@@ -981,8 +981,9 @@ it drops quad topology and changes vertex counts.
 
 **Shading is one scene program** (`@program mesh`) covering the shaded, unlit,
 wireframe, uv-checker and vertex-colour paths; tone mapping and sRGB encoding live
-in the `post` program, and the model wireframe is a depth-tested line-list draw in
-the scene pass. The whole set is generated per backend by sokol-shdc and compiled
+in the `post` program, and every line — the wireframe, the grid and every overlay —
+is a depth-tested screen-space quad, antialiased by its own shader and so drawn
+single-sample after the MSAA resolve rather than in the multisampled pass. The whole set is generated per backend by sokol-shdc and compiled
 offline to committed bytecode by `build.rs`; the runtime does no shader
 compilation. The Tex image is drawn by its own minimal fullscreen-triangle
 pipeline, outside the scene MRT and tonemap path, so channel isolation is a

@@ -188,6 +188,10 @@ pub struct SceneFrame<'a> {
     /// selected, else the model's own rest bounds. `None` falls back to
     /// `model.bounds`.
     pub scene_bounds: Option<Bounds>,
+    /// Physical pixels per egui point — the window's display scale (2 on a Retina
+    /// screen, 1.25 at 125% on Windows). What turns
+    /// [`SceneDebugOptions::wireframe_width`], which is in points, into pixels.
+    pub pixels_per_point: f32,
 }
 
 impl<'a> SceneFrame<'a> {
@@ -290,6 +294,9 @@ pub struct UvFrame<'a> {
     /// The texture picked in the Textures tab, drawn over the 0..1 square behind
     /// the layout so the islands can be read against the image they map.
     pub texture: Option<UvTexture<'a>>,
+    /// Physical pixels per egui point, as [`SceneFrame::pixels_per_point`]: what
+    /// gives the UV view's lines the same weight on every display.
+    pub pixels_per_point: f32,
 }
 
 /// An image the UV viewport lays its islands over: the decoded pixels from the

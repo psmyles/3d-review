@@ -4,7 +4,7 @@
 //! Each `sync_*` compares against the **borrowed** frame inputs and only
 //! `to_vec()`s its bake key on the rebuild path, so a steady-state frame
 //! allocates nothing. The model wireframe is the one documented exception: it is
-//! an *index* buffer over the mesh's own vertices, kept across toggles.
+//! an *edge list* over the mesh's own vertices, kept across toggles.
 
 use review_model::{Bounds, ModelData};
 
@@ -13,7 +13,7 @@ use crate::geometry::{
     skeleton_fill_triangles, skeleton_lines, skin_weight_vertices, uv_seam_lines,
     vertex_normal_lines, wireframe_edge_indices,
 };
-use crate::rhi::{GpuResult, IndexBuffer, VertexBuffer};
+use crate::rhi::{GpuResult, StorageBuffer, VertexBuffer};
 use crate::selection::{Selection, selection_bounds};
 use crate::{ActiveMaterial, BoundingBoxScope, SceneDebugOptions, ShadingMode};
 
@@ -25,8 +25,9 @@ use super::slot::{
 
 /// Build an optional vertex buffer from `vertices`: `None` for an empty set (sokol
 /// rejects a zero-byte buffer, and the draw is skipped anyway), else an immutable
-/// [`VertexBuffer`]. The build-on-demand line views + the UV wireframe/fill use this
-/// so an off / empty view holds no allocation.
+/// [`VertexBuffer`]. The build-on-demand fill views (the skeleton's octahedra, the
+/// skin-weight mesh, the UV islands) use this so an off / empty view holds no
+/// allocation.
 pub(super) fn optional_vertex_buffer(
     vertices: &[crate::scene::SceneVertex],
 ) -> GpuResult<Option<VertexBuffer>> {
@@ -34,6 +35,19 @@ pub(super) fn optional_vertex_buffer(
         Ok(None)
     } else {
         Ok(Some(VertexBuffer::new(vertices, c"derived view")?))
+    }
+}
+
+/// [`optional_vertex_buffer`] for a line list: built
+/// [`VertexBuffer::pullable`], because `vs_line` reads each line's two ends
+/// through a storage view rather than through the input layout.
+pub(super) fn optional_line_buffer(
+    vertices: &[crate::scene::SceneVertex],
+) -> GpuResult<Option<VertexBuffer>> {
+    if vertices.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(VertexBuffer::pullable(vertices, c"line view")?))
     }
 }
 
@@ -69,7 +83,7 @@ pub(super) fn sync_normal_view(
         return Ok(());
     }
     *buf = if on {
-        optional_vertex_buffer(&lines(model, lanes, length, color, hidden))?
+        optional_line_buffer(&lines(model, lanes, length, color, hidden))?
     } else {
         None
     };
@@ -86,7 +100,7 @@ impl SceneGpu {
     /// longer showing one.
     pub(super) fn release_ghost_wireframes(&mut self) {
         for slot in [&mut self.active, &mut self.idle] {
-            slot.ghost_wireframe_index = None;
+            slot.ghost_wireframe_edges = None;
             slot.ghost_wireframe_baked = None;
         }
     }
@@ -117,20 +131,20 @@ impl SceneGpu {
         }
 
         // Wireframe: built on first use and then *kept* across toggles — the one
-        // documented exception to invariant 3 (see `DerivedViews::wireframe_index`).
+        // documented exception to invariant 3 (see `DerivedViews::wireframe_edges`).
         // On in both the wireframe overlay and the wireframe-only shading mode.
-        // Its colour is a uniform now, so only the Outliner's hidden set can drift
-        // it (edges of a hidden mesh disappear with the mesh); a colour drag
-        // rebuilds nothing.
+        // Its colour and width are uniforms, so only the Outliner's hidden set can
+        // drift it (edges of a hidden mesh disappear with the mesh); a colour or
+        // width drag rebuilds nothing.
         let wireframe_on =
             debug.wireframe_overlay || matches!(debug.shading_mode, ShadingMode::Wireframe);
         let wireframe_stale = self.active.views.wireframe_baked.as_deref() != Some(hidden_meshes);
         if wireframe_on && wireframe_stale {
             let edges = wireframe_edge_indices(model, hidden_meshes);
-            self.active.views.wireframe_index = if edges.is_empty() {
+            self.active.views.wireframe_edges = if edges.is_empty() {
                 None
             } else {
-                Some(IndexBuffer::new(&edges, c"wireframe")?)
+                Some(StorageBuffer::immutable(&edges, c"wireframe edges")?)
             };
             self.active.views.wireframe_baked = Some(hidden_meshes.to_vec());
         }
@@ -179,10 +193,9 @@ impl SceneGpu {
                     BoundingBoxScope::VisibleOnly => model.visible_bounds(scope_hidden),
                 };
                 match bounds {
-                    Some(bounds) => optional_vertex_buffer(&bounding_box_lines(
-                        bounds,
-                        debug.bounding_box_color,
-                    ))?,
+                    Some(bounds) => {
+                        optional_line_buffer(&bounding_box_lines(bounds, debug.bounding_box_color))?
+                    }
                     None => None,
                 }
             } else {
@@ -244,7 +257,7 @@ impl SceneGpu {
         };
         if !uv_seam_unchanged {
             self.active.views.uv_seam_buf = if debug.uv_seams {
-                optional_vertex_buffer(&uv_seam_lines(
+                optional_line_buffer(&uv_seam_lines(
                     model,
                     lanes,
                     debug.uv_seam_color,
@@ -271,7 +284,7 @@ impl SceneGpu {
         if self.active.views.pivot_baked != want_pivot {
             self.active.views.pivot_buf = match &want_pivot {
                 Some(PivotParams { pivot, half }) => {
-                    optional_vertex_buffer(&pivot_lines(*pivot, *half))?
+                    optional_line_buffer(&pivot_lines(*pivot, *half))?
                 }
                 None => None,
             };
@@ -380,7 +393,7 @@ impl SceneGpu {
                     SKELETON_FILL_ALPHA,
                 ))?;
             self.active.views.skeleton_line_buf =
-                optional_vertex_buffer(&skeleton_lines(model, tint, debug.skeleton_joint_scale))?;
+                optional_line_buffer(&skeleton_lines(model, tint, debug.skeleton_joint_scale))?;
         } else {
             self.active.views.skeleton_fill_buf = None;
             self.active.views.skeleton_line_buf = None;

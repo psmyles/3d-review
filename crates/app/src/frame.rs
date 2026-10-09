@@ -454,6 +454,7 @@ impl App {
                             path: path.as_path(),
                             image,
                         }),
+                        pixels_per_point: full_output.pixels_per_point,
                     },
                 ),
                 WorkspaceMode::Texture => {
@@ -480,6 +481,7 @@ impl App {
                         pose,
                         pose_revision,
                         scene_bounds,
+                        pixels_per_point: full_output.pixels_per_point,
                     };
                     if workspace == WorkspaceMode::Opt {
                         // Read the cameras out before the call: the arguments are

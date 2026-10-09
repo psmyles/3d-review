@@ -11,7 +11,7 @@ use review_model::Bounds;
 
 use crate::geometry::deform::DeformLayout;
 use crate::material::MaterialDrawRange;
-use crate::rhi::{IndexBuffer, VertexBuffer};
+use crate::rhi::{IndexBuffer, StorageBuffer, VertexBuffer};
 use crate::selection::Selection;
 use crate::{BoundingBoxScope, MaterialMode, UvShadingMode};
 
@@ -155,6 +155,8 @@ pub(super) struct VisibilityBaked {
 /// The mesh's GPU buffers + per-material draw ranges, rebuilt when the model (or UV
 /// channel / material mode) changes. `None` for an empty model (the grid still draws).
 pub(super) struct MeshBuffers {
+    /// Built [`VertexBuffer::pullable`]: the wireframe reads these same bytes
+    /// through a storage view rather than through the input layout.
     pub(super) vertices: VertexBuffer,
     pub(super) indices: IndexBuffer,
     pub(super) ranges: Vec<MaterialDrawRange>,
@@ -169,9 +171,11 @@ pub(super) struct MeshBuffers {
 /// viewport.
 #[derive(Default)]
 pub(super) struct DerivedViews {
-    /// Model wireframe (original-polygon edges) as a `LineList` **index buffer
-    /// over the mesh's own vertex buffer** — 8 bytes per edge, not 160
-    /// (`wireframe_edge_indices`). Its colour is a uniform, so the key is the
+    /// Model wireframe (original-polygon edges) as an **edge list over the mesh's
+    /// own vertex buffer** — two `u32` corner indices per edge, 8 bytes, not 160
+    /// (`wireframe_edge_indices`). A storage buffer rather than an index buffer:
+    /// `vs_wire` reads both ends of an edge to widen it into a quad, so it pulls
+    /// the indices itself. Its colour and width are uniforms, so the key is the
     /// Outliner's hidden set alone.
     ///
     /// **The one documented exception to invariant 3**: this buffer is *not*
@@ -182,7 +186,7 @@ pub(super) struct DerivedViews {
     /// it affordable: a 3M-corner asset retains ~24 MB rather than ~480 MB. It
     /// is still dropped with the rest of `DerivedViews` when the model changes
     /// (see `ModelSlot::views_revision`), so nothing outlives its mesh.
-    pub(super) wireframe_index: Option<IndexBuffer>,
+    pub(super) wireframe_edges: Option<StorageBuffer<u32>>,
     pub(super) wireframe_baked: Option<Vec<u32>>,
     /// Axis-aligned bounding box; `None` while off or when the scope wraps no
     /// geometry.
@@ -297,14 +301,14 @@ pub(super) struct ModelSlot {
     /// so keying on the generation is what keeps that comparison allocation-free
     /// and O(1).
     pub(super) visibility_generation: u64,
-    /// This model's wireframe edge indices as drawn when it is the *ghost* in the
-    /// Opt workspace's overlay view — the same `LineList`-over-the-mesh form as
-    /// `views.wireframe_index`, over *this* slot's vertex buffer. Kept separate
+    /// This model's wireframe edge list as drawn when it is the *ghost* in the
+    /// Opt workspace's overlay view — the same edges-over-the-mesh form as
+    /// `views.wireframe_edges`, over *this* slot's vertex buffer. Kept separate
     /// from that one because the ghost is a different slot's mesh and exists
     /// regardless of the user's wireframe toggle; the colour no longer divides
     /// them (both read it from the uniform). `None` whenever this model is not
     /// currently the ghost (invariant 3).
-    pub(super) ghost_wireframe_index: Option<IndexBuffer>,
+    pub(super) ghost_wireframe_edges: Option<StorageBuffer<u32>>,
     pub(super) ghost_wireframe_baked: Option<(u64, Vec<u32>)>,
 }
 
@@ -360,7 +364,7 @@ impl ModelSlot {
         self.visible_ranges = Vec::new();
         self.visible_active = false;
         self.visibility_baked = None;
-        self.ghost_wireframe_index = None;
+        self.ghost_wireframe_edges = None;
         self.ghost_wireframe_baked = None;
     }
 

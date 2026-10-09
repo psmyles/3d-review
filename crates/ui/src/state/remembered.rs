@@ -176,6 +176,16 @@ const ENTRIES: &[Entry] = &[
         save: |s| color_text(s.wireframe.color),
         load: |s, v| set(&mut s.wireframe.color, color_from(v)),
     },
+    Entry {
+        key: "wireframe.width",
+        save: |s| f32_text(s.wireframe.width),
+        load: |s, v| {
+            set(
+                &mut s.wireframe.width,
+                f32_in(v, range::WIREFRAME_WIDTH_MIN, range::WIREFRAME_WIDTH_MAX),
+            )
+        },
+    },
     // Material Mode
     Entry {
         key: "material_mode.mode",
@@ -413,6 +423,7 @@ mod tests {
     fn edited_state() -> UiState {
         let mut state = UiState::default();
         state.wireframe.color = Color32::from_rgb(1, 2, 3);
+        state.wireframe.width = 2.5;
         state.debug.material_mode = MaterialMode::Unique;
         state.debug.buffer_view = BufferView::Tangent;
         state.bounding_box.color = Color32::from_rgb(4, 5, 6);

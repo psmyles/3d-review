@@ -24,7 +24,7 @@ use crate::{MaterialMode, UvShadingMode};
 
 use super::deform_gpu::DeformGpu;
 use super::gpu::SceneGpu;
-use super::line_views::optional_vertex_buffer;
+use super::line_views::{optional_line_buffer, optional_vertex_buffer};
 use super::slot::{MeshBuffers, UvViewParams};
 
 /// How opaque the UV island fill is over a texture: enough to read the islands
@@ -101,7 +101,7 @@ impl SceneGpu {
         };
         if !wireframe_current {
             views.uv_wireframe_buf =
-                optional_vertex_buffer(&uv_wireframe_lines(model, channel, &scope))?;
+                optional_line_buffer(&uv_wireframe_lines(model, channel, &scope))?;
             views.uv_wireframe_baked = Some(params());
         }
         if !fill_current {
@@ -199,7 +199,8 @@ impl SceneGpu {
                 (None, _) => None,
             };
             Some(MeshBuffers {
-                vertices: VertexBuffer::new(&vertices, c"mesh")?,
+                // Pullable, so the wireframe reads these bytes rather than a copy.
+                vertices: VertexBuffer::pullable(&vertices, c"mesh")?,
                 indices: IndexBuffer::new(&indices, c"mesh")?,
                 ranges,
                 deform,

@@ -19,7 +19,7 @@ use super::slot::SlotId;
 
 use super::gpu::SceneGpu;
 use super::targets::BackbufferRect;
-use super::uniforms::{post_uniforms, uv_scene_uniforms};
+use super::uniforms::{OVERLAY_LINE_WIDTH, line_uniforms, post_uniforms, uv_scene_uniforms};
 
 impl SceneGpu {
     /// Render the 2D UV viewport (instead of the 3D scene): the background (a flat
@@ -27,6 +27,11 @@ impl SceneGpu {
     /// across the square, the optional island fill (Shaded / Islands modes), then
     /// the model's UV edges on top - all framed by the 2D `uv_camera` and
     /// composited with no tone map and no GTAO.
+    ///
+    /// The edges are lines, and like the 3D view's they skip MSAA: at 2×+ they go in
+    /// a single-sample pass over the resolved view (see `SceneGpu::record_scene_pass`
+    /// for why). The grid is the exception — it lies *under* the texture and the
+    /// fill, so it has to be drawn in the multisampled pass, before them.
     pub(crate) fn render_uv(
         &mut self,
         frame: &mut Frame<'_>,
@@ -43,6 +48,7 @@ impl SceneGpu {
             selected_nodes,
             hidden_meshes,
             texture,
+            pixels_per_point,
         } = uv;
         // The UV viewport shows the source model, so its derived buffers belong in the
         // source slot (see the note in `render`).
@@ -69,6 +75,11 @@ impl SceneGpu {
         // The UV camera's orthographic view-projection; the rest of the uniform is
         // unused by the UV path (lines and fills return their own vertex colour).
         let uniforms = uv_scene_uniforms(uv_camera);
+        let line = line_uniforms(
+            self.targets.color.size(),
+            OVERLAY_LINE_WIDTH,
+            pixels_per_point,
+        );
 
         // Clear to zero (radiance + coverage); the background is painted in the
         // composite, matching the 3D path.
@@ -88,8 +99,14 @@ impl SceneGpu {
             self.draw_flat(frame, &checker.quad, &checker.material, &screen);
         }
 
-        // Reference grid.
-        self.draw_lines(frame, &self.scene.line, [&self.uv_grid], &uniforms);
+        // Reference grid, under everything that follows.
+        self.draw_lines(
+            frame,
+            &self.scene.underlay_line,
+            [&self.uv_grid],
+            &uniforms,
+            &line,
+        );
 
         // The picked texture over the 0..1 square, under the islands, blended by its
         // own alpha where it has one.
@@ -112,11 +129,26 @@ impl SceneGpu {
             frame.draw(0, fill.count());
         }
 
-        // The model's UV edges on top.
-        if let Some(wireframe) = &self.active.views.uv_wireframe_buf {
-            self.draw_lines(frame, &self.scene.line, [wireframe], &uniforms);
+        // The model's UV edges on top: last in this pass when it is single-sample,
+        // else in a single-sample pass of their own over the resolved view. Nothing
+        // here is depth-tested against anything (the view is flat), so that pass's
+        // depth is simply cleared.
+        let wireframe = self.active.views.uv_wireframe_buf.as_ref();
+        if targets.color.sample_count() > 1 {
+            frame.end_pass();
+            if let Some(wireframe) = wireframe {
+                frame.begin_resolved_pass(
+                    &[&targets.color, &targets.ambient],
+                    &targets.scratch_depth,
+                    c"uv lines",
+                );
+                self.draw_lines(frame, &self.lines.line, [wireframe], &uniforms, &line);
+                frame.end_pass();
+            }
+        } else {
+            self.draw_lines(frame, &self.lines.line, wireframe, &uniforms, &line);
+            frame.end_pass();
         }
-        frame.end_pass();
 
         // Composite: no GTAO (the flat UV viewport has no depth to occlude) and no
         // tone map. The view is a diagram and a picture, not a lit scene: with the

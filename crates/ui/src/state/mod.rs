@@ -67,6 +67,11 @@ pub(crate) mod range {
     /// varies enormously — a hand rig needs thinner bones than a vehicle's.
     pub const SKELETON_SCALE_MIN: f32 = 0.2;
     pub const SKELETON_SCALE_MAX: f32 = 4.0;
+    /// The model wireframe's line width, in points. Below half a point a line is
+    /// only a fainter one-pixel line (the shader fades it rather than thinning it
+    /// further), and past four it buries the faces it outlines.
+    pub const WIREFRAME_WIDTH_MIN: f32 = 0.5;
+    pub const WIREFRAME_WIDTH_MAX: f32 = 4.0;
 
     /// Ambient occlusion. Radius is a *multiplier* over the radius the renderer
     /// derives for the current view (1 = automatic), so the band is centred on 1
@@ -851,6 +856,7 @@ pub(crate) fn sync_debug_state(state: &mut UiState) {
     }
     state.debug.uv_seam_channel = state.uv_seams.uv_channel;
     state.debug.wireframe_color = theme::color32_to_rgba(state.wireframe.color);
+    state.debug.wireframe_width = state.wireframe.width;
     state.debug.bounding_box_color = theme::color32_to_rgba(state.bounding_box.color);
     state.debug.bounding_box_scope = match state.bounding_box.scope {
         BoundsScope::AllMeshes => BoundingBoxScope::AllMeshes,
