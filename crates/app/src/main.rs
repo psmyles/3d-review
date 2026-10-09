@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 mod animation;
+mod comments;
 mod dialog;
 mod docs_dir;
 mod events;
@@ -244,6 +245,12 @@ struct App {
     /// until the import worker marshals it, which happens right after the mesh
     /// is on screen — and `None` again the moment a new load begins.
     scene_extras: Option<Arc<review_model::SourceExtras>>,
+    /// Where the loaded review comments were read from — the file a save writes
+    /// back to. `None` until the import worker has read them, and when the file
+    /// could not be read for comments.
+    comment_source: Option<comments::CommentSource>,
+    /// The polygon runs surface pins are resolved through, per model.
+    pin_geometry: comments::PinGeometry,
     scene_revision: u64,
     /// Source of every model revision handed to the renderer, for the source mesh
     /// and each processed Opt level alike. One shared counter because the
@@ -451,6 +458,8 @@ impl Default for App {
             redraw: RedrawScheduler::default(),
             scene_model,
             scene_extras: None,
+            comment_source: None,
+            pin_geometry: comments::PinGeometry::default(),
             scene_revision: 0,
             model_revision_counter: 0,
             model_load_generation: Arc::new(AtomicU64::new(0)),
@@ -802,6 +811,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::ModelLoadProgress(message) => self.handle_model_load_progress(message),
             UserEvent::ModelMeasured(message) => self.handle_model_measured(*message),
             UserEvent::SourceExtrasReady(message) => self.handle_source_extras_ready(*message),
+            UserEvent::CommentsReady(message) => self.handle_comments_ready(*message),
             UserEvent::DialogDone(answer) => self.handle_dialog_done(answer),
             UserEvent::OpenPath(path) => self.open_model_from_path(&path),
             UserEvent::MenuCommand(command) => self.handle_menu_command(command),

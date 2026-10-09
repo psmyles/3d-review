@@ -602,6 +602,48 @@ flat bundle, what the generated const name drops, and what lets one catalog serv
 three crates without handing each of them the others' keys (`ui` takes `common-`
 and `ui-`, `app` takes `app-`, `shell-macos` takes `menu-`).
 
+### `annotate` — `review-annotate`
+
+Review comments stored **inside the FBX**, in pure safe Rust with no ufbx, GPU or
+window dependency — so the viewer, the `review-comments` CLI (`src/bin`) and any
+other tool read a file's comments through exactly the same code. The format other
+tools read against is `docs/review-comments-format.md`: a `KString` user property
+`ReviewComments` (flag `U`) on the `Model` each thread is about, holding versioned
+JSON.
+
+- `fbx/` reads and **losslessly patches** that property. A binary file is parsed
+  into a node tree whose property bytes stay opaque slices (compressed arrays are
+  never inflated) and rewritten with every record's absolute end offset
+  recomputed; an unedited rewrite is byte-identical to the input, and the footer
+  is re-padded at the new length keeping its writer's convention (the Autodesk SDK
+  pads 4 bytes more than Blender). An ASCII file is spliced one line at a time;
+  `&` in the stored JSON is written as `\u0026`, since ASCII FBX has no escape for
+  it. Reading a binary file **streams** it (`scan_file`): it seeks from record to
+  record by their end offsets and reads only the `Model` and `Connections`
+  records, so the viewer reads a 200 MB file's comments without a second copy of
+  it in memory.
+- `thread` / `codec`: the thread types and their JSON. Unknown fields, unknown
+  anchor kinds and threads that fail to decode are all kept verbatim and written
+  back, and a payload from a newer version is shown read-only — an older viewer
+  never destroys what it doesn't understand.
+- `mapping` pairs the file's objects with the importer's nodes. **ufbx lists nodes
+  by depth, not in file order** (measured on a rigged fixture) and adds nodes the
+  file never had, so the pairing walks both trees from the root and matches each
+  parent's children by name, *k*-th to *k*-th, stepping over synthetic nodes.
+- `report` lists a file's comments as JSON or Markdown.
+
+`app/src/comments.rs` reads them on the import worker, right after the source
+properties (whose synthetic-node flags the mapping needs), and posts them as their
+own event; each frame it resolves every anchor to a world point for the pins — a
+surface pin through the current pose, falling back to its stored local point when
+the host mesh's polygon/vertex counts no longer match the ones recorded with it.
+
+`tests/fixtures.rs` runs the patcher over every file in `assets/test_models`:
+byte-identical unedited rewrites, every imported node mapped, patched files read
+back identically by this crate *and* by ufbx with the scene otherwise unchanged,
+removal restoring the original bytes, and the streaming scan agreeing with the
+in-memory one.
+
 ### `psd` — `review-psd`
 
 A safe `decode_psd` over a C-ABI bridge to psd_sdk (C++), returning a PSD's merged

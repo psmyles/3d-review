@@ -98,6 +98,7 @@ impl UiState {
     fn release_stack_selection(&mut self) {
         self.opt.selected = None;
         self.texture_view.inspected = false;
+        self.comments.inspected = false;
     }
 
     /// Make pooled texture `index` the current one and show it in the Inspector.
@@ -109,6 +110,41 @@ impl UiState {
     pub(crate) fn select_texture(&mut self, index: usize) {
         self.texture_view.selected = index;
         self.texture_view.inspected = true;
+        self.comments.inspected = false;
+    }
+
+    /// Select review-comment thread `index` and show it in the Inspector. With
+    /// `select_host`, the object it is stored on becomes the scene selection too
+    /// (a click in the Comments tab, which goes to the comment); a click on a pin
+    /// leaves the scene selection alone, since the user is already looking at it.
+    pub(crate) fn select_comment(&mut self, index: usize, select_host: bool) {
+        if select_host
+            && let Some(node) = self
+                .comments
+                .threads
+                .get(index)
+                .and_then(|entry| entry.node)
+        {
+            // Through the normal path, which hands the Inspector over to the
+            // scene — so the comment takes it back below.
+            self.select_only(node, SelectionKind::Node);
+            self.outliner.scroll_to_selection = true;
+        }
+        self.comments.selected = Some(index);
+        self.comments.inspected = true;
+        self.texture_view.inspected = false;
+    }
+
+    /// Whether the Inspector is showing the selected review comment: after a
+    /// click in the Comments tab or on a pin, until the next scene selection, and
+    /// only in a workspace that lists comments.
+    pub(crate) fn comment_inspected(&self) -> bool {
+        self.comments.inspected
+            && self
+                .comments
+                .selected
+                .is_some_and(|index| index < self.comments.threads.len())
+            && OutlinerTab::Comments.offered_in(self.mode)
     }
 
     /// Whether the Inspector is showing the current texture rather than the

@@ -18,6 +18,8 @@ pub enum OutlinerTab {
     /// The scene texture pool — what the Tex workspace views, and what the
     /// materials sample.
     Textures,
+    /// The file's review comments.
+    Comments,
     /// The model's animation clips — offered only while the loaded file carries
     /// any, and only in the 3D workspace (UV and Tex have no pose, and Opt
     /// deliberately shows the bind pose).
@@ -31,12 +33,12 @@ impl OutlinerTab {
     /// use for a material list; Tex is an image viewer, so it lists only images;
     /// Opt edits geometry and leaves textures alone.
     fn for_mode(mode: WorkspaceMode) -> &'static [OutlinerTab] {
-        use OutlinerTab::{Animations, Materials, Scene, Textures};
+        use OutlinerTab::{Animations, Comments, Materials, Scene, Textures};
         match mode {
-            WorkspaceMode::ThreeD => &[Scene, Materials, Textures, Animations],
-            WorkspaceMode::Uv => &[Scene, Textures],
+            WorkspaceMode::ThreeD => &[Scene, Materials, Textures, Comments, Animations],
+            WorkspaceMode::Uv => &[Scene, Textures, Comments],
             WorkspaceMode::Texture => &[Textures],
-            WorkspaceMode::Opt => &[Scene, Materials],
+            WorkspaceMode::Opt => &[Scene, Materials, Comments],
         }
     }
 
@@ -221,14 +223,14 @@ mod tests {
     /// product decision, not something a refactor should drift.
     #[test]
     fn each_workspace_offers_its_own_tabs() {
-        use OutlinerTab::{Animations, Materials, Scene, Textures};
+        use OutlinerTab::{Animations, Comments, Materials, Scene, Textures};
         assert_eq!(
             tabs(WorkspaceMode::ThreeD, true),
-            [Scene, Materials, Textures, Animations]
+            [Scene, Materials, Textures, Comments, Animations]
         );
-        assert_eq!(tabs(WorkspaceMode::Uv, true), [Scene, Textures]);
+        assert_eq!(tabs(WorkspaceMode::Uv, true), [Scene, Textures, Comments]);
         assert_eq!(tabs(WorkspaceMode::Texture, true), [Textures]);
-        assert_eq!(tabs(WorkspaceMode::Opt, true), [Scene, Materials]);
+        assert_eq!(tabs(WorkspaceMode::Opt, true), [Scene, Materials, Comments]);
     }
 
     #[test]

@@ -35,6 +35,10 @@ impl App {
             self.apply_menu_intent(intent);
         }
 
+        if let Some(review_ui::CommentIntent::Show(index)) = output.comment {
+            self.show_comment(index);
+        }
+
         if self.renderer.is_none() {
             return;
         }

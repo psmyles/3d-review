@@ -317,6 +317,8 @@ impl App {
                         Err(error) => (Err(error), None),
                     };
                     let measure = result.as_ref().ok().map(Arc::clone);
+                    // The comments are read from the file after the model is up.
+                    let comment_path = path.clone();
                     // A send failure only means the event loop has exited.
                     let _ = proxy.send_event(UserEvent::ModelLoaded(Box::new(ModelLoaded {
                         generation,
@@ -369,8 +371,22 @@ impl App {
                         let _z = prof::zone!("Marshal Extras");
                         report(ImportProgress::stage(ImportStage::Extras));
                         let extras = pending.marshal(&model).map(|extras| extras.map(Arc::new));
+                        // Read while the capture is at hand: the comment mapping
+                        // steps over the nodes the importer made up, which only
+                        // the capture names.
+                        let comments = {
+                            let _z = prof::zone!("Read Review Comments");
+                            let capture = extras.as_ref().ok().and_then(Option::as_deref);
+                            crate::comments::read_comments(&comment_path, &model, capture)
+                        };
                         let _ = proxy.send_event(UserEvent::SourceExtrasReady(Box::new(
                             SourceExtrasReady { generation, extras },
+                        )));
+                        let _ = proxy.send_event(UserEvent::CommentsReady(Box::new(
+                            crate::comments::CommentsReady {
+                                generation,
+                                result: comments,
+                            },
                         )));
                     }
                     if superseded() {
@@ -435,8 +451,18 @@ impl App {
                     let clip_bounds = measure_clip_bounds(&model);
                     let groups = model.mesh_group_stats();
                     let extras = extras.marshal(&model).map(|extras| extras.map(Arc::new));
+                    let comments = crate::comments::read_comments(
+                        path,
+                        &model,
+                        extras.as_ref().ok().and_then(Option::as_deref),
+                    );
                     self.apply_loaded_model(path, Ok(Arc::clone(&model)), started.elapsed());
                     self.apply_source_extras(extras);
+                    let generation = self.model_load_generation();
+                    self.handle_comments_ready(crate::comments::CommentsReady {
+                        generation,
+                        result: comments,
+                    });
                     self.ui.clip_bounds = clip_bounds;
                     self.ui.set_mesh_group_stats(groups);
                     self.scene_bvh = Some(bvh);
@@ -695,6 +721,10 @@ impl App {
         // Indexes the outgoing model's triangles; the worker rebuilds it for the
         // incoming one a moment after it is drawn.
         self.scene_bvh = None;
+        // The comments belong to the outgoing file; the incoming one's are read on
+        // the import worker and arrive a moment after its mesh.
+        self.ui.comments.clear();
+        self.comment_source = None;
         self.posed_pick = None;
         // Picking is a tool, not a document edit: a new file starts in View, so
         // opening one can never leave a stray click selecting something.

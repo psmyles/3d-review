@@ -6,6 +6,7 @@
 ui-outliner-tab-scene = Scene
 ui-outliner-tab-materials = Materials
 ui-outliner-tab-textures = Textures
+ui-outliner-tab-comments = Comments
 ui-outliner-tab-animations = Animations
 
 ## Scene tab chrome

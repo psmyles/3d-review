@@ -28,6 +28,7 @@ use crate::theme;
 
 mod animation;
 mod caches;
+mod comments;
 mod outliner;
 mod panels;
 mod panels_open;
@@ -38,6 +39,7 @@ mod view;
 
 pub use animation::*;
 pub use caches::*;
+pub use comments::*;
 pub use outliner::*;
 pub use panels::*;
 pub use panels_open::*;
@@ -129,6 +131,18 @@ pub struct UiOutput {
     /// out — every entry reaches outside the chrome (a file dialog, the loaded
     /// model, the settings file, the process).
     pub menu: Option<MenuIntent>,
+    /// A review-comment action that moves the camera or the clock, for `app` to
+    /// carry out.
+    pub comment: Option<CommentIntent>,
+}
+
+/// A review-comment action for `app`: the parts of "go to this comment" the
+/// chrome doesn't own — the camera lives in the renderer, the clock in `app`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommentIntent {
+    /// Show thread `index` the way it was written: fly to its saved view and
+    /// jump to its clip and first frame, where it has them.
+    Show(usize),
 }
 
 /// An entry in the toolbar's menu. Each lands on the handler its keyboard
@@ -285,6 +299,9 @@ pub struct UiState {
     pub outliner: OutlinerState,
     /// Animation clip selection + playback — see [`AnimationUiState`].
     pub animation: AnimationUiState,
+    /// The loaded file's review comments, and how the chrome is showing them —
+    /// see [`CommentsState`].
+    pub comments: CommentsState,
     /// The in-app manual: whether its window is up, which page it is on, and
     /// where its images live. Chrome state like the panel set, edited in place
     /// rather than travelling as an intent — see [`crate::HelpState`].
@@ -430,6 +447,7 @@ impl Default for UiState {
             solo: false,
             outliner: OutlinerState::default(),
             animation: AnimationUiState::default(),
+            comments: CommentsState::default(),
             selected_bones: Vec::new(),
             tool: ViewportTool::default(),
             hover: None,

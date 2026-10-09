@@ -339,3 +339,39 @@ fn an_ampersand_round_trips_through_ascii_as_a_json_escape() {
         assert!(found, "ufbx decoded the property differently");
     }
 }
+
+/// The streaming file scan reads exactly what the in-memory scan does — on the
+/// originals, and on patched files where the property is present.
+#[test]
+fn the_streaming_scan_agrees_with_the_in_memory_one() {
+    for path in fixtures() {
+        let bytes = read(&path);
+        let from_memory = fbx::scan(&bytes, PROPERTY).expect("scans");
+        let from_file = fbx::scan_file(&path, PROPERTY).expect("streams");
+        assert_eq!(from_file, from_memory, "{}", path.display());
+
+        let edits: Vec<Edit> = from_memory
+            .models
+            .iter()
+            .map(|model| Edit {
+                model: model.id,
+                value: Some(PAYLOAD.to_owned()),
+                hidden: false,
+            })
+            .collect();
+        let patched = fbx::patch(&bytes, PROPERTY, &edits).expect("patches");
+        let name = format!(
+            "stream-{}",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("fixture.fbx")
+        );
+        let copy = temp_copy(&patched, &name);
+        assert_eq!(
+            fbx::scan_file(&copy, PROPERTY).expect("streams"),
+            fbx::scan(&patched, PROPERTY).expect("scans"),
+            "{}",
+            path.display()
+        );
+    }
+}

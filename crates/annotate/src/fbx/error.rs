@@ -28,6 +28,8 @@ pub enum FbxError {
     AsciiSyntax { line: usize },
     #[error("ASCII FBX 6.x files are not supported")]
     AsciiLegacy,
+    #[error("could not read {0}")]
+    Io(String),
 }
 
 pub type FbxResult<T> = Result<T, FbxError>;

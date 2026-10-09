@@ -152,10 +152,17 @@ pub(crate) struct List<'a> {
     terminator_end: Option<usize>,
 }
 
-/// A borrowed binary FBX, ready to be walked.
+/// A borrowed binary FBX — or one record of it — ready to be walked.
+///
+/// Positions are always *file* offsets, because that is what every record's end
+/// offset is. A reader over the whole file has `base` 0; one over a single record
+/// read out of a file ([`Reader::window`]) has `base` at that record's start, which
+/// is what lets the streaming scan in `file.rs` parse a `Model` without reading the
+/// geometry around it.
 #[derive(Clone, Copy)]
 pub(crate) struct Reader<'a> {
     data: &'a [u8],
+    base: usize,
     layout: Layout,
     pub(crate) version: u32,
 }
@@ -177,14 +184,49 @@ impl<'a> Reader<'a> {
         }
         Ok(Self {
             data,
+            base: 0,
             layout: Layout::for_version(version),
             version,
         })
     }
 
+    /// A reader over `data`, the bytes of one record that starts at file offset
+    /// `base` in a file of `version`.
+    pub(crate) fn window(data: &'a [u8], base: usize, version: u32) -> Self {
+        Self {
+            data,
+            base,
+            layout: Layout::for_version(version),
+            version,
+        }
+    }
+
+    /// The record at file offset `pos`, which must lie inside this reader's bytes.
+    pub(crate) fn record_at(&self, pos: usize) -> FbxResult<NodeView<'a>> {
+        let header = self.header_at(pos)?;
+        if header.end == 0 {
+            return Err(FbxError::Malformed { offset: pos });
+        }
+        self.view(pos, &header, self.limit())
+    }
+
+    /// One past the last file offset this reader holds.
+    fn limit(&self) -> usize {
+        self.base + self.data.len()
+    }
+
+    fn header_at(&self, pos: usize) -> FbxResult<RecordHeader> {
+        let relative = pos
+            .checked_sub(self.base)
+            .ok_or(FbxError::Malformed { offset: pos })?;
+        self.layout
+            .read_header(self.data, relative)
+            .map_err(|_| FbxError::Truncated { offset: pos })
+    }
+
     /// The top-level records, which must end in a null record.
     pub(crate) fn top_level(&self) -> FbxResult<List<'a>> {
-        let list = self.list(HEADER_LEN, self.data.len(), true)?;
+        let list = self.list(HEADER_LEN, self.limit(), true)?;
         if list.terminator_end.is_none() {
             return Err(FbxError::Truncated {
                 offset: self.data.len(),
@@ -206,7 +248,7 @@ impl<'a> Reader<'a> {
         let mut nodes = Vec::new();
         let mut pos = start;
         while pos < limit {
-            let header = self.layout.read_header(self.data, pos)?;
+            let header = self.header_at(pos)?;
             if header.end == 0 {
                 let is_null =
                     header.num_props == 0 && header.props_len == 0 && header.name_len == 0;
@@ -241,18 +283,76 @@ impl<'a> Reader<'a> {
         let children_start = props_start
             .checked_add(props_len)
             .ok_or_else(|| malformed.clone())?;
-        if end <= pos || end > limit || children_start > end {
+        if end <= pos || end > limit.min(self.limit()) || children_start > end {
             return Err(malformed);
         }
+        let base = self.base;
         Ok(NodeView {
-            name: &self.data[name_start..props_start],
+            name: &self.data[name_start - base..props_start - base],
             num_props: header.num_props,
-            props: &self.data[props_start..children_start],
+            props: &self.data[props_start - base..children_start - base],
             children_start,
             end,
         })
     }
 }
+
+/// Where a record sits in a file, as the streaming scan reads it: just its name
+/// and extent, so a record it doesn't need is skipped by its end offset unread.
+pub(crate) struct RecordInfo {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) name: Vec<u8>,
+    pub(crate) children_start: usize,
+}
+
+/// Positioned reads, which is all the streaming scan needs from a file.
+pub(crate) trait ReadAt {
+    fn read_exact_at(&mut self, pos: usize, buf: &mut [u8]) -> std::io::Result<()>;
+}
+
+/// Read the record header at file offset `pos` from `source`; `None` for a null
+/// record. `limit` bounds where the record may end (its parent's end, or the
+/// file's length).
+pub(crate) fn read_record(
+    source: &mut impl ReadAt,
+    pos: usize,
+    limit: usize,
+    version: u32,
+) -> FbxResult<Option<RecordInfo>> {
+    let layout = Layout::for_version(version);
+    let truncated = FbxError::Truncated { offset: pos };
+    let mut header = vec![0u8; layout.header_len()];
+    source
+        .read_exact_at(pos, &mut header)
+        .map_err(|_| truncated.clone())?;
+    let parsed = layout.read_header(&header, 0)?;
+    if parsed.end == 0 {
+        return Ok(None);
+    }
+    let mut name = vec![0u8; usize::from(parsed.name_len)];
+    source
+        .read_exact_at(pos + header.len(), &mut name)
+        .map_err(|_| truncated)?;
+    let malformed = FbxError::Malformed { offset: pos };
+    let end = usize::try_from(parsed.end).map_err(|_| malformed.clone())?;
+    let props_len = usize::try_from(parsed.props_len).map_err(|_| malformed.clone())?;
+    let children_start = (pos + layout.header_len() + name.len())
+        .checked_add(props_len)
+        .ok_or_else(|| malformed.clone())?;
+    if end <= pos || end > limit || children_start > end {
+        return Err(malformed);
+    }
+    Ok(Some(RecordInfo {
+        start: pos,
+        end,
+        name,
+        children_start,
+    }))
+}
+
+/// The file offset where the top-level records begin.
+pub(crate) const FIRST_RECORD: usize = HEADER_LEN;
 
 /// One record, owned enough to be edited: untouched records borrow their name and
 /// property bytes from the file, and only what an edit builds is allocated.

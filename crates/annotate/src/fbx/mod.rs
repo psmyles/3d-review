@@ -15,12 +15,13 @@
 mod ascii;
 mod binary;
 pub mod error;
+mod file;
 
 use std::collections::HashMap;
 
 pub use error::{FbxError, FbxResult};
 
-use binary::{Document, Node, NodeView, PropWriter, Reader, Value, decode_props};
+use binary::{Document, Node, NodeView, PropWriter, ReadAt, Reader, Value, decode_props};
 
 /// Which encoding a file uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -171,14 +172,33 @@ fn scan_binary(bytes: &[u8], property: &str, version: u32) -> FbxResult<Scan> {
         .iter()
         .find(|node| node.name == b"Objects")
         .ok_or(FbxError::NoObjects)?;
-    let mut models = Vec::new();
-    let mut strings = Vec::new();
+    let mut collected = Collected::default();
     for node in reader
         .children(objects)?
         .nodes
         .iter()
         .filter(|node| node.name == b"Model")
     {
+        collected.model(&reader, node, property)?;
+    }
+    if let Some(node) = top.nodes.iter().find(|node| node.name == b"Connections") {
+        collected.connections(&reader, node)?;
+    }
+    Ok(collected.finish(Format::Binary { version }))
+}
+
+/// What a binary scan gathers, record by record — shared by the in-memory scan
+/// and the streaming one, which reach the same records by different means.
+#[derive(Default)]
+struct Collected {
+    models: Vec<ModelObject>,
+    strings: Vec<StoredString>,
+    connections: Vec<(i64, i64)>,
+}
+
+impl Collected {
+    /// A `Model` record: its identity, and the property if it carries it.
+    fn model(&mut self, reader: &Reader<'_>, node: &NodeView<'_>, property: &str) -> FbxResult<()> {
         let values = decode_props(node.props, node.num_props)?;
         let id = values
             .first()
@@ -186,22 +206,24 @@ fn scan_binary(bytes: &[u8], property: &str, version: u32) -> FbxResult<Scan> {
             .ok_or(FbxError::BadProperty)?;
         let name = values.get(1).and_then(Value::as_str).unwrap_or_default();
         let class = values.get(2).and_then(Value::as_str).unwrap_or_default();
-        if let Some((value, hidden)) = binary_property(&reader, node, property)? {
-            strings.push(StoredString {
-                model: models.len(),
+        if let Some((value, hidden)) = binary_property(reader, node, property)? {
+            self.strings.push(StoredString {
+                model: self.models.len(),
                 value,
                 hidden,
             });
         }
-        models.push(ModelObject {
+        self.models.push(ModelObject {
             id,
             name: lossy(binary_object_name(name)),
             class: lossy(class),
             parent: None,
         });
+        Ok(())
     }
-    let mut connections = Vec::new();
-    if let Some(node) = top.nodes.iter().find(|node| node.name == b"Connections") {
+
+    /// The `Connections` record's object-object links.
+    fn connections(&mut self, reader: &Reader<'_>, node: &NodeView<'_>) -> FbxResult<()> {
         for connection in reader
             .children(node)?
             .nodes
@@ -215,16 +237,42 @@ fn scan_binary(bytes: &[u8], property: &str, version: u32) -> FbxResult<Scan> {
                     values.get(2).and_then(Value::as_int),
                 )
             {
-                connections.push((child, parent));
+                self.connections.push((child, parent));
             }
         }
+        Ok(())
     }
-    parents(&mut models, connections);
-    Ok(Scan {
-        format: Format::Binary { version },
-        models,
-        strings,
-    })
+
+    fn finish(mut self, format: Format) -> Scan {
+        parents(&mut self.models, self.connections);
+        Scan {
+            format,
+            models: self.models,
+            strings: self.strings,
+        }
+    }
+}
+
+/// [`scan`] a file on disk. A binary file is *streamed*: the scan seeks from record
+/// to record by their end offsets and reads only the `Model` and `Connections`
+/// records, so a 200 MB asset costs a few hundred kilobytes of reading rather than
+/// a second copy of the file in memory. An ASCII file has no offsets to skip by and
+/// is read whole.
+pub fn scan_file(path: &std::path::Path, property: &str) -> FbxResult<Scan> {
+    let io = |_| FbxError::Io(path.display().to_string());
+    let file = std::fs::File::open(path).map_err(io)?;
+    let len = file.metadata().map_err(io)?.len() as usize;
+    let mut source = file::FileSource::new(file);
+    let mut head = vec![0u8; binary::FIRST_RECORD.min(len)];
+    source.read_exact_at(0, &mut head).map_err(io)?;
+    match format(&head) {
+        Ok(Format::Binary { version }) => file::scan_binary(&mut source, len, version, property),
+        Ok(Format::Ascii) | Err(FbxError::NotBinary) => {
+            let bytes = std::fs::read(path).map_err(io)?;
+            scan(&bytes, property)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// The string value and hidden flag of `model`'s property `name`.

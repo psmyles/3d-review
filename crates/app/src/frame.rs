@@ -155,6 +155,9 @@ impl App {
                 .or_else(|| result.lod(self.ui.opt.active_lod).map(|lod| &lod.model))
                 .map(|model| (model, *revision))
         });
+        // The pins the chrome draws this frame, resolved against the pose the
+        // renderer is about to draw.
+        self.update_comment_pins();
         let (full_output, ui_output) = {
             let egui_state = self.egui_state.as_mut()?;
             let renderer = self.renderer.as_ref()?;

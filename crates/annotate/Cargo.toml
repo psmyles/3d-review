@@ -10,6 +10,10 @@ description = "Review comments stored inside an FBX: a lossless FBX property pat
 # can be read headlessly — by the viewer, by the `review-comments` CLI and by any
 # other Rust tool — through exactly the same code.
 [dependencies]
+# The comment payload is JSON, so a script in any DCC can read it with nothing but
+# its standard library.
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
@@ -18,6 +22,8 @@ thiserror.workspace = true
 # otherwise pass.
 review-import = { path = "../import" }
 review-model = { path = "../model" }
+# The `stamp` example places pins on real geometry.
+glam.workspace = true
 
 [lints]
 workspace = true

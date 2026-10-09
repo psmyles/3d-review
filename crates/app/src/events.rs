@@ -53,6 +53,9 @@ pub(crate) enum UserEvent {
     /// (posted by the import thread right after the mesh). Carried for the
     /// exporter; nothing in the viewport reads it.
     SourceExtrasReady(Box<loading::SourceExtrasReady>),
+    /// The review comments of the model on screen have been read from its file
+    /// (posted by the import thread, right after the source properties).
+    CommentsReady(Box<crate::comments::CommentsReady>),
     /// A native file dialog closed (posted by the thread that opened it —
     /// `docs/ARCHITECTURE.md`, Platform decisions D9). `None` when the user
     /// cancelled. Boxed because the export variant carries a whole LOD chain's

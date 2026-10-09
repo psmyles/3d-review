@@ -8,10 +8,11 @@ use review_render::{OrbitCamera, Selection};
 use crate::dimensions::DimensionView;
 use crate::opt_state::{ComparisonSide, OptIntent, OptLayout};
 use crate::state::{
-    ChromeInsets, OptionPanel, ScopedStats, UiOutput, UiState, WorkspaceMode, sync_debug_state,
+    ChromeInsets, CommentIntent, OptionPanel, ScopedStats, UiOutput, UiState, WorkspaceMode,
+    sync_debug_state,
 };
 use crate::theme::{self, color, size};
-use crate::{dimensions, gizmo, panels, stats, status_bar, texture_view, toolbar};
+use crate::{comment_pins, dimensions, gizmo, panels, stats, status_bar, texture_view, toolbar};
 
 /// The Opt workspace's second view, as the overlay needs to see it. `app` supplies
 /// this whenever that workspace is active; every other workspace passes `None`.
@@ -108,6 +109,7 @@ pub fn draw_overlay(
     output.material_edit_active = side.inspector.material_edit_active;
     output.opt = side.opt.intent;
     output.opt_edit_active = side.opt.edit_active;
+    output.comment = side.comment.or(side.inspector.comment);
 
     // The free viewport: the screen minus the chrome bands (toolbar top, status
     // bar bottom) and the open side panels (left/right). Floating chrome — the
@@ -149,6 +151,21 @@ pub fn draw_overlay(
         // per frame.
         let views = dimension_views(state, camera, model, bvh, opt, screen, viewport);
         dimensions::draw_dimension_labels(ctx, state, &views);
+
+        // Review-comment pins, over the scene and under the floating chrome.
+        if state.mode == WorkspaceMode::ThreeD {
+            comment_pins::draw_comment_pins(
+                ctx,
+                state,
+                &comment_pins::PinView {
+                    camera,
+                    image: screen,
+                    clamp: viewport,
+                    model,
+                    bvh,
+                },
+            );
+        }
 
         draw_option_panels(ctx, state, viewport);
 
@@ -424,6 +441,8 @@ struct SidePanelLayout {
     /// The Opt workspace's own emissions: the preset / export intents raised by
     /// the stack pane or the Opt inspector, and its drag-coalescing hint.
     opt: OptEmission,
+    /// A review-comment action raised by the Comments tab.
+    comment: Option<CommentIntent>,
     left_inset: f32,
     right_inset: f32,
 }
@@ -458,6 +477,7 @@ fn draw_side_panels(
 
     let opt_mode = state.mode == WorkspaceMode::Opt;
     let mut opt = OptEmission::default();
+    let mut comment = None;
 
     let mut left_inset = 0.0;
     if state.side_panels_open {
@@ -494,11 +514,13 @@ fn draw_side_panels(
                     }
                     egui::CentralPanel::default()
                         .frame(egui::Frame::NONE)
-                        .show(ui, |ui| panels::outliner::body(ui, state, model));
+                        .show(ui, |ui| panels::outliner::body(ui, state, model))
+                        .inner
                 } else {
-                    panels::outliner::body(ui, state, model);
+                    panels::outliner::body(ui, state, model)
                 }
             });
+        comment = response.inner;
         left_inset = response.response.rect.width();
     }
 
@@ -531,6 +553,7 @@ fn draw_side_panels(
     SidePanelLayout {
         inspector,
         opt,
+        comment,
         left_inset,
         right_inset,
     }

@@ -59,6 +59,7 @@ pub(crate) fn primary_modifier() -> std::borrow::Cow<'static, str> {
 
 mod about;
 mod assets;
+mod comment_pins;
 mod dimensions;
 mod gizmo;
 mod help;
@@ -93,8 +94,9 @@ pub use opt_state::{
 pub use overlay::{OptOverlayLevel, OptOverlayView, draw_overlay, split_halves};
 pub use review_render::{MsaaSamples, Selection};
 pub use state::{
-    AnimationUiState, AxisGizmoAction, ChromeInsets, HoverTarget, MenuIntent, PlaybackSpeed,
-    SelectMode, TexViewRequest, TextureBackground, TextureIntent, TexturePoolEntry, TextureSlotRef,
-    UiOutput, UiState, ViewportTool, WorkspaceMode, apply_pick,
+    AnimationUiState, AxisGizmoAction, ChromeInsets, CommentEntry, CommentIntent, CommentPin,
+    HoverTarget, MenuIntent, PlaybackSpeed, SelectMode, TexViewRequest, TextureBackground,
+    TextureIntent, TexturePoolEntry, TextureSlotRef, UiOutput, UiState, ViewProjectionMode,
+    ViewportTool, WorkspaceMode, apply_pick,
 };
 pub use theme::init_style;

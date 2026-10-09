@@ -46,6 +46,11 @@ pub const OUTLINER_TAB_HEIGHT: f32 = 34.0;
 pub const OUTLINER_TAB_PAD_Y: f32 = 9.0;
 /// Thickness of the active Outliner tab's underline accent.
 pub const OUTLINER_TAB_UNDERLINE: f32 = 2.0;
+/// Room either side of a tab's label, in points — the least a tab is given
+/// before the strip starts moving tabs into its overflow menu.
+pub const OUTLINER_TAB_PAD_X: f32 = 6.0;
+/// Width of the tab strip's overflow (`»`) button, in points.
+pub const OUTLINER_TAB_OVERFLOW_WIDTH: f32 = 24.0;
 /// Upper bound the user can drag the Outliner / Inspector side panels out to
 /// (the `width_range` ceiling); they start at [`SIDE_PANEL_DEFAULT_WIDTH`].
 pub const OUTLINER_MAX_WIDTH: f32 = 560.0;
@@ -201,6 +206,25 @@ pub const TEXTURE_ROW_TRAILING_WIDTH: f32 = 88.0;
 /// Longest on-screen edge of the texture Inspector's preview, which otherwise
 /// fills the panel's width.
 pub const TEXTURE_PREVIEW_MAX: f32 = 256.0;
+
+// ── Review comments ───────────────────────────────────────────────────
+/// Height of one thread row in the Outliner's Comments tab: the opening text
+/// over a line of who / where / when.
+pub const COMMENT_ROW_HEIGHT: f32 = 40.0;
+/// Width reserved at a thread row's left for its `#n`.
+pub const COMMENT_NUMBER_WIDTH: f32 = 32.0;
+/// Radius of a viewport pin.
+pub const COMMENT_PIN_RADIUS: f32 = 10.0;
+/// Width of a viewport pin's outline (and of the selection ring).
+pub const COMMENT_PIN_STROKE: f32 = 1.5;
+/// Gap between a pin and the ring drawn round the selected one.
+pub const COMMENT_PIN_RING_GAP: f32 = 2.5;
+/// Gap between the messages of a thread in the Inspector.
+pub const COMMENT_MESSAGE_GAP: f32 = 8.0;
+/// Height of an Outliner row's comment-count badge.
+pub const OUTLINER_BADGE_HEIGHT: f32 = 14.0;
+/// Space either side of the count inside the badge.
+pub const OUTLINER_BADGE_PAD_X: f32 = 5.0;
 
 // ── Texture viewport ──────────────────────────────────────────────────
 /// One segment width of the channel radio group (RGB / R / G / B / A),

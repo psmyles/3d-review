@@ -26,12 +26,14 @@ use crate::docs::Page;
 use crate::keys;
 use crate::labels;
 use crate::state::{
-    TextureAssign, TextureIntent, TexturePoolEntry, TextureSlotRef, UiState, WorkspaceMode,
+    CommentIntent, TextureAssign, TextureIntent, TexturePoolEntry, TextureSlotRef, UiState,
+    WorkspaceMode,
 };
 use crate::theme::size;
 use crate::widgets::{
     Tip, labeled_color_button, labeled_combo, labeled_slider_with_value, panel_grid, tip,
 };
+use review_annotate::thread::{Anchor, Scope, Status};
 
 /// What the Inspector emitted this frame, forwarded by the overlay into the
 /// [`crate::state::UiOutput`].
@@ -44,9 +46,18 @@ pub(crate) struct InspectorOutput {
     /// Whether a material slider / color-picker is being actively dragged this
     /// frame, so `app` can coalesce a continuous drag into one undo step.
     pub material_edit_active: bool,
+    /// "Go to comment" was clicked on the selected review comment.
+    pub comment: Option<CommentIntent>,
 }
 
 pub(crate) fn body(ui: &mut egui::Ui, state: &UiState, model: &ModelData) -> InspectorOutput {
+    if state.comment_inspected()
+        && let Some(index) = state.comments.selected
+    {
+        return egui::ScrollArea::vertical()
+            .show(ui, |ui| comment_inspector(ui, state, index))
+            .inner;
+    }
     if state.texture_inspected() {
         return egui::ScrollArea::vertical()
             .show(ui, |ui| texture_inspector(ui, state))
@@ -464,6 +475,114 @@ fn pool_name(path: &Path) -> String {
         .unwrap_or_else(|| review_localization::tr(keys::ui_inspector::NO_TEXTURE).into_owned())
 }
 
+/// The selected review comment, read-only: its status, what it is on and points
+/// at, its frames, and every message of the thread.
+fn comment_inspector(ui: &mut egui::Ui, state: &UiState, index: usize) -> InspectorOutput {
+    let mut out = InspectorOutput::default();
+    let Some(entry) = state.comments.threads.get(index) else {
+        return out;
+    };
+    let thread = &entry.thread;
+    ui.heading(keys::ui_comments::heading(index as f64 + 1.0));
+
+    panel_grid(ui, "inspector_comment", |ui| {
+        crate::widgets::value_row(
+            ui,
+            Tip::new(keys::ui_comments::STATUS)
+                .describe(keys::ui_comments::STATUS_DESCRIPTION)
+                .page(Page::Comments),
+            match thread.status {
+                Status::Open => keys::ui_comments::STATUS_OPEN,
+                Status::Resolved => keys::ui_comments::STATUS_RESOLVED,
+            },
+        );
+        let on: egui::WidgetText = match thread.scope {
+            Scope::File => keys::ui_comments::WHOLE_FILE.into(),
+            Scope::Object => entry.object_name.clone().into(),
+        };
+        crate::widgets::value_row(
+            ui,
+            Tip::new(keys::ui_comments::ON)
+                .describe(keys::ui_comments::ON_DESCRIPTION)
+                .page(Page::Comments),
+            on,
+        );
+        let points_at = match thread.anchor.as_ref() {
+            None => keys::ui_comments::ANCHOR_NONE,
+            Some(anchor) => match anchor.known() {
+                Some(Anchor::Surface { .. }) => keys::ui_comments::ANCHOR_SURFACE,
+                Some(Anchor::World { .. }) => keys::ui_comments::ANCHOR_WORLD,
+                Some(Anchor::Uv { .. }) => keys::ui_comments::ANCHOR_UV,
+                None => keys::ui_comments::ANCHOR_UNKNOWN,
+            },
+        };
+        crate::widgets::value_row(
+            ui,
+            Tip::new(keys::ui_comments::POINTS_AT)
+                .describe(keys::ui_comments::POINTS_AT_DESCRIPTION)
+                .page(Page::Comments),
+            points_at,
+        );
+        if let Some(frames) = &thread.frames {
+            crate::widgets::value_row(
+                ui,
+                Tip::new(keys::ui_comments::FRAMES_LABEL)
+                    .describe(keys::ui_comments::FRAMES_LABEL_DESCRIPTION)
+                    .page(Page::Comments),
+                crate::panels::outliner::comments::frames_label(frames),
+            );
+        }
+    });
+
+    if thread.view.is_some() || thread.frames.is_some() {
+        ui.add_space(ui.spacing().item_spacing.y);
+        let go = ui.button(keys::ui_comments::GO_TO);
+        if go.clicked() {
+            out.comment = Some(CommentIntent::Show(index));
+        }
+        tip(
+            go,
+            Tip::new(keys::ui_comments::GO_TO)
+                .describe(keys::ui_comments::GO_TO_DESCRIPTION)
+                .page(Page::Comments),
+        );
+    }
+
+    for message in &thread.messages {
+        ui.add_space(size::COMMENT_MESSAGE_GAP);
+        ui.separator();
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new(&message.author).strong());
+            if !message.time.is_empty() {
+                ui.label(
+                    egui::RichText::new(display_time(&message.time))
+                        .size(crate::theme::font::COMMENT_META)
+                        .color(crate::theme::color::TEXT_MUTED),
+                );
+            }
+        });
+        ui.add(egui::Label::new(&message.text).wrap());
+    }
+    out
+}
+
+/// A stored RFC 3339 UTC time (`2026-10-08T12:00:00Z`) as `2026-10-08 12:00 UTC`;
+/// anything else as written.
+fn display_time(time: &str) -> String {
+    let bytes = time.as_bytes();
+    let shaped = bytes.len() >= 17
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes[10] == b'T'
+        && bytes[13] == b':'
+        && time.ends_with('Z');
+    if shaped {
+        keys::ui_comments::time_utc(format!("{} {}", &time[..10], &time[11..16]))
+    } else {
+        time.to_owned()
+    }
+}
+
 /// The current texture: a preview (outside Tex, whose viewport already is one),
 /// its measured properties, the materials that read it, and the pool's remove /
 /// add commands. With nothing in the pool it offers only the add.
@@ -786,4 +905,15 @@ fn bone_selection_inspector(ui: &mut egui::Ui, state: &UiState, model: &ModelDat
             ui.label(node_label(model, node));
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::display_time;
+
+    #[test]
+    fn a_stored_time_reads_as_minutes_in_utc() {
+        assert_eq!(display_time("2026-10-08T12:34:56Z"), "2026-10-08 12:34 UTC");
+        assert_eq!(display_time("yesterday"), "yesterday");
+    }
 }
