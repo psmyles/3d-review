@@ -252,7 +252,10 @@ if rows["A"]:
     for name, key, budget, relative, digits in MEASURES:
         a, b = median_of("A", key), median_of("B", key)
         if a is None or b is None:
-            print(f"{name:<16}{'n/a':>12}{'n/a':>12}{'n/a':>22}{'n/a':>10}  skipped")
+            # A figure only one build records (the baseline predates it) is
+            # still worth reading; there is just nothing to subtract.
+            shown = lambda v: f"{v:.{digits}f}" if v is not None else "n/a"
+            print(f"{name:<16}{shown(a):>12}{shown(b):>12}{'n/a':>22}{'n/a':>10}  skipped")
             continue
         delta = b - a
         percent = 100.0 * delta / a if a else 0.0

@@ -234,7 +234,12 @@ $table = foreach ($m in $measures) {
     $medA = Get-MedianOf -Rows $rowsA -Property $m.Property
     $medB = Get-MedianOf -Rows $rowsB -Property $m.Property
     if ($null -eq $medA -or $null -eq $medB) {
-        [pscustomobject]@{ Measure = $m.Name; A = 'n/a'; B = 'n/a'; Delta = 'n/a'; Budget = 'n/a'; Verdict = 'skipped' }
+        # A figure only one build records (the baseline predates it) is still
+        # worth reading; there is just nothing to subtract.
+        $scale = if ($m.Property -like '*Bytes') { 1MB } else { 1.0 }
+        $shownA = if ($null -ne $medA) { "{0:$($m.Format)}" -f ([double]$medA / $scale) } else { 'n/a' }
+        $shownB = if ($null -ne $medB) { "{0:$($m.Format)}" -f ([double]$medB / $scale) } else { 'n/a' }
+        [pscustomobject]@{ Measure = $m.Name; A = $shownA; B = $shownB; Delta = 'n/a'; Budget = 'n/a'; Verdict = 'skipped' }
         continue
     }
     $scale = if ($m.Property -like '*Bytes') { 1MB } else { 1.0 }
