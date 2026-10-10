@@ -2710,6 +2710,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "review-audit"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "review-import",
+ "review-model",
+ "review-prof",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "review-import"
 version = "0.1.0"
 dependencies = [

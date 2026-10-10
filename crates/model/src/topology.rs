@@ -206,6 +206,50 @@ pub fn edge_uses(
     edges
 }
 
+/// The edge uses of just the polygons in `faces` (indices into
+/// [`ModelData::faces`], or triangle indices for a model with no face
+/// topology) — one object's worth, so a caller can work object by object and
+/// hold only the largest object's edges at once.
+pub fn edge_uses_of_faces(model: &ModelData, logical: &[u32], faces: &[u32]) -> Vec<EdgeUse> {
+    let mut edges = Vec::with_capacity(faces.len() * 4);
+    let triangles = model.indices.as_chunks::<3>().0;
+    for &face in faces {
+        if model.faces.is_empty() {
+            let Some(triangle) = triangles.get(face as usize) else {
+                continue;
+            };
+            for corner in 0..3 {
+                push_edge_use(
+                    &mut edges,
+                    logical,
+                    triangle[corner] as usize,
+                    triangle[(corner + 1) % 3] as usize,
+                    face,
+                );
+            }
+            continue;
+        }
+        let Some(polygon) = model.faces.get(face as usize) else {
+            continue;
+        };
+        let count = polygon.index_count as usize;
+        if count < 2 {
+            continue;
+        }
+        let first = polygon.first_index as usize;
+        for corner in 0..count {
+            push_edge_use(
+                &mut edges,
+                logical,
+                first + corner,
+                first + (corner + 1) % count,
+                face,
+            );
+        }
+    }
+    edges
+}
+
 /// Sort `edges` by key and yield each edge's uses as one slice — length 1 for an
 /// open border, 2 for a manifold edge, more for a non-manifold one.
 pub fn group_edge_uses(edges: &mut [EdgeUse]) -> impl Iterator<Item = &[EdgeUse]> {
