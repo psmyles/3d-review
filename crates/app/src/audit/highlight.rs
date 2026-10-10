@@ -167,7 +167,69 @@ impl App {
         highlight.measure(model);
         self.redraw.requested = true;
         if focus_changed {
+            if self.ui.aud.split() {
+                self.fit_audit_uv_camera();
+            }
             self.frame_audit_if_off_screen();
+        }
+    }
+
+    /// The UV set the focused rule reads: the lightmap rules' profile channel,
+    /// UV0 for the rest.
+    pub(crate) fn audit_uv_channel(&self) -> u32 {
+        match self.ui.aud.focus.and_then(AuditFocus::rule) {
+            Some(
+                rule @ (RuleId::LightmapOverlap
+                | RuleId::LightmapPadding
+                | RuleId::LightmapOutOfRange),
+            ) => self
+                .ui
+                .aud
+                .profile
+                .rule(rule)
+                .number("channel")
+                .unwrap_or(1.0) as u32,
+            _ => 0,
+        }
+    }
+
+    /// The objects the focus names, sorted — what the UV half lays out.
+    pub(crate) fn audit_focus_nodes(&self) -> Vec<u32> {
+        let (Some(focus), Some(report)) = (self.ui.aud.focus, self.ui.aud.report.as_ref()) else {
+            return Vec::new();
+        };
+        let mut nodes: Vec<u32> = focused(report, focus)
+            .into_iter()
+            .filter_map(|(_, _, offender)| offender.node)
+            .collect();
+        nodes.sort_unstable();
+        nodes.dedup();
+        nodes
+    }
+
+    /// Frame the Aud split's UV half on the focused offenders' UVs.
+    fn fit_audit_uv_camera(&mut self) {
+        let channel = self.audit_uv_channel() as usize;
+        let model = &self.scene_model;
+        let mut min = Vec2::splat(f32::INFINITY);
+        let mut max = Vec2::splat(f32::NEG_INFINITY);
+        for fills in &self.audit.highlight.fills {
+            for &triangle in fills {
+                for &corner in model
+                    .indices
+                    .get(triangle as usize * 3..triangle as usize * 3 + 3)
+                    .unwrap_or(&[])
+                {
+                    let uv = model.uv_for_channel(corner as usize, channel);
+                    min = min.min(uv);
+                    max = max.max(uv);
+                }
+            }
+        }
+        if min.x.is_finite()
+            && let Some(renderer) = self.renderer.as_mut()
+        {
+            renderer.fit_aud_uv_camera(min, max);
         }
     }
 

@@ -239,6 +239,11 @@ pub(super) struct DerivedViews {
     pub(super) audit_dots_hidden: Option<VertexBuffer>,
     /// The overlay revision the buffers above were built for.
     pub(super) audit_baked: Option<u64>,
+    /// The Aud workspace's offending triangles laid out in UV space, and the
+    /// overlay revision and UV set they were built for. Part of the UV view, so
+    /// freed with it (`release_uv_views`).
+    pub(super) uv_audit_buf: Option<VertexBuffer>,
+    pub(super) uv_audit_baked: Option<(u64, u32)>,
 }
 
 /// Which model a [`ModelSlot`] holds. The Opt workspace draws a source mesh and a

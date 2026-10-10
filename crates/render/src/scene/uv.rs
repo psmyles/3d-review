@@ -18,8 +18,10 @@ use super::gpu_types::{SceneUniforms, SceneVertex};
 use super::slot::SlotId;
 
 use super::gpu::SceneGpu;
-use super::targets::BackbufferRect;
+use super::line_views::optional_vertex_buffer;
+use super::targets::{BackbufferRect, TargetSet};
 use super::uniforms::{OVERLAY_LINE_WIDTH, line_uniforms, post_uniforms, uv_scene_uniforms};
+use crate::geometry::uv_highlight_triangles;
 
 impl SceneGpu {
     /// Render the 2D UV viewport (instead of the 3D scene): the background (a flat
@@ -38,52 +40,90 @@ impl SceneGpu {
         uv: &UvFrame<'_>,
         uv_camera: UvCamera,
     ) -> GpuResult<()> {
-        let &UvFrame {
-            model,
-            model_revision,
-            channel,
-            shading_mode,
-            anti_aliasing,
-            background,
-            selected_nodes,
-            hidden_meshes,
-            texture,
-            pixels_per_point,
-        } = uv;
         // The UV viewport shows the source model, so its derived buffers belong in the
         // source slot (see the note in `render`).
         self.activate(SlotId::Source);
         self.release_opt_views();
         let size = frame.size();
-        self.sync_targets(frame, size, anti_aliasing.effective_sample_count())?;
-        self.sync_uv_texture(texture)?;
+        self.sync_targets(frame, size, uv.anti_aliasing.effective_sample_count())?;
+        self.sync_uv_frame(uv, size)?;
+        self.record_uv_view(
+            frame,
+            uv,
+            uv_camera,
+            &self.targets,
+            BackbufferRect::full(size),
+        );
+        Ok(())
+    }
+
+    /// Bring the UV view's derived buffers — the picked texture, the layout's
+    /// edges and fill, the checkerboard, the Aud highlight — in line with `uv`,
+    /// for a view `size` pixels large. Assumes the target set is already synced.
+    pub(super) fn sync_uv_frame(&mut self, uv: &UvFrame<'_>, size: (u32, u32)) -> GpuResult<()> {
+        self.sync_uv_texture(uv.texture)?;
         self.sync_uv_view(
-            model,
-            model_revision,
-            channel,
-            shading_mode,
-            selected_nodes,
-            hidden_meshes,
+            uv.model,
+            uv.model_revision,
+            uv.channel,
+            uv.shading_mode,
+            uv.selected_nodes,
+            uv.hidden_meshes,
             self.uv_texture.is_some(),
         )?;
-        let checker_cell = match background {
+        let checker_cell = match uv.background {
             TexBackground::Checker { cell_px } => Some(cell_px.max(1.0)),
             _ => None,
         };
         self.sync_uv_checker(checker_cell, size)?;
+        self.sync_uv_audit(uv)
+    }
 
+    /// Build (or free) the Aud workspace's UV-space highlight.
+    fn sync_uv_audit(&mut self, uv: &UvFrame<'_>) -> GpuResult<()> {
+        let key = uv.audit.map(|audit| (audit.revision, uv.channel));
+        let views = &mut self.active.views;
+        if views.uv_audit_baked == key {
+            return Ok(());
+        }
+        views.uv_audit_buf = match uv.audit {
+            Some(audit) => optional_vertex_buffer(&uv_highlight_triangles(
+                uv.model,
+                uv.channel,
+                audit.fills,
+                audit.colors,
+            ))?,
+            None => None,
+        };
+        views.uv_audit_baked = key;
+        Ok(())
+    }
+
+    /// Draw the UV view into `targets` and composite it into `dest`: the
+    /// background (a flat fill, or a checkerboard drawn first), the 0..1 grid, the
+    /// picked texture across the square, the optional island fill, the Aud
+    /// highlight, then the model's UV edges on top - all framed by `uv_camera` and
+    /// composited with no tone map and no GTAO. Assumes [`Self::sync_uv_frame`]
+    /// has run.
+    pub(super) fn record_uv_view(
+        &self,
+        frame: &mut Frame<'_>,
+        uv: &UvFrame<'_>,
+        uv_camera: UvCamera,
+        targets: &TargetSet,
+        dest: BackbufferRect,
+    ) {
         // The UV camera's orthographic view-projection; the rest of the uniform is
         // unused by the UV path (lines and fills return their own vertex colour).
         let uniforms = uv_scene_uniforms(uv_camera);
         let line = line_uniforms(
-            self.targets.color.size(),
+            targets.color.size(),
             OVERLAY_LINE_WIDTH,
-            pixels_per_point,
+            uv.pixels_per_point,
         );
 
         // Clear to zero (radiance + coverage); the background is painted in the
         // composite, matching the 3D path.
-        let targets = &self.targets;
         frame.begin_offscreen_pass(
             &[&targets.color, &targets.ambient],
             Some(&targets.depth),
@@ -114,10 +154,16 @@ impl SceneGpu {
             self.draw_flat(frame, &backdrop.quad, &backdrop.material, &uniforms);
         }
 
-        // Island fill (Shaded / Islands), under the wireframe - faint over a
-        // texture. It runs `fs_main`, so it binds the full material set even though
-        // the zero-normal branch it takes never uses the sampled values.
-        if let Some(fill) = &self.active.views.uv_fill_buf {
+        // Island fill (Shaded / Islands), then the Aud highlight over it, both under
+        // the wireframe. They run `fs_main`, so they bind the full material set even
+        // though the zero-normal branch they take never uses the sampled values.
+        for fill in [
+            &self.active.views.uv_fill_buf,
+            &self.active.views.uv_audit_buf,
+        ]
+        .into_iter()
+        .flatten()
+        {
             let material = self.materials.fallback();
             let mut bindings = self.mesh_bindings(&self.checker_greyscale, material);
             bindings.mesh_vertices(fill);
@@ -160,11 +206,10 @@ impl SceneGpu {
             ..TonemapSettings::default()
         };
         let mut post = post_uniforms(ViewportBackground::Black, false, tonemap, false);
-        let [r, g, b] = background.clear_color();
+        let [r, g, b] = uv.background.clear_color();
         post.bg_top = [r, g, b, 0.0];
         post.bg_bottom = [r, g, b, 0.0];
-        self.queue_composite(frame, &post, targets, None, BackbufferRect::full(size));
-        Ok(())
+        self.queue_composite(frame, &post, targets, None, dest);
     }
 
     /// Draw `quad` unlit with `material`'s base color (and opacity, where it has

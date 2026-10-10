@@ -477,6 +477,21 @@ impl App {
                 hidden_alpha: theme::color::AUDIT_HIDDEN_OPACITY,
             }
         });
+        // The Aud split's UV half: the focused rule's UV set, laid out for the
+        // objects it names, with its offending triangles tinted.
+        let aud_split = audit_overlay
+            .filter(|_| self.ui.aud.split())
+            .map(|overlay| {
+                (
+                    self.audit_uv_channel(),
+                    self.audit_focus_nodes(),
+                    review_render::UvAuditOverlay {
+                        revision: overlay.revision,
+                        fills: overlay.fills,
+                        colors: overlay.colors,
+                    },
+                )
+            });
         let renderer = self.renderer.as_mut()?;
         let gpu = self.gpu.as_mut()?;
         let egui_renderer = self.egui_renderer.as_mut()?;
@@ -513,6 +528,7 @@ impl App {
                             image,
                         }),
                         pixels_per_point: full_output.pixels_per_point,
+                        audit: None,
                     },
                 ),
                 WorkspaceMode::Texture => {
@@ -542,7 +558,22 @@ impl App {
                         pixels_per_point: full_output.pixels_per_point,
                         audit: audit_overlay,
                     };
-                    if workspace == WorkspaceMode::Opt {
+                    if let Some((channel, nodes, overlay)) = aud_split.as_ref() {
+                        let uv = UvFrame {
+                            model,
+                            model_revision,
+                            channel: *channel,
+                            shading_mode: review_render::UvShadingMode::Wire,
+                            anti_aliasing,
+                            background: uv_background,
+                            selected_nodes: nodes,
+                            hidden_meshes: &hidden_meshes,
+                            texture: None,
+                            pixels_per_point: full_output.pixels_per_point,
+                            audit: Some(*overlay),
+                        };
+                        renderer.render_aud_split(&mut frame, &scene_frame, &uv, opt_viewport)
+                    } else if workspace == WorkspaceMode::Opt {
                         // Read the cameras out before the call: the arguments are
                         // evaluated after the `&mut renderer` receiver is borrowed.
                         let source_camera = renderer.camera;

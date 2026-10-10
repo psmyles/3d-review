@@ -306,8 +306,10 @@ impl SceneGpu {
         // the processed slot — rebuilding both, and discarding the processed cache on
         // every switch between workspaces.
         self.activate(SlotId::Source);
-        // One view, so what only the Opt comparison draws with goes (invariant 3).
+        // One view, so what only the Opt comparison draws with goes (invariant 3),
+        // and no UV layout beside it.
         self.release_opt_views();
+        self.release_uv_views();
 
         let size = frame.size();
         self.sync_frame(frame, scene, material_states, material_revision, size)?;
@@ -466,10 +468,6 @@ impl SceneGpu {
             target_size,
             scene.anti_aliasing.effective_sample_count(),
         )?;
-
-        // Every caller of this is a 3D frame, so the UV viewport's buffers are off
-        // (invariant 3); `render_uv` builds them instead and never comes through here.
-        self.release_uv_views();
 
         // The Unique-mode part key, then the mesh + the effective material table
         // (both depend on the active material mode's grouping).

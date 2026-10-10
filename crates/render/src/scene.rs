@@ -9,6 +9,7 @@
 //! same passes.
 
 mod ao_accum;
+mod aud;
 mod deform_gpu;
 mod draw;
 mod draw_lists;

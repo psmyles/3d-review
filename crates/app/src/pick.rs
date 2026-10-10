@@ -133,6 +133,25 @@ impl App {
             });
         }
 
+        // The Aud split draws the model in its left half only; the right half is a
+        // UV layout, with nothing to pick.
+        if let Some([left, right]) = self.aud_split_halves() {
+            if position.x >= right.0.x {
+                return None;
+            }
+            let (origin, size) = left;
+            let mut camera = renderer.camera;
+            camera.aspect_ratio = size.x / size.y.max(1.0);
+            return Some(PickView {
+                camera,
+                model: self.scene_model.as_ref(),
+                bvh: self.scene_bvh.as_deref()?,
+                origin,
+                size,
+                posed: self.animation.active,
+            });
+        }
+
         // Every other case draws one view over the whole backbuffer, with the
         // chrome painted on top of it.
         let (model, bvh) = match self.ui.mode {

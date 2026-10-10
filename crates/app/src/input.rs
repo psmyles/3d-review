@@ -98,8 +98,14 @@ impl App {
         // in). The 3D scene is LMB orbit / RMB look / MMB pan. The Tex viewport
         // handles its own pan/zoom inside egui (its canvas senses the drag), so
         // an unclaimed press there must not start a 3D-camera drag.
+        // A press in the Aud split's UV half drives that half's 2D camera, with the
+        // UV workspace's own bindings.
+        self.drag_in_aud_uv = self
+            .last_pointer_position
+            .is_some_and(|position| self.in_aud_uv_view(position));
         let uv_mode = match self.ui.mode {
             WorkspaceMode::Uv => true,
+            _ if self.drag_in_aud_uv => true,
             WorkspaceMode::ThreeD | WorkspaceMode::Opt | WorkspaceMode::Aud => false,
             WorkspaceMode::Texture => return,
         };
@@ -204,7 +210,10 @@ impl App {
 
         // Read before the renderer borrow below.
         let synced = self.opt_cameras_synced();
-        let half_view = self.opt_split_halves().map(|[(_, size), _]| size);
+        let half_view = self
+            .opt_split_halves()
+            .or_else(|| self.aud_split_halves())
+            .map(|[(_, size), _]| size);
         if let (Some(renderer), Some(last), Some(mode)) = (
             self.renderer.as_mut(),
             self.last_pointer_position,
@@ -212,6 +221,7 @@ impl App {
         ) {
             let delta = current - last;
             let uv_mode = self.ui.mode == WorkspaceMode::Uv;
+            let aud_uv = self.drag_in_aud_uv;
             let size = window.inner_size();
             let viewport = Vec2::new(size.width as f32, size.height as f32);
             // In the Opt split view with sync off, the drag belongs to whichever
@@ -238,7 +248,9 @@ impl App {
                 }
                 // Pan drives the 2D UV camera in UV mode, the 3D camera otherwise.
                 DragMode::Pan => {
-                    if uv_mode {
+                    if aud_uv {
+                        renderer.pan_aud_uv_camera(delta, half_view.unwrap_or(viewport));
+                    } else if uv_mode {
                         renderer.pan_uv_camera(delta, viewport);
                     } else if opt_right {
                         renderer.pan_opt_camera(delta, half_view.unwrap_or(viewport));
@@ -252,7 +264,9 @@ impl App {
                 // Pointer down (positive screen delta) zooms in, up zooms out —
                 // matching the wheel's positive-is-in sign.
                 DragMode::Zoom => {
-                    if uv_mode {
+                    if aud_uv {
+                        renderer.zoom_aud_uv_camera(delta.y * DRAG_ZOOM_SENSITIVITY);
+                    } else if uv_mode {
                         renderer.zoom_uv_camera(delta.y * DRAG_ZOOM_SENSITIVITY);
                     } else if opt_right {
                         renderer.zoom_opt_camera(delta.y * DRAG_ZOOM_SENSITIVITY);
@@ -315,6 +329,30 @@ impl App {
         Some([physical(left), physical(right)])
     }
 
+    /// The Aud split's two halves (the model, then its UV layout) in physical
+    /// pixels, as [`Self::opt_split_halves`]; `None` when Aud is not split.
+    pub(crate) fn aud_split_halves(&self) -> Option<[(Vec2, Vec2); 2]> {
+        if self.ui.mode != WorkspaceMode::Aud || !self.ui.aud.split() {
+            return None;
+        }
+        let rect = self.ui.scene_viewport?;
+        let scale = self.window.as_ref()?.scale_factor() as f32;
+        let physical = |half: egui::Rect| {
+            (
+                Vec2::new(half.left(), half.top()) * scale,
+                Vec2::new(half.width(), half.height()) * scale,
+            )
+        };
+        let (left, right) = review_ui::split_halves(rect);
+        Some([physical(left), physical(right)])
+    }
+
+    /// Whether a pointer position falls in the Aud split's UV half.
+    pub(crate) fn in_aud_uv_view(&self, position: Vec2) -> bool {
+        self.aud_split_halves()
+            .is_some_and(|[_, (right, _)]| position.x >= right.x)
+    }
+
     /// A scroll-wheel event: zoom the active (2D UV or 3D) camera unless egui claimed
     /// it. Line deltas (mice) and pixel deltas (trackpads) are normalized to one
     /// zoom step.
@@ -363,9 +401,17 @@ impl App {
             .last_pointer_position
             .is_some_and(|position| self.in_opt_right_view(position));
         let synced = self.opt_cameras_synced();
+        let aud_uv = self
+            .last_pointer_position
+            .is_some_and(|position| self.in_aud_uv_view(position));
         let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
+        if aud_uv {
+            renderer.zoom_aud_uv_camera(amount);
+            self.redraw.requested = true;
+            return;
+        }
         match self.ui.mode {
             WorkspaceMode::Uv => renderer.zoom_uv_camera(amount),
             WorkspaceMode::ThreeD | WorkspaceMode::Opt | WorkspaceMode::Aud => {

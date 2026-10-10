@@ -113,6 +113,9 @@ pub struct Renderer {
     pub camera: OrbitCamera,
     /// The 2D camera for the UV viewport, independent of the 3D orbit camera.
     pub uv_camera: UvCamera,
+    /// The Aud split's UV half — its own camera, so framing a finding there
+    /// leaves the UV workspace's view where the user left it.
+    pub aud_uv_camera: UvCamera,
     /// The Opt workspace's *right-hand* camera, used only by the split view with
     /// camera sync off. With sync on it simply mirrors [`Self::camera`], which is
     /// why it needs no transition of its own: the animated moves (framing, home,
@@ -330,6 +333,18 @@ pub struct UvFrame<'a> {
     /// Physical pixels per egui point, as [`SceneFrame::pixels_per_point`]: what
     /// gives the UV view's lines the same weight on every display.
     pub pixels_per_point: f32,
+    /// The Aud workspace's offending triangles, tinted on the layout. `None`
+    /// everywhere else.
+    pub audit: Option<UvAuditOverlay<'a>>,
+}
+
+/// The Aud workspace's UV-space highlight: the focused finding's triangles, by
+/// severity (0 Info, 1 Warning, 2 Error), laid out in the frame's UV set.
+#[derive(Debug, Clone, Copy)]
+pub struct UvAuditOverlay<'a> {
+    pub revision: u64,
+    pub fills: [&'a [u32]; 3],
+    pub colors: [[f32; 4]; 3],
 }
 
 /// An image the UV viewport lays its islands over: the decoded pixels from the
@@ -372,6 +387,7 @@ impl Renderer {
             config,
             camera: OrbitCamera::default(),
             uv_camera: UvCamera::default(),
+            aud_uv_camera: UvCamera::default(),
             opt_camera: OrbitCamera::default(),
             camera_transition: None,
             framing_safe_area: Vec2::ONE,
@@ -486,6 +502,54 @@ impl Renderer {
             return Ok(());
         };
         scene_gpu.render_uv(frame, uv, uv_camera)
+    }
+
+    /// Render the Aud workspace's split: the 3D scene on the left of `viewport`, the
+    /// UV layout of the focused finding on the right (framed by
+    /// [`Self::aud_uv_camera`]), the offenders highlighted in both.
+    pub fn render_aud_split(
+        &mut self,
+        frame: &mut Frame<'_>,
+        scene: &SceneFrame<'_>,
+        uv: &UvFrame<'_>,
+        viewport: SceneViewport,
+    ) -> GpuResult<()> {
+        let camera = self.camera;
+        // Remembered, so a later fit frames the box at the half's own shape.
+        self.aud_uv_camera.aspect_ratio =
+            (viewport.width / 2).max(1) as f32 / viewport.height.max(1) as f32;
+        let uv_camera = self.aud_uv_camera;
+        let material_revision = self.material_revision;
+        self.ensure_scene(frame, scene.anti_aliasing.effective_sample_count())?;
+        let Some(scene_gpu) = self.scene.as_mut() else {
+            return Ok(());
+        };
+        scene_gpu.render_aud_split(
+            frame,
+            scene,
+            uv,
+            camera,
+            uv_camera,
+            viewport,
+            &self.material_states,
+            material_revision,
+        )
+    }
+
+    /// Frame the Aud split's UV half on the UV box `min..max`.
+    pub fn fit_aud_uv_camera(&mut self, min: glam::Vec2, max: glam::Vec2) {
+        self.aud_uv_camera = self.aud_uv_camera.fitted_to(min, max, 0.15);
+    }
+
+    /// Zoom the Aud split's UV half (the wheel over it).
+    pub fn zoom_aud_uv_camera(&mut self, amount: f32) {
+        self.aud_uv_camera.zoom(amount);
+    }
+
+    /// Pan the Aud split's UV half by a pointer drag over it.
+    pub fn pan_aud_uv_camera(&mut self, delta_pixels: glam::Vec2, viewport_size: glam::Vec2) {
+        self.aud_uv_camera
+            .pan_screen_delta(delta_pixels, viewport_size);
     }
 
     /// Render the 2D Tex viewport (instead of the 3D scene): the chosen background

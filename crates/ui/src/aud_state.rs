@@ -131,6 +131,16 @@ impl AudUiState {
         self.view = DiagnosticView::Issues;
     }
 
+    /// Whether the viewport is split into the model and its UV layout: a UV
+    /// finding is focused in the Issues view.
+    pub fn split(&self) -> bool {
+        self.view == DiagnosticView::Issues
+            && self
+                .focus
+                .and_then(AuditFocus::rule)
+                .is_some_and(RuleId::is_uv)
+    }
+
     /// Whether a group is open.
     pub fn is_open(&self, group: IssueGroup) -> bool {
         let open_by_default = !matches!(group, IssueGroup::Rule(_));

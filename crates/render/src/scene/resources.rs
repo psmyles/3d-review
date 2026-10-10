@@ -47,6 +47,8 @@ impl SceneGpu {
             slot.views.uv_wireframe_baked = None;
             slot.views.uv_fill_buf = None;
             slot.views.uv_fill_baked = None;
+            slot.views.uv_audit_buf = None;
+            slot.views.uv_audit_baked = None;
         }
         self.uv_texture = None;
         self.uv_checker = None;

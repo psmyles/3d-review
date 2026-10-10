@@ -298,6 +298,37 @@ fn uv_island_colors(model: &ModelData, channel: usize) -> Vec<[f32; 4]> {
         .collect()
 }
 
+/// The Aud workspace's offending triangles in UV space: one flat-coloured
+/// triangle per entry of `fills[severity]`, coloured `colors[severity]`, worst
+/// severity last so it covers the rest.
+pub(crate) fn uv_highlight_triangles(
+    model: &ModelData,
+    channel: u32,
+    fills: [&[u32]; 3],
+    colors: [[f32; 4]; 3],
+) -> Vec<SceneVertex> {
+    let channel = channel as usize;
+    let uv_point = |vertex_index: u32| {
+        let uv = model.uv_for_channel(vertex_index as usize, channel);
+        [uv.x, uv.y, 0.0]
+    };
+    let mut vertices = Vec::new();
+    for (severity, triangles) in fills.iter().enumerate() {
+        for &triangle in *triangles {
+            let Some(corners) = model
+                .indices
+                .get(triangle as usize * 3..triangle as usize * 3 + 3)
+            else {
+                continue;
+            };
+            for &corner in corners {
+                push_fill_vertex(&mut vertices, uv_point(corner), colors[severity], NO_DEFORM);
+            }
+        }
+    }
+    vertices
+}
+
 /// Distinct, evenly-spread island color for the `index`-th UV island. Hues step
 /// by the golden-ratio conjugate so successive islands stay far apart on the
 /// wheel; saturation/value are fixed for a cohesive, readable palette. Returned

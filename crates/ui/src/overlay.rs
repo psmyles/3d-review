@@ -232,7 +232,9 @@ pub fn draw_overlay(
 /// hairline the chrome panels are edged with, so the divider reads as part of
 /// the frame rather than as something in the scene.
 fn draw_split_divider(ctx: &egui::Context, state: &UiState, viewport: egui::Rect) {
-    if state.mode != WorkspaceMode::Opt || state.opt.layout != OptLayout::Split {
+    let opt_split = state.mode == WorkspaceMode::Opt && state.opt.layout == OptLayout::Split;
+    let aud_split = state.mode == WorkspaceMode::Aud && state.aud.split();
+    if !opt_split && !aud_split {
         return;
     }
     let (left, _) = split_halves(viewport);
