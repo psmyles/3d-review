@@ -65,7 +65,7 @@ pub(crate) fn wireframe_edge_indices(model: &ModelData, hidden_nodes: &[u32]) ->
     }
 
     let hidden = HiddenFilter::new(model, hidden_nodes);
-    let face_node = hidden.is_active().then(|| face_node_map(model)).flatten();
+    let face_node = hidden.is_active().then(|| model.face_nodes()).flatten();
     for (face_index, face) in model.faces.iter().enumerate() {
         if let Some(map) = face_node.as_ref()
             && map
@@ -85,30 +85,6 @@ pub(crate) fn wireframe_edge_indices(model: &ModelData, hidden_nodes: &[u32]) ->
     }
 
     indices
-}
-
-/// A per-face owning scene-graph node index, parallel to [`ModelData::faces`].
-/// Built from the per-triangle node info (`tri_node`) projected through
-/// `tri_to_face`: each triangle stamps its node onto its face. `None` when the
-/// model carries no per-triangle node/face info, so face visibility can't be
-/// resolved (the caller then draws every face).
-pub(super) fn face_node_map(model: &ModelData) -> Option<Vec<u32>> {
-    let triangle_count = model.indices.len() / 3;
-    if triangle_count == 0
-        || model.triangles.node.len() != triangle_count
-        || model.triangles.to_face.len() != triangle_count
-        || model.faces.is_empty()
-    {
-        return None;
-    }
-    let mut map = vec![u32::MAX; model.faces.len()];
-    for triangle in 0..triangle_count {
-        let face = model.triangles.to_face[triangle] as usize;
-        if let Some(slot) = map.get_mut(face) {
-            *slot = model.triangles.node[triangle];
-        }
-    }
-    Some(map)
 }
 
 #[cfg(test)]

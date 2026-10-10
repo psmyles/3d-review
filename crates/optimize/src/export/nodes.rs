@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::ffi::CString;
 
 use glam::{Mat4, Quat, Vec3};
-use review_model::extras::{AttributeKind, Synthetic};
+use review_model::extras::AttributeKind;
 use review_model::{ModelData, SourceExtras};
 
 use crate::notice::ExportNote;
@@ -74,19 +74,10 @@ pub(crate) fn attribute_code(kind: AttributeKind) -> u32 {
 }
 
 /// Whether a source node is one the importer made up rather than the file
-/// authored: the synthetic file root and the scale helpers ufbx inserts for
-/// non-standard inherit modes. Neither is written; the authored `InheritType`
-/// lets a reader re-derive the helper, and the file has its own root.
+/// authored. Neither the synthetic root nor a scale helper is written; the
+/// authored `InheritType` lets a reader re-derive the helper.
 pub(crate) fn is_synthetic(source: &ModelData, extras: &SourceExtras, index: usize) -> bool {
-    match extras.nodes.get(index).map(|node| node.synthetic) {
-        Some(Synthetic::Root | Synthetic::ScaleHelper) => true,
-        Some(_) => false,
-        // No capture entry (never, given `validate`) — fall back to the
-        // structural test the computed path uses.
-        None => source.nodes.get(index).is_some_and(|node| {
-            node.parent.is_none() && node.name.is_empty() && node.mesh_part.is_none()
-        }),
-    }
+    review_model::hierarchy::is_synthetic(source, Some(extras), index)
 }
 
 /// The nearest authored ancestor of `index`, skipping synthetic nodes.

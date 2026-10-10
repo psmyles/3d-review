@@ -7,16 +7,22 @@ use glam::{Vec2, Vec3};
 
 pub mod anim;
 mod bvh;
+pub mod cancel;
 mod clip;
 pub mod color;
 mod demo;
 pub mod extras;
 mod geometry;
+pub mod hierarchy;
+pub mod measure;
 mod morph;
+pub mod naming;
 pub mod pick;
 mod scene;
 mod skin;
 mod stats;
+pub mod topology;
+pub mod uv_islands;
 
 // The crate's whole surface is re-exported here, so every `review_model::X`
 // path other crates use resolves exactly as it did when this was one file.
@@ -25,6 +31,7 @@ pub use bvh::{
     Bvh, ClosestPoint, Hit, SceneBvh, SceneHit, closest_point_on_triangle, ray_triangle_t,
     triangle_positions,
 };
+pub use cancel::CancelToken;
 pub use clip::{
     AnimationClip, DEFAULT_FRAME_RATE, Key, MAX_CLIP_FRAMES, MorphTrack, NodeTrack,
     frame_rate_or_default,

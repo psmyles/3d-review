@@ -61,6 +61,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use glam::{Vec3, Vec4};
 use review_model::color::linear_to_srgb;
+use review_model::naming::node_lod;
 use review_model::triangle_positions;
 use review_model::{Bounds, Bvh, ModelData, Vertex};
 
@@ -281,42 +282,6 @@ pub(crate) fn bake_submeshes(
             });
         }
     });
-}
-
-/// The source LOD identity of `node`: the index parsed from the conventional
-/// `_LOD<n>` name suffix, on the node itself or the nearest named ancestor
-/// (LOD grouping is sometimes on a parent group node). `None` for a node with
-/// no LOD identity. The parent walk is bounded so a malformed cycle in the
-/// hierarchy terminates rather than spins.
-fn node_lod(model: &ModelData, node: u32) -> Option<u32> {
-    let mut index = node as usize;
-    for _ in 0..=model.nodes.len() {
-        let node = model.nodes.get(index)?;
-        if let Some(lod) = lod_suffix(&node.name) {
-            return Some(lod);
-        }
-        index = node.parent?;
-    }
-    None
-}
-
-/// Parse a node name's trailing LOD index: `..._LOD<n>` in any case, or a name
-/// that is entirely `LOD<n>` (FBX LOD-group children are often named just
-/// that). Anchored at the end so `"Wall_LOD2"` is 2 but `"LOD_Test_Wall"` is
-/// nothing.
-fn lod_suffix(name: &str) -> Option<u32> {
-    let bytes = name.as_bytes();
-    let digits_start = bytes.iter().rposition(|byte| !byte.is_ascii_digit())? + 1;
-    if digits_start == bytes.len() {
-        return None; // no trailing digits
-    }
-    let head = &bytes[..digits_start];
-    let tagged = (head.len() >= 4 && head[head.len() - 4..].eq_ignore_ascii_case(b"_lod"))
-        || head.eq_ignore_ascii_case(b"lod");
-    if !tagged {
-        return None;
-    }
-    name[digits_start..].parse().ok()
 }
 
 /// Build one bake group's occluder scene: every *visible* submesh belonging to
@@ -570,6 +535,7 @@ mod tests {
         run_model(&review_model::demo_cube_model(), stack)
     }
     use glam::Mat4;
+    use review_model::naming::lod_suffix;
     use review_model::{NodeKind, SceneNode};
 
     #[test]
