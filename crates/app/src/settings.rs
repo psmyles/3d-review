@@ -4,8 +4,7 @@
 //! while that is on, the option-window values it remembers, the **Tracy
 //! Profiler** preference (a saved `--tracy`, read once at launch), and the File >
 //! Open Recent list (kept whatever the switch says — it is a history, not a tool
-//! setting; what goes into it is [`crate::recent`]'s business), and the name
-//! review comments are signed with. The format is the
+//! setting; what goes into it is [`crate::recent`]'s business). The format is the
 //! same hand-rolled `key=value` one [`crate::window_state`] uses — no serde, no
 //! schema, and a line it does not recognise is skipped rather than failing the
 //! read, because a settings file that has picked up a key from a newer build must
@@ -37,10 +36,6 @@ const TRACY_KEY: &str = "tracy_profiler";
 /// One recently opened model. The key repeats, one line per file, most recent
 /// first — the order the menu lists them in.
 const RECENT_KEY: &str = "recent_file";
-
-/// The name review comments are signed with. Kept whatever the remember switch
-/// says, like the recent files: it is who the user is, not a tool setting.
-const AUTHOR_KEY: &str = "comment_author";
 
 /// The namespace the remembered option-window values are written under, so the
 /// save can tell its own lines from everyone else's.
@@ -82,10 +77,6 @@ fn apply_entries(ui: &mut UiState, entries: &[(String, String)]) {
         .map(|(_, value)| PathBuf::from(value))
         .take(MAX_RECENT_FILES)
         .collect();
-    ui.comments.author = entries
-        .iter()
-        .find_map(|(key, value)| (key == AUTHOR_KEY).then(|| value.clone()))
-        .unwrap_or_default();
     ui.remember_settings = entries
         .iter()
         .any(|(key, value)| key == REMEMBER_KEY && value == "true");
@@ -158,7 +149,6 @@ fn settings_text(existing: &str, ui: &UiState) -> String {
             key == REMEMBER_KEY
                 || key == TRACY_KEY
                 || key == RECENT_KEY
-                || key == AUTHOR_KEY
                 || key.starts_with(OPTIONS_PREFIX)
         });
         if !owned {
@@ -168,11 +158,6 @@ fn settings_text(existing: &str, ui: &UiState) -> String {
     }
     text.push_str(&format!("{TRACY_KEY}={}\n", ui.tracy_profiler));
     text.push_str(&format!("{REMEMBER_KEY}={}\n", ui.remember_settings));
-    // One line: a name with a line break in it could not be read back.
-    let author = ui.comments.author.trim();
-    if !author.is_empty() && !author.contains(['\n', '\r']) {
-        text.push_str(&format!("{AUTHOR_KEY}={author}\n"));
-    }
     for path in ui
         .recent_files
         .iter()

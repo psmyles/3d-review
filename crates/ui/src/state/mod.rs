@@ -28,7 +28,6 @@ use crate::theme;
 
 mod animation;
 mod caches;
-mod comments;
 mod outliner;
 mod panels;
 mod panels_open;
@@ -39,7 +38,6 @@ mod view;
 
 pub use animation::*;
 pub use caches::*;
-pub use comments::*;
 pub use outliner::*;
 pub use panels::*;
 pub use panels_open::*;
@@ -136,18 +134,6 @@ pub struct UiOutput {
     /// out — every entry reaches outside the chrome (a file dialog, the loaded
     /// model, the settings file, the process).
     pub menu: Option<MenuIntent>,
-    /// A review-comment action that moves the camera or the clock, for `app` to
-    /// carry out.
-    pub comment: Option<CommentIntent>,
-}
-
-/// A review-comment action for `app`: the parts of "go to this comment" the
-/// chrome doesn't own — the camera lives in the renderer, the clock in `app`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CommentIntent {
-    /// Show thread `index` the way it was written: fly to its saved view and
-    /// jump to its clip and first frame, where it has them.
-    Show(usize),
 }
 
 /// An entry in the toolbar's menu. Each lands on the handler its keyboard
@@ -163,10 +149,6 @@ pub enum MenuIntent {
     OpenRecent(usize),
     /// Empty [`UiState::recent_files`] and write the settings file.
     ClearRecentFiles,
-    /// Write the review comments back into the opened FBX (the save shortcut).
-    SaveComments,
-    /// Write the opened FBX, with its review comments, to a new file.
-    SaveCommentsAs,
     /// Drop the loaded model and return to the start state (the new shortcut).
     CloseFile,
     /// Flip [`UiState::remember_settings`] and write the settings file at once,
@@ -317,9 +299,6 @@ pub struct UiState {
     pub outliner: OutlinerState,
     /// Animation clip selection + playback — see [`AnimationUiState`].
     pub animation: AnimationUiState,
-    /// The loaded file's review comments, and how the chrome is showing them —
-    /// see [`CommentsState`].
-    pub comments: CommentsState,
     /// The in-app manual: whether its window is up, which page it is on, and
     /// where its images live. Chrome state like the panel set, edited in place
     /// rather than travelling as an intent — see [`crate::HelpState`].
@@ -327,8 +306,6 @@ pub struct UiState {
     /// The About box — whether it is up, and the build / renderer facts `app`
     /// handed over for it to show. Opened from the menu's Help > About.
     pub about: crate::AboutState,
-    /// Preferences > User Name: whether its box is up, and what is typed in it.
-    pub user_name: crate::UserNameState,
     /// The Log window — whether it is up, its level filter, and this session's
     /// lines as `app` last handed them over. Opened from the menu's Debug >
     /// View Log.
@@ -422,7 +399,6 @@ impl Default for UiState {
         Self {
             help: crate::HelpState::default(),
             about: crate::AboutState::default(),
-            user_name: crate::UserNameState::default(),
             log: crate::LogWindowState::default(),
             mode: WorkspaceMode::ThreeD,
             debug: SceneDebugOptions::default(),
@@ -470,7 +446,6 @@ impl Default for UiState {
             solo: false,
             outliner: OutlinerState::default(),
             animation: AnimationUiState::default(),
-            comments: CommentsState::default(),
             selected_bones: Vec::new(),
             tool: ViewportTool::default(),
             hover: None,
@@ -654,14 +629,12 @@ impl UiState {
         self.selected_node_set()
     }
 
-    /// Drop every selection — both sets, the primary, the range anchor and the
-    /// review comment — and hand the Inspector back from a texture or a comment
-    /// to the (now empty) selection.
+    /// Drop every selection — both sets, the primary and the range anchor — and
+    /// hand the Inspector back from a texture to the (now empty) selection.
     /// `Esc` and a click on empty viewport both land here, so neither can leave
     /// half a selection behind (a cleared primary with the skeleton still lit).
     pub fn clear_selection(&mut self) {
         self.texture_view.inspected = false;
-        self.deselect_comment();
         self.selection = Selection::None;
         self.selected_nodes.clear();
         self.selected_bones.clear();
@@ -674,7 +647,6 @@ impl UiState {
         self.selection.is_active()
             || !self.selected_nodes.is_empty()
             || !self.selected_bones.is_empty()
-            || self.comments.selected.is_some()
     }
 
     /// Re-point every piece of skeleton/skin UI state at a freshly loaded `model`:

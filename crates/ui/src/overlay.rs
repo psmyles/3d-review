@@ -3,19 +3,15 @@
 //! and returns the [`UiOutput`] intents for `app` to apply.
 
 use review_model::{ModelData, SceneBvh};
-use review_render::{OrbitCamera, Selection, UvCamera};
+use review_render::{OrbitCamera, Selection};
 
 use crate::dimensions::DimensionView;
 use crate::opt_state::{ComparisonSide, OptIntent, OptLayout};
 use crate::state::{
-    ChromeInsets, CommentIntent, OptionPanel, ScopedStats, UiOutput, UiState, WorkspaceMode,
-    sync_debug_state,
+    ChromeInsets, OptionPanel, ScopedStats, UiOutput, UiState, WorkspaceMode, sync_debug_state,
 };
 use crate::theme::{self, color, size};
-use crate::{
-    comment_composer, comment_pins, dimensions, gizmo, panels, stats, status_bar, texture_view,
-    toolbar,
-};
+use crate::{dimensions, gizmo, panels, stats, status_bar, texture_view, toolbar};
 
 /// The Opt workspace's second view, as the overlay needs to see it. `app` supplies
 /// this whenever that workspace is active; every other workspace passes `None`.
@@ -48,9 +44,7 @@ pub struct OptOverlayLevel<'a> {
     pub revision: u64,
 }
 
-/// Draw the full egui overlay and return the intents emitted this frame.
-/// `camera` and `uv_camera` are the 3D and UV views' cameras, for projecting
-/// what the chrome draws over them (labels, review-comment pins). `model`
+/// Draw the full egui overlay and return the intents emitted this frame. `model`
 /// is the shared scene geometry and `bvh` an acceleration structure over it, both
 /// read only for the bounding-box dimension labels' occlusion test (invariant 1:
 /// borrowed, never copied). `bvh` is `None` until `app` has built it for the
@@ -61,7 +55,6 @@ pub fn draw_overlay(
     root: &mut egui::Ui,
     state: &mut UiState,
     camera: OrbitCamera,
-    uv_camera: UvCamera,
     model: &ModelData,
     bvh: Option<&SceneBvh>,
     opt: Option<OptOverlayView<'_>>,
@@ -91,20 +84,6 @@ pub fn draw_overlay(
     toolbar::draw(root, state, &mut output);
     status_bar::draw(root, state, model);
 
-    // The camera as a review comment would save it, for a comment started from
-    // the chrome this frame.
-    state.comments.view_now = Some(review_annotate::thread::SavedView {
-        target: camera.target.to_array(),
-        yaw: camera.yaw,
-        pitch: camera.pitch,
-        distance: camera.distance,
-        fov: camera.fov_y_radians,
-        ortho: matches!(
-            state.projection_mode,
-            crate::state::ViewProjectionMode::Orthographic
-        ),
-    });
-
     // Re-scoped before the panels rather than after: the Inspector's multi-part
     // summary states these same sums, and measuring them after it had drawn
     // would leave it one frame behind the selection it describes. The call is
@@ -129,7 +108,6 @@ pub fn draw_overlay(
     output.material_edit_active = side.inspector.material_edit_active;
     output.opt = side.opt.intent;
     output.opt_edit_active = side.opt.edit_active;
-    output.comment = side.comment.or(side.inspector.comment);
 
     // The free viewport: the screen minus the chrome bands (toolbar top, status
     // bar bottom) and the open side panels (left/right). Floating chrome — the
@@ -163,13 +141,6 @@ pub fn draw_overlay(
         if state.hover.is_some() && !ctx.is_pointer_over_egui() {
             ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
         }
-        // The Comment tool's click places something, so the pointer says where.
-        if state.tool == crate::state::ViewportTool::Comment
-            && state.mode == WorkspaceMode::ThreeD
-            && !ctx.is_pointer_over_egui()
-        {
-            ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
-        }
         draw_split_divider(ctx, state, viewport);
 
         // Bounding-box dimension labels sit on the viewport (under the chrome).
@@ -178,20 +149,6 @@ pub fn draw_overlay(
         // per frame.
         let views = dimension_views(state, camera, model, bvh, opt, screen, viewport);
         dimensions::draw_dimension_labels(ctx, state, &views);
-
-        // Review-comment pins, over the scene and under the floating chrome, and
-        // the composer of a comment being written. In the Opt split they sit on
-        // the source half — the mesh they were written on — through that half's
-        // own camera.
-        let split = state.mode == WorkspaceMode::Opt && state.opt.layout == OptLayout::Split;
-        let pin_view = if split {
-            let (left, _) = split_halves(viewport);
-            comment_pins::PinView::scene(state, half_camera(camera, left), left, left, model, bvh)
-        } else {
-            comment_pins::PinView::scene(state, camera, screen, viewport, model, bvh)
-        };
-        comment_pins::draw_comment_pins(ctx, state, &pin_view);
-        comment_composer::draw_composer(ctx, state, Some(&pin_view), viewport);
 
         draw_option_panels(ctx, state, viewport);
 
@@ -236,16 +193,6 @@ pub fn draw_overlay(
             side.right_inset,
         );
     } else {
-        if state.mode == WorkspaceMode::Uv {
-            if state.tool == crate::state::ViewportTool::Comment && !ctx.is_pointer_over_egui() {
-                ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
-            }
-            // The UV layout's pins, through the UV camera — the renderer draws the
-            // layout over the whole window, as it does the 3D scene.
-            let pin_view = comment_pins::PinView::uv(uv_camera, screen, viewport);
-            comment_pins::draw_comment_pins(ctx, state, &pin_view);
-            comment_composer::draw_composer(ctx, state, Some(&pin_view), viewport);
-        }
         if state.mode == WorkspaceMode::Texture {
             // The Tex workspace paints a 2D image viewer (channel-isolated,
             // pan/zoom) over a chosen background fill, in the central area the
@@ -265,9 +212,8 @@ pub fn draw_overlay(
         crate::log_window::draw(ctx, &mut state.log, viewport);
     }
 
-    // Last, so a modal's backdrop covers every other piece of chrome.
+    // Last, so the modal's backdrop covers every other piece of chrome.
     crate::about::draw(ctx, &mut state.about);
-    crate::user_name::draw(ctx, state);
 
     output
 }
@@ -478,8 +424,6 @@ struct SidePanelLayout {
     /// The Opt workspace's own emissions: the preset / export intents raised by
     /// the stack pane or the Opt inspector, and its drag-coalescing hint.
     opt: OptEmission,
-    /// A review-comment action raised by the Comments tab.
-    comment: Option<CommentIntent>,
     left_inset: f32,
     right_inset: f32,
 }
@@ -514,7 +458,6 @@ fn draw_side_panels(
 
     let opt_mode = state.mode == WorkspaceMode::Opt;
     let mut opt = OptEmission::default();
-    let mut comment = None;
 
     let mut left_inset = 0.0;
     if state.side_panels_open {
@@ -551,13 +494,11 @@ fn draw_side_panels(
                     }
                     egui::CentralPanel::default()
                         .frame(egui::Frame::NONE)
-                        .show(ui, |ui| panels::outliner::body(ui, state, model))
-                        .inner
+                        .show(ui, |ui| panels::outliner::body(ui, state, model));
                 } else {
-                    panels::outliner::body(ui, state, model)
+                    panels::outliner::body(ui, state, model);
                 }
             });
-        comment = response.inner;
         left_inset = response.response.rect.width();
     }
 
@@ -590,7 +531,6 @@ fn draw_side_panels(
     SidePanelLayout {
         inspector,
         opt,
-        comment,
         left_inset,
         right_inset,
     }
@@ -767,15 +707,7 @@ mod tests {
         };
         for _ in 0..3 {
             let mut output = ctx.run_ui(input(), |ui| {
-                draw_overlay(
-                    ui,
-                    &mut state,
-                    OrbitCamera::default(),
-                    UvCamera::default(),
-                    &model,
-                    None,
-                    None,
-                );
+                draw_overlay(ui, &mut state, OrbitCamera::default(), &model, None, None);
             });
             output.textures_delta.clear();
         }

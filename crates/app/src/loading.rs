@@ -250,11 +250,6 @@ impl App {
     }
 
     pub(crate) fn open_model_from_path(&mut self, path: &Path) {
-        // Unsaved review comments are asked about first; the open is resumed
-        // once the question is answered.
-        if !self.may_drop_comments(crate::comments_save::AfterSave::Open(path.to_path_buf())) {
-            return;
-        }
         // The clock the success notice reports runs from here — what the user
         // waited, not what the parse cost.
         let started = Instant::now();
@@ -322,8 +317,6 @@ impl App {
                         Err(error) => (Err(error), None),
                     };
                     let measure = result.as_ref().ok().map(Arc::clone);
-                    // The comments are read from the file after the model is up.
-                    let comment_path = path.clone();
                     // A send failure only means the event loop has exited.
                     let _ = proxy.send_event(UserEvent::ModelLoaded(Box::new(ModelLoaded {
                         generation,
@@ -376,22 +369,8 @@ impl App {
                         let _z = prof::zone!("Marshal Extras");
                         report(ImportProgress::stage(ImportStage::Extras));
                         let extras = pending.marshal(&model).map(|extras| extras.map(Arc::new));
-                        // Read while the capture is at hand: the comment mapping
-                        // steps over the nodes the importer made up, which only
-                        // the capture names.
-                        let comments = {
-                            let _z = prof::zone!("Read Review Comments");
-                            let capture = extras.as_ref().ok().and_then(Option::as_deref);
-                            crate::comments::read_comments(&comment_path, &model, capture)
-                        };
                         let _ = proxy.send_event(UserEvent::SourceExtrasReady(Box::new(
                             SourceExtrasReady { generation, extras },
-                        )));
-                        let _ = proxy.send_event(UserEvent::CommentsReady(Box::new(
-                            crate::comments::CommentsReady {
-                                generation,
-                                result: comments,
-                            },
                         )));
                     }
                     if superseded() {
@@ -456,18 +435,8 @@ impl App {
                     let clip_bounds = measure_clip_bounds(&model);
                     let groups = model.mesh_group_stats();
                     let extras = extras.marshal(&model).map(|extras| extras.map(Arc::new));
-                    let comments = crate::comments::read_comments(
-                        path,
-                        &model,
-                        extras.as_ref().ok().and_then(Option::as_deref),
-                    );
                     self.apply_loaded_model(path, Ok(Arc::clone(&model)), started.elapsed());
                     self.apply_source_extras(extras);
-                    let generation = self.model_load_generation();
-                    self.handle_comments_ready(crate::comments::CommentsReady {
-                        generation,
-                        result: comments,
-                    });
                     self.ui.clip_bounds = clip_bounds;
                     self.ui.set_mesh_group_stats(groups);
                     self.scene_bvh = Some(bvh);
@@ -549,24 +518,13 @@ impl App {
     /// Name the loaded model in the window title — `Barrel.fbx — 3D Review`
     /// — so the title bar, Alt+Tab and the taskbar button say which file is
     /// open. `None` is the empty start state, which restores the bare product name.
-    fn set_window_title(&mut self, model: Option<&str>) {
-        self.title_file = model.map(str::to_owned);
-        self.title_shows_unsaved = Some(false);
-        self.set_window_title_marked(model, false);
-    }
-
-    /// Title the window after `model`, marked when its comments have unsaved
-    /// changes.
-    pub(crate) fn set_window_title_marked(&self, model: Option<&str>, unsaved: bool) {
+    fn set_window_title(&self, model: Option<&str>) {
         if let Some(window) = self.window.as_ref() {
-            match (model, unsaved) {
-                (Some(name), false) => {
+            match model {
+                Some(name) => {
                     window.set_title(&keys::app_window::title_with_model(name, APP_NAME));
                 }
-                (Some(name), true) => {
-                    window.set_title(&keys::app_window::title_unsaved(name, APP_NAME));
-                }
-                (None, _) => window.set_title(APP_NAME),
+                None => window.set_title(APP_NAME),
             }
         }
     }
@@ -692,9 +650,6 @@ impl App {
     /// camera back to its home framing. Bumping the scene revision drops the
     /// previously-uploaded GPU geometry on the next paint.
     pub(crate) fn reset_to_start_state(&mut self) {
-        if !self.may_drop_comments(crate::comments_save::AfterSave::New) {
-            return;
-        }
         // A load still on the worker describes a model the user has just
         // dismissed; superseding it both drops its result when it lands (its
         // "Loading…" toast ends there, where its refcount is balanced) and stops
@@ -740,10 +695,6 @@ impl App {
         // Indexes the outgoing model's triangles; the worker rebuilds it for the
         // incoming one a moment after it is drawn.
         self.scene_bvh = None;
-        // The comments belong to the outgoing file; the incoming one's are read on
-        // the import worker and arrive a moment after its mesh.
-        self.ui.comments.clear();
-        self.comment_source = None;
         self.posed_pick = None;
         // Picking is a tool, not a document edit: a new file starts in View, so
         // opening one can never leave a stray click selecting something.

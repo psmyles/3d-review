@@ -238,26 +238,3 @@ pub const BOUNDING_BOX_SWATCHES: [Color32; 6] = [
     Color32::from_rgb(32, 224, 232),
     Color32::from_rgb(29, 255, 27),
 ];
-
-// ── Review comments ─────────────────────────────────────────────────────
-/// An open comment's pin and number: a warm yellow, apart from the orange
-/// selection highlight so a pin on a selected part still stands out.
-pub const COMMENT_PIN_OPEN: Color32 = Color32::from_rgb(250, 204, 72);
-/// A resolved comment's pin and number: a quiet green.
-pub const COMMENT_PIN_RESOLVED: Color32 = Color32::from_rgb(110, 190, 120);
-/// The number on a pin, dark against either fill.
-pub const COMMENT_PIN_TEXT: Color32 = Color32::from_rgb(24, 24, 28);
-/// A pin's outline, so it reads on a bright surface too.
-pub const COMMENT_PIN_OUTLINE: Color32 = Color32::from_rgb(24, 24, 28);
-/// The pin of a comment still being written.
-pub const COMMENT_PIN_DRAFT: Color32 = Color32::from_rgb(120, 170, 255);
-/// The ring round the selected comment's pin.
-pub const COMMENT_PIN_SELECTED: Color32 = Color32::WHITE;
-/// How opaque a pin hidden behind the model is drawn — dimmed, not removed, so
-/// the reviewer still knows a comment is there.
-pub const COMMENT_PIN_OCCLUDED_OPACITY: f32 = 0.35;
-/// How opaque a pin is while the animation is outside the frames it is about.
-pub const COMMENT_PIN_GHOST_OPACITY: f32 = 0.2;
-/// An Outliner row's comment-count badge.
-pub const COMMENT_BADGE_BG: Color32 = Color32::from_rgb(250, 204, 72);
-pub const COMMENT_BADGE_TEXT: Color32 = Color32::from_rgb(24, 24, 28);

@@ -165,12 +165,6 @@ pub(crate) const ICON_SELECT: AppIcon = AppIcon {
     png_bytes: include_bytes!("../../../assets/icons/icon_select_mouse.png"),
 };
 
-/// "Comment" — the viewport tool that leaves a review comment where it clicks.
-pub(crate) const ICON_COMMENT: AppIcon = AppIcon {
-    id: "icon_comment",
-    png_bytes: include_bytes!("../../../assets/icons/icon_comment.png"),
-};
-
 /// "Outliner" — the single side-panels toggle: the Outliner (left) and the
 /// Inspector (right) open and close together, so one button drives both.
 pub(crate) const ICON_OUTLINER: AppIcon = AppIcon {

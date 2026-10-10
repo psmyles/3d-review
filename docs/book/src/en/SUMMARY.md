@@ -17,7 +17,6 @@
 - [The UV workspace](uv.md)
 - [The Texture workspace](tex.md)
 - [Skinning and animation](animation.md)
-- [Review comments](comments.md)
 - [Model statistics](stats.md)
 
 # Options panels

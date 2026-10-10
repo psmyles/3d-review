@@ -100,10 +100,6 @@ impl App {
             let _z = prof::zone!("Apply UI Output");
             self.apply_ui_output(ui_output);
         }
-        // The pass may have changed the comments (the title's unsaved mark),
-        // signed the first one (the remembered name), or left the Comment tool
-        // with a pin move pending.
-        self.sync_comment_chrome();
         // The pass may have opened or closed the Log window.
         self.watch_log_window();
 
@@ -159,16 +155,12 @@ impl App {
                 .or_else(|| result.lod(self.ui.opt.active_lod).map(|lod| &lod.model))
                 .map(|model| (model, *revision))
         });
-        // The pins the chrome draws this frame, resolved against the pose the
-        // renderer is about to draw.
-        self.update_comment_pins();
         let (full_output, ui_output) = {
             let egui_state = self.egui_state.as_mut()?;
             let renderer = self.renderer.as_ref()?;
 
             let raw_input = egui_state.take_egui_input(window);
             let camera = renderer.camera;
-            let uv_camera = renderer.uv_camera;
             let scene_model = self.scene_model.clone();
             // Both the dimension labels' occlusion and the viewport pick read
             // this one index, built on the import worker; `None` until it lands.
@@ -212,7 +204,6 @@ impl App {
                     ui,
                     &mut self.ui,
                     camera,
-                    uv_camera,
                     &scene_model,
                     occlusion_bvh,
                     opt_overlay,

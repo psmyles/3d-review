@@ -382,7 +382,6 @@ pub(crate) fn viewport_tool(tool: ViewportTool) -> Key {
     match tool {
         ViewportTool::View => keys::ui_enums::TOOL_VIEW,
         ViewportTool::Select => keys::ui_enums::TOOL_SELECT,
-        ViewportTool::Comment => keys::ui_enums::TOOL_COMMENT,
     }
 }
 

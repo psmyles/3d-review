@@ -179,39 +179,6 @@ pub(super) fn draw_rows(
             }
         }
 
-        // ── Comment badge: how many listed review comments this part carries,
-        //    right-aligned before the eye, so a commented part is findable in
-        //    the tree.
-        let comments = state.comments.count_on(row.node);
-        if comments > 0 {
-            let galley = painter.layout_no_wrap(
-                comments.to_string(),
-                egui::FontId::proportional(crate::theme::font::COMMENT_META),
-                color::COMMENT_BADGE_TEXT,
-            );
-            let badge = egui::Rect::from_min_max(
-                egui::pos2(
-                    name_right - galley.size().x - 2.0 * size::OUTLINER_BADGE_PAD_X,
-                    row_rect.center().y - size::OUTLINER_BADGE_HEIGHT * 0.5,
-                ),
-                egui::pos2(
-                    name_right,
-                    row_rect.center().y + size::OUTLINER_BADGE_HEIGHT * 0.5,
-                ),
-            );
-            painter.rect_filled(
-                badge,
-                size::OUTLINER_BADGE_HEIGHT * 0.5,
-                color::COMMENT_BADGE_BG,
-            );
-            painter.galley(
-                badge.center() - galley.size() * 0.5,
-                galley,
-                color::COMMENT_BADGE_TEXT,
-            );
-            name_right = badge.left() - size::OUTLINER_ROW_GAP;
-        }
-
         // ── Name, truncated so it never runs under the eye ──────────────────
         let text_color = if !row.selectable {
             // Present only to keep a visible descendant attached to its ancestry —
@@ -252,19 +219,6 @@ pub(super) fn draw_rows(
         }
         if row.selectable && response.hovered() && !on_eye && !on_arrow {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
-        // A part's own context menu offers to comment on it, where comments can
-        // be written.
-        if row.selectable
-            && state.comments.writable()
-            && state.mode == crate::state::WorkspaceMode::ThreeD
-        {
-            response.context_menu(|ui| {
-                if ui.button(keys::ui_comments::COMMENT_ON_PART).clicked() {
-                    output.comment_on = Some(row.node);
-                    ui.close();
-                }
-            });
         }
         if state.outliner.scroll_to_selection && state.selection == Selection::Node(row.node) {
             response.scroll_to_me(None);

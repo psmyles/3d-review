@@ -17,9 +17,6 @@ log.workspace = true
 # The Log window's `Entry` / `Level`, which `app` hands over as plain values.
 review-log.workspace = true
 review-model = { path = "../model" }
-# The review-comment types the Comments tab, the Inspector and the pins show. The
-# crate is plain data + a pure-Rust FBX reader; the chrome only reads its values.
-review-annotate = { path = "../annotate" }
 # The Opt workspace edits an `OptStack` and displays its measured metrics, so the
 # chrome needs those types. Commands still flow ui -> app (invariant 2): this
 # crate reads and edits the stack value, never runs an operation.

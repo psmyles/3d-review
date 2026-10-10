@@ -43,24 +43,20 @@ impl App {
     /// Keyboard events egui has already consumed are filtered out by the caller.
     pub(crate) fn handle_keyboard_shortcut(&mut self, event: &KeyEvent) {
         // Escape clears the whole selection — the primary, both multi-selection
-        // sets, the range anchor and the selected review comment — whether it
-        // was made in the Outliner or by clicking the viewport — and, in UV, the
-        // texture behind the layout. While a comment
-        // is being written it is the composer's, which it cancels. It's a Named
-        // key, so handle it before the Character extraction below.
+        // sets and the range anchor — whether it was made in the Outliner or by
+        // clicking the viewport — and, in UV, the texture behind the layout.
+        // It's a Named key, so handle it before the Character extraction below.
         if event.state == ElementState::Pressed
             && matches!(&event.logical_key, Key::Named(NamedKey::Escape))
         {
-            if self.ui.comments.draft.is_none() {
-                if self.ui.has_selection() {
-                    self.ui.clear_selection();
-                    self.redraw.requested = true;
-                }
-                // In UV it also takes away the texture drawn behind the layout,
-                // which no selection can.
-                if self.ui.mode == WorkspaceMode::Uv && self.ui.uv_texture.take().is_some() {
-                    self.redraw.requested = true;
-                }
+            if self.ui.has_selection() {
+                self.ui.clear_selection();
+                self.redraw.requested = true;
+            }
+            // In UV it also takes away the texture drawn behind the layout,
+            // which no selection can.
+            if self.ui.mode == WorkspaceMode::Uv && self.ui.uv_texture.take().is_some() {
+                self.redraw.requested = true;
             }
             return;
         }
@@ -105,16 +101,6 @@ impl App {
                 self.reset_to_start_state();
             } else if character.eq_ignore_ascii_case("o") {
                 self.open_model_from_dialog();
-            } else if character.eq_ignore_ascii_case("s") {
-                // Primary+S saves the comments back into the file; with Shift,
-                // into a new one.
-                if self.ui.comments.writable() {
-                    if self.modifiers.shift_key() {
-                        self.save_comments_as();
-                    } else {
-                        self.save_comments(crate::comments_save::AfterSave::Nothing);
-                    }
-                }
             } else if character.eq_ignore_ascii_case("z") {
                 // Primary+Z undoes; Primary+Shift+Z redoes (the common alt-redo
                 // chord, and the only redo chord on a Mac).
@@ -168,11 +154,6 @@ impl App {
                 }
                 self.redraw.requested = true;
             }
-            // The Comment tool pins notes to the layout here too.
-            if event.state == ElementState::Pressed && key == "c" {
-                self.ui.tool = self.ui.tool.toggled_comment();
-                self.redraw.requested = true;
-            }
             return;
         }
 
@@ -223,17 +204,6 @@ impl App {
                 // Nothing is under the pointer as far as View mode is
                 // concerned, and a stale highlight would outlive the tool.
                 if self.ui.tool == review_ui::ViewportTool::View {
-                    self.set_hover(None);
-                }
-            }
-            // Switches the left button between turning the camera and leaving
-            // review comments, in the 3D workspace (UV handles it above).
-            "c" => {
-                if self.ui.mode != WorkspaceMode::ThreeD {
-                    return;
-                }
-                self.ui.tool = self.ui.tool.toggled_comment();
-                if self.ui.tool != review_ui::ViewportTool::Select {
                     self.set_hover(None);
                 }
             }

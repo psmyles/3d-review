@@ -6,8 +6,6 @@
 #![forbid(unsafe_code)]
 
 mod animation;
-mod comments;
-mod comments_save;
 mod dialog;
 mod docs_dir;
 mod events;
@@ -188,7 +186,6 @@ fn main() -> anyhow::Result<()> {
     // last remembered.
     if app.gate.is_none() {
         settings::restore(&mut app.ui);
-        app.persisted_author = app.ui.comments.author.clone();
     }
     let outcome = event_loop
         .run_app(&mut app)
@@ -247,18 +244,6 @@ struct App {
     /// until the import worker marshals it, which happens right after the mesh
     /// is on screen — and `None` again the moment a new load begins.
     scene_extras: Option<Arc<review_model::SourceExtras>>,
-    /// Where the loaded review comments were read from — the file a save writes
-    /// back to. `None` until the import worker has read them, and when the file
-    /// could not be read for comments.
-    comment_source: Option<comments::CommentSource>,
-    /// The polygon runs surface pins are resolved through, per model.
-    pin_geometry: comments::PinGeometry,
-    /// The file the window is titled after, and whether the title currently
-    /// carries the unsaved-comments mark (`None` = not yet set).
-    title_file: Option<String>,
-    title_shows_unsaved: Option<bool>,
-    /// The comment author last written to the settings file.
-    persisted_author: String,
     scene_revision: u64,
     /// Source of every model revision handed to the renderer, for the source mesh
     /// and each processed Opt level alike. One shared counter because the
@@ -466,11 +451,6 @@ impl Default for App {
             redraw: RedrawScheduler::default(),
             scene_model,
             scene_extras: None,
-            comment_source: None,
-            pin_geometry: comments::PinGeometry::default(),
-            title_file: None,
-            title_shows_unsaved: None,
-            persisted_author: String::new(),
             scene_revision: 0,
             model_revision_counter: 0,
             model_load_generation: Arc::new(AtomicU64::new(0)),
@@ -822,8 +802,6 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::ModelLoadProgress(message) => self.handle_model_load_progress(message),
             UserEvent::ModelMeasured(message) => self.handle_model_measured(*message),
             UserEvent::SourceExtrasReady(message) => self.handle_source_extras_ready(*message),
-            UserEvent::CommentsReady(message) => self.handle_comments_ready(*message),
-            UserEvent::CommentsSaved(message) => self.handle_comments_saved(*message),
             UserEvent::DialogDone(answer) => self.handle_dialog_done(answer),
             UserEvent::OpenPath(path) => self.open_model_from_path(&path),
             UserEvent::MenuCommand(command) => self.handle_menu_command(command),
@@ -895,12 +873,8 @@ impl ApplicationHandler<UserEvent> for App {
 
         match event {
             WindowEvent::CloseRequested => {
-                // Unsaved review comments are asked about first; the close is
-                // resumed (as an exit request) once the question is answered.
-                if self.may_drop_comments(comments_save::AfterSave::Exit) {
-                    self.save_window_placement();
-                    event_loop.exit();
-                }
+                self.save_window_placement();
+                event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
                 self.render();

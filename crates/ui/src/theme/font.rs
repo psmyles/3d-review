@@ -26,8 +26,3 @@ pub const PANEL_HEADING: f32 = 14.0;
 /// view's "No textures loaded…" prompt). Larger than panel body text so it
 /// reads clearly across the otherwise-empty canvas.
 pub const VIEWPORT_EMPTY_HINT: f32 = 13.0;
-/// The second line of a Comments-tab row (author · object · frames), and a
-/// message's author / time line in the Inspector.
-pub const COMMENT_META: f32 = 11.0;
-/// The number on a viewport pin.
-pub const COMMENT_PIN: f32 = 11.0;

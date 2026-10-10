@@ -56,15 +56,7 @@ impl Harness {
         let camera = self.camera;
         let notifications = &mut self.notifications;
         let mut output = self.ctx.run_ui(input, |ui| {
-            review_ui::draw_overlay(
-                ui,
-                state,
-                camera,
-                review_render::UvCamera::default(),
-                model,
-                None,
-                None,
-            );
+            review_ui::draw_overlay(ui, state, camera, model, None, None);
             notifications.show(ui.ctx(), state.chrome_insets);
         });
         // No renderer here, so the font-atlas deltas are deliberately dropped;
