@@ -194,6 +194,13 @@ pub fn draw_overlay(
             side.left_inset,
             side.right_inset,
         );
+        draw_heat_legend(
+            ctx,
+            state,
+            status_bar_height,
+            side.left_inset,
+            side.right_inset,
+        );
     } else {
         if state.mode == WorkspaceMode::Texture {
             // The Tex workspace paints a 2D image viewer (channel-isolated,
@@ -653,6 +660,107 @@ fn draw_overlay_legend(
             );
         },
     );
+}
+
+/// The Aud density views' key: the colour ramp and what its ends and middle
+/// mean, in the profile's own numbers. Centred like the overlay legend.
+fn draw_heat_legend(
+    ctx: &egui::Context,
+    state: &UiState,
+    status_bar_height: f32,
+    left_inset: f32,
+    right_inset: f32,
+) {
+    use review_audit::{DiagnosticView, Measured, RuleId};
+    if state.mode != WorkspaceMode::Aud {
+        return;
+    }
+    let profile = &state.aud.profile;
+    let (title, low, mid, high) = match state.aud.view {
+        DiagnosticView::TexelDensity => {
+            let rule = profile.rule(RuleId::TexelDensity);
+            let size = rule.number("texture_size").unwrap_or(2048.0);
+            let target = rule.number("target").unwrap_or(512.0);
+            let tolerance = rule.number("tolerance").unwrap_or(2.0).max(1.0);
+            let label = |value| crate::audit_labels::measured(&Measured::PxPerMeter(value));
+            (
+                crate::keys::ui_audit::legend_texel(format!("{size:.0}")),
+                label(target / tolerance),
+                label(target),
+                label(target * tolerance),
+            )
+        }
+        DiagnosticView::TriangleDensity => {
+            let rule = profile.rule(RuleId::TriangleLod);
+            let area = rule.number("min_pixel_area").unwrap_or(10.0);
+            (
+                review_localization::tr(crate::keys::ui_audit::LEGEND_TRIANGLE).into_owned(),
+                review_localization::tr(crate::keys::ui_audit::LEGEND_COARSE).into_owned(),
+                crate::audit_labels::measured(&Measured::SquarePixels(area)),
+                review_localization::tr(crate::keys::ui_audit::LEGEND_DENSE).into_owned(),
+            )
+        }
+        _ => return,
+    };
+    let offset = (left_inset - right_inset) * 0.5;
+    crate::widgets::stats_overlay_card_at(
+        ctx,
+        "aud_heat_legend",
+        crate::widgets::StatsCardSide::Center,
+        offset,
+        status_bar_height,
+        size::AUD_LEGEND_WIDTH,
+        |ui| {
+            ui.spacing_mut().item_spacing.y = size::STATS_ROW_SPACING;
+            ui.label(crate::widgets::mono_label(
+                &title,
+                theme::font::STATS,
+                color::TEXT_BODY,
+            ));
+            let (bar, _) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), size::AUD_LEGEND_BAR_HEIGHT),
+                egui::Sense::hover(),
+            );
+            paint_ramp(ui.painter(), bar);
+            ui.horizontal(|ui| {
+                let third = ui.available_width() / 3.0;
+                for (text, align) in [
+                    (low, egui::Align::Min),
+                    (mid, egui::Align::Center),
+                    (high, egui::Align::Max),
+                ] {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(third, ui.spacing().interact_size.y),
+                        egui::Layout::top_down(align),
+                        |ui| {
+                            ui.label(crate::widgets::mono_label(
+                                &text,
+                                theme::font::STATS,
+                                color::TEXT_MUTED,
+                            ));
+                        },
+                    );
+                }
+            });
+        },
+    );
+}
+
+/// The heat ramp as a horizontal bar: low, on target, high.
+fn paint_ramp(painter: &egui::Painter, rect: egui::Rect) {
+    let stops = [color::HEAT_LOW, color::HEAT_TARGET, color::HEAT_HIGH];
+    let mut mesh = egui::Mesh::default();
+    for (index, stop) in stops.iter().enumerate() {
+        let x = rect.left() + rect.width() * index as f32 / 2.0;
+        mesh.colored_vertex(egui::pos2(x, rect.top()), *stop);
+        mesh.colored_vertex(egui::pos2(x, rect.bottom()), *stop);
+    }
+    for segment in 0..2_u32 {
+        let base = segment * 2;
+        mesh.add_triangle(base, base + 1, base + 2);
+        mesh.add_triangle(base + 1, base + 3, base + 2);
+    }
+    painter.add(egui::Shape::mesh(mesh));
 }
 
 /// One legend line: a colour swatch and what it labels.

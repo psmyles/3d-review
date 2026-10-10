@@ -115,6 +115,11 @@ pub const AUDIT_SKIPPED: Color32 = Color32::from_gray(128);
 pub const AUDIT_FILL_OPACITY: f32 = 0.65;
 /// How strongly an offending edge or dot shows where the surface hides it.
 pub const AUDIT_HIDDEN_OPACITY: f32 = 0.3;
+/// The density heat maps' three ramp stops: below the target, on it, above it.
+/// Gamma rgb, like every overlay colour.
+pub const HEAT_LOW: Color32 = Color32::from_rgb(70, 130, 255);
+pub const HEAT_TARGET: Color32 = Color32::from_rgb(80, 215, 100);
+pub const HEAT_HIGH: Color32 = Color32::from_rgb(255, 80, 64);
 /// The digits on the toolbar's findings-count pill, dark on the bright pill.
 pub const AUDIT_BUBBLE_TEXT: Color32 = Color32::from_rgb(20, 20, 22);
 /// A scene-tree row the type filter is hiding, kept visible only because a

@@ -161,6 +161,11 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
                             draw_projection_group(ui, state, single_icon_group_width);
                             draw_side_panels_group(ui, state, single_icon_group_width);
                             draw_tool_group(ui, state, single_icon_group_width);
+                            // Aud's views, leftmost: they change what the
+                            // viewport shows the way the shading tools do.
+                            if state.mode == WorkspaceMode::Aud {
+                                draw_aud_view_group(ui, state, triple_icon_group_width);
+                            }
                         }
                         // The 2D workspaces keep Help and the side panels — the
                         // Outliner and Inspector are in every workspace — and UV
@@ -756,6 +761,47 @@ fn draw_tool_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
         .clicked()
         {
             state.tool = state.tool.toggled();
+        }
+    });
+}
+
+/// The Aud workspace's diagnostic views: the focused finding's offenders over
+/// neutral clay, and the two density heat maps. Picking a finding switches to
+/// the view that shows it best; these switch by hand. The heat maps' settings
+/// are the matching checks' own, in the profile.
+fn draw_aud_view_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
+    use review_audit::DiagnosticView;
+    toolbar_group_shell(ui, width, |ui| {
+        for (view, icon, title, description) in [
+            (
+                DiagnosticView::Issues,
+                &crate::assets::ICON_AUD_ISSUES,
+                keys::ui_audit::VIEW_ISSUES,
+                keys::ui_audit::VIEW_ISSUES_DESCRIPTION,
+            ),
+            (
+                DiagnosticView::TexelDensity,
+                &crate::assets::ICON_AUD_TEXEL_DENSITY,
+                keys::ui_audit::VIEW_TEXEL_DENSITY,
+                keys::ui_audit::VIEW_TEXEL_DENSITY_DESCRIPTION,
+            ),
+            (
+                DiagnosticView::TriangleDensity,
+                &crate::assets::ICON_AUD_TRIANGLE_DENSITY,
+                keys::ui_audit::VIEW_TRIANGLE_DENSITY,
+                keys::ui_audit::VIEW_TRIANGLE_DENSITY_DESCRIPTION,
+            ),
+        ] {
+            if icon_toggle_button(
+                ui,
+                icon,
+                state.aud.view == view,
+                Tip::new(title).describe(description).page(Page::AudViews),
+            )
+            .clicked()
+            {
+                state.aud.view = view;
+            }
         }
     });
 }

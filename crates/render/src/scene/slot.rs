@@ -210,6 +210,11 @@ pub(super) struct DerivedViews {
     /// active. `None` in every other mode (invariant 3).
     pub(super) weights_buf: Option<VertexBuffer>,
     pub(super) weights_baked: Option<SkinWeightParams>,
+    /// The density heat map, sharing `weights_buf`'s slot (it is the same kind
+    /// of drop-in replacement for the mesh's vertex buffer); the model revision
+    /// and the map it was built for. At most one of this and `weights_baked` is
+    /// set.
+    pub(super) heat_baked: Option<(u64, crate::HeatMap, [[f32; 3]; 3])>,
     /// The skeleton overlay's solid octahedron fills and their outlines; both
     /// `None` while the toggle is off. Drawn always-on-top (X-ray).
     pub(super) skeleton_fill_buf: Option<VertexBuffer>,

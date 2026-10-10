@@ -519,6 +519,7 @@ impl SceneGpu {
             scene.debug,
             scene.selected_bones,
         )?;
+        self.sync_heat_map(scene.model, scene.model_revision, scene.debug)?;
         self.sync_audit_overlay(scene.model, scene.audit.as_ref())?;
         self.sync_selection(
             scene.model,

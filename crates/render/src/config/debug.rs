@@ -130,6 +130,41 @@ pub struct SceneDebugOptions {
     /// double-sided — and picks one per frame from this flag, so toggling it
     /// allocates nothing.
     pub render_backfaces: bool,
+    /// A diagnostic colour map drawn in place of the material — the Aud
+    /// workspace's density views. `None` everywhere else.
+    pub heat_map: HeatMap,
+    /// The heat map's three ramp stops (gamma rgb): below the target, on it,
+    /// above it. Owned by the chrome's theme.
+    pub heat_ramp: [[f32; 3]; 3],
+}
+
+/// A per-face diagnostic colour map: each face coloured by how far a measured
+/// figure sits from its target, on a three-stop ramp (low, on target, high).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub enum HeatMap {
+    #[default]
+    None,
+    /// Texture pixels per meter for a `texture_size`-pixel texture, against
+    /// `target`; the ramp's ends are `target` divided and multiplied by
+    /// `tolerance`.
+    TexelDensity {
+        texture_size: f32,
+        target: f32,
+        tolerance: f32,
+    },
+    /// The pixels a face's triangles cover with their object filling a
+    /// `screen_height`-pixel screen, against `min_pixel_area`: dense faces read
+    /// as the ramp's high end.
+    TriangleDensity {
+        min_pixel_area: f32,
+        screen_height: f32,
+    },
+}
+
+impl HeatMap {
+    pub fn is_active(self) -> bool {
+        self != HeatMap::None
+    }
 }
 
 impl Default for SceneDebugOptions {
@@ -170,6 +205,8 @@ impl Default for SceneDebugOptions {
             bounding_box_scope: BoundingBoxScope::default(),
             bounding_box_selection: Selection::None,
             render_backfaces: false,
+            heat_map: HeatMap::None,
+            heat_ramp: [[0.25, 0.5, 1.0], [0.3, 0.85, 0.35], [1.0, 0.3, 0.25]],
         }
     }
 }

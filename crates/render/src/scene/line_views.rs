@@ -9,9 +9,9 @@
 use review_model::{Bounds, ModelData};
 
 use crate::geometry::{
-    BoneTint, audit_lines, bounding_box_lines, face_normal_lines, group_triangles, model_pivot,
-    pivot_half_extent, pivot_lines, skeleton_fill_triangles, skeleton_lines, skin_weight_vertices,
-    uv_seam_lines, vertex_normal_lines, wireframe_edge_indices,
+    BoneTint, audit_lines, bounding_box_lines, face_normal_lines, group_triangles, heat_vertices,
+    model_pivot, pivot_half_extent, pivot_lines, skeleton_fill_triangles, skeleton_lines,
+    skin_weight_vertices, uv_seam_lines, vertex_normal_lines, wireframe_edge_indices,
 };
 use crate::rhi::{GpuResult, StorageBuffer, VertexBuffer};
 use crate::selection::{Selection, selection_bounds};
@@ -314,7 +314,10 @@ impl SceneGpu {
         debug: SceneDebugOptions,
         selected_bones: &[u32],
     ) -> GpuResult<()> {
-        let active = debug.active_material == ActiveMaterial::SkinWeights && model.skin.is_some();
+        // A density heat map takes the slot over (`sync_heat_map`).
+        let active = debug.active_material == ActiveMaterial::SkinWeights
+            && model.skin.is_some()
+            && !debug.heat_map.is_active();
         // Drift check against the borrowed inputs — no per-frame key allocation.
         let unchanged = match (&self.active.views.weights_baked, active) {
             (None, false) => true,
@@ -339,6 +342,34 @@ impl SceneGpu {
             model_revision,
             selected: selected_bones.to_vec(),
         });
+        Ok(())
+    }
+
+    /// Build (or free) the density heat map, in the skin-weight map's buffer slot:
+    /// rebuilt when the model or the map's parameters change, freed when it is
+    /// switched off (invariant 3). Call after [`Self::sync_skin_weights`].
+    pub(super) fn sync_heat_map(
+        &mut self,
+        model: &ModelData,
+        model_revision: u64,
+        debug: SceneDebugOptions,
+    ) -> GpuResult<()> {
+        let views = &mut self.active.views;
+        if !debug.heat_map.is_active() {
+            if views.heat_baked.take().is_some() && views.weights_baked.is_none() {
+                views.weights_buf = None;
+            }
+            return Ok(());
+        }
+        let key = (model_revision, debug.heat_map, debug.heat_ramp);
+        if views.heat_baked == Some(key) {
+            return Ok(());
+        }
+        let vertices = heat_vertices(model, self.active.lanes(), debug.heat_map, debug.heat_ramp);
+        let views = &mut self.active.views;
+        views.weights_buf = optional_vertex_buffer(&vertices)?;
+        views.weights_baked = None;
+        views.heat_baked = Some(key);
         Ok(())
     }
 

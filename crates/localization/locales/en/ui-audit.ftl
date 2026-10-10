@@ -70,6 +70,24 @@ ui-audit-bubble = { $errors ->
 ui-audit-bubble-running = Checking the model...
 ui-audit-bubble-running-text = ...
 
+## Diagnostic views and their legend
+
+ui-audit-view-issues = Issues
+    .description = Shows the finding picked in the Issues list on the model, over plain
+        grey.
+ui-audit-view-texel-density = Texel density
+    .description = Colours each face by its texture pixels per meter: blue below the
+        profile's target, green on it, red above it. The texture size and target are the
+        Texel density check's, in the profile.
+ui-audit-view-triangle-density = Triangle density
+    .description = Colours each face by how small its triangles are for the size of their
+        object: red where they are too small to draw efficiently, green at the limit, blue
+        where there is room to spare. The limit is the Needs a LOD check's, in the profile.
+ui-audit-legend-texel = Texel density, { $size } px texture
+ui-audit-legend-triangle = Triangle size at full screen
+ui-audit-legend-dense = denser
+ui-audit-legend-coarse = coarser
+
 ## The Inspector: a finding
 
 ui-audit-measured = Measured

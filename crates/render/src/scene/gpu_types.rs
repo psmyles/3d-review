@@ -390,7 +390,9 @@ pub(super) fn buffer_view_value(debug_options: SceneDebugOptions) -> f32 {
 /// it can be Lambert-shaded, which means it can't be told apart by the zero-normal
 /// overlay sentinel — hence an explicit flag, in the last free uniform slot.
 pub(super) fn skin_weight_value(debug_options: SceneDebugOptions) -> f32 {
-    if debug_options.active_material == ActiveMaterial::SkinWeights {
+    if debug_options.active_material == ActiveMaterial::SkinWeights
+        || debug_options.heat_map.is_active()
+    {
         1.0
     } else {
         0.0

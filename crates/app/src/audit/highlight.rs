@@ -171,6 +171,29 @@ impl App {
         }
     }
 
+    /// The density view the Aud toolbar has chosen, as the renderer's heat map,
+    /// parameterised by the checks it mirrors.
+    pub(crate) fn audit_heat_map(&self) -> review_render::HeatMap {
+        let profile = &self.ui.aud.profile;
+        let number = |rule: RuleId, key: &str, fallback: f64| {
+            profile.rule(rule).number(key).unwrap_or(fallback) as f32
+        };
+        match self.ui.aud.view {
+            review_audit::DiagnosticView::TexelDensity => review_render::HeatMap::TexelDensity {
+                texture_size: number(RuleId::TexelDensity, "texture_size", 2048.0),
+                target: number(RuleId::TexelDensity, "target", 512.0),
+                tolerance: number(RuleId::TexelDensity, "tolerance", 2.0),
+            },
+            review_audit::DiagnosticView::TriangleDensity => {
+                review_render::HeatMap::TriangleDensity {
+                    min_pixel_area: number(RuleId::TriangleLod, "min_pixel_area", 10.0),
+                    screen_height: number(RuleId::TriangleLod, "screen_height", 1080.0),
+                }
+            }
+            _ => review_render::HeatMap::None,
+        }
+    }
+
     /// Ease the camera onto the focused offenders, but only when none of them is
     /// in view — a click that already shows its problem should not move the view.
     fn frame_audit_if_off_screen(&mut self) {

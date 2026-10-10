@@ -322,6 +322,23 @@ impl App {
             debug.material_mode = review_render::MaterialMode::Standard;
             debug.active_material = ActiveMaterial::Source;
         }
+        // Aud's density views, with the matching checks' own parameters so the
+        // map and the findings measure the same thing.
+        if self.ui.mode == WorkspaceMode::Aud {
+            debug.heat_map = self.audit_heat_map();
+            if debug.heat_map.is_active() {
+                debug.active_material = ActiveMaterial::Source;
+                let stop = |token: egui::Color32| {
+                    let [r, g, b, _] = token.to_normalized_gamma_f32();
+                    [r, g, b]
+                };
+                debug.heat_ramp = [
+                    stop(theme::color::HEAT_LOW),
+                    stop(theme::color::HEAT_TARGET),
+                    stop(theme::color::HEAT_HIGH),
+                ];
+            }
+        }
         let projection: CameraProjection = self.ui.projection_mode.into();
         let environment = self.ui.environment;
         let gtao = self.ui.gtao;

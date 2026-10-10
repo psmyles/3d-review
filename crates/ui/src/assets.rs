@@ -48,6 +48,21 @@ pub(crate) const ICON_SHADING_TEXTURE: AppIcon = AppIcon {
     id: "icon_shading_texture",
     png_bytes: include_bytes!("../../../assets/icons/icon_shading_texture.png"),
 };
+/// "Issues" — the Aud viewport showing the focused finding's offenders.
+pub(crate) const ICON_AUD_ISSUES: AppIcon = AppIcon {
+    id: "icon_aud_issues",
+    png_bytes: include_bytes!("../../../assets/icons/icon_aud_issues.png"),
+};
+/// "Texel density" — the Aud texel-density heat map.
+pub(crate) const ICON_AUD_TEXEL_DENSITY: AppIcon = AppIcon {
+    id: "icon_aud_texel_density",
+    png_bytes: include_bytes!("../../../assets/icons/icon_aud_texel_density.png"),
+};
+/// "Triangle density" — the Aud triangle-density heat map.
+pub(crate) const ICON_AUD_TRIANGLE_DENSITY: AppIcon = AppIcon {
+    id: "icon_aud_triangle_density",
+    png_bytes: include_bytes!("../../../assets/icons/icon_aud_triangle_density.png"),
+};
 pub(crate) const ICON_UV: AppIcon = AppIcon {
     id: "icon_uv",
     png_bytes: include_bytes!("../../../assets/icons/icon_uv.png"),

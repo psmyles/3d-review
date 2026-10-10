@@ -103,7 +103,14 @@ pub const TOOLBAR_CENTER_WIDTH: f32 = 120.0;
 /// moment a skinned mesh was opened - `tests/toolbar_layout.rs` is what now says
 /// so. It grows leftward from the right edge, away from the centered mode
 /// segments.
-pub const TOOLBAR_RIGHT_WIDTH: f32 = 325.0;
+///
+/// Aud adds its view group as the leftmost group of the cluster (152 + 9 more),
+/// which is the widest case: 477, plus slack.
+pub const TOOLBAR_RIGHT_WIDTH: f32 = 480.0;
+/// Width of the Aud workspace's heat-map legend card.
+pub const AUD_LEGEND_WIDTH: f32 = 220.0;
+/// Height of the legend's colour bar.
+pub const AUD_LEGEND_BAR_HEIGHT: f32 = 10.0;
 /// Left toolbar cluster: the menu (32) + show-wireframe (32) + shading (4) +
 /// material + geometry-debug (3) groups, with four group spacings between them.
 ///
