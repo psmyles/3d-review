@@ -122,6 +122,7 @@ ui-enums-workspace-3d = 3D
 ui-enums-workspace-uv = UV
 ui-enums-workspace-tex = Tex
 ui-enums-workspace-opt = Opt
+ui-enums-workspace-aud = Aud
 
 ## Opt operations
 

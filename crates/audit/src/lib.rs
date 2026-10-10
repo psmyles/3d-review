@@ -29,7 +29,9 @@ pub use finding::{
     AuditReport, AuditSummary, Axis, ElementSet, Measured, Offender, RangeSet, RuleResult, Skip,
     Status, Threshold,
 };
-pub use profile::{AuditProfile, Engine, ParamKind, ParamSpec, ParamValue, RuleConfig};
+pub use profile::{
+    AuditProfile, Engine, ParamKind, ParamSpec, ParamValue, RuleConfig, param_specs,
+};
 pub use rule::{Category, DiagnosticView, ElementKind, Marker, RuleId, Severity};
 
 use context::Context;

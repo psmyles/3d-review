@@ -97,6 +97,22 @@ pub const STATS_DELTA_WORSE: Color32 = Color32::from_rgb(226, 122, 118);
 /// often enough to be worth a colour of its own. Pitched to match the weight of
 /// egui's own warn/error tints beside it.
 pub const NOTICE_SUCCESS: Color32 = Color32::from_rgb(126, 202, 122);
+
+// ── Aud workspace ─────────────────────────────────────────────────────
+// Severity is also told by glyph shape (● ▲ ○) and by text, never by colour
+// alone.
+/// An Error finding: the list glyph, the toolbar count, the viewport tint.
+pub const SEVERITY_ERROR: Color32 = Color32::from_rgb(235, 87, 87);
+/// A Warning finding.
+pub const SEVERITY_WARNING: Color32 = Color32::from_rgb(242, 183, 64);
+/// An Info finding: a fact worth knowing, not a problem — so a cool, quiet hue.
+pub const SEVERITY_INFO: Color32 = Color32::from_rgb(120, 168, 222);
+/// A check that passed, in the list's "Show passed" view.
+pub const AUDIT_PASSED: Color32 = Color32::from_rgb(126, 202, 122);
+/// A check that did not run (switched off, or nothing to check).
+pub const AUDIT_SKIPPED: Color32 = Color32::from_gray(128);
+/// The digits on the toolbar's findings-count pill, dark on the bright pill.
+pub const AUDIT_BUBBLE_TEXT: Color32 = Color32::from_rgb(20, 20, 22);
 /// A scene-tree row the type filter is hiding, kept visible only because a
 /// shown node lives beneath it. Dim enough to read as structure, not content.
 pub const OUTLINER_FILTERED: Color32 = Color32::from_gray(104);

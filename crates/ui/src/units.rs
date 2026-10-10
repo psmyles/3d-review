@@ -18,7 +18,7 @@ pub(crate) struct KnownUnit {
 
 /// Known DCC world units. A value is shown in the file's authored unit when it
 /// matches one of these.
-const KNOWN_UNITS: [KnownUnit; 6] = [
+pub(crate) const KNOWN_UNITS: [KnownUnit; 6] = [
     KnownUnit {
         meters: 1.0,
         symbol: keys::ui_units::METERS,

@@ -199,8 +199,11 @@ impl App {
             Phase::Measuring => {
                 // A frame with no predecessor (the first measured one) has no
                 // interval to report, so it seeds `last_present` and nothing else.
+                // Once the sample count is reached nothing more is recorded: the
+                // run only waits for the audit to settle before it stamps.
                 if let (Some(previous), Some(start), Some(present)) =
                     (previous, gate.frame_start, before_present)
+                    && gate.samples.len() < MEASURED_FRAMES as usize
                 {
                     gate.samples.push(Sample {
                         total_ms: now.duration_since(previous).as_secs_f64() * 1000.0,
@@ -212,7 +215,10 @@ impl App {
             Phase::Holding { .. } => {}
         }
 
-        if collected {
+        // The hold samples memory from outside, so it must not begin while the
+        // audit's transient working set is still allocated: the resident report
+        // is what a user carries, the run's scratch is not.
+        if collected && self.audit_idle() {
             self.gate_finish();
         }
     }

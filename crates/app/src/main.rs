@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 mod animation;
+mod audit;
 mod dialog;
 mod docs_dir;
 mod events;
@@ -186,6 +187,8 @@ fn main() -> anyhow::Result<()> {
     // last remembered.
     if app.gate.is_none() {
         settings::restore(&mut app.ui);
+        // The audit profile used last, edits and all.
+        audit::restore_saved_profile(&mut app);
     }
     let outcome = event_loop
         .run_app(&mut app)
@@ -264,6 +267,9 @@ struct App {
     /// The Opt workspace's processing state. `None` until the user first opens
     /// the workspace — a session that never does pays nothing for it.
     opt: Option<opt::OptSubsystem>,
+    /// The audit's run state. Always present: the audit runs on every load, so
+    /// the toolbar can show its count from any workspace.
+    audit: audit::AuditSubsystem,
     /// Per-mesh-part triangle BVH over [`Self::scene_model`]: the spatial index
     /// behind both the viewport pick and the bounding-box dimension labels'
     /// occlusion.
@@ -455,6 +461,7 @@ impl Default for App {
             model_revision_counter: 0,
             model_load_generation: Arc::new(AtomicU64::new(0)),
             opt: None,
+            audit: audit::AuditSubsystem::default(),
             scene_bvh: None,
             posed_pick: None,
             click_press: None,
@@ -798,6 +805,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::OptProgressed(message) => self.handle_opt_progressed(message),
             UserEvent::OptPreviewed(message) => self.handle_opt_previewed(*message),
             UserEvent::OptExported(outcome) => self.handle_opt_exported(*outcome),
+            UserEvent::AuditDone(done) => self.handle_audit_done(*done),
             UserEvent::ModelLoaded(message) => self.handle_model_loaded(*message),
             UserEvent::ModelLoadProgress(message) => self.handle_model_load_progress(message),
             UserEvent::ModelMeasured(message) => self.handle_model_measured(*message),
@@ -947,6 +955,7 @@ impl ApplicationHandler<UserEvent> for App {
         // well as where a close is requested.
         self.save_window_placement();
         self.persist_settings();
+        self.persist_audit_profile();
         log::info!("exiting");
     }
 }

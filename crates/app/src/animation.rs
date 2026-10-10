@@ -73,7 +73,7 @@ impl App {
     /// Whether a clip is playing in the 3D workspace — the redraw loop keeps
     /// pacing frames while it is.
     pub(crate) fn animation_playing(&self) -> bool {
-        self.ui.mode == review_ui::WorkspaceMode::ThreeD
+        self.ui.mode.shows_pose()
             && self.ui.animation.playing
             && self.ui.animation.selected_clip.is_some()
     }
@@ -121,7 +121,7 @@ impl App {
 
         // The clock only runs in the 3D workspace: elsewhere the pose is not
         // drawn, and resuming from a paused clock mustn't jump ahead.
-        let playing = state.playing && self.ui.mode == review_ui::WorkspaceMode::ThreeD;
+        let playing = state.playing && self.ui.mode.shows_pose();
         if let (true, Some(clip)) = (playing, clip) {
             let now = Instant::now();
             let step = anim

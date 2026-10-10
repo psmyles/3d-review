@@ -111,6 +111,9 @@ impl App {
             let _z = prof::zone!("Sync Opt");
             self.sync_opt();
         }
+        // The audit runs on every load, whichever workspace is up: the toolbar
+        // shows its count from anywhere.
+        self.sync_audit();
 
         self.schedule_next_frame(&full_output);
 
@@ -405,8 +408,8 @@ impl App {
         // The evaluated pose, for the 3D workspace only: Opt compares static
         // geometry and deliberately shows the bind pose. Borrowed as a disjoint
         // field so it can outlive the renderer borrow below.
-        let pose = (workspace == WorkspaceMode::ThreeD && self.animation.active)
-            .then_some(&self.animation.deform);
+        let pose =
+            (workspace.shows_pose() && self.animation.active).then_some(&self.animation.deform);
         let pose_revision = self.animation.pose_revision;
         let scene_bounds = self.ui.bounds;
 
@@ -452,7 +455,7 @@ impl App {
                     let (image, background) = texture_draw.unwrap_or((None, TexBackground::Black));
                     renderer.render_texture(&mut frame, image, background)
                 }
-                WorkspaceMode::ThreeD | WorkspaceMode::Opt => {
+                WorkspaceMode::ThreeD | WorkspaceMode::Opt | WorkspaceMode::Aud => {
                     let scene_frame = SceneFrame {
                         model,
                         model_revision,

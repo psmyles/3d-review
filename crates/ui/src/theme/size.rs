@@ -129,9 +129,22 @@ pub const TOOLBAR_QUAD_ICON_GROUP_WIDTH: f32 = 122.0;
 /// Tonemapper / Anti-aliasing rendering-quality cluster): 4 padding + 5×28 icons
 /// + 4×2 gaps.
 pub const TOOLBAR_QUINT_ICON_GROUP_WIDTH: f32 = 152.0;
-/// Width of the centered workspace-mode group: 4 padding + 4×37 segments
-/// (3D / UV / Tex / Opt) + 3×2 gaps.
-pub const TOOLBAR_MODE_GROUP_WIDTH: f32 = 158.0;
+/// Width of the centered workspace-mode group: 4 padding + 5×37 segments
+/// (3D / UV / Tex / Opt / Aud) + 4×2 gaps, plus the room the Aud segment keeps
+/// for its findings count.
+pub const TOOLBAR_MODE_GROUP_WIDTH: f32 = 197.0 + AUD_BUBBLE_ROOM;
+/// How much wider the Aud segment is than the others: the findings count sits
+/// inside it, beside the label, so the bubble never overlaps a neighbour.
+pub const AUD_BUBBLE_ROOM: f32 = 20.0;
+/// Height of the Aud segment's findings-count pill.
+pub const AUD_BUBBLE_HEIGHT: f32 = 14.0;
+/// The narrowest the pill gets (a single digit), so it reads as a dot with a
+/// number rather than a sliver.
+pub const AUD_BUBBLE_MIN_WIDTH: f32 = 14.0;
+/// Horizontal padding inside the pill around its digits.
+pub const AUD_BUBBLE_PAD_X: f32 = 4.0;
+/// Font size of the pill's digits.
+pub const AUD_BUBBLE_FONT: f32 = 10.0;
 /// Width of the UV-set dropdown shown on the right of the toolbar in UV mode.
 pub const TOOLBAR_UV_DROPDOWN_WIDTH: f32 = 133.0;
 /// Width of the LOD-level dropdown in the Opt workspace's status-bar group.
@@ -281,6 +294,19 @@ pub const PANEL_BODY_TOP_MARGIN: i8 = 10;
 /// buttons match it so a row of buttons and a dropdown are the same height.
 pub const PANEL_ROW_H: f32 = 22.0;
 pub const PANEL_ROW_GAP: f32 = 6.0;
+
+// ── Aud workspace ─────────────────────────────────────────────────────
+/// Diameter of the severity dot on an Issues row and on a Scene row in Aud.
+pub const AUD_SEVERITY_DOT: f32 = 8.0;
+/// Width of the column the severity glyph is drawn in on an Issues row.
+pub const AUD_GLYPH_COLUMN: f32 = 16.0;
+/// Indent of each nesting level of the Issues list.
+pub const AUD_INDENT: f32 = 12.0;
+/// How many objects a finding lists in the Inspector before it says how many
+/// more there are.
+pub const AUD_INSPECTOR_MAX_OBJECTS: usize = 200;
+/// Width of the right-aligned count column on an Issues row.
+pub const AUD_COUNT_COLUMN: f32 = 52.0;
 /// Gap between the label and control columns of the striped panel grid (the
 /// demo widget-gallery layout).
 pub const PANEL_GRID_COL_GAP: f32 = 12.0;

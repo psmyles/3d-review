@@ -64,7 +64,7 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, model: &ModelData) 
                 }
                 // Opt draws the same 3D scene through the same shading and
                 // rendering-quality controls, so it shares this bar unchanged.
-                WorkspaceMode::ThreeD | WorkspaceMode::Opt => {}
+                WorkspaceMode::ThreeD | WorkspaceMode::Opt | WorkspaceMode::Aud => {}
                 WorkspaceMode::Texture => {
                     draw_texture_status_bar(ui, state, group_height);
                     return;

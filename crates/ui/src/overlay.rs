@@ -108,6 +108,8 @@ pub fn draw_overlay(
     output.material_edit_active = side.inspector.material_edit_active;
     output.opt = side.opt.intent;
     output.opt_edit_active = side.opt.edit_active;
+    output.audit = side.aud.intent;
+    output.aud_edit_active = side.aud.edit_active;
 
     // The free viewport: the screen minus the chrome bands (toolbar top, status
     // bar bottom) and the open side panels (left/right). Floating chrome — the
@@ -424,8 +426,18 @@ struct SidePanelLayout {
     /// The Opt workspace's own emissions: the preset / export intents raised by
     /// the stack pane or the Opt inspector, and its drag-coalescing hint.
     opt: OptEmission,
+    /// The Aud workspace's emissions: the profile / report intents and its
+    /// drag-coalescing hint.
+    aud: AudEmission,
     left_inset: f32,
     right_inset: f32,
+}
+
+/// What the Aud panels raised this frame.
+#[derive(Debug, Clone, Default)]
+struct AudEmission {
+    intent: Option<crate::aud_state::AuditIntent>,
+    edit_active: bool,
 }
 
 /// What the Opt panels raised this frame.
@@ -457,7 +469,9 @@ fn draw_side_panels(
     }
 
     let opt_mode = state.mode == WorkspaceMode::Opt;
+    let aud_mode = state.mode == WorkspaceMode::Aud;
     let mut opt = OptEmission::default();
+    let mut aud = AudEmission::default();
 
     let mut left_inset = 0.0;
     if state.side_panels_open {
@@ -496,7 +510,7 @@ fn draw_side_panels(
                         .frame(egui::Frame::NONE)
                         .show(ui, |ui| panels::outliner::body(ui, state, model));
                 } else {
-                    panels::outliner::body(ui, state, model);
+                    aud.intent = panels::outliner::body(ui, state, model);
                 }
             });
         left_inset = response.response.rect.width();
@@ -520,6 +534,14 @@ fn draw_side_panels(
                     opt.intent = opt.intent.take().or(out.intent);
                     opt.edit_active |= out.edit_active;
                     panels::inspector::InspectorOutput::default()
+                } else if aud_mode && panels::aud_inspector::wants_inspector(state) {
+                    // Aud retargets the Inspector at the focused finding or the
+                    // profile; a part selected in the Scene tab or the viewport
+                    // still gets the ordinary part view.
+                    let out = panels::aud_inspector::body(ui, state, model);
+                    aud.intent = aud.intent.take().or(out.intent);
+                    aud.edit_active |= out.edit_active;
+                    panels::inspector::InspectorOutput::default()
                 } else {
                     panels::inspector::body(ui, state, model)
                 }
@@ -531,6 +553,7 @@ fn draw_side_panels(
     SidePanelLayout {
         inspector,
         opt,
+        aud,
         left_inset,
         right_inset,
     }

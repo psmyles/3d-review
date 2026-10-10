@@ -69,7 +69,7 @@ impl App {
             && matches!(&event.logical_key, Key::Named(NamedKey::Space))
         {
             if self.modifiers.is_empty()
-                && self.ui.mode == WorkspaceMode::ThreeD
+                && self.ui.mode.shows_pose()
                 && self.ui.animation.selected_clip.is_some()
             {
                 self.toggle_playback();
@@ -210,9 +210,7 @@ impl App {
             "f" => self.frame_camera_on_key(),
             // Single-frame stepping through the selected clip (pauses playback).
             "," | "." => {
-                if self.ui.mode != WorkspaceMode::ThreeD
-                    || self.ui.animation.selected_clip.is_none()
-                {
+                if !self.ui.mode.shows_pose() || self.ui.animation.selected_clip.is_none() {
                     return;
                 }
                 self.step_frame(if key == "," { -1 } else { 1 });

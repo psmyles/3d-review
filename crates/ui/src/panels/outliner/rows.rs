@@ -139,6 +139,23 @@ pub(super) fn draw_rows(
         let mut name_right = row_rect.right() - size::OUTLINER_ROW_PAD_X;
         if let Some(eye_rect) = eye_rect {
             name_right = eye_rect.left() - size::OUTLINER_ROW_GAP;
+        }
+        // In Aud, the worst finding this object has, as the Issues list draws it.
+        if state.mode == crate::state::WorkspaceMode::Aud
+            && let Some(severity) = state
+                .aud
+                .report
+                .as_ref()
+                .and_then(|report| report.summary.node_worst.get(row.node).copied().flatten())
+        {
+            let dot = egui::Rect::from_min_max(
+                egui::pos2(name_right - size::AUD_GLYPH_COLUMN, row_rect.top()),
+                egui::pos2(name_right, row_rect.bottom()),
+            );
+            super::issues::paint_severity(&painter, dot, severity);
+            name_right = dot.left() - size::OUTLINER_ROW_GAP;
+        }
+        if let Some(eye_rect) = eye_rect {
             let hidden = state.hidden_meshes.contains(&row.node);
             let eye = ui.interact(eye_rect, row_id.with("eye"), egui::Sense::click());
             let hovered = eye.hovered();

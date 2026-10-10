@@ -21,6 +21,8 @@ review-model = { path = "../model" }
 # chrome needs those types. Commands still flow ui -> app (invariant 2): this
 # crate reads and edits the stack value, never runs an operation.
 review-optimize = { path = "../optimize" }
+# The Aud workspace shows the audit engine's typed report and edits its profile.
+review-audit = { path = "../audit" }
 # `Key` and `tr`; the `egui` feature is what lets a key be handed straight to a
 # widget as an `impl Into<WidgetText>`.
 review-localization = { workspace = true, features = ["egui"] }

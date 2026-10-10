@@ -100,7 +100,7 @@ impl App {
         // an unclaimed press there must not start a 3D-camera drag.
         let uv_mode = match self.ui.mode {
             WorkspaceMode::Uv => true,
-            WorkspaceMode::ThreeD | WorkspaceMode::Opt => false,
+            WorkspaceMode::ThreeD | WorkspaceMode::Opt | WorkspaceMode::Aud => false,
             WorkspaceMode::Texture => return,
         };
         // Which Opt split view this drag belongs to, fixed at press time so the
@@ -368,7 +368,7 @@ impl App {
         };
         match self.ui.mode {
             WorkspaceMode::Uv => renderer.zoom_uv_camera(amount),
-            WorkspaceMode::ThreeD | WorkspaceMode::Opt => {
+            WorkspaceMode::ThreeD | WorkspaceMode::Opt | WorkspaceMode::Aud => {
                 if opt_right {
                     renderer.zoom_opt_camera(amount);
                 } else {

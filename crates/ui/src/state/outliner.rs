@@ -22,6 +22,8 @@ pub enum OutlinerTab {
     /// any, and only in the 3D workspace (UV and Tex have no pose, and Opt
     /// deliberately shows the bind pose).
     Animations,
+    /// The audit's findings — the Aud workspace's own list.
+    Issues,
 }
 
 impl OutlinerTab {
@@ -31,12 +33,13 @@ impl OutlinerTab {
     /// use for a material list; Tex is an image viewer, so it lists only images;
     /// Opt edits geometry and leaves textures alone.
     fn for_mode(mode: WorkspaceMode) -> &'static [OutlinerTab] {
-        use OutlinerTab::{Animations, Materials, Scene, Textures};
+        use OutlinerTab::{Animations, Issues, Materials, Scene, Textures};
         match mode {
             WorkspaceMode::ThreeD => &[Scene, Materials, Textures, Animations],
             WorkspaceMode::Uv => &[Scene, Textures],
             WorkspaceMode::Texture => &[Textures],
             WorkspaceMode::Opt => &[Scene, Materials],
+            WorkspaceMode::Aud => &[Issues, Scene],
         }
     }
 
@@ -68,6 +71,7 @@ pub(crate) struct WorkspaceTabs {
     uv: OutlinerTab,
     texture: OutlinerTab,
     opt: OutlinerTab,
+    aud: OutlinerTab,
 }
 
 impl Default for WorkspaceTabs {
@@ -77,6 +81,7 @@ impl Default for WorkspaceTabs {
             uv: OutlinerTab::Scene,
             texture: OutlinerTab::Textures,
             opt: OutlinerTab::Scene,
+            aud: OutlinerTab::Issues,
         }
     }
 }
@@ -91,6 +96,7 @@ impl WorkspaceTabs {
             WorkspaceMode::Uv => self.uv,
             WorkspaceMode::Texture => self.texture,
             WorkspaceMode::Opt => self.opt,
+            WorkspaceMode::Aud => self.aud,
         }
     }
 
@@ -100,6 +106,7 @@ impl WorkspaceTabs {
             WorkspaceMode::Uv => &mut self.uv,
             WorkspaceMode::Texture => &mut self.texture,
             WorkspaceMode::Opt => &mut self.opt,
+            WorkspaceMode::Aud => &mut self.aud,
         };
         *slot = tab;
     }

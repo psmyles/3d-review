@@ -105,7 +105,7 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
                     ui.spacing_mut().item_spacing.x = group_spacing;
                     draw_menu_group(ui, state, output, single_icon_group_width);
                     match state.mode {
-                        WorkspaceMode::ThreeD | WorkspaceMode::Opt => {
+                        WorkspaceMode::ThreeD | WorkspaceMode::Opt | WorkspaceMode::Aud => {
                             draw_wireframe_group(ui, state, single_icon_group_width);
                             draw_shading_group(ui, state, shading_group_width);
                             // One tile wider when the model carries skin weights,
@@ -133,7 +133,7 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
                 |ui| {
                     ui.set_height(group_height);
                     toolbar_group_shell(ui, mode_group_width, |ui| {
-                        segmented_mode_control(ui, &mut state.mode);
+                        segmented_mode_control(ui, state);
                     });
                 },
             );
@@ -146,7 +146,7 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
                     ui.set_height(group_height);
                     ui.spacing_mut().item_spacing.x = group_spacing;
                     match state.mode {
-                        WorkspaceMode::ThreeD | WorkspaceMode::Opt => {
+                        WorkspaceMode::ThreeD | WorkspaceMode::Opt | WorkspaceMode::Aud => {
                             // The skeleton toggle only exists for a rigged model, so
                             // the group is one tile narrower without it.
                             let view_group_width = if state.has_bones {
@@ -843,14 +843,103 @@ fn draw_uv_set_picker(ui: &mut egui::Ui, state: &mut UiState) {
     });
 }
 
-fn segmented_mode_control(ui: &mut egui::Ui, mode: &mut WorkspaceMode) {
+fn segmented_mode_control(ui: &mut egui::Ui, state: &mut UiState) {
     for workspace in [
         WorkspaceMode::ThreeD,
         WorkspaceMode::Uv,
         WorkspaceMode::Texture,
         WorkspaceMode::Opt,
     ] {
-        mode_segment(ui, mode, workspace);
+        mode_segment(ui, &mut state.mode, workspace);
+    }
+    aud_segment(ui, state);
+}
+
+/// The Aud segment: its label, and beside it a pill counting the checks the
+/// model fails at Warning or Error, in the worst one's colour. Shown from every
+/// workspace, since the audit runs on every load; hidden at zero, and a quiet
+/// "…" while a run is going.
+fn aud_segment(ui: &mut egui::Ui, state: &mut UiState) {
+    let width = size::MODE_SEGMENT_WIDTH + size::AUD_BUBBLE_ROOM;
+    let selected = state.mode == WorkspaceMode::Aud;
+    let label = review_localization::tr(labels::workspace(WorkspaceMode::Aud));
+    let summary = state.aud.report.as_ref().map(|report| &report.summary);
+    let count = summary.map_or(0, review_audit::AuditSummary::attention_count);
+    let worst = summary.and_then(review_audit::AuditSummary::attention_worst);
+    let bubble = if state.aud.running {
+        Some((
+            None,
+            review_localization::tr(crate::keys::ui_audit::BUBBLE_RUNNING_TEXT).into_owned(),
+        ))
+    } else {
+        (count > 0).then(|| (worst, count.to_string()))
+    };
+
+    // The label shifts left to share the segment with the pill when there is
+    // one, and sits centred like its neighbours when there is not.
+    let response = segment_button(ui, "", selected, width);
+    let rect = response.rect;
+    let painter = ui.painter();
+    let text_color = if selected {
+        color::TEXT_PRIMARY
+    } else {
+        color::TEXT_SEGMENT_IDLE
+    };
+    let label_center = match bubble {
+        Some(_) => egui::pos2(
+            rect.left() + size::MODE_SEGMENT_WIDTH * 0.5 + size::AUD_BUBBLE_PAD_X,
+            rect.center().y,
+        ),
+        None => rect.center(),
+    };
+    painter.text(
+        label_center,
+        egui::Align2::CENTER_CENTER,
+        label.as_ref(),
+        egui::FontId::proportional(crate::theme::font::MODE_SEGMENT),
+        text_color,
+    );
+    if let Some((worst, text)) = &bubble {
+        let font = egui::FontId::proportional(size::AUD_BUBBLE_FONT);
+        let galley = painter.layout_no_wrap(text.clone(), font, color::AUDIT_BUBBLE_TEXT);
+        let pill_width =
+            (galley.size().x + size::AUD_BUBBLE_PAD_X * 2.0).max(size::AUD_BUBBLE_MIN_WIDTH);
+        let pill = egui::Rect::from_center_size(
+            egui::pos2(
+                rect.right() - size::AUD_BUBBLE_PAD_X - pill_width * 0.5,
+                rect.center().y,
+            ),
+            egui::vec2(pill_width, size::AUD_BUBBLE_HEIGHT),
+        );
+        let fill = match worst {
+            Some(severity) => crate::panels::outliner::severity_color(*severity),
+            None => color::TEXT_MUTED,
+        };
+        painter.rect_filled(pill, size::AUD_BUBBLE_HEIGHT * 0.5, fill);
+        painter.galley(
+            pill.center() - galley.size() * 0.5,
+            galley,
+            color::AUDIT_BUBBLE_TEXT,
+        );
+    }
+
+    let errors = summary.map_or(0, |summary| {
+        summary.failed[review_audit::Severity::Error.index()]
+    });
+    let warnings = summary.map_or(0, |summary| {
+        summary.failed[review_audit::Severity::Warning.index()]
+    });
+    let tooltip = if state.aud.running {
+        Tip::new(crate::keys::ui_audit::BUBBLE_RUNNING)
+    } else {
+        Tip::new(crate::keys::ui_audit::bubble(
+            f64::from(errors),
+            f64::from(warnings),
+        ))
+        .describe(crate::keys::ui_audit::BUBBLE_DESCRIPTION)
+    };
+    if tip(response, tooltip.page(Page::AudIndex)).clicked() {
+        state.mode = WorkspaceMode::Aud;
     }
 }
 

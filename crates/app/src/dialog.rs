@@ -73,6 +73,14 @@ pub(crate) enum Dialog {
     SavePreset { json: String },
     /// Pick an operation-stack preset to load.
     LoadPreset,
+    /// Choose where to save the audit profile, serialized before the picker
+    /// opens.
+    SaveAuditProfile { json: String },
+    /// Pick an audit profile to load.
+    LoadAuditProfile,
+    /// Choose where to save the audit report, built before the picker opens.
+    /// `stem` is the model's name, for the default file name.
+    SaveAuditReport { json: String, stem: String },
 }
 
 /// A dialog the user answered, with the request's payload carried back alongside
@@ -93,6 +101,15 @@ pub(crate) enum DialogAnswer {
         json: String,
     },
     LoadPreset(PathBuf),
+    SaveAuditProfile {
+        path: PathBuf,
+        json: String,
+    },
+    LoadAuditProfile(PathBuf),
+    SaveAuditReport {
+        path: PathBuf,
+        json: String,
+    },
 }
 
 impl Dialog {
@@ -105,6 +122,9 @@ impl Dialog {
             Dialog::ExportOpt { .. } => "dialog-export",
             Dialog::SavePreset { .. } => "dialog-save-preset",
             Dialog::LoadPreset => "dialog-load-preset",
+            Dialog::SaveAuditProfile { .. } => "dialog-save-audit-profile",
+            Dialog::LoadAuditProfile => "dialog-load-audit-profile",
+            Dialog::SaveAuditReport { .. } => "dialog-save-audit-report",
         }
     }
 
@@ -166,6 +186,40 @@ impl Dialog {
                 )
                 .pick_file()
                 .map(DialogAnswer::LoadPreset),
+            Dialog::SaveAuditProfile { json } => rfd::FileDialog::new()
+                .set_title(review_localization::tr(
+                    keys::app_dialogs::SAVE_AUDIT_PROFILE,
+                ))
+                .add_filter(
+                    review_localization::tr(keys::app_dialogs::FILTER_AUDIT_PROFILE),
+                    &[review_audit::profile::envelope::PROFILE_EXTENSION],
+                )
+                .set_file_name(review_localization::tr(
+                    keys::app_dialogs::AUDIT_PROFILE_FILE_NAME,
+                ))
+                .save_file()
+                .map(|path| DialogAnswer::SaveAuditProfile { path, json }),
+            Dialog::LoadAuditProfile => rfd::FileDialog::new()
+                .set_title(review_localization::tr(
+                    keys::app_dialogs::LOAD_AUDIT_PROFILE,
+                ))
+                .add_filter(
+                    review_localization::tr(keys::app_dialogs::FILTER_AUDIT_PROFILE),
+                    &[review_audit::profile::envelope::PROFILE_EXTENSION],
+                )
+                .pick_file()
+                .map(DialogAnswer::LoadAuditProfile),
+            Dialog::SaveAuditReport { json, stem } => rfd::FileDialog::new()
+                .set_title(review_localization::tr(
+                    keys::app_dialogs::SAVE_AUDIT_REPORT,
+                ))
+                .add_filter(
+                    review_localization::tr(keys::app_dialogs::FILTER_AUDIT_REPORT),
+                    &["json"],
+                )
+                .set_file_name(keys::app_dialogs::audit_report_file_name(stem))
+                .save_file()
+                .map(|path| DialogAnswer::SaveAuditReport { path, json }),
         }
     }
 }
@@ -239,6 +293,11 @@ impl App {
             } => self.spawn_opt_export(path, result, source, extras, options),
             DialogAnswer::SavePreset { path, json } => self.write_opt_preset(&path, &json),
             DialogAnswer::LoadPreset(path) => self.read_opt_preset(&path),
+            DialogAnswer::SaveAuditProfile { path, json } => {
+                self.write_audit_profile(&path, &json);
+            }
+            DialogAnswer::LoadAuditProfile(path) => self.read_audit_profile(&path),
+            DialogAnswer::SaveAuditReport { path, json } => self.write_audit_report(&path, &json),
         }
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();

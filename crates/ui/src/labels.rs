@@ -215,6 +215,7 @@ pub(crate) fn workspace(mode: WorkspaceMode) -> Key {
         WorkspaceMode::Uv => keys::ui_enums::WORKSPACE_UV,
         WorkspaceMode::Texture => keys::ui_enums::WORKSPACE_TEX,
         WorkspaceMode::Opt => keys::ui_enums::WORKSPACE_OPT,
+        WorkspaceMode::Aud => keys::ui_enums::WORKSPACE_AUD,
     }
 }
 

@@ -28,6 +28,7 @@
 //! not owned) and the material list from the app→UI snapshot.
 
 mod animations;
+mod issues;
 mod materials;
 mod nav;
 mod rows;
@@ -51,6 +52,7 @@ use nav::isolate_mesh;
 use rows::kind_icon;
 
 use animations::animations_tab;
+pub(crate) use issues::{paint_severity as paint_severity_glyph, severity_color};
 use materials::materials_tab;
 use nav::{apply_row_click, handle_nav, row_refs};
 use rows::draw_rows;
@@ -77,7 +79,12 @@ struct RowsOutput {
     scrolled: bool,
 }
 
-pub(crate) fn body(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData) {
+/// The Outliner, returning the Aud action the Issues tab raised, if any.
+pub(crate) fn body(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    model: &ModelData,
+) -> Option<crate::aud_state::AuditIntent> {
     // ── Tabs: the workspace's own subset (Scene / Materials / Textures /
     // Animations), as a full-width underlined tab strip. Each workspace
     // remembers its own tab; one it can't currently show (Animations, once a
@@ -93,6 +100,7 @@ pub(crate) fn body(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData) {
             OutlinerTab::Materials => keys::ui_outliner::TAB_MATERIALS.into(),
             OutlinerTab::Textures => keys::ui_outliner::TAB_TEXTURES.into(),
             OutlinerTab::Animations => keys::ui_outliner::TAB_ANIMATIONS.into(),
+            OutlinerTab::Issues => keys::ui_outliner::TAB_ISSUES.into(),
         })
         .collect();
     let active = tabs.iter().position(|t| *t == tab).unwrap_or(0);
@@ -105,6 +113,11 @@ pub(crate) fn body(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData) {
     let tab = state.outliner.tab(mode, state.animation.has_clips);
     ui.add_space(size::PANEL_ROW_GAP);
 
+    // The Issues tab has its own header (the profile row and the grouping
+    // switch); a name search says nothing about a finding.
+    if tab == OutlinerTab::Issues {
+        return issues::issues_tab(ui, state, model);
+    }
     header_controls(ui, state, model, tab);
 
     match tab {
@@ -124,7 +137,9 @@ pub(crate) fn body(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData) {
                 .show(ui, |ui| animations_tab(ui, state, model));
         }
         OutlinerTab::Scene => scene_tab(ui, state, model),
+        OutlinerTab::Issues => {}
     }
+    None
 }
 
 /// The header strip, drawn on every tab so the controls never shift underfoot:

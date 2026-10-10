@@ -151,7 +151,7 @@ impl App {
             origin: Vec2::ZERO,
             size: full,
             // Opt always shows the bind pose, by design.
-            posed: self.ui.mode == WorkspaceMode::ThreeD && self.animation.active,
+            posed: self.ui.mode.shows_pose() && self.animation.active,
         })
     }
 
@@ -267,7 +267,7 @@ impl App {
     /// Keyed on the pose revision, so a paused clip is indexed once however long
     /// it is looked at, and a static model never builds one at all.
     fn sync_posed_pick(&mut self) {
-        if !self.animation.active || self.ui.mode != WorkspaceMode::ThreeD {
+        if !self.animation.active || !self.ui.mode.shows_pose() {
             self.posed_pick = None;
             return;
         }

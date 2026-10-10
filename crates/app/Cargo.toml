@@ -26,6 +26,8 @@ review-log.workspace = true
 review-model = { path = "../model" }
 # The Opt workspace's mesh processing (vendored meshoptimizer behind a safe API).
 review-optimize = { path = "../optimize" }
+# The Aud workspace shows the audit engine's typed report and edits its profile.
+review-audit = { path = "../audit" }
 # The shared guarded Tracy helpers (zones, plots, frame marks, messages).
 review-prof.workspace = true
 review-render = { path = "../render" }

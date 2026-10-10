@@ -499,6 +499,9 @@ impl App {
     }
 
     fn apply_source_extras(&mut self, extras: Result<Option<Arc<SourceExtras>>, ImportError>) {
+        // Landed or failed, the capture has settled: the audit can run now
+        // rather than run twice.
+        self.audit_capture_settled();
         match extras {
             Ok(extras) => self.scene_extras = extras,
             Err(error) => {
@@ -619,6 +622,7 @@ impl App {
                 // Any Opt result (and every per-object override) describes the
                 // previous model, so drop both before the new one is drawn.
                 self.reset_opt_for_new_model();
+                self.reset_audit_for_new_model();
                 let label = file_label(path);
                 self.set_window_title(Some(&label));
                 self.notifications.success(keys::app_notifications::loaded(
@@ -674,6 +678,7 @@ impl App {
         self.scene_extras = None;
         self.scene_revision = self.next_model_revision();
         self.reset_opt_for_new_model();
+        self.reset_audit_for_new_model();
         self.set_window_title(None);
 
         log::info!("reset to start state");

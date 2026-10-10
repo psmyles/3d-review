@@ -98,6 +98,28 @@ impl UiState {
     fn release_stack_selection(&mut self) {
         self.opt.selected = None;
         self.texture_view.inspected = false;
+        self.aud.focus = None;
+        self.aud.profile_open = false;
+    }
+
+    /// Focus an audit finding, taking the Inspector — and the viewport's
+    /// highlight — from the scene selection. The two are exclusive like the
+    /// Opt stack pane and the Outliner: a finding's severity colours and the
+    /// selection's orange would otherwise compete on the same mesh. Focusing
+    /// sets the view to the one that shows the finding best.
+    pub fn select_audit_focus(&mut self, focus: Option<crate::aud_state::AuditFocus>) {
+        self.clear_selection();
+        self.aud.focus = focus;
+        self.aud.view = focus.and_then(crate::aud_state::AuditFocus::rule).map_or(
+            review_audit::DiagnosticView::Issues,
+            review_audit::RuleId::related_view,
+        );
+    }
+
+    /// Open the audit profile in the Inspector.
+    pub(crate) fn open_audit_profile(&mut self) {
+        self.clear_selection();
+        self.aud.profile_open = true;
     }
 
     /// Make pooled texture `index` the current one and show it in the Inspector.
