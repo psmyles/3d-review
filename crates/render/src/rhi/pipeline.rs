@@ -62,18 +62,19 @@ impl VertexFormat {
 }
 
 /// What a draw assembles its vertices into.
+///
+/// Triangles only. There are no hardware lines: they are one *device* pixel wide on
+/// every display and each API rasterizes them by its own rules, so every line the
+/// viewer draws is a screen-space quad built by the `line` / `wire` programs instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Topology {
     Triangles,
-    /// Independent line segments — every debug line view, and the model wireframe.
-    Lines,
 }
 
 impl Topology {
     const fn sg(self) -> sg::PrimitiveType {
         match self {
             Self::Triangles => sg::PrimitiveType::Triangles,
-            Self::Lines => sg::PrimitiveType::Lines,
         }
     }
 }
@@ -216,6 +217,10 @@ pub(crate) struct PipelineDesc<'a> {
     pub(crate) depth: Depth,
     pub(crate) depth_bias: DepthBias,
     pub(crate) blend: Blend,
+    /// Whether the colour attachments are written at all. `false` makes a depth-only
+    /// draw inside a pass that has colour attachments — which still have to be
+    /// declared in [`Self::colors`], because sokol matches them against the pass.
+    pub(crate) color_write: bool,
     /// The colour attachments this pipeline writes, in order. Must match the pass's.
     pub(crate) colors: &'a [Format],
     /// The pass's depth format, or `None` for a pass with no depth attachment.
@@ -253,6 +258,7 @@ impl<'a> PipelineDesc<'a> {
             depth: Depth::NONE,
             depth_bias: DepthBias::default(),
             blend: Blend::Opaque,
+            color_write: true,
             colors: SWAPCHAIN_COLORS,
             depth_format: None,
             sample_count: 1,
@@ -319,6 +325,9 @@ impl Pipeline {
         for (slot, &format) in desc.colors.iter().enumerate() {
             pd.colors[slot].pixel_format = format.sg();
             pd.colors[slot].blend = desc.blend.state();
+            if !desc.color_write {
+                pd.colors[slot].write_mask = sg::ColorMask::None;
+            }
         }
         pd.depth = sg::DepthState {
             // A pass with no depth attachment must say so here too, or sokol rejects

@@ -1,18 +1,12 @@
-static float4 frag_color;
+static float4 v_line;
 static float4 v_color;
+static float4 frag_color;
 static float4 frag_ambient;
-static float3 v_normal;
-static float2 v_uv;
-static float3 v_world_position;
-static float4 v_tangent;
 
 struct SPIRV_Cross_Input
 {
-    float3 v_normal : TEXCOORD0;
-    float2 v_uv : TEXCOORD1;
-    float4 v_color : TEXCOORD2;
-    float3 v_world_position : TEXCOORD3;
-    float4 v_tangent : TEXCOORD4;
+    noperspective float4 v_line : TEXCOORD0;
+    float4 v_color : TEXCOORD1;
 };
 
 struct SPIRV_Cross_Output
@@ -28,18 +22,17 @@ float3 srgb_to_linear(float3 c)
 
 void frag_main()
 {
+    float _81 = max(v_line.w, 0.5f) + 0.5f;
+    float _98 = v_color.w * ((clamp(_81 - abs(v_line.x), 0.0f, 1.0f) * clamp(_81 - max(-v_line.y, v_line.y - v_line.z), 0.0f, 1.0f)) * min(v_line.w * 2.0f, 1.0f));
     float3 param = v_color.xyz;
-    frag_color = float4(srgb_to_linear(param), v_color.w);
-    frag_ambient = float4(0.0f, 0.0f, 0.0f, v_color.w);
+    frag_color = float4(srgb_to_linear(param), _98);
+    frag_ambient = float4(0.0f, 0.0f, 0.0f, _98);
 }
 
 SPIRV_Cross_Output main(SPIRV_Cross_Input stage_input)
 {
+    v_line = stage_input.v_line;
     v_color = stage_input.v_color;
-    v_normal = stage_input.v_normal;
-    v_uv = stage_input.v_uv;
-    v_world_position = stage_input.v_world_position;
-    v_tangent = stage_input.v_tangent;
     frag_main();
     SPIRV_Cross_Output stage_output;
     stage_output.frag_color = frag_color;

@@ -163,7 +163,7 @@ fn edge_midpoints(min: Vec3, max: Vec3) -> [(Vec3, usize); 12] {
 
 /// Project a world point into `image` — the rect the camera's picture covers — or
 /// `None` when it is behind the camera or outside that picture.
-fn project(view_projection: Mat4, world: Vec3, image: egui::Rect) -> Option<egui::Pos2> {
+pub(crate) fn project(view_projection: Mat4, world: Vec3, image: egui::Rect) -> Option<egui::Pos2> {
     let clip = view_projection * world.extend(1.0);
     if clip.w <= 0.0 {
         return None; // behind the camera

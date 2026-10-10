@@ -11,7 +11,7 @@ use std::sync::Arc;
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
 
-use crate::texture::{ChannelSelect, DecodedImage, TEXTURE_SLOT_COUNT};
+use crate::texture::{ChannelSelect, DecodedImage, TEXTURE_SLOT_COUNT, TextureSlot};
 
 /// One per-material draw: a contiguous run of the reordered mesh index buffer
 /// whose triangles share a single material slot. `material` indexes the table, or
@@ -241,6 +241,32 @@ impl MaterialUniform {
                 state.alpha_cutoff.clamp(0.0, 1.0),
             ],
             flags: [state.workflow.shader_value(), 0.0, 0.0, 0.0],
+        }
+    }
+
+    /// A flat image, for an unlit draw that shows a texture as it is: white base
+    /// color times the base-color slot (all three channels) and, with `alpha`,
+    /// the same texture's alpha channel in the opacity slot, alpha-blended.
+    pub(super) fn image(alpha: bool) -> Self {
+        const BASE_COLOR_SLOT: u32 = 1 << TextureSlot::BaseColor as u32;
+        const OPACITY_SLOT: u32 = 1 << TextureSlot::Opacity as u32;
+        let slots = if alpha {
+            BASE_COLOR_SLOT | OPACITY_SLOT
+        } else {
+            BASE_COLOR_SLOT
+        };
+        let alpha_mode = if alpha {
+            AlphaMode::Blend
+        } else {
+            AlphaMode::Opaque
+        };
+        Self {
+            base_color: [1.0; 4],
+            emissive: [0.0; 4],
+            params: [0.0, 1.0, slots as f32, alpha_mode.shader_value()],
+            channels0: [ChannelSelect::Rgb.shader_index(), 0.0, 0.0, 0.0],
+            channels1: [0.0, 0.0, ChannelSelect::A.shader_index(), 0.0],
+            flags: [0.0; 4],
         }
     }
 

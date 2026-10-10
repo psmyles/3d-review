@@ -90,7 +90,10 @@ impl MsaaSamples {
 ///
 /// `enabled` is the toolbar toggle (left-click): when off, the scene renders with
 /// no antialiasing at all regardless of `msaa`, but the level is retained so
-/// toggling back on restores it. The default is enabled at 4× MSAA.
+/// toggling back on restores it. The default is enabled at 2× MSAA, on every
+/// platform: the lowest level that smooths the model's edges, and one every GPU the
+/// viewer runs on supports (Apple silicon offers 1/2/4). Lines antialias themselves,
+/// so they do not need more.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AntiAliasing {
     pub enabled: bool,
@@ -101,7 +104,7 @@ impl Default for AntiAliasing {
     fn default() -> Self {
         Self {
             enabled: true,
-            msaa: MsaaSamples::X4,
+            msaa: MsaaSamples::X2,
         }
     }
 }

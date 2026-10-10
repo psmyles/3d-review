@@ -1,7 +1,8 @@
 //! GPU-facing scene data that must stay in lockstep with the shader (invariant
 //! 11): the per-vertex [`SceneVertex`] layout + [`SceneUniforms`] (the `mesh`
-//! program), the composite [`PostUniforms`] (`post`), the [`GtaoUniforms`]
-//! (`gtao`), and the small render-option encoders. Every program is generated
+//! program), the line programs' [`LineUniforms`] (`line` / `wire`), the composite
+//! [`PostUniforms`] (`post`), the [`GtaoUniforms`] (`gtao`), and the small
+//! render-option encoders. Every program is generated
 //! from the one source, `crates/render/src/shaders/review.glsl`; the vertex
 //! layout each pipeline declares lives in [`super::pipelines`].
 //!
@@ -219,6 +220,51 @@ pub(crate) struct SceneVertex {
 // Byte-size lock against the shader's vertex input + `SCENE_VERTEX_LAYOUT` — the
 // per-field pins live in the layout test beside the pipelines.
 const _: () = assert!(std::mem::size_of::<SceneVertex>() == 80);
+// The line programs read vertex buffers a second way, as the `line_vertices` storage
+// buffer (binding 16) — the mesh's own for the wireframe, each line view's for the
+// rest — so the vertex is pinned against that struct too. The shader spells it out as
+// twenty scalars (a `vec3` member would align to 16 under std430 and stride the
+// buffer at 96), so each Rust array is pinned against the first of its scalars.
+const _: () = assert!(
+    std::mem::size_of::<SceneVertex>()
+        == std::mem::size_of::<crate::shaders::generated::Linevertex>()
+);
+assert_same_layout!(SceneVertex => crate::shaders::generated::Linevertex, {
+    position => px,
+    normal => nx,
+    uv => u,
+    tangent => tx,
+    vertex_color => r,
+    deform => d0,
+});
+
+// The wireframe's edge list (the `line_indices` storage buffer, binding 17) uploads
+// as bare `u32` corner indices, two per edge, so the shader's entry must stay one
+// scalar: a second field would stride every index after the first.
+const _: () = assert!(
+    std::mem::size_of::<u32>() == std::mem::size_of::<crate::shaders::generated::Lineindex>()
+);
+
+/// The line programs' own block (`line_params` in `review.glsl`, slot 3): what
+/// widening each line into a screen-space quad needs that [`SceneUniforms`] does not
+/// carry.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub(crate) struct LineUniforms {
+    /// `x` / `y` = the target's size in pixels (the quad's offsets are in pixels and
+    /// have to be turned back into clip space), `z` = the line's width in pixels,
+    /// `w` spare.
+    pub(crate) params: [f32; 4],
+}
+
+const _: () = assert!(std::mem::size_of::<LineUniforms>() == 16);
+const _: () = assert!(
+    std::mem::size_of::<LineUniforms>()
+        == std::mem::size_of::<crate::shaders::generated::LineParams>()
+);
+assert_same_layout!(LineUniforms => crate::shaders::generated::LineParams, {
+    params => params,
+});
 
 /// One entry of the influence buffer (the `deform_influences` storage buffer,
 /// vertex-stage binding 12): a palette entry and its weight. A vertex's run is

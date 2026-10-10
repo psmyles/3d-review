@@ -94,8 +94,8 @@ pub struct SceneDebugOptions {
     /// [`uv_seam_color`]: SceneDebugOptions::uv_seam_color
     pub uv_seams: bool,
     /// Color of the UV-seam edges, baked into that view's line buffer and
-    /// rebuilt when it changes. The line pipeline's width is fixed at 1px, so
-    /// this is the whole of what separates a seam from the wireframe under it.
+    /// rebuilt when it changes. A seam is drawn over the wireframe on the same
+    /// edge, so this is most of what separates the two.
     pub uv_seam_color: [f32; 4],
     /// Which model UV set the seam test reads (0-based). Deliberately its own
     /// channel rather than [`uv_channel`]: the seams a lightmap set carries are
@@ -104,9 +104,15 @@ pub struct SceneDebugOptions {
     ///
     /// [`uv_channel`]: SceneDebugOptions::uv_channel
     pub uv_seam_channel: u32,
-    /// Color of the model wireframe overlay, baked into the line vertex buffer
-    /// and rebuilt when it changes.
+    /// Color of the model wireframe overlay. Applied as a uniform at draw time, so
+    /// changing it rebuilds nothing.
     pub wireframe_color: [f32; 4],
+    /// Width of the model wireframe's lines in **points**, not pixels: the renderer
+    /// multiplies it by [`crate::SceneFrame::pixels_per_point`], so a line is the
+    /// same physical width on a Retina screen as on a 100% one. The wireframe is
+    /// drawn as screen-space quads rather than hardware lines precisely so that this
+    /// can hold — a hardware line is one *device* pixel wide whatever the display.
+    pub wireframe_width: f32,
     /// Color of the bounding-box edges, baked into its line buffer and rebuilt
     /// when it changes.
     pub bounding_box_color: [f32; 4],
@@ -159,6 +165,7 @@ impl Default for SceneDebugOptions {
             uv_seam_color: [0.11, 1.0, 0.11, 1.0],
             uv_seam_channel: 0,
             wireframe_color: [0.6, 0.6, 0.6, 1.0],
+            wireframe_width: 1.0,
             bounding_box_color: [1.0, 0.803_921_6, 0.250_980_4, 1.0],
             bounding_box_scope: BoundingBoxScope::default(),
             bounding_box_selection: Selection::None,

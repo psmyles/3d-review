@@ -1,8 +1,10 @@
 # Anti Aliasing
 
 Edges drawn on a screen can look jagged, like little stair steps. Anti-aliasing
-smooths them out. It applies to the whole 3D view, including the wireframe and
-the line overlays.
+smooths them out on the model and everything filled in the view. Lines are the
+exception - the [wireframe](wireframe.md), the grid and the overlays smooth
+their own edges, so they look the same at every setting, and turning
+anti-aliasing up costs nothing extra for them however many there are.
 
 ## Settings
 

@@ -1,19 +1,23 @@
 //! The draw verbs: what a pipeline is bound to, and the overlay draws that
 //! share the scene pass.
 
-use crate::GhostStyle;
-use crate::material::MaterialEntry;
+use crate::material::{MaterialDrawRange, MaterialEntry};
 use crate::rhi::{
-    Bindings, ColorTarget, Frame, IndexBuffer, Pipeline, SwapchainJob, Texture, VertexBuffer,
+    Bindings, ColorTarget, Frame, IndexBuffer, Pipeline, StorageBuffer, SwapchainJob, Texture,
+    VertexBuffer,
 };
 use crate::shaders::generated;
+use crate::{SceneFrame, ShadingMode};
 
 use super::deform_gpu::DeformGpu;
-use super::gpu_types::{PostUniforms, SceneUniforms};
+use super::gpu_types::{LineUniforms, PostUniforms, SceneUniforms};
 
 use super::gpu::FULLSCREEN_VERTICES;
 use super::gpu::SceneGpu;
 use super::targets::{BackbufferRect, TargetSet};
+
+/// Vertices a line program draws per line: two triangles.
+const VERTICES_PER_LINE: usize = 6;
 
 impl SceneGpu {
     /// The bindings a draw running `fs_main` needs: the checker, the four IBL maps,
@@ -30,9 +34,10 @@ impl SceneGpu {
         bindings
     }
 
-    /// The bindings a draw running `fs_line` or `fs_selection` needs: nothing but the
-    /// deform tables `vs_main` declares. Binding a texture here would be a validation
-    /// error, not a harmless extra.
+    /// The bindings a draw that samples nothing needs: only the deform tables its
+    /// vertex shader declares — `vs_main` for the selection fill, `vs_line` /
+    /// `vs_wire` for the lines, which add their pulled buffers on top. Binding a
+    /// texture here would be a validation error, not a harmless extra.
     pub(super) fn line_bindings(&self) -> Bindings {
         let mut bindings = Bindings::new();
         self.bind_deform(&mut bindings);
@@ -56,54 +61,61 @@ impl SceneGpu {
             .and_then(|mesh| mesh.deform.as_ref())
     }
 
-    /// Draw the idle slot's mesh as a see-through ghost over the solid one, inside the
-    /// scene pass the caller has already opened.
+    /// Which of the active mesh's index lists the frame draws, and its per-material
+    /// ranges — the one decision the shaded mesh and the line pass's depth-only redraw
+    /// of it must agree on, or a line would be hidden by geometry that is not there.
     ///
-    /// Both styles reuse pipelines that already exist. The x-ray is the
-    /// selection-highlight fill — a flat tinted colour, alpha-blended, depth-tested but
-    /// not depth-writing, which is exactly ghost behaviour — with the tint fed through
-    /// the same `selection_color` uniform it always reads. The wireframe ghost is the
-    /// same fragment shader over the same mesh vertex buffer, drawn as an indexed
-    /// `LineList` through the wireframe pipeline, so it reads that tint too. Neither
-    /// needs a shader change, so the committed bytecode stays valid.
+    /// In precedence order: solo (isolate the selection) wins; otherwise per-mesh
+    /// visibility (the filtered list, present only while some mesh is hidden);
+    /// otherwise the whole mesh. All three share the mesh vertex buffer. `None` draws
+    /// nothing: Wireframe shading draws no surface, solo with nothing resolved shows
+    /// nothing, and an active visibility filter with no list means every mesh is
+    /// hidden.
+    pub(super) fn mesh_draw_list(
+        &self,
+        scene: &SceneFrame<'_>,
+    ) -> Option<(&IndexBuffer, &[MaterialDrawRange])> {
+        let mesh = self.active.mesh.as_ref()?;
+        if matches!(scene.debug.shading_mode, ShadingMode::Wireframe) {
+            return None;
+        }
+        let selection = scene.selection;
+        if selection.solo && selection.selection.is_active() {
+            self.active
+                .selection_index
+                .as_ref()
+                .map(|index| (index, self.active.selection_ranges.as_slice()))
+        } else if self.active.visible_active {
+            self.active
+                .visible_index
+                .as_ref()
+                .map(|index| (index, self.active.visible_ranges.as_slice()))
+        } else {
+            Some((&mesh.indices, mesh.ranges.as_slice()))
+        }
+    }
+
+    /// Draw the idle slot's mesh as an x-ray ghost over the solid one, inside the
+    /// scene pass the caller has already opened: the selection-highlight fill — a flat
+    /// tinted colour, alpha-blended, depth-tested but not depth-writing, which is
+    /// exactly ghost behaviour — with the tint fed through the same `selection_color`
+    /// uniform it always reads. The wireframe ghost is a line and is drawn with the
+    /// rest of them ([`Self::draw_line_views`]).
     ///
     /// The deform tables it binds are the **active** slot's, not the idle one's: the
     /// ghost is drawn in its bind pose (its uniform's deform flag is off), so the
-    /// tables are never read — they only have to be bound, because `vs_main` declares
-    /// them.
-    pub(super) fn draw_ghost(
-        &self,
-        frame: &mut Frame<'_>,
-        style: GhostStyle,
-        uniforms: &SceneUniforms,
-    ) {
-        match style {
-            GhostStyle::Xray => {
-                if let Some(mesh) = &self.idle.mesh {
-                    let mut bindings = self.line_bindings();
-                    bindings.mesh_vertices(&mesh.vertices);
-                    bindings.mesh_indices(&mesh.indices);
-                    frame.apply_pipeline(&self.scene.selection);
-                    frame.apply_bindings(&bindings);
-                    frame.apply_uniforms(generated::UB_SCENE_VS, uniforms);
-                    frame.apply_uniforms(generated::UB_SCENE_FS, uniforms);
-                    frame.draw(0, mesh.indices.count());
-                }
-            }
-            GhostStyle::Wireframe => {
-                if let (Some(mesh), Some(edges)) =
-                    (&self.idle.mesh, &self.idle.ghost_wireframe_index)
-                {
-                    let mut bindings = self.line_bindings();
-                    bindings.mesh_vertices(&mesh.vertices);
-                    bindings.mesh_indices(edges);
-                    frame.apply_pipeline(&self.scene.wireframe);
-                    frame.apply_bindings(&bindings);
-                    frame.apply_uniforms(generated::UB_SCENE_VS, uniforms);
-                    frame.apply_uniforms(generated::UB_SCENE_FS, uniforms);
-                    frame.draw(0, edges.count());
-                }
-            }
+    /// tables are never read — they only have to be bound, because `vs_main`
+    /// declares them.
+    pub(super) fn draw_xray_ghost(&self, frame: &mut Frame<'_>, uniforms: &SceneUniforms) {
+        if let Some(mesh) = &self.idle.mesh {
+            let mut bindings = self.line_bindings();
+            bindings.mesh_vertices(&mesh.vertices);
+            bindings.mesh_indices(&mesh.indices);
+            frame.apply_pipeline(&self.scene.selection);
+            frame.apply_bindings(&bindings);
+            frame.apply_uniforms(generated::UB_SCENE_VS, uniforms);
+            frame.apply_uniforms(generated::UB_SCENE_FS, uniforms);
+            frame.draw(0, mesh.indices.count());
         }
     }
 
@@ -137,44 +149,119 @@ impl SceneGpu {
         frame.draw(0, indices.count());
     }
 
-    /// Draw the model wireframe: a `LineList` over the mesh's *own* vertex buffer,
-    /// indexed by the retained edge list (`wireframe_edge_indices`).
+    /// Redraw the mesh into the line pass's single-sample depth, writing no colour:
+    /// what the lines test against when the scene pass was multisampled, since its
+    /// depth cannot be read back. The same draw list, culling and depth bias as the
+    /// shaded mesh, so a line is hidden exactly where it would have been in that pass.
+    /// Costs a second run of the mesh's vertices and a depth-only fill, against the
+    /// per-sample blending the lines no longer pay.
+    pub(super) fn draw_depth_prepass(
+        &self,
+        frame: &mut Frame<'_>,
+        scene: &SceneFrame<'_>,
+        uniforms: &SceneUniforms,
+    ) {
+        let (Some(mesh), Some((indices, ranges))) = (&self.active.mesh, self.mesh_draw_list(scene))
+        else {
+            return;
+        };
+        let pipeline = if scene.debug.render_backfaces {
+            &self.lines.depth_prepass_double_sided
+        } else {
+            &self.lines.depth_prepass
+        };
+        let mut bindings = self.line_bindings();
+        bindings.mesh_vertices(&mesh.vertices);
+        bindings.mesh_indices(indices);
+        frame.apply_pipeline(pipeline);
+        frame.apply_bindings(&bindings);
+        frame.apply_uniforms(generated::UB_SCENE_VS, uniforms);
+        frame.apply_uniforms(generated::UB_SCENE_FS, uniforms);
+        for range in ranges {
+            frame.draw(range.first_index as usize, range.index_count as usize);
+        }
+    }
+
+    /// Draw the model wireframe: the retained edge list (`wireframe_edge_indices`)
+    /// over the mesh's *own* vertex buffer, each edge widened into a screen-space
+    /// quad.
     ///
-    /// It runs `fs_selection`, so the colour comes from the `selection_color`
-    /// uniform rather than from the vertices — the mesh's vertices carry the mesh's
-    /// own colours. As with the Opt ghost, nothing needs restoring afterwards:
-    /// uniforms are applied per draw, so the next draw's own call is the restore.
+    /// The colour comes from the `selection_color` uniform rather than from the
+    /// vertices — the mesh's vertices carry the mesh's own colours. As with the Opt
+    /// ghost, nothing needs restoring afterwards: uniforms are applied per draw, so
+    /// the next draw's own call is the restore.
     pub(super) fn draw_wireframe(
         &self,
         frame: &mut Frame<'_>,
         uniforms: &SceneUniforms,
+        line: &LineUniforms,
         color: [f32; 4],
     ) {
-        let (Some(mesh), Some(edges)) = (&self.active.mesh, &self.active.views.wireframe_index)
+        let (Some(mesh), Some(edges)) = (&self.active.mesh, &self.active.views.wireframe_edges)
         else {
             return;
         };
-        let mut wire_uniforms = *uniforms;
-        wire_uniforms.selection_color = color;
-        let mut bindings = self.line_bindings();
-        bindings.mesh_vertices(&mesh.vertices);
-        bindings.mesh_indices(edges);
-        frame.apply_pipeline(&self.scene.wireframe);
-        frame.apply_bindings(&bindings);
-        frame.apply_uniforms(generated::UB_SCENE_VS, &wire_uniforms);
-        frame.apply_uniforms(generated::UB_SCENE_FS, &wire_uniforms);
-        frame.draw(0, edges.count());
+        let mut wire_scene = *uniforms;
+        wire_scene.selection_color = color;
+        self.draw_edges(frame, &mesh.vertices, edges, &wire_scene, line);
     }
 
-    /// Draw a set of line buffers through one pipeline. They share everything but the
-    /// vertex stream, so the pipeline and the scene uniforms are applied once.
+    /// Draw the idle slot's wireframe as the Opt overlay's wireframe ghost, in the
+    /// tint `uniforms` carries. Its own vertex buffer and edge list; the deform tables
+    /// bound are the active slot's, never read (see [`Self::draw_xray_ghost`]).
+    pub(super) fn draw_wireframe_ghost(
+        &self,
+        frame: &mut Frame<'_>,
+        uniforms: &SceneUniforms,
+        line: &LineUniforms,
+    ) {
+        if let (Some(mesh), Some(edges)) = (&self.idle.mesh, &self.idle.ghost_wireframe_edges) {
+            self.draw_edges(frame, &mesh.vertices, edges, uniforms, line);
+        }
+    }
+
+    /// One wireframe draw through the `wire` program: six vertices per edge and no
+    /// vertex input — `vs_wire` pulls each edge's two corner indices from `edges`
+    /// and the corners themselves from `vertices`' storage view, so both are bound as
+    /// storage rather than as the input stream.
+    fn draw_edges(
+        &self,
+        frame: &mut Frame<'_>,
+        vertices: &VertexBuffer,
+        edges: &StorageBuffer<u32>,
+        uniforms: &SceneUniforms,
+        line: &LineUniforms,
+    ) {
+        /// Two corner indices per edge in the list.
+        const INDICES_PER_EDGE: usize = 2;
+
+        let mut bindings = self.line_bindings();
+        if !bindings.pulled_vertices(generated::VIEW_LINE_VERTICES, vertices) {
+            return;
+        }
+        bindings.storage(generated::VIEW_LINE_INDICES, edges);
+        frame.apply_pipeline(&self.lines.wireframe);
+        frame.apply_bindings(&bindings);
+        // `fs_line` reads its colour from the vertex stage, so shdc strips the
+        // fragment block and only the vertex block (and the line block) are declared.
+        frame.apply_uniforms(generated::UB_SCENE_VS, uniforms);
+        frame.apply_uniforms(generated::UB_LINE_PARAMS, line);
+        frame.draw(0, edges.capacity() / INDICES_PER_EDGE * VERTICES_PER_LINE);
+    }
+
+    /// Draw a set of line lists through one line pipeline. They share everything but
+    /// the vertex buffer, so the pipeline and the uniforms are applied once.
     pub(super) fn draw_lines<'b>(
         &self,
         frame: &mut Frame<'_>,
         pipeline: &Pipeline,
         buffers: impl IntoIterator<Item = &'b VertexBuffer>,
         uniforms: &SceneUniforms,
+        line: &LineUniforms,
     ) {
+        /// Two vertices per line in a line list.
+        const VERTICES_PER_LIST_LINE: usize = 2;
+
         // An iterator rather than a slice, so the caller's list of optional views
         // is filtered in place instead of collected into a `Vec` every frame.
         let mut buffers = buffers.into_iter().peekable();
@@ -183,13 +270,19 @@ impl SceneGpu {
         }
         frame.apply_pipeline(pipeline);
         // `fs_line` reads nothing from the fragment block, so shdc strips it and only
-        // the vertex block is declared.
+        // the vertex block (and the line block) are declared.
         frame.apply_uniforms(generated::UB_SCENE_VS, uniforms);
+        frame.apply_uniforms(generated::UB_LINE_PARAMS, line);
         for buffer in buffers {
             let mut bindings = self.line_bindings();
-            bindings.mesh_vertices(buffer);
+            if !bindings.pulled_vertices(generated::VIEW_LINE_VERTICES, buffer) {
+                continue;
+            }
             frame.apply_bindings(&bindings);
-            frame.draw(0, buffer.count());
+            frame.draw(
+                0,
+                buffer.count() / VERTICES_PER_LIST_LINE * VERTICES_PER_LINE,
+            );
         }
     }
 

@@ -4,10 +4,19 @@ These are the two side panels. The Outliner, on the left, is a list of
 everything in the file. The Inspector, on the right, shows details about
 whatever you have selected.
 
+Both are in every workspace, and the toolbar button that opens and closes
+them is too. Each workspace shows the tabs that make sense for it:
+
+- **3D** - Scene, Materials, Textures, and Animations when the file has any.
+- **UV** - Scene and Textures.
+- **Tex** - Textures.
+- **Opt** - Scene and Materials.
+
+Each workspace remembers which tab you last had open in it.
+
 ## The Outliner
 
-The Outliner is a panel on the left that you can drag wider or narrower. It has
-two or three tabs.
+The Outliner is a panel on the left that you can drag wider or narrower.
 
 **Scene** lists every part of the model. A model is usually built as a tree,
 where parts are attached to other parts (a hand is attached to an arm, which is
@@ -35,8 +44,14 @@ picking either kind clears the other.
 **Materials** lists the materials, with duplicates merged into one entry.
 Selecting one highlights every face that uses it and opens it in the Inspector.
 
-**Animations** lists the animations in the file. This tab only appears when
-the file has animations, and never in the Opt workspace. See
+**Textures** lists every image loaded for the scene, with a small preview and
+its size in pixels. Clicking one shows it in the Inspector, without changing
+what is selected in the scene; clicking it again, or picking anything in the
+scene, hands the Inspector back. In the [Texture workspace](tex.md) this tab
+is how you choose which image to look at.
+
+**Animations** lists the animations in the file. This tab only appears in the
+3D workspace, and only when the file has animations. See
 [Skinning and animation](animation.md).
 
 ## The Inspector
@@ -45,7 +60,10 @@ The Inspector is the panel on the right. For a selected part it shows facts
 about it that you can read but not change. For several selected parts, or
 several bones, it shows a summary instead: how many there are, what they come to
 in total, and their names. For a material it shows the three editable sections
-described in [Materials and textures](materials.md).
+described in [Materials and textures](materials.md). For a texture it shows a
+preview and the real facts about the file - its type, size in pixels,
+channels, bit depth, size on disk and where it was read from - and which
+materials use it.
 
 In the Opt workspace the Inspector changes job: it shows the settings of the
 operation you have selected, the export settings, or the per-object settings of

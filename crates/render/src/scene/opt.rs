@@ -19,7 +19,7 @@
 
 use crate::geometry::wireframe_edge_indices;
 use crate::material::MaterialState;
-use crate::rhi::{Frame, GpuResult, IndexBuffer};
+use crate::rhi::{Frame, GpuResult, StorageBuffer};
 use crate::{GhostStyle, OptSceneFrame, OptView, ProcessedModelRef, SceneFrame};
 
 use super::gpu::SceneGpu;
@@ -255,12 +255,12 @@ impl SceneGpu {
             scene.debug.material_mode,
         )?;
         let ghost_wireframe = (
-            self.active.ghost_wireframe_index.take(),
+            self.active.ghost_wireframe_edges.take(),
             self.active.ghost_wireframe_baked.take(),
         );
         self.active.release_derived();
         (
-            self.active.ghost_wireframe_index,
+            self.active.ghost_wireframe_edges,
             self.active.ghost_wireframe_baked,
         ) = ghost_wireframe;
         Ok(())
@@ -283,10 +283,10 @@ impl SceneGpu {
             return Ok(());
         }
         let edges = wireframe_edge_indices(scene.model, scene.hidden_meshes);
-        self.active.ghost_wireframe_index = if edges.is_empty() {
+        self.active.ghost_wireframe_edges = if edges.is_empty() {
             None
         } else {
-            Some(IndexBuffer::new(&edges, c"ghost wireframe")?)
+            Some(StorageBuffer::immutable(&edges, c"ghost wireframe edges")?)
         };
         self.active.ghost_wireframe_baked =
             Some((scene.model_revision, scene.hidden_meshes.to_vec()));

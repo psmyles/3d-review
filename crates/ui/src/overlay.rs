@@ -3,15 +3,19 @@
 //! and returns the [`UiOutput`] intents for `app` to apply.
 
 use review_model::{ModelData, SceneBvh};
-use review_render::{OrbitCamera, Selection};
+use review_render::{OrbitCamera, Selection, UvCamera};
 
 use crate::dimensions::DimensionView;
 use crate::opt_state::{ComparisonSide, OptIntent, OptLayout};
 use crate::state::{
-    ChromeInsets, OptionPanel, ScopedStats, UiOutput, UiState, WorkspaceMode, sync_debug_state,
+    ChromeInsets, CommentIntent, OptionPanel, ScopedStats, UiOutput, UiState, WorkspaceMode,
+    sync_debug_state,
 };
 use crate::theme::{self, color, size};
-use crate::{dimensions, gizmo, panels, stats, status_bar, texture_view, toolbar};
+use crate::{
+    comment_composer, comment_pins, dimensions, gizmo, panels, stats, status_bar, texture_view,
+    toolbar,
+};
 
 /// The Opt workspace's second view, as the overlay needs to see it. `app` supplies
 /// this whenever that workspace is active; every other workspace passes `None`.
@@ -44,7 +48,9 @@ pub struct OptOverlayLevel<'a> {
     pub revision: u64,
 }
 
-/// Draw the full egui overlay and return the intents emitted this frame. `model`
+/// Draw the full egui overlay and return the intents emitted this frame.
+/// `camera` and `uv_camera` are the 3D and UV views' cameras, for projecting
+/// what the chrome draws over them (labels, review-comment pins). `model`
 /// is the shared scene geometry and `bvh` an acceleration structure over it, both
 /// read only for the bounding-box dimension labels' occlusion test (invariant 1:
 /// borrowed, never copied). `bvh` is `None` until `app` has built it for the
@@ -55,6 +61,7 @@ pub fn draw_overlay(
     root: &mut egui::Ui,
     state: &mut UiState,
     camera: OrbitCamera,
+    uv_camera: UvCamera,
     model: &ModelData,
     bvh: Option<&SceneBvh>,
     opt: Option<OptOverlayView<'_>>,
@@ -84,49 +91,66 @@ pub fn draw_overlay(
     toolbar::draw(root, state, &mut output);
     status_bar::draw(root, state, model);
 
-    // The side panels, option panels, axis gizmo and stats overlay are all 3D-scene
-    // chrome; the UV / Texture workspaces keep a clean viewport (just the UV dropdown
-    // in the toolbar), so they draw only in the scene workspaces (3D and Opt).
+    // The camera as a review comment would save it, for a comment started from
+    // the chrome this frame.
+    state.comments.view_now = Some(review_annotate::thread::SavedView {
+        target: camera.target.to_array(),
+        yaw: camera.yaw,
+        pitch: camera.pitch,
+        distance: camera.distance,
+        fov: camera.fov_y_radians,
+        ortho: matches!(
+            state.projection_mode,
+            crate::state::ViewProjectionMode::Orthographic
+        ),
+    });
+
+    // Re-scoped before the panels rather than after: the Inspector's multi-part
+    // summary states these same sums, and measuring them after it had drawn
+    // would leave it one frame behind the selection it describes. The call is
+    // cached against the selection + hidden set, so the second one below is a
+    // lookup (invariant 6 — nothing O(mesh) per frame).
+    let scoped = state.scoped_stats(model);
+
+    // Outliner (left) + Inspector (right) dockable side panels, in every
+    // workspace — each shows its own tabs (`OutlinerTab::available`). They paint
+    // over the full-window background scene (exactly as the toolbar / status bar
+    // already do); their live widths inset the floating viewport chrome below so
+    // the gizmo / stats never land on top of a panel, and the Tex canvas is laid
+    // out in what they leave. The Inspector emits material-edit intents for `app`
+    // to apply (invariant 2).
+    let side = draw_side_panels(root, state, model);
+    state.chrome_insets = ChromeInsets {
+        left: side.left_inset,
+        right: side.right_inset,
+    };
+    output.material_edit = side.inspector.material_edit;
+    output.texture = side.inspector.texture;
+    output.material_edit_active = side.inspector.material_edit_active;
+    output.opt = side.opt.intent;
+    output.opt_edit_active = side.opt.edit_active;
+    output.comment = side.comment.or(side.inspector.comment);
+
+    // The free viewport: the screen minus the chrome bands (toolbar top, status
+    // bar bottom) and the open side panels (left/right). Floating chrome — the
+    // dimension labels, the option windows, the manual and the log — is kept
+    // inside this rect so it never overlaps the toolbar icons or a side panel.
+    let screen = ctx.content_rect();
+    let viewport = egui::Rect::from_min_max(
+        egui::pos2(
+            screen.left() + side.left_inset,
+            screen.top() + toolbar_height,
+        ),
+        egui::pos2(
+            screen.right() - side.right_inset,
+            screen.bottom() - status_bar_height,
+        ),
+    );
+
+    // The option panels, axis gizmo and stats overlay are all 3D-scene chrome;
+    // the UV / Texture workspaces keep a clean viewport, so they draw only in the
+    // scene workspaces (3D and Opt).
     if state.mode.is_scene() {
-        // Re-scoped before the panels rather than after: the Inspector's
-        // multi-part summary states these same sums, and measuring them after it
-        // had drawn would leave it one frame behind the selection it describes.
-        // The call is cached against the selection + hidden set, so the second
-        // one below is a lookup (invariant 6 — nothing O(mesh) per frame).
-        let scoped = state.scoped_stats(model);
-
-        // Outliner (left) + Inspector (right) dockable side panels. They paint over
-        // the full-window background scene (exactly as the toolbar / status bar
-        // already do); their live widths inset the floating viewport chrome below so
-        // the gizmo / stats never land on top of a panel. The Inspector emits
-        // material-edit intents for `app` to apply (invariant 2).
-        let side = draw_side_panels(root, state, model);
-        state.chrome_insets = ChromeInsets {
-            left: side.left_inset,
-            right: side.right_inset,
-        };
-        output.material_edit = side.inspector.material_edit;
-        output.texture = side.inspector.texture;
-        output.material_edit_active = side.inspector.material_edit_active;
-        output.opt = side.opt.intent;
-        output.opt_edit_active = side.opt.edit_active;
-
-        // The free viewport: the screen minus the chrome bands (toolbar top,
-        // status bar bottom) and the open side panels (left/right). Floating
-        // chrome — the dimension labels and the option windows — is kept inside
-        // this rect so it never overlaps the toolbar icons or a side panel.
-        let screen = ctx.content_rect();
-        let viewport = egui::Rect::from_min_max(
-            egui::pos2(
-                screen.left() + side.left_inset,
-                screen.top() + toolbar_height,
-            ),
-            egui::pos2(
-                screen.right() - side.right_inset,
-                screen.bottom() - status_bar_height,
-            ),
-        );
-
         // `app` reads this back to lay the Opt split out inside the area the user
         // can actually see (the renderer's `SceneViewport`).
         state.scene_viewport = Some(viewport);
@@ -139,6 +163,13 @@ pub fn draw_overlay(
         if state.hover.is_some() && !ctx.is_pointer_over_egui() {
             ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
         }
+        // The Comment tool's click places something, so the pointer says where.
+        if state.tool == crate::state::ViewportTool::Comment
+            && state.mode == WorkspaceMode::ThreeD
+            && !ctx.is_pointer_over_egui()
+        {
+            ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
+        }
         draw_split_divider(ctx, state, viewport);
 
         // Bounding-box dimension labels sit on the viewport (under the chrome).
@@ -147,6 +178,20 @@ pub fn draw_overlay(
         // per frame.
         let views = dimension_views(state, camera, model, bvh, opt, screen, viewport);
         dimensions::draw_dimension_labels(ctx, state, &views);
+
+        // Review-comment pins, over the scene and under the floating chrome, and
+        // the composer of a comment being written. In the Opt split they sit on
+        // the source half — the mesh they were written on — through that half's
+        // own camera.
+        let split = state.mode == WorkspaceMode::Opt && state.opt.layout == OptLayout::Split;
+        let pin_view = if split {
+            let (left, _) = split_halves(viewport);
+            comment_pins::PinView::scene(state, half_camera(camera, left), left, left, model, bvh)
+        } else {
+            comment_pins::PinView::scene(state, camera, screen, viewport, model, bvh)
+        };
+        comment_pins::draw_comment_pins(ctx, state, &pin_view);
+        comment_composer::draw_composer(ctx, state, Some(&pin_view), viewport);
 
         draw_option_panels(ctx, state, viewport);
 
@@ -190,32 +235,39 @@ pub fn draw_overlay(
             side.left_inset,
             side.right_inset,
         );
-    } else if state.mode == WorkspaceMode::Texture {
-        // The Tex workspace paints a 2D image viewer (channel-isolated, pan/zoom)
-        // over a chosen background fill, plus its own floating stats panel. The
-        // image itself is drawn by the renderer into the same frame, behind the
-        // chrome; this lays out the canvas + interaction + background fill only.
-        texture_view::draw(root, state);
-    }
+    } else {
+        if state.mode == WorkspaceMode::Uv {
+            if state.tool == crate::state::ViewportTool::Comment && !ctx.is_pointer_over_egui() {
+                ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
+            }
+            // The UV layout's pins, through the UV camera — the renderer draws the
+            // layout over the whole window, as it does the 3D scene.
+            let pin_view = comment_pins::PinView::uv(uv_camera, screen, viewport);
+            comment_pins::draw_comment_pins(ctx, state, &pin_view);
+            comment_composer::draw_composer(ctx, state, Some(&pin_view), viewport);
+        }
+        if state.mode == WorkspaceMode::Texture {
+            // The Tex workspace paints a 2D image viewer (channel-isolated,
+            // pan/zoom) over a chosen background fill, in the central area the
+            // side panels leave. The image itself is drawn by the renderer into
+            // the same frame, behind the chrome; this lays out the canvas +
+            // interaction + background fill only.
+            texture_view::draw(root, state);
+        }
 
-    // The manual and the log can be opened from the menu in any workspace, so
-    // outside the scene ones — which draw them above, inside their own free
-    // viewport — they get the area between the toolbar and the status bar.
-    if !state.mode.is_scene() {
+        // The manual and the log can be opened from the menu in any workspace, so
+        // outside the scene ones — which draw them above — they get the same free
+        // viewport.
         if let Some(page) = crate::help::take_requested(ctx) {
             state.help.open_page(page);
         }
-        let screen = ctx.content_rect();
-        let viewport = egui::Rect::from_min_max(
-            egui::pos2(screen.left(), screen.top() + toolbar_height),
-            egui::pos2(screen.right(), screen.bottom() - status_bar_height),
-        );
         crate::help::draw(ctx, &mut state.help, viewport);
         crate::log_window::draw(ctx, &mut state.log, viewport);
     }
 
-    // Last, so the modal's backdrop covers every other piece of chrome.
+    // Last, so a modal's backdrop covers every other piece of chrome.
     crate::about::draw(ctx, &mut state.about);
+    crate::user_name::draw(ctx, state);
 
     output
 }
@@ -426,6 +478,8 @@ struct SidePanelLayout {
     /// The Opt workspace's own emissions: the preset / export intents raised by
     /// the stack pane or the Opt inspector, and its drag-coalescing hint.
     opt: OptEmission,
+    /// A review-comment action raised by the Comments tab.
+    comment: Option<CommentIntent>,
     left_inset: f32,
     right_inset: f32,
 }
@@ -452,9 +506,15 @@ fn draw_side_panels(
     // Measure the selection's influence once per frame, before either panel reads
     // it (the Inspector shows it; the scan is far too heavy to repeat per repaint).
     state.sync_bone_influence(model);
+    // Keep the current texture in range before the Textures tab and the
+    // Inspector read it: a removed texture may have shrunk the pool.
+    if state.texture_view.selected >= state.texture_pool.len() {
+        state.texture_view.selected = 0;
+    }
 
     let opt_mode = state.mode == WorkspaceMode::Opt;
     let mut opt = OptEmission::default();
+    let mut comment = None;
 
     let mut left_inset = 0.0;
     if state.side_panels_open {
@@ -468,8 +528,20 @@ fn draw_side_panels(
                 // keeps the rest. A nested `Panel` is egui's own primitive for
                 // this, so egui owns the divider drag and the split height across
                 // frames exactly as it owns the side panel's width.
+                //
+                // Both nested panels are already inside the side panel's frame,
+                // whose fill and margin they would otherwise repeat: a default
+                // `CentralPanel` adds 8pt on every side, which pushed the
+                // Outliner's tabs down and in, in this workspace alone. So the
+                // tree's panel draws no frame of its own, and the stack keeps only
+                // its vertical margin — every workspace's Outliner, and both
+                // halves of this one, share the side panel's single inset.
                 if opt_mode {
+                    let mut stack_frame = egui::Frame::side_top_panel(ui.style());
+                    stack_frame.inner_margin.left = 0;
+                    stack_frame.inner_margin.right = 0;
                     let stack = egui::Panel::bottom("opt_stack_pane")
+                        .frame(stack_frame)
                         .resizable(true)
                         .default_size(size::OPT_STACK_DEFAULT_HEIGHT)
                         .size_range(size::OPT_STACK_MIN_HEIGHT..=size::OPT_STACK_MAX_HEIGHT)
@@ -478,11 +550,14 @@ fn draw_side_panels(
                         opt.intent = stack.inner;
                     }
                     egui::CentralPanel::default()
-                        .show(ui, |ui| panels::outliner::body(ui, state, model));
+                        .frame(egui::Frame::NONE)
+                        .show(ui, |ui| panels::outliner::body(ui, state, model))
+                        .inner
                 } else {
-                    panels::outliner::body(ui, state, model);
+                    panels::outliner::body(ui, state, model)
                 }
             });
+        comment = response.inner;
         left_inset = response.response.rect.width();
     }
 
@@ -515,6 +590,7 @@ fn draw_side_panels(
     SidePanelLayout {
         inspector,
         opt,
+        comment,
         left_inset,
         right_inset,
     }
@@ -670,6 +746,70 @@ mod tests {
             output.textures_delta.clear();
         }
         (width, title_width)
+    }
+
+    /// Where the first Outliner tab lands with `mode` up, after the overlay has
+    /// settled (egui sizes panels from the previous pass).
+    fn first_tab_rect(mode: WorkspaceMode) -> egui::Rect {
+        let ctx = egui::Context::default();
+        crate::theme::init_style(&ctx);
+        let model = review_model::demo_cube_model();
+        let mut state = UiState {
+            mode,
+            ..UiState::default()
+        };
+        let input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1600.0, 900.0),
+            )),
+            ..Default::default()
+        };
+        for _ in 0..3 {
+            let mut output = ctx.run_ui(input(), |ui| {
+                draw_overlay(
+                    ui,
+                    &mut state,
+                    OrbitCamera::default(),
+                    UvCamera::default(),
+                    &model,
+                    None,
+                    None,
+                );
+            });
+            output.textures_delta.clear();
+        }
+        let id = egui::Id::new(panels::outliner::TAB_STRIP_ID).with(("tab", 0_usize));
+        ctx.read_response(id)
+            .unwrap_or_else(|| panic!("{mode:?}: no Outliner tab was laid out"))
+            .rect
+    }
+
+    /// The Outliner's tab strip sits at the same place in every workspace.
+    ///
+    /// Opt nests the tree in a `CentralPanel` under its operation stack, and a
+    /// default one repeats the side panel's frame — 8pt more on every side, so the
+    /// tabs alone in that workspace sat lower and narrower than everywhere else.
+    #[test]
+    fn the_outliner_tabs_sit_at_one_place_in_every_workspace() {
+        let reference = first_tab_rect(WorkspaceMode::ThreeD);
+        for mode in [
+            WorkspaceMode::Uv,
+            WorkspaceMode::Texture,
+            WorkspaceMode::Opt,
+        ] {
+            let rect = first_tab_rect(mode);
+            assert_eq!(
+                rect.min, reference.min,
+                "{mode:?}: the tab strip starts at {:?}, not where 3D's does ({:?})",
+                rect.min, reference.min
+            );
+            assert_eq!(
+                rect.height(),
+                reference.height(),
+                "{mode:?}: tab height differs"
+            );
+        }
     }
 
     /// A collapsed option window's frame must surround its title bar.

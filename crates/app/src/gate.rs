@@ -27,7 +27,7 @@
 //!    query in the backend leaf that the Metal side would then owe a twin for — all
 //!    to learn what Windows already reports about any process.
 //!
-//! The measured conditions are the viewer's own defaults (GTAO on, 4× MSAA) rather
+//! The measured conditions are the viewer's own defaults (GTAO on, 2× MSAA) rather
 //! than overrides, so the gate measures what a user gets; the stamp records them so
 //! a comparison across two stamps can be checked rather than assumed. The one thing
 //! forced is the animation: D2 asks for a skinned clip playing, so gate mode selects

@@ -46,6 +46,11 @@ pub const OUTLINER_TAB_HEIGHT: f32 = 34.0;
 pub const OUTLINER_TAB_PAD_Y: f32 = 9.0;
 /// Thickness of the active Outliner tab's underline accent.
 pub const OUTLINER_TAB_UNDERLINE: f32 = 2.0;
+/// Room either side of a tab's label, in points — the least a tab is given
+/// before the strip starts moving tabs into its overflow menu.
+pub const OUTLINER_TAB_PAD_X: f32 = 6.0;
+/// Width of the tab strip's overflow (`»`) button, in points.
+pub const OUTLINER_TAB_OVERFLOW_WIDTH: f32 = 24.0;
 /// Upper bound the user can drag the Outliner / Inspector side panels out to
 /// (the `width_range` ceiling); they start at [`SIDE_PANEL_DEFAULT_WIDTH`].
 pub const OUTLINER_MAX_WIDTH: f32 = 560.0;
@@ -98,7 +103,7 @@ pub const TOOLBAR_CENTER_WIDTH: f32 = 120.0;
 /// moment a skinned mesh was opened - `tests/toolbar_layout.rs` is what now says
 /// so. It grows leftward from the right edge, away from the centered mode
 /// segments.
-pub const TOOLBAR_RIGHT_WIDTH: f32 = 325.0;
+pub const TOOLBAR_RIGHT_WIDTH: f32 = 356.0;
 /// Left toolbar cluster: the menu (32) + show-wireframe (32) + shading (4) +
 /// material + geometry-debug (3) groups, with four group spacings between them.
 ///
@@ -113,6 +118,8 @@ pub const TOOLBAR_SHADING_GROUP_WIDTH: f32 = 122.0;
 /// buffers (4 padding + 4×28 icons + 3×2 gaps).
 pub const TOOLBAR_MATERIAL_GROUP_WIDTH: f32 = 122.0;
 pub const TOOLBAR_SINGLE_ICON_GROUP_WIDTH: f32 = 32.0;
+/// A two-tile group (the viewport tools: Select and Comment).
+pub const TOOLBAR_DOUBLE_ICON_GROUP_WIDTH: f32 = 62.0;
 /// Width of a three-icon toolbar group (the geometry-debug face-normals /
 /// vertex-normals / UV-seams group, and the UV-shading wire / shaded / islands
 /// group): 4 padding + 3×28 icons + 2×2 gaps.
@@ -189,6 +196,55 @@ pub const TEXTURE_REMOVE_BTN_W: f32 = 24.0;
 /// Inspector is dragged narrow (the row's elastic control).
 pub const TEXTURE_COMBO_MIN_W: f32 = 60.0;
 
+// ── Textures tab + texture Inspector ──────────────────────────────────
+/// Height of one row in the Outliner's Textures tab — room for its thumbnail.
+pub const TEXTURE_ROW_HEIGHT: f32 = 26.0;
+/// On-screen edge of a Textures-tab row's thumbnail.
+pub const TEXTURE_ROW_THUMB: f32 = 20.0;
+/// Gap between a Textures-tab row's thumbnail and its name.
+pub const TEXTURE_ROW_THUMB_GAP: f32 = 6.0;
+/// Width reserved at a Textures-tab row's right edge for its pixel-size readout.
+pub const TEXTURE_ROW_TRAILING_WIDTH: f32 = 88.0;
+/// Longest on-screen edge of the texture Inspector's preview, which otherwise
+/// fills the panel's width.
+pub const TEXTURE_PREVIEW_MAX: f32 = 256.0;
+
+// ── Review comments ───────────────────────────────────────────────────
+/// Height of one thread row in the Outliner's Comments tab: the opening text
+/// over a line of who / where / when.
+pub const COMMENT_ROW_HEIGHT: f32 = 40.0;
+/// Width reserved at a thread row's left for its `#n`.
+pub const COMMENT_NUMBER_WIDTH: f32 = 32.0;
+/// Radius of a viewport pin.
+pub const COMMENT_PIN_RADIUS: f32 = 10.0;
+/// Width of a viewport pin's outline (and of the selection ring).
+pub const COMMENT_PIN_STROKE: f32 = 1.5;
+/// Gap between a pin and the ring drawn round the selected one.
+pub const COMMENT_PIN_RING_GAP: f32 = 2.5;
+/// Gap between the messages of a thread in the Inspector.
+pub const COMMENT_MESSAGE_GAP: f32 = 8.0;
+/// Width of the comment composer popover.
+pub const COMMENT_COMPOSER_WIDTH: f32 = 280.0;
+/// How far the composer opens from the pin it is writing about.
+pub const COMMENT_COMPOSER_OFFSET: f32 = 16.0;
+/// Rows the composer's text box shows before it scrolls.
+pub const COMMENT_COMPOSER_ROWS: usize = 3;
+/// Rows the Inspector's reply box shows.
+pub const COMMENT_REPLY_ROWS: usize = 2;
+/// Width of each of the composer's two frame-number fields: room for six digits
+/// of monospace, as many as an imported clip's frame numbers run to
+/// (`review_model::MAX_CLIP_FRAMES`).
+pub const COMMENT_FRAME_FIELD_WIDTH: f32 = 60.0;
+/// Width of the outline round a frame field that doesn't name a frame of the
+/// clip.
+pub const COMMENT_FRAME_FIELD_ERROR_STROKE: f32 = 1.0;
+/// Width of the User Name box opened from Preferences.
+pub const USER_NAME_WIDTH: f32 = 280.0;
+/// Height of an Outliner row's comment-count badge.
+pub const OUTLINER_BADGE_HEIGHT: f32 = 14.0;
+/// Space either side of the count inside the badge.
+pub const OUTLINER_BADGE_PAD_X: f32 = 5.0;
+
 // ── Texture viewport ──────────────────────────────────────────────────
 /// One segment width of the channel radio group (RGB / R / G / B / A),
 /// top-left of the Tex toolbar. The group width is derived per-frame from the
@@ -198,13 +254,8 @@ pub const TEXTURE_CHANNEL_SEGMENT_WIDTH: f32 = 29.0;
 /// bar: one segment width and the group width (4 segments + gaps + padding).
 pub const TEXTURE_BG_SEGMENT_WIDTH: f32 = 27.0;
 pub const TEXTURE_BG_GROUP_WIDTH: f32 = 118.0;
-/// Width of the texture-picker dropdown on the right of the Tex toolbar.
-pub const TOOLBAR_TEXTURE_DROPDOWN_WIDTH: f32 = 147.0;
-/// Width of the Tex viewport's stats panel (wider than the model-stats panel so
-/// "Dimension  1024 × 1024" fits on one row).
-pub const TEXTURE_STATS_PANEL_WIDTH: f32 = 188.0;
-/// Width of the clickable zoom-percentage readout next to the texture-info
-/// button in the Tex status bar. Sized to hold the widest readout
+/// Width of the clickable zoom-percentage readout at the left of the Tex status
+/// bar. Sized to hold the widest readout
 /// (`6400%` at the max zoom) without reflowing.
 pub const TEXTURE_ZOOM_LABEL_WIDTH: f32 = 40.0;
 /// Screen-point side of one checkerboard-background square.

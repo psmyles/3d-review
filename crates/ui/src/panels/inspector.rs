@@ -3,7 +3,9 @@
 //! metallic / emissive), **Texture mapping** (one texture + channel dropdown per
 //! PBR property, drawing from the scene texture pool), and **Texture files** (the
 //! pooled images with thumbnails + remove) — each under a collapsible header. For
-//! a selected node it shows read-only stats instead.
+//! a selected node it shows read-only stats instead, and for a texture picked in
+//! the Outliner's Textures tab (always, in the Tex workspace) that image's
+//! measured properties and the materials that read it.
 //!
 //! Textures live in a **scene-wide pool** (`app`-owned, decoded once, shared by
 //! `Arc`): the Inspector lists the pool and lets each property *reference* a
@@ -13,22 +15,25 @@
 //! intents and the live [`MaterialEdit`]s for the overlay to forward.
 
 use std::path::Path;
-use std::sync::Arc;
 
 use review_model::ModelData;
 use review_render::{
-    AlphaMode, ChannelSelect, DecodedImage, MaterialChange, MaterialEdit, MaterialState,
-    RoughnessWorkflow, Selection, TextureSlot,
+    AlphaMode, ChannelSelect, MaterialChange, MaterialEdit, MaterialState, RoughnessWorkflow,
+    Selection, TextureSlot,
 };
 
 use crate::docs::Page;
 use crate::keys;
 use crate::labels;
-use crate::state::{TextureAssign, TextureIntent, TexturePoolEntry, TextureSlotRef, UiState};
+use crate::state::{
+    CommentIntent, TextureAssign, TextureIntent, TexturePoolEntry, TextureSlotRef, UiState,
+    WorkspaceMode,
+};
 use crate::theme::size;
 use crate::widgets::{
     Tip, labeled_color_button, labeled_combo, labeled_slider_with_value, panel_grid, tip,
 };
+use review_annotate::thread::{Anchor, Scope, Status};
 
 /// What the Inspector emitted this frame, forwarded by the overlay into the
 /// [`crate::state::UiOutput`].
@@ -41,9 +46,24 @@ pub(crate) struct InspectorOutput {
     /// Whether a material slider / color-picker is being actively dragged this
     /// frame, so `app` can coalesce a continuous drag into one undo step.
     pub material_edit_active: bool,
+    /// "Go to comment" was clicked on the selected review comment.
+    pub comment: Option<CommentIntent>,
 }
 
-pub(crate) fn body(ui: &mut egui::Ui, state: &UiState, model: &ModelData) -> InspectorOutput {
+pub(crate) fn body(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData) -> InspectorOutput {
+    if state.comment_inspected()
+        && let Some(index) = state.comments.selected
+    {
+        return egui::ScrollArea::vertical()
+            .show(ui, |ui| comment_inspector(ui, state, index))
+            .inner;
+    }
+    let state: &UiState = state;
+    if state.texture_inspected() {
+        return egui::ScrollArea::vertical()
+            .show(ui, |ui| texture_inspector(ui, state))
+            .inner;
+    }
     match state.selection {
         Selection::None => {
             ui.weak(keys::ui_inspector::EMPTY);
@@ -407,11 +427,7 @@ fn texture_files_section(ui: &mut egui::Ui, pool: &[TexturePoolEntry], out: &mut
         }
     }
 
-    ui.add_space(ui.spacing().item_spacing.y);
-    if ui.button(keys::ui_inspector::ADD_TEXTURES).clicked() {
-        out.texture = Some(TextureIntent::Import);
-    }
-    ui.weak(keys::ui_inspector::DROP_TEXTURES);
+    add_textures_controls(ui, out);
 }
 
 /// One Texture files row: thumbnail (left), name (fills, truncating), remove
@@ -420,7 +436,7 @@ fn texture_file_row(ui: &mut egui::Ui, entry: &TexturePoolEntry, out: &mut Inspe
     ui.horizontal(|ui| {
         let side = size::TEXTURE_THUMB_SIZE;
         let thumb_size = egui::vec2(side, side);
-        match texture_thumbnail(ui, entry) {
+        match crate::widgets::texture_thumbnail(ui, entry, side) {
             Some(texture) => {
                 ui.add(egui::Image::from_texture(texture).fit_to_exact_size(thumb_size));
             }
@@ -460,55 +476,347 @@ fn pool_name(path: &Path) -> String {
         .unwrap_or_else(|| review_localization::tr(keys::ui_inspector::NO_TEXTURE).into_owned())
 }
 
-/// Lazily build + cache a small egui texture thumbnail for a pooled image. Cached
-/// in egui temp data keyed by path, with the source `Arc`'s identity stored so a
-/// disk reload (a fresh `Arc` at the same path) rebuilds the thumbnail. Mirrors
-/// [`crate::assets::load_icon_texture`]'s caching, downscaled on the CPU first so
-/// a 4K source doesn't upload at full size.
-fn texture_thumbnail(
-    ui: &mut egui::Ui,
-    entry: &TexturePoolEntry,
-) -> Option<egui::load::SizedTexture> {
-    let id = egui::Id::new(("texture_thumb", entry.path.as_path()));
-    let identity = Arc::as_ptr(&entry.image) as usize;
-    if let Some((cached, handle)) =
-        ui.data(|data| data.get_temp::<(usize, egui::TextureHandle)>(id))
-        && cached == identity
-    {
-        return Some(egui::load::SizedTexture::from_handle(&handle));
+/// The selected review comment: its status, what it is on and points at, its
+/// frames, every message of the thread, and — unless the file can't be written or
+/// the thread came from a newer version — the ways to change it, edited in place
+/// on [`UiState::comments`].
+fn comment_inspector(ui: &mut egui::Ui, state: &mut UiState, index: usize) -> InspectorOutput {
+    let mut out = InspectorOutput::default();
+    let Some(entry) = state.comments.threads.get(index) else {
+        return out;
+    };
+    let editable = state.comments.writable() && !entry.read_only;
+    let thread = entry.thread.clone();
+    let thread = &thread;
+    ui.heading(keys::ui_comments::heading(index as f64 + 1.0));
+
+    panel_grid(ui, "inspector_comment", |ui| {
+        crate::widgets::value_row(
+            ui,
+            Tip::new(keys::ui_comments::STATUS)
+                .describe(keys::ui_comments::STATUS_DESCRIPTION)
+                .page(Page::Comments),
+            match thread.status {
+                Status::Open => keys::ui_comments::STATUS_OPEN,
+                Status::Resolved => keys::ui_comments::STATUS_RESOLVED,
+            },
+        );
+        let on: egui::WidgetText = match thread.scope {
+            Scope::File => keys::ui_comments::WHOLE_FILE.into(),
+            Scope::Object => entry.object_name.clone().into(),
+        };
+        crate::widgets::value_row(
+            ui,
+            Tip::new(keys::ui_comments::ON)
+                .describe(keys::ui_comments::ON_DESCRIPTION)
+                .page(Page::Comments),
+            on,
+        );
+        let points_at = match thread.anchor.as_ref() {
+            None => keys::ui_comments::ANCHOR_NONE,
+            Some(anchor) => match anchor.known() {
+                Some(Anchor::Surface { .. }) => keys::ui_comments::ANCHOR_SURFACE,
+                Some(Anchor::World { .. }) => keys::ui_comments::ANCHOR_WORLD,
+                Some(Anchor::Uv { .. }) => keys::ui_comments::ANCHOR_UV,
+                None => keys::ui_comments::ANCHOR_UNKNOWN,
+            },
+        };
+        crate::widgets::value_row(
+            ui,
+            Tip::new(keys::ui_comments::POINTS_AT)
+                .describe(keys::ui_comments::POINTS_AT_DESCRIPTION)
+                .page(Page::Comments),
+            points_at,
+        );
+        if let Some(frames) = &thread.frames {
+            crate::widgets::value_row(
+                ui,
+                Tip::new(keys::ui_comments::FRAMES_LABEL)
+                    .describe(keys::ui_comments::FRAMES_LABEL_DESCRIPTION)
+                    .page(Page::Comments),
+                crate::panels::outliner::comments::frames_label(frames),
+            );
+        }
+    });
+
+    ui.add_space(ui.spacing().item_spacing.y);
+    ui.horizontal_wrapped(|ui| {
+        if thread.view.is_some() || thread.frames.is_some() || thread.anchor.is_some() {
+            let go = ui.button(keys::ui_comments::GO_TO);
+            if go.clicked() {
+                out.comment = Some(CommentIntent::Show(index));
+            }
+            tip(
+                go,
+                Tip::new(keys::ui_comments::GO_TO)
+                    .describe(keys::ui_comments::GO_TO_DESCRIPTION)
+                    .page(Page::Comments),
+            );
+        }
+        if !editable {
+            return;
+        }
+        let (label, description, next) = match thread.status {
+            Status::Open => (
+                keys::ui_comments::RESOLVE,
+                keys::ui_comments::RESOLVE_DESCRIPTION,
+                Status::Resolved,
+            ),
+            Status::Resolved => (
+                keys::ui_comments::REOPEN,
+                keys::ui_comments::REOPEN_DESCRIPTION,
+                Status::Open,
+            ),
+        };
+        let status = ui.button(label);
+        if status.clicked() {
+            state.comments.set_status(index, next);
+        }
+        tip(
+            status,
+            Tip::new(label).describe(description).page(Page::Comments),
+        );
+        if matches!(state.mode, WorkspaceMode::ThreeD | WorkspaceMode::Uv) {
+            let repin = ui.button(keys::ui_comments::REPIN);
+            if repin.clicked() {
+                state.comments.repin = Some(index);
+                state.tool = crate::state::ViewportTool::Comment;
+            }
+            tip(
+                repin,
+                Tip::new(keys::ui_comments::REPIN)
+                    .describe(keys::ui_comments::REPIN_DESCRIPTION)
+                    .page(Page::Comments),
+            );
+        }
+        let view = ui.button(keys::ui_comments::UPDATE_VIEW);
+        if view.clicked()
+            && let Some(now) = state.comments.view_now
+        {
+            state.comments.set_view(index, now);
+        }
+        tip(
+            view,
+            Tip::new(keys::ui_comments::UPDATE_VIEW)
+                .describe(keys::ui_comments::UPDATE_VIEW_DESCRIPTION)
+                .page(Page::Comments),
+        );
+    });
+    if state.comments.repin == Some(index) {
+        ui.weak(keys::ui_comments::REPIN_WAITING);
+    }
+    if entry_read_only(state, index) {
+        ui.weak(keys::ui_comments::THREAD_READ_ONLY);
     }
 
-    let color_image = thumbnail_color_image(&entry.image)?;
-    let handle = ui.ctx().load_texture(
-        format!("thumb:{}", entry.path.display()),
-        color_image,
-        egui::TextureOptions::LINEAR,
-    );
-    let sized = egui::load::SizedTexture::from_handle(&handle);
-    ui.data_mut(|data| data.insert_temp(id, (identity, handle)));
-    Some(sized)
+    for (message_index, message) in thread.messages.iter().enumerate() {
+        ui.add_space(size::COMMENT_MESSAGE_GAP);
+        ui.separator();
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new(&message.author).strong());
+            if !message.time.is_empty() {
+                ui.label(
+                    egui::RichText::new(display_time(&message.time))
+                        .size(crate::theme::font::COMMENT_META)
+                        .color(crate::theme::color::TEXT_MUTED),
+                );
+            }
+            if editable
+                && state.comments.editing.is_none()
+                && ui.small_button(keys::ui_comments::EDIT).clicked()
+            {
+                state.comments.editing = Some((index, message_index, message.text.clone()));
+            }
+        });
+        let editing_this = matches!(
+            &state.comments.editing,
+            Some((thread_index, edited, _)) if *thread_index == index && *edited == message_index
+        );
+        if editing_this {
+            let mut save = false;
+            let mut cancel = false;
+            if let Some((_, _, text)) = state.comments.editing.as_mut() {
+                ui.add(
+                    egui::TextEdit::multiline(text)
+                        .desired_rows(size::COMMENT_COMPOSER_ROWS)
+                        .desired_width(f32::INFINITY),
+                );
+            }
+            ui.horizontal(|ui| {
+                save = ui.button(keys::ui_comments::SAVE_EDIT).clicked();
+                cancel = ui.button(keys::ui_comments::COMPOSER_CANCEL).clicked();
+            });
+            if save && let Some((_, _, text)) = state.comments.editing.take() {
+                state.comments.edit_message(index, message_index, text);
+            } else if cancel {
+                state.comments.editing = None;
+            }
+        } else {
+            ui.add(egui::Label::new(&message.text).wrap());
+        }
+    }
+
+    if editable {
+        ui.add_space(size::COMMENT_MESSAGE_GAP);
+        ui.separator();
+        if state.comments.author.trim().is_empty() {
+            ui.horizontal(|ui| {
+                ui.label(keys::ui_comments::COMPOSER_NAME);
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.comments.author)
+                        .hint_text(keys::ui_comments::COMPOSER_NAME_HINT)
+                        .desired_width(f32::INFINITY),
+                );
+            });
+        }
+        ui.add(
+            egui::TextEdit::multiline(&mut state.comments.reply)
+                .hint_text(keys::ui_comments::REPLY_HINT)
+                .desired_rows(size::COMMENT_REPLY_ROWS)
+                .desired_width(f32::INFINITY),
+        );
+        let ready =
+            !state.comments.reply.trim().is_empty() && !state.comments.author.trim().is_empty();
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(ready, egui::Button::new(keys::ui_comments::REPLY))
+                .clicked()
+            {
+                state.comments.post_reply(index);
+            }
+        });
+
+        ui.add_space(size::COMMENT_MESSAGE_GAP);
+        let confirming = state.comments.confirm_delete == Some(index);
+        let delete = ui.button(if confirming {
+            keys::ui_comments::DELETE_CONFIRM
+        } else {
+            keys::ui_comments::DELETE
+        });
+        if delete.clicked() {
+            if confirming {
+                state.comments.delete(index);
+            } else {
+                state.comments.confirm_delete = Some(index);
+            }
+        }
+    }
+    out
 }
 
-/// Downscale a decoded RGBA8 image to a small `egui::ColorImage` thumbnail,
-/// preserving aspect ratio (longest edge ≈ twice the on-screen size for crispness
-/// on HiDPI). Returns `None` if the buffer is too small to be that image.
-fn thumbnail_color_image(image: &DecodedImage) -> Option<egui::ColorImage> {
-    let width = image.width.max(1);
-    let height = image.height.max(1);
-    if image.rgba.len() < (width as usize * height as usize * 4) {
-        return None;
+/// Whether thread `index` came from a newer version and is shown read-only.
+fn entry_read_only(state: &UiState, index: usize) -> bool {
+    state
+        .comments
+        .threads
+        .get(index)
+        .is_some_and(|entry| entry.read_only)
+}
+
+/// A stored RFC 3339 UTC time (`2026-10-08T12:00:00Z`) as `2026-10-08 12:00 UTC`;
+/// anything else as written.
+fn display_time(time: &str) -> String {
+    let bytes = time.as_bytes();
+    let shaped = bytes.len() >= 17
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes[10] == b'T'
+        && bytes[13] == b':'
+        && time.ends_with('Z');
+    if shaped {
+        keys::ui_comments::time_utc(format!("{} {}", &time[..10], &time[11..16]))
+    } else {
+        time.to_owned()
     }
-    let source = image::RgbaImage::from_raw(width, height, image.rgba.clone())?;
-    let max_edge = (size::TEXTURE_THUMB_SIZE * 2.0) as u32;
-    let scale = (max_edge as f32 / width.max(height) as f32).min(1.0);
-    let target_w = ((width as f32 * scale).round() as u32).max(1);
-    let target_h = ((height as f32 * scale).round() as u32).max(1);
-    let thumb = image::imageops::thumbnail(&source, target_w, target_h);
-    let dimensions = [thumb.width() as usize, thumb.height() as usize];
-    Some(egui::ColorImage::from_rgba_unmultiplied(
-        dimensions,
-        thumb.as_raw(),
-    ))
+}
+
+/// The current texture: a preview (outside Tex, whose viewport already is one),
+/// its measured properties, the materials that read it, and the pool's remove /
+/// add commands. With nothing in the pool it offers only the add.
+fn texture_inspector(ui: &mut egui::Ui, state: &UiState) -> InspectorOutput {
+    let mut out = InspectorOutput::default();
+    let Some(entry) = state.texture_pool.get(state.texture_view.selected) else {
+        ui.weak(if state.texture_pool.is_empty() {
+            keys::ui_inspector::NO_TEXTURES
+        } else {
+            keys::ui_inspector::NO_TEXTURE_SELECTED
+        });
+        add_textures_controls(ui, &mut out);
+        return out;
+    };
+
+    ui.heading(entry.name());
+
+    if state.mode != WorkspaceMode::Texture {
+        let edge = ui.available_width().min(size::TEXTURE_PREVIEW_MAX);
+        if let Some(texture) = crate::widgets::texture_thumbnail(ui, entry, edge) {
+            // Fit the longest edge to the preview size, keeping the aspect.
+            let scale = edge / texture.size.x.max(texture.size.y).max(1.0);
+            ui.add(egui::Image::from_texture(texture).fit_to_exact_size(texture.size * scale));
+        }
+    }
+
+    panel_grid(ui, "inspector_texture", |ui| {
+        for (row, value) in crate::stats::texture_stat_rows(entry) {
+            crate::widgets::value_row(ui, row, value);
+        }
+        crate::widgets::value_row(
+            ui,
+            Tip::new(keys::ui_inspector::TEXTURE_PATH)
+                .describe(keys::ui_inspector::TEXTURE_PATH_DESCRIPTION)
+                .page(Page::Tex),
+            egui::RichText::new(entry.path.display().to_string()),
+        );
+    });
+
+    // Every material with this image bound to one of its slots, by name.
+    let users: Vec<&str> = state
+        .materials_snapshot
+        .iter()
+        .filter(|material| {
+            material
+                .state
+                .textures
+                .iter()
+                .flatten()
+                .any(|binding| binding.path == entry.path)
+        })
+        .map(|material| material.name.as_str())
+        .collect();
+    let used_by = egui::CollapsingHeader::new(keys::ui_inspector::TEXTURE_USED_BY)
+        .id_salt("inspector_texture_used_by")
+        .default_open(true)
+        .show(ui, |ui| {
+            if users.is_empty() {
+                ui.weak(keys::ui_inspector::TEXTURE_UNUSED);
+            }
+            for name in &users {
+                ui.label(*name);
+            }
+        });
+    tip(
+        used_by.header_response,
+        Tip::new(keys::ui_inspector::TEXTURE_USED_BY)
+            .describe(keys::ui_inspector::TEXTURE_USED_BY_DESCRIPTION)
+            .page(Page::Materials),
+    );
+
+    ui.add_space(ui.spacing().item_spacing.y);
+    if ui.button(keys::ui_inspector::REMOVE_TEXTURE).clicked() {
+        out.texture = Some(TextureIntent::Remove(entry.path.clone()));
+    }
+    add_textures_controls(ui, &mut out);
+    out
+}
+
+/// The pool's "Add textures..." button and its drop hint, shared by the material
+/// Inspector's Texture files section and the texture Inspector.
+fn add_textures_controls(ui: &mut egui::Ui, out: &mut InspectorOutput) {
+    ui.add_space(ui.spacing().item_spacing.y);
+    if ui.button(keys::ui_inspector::ADD_TEXTURES).clicked() {
+        out.texture = Some(TextureIntent::Import);
+    }
+    ui.weak(keys::ui_inspector::DROP_TEXTURES);
 }
 
 /// Read-only stats for a selected node: name, type, child count, triangle count,
@@ -744,4 +1052,15 @@ fn bone_selection_inspector(ui: &mut egui::Ui, state: &UiState, model: &ModelDat
             ui.label(node_label(model, node));
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::display_time;
+
+    #[test]
+    fn a_stored_time_reads_as_minutes_in_utc() {
+        assert_eq!(display_time("2026-10-08T12:34:56Z"), "2026-10-08 12:34 UTC");
+        assert_eq!(display_time("yesterday"), "yesterday");
+    }
 }

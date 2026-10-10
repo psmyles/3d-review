@@ -12,9 +12,9 @@
 use review_ui::theme::size;
 
 /// The right-hand cluster in the 3D and Opt workspaces: Help, the view group,
-/// the projection toggle, the side-panels toggle and the viewport-tool toggle -
-/// five groups, each of which used to be three until Help was given a group of
-/// its own and the Select tool was added.
+/// the projection toggle, the side-panels toggle and the viewport tools (Select
+/// and Comment) - five groups, each of which used to be three until Help was
+/// given a group of its own and the Select tool was added.
 #[test]
 fn the_right_cluster_fits_its_reserved_width() {
     let spacing = size::TOOLBAR_GROUP_SPACING;
@@ -33,7 +33,7 @@ fn the_right_cluster_fits_its_reserved_width() {
             + spacing
             + size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH
             + spacing
-            + size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH;
+            + size::TOOLBAR_DOUBLE_ICON_GROUP_WIDTH;
         assert!(
             needed <= size::TOOLBAR_RIGHT_WIDTH,
             "the right toolbar cluster needs {needed}pt but TOOLBAR_RIGHT_WIDTH \
@@ -41,6 +41,26 @@ fn the_right_cluster_fits_its_reserved_width() {
             size::TOOLBAR_RIGHT_WIDTH,
         );
     }
+}
+
+/// The right-hand cluster in the UV workspace: Help, the side-panels toggle (the
+/// Outliner and Inspector are in every workspace), the Comment tool and the
+/// UV-set picker. Tex draws only the first two, so it fits whenever this does.
+#[test]
+fn the_uv_right_cluster_fits_its_reserved_width() {
+    let spacing = size::TOOLBAR_GROUP_SPACING;
+    let needed = size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH
+        + spacing
+        + size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH
+        + spacing
+        + size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH
+        + spacing
+        + size::TOOLBAR_UV_DROPDOWN_WIDTH;
+    assert!(
+        needed <= size::TOOLBAR_RIGHT_WIDTH,
+        "the UV right cluster needs {needed}pt but TOOLBAR_RIGHT_WIDTH reserves only {}pt",
+        size::TOOLBAR_RIGHT_WIDTH,
+    );
 }
 
 /// The left cluster: the menu, show-wireframe, shading, active material, and the

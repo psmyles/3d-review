@@ -114,6 +114,10 @@ impl Drop for TransientBuffer {
 /// draws the whole buffer, and the count is what `Frame::draw` is given.
 pub(crate) struct VertexBuffer {
     buffer: sg::Buffer,
+    /// A storage view of the same bytes, for a vertex shader that *pulls* its
+    /// vertices by index rather than having the input layout assemble them — the
+    /// wireframe's quads. `None` unless built with [`Self::pullable`].
+    pulled: Option<sg::View>,
     count: usize,
 }
 
@@ -122,11 +126,47 @@ impl VertexBuffer {
     /// a view with nothing in it is expressed as `None` rather than as an empty
     /// buffer (`scene::resources::optional_vertex_buffer`).
     pub(crate) fn new<T: Pod>(vertices: &[T], label: &CStr) -> GpuResult<Self> {
+        Self::build(vertices, false, label)
+    }
+
+    /// Upload `vertices` readable two ways: assembled through the input layout like
+    /// any vertex buffer, and pulled by index through a storage view
+    /// ([`super::Bindings::pulled_vertices`]). The mesh is built this way so the
+    /// wireframe reads the very bytes the mesh draws from rather than a copy of them
+    /// (invariant 1).
+    ///
+    /// Storage buffers must be a multiple of 4 bytes, which every vertex type here
+    /// is. On Direct3D 11 this makes the buffer a raw (byte-address) one, the kind
+    /// that may also be bound as a vertex buffer.
+    pub(crate) fn pullable<T: Pod>(vertices: &[T], label: &CStr) -> GpuResult<Self> {
+        Self::build(vertices, true, label)
+    }
+
+    fn build<T: Pod>(vertices: &[T], pullable: bool, label: &CStr) -> GpuResult<Self> {
         let mut usage = sg::BufferUsage::new();
         usage.vertex_buffer = true;
+        usage.storage_buffer = pullable;
         usage.immutable = true;
+        let buffer = make(bytemuck::cast_slice(vertices), usage, label)?;
+        let pulled = if pullable {
+            let mut view_desc = sg::ViewDesc::new();
+            view_desc.storage_buffer.buffer = buffer;
+            view_desc.label = label.as_ptr();
+            // As in `StorageBuffer::build`: a failed view has freed its own handle,
+            // but the buffer it was to be a view of is still live.
+            match make::view(&view_desc, ResourceKind::Buffer, name(label)) {
+                Ok(view) => Some(view),
+                Err(error) => {
+                    sg::destroy_buffer(buffer);
+                    return Err(error);
+                }
+            }
+        } else {
+            None
+        };
         Ok(Self {
-            buffer: make(bytemuck::cast_slice(vertices), usage, label)?,
+            buffer,
+            pulled,
             count: vertices.len(),
         })
     }
@@ -134,6 +174,11 @@ impl VertexBuffer {
     /// The sokol handle, for an `sg::Bindings`.
     pub(crate) fn handle(&self) -> sg::Buffer {
         self.buffer
+    }
+
+    /// The storage view a pulling shader reads, if the buffer was built with one.
+    pub(in crate::rhi) fn pulled_view(&self) -> Option<sg::View> {
+        self.pulled
     }
 
     /// How many vertices to draw.
@@ -145,6 +190,9 @@ impl VertexBuffer {
 impl Drop for VertexBuffer {
     fn drop(&mut self) {
         if sg::isvalid() {
+            if let Some(view) = self.pulled {
+                sg::destroy_view(view);
+            }
             sg::destroy_buffer(self.buffer);
         }
     }

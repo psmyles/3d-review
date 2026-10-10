@@ -458,6 +458,7 @@ impl App {
         self.textures.generation = self.textures.generation.wrapping_add(1);
         self.textures.forget_in_flight();
         self.ui.texture_pool = Vec::new();
+        self.ui.uv_texture = None;
         self.textures.watched_dirs.clear();
         // Dropping the watcher unregisters every directory.
         self.textures.watcher = None;

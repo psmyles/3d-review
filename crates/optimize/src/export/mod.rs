@@ -64,6 +64,7 @@ pub(crate) use deform::*;
 pub(crate) use materials::*;
 pub(crate) use mesh::*;
 pub(crate) use nodes::*;
+pub use scene::NodeStrings;
 pub(crate) use scene::*;
 pub(crate) use settings::*;
 pub(crate) use unit::*;
@@ -102,6 +103,20 @@ pub fn export_fbx(
     path: &Path,
     options: &ExportOptions,
 ) -> Result<ExportReport, OptError> {
+    export_fbx_with(lods, source, extras, path, options, None)
+}
+
+/// [`export_fbx`], writing `node_strings` over the source's authored node
+/// properties — how the viewer's review comments ride along (see
+/// [`NodeStrings`]).
+pub fn export_fbx_with(
+    lods: &[ProcessedLod],
+    source: &ModelData,
+    extras: Option<&SourceExtras>,
+    path: &Path,
+    options: &ExportOptions,
+    node_strings: Option<&NodeStrings>,
+) -> Result<ExportReport, OptError> {
     let _z = crate::prof::zone!("Export FBX");
 
     if !available() {
@@ -129,7 +144,7 @@ pub fn export_fbx(
     let mut staged: Vec<Staged> = Vec::with_capacity(lods.len());
     match options.packaging {
         LodPackaging::SingleFileSuffixed => {
-            let scene = build_scene(lods, source, extras, options, &mut report)?;
+            let scene = build_scene(lods, source, extras, options, node_strings, &mut report)?;
             staged.push(Staged::write(path, |staging| {
                 write_scene(&scene, staging, options.format)
             })?);
@@ -148,6 +163,7 @@ pub fn export_fbx(
                     source,
                     extras,
                     options,
+                    node_strings,
                     &mut report,
                 )?;
                 let level_path = if chain {

@@ -68,6 +68,20 @@ impl Bindings {
         self.0.views[slot] = buffer.view();
     }
 
+    /// Bind a vertex buffer's storage view to a view slot, for a shader that pulls
+    /// its vertices by index. Binds nothing and returns `false` for a buffer built
+    /// without one ([`VertexBuffer::pullable`]), so the caller skips a draw that
+    /// would otherwise fail sokol's validation for an empty slot.
+    pub(crate) fn pulled_vertices(&mut self, slot: usize, buffer: &VertexBuffer) -> bool {
+        match buffer.pulled_view() {
+            Some(view) => {
+                self.0.views[slot] = view;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Bind a sampler to a sampler slot.
     pub(crate) fn sampler(&mut self, slot: usize, sampler: &Sampler) {
         self.0.samplers[slot] = sampler.handle();

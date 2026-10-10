@@ -28,6 +28,7 @@ use crate::theme;
 
 mod animation;
 mod caches;
+mod comments;
 mod outliner;
 mod panels;
 mod panels_open;
@@ -38,6 +39,7 @@ mod view;
 
 pub use animation::*;
 pub use caches::*;
+pub use comments::*;
 pub use outliner::*;
 pub use panels::*;
 pub use panels_open::*;
@@ -65,6 +67,11 @@ pub(crate) mod range {
     /// varies enormously — a hand rig needs thinner bones than a vehicle's.
     pub const SKELETON_SCALE_MIN: f32 = 0.2;
     pub const SKELETON_SCALE_MAX: f32 = 4.0;
+    /// The model wireframe's line width, in points. Below half a point a line is
+    /// only a fainter one-pixel line (the shader fades it rather than thinning it
+    /// further), and past four it buries the faces it outlines.
+    pub const WIREFRAME_WIDTH_MIN: f32 = 0.5;
+    pub const WIREFRAME_WIDTH_MAX: f32 = 4.0;
 
     /// Ambient occlusion. Radius is a *multiplier* over the radius the renderer
     /// derives for the current view (1 = automatic), so the band is centred on 1
@@ -129,6 +136,18 @@ pub struct UiOutput {
     /// out — every entry reaches outside the chrome (a file dialog, the loaded
     /// model, the settings file, the process).
     pub menu: Option<MenuIntent>,
+    /// A review-comment action that moves the camera or the clock, for `app` to
+    /// carry out.
+    pub comment: Option<CommentIntent>,
+}
+
+/// A review-comment action for `app`: the parts of "go to this comment" the
+/// chrome doesn't own — the camera lives in the renderer, the clock in `app`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommentIntent {
+    /// Show thread `index` the way it was written: fly to its saved view and
+    /// jump to its clip and first frame, where it has them.
+    Show(usize),
 }
 
 /// An entry in the toolbar's menu. Each lands on the handler its keyboard
@@ -144,6 +163,10 @@ pub enum MenuIntent {
     OpenRecent(usize),
     /// Empty [`UiState::recent_files`] and write the settings file.
     ClearRecentFiles,
+    /// Write the review comments back into the opened FBX (the save shortcut).
+    SaveComments,
+    /// Write the opened FBX, with its review comments, to a new file.
+    SaveCommentsAs,
     /// Drop the loaded model and return to the start state (the new shortcut).
     CloseFile,
     /// Flip [`UiState::remember_settings`] and write the settings file at once,
@@ -193,6 +216,15 @@ pub struct UiState {
     /// unique per-island colors. Selected by the UV-shading toolbar group (shown
     /// only in UV mode).
     pub uv_shading_mode: UvShadingMode,
+    /// What the UV view fills the space around the layout with: the Tex
+    /// viewport's four backgrounds, chosen separately for this workspace.
+    pub uv_background: TextureBackground,
+    /// The pooled texture the UV view draws behind the layout, by path: set by
+    /// picking one in the Textures tab there, and kept - through scene
+    /// selections, which take the Inspector but not this - until another is
+    /// picked or `Esc` clears it. A path rather than an index, so a pool rebuilt
+    /// around it (a texture added or removed) still finds it, or finds it gone.
+    pub uv_texture: Option<std::path::PathBuf>,
     /// The Tex viewport's state: which pooled texture is shown plus its channel /
     /// background / pan-zoom view. Read by the texture-view chrome (toolbar channel
     /// group, status-bar background group) and the central image painter.
@@ -285,6 +317,9 @@ pub struct UiState {
     pub outliner: OutlinerState,
     /// Animation clip selection + playback — see [`AnimationUiState`].
     pub animation: AnimationUiState,
+    /// The loaded file's review comments, and how the chrome is showing them —
+    /// see [`CommentsState`].
+    pub comments: CommentsState,
     /// The in-app manual: whether its window is up, which page it is on, and
     /// where its images live. Chrome state like the panel set, edited in place
     /// rather than travelling as an intent — see [`crate::HelpState`].
@@ -292,6 +327,8 @@ pub struct UiState {
     /// The About box — whether it is up, and the build / renderer facts `app`
     /// handed over for it to show. Opened from the menu's Help > About.
     pub about: crate::AboutState,
+    /// Preferences > User Name: whether its box is up, and what is typed in it.
+    pub user_name: crate::UserNameState,
     /// The Log window — whether it is up, its level filter, and this session's
     /// lines as `app` last handed them over. Opened from the menu's Debug >
     /// View Log.
@@ -385,6 +422,7 @@ impl Default for UiState {
         Self {
             help: crate::HelpState::default(),
             about: crate::AboutState::default(),
+            user_name: crate::UserNameState::default(),
             log: crate::LogWindowState::default(),
             mode: WorkspaceMode::ThreeD,
             debug: SceneDebugOptions::default(),
@@ -399,6 +437,8 @@ impl Default for UiState {
             uv_sets: Vec::new(),
             uv_view_channel: 0,
             uv_shading_mode: UvShadingMode::default(),
+            uv_background: TextureBackground::default(),
+            uv_texture: None,
             texture_view: TextureViewState::default(),
             texture_canvas: None,
             scene_viewport: None,
@@ -430,6 +470,7 @@ impl Default for UiState {
             solo: false,
             outliner: OutlinerState::default(),
             animation: AnimationUiState::default(),
+            comments: CommentsState::default(),
             selected_bones: Vec::new(),
             tool: ViewportTool::default(),
             hover: None,
@@ -602,10 +643,25 @@ impl UiState {
         nodes
     }
 
-    /// Drop every selection — both sets, the primary and the range anchor.
+    /// The nodes the UV workspace lays out, in the shape [`Self::selected_node_set`]
+    /// gives: the mesh/group selection, or empty — meaning every node — when
+    /// nothing is selected, or only a material or bones are (neither has a UV
+    /// layout of its own to isolate).
+    pub fn uv_scope_nodes(&self) -> Vec<u32> {
+        if !self.selected_bones.is_empty() || !matches!(self.selection, Selection::Node(_)) {
+            return Vec::new();
+        }
+        self.selected_node_set()
+    }
+
+    /// Drop every selection — both sets, the primary, the range anchor and the
+    /// review comment — and hand the Inspector back from a texture or a comment
+    /// to the (now empty) selection.
     /// `Esc` and a click on empty viewport both land here, so neither can leave
     /// half a selection behind (a cleared primary with the skeleton still lit).
     pub fn clear_selection(&mut self) {
+        self.texture_view.inspected = false;
+        self.deselect_comment();
         self.selection = Selection::None;
         self.selected_nodes.clear();
         self.selected_bones.clear();
@@ -618,6 +674,7 @@ impl UiState {
         self.selection.is_active()
             || !self.selected_nodes.is_empty()
             || !self.selected_bones.is_empty()
+            || self.comments.selected.is_some()
     }
 
     /// Re-point every piece of skeleton/skin UI state at a freshly loaded `model`:
@@ -652,18 +709,15 @@ impl UiState {
     }
 
     /// Re-point the animation state at `model` (the one about to be shown):
-    /// drop the clip selection and playback (they index the old model's clips),
-    /// re-derive the capability flag that gates the Animations tab, and snap a
-    /// stale Animations tab back to the scene tree when the new model has no
-    /// clips to list.
+    /// drop the clip selection and playback (they index the old model's clips)
+    /// and re-derive the capability flag that gates the Animations tab. A stale
+    /// Animations tab needs no snapping back here: the Outliner resolves its tab
+    /// against what the model offers every frame ([`OutlinerState::tab`]).
     pub fn reset_animation_state(&mut self, model: &ModelData) {
         self.animation = AnimationUiState {
             has_clips: !model.animations.is_empty(),
             ..AnimationUiState::default()
         };
-        if !self.animation.has_clips && self.outliner.tab == OutlinerTab::Animations {
-            self.outliner.tab = OutlinerTab::Scene;
-        }
     }
 
     /// Select clip `clip` (or none), landing paused on its first frame; the app's
@@ -802,6 +856,7 @@ pub(crate) fn sync_debug_state(state: &mut UiState) {
     }
     state.debug.uv_seam_channel = state.uv_seams.uv_channel;
     state.debug.wireframe_color = theme::color32_to_rgba(state.wireframe.color);
+    state.debug.wireframe_width = state.wireframe.width;
     state.debug.bounding_box_color = theme::color32_to_rgba(state.bounding_box.color);
     state.debug.bounding_box_scope = match state.bounding_box.scope {
         BoundsScope::AllMeshes => BoundingBoxScope::AllMeshes,

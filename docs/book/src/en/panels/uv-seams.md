@@ -8,8 +8,8 @@ along. (Maya calls them texture border edges.)
 ## Settings
 
 **Color** - the color of the seam lines. Seams get their own color rather than
-sharing the wireframe's, because the two are often on at the same time and
-both are one pixel wide, so color is the only thing that tells them apart.
+sharing the wireframe's, because the two are often on at the same time and lie
+on the same edges, so color is the main thing that tells them apart.
 
 **UV set** - which layout's seams to show, if the model has more than one.
 

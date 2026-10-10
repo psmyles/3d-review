@@ -76,6 +76,16 @@ ui-inspector-no-texture = <texture>
 # The empty entry at the top of a texture slot's dropdown: picking it unbinds
 # whatever is in the slot.
 ui-inspector-select-texture = select texture
+
+## A texture picked in the Outliner's Textures tab
+
+ui-inspector-texture-path = Path
+    .description = Where the image was read from. The viewer watches this file, so when
+        you save a change in your paint program it shows up here.
+ui-inspector-texture-used-by = Used by
+    .description = The materials that read this image in one of their texture slots.
+ui-inspector-texture-unused = No material uses this image yet.
+ui-inspector-no-texture-selected = Pick a texture in the Outliner to see it here.
 ui-inspector-bones-selected = { $count ->
         [one] One bone selected
        *[other] { $count } bones selected

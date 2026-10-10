@@ -442,6 +442,43 @@ impl Frame<'_> {
         self.pass_open = true;
     }
 
+    /// Open a **single-sample** pass that keeps drawing onto what an earlier pass
+    /// left in `colors`: their resolved images at 2×+ (the MSAA pass resolved into
+    /// them at its `end_pass`), the targets themselves at 1×, loaded rather than
+    /// cleared. `depth` must be single-sample too; it is cleared to the Reversed-Z
+    /// far value and not stored, so the pass fills it with whatever it needs to test
+    /// against.
+    ///
+    /// This is the line overlays' pass: they antialias their own edges, so they gain
+    /// nothing from MSAA but its cost.
+    pub(crate) fn begin_resolved_pass(
+        &mut self,
+        colors: &[&ColorTarget],
+        depth: &DepthTarget,
+        label: &'static CStr,
+    ) {
+        debug_assert!(!self.pass_open, "a pass is already open");
+        debug_assert!(!colors.is_empty(), "a pass needs at least one attachment");
+        let mut pass = sg::Pass::new();
+        for (slot, target) in colors.iter().enumerate() {
+            pass.attachments.colors[slot] = target.resolved_attachment();
+            pass.action.colors[slot] = sg::ColorAttachmentAction {
+                load_action: sg::LoadAction::Load,
+                store_action: sg::StoreAction::Store,
+                clear_value: sg::Color::new(),
+            };
+        }
+        pass.attachments.depth_stencil = depth.attachment();
+        pass.action.depth = sg::DepthAttachmentAction {
+            load_action: sg::LoadAction::Clear,
+            store_action: sg::StoreAction::Dontcare,
+            clear_value: 0.0,
+        };
+        pass.label = label.as_ptr();
+        sg::begin_pass(&pass);
+        self.pass_open = true;
+    }
+
     /// Close the open offscreen pass. The swapchain pass is closed by
     /// [`Self::finish`] instead, which also commits and presents.
     pub(crate) fn end_pass(&mut self) {

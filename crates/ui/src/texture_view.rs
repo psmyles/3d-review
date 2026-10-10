@@ -15,13 +15,13 @@ use crate::keys;
 use crate::state::{
     TexViewRequest, TexViewTransition, TexturePoolEntry, TextureViewState, UiState,
 };
-use crate::stats;
 use crate::theme::{color, font, motion, size};
 
-/// Draw the Tex viewport: the central image canvas behind the chrome, plus the
-/// floating texture-stats panel when toggled on. Called from the overlay only in
-/// [`crate::state::WorkspaceMode::Texture`]. `output_format` is egui's framebuffer
-/// format, needed to build the image paint callback's pipeline.
+/// Draw the Tex viewport: the central image canvas behind the chrome, in the
+/// space the side panels leave (the viewed texture's measured properties are in
+/// the Inspector). Called from the overlay only in
+/// [`crate::state::WorkspaceMode::Texture`], after the side panels have taken
+/// their share of the window.
 pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState) {
     let ctx = &root.ctx().clone();
     // Keep the selection in range (a removed texture may have shrunk the pool).
@@ -48,10 +48,6 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState) {
         })
         .inner;
     state.texture_canvas = Some(canvas_rect);
-
-    if let (Some(entry), true) = (&entry, state.texture_view.show_stats) {
-        draw_texture_stats_overlay(ctx, entry);
-    }
 }
 
 /// Handle the canvas interaction (pan / zoom / fit). The background fill is the
@@ -229,19 +225,5 @@ fn draw_empty_hint(ui: &mut egui::Ui, rect: egui::Rect) {
         review_localization::tr(keys::ui_texture_view::EMPTY_HINT),
         egui::FontId::proportional(font::VIEWPORT_EMPTY_HINT),
         color::TEXT_MUTED,
-    );
-}
-
-/// The floating texture-stats panel, anchored bottom-left above the status bar —
-/// the Tex viewport's analogue of the model-stats overlay (matching frame + inset).
-fn draw_texture_stats_overlay(ctx: &egui::Context, entry: &TexturePoolEntry) {
-    let status_bar_height = size::STATUS_BAR_HEIGHT;
-    crate::widgets::stats_overlay_card(
-        ctx,
-        "texture_stats_overlay",
-        0.0,
-        status_bar_height,
-        size::TEXTURE_STATS_PANEL_WIDTH,
-        |ui| stats::texture_stats_grid(ui, entry),
     );
 }

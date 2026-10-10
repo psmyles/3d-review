@@ -136,3 +136,11 @@ app-notifications-watcher-unavailable = Textures will not reload on their own (t
     .description = Normally a texture refreshes by itself when you save it in your paint
         program. That will not happen this time; reopen the model to pick up a change.
 app-notifications-watch-failed = { $file } will not reload on its own when it changes
+
+# Review comments on { $count } object(s) of the opened file could not all be read.
+app-notifications-comments-unreadable = { $count ->
+        [one] Some review comments on one object couldn't be read. They are kept as they are.
+       *[other] Some review comments on { $count } objects couldn't be read. They are kept as they are.
+    }
+app-notifications-comments-saved = Comments saved to { $file }
+app-notifications-comments-save-failed = Couldn't save the comments to { $file }: { $detail }

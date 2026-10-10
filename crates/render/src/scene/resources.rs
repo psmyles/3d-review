@@ -17,15 +17,19 @@
 use review_model::ModelData;
 
 use crate::geometry::deform::DeformLayout;
-use crate::geometry::{model_mesh, uv_fill_triangles, uv_wireframe_lines};
+use crate::geometry::{UvNodeScope, model_mesh, uv_fill_triangles, uv_wireframe_lines};
 use crate::material::build_part_key;
 use crate::rhi::{GpuResult, IndexBuffer, VertexBuffer};
 use crate::{MaterialMode, UvShadingMode};
 
 use super::deform_gpu::DeformGpu;
 use super::gpu::SceneGpu;
-use super::line_views::optional_vertex_buffer;
-use super::slot::MeshBuffers;
+use super::line_views::{optional_line_buffer, optional_vertex_buffer};
+use super::slot::{MeshBuffers, UvViewParams};
+
+/// How opaque the UV island fill is over a texture: enough to read the islands
+/// by, little enough to see the image they cover.
+const UV_FILL_OVER_TEXTURE_OPACITY: f32 = 0.35;
 
 impl SceneGpu {
     /// Free both slots' UV viewport buffers (invariant 3) — this frame is a 3D one,
@@ -44,41 +48,78 @@ impl SceneGpu {
             slot.views.uv_fill_buf = None;
             slot.views.uv_fill_baked = None;
         }
+        self.uv_texture = None;
+        self.uv_checker = None;
     }
 
     /// Build-on-demand for the UV viewport's derived buffers (invariant 3): the
-    /// wireframe is rebuilt only when the model / channel changes; the island fill
-    /// when the model / channel / shading mode changes, and freed in Wire mode — so
-    /// panning/zooming rebuilds nothing. Leaving the viewport frees both, in
-    /// [`Self::release_uv_views`].
+    /// wireframe is rebuilt only when the model / channel / laid-out nodes change;
+    /// the island fill when those or the shading mode change, and freed in Wire
+    /// mode — so panning/zooming rebuilds nothing. Both compare against the
+    /// borrowed inputs, so a steady frame allocates nothing. Leaving the viewport
+    /// frees both, in [`Self::release_uv_views`].
+    ///
+    /// `selected` is the Outliner's node selection (sorted; empty for none) and
+    /// `hidden` its hidden meshes: the view lays out the selection when there is
+    /// one, else every node, and never a hidden one ([`UvNodeScope`]). `dimmed`
+    /// lowers the fill's opacity, for a texture drawn behind it.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn sync_uv_view(
         &mut self,
         model: &ModelData,
         model_revision: u64,
         channel: u32,
         shading_mode: UvShadingMode,
+        selected: &[u32],
+        hidden: &[u32],
+        dimmed: bool,
     ) -> GpuResult<()> {
-        let want_wireframe = Some((model_revision, channel));
-        if self.active.views.uv_wireframe_baked != want_wireframe {
-            self.active.views.uv_wireframe_buf =
-                optional_vertex_buffer(&uv_wireframe_lines(model, channel))?;
-            self.active.views.uv_wireframe_baked = want_wireframe;
+        let views = &mut self.active.views;
+        let wireframe_current = views
+            .uv_wireframe_baked
+            .as_ref()
+            .is_some_and(|params| params.matches(model_revision, channel, selected, hidden));
+        let fill_current = match (shading_mode, &views.uv_fill_baked) {
+            (UvShadingMode::Wire, baked) => baked.is_none(),
+            (mode, Some((params, baked_mode, baked_dimmed))) => {
+                *baked_mode == mode
+                    && *baked_dimmed == dimmed
+                    && params.matches(model_revision, channel, selected, hidden)
+            }
+            (_, None) => false,
+        };
+        if wireframe_current && fill_current {
+            return Ok(());
         }
 
-        let want_fill = match shading_mode {
-            UvShadingMode::Wire => None,
-            UvShadingMode::Shaded | UvShadingMode::Islands => {
-                Some((model_revision, channel, shading_mode))
-            }
+        let scope = UvNodeScope::new(model, selected, hidden);
+        let params = || UvViewParams {
+            model_revision,
+            channel,
+            selected: selected.to_vec(),
+            hidden: hidden.to_vec(),
         };
-        if self.active.views.uv_fill_baked != want_fill {
+        if !wireframe_current {
+            views.uv_wireframe_buf =
+                optional_line_buffer(&uv_wireframe_lines(model, channel, &scope))?;
+            views.uv_wireframe_baked = Some(params());
+        }
+        if !fill_current {
+            let opacity = if dimmed {
+                UV_FILL_OVER_TEXTURE_OPACITY
+            } else {
+                1.0
+            };
             let fill = match shading_mode {
                 UvShadingMode::Wire => Vec::new(),
-                UvShadingMode::Shaded => uv_fill_triangles(model, channel, false),
-                UvShadingMode::Islands => uv_fill_triangles(model, channel, true),
+                UvShadingMode::Shaded => uv_fill_triangles(model, channel, false, opacity, &scope),
+                UvShadingMode::Islands => uv_fill_triangles(model, channel, true, opacity, &scope),
             };
-            self.active.views.uv_fill_buf = optional_vertex_buffer(&fill)?;
-            self.active.views.uv_fill_baked = want_fill;
+            views.uv_fill_buf = optional_vertex_buffer(&fill)?;
+            views.uv_fill_baked = match shading_mode {
+                UvShadingMode::Wire => None,
+                mode => Some((params(), mode, dimmed)),
+            };
         }
 
         Ok(())
@@ -158,7 +199,8 @@ impl SceneGpu {
                 (None, _) => None,
             };
             Some(MeshBuffers {
-                vertices: VertexBuffer::new(&vertices, c"mesh")?,
+                // Pullable, so the wireframe reads these bytes rather than a copy.
+                vertices: VertexBuffer::pullable(&vertices, c"mesh")?,
                 indices: IndexBuffer::new(&indices, c"mesh")?,
                 ranges,
                 deform,

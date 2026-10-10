@@ -13,7 +13,8 @@ struct main0_out
 
 struct main0_in
 {
-    float4 v_color [[user(locn2)]];
+    float4 v_line [[user(locn0), center_no_perspective]];
+    float4 v_color [[user(locn1)]];
 };
 
 static inline __attribute__((always_inline))
@@ -25,9 +26,11 @@ float3 srgb_to_linear(thread const float3& c)
 fragment main0_out main0(main0_in in [[stage_in]])
 {
     main0_out out = {};
+    float _81 = fast::max(in.v_line.w, 0.5) + 0.5;
+    float _98 = in.v_color.w * ((fast::clamp(_81 - abs(in.v_line.x), 0.0, 1.0) * fast::clamp(_81 - fast::max(-in.v_line.y, in.v_line.y - in.v_line.z), 0.0, 1.0)) * fast::min(in.v_line.w * 2.0, 1.0));
     float3 param = in.v_color.xyz;
-    out.frag_color = float4(srgb_to_linear(param), in.v_color.w);
-    out.frag_ambient = float4(0.0, 0.0, 0.0, in.v_color.w);
+    out.frag_color = float4(srgb_to_linear(param), _98);
+    out.frag_ambient = float4(0.0, 0.0, 0.0, _98);
     return out;
 }
 

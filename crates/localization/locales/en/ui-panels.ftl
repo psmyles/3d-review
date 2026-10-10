@@ -4,6 +4,10 @@
 
 ## Wireframe
 
+ui-panels-wireframe-width = Line width
+    .description = How thick the edge lines are. It is measured on the screen, not in the
+        model, so the lines keep the same weight however close you zoom in, and look the
+        same on a high-resolution display as on an ordinary one.
 ui-panels-wireframe-color = Wireframe color
     .description = The color of the edge lines. Feel free to drag it around: changing the
         color is instant, even on a very big model.
@@ -69,8 +73,9 @@ ui-panels-color-mode = Color Mode
 ## Anti-aliasing
 
 ui-panels-msaa = MSAA
-    .description = Smooths jagged edges across the whole view, including the wireframe
-        and the overlay lines. Only the levels your GPU can handle are listed.
+    .description = Smooths jagged edges on the model. The wireframe, the grid and the
+        other lines smooth their own edges, so they look the same at every level.
+        Only the levels your GPU can handle are listed.
 
 ## Background
 

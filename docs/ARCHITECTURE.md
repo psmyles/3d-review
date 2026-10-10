@@ -393,6 +393,20 @@ The egui chrome, built on egui's **native windowing**. Option tools are native
 `UiState::panels_open`); the Outliner (left) and Inspector (right) are dockable,
 resizable `egui::Panel`s; the toolbar and status bar are `egui::Panel` bands.
 
+The side panels are in **every** workspace, and each workspace shows its own
+Outliner tabs. `OutlinerTab::available` (`state/outliner.rs`) is the one table:
+3D shows Scene, Materials, Textures and Animations (the last only for a file with
+clips); UV shows Scene and Textures; Tex shows Textures; Opt shows Scene and
+Materials. Each workspace remembers its own tab. The UV viewport lays out the
+Outliner's node selection, or every node when nothing is selected, and never a
+hidden one (`geometry::UvNodeScope`, part of `sync_uv_view`'s bake key).
+
+A texture is not a scene `Selection` — nothing in the viewport highlights it. A
+Textures-tab click makes it the current texture (`texture_view.selected`) and
+points the Inspector at it (`UiState::texture_inspected`); any scene selection
+hands the Inspector back, through the same `release_stack_selection` that already
+did so for the Opt stack pane.
+
 `draw_overlay` takes the frame's root `&mut Ui` (egui shows panels into a `Ui`,
 not onto the `Context`) and carves the bands out of it; floating chrome — `Window`,
 `Area`, the layer painters — still addresses `ui.ctx()`.
@@ -400,8 +414,9 @@ not onto the `Context`) and carves the bands out of it; floating chrome — `Win
 The 3D/UV scene and the composite are drawn by the renderer into the same frame
 *before* egui, which paints its chrome over them with a transparent central
 viewport. The Tex viewport (`texture_view.rs`) handles only interaction (pan,
-zoom, fit, background fill, channel pick) and hands the image to the renderer:
-`ui` owns no GPU state.
+zoom, fit, background fill, channel pick) in the central area the side panels
+leave, and hands the image to the renderer: `ui` owns no GPU state. Its image is
+picked in the Textures tab, and its measured properties are in the Inspector.
 
 Modules: `theme`, `state`, `assets`, `widgets`, `overlay`, `toolbar`,
 `status_bar`, `stats`, `texture_view`, `gizmo`, `dimensions`, `help`, `transport`
@@ -410,7 +425,8 @@ is selected in the 3D workspace), `notifications`, plus `panels/` (one file per 
 `bounding_box`, `environment`, `normals`, `gtao`, `tonemap`, `uv_checker`,
 `vertex_colors`, `wireframe`, `material_mode`; plus `inspector`, `outliner`, and
 `opt_stack` / `opt_inspector`). The Outliner is itself a directory —
-`panels/outliner/{mod,tree,rows,nav,materials,animations}.rs`.
+`panels/outliner/{mod,tree,rows,nav,materials,textures,animations}.rs`. Pooled-texture
+thumbnails, shared by the Textures tab and the Inspector, are `widgets/thumbnail.rs`.
 
 **Notifications.** `notifications.rs` is ours, drawn on plain egui —
 `egui-notify` is gone, because it slid every toast in and out with no way to stop
@@ -585,6 +601,53 @@ id is prefixed with its file's stem: that is what keeps ids unique inside the on
 flat bundle, what the generated const name drops, and what lets one catalog serve
 three crates without handing each of them the others' keys (`ui` takes `common-`
 and `ui-`, `app` takes `app-`, `shell-macos` takes `menu-`).
+
+### `annotate` — `review-annotate`
+
+Review comments stored **inside the FBX**, in pure safe Rust with no ufbx, GPU or
+window dependency — so the viewer, the `review-comments` CLI (`src/bin`) and any
+other tool read a file's comments through exactly the same code. The format other
+tools read against is `docs/review-comments-format.md`: a `KString` user property
+`ReviewComments` (flag `U`) on the `Model` each thread is about, holding versioned
+JSON.
+
+- `fbx/` reads and **losslessly patches** that property. A binary file is parsed
+  into a node tree whose property bytes stay opaque slices (compressed arrays are
+  never inflated) and rewritten with every record's absolute end offset
+  recomputed; an unedited rewrite is byte-identical to the input, and the footer
+  is re-padded at the new length keeping its writer's convention (the Autodesk SDK
+  pads 4 bytes more than Blender). An ASCII file is spliced one line at a time;
+  `&` in the stored JSON is written as `\u0026`, since ASCII FBX has no escape for
+  it. Reading a binary file **streams** it (`scan_file`): it seeks from record to
+  record by their end offsets and reads only the `Model` and `Connections`
+  records, so the viewer reads a 200 MB file's comments without a second copy of
+  it in memory.
+- `thread` / `codec`: the thread types and their JSON. Unknown fields, unknown
+  anchor kinds and threads that fail to decode are all kept verbatim and written
+  back, and a payload from a newer version is shown read-only — an older viewer
+  never destroys what it doesn't understand.
+- `mapping` pairs the file's objects with the importer's nodes. **ufbx lists nodes
+  by depth, not in file order** (measured on a rigged fixture) and adds nodes the
+  file never had, so the pairing walks both trees from the root and matches each
+  parent's children by name, *k*-th to *k*-th, stepping over synthetic nodes.
+- `report` lists the comments of one file or many as JSON or Markdown, and
+  `baseline` narrows a listing to what changed since an earlier `--json` one
+  (the CLI's `--baseline`). It matches threads by `id` across every file, so a
+  moved file reports nothing new, and messages by author, time and text, never
+  by time alone: `time` is the writer's clock, so a reply written before the
+  last check and pushed after it would otherwise be missed.
+
+`app/src/comments.rs` reads them on the import worker, right after the source
+properties (whose synthetic-node flags the mapping needs), and posts them as their
+own event; each frame it resolves every anchor to a world point for the pins — a
+surface pin through the current pose, falling back to its stored local point when
+the host mesh's polygon/vertex counts no longer match the ones recorded with it.
+
+`tests/fixtures.rs` runs the patcher over every file in `assets/test_models`:
+byte-identical unedited rewrites, every imported node mapped, patched files read
+back identically by this crate *and* by ufbx with the scene otherwise unchanged,
+removal restoring the original bytes, and the streaming scan agreeing with the
+in-memory one.
 
 ### `psd` — `review-psd`
 
@@ -918,8 +981,9 @@ it drops quad topology and changes vertex counts.
 
 **Shading is one scene program** (`@program mesh`) covering the shaded, unlit,
 wireframe, uv-checker and vertex-colour paths; tone mapping and sRGB encoding live
-in the `post` program, and the model wireframe is a depth-tested line-list draw in
-the scene pass. The whole set is generated per backend by sokol-shdc and compiled
+in the `post` program, and every line — the wireframe, the grid and every overlay —
+is a depth-tested screen-space quad, antialiased by its own shader and so drawn
+single-sample after the MSAA resolve rather than in the multisampled pass. The whole set is generated per backend by sokol-shdc and compiled
 offline to committed bytecode by `build.rs`; the runtime does no shader
 compilation. The Tex image is drawn by its own minimal fullscreen-triangle
 pipeline, outside the scene MRT and tonemap path, so channel isolation is a

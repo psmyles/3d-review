@@ -21,9 +21,11 @@ pub(crate) fn build_scene(
     source: &ModelData,
     extras: Option<&SourceExtras>,
     options: &ExportOptions,
+    node_strings: Option<&NodeStrings>,
     report: &mut ExportReport,
 ) -> Result<SceneData, OptError> {
     let mut scene = SceneData::new(UnitScale::from_source(source.stats.source_unit_meters));
+    scene.node_strings = node_strings.cloned();
 
     if let Some(extras) = extras {
         build_settings(&mut scene, extras);

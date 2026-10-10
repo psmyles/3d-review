@@ -1,4 +1,4 @@
-// 3D Review — THE shader source. One file, 15 programs, both backends.
+// 3D Review — THE shader source. One file, 17 programs, both backends.
 //
 // This is sokol-shdc's annotated GLSL (Vulkan syntax: separate `texture2D`/
 // `textureCube` and `sampler` objects, combined at each tap). `scripts/gen-shaders`
@@ -21,7 +21,7 @@
 //
 //   Uniform blocks (per stage — `sg_shader_uniform_block` carries one stage, so
 //   `SceneUniforms` is declared twice, once per stage, with the same bytes):
-//     0 scene_vs (VS)   1 scene_fs (FS)   2 material (FS)
+//     0 scene_vs (VS)   1 scene_fs (FS)   2 material (FS)   3 line_params (VS)
 //   Other programs number their own blocks from 0.
 //
 //   Views (textures and storage buffers share one bind space in sokol):
@@ -29,6 +29,7 @@
 //     5..11 the seven material slots
 //     12..15 the VS deform storage buffers (influences / palette / morph deltas /
 //            morph weights)
+//     16..17 the line programs' pulled vertices and the wireframe's edge list (VS)
 //   Samplers: 0 checker · 1 IBL · 2 material (anisotropic)
 //
 // A shader declares **only** the slots it actually uses: sokol validates that every
@@ -736,26 +737,6 @@ void main() {
 @end
 
 // ===========================================================================
-// Scene — flat-color line overlays
-// ===========================================================================
-
-// The grid and every line overlay (wireframe, bounding box, face/vertex normal
-// lines). The vertices carry their color; lines sample no texture and no light.
-@fs fs_line
-@include_block scene_uniforms_fs
-@include_block scene_varyings_in
-@include_block srgb
-
-layout(location=0) out vec4 frag_color;
-layout(location=1) out vec4 frag_ambient;
-
-void main() {
-    frag_color = vec4(srgb_to_linear(v_color.rgb), v_color.a);
-    frag_ambient = vec4(0.0, 0.0, 0.0, v_color.a);
-}
-@end
-
-// ===========================================================================
 // Scene — the selection flash
 // ===========================================================================
 
@@ -776,6 +757,241 @@ void main() {
     float fade = sc.selection_color.a;
     frag_color = vec4(srgb_to_linear(sc.selection_color.rgb), fade);
     frag_ambient = vec4(0.0, 0.0, 0.0, fade);
+}
+@end
+
+// ===========================================================================
+// Scene — line overlays, as screen-space quads
+// ===========================================================================
+
+// Every line the viewer draws — the model wireframe, the grid, the bounding box, the
+// normal lines, the seams, the pivot, the skeleton's outlines and the UV view's lines —
+// is widened into a quad of a chosen width in pixels, with its coverage faded out
+// analytically across the last half pixel on each side. Hardware lines are one
+// *device* pixel wide whatever the display, and each API rasterizes them by its own
+// rules — Direct3D 11 draws them ~1.4 px wide under MSAA, Metal 1 px — so the same
+// wireframe looked twice as heavy on one OS as the other, and half as heavy again on a
+// Retina screen. A quad is the same shape on every backend at every density.
+//
+// Because the edges smooth themselves, lines need no MSAA. With it on, the renderer
+// draws them in a single-sample pass over the *resolved* scene instead of in the
+// multisampled one (`SceneGpu::record_line_pass`): a dense wireframe covers a great
+// many pixels, and inside the MSAA pass every one of them was a blend per sample.
+//
+// There is no vertex input. A draw is six vertices per line, and the shader *pulls*
+// what it needs from the line's vertex buffer, bound as a storage buffer: the line's
+// two ends, both deformed through the same `apply_deform` as the mesh under them. The
+// two programs differ only in where a line's ends and colour come from:
+//
+//   line  a line list: ends `2i` and `2i + 1`, the colour carried by the vertices
+//   wire  the model wireframe: ends named by an edge list over the *mesh's own*
+//         vertex buffer, so the geometry is read rather than copied (invariant 1),
+//         and the colour from `selection_color` — which is what lets the Opt ghost
+//         reuse it with its own tint
+
+// The line programs' own block: what widening a line needs that the scene block lacks.
+@block line_uniforms
+layout(binding=3) uniform line_params {
+    // x / y = the scene target's size in pixels, z = the line's width in pixels,
+    // w spare.
+    vec4 params;
+} lu;
+@end
+
+// What both line vertex shaders share: the pulled vertex, and the quad built from a
+// line's two clip-space ends. Needs `scene_uniforms_vs`, `deform` and
+// `line_uniforms` included before it.
+@block line_quad
+// `SceneVertex` as a storage buffer sees it: twenty scalars, deliberately — a `vec3`
+// member would align to 16 bytes under std430 and stride the buffer at 96 rather than
+// the vertex buffer's 80. `gpu_types.rs` pins this to `SceneVertex`.
+struct LineVertex {
+    float px;
+    float py;
+    float pz;
+    float nx;
+    float ny;
+    float nz;
+    float u;
+    float v;
+    float tx;
+    float ty;
+    float tz;
+    float tw;
+    float r;
+    float g;
+    float b;
+    float a;
+    uint d0;
+    uint d1;
+    uint d2;
+    uint d3;
+};
+
+layout(binding=16) readonly buffer line_vertices { LineVertex line_vertex[]; };
+
+// Across the line, along it, its on-screen length, and its half width — all in
+// pixels, and all interpolated in screen space: the quad is a rectangle on screen, so
+// a perspective-correct interpolation would bend the coverage ramp.
+layout(location=0) noperspective out vec4 v_line;
+// Gamma-space rgb + alpha, as the vertices and `selection_color` both carry it.
+layout(location=1) out vec4 v_color;
+
+// A pulled vertex's position, deformed exactly as `vs_main` deforms it.
+vec3 line_corner_position(uint vertex) {
+    LineVertex corner = line_vertex[vertex];
+    vec3 position = vec3(corner.px, corner.py, corner.pz);
+    uvec4 lane = uvec4(corner.d0, corner.d1, corner.d2, corner.d3);
+    if (su.camera_position.w > 0.5 && (lane.y | lane.w) != 0u) {
+        // Only the position is wanted. A zero normal is the overlay sentinel, so the
+        // blend-shape normal deltas are skipped rather than revived.
+        vec3 normal = vec3(0.0);
+        vec3 tangent = vec3(0.0);
+        apply_deform(lane, position, normal, tangent);
+    }
+    return position;
+}
+
+vec4 line_corner_color(uint vertex) {
+    LineVertex corner = line_vertex[vertex];
+    return vec4(corner.r, corner.g, corner.b, corner.a);
+}
+
+// Corner `corner_index` (0..5) of a line's quad, as two triangles: x picks the line's
+// end (0 = first, 1 = second), y its side. Unsigned, like the arithmetic that finds
+// it: fxc warns on a signed integer divide, and `/WX` makes that a build error.
+vec2 line_quad_corner(uint corner_index) {
+    vec2 corners[6] = vec2[6](
+        vec2(0.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0),
+        vec2(0.0, -1.0), vec2(1.0, 1.0), vec2(0.0, 1.0));
+    return corners[corner_index];
+}
+
+// Write `gl_Position` and `v_line` for corner `corner_index` of the quad over the line
+// from `first` to `second`, both in clip space.
+void emit_line_quad(vec4 first, vec4 second, uint corner_index) {
+    vec2 corner = line_quad_corner(corner_index);
+
+    // Clip the line to the near plane before anything divides by w: an end behind
+    // the eye would otherwise land on the far side of the screen and drag the quad
+    // across it. Reversed-Z puts the near plane at z = w (perspective and
+    // orthographic alike), with everything in front of it at z < w.
+    float first_in = first.w - first.z;
+    float second_in = second.w - second.z;
+    if (first_in < 0.0 && second_in < 0.0) {
+        // Wholly behind the near plane: a degenerate quad outside the clip volume.
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        v_line = vec4(0.0);
+        return;
+    }
+    if (first_in < 0.0) {
+        first = mix(first, second, first_in / (first_in - second_in));
+    } else if (second_in < 0.0) {
+        second = mix(second, first, second_in / (second_in - first_in));
+    }
+
+    vec2 half_size = 0.5 * lu.params.xy;
+    vec2 first_px = first.xy / first.w * half_size;
+    vec2 second_px = second.xy / second.w * half_size;
+    vec2 along = second_px - first_px;
+    float length_px = length(along);
+    // A line seen end-on still gets a square of its own width, in any orientation.
+    vec2 direction = length_px > 1e-4 ? along / length_px : vec2(1.0, 0.0);
+    vec2 across = vec2(-direction.y, direction.x);
+
+    // The quad reaches half a pixel past the line on every side, which is where the
+    // fragment shader's coverage ramp reaches zero: a pixel whose centre lies any
+    // further out would be shaded only to be discarded by its alpha. A line under a
+    // pixel wide is drawn one pixel wide and faded instead (see `fs_line`), so the
+    // quad never shrinks below that.
+    float half_width = 0.5 * lu.params.z;
+    float reach = max(half_width, 0.5) + 0.5;
+    float end_sign = corner.x * 2.0 - 1.0;
+    vec4 position = corner.x < 0.5 ? first : second;
+    vec2 offset_px = across * (corner.y * reach) + direction * (end_sign * reach);
+    position.xy += offset_px / half_size * position.w;
+    gl_Position = position;
+    v_line = vec4(
+        corner.y * reach,
+        corner.x < 0.5 ? -reach : length_px + reach,
+        length_px,
+        half_width);
+}
+@end
+
+// A line list: line `i` runs from vertex `2i` to vertex `2i + 1`.
+@vs vs_line
+@include_block scene_uniforms_vs
+@include_block deform
+@include_block line_uniforms
+@include_block line_quad
+
+void main() {
+    uint vertex = uint(gl_VertexIndex);
+    uint line = vertex / 6u;
+    uint first_vertex = 2u * line;
+    vec4 first = su.view_projection * vec4(line_corner_position(first_vertex), 1.0);
+    vec4 second = su.view_projection * vec4(line_corner_position(first_vertex + 1u), 1.0);
+    uint corner_index = vertex - line * 6u;
+    emit_line_quad(first, second, corner_index);
+    v_color = line_corner_color(first_vertex + uint(line_quad_corner(corner_index).x));
+}
+@end
+
+// The model wireframe: edge `e` runs between the mesh vertices named by entries `2e`
+// and `2e + 1` of the edge list.
+@vs vs_wire
+@include_block scene_uniforms_vs
+@include_block deform
+@include_block line_uniforms
+@include_block line_quad
+
+// One corner index of the edge list. A struct of one `uint` because a storage buffer
+// must hold an array of a struct.
+struct LineIndex {
+    uint index;
+};
+
+layout(binding=17) readonly buffer line_indices { LineIndex line_index[]; };
+
+void main() {
+    uint vertex = uint(gl_VertexIndex);
+    uint edge = vertex / 6u;
+    vec4 first = su.view_projection
+        * vec4(line_corner_position(line_index[2u * edge].index), 1.0);
+    vec4 second = su.view_projection
+        * vec4(line_corner_position(line_index[2u * edge + 1u].index), 1.0);
+    emit_line_quad(first, second, vertex - edge * 6u);
+    v_color = su.selection_color;
+}
+@end
+
+// The line's coverage of this pixel: a one-pixel box filter of a band `width` pixels
+// wide, with a square cap of half that width past each end so lines meeting at a
+// vertex join without a notch. Writes zero ambient *colour* with the line's alpha, so
+// it masks (rather than GTAO-darkens) the ambient beneath, like the other overlays.
+@fs fs_line
+@include_block srgb
+
+layout(location=0) noperspective in vec4 v_line;
+layout(location=1) in vec4 v_color;
+
+layout(location=0) out vec4 frag_color;
+layout(location=1) out vec4 frag_ambient;
+
+void main() {
+    float half_width = max(v_line.w, 0.5);
+    // Narrower than a pixel: kept one pixel wide and faded by the shortfall, so a
+    // thin line dims evenly rather than breaking into dashes.
+    float thinness = min(v_line.w * 2.0, 1.0);
+    float across = abs(v_line.x);
+    float past_end = max(-v_line.y, v_line.y - v_line.z);
+    float coverage = clamp(half_width + 0.5 - across, 0.0, 1.0)
+        * clamp(half_width + 0.5 - past_end, 0.0, 1.0)
+        * thinness;
+    float alpha = v_color.a * coverage;
+    frag_color = vec4(srgb_to_linear(v_color.rgb), alpha);
+    frag_ambient = vec4(0.0, 0.0, 0.0, alpha);
 }
 @end
 
@@ -1956,12 +2172,14 @@ void main() {
 // Programs
 // ===========================================================================
 
-// The four scene pipelines share `vs_main`, so the mesh, the GTAO G-buffer, the
-// selection flash and every mesh-derived overlay deform through the one shader.
+// The mesh, the GTAO G-buffer and the selection flash share `vs_main`; the two line
+// programs pull their vertices instead (see `line_quad`) but deform them through the
+// same `apply_deform`, so every mesh-derived overlay moves with the mesh.
 @program mesh vs_main fs_main
-@program line vs_main fs_line
 @program selection vs_main fs_selection
 @program gtao_gbuffer vs_main fs_gtao_gbuffer
+@program line vs_line fs_line
+@program wire vs_wire fs_line
 
 @program skybox vs_skybox fs_skybox
 

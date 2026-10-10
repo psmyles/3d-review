@@ -49,10 +49,15 @@ pub(super) struct TargetSet {
     pub(super) color: ColorTarget,
     pub(super) ambient: ColorTarget,
     pub(super) depth: DepthTarget,
-    /// GTAO's targets, all **single-sample**: the view-normal/Z G-buffer (HDR) with
-    /// its own depth, the depth prefilter chain, and the two occlusion ping-pongs.
+    /// A **single-sample** depth buffer for the passes that cannot use [`Self::depth`]
+    /// at 2×+ MSAA: the GTAO G-buffer pass and the line pass. Pure scratch — both
+    /// clear it when they open and neither stores it — so the two share one rather
+    /// than each holding a screen of depth. They never overlap: the line pass closes
+    /// before the G-buffer pass opens.
+    pub(super) scratch_depth: DepthTarget,
+    /// GTAO's targets, all **single-sample**: the view-normal/Z G-buffer (HDR), the
+    /// depth prefilter chain, and the two occlusion ping-pongs.
     pub(super) gtao_gbuffer: ColorTarget,
-    pub(super) gtao_depth: DepthTarget,
     /// The prefilter chain, level `k` at `max(1, size >> k)`. Level 0 is written by
     /// the G-buffer pass as its second attachment; the rest reduce the one above.
     ///
@@ -83,8 +88,8 @@ impl TargetSet {
             color: ColorTarget::hdr(width, height, sample_count, c"scene colour")?,
             ambient: ColorTarget::hdr(width, height, sample_count, c"scene ambient")?,
             depth: DepthTarget::new(width, height, sample_count, c"scene depth")?,
+            scratch_depth: DepthTarget::new(width, height, 1, c"scratch depth")?,
             gtao_gbuffer: ColorTarget::hdr(width, height, 1, c"gtao gbuffer")?,
-            gtao_depth: DepthTarget::new(width, height, 1, c"gtao depth")?,
             gtao_depth_mips: depth_mips(width, height)?,
             ao_history: occlusion_pair(width, height, c"gtao history")?,
             ao_denoise: occlusion_pair(width, height, c"gtao denoise")?,
@@ -105,11 +110,11 @@ impl TargetSet {
         self.color = ColorTarget::hdr(width, height, sample_count, c"scene colour")?;
         self.ambient = ColorTarget::hdr(width, height, sample_count, c"scene ambient")?;
         self.depth = DepthTarget::new(width, height, sample_count, c"scene depth")?;
-        // GTAO's targets are single-sample by design (its own mesh-only pass, never
-        // resolved), so only a size change touches them.
+        // The scratch depth and GTAO's targets are single-sample by design, so only a
+        // size change touches them.
         if size_changed {
+            self.scratch_depth = DepthTarget::new(width, height, 1, c"scratch depth")?;
             self.gtao_gbuffer = ColorTarget::hdr(width, height, 1, c"gtao gbuffer")?;
-            self.gtao_depth = DepthTarget::new(width, height, 1, c"gtao depth")?;
             self.gtao_depth_mips = depth_mips(width, height)?;
             self.ao_history = occlusion_pair(width, height, c"gtao history")?;
             self.ao_denoise = occlusion_pair(width, height, c"gtao denoise")?;

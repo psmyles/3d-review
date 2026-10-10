@@ -65,7 +65,7 @@ pub mod stack;
 pub mod submesh;
 
 pub use cancel::CancelToken;
-pub use export::{ExportReport, export_fbx};
+pub use export::{ExportReport, NodeStrings, export_fbx, export_fbx_with};
 pub use notice::{ExportNote, OptWarning};
 pub use process::{
     AnalysisMetrics, MeshCounts, OptPreview, OptPreviewSink, OptProgress, OptProgressSink,

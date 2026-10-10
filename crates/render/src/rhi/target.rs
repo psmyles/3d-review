@@ -11,6 +11,11 @@
 //! `resolve_attachment` view over it goes in the pass's `resolves` slot. sokol
 //! resolves at `end_pass`, which is why the old explicit `ColorTarget::resolve` call
 //! has no successor — and why nothing has to remember to make it.
+//!
+//! The twin carries one more view, a `color_attachment` over the *resolved* image, so
+//! a later single-sample pass can keep drawing onto what the MSAA pass produced —
+//! the line overlays, which smooth their own edges and gain nothing from MSAA but its
+//! cost ([`super::Frame::begin_resolved_pass`]).
 
 use std::ffi::CStr;
 
@@ -43,6 +48,9 @@ pub(crate) struct ColorTarget {
 struct Resolve {
     image: sg::Image,
     view: sg::View,
+    /// The same image as a colour attachment, for a single-sample pass that draws
+    /// over the resolved result.
+    attachment: sg::View,
 }
 
 impl ColorTarget {
@@ -103,9 +111,13 @@ impl ColorTarget {
             let mut desc = sg::ViewDesc::new();
             desc.resolve_attachment.image = resolve_image;
             desc.label = label.as_ptr();
+            let mut attachment_desc = sg::ViewDesc::new();
+            attachment_desc.color_attachment.image = resolve_image;
+            attachment_desc.label = label.as_ptr();
             Resolve {
                 image: resolve_image,
                 view: sg::make_view(&desc),
+                attachment: sg::make_view(&attachment_desc),
             }
         });
 
@@ -151,6 +163,11 @@ impl ColorTarget {
                 ResourceKind::Target,
                 name,
             )?;
+            require_valid(
+                sg::query_view_state(resolve.attachment),
+                ResourceKind::Target,
+                name,
+            )?;
         }
         require_valid(
             sg::query_view_state(self.texture),
@@ -181,6 +198,14 @@ impl ColorTarget {
         self.resolve.as_ref().map(|twin| twin.view)
     }
 
+    /// The single-sample image as a colour attachment: the resolve twin at 2×+, the
+    /// target itself at 1×.
+    pub(in crate::rhi) fn resolved_attachment(&self) -> sg::View {
+        self.resolve
+            .as_ref()
+            .map_or(self.attachment, |twin| twin.attachment)
+    }
+
     /// The view a later pass samples it through.
     pub(in crate::rhi) fn texture(&self) -> sg::View {
         self.texture
@@ -192,6 +217,7 @@ impl Drop for ColorTarget {
         if sg::isvalid() {
             sg::destroy_view(self.texture);
             if let Some(resolve) = &self.resolve {
+                sg::destroy_view(resolve.attachment);
                 sg::destroy_view(resolve.view);
                 sg::destroy_image(resolve.image);
             }
@@ -244,9 +270,11 @@ impl DepthTarget {
     }
 }
 
-/// Which end of a resolve an image is. sokol takes these as *exclusive* usages: the
-/// multisampled image a pass draws into is a colour attachment, and the
-/// single-sample image it resolves into is a resolve attachment — never both.
+/// Which end of a resolve an image is: the multisampled image a pass draws into is a
+/// colour attachment, and the single-sample image it resolves into is a resolve
+/// attachment — and a colour attachment too, so a later single-sample pass can draw
+/// over the resolved result. sokol forbids only colour *and depth* on one image, and
+/// both backends create either usage as an ordinary render target.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Attachment {
     Color,
@@ -264,10 +292,8 @@ fn make_image(
 ) -> sg::Image {
     let mut desc = sg::ImageDesc::new();
     desc._type = sg::ImageType::Dim2;
-    match attachment {
-        Attachment::Color => desc.usage.color_attachment = true,
-        Attachment::Resolve => desc.usage.resolve_attachment = true,
-    }
+    desc.usage.color_attachment = true;
+    desc.usage.resolve_attachment = attachment == Attachment::Resolve;
     desc.width = width as i32;
     desc.height = height as i32;
     desc.num_mipmaps = 1;

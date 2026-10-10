@@ -18,6 +18,10 @@ pub(crate) const DEFAULT_NORMAL_LENGTH: f32 = 0.03;
 /// Default multiplier for the skeleton overlay's bone size.
 pub(crate) const DEFAULT_SKELETON_SCALE: f32 = 1.0;
 
+/// Default width of the model wireframe's lines, in points (the renderer scales it
+/// by the display, so this is one pixel at 100% and two on a Retina screen).
+pub(crate) const DEFAULT_WIREFRAME_WIDTH: f32 = 1.0;
+
 #[derive(Debug, Clone)]
 pub struct NormalPanelState {
     pub length: f32,
@@ -63,18 +67,21 @@ impl Default for SkeletonPanelState {
     }
 }
 
-/// Editable state backing the Wireframe options panel. The renderer bakes the
-/// chosen color into the final wireframe overlay line buffer via
-/// [`SceneDebugOptions`].
+/// Editable state backing the Wireframe options panel. The renderer applies both
+/// values as uniforms at draw time via [`SceneDebugOptions`], so neither rebuilds
+/// anything.
 #[derive(Debug, Clone)]
 pub struct WireframePanelState {
     pub color: egui::Color32,
+    /// Line width in points.
+    pub width: f32,
 }
 
 impl Default for WireframePanelState {
     fn default() -> Self {
         Self {
             color: theme::color::WIREFRAME_DEFAULT,
+            width: DEFAULT_WIREFRAME_WIDTH,
         }
     }
 }
