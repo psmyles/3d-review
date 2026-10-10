@@ -17,6 +17,15 @@ use crate::App;
 /// How many points a framing box and the on-screen test sample at most.
 const SAMPLE_CAP: usize = 4096;
 
+/// How close, in points, a click must land to a highlighted edge or dot to
+/// pick it: about the drawn dot's radius plus the shake of a click.
+pub(crate) const AUDIT_PICK_TOLERANCE_POINTS: f32 = 6.0;
+
+/// Most edge and dot elements one click tests. The highlight is capped far
+/// higher, but a click on a scene with a million offending points has its
+/// answer long before the millionth.
+const PICK_ELEMENT_CAP: usize = 1 << 18;
+
 /// The resolved highlight, and what it was resolved from.
 #[derive(Debug, Default)]
 pub(crate) struct AuditHighlight {
@@ -135,6 +144,116 @@ fn focused(report: &AuditReport, focus: AuditFocus) -> Vec<(RuleId, Severity, &O
         }
     }
     out
+}
+
+/// Distance from `point` to the segment `a`–`b`.
+fn segment_distance(point: Vec2, a: Vec2, b: Vec2) -> f32 {
+    let along = b - a;
+    let length_squared = along.length_squared();
+    if length_squared <= f32::EPSILON {
+        return point.distance(a);
+    }
+    let t = ((point - a).dot(along) / length_squared).clamp(0.0, 1.0);
+    point.distance(a + along * t)
+}
+
+/// The offender of `focus` whose drawn edge or dot lies nearest `pointer`,
+/// within `tolerance` — the marks a ray cannot hit because they have no
+/// surface of their own. `position` gives a render corner's world position (as
+/// drawn: posed when a clip is), `project` a world point's place on screen in
+/// the pointer's own pixels.
+pub(crate) fn offender_near(
+    report: &AuditReport,
+    focus: AuditFocus,
+    model: &ModelData,
+    position: impl Fn(u32) -> Option<Vec3>,
+    project: impl Fn(Vec3) -> Option<Vec2>,
+    pointer: Vec2,
+    tolerance: f32,
+) -> Option<AuditFocus> {
+    let screen = |corner: u32| position(corner).and_then(&project);
+    // Which nodes draw triangles: built once, and only if an object-level
+    // offender asks.
+    let owns_triangles = std::cell::OnceCell::new();
+    let owns = |node: u32| {
+        owns_triangles
+            .get_or_init(|| {
+                let mut owns = vec![false; model.nodes.len()];
+                for &owner in &model.triangles.node {
+                    if let Some(slot) = owns.get_mut(owner as usize) {
+                        *slot = true;
+                    }
+                }
+                owns
+            })
+            .get(node as usize)
+            .copied()
+            .unwrap_or(false)
+    };
+    let mut best: Option<(f32, RuleId, u32)> = None;
+    let mut budget = PICK_ELEMENT_CAP;
+    let mut consider = |distance: f32, rule: RuleId, node: u32| {
+        if distance <= tolerance && best.is_none_or(|(nearest, _, _)| distance < nearest) {
+            best = Some((distance, rule, node));
+        }
+    };
+    for (rule, _, offender) in focused(report, focus) {
+        let Some(node) = offender.node else {
+            continue;
+        };
+        match (&offender.elements, rule.marker()) {
+            (ElementSet::Edges(edges), _) => {
+                for &[a, b] in edges.iter().take(budget) {
+                    if let (Some(a), Some(b)) = (screen(a), screen(b)) {
+                        consider(segment_distance(pointer, a, b), rule, node);
+                    }
+                }
+                budget = budget.saturating_sub(edges.len());
+            }
+            (ElementSet::Vertices(corners), _) => {
+                for &corner in corners.iter().take(budget) {
+                    if let Some(at) = screen(corner) {
+                        consider(pointer.distance(at), rule, node);
+                    }
+                }
+                budget = budget.saturating_sub(corners.len());
+            }
+            (ElementSet::Triangles(set), Marker::Dot) => {
+                for triangle in set.iter().take(budget) {
+                    if let Some(at) = model
+                        .indices
+                        .get(triangle as usize * 3)
+                        .and_then(|&corner| screen(corner))
+                    {
+                        consider(pointer.distance(at), rule, node);
+                    }
+                }
+                budget = budget.saturating_sub(set.len() as usize);
+            }
+            (ElementSet::Points(points), _) => {
+                for (point, _) in points.iter().take(budget) {
+                    if let Some(at) = project(Vec3::from_array(*point)) {
+                        consider(pointer.distance(at), rule, node);
+                    }
+                }
+                budget = budget.saturating_sub(points.len());
+            }
+            (ElementSet::None, _) => {
+                // An object drawing nothing of its own is marked at its pivot.
+                if !owns(node)
+                    && let Some(scene_node) = model.nodes.get(node as usize)
+                    && let Some(at) = project(scene_node.transform.w_axis.truncate())
+                {
+                    consider(pointer.distance(at), rule, node);
+                }
+            }
+            (ElementSet::Triangles(_), _) => {}
+        }
+        if budget == 0 {
+            break;
+        }
+    }
+    best.map(|(_, rule, node)| AuditFocus::Offender(rule, node as usize))
 }
 
 impl App {
@@ -344,5 +463,88 @@ impl App {
                     .node
                     .map(|node| AuditFocus::Offender(rule, node as usize))
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use glam::{Vec2, Vec3};
+    use review_audit::{
+        AuditReport, ElementSet, Offender, RuleId, RuleResult, Severity, Status, Threshold,
+    };
+    use review_ui::AuditFocus;
+
+    use super::offender_near;
+
+    fn failing(rule: RuleId, offenders: Vec<Offender>) -> RuleResult {
+        RuleResult {
+            rule,
+            status: Status::Fail,
+            severity: Severity::Warning,
+            measured: None,
+            threshold: Threshold::None,
+            total: offenders.iter().map(|offender| offender.count).sum(),
+            offenders,
+            truncated: false,
+            measure_key: 0,
+        }
+    }
+
+    /// A click near a drawn edge or dot picks its offender, the nearer of two
+    /// candidates wins, and one beyond the tolerance picks nothing.
+    #[test]
+    fn edges_and_dots_are_picked_by_screen_distance() {
+        let model = review_model::demo_cube_model();
+        let report = AuditReport {
+            results: vec![
+                failing(
+                    RuleId::NonManifoldEdges,
+                    vec![Offender::elements(Some(0), ElementSet::Edges(vec![[0, 1]]))],
+                ),
+                failing(
+                    RuleId::IsolatedVertices,
+                    vec![Offender::elements(
+                        Some(0),
+                        ElementSet::Points(vec![([50.0, -3.0, 0.0], 7)]),
+                    )],
+                ),
+            ],
+            ..Default::default()
+        };
+        // Corner 0 at (0, 0) and corner 1 at (100, 0) on screen; the world is
+        // the screen, flattened.
+        let position = |corner: u32| match corner {
+            0 => Some(Vec3::ZERO),
+            1 => Some(Vec3::new(100.0, 0.0, 0.0)),
+            _ => None,
+        };
+        let project = |world: Vec3| Some(world.truncate());
+        let pick =
+            |focus, pointer| offender_near(&report, focus, &model, position, project, pointer, 6.0);
+
+        let edges = AuditFocus::Rule(RuleId::NonManifoldEdges);
+        assert_eq!(
+            pick(edges, Vec2::new(30.0, 4.0)),
+            Some(AuditFocus::Offender(RuleId::NonManifoldEdges, 0)),
+            "within the tolerance of the segment's middle",
+        );
+        assert_eq!(pick(edges, Vec2::new(30.0, 9.0)), None, "beyond it");
+        assert_eq!(
+            pick(edges, Vec2::new(104.0, 0.0)),
+            Some(AuditFocus::Offender(RuleId::NonManifoldEdges, 0)),
+            "past the end, but within the tolerance of it",
+        );
+
+        // Focused on the object, both marks are candidates: the nearer wins.
+        let object = AuditFocus::Object(0);
+        assert_eq!(
+            pick(object, Vec2::new(50.0, -2.0)),
+            Some(AuditFocus::Offender(RuleId::IsolatedVertices, 0)),
+            "the dot is nearer than the edge under it",
+        );
+        assert_eq!(
+            pick(object, Vec2::new(20.0, 3.0)),
+            Some(AuditFocus::Offender(RuleId::NonManifoldEdges, 0)),
+        );
     }
 }

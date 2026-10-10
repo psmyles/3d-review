@@ -33,7 +33,13 @@ path); nothing runs without a window. Everything underneath is already pure:
 - Naming template for outputs (`{stem}_LOD{n}.fbx` etc.).
 - Parallelism across files (each run already uses `std::thread::scope` inside).
 
-### 2. Automated validation / audit report — PARTIAL (integrity asserts only)
+### 2. Automated validation / audit report — DONE in the Aud workspace, except materials / textures
+
+Shipped as the **Aud** workspace (`crates/audit`): 43 checks over mesh, transforms,
+UVs, skin, density, naming and hierarchy, Unity / Unreal / Generic profiles in a
+versioned JSON envelope, an Issues list, and a JSON report whose schema the batch
+mode can reuse. Still open: the materials / textures rules below, and a pass/fail
+verdict over the report. The original gap analysis follows.
 
 The only user-visible warning today is one toast (`crates/app/src/loading.rs:394`).
 `crates/model/src/skin.rs:140` / `geometry.rs:111` reject malformed data at load;
@@ -88,13 +94,15 @@ from bytes into the same pool as file textures.
 ## Tier 2 — audit depth a tech artist expects (Unity / Unreal)
 
 7. **Texel density** heat map + per-mesh px/cm figure for a chosen texture size —
-   ABSENT. UV checker exists; density does not.
+   DONE (Aud: per-face heat map in px/m and the `density.texel` check). UV checker exists; density does not.
 8. **UV diagnostic modes** in the UV workspace: overlap, flipped, out-of-range,
-   lightmap-UV padding — ABSENT (`geometry/uv.rs` does wire/fill/island color only).
-9. **Overdraw / quad-overdraw visual mode** — PARTIAL (metric + optimizer op, no
-   view). The reorder op can't be judged visually today.
+   lightmap-UV padding — DONE as Aud findings, shown in a 3D | UV split; not yet
+   as modes of the UV workspace itself.
+9. **Overdraw / quad-overdraw visual mode** — DONE (Aud's Overdraw and Quad
+   overdraw views). The reorder op can't be judged visually today.
 10. **Skin audit stats** in the Inspector/stats card: max influences, bones per
-    mesh, weight-sum deviation, unused bones — PARTIAL (only a global bone count).
+    mesh, weight-sum deviation, unused bones — DONE as Aud checks; not on the
+    stats card.
 11. **Up-axis + unit in stats/Inspector, and a target-engine preview** (cm for
     Unreal, Y-up for Unity) — PARTIAL (unit shown, axis not).
 12. **Lights and cameras drawn as gizmos; adopt an FBX camera as the view** —

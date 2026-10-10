@@ -209,6 +209,10 @@ for line in open(records_path):
         "footprint_mb": int(footprint) / (1024 * 1024) if int(footprint) else None,
         "settings": stamp["settings"],
         "model": stamp["model"],
+        # Absent from a build that predates the audit, null when none landed.
+        "audit_ms": (stamp.get("audit") or {}).get("ms"),
+        "audit_report_kb": ((stamp.get("audit") or {}).get("report_bytes") or 0) / 1024
+            if stamp.get("audit") else None,
     })
 
 if not rows["B"]:
@@ -238,6 +242,8 @@ MEASURES = [
     ("frame p95 (ms)", "frame_p95_ms", None,           False, 3),
     ("cpu/frame (ms)", "cpu_ms",       None,           False, 3),
     ("footprint (MB)", "footprint_mb", memory_budget,  True,  1),
+    ("audit (ms)",     "audit_ms",     None,           False, 1),
+    ("audit rpt (KB)", "audit_report_kb", None,        False, 1),
 ]
 
 failures = []

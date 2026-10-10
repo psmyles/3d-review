@@ -341,6 +341,33 @@ mod tests {
         assert_eq!(state.selection, Selection::Material(2));
     }
 
+    /// A focused finding and a scene selection are exclusive in both
+    /// directions, and focusing a finding opens the view that shows it best.
+    #[test]
+    fn a_finding_and_a_selection_never_hold_the_viewport_at_once() {
+        use crate::aud_state::AuditFocus;
+        use review_audit::{DiagnosticView, RuleId};
+        let mut state = UiState::default();
+
+        state.select_only(4, SelectionKind::Node);
+        state.select_audit_focus(Some(AuditFocus::Rule(RuleId::TexelDensity)));
+        assert!(!state.has_selection(), "the finding takes the viewport");
+        assert_eq!(state.aud.view, DiagnosticView::TexelDensity);
+
+        state.select_only(4, SelectionKind::Node);
+        assert_eq!(state.aud.focus, None, "a part click takes it back");
+
+        state.select_audit_focus(Some(AuditFocus::Offender(RuleId::NonManifoldEdges, 2)));
+        assert_eq!(state.aud.view, DiagnosticView::Issues);
+        state.select_material(Selection::Material(1));
+        assert_eq!(state.aud.focus, None, "so does a material click");
+
+        state.open_audit_profile();
+        assert!(state.aud.profile_open);
+        state.select_only(1, SelectionKind::Node);
+        assert!(!state.aud.profile_open, "and it closes the profile");
+    }
+
     #[test]
     fn clear_selection_drops_everything() {
         let mut state = UiState::default();

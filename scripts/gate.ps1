@@ -151,6 +151,9 @@ function Invoke-GateRun {
         GpuBytes     = $gpu
         Settings     = $json.settings
         Model        = $json.model
+        # Absent from a build that predates the audit, null when none landed.
+        AuditMs      = if ($json.audit) { [double]$json.audit.ms } else { $null }
+        AuditReportBytes = if ($json.audit) { [double]$json.audit.report_bytes } else { $null }
     }
 }
 
@@ -222,6 +225,8 @@ $measures = @(
     @{ Name = 'cpu/frame (ms)'; Property = 'CpuMs'; Budget = $null; Relative = $false; Format = 'N3' }
     @{ Name = 'private (MB)'; Property = 'PrivateBytes'; Budget = $MemoryBudgetPercent; Relative = $true; Format = 'N1' }
     @{ Name = 'gpu (MB)'; Property = 'GpuBytes'; Budget = $MemoryBudgetPercent; Relative = $true; Format = 'N1' }
+    @{ Name = 'audit (ms)'; Property = 'AuditMs'; Budget = $null; Relative = $false; Format = 'N1' }
+    @{ Name = 'audit report (MB)'; Property = 'AuditReportBytes'; Budget = $null; Relative = $false; Format = 'N3' }
 )
 
 $failures = @()

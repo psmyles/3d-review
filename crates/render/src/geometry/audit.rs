@@ -68,3 +68,45 @@ pub(crate) fn audit_lines(
     }
     (edges, dots)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every audit mark deforms with what it marks: an edge's and a corner
+    /// dot's lanes are their corners' own, a point dot follows its node, and a
+    /// model that never deforms gets no lanes at all.
+    #[test]
+    fn marks_carry_the_lanes_of_what_they_mark() {
+        let model = review_model::demo_cube_model();
+        let lanes: Vec<[u32; 4]> = (0..model.vertices.len() as u32)
+            .map(|corner| [corner, 1, 0, 0])
+            .collect();
+        let overlay = AuditOverlay {
+            revision: 1,
+            fills: [&[], &[], &[]],
+            edges: [&[], &[[2, 5]], &[]],
+            corner_dots: [&[7], &[], &[]],
+            point_dots: [&[], &[], &[([1.0, 2.0, 3.0], 4)]],
+            colors: [[0.1, 0.2, 0.3, 0.9]; 3],
+            hidden_alpha: 0.3,
+        };
+        let (edges, dots) = audit_lines(&model, &lanes, &overlay, 0.3);
+        assert_eq!(edges.len(), 2);
+        assert_eq!([edges[0].deform, edges[1].deform], [lanes[2], lanes[5]]);
+        assert_eq!(dots.len(), 4, "a dot is a zero-length line");
+        assert_eq!(dots[0].deform, lanes[7]);
+        assert_eq!(dots[2].deform, super::super::deform::node_deform(4));
+        assert_eq!(dots[2].position, [1.0, 2.0, 3.0]);
+        assert!(
+            edges
+                .iter()
+                .chain(&dots)
+                .all(|vertex| vertex.vertex_color[3] == 0.3),
+            "the pass's alpha replaces the fill opacity"
+        );
+
+        let (_, rigid_dots) = audit_lines(&model, &[], &overlay, 1.0);
+        assert_eq!(rigid_dots[2].deform, super::super::deform::NO_DEFORM);
+    }
+}

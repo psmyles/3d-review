@@ -55,7 +55,7 @@ the source mesh and each processed Opt level.
 
 ## Crate map
 
-Nine crates. The boundaries carry real weight — see [Invariants](#invariants) 2,
+Thirteen crates. The boundaries carry real weight — see [Invariants](#invariants) 2,
 9 and 10.
 
 ### `app` — `review-app`
@@ -91,6 +91,7 @@ One `impl App` block per concern, one file each:
 | `docs_dir.rs` | Where the manual's images live on this install |
 | `undo.rs` | The unified undo/redo snapshot stack |
 | `opt/` | The Opt workspace: `mod.rs` (`OptSubsystem`, its state and the latest-request-wins rules), `process.rs` (scheduling runs, the worker, folding progress / previews / results back), `export.rs`, `preset.rs` |
+| `audit/` | The Aud workspace: `mod.rs` (`AuditSubsystem` — when a run starts, coalescing, the `model-audit` worker, folding the report back), `highlight.rs` (the focused finding resolved into the triangle / edge / dot lists the renderer draws, framing-if-off-screen, offender picking, the density and overdraw views' parameters), `profile.rs` (the last-used profile in the config dir, Save / Load profile), `report.rs` (Save report) |
 
 **GPU bring-up.** `Gpu::start` runs on the *first line of main*, on its own
 thread — device creation needs no window and is the longest single item on the
@@ -119,6 +120,20 @@ arriving mid-run mark it dirty and it respawns once with the latest stack, so
 dragging a slider coalesces without a debounce timer, and a result whose
 generation has been superseded is dropped rather than shown. Export runs on its
 own worker the same way.
+
+**Aud.** `AuditSubsystem` is always present — it is a handful of counters until a
+model is up. A run starts once the model is on screen *and* its source-property
+capture has settled (several checks read the capture), so startup and the time to
+a drawn model are untouched; the worker leaves two cores to the main thread and
+the import worker. It follows Opt's latest-request-wins shape: a profile edit
+bumps a generation that also cancels the run in flight through its
+`CancelToken`, edits during a run coalesce into one respawn, and a re-run hands
+the previous report back as `reuse`, so editing one threshold re-measures one
+check. A new model's run waits for its own capture rather than being respawned.
+The decisions are plain methods on the subsystem (`wants_run`, `request`,
+`start`, `finish`) so they are unit-tested without an `App`. The gate waits for
+the audit to go idle before its memory hold, and stamps its time and resident
+report size.
 
 **Background work** starts through `thread::Builder::spawn`, and a failure to
 spawn is a notice, never a panic. Each job that shows progress owns its own
@@ -152,6 +167,14 @@ Host-agnostic data only. Depends on `glam` and nothing else: no GPU API, no
   reference `deform_corner` / `clip_bounds` that the shader and the tests mirror.
 - `bvh.rs` — a per-mesh-part triangle BVH, used for occlusion of the dimension
   labels and by the Opt AO bake.
+- The mesh facts more than one crate measures, written once: `topology.rs`
+  (logical and welded vertex ids, `EdgeUse` with the direction each face walks
+  an edge, `group_edge_uses`), `uv_islands.rs`, `measure.rs` (triangle world and
+  signed UV area, `SurfaceMeasure::texel_density`, per-node bounds and
+  triangles), `naming.rs` (`_LOD<n>` suffixes), `hierarchy.rs` (`is_synthetic`,
+  the authored parent and roots that see through ufbx's helper nodes) and
+  `cancel.rs` (`CancelToken`, re-exported by `import` and `optimize`). `render`,
+  `optimize` and `audit` all call these rather than keeping copies.
 
 A clip's **motion envelope is not stored here.** It is measured after the model
 is on screen and lives in `UiState::clip_bounds` — see
@@ -348,6 +371,10 @@ between mismatched formats is a silent no-op.
 - `tex.rs` / `tex/gpu.rs` — what the Tex viewport is asked to draw, and its image
   and checker draws (two deferred `SwapchainJob`s, deliberately outside the scene
   MRT/tonemap path so the displayed texel equals the stored texel).
+- `geometry/audit.rs` + `geometry/heat.rs` — the Aud highlight's edge and dot
+  line lists (a dot is a zero-length line, so the line program draws it as a
+  square of the line's width) and the per-face density heat values, both
+  copying each corner's deform lane so they move with a playing clip.
 - `scene/` — `gpu.rs` (`SceneGpu`, the frame's sync and pass recording),
   `slot.rs` (`ModelSlot`: per-model GPU state — mesh buffers, derived views,
   selection/visibility draw lists, each with its bake key), `resources.rs` (the
@@ -356,7 +383,10 @@ between mismatched formats is a silent no-op.
   `deform_gpu.rs` (the skinning and morph tables), `targets.rs` (`TargetSet`),
   `gtao.rs` + `ao_accum.rs` (ambient occlusion and its convergence), `uv.rs`,
   `pipelines.rs`, `uniforms.rs`, `draw.rs`, `gpu_types.rs` (the `#[repr(C)]`
-  uniforms and `SceneVertex`), `opt.rs` (the Opt split and overlay views). Each
+  uniforms and `SceneVertex`), `opt.rs` (the Opt split and overlay views),
+  `aud.rs` (the Aud split: the model in the left half, its UV layout with the
+  offending triangles filled in the right, through `uv.rs`'s `record_uv_view`),
+  `overdraw.rs` (the two overdraw views — see invariant 4). Each
   derived resource's `sync_*` sits beside the thing it builds, and every one has
   a free arm on the path that leaves its view (invariant 3).
 - `ibl.rs` — HDR image-based lighting. At runtime the env cube, irradiance,
@@ -377,7 +407,7 @@ the moment a single view is drawn — as is everything else only Opt uses (the g
 wireframe, the idle slot's derived views) the moment `render`, `render_uv` or the
 Tex path runs (`SceneGpu::release_opt_views`).
 
-**Shaders are one source**: `src/shaders/review.glsl`, all sixteen programs in
+**Shaders are one source**: `src/shaders/review.glsl`, all twenty programs in
 sokol-shdc's annotated GLSL. `scripts/gen-shaders.{sh,ps1}` turns it into the
 checked-in `src/shaders/generated/` — per-backend HLSL5 and MSL sources plus
 shdc's Rust reflection (bind slots, attribute locations, a struct per uniform
@@ -397,7 +427,7 @@ The side panels are in **every** workspace, and each workspace shows its own
 Outliner tabs. `OutlinerTab::available` (`state/outliner.rs`) is the one table:
 3D shows Scene, Materials, Textures and Animations (the last only for a file with
 clips); UV shows Scene and Textures; Tex shows Textures; Opt shows Scene and
-Materials. Each workspace remembers its own tab. The UV viewport lays out the
+Materials; Aud shows Issues and Scene. Each workspace remembers its own tab. The UV viewport lays out the
 Outliner's node selection, or every node when nothing is selected, and never a
 hidden one (`geometry::UvNodeScope`, part of `sync_uv_view`'s bake key).
 
@@ -454,6 +484,20 @@ frame a card is shown, hovering pauses them, and one `request_repaint_after` per
 frame keeps a sticky card off the redraw loop. `begin_activity` names a background
 job; `update_activity` rewrites the stage line and the bar in place.
 
+**Aud state.** `aud_state.rs` holds the active `AuditProfile` (behind an `Arc`,
+bumped through `edit_profile` so undo and `app` see one revision), the last
+report, the focused finding (`AuditFocus`: a check, one object's failure of it,
+or one object), the chosen diagnostic view and the Issues list's grouping and
+open groups. A focused finding and a scene selection are exclusive, like the Opt
+stack pane and the Outliner: `select_audit_focus` clears the selection and
+`release_stack_selection` clears the focus. Only the file dialogs travel as an
+`AuditIntent`. `audit_labels.rs` is the exhaustive map from every typed audit
+value to catalog text (invariant 12); `panels/outliner/issues.rs` is the Issues
+tab and `panels/aud_inspector.rs` the finding, object, summary and profile
+views. The Aud view group sits just left of the workspace buttons
+(`toolbar::mode_group_left` keeps room for it in every workspace), and the Aud
+segment widens only while it has a count to show.
+
 **Opt state.** `opt_state.rs` holds the `OptStack` the chrome edits, the
 comparison-view settings and the last run's measured figures. Ownership follows
 the convention already used for selection and the hidden-mesh set: `UiState` owns
@@ -468,6 +512,33 @@ paragraph, manual link), and `help.rs` is the in-app manual — a native
 from `docs/book/src`. Page *text* is compiled in, so Help works on a broken
 install; only images are read from disk, and one that is not there renders as its
 alt text.
+
+### `audit` — `review-audit`
+
+The model audit behind the Aud workspace, as a pure library so a future headless
+batch run can write the same report. `#![forbid(unsafe_code)]`; depends on
+`review-model`, `glam`, `serde` and `review-prof` — deliberately **not** on
+`review-optimize`, which is an FFI site the audit has no need of. It is
+**text-free**: rule ids, severities, measured values and skip reasons are typed,
+and `ui` / `app` turn them into catalog text.
+
+- `rule.rs` — the `rules!` table: each `RuleId` with its stable wire name
+  (`"uv.overlap"`, pinned by a test, because saved profiles and reports key on
+  it), category, element kind and viewport marker; `Severity`;
+  `DiagnosticView`, `related_view` and `see_also`.
+- `finding.rs` — `Status`, `Measured`, `Threshold`, `Offender` (a node, an exact
+  count and the elements as triangles / edges / vertices / points, capped at
+  `ELEMENT_CAP` with `truncated` set), `RuleResult`, `AuditSummary`,
+  `AuditReport`.
+- `profile/` — `AuditProfile` (built-in Unity / Unreal / Generic, editable),
+  the parameter specs the Inspector edits, `sanitize`, and the versioned JSON
+  envelope.
+- `checks/` — one file per category. Work is per node and merged in node order,
+  so a report does not depend on the thread count. Each result keeps a
+  `measure_key` of the parameters that change what it *measures*; `run` given
+  the previous report re-judges a check whose key matches instead of rescanning.
+- `report.rs` — the JSON report (`3d-review.audit-report` v1), naming elements
+  the way the DCC does (per-mesh polygon and control-point indices).
 
 ### `optimize` — `review-optimize`
 
@@ -699,17 +770,25 @@ buffers. Implemented for the line views by `SceneGpu::sync_line_views` in
 `sync_*` / `release_*` pair lives too (`scene/resources.rs` keeps the mesh
 upload, `scene/slot.rs` the per-model state and bake keys, `scene/draw_lists.rs`
 the selection and visibility index ordering). A builder reached from only *one* viewport still needs its free
-arm on the path that leaves that viewport: `sync_uv_view` is called from
-`render_uv` alone, so `release_uv_views` runs from the 3D path's `sync_frame`.
+arm on the paths that leave them: `sync_uv_view` is called from `render_uv`
+and the Aud split (`render_aud_split`), so `release_uv_views` runs from the plain
+3D `render`, `render_opt` and `render_texture`; the Aud overdraw views are built
+only in a 3D frame, so `release_overdraw` runs from `render_uv` and
+`render_texture`.
 
-**4. Heavy derived views are GPU compute and capability-gated.** Compute-based
-views (none ship yet) read buffers already on the GPU and write transient storage
-buffers. Gate them on what the device reports — sokol's `query_features` /
-`query_limits` / `query_pixelformat` — and disable them in the UI when the active
-device cannot run them. Never crash. The one capability gate today is the scene
-MSAA picker, which asks `backend::supported_sample_counts` because sokol reports
-MSAA only as a yes/no; the texture path already asks `query_limits` for the
-largest 2D image the device takes.
+**4. Heavy derived views are GPU passes and capability-gated.** Views that need
+more than a recoloured mesh run as GPU passes — raster or compute — over buffers
+already on the GPU, writing transient targets or storage buffers. Gate them on
+what the device reports — sokol's `query_features` / `query_limits` /
+`query_pixelformat` — and disable them in the UI when the active device cannot
+run them. Never crash. The Aud overdraw views are the first such views: additive
+raster passes into a single-sample `R16F` count target, pulling the mesh's own
+vertex buffer, gated on `Gpu::supports_overdraw` (`Format::renders_blended`, which
+asks `query_pixelformat` for render *and* blend) and surfaced to the chrome as
+`Capabilities::overdraw`, which disables both view buttons with the reason. The
+scene MSAA picker asks `backend::supported_sample_counts` because sokol reports
+MSAA only as a yes/no; the texture path asks `query_limits` for the largest 2D
+image the device takes.
 
 **5. Faithful stats.** The Model Stats panel reads source DCC counts carried
 through import in `ModelStats` (original polygon and vertex counts), **never**
@@ -754,7 +833,7 @@ into `model` or `ui`, nor into `render`'s geometry, material or camera modules.
 Before `slice::from_raw_parts`, null-check the pointer and treat len 0 as empty
 (`checked_slice`). Free the C scene on **both** success and error paths.
 
-**The compiler enforces it.** `app`, `model`, `ui`, `log`, `prof` and
+**The compiler enforces it.** `app`, `model`, `ui`, `audit`, `log`, `prof` and
 `localization` are `#![forbid(unsafe_code)]`. `render`, `import` and `optimize`
 are `#![deny(unsafe_code)]` at the crate root, and each sanctioned module opts
 back in with a scoped `#![allow(unsafe_code, reason = "...")]` saying why — so a

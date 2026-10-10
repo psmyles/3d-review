@@ -43,6 +43,10 @@ sys-locale.workspace = true
 tracy-client.workspace = true
 winit.workspace = true
 
+[dev-dependencies]
+# Parses the gate stamp in its test, the way the harnesses do.
+serde_json.workspace = true
+
 # `product.json` is read on every host now: the identity it carries reaches the
 # binary as compile-time environment variables, and the macOS About panel is one of
 # the things that reads them.

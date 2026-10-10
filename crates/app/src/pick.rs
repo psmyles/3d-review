@@ -351,6 +351,38 @@ impl App {
         }
     }
 
+    /// The focused finding's edge or dot nearest a click at `position`, as the
+    /// focus that narrows to its offender.
+    fn audit_offender_near(&self, position: Vec2) -> Option<review_ui::AuditFocus> {
+        let focus = self.ui.aud.focus?;
+        let report = self.ui.aud.report.as_ref()?;
+        let view = self.pick_view(position)?;
+        let projection: CameraProjection = self.ui.projection_mode.into();
+        let pose = view
+            .posed
+            .then(|| self.animation.context())
+            .flatten()
+            .map(|ctx| (ctx, &self.animation.deform));
+        let model = view.model;
+        crate::audit::offender_near(
+            report,
+            focus,
+            model,
+            |corner| match pose {
+                Some((ctx, deform)) => (model.vertices.get(corner as usize).is_some()).then(|| {
+                    review_model::anim::deform_corner(model, ctx, deform, corner as usize).0
+                }),
+                None => model
+                    .vertices
+                    .get(corner as usize)
+                    .map(|vertex| vertex.position),
+            },
+            |world| view.camera.project(world, projection, view.size),
+            position - view.origin,
+            crate::audit::AUDIT_PICK_TOLERANCE_POINTS * self.scale_factor(),
+        )
+    }
+
     /// Apply a click at `position` to the selection.
     ///
     /// `mode` decides how it combines with what is already selected; the rule
@@ -362,11 +394,13 @@ impl App {
         }
         let hit = self.cast_hit(position);
         // In Aud, a click on a highlighted offender picks that finding rather
-        // than the part under it.
+        // than the part under it: a tinted face under the ray, or else an edge
+        // or dot drawn near the pointer.
         if self.ui.mode == WorkspaceMode::Aud
             && let Some(focus) = hit
                 .and_then(|(_, triangle)| triangle)
                 .and_then(|triangle| self.audit_offender_at(triangle))
+                .or_else(|| self.audit_offender_near(position))
         {
             self.ui.select_audit_focus(Some(focus));
             self.redraw.requested = true;

@@ -597,3 +597,135 @@ fn apply_click(state: &mut UiState, row: Row) {
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use review_audit::{
+        AuditReport, Category, ElementSet, Offender, RuleId, RuleResult, Severity, Skip, Status,
+        Threshold,
+    };
+
+    use super::{Row, rows_by_check, rows_by_object};
+    use crate::aud_state::IssueGroup;
+    use crate::state::UiState;
+
+    fn result(
+        rule: RuleId,
+        status: Status,
+        severity: Severity,
+        nodes: &[Option<u32>],
+    ) -> RuleResult {
+        RuleResult {
+            rule,
+            status,
+            severity,
+            measured: None,
+            threshold: Threshold::None,
+            offenders: nodes
+                .iter()
+                .map(|&node| Offender::elements(node.map(|node| node as usize), ElementSet::None))
+                .collect(),
+            total: nodes.len() as u64,
+            truncated: false,
+            measure_key: 0,
+        }
+    }
+
+    /// Two failing geometry rules (one on two objects, one scene-wide), a
+    /// passing UV rule and a skin rule that did not run.
+    fn report() -> AuditReport {
+        AuditReport {
+            results: vec![
+                result(
+                    RuleId::NonManifoldEdges,
+                    Status::Fail,
+                    Severity::Warning,
+                    &[Some(0), Some(1)],
+                ),
+                result(
+                    RuleId::DrawCallBudget,
+                    Status::Fail,
+                    Severity::Error,
+                    &[None],
+                ),
+                result(RuleId::UvOverlap, Status::Pass, Severity::Info, &[]),
+                result(
+                    RuleId::Influences,
+                    Status::NotEvaluated(Skip::NoSkin),
+                    Severity::Info,
+                    &[],
+                ),
+            ],
+            ..Default::default()
+        }
+    }
+
+    /// By check lists failing rules under their open category, closed; opening
+    /// a rule lists its objects; Show passed adds the rest.
+    #[test]
+    fn by_check_lists_failures_and_hides_the_rest_until_asked() {
+        let report = report();
+        let mut state = UiState::default();
+        assert_eq!(
+            rows_by_check(&state, &report),
+            [
+                Row::Category(Category::Geometry),
+                Row::Rule(RuleId::NonManifoldEdges),
+                Row::Rule(RuleId::DrawCallBudget),
+            ],
+        );
+
+        state.aud.toggle(IssueGroup::Rule(RuleId::NonManifoldEdges));
+        let rows = rows_by_check(&state, &report);
+        assert_eq!(rows.len(), 5, "{rows:?}");
+        assert_eq!(
+            rows[2],
+            Row::Offender {
+                rule: RuleId::NonManifoldEdges,
+                node: Some(0),
+                depth: 2
+            }
+        );
+
+        state.aud.show_passed = true;
+        let rows = rows_by_check(&state, &report);
+        assert!(rows.contains(&Row::Rule(RuleId::UvOverlap)), "{rows:?}");
+        assert!(rows.contains(&Row::Rule(RuleId::Influences)), "{rows:?}");
+
+        state.aud.toggle(IssueGroup::Category(Category::Geometry));
+        assert!(
+            !rows_by_check(&state, &report).contains(&Row::Rule(RuleId::NonManifoldEdges)),
+            "a closed category hides its rules",
+        );
+    }
+
+    /// By object lists the scene-wide group first, then each object with its
+    /// failing rules worst first; passed rules never appear there.
+    #[test]
+    fn by_object_groups_failures_under_each_object() {
+        let report = report();
+        let state = UiState::default();
+        let model = review_model::demo_cube_model();
+        let rows = rows_by_object(&state, &report, &model);
+        assert_eq!(rows[0], Row::Object(None));
+        assert_eq!(
+            rows[1],
+            Row::Offender {
+                rule: RuleId::DrawCallBudget,
+                node: None,
+                depth: 1
+            }
+        );
+        assert!(rows.contains(&Row::Object(Some(0))), "{rows:?}");
+        assert!(
+            rows.iter().all(|row| !matches!(
+                row,
+                Row::Offender {
+                    rule: RuleId::UvOverlap,
+                    ..
+                }
+            )),
+            "{rows:?}"
+        );
+    }
+}

@@ -46,8 +46,9 @@ it at any time. Click a part under the check, or in the Inspector's **Parts**
 list, to look at only that part's problems. Click the finding again, or press
 `Esc`, to go back to the plain model.
 
-In Select mode, clicking a highlighted problem in the viewport picks it in the
-list; clicking anywhere else selects the part as usual.
+In Select mode, clicking a highlighted problem in the viewport - a tinted face,
+or close to a marked edge or dot - picks it in the list; clicking anywhere else
+selects the part as usual.
 
 In the Scene tab, each part with a finding carries a dot in the colour of its
 worst one.

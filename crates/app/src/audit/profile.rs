@@ -25,6 +25,44 @@ fn saved_profile_file() -> Option<PathBuf> {
     Some(path)
 }
 
+/// What reading the saved profile found.
+#[derive(Debug)]
+enum Saved {
+    /// No file: the first launch.
+    Missing,
+    /// A file the system would not hand over; already logged.
+    Unreadable,
+    Loaded(review_audit::AuditProfile),
+    /// A file that is not a profile this build reads.
+    Rejected(review_audit::AuditError),
+}
+
+fn read_saved(path: &Path) -> Saved {
+    let json = match std::fs::read_to_string(path) {
+        Ok(json) => json,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Saved::Missing,
+        Err(error) => {
+            log::warn!("audit profile unreadable {}: {error}", path.display());
+            return Saved::Unreadable;
+        }
+    };
+    match envelope::from_json(&json) {
+        Ok(profile) => Saved::Loaded(profile),
+        Err(error) => Saved::Rejected(error),
+    }
+}
+
+/// Write `profile` to `path`, creating its directory.
+fn write_saved(path: &Path, profile: &review_audit::AuditProfile) -> Result<(), String> {
+    let json = envelope::to_json(profile).map_err(|error| error.to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("config dir unavailable {}: {error}", parent.display()))?;
+    }
+    review_optimize::write_bytes_replacing(path, &json)
+        .map_err(|error| format!("{}: {error}", path.display()))
+}
+
 /// Restore the last-used profile into `app` at launch. A missing file is the
 /// first launch and keeps the default; an unreadable one is reported once and
 /// replaced by the default on the next save.
@@ -32,20 +70,13 @@ pub(crate) fn restore_saved_profile(app: &mut App) {
     let Some(path) = saved_profile_file() else {
         return;
     };
-    let json = match std::fs::read_to_string(&path) {
-        Ok(json) => json,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
-        Err(error) => {
-            log::warn!("audit profile unreadable {}: {error}", path.display());
-            return;
-        }
-    };
-    match envelope::from_json(&json) {
-        Ok(profile) => {
+    match read_saved(&path) {
+        Saved::Missing | Saved::Unreadable => {}
+        Saved::Loaded(profile) => {
             app.ui.aud.set_profile(Arc::new(profile));
             app.audit.saved_revision = app.ui.aud.profile_revision;
         }
-        Err(error) => {
+        Saved::Rejected(error) => {
             log::warn!("saved audit profile rejected: {error}");
             app.notifications
                 .warning(keys::app_audit::saved_profile_reset(
@@ -77,21 +108,8 @@ impl App {
         let Some(path) = saved_profile_file() else {
             return;
         };
-        let json = match envelope::to_json(&self.ui.aud.profile) {
-            Ok(json) => json,
-            Err(error) => {
-                log::error!("audit profile not saved: {error}");
-                return;
-            }
-        };
-        if let Some(parent) = path.parent()
-            && let Err(error) = std::fs::create_dir_all(parent)
-        {
-            log::warn!("config dir unavailable {}: {error}", parent.display());
-            return;
-        }
-        if let Err(error) = review_optimize::write_bytes_replacing(&path, &json) {
-            log::warn!("audit profile not saved {}: {error}", path.display());
+        if let Err(error) = write_saved(&path, &self.ui.aud.profile) {
+            log::warn!("audit profile not saved: {error}");
         }
     }
 
@@ -156,5 +174,53 @@ impl App {
                     ));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use review_audit::{AuditProfile, Engine};
+
+    use super::{Saved, read_saved, write_saved};
+
+    /// A directory of this test's own, so parallel runs do not share a file.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "review-audit-profile-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    /// The saved profile survives a write and a read — edits included — and the
+    /// write creates the config directory on a first launch.
+    #[test]
+    fn the_saved_profile_round_trips_through_its_file() {
+        let dir = scratch("round-trip");
+        let path = dir.join("nested").join("audit-profile.json");
+        assert!(matches!(read_saved(&path), Saved::Missing));
+
+        let mut profile = AuditProfile::builtin(Engine::Unreal);
+        profile.name = "Studio".into();
+        write_saved(&path, &profile).expect("written");
+        match read_saved(&path) {
+            Saved::Loaded(read) => assert_eq!(read, profile),
+            other => panic!("expected the profile back, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file that is not a profile is rejected rather than half-applied.
+    #[test]
+    fn a_damaged_file_is_rejected() {
+        let dir = scratch("damaged");
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("audit-profile.json");
+        std::fs::write(&path, "{ not json").expect("written");
+        assert!(matches!(read_saved(&path), Saved::Rejected(_)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

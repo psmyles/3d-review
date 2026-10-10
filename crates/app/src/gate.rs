@@ -271,10 +271,18 @@ impl App {
         let size = self.gpu.as_ref().map_or((0, 0), review_render::Gpu::size);
         let msaa = self.ui.anti_aliasing.effective_sample_count();
         let gtao = self.ui.gtao.enabled;
+        // The audit that ran on the load: its time, and the report it left
+        // resident (the run's scratch is gone by now; `audit_idle` saw to that).
+        let audit = self
+            .ui
+            .aud
+            .report
+            .as_ref()
+            .map(|report| (f64::from(report.elapsed_ms), report.heap_bytes()));
         let Some(gate) = self.gate.as_mut() else {
             return;
         };
-        let stamp = gate.stamp(size, msaa, gtao);
+        let stamp = gate.stamp(size, msaa, gtao, audit);
         match std::fs::write(&gate.out, stamp) {
             Ok(()) => log::info!("gate: stamp written"),
             Err(err) => log::error!("gate: stamp write failed: {err}"),
@@ -287,8 +295,14 @@ impl App {
 
 impl Gate {
     /// The stamp, as JSON written by hand — `app` has no serializer and this is
-    /// eleven fields, none of which need escaping beyond the two paths.
-    fn stamp(&self, size: (u32, u32), msaa: u32, gtao: bool) -> String {
+    /// twelve fields, none of which need escaping beyond the two paths.
+    fn stamp(
+        &self,
+        size: (u32, u32),
+        msaa: u32,
+        gtao: bool,
+        audit: Option<(f64, usize)>,
+    ) -> String {
         let total: Vec<f64> = self.samples.iter().map(|s| s.total_ms).collect();
         let cpu: Vec<f64> = self.samples.iter().map(|s| s.cpu_ms).collect();
         let first_present_ns = self
@@ -332,9 +346,18 @@ impl Gate {
         );
         let _ = writeln!(
             out,
-            "  \"model\": {{ \"triangles\": {}, \"vertices\": {}, \"clips\": {} }}",
+            "  \"model\": {{ \"triangles\": {}, \"vertices\": {}, \"clips\": {} }},",
             self.triangles, self.vertices, self.clips
         );
+        // `null` when no report landed (an empty fixture, or a failed run), so
+        // the harness shows n/a rather than a zero that reads as free.
+        let _ = match audit {
+            Some((ms, bytes)) => writeln!(
+                out,
+                "  \"audit\": {{ \"ms\": {ms:.3}, \"report_bytes\": {bytes} }}"
+            ),
+            None => writeln!(out, "  \"audit\": null"),
+        };
         out.push_str("}\n");
         out
     }
@@ -395,7 +418,9 @@ fn json_string(value: &str) -> String {
 pub(crate) const GATE_POLL: Duration = Duration::from_millis(100);
 #[cfg(test)]
 mod tests {
-    use super::{json_string, percentile, stats_json};
+    use std::path::PathBuf;
+
+    use super::{Gate, json_string, percentile, stats_json};
 
     #[test]
     fn percentiles_are_nearest_rank() {
@@ -407,6 +432,25 @@ mod tests {
 
     /// The stamp is parsed by the harness, so a backslash in a Windows path must
     /// come out escaped rather than as an invalid JSON escape sequence.
+    /// The stamp is hand-written JSON, so it is parsed here as the harnesses
+    /// parse it: a missing comma is a gate run that fails at the very end.
+    #[test]
+    fn the_stamp_parses_with_and_without_an_audit() {
+        let gate = Gate::new(PathBuf::from(r"C:\out\stamp.json"));
+        for audit in [Some((12.5, 4096)), None] {
+            let stamp = gate.stamp((1920, 1080), 4, true, audit);
+            let json: serde_json::Value = serde_json::from_str(&stamp).expect(&stamp);
+            assert_eq!(json["settings"]["msaa"], 4);
+            match audit {
+                Some(_) => {
+                    assert_eq!(json["audit"]["ms"], 12.5);
+                    assert_eq!(json["audit"]["report_bytes"], 4096);
+                }
+                None => assert!(json["audit"].is_null()),
+            }
+        }
+    }
+
     #[test]
     fn paths_are_escaped_for_json() {
         assert_eq!(

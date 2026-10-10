@@ -148,3 +148,57 @@ fn reusing_the_previous_report_equals_a_cold_run() {
     let cold = run(input, &edited, None, RunOptions::default()).unwrap();
     assert_eq!(content(reused), content(cold));
 }
+
+/// What the Generic profile finds on each fixture: every failing check and
+/// its exact total. A change to a check's behaviour on real data shows here
+/// as a diff to read, rather than slipping through a test that only asks
+/// whether the rules ran.
+#[test]
+fn the_findings_on_the_fixtures_are_pinned() {
+    const PINNED: &[(&str, &str)] = &[
+        ("meter_cube.fbx", "geometry.hard_edges(12)"),
+        (
+            "monkey.fbx",
+            "geometry.duplicate_vertices(4) geometry.hard_edges(961) transform.scale(1) \
+             transform.unfrozen(1) uv.lightmap_overlap(8) density.triangle_lod(1)",
+        ),
+        (
+            "SM_column04.fbx",
+            "transform.unfrozen(1) uv.overlap(10) uv.flipped(15) density.triangle_lod(1)",
+        ),
+        (
+            "SM_Ammo_Crate_01a.fbx",
+            "geometry.duplicate_vertices(6542) geometry.inverted_normals(2) \
+             uv.out_of_range(10) uv.overlap(7660) uv.flipped(19) uv.lightmap_overlap(25) \
+             density.triangle_lod(3) hierarchy.empty_nodes(1)",
+        ),
+        (
+            "SK_Player_01.fbx",
+            "geometry.non_manifold_edges(4) geometry.duplicate_vertices(237) geometry.ngons(3) \
+             geometry.inverted_normals(11) transform.unfrozen(1) transform.pivot_offset(1) \
+             uv.missing(2) uv.out_of_range(2737) uv.overlap(121075) uv.flipped(18437) \
+             uv.lightmap_overlap(10799) skin.unused_bones(2) density.texel(3) \
+             density.triangle_lod(2) density.triangle_reduce(1) hierarchy.multiple_roots(2)",
+        ),
+        (
+            "xyzrgb_dragon.fbx",
+            "geometry.non_manifold_edges(1) geometry.isolated_vertices(123) \
+             geometry.hard_edges(357454) uv.missing(1) density.triangle_reduce(1) \
+             naming.invalid_characters(1)",
+        ),
+    ];
+    for (name, expected) in PINNED {
+        let Some((model, extras)) = fixture(name) else {
+            continue;
+        };
+        let report = audit(&model, &extras, &AuditProfile::builtin(Engine::Generic), 4);
+        let found: Vec<String> = report
+            .results
+            .iter()
+            .filter(|result| result.status == Status::Fail)
+            .map(|result| format!("{}({})", result.rule.as_str(), result.total))
+            .collect();
+        let expected: Vec<&str> = expected.split_whitespace().collect();
+        assert_eq!(found, expected, "{name}");
+    }
+}

@@ -312,3 +312,101 @@ impl SceneGpu {
         true
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use glam::{Vec2, Vec3};
+
+    /// `fs_quad_overdraw`'s count, on the CPU: what pixel `pixel` of a `size`
+    /// target adds for the triangle whose clip-space corners (x, y, w) are
+    /// `corners`. Mirrors the shader line for line, so a change to one is a
+    /// change to both.
+    fn quad_coverage(corners: [Vec3; 3], pixel: Vec2, size: Vec2) -> f32 {
+        let [a, b, c] = corners;
+        let (e0, e1, e2) = (b.cross(c), c.cross(a), a.cross(b));
+        let det = a.dot(e0);
+        let size = size.max(Vec2::ONE);
+        let pixel = pixel.floor();
+        let quad = pixel - pixel % 2.0;
+        let mut covered: f32 = 0.0;
+        for i in 0..4 {
+            let centre = quad + Vec2::new((i & 1) as f32, (i >> 1) as f32) + 0.5;
+            let p = Vec3::new(
+                centre.x / size.x * 2.0 - 1.0,
+                1.0 - centre.y / size.y * 2.0,
+                1.0,
+            );
+            let sign = if det > 0.0 {
+                1.0
+            } else if det < 0.0 {
+                -1.0
+            } else {
+                0.0
+            };
+            let edges = Vec3::new(e0.dot(p), e1.dot(p), e2.dot(p)) * sign;
+            if edges.min_element() >= 0.0 {
+                covered += 1.0;
+            }
+        }
+        let k: f32 = if det.abs() > 1e-12 {
+            covered.max(1.0)
+        } else {
+            4.0
+        };
+        4.0 / k
+    }
+
+    /// Corners in NDC at w = 1, as an orthographic draw hands them over.
+    fn flat(points: [(f32, f32); 3]) -> [Vec3; 3] {
+        points.map(|(x, y)| Vec3::new(x, y, 1.0))
+    }
+
+    const SIZE: Vec2 = Vec2::new(2.0, 2.0);
+
+    /// A triangle that fills its quads costs one shading per pixel, whichever
+    /// way it winds.
+    #[test]
+    fn a_covering_triangle_costs_one() {
+        let big = flat([(-5.0, -5.0), (5.0, -5.0), (0.0, 5.0)]);
+        assert_eq!(quad_coverage(big, Vec2::ZERO, SIZE), 1.0);
+        let reversed = [big[0], big[2], big[1]];
+        assert_eq!(quad_coverage(reversed, Vec2::new(1.0, 1.0), SIZE), 1.0);
+    }
+
+    /// A triangle covering half a quad pays for the half it does not.
+    #[test]
+    fn half_a_quad_costs_two() {
+        // Everything left of x = 0: the quad's left column.
+        let left = flat([(0.0, -10.0), (0.0, 10.0), (-10.0, 0.0)]);
+        assert_eq!(quad_coverage(left, Vec2::new(0.0, 1.0), SIZE), 2.0);
+    }
+
+    /// A triangle covering one pixel centre pays for the whole quad.
+    #[test]
+    fn one_pixel_costs_four() {
+        // Around the top-left pixel's centre, (-0.5, 0.5) in NDC.
+        let tiny = flat([(-0.6, 0.4), (-0.4, 0.4), (-0.5, 0.6)]);
+        assert_eq!(quad_coverage(tiny, Vec2::ZERO, SIZE), 4.0);
+    }
+
+    /// An edge-on triangle cannot say which centres it covers, so it is taken
+    /// to fill its quad: it never inflates the count. (A truly degenerate one
+    /// rasterizes no fragment to ask anyway.)
+    #[test]
+    fn an_edge_on_triangle_counts_as_filling_its_quad() {
+        let edge_on = flat([(-1.0, 0.0), (0.0, 0.0), (1.0, 0.0)]);
+        assert_eq!(quad_coverage(edge_on, Vec2::ZERO, SIZE), 1.0);
+    }
+
+    /// Homogeneous corners need no divide: the same triangle scaled by w
+    /// counts the same.
+    #[test]
+    fn coverage_does_not_depend_on_w() {
+        let left = flat([(0.0, -10.0), (0.0, 10.0), (-10.0, 0.0)]);
+        let scaled = left.map(|corner| corner * 3.5);
+        assert_eq!(
+            quad_coverage(scaled, Vec2::new(0.0, 1.0), SIZE),
+            quad_coverage(left, Vec2::new(0.0, 1.0), SIZE),
+        );
+    }
+}

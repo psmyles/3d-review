@@ -180,4 +180,20 @@ mod tests {
         assert!(filter.is_hidden(1));
         assert!(!filter.is_hidden(2));
     }
+
+    /// The overdraw views' triangle list: the whole index buffer, borrowed, when
+    /// nothing is hidden, and only the visible triangles' corners otherwise.
+    #[test]
+    fn visible_indices_borrow_when_nothing_is_hidden_and_filter_otherwise() {
+        let whole = model(3, vec![0, 1, 0]);
+        assert!(matches!(
+            visible_triangle_indices(&whole, &[]),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert_eq!(
+            visible_triangle_indices(&whole, &[0]).as_ref(),
+            [3, 4, 5],
+            "only node 1's triangle stays"
+        );
+    }
 }

@@ -15,6 +15,7 @@ under.
 - [Import and the FBX libraries](#import-and-the-fbx-libraries)
 - [The Opt workspace](#the-opt-workspace)
 - [Remesh](#remesh)
+- [The Aud workspace](#the-aud-workspace)
 - [Baked assets](#baked-assets)
 
 ---
@@ -732,6 +733,50 @@ a lie.
 A node is split into one piece per material with its own vertices, so a closed
 object reads as several open ones. Weld by position first — `welded_edge_uses` in
 `tests/remesh.rs` — which is the same weld `remesh::proxy` works on.
+
+---
+
+## The Aud workspace
+
+- **Inverted normals are judged against the mirror-corrected winding.** Import
+  copies a face's winding as authored but sign-corrects the normals on a mirrored
+  node, so `geometry.inverted_normals` multiplies the winding by
+  `sign(det(node × geometry_to_node))`; without it every mirrored half of a model
+  reads as inside out. And a face is inverted only when *every* corner normal
+  opposes the winding by more than `INVERTED_COS` — averaged normals on a smooth
+  surface routinely lean across a small face, and one disagreeing corner is
+  shading, not a flipped face. Both were false positives on real fixtures.
+- **`SceneFrame::with_model` resets `audit` to `None`.** The highlight's lists
+  index the *source* model's triangles and corners. The Opt workspace hands the
+  renderer its processed mesh through `with_model`, and an inherited overlay
+  would tint arbitrary faces of a different mesh.
+- **Clay is keyed on grouping, not on the material mode.** Focusing a finding
+  switches Source to Standard; the mesh, selection, hover and visibility bakes
+  compare `MaterialMode::groups_by_part()`, equal for the two, so a click in the
+  Issues list rebuilds nothing. Keying them on the raw mode rebuilt the mesh on
+  every focus change.
+- **The highlight is drawn in the Issues view only.** Over a density or overdraw
+  view a severity tint mixes into the ramp and the model stops matching the key.
+- **The audit waits for the source-property capture.** Several checks read it,
+  and it lands after the model is drawn; starting on `ModelLoaded` would run the
+  audit twice. A new model's run is not respawned by the old one's result: it
+  waits for its own capture (`AuditSubsystem::finish` only respawns for an edit).
+- **A file can declare a unit its geometry was not modelled in.** The checks
+  measure in the file's declared unit, so a wall modelled in meters but declared
+  in centimetres is a 4 cm wall to every density check — `SM_Wall_Break_4x3m`
+  reports 228845 px/m. The figure is right; the file is what the finding is
+  about.
+- **Overdraw counts read the mesh's own vertex buffer.** Both views draw each
+  visible triangle as three corners pulled through `VIEW_LINE_VERTICES`, with
+  the triangle list in a storage buffer at `VIEW_LINE_INDICES` — the same slots
+  the `wire` program uses. The quad view's depth prepass uses `MESH_DEPTH_BIAS`,
+  since the prepass (`vs_overdraw`) and the count (`vs_quad_overdraw`) are
+  different shaders and nothing guarantees their positions agree bit for bit.
+  `fs_quad_overdraw`'s rule has a CPU twin in `scene/overdraw.rs`'s tests; change
+  them together.
+- **A deferred draw's uniform block is capped.** `SwapchainJob` copies its
+  uniforms into a fixed `MAX_JOB_UNIFORM_BYTES` buffer, checked at compile time;
+  the overdraw ramp's 112-byte block is why it is 112.
 
 ---
 

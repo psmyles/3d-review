@@ -873,4 +873,22 @@ mod tests {
             }
         }
     }
+
+    /// The Aud split frames a UV box with a margin at the camera's own aspect:
+    /// centred on it, and tall or wide enough for whichever side binds.
+    #[test]
+    fn a_uv_camera_fits_a_box_at_its_aspect() {
+        let camera = UvCamera {
+            aspect_ratio: 2.0,
+            ..UvCamera::default()
+        };
+        // A tall box binds on height.
+        let tall = camera.fitted_to(Vec2::new(0.2, 0.0), Vec2::new(0.4, 1.0), 0.1);
+        assert!((tall.center - Vec2::new(0.3, 0.5)).length() < 1e-6);
+        assert!((tall.half_height - 0.6).abs() < 1e-6);
+        // A wide box binds on width: half of 2.4 across, over an aspect of 2.
+        let wide = camera.fitted_to(Vec2::ZERO, Vec2::new(2.0, 0.1), 0.1);
+        assert!((wide.half_height - 0.6).abs() < 1e-6);
+        assert_eq!(wide.aspect_ratio, 2.0);
+    }
 }

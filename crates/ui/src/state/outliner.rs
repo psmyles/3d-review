@@ -228,7 +228,7 @@ mod tests {
     /// product decision, not something a refactor should drift.
     #[test]
     fn each_workspace_offers_its_own_tabs() {
-        use OutlinerTab::{Animations, Materials, Scene, Textures};
+        use OutlinerTab::{Animations, Issues, Materials, Scene, Textures};
         assert_eq!(
             tabs(WorkspaceMode::ThreeD, true),
             [Scene, Materials, Textures, Animations]
@@ -236,6 +236,7 @@ mod tests {
         assert_eq!(tabs(WorkspaceMode::Uv, true), [Scene, Textures]);
         assert_eq!(tabs(WorkspaceMode::Texture, true), [Textures]);
         assert_eq!(tabs(WorkspaceMode::Opt, true), [Scene, Materials]);
+        assert_eq!(tabs(WorkspaceMode::Aud, true), [Issues, Scene]);
     }
 
     #[test]
@@ -251,6 +252,7 @@ mod tests {
             WorkspaceMode::Uv,
             WorkspaceMode::Texture,
             WorkspaceMode::Opt,
+            WorkspaceMode::Aud,
         ] {
             assert!(!tabs(mode, false).is_empty(), "{mode:?}");
         }

@@ -90,5 +90,10 @@ split view, and picks the part in the view you clicked in. That is how you reach
 [per-object settings](opt/overrides.md) without going through the Outliner. Opt
 always draws the bind pose, so a pick there ignores the animation.
 
+In the [Aud workspace](aud/index.md), while a finding is picked, clicking one
+of the parts it marks - a tinted face, or near a marked edge or dot - narrows
+the finding to that part. A click anywhere else selects a part as usual, and
+lets go of the finding: the two are never shown at once.
+
 Selecting does not work in the UV or Texture workspaces, which have nothing to
 pick.

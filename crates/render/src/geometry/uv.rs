@@ -532,4 +532,23 @@ mod tests {
         assert_eq!(traced_faces(&model, &[1], &[]), 1);
         assert_eq!(traced_faces(&model, &[], &[]), 2);
     }
+
+    /// The UV half's offender fill lays each offending triangle out at its UVs,
+    /// in its severity's colour, and skips an index past the end.
+    #[test]
+    fn the_uv_highlight_lays_offenders_out_at_their_uvs() {
+        let model = two_faces(
+            [Vec2::ZERO, Vec2::X, Vec2::Y],
+            [Vec2::X, Vec2::ONE, Vec2::Y],
+        );
+        let colors = [[0.0; 4], [1.0, 0.5, 0.0, 0.6], [0.0; 4]];
+        let vertices = uv_highlight_triangles(&model, 0, [&[], &[1, 9], &[]], colors);
+        assert_eq!(vertices.len(), 3, "triangle 9 does not exist");
+        assert_eq!(vertices[1].position, [1.0, 1.0, 0.0]);
+        assert!(
+            vertices
+                .iter()
+                .all(|vertex| vertex.vertex_color == colors[1])
+        );
+    }
 }

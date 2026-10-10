@@ -246,3 +246,17 @@ impl MaterialMode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::MaterialMode;
+
+    /// Aud's clay switches Source to Standard on every focus change; the two
+    /// group the mesh the same way, so the switch must not rebuild it.
+    #[test]
+    fn only_unique_groups_by_part() {
+        assert!(!MaterialMode::Source.groups_by_part());
+        assert!(!MaterialMode::Standard.groups_by_part());
+        assert!(MaterialMode::Unique.groups_by_part());
+    }
+}
