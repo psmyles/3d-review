@@ -18,6 +18,7 @@ mod gpu_types;
 mod gtao;
 mod line_views;
 mod opt;
+mod overdraw;
 mod pipelines;
 mod resources;
 mod slot;

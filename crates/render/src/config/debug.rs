@@ -136,6 +136,11 @@ pub struct SceneDebugOptions {
     /// The heat map's three ramp stops (gamma rgb): below the target, on it,
     /// above it. Owned by the chrome's theme.
     pub heat_ramp: [[f32; 3]; 3],
+    /// An overdraw count drawn in place of the whole scene — the Aud workspace's
+    /// overdraw views. `None` everywhere else.
+    pub overdraw: OverdrawView,
+    /// The overdraw views' colours. Owned by the chrome's theme.
+    pub overdraw_ramp: OverdrawRamp,
 }
 
 /// A per-face diagnostic colour map: each face coloured by how far a measured
@@ -164,6 +169,57 @@ pub enum HeatMap {
 impl HeatMap {
     pub fn is_active(self) -> bool {
         self != HeatMap::None
+    }
+}
+
+/// Which overdraw count replaces the scene.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OverdrawView {
+    #[default]
+    None,
+    /// How many surfaces cover each pixel, hidden ones included: the fragments a
+    /// GPU would shade with no depth rejection at all.
+    Layered,
+    /// For each visible pixel, the shading its 2x2 quad spends on it: 1 where the
+    /// surface's triangles fill whole quads, up to 4 where a triangle covers a
+    /// single pixel of one.
+    Quad,
+}
+
+impl OverdrawView {
+    pub fn is_active(self) -> bool {
+        self != OverdrawView::None
+    }
+
+    /// The counts the ramp's bottom and top stand for. The legend labels them, so
+    /// the two must come from here.
+    pub fn range(self) -> (f32, f32) {
+        match self {
+            OverdrawView::None | OverdrawView::Layered => (1.0, 8.0),
+            OverdrawView::Quad => (1.0, 4.0),
+        }
+    }
+}
+
+/// The overdraw views' colours (gamma rgb): the ramp's four stops, low to high,
+/// and the colour of a pixel no surface covers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OverdrawRamp {
+    pub stops: [[f32; 3]; 4],
+    pub empty: [f32; 3],
+}
+
+impl Default for OverdrawRamp {
+    fn default() -> Self {
+        Self {
+            stops: [
+                [0.1, 0.25, 0.6],
+                [0.2, 0.75, 0.4],
+                [0.95, 0.8, 0.2],
+                [1.0, 0.25, 0.2],
+            ],
+            empty: [0.05, 0.05, 0.06],
+        }
     }
 }
 
@@ -207,6 +263,8 @@ impl Default for SceneDebugOptions {
             render_backfaces: false,
             heat_map: HeatMap::None,
             heat_ramp: [[0.25, 0.5, 1.0], [0.3, 0.85, 0.35], [1.0, 0.3, 0.25]],
+            overdraw: OverdrawView::None,
+            overdraw_ramp: OverdrawRamp::default(),
         }
     }
 }

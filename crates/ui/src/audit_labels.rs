@@ -7,8 +7,8 @@
 //! names is `dead_code`.
 
 use review_audit::{
-    AuditProfile, AuditReport, Axis, Category, Engine, Measured, RuleId, Severity, Skip, Status,
-    Threshold,
+    AuditProfile, AuditReport, Axis, Category, DiagnosticView, Engine, Measured, RuleId, Severity,
+    Skip, Status, Threshold,
 };
 use review_localization::{Key, tr};
 
@@ -43,6 +43,20 @@ pub(crate) fn skip(skip: Skip) -> Key {
         Skip::InvalidPattern => k::SKIP_INVALID_PATTERN,
         Skip::EmptyModel => k::SKIP_EMPTY,
         Skip::Cancelled => k::SKIP_CANCELLED,
+    }
+}
+
+/// A diagnostic view's name and its one-paragraph description.
+pub(crate) fn view(view: DiagnosticView) -> (Key, Key) {
+    match view {
+        DiagnosticView::Issues => (k::VIEW_ISSUES, k::VIEW_ISSUES_DESCRIPTION),
+        DiagnosticView::TexelDensity => (k::VIEW_TEXEL_DENSITY, k::VIEW_TEXEL_DENSITY_DESCRIPTION),
+        DiagnosticView::TriangleDensity => (
+            k::VIEW_TRIANGLE_DENSITY,
+            k::VIEW_TRIANGLE_DENSITY_DESCRIPTION,
+        ),
+        DiagnosticView::Overdraw => (k::VIEW_OVERDRAW, k::VIEW_OVERDRAW_DESCRIPTION),
+        DiagnosticView::QuadOverdraw => (k::VIEW_QUAD_OVERDRAW, k::VIEW_QUAD_OVERDRAW_DESCRIPTION),
     }
 }
 

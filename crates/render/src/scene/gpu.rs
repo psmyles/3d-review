@@ -190,6 +190,9 @@ pub(crate) struct SceneGpu {
     pub(super) idle: ModelSlot,
     /// Which model `active` currently holds.
     pub(super) active_slot: SlotId,
+    /// The Aud overdraw views' pipelines, count target and index list, while one
+    /// is on (invariant 3).
+    pub(super) overdraw: Option<super::overdraw::OverdrawGpu>,
 }
 
 impl std::fmt::Debug for SceneGpu {
@@ -287,6 +290,7 @@ impl SceneGpu {
             active: ModelSlot::new(),
             idle: ModelSlot::new(),
             active_slot: SlotId::Source,
+            overdraw: None,
         })
     }
 
@@ -355,6 +359,9 @@ impl SceneGpu {
             scene.debug,
             self.active.deform_enabled(),
         );
+        if self.record_overdraw(frame, scene, targets, &uniforms, dest) {
+            return Ok(());
+        }
         let lines = LineWidths::new(scene, targets.color.size());
         let gtao_active = self.gtao_active(scene);
         self.record_scene_pass(
@@ -518,6 +525,7 @@ impl SceneGpu {
             scene.selected_bones,
         )?;
         self.sync_heat_map(scene.model, scene.model_revision, scene.debug)?;
+        self.sync_overdraw(scene, target_size)?;
         self.sync_audit_overlay(scene.model, scene.audit.as_ref())?;
         self.sync_selection(
             scene.model,

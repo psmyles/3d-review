@@ -190,14 +190,14 @@ pub fn draw_overlay(
         draw_overlay_legend(
             ctx,
             state,
-            status_bar_height,
+            toolbar_height,
             side.left_inset,
             side.right_inset,
         );
         draw_heat_legend(
             ctx,
             state,
-            status_bar_height,
+            toolbar_height,
             side.left_inset,
             side.right_inset,
         );
@@ -615,7 +615,7 @@ fn draw_stats_overlay(
 fn draw_overlay_legend(
     ctx: &egui::Context,
     state: &UiState,
-    status_bar_height: f32,
+    toolbar_height: f32,
     left_inset: f32,
     right_inset: f32,
 ) {
@@ -639,9 +639,9 @@ fn draw_overlay_legend(
     crate::widgets::stats_overlay_card_at(
         ctx,
         "opt_overlay_legend",
-        crate::widgets::StatsCardSide::Center,
+        crate::widgets::StatsCardSide::TopCenter,
         offset,
-        status_bar_height,
+        toolbar_height,
         size::OPT_LEGEND_WIDTH,
         |ui| {
             ui.spacing_mut().item_spacing.y = size::STATS_ROW_SPACING;
@@ -669,7 +669,7 @@ fn draw_overlay_legend(
 fn draw_heat_legend(
     ctx: &egui::Context,
     state: &UiState,
-    status_bar_height: f32,
+    toolbar_height: f32,
     left_inset: f32,
     right_inset: f32,
 ) {
@@ -678,6 +678,7 @@ fn draw_heat_legend(
         return;
     }
     let profile = &state.aud.profile;
+    let mut ramp: &[egui::Color32] = &HEAT_RAMP;
     let (title, low, mid, high) = match state.aud.view {
         DiagnosticView::TexelDensity => {
             let rule = profile.rule(RuleId::TexelDensity);
@@ -702,15 +703,44 @@ fn draw_heat_legend(
                 review_localization::tr(crate::keys::ui_audit::LEGEND_DENSE).into_owned(),
             )
         }
-        _ => return,
+        DiagnosticView::Overdraw | DiagnosticView::QuadOverdraw => {
+            let (title, render_view) = if state.aud.view == DiagnosticView::Overdraw {
+                (
+                    crate::keys::ui_audit::LEGEND_OVERDRAW,
+                    review_render::OverdrawView::Layered,
+                )
+            } else {
+                (
+                    crate::keys::ui_audit::LEGEND_QUAD_OVERDRAW,
+                    review_render::OverdrawView::Quad,
+                )
+            };
+            let (low, high) = render_view.range();
+            // Whole counts print whole; the ramp's middle can fall on a half.
+            let count = |value: f32| {
+                if value.fract() == 0.0 {
+                    format!("{value:.0}")
+                } else {
+                    format!("{value:.1}")
+                }
+            };
+            ramp = &OVERDRAW_RAMP;
+            (
+                review_localization::tr(title).into_owned(),
+                count(low),
+                count((low + high) * 0.5),
+                format!("{}+", count(high)),
+            )
+        }
+        DiagnosticView::Issues => return,
     };
     let offset = (left_inset - right_inset) * 0.5;
     crate::widgets::stats_overlay_card_at(
         ctx,
         "aud_heat_legend",
-        crate::widgets::StatsCardSide::Center,
+        crate::widgets::StatsCardSide::TopCenter,
         offset,
-        status_bar_height,
+        toolbar_height,
         size::AUD_LEGEND_WIDTH,
         |ui| {
             ui.spacing_mut().item_spacing.y = size::STATS_ROW_SPACING;
@@ -723,41 +753,54 @@ fn draw_heat_legend(
                 egui::vec2(ui.available_width(), size::AUD_LEGEND_BAR_HEIGHT),
                 egui::Sense::hover(),
             );
-            paint_ramp(ui.painter(), bar);
-            ui.horizontal(|ui| {
-                let third = ui.available_width() / 3.0;
-                for (text, align) in [
-                    (low, egui::Align::Min),
-                    (mid, egui::Align::Center),
-                    (high, egui::Align::Max),
-                ] {
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(third, ui.spacing().interact_size.y),
-                        egui::Layout::top_down(align),
-                        |ui| {
-                            ui.label(crate::widgets::mono_label(
-                                &text,
-                                theme::font::STATS,
-                                color::TEXT_MUTED,
-                            ));
-                        },
-                    );
-                }
-            });
+            paint_ramp(ui.painter(), bar, ramp);
+            // Painted at the bar's two ends and its middle rather than laid out:
+            // three labels of different widths in a row drift off the points of
+            // the ramp they name.
+            let (row, _) = ui.allocate_exact_size(
+                egui::vec2(bar.width(), ui.spacing().interact_size.y),
+                egui::Sense::hover(),
+            );
+            let font = egui::FontId::monospace(theme::font::STATS);
+            for (text, x, align) in [
+                (low, bar.left(), egui::Align2::LEFT_CENTER),
+                (mid, bar.center().x, egui::Align2::CENTER_CENTER),
+                (high, bar.right(), egui::Align2::RIGHT_CENTER),
+            ] {
+                ui.painter().text(
+                    egui::pos2(x, row.center().y),
+                    align,
+                    text,
+                    font.clone(),
+                    color::TEXT_MUTED,
+                );
+            }
         },
     );
 }
 
 /// The heat ramp as a horizontal bar: low, on target, high.
-fn paint_ramp(painter: &egui::Painter, rect: egui::Rect) {
-    let stops = [color::HEAT_LOW, color::HEAT_TARGET, color::HEAT_HIGH];
+/// The density heat maps' ramp, low to high.
+const HEAT_RAMP: [egui::Color32; 3] = [color::HEAT_LOW, color::HEAT_TARGET, color::HEAT_HIGH];
+/// The overdraw views' ramp, low to high — the same tokens `app` hands the
+/// renderer, so the legend and the view cannot disagree.
+const OVERDRAW_RAMP: [egui::Color32; 4] = [
+    color::OVERDRAW_1,
+    color::OVERDRAW_2,
+    color::OVERDRAW_3,
+    color::OVERDRAW_4,
+];
+
+/// A legend bar: `stops` spread evenly across `rect`.
+fn paint_ramp(painter: &egui::Painter, rect: egui::Rect, stops: &[egui::Color32]) {
+    let segments = stops.len().saturating_sub(1).max(1);
     let mut mesh = egui::Mesh::default();
     for (index, stop) in stops.iter().enumerate() {
-        let x = rect.left() + rect.width() * index as f32 / 2.0;
+        let x = rect.left() + rect.width() * index as f32 / segments as f32;
         mesh.colored_vertex(egui::pos2(x, rect.top()), *stop);
         mesh.colored_vertex(egui::pos2(x, rect.bottom()), *stop);
     }
-    for segment in 0..2_u32 {
+    for segment in 0..segments as u32 {
         let base = segment * 2;
         mesh.add_triangle(base, base + 1, base + 2);
         mesh.add_triangle(base + 1, base + 3, base + 2);

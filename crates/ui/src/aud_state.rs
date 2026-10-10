@@ -131,6 +131,21 @@ impl AudUiState {
         self.view = DiagnosticView::Issues;
     }
 
+    /// Whether the active adapter can draw `view` (invariant 4): the overdraw
+    /// views need a blendable half-float target; the rest need nothing special.
+    pub fn view_supported(
+        &self,
+        view: DiagnosticView,
+        capabilities: &crate::state::Capabilities,
+    ) -> bool {
+        match view {
+            DiagnosticView::Overdraw | DiagnosticView::QuadOverdraw => capabilities.overdraw,
+            DiagnosticView::Issues
+            | DiagnosticView::TexelDensity
+            | DiagnosticView::TriangleDensity => true,
+        }
+    }
+
     /// Whether the viewport is split into the model and its UV layout: a UV
     /// finding is focused in the Issues view.
     pub fn split(&self) -> bool {

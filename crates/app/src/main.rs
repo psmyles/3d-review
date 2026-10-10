@@ -720,6 +720,7 @@ impl App {
                 .unwrap_or(levels[0]);
         }
 
+        self.ui.capabilities.overdraw = gpu.supports_overdraw();
         self.ui.about.info.renderer = gpu.backend_name().to_owned();
         log::info!("graphics: {} on {}", gpu.backend_name(), gpu.adapter_name());
 

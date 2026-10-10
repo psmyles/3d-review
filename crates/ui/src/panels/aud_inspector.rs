@@ -250,6 +250,33 @@ fn rule_body(
         review_localization::tr(audit_labels::rule_fix(rule)),
     );
 
+    if let Some(view) = rule.see_also() {
+        ui.add_space(size::PANEL_ROW_GAP);
+        let (title, description) = audit_labels::view(view);
+        let supported = state.aud.view_supported(view, &state.capabilities);
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::from(k::SEE_ALSO).color(color::TEXT_MUTED));
+            let response = ui.add_enabled(
+                supported,
+                egui::Button::selectable(state.aud.view == view, title),
+            );
+            if supported {
+                if tip(
+                    response,
+                    Tip::new(title).describe(description).page(Page::AudViews),
+                )
+                .clicked()
+                {
+                    state.aud.view = view;
+                }
+            } else {
+                response.on_disabled_hover_ui(|ui| {
+                    crate::widgets::tip_body(ui, title, k::VIEW_UNSUPPORTED);
+                });
+            }
+        });
+    }
+
     if result.failed() && !result.offenders.is_empty() {
         ui.add_space(size::PANEL_ROW_GAP);
         let heading = ui.label(egui::RichText::from(k::OBJECTS).color(color::TEXT_PRIMARY));

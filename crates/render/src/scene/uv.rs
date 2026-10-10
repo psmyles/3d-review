@@ -44,6 +44,7 @@ impl SceneGpu {
         // source slot (see the note in `render`).
         self.activate(SlotId::Source);
         self.release_opt_views();
+        self.release_overdraw();
         let size = frame.size();
         self.sync_targets(frame, size, uv.anti_aliasing.effective_sample_count())?;
         self.sync_uv_frame(uv, size)?;

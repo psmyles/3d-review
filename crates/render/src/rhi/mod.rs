@@ -209,6 +209,12 @@ impl Gpu {
             .supported_sample_counts(SCENE_COLOR_FORMAT, SCENE_DEPTH_FORMAT)
     }
 
+    /// Whether the overdraw views can run: they count layers by additive blending
+    /// into a single-channel half-float target (invariant 4).
+    pub fn supports_overdraw(&self) -> bool {
+        Format::R16F.renders_blended()
+    }
+
     /// The graphics API sokol_gfx is drawing through, by its own name — the About
     /// box's renderer line. Stable English, like every other `label()` here: it
     /// names an API, not something a catalog could translate.

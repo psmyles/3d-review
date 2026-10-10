@@ -35,6 +35,7 @@ mod wireframe;
 pub(crate) use audit::audit_lines;
 pub(crate) use grid::{scene_lines, uv_grid_lines};
 pub(crate) use heat::heat_vertices;
+pub(crate) use hidden::visible_triangle_indices;
 pub(crate) use markers::{bounding_box_lines, model_pivot, pivot_half_extent, pivot_lines};
 pub(crate) use mesh::{group_triangles, model_mesh};
 pub(crate) use normal_lines::{face_normal_lines, vertex_normal_lines};

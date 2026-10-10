@@ -130,6 +130,10 @@ pub struct Capabilities {
     /// guaranteed at feature level 11_0+), so the status-bar AO button is never
     /// disabled in practice; kept as a field for the capability seam.
     pub(crate) gtao: bool,
+    /// Whether the active adapter can draw the Aud overdraw views, which count
+    /// layers by blending additively into a half-float target. `app` sets it from
+    /// the device's own answer; the two view buttons are disabled without it.
+    pub overdraw: bool,
 }
 
 impl Default for Capabilities {
@@ -140,6 +144,7 @@ impl Default for Capabilities {
             // once the device is known.
             ibl: true,
             gtao: true,
+            overdraw: true,
         }
     }
 }

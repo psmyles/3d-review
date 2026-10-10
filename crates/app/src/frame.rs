@@ -325,18 +325,30 @@ impl App {
         // Aud's density views, with the matching checks' own parameters so the
         // map and the findings measure the same thing.
         if self.ui.mode == WorkspaceMode::Aud {
+            let stop = |token: egui::Color32| {
+                let [r, g, b, _] = token.to_normalized_gamma_f32();
+                [r, g, b]
+            };
             debug.heat_map = self.audit_heat_map();
             if debug.heat_map.is_active() {
                 debug.active_material = ActiveMaterial::Source;
-                let stop = |token: egui::Color32| {
-                    let [r, g, b, _] = token.to_normalized_gamma_f32();
-                    [r, g, b]
-                };
                 debug.heat_ramp = [
                     stop(theme::color::HEAT_LOW),
                     stop(theme::color::HEAT_TARGET),
                     stop(theme::color::HEAT_HIGH),
                 ];
+            }
+            debug.overdraw = self.audit_overdraw_view();
+            if debug.overdraw.is_active() {
+                debug.overdraw_ramp = review_render::OverdrawRamp {
+                    stops: [
+                        stop(theme::color::OVERDRAW_1),
+                        stop(theme::color::OVERDRAW_2),
+                        stop(theme::color::OVERDRAW_3),
+                        stop(theme::color::OVERDRAW_4),
+                    ],
+                    empty: stop(theme::color::OVERDRAW_EMPTY),
+                };
             }
         }
         let projection: CameraProjection = self.ui.projection_mode.into();

@@ -88,6 +88,13 @@ impl Format {
         matches!(self, Self::Bc6hUf16)
     }
 
+    /// Whether the device can render into this format *and* blend there — what an
+    /// additive count target needs (invariant 4: asked, never assumed).
+    pub(crate) fn renders_blended(self) -> bool {
+        let info = sg::query_pixelformat(self.sg());
+        info.render && info.blend
+    }
+
     /// Bytes per texel, or per 4×4 block for a block-compressed format.
     pub(in crate::rhi) const fn block_bytes(self) -> u32 {
         match self {

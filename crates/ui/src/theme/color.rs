@@ -120,6 +120,13 @@ pub const AUDIT_HIDDEN_OPACITY: f32 = 0.3;
 pub const HEAT_LOW: Color32 = Color32::from_rgb(70, 130, 255);
 pub const HEAT_TARGET: Color32 = Color32::from_rgb(80, 215, 100);
 pub const HEAT_HIGH: Color32 = Color32::from_rgb(255, 80, 64);
+/// The overdraw views' four ramp stops, low to high (one layer / one shaded
+/// pixel, up to the ramp's top), and the colour where no surface is drawn.
+pub const OVERDRAW_1: Color32 = Color32::from_rgb(30, 70, 150);
+pub const OVERDRAW_2: Color32 = Color32::from_rgb(60, 190, 110);
+pub const OVERDRAW_3: Color32 = Color32::from_rgb(245, 205, 60);
+pub const OVERDRAW_4: Color32 = Color32::from_rgb(255, 70, 55);
+pub const OVERDRAW_EMPTY: Color32 = Color32::from_rgb(14, 14, 16);
 /// The digits on the toolbar's findings-count pill, dark on the bright pill.
 pub const AUDIT_BUBBLE_TEXT: Color32 = Color32::from_rgb(20, 20, 22);
 /// A scene-tree row the type filter is hiding, kept visible only because a

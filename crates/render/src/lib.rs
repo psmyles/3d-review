@@ -571,6 +571,7 @@ impl Renderer {
         if let Some(scene) = self.scene.as_mut() {
             scene.release_opt_views();
             scene.release_uv_views();
+            scene.release_overdraw();
         }
         // Built on the first Tex frame rather than at startup: a session that never
         // opens this workspace pays for none of it.

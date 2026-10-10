@@ -83,6 +83,20 @@ ui-audit-view-triangle-density = Triangle density
     .description = Colours each face by how small its triangles are for the size of their
         object: red where they are too small to draw efficiently, green at the limit, blue
         where there is room to spare. The limit is the Needs a LOD check's, in the profile.
+ui-audit-view-overdraw = Overdraw
+    .description = Replaces the view with a count of the surfaces under each pixel, hidden
+        ones included: how many times a GPU with no depth rejection would shade it. Where
+        parts of the model are stacked behind each other, the count climbs.
+ui-audit-view-quad-overdraw = Quad overdraw
+    .description = Replaces the view with the shading each visible pixel really costs. A
+        GPU shades pixels in 2x2 quads, so a triangle that covers one pixel of a quad
+        still pays for four: 1 is a surface whose triangles fill their quads, 4 is one
+        made of triangles too small for the screen.
+ui-audit-view-unsupported = This graphics adapter cannot draw the overdraw views: they
+    need to blend into a half-float target.
+ui-audit-see-also = See also
+ui-audit-legend-overdraw = Surfaces per pixel
+ui-audit-legend-quad-overdraw = Shading per visible pixel
 ui-audit-legend-texel = Texel density, { $size } px texture
 ui-audit-legend-triangle = Triangle size at full screen
 ui-audit-legend-dense = denser

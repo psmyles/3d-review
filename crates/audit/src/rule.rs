@@ -186,6 +186,17 @@ impl RuleId {
         }
     }
 
+    /// A second view worth a look for this rule's problem, beside
+    /// [`Self::related_view`]: triangles too small for their object are exactly
+    /// what quad overdraw measures the cost of.
+    pub fn see_also(self) -> Option<DiagnosticView> {
+        match self {
+            RuleId::TriangleLod | RuleId::TriangleReduce => Some(DiagnosticView::QuadOverdraw),
+            RuleId::TriangleBudget => Some(DiagnosticView::Overdraw),
+            _ => None,
+        }
+    }
+
     /// Whether the rule is about a UV layout, so its offenders are worth seeing
     /// in UV space beside the 3D view.
     pub fn is_uv(self) -> bool {

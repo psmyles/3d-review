@@ -256,6 +256,22 @@ impl App {
         }
     }
 
+    /// The overdraw view the Aud toolbar has chosen, as the renderer's — `None`
+    /// on an adapter that cannot draw it (invariant 4), whatever the state says.
+    pub(crate) fn audit_overdraw_view(&self) -> review_render::OverdrawView {
+        let view = self.ui.aud.view;
+        if !self.ui.aud.view_supported(view, &self.ui.capabilities) {
+            return review_render::OverdrawView::None;
+        }
+        match view {
+            review_audit::DiagnosticView::Overdraw => review_render::OverdrawView::Layered,
+            review_audit::DiagnosticView::QuadOverdraw => review_render::OverdrawView::Quad,
+            review_audit::DiagnosticView::Issues
+            | review_audit::DiagnosticView::TexelDensity
+            | review_audit::DiagnosticView::TriangleDensity => review_render::OverdrawView::None,
+        }
+    }
+
     /// Ease the camera onto the focused offenders, but only when none of them is
     /// in view — a click that already shows its problem should not move the view.
     fn frame_audit_if_off_screen(&mut self) {

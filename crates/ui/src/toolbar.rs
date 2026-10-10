@@ -164,7 +164,7 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
                             // Aud's views, leftmost: they change what the
                             // viewport shows the way the shading tools do.
                             if state.mode == WorkspaceMode::Aud {
-                                draw_aud_view_group(ui, state, triple_icon_group_width);
+                                draw_aud_view_group(ui, state, quint_icon_group_width);
                             }
                         }
                         // The 2D workspaces keep Help and the side panels — the
@@ -772,38 +772,52 @@ fn draw_tool_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
 fn draw_aud_view_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
     use review_audit::DiagnosticView;
     toolbar_group_shell(ui, width, |ui| {
-        for (view, icon, title, description) in [
-            (
-                DiagnosticView::Issues,
-                &crate::assets::ICON_AUD_ISSUES,
-                keys::ui_audit::VIEW_ISSUES,
-                keys::ui_audit::VIEW_ISSUES_DESCRIPTION,
-            ),
+        for (view, icon) in [
+            (DiagnosticView::Issues, &crate::assets::ICON_AUD_ISSUES),
             (
                 DiagnosticView::TexelDensity,
                 &crate::assets::ICON_AUD_TEXEL_DENSITY,
-                keys::ui_audit::VIEW_TEXEL_DENSITY,
-                keys::ui_audit::VIEW_TEXEL_DENSITY_DESCRIPTION,
             ),
             (
                 DiagnosticView::TriangleDensity,
                 &crate::assets::ICON_AUD_TRIANGLE_DENSITY,
-                keys::ui_audit::VIEW_TRIANGLE_DENSITY,
-                keys::ui_audit::VIEW_TRIANGLE_DENSITY_DESCRIPTION,
+            ),
+            (DiagnosticView::Overdraw, &crate::assets::ICON_AUD_OVERDRAW),
+            (
+                DiagnosticView::QuadOverdraw,
+                &crate::assets::ICON_AUD_QUAD_OVERDRAW,
             ),
         ] {
-            if icon_toggle_button(
-                ui,
-                icon,
-                state.aud.view == view,
-                Tip::new(title).describe(description).page(Page::AudViews),
-            )
-            .clicked()
-            {
+            let (title, description) = crate::audit_labels::view(view);
+            // The overdraw views need a blendable half-float target; disabled,
+            // with the reason, on an adapter without one (invariant 4).
+            let supported = state.aud.view_supported(view, &state.capabilities);
+            let response = ui
+                .add_enabled_ui(supported, |ui| {
+                    icon_toggle_button(
+                        ui,
+                        icon,
+                        state.aud.view == view,
+                        Tip::new(title).describe(description).page(Page::AudViews),
+                    )
+                })
+                .inner;
+            if !supported {
+                tip_disabled(response, title, keys::ui_audit::VIEW_UNSUPPORTED);
+            } else if response.clicked() {
                 state.aud.view = view;
             }
         }
     });
+}
+
+/// The tooltip a capability-disabled tile shows: its name, and why it is off.
+fn tip_disabled(
+    response: egui::Response,
+    title: review_localization::Key,
+    reason: review_localization::Key,
+) {
+    response.on_disabled_hover_ui(|ui| crate::widgets::tip_body(ui, title, reason));
 }
 
 /// Help, alone in a group at the far right of the bar.

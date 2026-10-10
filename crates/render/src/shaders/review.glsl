@@ -798,10 +798,11 @@ layout(binding=3) uniform line_params {
 } lu;
 @end
 
-// What both line vertex shaders share: the pulled vertex, and the quad built from a
-// line's two clip-space ends. Needs `scene_uniforms_vs`, `deform` and
-// `line_uniforms` included before it.
-@block line_quad
+// A mesh vertex pulled from a storage view of a vertex buffer, and its position
+// deformed exactly as `vs_main` deforms it: what every program that takes no vertex
+// input reads its geometry through (the lines, the wireframe, the overdraw views).
+// Needs `scene_uniforms_vs` and `deform` included before it.
+@block pulled_vertex
 // `SceneVertex` as a storage buffer sees it: twenty scalars, deliberately — a `vec3`
 // member would align to 16 bytes under std430 and stride the buffer at 96 rather than
 // the vertex buffer's 80. `gpu_types.rs` pins this to `SceneVertex`.
@@ -830,13 +831,6 @@ struct LineVertex {
 
 layout(binding=16) readonly buffer line_vertices { LineVertex line_vertex[]; };
 
-// Across the line, along it, its on-screen length, and its half width — all in
-// pixels, and all interpolated in screen space: the quad is a rectangle on screen, so
-// a perspective-correct interpolation would bend the coverage ramp.
-layout(location=0) noperspective out vec4 v_line;
-// Gamma-space rgb + alpha, as the vertices and `selection_color` both carry it.
-layout(location=1) out vec4 v_color;
-
 // A pulled vertex's position, deformed exactly as `vs_main` deforms it.
 vec3 line_corner_position(uint vertex) {
     LineVertex corner = line_vertex[vertex];
@@ -856,6 +850,19 @@ vec4 line_corner_color(uint vertex) {
     LineVertex corner = line_vertex[vertex];
     return vec4(corner.r, corner.g, corner.b, corner.a);
 }
+
+@end
+
+// What both line vertex shaders share: the quad built from a line's two clip-space
+// ends. Needs `scene_uniforms_vs`, `deform`, `pulled_vertex` and `line_uniforms`
+// included before it.
+@block line_quad
+// Across the line, along it, its on-screen length, and its half width — all in
+// pixels, and all interpolated in screen space: the quad is a rectangle on screen, so
+// a perspective-correct interpolation would bend the coverage ramp.
+layout(location=0) noperspective out vec4 v_line;
+// Gamma-space rgb + alpha, as the vertices and `selection_color` both carry it.
+layout(location=1) out vec4 v_color;
 
 // Corner `corner_index` (0..5) of a line's quad, as two triangles: x picks the line's
 // end (0 = first, 1 = second), y its side. Unsigned, like the arithmetic that finds
@@ -923,6 +930,7 @@ void emit_line_quad(vec4 first, vec4 second, uint corner_index) {
 @vs vs_line
 @include_block scene_uniforms_vs
 @include_block deform
+@include_block pulled_vertex
 @include_block line_uniforms
 @include_block line_quad
 
@@ -943,6 +951,7 @@ void main() {
 @vs vs_wire
 @include_block scene_uniforms_vs
 @include_block deform
+@include_block pulled_vertex
 @include_block line_uniforms
 @include_block line_quad
 
@@ -2169,6 +2178,155 @@ void main() {
 @end
 
 // ===========================================================================
+// Aud: the overdraw views
+// ===========================================================================
+//
+// Both count into a single-sample R16F target with additive blending, drawing every
+// visible triangle as three pulled vertices: entry `3t + k` of the index list names
+// corner `k` of triangle `t` in the mesh's own vertex buffer, so the geometry is read
+// rather than copied (invariant 1) and deforms as the mesh does.
+//
+//   overdraw_count  1 per layer covering a pixel, no depth test: how many surfaces
+//                   a pixel is shaded for (also the quad view's depth prepass)
+//   quad_overdraw   per visible pixel, 4 / k, where k is how many of its 2x2 quad's
+//                   pixel centres its own triangle covers: the shading a GPU spends
+//                   on helper lanes, since a quad is always shaded whole
+//   overdraw_ramp   the count, as a colour, into the view's rectangle
+
+@block overdraw_indices
+// One corner index of the triangle list. A struct of one `uint` because a storage
+// buffer must hold an array of a struct; named as the wireframe's edge list is, since
+// it is bound the same way.
+struct LineIndex {
+    uint index;
+};
+
+layout(binding=17) readonly buffer line_indices { LineIndex line_index[]; };
+@end
+
+@vs vs_overdraw
+@include_block scene_uniforms_vs
+@include_block deform
+@include_block pulled_vertex
+@include_block overdraw_indices
+
+void main() {
+    uint corner = line_index[uint(gl_VertexIndex)].index;
+    gl_Position = su.view_projection * vec4(line_corner_position(corner), 1.0);
+}
+@end
+
+@fs fs_overdraw_count
+layout(location=0) out vec4 frag_count;
+
+void main() {
+    frag_count = vec4(1.0, 0.0, 0.0, 1.0);
+}
+@end
+
+@vs vs_quad_overdraw
+@include_block scene_uniforms_vs
+@include_block deform
+@include_block pulled_vertex
+@include_block overdraw_indices
+
+// The triangle's three corners in clip space (x, y, w), the same for every fragment
+// of it: what lets a fragment test pixels its triangle does not cover.
+layout(location=0) flat out vec3 v_corner_a;
+layout(location=1) flat out vec3 v_corner_b;
+layout(location=2) flat out vec3 v_corner_c;
+
+void main() {
+    uint vertex = uint(gl_VertexIndex);
+    uint triangle = vertex / 3u;
+    vec4 a = su.view_projection * vec4(line_corner_position(line_index[3u * triangle].index), 1.0);
+    vec4 b = su.view_projection * vec4(line_corner_position(line_index[3u * triangle + 1u].index), 1.0);
+    vec4 c = su.view_projection * vec4(line_corner_position(line_index[3u * triangle + 2u].index), 1.0);
+    uint corner = vertex - triangle * 3u;
+    gl_Position = corner == 0u ? a : (corner == 1u ? b : c);
+    v_corner_a = a.xyw;
+    v_corner_b = b.xyw;
+    v_corner_c = c.xyw;
+}
+@end
+
+@fs fs_quad_overdraw
+// The count target's size, which turns a pixel into NDC. Its own block, and its own
+// slot: a uniform block belongs to one stage, and the line block is the vertex
+// stage's.
+layout(binding=4) uniform quad_params {
+    // x / y = the count target's size in pixels, z / w spare.
+    vec4 params;
+} qu;
+
+layout(location=0) flat in vec3 v_corner_a;
+layout(location=1) flat in vec3 v_corner_b;
+layout(location=2) flat in vec3 v_corner_c;
+
+layout(location=0) out vec4 frag_count;
+
+void main() {
+    // Homogeneous 2D edge functions (Olano and Greer): with the corners as the
+    // columns of M = [a b c], the adjugate's rows are the three edge functions, and a
+    // point (x, y, 1) in NDC is inside exactly when each has the sign of det(M) —
+    // with no divide by w, so a corner behind the eye needs no clipping first.
+    vec3 e0 = cross(v_corner_b, v_corner_c);
+    vec3 e1 = cross(v_corner_c, v_corner_a);
+    vec3 e2 = cross(v_corner_a, v_corner_b);
+    float det = dot(v_corner_a, e0);
+    vec2 size = max(qu.params.xy, vec2(1.0));
+    // The fragment's 2x2 quad, from its pixel (top-left origin, as `gl_FragCoord` is
+    // on every backend this ships on).
+    vec2 pixel = floor(gl_FragCoord.xy);
+    vec2 quad = pixel - mod(pixel, vec2(2.0));
+    float covered = 0.0;
+    for (int i = 0; i < 4; i++) {
+        vec2 centre = quad + vec2(float(i & 1), float(i >> 1)) + vec2(0.5);
+        vec3 p = vec3(centre.x / size.x * 2.0 - 1.0, 1.0 - centre.y / size.y * 2.0, 1.0);
+        vec3 edges = vec3(dot(e0, p), dot(e1, p), dot(e2, p)) * sign(det);
+        covered += (edges.x >= 0.0 && edges.y >= 0.0 && edges.z >= 0.0) ? 1.0 : 0.0;
+    }
+    // An edge-on triangle (det 0) cannot say; it is counted as a full quad. The
+    // fragment's own pixel is covered by construction, so k is at least 1.
+    float k = abs(det) > 1e-12 ? max(covered, 1.0) : 4.0;
+    frag_count = vec4(4.0 / k, 0.0, 0.0, 1.0);
+}
+@end
+
+@fs fs_overdraw_ramp
+layout(binding=0) uniform overdraw_params {
+    // The view's rectangle in framebuffer pixels: top-left corner + size.
+    vec4 rect;
+    // x = the count shown as the ramp's top, y = the count shown as its bottom.
+    vec4 range;
+    // The ramp's four stops, low to high (gamma rgb), and the colour for no surface.
+    vec4 stop0;
+    vec4 stop1;
+    vec4 stop2;
+    vec4 stop3;
+    vec4 empty;
+};
+
+layout(binding=0) uniform texture2D count_tex;
+layout(binding=0) uniform sampler count_smp;
+
+layout(location=0) out vec4 frag_color;
+
+void main() {
+    vec2 uv = (gl_FragCoord.xy - rect.xy) / max(rect.zw, vec2(1.0));
+    float count = textureLod(sampler2D(count_tex, count_smp), uv, 0.0).r;
+    if (count <= 0.0) {
+        frag_color = vec4(empty.rgb, 1.0);
+        return;
+    }
+    float t = clamp((count - range.y) / max(range.x - range.y, 1e-3), 0.0, 1.0) * 3.0;
+    vec3 rgb = t < 1.0 ? mix(stop0.rgb, stop1.rgb, t)
+        : (t < 2.0 ? mix(stop1.rgb, stop2.rgb, t - 1.0) : mix(stop2.rgb, stop3.rgb, t - 2.0));
+    frag_color = vec4(rgb, 1.0);
+}
+@end
+
+// ===========================================================================
 // Programs
 // ===========================================================================
 
@@ -2199,3 +2357,7 @@ void main() {
 @program ibl_irradiance vs_ibl fs_ibl_irradiance
 @program ibl_prefilter vs_ibl fs_ibl_prefilter
 @program ibl_brdf vs_ibl fs_ibl_brdf
+
+@program overdraw_count vs_overdraw fs_overdraw_count
+@program quad_overdraw vs_quad_overdraw fs_quad_overdraw
+@program overdraw_ramp vs_fullscreen_bare fs_overdraw_ramp

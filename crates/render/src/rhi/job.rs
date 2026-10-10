@@ -7,10 +7,10 @@
 use super::*;
 
 /// Most bytes a [`SwapchainJob`] can carry for its uniform block — enough for the
-/// largest one any deferred draw uploads (`tex_params`, 64 bytes). Checked at the
+/// largest one any deferred draw uploads (`overdraw_params`, 112 bytes). Checked at the
 /// call site, at compile time, so a block that outgrows it is a build error and not
 /// a truncated upload.
-pub(super) const MAX_JOB_UNIFORM_BYTES: usize = 64;
+pub(super) const MAX_JOB_UNIFORM_BYTES: usize = 112;
 
 /// One draw recorded before the swapchain pass exists and replayed once it opens.
 ///

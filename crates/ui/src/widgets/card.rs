@@ -32,33 +32,47 @@ pub(crate) fn stats_overlay_card(
 pub(crate) enum StatsCardSide {
     Left,
     Right,
-    /// Centred in the viewport, for a card that describes the view as a whole
-    /// rather than one mesh in it — the Opt overlay's legend. Its inset is the
-    /// signed horizontal offset that keeps it centred between the side panels.
-    Center,
+    /// Centred along the viewport's **top** edge, for a card that describes the
+    /// view as a whole rather than one mesh in it — the Opt overlay's legend, the
+    /// Aud views' key. The bottom centre belongs to the notifications, which
+    /// would otherwise land on it. Its inset is the signed horizontal offset that
+    /// keeps it centred between the side panels.
+    TopCenter,
 }
 
 /// [`stats_overlay_card`] with a choice of edge. `side_inset` is measured from
 /// that edge (the width of the side panel docked there), so a card never lands
-/// on top of a panel.
+/// on top of a panel. `edge_inset` is the chrome band the card sits beside: the
+/// status bar's height for the bottom corners, the toolbar's for
+/// [`StatsCardSide::TopCenter`].
 pub(crate) fn stats_overlay_card_at(
     ctx: &egui::Context,
     id: &str,
     side: StatsCardSide,
     side_inset: f32,
-    bottom_inset: f32,
+    edge_inset: f32,
     width: f32,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) {
     let margin = size::STATS_OVERLAY_MARGIN;
-    let (align, offset_x) = match side {
-        StatsCardSide::Left => (egui::Align2::LEFT_BOTTOM, side_inset + margin),
-        StatsCardSide::Right => (egui::Align2::RIGHT_BOTTOM, -(side_inset + margin)),
-        StatsCardSide::Center => (egui::Align2::CENTER_BOTTOM, side_inset),
+    let bottom = -(edge_inset + margin);
+    let (align, offset) = match side {
+        StatsCardSide::Left => (
+            egui::Align2::LEFT_BOTTOM,
+            egui::vec2(side_inset + margin, bottom),
+        ),
+        StatsCardSide::Right => (
+            egui::Align2::RIGHT_BOTTOM,
+            egui::vec2(-(side_inset + margin), bottom),
+        ),
+        StatsCardSide::TopCenter => (
+            egui::Align2::CENTER_TOP,
+            egui::vec2(side_inset, edge_inset + margin),
+        ),
     };
     egui::Area::new(egui::Id::new(id))
         .fade_in(false)
-        .anchor(align, egui::vec2(offset_x, -(bottom_inset + margin)))
+        .anchor(align, offset)
         .show(ctx, |ui| {
             egui::Frame::NONE
                 .fill(color::STATS_OVERLAY_BG)

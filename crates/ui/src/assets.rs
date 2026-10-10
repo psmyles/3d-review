@@ -63,6 +63,16 @@ pub(crate) const ICON_AUD_TRIANGLE_DENSITY: AppIcon = AppIcon {
     id: "icon_aud_triangle_density",
     png_bytes: include_bytes!("../../../assets/icons/icon_aud_triangle_density.png"),
 };
+/// "Overdraw" — the Aud layered-overdraw count.
+pub(crate) const ICON_AUD_OVERDRAW: AppIcon = AppIcon {
+    id: "icon_aud_overdraw",
+    png_bytes: include_bytes!("../../../assets/icons/icon_aud_overdraw.png"),
+};
+/// "Quad overdraw" — the Aud quad-overdraw count.
+pub(crate) const ICON_AUD_QUAD_OVERDRAW: AppIcon = AppIcon {
+    id: "icon_aud_quad_overdraw",
+    png_bytes: include_bytes!("../../../assets/icons/icon_aud_quad_overdraw.png"),
+};
 pub(crate) const ICON_UV: AppIcon = AppIcon {
     id: "icon_uv",
     png_bytes: include_bytes!("../../../assets/icons/icon_uv.png"),

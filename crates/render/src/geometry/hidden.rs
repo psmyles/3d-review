@@ -86,6 +86,29 @@ pub(super) fn visible_vertex_mask(model: &ModelData, hidden_nodes: &[u32]) -> Op
     Some(mask)
 }
 
+/// Every visible triangle's three corners, in triangle order — the whole index list,
+/// borrowed, when nothing is hidden.
+pub(crate) fn visible_triangle_indices<'a>(
+    model: &'a ModelData,
+    hidden_nodes: &[u32],
+) -> std::borrow::Cow<'a, [u32]> {
+    let hidden = HiddenFilter::new(model, hidden_nodes);
+    if !hidden.is_active() {
+        return std::borrow::Cow::Borrowed(&model.indices);
+    }
+    std::borrow::Cow::Owned(
+        model
+            .indices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .enumerate()
+            .filter(|&(triangle, _)| !hidden.is_hidden(triangle))
+            .flat_map(|(_, corners)| corners.iter().copied())
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
