@@ -223,6 +223,17 @@ pub(super) struct DerivedViews {
     /// whether it is dimmed over a texture.
     pub(super) uv_fill_buf: Option<VertexBuffer>,
     pub(super) uv_fill_baked: Option<(UvViewParams, UvShadingMode, bool)>,
+    /// The Aud workspace's highlighted offenders: tinted triangles per severity
+    /// (index lists over the mesh's own vertices), and lines and dots, each
+    /// twice — solid and depth-tested, and faint and always on top so nothing
+    /// hidden is missed. All `None` while nothing is focused (invariant 3).
+    pub(super) audit_fills: [Option<IndexBuffer>; 3],
+    pub(super) audit_edges: Option<VertexBuffer>,
+    pub(super) audit_edges_hidden: Option<VertexBuffer>,
+    pub(super) audit_dots: Option<VertexBuffer>,
+    pub(super) audit_dots_hidden: Option<VertexBuffer>,
+    /// The overlay revision the buffers above were built for.
+    pub(super) audit_baked: Option<u64>,
 }
 
 /// Which model a [`ModelSlot`] holds. The Opt workspace draws a source mesh and a

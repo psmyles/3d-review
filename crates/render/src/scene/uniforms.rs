@@ -116,6 +116,10 @@ pub(super) fn scene_uniforms(
 /// in points. One point is one pixel at 100% and two on a Retina screen, so they keep
 /// the same weight on every display, as the wireframe's own setting does.
 pub(super) const OVERLAY_LINE_WIDTH: f32 = 1.0;
+/// Width, in points, of the Aud workspace's offender edges.
+pub(super) const AUDIT_EDGE_WIDTH: f32 = 2.5;
+/// Size, in points, of the Aud workspace's offender dots.
+pub(super) const AUDIT_DOT_WIDTH: f32 = 7.0;
 
 /// The line programs' uniforms for one view: the wireframe at the user's width and
 /// every other line at [`OVERLAY_LINE_WIDTH`], both against the view's target size.
@@ -123,6 +127,12 @@ pub(super) const OVERLAY_LINE_WIDTH: f32 = 1.0;
 pub(super) struct LineWidths {
     pub(super) wireframe: LineUniforms,
     pub(super) overlay: LineUniforms,
+    /// The Aud workspace's offender edges: heavier than an overlay line, so they
+    /// read over the wireframe.
+    pub(super) audit_edge: LineUniforms,
+    /// The Aud workspace's offender dots — zero-length lines, drawn as squares of
+    /// this width.
+    pub(super) audit_dot: LineUniforms,
 }
 
 impl LineWidths {
@@ -134,6 +144,8 @@ impl LineWidths {
                 scene.pixels_per_point,
             ),
             overlay: line_uniforms(target_size, OVERLAY_LINE_WIDTH, scene.pixels_per_point),
+            audit_edge: line_uniforms(target_size, AUDIT_EDGE_WIDTH, scene.pixels_per_point),
+            audit_dot: line_uniforms(target_size, AUDIT_DOT_WIDTH, scene.pixels_per_point),
         }
     }
 }

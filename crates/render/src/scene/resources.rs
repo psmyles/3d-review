@@ -163,7 +163,7 @@ impl SceneGpu {
     ) -> GpuResult<()> {
         if self.active.mesh_revision == model_revision
             && self.active.mesh_uv_channel == uv_channel
-            && self.active.mesh_material_mode == mode
+            && self.active.mesh_material_mode.groups_by_part() == mode.groups_by_part()
         {
             return Ok(());
         }

@@ -187,6 +187,12 @@ impl App {
     /// Cast a ray through `position` (physical pixels, window-relative) and
     /// return what it hits.
     fn cast(&mut self, position: Vec2) -> Option<PickTarget> {
+        self.cast_hit(position).map(|(target, _)| target)
+    }
+
+    /// [`Self::cast`], plus the triangle the ray hit when it hit the mesh — what
+    /// tells a click on a highlighted offender from one beside it.
+    fn cast_hit(&mut self, position: Vec2) -> Option<(PickTarget, Option<u32>)> {
         let bones = self.picking_bones();
         let hidden = self.ui.hidden_mesh_nodes();
         let solo = self.ui.solo.then(|| self.ui.selected_node_set());
@@ -230,7 +236,7 @@ impl App {
                 pointer,
                 tolerance,
             )
-            .map(PickTarget::Bone);
+            .map(|bone| (PickTarget::Bone(bone), None));
         }
 
         // A hidden mesh is not on screen, so it cannot be clicked; and while a
@@ -259,7 +265,7 @@ impl App {
             }
             _ => view.bvh.pick(view.model, origin, dir, near, t_max, allow),
         }?;
-        (hit.node != u32::MAX).then_some(PickTarget::Node(hit.node as usize))
+        (hit.node != u32::MAX).then_some((PickTarget::Node(hit.node as usize), Some(hit.triangle)))
     }
 
     /// Rebuild the posed pick index when the pose or the model has moved.
@@ -335,7 +341,19 @@ impl App {
         if !self.picking_enabled() {
             return;
         }
-        let target = self.cast(position);
+        let hit = self.cast_hit(position);
+        // In Aud, a click on a highlighted offender picks that finding rather
+        // than the part under it.
+        if self.ui.mode == WorkspaceMode::Aud
+            && let Some(focus) = hit
+                .and_then(|(_, triangle)| triangle)
+                .and_then(|triangle| self.audit_offender_at(triangle))
+        {
+            self.ui.select_audit_focus(Some(focus));
+            self.redraw.requested = true;
+            return;
+        }
+        let target = hit.map(|(target, _)| target);
         review_ui::apply_pick(&mut self.ui, target.map(PickTarget::as_hover), mode);
         // The pick is also the freshest possible answer for the hover.
         self.set_hover(target.map(PickTarget::as_hover));

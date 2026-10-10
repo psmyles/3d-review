@@ -142,6 +142,33 @@ pub struct Renderer {
     scene: Option<SceneGpu>,
 }
 
+/// What the Aud workspace highlights: the offenders of the focused finding,
+/// sorted by severity (index 0 Info, 1 Warning, 2 Error), as plain borrowed lists
+/// `app` resolves once per focus change.
+///
+/// Everything indexes the model's own buffers — triangles and corners — so the
+/// overlay deforms with the mesh exactly as the selection fill does, and copies
+/// no geometry (invariant 1). `revision` identifies the lists; the renderer
+/// rebuilds its buffers only when it moves.
+#[derive(Debug, Clone, Copy)]
+pub struct AuditOverlay<'a> {
+    pub revision: u64,
+    /// Offending triangles, tinted.
+    pub fills: [&'a [u32]; 3],
+    /// Offending edges as render-corner pairs, drawn as lines.
+    pub edges: [&'a [[u32; 2]]; 3],
+    /// Offenders too small to see as a fill, as one render corner each, drawn as
+    /// dots.
+    pub corner_dots: [&'a [u32]; 3],
+    /// Offenders with no corner of their own (a loose point, a pivot, a bone), as
+    /// a world position and the node whose motion they follow.
+    pub point_dots: [&'a [([f32; 3], u32)]; 3],
+    /// Gamma-space colour per severity; alpha is the fill's opacity.
+    pub colors: [[f32; 4]; 3],
+    /// How strongly a line or dot shows where the surface hides it.
+    pub hidden_alpha: f32,
+}
+
 /// Per-frame inputs for the 3D scene render — everything `app` resolves from the
 /// live UI state each frame, bundled in one struct so the render entry points
 /// stay self-documenting and immune to argument-order mistakes among their many
@@ -192,6 +219,9 @@ pub struct SceneFrame<'a> {
     /// screen, 1.25 at 125% on Windows). What turns
     /// [`SceneDebugOptions::wireframe_width`], which is in points, into pixels.
     pub pixels_per_point: f32,
+    /// The Aud workspace's highlighted offenders, or `None` (every other
+    /// workspace, and Aud with nothing focused).
+    pub audit: Option<AuditOverlay<'a>>,
 }
 
 impl<'a> SceneFrame<'a> {
@@ -203,6 +233,9 @@ impl<'a> SceneFrame<'a> {
         SceneFrame {
             model,
             model_revision,
+            // The overlay indexes the source's triangles and corners, which mean
+            // nothing on another mesh.
+            audit: None,
             ..*self
         }
     }

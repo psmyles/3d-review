@@ -114,6 +114,7 @@ impl App {
         // The audit runs on every load, whichever workspace is up: the toolbar
         // shows its count from anywhere.
         self.sync_audit();
+        self.sync_audit_highlight();
 
         self.schedule_next_frame(&full_output);
 
@@ -311,7 +312,16 @@ impl App {
         // disjoint renderer/gpu borrows below). `debug` carries show_grid / shading
         // / overlay flags (synced during the egui pass); `projection` the
         // perspective/orthographic toggle; the model + revision drive the mesh.
-        let debug = self.ui.debug;
+        let mut debug = self.ui.debug;
+        // Aud's focus look: while a finding is highlighted the model turns neutral
+        // clay, so the severity colours are the only colour on it.
+        let audit_focused = self.ui.mode == WorkspaceMode::Aud
+            && !self.audit.highlight.is_empty()
+            && self.ui.aud.view == review_audit::DiagnosticView::Issues;
+        if audit_focused {
+            debug.material_mode = review_render::MaterialMode::Standard;
+            debug.active_material = ActiveMaterial::Source;
+        }
         let projection: CameraProjection = self.ui.projection_mode.into();
         let environment = self.ui.environment;
         let gtao = self.ui.gtao;
@@ -413,6 +423,43 @@ impl App {
         let pose_revision = self.animation.pose_revision;
         let scene_bounds = self.ui.bounds;
 
+        // The Aud focus's offenders, borrowed from the highlight `app` resolved.
+        let highlight = &self.audit.highlight;
+        let audit_overlay = (workspace == WorkspaceMode::Aud && !highlight.is_empty()).then(|| {
+            let color = |token: egui::Color32| {
+                let [r, g, b, _] = token.to_normalized_gamma_f32();
+                [r, g, b, theme::color::AUDIT_FILL_OPACITY]
+            };
+            review_render::AuditOverlay {
+                revision: highlight.revision,
+                fills: [
+                    &highlight.fills[0],
+                    &highlight.fills[1],
+                    &highlight.fills[2],
+                ],
+                edges: [
+                    &highlight.edges[0],
+                    &highlight.edges[1],
+                    &highlight.edges[2],
+                ],
+                corner_dots: [
+                    &highlight.corner_dots[0],
+                    &highlight.corner_dots[1],
+                    &highlight.corner_dots[2],
+                ],
+                point_dots: [
+                    &highlight.point_dots[0],
+                    &highlight.point_dots[1],
+                    &highlight.point_dots[2],
+                ],
+                colors: [
+                    color(theme::color::SEVERITY_INFO),
+                    color(theme::color::SEVERITY_WARNING),
+                    color(theme::color::SEVERITY_ERROR),
+                ],
+                hidden_alpha: theme::color::AUDIT_HIDDEN_OPACITY,
+            }
+        });
         let renderer = self.renderer.as_mut()?;
         let gpu = self.gpu.as_mut()?;
         let egui_renderer = self.egui_renderer.as_mut()?;
@@ -476,6 +523,7 @@ impl App {
                         pose_revision,
                         scene_bounds,
                         pixels_per_point: full_output.pixels_per_point,
+                        audit: audit_overlay,
                     };
                     if workspace == WorkspaceMode::Opt {
                         // Read the cameras out before the call: the arguments are

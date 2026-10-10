@@ -519,6 +519,7 @@ impl SceneGpu {
             scene.debug,
             scene.selected_bones,
         )?;
+        self.sync_audit_overlay(scene.model, scene.audit.as_ref())?;
         self.sync_selection(
             scene.model,
             scene.model_revision,
@@ -652,6 +653,8 @@ impl SceneGpu {
             || derived.skeleton_fill_buf.is_some()
             || derived.skeleton_line_buf.is_some()
             || (views.wireframe_ghost.is_some() && self.idle.ghost_wireframe_edges.is_some())
+            || derived.audit_edges.is_some()
+            || derived.audit_dots.is_some()
     }
 
     /// The skybox, behind all geometry.
@@ -792,6 +795,39 @@ impl SceneGpu {
         if let Some(ghost_uniforms) = wireframe_ghost {
             self.draw_wireframe_ghost(frame, ghost_uniforms, &lines.wireframe);
         }
+
+        // The Aud workspace's offender edges and dots, last so nothing covers them:
+        // first faint and always on top, so an offender inside or behind the model
+        // still shows, then solid and depth-tested over it where it is in view.
+        let views = &self.active.views;
+        self.draw_lines(
+            frame,
+            &self.lines.line_overlay,
+            views.audit_edges_hidden.iter(),
+            uniforms,
+            &lines.audit_edge,
+        );
+        self.draw_lines(
+            frame,
+            &self.lines.line,
+            views.audit_edges.iter(),
+            uniforms,
+            &lines.audit_edge,
+        );
+        self.draw_lines(
+            frame,
+            &self.lines.line_overlay,
+            views.audit_dots_hidden.iter(),
+            uniforms,
+            &lines.audit_dot,
+        );
+        self.draw_lines(
+            frame,
+            &self.lines.line,
+            views.audit_dots.iter(),
+            uniforms,
+            &lines.audit_dot,
+        );
     }
 
     /// The hover preview and the selection highlight, over the mesh.
@@ -826,6 +862,21 @@ impl SceneGpu {
                 uniforms,
                 uniforms.selection_color,
             );
+        }
+        // The Aud workspace's offending faces, worst severity last so it wins
+        // where two overlap.
+        if let (Some(mesh), Some(audit)) = (&self.active.mesh, scene.audit.as_ref()) {
+            for (severity, fill) in self.active.views.audit_fills.iter().enumerate() {
+                if let Some(index) = fill {
+                    self.draw_highlight(
+                        frame,
+                        index,
+                        &mesh.vertices,
+                        uniforms,
+                        audit.colors[severity],
+                    );
+                }
+            }
         }
     }
 }

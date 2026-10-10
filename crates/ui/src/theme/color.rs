@@ -111,6 +111,10 @@ pub const SEVERITY_INFO: Color32 = Color32::from_rgb(120, 168, 222);
 pub const AUDIT_PASSED: Color32 = Color32::from_rgb(126, 202, 122);
 /// A check that did not run (switched off, or nothing to check).
 pub const AUDIT_SKIPPED: Color32 = Color32::from_gray(128);
+/// How opaque the Aud viewport's tint over an offending face is.
+pub const AUDIT_FILL_OPACITY: f32 = 0.65;
+/// How strongly an offending edge or dot shows where the surface hides it.
+pub const AUDIT_HIDDEN_OPACITY: f32 = 0.3;
 /// The digits on the toolbar's findings-count pill, dark on the bright pill.
 pub const AUDIT_BUBBLE_TEXT: Color32 = Color32::from_rgb(20, 20, 22);
 /// A scene-tree row the type filter is hiding, kept visible only because a

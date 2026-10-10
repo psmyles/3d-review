@@ -215,6 +215,15 @@ impl MaterialMode {
         MaterialMode::Unique,
     ];
 
+    /// Whether the mesh is grouped per mesh part rather than per material. The
+    /// only thing about a mode the mesh's index order and the highlight lists
+    /// depend on: Source and Standard group identically, so switching between
+    /// them (as the Aud workspace's neutral clay does on every focus change)
+    /// must rebuild nothing.
+    pub fn groups_by_part(self) -> bool {
+        self == MaterialMode::Unique
+    }
+
     /// Dropdown label.
     pub fn label(self) -> &'static str {
         match self {

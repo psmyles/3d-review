@@ -92,7 +92,7 @@ pub(super) fn grouping_key<'a>(
 
 /// Copy `triangles` into a fresh index buffer, grouped by `key` (slot 0 for all
 /// when `None`) in first-seen order, with one [`MaterialDrawRange`] per group.
-pub(super) fn group_triangles(
+pub(crate) fn group_triangles(
     model: &ModelData,
     key: Option<&[u32]>,
     triangles: impl IntoIterator<Item = usize>,

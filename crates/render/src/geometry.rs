@@ -16,6 +16,7 @@
 //!
 //! [`ModelData`]: review_model::ModelData
 
+mod audit;
 pub(crate) mod deform;
 mod grid;
 mod hidden;
@@ -30,9 +31,10 @@ mod uv_seams;
 mod vertex;
 mod wireframe;
 
+pub(crate) use audit::audit_lines;
 pub(crate) use grid::{scene_lines, uv_grid_lines};
 pub(crate) use markers::{bounding_box_lines, model_pivot, pivot_half_extent, pivot_lines};
-pub(crate) use mesh::model_mesh;
+pub(crate) use mesh::{group_triangles, model_mesh};
 pub(crate) use normal_lines::{face_normal_lines, vertex_normal_lines};
 pub(crate) use select::{selected_triangle_mask, selection_geometry, visible_geometry};
 pub use skeleton::{BONE_PICK_TOLERANCE_POINTS, pick_bone_shape, posed_joint_positions};

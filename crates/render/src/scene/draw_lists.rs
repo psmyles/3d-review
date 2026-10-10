@@ -48,7 +48,7 @@ impl SceneGpu {
                     && baked.selection == view.selection
                     && baked.selected_nodes == selected_nodes
                     && baked.hidden == hidden
-                    && baked.mode == mode
+                    && baked.mode.groups_by_part() == mode.groups_by_part()
             }
             _ => false,
         };
@@ -108,7 +108,7 @@ impl SceneGpu {
                 baked.model_revision == model_revision
                     && baked.node == node
                     && baked.hidden == hidden
-                    && baked.mode == mode
+                    && baked.mode.groups_by_part() == mode.groups_by_part()
             }
             _ => false,
         };
@@ -153,7 +153,7 @@ impl SceneGpu {
             (Some(baked), true) => {
                 baked.model_revision == model_revision
                     && baked.hidden == hidden
-                    && baked.mode == mode
+                    && baked.mode.groups_by_part() == mode.groups_by_part()
             }
             _ => false,
         };

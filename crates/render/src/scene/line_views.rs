@@ -9,9 +9,9 @@
 use review_model::{Bounds, ModelData};
 
 use crate::geometry::{
-    BoneTint, bounding_box_lines, face_normal_lines, model_pivot, pivot_half_extent, pivot_lines,
-    skeleton_fill_triangles, skeleton_lines, skin_weight_vertices, uv_seam_lines,
-    vertex_normal_lines, wireframe_edge_indices,
+    BoneTint, audit_lines, bounding_box_lines, face_normal_lines, group_triangles, model_pivot,
+    pivot_half_extent, pivot_lines, skeleton_fill_triangles, skeleton_lines, skin_weight_vertices,
+    uv_seam_lines, vertex_normal_lines, wireframe_edge_indices,
 };
 use crate::rhi::{GpuResult, StorageBuffer, VertexBuffer};
 use crate::selection::{Selection, selection_bounds};
@@ -22,6 +22,7 @@ use super::slot::{
     BoundingBoxParams, DerivedViews, NormalParams, PivotParams, SKELETON_FILL_ALPHA,
     SkeletonParams, SkinWeightParams, UvSeamParams,
 };
+use crate::rhi::IndexBuffer;
 
 /// Build an optional vertex buffer from `vertices`: `None` for an empty set (sokol
 /// rejects a zero-byte buffer, and the draw is skipped anyway), else an immutable
@@ -338,6 +339,54 @@ impl SceneGpu {
             model_revision,
             selected: selected_bones.to_vec(),
         });
+        Ok(())
+    }
+
+    /// Build (or free) the Aud workspace's offender highlight: fill lists per
+    /// severity and the edge and dot lines, solid and faint. Rebuilt only when the
+    /// overlay's revision moves; freed when nothing is focused (invariant 3).
+    pub(super) fn sync_audit_overlay(
+        &mut self,
+        model: &ModelData,
+        overlay: Option<&crate::AuditOverlay<'_>>,
+    ) -> GpuResult<()> {
+        let revision = overlay.map(|overlay| overlay.revision);
+        if self.active.views.audit_baked == revision {
+            return Ok(());
+        }
+        let views = &mut self.active.views;
+        views.audit_fills = [None, None, None];
+        views.audit_edges = None;
+        views.audit_edges_hidden = None;
+        views.audit_dots = None;
+        views.audit_dots_hidden = None;
+        views.audit_baked = revision;
+        let Some(overlay) = overlay else {
+            return Ok(());
+        };
+        let triangle_count = model.indices.len() / 3;
+        for (severity, triangles) in overlay.fills.iter().enumerate() {
+            let (indices, _) = group_triangles(
+                model,
+                None,
+                triangles
+                    .iter()
+                    .map(|&t| t as usize)
+                    .filter(|&t| t < triangle_count),
+            );
+            if !indices.is_empty() {
+                self.active.views.audit_fills[severity] =
+                    Some(IndexBuffer::new(&indices, c"audit fill")?);
+            }
+        }
+        let lanes = self.active.lanes();
+        let (edges, dots) = audit_lines(model, lanes, overlay, 1.0);
+        let (edges_hidden, dots_hidden) = audit_lines(model, lanes, overlay, overlay.hidden_alpha);
+        let views = &mut self.active.views;
+        views.audit_edges = optional_line_buffer(&edges)?;
+        views.audit_dots = optional_line_buffer(&dots)?;
+        views.audit_edges_hidden = optional_line_buffer(&edges_hidden)?;
+        views.audit_dots_hidden = optional_line_buffer(&dots_hidden)?;
         Ok(())
     }
 

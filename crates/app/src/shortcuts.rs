@@ -207,7 +207,15 @@ impl App {
                     self.set_hover(None);
                 }
             }
-            "f" => self.frame_camera_on_key(),
+            "f" => {
+                // In Aud with a finding focused, F frames its offenders.
+                let framed = self.ui.mode == WorkspaceMode::Aud
+                    && !self.audit.highlight.is_empty()
+                    && self.frame_audit_focus();
+                if !framed {
+                    self.frame_camera_on_key();
+                }
+            }
             // Single-frame stepping through the selected clip (pauses playback).
             "," | "." => {
                 if !self.ui.mode.shows_pose() || self.ui.animation.selected_clip.is_none() {

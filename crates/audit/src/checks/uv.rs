@@ -224,10 +224,7 @@ pub(super) fn overlap_per_material(ctx: &Context<'_>, config: &RuleConfig) -> Ou
         }
         mark_overlaps(ctx, triangles, 0, resolution, &mut owner, &mut flagged);
     }
-    Outcome::judged(
-        offenders_from_flags(ctx, &flagged),
-        Threshold::Equals(Measured::Count(0)),
-    )
+    Outcome::judged(offenders_from_flags(ctx, &flagged), Threshold::None)
 }
 
 /// Mirrored islands, and triangles folded against their own island.
@@ -346,7 +343,7 @@ pub(super) fn lightmap_overlap(ctx: &Context<'_>, config: &RuleConfig) -> Outcom
         .filter(|(_, set)| !set.is_empty())
         .map(|(node, set)| Offender::elements(Some(node), ElementSet::Triangles(set)))
         .collect();
-    Outcome::judged(offenders, Threshold::Equals(Measured::Count(0)))
+    Outcome::judged(offenders, Threshold::None)
 }
 
 /// Islands of one object's lightmap closer than the padding: light bleeds

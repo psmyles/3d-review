@@ -19,6 +19,7 @@
 //! the previous report back as `reuse`, so editing one threshold re-measures one
 //! rule.
 
+mod highlight;
 mod profile;
 mod report;
 
@@ -72,6 +73,8 @@ pub(crate) struct AuditSubsystem {
     activity: Option<ActivityId>,
     /// The profile revision last written to the config dir.
     saved_revision: u64,
+    /// What the viewport highlights for the focus.
+    pub(crate) highlight: highlight::AuditHighlight,
 }
 
 impl Default for AuditSubsystem {
@@ -86,6 +89,7 @@ impl Default for AuditSubsystem {
             started_at: None,
             activity: None,
             saved_revision: 0,
+            highlight: highlight::AuditHighlight::default(),
         }
     }
 }
