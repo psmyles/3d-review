@@ -28,7 +28,6 @@
 //! not owned) and the material list from the app→UI snapshot.
 
 mod animations;
-pub(crate) mod comments;
 mod materials;
 mod nav;
 mod rows;
@@ -44,7 +43,7 @@ use crate::assets::{self, AppIcon};
 use crate::docs::Page;
 use crate::keys;
 use crate::labels;
-use crate::state::{CommentIntent, OutlinerTab, OutlinerViewMode, UiState};
+use crate::state::{OutlinerTab, OutlinerViewMode, UiState};
 use crate::theme::{color, size};
 use crate::widgets;
 use crate::widgets::{Tip, tip};
@@ -52,7 +51,6 @@ use nav::isolate_mesh;
 use rows::kind_icon;
 
 use animations::animations_tab;
-use comments::comments_tab;
 use materials::materials_tab;
 use nav::{apply_row_click, handle_nav, row_refs};
 use rows::draw_rows;
@@ -73,21 +71,13 @@ struct RowsOutput {
     /// The mesh row whose visibility eye was clicked, and the modifiers held —
     /// the primary modifier isolates that mesh instead of toggling it.
     toggled_eye: Option<(usize, egui::Modifiers)>,
-    /// The node whose "Comment on this part" was chosen from its context menu.
-    comment_on: Option<usize>,
     /// Whether a pending [`OutlinerState::scroll_to_selection`] was honored.
     ///
     /// [`OutlinerState::scroll_to_selection`]: crate::state::OutlinerState::scroll_to_selection
     scrolled: bool,
 }
 
-/// Draw the Outliner; returns the review-comment action a click in the Comments
-/// tab asked `app` for, if any.
-pub(crate) fn body(
-    ui: &mut egui::Ui,
-    state: &mut UiState,
-    model: &ModelData,
-) -> Option<CommentIntent> {
+pub(crate) fn body(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData) {
     // ── Tabs: the workspace's own subset (Scene / Materials / Textures /
     // Animations), as a full-width underlined tab strip. Each workspace
     // remembers its own tab; one it can't currently show (Animations, once a
@@ -102,7 +92,6 @@ pub(crate) fn body(
             OutlinerTab::Scene => keys::ui_outliner::TAB_SCENE.into(),
             OutlinerTab::Materials => keys::ui_outliner::TAB_MATERIALS.into(),
             OutlinerTab::Textures => keys::ui_outliner::TAB_TEXTURES.into(),
-            OutlinerTab::Comments => keys::ui_outliner::TAB_COMMENTS.into(),
             OutlinerTab::Animations => keys::ui_outliner::TAB_ANIMATIONS.into(),
         })
         .collect();
@@ -129,7 +118,6 @@ pub(crate) fn body(
                 .auto_shrink([false, false])
                 .show(ui, |ui| textures_tab(ui, state));
         }
-        OutlinerTab::Comments => return comments_tab(ui, state, model),
         OutlinerTab::Animations => {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
@@ -137,7 +125,6 @@ pub(crate) fn body(
         }
         OutlinerTab::Scene => scene_tab(ui, state, model),
     }
-    None
 }
 
 /// The header strip, drawn on every tab so the controls never shift underfoot:
@@ -257,9 +244,6 @@ fn scene_tab(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData) {
         return;
     }
     state.outliner.ensure_tree(model);
-    // The rows' comment badges read a per-node count kept current here, so the
-    // draw itself stays a lookup.
-    state.comments.refresh_counts(model.nodes.len());
 
     let query = state.outliner.search.trim().to_lowercase();
     let searching = !query.is_empty();
@@ -321,12 +305,6 @@ fn apply_rows_output(state: &mut UiState, model: &ModelData, rows: &[TreeRow], o
         && !state.outliner.collapsed.remove(&node)
     {
         state.outliner.collapsed.insert(node);
-    }
-    if let Some(node) = output.comment_on {
-        let center = state
-            .scene_viewport
-            .map_or(egui::Pos2::ZERO, |viewport| viewport.center());
-        state.start_comment(model, crate::state::DraftAnchor::Object { node }, center);
     }
     if let Some((node, modifiers)) = output.clicked {
         // Clicking a row is also how the Outliner claims the arrow keys.

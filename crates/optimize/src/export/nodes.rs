@@ -136,7 +136,7 @@ pub(crate) fn emit_authored_node(
             .unwrap_or(NO_PARENT),
         None => NO_PARENT,
     };
-    let data = authored_node_data(scene, node, authored, parent, &node.name, index, false);
+    let data = authored_node_data(scene, node, authored, parent, &node.name);
     scene.nodes.push(data);
     let placed_index = (scene.nodes.len() - 1) as i32;
     placed.insert(index, placed_index);
@@ -150,10 +150,8 @@ pub(crate) fn authored_node_data(
     authored: &review_model::extras::NodeExtras,
     parent: i32,
     name: &str,
-    source_index: usize,
-    copy: bool,
 ) -> NodeData {
-    let props = scene.push_node_props(&authored.props, source_index, copy);
+    let props = scene.push_props(&authored.props);
     let (attribute_kind, attribute_name, attribute_props) = match &authored.attribute {
         Some(attribute) => (
             attribute_code(attribute.kind),
@@ -242,15 +240,7 @@ pub(crate) fn place_level_node(
         return base;
     };
     let parent = scene.nodes[base as usize].parent;
-    let data = authored_node_data(
-        scene,
-        node,
-        authored,
-        parent,
-        &suffixed(&node.name, level),
-        index,
-        true,
-    );
+    let data = authored_node_data(scene, node, authored, parent, &suffixed(&node.name, level));
     scene.nodes.push(data);
     let copy = (scene.nodes.len() - 1) as i32;
     scene.level_copies.entry(index).or_default().push(copy);

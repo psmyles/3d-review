@@ -187,21 +187,6 @@ pub(crate) struct SceneData {
     pub(crate) selection_sets: Vec<SelectionSetData>,
     /// Source node → the suffixed per-level copies made of it.
     pub(crate) level_copies: HashMap<usize, Vec<i32>>,
-    /// A user string property written over what the source authored (the
-    /// viewer's review comments): see [`NodeStrings`].
-    pub(crate) node_strings: Option<NodeStrings>,
-}
-
-/// A user string property the export writes over what the source authored —
-/// how data the viewer keeps on a node (its review comments) reaches an export.
-/// The property named `name` is dropped from every exported node, then written
-/// with `values[source node]` on that source node's own node; the `_LOD<n>`
-/// copies of it never carry it, so a chain doesn't repeat it once per level.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct NodeStrings {
-    pub name: String,
-    /// Source node index → the property's text.
-    pub values: HashMap<usize, String>,
 }
 
 impl SceneData {
@@ -233,46 +218,7 @@ impl SceneData {
             display_layers: Vec::new(),
             selection_sets: Vec::new(),
             level_copies: HashMap::new(),
-            node_strings: None,
         }
-    }
-
-    /// [`Self::push_props`] for a node's authored properties, applying
-    /// [`Self::node_strings`]: the property it names is dropped, and written
-    /// afresh on the source node itself (not on a `copy` made for a later level).
-    pub(crate) fn push_node_props(
-        &mut self,
-        props: &[Prop],
-        source_index: usize,
-        copy: bool,
-    ) -> PropRange {
-        let Some(strings) = self.node_strings.take() else {
-            return self.push_props(props);
-        };
-        let kept: Vec<Prop> = props
-            .iter()
-            .filter(|prop| prop.name != strings.name)
-            .cloned()
-            .collect();
-        let mut range = self.push_props(&kept);
-        if !copy
-            && let Some(value) = strings.values.get(&source_index)
-            && let Ok(name) = CString::new(strings.name.replace('\0', ""))
-        {
-            self.props.push(PropData {
-                name,
-                kind: review_model::extras::PropType::Text.code(),
-                flags: review_model::extras::PropFlags::USER_DEFINED
-                    | review_model::extras::PropFlags::VALUE_STR,
-                value_int: 0,
-                value_real: [0.0; 4],
-                value_str: c_string_or_empty(value),
-                blob: Vec::new(),
-            });
-            range.count += 1;
-        }
-        self.node_strings = Some(strings);
-        range
     }
 
     /// Append `props` to the table and return their range. A property whose

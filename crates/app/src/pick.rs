@@ -11,8 +11,8 @@
 //! skeleton overlay draws with, and what a click *does* to the selection is
 //! `review_ui`'s shared rule, the one the Outliner's rows obey too.
 
-use glam::{Vec2, Vec3};
-use review_model::{ModelData, PosedScene, SceneBvh, SceneHit};
+use glam::Vec2;
+use review_model::{ModelData, PosedScene, SceneBvh};
 use review_render::{CameraProjection, OrbitCamera};
 use review_ui::{HoverTarget, ViewportTool, WorkspaceMode};
 
@@ -56,47 +56,6 @@ struct PickView<'a> {
     /// Whether this view draws the model posed. The Opt workspace deliberately
     /// shows the bind pose, so a pick there must use the bind pose too.
     posed: bool,
-}
-
-/// A pick ray through one pointer position, with the span the camera draws.
-struct PickRay {
-    origin: Vec3,
-    dir: Vec3,
-    near: f32,
-    t_max: f32,
-}
-
-impl PickRay {
-    fn through(view: &PickView<'_>, position: Vec2, projection: CameraProjection) -> Self {
-        let ndc = OrbitCamera::ndc_from_viewport(position - view.origin, view.size);
-        let (origin, dir) = view.camera.screen_ray(ndc, projection);
-        let (near, far) = view.camera.near_far();
-        // The same span the camera draws, so what can be picked is exactly what
-        // can be seen. An infinite perspective far plane has no bound to give.
-        let t_max = match projection {
-            CameraProjection::Perspective => f32::INFINITY,
-            CameraProjection::Orthographic => far,
-        };
-        Self {
-            origin,
-            dir,
-            near,
-            t_max,
-        }
-    }
-}
-
-/// A click that landed on the mesh, as a review comment needs it.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct MeshHit {
-    pub(crate) node: usize,
-    /// Global triangle index.
-    pub(crate) triangle: usize,
-    /// The point hit, in the scene's world space.
-    pub(crate) world: Vec3,
-    /// Whether the mesh is drawn posed (so the triangle's corners must be posed
-    /// too to place the point on it).
-    pub(crate) posed: bool,
 }
 
 /// Whether a press and release that far apart still counts as a click rather
@@ -198,7 +157,7 @@ impl App {
 
     /// The window's device pixel ratio, for turning a size in egui points into
     /// the physical pixels a pointer position is measured in.
-    pub(crate) fn scale_factor(&self) -> f32 {
+    fn scale_factor(&self) -> f32 {
         self.window
             .as_ref()
             .map_or(1.0, |window| window.scale_factor() as f32)
@@ -239,8 +198,15 @@ impl App {
 
         let view = self.pick_view(position)?;
         let projection: CameraProjection = self.ui.projection_mode.into();
-        let ray = PickRay::through(&view, position, projection);
-        let (origin, dir) = (ray.origin, ray.dir);
+        let ndc = OrbitCamera::ndc_from_viewport(position - view.origin, view.size);
+        let (origin, dir) = view.camera.screen_ray(ndc, projection);
+        let (near, far) = view.camera.near_far();
+        // The same span the camera draws, so what can be picked is exactly what
+        // can be seen. An infinite perspective far plane has no bound to give.
+        let t_max = match projection {
+            CameraProjection::Perspective => f32::INFINITY,
+            CameraProjection::Orthographic => far,
+        };
 
         if bones {
             // The bone test measures screen distances, so it needs the pointer in
@@ -267,25 +233,16 @@ impl App {
             .map(PickTarget::Bone);
         }
 
-        let hit = self.mesh_hit(&view, &ray, &hidden, solo.as_deref())?;
-        (hit.node != u32::MAX).then_some(PickTarget::Node(hit.node as usize))
-    }
-
-    /// The triangle `ray` hits first in `view`, among what is on screen: a hidden
-    /// mesh is not, and while a selection is isolated, the isolated set is all
-    /// there is.
-    fn mesh_hit(
-        &self,
-        view: &PickView<'_>,
-        ray: &PickRay,
-        hidden: &[u32],
-        solo: Option<&[u32]>,
-    ) -> Option<SceneHit> {
+        // A hidden mesh is not on screen, so it cannot be clicked; and while a
+        // selection is isolated, the isolated set is all there is to click.
         let allow = |node: u32| {
             !hidden.contains(&node)
-                && solo.is_none_or(|isolated| isolated.is_empty() || isolated.contains(&node))
+                && solo
+                    .as_ref()
+                    .is_none_or(|isolated| isolated.is_empty() || isolated.contains(&node))
         };
-        match (view.posed, self.posed_pick.as_ref()) {
+
+        let hit = match (view.posed, self.posed_pick.as_ref()) {
             (true, Some((_, posed))) => {
                 let ctx = self.animation.context()?;
                 posed.pick(
@@ -293,38 +250,16 @@ impl App {
                     view.model,
                     ctx,
                     &self.animation.deform,
-                    ray.origin,
-                    ray.dir,
-                    ray.near,
-                    ray.t_max,
+                    origin,
+                    dir,
+                    near,
+                    t_max,
                     allow,
                 )
             }
-            _ => view
-                .bvh
-                .pick(view.model, ray.origin, ray.dir, ray.near, ray.t_max, allow),
-        }
-    }
-
-    /// Where a click at `position` lands on the source mesh in the 3D view: the
-    /// triangle, the point, and whether the mesh is drawn posed there. `None`
-    /// over empty space, or outside the 3D workspace.
-    pub(crate) fn cast_mesh(&mut self, position: Vec2) -> Option<MeshHit> {
-        if self.ui.mode != WorkspaceMode::ThreeD {
-            return None;
-        }
-        let hidden = self.ui.hidden_mesh_nodes();
-        let solo = self.ui.solo.then(|| self.ui.selected_node_set());
-        self.sync_posed_pick();
-        let view = self.pick_view(position)?;
-        let ray = PickRay::through(&view, position, self.ui.projection_mode.into());
-        let hit = self.mesh_hit(&view, &ray, &hidden, solo.as_deref())?;
-        (hit.node != u32::MAX).then(|| MeshHit {
-            node: hit.node as usize,
-            triangle: hit.triangle as usize,
-            world: ray.origin + ray.dir * hit.t,
-            posed: view.posed,
-        })
+            _ => view.bvh.pick(view.model, origin, dir, near, t_max, allow),
+        }?;
+        (hit.node != u32::MAX).then_some(PickTarget::Node(hit.node as usize))
     }
 
     /// Rebuild the posed pick index when the pose or the model has moved.

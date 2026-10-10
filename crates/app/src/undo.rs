@@ -33,7 +33,6 @@ use std::sync::Arc;
 
 use review_optimize::OptStack;
 use review_render::{DecodedImage, MaterialState, Selection};
-use review_ui::CommentEntry;
 
 use crate::App;
 
@@ -83,10 +82,6 @@ pub(crate) struct EditSnapshot {
     /// reprocesses them.
     opt_stack: Arc<OptStack>,
     opt_revision: u64,
-    /// The review comments, tagged by `comments_revision`: writing, replying,
-    /// resolving, moving a pin and deleting all undo like any other edit.
-    comments: Arc<Vec<CommentEntry>>,
-    comments_revision: u64,
 }
 
 impl EditSnapshot {
@@ -104,8 +99,6 @@ impl EditSnapshot {
             texture_revision: 0,
             opt_stack: Arc::new(OptStack::default()),
             opt_revision: 0,
-            comments: Arc::new(Vec::new()),
-            comments_revision: 0,
         }
     }
 
@@ -122,7 +115,6 @@ impl EditSnapshot {
             || self.material_revision != other.material_revision
             || self.texture_revision != other.texture_revision
             || self.opt_revision != other.opt_revision
-            || self.comments_revision != other.comments_revision
     }
 }
 
@@ -274,12 +266,6 @@ impl App {
             // is a refcount bump; the revision tag is what `differs` compares.
             opt_stack: Arc::clone(&self.ui.opt.stack),
             opt_revision: self.ui.opt.stack_revision,
-            comments: if prev.comments_revision == self.ui.comments.revision {
-                Arc::clone(&prev.comments)
-            } else {
-                Arc::new(self.ui.comments.threads.clone())
-            },
-            comments_revision: self.ui.comments.revision,
         }
     }
 
@@ -325,12 +311,6 @@ impl App {
         // (a material tweak, say) doesn't reprocess the mesh for no reason.
         if !Arc::ptr_eq(&self.ui.opt.stack, &snapshot.opt_stack) {
             self.ui.opt.set_stack(Arc::clone(&snapshot.opt_stack));
-        }
-
-        // Only when the comments differ, so an unrelated undo doesn't reset the
-        // comment selection or an edit in progress.
-        if self.ui.comments.threads != *snapshot.comments {
-            self.ui.comments.restore((*snapshot.comments).clone());
         }
 
         self.refresh_materials();
@@ -420,8 +400,6 @@ mod tests {
             texture_revision,
             opt_stack: Arc::new(OptStack::default()),
             opt_revision: 0,
-            comments: Arc::new(Vec::new()),
-            comments_revision: 0,
         }
     }
 
@@ -510,17 +488,5 @@ mod tests {
         stack.observe(snap(Selection::None, 5, 0), true);
         stack.observe(snap(Selection::None, 5, 0), false);
         assert!(stack.undo.is_empty());
-    }
-
-    #[test]
-    fn a_comment_edit_is_a_recordable_change() {
-        let edited = EditSnapshot {
-            comments_revision: 1,
-            ..snap(Selection::None, 0, 0)
-        };
-        assert!(
-            edited.differs(&snap(Selection::None, 0, 0)),
-            "a comment edit must be undoable"
-        );
     }
 }

@@ -18,14 +18,3 @@ app-dialogs-filter-preset = Optimization preset
 app-dialogs-preset-file-name = optimization-preset.json
 # The export dialog's default file name when the model has no name of its own.
 app-dialogs-export-file-name = optimized
-
-## Saving review comments
-
-app-dialogs-save-comments-as = Save model with comments
-app-dialogs-file-changed-title = File changed on disk
-app-dialogs-file-changed = { $file } has changed on disk since it was opened. Saving the comments will write over those changes. Save anyway?
-app-dialogs-unsaved-title = Unsaved comments
-app-dialogs-unsaved = The review comments in { $file } have changes that haven't been saved.
-app-dialogs-unsaved-save = Save
-app-dialogs-unsaved-discard = Don't Save
-app-dialogs-unsaved-cancel = Cancel

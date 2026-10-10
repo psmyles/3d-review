@@ -18,11 +18,6 @@ image.workspace = true
 log.workspace = true
 notify.workspace = true
 review-import = { path = "../import" }
-# Review comments: read from the opened FBX (and, later, written back into it)
-# through the same pure-Rust reader the `review-comments` CLI uses.
-review-annotate = { path = "../annotate" }
-# The comment threads a save carries through without understanding them.
-serde_json.workspace = true
 # `Key`, `tr` and the generated keys for this crate's notices, dialogs and window
 # title. No `egui` feature: `app` never hands a key to a widget - it formats the
 # text and passes a `String` through the notification API.
