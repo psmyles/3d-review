@@ -156,35 +156,38 @@ fn reusing_the_previous_report_equals_a_cold_run() {
 #[test]
 fn the_findings_on_the_fixtures_are_pinned() {
     const PINNED: &[(&str, &str)] = &[
-        ("meter_cube.fbx", "geometry.hard_edges(12)"),
+        ("meter_cube.fbx", "geometry.hard_edges(12) density.texel(1)"),
         (
             "monkey.fbx",
             "geometry.duplicate_vertices(4) geometry.hard_edges(961) transform.scale(1) \
-             transform.unfrozen(1) uv.lightmap_overlap(8) density.triangle_lod(1)",
+             transform.unfrozen(1) uv.lightmap_overlap(8) density.texel(1) \
+             density.triangle_lod(1)",
         ),
         (
             "SM_column04.fbx",
-            "transform.unfrozen(1) uv.overlap(10) uv.flipped(15) density.triangle_lod(1)",
+            "transform.unfrozen(1) uv.overlap(10) uv.flipped(15) density.texel(1) \
+             density.triangle_lod(1)",
         ),
         (
             "SM_Ammo_Crate_01a.fbx",
             "geometry.duplicate_vertices(6542) geometry.inverted_normals(2) \
              uv.out_of_range(10) uv.overlap(7660) uv.flipped(19) uv.lightmap_overlap(25) \
-             density.triangle_lod(3) hierarchy.empty_nodes(1)",
+             density.texel(4) density.triangle_lod(3) hierarchy.empty_nodes(1)",
         ),
         (
             "SK_Player_01.fbx",
             "geometry.non_manifold_edges(4) geometry.duplicate_vertices(237) geometry.ngons(3) \
              geometry.inverted_normals(11) transform.unfrozen(1) transform.pivot_offset(1) \
              uv.missing(2) uv.out_of_range(2737) uv.overlap(121075) uv.flipped(18437) \
-             uv.lightmap_overlap(10799) skin.unused_bones(2) density.texel(3) \
-             density.triangle_lod(2) density.triangle_reduce(1) hierarchy.multiple_roots(2)",
+             uv.lightmap_overlap(10799) skin.influences(2) skin.unused_bones(2) \
+             density.texel(2) density.triangle_lod(2) density.triangle_reduce(1) \
+             hierarchy.multiple_roots(2) hierarchy.materials_per_mesh(2)",
         ),
         (
             "xyzrgb_dragon.fbx",
             "geometry.non_manifold_edges(1) geometry.isolated_vertices(123) \
-             geometry.hard_edges(357454) uv.missing(1) density.triangle_reduce(1) \
-             naming.invalid_characters(1)",
+             geometry.hard_edges(357454) geometry.triangle_budget(1) uv.missing(1) \
+             density.triangle_reduce(1) naming.invalid_characters(1)",
         ),
     ];
     for (name, expected) in PINNED {

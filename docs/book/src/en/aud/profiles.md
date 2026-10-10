@@ -2,9 +2,12 @@
 
 A profile is the set of rules a model is checked against: which checks run,
 how serious each one is, and their limits. There are three built in, one per
-target: **Unity**, **Unreal** and **Generic**. They differ where the engines
-differ, for example Unreal works in centimeters with Z up, and Unity keeps four
-bones per point where Unreal keeps eight.
+target: **Unity**, **Unreal** and **Generic**. They share their limits - four
+bones per point, 80 bones per mesh, 1024 texture pixels per meter on a
+1024-pixel texture, 200,000 triangles per object and 2 million in the file, 32
+draw calls, 4 materials per mesh - and differ where the engines differ: Unreal
+works in centimeters with Z up, Unity in meters with Y up, and each treats some
+findings as more serious than the other does.
 
 Click the **Profile** row at the top of the Issues list to open the profile in
 the Inspector. Every change you make there re-checks the model at once; a check

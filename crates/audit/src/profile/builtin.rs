@@ -48,15 +48,12 @@ pub fn default_config(engine: Engine, rule: RuleId) -> RuleConfig {
             pick(Some(I), Some(I), Some(I))
         }
         RuleId::TriangleBudget => {
-            number(
-                "max_per_object",
-                by_engine(100_000.0, 200_000.0, 1_000_000.0),
-            );
-            number("max_total", by_engine(500_000.0, 1_000_000.0, 5_000_000.0));
+            number("max_per_object", 200_000.0);
+            number("max_total", 2_000_000.0);
             pick(Some(W), Some(W), Some(I))
         }
         RuleId::DrawCallBudget => {
-            number("max", by_engine(32.0, 32.0, 64.0));
+            number("max", 32.0);
             pick(Some(W), Some(W), Some(I))
         }
         RuleId::Scale => pick(Some(W), Some(I), Some(I)),
@@ -97,7 +94,6 @@ pub fn default_config(engine: Engine, rule: RuleId) -> RuleConfig {
             pick(Some(W), Some(E), Some(W))
         }
         RuleId::LightmapPadding => {
-            number("channel", 1.0);
             number("resolution", by_engine(128.0, 64.0, 128.0));
             number("min_padding", 2.0);
             pick(Some(W), Some(W), None)
@@ -107,7 +103,7 @@ pub fn default_config(engine: Engine, rule: RuleId) -> RuleConfig {
             pick(Some(E), Some(E), Some(W))
         }
         RuleId::Influences => {
-            number("max", by_engine(4.0, 8.0, 8.0));
+            number("max", 4.0);
             pick(Some(W), Some(W), Some(I))
         }
         RuleId::UnnormalizedWeights => {
@@ -115,14 +111,14 @@ pub fn default_config(engine: Engine, rule: RuleId) -> RuleConfig {
             pick(Some(I), Some(I), Some(I))
         }
         RuleId::BonesPerMesh => {
-            number("max", by_engine(255.0, 75.0, 256.0));
+            number("max", 80.0);
             pick(Some(I), Some(I), Some(I))
         }
         RuleId::UnusedBones => pick(Some(I), Some(I), Some(I)),
         RuleId::BindPoseMismatch => pick(Some(I), Some(W), Some(I)),
         RuleId::TexelDensity => {
-            number("texture_size", 2048.0);
-            number("target", 512.0);
+            number("texture_size", 1024.0);
+            number("target", 1024.0);
             number("tolerance", 2.0);
             pick(Some(W), Some(W), Some(I))
         }
@@ -174,7 +170,7 @@ pub fn default_config(engine: Engine, rule: RuleId) -> RuleConfig {
         RuleId::MultipleRoots => pick(Some(I), Some(I), Some(I)),
         RuleId::LightsCameras => pick(Some(W), Some(I), Some(I)),
         RuleId::MaterialsPerMesh => {
-            number("max", by_engine(4.0, 4.0, 8.0));
+            number("max", 4.0);
             pick(Some(W), Some(W), Some(I))
         }
     };

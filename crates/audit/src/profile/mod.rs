@@ -201,7 +201,6 @@ pub fn param_specs(rule: RuleId) -> &'static [ParamSpec] {
         RuleId::LightmapPadding => {
             &const {
                 [
-                    spec("channel", CHANNEL),
                     spec("resolution", RESOLUTION),
                     spec(
                         "min_padding",
@@ -519,7 +518,7 @@ mod tests {
         let key = config.finding_key();
         config.severity = Severity::Error;
         assert_eq!(config.finding_key(), key);
-        config.params.insert("max".into(), ParamValue::Number(4.0));
+        config.params.insert("max".into(), ParamValue::Number(6.0));
         assert_ne!(config.finding_key(), key);
     }
 }

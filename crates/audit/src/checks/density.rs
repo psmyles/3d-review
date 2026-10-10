@@ -24,8 +24,8 @@ use crate::finding::{Measured, Offender, Threshold};
 use crate::profile::RuleConfig;
 
 pub(super) fn texel(ctx: &Context<'_>, config: &RuleConfig) -> Outcome {
-    let texture_size = count_param(config, "texture_size", 2048) as f32;
-    let target = config.number("target").unwrap_or(512.0);
+    let texture_size = count_param(config, "texture_size", 1024) as f32;
+    let target = config.number("target").unwrap_or(1024.0);
     let tolerance = config.number("tolerance").unwrap_or(2.0).max(1.0);
     let (low, high) = (target / tolerance, target * tolerance);
     let measure = SurfaceMeasure::new(ctx.model, 0);

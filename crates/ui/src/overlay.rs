@@ -684,8 +684,8 @@ fn draw_heat_legend(
     let ((title, title_right), low, mid, high) = match state.aud.view {
         DiagnosticView::TexelDensity => {
             let rule = profile.rule(RuleId::TexelDensity);
-            let size = rule.number("texture_size").unwrap_or(2048.0);
-            let target = rule.number("target").unwrap_or(512.0);
+            let size = rule.number("texture_size").unwrap_or(1024.0);
+            let target = rule.number("target").unwrap_or(1024.0);
             let tolerance = rule.number("tolerance").unwrap_or(2.0).max(1.0);
             // The units are in the header; under the bar only the numbers.
             let number = |value: f64| format!("{value:.0}");

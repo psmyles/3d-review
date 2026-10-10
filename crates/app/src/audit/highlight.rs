@@ -297,17 +297,15 @@ impl App {
     /// UV0 for the rest.
     pub(crate) fn audit_uv_channel(&self) -> u32 {
         match self.ui.aud.focus.and_then(AuditFocus::rule) {
-            Some(
-                rule @ (RuleId::LightmapOverlap
-                | RuleId::LightmapPadding
-                | RuleId::LightmapOutOfRange),
-            ) => self
-                .ui
-                .aud
-                .profile
-                .rule(rule)
-                .number("channel")
-                .unwrap_or(1.0) as u32,
+            Some(RuleId::LightmapPadding) => review_audit::LIGHTMAP_PADDING_CHANNEL as u32,
+            Some(rule @ (RuleId::LightmapOverlap | RuleId::LightmapOutOfRange)) => {
+                self.ui
+                    .aud
+                    .profile
+                    .rule(rule)
+                    .number("channel")
+                    .unwrap_or(1.0) as u32
+            }
             _ => 0,
         }
     }
@@ -361,8 +359,8 @@ impl App {
         };
         match self.ui.aud.view {
             review_audit::DiagnosticView::TexelDensity => review_render::HeatMap::TexelDensity {
-                texture_size: number(RuleId::TexelDensity, "texture_size", 2048.0),
-                target: number(RuleId::TexelDensity, "target", 512.0),
+                texture_size: number(RuleId::TexelDensity, "texture_size", 1024.0),
+                target: number(RuleId::TexelDensity, "target", 1024.0),
                 tolerance: number(RuleId::TexelDensity, "tolerance", 2.0),
             },
             review_audit::DiagnosticView::TriangleDensity => {
