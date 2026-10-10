@@ -429,6 +429,8 @@ pub(super) fn marshal_mesh_extras(
     let extra_skin_offsets = raw.extra_skin_offsets()?;
     let extra_influences = raw.extra_influences()?;
     let dq_weights = raw.dq_weights()?;
+    let uv_sets = raw.uv_sets()?;
+    let unused_vertices = raw.unused_vertices()?;
 
     let meshes = raw
         .meshes()?
@@ -552,6 +554,24 @@ pub(super) fn marshal_mesh_extras(
                 face_first: mesh.face_first,
                 face_count: mesh.face_count,
                 tangents_authored: mesh.tangents_authored != 0,
+                normals_authored: mesh.normals_authored != 0,
+                uv_sets: slice_range(uv_sets, mesh.uv_set_first, mesh.uv_set_count, "uv sets")?
+                    .iter()
+                    .map(|set| extras::UvSetExtras {
+                        name: view.str(set.name),
+                        index: set.index,
+                        has_values: set.has_values != 0,
+                    })
+                    .collect(),
+                unused_vertices: slice_range(
+                    unused_vertices,
+                    mesh.unused_vertex_first,
+                    mesh.unused_vertex_count,
+                    "unused vertices",
+                )?
+                .iter()
+                .map(|vertex| (vertex.logical, Vec3::from_array(vertex.position)))
+                .collect(),
                 reversed_winding: mesh.reversed_winding != 0,
                 color_sets,
                 edges: slice_range(edges, pair_first, pair_count, "edges")?

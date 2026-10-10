@@ -252,6 +252,8 @@ slice_accessors!(ReviewImportExtras {
     extra_skin_offsets: u32 = (extra_skin_offsets, extra_skin_offset_count);
     extra_influences: XExtraInfluence = (extra_influences, extra_influence_count);
     dq_weights: XDqWeight = (dq_weights, dq_weight_count);
+    uv_sets: XUvSet = (uv_sets, uv_set_count);
+    unused_vertices: XUnusedVertex = (unused_vertices, unused_vertex_count);
     poses: XPose = (poses, pose_count);
     pose_entries: XPoseEntry = (pose_entries, pose_entry_count);
     display_layers: XDisplayLayer = (display_layers, display_layer_count);

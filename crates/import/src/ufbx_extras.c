@@ -91,6 +91,7 @@ typedef struct review_extras_builder {
     size_t selection_set_capacity, selection_node_capacity, selection_index_capacity;
     size_t anim_stack_capacity, stack_layer_capacity, anim_layer_capacity, anim_prop_capacity,
         anim_curve_capacity, anim_key_capacity;
+    size_t uv_set_capacity, unused_vertex_capacity;
 } review_extras_builder;
 
 /* Each list gets a tiny typed push helper. They all return the first appended
@@ -142,6 +143,8 @@ REVIEW_EXTRAS_LIST(anim_layer, review_import_anim_layer_extras, anim_layers, ani
 REVIEW_EXTRAS_LIST(anim_prop, review_import_anim_prop_extras, anim_props, anim_prop_count, anim_prop_capacity)
 REVIEW_EXTRAS_LIST(anim_curve, review_import_anim_curve_extras, anim_curves, anim_curve_count, anim_curve_capacity)
 REVIEW_EXTRAS_LIST(anim_key, review_import_anim_key, anim_keys, anim_key_count, anim_key_capacity)
+REVIEW_EXTRAS_LIST(uv_set, review_import_uv_set, uv_sets, uv_set_count, uv_set_capacity)
+REVIEW_EXTRAS_LIST(unused_vertex, review_import_unused_vertex, unused_vertices, unused_vertex_count, unused_vertex_capacity)
 
 /* The per-face and per-edge layer arrays grow together with `face_count` /
    `edge_count`, so they are pushed as a set. */
@@ -838,6 +841,7 @@ static int review_extras_capture_mesh(review_extras_builder *b, const ufbx_node 
     dst.face_first = (uint32_t)bases->face_first;
     dst.face_count = (uint32_t)bases->face_count;
     dst.tangents_authored = mesh->vertex_tangent.exists ? 1u : 0u;
+    dst.normals_authored = (mesh->vertex_normal.exists && !mesh->generated_normals) ? 1u : 0u;
     dst.reversed_winding = mesh->reversed_winding ? 1u : 0u;
     dst.subdivision_preview_levels = mesh->subdivision_preview_levels;
     dst.subdivision_render_levels = mesh->subdivision_render_levels;
@@ -1016,8 +1020,62 @@ static int review_extras_capture_mesh(review_extras_builder *b, const ufbx_node 
 
     review_extras_capture_extra_skins(b, mesh, bases, &dst);
 
+    /* UV sets, in the file's order: the geometry fill matches channels by
+       position, so this is the only record of which sets each mesh has. */
+    {
+        size_t set_first = b->out->uv_set_count;
+        size_t set_index;
+        for (set_index = 0; set_index < mesh->uv_sets.count; set_index++) {
+            const ufbx_uv_set *set = &mesh->uv_sets.data[set_index];
+            review_import_uv_set entry;
+            memset(&entry, 0, sizeof(entry));
+            entry.name = review_extras_str(b, set->name);
+            entry.index = set->index;
+            entry.has_values = (set->vertex_uv.exists && set->vertex_uv.values.count > 0) ? 1u : 0u;
+            review_extras_push_uv_set(b, &entry, 1);
+        }
+        if (set_first > UINT32_MAX) {
+            b->failed = 1;
+        } else {
+            dst.uv_set_first = (uint32_t)set_first;
+            dst.uv_set_count = (uint32_t)(b->out->uv_set_count - set_first);
+        }
+    }
+
+    /* Control points no face references. They produce no render corner, so
+       their position is recorded here, through the same geometry_to_world the
+       fill applies to every corner. */
+    {
+        size_t unused_first = b->out->unused_vertex_count;
+        size_t vertex;
+        for (vertex = 0; vertex < bases->logical_count && vertex < mesh->vertex_first_index.count
+                         && vertex < mesh->vertices.count;
+             vertex++) {
+            review_import_unused_vertex entry;
+            ufbx_vec3 position;
+            if (mesh->vertex_first_index.data[vertex] != UFBX_NO_INDEX) {
+                continue;
+            }
+            if (bases->logical_first + vertex > UINT32_MAX) {
+                b->failed = 1;
+                break;
+            }
+            position = ufbx_transform_position(&node->geometry_to_world, mesh->vertices.data[vertex]);
+            entry.logical = (uint32_t)(bases->logical_first + vertex);
+            entry.position[0] = (float)position.x;
+            entry.position[1] = (float)position.y;
+            entry.position[2] = (float)position.z;
+            review_extras_push_unused_vertex(b, &entry, 1);
+        }
+        if (unused_first > UINT32_MAX) {
+            b->failed = 1;
+        } else {
+            dst.unused_vertex_first = (uint32_t)unused_first;
+            dst.unused_vertex_count = (uint32_t)(b->out->unused_vertex_count - unused_first);
+        }
+    }
+
     free(corner_of_index);
-    (void)node;
     if (!ok) {
         return 0;
     }
@@ -1506,6 +1564,8 @@ void review_import_free_extras(review_import_extras *extras)
     free(extras->anim_props);
     free(extras->anim_curves);
     free(extras->anim_keys);
+    free(extras->uv_sets);
+    free(extras->unused_vertices);
     memset(extras, 0, sizeof(*extras));
 }
 
