@@ -679,25 +679,36 @@ fn draw_heat_legend(
     }
     let profile = &state.aud.profile;
     let mut ramp: &[egui::Color32] = &HEAT_RAMP;
-    let (title, low, mid, high) = match state.aud.view {
+    // The header is one title, or (texel density) a pair of facts at the
+    // card's two ends; the three labels under the bar name its ends and middle.
+    let ((title, title_right), low, mid, high) = match state.aud.view {
         DiagnosticView::TexelDensity => {
             let rule = profile.rule(RuleId::TexelDensity);
             let size = rule.number("texture_size").unwrap_or(2048.0);
             let target = rule.number("target").unwrap_or(512.0);
             let tolerance = rule.number("tolerance").unwrap_or(2.0).max(1.0);
-            let label = |value| crate::audit_labels::measured(&Measured::PxPerMeter(value));
+            // The units are in the header; under the bar only the numbers.
+            let number = |value: f64| format!("{value:.0}");
             (
-                crate::keys::ui_audit::legend_texel(format!("{size:.0}")),
-                label(target / tolerance),
-                label(target),
-                label(target * tolerance),
+                (
+                    crate::keys::ui_audit::legend_texel_target(crate::audit_labels::measured(
+                        &Measured::PxPerMeter(target),
+                    )),
+                    Some(crate::keys::ui_audit::legend_texel_size(number(size))),
+                ),
+                number(target / tolerance),
+                number(target),
+                number(target * tolerance),
             )
         }
         DiagnosticView::TriangleDensity => {
             let rule = profile.rule(RuleId::TriangleLod);
             let area = rule.number("min_pixel_area").unwrap_or(10.0);
             (
-                review_localization::tr(crate::keys::ui_audit::LEGEND_TRIANGLE).into_owned(),
+                (
+                    review_localization::tr(crate::keys::ui_audit::LEGEND_TRIANGLE).into_owned(),
+                    None,
+                ),
                 review_localization::tr(crate::keys::ui_audit::LEGEND_COARSE).into_owned(),
                 crate::audit_labels::measured(&Measured::SquarePixels(area)),
                 review_localization::tr(crate::keys::ui_audit::LEGEND_DENSE).into_owned(),
@@ -726,7 +737,7 @@ fn draw_heat_legend(
             };
             ramp = &OVERDRAW_RAMP;
             (
-                review_localization::tr(title).into_owned(),
+                (review_localization::tr(title).into_owned(), None),
                 count(low),
                 count((low + high) * 0.5),
                 format!("{}+", count(high)),
@@ -744,11 +755,27 @@ fn draw_heat_legend(
         size::AUD_LEGEND_WIDTH,
         |ui| {
             ui.spacing_mut().item_spacing.y = size::STATS_ROW_SPACING;
-            ui.label(crate::widgets::mono_label(
+            let font = egui::FontId::monospace(theme::font::STATS);
+            let (header, _) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+                egui::Sense::hover(),
+            );
+            ui.painter().text(
+                header.left_center(),
+                egui::Align2::LEFT_CENTER,
                 &title,
-                theme::font::STATS,
+                font.clone(),
                 color::TEXT_BODY,
-            ));
+            );
+            if let Some(right) = &title_right {
+                ui.painter().text(
+                    header.right_center(),
+                    egui::Align2::RIGHT_CENTER,
+                    right,
+                    font.clone(),
+                    color::TEXT_BODY,
+                );
+            }
             let (bar, _) = ui.allocate_exact_size(
                 egui::vec2(ui.available_width(), size::AUD_LEGEND_BAR_HEIGHT),
                 egui::Sense::hover(),
@@ -761,7 +788,6 @@ fn draw_heat_legend(
                 egui::vec2(bar.width(), ui.spacing().interact_size.y),
                 egui::Sense::hover(),
             );
-            let font = egui::FontId::monospace(theme::font::STATS);
             for (text, x, align) in [
                 (low, bar.left(), egui::Align2::LEFT_CENTER),
                 (mid, bar.center().x, egui::Align2::CENTER_CENTER),

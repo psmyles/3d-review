@@ -114,27 +114,39 @@ fn every_icon_group_width_holds_its_tiles() {
     }
 }
 
-/// The three clusters plus the centred mode group must not overlap at the
-/// narrowest window the chrome is expected to work in.
+/// The three clusters, the mode group and Aud's view group beside it must not
+/// overlap at the narrowest window the chrome is expected to work in.
 #[test]
 fn the_clusters_do_not_overlap_at_a_small_window() {
     // A 1280pt-wide window: the smallest a 3D viewer is realistically used at.
     const BAR_WIDTH: f32 = 1280.0;
+    let row_left = size::OVERLAY_MARGIN;
     let usable = BAR_WIDTH - size::OVERLAY_MARGIN * 2.0;
 
-    let left_end = size::TOOLBAR_LEFT_WIDTH;
-    let right_start = usable - size::TOOLBAR_RIGHT_WIDTH;
-    let centre_start = usable / 2.0 - size::TOOLBAR_MODE_GROUP_WIDTH / 2.0;
-    let centre_end = usable / 2.0 + size::TOOLBAR_MODE_GROUP_WIDTH / 2.0;
+    let left_end = row_left + size::TOOLBAR_LEFT_WIDTH;
+    let right_start = row_left + usable - size::TOOLBAR_RIGHT_WIDTH;
+    let mode_start = review_ui::mode_group_left(row_left, usable);
+    // With the Aud segment's count showing: the widest the group gets.
+    let mode_end = mode_start + size::TOOLBAR_MODE_GROUP_WIDTH + size::AUD_BUBBLE_ROOM;
+    let aud_views_start =
+        mode_start - size::TOOLBAR_GROUP_SPACING - size::TOOLBAR_QUINT_ICON_GROUP_WIDTH;
 
     assert!(
-        left_end < centre_start,
-        "the left cluster ({left_end}pt) reaches the centred mode group \
-         ({centre_start}pt) at a {BAR_WIDTH}pt window",
+        left_end < aud_views_start,
+        "the left cluster ({left_end}pt) reaches Aud's view group \
+         ({aud_views_start}pt) at a {BAR_WIDTH}pt window",
     );
     assert!(
-        centre_end < right_start,
-        "the centred mode group ends at {centre_end}pt, past where the right \
-         cluster starts ({right_start}pt), at a {BAR_WIDTH}pt window",
+        mode_end < right_start,
+        "the mode group ends at {mode_end}pt, past where the right cluster \
+         starts ({right_start}pt), at a {BAR_WIDTH}pt window",
     );
+}
+
+/// On a window with room, the mode group is centred for its count-less width.
+#[test]
+fn the_mode_group_is_centred_when_there_is_room() {
+    let row_width = 2400.0;
+    let left = review_ui::mode_group_left(0.0, row_width);
+    assert!((left + size::TOOLBAR_MODE_GROUP_WIDTH * 0.5 - row_width * 0.5).abs() < 0.01);
 }

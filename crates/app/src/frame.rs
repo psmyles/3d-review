@@ -453,8 +453,14 @@ impl App {
         let scene_bounds = self.ui.bounds;
 
         // The Aud focus's offenders, borrowed from the highlight `app` resolved.
+        // Only in the Issues view: a density or overdraw view is itself the
+        // picture of the finding, and a severity tint over it would misread as
+        // part of its ramp.
         let highlight = &self.audit.highlight;
-        let audit_overlay = (workspace == WorkspaceMode::Aud && !highlight.is_empty()).then(|| {
+        let audit_overlay = (workspace == WorkspaceMode::Aud
+            && self.ui.aud.view == review_audit::DiagnosticView::Issues
+            && !highlight.is_empty())
+        .then(|| {
             let color = |token: egui::Color32| {
                 let [r, g, b, _] = token.to_normalized_gamma_f32();
                 [r, g, b, theme::color::AUDIT_FILL_OPACITY]

@@ -92,7 +92,6 @@ pub const TOOLBAR_ICON_GAP: f32 = 2.0;
 /// sized to a dropdown) keeps the toolbar's icon-to-tile proportion. Matches
 /// the 8-of-42 proportion the toolbar tiles were originally drawn at.
 pub const TILE_ICON_INSET_RATIO: f32 = 8.0 / 42.0;
-pub const TOOLBAR_CENTER_WIDTH: f32 = 120.0;
 /// Right toolbar cluster (3D and Opt): Help (32) + the view group + projection
 /// (32) + the side-panels toggle (32), with three group spacings.
 ///
@@ -103,12 +102,9 @@ pub const TOOLBAR_CENTER_WIDTH: f32 = 120.0;
 /// moment a skinned mesh was opened - `tests/toolbar_layout.rs` is what now says
 /// so. It grows leftward from the right edge, away from the centered mode
 /// segments.
-///
-/// Aud adds its view group as the leftmost group of the cluster (152 + 9 more),
-/// which is the widest case: 477, plus slack.
-pub const TOOLBAR_RIGHT_WIDTH: f32 = 480.0;
+pub const TOOLBAR_RIGHT_WIDTH: f32 = 325.0;
 /// Width of the Aud workspace's heat-map legend card.
-pub const AUD_LEGEND_WIDTH: f32 = 220.0;
+pub const AUD_LEGEND_WIDTH: f32 = 260.0;
 /// Height of the legend's colour bar.
 pub const AUD_LEGEND_BAR_HEIGHT: f32 = 10.0;
 /// Left toolbar cluster: the menu (32) + show-wireframe (32) + shading (4) +
@@ -137,11 +133,12 @@ pub const TOOLBAR_QUAD_ICON_GROUP_WIDTH: f32 = 122.0;
 /// + 4×2 gaps.
 pub const TOOLBAR_QUINT_ICON_GROUP_WIDTH: f32 = 152.0;
 /// Width of the centered workspace-mode group: 4 padding + 5×37 segments
-/// (3D / UV / Tex / Opt / Aud) + 4×2 gaps, plus the room the Aud segment keeps
-/// for its findings count.
-pub const TOOLBAR_MODE_GROUP_WIDTH: f32 = 197.0 + AUD_BUBBLE_ROOM;
-/// How much wider the Aud segment is than the others: the findings count sits
-/// inside it, beside the label, so the bubble never overlaps a neighbour.
+/// (3D / UV / Tex / Opt / Aud) + 4×2 gaps. The group grows by
+/// [`AUD_BUBBLE_ROOM`] to its right while the Aud segment shows a count.
+pub const TOOLBAR_MODE_GROUP_WIDTH: f32 = 197.0;
+/// How much wider the Aud segment gets while it shows the findings count: the
+/// count sits inside it, beside the label, so it never overlaps a neighbour.
+/// With no count to show, the segment is as wide as the others.
 pub const AUD_BUBBLE_ROOM: f32 = 20.0;
 /// Height of the Aud segment's findings-count pill.
 pub const AUD_BUBBLE_HEIGHT: f32 = 14.0;

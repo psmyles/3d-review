@@ -102,3 +102,4 @@ pub use state::{
     UiOutput, UiState, ViewportTool, WorkspaceMode, apply_pick,
 };
 pub use theme::init_style;
+pub use toolbar::mode_group_left;

@@ -42,7 +42,6 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
     let group_spacing = size::TOOLBAR_GROUP_SPACING;
     let group_height = size::TOOLBAR_GROUP_HEIGHT;
     let left_width = size::TOOLBAR_LEFT_WIDTH;
-    let center_width = size::TOOLBAR_CENTER_WIDTH;
     let right_width = size::TOOLBAR_RIGHT_WIDTH;
     let shading_group_width = size::TOOLBAR_SHADING_GROUP_WIDTH;
     let material_group_width = size::TOOLBAR_MATERIAL_GROUP_WIDTH;
@@ -78,9 +77,20 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
                 row_rect.left_top(),
                 egui::vec2(left_width.min(row_rect.width()), group_height),
             );
-            let center_rect = egui::Rect::from_center_size(
-                egui::pos2(row_rect.center().x, row_rect.top() + group_height * 0.5),
-                egui::vec2(center_width.min(row_rect.width()), group_height),
+            // The mode group's left edge is placed for its count-less width, so
+            // the count grows it rightwards and the four plain segments never
+            // move under the pointer.
+            let mode_left = mode_group_left(row_rect.left(), row_rect.width());
+            let mode_rect = egui::Rect::from_min_size(
+                egui::pos2(mode_left, row_rect.top()),
+                egui::vec2(mode_group_width + aud_bubble_room(state), group_height),
+            );
+            let aud_views_rect = egui::Rect::from_min_size(
+                egui::pos2(
+                    mode_left - group_spacing - quint_icon_group_width,
+                    row_rect.top(),
+                ),
+                egui::vec2(quint_icon_group_width, group_height),
             );
             let right_rect = egui::Rect::from_min_size(
                 egui::pos2(
@@ -127,16 +137,29 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
             );
 
             ui.scope_builder(
-                egui::UiBuilder::new().max_rect(center_rect).layout(
-                    egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
-                ),
+                egui::UiBuilder::new()
+                    .max_rect(mode_rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
                 |ui| {
                     ui.set_height(group_height);
-                    toolbar_group_shell(ui, mode_group_width, |ui| {
+                    toolbar_group_shell(ui, mode_rect.width(), |ui| {
                         segmented_mode_control(ui, state);
                     });
                 },
             );
+            // Aud's views sit against the workspace buttons, on their left: they
+            // are what the Aud workspace adds, so they read as part of choosing it.
+            if state.mode == WorkspaceMode::Aud {
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .max_rect(aud_views_rect)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                    |ui| {
+                        ui.set_height(group_height);
+                        draw_aud_view_group(ui, state, quint_icon_group_width);
+                    },
+                );
+            }
 
             ui.scope_builder(
                 egui::UiBuilder::new()
@@ -161,11 +184,6 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
                             draw_projection_group(ui, state, single_icon_group_width);
                             draw_side_panels_group(ui, state, single_icon_group_width);
                             draw_tool_group(ui, state, single_icon_group_width);
-                            // Aud's views, leftmost: they change what the
-                            // viewport shows the way the shading tools do.
-                            if state.mode == WorkspaceMode::Aud {
-                                draw_aud_view_group(ui, state, quint_icon_group_width);
-                            }
                         }
                         // The 2D workspaces keep Help and the side panels — the
                         // Outliner and Inspector are in every workspace — and UV
@@ -903,6 +921,52 @@ fn draw_uv_set_picker(ui: &mut egui::Ui, state: &mut UiState) {
     });
 }
 
+/// Where the workspace-mode group's left edge goes on a bar whose usable row
+/// starts at `row_left` and is `row_width` wide: centred for its count-less
+/// width, but never so far left that Aud's view group — which sits against its
+/// left side — would reach the left cluster. The room is kept in every
+/// workspace, so the segments do not jump when Aud is picked; it only moves the
+/// group off centre on a narrow window.
+pub fn mode_group_left(row_left: f32, row_width: f32) -> f32 {
+    let centred = row_left + (row_width - size::TOOLBAR_MODE_GROUP_WIDTH) * 0.5;
+    let clear_of_left_cluster = row_left
+        + size::TOOLBAR_LEFT_WIDTH
+        + size::TOOLBAR_GROUP_SPACING
+        + size::TOOLBAR_QUINT_ICON_GROUP_WIDTH
+        + size::TOOLBAR_GROUP_SPACING;
+    centred.max(clear_of_left_cluster)
+}
+
+/// What the Aud segment's pill shows, if anything: the count of failing Error
+/// and Warning checks in the worst one's colour, or a quiet "..." while a re-run
+/// replaces a count already shown. A first run with nothing shown yet shows
+/// nothing, so the segment does not widen only to shrink back at zero.
+fn aud_bubble(state: &UiState) -> Option<(Option<review_audit::Severity>, String)> {
+    let summary = state.aud.report.as_ref().map(|report| &report.summary);
+    let count = summary.map_or(0, review_audit::AuditSummary::attention_count);
+    if count == 0 {
+        return None;
+    }
+    if state.aud.running {
+        return Some((
+            None,
+            review_localization::tr(crate::keys::ui_audit::BUBBLE_RUNNING_TEXT).into_owned(),
+        ));
+    }
+    let worst = summary.and_then(review_audit::AuditSummary::attention_worst);
+    Some((worst, count.to_string()))
+}
+
+/// How much wider the Aud segment is this frame: its pill's room while it has
+/// one, nothing otherwise.
+fn aud_bubble_room(state: &UiState) -> f32 {
+    if aud_bubble(state).is_some() {
+        size::AUD_BUBBLE_ROOM
+    } else {
+        0.0
+    }
+}
+
 fn segmented_mode_control(ui: &mut egui::Ui, state: &mut UiState) {
     for workspace in [
         WorkspaceMode::ThreeD,
@@ -917,23 +981,14 @@ fn segmented_mode_control(ui: &mut egui::Ui, state: &mut UiState) {
 
 /// The Aud segment: its label, and beside it a pill counting the checks the
 /// model fails at Warning or Error, in the worst one's colour. Shown from every
-/// workspace, since the audit runs on every load; hidden at zero, and a quiet
-/// "…" while a run is going.
+/// workspace, since the audit runs on every load; hidden at zero, when the
+/// segment is as wide as its neighbours (see [`aud_bubble`]).
 fn aud_segment(ui: &mut egui::Ui, state: &mut UiState) {
-    let width = size::MODE_SEGMENT_WIDTH + size::AUD_BUBBLE_ROOM;
+    let width = size::MODE_SEGMENT_WIDTH + aud_bubble_room(state);
     let selected = state.mode == WorkspaceMode::Aud;
     let label = review_localization::tr(labels::workspace(WorkspaceMode::Aud));
     let summary = state.aud.report.as_ref().map(|report| &report.summary);
-    let count = summary.map_or(0, review_audit::AuditSummary::attention_count);
-    let worst = summary.and_then(review_audit::AuditSummary::attention_worst);
-    let bubble = if state.aud.running {
-        Some((
-            None,
-            review_localization::tr(crate::keys::ui_audit::BUBBLE_RUNNING_TEXT).into_owned(),
-        ))
-    } else {
-        (count > 0).then(|| (worst, count.to_string()))
-    };
+    let bubble = aud_bubble(state);
 
     // The label shifts left to share the segment with the pill when there is
     // one, and sits centred like its neighbours when there is not.

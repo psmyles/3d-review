@@ -1,9 +1,10 @@
 # Diagnostic views
 
 Some problems are about a whole surface rather than particular faces. The
-diagnostic views paint the model in a colour map instead. Pick one from the
-view group on the right of the toolbar, or click the finding it belongs to;
-a key at the top of the viewport shows what the colours mean.
+diagnostic views paint the model in a colour map instead, without the
+severity tint the Issues view draws. Pick one from the view group just left
+of the workspace buttons, or click the finding it belongs to; a key at the
+top of the viewport shows what the colours mean.
 
 - **Texel density** colours each face by its texture pixels per meter, for
   the texture size in the profile: blue below the target, green on it, red
