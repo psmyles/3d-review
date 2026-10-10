@@ -10,3 +10,4 @@
 - onion skin mode for animation review
 - viewport presets
 - update outliner icon
+- set default MSAA to 2x
