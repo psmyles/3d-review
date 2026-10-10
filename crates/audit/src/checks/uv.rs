@@ -349,9 +349,7 @@ pub(super) fn lightmap_overlap(ctx: &Context<'_>, config: &RuleConfig) -> Outcom
 /// Islands of one object's lightmap closer than the padding: light bleeds
 /// across the gap when the lightmap is filtered or mipped.
 pub(super) fn lightmap_padding(ctx: &Context<'_>, config: &RuleConfig) -> Outcome {
-    // Always the second UV set: padding is a lightmap's concern, and a texture
-    // set is allowed to pack its islands edge to edge.
-    let channel = crate::LIGHTMAP_PADDING_CHANNEL;
+    let channel = lightmap_channel(config);
     if ctx.model.stats.uv_set_count <= channel {
         return Outcome::skip(Skip::NoUvSet);
     }

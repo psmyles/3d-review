@@ -33,8 +33,8 @@ profile's engine.
 - **Missing lightmap UVs**, **Overlapping lightmap UVs**, **Lightmap
   padding** and **Lightmap UVs outside 0-1**: the lightmap UV set is checked at
   the lightmap's own resolution, because that is what decides whether light
-  leaks. Padding always reads the second UV set, where engines expect the
-  lightmap; the other three read the set the profile names.
+  leaks. All four read the UV set the profile names - the second one by
+  default, where engines expect the lightmap.
 
 ## Skin
 

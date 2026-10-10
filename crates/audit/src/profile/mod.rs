@@ -201,6 +201,7 @@ pub fn param_specs(rule: RuleId) -> &'static [ParamSpec] {
         RuleId::LightmapPadding => {
             &const {
                 [
+                    spec("channel", CHANNEL),
                     spec("resolution", RESOLUTION),
                     spec(
                         "min_padding",

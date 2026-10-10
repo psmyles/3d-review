@@ -297,15 +297,17 @@ impl App {
     /// UV0 for the rest.
     pub(crate) fn audit_uv_channel(&self) -> u32 {
         match self.ui.aud.focus.and_then(AuditFocus::rule) {
-            Some(RuleId::LightmapPadding) => review_audit::LIGHTMAP_PADDING_CHANNEL as u32,
-            Some(rule @ (RuleId::LightmapOverlap | RuleId::LightmapOutOfRange)) => {
-                self.ui
-                    .aud
-                    .profile
-                    .rule(rule)
-                    .number("channel")
-                    .unwrap_or(1.0) as u32
-            }
+            Some(
+                rule @ (RuleId::LightmapOverlap
+                | RuleId::LightmapPadding
+                | RuleId::LightmapOutOfRange),
+            ) => self
+                .ui
+                .aud
+                .profile
+                .rule(rule)
+                .number("channel")
+                .unwrap_or(1.0) as u32,
             _ => 0,
         }
     }

@@ -94,6 +94,7 @@ pub fn default_config(engine: Engine, rule: RuleId) -> RuleConfig {
             pick(Some(W), Some(E), Some(W))
         }
         RuleId::LightmapPadding => {
+            number("channel", 1.0);
             number("resolution", by_engine(128.0, 64.0, 128.0));
             number("min_padding", 2.0);
             pick(Some(W), Some(W), None)

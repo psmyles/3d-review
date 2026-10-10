@@ -380,7 +380,7 @@ ui-audit-rule-lightmap-overlap-why = Each pixel of a lightmap stores the light f
 ui-audit-rule-lightmap-overlap-fix = Unwrap the lightmap UVs again so no two faces overlap.
 
 ui-audit-rule-lightmap-padding = Lightmap padding
-ui-audit-rule-lightmap-padding-what = Islands closer together than the padding, at the lightmap's resolution. Always the second UV set, where engines expect the lightmap.
+ui-audit-rule-lightmap-padding-what = Islands closer together than the padding, at the lightmap's resolution, in the UV set the profile names - the second one by default, where engines expect the lightmap.
 ui-audit-rule-lightmap-padding-why = Light bleeds from one island into its neighbour when the lightmap is filtered or shrunk, which shows as light leaks along edges.
 ui-audit-rule-lightmap-padding-fix = Pack the lightmap UVs again with more spacing.
 

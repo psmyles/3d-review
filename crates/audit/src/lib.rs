@@ -41,12 +41,6 @@ use review_model::CancelToken;
 /// gigabytes of offenders. Counts stay exact.
 pub const ELEMENT_CAP: u64 = 1 << 20;
 
-/// The UV set `uv.lightmap_padding` reads, always: the second one, where Unity
-/// and Unreal both expect the lightmap. Not a profile parameter — a texture set
-/// may pack its islands edge to edge, so pointing the check anywhere else only
-/// produces findings nobody should act on.
-pub const LIGHTMAP_PADDING_CHANNEL: usize = 1;
-
 /// Why a run or a profile operation failed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AuditError {
