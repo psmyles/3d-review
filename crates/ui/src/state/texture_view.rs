@@ -137,31 +137,25 @@ impl TextureBackground {
         TextureBackground::Grey,
         TextureBackground::Checker,
     ];
-
-    /// Single-letter status-bar segment label (Black / White / Grey / Checker).
-    pub fn label(self) -> &'static str {
-        match self {
-            TextureBackground::Black => "B",
-            TextureBackground::White => "W",
-            TextureBackground::Grey => "G",
-            TextureBackground::Checker => "C",
-        }
-    }
 }
 
-/// State backing the Tex viewport: which pooled texture is shown, the channel
-/// isolation + background fill, the floating stats toggle, and the pan/zoom view.
-/// All plain UI values (invariant 2) — the pixels live in [`UiState::texture_pool`].
+/// State backing the Tex viewport and the Textures tab: which pooled texture is
+/// current, whether the Inspector is showing it, the channel isolation +
+/// background fill, and the pan/zoom view. All plain UI values (invariant 2) — the
+/// pixels live in [`UiState::texture_pool`].
 #[derive(Debug, Clone)]
 pub struct TextureViewState {
-    /// Index into [`UiState::texture_pool`] of the viewed texture. Clamped to the
-    /// pool each frame; ignored when the pool is empty.
+    /// Index into [`UiState::texture_pool`] of the current texture: the one the
+    /// Tex viewport shows and the Textures tab highlights. Clamped to the pool
+    /// each frame; ignored when the pool is empty.
     pub selected: usize,
+    /// Whether the Inspector shows the current texture rather than the scene
+    /// selection, outside the Tex workspace (where it always does). Set by a
+    /// click in the Textures tab, and given up by every scene selection — see
+    /// [`UiState::texture_inspected`].
+    pub inspected: bool,
     pub channel: TextureChannelView,
     pub background: TextureBackground,
-    /// Whether the texture stats panel (Format / Dimension / Channels / Bit depth /
-    /// File size) is shown — the Tex viewport's analogue of the model-stats overlay.
-    pub show_stats: bool,
     /// Screen-point offset of the image center from the viewport center (pan).
     pub pan: egui::Vec2,
     /// Image-pixels → screen-points scale (zoom). 1.0 = one texel per point.
@@ -182,9 +176,9 @@ impl Default for TextureViewState {
     fn default() -> Self {
         Self {
             selected: 0,
+            inspected: false,
             channel: TextureChannelView::default(),
             background: TextureBackground::default(),
-            show_stats: true,
             pan: egui::Vec2::ZERO,
             zoom: 1.0,
             fitted_key: None,

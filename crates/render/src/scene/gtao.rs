@@ -116,7 +116,7 @@ impl SceneGpu {
         frame.zone_begin(Zone::GtaoGbuffer);
         frame.begin_offscreen_pass(
             &[&targets.gtao_gbuffer, &targets.gtao_depth_mips[0]],
-            Some(&targets.gtao_depth),
+            Some(&targets.scratch_depth),
             [0.0; 4],
             c"gtao gbuffer",
         );

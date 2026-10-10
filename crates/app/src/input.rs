@@ -59,11 +59,14 @@ impl App {
         egui_consumed: bool,
     ) {
         if state == ElementState::Released {
-            // A press that never moved is a click, and in Select mode a click
-            // picks. Read before the drag state is cleared: `pending_drag` (or a
-            // settled `drag_mode`) is what says egui did *not* take the press —
-            // a press it grabbed leaves both `None`, and must not also select
-            // something under the panel the user was actually dragging.
+            // A press that never moved is a click: in Select mode it picks, with
+            // the Comment tool it leaves a comment, and with any tool it lets go
+            // of the selected comment. Read before the drag state is cleared:
+            // `pending_drag` (or a settled `drag_mode`) is what says egui did
+            // *not* take the press — a press it grabbed leaves both `None`, and
+            // must not also select something under the panel the user was
+            // actually dragging. A pin is egui's too, so clicking the selected
+            // comment's own pin never arrives here.
             let unclaimed = self.pending_drag.is_some() || self.drag_mode.is_some();
             let click = (button == MouseButton::Left)
                 .then(|| self.click_press.take())
@@ -85,7 +88,14 @@ impl App {
                     crate::shortcuts::primary_held(self.modifiers),
                     self.modifiers.shift_key(),
                 );
-                self.pick_click(position, mode);
+                if self.commenting_enabled() {
+                    self.place_comment(position);
+                } else if self.picking_enabled() {
+                    self.pick_click(position, mode);
+                } else {
+                    self.ui.deselect_comment();
+                    self.request_redraw();
+                }
             }
             return;
         }
@@ -124,7 +134,10 @@ impl App {
                         self.last_primary_click = Some((Instant::now(), position));
                         // Where a click would land, if this press turns out not
                         // to be the start of a drag.
-                        self.click_press = self.picking_enabled().then_some(position);
+                        self.click_press = (self.picking_enabled()
+                            || self.commenting_enabled()
+                            || self.ui.comment_inspected())
+                        .then_some(position);
                     }
                 }
             }

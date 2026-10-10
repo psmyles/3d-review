@@ -7,9 +7,9 @@
 use review_render::{ActiveMaterial, ShadingMode, UvShadingMode};
 
 use crate::assets::{
-    ICON_AXIS_GIZMO, ICON_BACKFACE, ICON_BBOX, ICON_BUFFERS, ICON_GRID, ICON_HELP, ICON_MENU,
-    ICON_NODE_BONE, ICON_NORMALS_FACE, ICON_NORMALS_VERTEX, ICON_OUTLINER, ICON_PIVOT, ICON_SELECT,
-    ICON_SHADING_SHADED, ICON_SHADING_TEXTURE, ICON_SHADING_UNLIT, ICON_SHADING_WIRE,
+    ICON_AXIS_GIZMO, ICON_BACKFACE, ICON_BBOX, ICON_BUFFERS, ICON_COMMENT, ICON_GRID, ICON_HELP,
+    ICON_MENU, ICON_NODE_BONE, ICON_NORMALS_FACE, ICON_NORMALS_VERTEX, ICON_OUTLINER, ICON_PIVOT,
+    ICON_SELECT, ICON_SHADING_SHADED, ICON_SHADING_TEXTURE, ICON_SHADING_UNLIT, ICON_SHADING_WIRE,
     ICON_SHADING_WIRE_ONLY, ICON_SKIN_WEIGHTS, ICON_UV, ICON_UV_ISLANDS, ICON_UV_SEAM,
     ICON_UV_SHADED, ICON_UV_WIRE, ICON_VERTEX_COLORS, ICON_VIEW_ORTHO, ICON_VIEW_PERSPECTIVE,
 };
@@ -17,8 +17,8 @@ use crate::docs::Page;
 use crate::keys;
 use crate::labels;
 use crate::state::{
-    MenuIntent, OptionPanel, TextureChannelView, TexturePoolEntry, UiOutput, UiState,
-    ViewProjectionMode, ViewportTool, WorkspaceMode,
+    MenuIntent, OptionPanel, TextureChannelView, UiOutput, UiState, ViewProjectionMode,
+    ViewportTool, WorkspaceMode,
 };
 use crate::theme::{color, size};
 use crate::widgets::{
@@ -95,7 +95,7 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
             // shading / material / normal tool groups operate on the 3D scene, so
             // they are shown only in the 3D workspace. UV mode swaps in the
             // UV-shading group + UV-set picker; Texture mode swaps in the channel
-            // group + texture picker.
+            // group (its image is picked in the Outliner's Textures tab).
             ui.scope_builder(
                 egui::UiBuilder::new()
                     .max_rect(left_rect)
@@ -160,10 +160,22 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
                             draw_view_group(ui, state, view_group_width);
                             draw_projection_group(ui, state, single_icon_group_width);
                             draw_side_panels_group(ui, state, single_icon_group_width);
-                            draw_tool_group(ui, state, single_icon_group_width);
+                            draw_tool_group(ui, state, size::TOOLBAR_DOUBLE_ICON_GROUP_WIDTH);
                         }
-                        WorkspaceMode::Uv => draw_uv_set_picker(ui, state),
-                        WorkspaceMode::Texture => draw_texture_picker(ui, state),
+                        // The 2D workspaces keep Help and the side panels — the
+                        // Outliner and Inspector are in every workspace — and UV
+                        // adds the set it lays out. Tex picks its image from the
+                        // Outliner's Textures tab.
+                        WorkspaceMode::Uv => {
+                            draw_help_group(ui, state, single_icon_group_width);
+                            draw_side_panels_group(ui, state, single_icon_group_width);
+                            draw_comment_tool_group(ui, state, single_icon_group_width);
+                            draw_uv_set_picker(ui, state);
+                        }
+                        WorkspaceMode::Texture => {
+                            draw_help_group(ui, state, single_icon_group_width);
+                            draw_side_panels_group(ui, state, single_icon_group_width);
+                        }
                     }
                 },
             );
@@ -233,9 +245,23 @@ fn file_menu(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput) {
     });
     // Nothing to close until a model is loaded; `bounds` is `None` exactly then.
     let close_file = egui::Button::new(keys::ui_toolbar::MENU_CLOSE_FILE)
-        .shortcut_text(keys::ui_toolbar::menu_close_file_shortcut(modifier));
+        .shortcut_text(keys::ui_toolbar::menu_close_file_shortcut(modifier.clone()));
     if ui.add_enabled(state.bounds.is_some(), close_file).clicked() {
         output.menu = Some(MenuIntent::CloseFile);
+    }
+    ui.separator();
+    // The comments are the one part of the file the viewer changes, so they are
+    // what Save writes — back into the FBX, or into a copy of it.
+    let writable = state.comments.writable();
+    let save = egui::Button::new(keys::ui_toolbar::MENU_SAVE)
+        .shortcut_text(keys::ui_toolbar::menu_save_shortcut(modifier.clone()));
+    if ui.add_enabled(writable, save).clicked() {
+        output.menu = Some(MenuIntent::SaveComments);
+    }
+    let save_as = egui::Button::new(keys::ui_toolbar::MENU_SAVE_AS)
+        .shortcut_text(keys::ui_toolbar::menu_save_as_shortcut(modifier.clone()));
+    if ui.add_enabled(writable, save_as).clicked() {
+        output.menu = Some(MenuIntent::SaveCommentsAs);
     }
     ui.separator();
     if ui.button(keys::ui_toolbar::MENU_EXIT).clicked() {
@@ -270,8 +296,9 @@ fn recent_files_menu(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput) 
     }
 }
 
-/// Preferences: the Remember Settings switch.
-fn preferences_menu(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput) {
+/// Preferences: the Remember Settings switch, and the name review comments are
+/// signed with.
+fn preferences_menu(ui: &mut egui::Ui, state: &mut UiState, output: &mut UiOutput) {
     // A copy, not the field: flipping it is `app`'s job, because flipping it is
     // also what writes the settings file.
     let mut remember = state.remember_settings;
@@ -285,6 +312,19 @@ fn preferences_menu(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput) {
     .clicked()
     {
         output.menu = Some(MenuIntent::ToggleRememberSettings);
+    }
+    // Opens the box in place, like About: the name is the chrome's to edit, and
+    // `app` notices it change and saves it.
+    let user_name = ui.button(keys::ui_toolbar::MENU_USER_NAME);
+    if tip(
+        user_name,
+        Tip::new(keys::ui_toolbar::MENU_USER_NAME)
+            .describe(keys::ui_toolbar::MENU_USER_NAME_DESCRIPTION)
+            .page(Page::Menu),
+    )
+    .clicked()
+    {
+        state.user_name.open(&state.comments.author);
     }
 }
 
@@ -703,7 +743,7 @@ fn draw_view_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
     });
 }
 
-/// Side-panel toggle group (3D mode): one button opening the Outliner (left) and
+/// Side-panel toggle group (every workspace): one button opening the Outliner (left) and
 /// the Inspector (right) together. They are two halves of one workflow — the
 /// Outliner picks a row, the Inspector describes it — so they share a toggle, and
 /// it shows highlighted while they're open.
@@ -746,7 +786,36 @@ fn draw_tool_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
         {
             state.tool = state.tool.toggled();
         }
+        // Comments are placed in the 3D and UV workspaces; Opt lays its two
+        // meshes out side by side and has no one surface to pin to.
+        ui.add_enabled_ui(state.mode == WorkspaceMode::ThreeD, |ui| {
+            comment_tool_button(ui, state);
+        });
     });
+}
+
+/// The UV workspace's one viewport tool: Comment, for pinning a note to a spot
+/// on the layout.
+fn draw_comment_tool_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
+    toolbar_group_shell(ui, width, |ui| comment_tool_button(ui, state));
+}
+
+/// The Comment tool's tile.
+fn comment_tool_button(ui: &mut egui::Ui, state: &mut UiState) {
+    if icon_toggle_button(
+        ui,
+        &ICON_COMMENT,
+        state.tool == ViewportTool::Comment,
+        Tip::new(keys::ui_toolbar::COMMENT_TOOL)
+            .describe(keys::ui_toolbar::comment_tool_description(
+                review_localization::tr(keys::ui_toolbar::COMMENT_TOOL_KEY).into_owned(),
+            ))
+            .page(Page::Comments),
+    )
+    .clicked()
+    {
+        state.tool = state.tool.toggled_comment();
+    }
 }
 
 /// Help, alone in a group at the far right of the bar.
@@ -886,32 +955,6 @@ fn draw_texture_channel_group(ui: &mut egui::Ui, state: &mut UiState) {
             if segment_button(ui, label.as_ref(), selected, segment_w).clicked() {
                 state.texture_view.channel = channel;
             }
-        }
-    });
-}
-
-/// The texture-picker dropdown shown on the right of the toolbar in Texture mode:
-/// lists the scene texture pool by file name and selects which one the Tex
-/// viewport shows. Hidden when the pool is empty.
-fn draw_texture_picker(ui: &mut egui::Ui, state: &mut UiState) {
-    if state.texture_pool.is_empty() {
-        return;
-    }
-    // Keep the selection in range (a removed texture may have shrunk the pool).
-    if state.texture_view.selected >= state.texture_pool.len() {
-        state.texture_view.selected = 0;
-    }
-
-    let width = size::TOOLBAR_TEXTURE_DROPDOWN_WIDTH;
-    let names: Vec<String> = state
-        .texture_pool
-        .iter()
-        .map(TexturePoolEntry::name)
-        .collect();
-    let selected = names[state.texture_view.selected].clone();
-    compact_combo(ui, "texture_picker", width, selected, |ui| {
-        for (index, name) in names.iter().enumerate() {
-            ui.selectable_value(&mut state.texture_view.selected, index, name);
         }
     });
 }

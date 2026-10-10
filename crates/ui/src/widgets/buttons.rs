@@ -165,10 +165,102 @@ pub(crate) fn segment_button(
     response
 }
 
-/// A full-width tab strip: one equal-width cell per label, all sharing a single
-/// baseline hairline, with the active tab marked by an accent underline and a
-/// brightened label. Hovering an inactive tab lifts it with the standard hover
-/// fill and a pointing-hand cursor.
+/// Where each tab of a strip goes: the tabs drawn in it, left to right, with
+/// their widths, and the ones moved into its overflow menu.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TabLayout {
+    pub(crate) visible: Vec<(usize, f32)>,
+    pub(crate) overflow: Vec<usize>,
+}
+
+/// Lay `natural` tab widths (each label plus its padding) out across a strip
+/// `width` wide.
+///
+/// * When every tab fits at the widest one's width, they share the strip
+///   equally — the strip's usual look.
+/// * When they fit only at their own widths, each gets its own width plus an
+///   equal share of what is left.
+/// * When they don't fit at all, an overflow button takes `overflow_width` at the
+///   right and the tabs that don't fit go into its menu — the trailing ones, but
+///   never the `selected` one, which takes the place of whatever it has to.
+pub(crate) fn tab_layout(
+    width: f32,
+    natural: &[f32],
+    selected: usize,
+    overflow_width: f32,
+) -> TabLayout {
+    let count = natural.len();
+    if count == 0 {
+        return TabLayout {
+            visible: Vec::new(),
+            overflow: Vec::new(),
+        };
+    }
+    let widest = natural.iter().copied().fold(0.0, f32::max);
+    if widest * count as f32 <= width {
+        let share = width / count as f32;
+        return TabLayout {
+            visible: (0..count).map(|index| (index, share)).collect(),
+            overflow: Vec::new(),
+        };
+    }
+    let total: f32 = natural.iter().sum();
+    if total <= width {
+        let extra = (width - total) / count as f32;
+        return TabLayout {
+            visible: natural
+                .iter()
+                .enumerate()
+                .map(|(index, &natural)| (index, natural + extra))
+                .collect(),
+            overflow: Vec::new(),
+        };
+    }
+
+    let room = (width - overflow_width).max(0.0);
+    let mut shown = Vec::new();
+    let mut used = 0.0;
+    for (index, &natural) in natural.iter().enumerate() {
+        if used + natural > room {
+            break;
+        }
+        shown.push(index);
+        used += natural;
+    }
+    let selected = selected.min(count - 1);
+    if !shown.contains(&selected) {
+        while used + natural[selected] > room {
+            let Some(last) = shown.pop() else { break };
+            used -= natural[last];
+        }
+        shown.push(selected);
+        used += natural[selected];
+        shown.sort_unstable();
+    }
+    let visible = if used > room {
+        // Narrower than even the selected tab: it takes what there is.
+        shown
+            .iter()
+            .map(|&index| (index, room / shown.len() as f32))
+            .collect()
+    } else {
+        let extra = (room - used) / shown.len() as f32;
+        shown
+            .iter()
+            .map(|&index| (index, natural[index] + extra))
+            .collect()
+    };
+    TabLayout {
+        visible,
+        overflow: (0..count).filter(|index| !shown.contains(index)).collect(),
+    }
+}
+
+/// A full-width tab strip: one cell per label (see [`tab_layout`] for how they
+/// share the width, and when the trailing ones move into a `»` overflow menu),
+/// all sharing a single baseline hairline, with the active tab marked by an
+/// accent underline and a brightened label. Hovering an inactive tab lifts it with
+/// the standard hover fill and a pointing-hand cursor.
 ///
 /// The label is drawn in the ambient `TextStyle::Button` font — the same one the
 /// stock `selectable_label` rows beneath the strip resolve — so the tabs and the
@@ -180,10 +272,13 @@ pub(crate) fn segment_button(
 /// It also parks the selection in `ctx` temp data, which would duplicate the
 /// `UiState` field that already owns it (invariant 2).
 ///
-/// Returns the index of the tab clicked this frame, if any; the caller owns the
-/// selection.
+/// Returns the index of the tab clicked this frame, if any — in the strip or in
+/// its overflow menu; the caller owns the selection. `strip_id` names the strip:
+/// each cell's id is `strip_id.with(("tab", index))` wherever the strip is laid
+/// out, so it doesn't change with the panels nested around it.
 pub(crate) fn tab_bar(
     ui: &mut egui::Ui,
+    strip_id: egui::Id,
     labels: &[egui::WidgetText],
     selected: usize,
 ) -> Option<usize> {
@@ -201,10 +296,25 @@ pub(crate) fn tab_bar(
         egui::vec2(ui.available_width(), height),
         egui::Sense::hover(),
     );
-    let cell_width = strip.width() / labels.len() as f32;
+    let painter = ui.painter().clone();
+    let galleys: Vec<_> = labels
+        .iter()
+        .map(|label| {
+            painter.layout_no_wrap(label.text().to_owned(), font.clone(), color::TEXT_PRIMARY)
+        })
+        .collect();
+    let natural: Vec<f32> = galleys
+        .iter()
+        .map(|galley| galley.size().x + 2.0 * size::OUTLINER_TAB_PAD_X)
+        .collect();
+    let layout = tab_layout(
+        strip.width(),
+        &natural,
+        selected,
+        size::OUTLINER_TAB_OVERFLOW_WIDTH,
+    );
     // The underline is centred on the rail, so both share this baseline.
     let baseline = strip.bottom() - underline * 0.5;
-    let painter = ui.painter().clone();
     let mut clicked = None;
 
     // One continuous rail under the whole strip, so the active underline reads as
@@ -215,12 +325,12 @@ pub(crate) fn tab_bar(
         egui::Stroke::new(size::HAIRLINE, color::DIVIDER),
     );
 
-    for (index, label) in labels.iter().enumerate() {
-        let cell = egui::Rect::from_min_size(
-            egui::pos2(strip.left() + cell_width * index as f32, strip.top()),
-            egui::vec2(cell_width, height),
-        );
-        let response = ui.interact(cell, ui.id().with(("tab", index)), egui::Sense::click());
+    let mut left = strip.left();
+    for &(index, width) in &layout.visible {
+        let cell =
+            egui::Rect::from_min_size(egui::pos2(left, strip.top()), egui::vec2(width, height));
+        left += width;
+        let response = ui.interact(cell, strip_id.with(("tab", index)), egui::Sense::click());
         let active = index == selected;
 
         if response.hovered() {
@@ -233,12 +343,13 @@ pub(crate) fn tab_bar(
             clicked = Some(index);
         }
 
-        // Centre the label in the space above the rail, not in the whole cell.
-        painter.text(
-            egui::pos2(cell.center().x, (cell.top() + baseline) * 0.5),
-            egui::Align2::CENTER_CENTER,
-            label.text(),
-            font.clone(),
+        // Centre the label in the space above the rail, not in the whole cell —
+        // clipped to the cell, for a strip narrower than its one remaining tab.
+        let galley = galleys[index].clone();
+        let anchor = egui::pos2(cell.center().x, (cell.top() + baseline) * 0.5);
+        painter.with_clip_rect(cell).galley(
+            anchor - galley.size() * 0.5,
+            galley,
             if active {
                 color::TEXT_PRIMARY
             } else {
@@ -255,8 +366,44 @@ pub(crate) fn tab_bar(
         }
     }
 
+    if !layout.overflow.is_empty() {
+        let cell = egui::Rect::from_min_max(
+            egui::pos2(
+                strip.right() - size::OUTLINER_TAB_OVERFLOW_WIDTH,
+                strip.top(),
+            ),
+            egui::pos2(strip.right(), strip.top() + height),
+        );
+        let response = ui.interact(cell, strip_id.with("overflow"), egui::Sense::click());
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            painter.rect_filled(cell, size::TILE_CORNER_RADIUS, color::HOVER_BG);
+        }
+        painter.text(
+            egui::pos2(cell.center().x, (cell.top() + baseline) * 0.5),
+            egui::Align2::CENTER_CENTER,
+            OVERFLOW_GLYPH,
+            font.clone(),
+            color::TEXT_SEGMENT_IDLE,
+        );
+        egui::Popup::menu(&response)
+            .id(strip_id.with("overflow_menu"))
+            .show(|ui| {
+                for &index in &layout.overflow {
+                    if ui.selectable_label(false, labels[index].clone()).clicked() {
+                        clicked = Some(index);
+                    }
+                }
+            });
+        tip(response, Tip::new(crate::keys::ui_widgets::MORE_TABS));
+    }
+
     clicked
 }
+
+/// The tab strip's overflow button: a glyph, not a word, like every other icon
+/// in the chrome.
+const OVERFLOW_GLYPH: &str = "\u{00bb}";
 
 /// A panel's footer row: the stock "Reset all" button, and — pushed to the right
 /// edge — a `?` that opens this panel's page in the manual.
@@ -286,4 +433,62 @@ pub(crate) fn panel_footer(ui: &mut egui::Ui, page: crate::docs::Page) -> egui::
         reset
     })
     .inner
+}
+
+#[cfg(test)]
+mod tab_layout_tests {
+    use super::tab_layout;
+
+    fn widths(layout: &super::TabLayout) -> f32 {
+        layout.visible.iter().map(|&(_, width)| width).sum()
+    }
+
+    #[test]
+    fn tabs_that_fit_at_the_widest_share_the_strip_equally() {
+        let layout = tab_layout(300.0, &[40.0, 60.0, 50.0], 0, 24.0);
+        assert!(layout.overflow.is_empty());
+        assert!(layout.visible.iter().all(|&(_, width)| width == 100.0));
+    }
+
+    #[test]
+    fn tabs_that_fit_only_at_their_own_widths_keep_them() {
+        let layout = tab_layout(200.0, &[40.0, 90.0, 50.0], 0, 24.0);
+        assert!(layout.overflow.is_empty());
+        let extra = (200.0 - 180.0) / 3.0;
+        assert_eq!(layout.visible[1], (1, 90.0 + extra));
+        assert!((widths(&layout) - 200.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn tabs_that_do_not_fit_overflow_from_the_end() {
+        let layout = tab_layout(150.0, &[40.0, 50.0, 60.0, 70.0], 0, 24.0);
+        assert_eq!(layout.overflow, [2, 3]);
+        assert_eq!(
+            layout.visible.iter().map(|&(i, _)| i).collect::<Vec<_>>(),
+            [0, 1]
+        );
+        assert!(
+            (widths(&layout) - 126.0).abs() < 1e-3,
+            "the strip minus the overflow button"
+        );
+    }
+
+    #[test]
+    fn the_selected_tab_is_never_in_the_overflow() {
+        let layout = tab_layout(150.0, &[40.0, 50.0, 60.0, 70.0], 3, 24.0);
+        assert!(layout.visible.iter().any(|&(i, _)| i == 3));
+        assert!(!layout.overflow.contains(&3));
+        let shown: Vec<usize> = layout.visible.iter().map(|&(i, _)| i).collect();
+        assert!(
+            shown.windows(2).all(|pair| pair[0] < pair[1]),
+            "still in order"
+        );
+    }
+
+    #[test]
+    fn a_strip_narrower_than_one_tab_still_shows_the_selected_one() {
+        let layout = tab_layout(30.0, &[40.0, 50.0], 1, 24.0);
+        assert_eq!(layout.visible.len(), 1);
+        assert_eq!(layout.visible[0].0, 1);
+    }
 }

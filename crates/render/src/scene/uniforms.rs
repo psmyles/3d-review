@@ -13,7 +13,7 @@ use crate::{
 
 use super::ao_accum::{AoPlan, temporal_pattern};
 use super::gpu_types::{
-    GtaoMipUniforms, GtaoUniforms, PostUniforms, SceneUniforms, buffer_view_value,
+    GtaoMipUniforms, GtaoUniforms, LineUniforms, PostUniforms, SceneUniforms, buffer_view_value,
     shading_mode_value, skin_weight_value, vertex_color_value,
 };
 
@@ -108,6 +108,59 @@ pub(super) fn scene_uniforms(
         ],
         view: camera.view_matrix().to_cols_array_2d(),
         selection_color,
+    }
+}
+
+/// Width of every line overlay but the wireframe — the grid, the bounding box, the
+/// normal and seam lines, the pivot, the skeleton's outlines and the UV view's lines —
+/// in points. One point is one pixel at 100% and two on a Retina screen, so they keep
+/// the same weight on every display, as the wireframe's own setting does.
+pub(super) const OVERLAY_LINE_WIDTH: f32 = 1.0;
+
+/// The line programs' uniforms for one view: the wireframe at the user's width and
+/// every other line at [`OVERLAY_LINE_WIDTH`], both against the view's target size.
+#[derive(Clone, Copy)]
+pub(super) struct LineWidths {
+    pub(super) wireframe: LineUniforms,
+    pub(super) overlay: LineUniforms,
+}
+
+impl LineWidths {
+    pub(super) fn new(scene: &SceneFrame<'_>, target_size: (u32, u32)) -> Self {
+        Self {
+            wireframe: line_uniforms(
+                target_size,
+                scene.debug.wireframe_width,
+                scene.pixels_per_point,
+            ),
+            overlay: line_uniforms(target_size, OVERLAY_LINE_WIDTH, scene.pixels_per_point),
+        }
+    }
+}
+
+/// Build a line draw's [`LineUniforms`] for a target of `target_size` pixels, with
+/// the line `width_points` wide on a display of `pixels_per_point`.
+///
+/// The target size is the one the pass renders into, not the window — the Opt split
+/// draws each half into its own half-width target, and the quad's pixel offsets are
+/// turned back into clip space against whichever it is.
+pub(super) fn line_uniforms(
+    target_size: (u32, u32),
+    width_points: f32,
+    pixels_per_point: f32,
+) -> LineUniforms {
+    let width = width_points * pixels_per_point;
+    LineUniforms {
+        params: [
+            target_size.0.max(1) as f32,
+            target_size.1.max(1) as f32,
+            if width.is_finite() {
+                width.max(0.0)
+            } else {
+                0.0
+            },
+            0.0,
+        ],
     }
 }
 

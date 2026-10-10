@@ -161,7 +161,7 @@ impl StatScope {
     }
 }
 
-/// A row of the Tex viewport's card.
+/// One of a texture's measured properties, as the Inspector lists them.
 #[derive(Clone, Copy)]
 enum TexStatRow {
     Format,
@@ -172,16 +172,6 @@ enum TexStatRow {
 }
 
 impl TexStatRow {
-    fn id(self) -> &'static str {
-        match self {
-            TexStatRow::Format => "tex_format",
-            TexStatRow::Dimension => "tex_dimension",
-            TexStatRow::Channels => "tex_channels",
-            TexStatRow::BitDepth => "tex_bit_depth",
-            TexStatRow::FileSize => "tex_file_size",
-        }
-    }
-
     fn label(self) -> Key {
         match self {
             TexStatRow::Format => keys::ui_stats::TEX_FORMAT,
@@ -203,29 +193,34 @@ impl TexStatRow {
     }
 }
 
-/// The Tex viewport's stats panel: the viewed texture's source format, pixel
-/// dimensions, channel layout, bit depth and on-disk file size. Every value is a
-/// real measured property of the file (invariant 5) — the `source_*` counts come
-/// straight from the decoder, the size from `app`'s `fs::metadata`.
-pub(crate) fn texture_stats_grid(ui: &mut egui::Ui, entry: &TexturePoolEntry) {
+/// A texture's measured properties — source format, pixel dimensions, channel
+/// layout, bit depth and on-disk file size — as the label/value rows the
+/// Inspector lays out in its grid. Every value is a real measured property of
+/// the file (invariant 5): the `source_*` counts come straight from the decoder,
+/// the size from `app`'s `fs::metadata`.
+pub(crate) fn texture_stat_rows(entry: &TexturePoolEntry) -> [(Tip, String); 5] {
     let image = &entry.image;
-    ui.spacing_mut().item_spacing.y = size::STATS_ROW_SPACING;
-    tex_row(ui, TexStatRow::Format, &entry.format_label());
-    tex_row(
-        ui,
-        TexStatRow::Dimension,
-        &keys::ui_stats::tex_dimension_value(f64::from(image.width), f64::from(image.height)),
-    );
-    tex_row(
-        ui,
-        TexStatRow::Channels,
-        &channel_label(image.source_channels),
-    );
     // Bit depth is shown as total bits per pixel (per-channel depth × channels),
     // e.g. 8-bit RGBA → 32, matching the convention texture tools display.
     let bits = image.source_bit_depth as u32 * image.source_channels.max(1) as u32;
-    tex_row(ui, TexStatRow::BitDepth, &bits.to_string());
-    tex_row(ui, TexStatRow::FileSize, &human_size(entry.file_size));
+    let row = |row: TexStatRow, value: String| {
+        (
+            Tip::new(row.label())
+                .describe(row.description())
+                .page(Page::Tex),
+            value,
+        )
+    };
+    [
+        row(TexStatRow::Format, entry.format_label()),
+        row(
+            TexStatRow::Dimension,
+            keys::ui_stats::tex_dimension_value(f64::from(image.width), f64::from(image.height)),
+        ),
+        row(TexStatRow::Channels, channel_label(image.source_channels)),
+        row(TexStatRow::BitDepth, bits.to_string()),
+        row(TexStatRow::FileSize, human_size(entry.file_size)),
+    ]
 }
 
 /// Short channel-layout label for a source channel count.
@@ -779,22 +774,6 @@ fn stat_row(ui: &mut egui::Ui, row: StatRow, value: &str) {
 
 /// One row of the Tex viewport's card. Its rows have no scope columns and no
 /// change against a source, so they share `value_row` rather than `cells_row`.
-fn tex_row(ui: &mut egui::Ui, row: TexStatRow, value: &str) {
-    let label = review_localization::tr(row.label());
-    value_row(ui, row.id(), None, &label, value, None);
-    // `value_row` attaches a `StatRow`'s tooltip; a Tex row's is its own, and
-    // pointing at the texture-workspace page rather than the stats one.
-    let id = ui.id().with(("stat_row", row.id()));
-    if let Some(response) = ui.ctx().read_response(id) {
-        tip(
-            response,
-            Tip::new(row.label())
-                .describe(row.description())
-                .page(Page::Tex),
-        );
-    }
-}
-
 #[cfg(test)]
 mod human_size_tests {
     use super::human_size;

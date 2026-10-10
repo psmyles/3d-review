@@ -77,8 +77,6 @@ ui-enums-background-grey-50 = 50% Grey
 ui-enums-background-grey-75 = 75% Grey
 ui-enums-background-white = White
 ui-enums-background-gradient = Gradient
-ui-enums-background-grey = Grey
-ui-enums-background-checker = Checker
 
 ## Materials
 
@@ -236,6 +234,7 @@ ui-enums-fbx-ascii = ASCII
 
 ui-enums-tool-view = View mode
 ui-enums-tool-select = Select mode
+ui-enums-tool-comment = Comment mode
 
 ## Opt comparison
 

@@ -9,6 +9,18 @@ The UV workspace shows that flat sheet. It has its own camera: left-drag slides
 the view around, right-drag or the mouse wheel zooms, and `R` fits the whole
 layout back into view.
 
+Pick a texture in the Outliner's **Textures** tab and it is drawn across the
+square, behind the layout, so you can see which part of the picture each island
+covers. It stays there while you select parts to narrow the layout down, until
+you pick another texture or press `Esc`. Its colors are shown as they are, and
+its see-through parts let the background show through. With **Shaded** or
+**Islands**, the fills are drawn faint over it, so the islands and the picture
+can both be read.
+
+The buttons at the bottom right choose the background around the layout, as in
+the [Tex workspace](tex.md): **B** black, **W** white, **G** grey, or **C** a
+checkerboard, which is the clearest way to see a texture's see-through parts.
+
 The outlines of the layout are always drawn. The toolbar choice decides what
 fills them:
 
@@ -19,6 +31,11 @@ fills them:
 
 If the model has more than one UV layout, a picker in the toolbar switches
 between them.
+
+The [Outliner](outliner-inspector.md) decides which parts are laid out. With
+nothing selected you see every part, and with parts selected you see only
+theirs, so you can check one piece of a model without the others drawn over
+it. A part hidden with its eye icon is left out either way.
 
 ## Reading a layout
 

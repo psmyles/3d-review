@@ -2680,8 +2680,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "review-annotate"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "review-import",
+ "review-model",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "review-app"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "dirs",
@@ -2691,6 +2703,7 @@ dependencies = [
  "image",
  "log",
  "notify",
+ "review-annotate",
  "review-import",
  "review-localization",
  "review-localization-build",
@@ -2837,6 +2850,7 @@ dependencies = [
  "image",
  "log",
  "pulldown-cmark",
+ "review-annotate",
  "review-localization",
  "review-localization-build",
  "review-log",

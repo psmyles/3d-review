@@ -35,6 +35,10 @@ impl App {
             self.apply_menu_intent(intent);
         }
 
+        if let Some(review_ui::CommentIntent::Show(index)) = output.comment {
+            self.show_comment(index);
+        }
+
         if self.renderer.is_none() {
             return;
         }
@@ -110,6 +114,10 @@ impl App {
             MenuIntent::OpenRecent(index) => self.open_recent_file(index),
             MenuIntent::ClearRecentFiles => self.clear_recent_files(),
             MenuIntent::CloseFile => self.reset_to_start_state(),
+            MenuIntent::SaveComments => {
+                self.save_comments(crate::comments_save::AfterSave::Nothing)
+            }
+            MenuIntent::SaveCommentsAs => self.save_comments_as(),
             MenuIntent::ToggleRememberSettings => {
                 self.ui.remember_settings = !self.ui.remember_settings;
                 // Written now rather than only on exit, so the choice holds even
@@ -131,7 +139,11 @@ impl App {
                 self.redraw.requested = true;
             }
             MenuIntent::CheckForUpdates => self.check_for_updates(),
-            MenuIntent::Exit => self.exit_requested = true,
+            MenuIntent::Exit => {
+                if self.may_drop_comments(crate::comments_save::AfterSave::Exit) {
+                    self.exit_requested = true;
+                }
+            }
         }
     }
 
@@ -147,6 +159,9 @@ impl App {
         let intent = match command {
             MenuCommand::Open => MenuIntent::OpenFile,
             MenuCommand::New => MenuIntent::CloseFile,
+            MenuCommand::Save => MenuIntent::SaveComments,
+            MenuCommand::SaveAs => MenuIntent::SaveCommentsAs,
+            MenuCommand::Quit => MenuIntent::Exit,
             MenuCommand::OpenRecent(index) => MenuIntent::OpenRecent(index),
             MenuCommand::ClearRecentFiles => MenuIntent::ClearRecentFiles,
             MenuCommand::ToggleRememberSettings => MenuIntent::ToggleRememberSettings,
@@ -158,6 +173,10 @@ impl App {
             }
             MenuCommand::ViewLog => {
                 self.ui.log.open = true;
+                return self.request_redraw();
+            }
+            MenuCommand::UserName => {
+                self.ui.user_name.open(&self.ui.comments.author);
                 return self.request_redraw();
             }
             MenuCommand::Documentation => {
@@ -189,6 +208,7 @@ impl App {
                 remember_settings: self.ui.remember_settings,
                 tracy_profiler: self.ui.tracy_profiler,
                 recent_files: &self.ui.recent_files,
+                can_save: self.ui.comments.writable(),
             });
         }
     }

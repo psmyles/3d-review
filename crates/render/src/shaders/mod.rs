@@ -1,6 +1,6 @@
 //! The one shader source and everything sokol-shdc generates from it.
 //!
-//! `review.glsl` is the single annotated-GLSL source for all 16 programs;
+//! `review.glsl` is the single annotated-GLSL source for all 17 programs;
 //! `scripts/gen-shaders.{sh,ps1}` turns it into the checked-in `generated/`
 //! directory — the per-backend HLSL5 and MSL sources plus [`generated`], shdc's
 //! reflection (bind slots, attribute locations, and a Rust struct per uniform
@@ -72,10 +72,12 @@ mod tests {
 
     /// Every program built on `vs_main` must see the same vertex attribute
     /// locations, because they all draw the one `SceneVertex` layout: the mesh, the
-    /// line overlays, the selection flash and the GTAO G-buffer share a vertex
-    /// buffer and a pipeline input layout. shdc numbers attributes per program, so
-    /// this pins all four against the literal locations `review.glsl` declares —
-    /// a mismatch would mean one pipeline reading the vertex stream shifted.
+    /// selection flash and the GTAO G-buffer share a vertex buffer and a pipeline
+    /// input layout. shdc numbers attributes per program, so this pins all three
+    /// against the literal locations `review.glsl` declares — a mismatch would mean
+    /// one pipeline reading the vertex stream shifted. (The line programs take no
+    /// vertex input; they read the same layout as a storage buffer, pinned in
+    /// `gpu_types.rs`.)
     #[test]
     fn shared_vertex_attributes_agree_across_programs() {
         let expected = [0usize, 1, 2, 3, 4, 5];
@@ -86,14 +88,6 @@ mod tests {
             generated::ATTR_MESH_IN_TANGENT,
             generated::ATTR_MESH_IN_COLOR,
             generated::ATTR_MESH_IN_DEFORM,
-        ];
-        let line = [
-            generated::ATTR_LINE_IN_POSITION,
-            generated::ATTR_LINE_IN_NORMAL,
-            generated::ATTR_LINE_IN_UV,
-            generated::ATTR_LINE_IN_TANGENT,
-            generated::ATTR_LINE_IN_COLOR,
-            generated::ATTR_LINE_IN_DEFORM,
         ];
         let selection = [
             generated::ATTR_SELECTION_IN_POSITION,
@@ -112,7 +106,6 @@ mod tests {
             generated::ATTR_GTAO_GBUFFER_IN_DEFORM,
         ];
         assert_eq!(mesh, expected, "mesh");
-        assert_eq!(line, expected, "line");
         assert_eq!(selection, expected, "selection");
         assert_eq!(gbuffer, expected, "gtao_gbuffer");
     }
@@ -140,6 +133,9 @@ mod tests {
         assert_eq!(generated::VIEW_DEFORM_PALETTE, 13);
         assert_eq!(generated::VIEW_MORPH_DELTAS, 14);
         assert_eq!(generated::VIEW_MORPH_WEIGHTS, 15);
+        // The line programs' pulled vertices and the wireframe's edge list.
+        assert_eq!(generated::VIEW_LINE_VERTICES, 16);
+        assert_eq!(generated::VIEW_LINE_INDICES, 17);
     }
 
     /// `SceneUniforms` is uploaded to both stages from one Rust value, so the two
@@ -154,5 +150,7 @@ mod tests {
         assert_eq!(generated::UB_SCENE_VS, 0);
         assert_eq!(generated::UB_SCENE_FS, 1);
         assert_eq!(generated::UB_MATERIAL, 2);
+        // Its own slot, so no slot means two different structs across programs.
+        assert_eq!(generated::UB_LINE_PARAMS, 3);
     }
 }

@@ -252,6 +252,21 @@ impl MaterialTable {
         &self.fallback_entry
     }
 
+    /// An entry that shows `texture` flat ([`MaterialUniform::image`]): in the
+    /// base-color slot and, with `alpha`, the opacity slot too, every other slot
+    /// its fallback. The UV viewport draws its texture and its checker with one.
+    pub(crate) fn image_entry(&self, texture: Arc<Texture>, alpha: bool) -> MaterialEntry {
+        let mut textures = self.fallback_textures.clone();
+        textures[TextureSlot::BaseColor as usize] = Arc::clone(&texture);
+        if alpha {
+            textures[TextureSlot::Opacity as usize] = texture;
+        }
+        MaterialEntry {
+            uniform: MaterialUniform::image(alpha),
+            textures,
+        }
+    }
+
     /// The anisotropic material sampler.
     pub(crate) fn sampler(&self) -> &Sampler {
         &self.sampler

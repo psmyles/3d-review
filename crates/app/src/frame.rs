@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use review_model::ModelData;
 use review_render::{
     ActiveMaterial, CameraProjection, OptSceneFrame, OptView, ProcessedModelRef, Renderer,
-    SceneFrame, SceneViewport, TexBackground, TexImage, UvFrame,
+    SceneFrame, SceneViewport, TexBackground, TexImage, UvFrame, UvTexture,
 };
 use review_ui::{
     ComparisonSide, OptLayout, OptOverlayLevel, OptOverlayView, TextureBackground, UiOutput,
@@ -100,6 +100,10 @@ impl App {
             let _z = prof::zone!("Apply UI Output");
             self.apply_ui_output(ui_output);
         }
+        // The pass may have changed the comments (the title's unsaved mark),
+        // signed the first one (the remembered name), or left the Comment tool
+        // with a pin move pending.
+        self.sync_comment_chrome();
         // The pass may have opened or closed the Log window.
         self.watch_log_window();
 
@@ -155,12 +159,16 @@ impl App {
                 .or_else(|| result.lod(self.ui.opt.active_lod).map(|lod| &lod.model))
                 .map(|model| (model, *revision))
         });
+        // The pins the chrome draws this frame, resolved against the pose the
+        // renderer is about to draw.
+        self.update_comment_pins();
         let (full_output, ui_output) = {
             let egui_state = self.egui_state.as_mut()?;
             let renderer = self.renderer.as_ref()?;
 
             let raw_input = egui_state.take_egui_input(window);
             let camera = renderer.camera;
+            let uv_camera = renderer.uv_camera;
             let scene_model = self.scene_model.clone();
             // Both the dimension labels' occlusion and the viewport pick read
             // this one index, built on the import worker; `None` until it lands.
@@ -204,6 +212,7 @@ impl App {
                     ui,
                     &mut self.ui,
                     camera,
+                    uv_camera,
                     &scene_model,
                     occlusion_bvh,
                     opt_overlay,
@@ -329,6 +338,27 @@ impl App {
         };
         let workspace = self.ui.mode;
         let uv_channel = self.ui.uv_view_channel;
+        // What the UV workspace lays out: the Outliner's mesh/group selection, or
+        // every visible node when there is none. Built only for that workspace.
+        let uv_nodes = if workspace == WorkspaceMode::Uv {
+            self.ui.uv_scope_nodes()
+        } else {
+            Vec::new()
+        };
+        // The texture picked in the Textures tab, which the UV workspace draws
+        // behind the layout until another is picked or `Esc` clears it. Cloned handles (a path and an `Arc`), so nothing of
+        // `self.ui` stays borrowed across the paint.
+        let uv_texture = (workspace == WorkspaceMode::Uv)
+            .then_some(self.ui.uv_texture.as_ref())
+            .flatten()
+            .and_then(|path| {
+                self.ui
+                    .texture_pool
+                    .iter()
+                    .find(|entry| &entry.path == path)
+            })
+            .map(|entry| (entry.path.clone(), Arc::clone(&entry.image)));
+        let uv_background = tex_background(self.ui.uv_background, full_output.pixels_per_point);
         let uv_shading = self.ui.uv_shading_mode;
         // The Tex viewport's draw inputs (background + placed image), resolved from
         // the live UI state only in Texture mode. Built before the renderer borrow
@@ -417,7 +447,14 @@ impl App {
                         channel: uv_channel,
                         shading_mode: uv_shading,
                         anti_aliasing,
-                        background,
+                        background: uv_background,
+                        selected_nodes: &uv_nodes,
+                        hidden_meshes: &hidden_meshes,
+                        texture: uv_texture.as_ref().map(|(path, image)| UvTexture {
+                            path: path.as_path(),
+                            image,
+                        }),
+                        pixels_per_point: full_output.pixels_per_point,
                     },
                 ),
                 WorkspaceMode::Texture => {
@@ -444,6 +481,7 @@ impl App {
                         pose,
                         pose_revision,
                         scene_bounds,
+                        pixels_per_point: full_output.pixels_per_point,
                     };
                     if workspace == WorkspaceMode::Opt {
                         // Read the cameras out before the call: the arguments are
@@ -560,15 +598,7 @@ impl App {
     /// pixels via `ppp`). The UI emits only plain values (invariant 2); `app` owns the
     /// pool and resolves placement here.
     fn build_texture_draw(&self, ppp: f32) -> (Option<TexImage>, TexBackground) {
-        let background = match self.ui.texture_view.background {
-            TextureBackground::Black => TexBackground::Black,
-            TextureBackground::White => TexBackground::White,
-            TextureBackground::Grey => TexBackground::Grey,
-            TextureBackground::Checker => TexBackground::Checker {
-                // The UI theme's checker cell (points), scaled to physical pixels.
-                cell_px: theme::size::TEXTURE_CHECKER_CELL * ppp,
-            },
-        };
+        let background = tex_background(self.ui.texture_view.background, ppp);
 
         let view = &self.ui.texture_view;
         let (Some(canvas), Some(entry)) = (
@@ -594,6 +624,19 @@ impl App {
             size_px: [size_pts.x * ppp, size_pts.y * ppp],
         };
         (Some(tex_image), background)
+    }
+}
+
+/// The renderer's form of a Tex / UV background fill: the checker's cell (the UI
+/// theme's, in points) scaled to physical pixels by `ppp`.
+fn tex_background(background: TextureBackground, ppp: f32) -> TexBackground {
+    match background {
+        TextureBackground::Black => TexBackground::Black,
+        TextureBackground::White => TexBackground::White,
+        TextureBackground::Grey => TexBackground::Grey,
+        TextureBackground::Checker => TexBackground::Checker {
+            cell_px: theme::size::TEXTURE_CHECKER_CELL * ppp,
+        },
     }
 }
 

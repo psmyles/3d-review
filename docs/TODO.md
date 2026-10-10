@@ -6,3 +6,7 @@
 - Headless batch mode (preset × files → export + report)
 - UV view during opt mode?
 - audit module
+- animation curves
+- onion skin mode for animation review
+- viewport presets
+- update outliner icon
