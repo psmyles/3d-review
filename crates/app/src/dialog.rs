@@ -67,40 +67,12 @@ pub(crate) enum Dialog {
         options: ExportOptions,
         /// Default file name stem, which the per-LOD packaging also suffixes.
         stem: String,
-        /// The review comments as they stood when Export was clicked, per source
-        /// node, for the export to write onto those nodes.
-        comments: Option<review_optimize::NodeStrings>,
     },
     /// Choose where to write an operation-stack preset. The JSON is serialized
     /// before the dialog opens, so it describes the stack the user was looking at.
     SavePreset { json: String },
     /// Pick an operation-stack preset to load.
     LoadPreset,
-    /// Choose where to write the model with its review comments.
-    SaveCommentsAs {
-        /// The file name offered, the opened file's own.
-        name: String,
-    },
-    /// The opened file changed on disk since its comments were read: write the
-    /// comments over it anyway? `then` is what follows a save that goes ahead.
-    ConfirmOverwrite {
-        file: String,
-        then: crate::comments_save::AfterSave,
-    },
-    /// The comments have unsaved changes and something is about to drop them:
-    /// save, discard, or stay?
-    UnsavedComments {
-        file: String,
-        /// What was about to happen, carried out once the question is answered.
-        then: crate::comments_save::AfterSave,
-    },
-}
-
-/// The answer to [`Dialog::UnsavedComments`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UnsavedChoice {
-    Save,
-    Discard,
 }
 
 /// A dialog the user answered, with the request's payload carried back alongside
@@ -115,20 +87,12 @@ pub(crate) enum DialogAnswer {
         source: Arc<ModelData>,
         extras: Option<Arc<SourceExtras>>,
         options: ExportOptions,
-        comments: Option<review_optimize::NodeStrings>,
     },
     SavePreset {
         path: PathBuf,
         json: String,
     },
     LoadPreset(PathBuf),
-    SaveCommentsAs(PathBuf),
-    /// The user chose to write over a file that changed on disk.
-    ConfirmOverwrite(crate::comments_save::AfterSave),
-    UnsavedComments {
-        choice: UnsavedChoice,
-        then: crate::comments_save::AfterSave,
-    },
 }
 
 impl Dialog {
@@ -141,9 +105,6 @@ impl Dialog {
             Dialog::ExportOpt { .. } => "dialog-export",
             Dialog::SavePreset { .. } => "dialog-save-preset",
             Dialog::LoadPreset => "dialog-load-preset",
-            Dialog::SaveCommentsAs { .. } => "dialog-save-comments-as",
-            Dialog::ConfirmOverwrite { .. } => "dialog-confirm-overwrite",
-            Dialog::UnsavedComments { .. } => "dialog-unsaved-comments",
         }
     }
 
@@ -173,7 +134,6 @@ impl Dialog {
                 extras,
                 options,
                 stem,
-                comments,
             } => rfd::FileDialog::new()
                 .set_title(review_localization::tr(keys::app_dialogs::EXPORT_MESH))
                 .add_filter(
@@ -188,7 +148,6 @@ impl Dialog {
                     source,
                     extras,
                     options,
-                    comments,
                 }),
             Dialog::SavePreset { json } => rfd::FileDialog::new()
                 .set_title(review_localization::tr(keys::app_dialogs::SAVE_PRESET))
@@ -207,58 +166,6 @@ impl Dialog {
                 )
                 .pick_file()
                 .map(DialogAnswer::LoadPreset),
-            Dialog::SaveCommentsAs { name } => rfd::FileDialog::new()
-                .set_title(review_localization::tr(keys::app_dialogs::SAVE_COMMENTS_AS))
-                .add_filter(
-                    review_localization::tr(keys::app_dialogs::FILTER_FBX),
-                    &["fbx"],
-                )
-                .set_file_name(name)
-                .save_file()
-                .map(DialogAnswer::SaveCommentsAs),
-            Dialog::ConfirmOverwrite { file, then } => {
-                let answer = rfd::MessageDialog::new()
-                    .set_level(rfd::MessageLevel::Warning)
-                    .set_title(review_localization::tr(
-                        keys::app_dialogs::FILE_CHANGED_TITLE,
-                    ))
-                    .set_description(keys::app_dialogs::file_changed(file))
-                    .set_buttons(rfd::MessageButtons::YesNo)
-                    .show();
-                (answer == rfd::MessageDialogResult::Yes)
-                    .then_some(DialogAnswer::ConfirmOverwrite(then))
-            }
-            Dialog::UnsavedComments { file, then } => {
-                let save = review_localization::tr(keys::app_dialogs::UNSAVED_SAVE).into_owned();
-                let discard =
-                    review_localization::tr(keys::app_dialogs::UNSAVED_DISCARD).into_owned();
-                let cancel =
-                    review_localization::tr(keys::app_dialogs::UNSAVED_CANCEL).into_owned();
-                let answer = rfd::MessageDialog::new()
-                    .set_level(rfd::MessageLevel::Warning)
-                    .set_title(review_localization::tr(keys::app_dialogs::UNSAVED_TITLE))
-                    .set_description(keys::app_dialogs::unsaved(file))
-                    .set_buttons(rfd::MessageButtons::YesNoCancelCustom(
-                        save.clone(),
-                        discard.clone(),
-                        cancel,
-                    ))
-                    .show();
-                // Backends that can't show custom labels answer with the plain
-                // Yes / No they put up instead.
-                let choice = match answer {
-                    rfd::MessageDialogResult::Custom(label) if label == save => {
-                        Some(UnsavedChoice::Save)
-                    }
-                    rfd::MessageDialogResult::Custom(label) if label == discard => {
-                        Some(UnsavedChoice::Discard)
-                    }
-                    rfd::MessageDialogResult::Yes => Some(UnsavedChoice::Save),
-                    rfd::MessageDialogResult::No => Some(UnsavedChoice::Discard),
-                    _ => None,
-                };
-                choice.map(|choice| DialogAnswer::UnsavedComments { choice, then })
-            }
         }
     }
 }
@@ -329,22 +236,9 @@ impl App {
                 source,
                 extras,
                 options,
-                comments,
-            } => self.spawn_opt_export(path, result, source, extras, options, comments),
+            } => self.spawn_opt_export(path, result, source, extras, options),
             DialogAnswer::SavePreset { path, json } => self.write_opt_preset(&path, &json),
             DialogAnswer::LoadPreset(path) => self.read_opt_preset(&path),
-            DialogAnswer::SaveCommentsAs(path) => {
-                self.write_comments(path, crate::comments_save::AfterSave::Nothing, true)
-            }
-            DialogAnswer::ConfirmOverwrite(then) => self.save_comments_unchecked(then),
-            DialogAnswer::UnsavedComments { choice, then } => match choice {
-                UnsavedChoice::Save => self.save_comments(then),
-                UnsavedChoice::Discard => {
-                    // Treated as saved, so what comes next doesn't ask again.
-                    self.ui.comments.mark_saved();
-                    self.resume(then);
-                }
-            },
         }
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();

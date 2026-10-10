@@ -20,7 +20,7 @@
          are also include_bytes!'d, so they must be current before the build).
          The freshness gate keeps this a fast no-op unless a source HDR or the IBL
          precompute code changed; an actual re-bake needs a GPU.
-      7. cargo build --release -p review-app, and the review-comments CLI
+      7. cargo build --release -p review-app
       8. Verifies the committed shader bytecode matches the shader beside it.
       9. Checks the built exe is there, locates ISCC.exe (Inno Setup 6) and
          compiles packaging\3d-review.iss, passing product metadata as /D defines.
@@ -153,9 +153,6 @@ if (-not $SkipBuild) {
     try {
         & cargo build --release -p review-app
         if ($LASTEXITCODE -ne 0) { throw "cargo build failed (exit $LASTEXITCODE)." }
-        # The headless review-comments tool, installed beside the viewer.
-        & cargo build --release -p review-annotate --bin review-comments
-        if ($LASTEXITCODE -ne 0) { throw "cargo build of review-comments failed (exit $LASTEXITCODE)." }
     }
     finally {
         Pop-Location
@@ -190,10 +187,6 @@ Write-Host "    $($noticeFiles.Count) notice files + $($licenseTexts.Count) lice
 $exePath = Join-Path $repoRoot "target\release\$appExe"
 if (-not (Test-Path $exePath)) {
     throw "Release exe not found at $exePath. Run without -SkipBuild, or build first."
-}
-$cliPath = Join-Path $repoRoot 'target\release\review-comments.exe'
-if (-not (Test-Path $cliPath)) {
-    throw "review-comments.exe not found at $cliPath. Run without -SkipBuild, or build first."
 }
 
 # ISCC (Inno Setup 6) reads packaging\3d-review.iss and takes the product metadata

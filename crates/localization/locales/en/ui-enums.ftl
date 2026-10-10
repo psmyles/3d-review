@@ -234,7 +234,6 @@ ui-enums-fbx-ascii = ASCII
 
 ui-enums-tool-view = View mode
 ui-enums-tool-select = Select mode
-ui-enums-tool-comment = Comment mode
 
 ## Opt comparison
 

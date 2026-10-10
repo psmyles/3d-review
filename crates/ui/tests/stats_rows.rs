@@ -54,15 +54,7 @@ impl Harness {
         let model = &self.model;
         let camera = self.camera;
         let mut output = self.ctx.run_ui(input, |ui| {
-            review_ui::draw_overlay(
-                ui,
-                state,
-                camera,
-                review_render::UvCamera::default(),
-                model,
-                None,
-                None,
-            );
+            review_ui::draw_overlay(ui, state, camera, model, None, None);
         });
         // This harness lays the chrome out to inspect its geometry; it has no
         // renderer, so the font-atlas deltas are deliberately discarded. A

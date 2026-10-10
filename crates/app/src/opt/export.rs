@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use review_model::ModelData;
-use review_optimize::{ExportOptions, ExportReport, OptError, ProcessedResult, export_fbx_with};
+use review_optimize::{ExportOptions, ExportReport, OptError, ProcessedResult, export_fbx};
 use review_ui::{ActivityId, NoticeKind};
 
 use super::*;
@@ -48,7 +48,6 @@ impl App {
             extras: self.scene_extras.clone(),
             options: self.ui.opt.stack.export,
             stem,
-            comments: self.comment_export_strings(),
         });
     }
 
@@ -64,7 +63,6 @@ impl App {
         source: Arc<ModelData>,
         extras: Option<Arc<review_model::SourceExtras>>,
         options: ExportOptions,
-        comments: Option<review_optimize::NodeStrings>,
     ) {
         let Some(proxy) = self.textures.proxy.clone() else {
             log::error!("no event-loop proxy; cannot export off-thread");
@@ -86,15 +84,7 @@ impl App {
                 let started = Instant::now();
                 let outcome = {
                     let _z = prof::zone!("Export FBX");
-                    // The review comments as they stand ride on the source nodes.
-                    export_fbx_with(
-                        &result.lods,
-                        &source,
-                        extras.as_deref(),
-                        &path,
-                        &options,
-                        comments.as_ref(),
-                    )
+                    export_fbx(&result.lods, &source, extras.as_deref(), &path, &options)
                 };
                 // The failures are logged where they are reported, on the main thread.
                 if let Ok(report) = &outcome {

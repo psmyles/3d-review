@@ -23,13 +23,6 @@ workspace, and has four parts.
 
 - **Remember Settings** is a switch. A tick next to it means it is on. See
   [below](#remember-settings) for what it keeps.
-- **User Name...** opens a box with the name your
-  [review comments](comments.md) and replies are signed with. Type the new name
-  and press **Save** (or Enter); **Cancel**, `Esc` or a click outside the box
-  keeps the old one. A name is needed, so **Save** waits until there is one.
-  The name is kept between sessions whether or not **Remember Settings** is on,
-  in the same settings file. Comments already written keep the name they were
-  signed with.
 
 ## Debug
 

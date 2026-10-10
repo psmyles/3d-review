@@ -216,18 +216,13 @@ echo "  Cargo.lock: review-app $lock_version."
 if [[ $do_build -eq 1 ]]; then
     say "cargo build --release"
     cargo build --manifest-path "$repo/Cargo.toml" -p review-app --release
-    # The headless review-comments tool, bundled beside the viewer.
-    cargo build --manifest-path "$repo/Cargo.toml" -p review-annotate --bin review-comments --release
 fi
 
 bin="$repo/target/release/$exe"
 [[ -x "$bin" ]] || die "no release binary at $bin — drop --no-build?"
-cli="$repo/target/release/review-comments"
-[[ -x "$cli" ]] || die "no release review-comments at $cli — drop --no-build?"
 
 archs="$(lipo -archs "$bin")"
 [[ "$archs" == *arm64* ]] || die "the binary is '$archs', not arm64 (D11 is Apple Silicon only)"
-[[ "$(lipo -archs "$cli")" == *arm64* ]] || die "review-comments is not arm64"
 
 # ---------------------------------------------------------------------------------------------
 # 4. The icon
@@ -267,9 +262,6 @@ say "bundle -> $app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin" "$app/Contents/MacOS/$name"
-# The command-line tool lives beside the viewer's own binary, where a script finds
-# it as "<app>/Contents/MacOS/review-comments".
-cp "$cli" "$app/Contents/MacOS/review-comments"
 cp "$icns" "$app/Contents/Resources/$name.icns"
 cp "$car" "$app/Contents/Resources/Assets.car"
 
@@ -365,10 +357,6 @@ if [[ $do_sign -eq 1 ]]; then
     # `--timestamp` gets a secure timestamp from Apple, which it also requires and
     # which is what keeps the signature valid after the certificate expires. No
     # entitlements: the viewer needs none, and every entitlement is a hole to justify.
-    # Nested code is signed first and on its own: notarization refuses an unsigned
-    # executable inside the bundle, and `--deep` signing is what Apple says not to do.
-    codesign --force --options runtime --timestamp --sign "$sign_id" \
-        "$app/Contents/MacOS/review-comments"
     codesign --force --options runtime --timestamp --sign "$sign_id" "$app"
     codesign --verify --deep --strict --verbose=2 "$app"
 else

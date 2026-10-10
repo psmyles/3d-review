@@ -143,13 +143,13 @@ fn every_stats_row_label_fits_the_card() {
     );
 }
 
-/// At the side panel's default width, the 3D workspace's tabs for a file
-/// without animations — Scene, Materials, Textures, Comments — all fit in the
-/// strip with their padding, so nobody has to open the overflow menu for a tab
-/// they reach for every session. (With an Animations tab added the strip moves
-/// the trailing tab into its overflow menu, which is what that menu is for.)
+/// At the side panel's default width, every tab the 3D workspace can show —
+/// Scene, Materials, Textures and, for an animated file, Animations — fits in
+/// the strip with its padding, so nobody has to open the overflow menu for a
+/// tab they reach for every session. The overflow menu is for a panel the user
+/// has dragged narrower than that.
 #[test]
-fn the_everyday_outliner_tabs_fit_the_default_panel() {
+fn the_outliner_tabs_fit_the_default_panel() {
     let ctx = styled_context();
     let tab_font = egui::TextStyle::Button.resolve(&ctx.global_style());
     // The side panel's frame takes egui's 8pt margin each side.
@@ -158,7 +158,7 @@ fn the_everyday_outliner_tabs_fit_the_default_panel() {
         "ui-outliner-tab-scene",
         "ui-outliner-tab-materials",
         "ui-outliner-tab-textures",
-        "ui-outliner-tab-comments",
+        "ui-outliner-tab-animations",
     ];
     let needed: f32 = labels
         .iter()
@@ -169,6 +169,6 @@ fn the_everyday_outliner_tabs_fit_the_default_panel() {
         .sum();
     assert!(
         needed <= available,
-        "the everyday tabs need {needed:.0}pt but the default panel's strip has {available:.0}pt"
+        "the 3D tabs need {needed:.0}pt but the default panel's strip has {available:.0}pt"
     );
 }
