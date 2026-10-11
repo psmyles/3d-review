@@ -65,7 +65,7 @@ ui-audit-bubble = { $errors ->
         [one] one warning
        *[other] { $warnings } warnings
     }
-    .description = Checks the model fails, from the Aud workspace. Info findings are not
+    .description = Checks the model fails, from the Audit workspace. Info findings are not
         counted.
 ui-audit-bubble-running = Checking the model...
 ui-audit-bubble-running-text = ...

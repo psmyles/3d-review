@@ -1,66 +1,128 @@
 [package]
 name = "review-app"
 version = "0.6.0"
-edition.workspace = true
-license.workspace = true
-rust-version.workspace = true
 
-[dependencies]
-anyhow.workspace = true
-# The per-user config directory `window.cfg` is written to (D17).
-dirs.workspace = true
-egui.workspace = true
-egui-winit.workspace = true
-glam.workspace = true
-image.workspace = true
-# Every diagnostic line goes through the standard facade; `review-log` is the
-# logger behind it (file, Log window, stderr, Tracy).
-log.workspace = true
-notify.workspace = true
-review-import = { path = "../import" }
-# `Key`, `tr` and the generated keys for this crate's notices, dialogs and window
-# title. No `egui` feature: `app` never hands a key to a widget - it formats the
-# text and passes a `String` through the notification API.
-review-localization.workspace = true
-review-log.workspace = true
-review-model = { path = "../model" }
-# The Opt workspace's mesh processing (vendored meshoptimizer behind a safe API).
-review-optimize = { path = "../optimize" }
-# The Aud workspace shows the audit engine's typed report and edits its profile.
-review-audit = { path = "../audit" }
-# The shared guarded Tracy helpers (zones, plots, frame marks, messages).
-review-prof.workspace = true
-review-render = { path = "../render" }
-# The macOS shell leaves — the Launch Services open hook (D14) and the menu bar
-# (D15). Depended on unconditionally: every entry point is a no-op stub off macOS,
-# which is what keeps the `cfg` out of `main.rs`. It is its own crate because the
-# delegate hook needs `unsafe`, and this one is `#![forbid(unsafe_code)]`.
-review-shell-macos = { path = "../shell-macos" }
-review-ui = { path = "../ui" }
-rfd.workspace = true
-# The OS locale, negotiated against the embedded catalogs at startup.
-sys-locale.workspace = true
-tracy-client.workspace = true
-winit.workspace = true
 
-[dev-dependencies]
-# Parses the gate stamp in its test, the way the harnesses do.
-serde_json.workspace = true
+[package.edition]
+workspace = true
 
-# `product.json` is read on every host now: the identity it carries reaches the
-# binary as compile-time environment variables, and the macOS About panel is one of
-# the things that reads them.
-[build-dependencies]
-# Generates `keys.rs` (the typed message keys) into this crate's OUT_DIR.
-review-localization-build.workspace = true
-serde_json.workspace = true
 
-[target.'cfg(windows)'.build-dependencies]
-winresource.workspace = true
+[package.license]
+workspace = true
+
+
+[package.rust-version]
+workspace = true
+
+
+[dependencies.anyhow]
+workspace = true
+
+
+[dependencies.dirs]
+workspace = true
+
+
+[dependencies.egui]
+workspace = true
+
+
+[dependencies.egui-winit]
+workspace = true
+
+
+[dependencies.glam]
+workspace = true
+
+
+[dependencies.image]
+workspace = true
+
+
+[dependencies.log]
+workspace = true
+
+
+[dependencies.notify]
+workspace = true
+
+
+[dependencies.review-import]
+path = "../import"
+
+
+[dependencies.review-localization]
+workspace = true
+
+
+[dependencies.review-log]
+workspace = true
+
+
+[dependencies.review-model]
+path = "../model"
+
+
+[dependencies.review-optimize]
+path = "../optimize"
+
+
+[dependencies.review-audit]
+path = "../audit"
+
+
+[dependencies.review-prof]
+workspace = true
+
+
+[dependencies.review-render]
+path = "../render"
+
+
+[dependencies.review-shell-macos]
+path = "../shell-macos"
+
+
+[dependencies.review-ui]
+path = "../ui"
+
+
+[dependencies.rfd]
+workspace = true
+
+
+[dependencies.sys-locale]
+workspace = true
+
+
+[dependencies.tracy-client]
+workspace = true
+
+
+[dependencies.winit]
+workspace = true
+
+
+[dev-dependencies.serde_json]
+workspace = true
+
+
+[build-dependencies.review-localization-build]
+workspace = true
+
+
+[build-dependencies.serde_json]
+workspace = true
+
+
+[target."cfg(windows)".build-dependencies.winresource]
+workspace = true
+
 
 [[bin]]
 name = "3d-review"
 path = "src/main.rs"
+
 
 [lints]
 workspace = true
