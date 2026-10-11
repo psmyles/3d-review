@@ -114,8 +114,9 @@ fn every_icon_group_width_holds_its_tiles() {
     }
 }
 
-/// The three clusters, the mode group and Aud's view group beside it must not
-/// overlap at the narrowest window the chrome is expected to work in.
+/// The clusters and the mode group must not overlap at the narrowest window the
+/// chrome is expected to work in - the left one at its widest, in Aud, where the
+/// view group follows the 3D tools.
 #[test]
 fn the_clusters_do_not_overlap_at_a_small_window() {
     // A 1280pt-wide window: the smallest a 3D viewer is realistically used at.
@@ -123,18 +124,16 @@ fn the_clusters_do_not_overlap_at_a_small_window() {
     let row_left = size::OVERLAY_MARGIN;
     let usable = BAR_WIDTH - size::OVERLAY_MARGIN * 2.0;
 
-    let left_end = row_left + size::TOOLBAR_LEFT_WIDTH;
+    let left_end = row_left + size::TOOLBAR_LEFT_AUD_WIDTH;
     let right_start = row_left + usable - size::TOOLBAR_RIGHT_WIDTH;
     let mode_start = review_ui::mode_group_left(row_left, usable);
     // With the Aud segment's count showing: the widest the group gets.
     let mode_end = mode_start + size::TOOLBAR_MODE_GROUP_WIDTH + size::AUD_BUBBLE_ROOM;
-    let aud_views_start =
-        mode_start - size::TOOLBAR_GROUP_SPACING - size::TOOLBAR_QUINT_ICON_GROUP_WIDTH;
 
     assert!(
-        left_end < aud_views_start,
-        "the left cluster ({left_end}pt) reaches Aud's view group \
-         ({aud_views_start}pt) at a {BAR_WIDTH}pt window",
+        left_end < mode_start,
+        "the left cluster ({left_end}pt) reaches the mode group \
+         ({mode_start}pt) at a {BAR_WIDTH}pt window",
     );
     assert!(
         mode_end < right_start,

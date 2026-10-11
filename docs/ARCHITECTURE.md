@@ -494,9 +494,10 @@ stack pane and the Outliner: `select_audit_focus` clears the selection and
 `AuditIntent`. `audit_labels.rs` is the exhaustive map from every typed audit
 value to catalog text (invariant 12); `panels/outliner/issues.rs` is the Issues
 tab and `panels/aud_inspector.rs` the finding, object, summary and profile
-views. The Aud view group sits just left of the workspace buttons
-(`toolbar::mode_group_left` keeps room for it in every workspace), and the Aud
-segment widens only while it has a count to show.
+views. The Aud view group follows the 3D tools in the left cluster
+(`TOOLBAR_LEFT_AUD_WIDTH`; `toolbar::mode_group_left` keeps room for it in
+every workspace, so the workspace buttons never jump), and the Aud segment
+widens only while it has a count to show.
 
 **Opt state.** `opt_state.rs` holds the `OptStack` the chrome edits, the
 comparison-view settings and the last run's measured figures. Ownership follows

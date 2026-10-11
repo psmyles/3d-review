@@ -1,5 +1,5 @@
 //! The top toolbar: the application menu, the wireframe overlay, the shading-mode
-//! group, debug-view group, the 3D/UV/Tex mode segments, and the
+//! group, debug-view group, Aud's diagnostic views, the workspace segments, and the
 //! gizmo/grid/projection group, with the side-panels toggle and then Help closing
 //! out the right-hand end. Emits panel-open intents by mutating [`UiState`] in
 //! place, and the menu's commands as a [`MenuIntent`].
@@ -41,7 +41,11 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
     let overlay_margin = size::OVERLAY_MARGIN;
     let group_spacing = size::TOOLBAR_GROUP_SPACING;
     let group_height = size::TOOLBAR_GROUP_HEIGHT;
-    let left_width = size::TOOLBAR_LEFT_WIDTH;
+    let left_width = if state.mode == WorkspaceMode::Aud {
+        size::TOOLBAR_LEFT_AUD_WIDTH
+    } else {
+        size::TOOLBAR_LEFT_WIDTH
+    };
     let right_width = size::TOOLBAR_RIGHT_WIDTH;
     let shading_group_width = size::TOOLBAR_SHADING_GROUP_WIDTH;
     let material_group_width = size::TOOLBAR_MATERIAL_GROUP_WIDTH;
@@ -85,13 +89,6 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
                 egui::pos2(mode_left, row_rect.top()),
                 egui::vec2(mode_group_width + aud_bubble_room(state), group_height),
             );
-            let aud_views_rect = egui::Rect::from_min_size(
-                egui::pos2(
-                    mode_left - group_spacing - quint_icon_group_width,
-                    row_rect.top(),
-                ),
-                egui::vec2(quint_icon_group_width, group_height),
-            );
             let right_rect = egui::Rect::from_min_size(
                 egui::pos2(
                     row_rect.right() - right_width.min(row_rect.width()),
@@ -103,9 +100,10 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
             // The menu anchors the left end of the bar in every workspace: its
             // commands are about the application, not the view. After it, the
             // shading / material / normal tool groups operate on the 3D scene, so
-            // they are shown only in the 3D workspace. UV mode swaps in the
-            // UV-shading group + UV-set picker; Texture mode swaps in the channel
-            // group (its image is picked in the Outliner's Textures tab).
+            // they are shown only in the 3D workspace. Aud's views follow them: they
+            // too change how the model is drawn. UV mode swaps in the UV-shading
+            // group + UV-set picker; Texture mode swaps in the channel group (its
+            // image is picked in the Outliner's Textures tab).
             ui.scope_builder(
                 egui::UiBuilder::new()
                     .max_rect(left_rect)
@@ -127,6 +125,9 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
                             };
                             draw_material_group(ui, state, material_width);
                             draw_geometry_debug_group(ui, state, triple_icon_group_width);
+                            if state.mode == WorkspaceMode::Aud {
+                                draw_aud_view_group(ui, state, quint_icon_group_width);
+                            }
                         }
                         WorkspaceMode::Uv => {
                             draw_uv_shading_group(ui, state, triple_icon_group_width);
@@ -147,19 +148,6 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
                     });
                 },
             );
-            // Aud's views sit against the workspace buttons, on their left: they
-            // are what the Aud workspace adds, so they read as part of choosing it.
-            if state.mode == WorkspaceMode::Aud {
-                ui.scope_builder(
-                    egui::UiBuilder::new()
-                        .max_rect(aud_views_rect)
-                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                    |ui| {
-                        ui.set_height(group_height);
-                        draw_aud_view_group(ui, state, quint_icon_group_width);
-                    },
-                );
-            }
 
             ui.scope_builder(
                 egui::UiBuilder::new()
@@ -923,17 +911,14 @@ fn draw_uv_set_picker(ui: &mut egui::Ui, state: &mut UiState) {
 
 /// Where the workspace-mode group's left edge goes on a bar whose usable row
 /// starts at `row_left` and is `row_width` wide: centred for its count-less
-/// width, but never so far left that Aud's view group — which sits against its
-/// left side — would reach the left cluster. The room is kept in every
-/// workspace, so the segments do not jump when Aud is picked; it only moves the
-/// group off centre on a narrow window.
+/// width, but never so far left that it would reach the left cluster at its
+/// widest - in Aud, where the view group follows the 3D tools. The room is kept
+/// in every workspace, so the segments do not jump when Aud is picked; it only
+/// moves the group off centre on a narrow window.
 pub fn mode_group_left(row_left: f32, row_width: f32) -> f32 {
     let centred = row_left + (row_width - size::TOOLBAR_MODE_GROUP_WIDTH) * 0.5;
-    let clear_of_left_cluster = row_left
-        + size::TOOLBAR_LEFT_WIDTH
-        + size::TOOLBAR_GROUP_SPACING
-        + size::TOOLBAR_QUINT_ICON_GROUP_WIDTH
-        + size::TOOLBAR_GROUP_SPACING;
+    let clear_of_left_cluster =
+        row_left + size::TOOLBAR_LEFT_AUD_WIDTH + size::TOOLBAR_GROUP_SPACING;
     centred.max(clear_of_left_cluster)
 }
 

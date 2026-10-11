@@ -2,9 +2,9 @@
 
 Some problems are about a whole surface rather than particular faces. The
 diagnostic views paint the model in a colour map instead, without the
-severity tint the Issues view draws. Pick one from the view group just left
-of the workspace buttons, or click the finding it belongs to; a key at the
-top of the viewport shows what the colours mean.
+severity tint the Issues view draws. Pick one from the view group at the
+end of the toolbar's left-hand tools, or click the finding it belongs to; a
+key at the top of the viewport shows what the colours mean.
 
 - **Texel density** colours each face by its texture pixels per meter, for
   the texture size in the profile: blue below the target, green on it, red
