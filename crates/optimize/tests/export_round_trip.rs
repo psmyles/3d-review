@@ -135,6 +135,16 @@ fn a_lod_chain_writes_suffixed_sibling_nodes_into_one_file() {
         names.iter().any(|name| name.ends_with("_LOD1")),
         "the second level is suffixed: {names:?}"
     );
+    // Level 0 too: an engine builds the LOD group from the suffixes, so a
+    // plain-named base mesh would be left out of it.
+    assert!(
+        loaded
+            .nodes
+            .iter()
+            .filter(|node| node.mesh_part.is_some())
+            .all(|node| node.name.ends_with("_LOD0") || node.name.ends_with("_LOD1")),
+        "every level's mesh node is suffixed: {names:?}"
+    );
     // "Sibling" is literal: the levels share one parent, not per-level copies
     // of the ancestor chain.
     let mesh_parents: std::collections::HashSet<Option<usize>> = loaded

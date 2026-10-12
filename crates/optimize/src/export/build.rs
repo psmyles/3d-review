@@ -34,8 +34,9 @@ pub(crate) fn build_scene(
         build_materials_from_viewer(&mut scene, source);
     }
 
-    // Whether more than one level shares this file decides whether meshes need a
-    // `_LOD<n>` suffix to stay distinguishable.
+    // Whether more than one level shares this file decides whether every level's
+    // meshes carry a `_LOD<n>` suffix, level 0's included — that is how an engine
+    // reads the siblings as one LOD group.
     let suffix_levels = lods.len() > 1;
 
     // Source node index → scene node index for every node already emitted into
@@ -59,9 +60,15 @@ pub(crate) fn build_scene(
         let groups = group_by_node(&lod.model);
         for group in groups {
             let node_index = match (extras, options.hierarchy) {
-                (Some(extras), HierarchyMode::Rebuild) => {
-                    place_level_node(&mut scene, &placed, source, extras, &group, lod.level)
-                }
+                (Some(extras), HierarchyMode::Rebuild) => place_level_node(
+                    &mut scene,
+                    &placed,
+                    source,
+                    extras,
+                    &group,
+                    lod.level,
+                    suffix_levels,
+                ),
                 _ => {
                     let (node_index, notes) = place_node(
                         &mut scene,
@@ -70,6 +77,7 @@ pub(crate) fn build_scene(
                         &group,
                         options.hierarchy,
                         lod.level,
+                        suffix_levels,
                     );
                     report.notes.extend(notes);
                     node_index

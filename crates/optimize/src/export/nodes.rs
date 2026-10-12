@@ -197,8 +197,9 @@ pub(crate) fn place_graph(
 }
 
 /// The scene node a level's mesh attaches to, with the whole graph already
-/// placed: level 0 uses the source node itself; a later level gets a suffixed
-/// sibling copy — same authored properties and attribute — beside it.
+/// placed: level 0 uses the source node itself — renamed `_LOD0` when `in_chain`
+/// says the file holds several levels; a later level gets a suffixed sibling
+/// copy — same authored properties and attribute — beside it.
 pub(crate) fn place_level_node(
     scene: &mut SceneData,
     placed: &HashMap<usize, i32>,
@@ -206,11 +207,12 @@ pub(crate) fn place_level_node(
     extras: &SourceExtras,
     group: &NodeGroup,
     level: usize,
+    in_chain: bool,
 ) -> i32 {
     let Some(index) = group.source_node else {
         // No node tags at all: one root holds the whole level.
         scene.nodes.push(NodeData {
-            name: c_string(&suffixed(&source.name, level), "Mesh"),
+            name: c_string(&level_name(&source.name, level, in_chain), "Mesh"),
             parent: NO_PARENT,
             translation: [0.0; 3],
             rotation: [0.0, 0.0, 0.0, 1.0],
@@ -224,7 +226,13 @@ pub(crate) fn place_level_node(
         return (scene.nodes.len() - 1) as i32;
     };
     let base = placed.get(&index).copied().unwrap_or(NO_PARENT);
-    if level == 0 || base == NO_PARENT {
+    if base == NO_PARENT {
+        return base;
+    }
+    if level == 0 {
+        if in_chain && let Some(node) = source.nodes.get(index) {
+            scene.nodes[base as usize].name = c_string(&suffixed(&node.name, 0), "Node");
+        }
         return base;
     }
     let (Some(node), Some(authored)) = (source.nodes.get(index), extras.nodes.get(index)) else {
@@ -249,7 +257,8 @@ pub(crate) fn place_level_node(
 /// node's levels in a suffixed chain — hang off a single shared chain rather
 /// than each duplicating it from the root. Only the mesh-bearing leaf carries
 /// the level suffix, which puts a chain's levels beside each other as siblings —
-/// the layout game FBX files use for their own LOD chains. The importer's
+/// the layout game FBX files use for their own LOD chains; with `in_chain` set the
+/// level-0 leaf is suffixed `_LOD0` too, since it is one of them. The importer's
 /// synthetic file root (nameless, meshless, parentless) is not re-emitted at
 /// all: the written file has its own root, so an explicit copy would wrap every
 /// re-import in one extra level.
@@ -263,6 +272,7 @@ pub(crate) fn place_node(
     group: &NodeGroup,
     hierarchy: HierarchyMode,
     level: usize,
+    in_chain: bool,
 ) -> (i32, Vec<ExportNote>) {
     let mut notes = Vec::new();
 
@@ -308,7 +318,7 @@ pub(crate) fn place_node(
             .map(|node| node.name.clone())
             .unwrap_or_else(|| source.name.clone());
         scene.nodes.push(plain(
-            c_string(&suffixed(&name, level), "Mesh"),
+            c_string(&level_name(&name, level, in_chain), "Mesh"),
             NO_PARENT,
             Mat4::IDENTITY,
         ));
@@ -355,10 +365,15 @@ pub(crate) fn place_node(
         if !leaf && node.parent.is_none() && node.name.is_empty() && node.mesh_part.is_none() {
             continue;
         }
-        // Reuse a node an earlier group already emitted. A suffixed leaf is a
-        // per-level variant of its source node, so it is never shared.
-        let suffix = leaf && level != 0;
-        if !suffix && let Some(&existing) = placed.get(&index) {
+        // Reuse a node an earlier group already emitted. A later level's leaf is
+        // a per-level variant of its source node, so it is never shared. A
+        // level-0 leaf an earlier group emitted as its ancestor still takes the
+        // chain's `_LOD0` name.
+        let level_copy = leaf && level != 0;
+        if !level_copy && let Some(&existing) = placed.get(&index) {
+            if leaf && in_chain {
+                scene.nodes[existing as usize].name = c_string(&suffixed(&node.name, 0), "Node");
+            }
             parent = existing;
             parent_world = node.transform;
             continue;
@@ -376,8 +391,8 @@ pub(crate) fn place_node(
             node.transform
         };
 
-        let name = if suffix {
-            suffixed(&node.name, level)
+        let name = if leaf {
+            level_name(&node.name, level, in_chain)
         } else {
             node.name.clone()
         };
@@ -385,7 +400,7 @@ pub(crate) fn place_node(
             .nodes
             .push(plain(c_string(&name, "Node"), parent, local));
         parent = (scene.nodes.len() - 1) as i32;
-        if !suffix {
+        if !level_copy {
             placed.insert(index, parent);
         }
         parent_world = node.transform;
@@ -394,12 +409,20 @@ pub(crate) fn place_node(
     (parent, notes)
 }
 
-/// `"Body"` at level 0, `"Body_LOD2"` above it. Level 0 keeps the plain name so
-/// a chain-less export round-trips with the source's own names.
+/// `"Body_LOD2"`.
 pub(crate) fn suffixed(name: &str, level: usize) -> String {
-    if level == 0 {
+    format!("{name}_LOD{level}")
+}
+
+/// The name a level's mesh node goes out under. A file holding a chain names
+/// every level, `_LOD0` included: an engine groups the siblings into one LOD
+/// group by that suffix, so a plain-named level 0 is left out of the group.
+/// Outside a chain level 0 keeps the plain name, so a chain-less export
+/// round-trips with the source's own names.
+pub(crate) fn level_name(name: &str, level: usize, in_chain: bool) -> String {
+    if level == 0 && !in_chain {
         name.to_owned()
     } else {
-        format!("{name}_LOD{level}")
+        suffixed(name, level)
     }
 }
