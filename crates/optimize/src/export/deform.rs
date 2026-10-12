@@ -53,7 +53,15 @@ pub(crate) fn placed_or_place(
                 source_node: Some(node),
                 triangles: Vec::new(),
             };
-            let (index, _) = place_node(scene, placed, source, &group, HierarchyMode::Rebuild, 0);
+            let (index, _) = place_node(
+                scene,
+                placed,
+                source,
+                &group,
+                HierarchyMode::Rebuild,
+                0,
+                false,
+            );
             (index >= 0).then_some(index)
         }
     }

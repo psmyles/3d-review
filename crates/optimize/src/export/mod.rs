@@ -238,6 +238,13 @@ mod tests {
     }
 
     #[test]
+    fn level_name_suffixes_level_zero_only_inside_a_chain() {
+        assert_eq!(level_name("Body", 0, true), "Body_LOD0");
+        assert_eq!(level_name("Body", 2, true), "Body_LOD2");
+        assert_eq!(level_name("Body", 0, false), "Body");
+    }
+
+    #[test]
     fn unit_scale_follows_the_source_and_snaps_to_the_unit_it_meant() {
         // A centimeter file's 0.01 arrives through an f32, so the naive
         // `x * 100.0` is 0.99999998 — a factor no importer names, and one whose
@@ -336,6 +343,7 @@ mod tests {
             &group,
             HierarchyMode::Rebuild,
             0,
+            false,
         );
 
         assert_eq!(node, 0, "the mesh still attaches to a real node");
@@ -410,6 +418,7 @@ mod tests {
                 &group,
                 HierarchyMode::Rebuild,
                 0,
+                false,
             );
             assert!(node >= 0, "the mesh attaches to a real node");
         }
@@ -426,7 +435,8 @@ mod tests {
 
     /// A suffixed chain (several levels in one file) puts each level's leaf as
     /// a sibling under the same unsuffixed ancestors, mirroring how game FBX
-    /// files lay out their own LOD chains.
+    /// files lay out their own LOD chains — level 0 suffixed `_LOD0` like the
+    /// rest, or an engine leaves it out of the group.
     #[test]
     fn place_node_puts_suffixed_levels_as_siblings_under_one_chain() {
         let source = lod_sibling_model();
@@ -445,12 +455,13 @@ mod tests {
                 &group,
                 HierarchyMode::Rebuild,
                 level,
+                true,
             );
         }
 
         assert_eq!(
             placed_names(&scene),
-            ["SM_Crate", "SM_Crate_LOD0", "SM_Crate_LOD0_LOD1"],
+            ["SM_Crate", "SM_Crate_LOD0_LOD0", "SM_Crate_LOD0_LOD1"],
             "only the leaf is suffixed; the ancestors are shared"
         );
         assert_eq!(scene.nodes[1].parent, 0);
@@ -557,10 +568,15 @@ mod tests {
             triangles: Vec::new(),
         };
         assert_eq!(
-            place_level_node(&mut scene, &placed, &source, &extras, &group, 0),
+            place_level_node(&mut scene, &placed, &source, &extras, &group, 0, true),
             1
         );
-        let copy = place_level_node(&mut scene, &placed, &source, &extras, &group, 1);
+        assert_eq!(
+            scene.nodes[1].name.to_str().unwrap(),
+            "SM_Crate_LOD0_LOD0",
+            "level 0 of a chain is the source node, suffixed like the rest"
+        );
+        let copy = place_level_node(&mut scene, &placed, &source, &extras, &group, 1, true);
         assert_eq!(copy, 4);
         assert_eq!(scene.nodes[4].parent, 0, "the level copy is a sibling");
         assert_eq!(scene.nodes[4].name.to_str().unwrap(), "SM_Crate_LOD0_LOD1");
