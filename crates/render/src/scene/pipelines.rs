@@ -30,7 +30,7 @@ pub(super) const SCENE_VERTEX_LAYOUT: [VertexFormat; 6] = [
 /// Slope-scaled depth bias for the mesh: it pushes its surface back so the coplanar
 /// line overlays win the Reversed-Z test against it. The line pass's depth-only redraw
 /// of the mesh uses the same bias, or the lines would lose to their own surface there.
-const MESH_DEPTH_BIAS: DepthBias = DepthBias {
+pub(super) const MESH_DEPTH_BIAS: DepthBias = DepthBias {
     constant: -2.0,
     slope_scaled: -2.0,
 };

@@ -95,6 +95,19 @@ impl UvCamera {
         self.half_height * self.aspect_ratio.max(0.1)
     }
 
+    /// This camera framed on the UV box `min..max` with a `margin` (a fraction of
+    /// the box) around it, at its own aspect ratio.
+    pub fn fitted_to(self, min: Vec2, max: Vec2, margin: f32) -> Self {
+        let size = (max - min).max(Vec2::splat(1.0e-4)) * (1.0 + margin * 2.0);
+        let aspect = self.aspect_ratio.max(0.1);
+        let half_height = (size.y * 0.5).max(size.x * 0.5 / aspect);
+        Self {
+            center: (min + max) * 0.5,
+            half_height: half_height.clamp(UV_MIN_HALF_HEIGHT, UV_MAX_HALF_HEIGHT),
+            aspect_ratio: self.aspect_ratio,
+        }
+    }
+
     /// Pan the view by a pointer drag (pixels), keeping the grabbed UV point
     /// under the cursor: the content follows the drag direction.
     pub fn pan_screen_delta(&mut self, delta_pixels: Vec2, viewport_size: Vec2) {
@@ -859,5 +872,23 @@ mod tests {
                 assert!(origin.abs_diff_eq(camera.eye_position(), 1e-4));
             }
         }
+    }
+
+    /// The Aud split frames a UV box with a margin at the camera's own aspect:
+    /// centred on it, and tall or wide enough for whichever side binds.
+    #[test]
+    fn a_uv_camera_fits_a_box_at_its_aspect() {
+        let camera = UvCamera {
+            aspect_ratio: 2.0,
+            ..UvCamera::default()
+        };
+        // A tall box binds on height.
+        let tall = camera.fitted_to(Vec2::new(0.2, 0.0), Vec2::new(0.4, 1.0), 0.1);
+        assert!((tall.center - Vec2::new(0.3, 0.5)).length() < 1e-6);
+        assert!((tall.half_height - 0.6).abs() < 1e-6);
+        // A wide box binds on width: half of 2.4 across, over an aspect of 2.
+        let wide = camera.fitted_to(Vec2::ZERO, Vec2::new(2.0, 0.1), 0.1);
+        assert!((wide.half_height - 0.6).abs() < 1e-6);
+        assert_eq!(wide.aspect_ratio, 2.0);
     }
 }

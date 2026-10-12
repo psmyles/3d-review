@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use crate::texture_manager::TextureDecode;
-use crate::{dialog, loading, opt, update};
+use crate::{audit, dialog, loading, opt, update};
 
 /// Custom event posted from a background thread to the winit event loop, so work
 /// done off the main thread is applied back on it (the redraw loop + all renderer
@@ -35,6 +35,9 @@ pub(crate) enum UserEvent {
     /// optimize thread, already throttled there). Drawn in place of the
     /// finished level until that run lands. Boxed: it carries a whole model.
     OptPreviewed(Box<opt::OptPreviewed>),
+    /// A background audit run finished (posted by the audit thread). Boxed: the
+    /// report carries every finding's element list.
+    AuditDone(Box<audit::AuditDone>),
     /// A background FBX export finished (posted by the export thread).
     OptExported(Box<crate::opt::OptExported>),
     /// A background model import produced a drawable model (posted by the import

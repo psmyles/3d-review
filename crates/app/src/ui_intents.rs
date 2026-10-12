@@ -20,12 +20,16 @@ impl App {
         // the next frame), so a continuous slider / color drag — a material
         // parameter or an Opt one — coalesces into a single undo step. Tracked
         // even when the renderer isn't ready yet.
-        self.drag_in_progress = output.material_edit_active || output.opt_edit_active;
+        self.drag_in_progress =
+            output.material_edit_active || output.opt_edit_active || output.aud_edit_active;
 
         // Opt's file-dialog actions don't need the renderer, and must run even
         // before it exists.
         if let Some(intent) = output.opt {
             self.apply_opt_intent(intent);
+        }
+        if let Some(intent) = output.audit {
+            self.apply_audit_intent(intent);
         }
 
         // The menu's commands land on the handlers their shortcuts already reach

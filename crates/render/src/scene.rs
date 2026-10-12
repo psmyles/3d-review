@@ -9,6 +9,7 @@
 //! same passes.
 
 mod ao_accum;
+mod aud;
 mod deform_gpu;
 mod draw;
 mod draw_lists;
@@ -17,6 +18,7 @@ mod gpu_types;
 mod gtao;
 mod line_views;
 mod opt;
+mod overdraw;
 mod pipelines;
 mod resources;
 mod slot;

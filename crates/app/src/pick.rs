@@ -133,6 +133,25 @@ impl App {
             });
         }
 
+        // The Aud split draws the model in its left half only; the right half is a
+        // UV layout, with nothing to pick.
+        if let Some([left, right]) = self.aud_split_halves() {
+            if position.x >= right.0.x {
+                return None;
+            }
+            let (origin, size) = left;
+            let mut camera = renderer.camera;
+            camera.aspect_ratio = size.x / size.y.max(1.0);
+            return Some(PickView {
+                camera,
+                model: self.scene_model.as_ref(),
+                bvh: self.scene_bvh.as_deref()?,
+                origin,
+                size,
+                posed: self.animation.active,
+            });
+        }
+
         // Every other case draws one view over the whole backbuffer, with the
         // chrome painted on top of it.
         let (model, bvh) = match self.ui.mode {
@@ -151,7 +170,7 @@ impl App {
             origin: Vec2::ZERO,
             size: full,
             // Opt always shows the bind pose, by design.
-            posed: self.ui.mode == WorkspaceMode::ThreeD && self.animation.active,
+            posed: self.ui.mode.shows_pose() && self.animation.active,
         })
     }
 
@@ -187,6 +206,12 @@ impl App {
     /// Cast a ray through `position` (physical pixels, window-relative) and
     /// return what it hits.
     fn cast(&mut self, position: Vec2) -> Option<PickTarget> {
+        self.cast_hit(position).map(|(target, _)| target)
+    }
+
+    /// [`Self::cast`], plus the triangle the ray hit when it hit the mesh — what
+    /// tells a click on a highlighted offender from one beside it.
+    fn cast_hit(&mut self, position: Vec2) -> Option<(PickTarget, Option<u32>)> {
         let bones = self.picking_bones();
         let hidden = self.ui.hidden_mesh_nodes();
         let solo = self.ui.solo.then(|| self.ui.selected_node_set());
@@ -230,7 +255,7 @@ impl App {
                 pointer,
                 tolerance,
             )
-            .map(PickTarget::Bone);
+            .map(|bone| (PickTarget::Bone(bone), None));
         }
 
         // A hidden mesh is not on screen, so it cannot be clicked; and while a
@@ -259,7 +284,7 @@ impl App {
             }
             _ => view.bvh.pick(view.model, origin, dir, near, t_max, allow),
         }?;
-        (hit.node != u32::MAX).then_some(PickTarget::Node(hit.node as usize))
+        (hit.node != u32::MAX).then_some((PickTarget::Node(hit.node as usize), Some(hit.triangle)))
     }
 
     /// Rebuild the posed pick index when the pose or the model has moved.
@@ -267,7 +292,7 @@ impl App {
     /// Keyed on the pose revision, so a paused clip is indexed once however long
     /// it is looked at, and a static model never builds one at all.
     fn sync_posed_pick(&mut self) {
-        if !self.animation.active || self.ui.mode != WorkspaceMode::ThreeD {
+        if !self.animation.active || !self.ui.mode.shows_pose() {
             self.posed_pick = None;
             return;
         }
@@ -326,6 +351,38 @@ impl App {
         }
     }
 
+    /// The focused finding's edge or dot nearest a click at `position`, as the
+    /// focus that narrows to its offender.
+    fn audit_offender_near(&self, position: Vec2) -> Option<review_ui::AuditFocus> {
+        let focus = self.ui.aud.focus?;
+        let report = self.ui.aud.report.as_ref()?;
+        let view = self.pick_view(position)?;
+        let projection: CameraProjection = self.ui.projection_mode.into();
+        let pose = view
+            .posed
+            .then(|| self.animation.context())
+            .flatten()
+            .map(|ctx| (ctx, &self.animation.deform));
+        let model = view.model;
+        crate::audit::offender_near(
+            report,
+            focus,
+            model,
+            |corner| match pose {
+                Some((ctx, deform)) => (model.vertices.get(corner as usize).is_some()).then(|| {
+                    review_model::anim::deform_corner(model, ctx, deform, corner as usize).0
+                }),
+                None => model
+                    .vertices
+                    .get(corner as usize)
+                    .map(|vertex| vertex.position),
+            },
+            |world| view.camera.project(world, projection, view.size),
+            position - view.origin,
+            crate::audit::AUDIT_PICK_TOLERANCE_POINTS * self.scale_factor(),
+        )
+    }
+
     /// Apply a click at `position` to the selection.
     ///
     /// `mode` decides how it combines with what is already selected; the rule
@@ -335,7 +392,21 @@ impl App {
         if !self.picking_enabled() {
             return;
         }
-        let target = self.cast(position);
+        let hit = self.cast_hit(position);
+        // In Aud, a click on a highlighted offender picks that finding rather
+        // than the part under it: a tinted face under the ray, or else an edge
+        // or dot drawn near the pointer.
+        if self.ui.mode == WorkspaceMode::Aud
+            && let Some(focus) = hit
+                .and_then(|(_, triangle)| triangle)
+                .and_then(|triangle| self.audit_offender_at(triangle))
+                .or_else(|| self.audit_offender_near(position))
+        {
+            self.ui.select_audit_focus(Some(focus));
+            self.redraw.requested = true;
+            return;
+        }
+        let target = hit.map(|(target, _)| target);
         review_ui::apply_pick(&mut self.ui, target.map(PickTarget::as_hover), mode);
         // The pick is also the freshest possible answer for the hover.
         self.set_hover(target.map(PickTarget::as_hover));

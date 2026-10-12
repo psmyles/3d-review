@@ -209,6 +209,22 @@ typedef struct review_import_color_set {
     uint32_t value_first;
 } review_import_color_set;
 
+/* One UV set a mesh carries, in the file's own order. */
+typedef struct review_import_uv_set {
+    review_import_str name;
+    uint32_t index;
+    /* Whether the set holds values (a declared but empty layer does not). */
+    uint32_t has_values;
+} review_import_uv_set;
+
+/* A control point no face references: it has no render corner, so this is the
+   only record of where it is. World space, meters, like the corners. */
+typedef struct review_import_unused_vertex {
+    /* Global logical vertex. */
+    uint32_t logical;
+    float position[3];
+} review_import_unused_vertex;
+
 typedef struct review_import_face_group {
     int32_t id;
     review_import_str name;
@@ -283,6 +299,14 @@ typedef struct review_import_mesh_extras {
     uint32_t extra_skin_count;
     uint32_t dq_first;
     uint32_t dq_count;
+    /* Whether the file carried normals (otherwise ufbx generated them). */
+    uint32_t normals_authored;
+    /* Range of `uv_sets`. */
+    uint32_t uv_set_first;
+    uint32_t uv_set_count;
+    /* Range of `unused_vertices`. */
+    uint32_t unused_vertex_first;
+    uint32_t unused_vertex_count;
 } review_import_mesh_extras;
 
 typedef struct review_import_pose_extras {
@@ -530,6 +554,11 @@ typedef struct review_import_extras {
     size_t anim_curve_count;
     review_import_anim_key *anim_keys;
     size_t anim_key_count;
+
+    review_import_uv_set *uv_sets;
+    size_t uv_set_count;
+    review_import_unused_vertex *unused_vertices;
+    size_t unused_vertex_count;
 } review_import_extras;
 
 void review_import_free_extras(review_import_extras *extras);

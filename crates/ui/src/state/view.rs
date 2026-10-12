@@ -12,6 +12,9 @@ pub enum WorkspaceMode {
     /// Mesh optimization: the same 3D scene chrome, plus the operation stack and
     /// a source-vs-processed comparison viewport.
     Opt,
+    /// Model audit: the same 3D scene chrome, plus the Issues list and the
+    /// offenders highlighted in the viewport.
+    Aud,
 }
 
 impl WorkspaceMode {
@@ -21,7 +24,18 @@ impl WorkspaceMode {
     /// not a separate kind of viewport. (The Outliner and Inspector are in every
     /// workspace; which tabs each shows is `OutlinerTab::available`.)
     pub fn is_scene(self) -> bool {
-        matches!(self, WorkspaceMode::ThreeD | WorkspaceMode::Opt)
+        matches!(
+            self,
+            WorkspaceMode::ThreeD | WorkspaceMode::Opt | WorkspaceMode::Aud
+        )
+    }
+
+    /// True for the workspaces that draw the model *posed* — the selected clip
+    /// playing, the skin at its rest pose — rather than in the bind pose its
+    /// buffers hold. Aud follows 3D so a finding is seen where the mesh is drawn;
+    /// Opt compares static geometry and deliberately shows the bind pose.
+    pub fn shows_pose(self) -> bool {
+        matches!(self, WorkspaceMode::ThreeD | WorkspaceMode::Aud)
     }
 }
 

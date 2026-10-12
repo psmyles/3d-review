@@ -82,6 +82,11 @@ pub(crate) struct EditSnapshot {
     /// reprocesses them.
     opt_stack: Arc<OptStack>,
     opt_revision: u64,
+    /// The audit profile, tagged by `audit_profile_revision`: its switches,
+    /// severities and limits undo like the Opt stack does. The report is not
+    /// captured — it is derived, and restoring the profile re-runs the audit.
+    audit_profile: Arc<review_audit::AuditProfile>,
+    audit_profile_revision: u64,
 }
 
 impl EditSnapshot {
@@ -99,6 +104,8 @@ impl EditSnapshot {
             texture_revision: 0,
             opt_stack: Arc::new(OptStack::default()),
             opt_revision: 0,
+            audit_profile: Arc::new(review_audit::AuditProfile::default()),
+            audit_profile_revision: 0,
         }
     }
 
@@ -115,6 +122,7 @@ impl EditSnapshot {
             || self.material_revision != other.material_revision
             || self.texture_revision != other.texture_revision
             || self.opt_revision != other.opt_revision
+            || self.audit_profile_revision != other.audit_profile_revision
     }
 }
 
@@ -266,6 +274,8 @@ impl App {
             // is a refcount bump; the revision tag is what `differs` compares.
             opt_stack: Arc::clone(&self.ui.opt.stack),
             opt_revision: self.ui.opt.stack_revision,
+            audit_profile: Arc::clone(&self.ui.aud.profile),
+            audit_profile_revision: self.ui.aud.profile_revision,
         }
     }
 
@@ -309,6 +319,9 @@ impl App {
         // the matching mesh back in the viewport without a separate mechanism.
         // Skipped when nothing about the stack changed, so an unrelated undo
         // (a material tweak, say) doesn't reprocess the mesh for no reason.
+        if !Arc::ptr_eq(&self.ui.aud.profile, &snapshot.audit_profile) {
+            self.ui.aud.set_profile(Arc::clone(&snapshot.audit_profile));
+        }
         if !Arc::ptr_eq(&self.ui.opt.stack, &snapshot.opt_stack) {
             self.ui.opt.set_stack(Arc::clone(&snapshot.opt_stack));
         }
@@ -400,6 +413,8 @@ mod tests {
             texture_revision,
             opt_stack: Arc::new(OptStack::default()),
             opt_revision: 0,
+            audit_profile: Arc::new(review_audit::AuditProfile::default()),
+            audit_profile_revision: 0,
         }
     }
 

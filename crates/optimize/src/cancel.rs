@@ -46,30 +46,7 @@
 //! one of them (the distance field or the extraction). Every other operation
 //! stops almost at once.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-/// A shared "is this run still wanted?" flag, checked from inside a run.
-#[derive(Debug, Clone)]
-pub struct CancelToken {
-    current: Arc<AtomicU64>,
-    mine: u64,
-}
-
-impl CancelToken {
-    /// A token for request `generation`, live until `current` moves past it.
-    pub fn new(current: Arc<AtomicU64>, generation: u64) -> Self {
-        Self {
-            current,
-            mine: generation,
-        }
-    }
-
-    /// Whether this request has been superseded.
-    pub fn is_cancelled(&self) -> bool {
-        self.current.load(Ordering::Relaxed) != self.mine
-    }
-}
+pub use review_model::CancelToken;
 
 /// Whether a run carrying `token` should stop. The `None` case is a run nobody
 /// can cancel — a test, or a batch caller — so it never stops early.
@@ -79,6 +56,9 @@ pub(crate) fn cancelled(token: Option<&CancelToken>) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use super::*;
 
     #[test]

@@ -151,6 +151,9 @@ function Invoke-GateRun {
         GpuBytes     = $gpu
         Settings     = $json.settings
         Model        = $json.model
+        # Absent from a build that predates the audit, null when none landed.
+        AuditMs      = if ($json.audit) { [double]$json.audit.ms } else { $null }
+        AuditReportBytes = if ($json.audit) { [double]$json.audit.report_bytes } else { $null }
     }
 }
 
@@ -222,6 +225,8 @@ $measures = @(
     @{ Name = 'cpu/frame (ms)'; Property = 'CpuMs'; Budget = $null; Relative = $false; Format = 'N3' }
     @{ Name = 'private (MB)'; Property = 'PrivateBytes'; Budget = $MemoryBudgetPercent; Relative = $true; Format = 'N1' }
     @{ Name = 'gpu (MB)'; Property = 'GpuBytes'; Budget = $MemoryBudgetPercent; Relative = $true; Format = 'N1' }
+    @{ Name = 'audit (ms)'; Property = 'AuditMs'; Budget = $null; Relative = $false; Format = 'N1' }
+    @{ Name = 'audit report (MB)'; Property = 'AuditReportBytes'; Budget = $null; Relative = $false; Format = 'N3' }
 )
 
 $failures = @()
@@ -229,7 +234,12 @@ $table = foreach ($m in $measures) {
     $medA = Get-MedianOf -Rows $rowsA -Property $m.Property
     $medB = Get-MedianOf -Rows $rowsB -Property $m.Property
     if ($null -eq $medA -or $null -eq $medB) {
-        [pscustomobject]@{ Measure = $m.Name; A = 'n/a'; B = 'n/a'; Delta = 'n/a'; Budget = 'n/a'; Verdict = 'skipped' }
+        # A figure only one build records (the baseline predates it) is still
+        # worth reading; there is just nothing to subtract.
+        $scale = if ($m.Property -like '*Bytes') { 1MB } else { 1.0 }
+        $shownA = if ($null -ne $medA) { "{0:$($m.Format)}" -f ([double]$medA / $scale) } else { 'n/a' }
+        $shownB = if ($null -ne $medB) { "{0:$($m.Format)}" -f ([double]$medB / $scale) } else { 'n/a' }
+        [pscustomobject]@{ Measure = $m.Name; A = $shownA; B = $shownB; Delta = 'n/a'; Budget = 'n/a'; Verdict = 'skipped' }
         continue
     }
     $scale = if ($m.Property -like '*Bytes') { 1MB } else { 1.0 }

@@ -210,6 +210,11 @@ pub(super) struct DerivedViews {
     /// active. `None` in every other mode (invariant 3).
     pub(super) weights_buf: Option<VertexBuffer>,
     pub(super) weights_baked: Option<SkinWeightParams>,
+    /// The density heat map, sharing `weights_buf`'s slot (it is the same kind
+    /// of drop-in replacement for the mesh's vertex buffer); the model revision
+    /// and the map it was built for. At most one of this and `weights_baked` is
+    /// set.
+    pub(super) heat_baked: Option<(u64, crate::HeatMap, [[f32; 3]; 3])>,
     /// The skeleton overlay's solid octahedron fills and their outlines; both
     /// `None` while the toggle is off. Drawn always-on-top (X-ray).
     pub(super) skeleton_fill_buf: Option<VertexBuffer>,
@@ -223,6 +228,22 @@ pub(super) struct DerivedViews {
     /// whether it is dimmed over a texture.
     pub(super) uv_fill_buf: Option<VertexBuffer>,
     pub(super) uv_fill_baked: Option<(UvViewParams, UvShadingMode, bool)>,
+    /// The Aud workspace's highlighted offenders: tinted triangles per severity
+    /// (index lists over the mesh's own vertices), and lines and dots, each
+    /// twice — solid and depth-tested, and faint and always on top so nothing
+    /// hidden is missed. All `None` while nothing is focused (invariant 3).
+    pub(super) audit_fills: [Option<IndexBuffer>; 3],
+    pub(super) audit_edges: Option<VertexBuffer>,
+    pub(super) audit_edges_hidden: Option<VertexBuffer>,
+    pub(super) audit_dots: Option<VertexBuffer>,
+    pub(super) audit_dots_hidden: Option<VertexBuffer>,
+    /// The overlay revision the buffers above were built for.
+    pub(super) audit_baked: Option<u64>,
+    /// The Aud workspace's offending triangles laid out in UV space, and the
+    /// overlay revision and UV set they were built for. Part of the UV view, so
+    /// freed with it (`release_uv_views`).
+    pub(super) uv_audit_buf: Option<VertexBuffer>,
+    pub(super) uv_audit_baked: Option<(u64, u32)>,
 }
 
 /// Which model a [`ModelSlot`] holds. The Opt workspace draws a source mesh and a

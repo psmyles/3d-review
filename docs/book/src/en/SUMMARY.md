@@ -51,6 +51,15 @@
   - [Comparing the result](opt/comparison.md)
   - [Exporting](opt/export.md)
 
+# Aud: the audit workspace
+
+- [Overview](aud/index.md)
+  - [The Issues list](aud/issues.md)
+  - [The checks](aud/checks.md)
+  - [Profiles](aud/profiles.md)
+  - [Diagnostic views](aud/views.md)
+  - [Reports](aud/report.md)
+
 # Reference
 
 - [Keyboard and mouse](keyboard.md)

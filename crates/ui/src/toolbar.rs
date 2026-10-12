@@ -1,5 +1,5 @@
 //! The top toolbar: the application menu, the wireframe overlay, the shading-mode
-//! group, debug-view group, the 3D/UV/Tex mode segments, and the
+//! group, debug-view group, Aud's diagnostic views, the workspace segments, and the
 //! gizmo/grid/projection group, with the side-panels toggle and then Help closing
 //! out the right-hand end. Emits panel-open intents by mutating [`UiState`] in
 //! place, and the menu's commands as a [`MenuIntent`].
@@ -41,8 +41,11 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
     let overlay_margin = size::OVERLAY_MARGIN;
     let group_spacing = size::TOOLBAR_GROUP_SPACING;
     let group_height = size::TOOLBAR_GROUP_HEIGHT;
-    let left_width = size::TOOLBAR_LEFT_WIDTH;
-    let center_width = size::TOOLBAR_CENTER_WIDTH;
+    let left_width = if state.mode == WorkspaceMode::Aud {
+        size::TOOLBAR_LEFT_AUD_WIDTH
+    } else {
+        size::TOOLBAR_LEFT_WIDTH
+    };
     let right_width = size::TOOLBAR_RIGHT_WIDTH;
     let shading_group_width = size::TOOLBAR_SHADING_GROUP_WIDTH;
     let material_group_width = size::TOOLBAR_MATERIAL_GROUP_WIDTH;
@@ -78,9 +81,13 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
                 row_rect.left_top(),
                 egui::vec2(left_width.min(row_rect.width()), group_height),
             );
-            let center_rect = egui::Rect::from_center_size(
-                egui::pos2(row_rect.center().x, row_rect.top() + group_height * 0.5),
-                egui::vec2(center_width.min(row_rect.width()), group_height),
+            // The mode group's left edge is placed for its count-less width, so
+            // the count grows it rightwards and the four plain segments never
+            // move under the pointer.
+            let mode_left = mode_group_left(row_rect.left(), row_rect.width());
+            let mode_rect = egui::Rect::from_min_size(
+                egui::pos2(mode_left, row_rect.top()),
+                egui::vec2(mode_group_width + aud_bubble_room(state), group_height),
             );
             let right_rect = egui::Rect::from_min_size(
                 egui::pos2(
@@ -93,9 +100,10 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
             // The menu anchors the left end of the bar in every workspace: its
             // commands are about the application, not the view. After it, the
             // shading / material / normal tool groups operate on the 3D scene, so
-            // they are shown only in the 3D workspace. UV mode swaps in the
-            // UV-shading group + UV-set picker; Texture mode swaps in the channel
-            // group (its image is picked in the Outliner's Textures tab).
+            // they are shown only in the 3D workspace. Aud's views follow them: they
+            // too change how the model is drawn. UV mode swaps in the UV-shading
+            // group + UV-set picker; Texture mode swaps in the channel group (its
+            // image is picked in the Outliner's Textures tab).
             ui.scope_builder(
                 egui::UiBuilder::new()
                     .max_rect(left_rect)
@@ -105,7 +113,7 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
                     ui.spacing_mut().item_spacing.x = group_spacing;
                     draw_menu_group(ui, state, output, single_icon_group_width);
                     match state.mode {
-                        WorkspaceMode::ThreeD | WorkspaceMode::Opt => {
+                        WorkspaceMode::ThreeD | WorkspaceMode::Opt | WorkspaceMode::Aud => {
                             draw_wireframe_group(ui, state, single_icon_group_width);
                             draw_shading_group(ui, state, shading_group_width);
                             // One tile wider when the model carries skin weights,
@@ -117,6 +125,9 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
                             };
                             draw_material_group(ui, state, material_width);
                             draw_geometry_debug_group(ui, state, triple_icon_group_width);
+                            if state.mode == WorkspaceMode::Aud {
+                                draw_aud_view_group(ui, state, quint_icon_group_width);
+                            }
                         }
                         WorkspaceMode::Uv => {
                             draw_uv_shading_group(ui, state, triple_icon_group_width);
@@ -127,13 +138,13 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
             );
 
             ui.scope_builder(
-                egui::UiBuilder::new().max_rect(center_rect).layout(
-                    egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
-                ),
+                egui::UiBuilder::new()
+                    .max_rect(mode_rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
                 |ui| {
                     ui.set_height(group_height);
-                    toolbar_group_shell(ui, mode_group_width, |ui| {
-                        segmented_mode_control(ui, &mut state.mode);
+                    toolbar_group_shell(ui, mode_rect.width(), |ui| {
+                        segmented_mode_control(ui, state);
                     });
                 },
             );
@@ -146,7 +157,7 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
                     ui.set_height(group_height);
                     ui.spacing_mut().item_spacing.x = group_spacing;
                     match state.mode {
-                        WorkspaceMode::ThreeD | WorkspaceMode::Opt => {
+                        WorkspaceMode::ThreeD | WorkspaceMode::Opt | WorkspaceMode::Aud => {
                             // The skeleton toggle only exists for a rigged model, so
                             // the group is one tile narrower without it.
                             let view_group_width = if state.has_bones {
@@ -760,6 +771,61 @@ fn draw_tool_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
     });
 }
 
+/// The Aud workspace's diagnostic views: the focused finding's offenders over
+/// neutral clay, and the two density heat maps. Picking a finding switches to
+/// the view that shows it best; these switch by hand. The heat maps' settings
+/// are the matching checks' own, in the profile.
+fn draw_aud_view_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
+    use review_audit::DiagnosticView;
+    toolbar_group_shell(ui, width, |ui| {
+        for (view, icon) in [
+            (DiagnosticView::Issues, &crate::assets::ICON_AUD_ISSUES),
+            (
+                DiagnosticView::TexelDensity,
+                &crate::assets::ICON_AUD_TEXEL_DENSITY,
+            ),
+            (
+                DiagnosticView::TriangleDensity,
+                &crate::assets::ICON_AUD_TRIANGLE_DENSITY,
+            ),
+            (DiagnosticView::Overdraw, &crate::assets::ICON_AUD_OVERDRAW),
+            (
+                DiagnosticView::QuadOverdraw,
+                &crate::assets::ICON_AUD_QUAD_OVERDRAW,
+            ),
+        ] {
+            let (title, description) = crate::audit_labels::view(view);
+            // The overdraw views need a blendable half-float target; disabled,
+            // with the reason, on an adapter without one (invariant 4).
+            let supported = state.aud.view_supported(view, &state.capabilities);
+            let response = ui
+                .add_enabled_ui(supported, |ui| {
+                    icon_toggle_button(
+                        ui,
+                        icon,
+                        state.aud.view == view,
+                        Tip::new(title).describe(description).page(Page::AudViews),
+                    )
+                })
+                .inner;
+            if !supported {
+                tip_disabled(response, title, keys::ui_audit::VIEW_UNSUPPORTED);
+            } else if response.clicked() {
+                state.aud.view = view;
+            }
+        }
+    });
+}
+
+/// The tooltip a capability-disabled tile shows: its name, and why it is off.
+fn tip_disabled(
+    response: egui::Response,
+    title: review_localization::Key,
+    reason: review_localization::Key,
+) {
+    response.on_disabled_hover_ui(|ui| crate::widgets::tip_body(ui, title, reason));
+}
+
 /// Help, alone in a group at the far right of the bar.
 ///
 /// Its own group rather than sharing the side panels' one: every other tile on
@@ -843,14 +909,137 @@ fn draw_uv_set_picker(ui: &mut egui::Ui, state: &mut UiState) {
     });
 }
 
-fn segmented_mode_control(ui: &mut egui::Ui, mode: &mut WorkspaceMode) {
+/// Where the workspace-mode group's left edge goes on a bar whose usable row
+/// starts at `row_left` and is `row_width` wide: centred for its count-less
+/// width, but never so far left that it would reach the left cluster at its
+/// widest - in Aud, where the view group follows the 3D tools. The room is kept
+/// in every workspace, so the segments do not jump when Aud is picked; it only
+/// moves the group off centre on a narrow window.
+pub fn mode_group_left(row_left: f32, row_width: f32) -> f32 {
+    let centred = row_left + (row_width - size::TOOLBAR_MODE_GROUP_WIDTH) * 0.5;
+    let clear_of_left_cluster =
+        row_left + size::TOOLBAR_LEFT_AUD_WIDTH + size::TOOLBAR_GROUP_SPACING;
+    centred.max(clear_of_left_cluster)
+}
+
+/// What the Aud segment's pill shows, if anything: the count of failing Error
+/// and Warning checks in the worst one's colour, or a quiet "..." while a re-run
+/// replaces a count already shown. A first run with nothing shown yet shows
+/// nothing, so the segment does not widen only to shrink back at zero.
+fn aud_bubble(state: &UiState) -> Option<(Option<review_audit::Severity>, String)> {
+    let summary = state.aud.report.as_ref().map(|report| &report.summary);
+    let count = summary.map_or(0, review_audit::AuditSummary::attention_count);
+    if count == 0 {
+        return None;
+    }
+    if state.aud.running {
+        return Some((
+            None,
+            review_localization::tr(crate::keys::ui_audit::BUBBLE_RUNNING_TEXT).into_owned(),
+        ));
+    }
+    let worst = summary.and_then(review_audit::AuditSummary::attention_worst);
+    Some((worst, count.to_string()))
+}
+
+/// How much wider the Aud segment is this frame: its pill's room while it has
+/// one, nothing otherwise.
+fn aud_bubble_room(state: &UiState) -> f32 {
+    if aud_bubble(state).is_some() {
+        size::AUD_BUBBLE_ROOM
+    } else {
+        0.0
+    }
+}
+
+fn segmented_mode_control(ui: &mut egui::Ui, state: &mut UiState) {
     for workspace in [
         WorkspaceMode::ThreeD,
         WorkspaceMode::Uv,
         WorkspaceMode::Texture,
         WorkspaceMode::Opt,
     ] {
-        mode_segment(ui, mode, workspace);
+        mode_segment(ui, &mut state.mode, workspace);
+    }
+    aud_segment(ui, state);
+}
+
+/// The Aud segment: its label, and beside it a pill counting the checks the
+/// model fails at Warning or Error, in the worst one's colour. Shown from every
+/// workspace, since the audit runs on every load; hidden at zero, when the
+/// segment is as wide as its neighbours (see [`aud_bubble`]).
+fn aud_segment(ui: &mut egui::Ui, state: &mut UiState) {
+    let width = size::MODE_SEGMENT_WIDTH + aud_bubble_room(state);
+    let selected = state.mode == WorkspaceMode::Aud;
+    let label = review_localization::tr(labels::workspace(WorkspaceMode::Aud));
+    let summary = state.aud.report.as_ref().map(|report| &report.summary);
+    let bubble = aud_bubble(state);
+
+    // The label shifts left to share the segment with the pill when there is
+    // one, and sits centred like its neighbours when there is not.
+    let response = segment_button(ui, "", selected, width);
+    let rect = response.rect;
+    let painter = ui.painter();
+    let text_color = if selected {
+        color::TEXT_PRIMARY
+    } else {
+        color::TEXT_SEGMENT_IDLE
+    };
+    let label_center = match bubble {
+        Some(_) => egui::pos2(
+            rect.left() + size::MODE_SEGMENT_WIDTH * 0.5 + size::AUD_BUBBLE_PAD_X,
+            rect.center().y,
+        ),
+        None => rect.center(),
+    };
+    painter.text(
+        label_center,
+        egui::Align2::CENTER_CENTER,
+        label.as_ref(),
+        egui::FontId::proportional(crate::theme::font::MODE_SEGMENT),
+        text_color,
+    );
+    if let Some((worst, text)) = &bubble {
+        let font = egui::FontId::proportional(size::AUD_BUBBLE_FONT);
+        let galley = painter.layout_no_wrap(text.clone(), font, color::AUDIT_BUBBLE_TEXT);
+        let pill_width =
+            (galley.size().x + size::AUD_BUBBLE_PAD_X * 2.0).max(size::AUD_BUBBLE_MIN_WIDTH);
+        let pill = egui::Rect::from_center_size(
+            egui::pos2(
+                rect.right() - size::AUD_BUBBLE_PAD_X - pill_width * 0.5,
+                rect.center().y,
+            ),
+            egui::vec2(pill_width, size::AUD_BUBBLE_HEIGHT),
+        );
+        let fill = match worst {
+            Some(severity) => crate::panels::outliner::severity_color(*severity),
+            None => color::TEXT_MUTED,
+        };
+        painter.rect_filled(pill, size::AUD_BUBBLE_HEIGHT * 0.5, fill);
+        painter.galley(
+            pill.center() - galley.size() * 0.5,
+            galley,
+            color::AUDIT_BUBBLE_TEXT,
+        );
+    }
+
+    let errors = summary.map_or(0, |summary| {
+        summary.failed[review_audit::Severity::Error.index()]
+    });
+    let warnings = summary.map_or(0, |summary| {
+        summary.failed[review_audit::Severity::Warning.index()]
+    });
+    let tooltip = if state.aud.running {
+        Tip::new(crate::keys::ui_audit::BUBBLE_RUNNING)
+    } else {
+        Tip::new(crate::keys::ui_audit::bubble(
+            f64::from(errors),
+            f64::from(warnings),
+        ))
+        .describe(crate::keys::ui_audit::BUBBLE_DESCRIPTION)
+    };
+    if tip(response, tooltip.page(Page::AudIndex)).clicked() {
+        state.mode = WorkspaceMode::Aud;
     }
 }
 

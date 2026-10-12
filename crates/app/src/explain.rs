@@ -12,9 +12,21 @@
 //! A further variant that turns out to need this is one more arm here, not a
 //! trait spread across four crates.
 
+use review_audit::AuditError;
 use review_optimize::{ExportNote, OptError, OptWarning};
 
 use crate::keys;
+
+/// What to show the user for an audit error: a newer profile says what to do
+/// about it; everything else keeps the library's own diagnostic.
+pub(crate) fn explain_audit_error(error: &AuditError) -> String {
+    match error {
+        AuditError::ProfileVersion { found, supported } => {
+            keys::app_audit::profile_newer(f64::from(*found), f64::from(*supported))
+        }
+        other => other.to_string(),
+    }
+}
 
 /// What to show the user for an optimizer error.
 pub(crate) fn explain_opt_error(error: &OptError) -> String {

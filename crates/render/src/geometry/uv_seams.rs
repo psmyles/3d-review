@@ -6,11 +6,9 @@
 //! by (owning node, exact position bits) instead — exact is correct, not a
 //! shortcut, because `optimize` never synthesizes a position.
 
-use std::borrow::Cow;
-use std::collections::HashMap;
-
 use glam::Vec2;
 use review_model::ModelData;
+use review_model::topology::{edge_uses, group_edge_uses, logical_ids};
 
 use crate::scene::SceneVertex;
 
@@ -18,33 +16,11 @@ use super::deform::corner_deform;
 use super::hidden::HiddenFilter;
 use super::vertex::push_line_deformed;
 
-use super::wireframe::face_node_map;
-
 /// How far apart two UVs must sit (squared, in UV units) before the edge between
 /// them reads as a discontinuity. The two sides of a *non*-seam edge are one source
 /// UV element copied into two corners, so they normally agree bit for bit; this only
 /// absorbs the last-place noise of a file that stored them separately.
 const UV_SEAM_EPSILON: f32 = 1e-12;
-
-/// One use of one mesh edge by one face, keyed by the pair of **logical** (DCC)
-/// vertices it connects.
-///
-/// The logical pair is what makes the two sides of a seam meet at all: import splits
-/// every face corner into its own render vertex, so the two faces sharing an edge
-/// reference four different [`ModelData::vertices`] entries — which all trace back to
-/// the same two entries of [`ModelData::corner_to_logical`]. Comparing render-vertex
-/// indices would find no shared edges whatsoever.
-struct EdgeUse {
-    /// `min(logical) << 32 | max(logical)`, so both winding directions of one edge
-    /// sort together and a single pass over the sorted list groups them.
-    key: u64,
-    /// The render corner this use saw the edge's *lower*-numbered logical vertex at.
-    /// Ordered to match `key` so two uses of an edge compare UVs end for end
-    /// whichever way each face winds around it.
-    low: u32,
-    /// The render corner this use saw the higher-numbered logical vertex at.
-    high: u32,
-}
 
 /// One line per **UV seam**: a mesh edge across which the chosen UV set is
 /// discontinuous, which is exactly where the texture is cut. Maya draws the same set
@@ -56,7 +32,7 @@ struct EdgeUse {
 /// shell ends just the same.
 ///
 /// Works on an optimizer-rebuilt mesh as well as an imported one; the two differ only
-/// in how a shared vertex is recognized, see [`welded_logical_ids`].
+/// in how a shared vertex is recognized, see [`review_model::topology::welded_logical_ids`].
 pub(crate) fn uv_seam_lines(
     model: &ModelData,
     lanes: &[[u32; 4]],
@@ -67,11 +43,7 @@ pub(crate) fn uv_seam_lines(
     // Which render corners are the same point of the same surface. Import hands that
     // over for free; anything else has to be welded for it (invariant 1: both are
     // views *onto* the shared buffers, neither copies geometry).
-    let logical: Cow<'_, [u32]> = if model.corner_to_logical.len() == model.vertices.len() {
-        Cow::Borrowed(&model.corner_to_logical)
-    } else {
-        Cow::Owned(welded_logical_ids(model))
-    };
+    let logical = logical_ids(model);
     // `None` for a single-set model, which keeps its UVs in `Vertex::uv` (see
     // `ModelData::uv_channels`) — and for a channel whose array doesn't run parallel
     // to the vertices, where a lookup could only produce a wrong-but-plausible seam.
@@ -87,20 +59,11 @@ pub(crate) fn uv_seam_lines(
         }
     };
 
-    let mut edges = collect_edge_uses(model, &logical, hidden_nodes);
-    edges.sort_unstable_by_key(|edge| edge.key);
+    let hidden = HiddenFilter::new(model, hidden_nodes);
+    let mut edges = edge_uses(model, &logical, |node| hidden.contains_node(node));
 
     let mut vertices = Vec::new();
-    let mut start = 0;
-    while start < edges.len() {
-        let key = edges[start].key;
-        let mut end = start + 1;
-        while end < edges.len() && edges[end].key == key {
-            end += 1;
-        }
-        let group = &edges[start..end];
-        start = end;
-
+    for group in group_edge_uses(&mut edges) {
         // Every use is compared against the first rather than pairwise: a seam is
         // "not all the same", so a non-manifold edge with three faces on it is one as
         // soon as any of them disagrees.
@@ -132,162 +95,6 @@ pub(crate) fn uv_seam_lines(
     }
 
     vertices
-}
-
-/// Every edge of every *visible* face, one [`EdgeUse`] per (face, edge) pair, with
-/// `map` giving each render corner the identity two faces meet on.
-///
-/// Walks the original polygons wherever the model carries face topology — so a
-/// quad's four real edges are considered and never its triangulation diagonal, which
-/// is not an edge an artist can put a seam on — and falls back to triangle edges only
-/// for a mesh that arrived without it. A processed mesh takes the fallback (it is
-/// pure triangles and carries no `faces`), which costs it nothing: a diagonal is an
-/// interior edge whose two triangles agree about the UVs, so it is never a seam.
-fn collect_edge_uses(model: &ModelData, map: &[u32], hidden_nodes: &[u32]) -> Vec<EdgeUse> {
-    let mut edges = Vec::with_capacity(model.indices.len());
-    let hidden = HiddenFilter::new(model, hidden_nodes);
-
-    if model.faces.is_empty() {
-        for (triangle_index, triangle) in model.indices.as_chunks::<3>().0.iter().enumerate() {
-            if hidden.is_hidden(triangle_index) {
-                continue;
-            }
-            for corner in 0..3 {
-                push_edge_use(
-                    &mut edges,
-                    map,
-                    triangle[corner] as usize,
-                    triangle[(corner + 1) % 3] as usize,
-                );
-            }
-        }
-        return edges;
-    }
-
-    // The same face -> node resolution the wireframe uses, so a hidden mesh's seams
-    // disappear with its edges. `None` when visibility can't be resolved, in which
-    // case every face contributes.
-    let face_node = hidden.is_active().then(|| face_node_map(model)).flatten();
-    for (face_index, face) in model.faces.iter().enumerate() {
-        if let Some(nodes) = face_node.as_ref()
-            && nodes
-                .get(face_index)
-                .is_some_and(|node| hidden.contains_node(*node))
-        {
-            continue;
-        }
-        let count = face.index_count as usize;
-        if count < 2 {
-            continue;
-        }
-        let first = face.first_index as usize;
-        for corner in 0..count {
-            push_edge_use(
-                &mut edges,
-                map,
-                first + corner,
-                first + (corner + 1) % count,
-            );
-        }
-    }
-
-    edges
-}
-
-/// A stand-in for [`ModelData::corner_to_logical`] on a mesh that carries none —
-/// today, the Opt workspace's processed levels, whose rebuilt vertex buffer has no
-/// source vertices left to map back to. Two corners get the same id when they sit at
-/// the **same position on the same object**, which is the identity a UV seam is
-/// actually about.
-///
-/// This is exact rather than tolerant, and that is not a simplification:
-/// `optimize` never synthesizes a position — every operation either drops vertices or
-/// copies whole ones through a remap — so a processed vertex's position is bit for bit
-/// one the source mesh had, and the corners that came from one source vertex still
-/// match to the bit. Welding within a tolerance instead would risk merging genuinely
-/// separate surfaces that pass close by.
-///
-/// The owning node is part of the key because a weld is otherwise happy to join two
-/// objects that touch, which would hide the border each of them really has there. It
-/// comes from the per-triangle node tags; a mesh without them welds as one object,
-/// the most a position alone can say.
-///
-/// Cost is one hash pass over the vertices, and it lands where it is cheapest: a
-/// processed mesh has been through `index_mesh`, so it has far fewer vertices than
-/// the corner-split mesh import produces. An imported mesh never pays it at all.
-fn welded_logical_ids(model: &ModelData) -> Vec<u32> {
-    let triangle_count = model.indices.len() / 3;
-    let node_tags =
-        (model.triangles.node.len() == triangle_count).then_some(model.triangles.node.as_slice());
-
-    let mut ids = vec![u32::MAX; model.vertices.len()];
-    let mut welded: HashMap<(u32, [u32; 3]), u32> = HashMap::new();
-    for (triangle_index, triangle) in model.indices.as_chunks::<3>().0.iter().enumerate() {
-        let node = node_tags.map_or(0, |nodes| nodes[triangle_index]);
-        for &corner in triangle {
-            let corner = corner as usize;
-            // Skips an out-of-range index and an already-assigned corner in one test.
-            // A vertex no triangle references keeps `u32::MAX`, and is never reached
-            // by the edge walk either.
-            if ids.get(corner).copied() != Some(u32::MAX) {
-                continue;
-            }
-            let Some(vertex) = model.vertices.get(corner) else {
-                continue;
-            };
-            let key = (
-                node,
-                [
-                    position_bits(vertex.position.x),
-                    position_bits(vertex.position.y),
-                    position_bits(vertex.position.z),
-                ],
-            );
-            let next = welded.len() as u32;
-            ids[corner] = *welded.entry(key).or_insert(next);
-        }
-    }
-    ids
-}
-
-/// One position component as a hash key. `-0.0` folds onto `0.0` and every NaN onto
-/// one canonical NaN, because the comparison is bitwise: without that, two vertices
-/// at the same visible point could miss each other over a sign bit.
-fn position_bits(value: f32) -> u32 {
-    if value == 0.0 {
-        0.0f32.to_bits()
-    } else if value.is_nan() {
-        f32::NAN.to_bits()
-    } else {
-        value.to_bits()
-    }
-}
-
-/// Record one use of the edge between render corners `a` and `b`, on the canonical
-/// (lower logical vertex first) form. Skips a corner outside the map, and an edge
-/// whose ends share a logical vertex — degenerate either way, and neither can carry
-/// a seam.
-fn push_edge_use(edges: &mut Vec<EdgeUse>, map: &[u32], a: usize, b: usize) {
-    let (Some(&logical_a), Some(&logical_b)) = (map.get(a), map.get(b)) else {
-        return;
-    };
-    if logical_a == logical_b {
-        return;
-    }
-    let (key, low, high) = if logical_a < logical_b {
-        (
-            (u64::from(logical_a) << 32) | u64::from(logical_b),
-            a as u32,
-            b as u32,
-        )
-    } else {
-        (
-            (u64::from(logical_b) << 32) | u64::from(logical_a),
-            b as u32,
-            a as u32,
-        )
-    };
-    edges.push(EdgeUse { key, low, high });
 }
 
 #[cfg(test)]

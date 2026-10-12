@@ -873,3 +873,76 @@ fn a_superseded_load_is_cancelled_rather_than_parsed() {
         .expect("a current load still imports");
     assert!(staged.model.stats.triangle_count > 0);
 }
+
+/// A hand-written triangle with no normals, a fourth control point no face
+/// uses, and two named UV sets — the three facts the capture records for the
+/// audit and that the geometry itself cannot carry.
+#[test]
+fn capture_records_authored_normals_uv_sets_and_unused_points() {
+    const FBX: &str = r#"; FBX 7.4.0 project file
+FBXHeaderExtension:  {
+	FBXHeaderVersion: 1003
+	FBXVersion: 7400
+}
+Objects:  {
+	Geometry: 1000, "Geometry::Tri", "Mesh" {
+		Vertices: *12 {
+			a: 0,0,0,1,0,0,0,1,0,5,5,5
+		}
+		PolygonVertexIndex: *3 {
+			a: 0,1,-3
+		}
+		LayerElementUV: 0 {
+			Version: 101
+			Name: "map1"
+			MappingInformationType: "ByPolygonVertex"
+			ReferenceInformationType: "Direct"
+			UV: *6 {
+				a: 0,0,1,0,0,1
+			}
+		}
+		LayerElementUV: 1 {
+			Version: 101
+			Name: "lightmap"
+			MappingInformationType: "ByPolygonVertex"
+			ReferenceInformationType: "Direct"
+			UV: *6 {
+				a: 0,0,1,0,0,1
+			}
+		}
+	}
+	Model: 2000, "Model::Tri", "Mesh" {
+		Version: 232
+	}
+}
+Connections:  {
+	C: "OO",1000,2000
+	C: "OO",2000,0
+}
+"#;
+    let path = temp_fbx("audit-capture", FBX.as_bytes());
+    let (model, extras) = match review_import::load_model_full(&path) {
+        Ok((model, Some(extras))) => (model, extras),
+        Ok((_, None)) => return skipping("no capture in this build"),
+        Err(ImportError::UfbxUnavailable) => return skipping("FBX import is unavailable"),
+        Err(error) => panic!("the hand-written fixture failed to load: {error}"),
+    };
+    assert_eq!(model.stats.triangle_count, 1);
+    assert_eq!(extras.meshes.len(), 1);
+    let mesh = &extras.meshes[0];
+    assert!(!mesh.normals_authored, "the file carries no normals");
+    let names: Vec<&str> = mesh.uv_sets.iter().map(|set| set.name.as_str()).collect();
+    assert_eq!(names, ["map1", "lightmap"]);
+    assert!(mesh.uv_sets.iter().all(|set| set.has_values));
+    assert_eq!(
+        mesh.unused_vertices.len(),
+        1,
+        "control point 3 is used by no face"
+    );
+    let (logical, position) = mesh.unused_vertices[0];
+    assert_eq!(logical, 3);
+    // Import normalizes to meters; a file declaring no unit is read as
+    // centimeters, so allow either scale but require the direction.
+    let direction = position.normalize();
+    assert!((direction - glam::Vec3::splat(1.0).normalize()).length() < 1e-4);
+}

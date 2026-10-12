@@ -113,6 +113,9 @@ pub struct Renderer {
     pub camera: OrbitCamera,
     /// The 2D camera for the UV viewport, independent of the 3D orbit camera.
     pub uv_camera: UvCamera,
+    /// The Aud split's UV half — its own camera, so framing a finding there
+    /// leaves the UV workspace's view where the user left it.
+    pub aud_uv_camera: UvCamera,
     /// The Opt workspace's *right-hand* camera, used only by the split view with
     /// camera sync off. With sync on it simply mirrors [`Self::camera`], which is
     /// why it needs no transition of its own: the animated moves (framing, home,
@@ -140,6 +143,33 @@ pub struct Renderer {
     /// The scene's pipelines, offscreen targets, IBL maps and per-model caches, built
     /// on the first 3D or UV frame.
     scene: Option<SceneGpu>,
+}
+
+/// What the Aud workspace highlights: the offenders of the focused finding,
+/// sorted by severity (index 0 Info, 1 Warning, 2 Error), as plain borrowed lists
+/// `app` resolves once per focus change.
+///
+/// Everything indexes the model's own buffers — triangles and corners — so the
+/// overlay deforms with the mesh exactly as the selection fill does, and copies
+/// no geometry (invariant 1). `revision` identifies the lists; the renderer
+/// rebuilds its buffers only when it moves.
+#[derive(Debug, Clone, Copy)]
+pub struct AuditOverlay<'a> {
+    pub revision: u64,
+    /// Offending triangles, tinted.
+    pub fills: [&'a [u32]; 3],
+    /// Offending edges as render-corner pairs, drawn as lines.
+    pub edges: [&'a [[u32; 2]]; 3],
+    /// Offenders too small to see as a fill, as one render corner each, drawn as
+    /// dots.
+    pub corner_dots: [&'a [u32]; 3],
+    /// Offenders with no corner of their own (a loose point, a pivot, a bone), as
+    /// a world position and the node whose motion they follow.
+    pub point_dots: [&'a [([f32; 3], u32)]; 3],
+    /// Gamma-space colour per severity; alpha is the fill's opacity.
+    pub colors: [[f32; 4]; 3],
+    /// How strongly a line or dot shows where the surface hides it.
+    pub hidden_alpha: f32,
 }
 
 /// Per-frame inputs for the 3D scene render — everything `app` resolves from the
@@ -192,6 +222,9 @@ pub struct SceneFrame<'a> {
     /// screen, 1.25 at 125% on Windows). What turns
     /// [`SceneDebugOptions::wireframe_width`], which is in points, into pixels.
     pub pixels_per_point: f32,
+    /// The Aud workspace's highlighted offenders, or `None` (every other
+    /// workspace, and Aud with nothing focused).
+    pub audit: Option<AuditOverlay<'a>>,
 }
 
 impl<'a> SceneFrame<'a> {
@@ -203,6 +236,9 @@ impl<'a> SceneFrame<'a> {
         SceneFrame {
             model,
             model_revision,
+            // The overlay indexes the source's triangles and corners, which mean
+            // nothing on another mesh.
+            audit: None,
             ..*self
         }
     }
@@ -297,6 +333,18 @@ pub struct UvFrame<'a> {
     /// Physical pixels per egui point, as [`SceneFrame::pixels_per_point`]: what
     /// gives the UV view's lines the same weight on every display.
     pub pixels_per_point: f32,
+    /// The Aud workspace's offending triangles, tinted on the layout. `None`
+    /// everywhere else.
+    pub audit: Option<UvAuditOverlay<'a>>,
+}
+
+/// The Aud workspace's UV-space highlight: the focused finding's triangles, by
+/// severity (0 Info, 1 Warning, 2 Error), laid out in the frame's UV set.
+#[derive(Debug, Clone, Copy)]
+pub struct UvAuditOverlay<'a> {
+    pub revision: u64,
+    pub fills: [&'a [u32]; 3],
+    pub colors: [[f32; 4]; 3],
 }
 
 /// An image the UV viewport lays its islands over: the decoded pixels from the
@@ -339,6 +387,7 @@ impl Renderer {
             config,
             camera: OrbitCamera::default(),
             uv_camera: UvCamera::default(),
+            aud_uv_camera: UvCamera::default(),
             opt_camera: OrbitCamera::default(),
             camera_transition: None,
             framing_safe_area: Vec2::ONE,
@@ -455,6 +504,54 @@ impl Renderer {
         scene_gpu.render_uv(frame, uv, uv_camera)
     }
 
+    /// Render the Aud workspace's split: the 3D scene on the left of `viewport`, the
+    /// UV layout of the focused finding on the right (framed by
+    /// [`Self::aud_uv_camera`]), the offenders highlighted in both.
+    pub fn render_aud_split(
+        &mut self,
+        frame: &mut Frame<'_>,
+        scene: &SceneFrame<'_>,
+        uv: &UvFrame<'_>,
+        viewport: SceneViewport,
+    ) -> GpuResult<()> {
+        let camera = self.camera;
+        // Remembered, so a later fit frames the box at the half's own shape.
+        self.aud_uv_camera.aspect_ratio =
+            (viewport.width / 2).max(1) as f32 / viewport.height.max(1) as f32;
+        let uv_camera = self.aud_uv_camera;
+        let material_revision = self.material_revision;
+        self.ensure_scene(frame, scene.anti_aliasing.effective_sample_count())?;
+        let Some(scene_gpu) = self.scene.as_mut() else {
+            return Ok(());
+        };
+        scene_gpu.render_aud_split(
+            frame,
+            scene,
+            uv,
+            camera,
+            uv_camera,
+            viewport,
+            &self.material_states,
+            material_revision,
+        )
+    }
+
+    /// Frame the Aud split's UV half on the UV box `min..max`.
+    pub fn fit_aud_uv_camera(&mut self, min: glam::Vec2, max: glam::Vec2) {
+        self.aud_uv_camera = self.aud_uv_camera.fitted_to(min, max, 0.15);
+    }
+
+    /// Zoom the Aud split's UV half (the wheel over it).
+    pub fn zoom_aud_uv_camera(&mut self, amount: f32) {
+        self.aud_uv_camera.zoom(amount);
+    }
+
+    /// Pan the Aud split's UV half by a pointer drag over it.
+    pub fn pan_aud_uv_camera(&mut self, delta_pixels: glam::Vec2, viewport_size: glam::Vec2) {
+        self.aud_uv_camera
+            .pan_screen_delta(delta_pixels, viewport_size);
+    }
+
     /// Render the 2D Tex viewport (instead of the 3D scene): the chosen background
     /// fill, then the selected image (channel-isolated, placed by `image`'s pixel
     /// rectangle) when one is present. The egui chrome is drawn on top afterwards.
@@ -474,6 +571,7 @@ impl Renderer {
         if let Some(scene) = self.scene.as_mut() {
             scene.release_opt_views();
             scene.release_uv_views();
+            scene.release_overdraw();
         }
         // Built on the first Tex frame rather than at startup: a session that never
         // opens this workspace pays for none of it.

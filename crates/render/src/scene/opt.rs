@@ -43,6 +43,8 @@ impl SceneGpu {
         material_states: &[MaterialState],
         material_revision: u64,
     ) -> GpuResult<()> {
+        // A 3D comparison: the UV viewport's buffers are off (invariant 3).
+        self.release_uv_views();
         match opt.view {
             // The overlay needs two meshes to have anything to overlay; without a
             // processed one it is simply the 3D scene.

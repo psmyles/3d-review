@@ -168,6 +168,19 @@ pub(super) struct XColorSet {
 }
 
 #[repr(C)]
+pub(super) struct XUvSet {
+    pub(super) name: XStr,
+    pub(super) index: u32,
+    pub(super) has_values: u32,
+}
+
+#[repr(C)]
+pub(super) struct XUnusedVertex {
+    pub(super) logical: u32,
+    pub(super) position: [f32; 3],
+}
+
+#[repr(C)]
 pub(super) struct XFaceGroup {
     pub(super) id: i32,
     pub(super) name: XStr,
@@ -239,6 +252,11 @@ pub(super) struct XMesh {
     pub(super) extra_skin_count: u32,
     pub(super) dq_first: u32,
     pub(super) dq_count: u32,
+    pub(super) normals_authored: u32,
+    pub(super) uv_set_first: u32,
+    pub(super) uv_set_count: u32,
+    pub(super) unused_vertex_first: u32,
+    pub(super) unused_vertex_count: u32,
 }
 
 #[repr(C)]
@@ -459,4 +477,9 @@ pub(super) struct ReviewImportExtras {
     pub(super) anim_curve_count: usize,
     pub(super) anim_keys: *mut XAnimKey,
     pub(super) anim_key_count: usize,
+
+    pub(super) uv_sets: *mut XUvSet,
+    pub(super) uv_set_count: usize,
+    pub(super) unused_vertices: *mut XUnusedVertex,
+    pub(super) unused_vertex_count: usize,
 }
