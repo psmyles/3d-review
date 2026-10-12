@@ -21,6 +21,12 @@ move you forward, left, back and right, `Q` and `E` move you down and up, and
 the wheel changes how fast you fly. The speed matches the size of what you are
 looking at, so a tiny prop and a huge level both feel the same to fly through.
 
+**Perspective and orthographic.** The camera button on the right of the
+toolbar switches between a perspective camera, where far things look smaller,
+and a flat orthographic one. Right-click it for the [Camera](panels/camera.md)
+options: how fast orbiting, zooming and flying move the camera, and how wide
+the perspective camera sees.
+
 ## Selecting
 
 The mouse button on the right of the toolbar, and the `Q` key, switch the left

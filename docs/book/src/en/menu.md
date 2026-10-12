@@ -95,6 +95,7 @@ start it. That covers everything those windows set:
 - which channels vertex colors show, the material mode and the buffer shown;
 - the background, the environment and its strength and turn, and whether the
   environment is drawn behind the model;
+- the camera's field of view and its orbit, zoom and fly speeds;
 - the ambient occlusion, tone mapping and edge smoothing settings, including
   whether each of them is on.
 

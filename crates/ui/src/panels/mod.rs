@@ -9,6 +9,7 @@ pub(crate) mod aud_inspector;
 mod background;
 mod bounding_box;
 mod buffer_view;
+mod camera;
 mod environment;
 mod gtao;
 pub(crate) mod inspector;
@@ -70,6 +71,7 @@ pub(crate) fn draw_panel_body(ui: &mut egui::Ui, state: &mut UiState, panel: Opt
         OptionPanel::UvSeams => uv_seams::body(ui, state),
         OptionPanel::Skeleton => skeleton::body(ui, state),
         OptionPanel::VertexColors => vertex_colors::body(ui, state),
+        OptionPanel::Camera => camera::body(ui, state),
         OptionPanel::AntiAliasing => anti_aliasing::body(ui, state),
         OptionPanel::Background => background::body(ui, state),
         OptionPanel::Environment => environment::body(ui, state),

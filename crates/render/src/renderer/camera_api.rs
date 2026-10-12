@@ -90,6 +90,23 @@ impl Renderer {
         }
     }
 
+    /// Set the vertical field of view of every 3D camera: the main one, the Opt
+    /// split's right-hand one, and both ends of a transition in flight, so the
+    /// glide cannot carry the old angle back in. Each one dollies to keep its
+    /// framing ([`OrbitCamera::set_fov_keeping_extent`]).
+    ///
+    /// Setting the angle a camera already has leaves it bit for bit as it was
+    /// (the dolly ratio is exactly 1), so `app` can hand the chrome's value over
+    /// every frame without disturbing anything keyed on the camera.
+    pub fn set_camera_fov(&mut self, fov_y_radians: f32) {
+        self.camera.set_fov_keeping_extent(fov_y_radians);
+        self.opt_camera.set_fov_keeping_extent(fov_y_radians);
+        if let Some(transition) = self.camera_transition.as_mut() {
+            transition.start.set_fov_keeping_extent(fov_y_radians);
+            transition.end.set_fov_keeping_extent(fov_y_radians);
+        }
+    }
+
     /// Orbit / pan / zoom the Opt split view's right-hand camera. Used only while
     /// camera sync is off; with it on, `app` drives the main camera and both views
     /// follow it.
@@ -154,10 +171,12 @@ impl Renderer {
     /// The default "home" view, re-framed for the live aspect ratio and the
     /// chrome-aware safe area so the whole grid stays visible regardless of
     /// window shape. Shared by the animated reset and the instant startup frame
-    /// so both land on exactly the same view.
+    /// so both land on exactly the same view. Framed through the user's field of
+    /// view, not the default one, so a wide lens still fits the grid.
     fn home_camera(&self) -> OrbitCamera {
         let home = OrbitCamera {
             aspect_ratio: self.camera.aspect_ratio,
+            fov_y_radians: self.camera.fov_y_radians,
             ..OrbitCamera::default()
         };
         // Fill only a fraction of the safe area so the grid sits back from the
@@ -193,5 +212,45 @@ impl Renderer {
 
     pub fn is_camera_animating(&self) -> bool {
         self.camera_transition.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::RendererConfig;
+
+    /// One field of view for every 3D view: both cameras, a glide in flight, and
+    /// the home view a reset lands on — which is framed through it, not through
+    /// the default.
+    #[test]
+    fn the_field_of_view_reaches_every_camera_and_the_home_view() {
+        let fov = 80.0_f32.to_radians();
+        let mut renderer = Renderer::new(RendererConfig::default());
+        renderer.animate_camera_to_bounds(GRID_BOUNDS);
+        renderer.set_camera_fov(fov);
+
+        assert_eq!(renderer.camera.fov_y_radians, fov);
+        assert_eq!(renderer.opt_camera.fov_y_radians, fov);
+        let transition = renderer.camera_transition.expect("a glide is in flight");
+        assert_eq!(transition.start.fov_y_radians, fov);
+        assert_eq!(transition.end.fov_y_radians, fov);
+
+        renderer.reset_camera_to_home();
+        assert_eq!(renderer.camera.fov_y_radians, fov);
+    }
+
+    /// Handing over the angle the cameras already have must change nothing, or
+    /// the per-frame call would restart everything keyed on the camera.
+    #[test]
+    fn setting_the_same_field_of_view_is_a_no_op() {
+        let mut renderer = Renderer::new(RendererConfig::default());
+        renderer.set_camera_fov(65.0_f32.to_radians());
+        let before = (renderer.camera.distance, renderer.opt_camera.distance);
+        renderer.set_camera_fov(65.0_f32.to_radians());
+        assert_eq!(
+            (renderer.camera.distance, renderer.opt_camera.distance),
+            before
+        );
     }
 }

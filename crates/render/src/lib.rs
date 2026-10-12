@@ -40,7 +40,7 @@ mod tex;
 mod texture;
 
 use camera::CameraTransition;
-pub use camera::{OrbitCamera, UvCamera, ease_in_out_cubic};
+pub use camera::{DEFAULT_FOV_Y_DEGREES, OrbitCamera, UvCamera, ease_in_out_cubic};
 pub use config::*;
 pub use egui_sokol::EguiRenderer;
 pub use geometry::{BONE_PICK_TOLERANCE_POINTS, pick_bone_shape, posed_joint_positions};

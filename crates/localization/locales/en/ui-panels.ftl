@@ -70,6 +70,26 @@ ui-panels-color-mode = Color Mode
     .description = Show the stored colors, show the alpha (see-through) value as shades of
         grey, or show the colors with alpha making parts see-through.
 
+## Camera
+
+ui-panels-camera-orbit-speed = Orbit Speed
+    .description = How far the camera turns as you drag: orbiting with the left button,
+        looking around with the right button, or dragging the axis gizmo. 1 is the
+        normal speed.
+ui-panels-camera-zoom-speed = Zoom Speed
+    .description = How far one step of the mouse wheel, an Alt plus right-drag or a
+        trackpad pinch moves the camera closer or further away. 1 is the normal speed.
+ui-panels-camera-fly-speed = Fly Speed
+    .description = How fast W A S D, Q and E fly the camera while you hold the right
+        mouse button. Turning the wheel while you fly changes this too. 1 is the normal
+        speed, which already matches the size of the model.
+ui-panels-camera-perspective-note = The settings below only apply to the perspective
+    camera.
+ui-panels-camera-field-of-view = Field of View
+    .description = How wide the perspective camera sees, in degrees from the top of the
+        view to the bottom. A small angle flattens the model like a long lens; a large
+        one exaggerates depth. The model keeps its size on screen as you change it.
+
 ## Anti-aliasing
 
 ui-panels-msaa = MSAA

@@ -31,6 +31,7 @@
 - [UV Seams](panels/uv-seams.md)
 - [Skeleton](panels/skeleton.md)
 - [Vertex Colors](panels/vertex-colors.md)
+- [Camera](panels/camera.md)
 - [Anti Aliasing](panels/anti-aliasing.md)
 - [Background](panels/background.md)
 - [Environment](panels/environment.md)

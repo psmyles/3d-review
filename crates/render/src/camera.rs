@@ -13,6 +13,11 @@ use review_model::Bounds;
 
 use crate::{CameraProjection, GRID_BOUNDS, GRID_FAR_RADIUS};
 
+/// The 3D cameras' vertical field of view until the user picks another, in
+/// degrees. Public because the chrome's Camera options panel resets to it, and a
+/// second copy there would drift from the one the cameras start with.
+pub const DEFAULT_FOV_Y_DEGREES: f32 = 50.0;
+
 const CAMERA_TRANSITION_SECONDS: f32 = 0.3;
 /// Uniform breathing room left around a framed fit (4%), on top of any
 /// safe-area inset, so content never sits hard against the viewport edges.
@@ -172,7 +177,7 @@ impl Default for OrbitCamera {
             // `distance` / `scene_radius` are recomputed by `framed_to_bounds`.
             distance: 7.5,
             aspect_ratio: 16.0 / 9.0,
-            fov_y_radians: 50.0_f32.to_radians(),
+            fov_y_radians: DEFAULT_FOV_Y_DEGREES.to_radians(),
             scene_radius: 1.0,
         };
         base.framed_to_bounds(GRID_BOUNDS, Vec2::ONE)
@@ -180,10 +185,37 @@ impl Default for OrbitCamera {
 }
 
 impl OrbitCamera {
+    /// Back to the default view, keeping the live aspect ratio and the user's
+    /// field of view.
     pub fn reset(&mut self) {
         let aspect_ratio = self.aspect_ratio;
+        let fov_y_radians = self.fov_y_radians;
         *self = Self::default();
         self.aspect_ratio = aspect_ratio;
+        self.set_fov_keeping_extent(fov_y_radians);
+    }
+
+    /// Change the vertical field of view, dollying along the view axis so the
+    /// plane through the orbit pivot keeps its size on screen: only how strongly
+    /// the perspective converges changes, not what is framed.
+    ///
+    /// Holding `distance * tan(fov / 2)` fixed is what that means, and it is the
+    /// product [`Self::view_extent`] and the orthographic half-height are both
+    /// built from — so a FOV change moves neither. The orthographic view, the
+    /// ambient-occlusion radius derived from the extent, and the size a model
+    /// keeps across a projection toggle are all left exactly as they were, which
+    /// is what makes the field of view a perspective-only setting rather than a
+    /// second zoom.
+    ///
+    /// Ignores an angle outside `(0, PI)`, where the tangent has no meaning.
+    pub fn set_fov_keeping_extent(&mut self, fov_y_radians: f32) {
+        if !(fov_y_radians > 0.0 && fov_y_radians < std::f32::consts::PI) {
+            return;
+        }
+        let old_half = (self.fov_y_radians * 0.5).tan();
+        let new_half = (fov_y_radians * 0.5).tan();
+        self.distance = (self.distance * old_half / new_half).max(MIN_ORBIT_DISTANCE);
+        self.fov_y_radians = fov_y_radians;
     }
 
     pub fn frame_bounds(&mut self, bounds: Bounds) {
@@ -678,6 +710,52 @@ mod tests {
 
         assert!(large.fly_speed() > small.fly_speed() * 100.0);
         assert!(small.fly_speed() >= MIN_FLY_SPEED);
+    }
+
+    /// A FOV change is a dolly, not a zoom: the pivot plane keeps its size, so
+    /// the orthographic view built from the same product does not move at all.
+    #[test]
+    fn a_fov_change_keeps_the_pivot_plane_and_the_orthographic_view() {
+        let before = OrbitCamera {
+            distance: 4.0,
+            ..OrbitCamera::default()
+        };
+        for degrees in [10.0_f32, 35.0, 90.0, 120.0] {
+            let mut after = before;
+            after.set_fov_keeping_extent(degrees.to_radians());
+
+            assert_eq!(after.fov_y_radians, degrees.to_radians());
+            assert_eq!(after.target, before.target);
+            let extent = before.view_extent();
+            assert!(
+                (after.view_extent() - extent).abs() < 1e-5 * extent,
+                "{degrees} deg: extent {} became {}",
+                extent,
+                after.view_extent(),
+            );
+            // The orthographic x/y scale is the whole of what it shows; its z
+            // terms follow the near/far fit, which moves with the eye.
+            let ortho_before = before.projection_matrix(CameraProjection::Orthographic);
+            let ortho_after = after.projection_matrix(CameraProjection::Orthographic);
+            assert!((ortho_after.x_axis.x - ortho_before.x_axis.x).abs() < 1e-5);
+            assert!((ortho_after.y_axis.y - ortho_before.y_axis.y).abs() < 1e-5);
+        }
+
+        // A wider lens has to come closer to frame the same plane.
+        let mut wide = before;
+        wide.set_fov_keeping_extent(90.0_f32.to_radians());
+        assert!(wide.distance < before.distance);
+    }
+
+    #[test]
+    fn a_degenerate_fov_is_ignored() {
+        let before = OrbitCamera::default();
+        for bad in [0.0, -1.0, std::f32::consts::PI, f32::NAN] {
+            let mut after = before;
+            after.set_fov_keeping_extent(bad);
+            assert_eq!(after.fov_y_radians, before.fov_y_radians);
+            assert_eq!(after.distance, before.distance);
+        }
     }
 
     #[test]

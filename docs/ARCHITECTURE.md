@@ -452,7 +452,8 @@ Modules: `theme`, `state`, `assets`, `widgets`, `overlay`, `toolbar`,
 `status_bar`, `stats`, `texture_view`, `gizmo`, `dimensions`, `help`, `transport`
 (the playback controls, drawn in the status bar's centre span only while a clip
 is selected in the 3D workspace), `notifications`, plus `panels/` (one file per tool: `anti_aliasing`,
-`bounding_box`, `environment`, `normals`, `gtao`, `tonemap`, `uv_checker`,
+`bounding_box`, `camera` (the projection button's right-click: field of view and
+gesture speeds), `environment`, `normals`, `gtao`, `tonemap`, `uv_checker`,
 `vertex_colors`, `wireframe`, `material_mode`; plus `inspector`, `outliner`, and
 `opt_stack` / `opt_inspector`). The Outliner is itself a directory —
 `panels/outliner/{mod,tree,rows,nav,materials,textures,animations}.rs`. Pooled-texture

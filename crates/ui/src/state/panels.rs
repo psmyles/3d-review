@@ -161,3 +161,73 @@ impl Default for UvCheckerPanelState {
 pub struct VertexColorPanelState {
     pub mode: VertexColorMode,
 }
+
+/// Editable state backing the Camera options panel: the 3D cameras' field of
+/// view and how fast each camera gesture moves them.
+///
+/// Plain values, like every panel's (invariant 2): `app` hands the field of view
+/// to the renderer each frame and scales its own gestures by the speeds. View
+/// state, so none of it is undone.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CameraPanelState {
+    /// Vertical field of view in degrees. Perspective only: a change dollies the
+    /// camera to keep the framing, which leaves the orthographic view untouched.
+    pub fov_degrees: f32,
+    /// Multiplier on the left-button orbit, the right-button look and the axis
+    /// gizmo's drag.
+    pub orbit_speed: f32,
+    /// Multiplier on the wheel, the Alt + right-button drag and the trackpad
+    /// pinch, in the 3D views only.
+    pub zoom_speed: f32,
+    /// Multiplier on the right-button flycam's base speed. The same value the
+    /// wheel adjusts mid-flight ([`CameraPanelState::scale_fly_speed`]).
+    pub fly_speed: f32,
+}
+
+impl Default for CameraPanelState {
+    fn default() -> Self {
+        Self {
+            fov_degrees: review_render::DEFAULT_FOV_Y_DEGREES,
+            orbit_speed: 1.0,
+            zoom_speed: 1.0,
+            fly_speed: 1.0,
+        }
+    }
+}
+
+impl CameraPanelState {
+    /// Scale the fly speed by `factor`, held to the slider's range — what the
+    /// wheel does while the right button is down. One value for both doors onto
+    /// it, so the slider shows wherever the wheel left it.
+    pub fn scale_fly_speed(&mut self, factor: f32) {
+        if factor.is_finite() {
+            self.fly_speed = (self.fly_speed * factor).clamp(
+                super::range::CAMERA_FLY_SPEED_MIN,
+                super::range::CAMERA_FLY_SPEED_MAX,
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::range::{CAMERA_FLY_SPEED_MAX, CAMERA_FLY_SPEED_MIN};
+    use super::*;
+
+    #[test]
+    fn the_wheel_keeps_the_fly_speed_inside_the_slider() {
+        let mut camera = CameraPanelState::default();
+        camera.scale_fly_speed(2.0);
+        assert_eq!(camera.fly_speed, 2.0);
+        for _ in 0..100 {
+            camera.scale_fly_speed(1.15);
+        }
+        assert_eq!(camera.fly_speed, CAMERA_FLY_SPEED_MAX);
+        for _ in 0..200 {
+            camera.scale_fly_speed(1.0 / 1.15);
+        }
+        assert_eq!(camera.fly_speed, CAMERA_FLY_SPEED_MIN);
+        camera.scale_fly_speed(f32::NAN);
+        assert_eq!(camera.fly_speed, CAMERA_FLY_SPEED_MIN);
+    }
+}

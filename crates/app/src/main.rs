@@ -229,8 +229,8 @@ struct App {
     /// Whether the in-progress drag started in the Aud split's UV half, fixed at
     /// press time like [`Self::drag_in_opt_right_view`].
     drag_in_aud_uv: bool,
-    /// The right-button WASD/QE flycam: held movement keys plus the
-    /// wheel-adjusted speed (`flycam.rs`). Held here rather than in the renderer
+    /// The right-button WASD/QE flycam's held movement keys (`flycam.rs`); its
+    /// speed is the Camera panel's, on `ui.camera`. Held here rather than in the renderer
     /// because it is input state — the renderer only ever sees the resulting
     /// per-frame move (invariant 2).
     flycam: FlyCam,
@@ -526,7 +526,7 @@ impl App {
 
         drop(phase.take());
         phase = prof::zone!("Renderer Init");
-        let renderer = build_startup_renderer(&window);
+        let renderer = build_startup_renderer(&window, self.ui.camera.fov_degrees);
         let egui_ctx = egui::Context::default();
         // Install fonts + visuals once: the style is derived purely from the
         // central theme tokens (no per-frame state), so it never needs re-syncing.
@@ -763,10 +763,13 @@ impl App {
 }
 
 /// Startup phase 2: the renderer with its cameras seeded for the real window
-/// size / safe area, so the startup view matches what reset
-/// (`animate_camera_to_home`) produces instead of the full-window default.
-fn build_startup_renderer(window: &Window) -> Renderer {
+/// size / safe area and the remembered field of view, so the startup view
+/// matches what reset (`animate_camera_to_home`) produces instead of the
+/// full-window default.
+fn build_startup_renderer(window: &Window, fov_degrees: f32) -> Renderer {
     let mut renderer = Renderer::new(RendererConfig::default());
+    // Before the home framing below, which fits the grid through this angle.
+    renderer.set_camera_fov(fov_degrees.to_radians());
     let size = window.inner_size();
     if size.height > 0 {
         renderer.set_camera_aspect_ratio(size.width as f32 / size.height as f32);

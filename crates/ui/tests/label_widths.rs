@@ -60,6 +60,10 @@ fn messages_from(file: &str) -> Vec<(&'static str, String)> {
 
 /// An option panel's label column is a fixed width and truncates rather than
 /// widening, so every row label has to fit inside it.
+///
+/// A `-note` message is not a row label: it is a sentence the panel wraps
+/// across its whole width, under or between the rows (the Camera panel's
+/// "perspective only" line), so it has no column to fit.
 #[test]
 fn every_panel_row_label_fits_its_column() {
     let ctx = styled_context();
@@ -67,6 +71,9 @@ fn every_panel_row_label_fits_its_column() {
     let mut overflowing = Vec::new();
 
     for (id, text) in messages_from("ui-panels") {
+        if id.ends_with("-note") {
+            continue;
+        }
         let width = measure(&ctx, &text, body.clone());
         if width > size::PANEL_LABEL_COL_WIDTH {
             overflowing.push(format!(
