@@ -48,12 +48,21 @@ impl App {
         // Camera + scalar material edits need the renderer borrow; scope it so the
         // texture intents below can call `&mut self` helpers.
         {
+            let camera_settings = self.ui.camera;
             let Some(renderer) = self.renderer.as_mut() else {
                 return;
             };
+            // The Camera panel's field of view, handed over every frame: the
+            // renderer leaves a camera bit for bit alone when the angle has not
+            // moved, so this costs nothing until the slider does.
+            renderer.set_camera_fov(camera_settings.fov_degrees.to_radians());
             if let Some(action) = output.axis_gizmo_action {
                 match action {
-                    AxisGizmoAction::Orbit(delta) => renderer.orbit_camera(delta),
+                    // A gizmo drag is an orbit like any other, so it turns at the
+                    // Camera panel's Orbit Speed too.
+                    AxisGizmoAction::Orbit(delta) => {
+                        renderer.orbit_camera(delta * camera_settings.orbit_speed);
+                    }
                     AxisGizmoAction::Snap(axis) => {
                         renderer.animate_camera_to_offset_direction(axis.offset_direction());
                     }

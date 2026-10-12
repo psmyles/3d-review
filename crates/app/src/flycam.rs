@@ -25,36 +25,27 @@ use crate::input::DragMode;
 /// and the same cap, as the camera transitions in `update_camera_animation`).
 const MAX_FLY_STEP: f32 = 1.0 / 30.0;
 
-/// Multiplier applied to the fly speed per wheel notch, and the range it may
-/// reach. One notch is ~15%, so a couple of flicks make a noticeable difference
-/// and a full spin crosses the range — the feel both editors have.
+/// Multiplier applied to the fly speed per wheel notch. One notch is ~15%, so a
+/// couple of flicks make a noticeable difference and a full spin crosses the
+/// range — the feel both editors have. The range itself is the Camera panel's
+/// Fly Speed slider's, which the wheel moves.
 const FLY_SPEED_PER_NOTCH: f32 = 1.15;
-const MIN_FLY_SPEED_SCALE: f32 = 0.05;
-const MAX_FLY_SPEED_SCALE: f32 = 20.0;
 
-/// The flycam's state: which movement keys are down, the user's speed setting,
-/// and when the last step was integrated.
+/// The flycam's state: which movement keys are down, and when the last step was
+/// integrated.
+///
+/// The speed is not here: it is the Camera panel's Fly Speed
+/// (`UiState::camera.fly_speed`), one value the slider and the wheel both move —
+/// a preference that persists across flights and, with Remember Settings,
+/// across sessions, though like the camera itself it is view state and never
+/// undone.
+#[derive(Default)]
 pub(crate) struct FlyCam {
     keys: FlyKeys,
-    /// Wheel-adjusted multiplier over the framing-scaled base speed
-    /// (`OrbitCamera::fly_speed`). Persists across flights — it is a preference,
-    /// not drag state — but is deliberately *not* undoable: like the camera
-    /// itself it is view state.
-    speed_scale: f32,
     /// When [`App::step_flycam`] last moved the camera, or `None` when no flight
     /// is in progress, so the first step of a new one advances by nothing rather
     /// than by however long the viewer sat idle.
     last_step: Option<Instant>,
-}
-
-impl Default for FlyCam {
-    fn default() -> Self {
-        Self {
-            keys: FlyKeys::default(),
-            speed_scale: 1.0,
-            last_step: None,
-        }
-    }
 }
 
 impl FlyCam {
@@ -193,12 +184,16 @@ impl App {
     ///
     /// Deliberately not gated on a key being held: setting the speed *before*
     /// moving off is how the gesture is normally used.
+    ///
+    /// It moves the Camera panel's Fly Speed itself (app→UI data, invariant 2),
+    /// so an open panel shows the speed being flown at.
     pub(crate) fn adjust_fly_speed(&mut self, notches: f32) -> bool {
         if !matches!(self.drag_mode, Some(DragMode::Look)) {
             return false;
         }
-        self.flycam.speed_scale = (self.flycam.speed_scale * FLY_SPEED_PER_NOTCH.powf(notches))
-            .clamp(MIN_FLY_SPEED_SCALE, MAX_FLY_SPEED_SCALE);
+        self.ui
+            .camera
+            .scale_fly_speed(FLY_SPEED_PER_NOTCH.powf(notches));
         true
     }
 
@@ -228,7 +223,7 @@ impl App {
             return;
         }
 
-        let speed_scale = self.flycam.speed_scale;
+        let speed_scale = self.ui.camera.fly_speed;
         // The flight belongs to whichever Opt split view the look drag started
         // in — the same anchor the drag itself uses, so a flight and the look
         // steering it can never drive different cameras.

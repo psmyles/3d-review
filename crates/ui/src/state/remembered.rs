@@ -285,6 +285,55 @@ const ENTRIES: &[Entry] = &[
         save: |s| vertex_color_id(s.vertex_colors.mode),
         load: |s, v| set(&mut s.vertex_colors.mode, vertex_color_from(v)),
     },
+    // Camera
+    Entry {
+        key: "camera.orbit_speed",
+        save: |s| f32_text(s.camera.orbit_speed),
+        load: |s, v| {
+            set(
+                &mut s.camera.orbit_speed,
+                f32_in(
+                    v,
+                    range::CAMERA_ORBIT_SPEED_MIN,
+                    range::CAMERA_ORBIT_SPEED_MAX,
+                ),
+            )
+        },
+    },
+    Entry {
+        key: "camera.zoom_speed",
+        save: |s| f32_text(s.camera.zoom_speed),
+        load: |s, v| {
+            set(
+                &mut s.camera.zoom_speed,
+                f32_in(
+                    v,
+                    range::CAMERA_ZOOM_SPEED_MIN,
+                    range::CAMERA_ZOOM_SPEED_MAX,
+                ),
+            )
+        },
+    },
+    Entry {
+        key: "camera.fly_speed",
+        save: |s| f32_text(s.camera.fly_speed),
+        load: |s, v| {
+            set(
+                &mut s.camera.fly_speed,
+                f32_in(v, range::CAMERA_FLY_SPEED_MIN, range::CAMERA_FLY_SPEED_MAX),
+            )
+        },
+    },
+    Entry {
+        key: "camera.field_of_view",
+        save: |s| f32_text(s.camera.fov_degrees),
+        load: |s, v| {
+            set(
+                &mut s.camera.fov_degrees,
+                f32_in(v, range::CAMERA_FOV_MIN, range::CAMERA_FOV_MAX),
+            )
+        },
+    },
     // Anti Aliasing
     Entry {
         key: "anti_aliasing.enabled",
@@ -438,6 +487,10 @@ mod tests {
         state.skeleton.scale = 2.5;
         state.skeleton.color = Color32::from_rgb(16, 17, 18);
         state.vertex_colors.mode = VertexColorMode::RgbAlpha;
+        state.camera.orbit_speed = 0.5;
+        state.camera.zoom_speed = 2.25;
+        state.camera.fly_speed = 7.5;
+        state.camera.fov_degrees = 72.0;
         state.anti_aliasing.enabled = false;
         state.anti_aliasing.msaa = MsaaSamples::X8;
         state.viewport_background = ViewportBackground::Gradient;
@@ -495,5 +548,9 @@ mod tests {
         assert_eq!(state.gtao.radius, range::AO_RADIUS_MAX);
         assert!(state.restore_remembered_option("uv_checker.tiling", "0"));
         assert_eq!(state.uv_checker.tiling, range::CHECKER_TILING_MIN);
+        assert!(state.restore_remembered_option("camera.field_of_view", "179"));
+        assert_eq!(state.camera.fov_degrees, range::CAMERA_FOV_MAX);
+        assert!(state.restore_remembered_option("camera.fly_speed", "0"));
+        assert_eq!(state.camera.fly_speed, range::CAMERA_FLY_SPEED_MIN);
     }
 }

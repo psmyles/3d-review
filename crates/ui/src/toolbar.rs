@@ -857,28 +857,38 @@ fn draw_help_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
     });
 }
 
+/// The projection toggle: left-click switches between the perspective and
+/// orthographic cameras, right-click opens the Camera options (field of view and
+/// gesture speeds).
 fn draw_projection_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
     toolbar_group_shell(ui, width, |ui| {
         let (icon, tooltip) = match state.projection_mode {
             ViewProjectionMode::Perspective => (
                 &ICON_VIEW_PERSPECTIVE,
                 Tip::new(keys::ui_toolbar::PERSPECTIVE)
-                    .describe(keys::ui_toolbar::PERSPECTIVE_DESCRIPTION)
-                    .page(Page::Viewport),
+                    .describe(keys::ui_toolbar::PERSPECTIVE_DESCRIPTION),
             ),
             ViewProjectionMode::Orthographic => (
                 &ICON_VIEW_ORTHO,
                 Tip::new(keys::ui_toolbar::ORTHOGRAPHIC)
-                    .describe(keys::ui_toolbar::ORTHOGRAPHIC_DESCRIPTION)
-                    .page(Page::Viewport),
+                    .describe(keys::ui_toolbar::ORTHOGRAPHIC_DESCRIPTION),
             ),
         };
 
-        if icon_toggle_button(ui, icon, false, tooltip).clicked() {
+        let projection = icon_toggle_button_with_options(
+            ui,
+            icon,
+            false,
+            tooltip.with_options().page(Page::PanelsCamera),
+        );
+        if projection.clicked() {
             state.projection_mode = match state.projection_mode {
                 ViewProjectionMode::Perspective => ViewProjectionMode::Orthographic,
                 ViewProjectionMode::Orthographic => ViewProjectionMode::Perspective,
             };
+        }
+        if projection.secondary_clicked() {
+            state.panels_open.toggle(OptionPanel::Camera);
         }
     });
 }

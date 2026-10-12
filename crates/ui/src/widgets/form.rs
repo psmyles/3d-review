@@ -118,6 +118,31 @@ pub(crate) fn labeled_slider_with_value<Num: egui::emath::Numeric>(
     range: std::ops::RangeInclusive<Num>,
     decimals: usize,
 ) -> bool {
+    slider_row(ui, label, value, range, decimals, false)
+}
+
+/// [`labeled_slider_with_value`] on a logarithmic rail, for a multiplier: a
+/// band like 0.05-20 is as much slower than 1 as it is faster, and on a linear
+/// rail 1 would sit a twentieth of the way along with the whole slow half
+/// crammed into it.
+pub(crate) fn labeled_log_slider_with_value<Num: egui::emath::Numeric>(
+    ui: &mut egui::Ui,
+    label: Tip,
+    value: &mut Num,
+    range: std::ops::RangeInclusive<Num>,
+    decimals: usize,
+) -> bool {
+    slider_row(ui, label, value, range, decimals, true)
+}
+
+fn slider_row<Num: egui::emath::Numeric>(
+    ui: &mut egui::Ui,
+    label: Tip,
+    value: &mut Num,
+    range: std::ops::RangeInclusive<Num>,
+    decimals: usize,
+    logarithmic: bool,
+) -> bool {
     grid_label_tip(ui, label);
     // The slider's own inline readout auto-sizes to its digit count, so it
     // reflows as the number changes. Instead, hide it (`show_value(false)`) and
@@ -131,6 +156,7 @@ pub(crate) fn labeled_slider_with_value<Num: egui::emath::Numeric>(
             let mut response = ui.add(
                 egui::Slider::new(value, range.clone())
                     .show_value(false)
+                    .logarithmic(logarithmic)
                     .clamping(egui::SliderClamping::Always),
             );
             let box_height = ui.spacing().interact_size.y;

@@ -12,6 +12,7 @@ ui-panel-titles-vertex-normals = Vertex Normals
 ui-panel-titles-uv-seams = UV Seams
 ui-panel-titles-skeleton = Skeleton
 ui-panel-titles-vertex-colors = Vertex Colors
+ui-panel-titles-camera = Camera
 ui-panel-titles-anti-aliasing = Anti Aliasing
 ui-panel-titles-background = Background
 ui-panel-titles-environment = Environment

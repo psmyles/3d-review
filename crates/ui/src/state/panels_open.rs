@@ -25,6 +25,7 @@ pub enum OptionPanel {
     UvSeams,
     Skeleton,
     VertexColors,
+    Camera,
     AntiAliasing,
     Background,
     Environment,
@@ -35,7 +36,7 @@ pub enum OptionPanel {
 impl OptionPanel {
     /// Every panel, in toolbar order. Iterated each frame to draw the open ones
     /// (and to give each a stable cascade slot), so the order is deterministic.
-    pub(crate) const ALL: [OptionPanel; 15] = [
+    pub(crate) const ALL: [OptionPanel; 16] = [
         OptionPanel::Wireframe,
         OptionPanel::MaterialMode,
         OptionPanel::BufferView,
@@ -46,6 +47,7 @@ impl OptionPanel {
         OptionPanel::UvSeams,
         OptionPanel::Skeleton,
         OptionPanel::VertexColors,
+        OptionPanel::Camera,
         OptionPanel::AntiAliasing,
         OptionPanel::Background,
         OptionPanel::Environment,
@@ -67,6 +69,7 @@ impl OptionPanel {
             OptionPanel::UvSeams => keys::ui_panel_titles::UV_SEAMS,
             OptionPanel::Skeleton => keys::ui_panel_titles::SKELETON,
             OptionPanel::VertexColors => keys::ui_panel_titles::VERTEX_COLORS,
+            OptionPanel::Camera => keys::ui_panel_titles::CAMERA,
             OptionPanel::AntiAliasing => keys::ui_panel_titles::ANTI_ALIASING,
             OptionPanel::Background => keys::ui_panel_titles::BACKGROUND,
             OptionPanel::Environment => keys::ui_panel_titles::ENVIRONMENT,
@@ -92,6 +95,7 @@ impl OptionPanel {
             OptionPanel::UvSeams => Page::PanelsUvSeams,
             OptionPanel::Skeleton => Page::PanelsSkeleton,
             OptionPanel::VertexColors => Page::PanelsVertexColors,
+            OptionPanel::Camera => Page::PanelsCamera,
             OptionPanel::AntiAliasing => Page::PanelsAntiAliasing,
             OptionPanel::Background => Page::PanelsBackground,
             OptionPanel::Environment => Page::PanelsEnvironment,
@@ -114,6 +118,7 @@ impl OptionPanel {
             OptionPanel::UvSeams => "panel_uv_seams",
             OptionPanel::Skeleton => "panel_skeleton",
             OptionPanel::VertexColors => "panel_vertex_colors",
+            OptionPanel::Camera => "panel_camera",
             OptionPanel::AntiAliasing => "panel_anti_aliasing",
             OptionPanel::Background => "panel_background",
             OptionPanel::Environment => "panel_environment",

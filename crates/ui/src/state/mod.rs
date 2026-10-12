@@ -91,6 +91,19 @@ pub(crate) mod range {
     pub const ENV_ROTATION_MIN: f32 = 0.0;
     pub const ENV_ROTATION_MAX: f32 = 360.0;
 
+    /// The 3D cameras. The field of view is vertical, in degrees: past ~120 the
+    /// stretching at the edges of a wide window stops being usable. The speeds
+    /// are multipliers over the viewer's own feel (1 = as it always was); the
+    /// fly band is the one the right-button wheel already moved it through.
+    pub const CAMERA_FOV_MIN: f32 = 10.0;
+    pub const CAMERA_FOV_MAX: f32 = 120.0;
+    pub const CAMERA_ORBIT_SPEED_MIN: f32 = 0.1;
+    pub const CAMERA_ORBIT_SPEED_MAX: f32 = 5.0;
+    pub const CAMERA_ZOOM_SPEED_MIN: f32 = 0.1;
+    pub const CAMERA_ZOOM_SPEED_MAX: f32 = 5.0;
+    pub const CAMERA_FLY_SPEED_MIN: f32 = 0.05;
+    pub const CAMERA_FLY_SPEED_MAX: f32 = 20.0;
+
     /// The Opt operations' ranges live with the operations, so a preset loaded
     /// from disk is clamped to exactly what these sliders offer.
     pub use review_optimize::stack::limits::*;
@@ -176,6 +189,9 @@ pub struct UiState {
     pub debug: SceneDebugOptions,
     pub shading_mode: ShadingMode,
     pub projection_mode: ViewProjectionMode,
+    /// The 3D cameras' field of view and gesture speeds, edited by the Camera
+    /// panel (right-click the projection button) and applied by `app`.
+    pub camera: CameraPanelState,
     pub show_grid: bool,
     pub show_axis_gizmo: bool,
     /// Whether the model-stats overlay is shown in the viewport. Toggled by the
@@ -414,6 +430,7 @@ impl Default for UiState {
             debug: SceneDebugOptions::default(),
             shading_mode: ShadingMode::Shaded,
             projection_mode: ViewProjectionMode::Perspective,
+            camera: CameraPanelState::default(),
             show_grid: true,
             show_axis_gizmo: true,
             show_stats: true,

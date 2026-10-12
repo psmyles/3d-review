@@ -208,8 +208,11 @@ impl App {
             self.hover_pending = Some(current);
         }
 
-        // Read before the renderer borrow below.
+        // Read before the renderer borrow below. The Camera panel's speeds scale
+        // the 3D gestures only; the 2D UV cameras keep their own feel.
         let synced = self.opt_cameras_synced();
+        let orbit_speed = self.ui.camera.orbit_speed;
+        let zoom_speed = self.ui.camera.zoom_speed;
         let half_view = self
             .opt_split_halves()
             .or_else(|| self.aud_split_halves())
@@ -231,9 +234,9 @@ impl App {
             match mode {
                 DragMode::Orbit => {
                     if opt_right {
-                        renderer.orbit_opt_camera(delta);
+                        renderer.orbit_opt_camera(delta * orbit_speed);
                     } else {
-                        renderer.orbit_camera(delta);
+                        renderer.orbit_camera(delta * orbit_speed);
                     }
                 }
                 // Look turns the camera in place instead of around the pivot. 3D
@@ -241,9 +244,9 @@ impl App {
                 // starts one.
                 DragMode::Look => {
                     if opt_right {
-                        renderer.look_opt_camera(delta);
+                        renderer.look_opt_camera(delta * orbit_speed);
                     } else {
-                        renderer.look_camera(delta);
+                        renderer.look_camera(delta * orbit_speed);
                     }
                 }
                 // Pan drives the 2D UV camera in UV mode, the 3D camera otherwise.
@@ -269,9 +272,9 @@ impl App {
                     } else if uv_mode {
                         renderer.zoom_uv_camera(delta.y * DRAG_ZOOM_SENSITIVITY);
                     } else if opt_right {
-                        renderer.zoom_opt_camera(delta.y * DRAG_ZOOM_SENSITIVITY);
+                        renderer.zoom_opt_camera(delta.y * DRAG_ZOOM_SENSITIVITY * zoom_speed);
                     } else {
-                        renderer.zoom_camera(delta.y * DRAG_ZOOM_SENSITIVITY);
+                        renderer.zoom_camera(delta.y * DRAG_ZOOM_SENSITIVITY * zoom_speed);
                     }
                 }
             }
@@ -404,6 +407,9 @@ impl App {
         let aud_uv = self
             .last_pointer_position
             .is_some_and(|position| self.in_aud_uv_view(position));
+        // The Camera panel's Zoom Speed is the 3D cameras'; the 2D UV ones keep
+        // their own step.
+        let zoom_3d = amount * self.ui.camera.zoom_speed;
         let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
@@ -416,9 +422,9 @@ impl App {
             WorkspaceMode::Uv => renderer.zoom_uv_camera(amount),
             WorkspaceMode::ThreeD | WorkspaceMode::Opt | WorkspaceMode::Aud => {
                 if opt_right {
-                    renderer.zoom_opt_camera(amount);
+                    renderer.zoom_opt_camera(zoom_3d);
                 } else {
-                    renderer.zoom_camera(amount);
+                    renderer.zoom_camera(zoom_3d);
                 }
             }
             // The Tex viewport zooms inside egui (its canvas claims the wheel);

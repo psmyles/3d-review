@@ -1,4 +1,3 @@
-- Texture view in UV mode
 - compression option at export time?
 - read FBX built in textures
 - generate UVs - xatlas?
