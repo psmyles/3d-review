@@ -11,6 +11,8 @@ them is too. Each workspace shows the tabs that make sense for it:
 - **UV** - Scene and Textures.
 - **Tex** - Textures.
 - **Opt** - Scene and Materials.
+- **Aud** - [Issues](aud/issues.md) and Scene. In the Scene tab each part
+  carries a mark for the worst problem found on it.
 
 Each workspace remembers which tab you last had open in it.
 
@@ -69,3 +71,7 @@ In the Opt workspace the Inspector changes job: it shows the settings of the
 operation you have selected, the export settings, or the per-object settings of
 the part you have selected. Per-object settings apply to one part, so with
 several selected they follow the last one you clicked.
+
+In the Aud workspace it explains the finding you picked in the Issues list -
+what was measured against what limit, why it matters, and how to fix it - or
+shows the [audit profile](aud/profiles.md) for editing.

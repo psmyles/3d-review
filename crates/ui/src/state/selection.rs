@@ -98,6 +98,28 @@ impl UiState {
     fn release_stack_selection(&mut self) {
         self.opt.selected = None;
         self.texture_view.inspected = false;
+        self.aud.focus = None;
+        self.aud.profile_open = false;
+    }
+
+    /// Focus an audit finding, taking the Inspector — and the viewport's
+    /// highlight — from the scene selection. The two are exclusive like the
+    /// Opt stack pane and the Outliner: a finding's severity colours and the
+    /// selection's orange would otherwise compete on the same mesh. Focusing
+    /// sets the view to the one that shows the finding best.
+    pub fn select_audit_focus(&mut self, focus: Option<crate::aud_state::AuditFocus>) {
+        self.clear_selection();
+        self.aud.focus = focus;
+        self.aud.view = focus.and_then(crate::aud_state::AuditFocus::rule).map_or(
+            review_audit::DiagnosticView::Issues,
+            review_audit::RuleId::related_view,
+        );
+    }
+
+    /// Open the audit profile in the Inspector.
+    pub(crate) fn open_audit_profile(&mut self) {
+        self.clear_selection();
+        self.aud.profile_open = true;
     }
 
     /// Make pooled texture `index` the current one and show it in the Inspector.
@@ -317,6 +339,33 @@ mod tests {
         state.select_material(Selection::Material(2));
         assert_eq!(state.opt.selected, None, "and a material click");
         assert_eq!(state.selection, Selection::Material(2));
+    }
+
+    /// A focused finding and a scene selection are exclusive in both
+    /// directions, and focusing a finding opens the view that shows it best.
+    #[test]
+    fn a_finding_and_a_selection_never_hold_the_viewport_at_once() {
+        use crate::aud_state::AuditFocus;
+        use review_audit::{DiagnosticView, RuleId};
+        let mut state = UiState::default();
+
+        state.select_only(4, SelectionKind::Node);
+        state.select_audit_focus(Some(AuditFocus::Rule(RuleId::TexelDensity)));
+        assert!(!state.has_selection(), "the finding takes the viewport");
+        assert_eq!(state.aud.view, DiagnosticView::TexelDensity);
+
+        state.select_only(4, SelectionKind::Node);
+        assert_eq!(state.aud.focus, None, "a part click takes it back");
+
+        state.select_audit_focus(Some(AuditFocus::Offender(RuleId::NonManifoldEdges, 2)));
+        assert_eq!(state.aud.view, DiagnosticView::Issues);
+        state.select_material(Selection::Material(1));
+        assert_eq!(state.aud.focus, None, "so does a material click");
+
+        state.open_audit_profile();
+        assert!(state.aud.profile_open);
+        state.select_only(1, SelectionKind::Node);
+        assert!(!state.aud.profile_open, "and it closes the profile");
     }
 
     #[test]

@@ -86,6 +86,29 @@ pub(super) fn visible_vertex_mask(model: &ModelData, hidden_nodes: &[u32]) -> Op
     Some(mask)
 }
 
+/// Every visible triangle's three corners, in triangle order — the whole index list,
+/// borrowed, when nothing is hidden.
+pub(crate) fn visible_triangle_indices<'a>(
+    model: &'a ModelData,
+    hidden_nodes: &[u32],
+) -> std::borrow::Cow<'a, [u32]> {
+    let hidden = HiddenFilter::new(model, hidden_nodes);
+    if !hidden.is_active() {
+        return std::borrow::Cow::Borrowed(&model.indices);
+    }
+    std::borrow::Cow::Owned(
+        model
+            .indices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .enumerate()
+            .filter(|&(triangle, _)| !hidden.is_hidden(triangle))
+            .flat_map(|(_, corners)| corners.iter().copied())
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,5 +179,21 @@ mod tests {
         assert!(filter.is_active());
         assert!(filter.is_hidden(1));
         assert!(!filter.is_hidden(2));
+    }
+
+    /// The overdraw views' triangle list: the whole index buffer, borrowed, when
+    /// nothing is hidden, and only the visible triangles' corners otherwise.
+    #[test]
+    fn visible_indices_borrow_when_nothing_is_hidden_and_filter_otherwise() {
+        let whole = model(3, vec![0, 1, 0]);
+        assert!(matches!(
+            visible_triangle_indices(&whole, &[]),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert_eq!(
+            visible_triangle_indices(&whole, &[0]).as_ref(),
+            [3, 4, 5],
+            "only node 1's triangle stays"
+        );
     }
 }

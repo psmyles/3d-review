@@ -92,7 +92,6 @@ pub const TOOLBAR_ICON_GAP: f32 = 2.0;
 /// sized to a dropdown) keeps the toolbar's icon-to-tile proportion. Matches
 /// the 8-of-42 proportion the toolbar tiles were originally drawn at.
 pub const TILE_ICON_INSET_RATIO: f32 = 8.0 / 42.0;
-pub const TOOLBAR_CENTER_WIDTH: f32 = 120.0;
 /// Right toolbar cluster (3D and Opt): Help (32) + the view group + projection
 /// (32) + the side-panels toggle (32), with three group spacings.
 ///
@@ -104,6 +103,10 @@ pub const TOOLBAR_CENTER_WIDTH: f32 = 120.0;
 /// so. It grows leftward from the right edge, away from the centered mode
 /// segments.
 pub const TOOLBAR_RIGHT_WIDTH: f32 = 325.0;
+/// Width of the Aud workspace's heat-map legend card.
+pub const AUD_LEGEND_WIDTH: f32 = 260.0;
+/// Height of the legend's colour bar.
+pub const AUD_LEGEND_BAR_HEIGHT: f32 = 10.0;
 /// Left toolbar cluster: the menu (32) + show-wireframe (32) + shading (4) +
 /// material + geometry-debug (3) groups, with four group spacings between them.
 ///
@@ -111,6 +114,10 @@ pub const TOOLBAR_RIGHT_WIDTH: f32 = 325.0;
 /// gains a tile for the skin-weight view on a skinned mesh (152 rather than 122),
 /// so 32 + 9 + 32 + 9 + 122 + 9 + 152 + 9 + 92 = 466, plus a little slack.
 pub const TOOLBAR_LEFT_WIDTH: f32 = 470.0;
+/// The left cluster in the Aud workspace: [`TOOLBAR_LEFT_WIDTH`] plus Aud's
+/// five-view group, which follows the geometry-debug group.
+pub const TOOLBAR_LEFT_AUD_WIDTH: f32 =
+    TOOLBAR_LEFT_WIDTH + TOOLBAR_GROUP_SPACING + TOOLBAR_QUINT_ICON_GROUP_WIDTH;
 /// Four-icon shading group: wireframe-only, unlit, shaded, backface-rendering
 /// (4 padding + 4×28 icons + 3×2 gaps). Show Wireframe is a group of its own.
 pub const TOOLBAR_SHADING_GROUP_WIDTH: f32 = 122.0;
@@ -129,9 +136,23 @@ pub const TOOLBAR_QUAD_ICON_GROUP_WIDTH: f32 = 122.0;
 /// Tonemapper / Anti-aliasing rendering-quality cluster): 4 padding + 5×28 icons
 /// + 4×2 gaps.
 pub const TOOLBAR_QUINT_ICON_GROUP_WIDTH: f32 = 152.0;
-/// Width of the centered workspace-mode group: 4 padding + 4×37 segments
-/// (3D / UV / Tex / Opt) + 3×2 gaps.
-pub const TOOLBAR_MODE_GROUP_WIDTH: f32 = 158.0;
+/// Width of the centered workspace-mode group: 4 padding + 5×37 segments
+/// (3D / UV / Tex / Opt / Aud) + 4×2 gaps. The group grows by
+/// [`AUD_BUBBLE_ROOM`] to its right while the Aud segment shows a count.
+pub const TOOLBAR_MODE_GROUP_WIDTH: f32 = 197.0;
+/// How much wider the Aud segment gets while it shows the findings count: the
+/// count sits inside it, beside the label, so it never overlaps a neighbour.
+/// With no count to show, the segment is as wide as the others.
+pub const AUD_BUBBLE_ROOM: f32 = 20.0;
+/// Height of the Aud segment's findings-count pill.
+pub const AUD_BUBBLE_HEIGHT: f32 = 14.0;
+/// The narrowest the pill gets (a single digit), so it reads as a dot with a
+/// number rather than a sliver.
+pub const AUD_BUBBLE_MIN_WIDTH: f32 = 14.0;
+/// Horizontal padding inside the pill around its digits.
+pub const AUD_BUBBLE_PAD_X: f32 = 4.0;
+/// Font size of the pill's digits.
+pub const AUD_BUBBLE_FONT: f32 = 10.0;
 /// Width of the UV-set dropdown shown on the right of the toolbar in UV mode.
 pub const TOOLBAR_UV_DROPDOWN_WIDTH: f32 = 133.0;
 /// Width of the LOD-level dropdown in the Opt workspace's status-bar group.
@@ -281,6 +302,19 @@ pub const PANEL_BODY_TOP_MARGIN: i8 = 10;
 /// buttons match it so a row of buttons and a dropdown are the same height.
 pub const PANEL_ROW_H: f32 = 22.0;
 pub const PANEL_ROW_GAP: f32 = 6.0;
+
+// ── Aud workspace ─────────────────────────────────────────────────────
+/// Diameter of the severity dot on an Issues row and on a Scene row in Aud.
+pub const AUD_SEVERITY_DOT: f32 = 8.0;
+/// Width of the column the severity glyph is drawn in on an Issues row.
+pub const AUD_GLYPH_COLUMN: f32 = 16.0;
+/// Indent of each nesting level of the Issues list.
+pub const AUD_INDENT: f32 = 12.0;
+/// How many objects a finding lists in the Inspector before it says how many
+/// more there are.
+pub const AUD_INSPECTOR_MAX_OBJECTS: usize = 200;
+/// Width of the right-aligned count column on an Issues row.
+pub const AUD_COUNT_COLUMN: f32 = 52.0;
 /// Gap between the label and control columns of the striped panel grid (the
 /// demo widget-gallery layout).
 pub const PANEL_GRID_COL_GAP: f32 = 12.0;

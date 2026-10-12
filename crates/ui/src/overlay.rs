@@ -108,6 +108,8 @@ pub fn draw_overlay(
     output.material_edit_active = side.inspector.material_edit_active;
     output.opt = side.opt.intent;
     output.opt_edit_active = side.opt.edit_active;
+    output.audit = side.aud.intent;
+    output.aud_edit_active = side.aud.edit_active;
 
     // The free viewport: the screen minus the chrome bands (toolbar top, status
     // bar bottom) and the open side panels (left/right). Floating chrome — the
@@ -188,7 +190,14 @@ pub fn draw_overlay(
         draw_overlay_legend(
             ctx,
             state,
-            status_bar_height,
+            toolbar_height,
+            side.left_inset,
+            side.right_inset,
+        );
+        draw_heat_legend(
+            ctx,
+            state,
+            toolbar_height,
             side.left_inset,
             side.right_inset,
         );
@@ -223,7 +232,9 @@ pub fn draw_overlay(
 /// hairline the chrome panels are edged with, so the divider reads as part of
 /// the frame rather than as something in the scene.
 fn draw_split_divider(ctx: &egui::Context, state: &UiState, viewport: egui::Rect) {
-    if state.mode != WorkspaceMode::Opt || state.opt.layout != OptLayout::Split {
+    let opt_split = state.mode == WorkspaceMode::Opt && state.opt.layout == OptLayout::Split;
+    let aud_split = state.mode == WorkspaceMode::Aud && state.aud.split();
+    if !opt_split && !aud_split {
         return;
     }
     let (left, _) = split_halves(viewport);
@@ -424,8 +435,18 @@ struct SidePanelLayout {
     /// The Opt workspace's own emissions: the preset / export intents raised by
     /// the stack pane or the Opt inspector, and its drag-coalescing hint.
     opt: OptEmission,
+    /// The Aud workspace's emissions: the profile / report intents and its
+    /// drag-coalescing hint.
+    aud: AudEmission,
     left_inset: f32,
     right_inset: f32,
+}
+
+/// What the Aud panels raised this frame.
+#[derive(Debug, Clone, Default)]
+struct AudEmission {
+    intent: Option<crate::aud_state::AuditIntent>,
+    edit_active: bool,
 }
 
 /// What the Opt panels raised this frame.
@@ -457,7 +478,9 @@ fn draw_side_panels(
     }
 
     let opt_mode = state.mode == WorkspaceMode::Opt;
+    let aud_mode = state.mode == WorkspaceMode::Aud;
     let mut opt = OptEmission::default();
+    let mut aud = AudEmission::default();
 
     let mut left_inset = 0.0;
     if state.side_panels_open {
@@ -496,7 +519,7 @@ fn draw_side_panels(
                         .frame(egui::Frame::NONE)
                         .show(ui, |ui| panels::outliner::body(ui, state, model));
                 } else {
-                    panels::outliner::body(ui, state, model);
+                    aud.intent = panels::outliner::body(ui, state, model);
                 }
             });
         left_inset = response.response.rect.width();
@@ -520,6 +543,14 @@ fn draw_side_panels(
                     opt.intent = opt.intent.take().or(out.intent);
                     opt.edit_active |= out.edit_active;
                     panels::inspector::InspectorOutput::default()
+                } else if aud_mode && panels::aud_inspector::wants_inspector(state) {
+                    // Aud retargets the Inspector at the focused finding or the
+                    // profile; a part selected in the Scene tab or the viewport
+                    // still gets the ordinary part view.
+                    let out = panels::aud_inspector::body(ui, state, model);
+                    aud.intent = aud.intent.take().or(out.intent);
+                    aud.edit_active |= out.edit_active;
+                    panels::inspector::InspectorOutput::default()
                 } else {
                     panels::inspector::body(ui, state, model)
                 }
@@ -531,6 +562,7 @@ fn draw_side_panels(
     SidePanelLayout {
         inspector,
         opt,
+        aud,
         left_inset,
         right_inset,
     }
@@ -583,7 +615,7 @@ fn draw_stats_overlay(
 fn draw_overlay_legend(
     ctx: &egui::Context,
     state: &UiState,
-    status_bar_height: f32,
+    toolbar_height: f32,
     left_inset: f32,
     right_inset: f32,
 ) {
@@ -607,9 +639,9 @@ fn draw_overlay_legend(
     crate::widgets::stats_overlay_card_at(
         ctx,
         "opt_overlay_legend",
-        crate::widgets::StatsCardSide::Center,
+        crate::widgets::StatsCardSide::TopCenter,
         offset,
-        status_bar_height,
+        toolbar_height,
         size::OPT_LEGEND_WIDTH,
         |ui| {
             ui.spacing_mut().item_spacing.y = size::STATS_ROW_SPACING;
@@ -630,6 +662,176 @@ fn draw_overlay_legend(
             );
         },
     );
+}
+
+/// The Aud density views' key: the colour ramp and what its ends and middle
+/// mean, in the profile's own numbers. Centred like the overlay legend.
+fn draw_heat_legend(
+    ctx: &egui::Context,
+    state: &UiState,
+    toolbar_height: f32,
+    left_inset: f32,
+    right_inset: f32,
+) {
+    use review_audit::{DiagnosticView, Measured, RuleId};
+    if state.mode != WorkspaceMode::Aud {
+        return;
+    }
+    let profile = &state.aud.profile;
+    let mut ramp: &[egui::Color32] = &HEAT_RAMP;
+    // The header is one title, or (texel density) a pair of facts at the
+    // card's two ends; the three labels under the bar name its ends and middle.
+    let ((title, title_right), low, mid, high) = match state.aud.view {
+        DiagnosticView::TexelDensity => {
+            let rule = profile.rule(RuleId::TexelDensity);
+            let size = rule.number("texture_size").unwrap_or(1024.0);
+            let target = rule.number("target").unwrap_or(1024.0);
+            let tolerance = rule.number("tolerance").unwrap_or(2.0).max(1.0);
+            // The units are in the header; under the bar only the numbers.
+            let number = |value: f64| format!("{value:.0}");
+            (
+                (
+                    crate::keys::ui_audit::legend_texel_target(crate::audit_labels::measured(
+                        &Measured::PxPerMeter(target),
+                    )),
+                    Some(crate::keys::ui_audit::legend_texel_size(number(size))),
+                ),
+                number(target / tolerance),
+                number(target),
+                number(target * tolerance),
+            )
+        }
+        DiagnosticView::TriangleDensity => {
+            let rule = profile.rule(RuleId::TriangleLod);
+            let area = rule.number("min_pixel_area").unwrap_or(10.0);
+            (
+                (
+                    review_localization::tr(crate::keys::ui_audit::LEGEND_TRIANGLE).into_owned(),
+                    None,
+                ),
+                review_localization::tr(crate::keys::ui_audit::LEGEND_COARSE).into_owned(),
+                crate::audit_labels::measured(&Measured::SquarePixels(area)),
+                review_localization::tr(crate::keys::ui_audit::LEGEND_DENSE).into_owned(),
+            )
+        }
+        DiagnosticView::Overdraw | DiagnosticView::QuadOverdraw => {
+            let (title, render_view) = if state.aud.view == DiagnosticView::Overdraw {
+                (
+                    crate::keys::ui_audit::LEGEND_OVERDRAW,
+                    review_render::OverdrawView::Layered,
+                )
+            } else {
+                (
+                    crate::keys::ui_audit::LEGEND_QUAD_OVERDRAW,
+                    review_render::OverdrawView::Quad,
+                )
+            };
+            let (low, high) = render_view.range();
+            // Whole counts print whole; the ramp's middle can fall on a half.
+            let count = |value: f32| {
+                if value.fract() == 0.0 {
+                    format!("{value:.0}")
+                } else {
+                    format!("{value:.1}")
+                }
+            };
+            ramp = &OVERDRAW_RAMP;
+            (
+                (review_localization::tr(title).into_owned(), None),
+                count(low),
+                count((low + high) * 0.5),
+                format!("{}+", count(high)),
+            )
+        }
+        DiagnosticView::Issues => return,
+    };
+    let offset = (left_inset - right_inset) * 0.5;
+    crate::widgets::stats_overlay_card_at(
+        ctx,
+        "aud_heat_legend",
+        crate::widgets::StatsCardSide::TopCenter,
+        offset,
+        toolbar_height,
+        size::AUD_LEGEND_WIDTH,
+        |ui| {
+            ui.spacing_mut().item_spacing.y = size::STATS_ROW_SPACING;
+            let font = egui::FontId::monospace(theme::font::STATS);
+            let (header, _) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+                egui::Sense::hover(),
+            );
+            ui.painter().text(
+                header.left_center(),
+                egui::Align2::LEFT_CENTER,
+                &title,
+                font.clone(),
+                color::TEXT_BODY,
+            );
+            if let Some(right) = &title_right {
+                ui.painter().text(
+                    header.right_center(),
+                    egui::Align2::RIGHT_CENTER,
+                    right,
+                    font.clone(),
+                    color::TEXT_BODY,
+                );
+            }
+            let (bar, _) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), size::AUD_LEGEND_BAR_HEIGHT),
+                egui::Sense::hover(),
+            );
+            paint_ramp(ui.painter(), bar, ramp);
+            // Painted at the bar's two ends and its middle rather than laid out:
+            // three labels of different widths in a row drift off the points of
+            // the ramp they name.
+            let (row, _) = ui.allocate_exact_size(
+                egui::vec2(bar.width(), ui.spacing().interact_size.y),
+                egui::Sense::hover(),
+            );
+            for (text, x, align) in [
+                (low, bar.left(), egui::Align2::LEFT_CENTER),
+                (mid, bar.center().x, egui::Align2::CENTER_CENTER),
+                (high, bar.right(), egui::Align2::RIGHT_CENTER),
+            ] {
+                ui.painter().text(
+                    egui::pos2(x, row.center().y),
+                    align,
+                    text,
+                    font.clone(),
+                    color::TEXT_MUTED,
+                );
+            }
+        },
+    );
+}
+
+/// The heat ramp as a horizontal bar: low, on target, high.
+/// The density heat maps' ramp, low to high.
+const HEAT_RAMP: [egui::Color32; 3] = [color::HEAT_LOW, color::HEAT_TARGET, color::HEAT_HIGH];
+/// The overdraw views' ramp, low to high — the same tokens `app` hands the
+/// renderer, so the legend and the view cannot disagree.
+const OVERDRAW_RAMP: [egui::Color32; 4] = [
+    color::OVERDRAW_1,
+    color::OVERDRAW_2,
+    color::OVERDRAW_3,
+    color::OVERDRAW_4,
+];
+
+/// A legend bar: `stops` spread evenly across `rect`.
+fn paint_ramp(painter: &egui::Painter, rect: egui::Rect, stops: &[egui::Color32]) {
+    let segments = stops.len().saturating_sub(1).max(1);
+    let mut mesh = egui::Mesh::default();
+    for (index, stop) in stops.iter().enumerate() {
+        let x = rect.left() + rect.width() * index as f32 / segments as f32;
+        mesh.colored_vertex(egui::pos2(x, rect.top()), *stop);
+        mesh.colored_vertex(egui::pos2(x, rect.bottom()), *stop);
+    }
+    for segment in 0..segments as u32 {
+        let base = segment * 2;
+        mesh.add_triangle(base, base + 1, base + 2);
+        mesh.add_triangle(base + 1, base + 3, base + 2);
+    }
+    painter.add(egui::Shape::mesh(mesh));
 }
 
 /// One legend line: a colour swatch and what it labels.

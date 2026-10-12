@@ -128,6 +128,7 @@ pub fn workspace_help_page(mode: crate::state::WorkspaceMode) -> Page {
         crate::state::WorkspaceMode::Uv => Page::Uv,
         crate::state::WorkspaceMode::Texture => Page::Tex,
         crate::state::WorkspaceMode::Opt => Page::OptIndex,
+        crate::state::WorkspaceMode::Aud => Page::AudIndex,
     }
 }
 

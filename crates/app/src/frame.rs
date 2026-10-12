@@ -111,6 +111,10 @@ impl App {
             let _z = prof::zone!("Sync Opt");
             self.sync_opt();
         }
+        // The audit runs on every load, whichever workspace is up: the toolbar
+        // shows its count from anywhere.
+        self.sync_audit();
+        self.sync_audit_highlight();
 
         self.schedule_next_frame(&full_output);
 
@@ -308,7 +312,45 @@ impl App {
         // disjoint renderer/gpu borrows below). `debug` carries show_grid / shading
         // / overlay flags (synced during the egui pass); `projection` the
         // perspective/orthographic toggle; the model + revision drive the mesh.
-        let debug = self.ui.debug;
+        let mut debug = self.ui.debug;
+        // Aud's focus look: while a finding is highlighted the model turns neutral
+        // clay, so the severity colours are the only colour on it.
+        let audit_focused = self.ui.mode == WorkspaceMode::Aud
+            && !self.audit.highlight.is_empty()
+            && self.ui.aud.view == review_audit::DiagnosticView::Issues;
+        if audit_focused {
+            debug.material_mode = review_render::MaterialMode::Standard;
+            debug.active_material = ActiveMaterial::Source;
+        }
+        // Aud's density views, with the matching checks' own parameters so the
+        // map and the findings measure the same thing.
+        if self.ui.mode == WorkspaceMode::Aud {
+            let stop = |token: egui::Color32| {
+                let [r, g, b, _] = token.to_normalized_gamma_f32();
+                [r, g, b]
+            };
+            debug.heat_map = self.audit_heat_map();
+            if debug.heat_map.is_active() {
+                debug.active_material = ActiveMaterial::Source;
+                debug.heat_ramp = [
+                    stop(theme::color::HEAT_LOW),
+                    stop(theme::color::HEAT_TARGET),
+                    stop(theme::color::HEAT_HIGH),
+                ];
+            }
+            debug.overdraw = self.audit_overdraw_view();
+            if debug.overdraw.is_active() {
+                debug.overdraw_ramp = review_render::OverdrawRamp {
+                    stops: [
+                        stop(theme::color::OVERDRAW_1),
+                        stop(theme::color::OVERDRAW_2),
+                        stop(theme::color::OVERDRAW_3),
+                        stop(theme::color::OVERDRAW_4),
+                    ],
+                    empty: stop(theme::color::OVERDRAW_EMPTY),
+                };
+            }
+        }
         let projection: CameraProjection = self.ui.projection_mode.into();
         let environment = self.ui.environment;
         let gtao = self.ui.gtao;
@@ -405,11 +447,69 @@ impl App {
         // The evaluated pose, for the 3D workspace only: Opt compares static
         // geometry and deliberately shows the bind pose. Borrowed as a disjoint
         // field so it can outlive the renderer borrow below.
-        let pose = (workspace == WorkspaceMode::ThreeD && self.animation.active)
-            .then_some(&self.animation.deform);
+        let pose =
+            (workspace.shows_pose() && self.animation.active).then_some(&self.animation.deform);
         let pose_revision = self.animation.pose_revision;
         let scene_bounds = self.ui.bounds;
 
+        // The Aud focus's offenders, borrowed from the highlight `app` resolved.
+        // Only in the Issues view: a density or overdraw view is itself the
+        // picture of the finding, and a severity tint over it would misread as
+        // part of its ramp.
+        let highlight = &self.audit.highlight;
+        let audit_overlay = (workspace == WorkspaceMode::Aud
+            && self.ui.aud.view == review_audit::DiagnosticView::Issues
+            && !highlight.is_empty())
+        .then(|| {
+            let color = |token: egui::Color32| {
+                let [r, g, b, _] = token.to_normalized_gamma_f32();
+                [r, g, b, theme::color::AUDIT_FILL_OPACITY]
+            };
+            review_render::AuditOverlay {
+                revision: highlight.revision,
+                fills: [
+                    &highlight.fills[0],
+                    &highlight.fills[1],
+                    &highlight.fills[2],
+                ],
+                edges: [
+                    &highlight.edges[0],
+                    &highlight.edges[1],
+                    &highlight.edges[2],
+                ],
+                corner_dots: [
+                    &highlight.corner_dots[0],
+                    &highlight.corner_dots[1],
+                    &highlight.corner_dots[2],
+                ],
+                point_dots: [
+                    &highlight.point_dots[0],
+                    &highlight.point_dots[1],
+                    &highlight.point_dots[2],
+                ],
+                colors: [
+                    color(theme::color::SEVERITY_INFO),
+                    color(theme::color::SEVERITY_WARNING),
+                    color(theme::color::SEVERITY_ERROR),
+                ],
+                hidden_alpha: theme::color::AUDIT_HIDDEN_OPACITY,
+            }
+        });
+        // The Aud split's UV half: the focused rule's UV set, laid out for the
+        // objects it names, with its offending triangles tinted.
+        let aud_split = audit_overlay
+            .filter(|_| self.ui.aud.split())
+            .map(|overlay| {
+                (
+                    self.audit_uv_channel(),
+                    self.audit_focus_nodes(),
+                    review_render::UvAuditOverlay {
+                        revision: overlay.revision,
+                        fills: overlay.fills,
+                        colors: overlay.colors,
+                    },
+                )
+            });
         let renderer = self.renderer.as_mut()?;
         let gpu = self.gpu.as_mut()?;
         let egui_renderer = self.egui_renderer.as_mut()?;
@@ -446,13 +546,14 @@ impl App {
                             image,
                         }),
                         pixels_per_point: full_output.pixels_per_point,
+                        audit: None,
                     },
                 ),
                 WorkspaceMode::Texture => {
                     let (image, background) = texture_draw.unwrap_or((None, TexBackground::Black));
                     renderer.render_texture(&mut frame, image, background)
                 }
-                WorkspaceMode::ThreeD | WorkspaceMode::Opt => {
+                WorkspaceMode::ThreeD | WorkspaceMode::Opt | WorkspaceMode::Aud => {
                     let scene_frame = SceneFrame {
                         model,
                         model_revision,
@@ -473,8 +574,24 @@ impl App {
                         pose_revision,
                         scene_bounds,
                         pixels_per_point: full_output.pixels_per_point,
+                        audit: audit_overlay,
                     };
-                    if workspace == WorkspaceMode::Opt {
+                    if let Some((channel, nodes, overlay)) = aud_split.as_ref() {
+                        let uv = UvFrame {
+                            model,
+                            model_revision,
+                            channel: *channel,
+                            shading_mode: review_render::UvShadingMode::Wire,
+                            anti_aliasing,
+                            background: uv_background,
+                            selected_nodes: nodes,
+                            hidden_meshes: &hidden_meshes,
+                            texture: None,
+                            pixels_per_point: full_output.pixels_per_point,
+                            audit: Some(*overlay),
+                        };
+                        renderer.render_aud_split(&mut frame, &scene_frame, &uv, opt_viewport)
+                    } else if workspace == WorkspaceMode::Opt {
                         // Read the cameras out before the call: the arguments are
                         // evaluated after the `&mut renderer` receiver is borrowed.
                         let source_camera = renderer.camera;

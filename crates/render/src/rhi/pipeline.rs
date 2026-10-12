@@ -171,6 +171,9 @@ pub(crate) enum Blend {
     /// `src·(1−dstA) + dst·1` for alpha, which composes correctly when the chrome is
     /// drawn over an already-opaque backbuffer *and* when it overlaps itself.
     PremultipliedAlpha,
+    /// `src + dst`, both channels: the overdraw views' count targets, where each
+    /// fragment adds its share of a layer.
+    Additive,
 }
 
 impl Blend {
@@ -192,6 +195,15 @@ impl Blend {
                 dst_factor_rgb: sg::BlendFactor::OneMinusSrcAlpha,
                 op_rgb: sg::BlendOp::Add,
                 src_factor_alpha: sg::BlendFactor::OneMinusDstAlpha,
+                dst_factor_alpha: sg::BlendFactor::One,
+                op_alpha: sg::BlendOp::Add,
+            },
+            Self::Additive => sg::BlendState {
+                enabled: true,
+                src_factor_rgb: sg::BlendFactor::One,
+                dst_factor_rgb: sg::BlendFactor::One,
+                op_rgb: sg::BlendOp::Add,
+                src_factor_alpha: sg::BlendFactor::One,
                 dst_factor_alpha: sg::BlendFactor::One,
                 op_alpha: sg::BlendOp::Add,
             },

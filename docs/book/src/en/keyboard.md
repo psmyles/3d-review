@@ -32,7 +32,8 @@ panel.
 - `1` / `2` / `3` - wireframe only, unlit, or shaded.
 - `I` - show or hide the stats card.
 - `G` - show or hide the grid.
-- `F` - frame the model, or the selected part.
+- `F` - frame the model, or the selected part. In Aud, with a finding picked,
+  frame the parts it marks.
 - `Q` - switch between turning the camera and
   [selecting by clicking](selection.md). While the right mouse button is held it
   keeps its flying meaning instead, and moves you down.
@@ -50,7 +51,8 @@ panel.
 - `X` - in the Opt overlay, swap which model is solid.
 - `F1` - open this manual, at the page for whatever is under the pointer.
 - `Esc` - clear the selection, in the viewport or the Outliner. In UV it also
-  takes away the texture behind the layout.
+  takes away the texture behind the layout. In Aud it lets go of the picked
+  finding.
 - Primary + `N` - start over with an empty viewer.
 - Primary + `O` - open a model.
 - Primary + `Z` - undo.
@@ -61,10 +63,11 @@ panel.
 Undo covers the things you *edit*: what is selected - in the Outliner or by
 clicking in the viewport, including selections of several parts at once - which
 parts are hidden, material settings, which texture is in which slot, the texture
-pool, and the list of operations in Opt. Dragging a slider or a color picker
+pool, the list of operations in Opt, and the audit profile in Aud. Dragging a
+slider or a color picker
 counts as one step, however long you drag.
 
 Undo does not touch how you are *looking* at the model: the camera, the grid,
 the shading mode, anti-aliasing, ambient occlusion, tone mapping, the
-environment, the UV and Tex views, animation playback, and whether clicking
-selects.
+environment, the UV and Tex views, animation playback, whether clicking
+selects, and which finding is picked in Aud.

@@ -5,6 +5,7 @@
 //! `egui::SidePanel`s. So this module only fills in controls.
 
 mod anti_aliasing;
+pub(crate) mod aud_inspector;
 mod background;
 mod bounding_box;
 mod buffer_view;

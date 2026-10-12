@@ -23,6 +23,7 @@ use review_render::{
     UvShadingMode, ViewportBackground, selection_bounds,
 };
 
+use crate::aud_state::{AudUiState, AuditIntent};
 use crate::opt_state::{OptIntent, OptUiState};
 use crate::theme;
 
@@ -130,6 +131,11 @@ pub struct UiOutput {
     /// drag-coalescing hint as [`UiOutput::material_edit_active`], so scrubbing a
     /// LOD ratio produces one undo step rather than one per frame.
     pub opt_edit_active: bool,
+    /// An Aud action `app` must carry out this frame (profile / report IO).
+    pub audit: Option<AuditIntent>,
+    /// Whether an audit-profile widget is being actively dragged — the same
+    /// drag-coalescing hint as [`UiOutput::opt_edit_active`].
+    pub aud_edit_active: bool,
     /// A command chosen from the toolbar's menu this frame, for `app` to carry
     /// out — every entry reaches outside the chrome (a file dialog, the loaded
     /// model, the settings file, the process).
@@ -185,6 +191,10 @@ pub struct UiState {
     /// regardless of the active mode (it is document state, not view state), but
     /// only edited and read while Opt is active.
     pub opt: OptUiState,
+    /// The Aud workspace's profile, report and list settings. Present in every
+    /// workspace: the audit runs on every load, and the toolbar shows its count
+    /// from anywhere.
+    pub aud: AudUiState,
     pub uv_checker: UvCheckerPanelState,
     /// Display labels of the loaded model's UV sets, in source-file order, shown
     /// in the UV-view toolbar dropdown. Empty when no model / no UV sets. Set by
@@ -409,6 +419,7 @@ impl Default for UiState {
             show_stats: true,
             panels_open: PanelsOpen::default(),
             opt: OptUiState::default(),
+            aud: AudUiState::default(),
             uv_checker: UvCheckerPanelState::default(),
             uv_sets: Vec::new(),
             uv_view_channel: 0,
@@ -635,6 +646,8 @@ impl UiState {
     /// half a selection behind (a cleared primary with the skeleton still lit).
     pub fn clear_selection(&mut self) {
         self.texture_view.inspected = false;
+        self.aud.focus = None;
+        self.aud.profile_open = false;
         self.selection = Selection::None;
         self.selected_nodes.clear();
         self.selected_bones.clear();

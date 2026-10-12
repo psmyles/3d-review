@@ -190,6 +190,9 @@ pub(crate) struct SceneGpu {
     pub(super) idle: ModelSlot,
     /// Which model `active` currently holds.
     pub(super) active_slot: SlotId,
+    /// The Aud overdraw views' pipelines, count target and index list, while one
+    /// is on (invariant 3).
+    pub(super) overdraw: Option<super::overdraw::OverdrawGpu>,
 }
 
 impl std::fmt::Debug for SceneGpu {
@@ -287,6 +290,7 @@ impl SceneGpu {
             active: ModelSlot::new(),
             idle: ModelSlot::new(),
             active_slot: SlotId::Source,
+            overdraw: None,
         })
     }
 
@@ -306,8 +310,10 @@ impl SceneGpu {
         // the processed slot — rebuilding both, and discarding the processed cache on
         // every switch between workspaces.
         self.activate(SlotId::Source);
-        // One view, so what only the Opt comparison draws with goes (invariant 3).
+        // One view, so what only the Opt comparison draws with goes (invariant 3),
+        // and no UV layout beside it.
         self.release_opt_views();
+        self.release_uv_views();
 
         let size = frame.size();
         self.sync_frame(frame, scene, material_states, material_revision, size)?;
@@ -353,6 +359,9 @@ impl SceneGpu {
             scene.debug,
             self.active.deform_enabled(),
         );
+        if self.record_overdraw(frame, scene, targets, &uniforms, dest) {
+            return Ok(());
+        }
         let lines = LineWidths::new(scene, targets.color.size());
         let gtao_active = self.gtao_active(scene);
         self.record_scene_pass(
@@ -467,10 +476,6 @@ impl SceneGpu {
             scene.anti_aliasing.effective_sample_count(),
         )?;
 
-        // Every caller of this is a 3D frame, so the UV viewport's buffers are off
-        // (invariant 3); `render_uv` builds them instead and never comes through here.
-        self.release_uv_views();
-
         // The Unique-mode part key, then the mesh + the effective material table
         // (both depend on the active material mode's grouping).
         self.sync_unique_parts(scene.model, scene.model_revision, scene.debug.material_mode);
@@ -519,6 +524,9 @@ impl SceneGpu {
             scene.debug,
             scene.selected_bones,
         )?;
+        self.sync_heat_map(scene.model, scene.model_revision, scene.debug)?;
+        self.sync_overdraw(scene, target_size)?;
+        self.sync_audit_overlay(scene.model, scene.audit.as_ref())?;
         self.sync_selection(
             scene.model,
             scene.model_revision,
@@ -652,6 +660,8 @@ impl SceneGpu {
             || derived.skeleton_fill_buf.is_some()
             || derived.skeleton_line_buf.is_some()
             || (views.wireframe_ghost.is_some() && self.idle.ghost_wireframe_edges.is_some())
+            || derived.audit_edges.is_some()
+            || derived.audit_dots.is_some()
     }
 
     /// The skybox, behind all geometry.
@@ -792,6 +802,39 @@ impl SceneGpu {
         if let Some(ghost_uniforms) = wireframe_ghost {
             self.draw_wireframe_ghost(frame, ghost_uniforms, &lines.wireframe);
         }
+
+        // The Aud workspace's offender edges and dots, last so nothing covers them:
+        // first faint and always on top, so an offender inside or behind the model
+        // still shows, then solid and depth-tested over it where it is in view.
+        let views = &self.active.views;
+        self.draw_lines(
+            frame,
+            &self.lines.line_overlay,
+            views.audit_edges_hidden.iter(),
+            uniforms,
+            &lines.audit_edge,
+        );
+        self.draw_lines(
+            frame,
+            &self.lines.line,
+            views.audit_edges.iter(),
+            uniforms,
+            &lines.audit_edge,
+        );
+        self.draw_lines(
+            frame,
+            &self.lines.line_overlay,
+            views.audit_dots_hidden.iter(),
+            uniforms,
+            &lines.audit_dot,
+        );
+        self.draw_lines(
+            frame,
+            &self.lines.line,
+            views.audit_dots.iter(),
+            uniforms,
+            &lines.audit_dot,
+        );
     }
 
     /// The hover preview and the selection highlight, over the mesh.
@@ -826,6 +869,21 @@ impl SceneGpu {
                 uniforms,
                 uniforms.selection_color,
             );
+        }
+        // The Aud workspace's offending faces, worst severity last so it wins
+        // where two overlap.
+        if let (Some(mesh), Some(audit)) = (&self.active.mesh, scene.audit.as_ref()) {
+            for (severity, fill) in self.active.views.audit_fills.iter().enumerate() {
+                if let Some(index) = fill {
+                    self.draw_highlight(
+                        frame,
+                        index,
+                        &mesh.vertices,
+                        uniforms,
+                        audit.colors[severity],
+                    );
+                }
+            }
         }
     }
 }

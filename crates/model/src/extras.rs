@@ -440,6 +440,15 @@ pub struct ColorSetExtras {
     pub values: Vec<Vec4>,
 }
 
+/// One UV set a mesh part carries.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UvSetExtras {
+    pub name: String,
+    pub index: u32,
+    /// Whether the layer holds any values (a declared but empty layer does not).
+    pub has_values: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct FaceGroup {
     pub id: i32,
@@ -501,6 +510,18 @@ pub struct MeshExtras {
     /// Whether the file carried a tangent layer (otherwise the model's tangents
     /// were synthesized at import and are not written back).
     pub tangents_authored: bool,
+    /// Whether the file carried normals (otherwise they were generated at
+    /// import). Read by the audit; the exporter writes the model's normals
+    /// either way.
+    pub normals_authored: bool,
+    /// The UV sets this part carries, in the file's order. The geometry matches
+    /// channels by *position*, so this is the only record of which sets each
+    /// part really has and what they are called.
+    pub uv_sets: Vec<UvSetExtras>,
+    /// Control points no face references, as `(global logical vertex, world
+    /// position)`. They produce no render corner, so nothing else records
+    /// where they are.
+    pub unused_vertices: Vec<(u32, Vec3)>,
     pub reversed_winding: bool,
     pub color_sets: Vec<ColorSetExtras>,
     /// Each edge as two corner indices into `ModelData::vertices`

@@ -1,0 +1,25 @@
+[package]
+name = "review-audit"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+glam.workspace = true
+review-model = { path = "../model" }
+# The shared guarded Tracy helpers, for the per-check CPU zones.
+review-prof.workspace = true
+# Profiles and reports are JSON. `review-model` stays glam-only (invariant 10):
+# nothing here adds a derive to a `review-model` type.
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# The fixture suite audits real FBX files. Test-only: the engine itself takes a
+# `ModelData` from anywhere, so the batch CLI and an Opt-output audit can share it.
+review-import = { path = "../import" }
+
+[lints]
+workspace = true

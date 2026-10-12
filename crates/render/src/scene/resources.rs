@@ -47,6 +47,8 @@ impl SceneGpu {
             slot.views.uv_wireframe_baked = None;
             slot.views.uv_fill_buf = None;
             slot.views.uv_fill_baked = None;
+            slot.views.uv_audit_buf = None;
+            slot.views.uv_audit_baked = None;
         }
         self.uv_texture = None;
         self.uv_checker = None;
@@ -163,7 +165,7 @@ impl SceneGpu {
     ) -> GpuResult<()> {
         if self.active.mesh_revision == model_revision
             && self.active.mesh_uv_channel == uv_channel
-            && self.active.mesh_material_mode == mode
+            && self.active.mesh_material_mode.groups_by_part() == mode.groups_by_part()
         {
             return Ok(());
         }

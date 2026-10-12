@@ -54,26 +54,7 @@ pub enum ImportError {
 /// it still reads the value the token was made with. That makes cancellation a
 /// consequence of the check `app` already performs, rather than a second piece of
 /// state to keep in step with it.
-#[derive(Debug, Clone)]
-pub struct CancelToken {
-    current: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    mine: u64,
-}
-
-impl CancelToken {
-    /// A token for request `generation`, live until `current` moves past it.
-    pub fn new(current: std::sync::Arc<std::sync::atomic::AtomicU64>, generation: u64) -> Self {
-        Self {
-            current,
-            mine: generation,
-        }
-    }
-
-    /// Whether this request has been superseded.
-    pub fn is_cancelled(&self) -> bool {
-        self.current.load(std::sync::atomic::Ordering::Relaxed) != self.mine
-    }
-}
+pub use review_model::CancelToken;
 
 /// The stage an import is in, as reported to [`load_model_with_progress`].
 ///
