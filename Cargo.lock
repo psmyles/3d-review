@@ -2842,6 +2842,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "review-snapshot"
+version = "0.1.0"
+dependencies = [
+ "ab_glyph",
+ "anyhow",
+ "glam",
+ "image",
+ "review-import",
+ "review-model",
+ "review-optimize",
+ "review-render",
+]
+
+[[package]]
 name = "review-ui"
 version = "0.1.0"
 dependencies = [

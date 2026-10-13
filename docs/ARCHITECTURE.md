@@ -55,7 +55,7 @@ the source mesh and each processed Opt level.
 
 ## Crate map
 
-Thirteen crates. The boundaries carry real weight — see [Invariants](#invariants) 2,
+Fourteen crates. The boundaries carry real weight — see [Invariants](#invariants) 2,
 9 and 10.
 
 ### `app` — `review-app`
@@ -322,6 +322,13 @@ independent of the API underneath it.
 | `gpu_profiler.rs` | The `--tracy` GPU profiler: the `Zone` set, the Tracy GPU context and spans, the arming flag and the message channel |
 | `bake.rs` | The offline bake's headless sokol device, `CubeTarget`, `Target2D` (feature `bake` only) |
 
+`Gpu::headless` (feature `headless` only) is the other windowless GPU: the same
+device and sokol setup as the viewer's, with the swapchain swapped for an
+offscreen backbuffer that `Gpu::read_back` copies to the CPU. Everything above it
+— `Frame`, the one swapchain pass, the `Renderer` — runs unchanged, which is the
+point: the [`snapshot`](#snapshot--review-snapshot) tool's images are the
+viewer's own frames.
+
 `Frame` carries a `Drop` guard that closes an abandoned pass, so one bad frame
 cannot wedge the next. `SwapchainJob` is a draw *recorded* before the swapchain
 pass exists and replayed when it opens: every `Renderer::render_*` runs before
@@ -334,7 +341,10 @@ only platform GPU code in the workspace. `d3d11.rs` creates the device, points
 render-target view per frame, presents, and answers `supported_sample_counts`
 (sokol only reports MSAA as a yes/no). `metal.rs` does the same with a
 `CAMetalLayer`. Each also carries the leaves for what sokol has no notion of:
-`GpuTimer` (timestamp queries) and, gated on `bake`, `read_image_subresource`.
+`GpuTimer` (timestamp queries) and, gated on `bake`, `read_image_subresource`;
+gated on `headless`, `Swapchain::offscreen` + `read_back` (the Metal twin is a
+stub that reports itself unimplemented). Both readbacks share one staging-copy
+helper.
 
 The two modules are twins aliased as `backend`, **not a trait**: anything added to
 one must be added to the other.
@@ -583,6 +593,18 @@ versioned JSON envelope. The two operations that simplify share one
 `process::simplify_submeshes` — the LOD op fans its output out into levels,
 `Reduce` writes its own back in place.
 
+**A simplify works an object at a time.** `ops::simplify_object` concatenates a
+node's material pieces, simplifies them as one mesh toward one budget, and deals
+the triangles back out; a material border is then an attribute seam both sides
+keep. The default algorithm (`WithAttributes`, "Preserve Attributes") weighs
+normals / UVs / colours beside the shape and **refits** what it keeps:
+`meshopt_simplifyWithUpdate` moves each survivor to its best-fit position and
+re-solves its attributes there, so a simplified level shades like its source
+(`ops::simplify_appearance`). Its error limit is the shape's alone — a
+position-only pass finds how far the limit allows, and the attribute-aware pass
+runs to that count. See [GOTCHAS](GOTCHAS.md#a-simplifiers-survivors-must-be-refit-or-a-flat-face-shades-in-blotches)
+for why each of those is load-bearing.
+
 **Everything the stack did not change is carried through.** A `Submesh` holds,
 beside its vertices, the per-vertex rows a vertex remap must follow
 (`VertexRows`: skin, extra skin layers, DQ weights, blend-shape offsets; plus
@@ -706,6 +728,24 @@ client is running, so each wrapper checks `Client::running()` first. It re-expor
 `tracy_client`, and the macros reach it as `$crate::tracy_client`, so a crate that
 only opens zones needs no tracy dependency of its own. Each consumer's `prof.rs`
 is a re-export of this crate, not a copy.
+
+### `snapshot` — `review-snapshot`
+
+A developer tool, not part of the shipped viewer: it renders models, their
+`_LOD<n>` levels, or an Opt stack's output to PNG through the real `Renderer` on
+`Gpu::headless`, so nothing opens a window, takes focus or reads input — a change
+can be looked at from a script while the machine is in use. `cli.rs` is the
+command line (`--help` documents it), `inputs.rs` turns `file.fbx[@stack][#level]`
+into subjects (a model plus the nodes hidden from it), `capture.rs` drives the
+frame loop (drawing until ambient occlusion converges, as the viewer does),
+`sheet.rs` lays views out as a labelled contact sheet. Two modes measure rather
+than show: `--compare` renders every subject's interpolated vertex normals from
+the same cameras and reports each one's per-pixel angle and silhouette mismatch
+against the first subject, with a heat-map sheet (`compare.rs`); `--inspect`
+reports how a simplified mesh's vertices relate to its source's — kept or moved,
+normals copied or refit (`inspect.rs`). The two are how the simplifier's shading
+was matched against a commercial tool's output, and they are the way to check a
+change to it: e.g. `review-snapshot --look matte --compare src.fbx src.fbx@lods`.
 
 ### Vendored trees
 

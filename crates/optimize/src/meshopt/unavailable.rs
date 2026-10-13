@@ -88,6 +88,19 @@ pub fn simplify(
 }
 
 #[cfg(not(has_meshopt))]
+pub fn simplify_with_update(
+    _indices: &[u32],
+    _positions: &mut [f32],
+    _vertex_count: usize,
+    _attributes: &mut SimplifyAttributes,
+    _target_index_count: usize,
+    _target_error: f32,
+    _options: u32,
+) -> Result<SimplifyOutcome, OptError> {
+    Err(OptError::Unavailable)
+}
+
+#[cfg(not(has_meshopt))]
 pub fn simplify_sloppy(
     _indices: &[u32],
     _positions: &[f32],

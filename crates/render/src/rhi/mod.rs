@@ -144,6 +144,30 @@ impl Gpu {
         )
     }
 
+    /// A GPU with no window: the same device and sokol setup, drawing every frame
+    /// into a `width`×`height` offscreen backbuffer that [`Self::read_back`]
+    /// returns. What the headless `review-snapshot` tool renders through, so its
+    /// images are the viewer's own frames rather than a second renderer's idea of
+    /// them. Synchronous — there is no window creation to overlap with.
+    #[cfg(feature = "headless")]
+    pub fn headless(width: u32, height: u32) -> GpuResult<Gpu> {
+        let device = Self::bring_up()?;
+        let swapchain = backend::Swapchain::offscreen(&device, width, height)?;
+        Ok(Gpu {
+            device,
+            swapchain,
+            profiler: None,
+            jobs: Vec::new(),
+        })
+    }
+
+    /// The last finished frame of a [`Self::headless`] GPU, as tight `RGBA8` rows,
+    /// top row first. Call after [`Frame::finish`]: that is what submits the frame.
+    #[cfg(feature = "headless")]
+    pub fn read_back(&mut self) -> GpuResult<Vec<u8>> {
+        self.swapchain.read_back()
+    }
+
     /// The device, and sokol_gfx set up on it. Runs on the bring-up thread.
     fn bring_up() -> GpuResult<backend::Device> {
         let device = backend::Device::create()?;
