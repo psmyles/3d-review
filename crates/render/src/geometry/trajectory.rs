@@ -12,8 +12,15 @@
 //! so the marker lands on the path at every frame and slides along it between
 //! them.
 //!
+//! The line between the dots is either straight, frame to frame, or a smooth
+//! curve through them ([`curve_points`]). Either way the dots are the measured
+//! positions and the line between them is drawing: the pose between two frames
+//! is interpolated by the player, not sampled here.
+//!
 //! Zero-normal vertices throughout, the scene shader's overlay sentinel: nothing
 //! here is lit, and nothing feeds ambient occlusion.
+
+use glam::Vec3;
 
 use crate::TrajectoryOverlay;
 use crate::scene::SceneVertex;
@@ -22,6 +29,16 @@ use super::deform::{NO_DEFORM, node_deform};
 use super::uv::hsv_to_rgb;
 use super::vertex::push_line;
 use review_model::ModelData;
+
+/// How far, in radians, a smooth curve may turn from one of its segments to the
+/// next: about six degrees, below which a polyline a few pixels wide already
+/// reads as a curve. Where a path turns less than this per frame — most of any
+/// clip sampled at 24 fps or more — it spends one segment per frame, exactly
+/// as the straight style does.
+const SMOOTH_TURN: f32 = 0.1;
+/// The most segments a smooth curve spends between two frames, however sharply
+/// it turns there. Bounds the buffer at this many times the straight style's.
+const SMOOTH_STEPS_MAX: u32 = 8;
 
 /// Successive hues step by the golden-ratio conjugate, so nodes next to each
 /// other in [`hierarchy_ranks`]' order — a bone and its child — land far apart on
@@ -126,18 +143,14 @@ pub(crate) fn trajectory_geometry(
             continue;
         };
         let color = node_color(&ranks, path.node);
-        for pair in path.points.windows(2) {
-            // A held pose repeats its point; a zero-length segment there would
-            // only draw a square under the frame's own dot.
-            if pair[0] != pair[1] {
-                push_line(
-                    &mut geometry.lines,
-                    pair[0].to_array(),
-                    pair[1].to_array(),
-                    color,
-                    NO_DEFORM,
-                );
-            }
+        for pair in curve_points(&path.points, overlay.style.smooth).windows(2) {
+            push_line(
+                &mut geometry.lines,
+                pair[0].to_array(),
+                pair[1].to_array(),
+                color,
+                NO_DEFORM,
+            );
         }
         for point in &path.points {
             let point = point.to_array();
@@ -152,6 +165,68 @@ pub(crate) fn trajectory_geometry(
         push_line(&mut geometry.markers, rest, rest, color, lane);
     }
     geometry
+}
+
+/// The points a path's line is drawn through: its frames, with a held pose's
+/// repeats dropped (a zero-length segment would only draw a square under the
+/// frame's own dot), and with `smooth`, a centripetal Catmull-Rom spline through
+/// them.
+///
+/// Centripetal — knots spaced by the square root of each chord — because it is
+/// the one parametrisation of the family that never loops or cusps within a
+/// segment, which a uniform spline does wherever a slow frame sits beside a fast
+/// one: exactly what an animation's ease-in and ease-out are. Each segment is cut
+/// into as many pieces as the path turns at its two ends calls for
+/// ([`SMOOTH_TURN`]), so a straight run costs nothing extra.
+fn curve_points(points: &[Vec3], smooth: bool) -> Vec<Vec3> {
+    let mut frames: Vec<Vec3> = Vec::with_capacity(points.len());
+    for &point in points {
+        if frames.last() != Some(&point) {
+            frames.push(point);
+        }
+    }
+    if !smooth || frames.len() < 3 {
+        return frames;
+    }
+    let last = frames.len() - 1;
+    // Past either end, a point mirrored through the end one, so the end segments
+    // leave their frames heading the way the path does.
+    let at = |index: isize| -> Vec3 {
+        match index {
+            -1 => 2.0 * frames[0] - frames[1],
+            i if i as usize > last => 2.0 * frames[last] - frames[last - 1],
+            i => frames[i as usize],
+        }
+    };
+    let mut curve = Vec::with_capacity(frames.len() * 2);
+    curve.push(frames[0]);
+    for segment in 0..last as isize {
+        let [p0, p1, p2, p3] = [-1, 0, 1, 2].map(|offset| at(segment + offset));
+        let turn = (p1 - p0).angle_between(p2 - p1) + (p2 - p1).angle_between(p3 - p2);
+        let steps = ((turn * 0.5 / SMOOTH_TURN).ceil() as u32).clamp(1, SMOOTH_STEPS_MAX);
+        for step in 1..steps {
+            curve.push(centripetal(p0, p1, p2, p3, step as f32 / steps as f32));
+        }
+        curve.push(p2);
+    }
+    curve
+}
+
+/// The centripetal Catmull-Rom spline through `p1` and `p2`, `fraction` of the
+/// way from one to the other (Barry and Goldman's pyramid). Every chord must
+/// have a length, which [`curve_points`] guarantees by dropping repeats.
+fn centripetal(p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, fraction: f32) -> Vec3 {
+    let t1 = p0.distance(p1).sqrt();
+    let t2 = t1 + p1.distance(p2).sqrt();
+    let t3 = t2 + p2.distance(p3).sqrt();
+    let t = t1 + (t2 - t1) * fraction;
+    let lerp = |a: Vec3, b: Vec3, from: f32, to: f32| a + (b - a) * ((t - from) / (to - from));
+    let a1 = lerp(p0, p1, 0.0, t1);
+    let a2 = lerp(p1, p2, t1, t2);
+    let a3 = lerp(p2, p3, t2, t3);
+    let b1 = lerp(a1, a2, 0.0, t2);
+    let b2 = lerp(a2, a3, t1, t3);
+    lerp(b1, b2, t1, t2)
 }
 
 /// Per node, the color its bone takes while its path is shown — `None` for every
@@ -174,10 +249,11 @@ pub(crate) fn trajectory_node_colors(
 
 #[cfg(test)]
 mod tests {
-    use glam::{Mat4, Vec3};
+    use glam::Mat4;
     use review_model::{NodePath, SceneNode};
 
     use super::*;
+    use crate::TrajectoryStyle;
 
     fn model() -> ModelData {
         ModelData {
@@ -215,6 +291,7 @@ mod tests {
             revision: 1,
             paths: &paths,
             shown: &[0],
+            style: TrajectoryStyle::default(),
         };
         let geometry = trajectory_geometry(&model, &overlay, true);
         // Four frames, one of them a repeat: two segments, four dots.
@@ -241,6 +318,7 @@ mod tests {
             revision: 1,
             paths: &paths,
             shown: &[1],
+            style: TrajectoryStyle::default(),
         };
         let geometry = trajectory_geometry(&model, &overlay, true);
         assert!(
@@ -278,6 +356,7 @@ mod tests {
             revision: 1,
             paths: &paths,
             shown: &[0, 1],
+            style: TrajectoryStyle::default(),
         };
         let colors = trajectory_node_colors(&model, &overlay);
         assert_eq!(colors[0], None, "node 0 has no path");
@@ -305,6 +384,7 @@ mod tests {
             revision: 1,
             paths: &paths,
             shown: &[1],
+            style: TrajectoryStyle::default(),
         };
         let colors = trajectory_node_colors(&model, &overlay);
         assert_eq!(colors[1], None);
@@ -381,5 +461,64 @@ mod tests {
                 assert_ne!(first, second);
             }
         }
+    }
+    /// Straight, a path is its frames with the held repeats dropped; smooth, it
+    /// still passes through every one of them, in order.
+    #[test]
+    fn a_smooth_curve_passes_through_every_frame() {
+        // A quarter circle, a frame every fifteen degrees, holding at the end.
+        let mut frames: Vec<Vec3> = (0..=6)
+            .map(|step| {
+                let angle = step as f32 * 15f32.to_radians();
+                Vec3::new(angle.cos(), angle.sin(), 0.0)
+            })
+            .collect();
+        frames.push(frames[6]);
+
+        let straight = curve_points(&frames, false);
+        assert_eq!(straight, frames[..7]);
+
+        let smooth = curve_points(&frames, true);
+        assert!(
+            smooth.len() > straight.len(),
+            "it turns, so it is cut finer"
+        );
+        let mut from = 0;
+        for frame in &straight {
+            let found = smooth[from..]
+                .iter()
+                .position(|point| point == frame)
+                .expect("every frame is on the curve");
+            from += found + 1;
+        }
+        // And it follows the circle it was sampled from more closely than the
+        // straight chords do, which fall 1 - cos(7.5 degrees), 0.0086, inside it
+        // midway between frames. The end segments are the loosest: past the
+        // last frame the curve can only guess which way the path was heading.
+        let chord_sag = 1.0 - 7.5f32.to_radians().cos();
+        for point in &smooth {
+            assert!((point.length() - 1.0).abs() < chord_sag * 0.6, "{point}");
+        }
+    }
+
+    /// A path that runs straight costs the smooth style nothing extra.
+    #[test]
+    fn a_straight_run_is_not_subdivided() {
+        let frames: Vec<Vec3> = (0..10).map(|step| Vec3::X * step as f32).collect();
+        assert_eq!(curve_points(&frames, true), frames);
+    }
+
+    /// However sharp the turn, a segment is cut into a bounded number of pieces.
+    #[test]
+    fn a_sharp_turn_is_cut_into_a_bounded_number_of_pieces() {
+        let frames = [
+            Vec3::ZERO,
+            Vec3::X,
+            Vec3::ZERO + Vec3::Y * 1e-3,
+            Vec3::NEG_X,
+        ];
+        let smooth = curve_points(&frames, true);
+        assert!(smooth.len() <= 1 + 3 * SMOOTH_STEPS_MAX as usize);
+        assert!(smooth.iter().all(|point| point.is_finite()));
     }
 }

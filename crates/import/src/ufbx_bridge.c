@@ -1931,6 +1931,9 @@ int review_import_load_fbx(
        so a mis-authored export is visible rather than silently trusted. */
     out_scene->source_unit_meters = (float)scene->settings.original_unit_meters;
     out_scene->frames_per_second = scene->settings.frames_per_second;
+    out_scene->axis_right = (uint32_t)scene->settings.axes.right;
+    out_scene->axis_up = (uint32_t)scene->settings.axes.up;
+    out_scene->axis_front = (uint32_t)scene->settings.axes.front;
 
     if (!review_import_count_pass(scene, out_scene, &totals, out_error)) {
         goto cleanup;

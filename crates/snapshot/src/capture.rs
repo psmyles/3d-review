@@ -7,7 +7,8 @@ use review_model::Bounds;
 use review_render::{
     ActiveMaterial, AntiAliasing, BufferView, CameraProjection, EnvironmentSettings, FramingArea,
     Gpu, GtaoSettings, MaterialMode, OrbitCamera, Renderer, RendererConfig, SceneDebugOptions,
-    SceneFrame, SelectionView, ShadingMode, TonemapSettings, TrajectoryOverlay, ViewportBackground,
+    SceneFrame, SelectionView, ShadingMode, TonemapSettings, TrajectoryOverlay, TrajectoryStyle,
+    ViewportBackground,
 };
 
 use crate::animation::Posed;
@@ -28,6 +29,7 @@ pub struct Capture {
     background: ViewportBackground,
     grid: bool,
     skeleton: bool,
+    curve_style: TrajectoryStyle,
     /// The renderer caches a mesh's GPU buffers by revision, so every subject
     /// needs its own — the same rule `app` follows for every mesh it hands over.
     next_revision: u64,
@@ -42,6 +44,7 @@ impl Capture {
         background: ViewportBackground,
         grid: bool,
         skeleton: bool,
+        curve_style: TrajectoryStyle,
     ) -> Result<Self> {
         let gpu = Gpu::headless(size.0, size.1).context("bringing the GPU up without a window")?;
         let mut renderer = Renderer::new(RendererConfig::default());
@@ -54,6 +57,7 @@ impl Capture {
             background,
             grid,
             skeleton,
+            curve_style,
             next_revision: 1,
             current: None,
         })
@@ -164,6 +168,7 @@ impl Capture {
                     revision,
                     paths: &posed.paths,
                     shown: &posed.shown,
+                    style: self.curve_style,
                 }
             }),
         };

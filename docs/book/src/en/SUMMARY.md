@@ -30,6 +30,7 @@
 - [Vertex Normals](panels/vertex-normals.md)
 - [UV Seams](panels/uv-seams.md)
 - [Skeleton](panels/skeleton.md)
+- [Animation Curves](panels/animation-curves.md)
 - [Vertex Colors](panels/vertex-colors.md)
 - [Camera](panels/camera.md)
 - [Anti Aliasing](panels/anti-aliasing.md)

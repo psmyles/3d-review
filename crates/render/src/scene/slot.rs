@@ -116,26 +116,31 @@ pub(super) struct SkeletonParams {
 }
 
 /// Bake key for the animation-curve overlay, and the part of the skeleton's that
-/// follows it: which sampling of which clip (`revision`), and which of its paths
-/// the selection leaves showing. Colours are derived from the node, so they need
-/// no key of their own.
+/// follows it: which sampling of which clip (`revision`), which of its paths the
+/// selection leaves showing, and whether they are drawn smooth. Colours are
+/// derived from the node, so they need no key of their own; the width, opacity
+/// and dot size are uniforms, so dragging them rebuilds nothing.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct TrajectoryParams {
     pub(super) revision: u64,
     pub(super) shown: Vec<u32>,
+    pub(super) smooth: bool,
 }
 
 impl TrajectoryParams {
     /// Whether this key describes `overlay` — compared against the borrowed
     /// frame input, so a steady-state frame allocates nothing.
     pub(super) fn matches(&self, overlay: &crate::TrajectoryOverlay<'_>) -> bool {
-        self.revision == overlay.revision && self.shown == overlay.shown
+        self.revision == overlay.revision
+            && self.shown == overlay.shown
+            && self.smooth == overlay.style.smooth
     }
 
     pub(super) fn of(overlay: &crate::TrajectoryOverlay<'_>) -> Self {
         Self {
             revision: overlay.revision,
             shown: overlay.shown.to_vec(),
+            smooth: overlay.style.smooth,
         }
     }
 }

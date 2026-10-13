@@ -243,12 +243,22 @@ impl App {
             let StagedImport { model: source, .. } = staged;
             let animation = Arc::new(AttachedAnimation::new(model, source, file_stem(&path)));
             let matched = animation.node_map.iter().flatten().count();
+            let report = &animation.report;
             log::info!(
-                "attached {}: {} clips, {matched} of its {} nodes matched",
+                "attached {}: {} clips, {matched} of its {} nodes matched; animates {} of {} \
+                 bones and {} of {} blend-shape channels; {} unmatched bones, {} other \
+                 unmatched nodes",
                 path.display(),
                 animation.clips.len(),
-                animation.nodes.len()
+                animation.nodes.len(),
+                report.bones.animated,
+                report.bones.total,
+                report.channels.animated,
+                report.channels.total,
+                report.unmatched_bones.len(),
+                report.unmatched_nodes.len(),
             );
+            self.warn_mismatch(model, &path, &animation);
             self.ui.attach_animation(Arc::clone(&animation));
             self.scene_files.push(path.clone());
             self.remember_recent_file(&path);
@@ -276,6 +286,29 @@ impl App {
                 )),
         }
         attached
+    }
+
+    /// Say up front what does not line up between an attached file and the
+    /// model — before anything is played, so a clip that looks wrong is never
+    /// the first sign of it. One card per file; nothing when it all lines up.
+    fn warn_mismatch(&mut self, model: &ModelData, path: &Path, animation: &AttachedAnimation) {
+        let lines = review_ui::binding_warnings(model, animation);
+        if lines.is_empty() {
+            return;
+        }
+        for line in &lines {
+            log::warn!("{}: {line}", path.display());
+        }
+        let model_label = self
+            .scene_files
+            .first()
+            .map(|path| file_label(path))
+            .unwrap_or_default();
+        self.notifications.report(
+            NoticeKind::Warning,
+            keys::app_notifications::attached_mismatch(file_label(path), model_label),
+            lines,
+        );
     }
 
     /// One card listing every file of a request that was not loaded, and why.

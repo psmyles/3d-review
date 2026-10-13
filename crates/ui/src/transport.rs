@@ -22,7 +22,7 @@ use review_model::AnimationClip;
 use crate::assets::{self, AppIcon};
 use crate::docs::Page;
 use crate::keys;
-use crate::state::{PlaybackSpeed, UiState};
+use crate::state::{OptionPanel, PlaybackSpeed, UiState};
 use crate::theme::{color, font, size};
 use crate::widgets;
 use crate::widgets::Tip;
@@ -75,6 +75,7 @@ fn rail_budget(available: f32, controls: f32, readout: f32, gap: f32) -> RailBud
 /// controls sideways.
 pub(crate) fn transport_row(ui: &mut egui::Ui, state: &mut UiState, clip: &AnimationClip) {
     let anim = &mut state.animation;
+    let panels_open = &mut state.panels_open;
     let last_frame = clip.frame_count().saturating_sub(1);
     // Square tiles the height of the speed dropdown — `compact_combo` sizes its
     // button from `PANEL_ROW_H`, so every control in the row reads as one band.
@@ -218,16 +219,24 @@ pub(crate) fn transport_row(ui: &mut egui::Ui, state: &mut UiState, clip: &Anima
         );
 
         // Last, apart from the playback settings: it changes what the viewport
-        // shows, not how the clip plays.
-        if button(
+        // shows, not how the clip plays. Right-click opens how it is drawn, as
+        // every toggle with options does.
+        let curves = widgets::icon_tile_button(
             ui,
             &assets::ICON_ANIM_CURVE,
             anim.show_curves,
             Tip::new(keys::ui_transport::CURVES)
                 .describe(keys::ui_transport::CURVES_DESCRIPTION)
-                .page(Page::Animation),
-        ) {
+                .with_options()
+                .page(Page::PanelsAnimationCurves),
+            tile,
+            true,
+        );
+        if curves.clicked() {
             anim.show_curves = !anim.show_curves;
+        }
+        if curves.secondary_clicked() {
+            panels_open.toggle(OptionPanel::AnimationCurves);
         }
     });
 }

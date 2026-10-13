@@ -35,6 +35,10 @@ pub struct ModelStats {
     /// the stats panel can show what the file claimed. `0.0` means the source
     /// declared no unit (e.g. the built-in demo, or a file missing the metadata).
     pub source_unit_meters: f32,
+    /// The axis system the file declared, or `None` when it declared none.
+    /// Import does not convert axes, so this is the system every coordinate of
+    /// the model is written in.
+    pub source_axes: Option<CoordinateAxes>,
 }
 
 /// Measured counts for one draw group — the triangles sharing a

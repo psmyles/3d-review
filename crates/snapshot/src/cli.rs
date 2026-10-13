@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, bail};
-use review_render::ViewportBackground;
+use review_render::{TrajectoryStyle, ViewportBackground};
 
 pub const USAGE: &str = "\
 review-snapshot - headless renders through the viewer's own renderer
@@ -47,6 +47,10 @@ OPTIONS
                         File > Add Animations does (repeatable); its clips number on
                         from the subject's own in --clip
   --curves              with --clip: draw the clip's animation curves
+  --curve-style <shape>[:<width>:<opacity>:<dot>]
+                        how --curves draws them, as the Animation Curves window
+                        sets it: straight (default) or smooth, then the line width
+                        in points, its opacity (0-1) and the frame dots' size
   --skeleton            draw the skeleton overlay
   --select <names>      ','-separated node names, selected as an Outliner click
                         would: bones narrow the curves to their own, a mesh or group
@@ -74,6 +78,7 @@ pub struct Args {
     /// Animation files attached to every subject, in order.
     pub attach: Vec<PathBuf>,
     pub curves: bool,
+    pub curve_style: TrajectoryStyle,
     pub skeleton: bool,
     pub select: Vec<String>,
 }
@@ -169,6 +174,7 @@ pub fn parse(mut arguments: impl Iterator<Item = String>) -> Result<Option<Args>
         clip: None,
         attach: Vec::new(),
         curves: false,
+        curve_style: TrajectoryStyle::default(),
         skeleton: false,
         select: Vec::new(),
     };
@@ -213,6 +219,7 @@ pub fn parse(mut arguments: impl Iterator<Item = String>) -> Result<Option<Args>
             "--clip" => args.clip = Some(parse_clip(&value("--clip")?)?),
             "--attach" => args.attach.push(value("--attach")?.into()),
             "--curves" => args.curves = true,
+            "--curve-style" => args.curve_style = parse_curve_style(&value("--curve-style")?)?,
             "--skeleton" => args.skeleton = true,
             "--select" => args.select.extend(
                 value("--select")?
@@ -404,4 +411,26 @@ fn parse_input(text: &str) -> Result<InputSpec> {
         stack,
         level,
     })
+}
+
+/// `smooth` or `straight`, then optionally `:width:opacity:dot size`.
+fn parse_curve_style(text: &str) -> Result<TrajectoryStyle> {
+    let mut parts = text.split(':');
+    let mut style = TrajectoryStyle {
+        smooth: match parts.next().map(str::trim) {
+            Some("smooth") => true,
+            Some("straight") => false,
+            other => bail!("--curve-style: {other:?} is neither smooth nor straight"),
+        },
+        ..TrajectoryStyle::default()
+    };
+    for slot in [&mut style.width, &mut style.opacity, &mut style.dot_size] {
+        if let Some(part) = parts.next() {
+            *slot = part
+                .trim()
+                .parse()
+                .with_context(|| format!("--curve-style: {part:?} is not a number"))?;
+        }
+    }
+    Ok(style)
 }

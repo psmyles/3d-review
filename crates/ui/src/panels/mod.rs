@@ -4,6 +4,7 @@
 //! `egui::Window` owned by the overlay; the Outliner / Inspector are native
 //! `egui::SidePanel`s. So this module only fills in controls.
 
+mod animation_curves;
 mod anti_aliasing;
 pub(crate) mod aud_inspector;
 mod background;
@@ -70,6 +71,7 @@ pub(crate) fn draw_panel_body(ui: &mut egui::Ui, state: &mut UiState, panel: Opt
         OptionPanel::VertexNormals => normals::vertex_body(ui, state),
         OptionPanel::UvSeams => uv_seams::body(ui, state),
         OptionPanel::Skeleton => skeleton::body(ui, state),
+        OptionPanel::AnimationCurves => animation_curves::body(ui, state),
         OptionPanel::VertexColors => vertex_colors::body(ui, state),
         OptionPanel::Camera => camera::body(ui, state),
         OptionPanel::AntiAliasing => anti_aliasing::body(ui, state),

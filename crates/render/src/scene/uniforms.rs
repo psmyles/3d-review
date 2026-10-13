@@ -120,13 +120,8 @@ pub(super) const OVERLAY_LINE_WIDTH: f32 = 1.0;
 pub(super) const AUDIT_EDGE_WIDTH: f32 = 2.5;
 /// Size, in points, of the Aud workspace's offender dots.
 pub(super) const AUDIT_DOT_WIDTH: f32 = 7.0;
-/// Width, in points, of an animation curve. Heavier than an overlay line: a curve
-/// is read by its colour, and a one-point line is too thin to carry one.
-pub(super) const TRAJECTORY_WIDTH: f32 = 1.5;
-/// Size, in points, of the dot on every frame of an animation curve — clearly
-/// wider than the curve, so the spacing between them reads as speed.
-pub(super) const TRAJECTORY_DOT_WIDTH: f32 = 4.0;
-/// Size, in points, of the marker at the current frame of each curve.
+/// Size, in points, of the marker at the current frame of each curve. The curve's
+/// own width and its dots' size are the user's ([`crate::TrajectoryStyle`]).
 pub(super) const TRAJECTORY_MARKER_WIDTH: f32 = 9.0;
 
 /// The line programs' uniforms for one view: the wireframe at the user's width and
@@ -149,6 +144,13 @@ pub(super) struct LineWidths {
 
 impl LineWidths {
     pub(super) fn new(scene: &SceneFrame<'_>, target_size: (u32, u32)) -> Self {
+        // Without curves nothing is drawn with these; the defaults keep the
+        // uniforms well-formed all the same.
+        let style = scene
+            .trajectories
+            .map(|overlay| overlay.style)
+            .unwrap_or_default();
+        let trajectory = line_uniforms(target_size, style.width, scene.pixels_per_point);
         Self {
             wireframe: line_uniforms(
                 target_size,
@@ -158,12 +160,15 @@ impl LineWidths {
             overlay: line_uniforms(target_size, OVERLAY_LINE_WIDTH, scene.pixels_per_point),
             audit_edge: line_uniforms(target_size, AUDIT_EDGE_WIDTH, scene.pixels_per_point),
             audit_dot: line_uniforms(target_size, AUDIT_DOT_WIDTH, scene.pixels_per_point),
-            trajectory: line_uniforms(target_size, TRAJECTORY_WIDTH, scene.pixels_per_point),
-            trajectory_dot: line_uniforms(
-                target_size,
-                TRAJECTORY_DOT_WIDTH,
-                scene.pixels_per_point,
-            ),
+            trajectory: LineUniforms {
+                params: [
+                    trajectory.params[0],
+                    trajectory.params[1],
+                    trajectory.params[2],
+                    style.opacity.clamp(0.0, 1.0),
+                ],
+            },
+            trajectory_dot: line_uniforms(target_size, style.dot_size, scene.pixels_per_point),
             trajectory_marker: line_uniforms(
                 target_size,
                 TRAJECTORY_MARKER_WIDTH,
@@ -194,7 +199,8 @@ pub(super) fn line_uniforms(
             } else {
                 0.0
             },
-            0.0,
+            // Opaque: only the animation curves take the user's opacity.
+            1.0,
         ],
     }
 }

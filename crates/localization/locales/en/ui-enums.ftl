@@ -44,6 +44,11 @@ ui-enums-scope-all-meshes = All Meshes
 ui-enums-scope-only-selection = Only Selection
 ui-enums-scope-visible-only = Only Visible
 
+## Animation curve shapes
+
+ui-enums-curve-shape-smooth = Smooth
+ui-enums-curve-shape-straight = Straight
+
 ## Rendering quality
 
 ui-enums-msaa-off = Off

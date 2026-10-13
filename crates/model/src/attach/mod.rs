@@ -25,11 +25,21 @@
 //! animation file's default pose, which is whatever frame its exporter was parked
 //! on: [`crate::anim::evaluate_pose`] falls back to the *model's* rest for an
 //! untracked node, which is exactly that.
+//!
+//! Before a clip is re-pointed its keys are brought into the model's units and
+//! axes ([`convert`]), and what does not line up between the two files is
+//! measured into a [`BindingReport`] ([`report`]) for the viewer to warn about.
+
+mod convert;
+mod report;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::{AnimationClip, ModelData, NodeKind, SceneNode};
+
+use convert::Conversion;
+pub use report::{AxisChange, BindingReport, BoneOffset, Coverage, UnitChange, VertexCount};
 
 /// Which clip, of every clip the viewer holds: `file` 0 is the model's own file,
 /// `file` `n` is its `n`-th attached animation file.
@@ -54,16 +64,23 @@ pub struct AttachedAnimation {
     pub nodes: Vec<SceneNode>,
     /// Per node of [`Self::nodes`], the model node it drives.
     pub node_map: Vec<Option<u32>>,
-    /// The file's clips, re-pointed at the model.
+    /// The file's clips, converted into the model's units and axes and
+    /// re-pointed at it.
     pub clips: Vec<AnimationClip>,
+    /// How the file bound: coverage, what did not match, what did not line up.
+    pub report: BindingReport,
 }
 
 impl AttachedAnimation {
-    /// Attach `source` to `model`: re-point its clips and keep its scene graph,
+    /// Attach `source` to `model`: measure how it binds, convert its clips into
+    /// the model's units and axes, re-point them, and keep its scene graph,
     /// dropping everything else it carried. Consumes `source` so the clips move
     /// rather than copy.
     pub fn new(model: &ModelData, source: ModelData, name: String) -> Self {
         let binding = Binding::new(model, &source);
+        // Measured first, from the file as it was authored.
+        let report = BindingReport::new(model, &source, &binding);
+        let conversion = Conversion::between(model, &source);
         let ModelData {
             nodes,
             animations,
@@ -72,7 +89,10 @@ impl AttachedAnimation {
         } = source;
         let clips = animations
             .into_iter()
-            .map(|clip| binding.repoint(clip))
+            .map(|mut clip| {
+                conversion.apply(&mut clip, &nodes);
+                binding.repoint(clip)
+            })
             .collect();
         Self {
             name,
@@ -80,6 +100,7 @@ impl AttachedAnimation {
             nodes,
             node_map: binding.nodes,
             clips,
+            report,
         }
     }
 }

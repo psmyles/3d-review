@@ -470,6 +470,7 @@ impl App {
                 revision: self.animation.paths_revision,
                 paths: &sampled.paths,
                 shown: &shown_paths,
+                style: self.ui.curves.style(),
             });
 
         // The Aud focus's offenders, borrowed from the highlight `app` resolved.

@@ -169,6 +169,23 @@ for such a model, then keeps it for the model's lifetime so a workspace switch
 does not rebuild the mesh. The derived views copied the old, empty lanes, so the
 same rebuild resets `views_revision` to make them follow.
 
+### A file's unit lives in its root, not in its keys
+
+Import normalizes every file to meters with ufbx's default space conversion,
+which puts the scale on the scene **root**'s transform. Every other node's local
+translation — rest and keys alike — stays in its own file's unit: the Eve rig's
+spine sits `7.37` from its hip, in centimeters. Played on its own that is
+invisible, since the root scales it back. Attached to a model in another unit it
+is not: the model's root applies the model's factor to the file's numbers, and a
+meter file's clip moves a hundredth as far on a centimeter rig. So
+`attach::convert` scales every translation key by the file's unit over the
+model's, and the bone-offset check reads both sides through their own unit
+before comparing. Import does not convert axes at all, so a Z-up file's
+top-level nodes are written in Z-up coordinates and their keys are turned into
+the model's axes; nodes below them are written in their parent's frame and are
+left alone. `crates/import/tests/attach_checks.rs` pins both through the real
+importer, with a meter Z-up file played on a centimeter Y-up rig.
+
 ---
 
 ## GPU struct layout and the render passes

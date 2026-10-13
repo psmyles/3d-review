@@ -47,6 +47,32 @@ the file does not animate stays in the model's resting pose.
 Only one clip plays at a time. A face animation therefore plays on a body
 standing in its resting pose.
 
+### When the two files do not line up
+
+As an animation file is added, 3D Review checks that it fits the model, and if
+anything does not, a warning says so straight away - before you play anything,
+so a clip that looks wrong is never the first sign of it:
+
+- **Units.** One file is in centimeters and the other in meters, say. The
+  animation is converted, so it plays at the model's scale, as a game engine
+  importing both files would show it.
+- **Axes.** One file is Z-up and the other Y-up, say. The animation is turned to
+  match the model. Two files whose axes are mirror images of each other cannot be
+  matched by turning, and the warning says that instead.
+- **Bone lengths.** A bone the animation holds at a different distance from its
+  parent than the model does. The animation is played as keyed, so the model's
+  proportions change while it plays - which is what the engine would show too.
+  Bones that move as part of the animation, such as the hips, are not compared.
+- **Mesh vertex counts.** A face animation carries copies of the model's head
+  meshes. If a copy has a different number of vertices from the model's own, the
+  animation was probably exported from another version of the mesh, and its
+  expressions may not be the ones the model has.
+- **Bones with no match.** A bone the animation moves that the model does not
+  have. Its keys are not played; it was most likely renamed or removed.
+
+Bones and expressions the animation leaves alone, and the controls an animation
+package adds beside the skeleton, are expected, and are not warned about.
+
 The [Opt workspace](opt/index.md) exports only the model's own animations, not
 the ones added from other files.
 
@@ -85,6 +111,10 @@ Outliner, or click them in the viewport with the skeleton on, and only their
 paths are drawn. Selecting an object or a group shows the paths of everything
 inside it. If nothing you select has a path, all of them stay on screen. An
 object you hide in the Outliner hides its path too.
+
+Right-click the curves button to set how they are drawn: smooth or straight
+between the dots, how thick and how solid the lines are, and how large the dots
+are. See [Animation Curves](panels/animation-curves.md).
 
 ## Framing an animation
 

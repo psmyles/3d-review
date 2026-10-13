@@ -48,6 +48,7 @@ pub fn demo_cube_model() -> ModelData {
             bone_count: 0,
             clip_count: 0,
             source_unit_meters: 1.0,
+            source_axes: None,
         },
         materials: vec![MaterialImportDefaults {
             name: "Default".to_owned(),

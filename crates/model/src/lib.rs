@@ -28,7 +28,7 @@ pub mod uv_islands;
 // The crate's whole surface is re-exported here, so every `review_model::X`
 // path other crates use resolves exactly as it did when this was one file.
 pub use anim::{AnimContext, DeformPose, NodePath, Pose};
-pub use attach::{AttachedAnimation, Binding, ClipId, Clips};
+pub use attach::{AttachedAnimation, Binding, BindingReport, ClipId, Clips};
 pub use bvh::{
     Bvh, ClosestPoint, Hit, SceneBvh, SceneHit, closest_point_on_triangle, ray_triangle_t,
     triangle_positions,
@@ -43,7 +43,9 @@ pub use extras::{ExtrasCounts, SourceExtras};
 pub use geometry::{Bounds, TopologyFace, TriangleData, Vertex};
 pub use morph::{MorphChannel, MorphData, MorphKeyframe, MorphShape};
 pub use pick::PosedScene;
-pub use scene::{BoneInfo, LocalTransform, MaterialImportDefaults, NodeKind, SceneNode};
+pub use scene::{
+    Axis, BoneInfo, CoordinateAxes, LocalTransform, MaterialImportDefaults, NodeKind, SceneNode,
+};
 pub use skin::{SkinCluster, SkinData, SkinDeformerInfo, SkinningMethod};
 pub use stats::{MeshGroupStats, ModelStats, ScopeStats, StatsScope};
 
@@ -544,6 +546,7 @@ mod tests {
                 bone_count: 0,
                 clip_count: 0,
                 source_unit_meters: 1.0,
+                source_axes: None,
             },
             materials: Vec::new(),
             corner_to_logical: Vec::new(),

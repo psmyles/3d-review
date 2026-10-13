@@ -4,7 +4,7 @@
 //! slider values that tool is editing; `sync_debug_state` funnels the committed
 //! ones into the `SceneDebugOptions` the renderer reads.
 
-use review_render::{CheckerTexture, VertexColorMode};
+use review_render::{CheckerTexture, TrajectoryStyle, VertexColorMode};
 
 use crate::theme;
 
@@ -63,6 +63,72 @@ impl Default for SkeletonPanelState {
         Self {
             scale: DEFAULT_SKELETON_SCALE,
             color: theme::color::SKELETON_DEFAULT,
+        }
+    }
+}
+
+/// How an animation curve's line runs between its frame dots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CurveShape {
+    /// A smooth curve through the dots.
+    Smooth,
+    /// A straight line from each dot to the next (default).
+    #[default]
+    Straight,
+}
+
+impl CurveShape {
+    pub const ALL: [CurveShape; 2] = [CurveShape::Smooth, CurveShape::Straight];
+
+    /// The dropdown label for this shape.
+    pub fn label(self) -> review_localization::Key {
+        match self {
+            CurveShape::Smooth => crate::keys::ui_enums::CURVE_SHAPE_SMOOTH,
+            CurveShape::Straight => crate::keys::ui_enums::CURVE_SHAPE_STRAIGHT,
+        }
+    }
+}
+
+/// Editable state backing the Animation Curves options panel, handed to the
+/// renderer as a [`TrajectoryStyle`] with the curves themselves. The shape
+/// rebuilds them; the width, opacity and dot size are uniforms and rebuild
+/// nothing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CurvesPanelState {
+    pub shape: CurveShape,
+    /// The curve's width, in points.
+    pub width: f32,
+    /// The curve's opacity; the dots and markers stay opaque.
+    pub opacity: f32,
+    /// The size of the dot on each frame, in points.
+    pub dot_size: f32,
+}
+
+impl Default for CurvesPanelState {
+    /// The renderer's own default style, so the two cannot drift apart.
+    fn default() -> Self {
+        let style = TrajectoryStyle::default();
+        Self {
+            shape: if style.smooth {
+                CurveShape::Smooth
+            } else {
+                CurveShape::Straight
+            },
+            width: style.width,
+            opacity: style.opacity,
+            dot_size: style.dot_size,
+        }
+    }
+}
+
+impl CurvesPanelState {
+    /// What the renderer draws the curves with.
+    pub fn style(&self) -> TrajectoryStyle {
+        TrajectoryStyle {
+            smooth: self.shape == CurveShape::Smooth,
+            width: self.width,
+            opacity: self.opacity,
+            dot_size: self.dot_size,
         }
     }
 }

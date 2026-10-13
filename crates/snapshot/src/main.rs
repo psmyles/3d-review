@@ -125,6 +125,7 @@ fn run() -> Result<()> {
         args.background,
         args.grid,
         args.skeleton,
+        args.curve_style,
     )?;
     let columns: Vec<String> = args.views.iter().map(|view| view.name.clone()).collect();
     let cameras: Vec<_> = args

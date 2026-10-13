@@ -143,8 +143,21 @@ compact key store is worth doing later.
    are measured on every core in 128-frame pieces (9 body clips on the Eve rig,
    9.8 s to 0.9 s), and a rigid rig with attached clips builds its deform path
    when the first pose arrives.
-3. **The checks and the report data.** Units / axes, bone proportions, matched
-   mesh vertex counts, unmatched bones, coverage counts — reported up front.
+3. **The checks and the report data.** *Done.* `review_model::attach::report`
+   measures a `BindingReport` as a file attaches: coverage (model bones animated
+   of all; channels animated of those on the meshes the file carries), the
+   unmatched lists both ways, and the warnings — units, axes, bone offsets,
+   copied meshes' vertex counts, unmatched bones — which `ui::binding_warnings`
+   turns into one warning card per file. `attach::convert` scales translation
+   keys into the model's unit and turns top-level nodes' keys into its axes
+   (import now captures each file's declared axes, `ModelStats::source_axes`).
+   A bone offset is compared only for a bone under a bone whose keyed
+   translation holds still, so root motion is never read as a proportion.
+   Tested end to end by `import/tests/attach_checks.rs`: a metre Z-up file on a
+   centimetre Y-up rig lifts the root *up* and bends the tip to -X. The Eve pair
+   reports nothing, as measured by hand: the body file animates all 101 bones,
+   the face file 1374 of the 2460 channels on its six meshes. Alongside, the
+   animation curves got an options window (shape, width, opacity, dot size).
 4. **Interface.** File groups in the Outliner with marks, the report in the
    Inspector, the Animations tab grouped by file.
 5. **Later:** layering a face clip over a body clip; a compact key store.

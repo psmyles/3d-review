@@ -18,6 +18,9 @@ app-notifications-attached = { $clips ->
        *[other] Added { $clips } animations from { $file }
     }
 app-notifications-attached-files = Added { $clips } animations from { $count } files
+# An attached animation file that does not line up with the model everywhere, as
+# the title of a card listing what differs.
+app-notifications-attached-mismatch = { $file } does not fully match { $model }
 
 # Files opened together that were left out, as the title of a card listing them.
 app-notifications-not-loaded = { $count ->

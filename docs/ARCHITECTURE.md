@@ -171,13 +171,21 @@ Host-agnostic data only. Depends on `glam` and nothing else: no GPU API, no
   which of them a selection leaves showing — bones exactly, a mesh or group with
   its subtree (`ModelData::node_subtree_union`), every path when the selection
   names none.
-- `attach.rs` — playing one file's clips on another file's model. `Binding`
-  matches a file's nodes to the model's by name (namespaces removed, exact names
-  first, one source node per model node) and its blend-shape channels by mesh
-  name plus channel name; `AttachedAnimation` holds a file's clips **re-pointed**
-  at the model in place (tracks with no target dropped, no key copied) beside the
-  file's own node table; `ClipId { file, clip }` and the `Clips` view address
-  every clip on offer, file 0 being the model's own.
+- `attach/` — playing one file's clips on another file's model. `mod.rs`:
+  `Binding` matches a file's nodes to the model's by name (namespaces removed,
+  exact names first, one source node per model node) and its blend-shape
+  channels by mesh name plus channel name; `AttachedAnimation` holds a file's
+  clips **re-pointed** at the model in place (tracks with no target dropped, no
+  key copied) beside the file's own node table; `ClipId { file, clip }` and the
+  `Clips` view address every clip on offer, file 0 being the model's own.
+  `convert.rs`: before re-pointing, a clip's keys are brought into the model's
+  unit (every translation key scaled) and axes (the top-level nodes' keys turned
+  by `CoordinateAxes::rotation_to`) — see GOTCHAS on where a file's unit lives.
+  `report.rs`: the `BindingReport` measured as the file attaches — coverage of
+  the model's bones and channels, what matched nothing either way, and the
+  mismatches the viewer warns about up front (units, axes, bone offsets, copied
+  meshes' vertex counts, unmatched bones). `ui`'s `binding.rs` turns its
+  mismatches into the lines of the warning card `app` raises.
 - `bvh.rs` — a per-mesh-part triangle BVH, used for occlusion of the dimension
   labels and by the Opt AO bake.
 - The mesh facts more than one crate measures, written once: `topology.rs`
@@ -415,7 +423,12 @@ between mismatched formats is a silent no-op.
   (`NO_DEFORM`); the marker sits at the node's rest pivot on the node's own lane,
   so the pose moves it with no CPU rebuild during playback. Each node's colour is
   keyed on its depth-first rank in the hierarchy, and the skeleton tints a bone
-  whose curve is shown to match (`BoneTint::curves`).
+  whose curve is shown to match (`BoneTint::curves`). `TrajectoryStyle` (the
+  Animation Curves window) picks the line's shape — straight frame to frame, or
+  a centripetal Catmull-Rom through the frames, cut finer only where the path
+  turns — which is the one setting that rebuilds; the width, dot size and
+  opacity are uniforms (opacity is the line program's `params.w`, which every
+  other line leaves at 1).
 - `scene/` — `gpu.rs` (`SceneGpu`, the frame's sync and pass recording),
   `slot.rs` (`ModelSlot`: per-model GPU state — mesh buffers, derived views,
   selection/visibility draw lists, each with its bake key), `resources.rs` (the
@@ -784,6 +797,9 @@ subject on one frame of a clip and frames on its whole motion, and `--curves`,
 `--skeleton` and `--select names` draw the animation curves, the skeleton and a
 selection over it (`animation.rs`, through the same `selected_paths` rule the
 viewer uses): e.g. `review-snapshot --clip 4:6 --curves --skeleton dog.fbx`.
+`--curve-style straight:3:0.5:6` draws them as the Animation Curves window would,
+and `--attach file.fbx` attaches an animation file first, printing its binding
+report's coverage and any mismatch.
 
 ### Vendored trees
 

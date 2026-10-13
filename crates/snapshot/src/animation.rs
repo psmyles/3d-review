@@ -53,12 +53,29 @@ pub fn attach(model: &ModelData, files: &[(PathBuf, ModelData)]) -> Vec<Arc<Atta
                 .unwrap_or_default();
             let attached = AttachedAnimation::new(model, source.clone(), name);
             let matched = attached.node_map.iter().flatten().count();
+            let report = &attached.report;
             println!(
-                "attached {}: {} clips, {matched} of its {} nodes matched",
+                "attached {}: {} clips, {matched} of its {} nodes matched; animates {} of {} \
+                 bones, {} of {} channels",
                 path.display(),
                 attached.clips.len(),
-                attached.nodes.len()
+                attached.nodes.len(),
+                report.bones.animated,
+                report.bones.total,
+                report.channels.animated,
+                report.channels.total,
             );
+            if report.has_warnings() {
+                println!(
+                    "  mismatches: units {:?}, axes {:?}, bone offsets {:?}, vertex counts \
+                     {:?}, unmatched bones {:?}",
+                    report.units,
+                    report.axes,
+                    report.bone_offsets,
+                    report.vertex_counts,
+                    report.unmatched_bones,
+                );
+            }
             Arc::new(attached)
         })
         .collect()

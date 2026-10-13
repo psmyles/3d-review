@@ -189,6 +189,37 @@ pub struct TrajectoryOverlay<'a> {
     pub paths: &'a [NodePath],
     /// Which of `paths` to draw, as sorted indices into it.
     pub shown: &'a [u32],
+    /// How they are drawn.
+    pub style: TrajectoryStyle,
+}
+
+/// How the animation curves are drawn: the Animation Curves options window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TrajectoryStyle {
+    /// A smooth curve through each frame's point, or a straight line from one
+    /// to the next. Changing it rebuilds the curves; nothing else here does.
+    pub smooth: bool,
+    /// The curve's width, in points.
+    pub width: f32,
+    /// The curve's opacity, `0..=1`. The frame dots and the current-frame
+    /// markers stay opaque: they are what the curve is read by.
+    pub opacity: f32,
+    /// The size of the dot on every frame, in points.
+    pub dot_size: f32,
+}
+
+impl Default for TrajectoryStyle {
+    fn default() -> Self {
+        // Straight lines between frames, as thin as every other overlay line,
+        // with dots three times as wide so the spacing between them reads as
+        // speed. Chosen by eye against real clips.
+        Self {
+            smooth: false,
+            width: 1.0,
+            opacity: 1.0,
+            dot_size: 3.0,
+        }
+    }
 }
 
 /// Per-frame inputs for the 3D scene render — everything `app` resolves from the
