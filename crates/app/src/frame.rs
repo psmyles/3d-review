@@ -89,6 +89,9 @@ impl App {
         let Some((full_output, ui_output)) = self.run_egui_pass(&window, &egui_ctx) else {
             return;
         };
+        // The pass has just measured the chrome; anything framed from here on
+        // (an `F` before the next frame, a model landing) fits what it leaves.
+        self.sync_framing_area(&egui_ctx);
 
         // The pass above is what decides whether egui took the last press — a
         // panel divider or a window's resize edge grabs it here, a frame after

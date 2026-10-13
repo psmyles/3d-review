@@ -13,6 +13,8 @@ use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 use winit::window::Window;
 
+use review_render::FramingArea;
+use review_ui::theme::size;
 use review_ui::{OptLayout, WorkspaceMode};
 
 use crate::App;
@@ -21,7 +23,9 @@ use crate::window_state::monitor_refresh_interval;
 impl App {
     /// A window resize: re-derive the monitor frame cap (a resize may follow a move
     /// to another monitor), flag the windowed bounds for a deferred resample, update
-    /// the camera aspect ratios + framing safe-area, and resize the swapchain.
+    /// the camera aspect ratios, and resize the swapchain. The framing area follows
+    /// on the redraw this requests (`sync_framing_area`), once the chrome has been
+    /// laid out at the new size.
     pub(crate) fn handle_resized(&mut self, size: PhysicalSize<u32>, window: &Window) {
         self.redraw.refresh_interval = monitor_refresh_interval(window);
         // Defer recording to `about_to_wait`: a maximize resize lands before winit's
@@ -34,8 +38,6 @@ impl App {
             let aspect = size.width as f32 / size.height as f32;
             renderer.set_camera_aspect_ratio(aspect);
             renderer.set_uv_aspect_ratio(aspect);
-            let (safe_w, safe_h) = framing_safe_area(size.height, window.scale_factor() as f32);
-            renderer.set_framing_safe_area(safe_w, safe_h);
         }
 
         // Infallible: a zero size (a minimized window) is remembered and the frame
@@ -289,6 +291,38 @@ impl App {
         self.last_pointer_position = Some(current);
     }
 
+    /// Hand the renderer where framing should put the model, from the chrome this
+    /// frame's egui pass has just laid out. Every frame rather than on a resize: a
+    /// side panel can be dragged wider or closed at any time, and the next `F`
+    /// has to see it.
+    pub(crate) fn sync_framing_area(&mut self, egui_ctx: &egui::Context) {
+        // Only the scene workspaces measure a viewport. Outside them the last
+        // one stands, which is the layout a model loaded from there is framed for.
+        if !self.ui.mode.is_scene() {
+            return;
+        }
+        let Some(viewport) = self.ui.scene_viewport else {
+            return;
+        };
+        let area = framing_area(egui_ctx.content_rect(), viewport, self.scene_is_split());
+        let projection = self.ui.projection_mode.into();
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.set_framing_area(area, projection);
+        }
+    }
+
+    /// Whether the scene is drawn as two views side by side — the Opt split, or
+    /// the Aud split while a UV finding is focused — rather than one across the
+    /// window. The same tests [`Self::opt_split_halves`] and
+    /// [`Self::aud_split_halves`] make.
+    fn scene_is_split(&self) -> bool {
+        match self.ui.mode {
+            WorkspaceMode::Opt => self.ui.opt.layout == OptLayout::Split,
+            WorkspaceMode::Aud => self.ui.aud.split(),
+            _ => false,
+        }
+    }
+
     /// Whether the Opt workspace is currently showing two views that share a
     /// camera. False in every other workspace, and in the single-view overlay —
     /// which has only one camera to begin with.
@@ -468,72 +502,132 @@ pub(crate) enum DragMode {
     Zoom,
 }
 
-/// Fraction of the window framing should fill, leaving room for the chrome that
-/// overlays the full-window 3D scene (toolbar on top, status bar on the bottom)
-/// so a framed model doesn't hide under it. Width is left unconstrained — the
-/// option panel floats and is transient.
+/// Where framing puts the model, from the chrome as a frame's egui pass laid it
+/// out: `screen` is the whole window and `viewport` the part of it no chrome
+/// covers, both in egui points.
 ///
-/// Both terms are egui points: the window height converted from physical pixels,
-/// and the bands' height from [`review_ui::theme::chrome_height`], which is the
-/// sum of the two band tokens as drawn. `scale_factor` therefore enters only
-/// through the height conversion — the chrome is a fixed number of points, so it
-/// takes a *larger* share of a HiDPI window, which has fewer points for the same
-/// pixels. That is the whole point: the bands stay one apparent size on screen.
-pub(crate) fn framing_safe_area(height_px: u32, scale_factor: f32) -> (f32, f32) {
+/// A single view is drawn across the whole window with the toolbar, status bar
+/// and side panels painted over its edges, so the model goes in the part they
+/// leave. Width used to be left unconstrained, which is what put a wide model's
+/// sides under the Outliner and Inspector. A split draws each view into its own
+/// half of `viewport` (the renderer's `SceneViewport`) — nothing covers it, but
+/// it is half as wide, and a fit at the window's shape overflowed both sides.
+pub(crate) fn framing_area(screen: egui::Rect, viewport: egui::Rect, split: bool) -> FramingArea {
+    if split {
+        let (left, _) = review_ui::split_halves(viewport);
+        return FramingArea::whole(left.width() / left.height().max(1.0));
+    }
+    let size = screen.size().max(egui::vec2(1.0, 1.0));
+    let fraction = |point: egui::Pos2| {
+        Vec2::new(
+            (point.x - screen.left()) / size.x,
+            (point.y - screen.top()) / size.y,
+        )
+    };
+    FramingArea {
+        aspect_ratio: size.x / size.y,
+        visible_min: fraction(viewport.min),
+        visible_max: fraction(viewport.max),
+    }
+}
+
+/// [`framing_area`] for the startup view, framed before egui's first pass has
+/// measured anything. The toolbar and status bar are fixed tokens and can be
+/// kept clear already; the side panels are measured once drawn, and the first
+/// frame replaces this.
+///
+/// The window is converted to points to match the tokens: the chrome is a fixed
+/// number of points, so it takes a *larger* share of a HiDPI window, which has
+/// fewer points for the same pixels. That is the whole point — the bands stay one
+/// apparent size on screen.
+pub(crate) fn startup_framing_area(size: PhysicalSize<u32>, scale_factor: f32) -> FramingArea {
     // A degenerate scale (a window that reports 0, or worse) means "unknown", not
-    // "infinitely dense": fall back to 1:1 rather than dividing the height up.
+    // "infinitely dense": fall back to 1:1 rather than dividing the size up.
     let scale = if scale_factor > 0.0 {
         scale_factor
     } else {
         1.0
     };
-    let logical_height = height_px as f32 / scale;
-    let chrome = review_ui::theme::chrome_height();
-    let height_fraction = if logical_height > chrome {
-        (logical_height - chrome) / logical_height
+    let screen = egui::Rect::from_min_size(
+        egui::Pos2::ZERO,
+        egui::vec2(size.width as f32, size.height as f32) / scale,
+    );
+    let viewport = egui::Rect::from_x_y_ranges(
+        screen.x_range(),
+        size::TOOLBAR_HEIGHT..=screen.bottom() - size::STATUS_BAR_HEIGHT,
+    );
+    // A window shorter than its own chrome has no band left to frame into.
+    let viewport = if viewport.height() > 0.0 {
+        viewport
     } else {
-        1.0
+        screen
     };
-    (1.0, height_fraction.clamp(0.4, 1.0))
+    framing_area(screen, viewport, false)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::framing_safe_area;
+    use glam::Vec2;
+    use review_ui::theme::size;
+    use winit::dpi::PhysicalSize;
+
+    use super::{framing_area, startup_framing_area};
+
+    fn rect(left: f32, top: f32, right: f32, bottom: f32) -> egui::Rect {
+        egui::Rect::from_min_max(egui::pos2(left, top), egui::pos2(right, bottom))
+    }
+
+    /// A single view keeps the model out from under every panel, and the
+    /// uncovered part need not be centred in the window: closing the Inspector
+    /// alone moves it right.
+    #[test]
+    fn a_single_view_frames_into_what_the_panels_leave() {
+        let screen = rect(0.0, 0.0, 1600.0, 900.0);
+        let area = framing_area(screen, rect(300.0, 48.0, 1600.0, 858.0), false);
+        assert_eq!(area.aspect_ratio, 1600.0 / 900.0);
+        assert_eq!(area.visible_min, Vec2::new(300.0 / 1600.0, 48.0 / 900.0));
+        assert_eq!(area.visible_max, Vec2::new(1.0, 858.0 / 900.0));
+    }
+
+    /// Each half of a split is an image of its own, uncovered and half as wide
+    /// as the area it divides — not the window's shape.
+    #[test]
+    fn a_split_frames_into_one_half_at_its_own_shape() {
+        let screen = rect(0.0, 0.0, 1600.0, 900.0);
+        let area = framing_area(screen, rect(300.0, 48.0, 1300.0, 858.0), true);
+        assert_eq!(area.aspect_ratio, 500.0 / 810.0);
+        assert_eq!(area.visible_min, Vec2::ZERO);
+        assert_eq!(area.visible_max, Vec2::ONE);
+    }
 
     /// The chrome is a fixed number of *points*, so it reserves a bigger fraction
     /// of a HiDPI window: the same 1000 physical pixels are 1000 points at 100%
     /// but only 500 at 200%, and a band that keeps one apparent size on screen has
-    /// to eat twice the share of them.
-    ///
-    /// Derived from [`review_ui::theme::chrome_height`] rather than written out,
-    /// so retuning a band's token can't silently invalidate the expectation — an
-    /// earlier revision of this test hardcoded the figures and went stale the first
-    /// time the toolbar was resized.
+    /// to eat twice the share of them. Derived from the tokens rather than written
+    /// out, so retuning a band can't silently invalidate the expectation.
     #[test]
-    fn the_framing_safe_area_reserves_the_chrome_in_points() {
-        let chrome = review_ui::theme::chrome_height();
-        let (width, unscaled) = framing_safe_area(1000, 1.0);
-        let (_, scaled) = framing_safe_area(1000, 2.0);
-        assert_eq!(width, 1.0);
-        assert!(
-            (unscaled - (1000.0 - chrome) / 1000.0).abs() < 1e-6,
-            "{unscaled}"
-        );
-        assert!((scaled - (500.0 - chrome) / 500.0).abs() < 1e-6, "{scaled}");
-        assert!(
-            scaled < unscaled,
-            "{scaled} should reserve more than {unscaled}"
-        );
+    fn the_startup_area_keeps_the_bands_clear_in_points() {
+        let unscaled = startup_framing_area(PhysicalSize::new(1600, 1000), 1.0);
+        let scaled = startup_framing_area(PhysicalSize::new(1600, 1000), 2.0);
+        assert!((unscaled.visible_min.y - size::TOOLBAR_HEIGHT / 1000.0).abs() < 1e-6);
+        assert!((unscaled.visible_max.y - (1.0 - size::STATUS_BAR_HEIGHT / 1000.0)).abs() < 1e-6);
+        assert!((scaled.visible_min.y - size::TOOLBAR_HEIGHT / 500.0).abs() < 1e-6);
+        assert_eq!((unscaled.visible_min.x, unscaled.visible_max.x), (0.0, 1.0));
+        assert_eq!(unscaled.aspect_ratio, 1.6);
     }
 
     /// A window shorter than its own chrome has no band left to frame into, so it
-    /// frames against the whole window rather than a zero (or negative) fraction.
-    /// A degenerate scale factor falls back to 1:1 rather than inflating the height.
+    /// frames against the whole window rather than an empty or inverted one. A
+    /// degenerate scale factor falls back to 1:1 rather than inflating the size.
     #[test]
     fn a_window_shorter_than_the_chrome_frames_whole() {
         let short = review_ui::theme::chrome_height() as u32 - 1;
-        assert_eq!(framing_safe_area(short, 1.0), (1.0, 1.0));
-        assert_eq!(framing_safe_area(short, 0.0), (1.0, 1.0));
+        for scale in [1.0, 0.0] {
+            let area = startup_framing_area(PhysicalSize::new(800, short), scale);
+            assert_eq!(
+                (area.visible_min, area.visible_max),
+                (Vec2::ZERO, Vec2::ONE)
+            );
+        }
     }
 }

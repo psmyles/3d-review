@@ -19,9 +19,21 @@ use crate::{CameraProjection, GRID_BOUNDS, GRID_FAR_RADIUS};
 pub const DEFAULT_FOV_Y_DEGREES: f32 = 50.0;
 
 const CAMERA_TRANSITION_SECONDS: f32 = 0.3;
-/// Uniform breathing room left around a framed fit (4%), on top of any
-/// safe-area inset, so content never sits hard against the viewport edges.
+/// Uniform breathing room left around a framed fit (4%), inside the visible
+/// area, so content never sits hard against the chrome's edges.
 const FRAME_MARGIN: f32 = 1.04;
+/// The narrowest a framing area may get, as a half-span in normalised device
+/// coordinates: a window squeezed down to almost nothing between its panels
+/// still frames the model at 5% of its width rather than at infinity.
+const MIN_FRAMING_HALF_SPAN: f32 = 0.05;
+/// Halvings the centring pan is solved to. The bracket is the pan range the fit
+/// allows, so this resolves it to far below a pixel at any scale.
+const CENTRING_STEPS: usize = 48;
+/// Floor under the share of an orthographic framing's distance that is left to
+/// clear the model once the pivot's own offset is paid for. An area centred so
+/// far off the view axis that the pivot runs away from the model as fast as the
+/// eye backs off has no distance that clears it; this keeps that one finite.
+const MIN_CLEARANCE_SHARE: f32 = 0.25;
 
 /// Largest far/near ratio we use when fitting the near plane. Perspective uses
 /// infinite Reversed-Z, so the far value no longer clips geometry there; the
@@ -149,6 +161,74 @@ impl UvCamera {
     }
 }
 
+/// Where a framed model has to land: the shape of the image a 3D camera draws,
+/// and the part of that image the user can actually see.
+///
+/// The two differ because the chrome is painted *over* the scene. A single view
+/// spans the whole window, and the toolbar, status bar, Outliner and Inspector
+/// each cover one edge of it, so a fit to the window puts the model's sides under
+/// the side panels. The Opt and Aud splits draw each view into its own half of
+/// the visible area instead: nothing covers that, but it is half as wide, so a
+/// fit made at the window's shape overflows both sides of it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FramingArea {
+    /// Width over height of the image the camera draws.
+    pub aspect_ratio: f32,
+    /// The visible part of that image as fractions of its size, top-left
+    /// (`0,0`) to bottom-right (`1,1`): y down, as the chrome measures it.
+    pub visible_min: Vec2,
+    pub visible_max: Vec2,
+}
+
+impl FramingArea {
+    /// All of an image `aspect_ratio` wide per unit of height.
+    pub fn whole(aspect_ratio: f32) -> Self {
+        Self {
+            aspect_ratio,
+            visible_min: Vec2::ZERO,
+            visible_max: Vec2::ONE,
+        }
+    }
+
+    /// The same area shrunk about its own centre to `fraction` of its size.
+    pub fn shrunk(self, fraction: f32) -> Self {
+        let center = (self.visible_min + self.visible_max) * 0.5;
+        let half = (self.visible_max - self.visible_min) * 0.5 * fraction;
+        Self {
+            visible_min: center - half,
+            visible_max: center + half,
+            ..self
+        }
+    }
+
+    /// The visible area, less the framing margin, as the tangents of the view
+    /// angles to its edges: `[left, right]` and `[bottom, top]`. A point
+    /// `(x, y)` across from the view axis at depth `z` is in it when `x / z`
+    /// and `y / z` fall inside those spans, which is the form the fit is solved
+    /// in.
+    fn tangent_spans(self, fov_y_radians: f32) -> ([f32; 2], [f32; 2]) {
+        let tan_up = (fov_y_radians * 0.5).clamp(0.01, 1.5).tan();
+        let tan_right = tan_up * self.aspect_ratio.max(0.1);
+        let min = self.visible_min.clamp(Vec2::ZERO, Vec2::ONE);
+        let max = self.visible_max.clamp(Vec2::ZERO, Vec2::ONE);
+        // Fractions (y down) to normalised device coordinates (y up).
+        let [left, right] = margined_span(min.x * 2.0 - 1.0, max.x * 2.0 - 1.0);
+        let [bottom, top] = margined_span(1.0 - max.y * 2.0, 1.0 - min.y * 2.0);
+        (
+            [left * tan_right, right * tan_right],
+            [bottom * tan_up, top * tan_up],
+        )
+    }
+}
+
+/// The span `lo..hi` pulled in about its centre by [`FRAME_MARGIN`], and held
+/// open to [`MIN_FRAMING_HALF_SPAN`] so a degenerate area still frames.
+fn margined_span(lo: f32, hi: f32) -> [f32; 2] {
+    let center = (lo + hi) * 0.5;
+    let half = ((hi - lo) * 0.5 / FRAME_MARGIN).max(MIN_FRAMING_HALF_SPAN);
+    [center - half, center + half]
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct OrbitCamera {
     pub target: Vec3,
@@ -180,7 +260,11 @@ impl Default for OrbitCamera {
             fov_y_radians: DEFAULT_FOV_Y_DEGREES.to_radians(),
             scene_radius: 1.0,
         };
-        base.framed_to_bounds(GRID_BOUNDS, Vec2::ONE)
+        base.framed_to_bounds(
+            GRID_BOUNDS,
+            FramingArea::whole(base.aspect_ratio),
+            CameraProjection::Perspective,
+        )
     }
 }
 
@@ -218,18 +302,45 @@ impl OrbitCamera {
         self.fov_y_radians = fov_y_radians;
     }
 
+    /// Frame `bounds` across this camera's whole image, in perspective.
     pub fn frame_bounds(&mut self, bounds: Bounds) {
-        *self = self.framed_to_bounds(bounds, Vec2::ONE);
+        *self = self.framed_to_bounds(
+            bounds,
+            FramingArea::whole(self.aspect_ratio),
+            CameraProjection::Perspective,
+        );
     }
 
-    /// Frame the camera so `bounds` fills the viewport, tight and centred.
+    /// Frame the camera so `bounds` fills the visible part of `area`, as tight
+    /// as it can be and centred in it, seen through `projection`.
     ///
-    /// `safe_area` is the fraction of the viewport (x = width, y = height) that
-    /// framing should aim to fill — `Vec2::ONE` is the whole window. The 3D
-    /// scene is painted full-window with the toolbar / status-bar chrome drawn
-    /// *over* its top and bottom, so passing the visible fraction there keeps
-    /// the model out from under the chrome.
-    pub fn framed_to_bounds(mut self, bounds: Bounds, safe_area: Vec2) -> Self {
+    /// Only the target and distance move. The fit is made at `area`'s aspect
+    /// ratio rather than the camera's own: the Opt split draws this camera into a
+    /// half-width view and re-aspects it there, and `app` keeps the field at the
+    /// window's shape.
+    ///
+    /// The projection matters because the two see a box differently: perspective
+    /// binds on the corners nearest the eye, which look biggest, and orthographic
+    /// sees every corner at the size it has at the pivot. A perspective fit seen
+    /// orthographically can overflow the area by a third of its size (measured
+    /// over the cases the tests below frame), which is what `F` used to do
+    /// there. Each is fit exactly for itself, so a projection toggle, which keeps
+    /// the distance, can leave the model loose or over an edge until the next `F`.
+    /// Holding both fits at once was tried and costs too much: up to a quarter of
+    /// the fill, and orthographic off-centre by a fifth.
+    ///
+    /// An orthographic view's size is tied to the distance (its half-height is
+    /// `distance · tan(fov/2)`), but its eye is still a point on the axis with a
+    /// near plane in front of it, so the distance is also held where orbiting
+    /// cannot slice the model ([`orthographic_clearance`]). Looking down a tall
+    /// box, that, not the area, is what binds — a cost of the coupling, which
+    /// the perspective fit this replaced paid too.
+    pub fn framed_to_bounds(
+        mut self,
+        bounds: Bounds,
+        area: FramingArea,
+        projection: CameraProjection,
+    ) -> Self {
         let center = bounds.center();
         let half_size = bounds.size() * 0.5;
         let rotation = self.rotation();
@@ -238,61 +349,52 @@ impl OrbitCamera {
         let right = rotation.transform_vector3(Vec3::X);
         let up = rotation.transform_vector3(Vec3::Y);
         let forward = self.forward_dir();
-        // Loosen the usable FOV by the safe-area fractions and the uniform
-        // margin, so the silhouette is fit *inside* the visible band rather than
-        // the full window.
-        let safe_h = (safe_area.x / FRAME_MARGIN).clamp(0.05, 1.0);
-        let safe_v = (safe_area.y / FRAME_MARGIN).clamp(0.05, 1.0);
-        let half_fov = (self.fov_y_radians * 0.5).clamp(0.01, 1.5).tan();
-        let tan_v = half_fov * safe_v;
-        let tan_h = half_fov * self.aspect_ratio.max(0.1) * safe_h;
+        let (span_x, span_y) = area.tangent_spans(self.fov_y_radians);
 
-        // Per-corner offsets from the box centre projected onto the camera
-        // basis: `(u, v, w)` = (right·c, up·c, forward·c). `w` (depth along
-        // forward) is unaffected by a lateral re-centring pan, so it's computed
-        // once; `u`/`v` shift uniformly as the target pans.
-        let mut corners = [(0.0_f32, 0.0_f32, 0.0_f32); 8];
+        // Each corner's offset from the box centre along the camera basis, as
+        // `(across, depth)` per screen axis: across is `right·c` or `up·c`, and
+        // depth is `forward·c` as perspective sees it, or 0 as orthographic does.
+        // The box contains the model, so a fit that holds its corners holds
+        // every vertex.
+        let seen_depth = |depth: f32| match projection {
+            CameraProjection::Perspective => depth,
+            CameraProjection::Orthographic => 0.0,
+        };
+        let mut x = [(0.0_f32, 0.0_f32); 8];
+        let mut y = x;
         let mut i = 0;
         for cx in [-1.0_f32, 1.0] {
             for cy in [-1.0_f32, 1.0] {
                 for cz in [-1.0_f32, 1.0] {
                     let c = Vec3::new(cx * half_size.x, cy * half_size.y, cz * half_size.z);
-                    corners[i] = (right.dot(c), up.dot(c), forward.dot(c));
+                    let depth = seen_depth(forward.dot(c));
+                    x[i] = (right.dot(c), depth);
+                    y[i] = (up.dot(c), depth);
                     i += 1;
                 }
             }
         }
-
-        // Solve the fit distance *and* a lateral re-centring pan together. The
-        // per-corner screen-fill constraint is
-        //   |u| <= tan_h * (distance + w)   and   |v| <= tan_v * (distance + w)
-        // so distance >= |u|/tan_h - w (and likewise for v). A pure box-centre
-        // fit (pan = 0) makes the *nearest* extreme corner touch the edge while
-        // the far corner leaves a gap — perspective magnifies near geometry, so
-        // the silhouette is not actually centred. Each pass fits the smallest
-        // distance for the current pan, then shifts the pan so the projected
-        // silhouette straddles the centre. The depth term makes the re-centre
-        // non-linear, so iterate to a fixed point (cheap: 8 corners, 6 passes).
-        let mut pan_u = 0.0_f32;
-        let mut pan_v = 0.0_f32;
-        let mut distance = MIN_ORBIT_DISTANCE;
-        for _ in 0..6 {
-            distance = 0.0;
-            for &(u, v, w) in &corners {
-                distance = distance
-                    .max((u + pan_u).abs() / tan_h - w)
-                    .max((v + pan_v).abs() / tan_v - w);
+        // Perspective's fit already keeps every corner in front of the eye: a
+        // corner at or behind it cannot be inside the frustum.
+        let clearance = match projection {
+            CameraProjection::Perspective => 0.0,
+            CameraProjection::Orthographic => {
+                orthographic_clearance(half_size.length(), span_x, span_y)
             }
-            distance = distance.max(MIN_ORBIT_DISTANCE);
-            pan_u +=
-                silhouette_recenter(corners.iter().map(|&(u, _, w)| (u + pan_u, distance + w)));
-            pan_v +=
-                silhouette_recenter(corners.iter().map(|&(_, v, w)| (v + pan_v, distance + w)));
-        }
+        };
 
-        // Pan the target laterally by the solved offset (eye follows, so depth
-        // along forward is unchanged) to centre the projected silhouette.
-        self.target = center - right * pan_u - up * pan_v;
+        let distance = fit_distance(&x, span_x)
+            .max(fit_distance(&y, span_y))
+            .max(clearance)
+            .max(MIN_ORBIT_DISTANCE);
+        // The axis that set the distance is already pinned between its two
+        // edges; the other has room, and both are centred in what they have.
+        let pan_x = centring_pan(&x, span_x, distance);
+        let pan_y = centring_pan(&y, span_y, distance);
+
+        // Pan the target laterally by the solved offset (the eye follows, so
+        // depth along forward is unchanged).
+        self.target = center - right * pan_x - up * pan_y;
         self.distance = distance;
         // Bounding-sphere radius around the box centre (corner distance). Drives
         // the per-frame near/far fit in `near_far`.
@@ -600,32 +702,90 @@ fn lerp_angle(start: f32, end: f32, t: f32) -> f32 {
     start + delta * t
 }
 
-/// Additional lateral pan that makes the two screen-space extreme corners on one
-/// axis straddle the viewport centre symmetrically. Each item is `(lateral,
-/// depth)` for a corner — `lateral` already includes the running pan, `depth` is
-/// `distance + forward·offset`. Returns the extra pan to apply on that axis.
-fn silhouette_recenter(corners: impl Iterator<Item = (f32, f32)>) -> f32 {
-    let mut lo = f32::INFINITY;
-    let mut hi = f32::NEG_INFINITY;
-    let mut lo_corner = (0.0_f32, 1.0_f32);
-    let mut hi_corner = (0.0_f32, 1.0_f32);
-    for (lateral, depth) in corners {
-        let depth = depth.max(1e-3);
-        let screen = lateral / depth;
-        if screen < lo {
-            lo = screen;
-            lo_corner = (lateral, depth);
+/// The smallest distance at which every point fits `span` for *some* pan.
+///
+/// A point `(across, depth)` is in view when `lo·(d + depth) <= across + pan <=
+/// hi·(d + depth)`. Rearranged, `pan - hi·d <= hi·depth - across` and `lo·d -
+/// pan <= across - lo·depth` must hold for every point; adding the tightest of
+/// each eliminates the pan and leaves `d >= -(a + b) / (hi - lo)`. At that
+/// distance the silhouette touches both edges, so the fit is exact in one step.
+/// (It used to be iterated — fit a distance, re-centre, repeat six times — and
+/// the last re-centre moved the pan after the last fit, so the pair it returned
+/// had never been checked against each other.)
+fn fit_distance(points: &[(f32, f32)], [lo, hi]: [f32; 2]) -> f32 {
+    let a = points
+        .iter()
+        .map(|&(across, depth)| hi * depth - across)
+        .fold(f32::INFINITY, f32::min);
+    let b = points
+        .iter()
+        .map(|&(across, depth)| across - lo * depth)
+        .fold(f32::INFINITY, f32::min);
+    -(a + b) / (hi - lo)
+}
+
+/// The least distance an orthographic framing may sit at so that orbiting
+/// from it never puts the model through the near plane.
+///
+/// An orbit swings the eye round the pivot at `distance`, so a point `r` from
+/// the pivot comes as close as `distance - r` to it. The pivot is not the box's
+/// centre: centring the box in an off-centre area pans it there by the area's
+/// centre times the distance (`offset`, in the spans' tangent units), so every
+/// corner is within `radius + offset · distance` of it. The near plane is never
+/// further out than `far / MAX_DEPTH_RATIO`, with `far = distance + max(radius,
+/// GRID_FAR_RADIUS)` (`near_far`), and solving `distance - radius - offset ·
+/// distance >= far / ratio` for the distance gives this. Clearing only the
+/// corners in front of the eye framed tighter and sliced the model on the first
+/// orbit; clearing the box's centre rather than the pivot did the same in an
+/// off-centre area.
+fn orthographic_clearance(radius: f32, [left, right]: [f32; 2], [bottom, top]: [f32; 2]) -> f32 {
+    let offset = Vec2::new(left + right, bottom + top).length() * 0.5;
+    let ratio = 1.0 / MAX_DEPTH_RATIO;
+    let reach = radius.max(GRID_FAR_RADIUS);
+    (radius + reach * ratio) / (1.0 - offset - ratio).max(MIN_CLEARANCE_SHARE)
+}
+
+/// The pan that centres the silhouette of `points` in `span` at `distance`:
+/// the one leaving its two outermost corners equally far in from the edges.
+///
+/// It lies in the range of pans that keep every point in view, which
+/// `distance` guarantees is not empty. Every corner's screen position grows
+/// with the pan, so the silhouette's centre does too, and a bisection over that
+/// range finds it. Putting the *box centre* on the area's centre instead would
+/// leave perspective's near corners, which look bigger, against one edge and a
+/// gap at the other.
+fn centring_pan(points: &[(f32, f32)], [lo, hi]: [f32; 2], distance: f32) -> f32 {
+    let mut low = f32::NEG_INFINITY;
+    let mut high = f32::INFINITY;
+    for &(across, depth) in points {
+        low = low.max(lo * (distance + depth) - across);
+        high = high.min(hi * (distance + depth) - across);
+    }
+    if low >= high {
+        // Pinned at both edges (the binding axis) or crossed by rounding.
+        return 0.5 * (low + high);
+    }
+    // How far the silhouette's centre sits right of the span's, doubled. At
+    // `low` a corner touches the near edge and at `high` the far one, so this
+    // is negative at one end of the range and positive at the other.
+    let off_centre = |pan: f32| {
+        let (mut first, mut last) = (f32::INFINITY, f32::NEG_INFINITY);
+        for &(across, depth) in points {
+            let screen = (across + pan) / (distance + depth).max(f32::EPSILON);
+            first = first.min(screen);
+            last = last.max(screen);
         }
-        if screen > hi {
-            hi = screen;
-            hi_corner = (lateral, depth);
+        first + last - (lo + hi)
+    };
+    for _ in 0..CENTRING_STEPS {
+        let mid = 0.5 * (low + high);
+        if off_centre(mid) < 0.0 {
+            low = mid;
+        } else {
+            high = mid;
         }
     }
-    let (lat_lo, depth_lo) = lo_corner;
-    let (lat_hi, depth_hi) = hi_corner;
-    // Solve Δ so (lat_lo + Δ)/depth_lo = -(lat_hi + Δ)/depth_hi, i.e. the two
-    // extreme corners project to equal-and-opposite screen offsets.
-    -(lat_lo * depth_hi + lat_hi * depth_lo) / (depth_lo + depth_hi)
+    0.5 * (low + high)
 }
 
 /// The shared ease-in-out cubic curve: slow at both ends, fastest in the middle.
@@ -780,7 +940,8 @@ mod tests {
                 min: Vec3::splat(-500.0),
                 max: Vec3::splat(500.0),
             },
-            Vec2::ONE,
+            FramingArea::whole(16.0 / 9.0),
+            CameraProjection::Perspective,
         );
         while camera.distance > 0.01 {
             camera.zoom(WHEEL_NOTCH);
@@ -792,6 +953,205 @@ mod tests {
             "near {near} pivot {}",
             camera.distance
         );
+    }
+
+    /// The areas the viewer asks framing to fill, on a 1600x900 window: all of
+    /// it, the band between the toolbar and status bar, that band less both side
+    /// panels or the Outliner alone, and one half of the Opt split.
+    fn framing_areas() -> Vec<(&'static str, FramingArea)> {
+        let (width, height) = (1600.0, 900.0);
+        let band = |left: f32, right: f32| FramingArea {
+            aspect_ratio: width / height,
+            visible_min: Vec2::new(left / width, 48.0 / height),
+            visible_max: Vec2::new(1.0 - right / width, 1.0 - 42.0 / height),
+        };
+        vec![
+            ("whole", FramingArea::whole(width / height)),
+            ("bars", band(0.0, 0.0)),
+            ("panels", band(300.0, 300.0)),
+            ("outliner", band(300.0, 0.0)),
+            ("split half", FramingArea::whole(500.0 / 810.0)),
+        ]
+    }
+
+    /// The shapes bounds come in: a wide arch, a tall column, a flat panel and a
+    /// cube, away from the origin so the target has somewhere to go.
+    fn framing_boxes() -> Vec<Bounds> {
+        let center = Vec3::new(2.0, 1.5, -3.0);
+        [
+            Vec3::new(4.0, 3.0, 1.0),
+            Vec3::new(0.6, 5.0, 0.6),
+            Vec3::new(3.0, 0.05, 2.0),
+            Vec3::splat(1.0),
+        ]
+        .into_iter()
+        .map(|size| Bounds {
+            min: center - size * 0.5,
+            max: center + size * 0.5,
+        })
+        .collect()
+    }
+
+    /// Every framing the tests below check, labelled for their messages: each
+    /// area and box from a spread of directions and lenses, fit for
+    /// `projection`.
+    fn framings(projection: CameraProjection) -> Vec<(String, FramingArea, Bounds, OrbitCamera)> {
+        let mut cases = Vec::new();
+        for (name, area) in framing_areas() {
+            for (index, bounds) in framing_boxes().into_iter().enumerate() {
+                for yaw in (0..360).step_by(30) {
+                    for pitch in [-80.0_f32, -35.0, 0.0, 30.0, 80.0] {
+                        for fov in [30.0_f32, 50.0, 90.0] {
+                            // The camera keeps the window's shape, as `app`'s does;
+                            // the fit must go by the area's.
+                            let start = OrbitCamera {
+                                yaw: (yaw as f32).to_radians(),
+                                pitch: pitch.to_radians(),
+                                fov_y_radians: fov.to_radians(),
+                                aspect_ratio: 16.0 / 9.0,
+                                ..OrbitCamera::default()
+                            };
+                            cases.push((
+                                format!("{name}, box {index}, yaw {yaw} pitch {pitch} fov {fov}"),
+                                area,
+                                bounds,
+                                start.framed_to_bounds(bounds, area, projection),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        cases
+    }
+
+    /// Where each corner of `bounds` lands in an image of `area`'s shape, as
+    /// fractions of it (y down), through `camera` in `projection`. Every corner
+    /// must also be past the near plane, in either projection, or it is not
+    /// drawn wherever it lands.
+    fn landed(
+        camera: OrbitCamera,
+        area: FramingArea,
+        bounds: Bounds,
+        projection: CameraProjection,
+    ) -> Vec<Vec2> {
+        let camera = OrbitCamera {
+            aspect_ratio: area.aspect_ratio,
+            ..camera
+        };
+        let (near, _) = camera.near_far();
+        let mut points = Vec::new();
+        for x in [bounds.min.x, bounds.max.x] {
+            for y in [bounds.min.y, bounds.max.y] {
+                for z in [bounds.min.z, bounds.max.z] {
+                    let corner = Vec3::new(x, y, z);
+                    let depth = camera.forward_dir().dot(corner - camera.eye_position());
+                    assert!(
+                        depth > near,
+                        "a corner is {depth} from the eye, near {near}"
+                    );
+                    let point = camera.project(corner, projection, Vec2::ONE);
+                    points.push(point.expect("a framed corner is in front of the eye"));
+                }
+            }
+        }
+        points
+    }
+
+    /// How much of `area`'s visible part, less the margin, `points` span along
+    /// each axis, and how far their centre sits off its centre - both as
+    /// fractions of that span.
+    fn fit_of(points: &[Vec2], area: FramingArea) -> (Vec2, Vec2) {
+        let first = points.iter().copied().reduce(Vec2::min).unwrap();
+        let last = points.iter().copied().reduce(Vec2::max).unwrap();
+        let center = (area.visible_min + area.visible_max) * 0.5;
+        let span = (area.visible_max - area.visible_min) / FRAME_MARGIN;
+        (
+            (last - first) / span,
+            ((first + last) * 0.5 - center) / span,
+        )
+    }
+
+    /// What `F` promises: every corner of the box lands inside the part of the
+    /// image no chrome covers. Fitting to the whole window while the side panels
+    /// covered its edges, or at the window's shape while the split drew a
+    /// half-width view, put an arch's sides out of sight.
+    #[test]
+    fn a_framed_box_lands_inside_the_visible_area() {
+        for projection in [
+            CameraProjection::Perspective,
+            CameraProjection::Orthographic,
+        ] {
+            for (case, area, bounds, camera) in framings(projection) {
+                for point in landed(camera, area, bounds, projection) {
+                    let inside = point.cmpge(area.visible_min - 1e-4).all()
+                        && point.cmple(area.visible_max + 1e-4).all();
+                    assert!(
+                        inside,
+                        "{case}, {projection:?}: a corner lands at {point:?}, outside \
+                         {:?}..{:?}",
+                        area.visible_min, area.visible_max
+                    );
+                }
+            }
+        }
+    }
+
+    /// And it is a *fit*, not merely inside: the silhouette spans the visible
+    /// area, less the margin, along one axis and is centred in it along both.
+    /// The one exception is an orthographic view held back to keep its eye out of
+    /// the box (see `framed_to_bounds`), which still centres what it shows.
+    #[test]
+    fn a_framed_box_fills_and_centres_in_the_visible_area() {
+        for projection in [
+            CameraProjection::Perspective,
+            CameraProjection::Orthographic,
+        ] {
+            for (case, area, bounds, camera) in framings(projection) {
+                let points = landed(camera, area, bounds, projection);
+                let (fill, off_centre) = fit_of(&points, area);
+                let held_back =
+                    projection == CameraProjection::Orthographic && held_back(camera, area, bounds);
+                assert!(
+                    fill.max_element() > 0.999 || held_back,
+                    "{case}, {projection:?}: the silhouette spans only {fill:?} of the area"
+                );
+                assert!(
+                    off_centre.abs().max_element() < 1e-3,
+                    "{case}, {projection:?}: the silhouette sits {off_centre:?} off the \
+                     area's centre"
+                );
+            }
+        }
+    }
+
+    /// Whether an orthographic `camera` sits where its fit had to hold it back
+    /// to clear the model for orbiting, rather than where `area` would allow.
+    fn held_back(camera: OrbitCamera, area: FramingArea, bounds: Bounds) -> bool {
+        let (span_x, span_y) = area.tangent_spans(camera.fov_y_radians);
+        let clearance = orthographic_clearance(bounds.size().length() * 0.5, span_x, span_y);
+        camera.distance <= clearance * 1.0001
+    }
+
+    /// An orthographic framing is a place to orbit from, not only a picture: its
+    /// eye sits close in (the view's size is tied to the distance), so a fit that
+    /// cleared only the corners in front of it put the far ones through the near
+    /// plane as soon as the camera turned.
+    #[test]
+    fn an_orthographic_framing_survives_an_orbit() {
+        for (_, area, bounds, framed) in framings(CameraProjection::Orthographic) {
+            for yaw in (0..360).step_by(45) {
+                for pitch in [-1.5_f32, -0.6, 0.0, 0.6, 1.5] {
+                    let camera = OrbitCamera {
+                        yaw: (yaw as f32).to_radians(),
+                        pitch,
+                        ..framed
+                    };
+                    // `landed` asserts every corner is past the near plane.
+                    landed(camera, area, bounds, CameraProjection::Orthographic);
+                }
+            }
+        }
     }
 
     #[test]

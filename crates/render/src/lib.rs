@@ -22,7 +22,7 @@
 // FFI / GPU leaf opts in with a module-level `allow` that says why.
 #![deny(unsafe_code)]
 
-use glam::{Vec2, Vec3};
+use glam::Vec3;
 use review_model::{Bounds, DeformPose, ModelData};
 
 mod camera;
@@ -40,7 +40,7 @@ mod tex;
 mod texture;
 
 use camera::CameraTransition;
-pub use camera::{DEFAULT_FOV_Y_DEGREES, OrbitCamera, UvCamera, ease_in_out_cubic};
+pub use camera::{DEFAULT_FOV_Y_DEGREES, FramingArea, OrbitCamera, UvCamera, ease_in_out_cubic};
 pub use config::*;
 pub use egui_sokol::EguiRenderer;
 pub use geometry::{BONE_PICK_TOLERANCE_POINTS, pick_bone_shape, posed_joint_positions};
@@ -82,10 +82,10 @@ const _: () = assert!(
     "SceneVertex changed size: re-derive the engine-equivalent vertex size"
 );
 
-/// Fraction of the safe area the empty "home" grid view fills. Below 1.0 so the
-/// reference grid sits comfortably back in the viewport with margin around it,
-/// rather than filling the window edge-to-edge. Only affects the home/reset
-/// view — loaded models still frame tight to the safe area.
+/// Fraction of the framing area the empty "home" grid view fills. Below 1.0 so
+/// the reference grid sits comfortably back in the viewport with margin around
+/// it, rather than filling the window edge-to-edge. Only affects the home/reset
+/// view — loaded models still frame tight to the framing area.
 pub(crate) const HOME_FILL_FRACTION: f32 = 0.68;
 
 /// Half-extent of the static reference grid: a 2 m square floor (±1 m) ruled in
@@ -123,10 +123,11 @@ pub struct Renderer {
     /// follows it or is dragged by hand.
     pub opt_camera: OrbitCamera,
     camera_transition: Option<CameraTransition>,
-    /// Fraction of the viewport (x = width, y = height) framing should fill,
-    /// leaving room for the chrome that overlays the full-window 3D scene. Set
-    /// by `app` from the live window + chrome sizes; `Vec2::ONE` = whole window.
-    framing_safe_area: Vec2,
+    /// Where framing puts the model: the shape of the image the main camera is
+    /// drawn into and the part of it no chrome covers. `app` sets it every frame
+    /// from the chrome it has just laid out, with the projection the view is in.
+    framing_area: FramingArea,
+    framing_projection: CameraProjection,
     /// Editable per-material PBR parameters, seeded from the loaded model's import
     /// defaults and edited live via [`MaterialEdit`] intents (invariant 2). Carried
     /// into the scene render each frame; the renderer-side table re-uploads them
@@ -390,7 +391,8 @@ impl Renderer {
             aud_uv_camera: UvCamera::default(),
             opt_camera: OrbitCamera::default(),
             camera_transition: None,
-            framing_safe_area: Vec2::ONE,
+            framing_area: FramingArea::whole(16.0 / 9.0),
+            framing_projection: CameraProjection::Perspective,
             material_states: Vec::new(),
             material_names: Vec::new(),
             material_revision: 0,

@@ -185,6 +185,110 @@ pub fn simplify(
     })
 }
 
+/// Collapse the mesh toward `target_index_count` exactly as [`simplify`] does,
+/// then **move** each surviving vertex to the point that best fits the surface
+/// it now stands for, and re-solve its attributes there — where [`simplify`]
+/// leaves every survivor at its own position with its own values.
+///
+/// That second half is what keeps a simplified surface shading like the
+/// original. A survivor's normal described the few faces around it at full
+/// detail; once the collapses have stretched its faces across a whole panel, the
+/// fitted normal describes the panel, where the original one (from a bevel, say)
+/// tilts the shading of everything it now reaches.
+///
+/// `positions` and `attributes.stream` are rewritten **in place**, and only for
+/// vertices the returned index buffer references, which still addresses the
+/// input vertex array. meshoptimizer moves only vertices inside a smooth surface
+/// and at junctions of several seams: anything on an open border, along a
+/// two-sided attribute seam or locked keeps its exact position, and a vertex
+/// that moves takes every vertex sharing its position with it, bit for bit — so
+/// no seam or material border can open. Attributes with a zero weight are
+/// neither considered nor rewritten.
+pub fn simplify_with_update(
+    indices: &[u32],
+    positions: &mut [f32],
+    vertex_count: usize,
+    attributes: &mut SimplifyAttributes,
+    target_index_count: usize,
+    target_error: f32,
+    options: u32,
+) -> Result<SimplifyOutcome, OptError> {
+    check_indices(indices, vertex_count)?;
+    check_stream(positions, vertex_count, POSITION_COMPONENTS)?;
+    check_simplify_options(options)?;
+
+    let attribute_count = attributes.weights.len();
+    if attribute_count > MAX_SIMPLIFY_ATTRIBUTES {
+        return Err(OptError::InvalidParameter {
+            name: "attribute count",
+            value: attribute_count as f32,
+        });
+    }
+    if let Some(&weight) = attributes
+        .weights
+        .iter()
+        .find(|weight| !(weight.is_finite() && **weight >= 0.0))
+    {
+        return Err(OptError::InvalidParameter {
+            name: "attribute weight",
+            value: weight,
+        });
+    }
+    if attribute_count > 0 {
+        check_stream(&attributes.stream, vertex_count, attribute_count)?;
+    }
+
+    let target = target_index_count.min(indices.len());
+    // The call rewrites its index buffer in place, so it works on a copy.
+    let mut result = indices.to_vec();
+    let mut error = 0.0f32;
+    let attribute_stride = attribute_count * size_of::<f32>();
+    let attribute_data = if attribute_count == 0 {
+        std::ptr::null_mut()
+    } else {
+        attributes.stream.as_mut_ptr()
+    };
+    // SAFETY: `result` is a whole-triangle, in-range index buffer of
+    // `index_count` entries, which is all the call writes (it only ever shrinks
+    // it); `positions` is exactly `vertex_count * 3` finite floats at the declared
+    // stride and is written only within that range; `attributes.stream` is
+    // exactly `vertex_count * attribute_count` finite floats at the declared
+    // stride (or null with a zero count), likewise written in range;
+    // `attributes.weights` holds `attribute_count` non-negative finite entries;
+    // `vertex_lock` is null ("no locked vertices"); `error` is a live local.
+    let produced = unsafe {
+        crate::ffi::meshopt_simplifyWithUpdate(
+            result.as_mut_ptr(),
+            result.len(),
+            positions.as_mut_ptr(),
+            vertex_count,
+            POSITION_STRIDE,
+            attribute_data,
+            attribute_stride,
+            attributes.weights.as_ptr(),
+            attribute_count,
+            std::ptr::null(),
+            target,
+            target_error.max(0.0),
+            options,
+            &raw mut error,
+        )
+    };
+    check_index_result(produced, result.len())?;
+    result.truncate(produced);
+    // A solve that went singular is rejected upstream rather than written, but
+    // a non-finite value reaching the vertex buffer would poison every later
+    // step, so it is checked rather than assumed.
+    check_stream(positions, vertex_count, POSITION_COMPONENTS)?;
+    if attribute_count > 0 {
+        check_stream(&attributes.stream, vertex_count, attribute_count)?;
+    }
+    Ok(SimplifyOutcome {
+        indices: result,
+        error,
+    })
+}
+
 /// Topology-ignoring simplifier: much faster and hits the target far more
 /// reliably than [`simplify`], at the cost of not preserving the mesh's
 /// topology (it can close holes and merge nearby shells). The right choice for
@@ -279,6 +383,92 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn the_updating_simplifier_refuses_what_the_plain_one_does() {
+        let (indices, mut positions) = triangle();
+        let mut attributes = SimplifyAttributes {
+            stream: vec![0.0; 3],
+            weights: vec![-1.0],
+        };
+        assert!(matches!(
+            simplify_with_update(&indices, &mut positions, 3, &mut attributes, 3, 0.01, 0),
+            Err(OptError::InvalidParameter {
+                name: "attribute weight",
+                ..
+            })
+        ));
+        attributes.weights = vec![1.0];
+        assert!(matches!(
+            simplify_with_update(
+                &indices,
+                &mut positions,
+                3,
+                &mut attributes,
+                3,
+                0.01,
+                1 << 1
+            ),
+            Err(OptError::InvalidParameter {
+                name: "simplify options",
+                ..
+            })
+        ));
+    }
+
+    /// `ops` copies every vertex back after an update, which is exact only
+    /// because a vertex the result does not reference comes back untouched.
+    #[test]
+    fn an_update_leaves_unreferenced_vertices_alone() {
+        // A 4x4-vertex grid, plus one stray vertex no triangle uses.
+        let mut positions = Vec::new();
+        for y in 0..4 {
+            for x in 0..4 {
+                let bump = if (x, y) == (1, 1) { 0.3 } else { 0.0 };
+                positions.extend_from_slice(&[x as f32, y as f32, bump]);
+            }
+        }
+        positions.extend_from_slice(&[9.0, 9.0, 9.0]);
+        let mut indices = Vec::new();
+        for y in 0..3u32 {
+            for x in 0..3u32 {
+                let a = y * 4 + x;
+                indices.extend_from_slice(&[a, a + 1, a + 5, a, a + 5, a + 4]);
+            }
+        }
+        let vertex_count = positions.len() / 3;
+        let mut attributes = SimplifyAttributes {
+            stream: (0..vertex_count).map(|v| v as f32 * 0.1).collect(),
+            weights: vec![0.5],
+        };
+        let before = (positions.clone(), attributes.stream.clone());
+        let outcome = simplify_with_update(
+            &indices,
+            &mut positions,
+            vertex_count,
+            &mut attributes,
+            6,
+            f32::MAX,
+            0,
+        )
+        .unwrap();
+        assert!(
+            outcome.indices.len() < indices.len(),
+            "nothing was simplified"
+        );
+        let stray = vertex_count - 1;
+        assert_eq!(positions[stray * 3..], before.0[stray * 3..]);
+        assert_eq!(attributes.stream[stray], before.1[stray]);
+        for referenced in 0..stray {
+            if !outcome.indices.contains(&(referenced as u32)) {
+                assert_eq!(
+                    positions[referenced * 3..referenced * 3 + 3],
+                    before.0[referenced * 3..referenced * 3 + 3],
+                    "vertex {referenced} is no longer used but was moved"
+                );
+            }
+        }
     }
 
     #[test]

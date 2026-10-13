@@ -53,7 +53,7 @@ use std::time::Instant;
 use anyhow::Context;
 use glam::Vec2;
 use review_model::{ModelData, PosedScene, SceneBvh};
-use review_render::{EguiRenderer, Gpu, GpuBringUp, Renderer, RendererConfig};
+use review_render::{CameraProjection, EguiRenderer, Gpu, GpuBringUp, Renderer, RendererConfig};
 use review_ui::{MsaaSamples, Notifications, UiState, ViewportTool, init_style};
 use winit::application::ApplicationHandler;
 use winit::event::{StartCause, WindowEvent};
@@ -65,7 +65,7 @@ use animation::AnimationSubsystem;
 use events::UserEvent;
 use flycam::FlyCam;
 use gate::Gate;
-use input::{DragMode, framing_safe_area};
+use input::{DragMode, startup_framing_area};
 use redraw::RedrawScheduler;
 use texture_manager::TextureSubsystem;
 use undo::UndoStack;
@@ -526,7 +526,11 @@ impl App {
 
         drop(phase.take());
         phase = prof::zone!("Renderer Init");
-        let renderer = build_startup_renderer(&window, self.ui.camera.fov_degrees);
+        let renderer = build_startup_renderer(
+            &window,
+            self.ui.camera.fov_degrees,
+            self.ui.projection_mode.into(),
+        );
         let egui_ctx = egui::Context::default();
         // Install fonts + visuals once: the style is derived purely from the
         // central theme tokens (no per-frame state), so it never needs re-syncing.
@@ -763,10 +767,14 @@ impl App {
 }
 
 /// Startup phase 2: the renderer with its cameras seeded for the real window
-/// size / safe area and the remembered field of view, so the startup view
-/// matches what reset (`animate_camera_to_home`) produces instead of the
-/// full-window default.
-fn build_startup_renderer(window: &Window, fov_degrees: f32) -> Renderer {
+/// size, the chrome bands and the remembered field of view and projection, so
+/// the startup view matches what reset (`animate_camera_to_home`) produces
+/// instead of the full-window default.
+fn build_startup_renderer(
+    window: &Window,
+    fov_degrees: f32,
+    projection: CameraProjection,
+) -> Renderer {
     let mut renderer = Renderer::new(RendererConfig::default());
     // Before the home framing below, which fits the grid through this angle.
     renderer.set_camera_fov(fov_degrees.to_radians());
@@ -774,8 +782,10 @@ fn build_startup_renderer(window: &Window, fov_degrees: f32) -> Renderer {
     if size.height > 0 {
         renderer.set_camera_aspect_ratio(size.width as f32 / size.height as f32);
         renderer.set_uv_aspect_ratio(size.width as f32 / size.height as f32);
-        let (safe_w, safe_h) = framing_safe_area(size.height, window.scale_factor() as f32);
-        renderer.set_framing_safe_area(safe_w, safe_h);
+        renderer.set_framing_area(
+            startup_framing_area(size, window.scale_factor() as f32),
+            projection,
+        );
         renderer.reset_camera_to_home();
     }
     renderer

@@ -41,6 +41,13 @@ Framing means moving the camera so the thing you care about fills the view.
   instead; press `F` again to go back to the whole model.
 - `R` returns the camera to where it started.
 
+The model is framed in the part of the viewport the panels and bars leave
+uncovered, so it never lands under the Outliner or the Inspector. If you resize
+or close one, press `F` again to use the new space. In the Opt workspace's split
+view, `F` frames the model to fit one half. Framing is worked out for the
+current projection, so after switching between perspective and orthographic,
+press `F` again for a tight fit.
+
 While an animation is selected, `F` frames the whole area the animation moves
 through, not just the pose you happen to be on. See
 [Skinning and animation](animation.md).

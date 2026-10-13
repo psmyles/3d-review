@@ -184,6 +184,23 @@ unsafe extern "C" {
         result_error: *mut c_float,
     ) -> usize;
 
+    pub fn meshopt_simplifyWithUpdate(
+        indices: *mut c_uint,
+        index_count: usize,
+        vertex_positions: *mut c_float,
+        vertex_count: usize,
+        vertex_positions_stride: usize,
+        vertex_attributes: *mut c_float,
+        vertex_attributes_stride: usize,
+        attribute_weights: *const c_float,
+        attribute_count: usize,
+        vertex_lock: *const u8,
+        target_index_count: usize,
+        target_error: c_float,
+        options: c_uint,
+        result_error: *mut c_float,
+    ) -> usize;
+
     pub fn meshopt_simplifySloppy(
         destination: *mut c_uint,
         indices: *const c_uint,

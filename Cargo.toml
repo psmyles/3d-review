@@ -12,6 +12,7 @@ members = [
     "crates/psd",
     "crates/render",
     "crates/shell-macos",
+    "crates/snapshot",
     "crates/ui",
 ]
 # `vendor/sokol-rust` is a pinned upstream copy (`docs/ARCHITECTURE.md`, Platform

@@ -205,6 +205,26 @@ impl Swapchain {
         })
     }
 
+    /// The twin of the D3D11 leaf's windowless backbuffer for the headless
+    /// `review-snapshot` tool. Not built on Metal yet: it would be a private
+    /// `MTLTexture` handed over as the pass's render target, read back through the
+    /// same blit [`read_image_subresource`] uses.
+    #[cfg(feature = "headless")]
+    pub(crate) fn offscreen(device: &Device, width: u32, height: u32) -> GpuResult<Self> {
+        let _ = (device, width, height);
+        Err(GpuError::Backend(
+            "headless rendering is not implemented on Metal yet".into(),
+        ))
+    }
+
+    /// See [`Self::offscreen`]: nothing on Metal can be read back yet.
+    #[cfg(feature = "headless")]
+    pub(crate) fn read_back(&mut self) -> GpuResult<Vec<u8>> {
+        Err(GpuError::Backend(
+            "headless rendering is not implemented on Metal yet".into(),
+        ))
+    }
+
     /// The backbuffer size in physical pixels.
     pub(crate) fn size(&self) -> (u32, u32) {
         (self.width, self.height)
