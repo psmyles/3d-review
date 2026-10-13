@@ -80,7 +80,7 @@ pub(crate) fn restore_saved_profile(app: &mut App) {
             log::warn!("saved audit profile rejected: {error}");
             app.notifications
                 .warning(keys::app_audit::saved_profile_reset(
-                    crate::explain::explain_audit_error(&error),
+                    review_labels::audit::explain_audit_error(&error),
                 ));
         }
     }
@@ -121,7 +121,7 @@ impl App {
             Err(error) => self
                 .notifications
                 .error(keys::app_audit::profile_unreadable(
-                    crate::explain::explain_audit_error(&error),
+                    review_labels::audit::explain_audit_error(&error),
                 )),
         }
     }
@@ -170,7 +170,7 @@ impl App {
             Err(error) => {
                 self.notifications
                     .error(keys::app_audit::profile_unreadable(
-                        crate::explain::explain_audit_error(&error),
+                        review_labels::audit::explain_audit_error(&error),
                     ));
             }
         }

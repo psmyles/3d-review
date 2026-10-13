@@ -1,0 +1,26 @@
+[package]
+name = "review-labels"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "The catalog text for the libraries' typed values, shared by the viewer and review-cli"
+publish = false
+
+# Invariant 12's exhaustive maps for what `review-audit` and `review-optimize`
+# hand back as values - a rule, a severity, an operation, a warning - written
+# once so the viewer's chrome, its notices and the console tool name each one
+# the same way. No egui and no GPU: `review-cli` links this and nothing that
+# draws.
+[dependencies]
+review-audit = { path = "../audit" }
+review-localization.workspace = true
+review-optimize = { path = "../optimize" }
+
+[build-dependencies]
+# Generates `keys.rs` (the typed message keys of the `labels-` files) into
+# this crate's OUT_DIR.
+review-localization-build.workspace = true
+
+[lints]
+workspace = true

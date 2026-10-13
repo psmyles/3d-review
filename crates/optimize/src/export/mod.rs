@@ -127,20 +127,16 @@ pub fn export_fbx(
     // which truncates the user's previous export before writing a byte, and a
     // chain whose third level failed would already have replaced the first two.
     let mut staged: Vec<Staged> = Vec::with_capacity(lods.len());
+    let paths = planned_files(lods.iter().map(|lod| lod.level), path, options);
     match options.packaging {
         LodPackaging::SingleFileSuffixed => {
             let scene = build_scene(lods, source, extras, options, &mut report)?;
-            staged.push(Staged::write(path, |staging| {
+            staged.push(Staged::write(&paths[0], |staging| {
                 write_scene(&scene, staging, options.format)
             })?);
         }
         LodPackaging::FilePerLod => {
-            // A lone level is not a chain: there is nothing for a `_LOD0` suffix to
-            // distinguish it from, and a stack that only reduces the mesh in place
-            // is meant to stand in for the source asset — so it goes to the path
-            // the user actually chose.
-            let chain = lods.len() > 1;
-            for lod in lods {
+            for (lod, file) in lods.iter().zip(&paths) {
                 // Each file holds one level, so its meshes keep their plain names
                 // rather than a suffix the filename already carries.
                 let scene = build_scene(
@@ -150,12 +146,7 @@ pub fn export_fbx(
                     options,
                     &mut report,
                 )?;
-                let level_path = if chain {
-                    level_path(path, lod.level)
-                } else {
-                    path.to_path_buf()
-                };
-                staged.push(Staged::write(&level_path, |staging| {
+                staged.push(Staged::write(file, |staging| {
                     write_scene(&scene, staging, options.format)
                 })?);
             }
@@ -193,6 +184,32 @@ fn dedup_notes(notes: &mut Vec<ExportNote>) {
     notes.retain(|note| seen.insert(note.clone()));
 }
 
+/// The files [`export_fbx`] writes for a chain holding `levels` (each level's
+/// number, level 0 first) to `path`, in the order it writes them.
+///
+/// Public so a caller can decide what to do about files already there *before*
+/// it spends a run on a chain it will not write: the batch tool's
+/// `--if-exists`. One function, so the two can never disagree about a name.
+pub fn planned_files(
+    levels: impl IntoIterator<Item = usize>,
+    path: &Path,
+    options: &ExportOptions,
+) -> Vec<PathBuf> {
+    let levels: Vec<usize> = levels.into_iter().collect();
+    match options.packaging {
+        LodPackaging::SingleFileSuffixed => vec![path.to_path_buf()],
+        // A lone level is not a chain: there is nothing for a `_LOD0` suffix to
+        // distinguish it from, and a stack that only reduces the mesh in place
+        // is meant to stand in for the source asset — so it goes to the path the
+        // user actually chose.
+        LodPackaging::FilePerLod if levels.len() <= 1 => vec![path.to_path_buf()],
+        LodPackaging::FilePerLod => levels
+            .into_iter()
+            .map(|level| level_path(path, level))
+            .collect(),
+    }
+}
+
 /// `asset.fbx` → `asset_LOD2.fbx`.
 fn level_path(path: &Path, level: usize) -> PathBuf {
     let stem = path
@@ -219,6 +236,28 @@ mod tests {
 
     use super::*;
     use crate::stack::HierarchyMode;
+
+    #[test]
+    fn planned_files_name_a_chain_by_level_and_a_lone_level_by_the_path() {
+        let path = Path::new("out/asset.fbx");
+        let per_lod = ExportOptions {
+            packaging: LodPackaging::FilePerLod,
+            ..ExportOptions::default()
+        };
+        assert_eq!(
+            planned_files([0, 1, 2], path, &per_lod),
+            [
+                PathBuf::from("out/asset_LOD0.fbx"),
+                PathBuf::from("out/asset_LOD1.fbx"),
+                PathBuf::from("out/asset_LOD2.fbx"),
+            ]
+        );
+        assert_eq!(planned_files([0], path, &per_lod), [path.to_path_buf()]);
+        assert_eq!(
+            planned_files([0, 1, 2], path, &ExportOptions::default()),
+            [path.to_path_buf()]
+        );
+    }
 
     #[test]
     fn level_path_suffixes_the_stem_and_keeps_the_extension() {

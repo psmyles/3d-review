@@ -21,8 +21,14 @@ use syn::spanned::Spanned;
 use syn::visit::Visit;
 
 /// The crates whose sources may not carry user-visible literals: the ones that
-/// draw, announce, or name something on screen.
-const SCANNED: [&str; 3] = ["ui", "app", "shell-macos"];
+/// draw, announce, or name something on screen - and, for the console tool, the
+/// terminal is the screen.
+const SCANNED: [&str; 5] = ["ui", "app", "shell-macos", "labels", "cli"];
+
+/// Macros whose literals reach a terminal. `write!` / `writeln!` are not here:
+/// they build strings and files as often as they print, and the console tool's
+/// own lines go through `console::say` / `console::warn` below.
+const PRINT_MACROS: &[&str] = &["print", "println", "eprint", "eprintln"];
 
 /// Methods whose every argument reaches the screen.
 ///
@@ -128,6 +134,9 @@ const FUNCTION_SINKS: &[(&str, &[usize])] = &[
     ("LayoutJob::simple", &[0]),
     ("LayoutJob::simple_singleline", &[0]),
     ("LayoutJob::single_section", &[0]),
+    // `review-cli`'s lines: a console line is that tool's label.
+    ("console::say", &[0]),
+    ("console::warn", &[0]),
     // widget wrappers: (ui, …).
     ("grid_label_tip", &[1]),
     ("labeled_checkbox", &[1]),
@@ -432,6 +441,19 @@ impl<'ast> Visit<'ast> for SinkVisitor<'_> {
         self.bindings.pop();
     }
 
+    /// A print macro's literals reach the terminal, whether it stands as a
+    /// statement or inside an expression.
+    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        if let Some(name) = macro_name(&mac.path)
+            && PRINT_MACROS.contains(&name.as_str())
+        {
+            for (literal, line) in string_literals(mac.tokens.clone()) {
+                self.record(&literal, line, &name);
+            }
+        }
+        syn::visit::visit_macro(self, mac);
+    }
+
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
         let name = call.method.to_string();
         if name == "text" {
@@ -588,6 +610,24 @@ mod gate {
             mod shipped { fn f(ui: &egui::Ui) { ui.label("Shipped text"); } }
         "#;
         assert_eq!(findings(source), ["Shipped text"]);
+    }
+
+    #[test]
+    fn a_console_line_is_a_sink() {
+        let source = r#"fn f(count: usize) {
+            println!("Checked {count} models");
+            console::say(&format!("[{count}] done"));
+            console::warn("Couldn't read it");
+            let _ = format!("[{count}]");
+        }"#;
+        assert_eq!(
+            findings(source),
+            [
+                "Checked {count} models",
+                "[{count}] done",
+                "Couldn't read it"
+            ]
+        );
     }
 
     #[test]

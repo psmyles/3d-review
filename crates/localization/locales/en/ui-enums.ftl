@@ -131,66 +131,6 @@ ui-enums-workspace-aud = Aud
 
 ## Opt operations
 
-# Each operation's name and what it does. Shown on the stack row, in the
-# "Add operation" menu, and as the heading over its parameters - one message, so
-# the three cannot describe it differently.
-ui-enums-op-weld = Weld Vertices
-    .description = Joins points that sit in the same place. Every run already joins points
-        that match in every way; this operation widens what counts as a match - for
-        example ignoring normals or texture layout, or allowing a small gap - which does
-        change the model.
-ui-enums-op-filter-triangles = Filter Triangles
-    .description = Removes broken triangles (ones squashed into a line) and exact copies of
-        other triangles. Copies that face the other way are kept, since they are how
-        double-sided surfaces are made.
-ui-enums-op-prune-components = Prune Components
-    .description = Removes small loose pieces below a size you choose - stray shells and
-        single faces left floating around by mistake.
-ui-enums-op-reduce = Reduce
-    .description = Simplifies the model in place, using the same simplifier that makes LOD
-        levels. Instead of making extra copies, it replaces the model, so everything
-        below it in the list works on the simplified version, and the export saves it in
-        place of the original.
-ui-enums-op-remesh = Remesh
-    .description = Rebuilds each object's surface out of evenly sized faces, triangles or
-        quads, sized to follow the shape's own curves. Unlike Reduce it does not take away what is there -
-        it lays down a new surface and copies the materials, texture layout and colors
-        across, which is what turns a scan or a CAD part into something a game can use.
-        Open borders and sharp edges are kept where they were. Works on still objects
-        only.
-ui-enums-op-shrinkwrap = Shrinkwrap
-    .description = Replaces each object with a single closed skin that hugs it. The shape is
-        measured onto a grid and a new surface pulled back out of it, which fuses a pile of
-        overlapping parts into one solid and seals holes; the Voxel method also keeps thin
-        sheets such as leaves. What comes out is dense and
-        irregular, so a Remesh below it is what makes it even. Materials, texture layout
-        and colors are copied across. Works on still objects only.
-ui-enums-op-recalculate-normals = Recalculate Normals
-    .description = Works out fresh shading directions from the shape itself. Edges sharper
-        than the crease angle stay hard and the rest are smoothed, and the hard and soft
-        edge markings saved with the model are rewritten to match. Objects with blend
-        shapes are left as they are. Does not change the shape.
-ui-enums-op-simplify-lod = Generate LODs
-    .description = Makes a set of simpler copies of the model (levels of detail) for a game
-        to show at a distance. Each level is made from the model as it stands at this
-        point in the list.
-ui-enums-op-bake-ao = Bake AO to Vertex Colors
-    .description = Works out how much light reaches each point of the model and stores it
-        as a color on that point. Objects whose names end in _LOD and a number are shaded
-        only by their own level, so a whole set of levels can bake in one go. Hidden
-        objects are left out, so hide collision shapes first. Does not change the shape.
-ui-enums-op-vertex-cache = Optimize Vertex Cache
-    .description = Reorders the triangles so the GPU can reuse work it has just
-        done. Does not change the shape; watch the ACMR and ATVR numbers on the stats
-        card to see the effect.
-ui-enums-op-overdraw = Optimize Overdraw
-    .description = Reorders the triangles so nearer ones tend to be drawn first, and the
-        GPU wastes less effort on parts that end up hidden. Does not change the
-        shape.
-ui-enums-op-vertex-fetch = Optimize Vertex Fetch
-    .description = Reorders the points into the order they are read, and removes any point
-        nothing uses. Does not change the shape.
-
 ui-enums-shrinkwrap-method-winding = Distance field
 ui-enums-shrinkwrap-method-voxel = Voxel
 
@@ -233,6 +173,7 @@ ui-enums-fbx-binary = Binary
 ui-enums-fbx-ascii = ASCII
 
 ## Viewport tool
+
 #
 # Shown by the mode notice when the tool is switched, so each of these is a
 # whole phrase rather than a bare noun - "Select" alone reads as a command

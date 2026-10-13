@@ -1,0 +1,39 @@
+[package]
+name = "review-cli"
+# The version `--version` prints and every report records is the product's, read
+# from `product.json` by build.rs - this field is cargo's and nobody reads it.
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Optimize and check FBX models from a terminal, a script or Launcher, without the viewer"
+publish = false
+
+# The Opt and Aud workspaces' work as a console program, shipped beside the
+# viewer. Everything it does is a library call the viewer makes too - import,
+# the operation stack, the export, the audit - so it links no GPU, no window and
+# no egui, and a run measures exactly what the viewer would.
+[[bin]]
+name = "review-cli"
+path = "src/main.rs"
+
+[dependencies]
+review-audit = { path = "../audit" }
+review-import = { path = "../import" }
+review-labels.workspace = true
+review-localization.workspace = true
+review-model = { path = "../model" }
+review-optimize = { path = "../optimize" }
+serde_json.workspace = true
+# The OS locale, for the catalog - as the viewer picks it.
+sys-locale.workspace = true
+
+[build-dependencies]
+# Generates `keys.rs` (the typed message keys of `cli.ftl`) into this crate's
+# OUT_DIR.
+review-localization-build.workspace = true
+# Reads the product version out of `product.json`.
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -16,7 +16,7 @@ use review_localization::Key;
 use review_log::Level;
 use review_model::{NodeKind, SkinningMethod};
 use review_optimize::{
-    AoQuality, AoTarget, FbxFormat, HierarchyMode, LodPackaging, NormalMode, OpKind, RemeshDensity,
+    AoQuality, AoTarget, FbxFormat, HierarchyMode, LodPackaging, NormalMode, RemeshDensity,
     RemeshTopology, ShrinkwrapMethod, SimplifyAlgorithm, VoxelTarget,
 };
 use review_render::{
@@ -216,50 +216,6 @@ pub(crate) fn workspace(mode: WorkspaceMode) -> Key {
         WorkspaceMode::Texture => keys::ui_enums::WORKSPACE_TEX,
         WorkspaceMode::Opt => keys::ui_enums::WORKSPACE_OPT,
         WorkspaceMode::Aud => keys::ui_enums::WORKSPACE_AUD,
-    }
-}
-
-pub(crate) fn op_kind(kind: &OpKind) -> Key {
-    match kind {
-        OpKind::Weld(_) => keys::ui_enums::OP_WELD,
-        OpKind::FilterTriangles => keys::ui_enums::OP_FILTER_TRIANGLES,
-        OpKind::PruneComponents { .. } => keys::ui_enums::OP_PRUNE_COMPONENTS,
-        OpKind::Reduce(_) => keys::ui_enums::OP_REDUCE,
-        OpKind::Remesh(_) => keys::ui_enums::OP_REMESH,
-        OpKind::Shrinkwrap(_) => keys::ui_enums::OP_SHRINKWRAP,
-        OpKind::RecalculateNormals(_) => keys::ui_enums::OP_RECALCULATE_NORMALS,
-        OpKind::SimplifyLod(_) => keys::ui_enums::OP_SIMPLIFY_LOD,
-        OpKind::BakeAo(_) => keys::ui_enums::OP_BAKE_AO,
-        OpKind::VertexCache => keys::ui_enums::OP_VERTEX_CACHE,
-        OpKind::Overdraw { .. } => keys::ui_enums::OP_OVERDRAW,
-        OpKind::VertexFetch => keys::ui_enums::OP_VERTEX_FETCH,
-    }
-}
-
-/// An operation's display name, for the progress line `app` shows while a run
-/// is going. See [`material_mode_name`]: the stack row and the notice have to
-/// call an operation the same thing, and only this crate holds the names.
-pub fn op_kind_name(kind: &OpKind) -> String {
-    review_localization::tr(op_kind(kind)).into_owned()
-}
-
-/// What an operation does, in a sentence - the stack row's tooltip and the
-/// heading text over its parameters. Paired with [`op_kind`] so the name and the
-/// explanation cannot drift apart.
-pub(crate) fn op_description(kind: &OpKind) -> Key {
-    match kind {
-        OpKind::Weld(_) => keys::ui_enums::OP_WELD_DESCRIPTION,
-        OpKind::FilterTriangles => keys::ui_enums::OP_FILTER_TRIANGLES_DESCRIPTION,
-        OpKind::PruneComponents { .. } => keys::ui_enums::OP_PRUNE_COMPONENTS_DESCRIPTION,
-        OpKind::Reduce(_) => keys::ui_enums::OP_REDUCE_DESCRIPTION,
-        OpKind::Remesh(_) => keys::ui_enums::OP_REMESH_DESCRIPTION,
-        OpKind::Shrinkwrap(_) => keys::ui_enums::OP_SHRINKWRAP_DESCRIPTION,
-        OpKind::RecalculateNormals(_) => keys::ui_enums::OP_RECALCULATE_NORMALS_DESCRIPTION,
-        OpKind::SimplifyLod(_) => keys::ui_enums::OP_SIMPLIFY_LOD_DESCRIPTION,
-        OpKind::BakeAo(_) => keys::ui_enums::OP_BAKE_AO_DESCRIPTION,
-        OpKind::VertexCache => keys::ui_enums::OP_VERTEX_CACHE_DESCRIPTION,
-        OpKind::Overdraw { .. } => keys::ui_enums::OP_OVERDRAW_DESCRIPTION,
-        OpKind::VertexFetch => keys::ui_enums::OP_VERTEX_FETCH_DESCRIPTION,
     }
 }
 
@@ -488,13 +444,6 @@ mod tests {
         }
         for value in FbxFormat::ALL {
             assert_resolves(fbx_format(value));
-        }
-        // `OpKind::ALL` is a table of builders, because several variants carry
-        // parameters and there is no bare value to list.
-        for make in OpKind::ALL {
-            let kind = make();
-            assert_resolves(op_kind(&kind));
-            assert_resolves(op_description(&kind));
         }
     }
 }

@@ -44,9 +44,9 @@ exe="$(plutil -extract exeName raw -o - "$repo/product.json")"
 
 if [[ $build -eq 1 ]]; then
     if [[ $profile == release ]]; then
-        cargo build --manifest-path "$repo/Cargo.toml" -p review-app --release
+        cargo build --manifest-path "$repo/Cargo.toml" -p review-app -p review-cli --release
     else
-        cargo build --manifest-path "$repo/Cargo.toml" -p review-app
+        cargo build --manifest-path "$repo/Cargo.toml" -p review-app -p review-cli
     fi
 fi
 
@@ -57,6 +57,11 @@ app="$repo/target/$name.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
 cp "$bin" "$app/Contents/MacOS/$name"
+# The console tool, where the release bundle has it - so a tool that finds the app by
+# its bundle id finds review-cli beside it in a dev bundle too.
+if [[ -x "$repo/target/$profile/review-cli" ]]; then
+    cp "$repo/target/$profile/review-cli" "$app/Contents/MacOS/review-cli"
+fi
 
 # NSHighResolutionCapable is not optional: without it macOS runs the window through 1x scaling and
 # every pixel is blurry on a Retina display, which would make the scene look like the port had

@@ -7,6 +7,7 @@
 //! mesh continuously, which is both the wrong result and an easy mistake to make
 //! invisibly.
 
+use review_labels::opt::{op_description, op_kind};
 use review_model::ModelData;
 use review_optimize::{
     AoQuality, AoTarget, AttributeWeights, BakeAoParams, ExportOptions, FbxFormat, HierarchyMode,
@@ -81,9 +82,9 @@ fn operation_body(ui: &mut egui::Ui, state: &mut UiState, id: u64) {
     };
     let kind = op.kind.clone();
 
-    ui.heading(egui::RichText::from(labels::op_kind(&kind)));
+    ui.heading(egui::RichText::from(op_kind(&kind)));
     ui.add_space(size::PANEL_ROW_GAP);
-    ui.label(egui::RichText::from(labels::op_description(&kind)).color(color::TEXT_MUTED));
+    ui.label(egui::RichText::from(op_description(&kind)).color(color::TEXT_MUTED));
     ui.add_space(size::PANEL_ROW_GAP);
     ui.separator();
 

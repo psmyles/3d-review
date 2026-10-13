@@ -18,20 +18,20 @@ feature. File paths point at the seam a feature would attach to.
 
 ## Tier 1 — gaps that block a use case the user named
 
-### 1. Headless batch mode (preset × files → export + report) — ABSENT
+### 1. Headless batch mode (preset × files → export + report) — DONE as `review-cli`
 
-`crates/app/src/main.rs:77-88` hand-scans three flags (`--tracy`, `--gate-out`, a
-path); nothing runs without a window. Everything underneath is already pure:
-`review_import::load_model`, `review_optimize::process` + `preset` (JSON) +
-`export`, and the AO bake is CPU raycasts. What's missing is the driver:
-
-- A `review-cli` binary (or `3d-review batch` subcommand) with a real arg parser:
-  `--preset p.json --out <dir> [--recurse] [--glob] <files...>`, per-file
-  progress on stdout, non-zero exit on any failure, `--report out.json`.
-- Overwrite policy (code-quality finding F2: export writes over the destination
-  with no check) — matters far more once a batch can clobber a whole folder.
-- Naming template for outputs (`{stem}_LOD{n}.fbx` etc.).
-- Parallelism across files (each run already uses `std::thread::scope` inside).
+`review-cli optimize` (`crates/cli`, reference `docs/cli.md`): a preset and/or
+`--lods` / `--reduce` / the export options over any mix of files and folders
+(`--recurse`), written under `--out` with each model's place kept and a
+`--suffix`, an `--if-exists fail|skip|replace` policy settled before a model is
+loaded (`export::planned_files` is the export's own naming), a guard against
+writing over another model of the run or over a source, plain per-model lines
+plus `OSC 9;4` progress, exit 0 / 1 / 2, and `--report out.json`. Built to
+Launcher's CLI contract and shipped beside the viewer on both platforms. Still
+open: parallelism across files (each run already uses `std::thread::scope`
+inside, so this is a memory question as much as a speed one), and a Ctrl+C that
+stops between models rather than mid-write (the export stages and commits, so an
+interrupted run leaves staging files, never a half-written model).
 
 ### 2. Automated validation / audit report — DONE in the Aud workspace, except materials / textures
 
@@ -39,7 +39,8 @@ Shipped as the **Aud** workspace (`crates/audit`): 43 checks over mesh, transfor
 UVs, skin, density, naming and hierarchy, Unity / Unreal / Generic profiles in a
 versioned JSON envelope, an Issues list, and a JSON report whose schema the batch
 mode can reuse. Still open: the materials / textures rules below, and a pass/fail
-verdict over the report. The original gap analysis follows.
+verdict over the report — which `review-cli audit --fail-on` now is, for a
+run. The original gap analysis follows.
 
 The only user-visible warning today is one toast (`crates/app/src/loading.rs:394`).
 `crates/model/src/skin.rs:140` / `geometry.rs:111` reject malformed data at load;

@@ -51,6 +51,10 @@ workspace = true
 path = "../import"
 
 
+[dependencies.review-labels]
+workspace = true
+
+
 [dependencies.review-localization]
 workspace = true
 

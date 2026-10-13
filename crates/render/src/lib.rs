@@ -75,8 +75,9 @@ pub const fn scene_vertex_size() -> usize {
     ENGINE_VERTEX_SIZE
 }
 
-/// [`scene_vertex_size`]'s value: `SceneVertex` minus its deform lane.
-const ENGINE_VERTEX_SIZE: usize = 64;
+/// [`scene_vertex_size`]'s value: `SceneVertex` minus its deform lane, which is
+/// the model's engine-equivalent vertex.
+const ENGINE_VERTEX_SIZE: usize = review_model::ENGINE_VERTEX_BYTES;
 const _: () = assert!(
     ENGINE_VERTEX_SIZE + size_of::<[u32; 4]>() == size_of::<scene::SceneVertex>(),
     "SceneVertex changed size: re-derive the engine-equivalent vertex size"

@@ -87,7 +87,6 @@ One `impl App` block per concern, one file each:
 | `recent.rs` | File > Open Recent |
 | `update.rs` | Help > Check for Updates, over the OS `curl` on a worker |
 | `logging.rs` | The log from `app`'s side: where the day's file lives, the session header, the handover into the Log window |
-| `explain.rs` | The optimizer errors, warnings and export notes a user can act on, turned into catalog text (`review_optimize::notice`'s `OptWarning` / `ExportNote` are typed, so every one has a key) |
 | `docs_dir.rs` | Where the manual's images live on this install |
 | `undo.rs` | The unified undo/redo snapshot stack |
 | `opt/` | The Opt workspace: `mod.rs` (`OptSubsystem`, its state and the latest-request-wins rules), `process.rs` (scheduling runs, the worker, folding progress / previews / results back), `export.rs`, `preset.rs` |
@@ -546,8 +545,9 @@ or one object), the chosen diagnostic view and the Issues list's grouping and
 open groups. A focused finding and a scene selection are exclusive, like the Opt
 stack pane and the Outliner: `select_audit_focus` clears the selection and
 `release_stack_selection` clears the focus. Only the file dialogs travel as an
-`AuditIntent`. `audit_labels.rs` is the exhaustive map from every typed audit
-value to catalog text (invariant 12); `panels/outliner/issues.rs` is the Issues
+`AuditIntent`. The exhaustive map from every typed audit value to catalog text
+(invariant 12) is `review-labels`' `audit` module, shared with `review-cli`, and
+the chrome reaches it as `audit_labels`; `panels/outliner/issues.rs` is the Issues
 tab and `panels/aud_inspector.rs` the finding, object, summary and profile
 views. The Aud view group follows the 3D tools in the left cluster
 (`TOOLBAR_LEFT_AUD_WIDTH`; `toolbar::mode_group_left` keeps room for it in
@@ -562,21 +562,22 @@ to reprocess and what undo compares. Only the file-dialog actions (export, prese
 load/save) travel as an `OptIntent`.
 
 Three modules exist for invariant 12: `labels.rs` maps every foreign enum variant
-to a catalog message, `widgets/tooltip.rs` is the one tooltip shape (title,
-paragraph, manual link), and `help.rs` is the in-app manual — a native
-`egui::Window` over `docs::Page`, the page table this crate's `build.rs` generates
-from `docs/book/src`. Page *text* is compiled in, so Help works on a broken
-install; only images are read from disk, and one that is not there renders as its
-alt text.
+the chrome alone shows to a catalog message (an operation's name, a rule's, a
+DCC unit's are `review-labels`', because `review-cli` prints them too),
+`widgets/tooltip.rs` is the one tooltip shape (title, paragraph, manual link), and
+`help.rs` is the in-app manual — a native `egui::Window` over `docs::Page`, the
+page table this crate's `build.rs` generates from `docs/book/src`. Page *text* is
+compiled in, so Help works on a broken install; only images are read from disk,
+and one that is not there renders as its alt text.
 
 ### `audit` — `review-audit`
 
-The model audit behind the Aud workspace, as a pure library so a future headless
-batch run can write the same report. `#![forbid(unsafe_code)]`; depends on
+The model audit behind the Aud workspace, as a pure library so `review-cli audit`
+writes the same report the viewer does. `#![forbid(unsafe_code)]`; depends on
 `review-model`, `glam`, `serde` and `review-prof` — deliberately **not** on
 `review-optimize`, which is an FFI site the audit has no need of. It is
 **text-free**: rule ids, severities, measured values and skip reasons are typed,
-and `ui` / `app` turn them into catalog text.
+and `review-labels` turns them into catalog text.
 
 - `rule.rs` — the `rules!` table: each `RuleId` with its stable wire name
   (`"uv.overlap"`, pinned by a test, because saved profiles and reports key on
@@ -738,8 +739,24 @@ compile error rather than a `{$name}` left in the text.
 The English catalog is `crates/localization/locales/en/*.ftl`, one file per area. Every
 id is prefixed with its file's stem: that is what keeps ids unique inside the one
 flat bundle, what the generated const name drops, and what lets one catalog serve
-three crates without handing each of them the others' keys (`ui` takes `common-`
-and `ui-`, `app` takes `app-`, `shell-macos` takes `menu-`).
+five crates without handing each of them the others' keys (`ui` takes `common-`
+and `ui-`, `app` takes `app-`, `shell-macos` takes `menu-`, `labels` takes
+`labels-`, `cli` takes `cli-`).
+
+### `labels` — `review-labels`
+
+The catalog text for the typed values the libraries hand back, written once
+because two programs print them: the viewer's chrome and notices, and
+`review-cli`. `audit.rs` is every audit value — a check's name, what it checks,
+why it matters per engine and how to fix it, a severity, a category, a skip
+reason, a parameter, a measured figure, a profile's name, the **Copy summary**
+text and the actionable `AuditError`s. `opt.rs` is an operation's name and
+description, every `OptWarning` and `ExportNote`, the actionable `OptError`s and
+the notes on a preset's rebound per-object settings. `units.rs` is the DCC length
+units the stats card, the dimension labels and the audit's lengths share. Every
+map is exhaustive, and the crate links no egui and no GPU, which is what lets the
+console tool depend on it. Its messages are the `labels-*.ftl` files.
+`#![forbid(unsafe_code)]`.
 
 ### `psd` — `review-psd`
 
@@ -800,6 +817,39 @@ viewer uses): e.g. `review-snapshot --clip 4:6 --curves --skeleton dog.fbx`.
 `--curve-style straight:3:0.5:6` draws them as the Animation Curves window would,
 and `--attach file.fbx` attaches an animation file first, printing its binding
 report's coverage and any mismatch.
+
+### `cli` — `review-cli`
+
+The console tool shipped beside the viewer (`docs/cli.md` is its reference):
+`optimize`, `audit` and `info` over any mix of models and folders, for scripts,
+pipelines and Launcher. It links the libraries the viewer's Opt and Aud
+workspaces call — `import`, `optimize`, `audit`, `labels` — and nothing that
+draws, so a run measures and writes exactly what the viewer would, with no GPU.
+
+- `args.rs` — the command line. One table is both what is accepted and what
+  `--help` lists. Parsing is all or nothing: anything wrong is exit status 2 and
+  nothing runs. An empty value is the option left out and a list is one
+  comma-separated value, which is how a form-filled command line arrives.
+- `inputs.rs` — files and folders into models, each with its place below the
+  argument that named it (what an output keeps).
+- `load.rs` — the viewer's load: the funnel, the GPU-vertex count, the
+  source-property capture, which costs the model nothing when it fails. A Git LFS
+  pointer is named as one.
+- `optimize.rs` — the preset with `--lods` / `--reduce` / the export options laid
+  over it, then per model the rebind, the run and `export_fbx`. Every file a model
+  will write is known before it loads (`export::planned_files`, the export's own
+  naming), so `--if-exists` costs nothing and no model can write over another, or
+  over a model being read.
+- `audit.rs` — each model checked against one profile, its entry carrying the
+  `3d-review.audit-report` document; `--fail-on` is the run's verdict.
+- `info.rs` — the stats card's counts.
+- `report.rs` — the `--report` document: flat run-wide counts for a tool's
+  results, an entry per model, removed before a run and written after it.
+- `console.rs` — every line and the `OSC 9;4` bar. Writes ignore a closed pipe.
+
+Its messages are `cli.ftl`, and the localization gate scans it with print macros
+and `console::say` / `console::warn` as text sinks: the terminal is its screen.
+`#![forbid(unsafe_code)]`.
 
 ### Vendored trees
 
@@ -1049,10 +1099,10 @@ run and the widget breaks it where it actually runs out of room.
 `GpuError` and `PsdError` keep their English `Display`: they are diagnostics, they
 are what a bug report quotes, and their crates must not learn about catalogs to
 say them. `app` localizes the *lead* line and passes the diagnostic through as
-`{ $detail }`; the three optimizer errors a user can act on get their own text in
-`app/src/explain.rs`. What a run or an export has to *say* — a warning, a note
+`{ $detail }`; the optimizer and audit errors a user can act on get their own
+text in `review-labels`. What a run or an export has to *say* — a warning, a note
 about what the file lost — is not an error, so it is a typed value
-(`review_optimize::OptWarning` / `ExportNote`) that `explain.rs` renders through
+(`review_optimize::OptWarning` / `ExportNote`) that `review-labels` renders through
 the catalog, exhaustively. Enums in `render` / `optimize` / `model` / `import` keep
 `label()` as a stable English identifier for logs and reports, and get their
 display name through `ui`'s `labels.rs` map — which is exhaustive, so a variant

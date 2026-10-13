@@ -57,10 +57,15 @@ pub(crate) fn primary_modifier() -> std::borrow::Cow<'static, str> {
     }
 }
 
+// What a typed audit value or a DCC unit is called lives in `review-labels`,
+// shared with `review-cli` (invariant 12); the chrome reaches it under the
+// module names it has always used.
+use review_labels::audit as audit_labels;
+use review_labels::units;
+
 mod about;
 mod assets;
 mod aud_state;
-mod audit_labels;
 mod binding;
 mod dimensions;
 mod gizmo;
@@ -79,17 +84,15 @@ mod texture_view;
 pub mod theme;
 mod toolbar;
 mod transport;
-mod units;
 mod widgets;
 
 // Root re-exports carry exactly what `app` (the sole consumer) uses; everything
 // else stays reachable under its own module path.
 pub use about::{AboutInfo, AboutState};
 pub use aud_state::{AudGrouping, AudUiState, AuditFocus, AuditIntent};
-pub use audit_labels::audit_summary_text;
 pub use binding::binding_warnings;
 pub use help::{HelpState, option_panel_at, workspace_help_page};
-pub use labels::{buffer_view_name, material_mode_name, op_kind_name, viewport_tool_name};
+pub use labels::{buffer_view_name, material_mode_name, viewport_tool_name};
 pub use log_window::LogWindowState;
 pub use notifications::{ActivityId, NoticeKind, Notifications};
 pub use opt_state::{

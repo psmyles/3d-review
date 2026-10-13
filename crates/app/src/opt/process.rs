@@ -66,11 +66,11 @@ pub(crate) struct OptProgressed {
 ///
 /// Rendered on the worker, like the import's, so the main thread only ever
 /// swaps a finished string into the card. What a stage is *called* comes from
-/// the chrome's catalog (`review_ui::op_kind_name` for an operation), so the
+/// the chrome's catalog (`review_labels::opt::op_kind_name` for an operation), so the
 /// notice and the stack row can't drift apart.
 fn progress_message(progress: OptProgress<'_>) -> String {
     let stage = match progress.op {
-        Some(kind) => review_ui::op_kind_name(kind),
+        Some(kind) => review_labels::opt::op_kind_name(kind),
         None => review_localization::tr(stage_name(progress.stage)).into_owned(),
     };
     match (progress.object, progress.total) {
@@ -447,7 +447,7 @@ impl App {
                     log::error!("mesh optimization failed: {error}");
                     self.notifications
                         .error(keys::app_notifications::optimization_failed(
-                            crate::explain::explain_opt_error(&error),
+                            review_labels::opt::explain_opt_error(&error),
                         ));
                 }
             }
@@ -535,7 +535,7 @@ impl App {
             warnings: result
                 .warnings
                 .iter()
-                .map(crate::explain::explain_opt_warning)
+                .map(review_labels::opt::explain_opt_warning)
                 .collect(),
             source: result.source,
             source_metrics: result.source_metrics,
@@ -601,7 +601,7 @@ impl App {
             }
             let fresh: Vec<String> = fresh
                 .iter()
-                .map(crate::explain::explain_opt_warning)
+                .map(review_labels::opt::explain_opt_warning)
                 .collect();
             // One notice for the run, however many things it has to say.
             self.notifications.report(

@@ -2693,6 +2693,7 @@ dependencies = [
  "notify",
  "review-audit",
  "review-import",
+ "review-labels",
  "review-localization",
  "review-localization-build",
  "review-log",
@@ -2724,6 +2725,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "review-cli"
+version = "0.1.0"
+dependencies = [
+ "review-audit",
+ "review-import",
+ "review-labels",
+ "review-localization",
+ "review-localization-build",
+ "review-model",
+ "review-optimize",
+ "serde_json",
+ "sys-locale",
+]
+
+[[package]]
 name = "review-import"
 version = "0.1.0"
 dependencies = [
@@ -2734,6 +2750,16 @@ dependencies = [
  "thiserror 2.0.18",
  "tracy-client",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "review-labels"
+version = "0.1.0"
+dependencies = [
+ "review-audit",
+ "review-localization",
+ "review-localization-build",
+ "review-optimize",
 ]
 
 [[package]]
@@ -2866,6 +2892,7 @@ dependencies = [
  "log",
  "pulldown-cmark",
  "review-audit",
+ "review-labels",
  "review-localization",
  "review-localization-build",
  "review-log",
